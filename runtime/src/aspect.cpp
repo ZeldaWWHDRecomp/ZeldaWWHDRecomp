@@ -212,7 +212,8 @@ extern "C" void site_025ADB38(Cpu* c) { adjust_projection_args(c, 1, 2); }
 //     from the centre (hearts, magic, rupees, buttons, keys, place names...) are moved out by the
 //     extra half width (height); L_EnemyHP_00 / L_CommandA_00 and roots the game moved off 0,0
 //     (placed at an actor's projected position) are scaled by kx, ky instead; leaf panes covering the
-//     whole 1280x720 screen (backgrounds, fades) are stretched. The translation/scale is changed only
+//     whole 1280x720 screen (backgrounds, fades) are stretched, except the pause screen's own panels
+//     (PF_PauseTV_00 / PF_PauseDRC_00), which stay at 16:9. The translation/scale is changed only
 //     for the call (dirty bit forced so the matrix is recomputed), so animations and game code keep
 //     their values. Panes the game parks off the 16:9 screen are not drawn (they would show in the
 //     extra space).
@@ -289,6 +290,14 @@ bool is_hud_edge_pane(uint32_t pane) {
     return false;
 }
 
+// The pause screen's own panels are 1280x720 leaves too, but they are not backgrounds: they carry
+// the menu (the frame and the boxes the cursor moves between) drawn on top of the stretched
+// background, so stretching them deformed the frame and left the menu inside it not matching it. They
+// stay at 16:9, centred like the rest of the TV layout.
+bool is_pause_pane(uint32_t pane) {
+    return name_is(pane, "PF_PauseTV_00") || name_is(pane, "PF_PauseDRC_00");
+}
+
 thread_local uint32_t t_root = 0;   // layout root whose matrices are being computed
 thread_local bool t_anchor = false; // ... and it is a TV layout at another aspect ratio
 }  // namespace
@@ -354,7 +363,7 @@ extern "C" void hook_028766CC(Cpu* c) {
     uint32_t sentinel = pane + kPaneChildren;
     if (ld32(sentinel) == sentinel && std::fabs(tx) < 8.0f && std::fabs(ty) < 8.0f) {
         float w = (float)ldf32(pane + kPaneSize) * std::fabs(sx), h = (float)ldf32(pane + kPaneSize + 4) * std::fabs(sy);
-        if (w >= 1270.0f && h >= 710.0f) {
+        if (w >= 1270.0f && h >= 710.0f && !is_pause_pane(pane)) {
             nsx = sx * kx;
             nsy = sy * ky;
             static const bool log_st = getenv("WWHD_ASPECT_LOG") != nullptr;
