@@ -10,6 +10,24 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ## What's new in this update
 
+### v0.2.2
+
+- **Controller rumble fixed** (issue #35): rumble now follows the game's patterns exactly and always
+  stops: on quit, after a crash, when the game hangs, while the settings menu is open and when the
+  window is in the background. Before, a controller could keep vibrating until it was switched off.
+  New **Rumble** on/off option in the settings overlay (Controls tab).
+- **Older graphics drivers** (issue #37): Windows/Linux builds no longer refuse to start with
+  "Entry Point Not Found" on drivers without Vulkan 1.3; they use the `VK_KHR_dynamic_rendering`
+  extension where the driver offers it, and otherwise show a clear message naming the GPU, its
+  driver version and what is missing.
+- **Language tab:** only the languages your game contains can be chosen (the USA version has
+  English, French and Spanish), and a changed language says that it applies after a restart.
+- **Textures update exactly:** textures the game changes in memory are now always re-uploaded (on
+  Metal and Vulkan); before, a change could show up a few frames late.
+- **Better crash logs:** a crash outside the game code names the library it happened in (for
+  example the graphics driver), and the log lists the Vulkan layers that overlays add, so crash
+  reports can be answered much faster.
+
 ### v0.2.1
 
 - **Cemu archives (`.wua`)** (issue #27): the setup now also takes a Cemu `.wua` file; it is
