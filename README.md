@@ -24,6 +24,8 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
   English, French and Spanish), and a changed language says that it applies after a restart.
 - **Textures update exactly:** textures the game changes in memory are now always re-uploaded (on
   Metal and Vulkan); before, a change could show up a few frames late.
+- **Full screen is remembered on Windows and Linux too** (issue #43), as it always was on macOS:
+  leave the game in full screen and it starts in full screen next time.
 - **Better crash logs:** a crash outside the game code names the library it happened in (for
   example the graphics driver), and the log lists the Vulkan layers that overlays add, so crash
   reports can be answered much faster.
