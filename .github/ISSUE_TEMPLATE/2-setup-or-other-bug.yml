@@ -1,0 +1,65 @@
+name: Setup, start or other bug
+description: The setup fails, the game doesn't start, or a problem outside of playing (menus of the launcher, installation, downloads).
+labels: ["bug", "setup"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For problems **while playing**, please use the "In-game bug" form instead (it asks for a save state).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you see, and what you expected instead. Screenshots or a short video help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, step by step, and the exact error message (screenshot or text).
+      placeholder: |
+        1. Go to ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release (e.g. v0.2.1), or the commit if you built it yourself (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux (x86-64)
+        - Linux (arm64)
+        - Android
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU, GPU and RAM (e.g. "Ryzen 5 5600, RTX 3060, 16 GB" or "M1, 8 GB").
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      options:
+        - Metal
+        - Vulkan
+        - Don't know
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        If the game crashed: the newest `crash-<date>-<time>.log` from `data/captures/` (release) or `captures/` (built from source). If the setup failed: `data/setup.log`. Drag the file in here.

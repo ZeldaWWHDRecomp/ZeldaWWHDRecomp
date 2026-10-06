@@ -1,0 +1,16 @@
+name: Feature request
+description: An idea or a wish for the port (an option, a mod, platform support, ...).
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and why it would help.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform (if it matters)
+      placeholder: "e.g. Windows, Steam Deck, Android"

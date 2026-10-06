@@ -1,0 +1,83 @@
+name: In-game bug
+description: Something goes wrong while playing (graphics, gameplay, sound, controls, crash during play).
+labels: ["bug", "in-game"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A **save state** from the moment the problem happens lets us reproduce it in minutes instead of hours, so please add one if you can.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you see, and what you expected instead. Screenshots or a short video help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Where in the game, and what you did right before it happened.
+      placeholder: |
+        1. Go to ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: savestate
+    attributes:
+      label: Save state (link), or why you can't add one
+      description: |
+        **How to make a save state:**
+        1. In the game, go to the place where the problem happens (or just before it).
+        2. Press **Shift+F1** (Fn+Shift+F1 on most Mac keyboards), or open the settings overlay (**F1**, or hold Select / press Home on a controller) > **Save States** > save to a free slot.
+        3. Find the file `slotN.bin` (N = the slot number):
+           - Release (all systems): `data/user/states/` inside the folder you unzipped
+           - Built from source: macOS `~/Library/Application Support/wwhd/states/`, Linux `~/.config/wwhd/states/`, Windows `%APPDATA%\WWHD\states\`
+        4. The file is about 250–300 MB, too big for GitHub. Upload it (zipped if you like) to Google Drive, Dropbox, OneDrive or similar, and paste the share link here.
+
+        Save states only load in the same version they were made with, so please also fill in the version below.
+        If you can't add one (e.g. you can't reach that place again), write the reason here instead.
+      placeholder: "https://drive.google.com/... or: no save state because ..."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release (e.g. v0.2.1), or the commit if you built it yourself (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux (x86-64)
+        - Linux (arm64)
+        - Android
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU, GPU and RAM (e.g. "Ryzen 5 5600, RTX 3060, 16 GB" or "M1, 8 GB").
+    validations:
+      required: true
+  - type: dropdown
+    id: renderer
+    attributes:
+      label: Renderer
+      options:
+        - Metal
+        - Vulkan
+        - Don't know
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        If the game crashed: the newest `crash-<date>-<time>.log` from `data/captures/` (release) or `captures/` (built from source). If the setup failed: `data/setup.log`. Drag the file in here.
