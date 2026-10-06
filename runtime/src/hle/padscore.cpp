@@ -4,6 +4,7 @@
 #include "../crashrec.h"
 #include "../runtime.h"
 #include "../input.h"
+#include "../rumble.h"
 
 namespace interp { bool repeat_input(); bool fresh_sticks(); }
 
@@ -42,7 +43,7 @@ HLE(padscore, WPADControlMotor) {
     uint32_t chan = arg(c, 0), cmd = arg(c, 1);
     if (connected(chan)) {
         TRACE("[pad] WPADControlMotor(%u, %u) -> %s", chan, cmd, cmd ? "rumble" : "stop");
-        input::set_rumble(cmd ? 1.f : 0.f, cmd ? 500u : 0u);
+        rumble::pro_motor(chan, cmd != 0);
     }
     ret(c, (uint32_t)kWpadErrNone);
 }

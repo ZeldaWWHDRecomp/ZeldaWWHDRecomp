@@ -528,9 +528,11 @@ Controller, the GamePad window keeps its screen and touch input.
 When the game asks for text (e.g. your name), a macOS text field opens.
 
 Rumble works too (SDL hosts): what the game asks its controller's motor to do is passed to the
-connected controllers that have one, which includes the Pro Controller's (`WWHD_RUMBLE=0` turns
-it off). A host controller has a single motor, so a rumble pattern becomes its average strength
-for the length of one pass.
+connected controllers that have one, which includes the Pro Controller's. A host controller has a
+single motor, so a GamePad rumble pattern plays as on/off (or half strength where it alternates),
+and the motors stay still while the settings overlay is open, while no game window has focus and
+once the app quits. **Controls > Rumble** in the settings overlay (F1) turns it off and is
+remembered (`WWHD_RUMBLE=0` starts with it off). The macOS app does not drive controller motors yet.
 
 The **Display** menu: full screen for the TV window (**⌘F**, **⌃⌘F** or the green button; the
 pointer hides after 2 s without movement), picture scaling (smooth, sharp, or integer scale) and
@@ -556,7 +558,8 @@ and the renderer are remembered in `~/Library/Application Support/wwhd/display.p
   `WWHD_FXAA=0|1`, `WWHD_INTERP=1`, `WWHD_INTERP_PACED=0|1`, `WWHD_TRUE60=1` (start values for the Graphics menu; they
   override the remembered choices);
   `WWHD_SHADOW_SCALE=n` gives the shadow maps their own resolution factor; `WWHD_STATE_DIR=<dir>`
-  stores save states elsewhere; `WWHD_RUMBLE=0` (SDL builds) leaves the controller motors alone.
+  stores save states elsewhere; `WWHD_RUMBLE=0|1` (SDL builds) start value for Controls > Rumble (overrides the remembered
+  choice); `WWHD_LOG_RUMBLE=1` logs the game's motor requests and what the motors do.
 - Crashes and game halts write `captures/crash-<time>.log` (crash address, registers, the guest call
   chain, a host backtrace and the last log lines; useful for bug reports, it contains only addresses,
   function names and log text).

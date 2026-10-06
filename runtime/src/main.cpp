@@ -25,6 +25,7 @@
 #include "gx2/gx2.h"
 #include "recomp_table.h"
 #include "crashrec.h"
+#include "input.h"
 #include "runtime.h"
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -112,6 +113,7 @@ static void crash_handler(int sig, siginfo_t* si, void*) {
         FILE* f = fopen("trace_dump.txt", "w");
         if (f) { trace_dump(f, 3000); fclose(f); if (write(2, "[trace] wrote trace_dump.txt\n", 29) < 0) {} }
     }
+    input::stop_rumble_now();  // controllers keep their last motor level after the process (issue #35)
     _exit(128 + sig);
 }
 
@@ -148,6 +150,7 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     crashrec::crash_note(fd,win_crash_out);
     if(fd>=0){win_crash_log_only(fd,"\n--- last log lines ---\n",24); log_ring_write(fd,win_crash_log_only); _close(fd); fprintf(stderr,"[crash] wrote %s\n",path);}
     if(g_ppc_trace) { FILE* f=fopen("trace_dump.txt","w"); if(f){trace_dump(f,3000);fclose(f);} }
+    input::stop_rumble_now();  // controllers keep their last motor level after the process (issue #35)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 static void install_crash_handler() { SetUnhandledExceptionFilter(crash_handler); }

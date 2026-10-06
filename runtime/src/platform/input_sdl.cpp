@@ -4,6 +4,7 @@
 #include "mouse_sdl.h"
 #include "../input.h"
 #include "../input_map.h"
+#include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
 #include "../gfx/vulkan/settings.h"
@@ -18,6 +19,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <thread>
 #include <utility>
 #include <vector>
 namespace render { uint64_t frame_count(); }
@@ -191,38 +193,67 @@ static bool overlay_event(const SDL_Event& event){
 }
 static PadState keyboard_state(bool host){bool keys[256];for(int i=0;i<256;i++)keys[i]=(host&&g_keys[i])||g_script_keys[i];return input_map::keyboard_state(input_map::current(),keys);}
 // ---- rumble -----------------------------------------------------------------------------------
-// The game drives the motor from a guest thread (VPADControlMotor / WPADControlMotor in
-// runtime/src/hle), so a request only lands here and update() does the work on the main thread,
-// with the rest of the input.
-static std::mutex g_rumble_mu;
-static bool g_rumble_pending;
-static float g_rumble_strength;
-static Uint32 g_rumble_ms;
-void set_rumble(float strength,uint32_t duration_ms){
- std::lock_guard lk(g_rumble_mu);
- g_rumble_strength=std::clamp(strength,0.f,1.f);g_rumble_ms=duration_ms;g_rumble_pending=true;
-}
-static void apply_rumble(){
- // debug: WWHD_RUMBLE=0 turns the motor off, WWHD_RUMBLE_LOG=1 logs the requests
- static const bool off=getenv("WWHD_RUMBLE")&&!atoi(getenv("WWHD_RUMBLE"));
- static const bool log_requests=getenv("WWHD_RUMBLE_LOG")!=nullptr;
- float strength;Uint32 ms;
- {std::lock_guard lk(g_rumble_mu);
-  if(!g_rumble_pending)return;
-  g_rumble_pending=false;strength=g_rumble_strength;ms=g_rumble_ms;}
- if(off)return;
- // no controller, or none with a motor: nothing to do, and nothing to say
- if(g_rumble_controllers.empty())return;
- // SDL wants a duration even for the request that stops the motor (intensity 0)
- if(ms==0)ms=1;
- auto level=(Uint16)(strength*0xFFFFu);
+// The game's requests (VPADControlMotor / WPADControlMotor in runtime/src/hle) are kept by
+// rumble.h; update() sets the motors from them on the main thread, with the rest of the input. A
+// running motor is sent again every update with a short duration, so it never outlasts the
+// requests by more than kRumbleRefreshMs; should the main loop stall (SDL ends a rumble only while
+// it pumps events), a watchdog thread stops the motors after kRumbleStallMs.
+// The motors are still while the option is off, the settings overlay is open (the game sees no
+// input then), no game window has the keyboard (SDL reads no controllers in the background), and
+// from the moment the process ends (quit, exit, crash): it ends without SDL_Quit, and XInput and
+// HIDAPI controllers keep the last motor level they were sent after it.
+constexpr Uint32 kRumbleRefreshMs=150,kRumbleStallMs=300;
+static std::mutex g_pads_mu;  // g_controllers, g_rumble_*: the watchdog and exit paths run on other threads
+static std::map<SDL_JoystickID,Uint16> g_rumble_sent;  // the level each controller runs at
+static std::atomic<bool> g_rumble_quit{false};
+static std::atomic<Uint64> g_rumble_update_ms{0};  // SDL_GetTicks of the latest update
+static void rumble_all_locked(Uint16 level,Uint32 ms){
  for(auto id:g_rumble_controllers){
   auto i=g_controllers.find(id);
-  if(i!=g_controllers.end()&&SDL_GamepadConnected(i->second))SDL_RumbleGamepad(i->second,level,level,ms);
+  if(i==g_controllers.end()||!SDL_GamepadConnected(i->second))continue;
+  Uint16& sent=g_rumble_sent[id];
+  if(level||sent)SDL_RumbleGamepad(i->second,level,level,level?ms:0);
+  if(rumble::log_enabled()&&level!=sent)LOG("[rumble] host: controller %u motor %.2f",(unsigned)id,level/65535.0);
+  sent=level;
  }
- if(log_requests)LOG("[rumble] strength %.2f for %u ms on %zu controller(s)",strength,(unsigned)ms,g_rumble_controllers.size());
 }
+static void apply_rumble(){
+ g_rumble_update_ms=SDL_GetTicks();
+ if(g_rumble_controllers.empty()||g_rumble_quit)return;  // no controller with a motor: nothing to do
+ // the share of "on" over the next host frame (the motor spins up and down slower than that)
+ float level=rumble::host_level(1000000/60);
+ if(overlay::is_open()||!SDL_GetKeyboardFocus())level=0;  // the game cannot stop it from here
+ std::lock_guard lk(g_pads_mu);
+ rumble_all_locked((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu),kRumbleRefreshMs);
+}
+static void rumble_watchdog(){
+ while(!g_rumble_quit){
+  SDL_Delay(100);
+  if(SDL_GetTicks()-g_rumble_update_ms<kRumbleStallMs)continue;
+  std::lock_guard lk(g_pads_mu);
+  if(std::any_of(g_rumble_sent.begin(),g_rumble_sent.end(),[](auto& s){return s.second!=0;})){
+   LOG("[rumble] the main loop stalls: motors stopped");
+   rumble_all_locked(0,0);  // the next update runs them again
+  }
+ }
+}
+void stop_rumble_now(){
+ g_rumble_quit=true;
+ // crash handler: never wait for a thread that may be gone
+ std::unique_lock lk(g_pads_mu,std::try_to_lock);
+ if(lk.owns_lock())rumble_all_locked(0,0);
+}
+// SDL_EVENT_QUIT and closing the TV window end the process at once (std::_Exit in the renderer's
+// loop): an event watch sees them as they arrive, before the loop does
+static bool rumble_quit_watch(void*,SDL_Event* event){
+ if(event->type==SDL_EVENT_QUIT||event->type==SDL_EVENT_TERMINATING||
+    (event->type==SDL_EVENT_WINDOW_CLOSE_REQUESTED&&g_prompt_window&&event->window.windowID==SDL_GetWindowID(g_prompt_window)))
+  stop_rumble_now();
+ return true;
+}
+bool has_rumble(){return true;}
 static void open_controller(SDL_JoystickID id){
+ std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
  if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
@@ -234,6 +265,9 @@ void init(){
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
   int count=0;auto* ids=SDL_GetGamepads(&count);for(int i=0;i<count;i++)open_controller(ids[i]);SDL_free(ids);
+  SDL_AddEventWatch(rumble_quit_watch,nullptr);
+  atexit(stop_rumble_now);  // std::exit: the game's exit(), its main thread returned
+  std::thread(rumble_watchdog).detach();
  }
 }
 static std::string utf8(const std::u16string& text){
@@ -331,7 +365,7 @@ void handle_event(const SDL_Event& event){
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
  if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED){auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);}
  if(event.type==SDL_EVENT_WINDOW_FOCUS_LOST)release_keys();
  if(text_entry_event(event))return;
  if(g_done){

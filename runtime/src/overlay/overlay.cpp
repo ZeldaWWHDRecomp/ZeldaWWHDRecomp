@@ -31,6 +31,7 @@
 #include "../mods/climb.h"
 #include "../mods/mods.h"
 #include "../platform/keycodes.h"
+#include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
 
@@ -916,6 +917,14 @@ void tab_controls() {
         input_map::set_current(m);
     }
     ImGui::SameLine(0, 24);
+    // issue #35: a way to keep the controller motors still (saved; WWHD_RUMBLE=0 starts with it off)
+    if (check("Rumble", rumble::enabled(), &v, input::has_rumble())) {
+        rumble::set_enabled(v);
+        hostui::post([v] { hostui::set("rumble", v ? "1" : "0"); });
+    }
+    help(input::has_rumble() ? "Controller vibration when the game asks for it. Off keeps the motors still."
+                             : "Controller vibration: this host does not drive controller motors yet.");
+    ImGui::SameLine(0, 24);
     if (ImGui::Button("Reset to defaults")) input_map::set_current(input_map::Mapping::defaults());
 }
 
@@ -1126,6 +1135,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         // the saved controller choice (WWHD_PRO_CONTROLLER wins); it also hides or shows the GamePad screen
         if (!getenv("WWHD_PRO_CONTROLLER") && hostui::get("proController", v))
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
+        // the saved rumble choice (WWHD_RUMBLE wins)
+        if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
     }
     if (!test.done && render::frame_count() + 1 >= test.at) {
         test.done = true;

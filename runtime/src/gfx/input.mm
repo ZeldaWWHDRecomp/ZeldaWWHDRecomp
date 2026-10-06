@@ -94,12 +94,11 @@ void release_keys() {
     memset(g_keys, 0, sizeof(g_keys));
 }
 
-// Rumble would go to the host game controllers through GameController.framework; this host has
-// none of its own yet (see platform/input_sdl.cpp for the SDL host, which does rumble).
-void set_rumble(float strength, uint32_t duration_ms) {
-    (void)strength;
-    (void)duration_ms;
-}
+// Rumble would go to the host game controllers through GameController.framework (GCController
+// haptics); this host has none of its own yet (see platform/input_sdl.cpp for the SDL host, which
+// does rumble). The game's requests are kept by rumble.h all the same.
+bool has_rumble() { return false; }
+void stop_rumble_now() {}
 
 // modifier keys arrive as flagsChanged; the device-dependent bits tell left from right
 static bool modifier_down(uint16_t code, NSEventModifierFlags f) {

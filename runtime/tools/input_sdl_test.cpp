@@ -1,5 +1,6 @@
 // Tests only the host input boundary. No game binary or renderer is involved.
 #include <SDL3/SDL.h>
+#include <atomic>
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
@@ -7,6 +8,7 @@
 #include <string>
 #include "input.h"
 #include "input_map.h"
+#include "rumble.h"
 #include "platform/input_sdl.h"
 static int savedSlot=0, loadedSlot=0, saveRequests=0, loadRequests=0;
 namespace ss { void request_save(int slot){savedSlot=slot;++saveRequests;} void request_load(int slot){loadedSlot=slot;++loadRequests;} }
@@ -20,7 +22,8 @@ void log_msg(const char*,...){}
 // settings overlay: closed (keys reach the game and its shortcuts as before); the game's text prompt
 // (overlay/text_entry.h) shows while promptShown: overlay::key takes every key then, as the real one does
 static bool promptShown=false;static int promptKeys=0;static std::string promptText;
-namespace overlay { bool key(int,bool,bool,int){if(promptShown)++promptKeys;return promptShown;} bool is_open(){return false;} bool blocks_input(){return promptShown;}
+static bool overlayOpen=false;
+namespace overlay { bool key(int,bool,bool,int){if(promptShown)++promptKeys;return promptShown;} bool is_open(){return overlayOpen;} bool blocks_input(){return promptShown;}
  bool captures(){return promptShown;}
  bool mouse_move(float,float){return false;} bool mouse_button(int,bool){return false;} bool mouse_wheel(float,float){return false;} }
 namespace text_entry { bool active(){return promptShown;} void text(const char* s){promptText+=s;} void preedit(const char*){} }
@@ -90,6 +93,38 @@ int main(){
  // the key that confirmed is still held: its repeats don't press it in the game
  graphicsEvent(SDL_SCANCODE_RETURN,game,true);input::held_keys(held);assert(!held[input_map::key_from_id("Return")]);
  graphicsEvent(SDL_SCANCODE_RETURN,game,false,SDL_EVENT_KEY_UP);
+ // rumble (issue #35): a virtual controller with a motor follows the game's requests and stops on
+ // every path the game cannot stop it from (option off, overlay open, no focus, quit)
+ static std::atomic<Uint16> motorLow{0},motorHigh{0};static std::atomic<int> motorCalls{0};
+ SDL_VirtualJoystickDesc desc;SDL_INIT_INTERFACE(&desc);
+ desc.type=SDL_JOYSTICK_TYPE_GAMEPAD;desc.naxes=SDL_GAMEPAD_AXIS_COUNT;desc.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;desc.name="rumble test pad";
+ desc.Rumble=[](void*,Uint16 low,Uint16 high){motorLow=low;motorHigh=high;++motorCalls;return true;};
+ const SDL_JoystickID padId=SDL_AttachVirtualJoystick(&desc);assert(padId);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);  // SDL_EVENT_GAMEPAD_ADDED opens it
+ SDL_ShowWindow(game);for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ const bool focused=SDL_GetKeyboardFocus()!=nullptr;  // the dummy driver may give no window the keyboard
+ const uint8_t on[15]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+ rumble::set_enabled(true);rumble::gamepad_pattern(0,on,120);input::update();
+ if(focused){
+  assert(motorLow==0xFFFF&&motorHigh==0xFFFF);
+  rumble::set_enabled(false);input::update();assert(motorLow==0);  // the option stops it at once
+  rumble::set_enabled(true);input::update();assert(motorLow==0xFFFF);
+  overlayOpen=true;input::update();assert(motorLow==0);overlayOpen=false;
+  input::update();assert(motorLow==0xFFFF);
+  rumble::gamepad_stop(0);input::update();assert(motorLow==0);
+  const int calls=motorCalls;input::update();input::update();assert(motorCalls==calls);  // still: nothing more sent
+  rumble::pro_motor(0,true);input::update();assert(motorLow==0xFFFF);
+  SDL_HideWindow(game);for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+  if(!SDL_GetKeyboardFocus()){input::update();assert(motorLow==0);SDL_ShowWindow(game);for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);}
+  input::update();assert(motorLow==0xFFFF);
+  SDL_Delay(600);assert(motorLow==0);  // no update for a while (main loop stalled): the watchdog stops it
+  rumble::pro_motor(0,true);input::update();assert(motorLow==0xFFFF);  // (the game sends it every frame)
+  SDL_Event quit{};quit.type=SDL_EVENT_QUIT;SDL_PushEvent(&quit);assert(motorLow==0);  // the app ends now
+  input::update();assert(motorLow==0);
+ }else{
+  assert(motorLow==0);puts("input_sdl_test: no window has the keyboard here, rumble checked with the motors still only");
+ }
+ rumble::reset();
  SDL_DestroyWindow(controls);SDL_DestroyWindow(game);input::set_prompt_window(nullptr);
- SDL_Quit();puts("input_sdl_test: keyboard mapping, focus, touch, Pro mode, guarded save-state shortcuts, text prompt routing passed");
+ SDL_Quit();puts("input_sdl_test: keyboard mapping, focus, touch, Pro mode, guarded save-state shortcuts, text prompt routing, rumble passed");
 }

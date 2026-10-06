@@ -51,6 +51,7 @@
 
 #include "runtime.h"
 #include "crashrec.h"
+#include "rumble.h"
 
 // module sections
 bool threads_ss_save(ss::Writer& w, std::string& why);
@@ -599,6 +600,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     gx2_ss_load(r);
     interp::ss_reset();
     aspect::ss_reset();
+    rumble::reset();     // an effect running before the load is not the restored game's
     r = s->section(kSecThreads);
     threads_ss_load(r);  // last: wakes the parked threads (they continue after the thaw)
     threads::thaw();
