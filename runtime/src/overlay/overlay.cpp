@@ -144,6 +144,7 @@ struct Ui {
     double last_present = 0;
     // language (applies on the next start)
     int language = -1;
+    int language_at_start = -1;  // the language this start runs with (the saved one when the tab first shows)
     bool linearized = false;
     bool just_opened = false;
     bool list_view = false;  // Controls: the table instead of the drawing
@@ -937,7 +938,7 @@ int saved_language() {
 void tab_about() {
     static const char* const langs[] = {"Japanese", "English", "French", "German", "Italian", "Spanish",
                                         "Chinese", "Korean", "Dutch", "Portuguese", "Russian", "Chinese (Taiwan)"};
-    if (U.language < 0) U.language = saved_language();
+    if (U.language < 0) U.language = U.language_at_start = saved_language();
     heading("Console language (applies on the next start)");
     note("The game picks its text language from the console language. The USA disc has English, French and "
          "Spanish; other languages need a disc that carries them.");
@@ -952,6 +953,12 @@ void tab_about() {
     }
     ImGui::EndDisabled();
     if (env && *env) note("WWHD_LANGUAGE=%s is set for this start and takes precedence.", env);
+    else if (U.language != U.language_at_start) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.35f, 1.0f));
+        ImGui::TextWrapped("%s is saved. Restart the game to apply it: the game reads the console language only when "
+                           "it starts.", langs[U.language]);
+        ImGui::PopStyleColor();
+    }
     heading("About");
     ImGui::Text("The Legend of Zelda: The Wind Waker HD - native port (%s host, %s renderer)", hostui::name(),
                 render::api_name(render::active()));
