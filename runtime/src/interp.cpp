@@ -1,3 +1,4 @@
+#include "mods/packages.h"
 // Frame interpolation (60 fps output, game logic unchanged at 30 steps per second).
 //
 // With interpolation on, the main loop body runs every vsync (swap interval halved) but the game
@@ -752,6 +753,7 @@ extern "C" void hook_025DE788(Cpu* c) {
     uint32_t execute_fn = c->r[3];
     f_025DE788_orig(c);
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
+    if (!interp::g_hold_frame) mods::packages::frame(interp::g_logic_steps);
     g_in_execute = false;
 }
 extern "C" void hook_025DE024(Cpu* c) { if (!skip(2)) f_025DE024_orig(c); }

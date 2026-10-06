@@ -27,6 +27,8 @@
 #include "crash_addr.h"
 #include "crashrec.h"
 #include "input.h"
+#include "mods/manager.h"
+#include "mods/packages.h"
 #include "runtime.h"
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
@@ -316,7 +318,27 @@ int main(int argc, char** argv) {
         return result;
     }
 #endif
+    mods::manager::load_saved();  // player choices, before the game starts
+    mods::packages::initialize();
     mem::init();
+    auto valid_mod_memory = [](uint32_t address, size_t size) {
+        if (size > 1024 * 1024) return false;
+        uint64_t end = uint64_t(address) + size;
+        return (address >= mem::kMem2Start && end <= mem::kMem2End) ||
+               (address >= mem::kMem1 && end <= uint64_t(mem::kMem1) + mem::kMem1Size) ||
+               (address >= mem::kFgBucket && end <= uint64_t(mem::kFgBucket) + mem::kFgBucketSize);
+    };
+    // Store noncapturing callbacks: native mods operate on guest data, on the game thread.
+    static auto valid_memory = valid_mod_memory;
+    mods::packages::set_memory_access(
+        [](uint32_t a, void* out, size_t n) -> int {
+            if (!out || !valid_memory(a, n)) return 0;
+            memcpy(out, mem::ptr(a), n); return 1;
+        },
+        [](uint32_t a, const void* in, size_t n) -> int {
+            if (!in || !valid_memory(a, n)) return 0;
+            memcpy(mem::ptr(a), in, n); return 1;
+        });
 
     LoadedModule m{};
     std::string rpx = config::game_dir + "/code/cking.rpx";

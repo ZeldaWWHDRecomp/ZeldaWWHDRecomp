@@ -8,6 +8,7 @@
 
 namespace hostui {
 
+void choose_mod_source(bool folder, std::function<void(std::string)> chosen);
 void post(std::function<void()> fn);  // run on the main thread (soon, in order)
 
 // persistent settings: display.plist (AppKit) or <config dir>/settings.ini (SDL host). Test runs

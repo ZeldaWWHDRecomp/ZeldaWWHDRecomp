@@ -1,3 +1,4 @@
+#include <mutex>
 // In-game settings overlay: the Dear ImGui user interface (see overlay.h). The renderers draw the
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
@@ -31,6 +32,8 @@
 #include "../input_map.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
+#include "../mods/manager.h"
+#include "../mods/packages.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
 #include "../runtime.h"
@@ -656,54 +659,168 @@ void tab_display() {
     }
 }
 
+void package_controls() {
+    using namespace mods::packages;
+    static std::string error;
+    static char source[1024] = {}, new_profile[65] = {};
+    static std::mutex picker_mutex;
+    static std::string picked;
+    {
+        std::lock_guard guard(picker_mutex);
+        if (!picked.empty()) { snprintf(source, sizeof source, "%s", picked.c_str()); picked.clear(); }
+    }
+    heading("Profiles");
+    auto current = current_profile();
+    if (ImGui::BeginCombo("Active profile", current.c_str())) {
+        for (const auto& name : profiles())
+            if (ImGui::Selectable(name.c_str(), name == current)) select_profile(name, error);
+        ImGui::EndCombo();
+    }
+    ImGui::InputText("New profile", new_profile, sizeof new_profile);
+    ImGui::SameLine();
+    if (ImGui::Button("Clone current") && create_profile(new_profile, error)) new_profile[0] = 0;
+    static std::string delete_choice;
+    auto saved_profiles = profiles();
+    if (delete_choice == current || std::find(saved_profiles.begin(), saved_profiles.end(), delete_choice) == saved_profiles.end()) delete_choice.clear();
+    if (delete_choice.empty()) for (const auto& name : saved_profiles) if (name != current) { delete_choice = name; break; }
+    if (ImGui::BeginCombo("Delete profile", delete_choice.empty() ? "No inactive profile" : delete_choice.c_str())) {
+        for (const auto& name : saved_profiles) if (name != current && ImGui::Selectable(name.c_str(), name == delete_choice)) delete_choice = name;
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(delete_choice.empty());
+    if (ImGui::Button("Delete selected")) { if (delete_profile(delete_choice, error)) delete_choice.clear(); }
+    ImGui::EndDisabled();
+    note("Your active profile is protected from deletion.");
+    heading("Installed packages");
+    note("Install a local .wwhdmod ZIP or a folder containing manifest.json.");
+    if (ImGui::Button("Choose package…")) hostui::choose_mod_source(false, [](std::string path) {
+        std::lock_guard guard(picker_mutex); picked = std::move(path);
+    });
+    ImGui::SameLine();
+    if (ImGui::Button("Choose folder…")) hostui::choose_mod_source(true, [](std::string path) {
+        std::lock_guard guard(picker_mutex); picked = std::move(path);
+    });
+    ImGui::SetNextItemWidth(-140);
+    ImGui::InputText("Package path", source, sizeof source);
+    if (ImGui::Button("Install package")) install(source, error);
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh packages")) refresh(error);
+    auto path = directory();
+    if (!path.empty()) note("Mods folder: %s", path.c_str());
+    if (!error.empty()) ImGui::TextWrapped("%s", error.c_str());
+    auto installed = list();
+    if (installed.empty()) note("No external packages installed.");
+    for (const auto& mod : installed) {
+        ImGui::PushID(mod.id.c_str());
+        bool on = mod.enabled;
+        if (ImGui::Checkbox("##package_enabled", &on)) enable(mod.id, on, error);
+        ImGui::SameLine();
+        if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
+        if (expanded) {
+            note("%s · %s", mod.kind == "native" ? "Native mod" : "Built-in settings preset",
+                 mod.active ? "Active" : mod.enabled ? "Waiting for game update" : "Disabled");
+            if (!mod.author.empty()) note("By %s", mod.author.c_str());
+            ImGui::TextWrapped("%s", mod.description.c_str());
+            if (!mod.reason.empty()) ImGui::TextWrapped("%s", mod.reason.c_str());
+            if (!mod.status.empty()) ImGui::TextWrapped("%s", mod.status.c_str());
+            for (const auto& dependency : mod.dependencies) note("Requires %s", dependency.c_str());
+            for (const auto& conflict : mod.conflicts) note("Conflicts with %s", conflict.c_str());
+            for (const auto& option : mod.options) {
+                ImGui::PushID(option.id.c_str());
+                if (option.type == "bool") {
+                    bool value = option.value.boolean;
+                    if (ImGui::Checkbox(option.name.c_str(), &value)) configure(mod.id, option.id, value, error);
+                } else if (option.type == "number") {
+                    double value = option.value.number;
+                    if (ImGui::SliderScalar(option.name.c_str(), ImGuiDataType_Double, &value,
+                                            &option.minimum, &option.maximum, "%.3f"))
+                        configure(mod.id, option.id, value, error);
+                } else if (option.type == "enum") {
+                    if (ImGui::BeginCombo(option.name.c_str(), option.value.text.c_str())) {
+                        for (const auto& choice : option.choices)
+                            if (ImGui::Selectable(choice.c_str(), choice == option.value.text))
+                                configure(mod.id, option.id, choice, error);
+                        ImGui::EndCombo();
+                    }
+                } else {
+                    char value[1025]; snprintf(value, sizeof value, "%s", option.value.text.c_str());
+                    if (ImGui::InputText(option.name.c_str(), value, sizeof value, ImGuiInputTextFlags_EnterReturnsTrue))
+                        configure(mod.id, option.id, std::string(value), error);
+                }
+                if (!option.description.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", option.description.c_str());
+                ImGui::PopID();
+            }
+            ImGui::BeginDisabled(mod.enabled || mod.active);
+            if (ImGui::Button("Remove package")) remove(mod.id, error);
+            ImGui::EndDisabled();
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+}
+
 void tab_mods() {
     bool v;
-    heading("Camera");
-    if (check("Direct right-stick camera (no easing)", mods::direct_camera(), &v)) hostui::post([v] { mods::set_direct_camera(v); });
-    help("The right stick turns the camera at a constant rate as soon as it is pushed");
-    ImGui::SameLine(0, 24);
-    ImGui::SetNextItemWidth(110);
-    static const float speeds[] = {0.5f, 1.0f, 1.5f, 2.0f};
-    char preview[16];
-    snprintf(preview, sizeof preview, "Speed %gx", mods::camera_speed());
-    ImGui::BeginDisabled(!mods::direct_camera());
-    if (ImGui::BeginCombo("##speed", preview)) {
-        for (float s : speeds) {
-            char l[16];
-            snprintf(l, sizeof l, "%gx", s);
-            if (ImGui::Selectable(l, mods::camera_speed() == s)) hostui::post([s] { mods::set_camera_speed(s); });
+    heading("Mod manager");
+    note("Built-in mods are part of this recomp build. Your choices are saved; all start off by default.");
+    static ImGuiTextFilter search;
+    search.Draw("Search mods", 260);
+    static bool only_enabled = false;
+    ImGui::SameLine();
+    ImGui::Checkbox("Enabled only", &only_enabled);
+    unsigned enabled = 0;
+    for (const auto& entry : mods::manager::entries()) if (entry.enabled()) ++enabled;
+    ImGui::Text("%u of %zu enabled", enabled, mods::manager::entries().size());
+    ImGui::SameLine();
+    if (ImGui::Button("Disable all mods")) hostui::post([] { mods::packages::disable_all(); });
+    static std::string selected = "direct-camera";
+    if (ImGui::BeginTable("mod_catalogue", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("Mods", ImGuiTableColumnFlags_WidthStretch, 1);
+        ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        unsigned shown = 0;
+        for (const auto& entry : mods::manager::entries()) {
+            bool on = entry.enabled();
+            if (only_enabled && !on) continue;
+            std::string searchable = std::string(entry.name)+" "+entry.category+" "+entry.description;
+            if (!search.PassFilter(searchable.c_str())) continue;
+            ++shown;
+            ImGui::PushID(entry.id);
+            if (ImGui::Checkbox("##enabled", &on)) {
+                std::string id = entry.id;
+                hostui::post([id, on] { mods::manager::set_enabled(id, on); });
+            }
+            ImGui::SameLine();
+            if (ImGui::Selectable(entry.name, selected == entry.id)) selected = entry.id;
+            ImGui::PopID();
         }
-        ImGui::EndCombo();
-    }
-    ImGui::EndDisabled();
-    if (check("Mouse camera (click the picture to capture, Esc releases)", mods::mouse_camera(), &v))
-        hostui::post([v] { mods::set_mouse_camera(v); });
-    ImGui::SameLine(0, 24);
-    static const float sens[] = {0.08f, 0.15f, 0.3f};
-    static const char* const sens_names[] = {"Sensitivity low", "Sensitivity medium", "Sensitivity high"};
-    int si = 1;
-    for (int i = 0; i < 3; i++)
-        if (mods::mouse_sensitivity() == sens[i]) si = i;
-    ImGui::SetNextItemWidth(170);
-    ImGui::BeginDisabled(!mods::mouse_camera());
-    if (ImGui::BeginCombo("##sens", sens_names[si])) {
-        for (int i = 0; i < 3; i++) {
-            float s = sens[i];
-            if (ImGui::Selectable(sens_names[i], si == i)) hostui::post([s] { mods::set_mouse_sensitivity(s); });
+        if (!shown) note("No mods match your filter.");
+        ImGui::TableNextColumn();
+        if (const auto* entry = mods::manager::find(selected)) {
+            ImGui::TextUnformatted(entry->name);
+            note("%s · Built in · %s", entry->category, entry->enabled() ? "Enabled" : "Disabled");
+            ImGui::TextWrapped("%s", entry->description);
+            if (const char* override = std::getenv(entry->startup_env))
+                note("%s=%s overrides the saved choice at startup.", entry->startup_env, override);
+            if (entry->restart_required) note("Restart the game after changing this mod.");
+            if (selected == "direct-camera") {
+                float speed = mods::camera_speed();
+                if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
+                    hostui::post([speed] { mods::set_camera_speed(speed); hostui::set("mod.direct-camera.speed", std::to_string(speed)); mods::packages::remember_option("direct-camera.speed", speed); });
+            } else if (selected == "mouse-camera") {
+                float sensitivity = mods::mouse_sensitivity();
+                if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))
+                    hostui::post([sensitivity] { mods::set_mouse_sensitivity(sensitivity); hostui::set("mod.mouse-camera.sensitivity", std::to_string(sensitivity)); mods::packages::remember_option("mouse-camera.sensitivity", sensitivity); });
+            }
         }
-        ImGui::EndCombo();
+        ImGui::EndTable();
     }
-    ImGui::EndDisabled();
-    if (check("First person on R3 / mouse wheel", mods::first_person_wheel(), &v)) hostui::post([v] { mods::set_first_person_wheel(v); });
-    heading("Gameplay");
-    if (check("Climb any wall", mods::climb_enabled(), &v)) hostui::post([v] { mods::set_climb_enabled(v); });
-    help("Grab and climb any wall (stamina wheel; B or A lets go)");
-    ImGui::SameLine(0, 24);
-    if (check("Quick doors", mods::quick_doors(), &v)) hostui::post([v] { mods::set_quick_doors(v); });
-    help("Door events (walk-in, opening, closing) run at 4x speed");
-    ImGui::SameLine(0, 24);
-    if (check("Fast scene changes", mods::fast_scenes(), &v)) hostui::post([v] { mods::set_fast_scenes(v); });
-    help("Fades and loading between areas run at 4x speed");
+    ImGui::Separator();
+    package_controls();
+    ImGui::Separator();
     heading("Cheats (save in game to keep them)");
     if (ImGui::Button("Give all items")) mods::request_cheat(mods::kCheatItems);
     ImGui::SameLine();

@@ -35,6 +35,18 @@ namespace hostui {
 void post(std::function<void()> fn) {
     dispatch_async(dispatch_get_main_queue(), ^{ fn(); });
 }
+void choose_mod_source(bool folder, std::function<void(std::string)> chosen) {
+    post([folder, chosen] {
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.title = folder ? @"Choose mod folder" : @"Choose mod package";
+        panel.canChooseDirectories = folder;
+        panel.canChooseFiles = !folder;
+        panel.allowsMultipleSelection = NO;
+        [panel beginWithCompletionHandler:^(NSModalResponse result) {
+            if (result == NSModalResponseOK) chosen(std::string(panel.URL.path.UTF8String));
+        }];
+    });
+}
 bool get(const char* key, std::string& value) { return gfx::host_setting(key, value); }
 void set(const char* key, const std::string& value) { gfx::set_host_setting(key, value); }
 float res_scale() { return gfx::menu_res_scale(); }
