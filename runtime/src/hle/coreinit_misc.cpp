@@ -1,6 +1,7 @@
 // coreinit: logging, dynamic loading, system info, and small odds and ends.
 #include "../overlay/hostui.h"
 #include "../crashrec.h"
+#include "../game_languages.h"
 #include <cstdlib>
 #include "../true60.h"
 #include <filesystem>
@@ -99,8 +100,9 @@ static void report(const std::string& s) {
 
 // Console language for UCReadSysConfig("cafe.language"): WWHD_LANGUAGE=<Wii U code> (0 ja, 1 en,
 // 2 fr, 3 de, 4 it, 5 es, 6 zh, 7 ko, 8 nl, 9 pt, 10 ru, 11 zh-TW), else the setting saved by the
-// settings overlay (Language tab, hostui "language"; read once at start). The USA/Asia disc carries
-// en/fr/es. Unset, out of range or not a number: English, as before.
+// settings overlay (Language tab, hostui "language"; read once at start). Unset, out of range or not
+// a number: English. A language the disc has no pack for (game_languages.h) becomes English (or the
+// disc's first language without English), as the USA game itself does with one it doesn't know.
 static uint32_t console_language() {
     static const uint32_t lang = [] {
         const char* why = "WWHD_LANGUAGE";
@@ -110,15 +112,23 @@ static uint32_t console_language() {
             e = saved.c_str();
             why = "saved setting";
         }
-        if (!e || !*e) return 1u;
-        char* end = nullptr;
-        long v = strtol(e, &end, 10);
-        if (*end || v < 0 || v > 11) {
-            LOG("[config] language %s (%s) is not a language code 0..11; using English", e, why);
-            return 1u;
+        long v = 1;
+        if (e && *e) {
+            char* end = nullptr;
+            v = strtol(e, &end, 10);
+            if (*end || v < 0 || v >= game_lang::kLanguages) {
+                LOG("[config] language %s (%s) is not a language code 0..11; using English", e, why);
+                v = 1;
+            } else {
+                LOG("[config] console language %ld (%s)", v, why);
+            }
         }
-        LOG("[config] console language %ld (%s)", v, why);
-        return (uint32_t)v;
+        const int use = game_lang::usable((int)v);
+        if (use != v)
+            LOG("[config] %s is not on this disc (%s); the game gets %s", game_lang::name((int)v),
+                game_lang::region().c_str(), game_lang::name(use));
+        game_lang::set_started(use);
+        return (uint32_t)use;
     }();
     return lang;
 }
@@ -293,7 +303,7 @@ HLE(coreinit, UCReadSysConfig) {
         std::string name = mem::read_cstr(e);
         uint32_t size = ld32(e + 0x4C), data = ld32(e + 0x50);
         uint32_t value = 0;
-        if (name == "cafe.language") value = console_language();  // WWHD_LANGUAGE, default 1 (English)
+        if (name == "cafe.language") value = console_language();  // WWHD_LANGUAGE or saved, default English
         else if (name == "cafe.cntry_reg") value = 49;   // USA
         else if (name == "cafe.eula_agree") value = 1;
         else if (name == "cafe.initial_launch") value = 2;

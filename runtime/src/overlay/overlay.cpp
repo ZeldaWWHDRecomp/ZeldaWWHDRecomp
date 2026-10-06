@@ -22,6 +22,7 @@
 #include "text_entry.h"
 #include "../aspect.h"
 #include "../crashrec.h"
+#include "../game_languages.h"
 #include "../gfx/renderer.h"
 #ifdef WWHD_HAS_VULKAN
 #include "../gfx/vulkan/settings.h"
@@ -144,7 +145,7 @@ struct Ui {
     double last_present = 0;
     // language (applies on the next start)
     int language = -1;
-    int language_at_start = -1;  // the language this start runs with (the saved one when the tab first shows)
+    int language_at_start = -1;  // the language this start runs with (game_lang: the one on the disc)
     bool linearized = false;
     bool just_opened = false;
     bool list_view = false;  // Controls: the table instead of the drawing
@@ -389,6 +390,15 @@ void note(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.78f, 0.84f, 1.0f));
+    ImGui::TextWrappedV(fmt, ap);
+    ImGui::PopStyleColor();
+    va_end(ap);
+}
+void warn(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void warn(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.35f, 1.0f));
     ImGui::TextWrappedV(fmt, ap);
     ImGui::PopStyleColor();
     va_end(ap);
@@ -931,33 +941,60 @@ void tab_controls() {
 
 int saved_language() {
     std::string v;
-    if (hostui::get("language", v) && !v.empty()) return atoi(v.c_str());
+    if (hostui::get("language", v) && !v.empty()) {
+        int l = atoi(v.c_str());
+        if (l >= 0 && l < game_lang::kLanguages) return l;
+    }
     return 1;
 }
 
+// "English, French and Spanish"
+std::string language_list(const std::vector<int>& langs) {
+    std::string s;
+    for (size_t k = 0; k < langs.size(); k++)
+        s += std::string(k == 0 ? "" : k + 1 == langs.size() ? " and " : ", ") + game_lang::name(langs[k]);
+    return s;
+}
+
 void tab_about() {
-    static const char* const langs[] = {"Japanese", "English", "French", "German", "Italian", "Spanish",
-                                        "Chinese", "Korean", "Dutch", "Portuguese", "Russian", "Chinese (Taiwan)"};
-    if (U.language < 0) U.language = U.language_at_start = saved_language();
-    heading("Console language (applies on the next start)");
-    note("The game picks its text language from the console language. The USA disc has English, French and "
-         "Spanish; other languages need a disc that carries them.");
     const char* env = getenv("WWHD_LANGUAGE");
-    ImGui::BeginDisabled(env && *env);
+    const bool env_set = env && *env;
+    char* end = nullptr;
+    const long env_value = env_set ? strtol(env, &end, 10) : 1;
+    const int env_language = env_set && !*end && env_value >= 0 && env_value < game_lang::kLanguages ? (int)env_value : 1;
+    if (U.language < 0) {
+        U.language = saved_language();
+        U.language_at_start = game_lang::started();  // the game reads it early in the boot
+        if (U.language_at_start < 0) U.language_at_start = game_lang::usable(env_set ? env_language : U.language);
+    }
+    const std::vector<int>& avail = game_lang::available();
+    heading("Console language (applies on the next start)");
+    if (avail.empty())
+        note("The game picks its text language from the console language. Its language packs (content/Common/Pack) "
+             "were not found, so every language is offered; the game shows only those its disc carries.");
+    else
+        note("The game picks its text language from the console language. This game (%s) contains %s; the other "
+             "languages need a disc that carries them.", game_lang::region().c_str(), language_list(avail).c_str());
+    ImGui::BeginDisabled(env_set);
     for (int i : {1, 2, 5, 3, 4, 8, 9, 10, 7, 0, 6, 11}) {
         if (i != 1 && i != 3 && i != 9 && i != 0) ImGui::SameLine();  // rows of three
-        if (radio(langs[i], U.language == i)) {
+        if (radio(game_lang::name(i), U.language == i, game_lang::is_available(i))) {
             U.language = i;
             hostui::post([i] { hostui::set("language", std::to_string(i)); });
         }
     }
     ImGui::EndDisabled();
-    if (env && *env) note("WWHD_LANGUAGE=%s is set for this start and takes precedence.", env);
-    else if (U.language != U.language_at_start) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.35f, 1.0f));
-        ImGui::TextWrapped("%s is saved. Restart the game to apply it: the game reads the console language only when "
-                           "it starts.", langs[U.language]);
-        ImGui::PopStyleColor();
+    if (env_set) {
+        note("WWHD_LANGUAGE=%s is set for this start and takes precedence.", env);
+        if (!game_lang::is_available(env_language))
+            warn("%s is not on this disc: the game runs in %s.", game_lang::name(env_language),
+                 game_lang::name(game_lang::usable(env_language)));
+    } else if (!game_lang::is_available(U.language)) {
+        warn("%s is saved but is not on this disc: the game runs in %s. Choose one of the languages above.",
+             game_lang::name(U.language), game_lang::name(game_lang::usable(U.language)));
+    } else if (U.language != U.language_at_start) {
+        warn("%s is saved. Restart the game to apply it: the game reads the console language only when it starts.",
+             game_lang::name(U.language));
     }
     heading("About");
     ImGui::Text("The Legend of Zelda: The Wind Waker HD - native port (%s host, %s renderer)", hostui::name(),
