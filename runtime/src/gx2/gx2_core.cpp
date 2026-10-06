@@ -536,13 +536,13 @@ using namespace gx2;
 static uint64_t g_swap_count = 0, g_flip_count = 0;
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); uint32_t flip_gap(uint32_t game); uint64_t logic_steps(); }
 static std::mutex g_flip_mutex;
 static const auto g_vsync_epoch = std::chrono::steady_clock::now();
 static constexpr std::chrono::nanoseconds kVsyncPeriod(16683333);  // 59.94 Hz
 // a flip also waits for the GPU to finish that frame, as on hardware: the game reuses a frame's
 // buffers once its flip has executed
-struct PendingFlip { uint64_t vsync, swap; };
+struct PendingFlip { uint64_t vsync, swap; uint32_t gap; };  // gap: vsyncs after the previous flip
 static std::deque<PendingFlip> g_pending_flips;
 static uint64_t g_last_flip_vsync = 0;
 static uint64_t g_last_flip_time = 0;  // timebase
@@ -563,7 +563,7 @@ static bool uncapped_benchmark() {
 static void update_flips() {  // g_flip_mutex held
     uint64_t now = vsync_index();
     while (!g_pending_flips.empty()) {
-        uint64_t at = std::max(g_pending_flips.front().vsync + 1, g_last_flip_vsync + interp::effective_swap_interval(g_swap_interval));
+        uint64_t at = std::max(g_pending_flips.front().vsync + 1, g_last_flip_vsync + g_pending_flips.front().gap);
 #ifdef WWHD_HAS_VULKAN
         if ((!uncapped_benchmark() && at > now) || render::frames_completed() < g_pending_flips.front().swap) break;
 #else
@@ -584,7 +584,7 @@ static void ready_flip_before_resume() {
         if(g_pending_flips.empty()) return;
         const auto& front = g_pending_flips.front();
         const uint64_t at = std::max(front.vsync + 1,
-            g_last_flip_vsync + interp::effective_swap_interval(g_swap_interval));
+            g_last_flip_vsync + g_pending_flips.front().gap);
         if(at > vsync_index()) return;
         needsSync = render::frames_completed() < front.swap;
     }
@@ -745,7 +745,7 @@ HLE(gx2, GX2SwapScanBuffers) {
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
         g_swap_count++;
-        g_pending_flips.push_back({vsync_index(), g_swap_count});
+        g_pending_flips.push_back({vsync_index(), g_swap_count, interp::flip_gap(g_swap_interval)});
     }
     // debug: WWHD_LOG_SLOW_SWAP=ms logs swaps that came more than ms after the previous one
     static const double slow_ms = getenv("WWHD_LOG_SLOW_SWAP") ? atof(getenv("WWHD_LOG_SLOW_SWAP")) : 0;
@@ -796,7 +796,7 @@ HLE(gx2, GX2WaitForVsync) {
             if(!g_pending_flips.empty()) {
                 const auto& front = g_pending_flips.front();
                 const uint64_t at = std::max(front.vsync + 1,
-                    g_last_flip_vsync + interp::effective_swap_interval(g_swap_interval));
+                    g_last_flip_vsync + g_pending_flips.front().gap);
                 eligible = at <= vsync_index();
                 if(eligible) needsSync = render::frames_completed() < front.swap;
             }

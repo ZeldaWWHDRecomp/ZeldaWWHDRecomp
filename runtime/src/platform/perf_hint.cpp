@@ -18,7 +18,7 @@
 
 #include "../runtime.h"
 
-namespace interp { int mode(); void set_mode(int); bool paced_interpolation(); }
+namespace interp { int mode(); void set_mode(int); bool paced_interpolation(); void set_render_ms(double); }
 
 namespace perf_hint {
 namespace {
@@ -71,6 +71,7 @@ void adapt_60(int64_t now) {
     const int64_t cpu = thread_cpu_ns();
     const double msPerFrame = (cpu - windowCpu) / 1e6 / frames;
     windowStart = now; windowCpu = cpu; frames = 0;
+    interp::set_render_ms(msPerFrame);  // paced interpolation: room for in-between frames
     const int mode = interp::mode();
     sync_choice();
     if (mode == 2) return;

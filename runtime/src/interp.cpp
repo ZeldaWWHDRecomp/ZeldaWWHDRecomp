@@ -524,8 +524,16 @@ float paced_drawn_share() { return paced() && interp_on() ? g_paced_share.load(s
 using pace_clock = std::chrono::steady_clock;
 static pace_clock::time_point g_last_logic{}, g_last_entry{};
 static pace_clock::duration g_slept{}, g_pass_avg = std::chrono::milliseconds(16);
+// in-between passes alone (they cost less than logic passes, and the decision is about them), and
+// the margin they must leave, set from the game's speed (paced_pass_start): a device at its limit
+// draws fewer of them, the game keeps 30 steps a second
+static pace_clock::duration g_hold_avg = std::chrono::milliseconds(16), g_margin{};
 static bool g_wait_step = false;  // no in-between pass: the next logic pass waits for its time
-static uint64_t g_paced_dropped = 0, g_paced_holds = 0;
+static bool g_pass_after_logic = false;  // this pass is a logic pass that follows a logic pass
+static std::atomic<double> g_render_ms{0.0};  // render thread CPU ms per frame (0: not measured)
+static std::atomic<uint64_t> g_render_readings{0};
+static bool g_render_full = false;
+static uint64_t g_paced_dropped = 0, g_paced_holds = 0, g_paced_late = 0;
 constexpr auto kPacedStep = std::chrono::nanoseconds(33'333'333);
 // start of every pass: the last pass's own duration, and the wait before a logic pass that follows
 // another logic pass directly
@@ -533,17 +541,46 @@ static void paced_pass_start() {
     static bool previousHold = false;
     if (!paced() || !interp_on()) { g_exact_step = false; previousHold = false; return; }
     if (!g_hold_next) g_exact_step = !previousHold;  // this logic pass: blend only after a hold
+    const bool endedHold = previousHold;
     previousHold = g_hold_next;
+    g_pass_after_logic = !g_hold_next && !endedHold;
     const auto now = pace_clock::now();
-    if (g_last_entry != pace_clock::time_point{})
-        g_pass_avg = (g_pass_avg * 3 + (now - g_last_entry - g_slept)) / 4;
+    if (g_last_entry != pace_clock::time_point{}) {
+        const auto pass = now - g_last_entry - g_slept;
+        g_pass_avg = (g_pass_avg * 3 + pass) / 4;
+        if (endedHold) g_hold_avg = (g_hold_avg * 3 + pass) / 4;
+    }
     g_last_entry = now;
     g_slept = {};
     if (g_hold_next) return;
-    if (g_wait_step && now < g_last_logic + kPacedStep) {
-        threads::park_sleep_until(g_last_logic + kPacedStep);  // the game keeps 30 steps a second
-        g_slept = pace_clock::now() - now;
+    // The margin follows the game's speed, counted over each second: below 29.5 steps with
+    // in-between passes drawn, +4 ms (up to a whole step: none drawn, 30 exact steps as without
+    // interpolation); at 29.7 or more, -2 ms. (The start of single steps varies by several ms on
+    // the vsync grid, so timing them flagged steps late while the game kept 30 a second.)
+    {
+        using std::chrono::milliseconds;
+        static pace_clock::time_point windowStart{};
+        static int steps = 0, holds = 0;
+        if (windowStart == pace_clock::time_point{}) windowStart = now;
+        ++steps;
+        holds += endedHold;
+        const auto span = now - windowStart;
+        if (span >= std::chrono::seconds(1)) {
+            const double rate = steps / std::chrono::duration<double>(span).count();
+            if (holds && rate < 29.5) {
+                g_margin = std::min<pace_clock::duration>(g_margin + milliseconds(4), kPacedStep);
+                g_paced_late++;
+            } else if (rate >= 29.7 && !g_render_full) {
+                g_margin = std::max<pace_clock::duration>(g_margin - milliseconds(2), {});
+            }
+            windowStart = now;
+            steps = holds = 0;
+        }
     }
+    // A logic pass right after a logic pass: its swap waits the game's own interval (flip_gap), on
+    // the vsync grid as without interpolation. (Sleeping until 33.3 ms after the last step instead
+    // was off that grid: the swap then waited for the next vsync, and a device that dropped every
+    // in-between pass ran 27 steps a second.)
     g_wait_step = false;
     g_last_logic = pace_clock::now();
 }
@@ -551,9 +588,25 @@ static void paced_pass_start() {
 static void paced_after_logic() {
     if (!paced() || !interp_on()) { g_hold_next = true; g_wait_step = false; return; }
     const auto elapsed = pace_clock::now() - g_last_logic;
-    const bool fits = elapsed + g_pass_avg <= kPacedStep + std::chrono::milliseconds(2);
+    // the render thread draws both frames of a step: at 14.5 ms or more per frame (its CPU time,
+    // Android: perf_hint.cpp) two do not fit in 33.3 ms, whatever the game thread's passes take
+    // (one reading a second; back below 13 ms for 3 readings in a row before they are tried again:
+    // a single lighter second, such as a camera turn, brought them back into a scene too heavy)
+    const double renderMs = g_render_ms.load(std::memory_order_relaxed);
+    static uint64_t seenReading = 0;
+    static int calm = 0;
+    if (const uint64_t r = g_render_readings.load(std::memory_order_relaxed); r != seenReading) {
+        seenReading = r;
+        if (renderMs >= 14.5) { g_render_full = true; calm = 0; }
+        else if (renderMs < 13.0) { if (++calm >= 3) g_render_full = false; }
+        else calm = 0;
+    }
+    const bool fits = !g_render_full && elapsed + g_hold_avg + g_margin <= kPacedStep;
     g_hold_next = fits;
     g_wait_step = !fits;
+    // without in-between passes their average is not measured: let it come down (0.5 ms a step)
+    // so that one slow pass (a loading screen) does not keep them off for good
+    if (!fits && g_hold_avg > std::chrono::milliseconds(4)) g_hold_avg -= std::chrono::microseconds(500);
     (fits ? g_paced_holds : g_paced_dropped)++;
     static unsigned recentHolds = 0, recentN = 0;
     recentHolds += fits;
@@ -562,11 +615,22 @@ static void paced_after_logic() {
         recentHolds = recentN = 0;
     }
     if (g_paced_dropped + g_paced_holds >= 300) {
-        LOG("[interp] paced: %.0f%% of in-between frames drawn (pass %.1f ms)",
-            100.0 * g_paced_holds / double(g_paced_dropped + g_paced_holds),
-            std::chrono::duration<double, std::milli>(g_pass_avg).count());
-        g_paced_dropped = g_paced_holds = 0;
+        using ms = std::chrono::duration<double, std::milli>;
+        LOG("[interp] paced: %.0f%% of in-between frames drawn (pass %.1f ms, in-between %.1f ms, margin %.1f ms, %llu slow seconds, render thread %.1f ms a frame)",
+            100.0 * g_paced_holds / double(g_paced_dropped + g_paced_holds), ms(g_pass_avg).count(),
+            ms(g_hold_avg).count(), ms(g_margin).count(), (unsigned long long)g_paced_late, renderMs);
+        g_paced_dropped = g_paced_holds = g_paced_late = 0;
     }
+}
+void set_render_ms(double ms) {
+    g_render_ms.store(ms, std::memory_order_relaxed);
+    g_render_readings.fetch_add(1, std::memory_order_relaxed);
+}
+// vsyncs between the previous flip and the flip of a swap made now: the game's own interval for a
+// logic pass after a logic pass (paced, its in-between pass dropped), half of it otherwise
+uint32_t flip_gap(uint32_t game) {
+    if (paced() && interp_on() && g_pass_after_logic) return game;
+    return effective_swap_interval(game);
 }
 }  // namespace interp
 
