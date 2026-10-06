@@ -14,7 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 // On-screen controls over the game: two sticks, A B X Y, L R ZL ZR, + -, a D-pad, and a small button
-// at the top that shows or hides them (remembered). They are a virtual SDL gamepad
+// under the view button (top left) that shows or hides them (remembered). They are a virtual SDL gamepad
 // (runtime/src/platform/touch_pad.cpp), so the game reads them like a controller. Touches that land
 // on no control go on to the game as before (the GamePad picture, the view button), the way
 // SDLSurface passes them.
@@ -53,7 +53,7 @@ public class TouchControls extends View {
         super(context);
         prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         shown = prefs.getBoolean("touch_controls", true);
-        // the game's view button is in the top left corner: nothing there
+        // the top left corner has the game's view button and the show/hide button: nothing else there
         controls.add(new Control(KIND_STICK, 0, "", 0.14f, 0.70f, 0.13f));
         controls.add(new Control(KIND_STICK, 1, "", 0.68f, 0.80f, 0.11f));
         final float ax = 0.86f, ay = 0.60f, d = 0.10f;  // A B X Y as on a Wii U GamePad
@@ -66,13 +66,13 @@ public class TouchControls extends View {
         controls.add(new Control(KIND_BUTTON, DPAD_DOWN, "▼", px, py + e, 0.04f));
         controls.add(new Control(KIND_BUTTON, DPAD_LEFT, "◀", px - e * 0.75f, py, 0.04f));
         controls.add(new Control(KIND_BUTTON, DPAD_RIGHT, "▶", px + e * 0.75f, py, 0.04f));
-        controls.add(new Control(KIND_TRIGGER, 0, "ZL", 0.07f, 0.20f, 0.05f));
-        controls.add(new Control(KIND_BUTTON, LEFT_SHOULDER, "L", 0.19f, 0.20f, 0.05f));
-        controls.add(new Control(KIND_BUTTON, RIGHT_SHOULDER, "R", 0.81f, 0.20f, 0.05f));
-        controls.add(new Control(KIND_TRIGGER, 1, "ZR", 0.93f, 0.20f, 0.05f));
+        controls.add(new Control(KIND_TRIGGER, 0, "ZL", 0.19f, 0.15f, 0.05f));
+        controls.add(new Control(KIND_BUTTON, LEFT_SHOULDER, "L", 0.30f, 0.15f, 0.05f));
+        controls.add(new Control(KIND_BUTTON, RIGHT_SHOULDER, "R", 0.70f, 0.15f, 0.05f));
+        controls.add(new Control(KIND_TRIGGER, 1, "ZR", 0.81f, 0.15f, 0.05f));
         controls.add(new Control(KIND_BUTTON, BACK, "−", 0.42f, 0.92f, 0.04f));
         controls.add(new Control(KIND_BUTTON, START, "+", 0.58f, 0.92f, 0.04f));
-        toggle = new Control(KIND_TOGGLE, 0, "🎮", 0.5f, 0.07f, 0.04f);
+        toggle = new Control(KIND_TOGGLE, 0, "🎮", 0f, 0f, 0.04f);  // placed in onSizeChanged
         text.setTextAlign(Paint.Align.CENTER);
         text.setFakeBoldText(true);
         edge.setStyle(Paint.Style.STROKE);
@@ -82,7 +82,11 @@ public class TouchControls extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         final float s = Math.min(w, h);
         for (Control c : controls) place(c, w, h, s);
-        place(toggle, w, h, s);
+        // under the game's view button (screen_layout.cpp: a square of 9% of the short side, 1.5% from
+        // the top left corner)
+        toggle.r = toggle.fr * s;
+        toggle.cx = s * (0.015f + 0.045f);
+        toggle.cy = s * (0.015f + 0.09f + 0.02f) + toggle.r;
         edge.setStrokeWidth(Math.max(2f, s * 0.004f));
     }
 
