@@ -1,5 +1,6 @@
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
+#include "geometry_snapshot.h"
 #include "shaders.h"
 #include "gx2/gx2.h"
 #include "runtime.h"
@@ -119,6 +120,46 @@ void asynchronous_submission_check() {
   require(!slot.pending&&slot.garbageBuffers.empty()&&slot.garbageImages.empty(),"async drain left pending resources");
  defer_buffer(out);flush();
  fprintf(stderr,"[renderer smoke] ten async submissions, immutable snapshots, slot wrap and deferred retirement passed\n");
+}
+void geometry_snapshot_check() {
+ GeometrySnapshotCache<UploadSlice,VkDevice> cache;
+ constexpr uint32_t size=64, submissions=10;
+ Buffer out=create_buffer(size*submissions*2,VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+ std::array<uint8_t,size> guest{};
+ auto fresh=[](const void* bytes,size_t length) {
+  auto slice=allocate_upload(std::max<size_t>(length,16),4);
+  memcpy(slice.mapped,bytes,length);return slice;
+ };
+ for(uint32_t submission=0;submission<submissions;++submission) {
+  guest.fill(uint8_t(submission*2));
+  auto first=cache.get(R.device,R.submissionGeneration,0x1000,guest.data(),size,fresh);
+  // Other shapes can bind other sources between draws of the same geometry.
+  cache.get(R.device,R.submissionGeneration,0x2000,guest.data(),size,fresh);
+  auto prefix=cache.get(R.device,R.submissionGeneration,0x1000,guest.data(),16,fresh);
+  require(prefix.buffer==first.buffer&&prefix.offset==first.offset,"geometry prefix did not reuse immutable slice");
+  guest.fill(uint8_t(submission*2+1));
+  auto second=cache.get(R.device,R.submissionGeneration,0x1000,guest.data(),size,fresh);
+  require(first.buffer!=second.buffer||first.offset!=second.offset,"geometry mutation reused old slice");
+  auto cmd=command_buffer();
+  VkBufferCopy copies[2]={{first.offset,size*submission*2,size},
+                        {second.offset,size*(submission*2+1),size}};
+  vkCmdCopyBuffer(cmd,first.buffer,out.buffer,1,&copies[0]);
+  vkCmdCopyBuffer(cmd,second.buffer,out.buffer,1,&copies[1]);
+  flush_async();
+ }
+ VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+ host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+ host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+ host.buffer=out.buffer;host.size=VK_WHOLE_SIZE;
+ vkCmdPipelineBarrier(command_buffer(),VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,
+     0,0,nullptr,1,&host,0,nullptr);flush();
+ auto* bytes=static_cast<uint8_t*>(out.mapped);
+ for(uint32_t block=0;block<submissions*2;++block)
+  for(uint32_t byte=0;byte<size;++byte)
+   require(bytes[block*size+byte]==uint8_t(block),"geometry immutable GPU readback differs after slot wrap");
+ defer_buffer(out);flush();
+ fprintf(stderr,"[renderer smoke] geometry host snapshots, prefixes, mutation and ten submission retirements passed\n");
 }
 void triangle(Surface& s) {
  struct Resources {
@@ -332,7 +373,7 @@ void dynamic_uniform_check(Surface& s) {
 }
 int renderer_smoke_test() {
  try {
-  mem::init();upload_arena_check();asynchronous_submission_check();set_res_scale(1);latch_res_scale();
+  mem::init();upload_arena_check();asynchronous_submission_check();geometry_snapshot_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
    upload.s.addr=mem::host_alloc(65536,256);upload.s.mipAddr=mem::host_alloc(65536,256);

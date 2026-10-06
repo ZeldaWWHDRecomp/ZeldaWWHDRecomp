@@ -1,5 +1,22 @@
 # Performance notes
 
+## GameCube-informed geometry reuse (2026-10-06)
+
+These are incremental measurements in a local experimental build with other
+renderer changes held constant, not a clean-upstream benchmark.
+
+The new opt-in `WWHD_VK_GEOMETRY_SNAPSHOTS=1` path applies J3D's separation of
+model geometry from material/shape submissions: a bounded host-backed cache
+reuses byte-verified immutable uploads across shapes and vertex bindings.
+Eight matched 4K Outset runs averaged 10.1107 ms/frame with fresh uploads versus
+9.3491 ms/frame with reuse (0.7617 ms / 7.5% lower render CPU). Uploads fell from
+30.26 to 15.52 MiB/frame. Three of four adjacent CPU comparisons improved, with
+substantial control variation, so the setting remains opt-in. Diagnostic
+uncapped throughput rose only 1.5%; this does not resolve normal-game pacing.
+Source comparison, individual trials, correctness checks and limitations are
+in [the GameCube CPU optimization notes](WWHD_GameCube_CPU_Optimizations.md).
+
+
 Measurements and fixes from profiling the port on an Apple Silicon Mac, plus open leads.
 
 ## Native Windows checkpoint (2026-10-05)

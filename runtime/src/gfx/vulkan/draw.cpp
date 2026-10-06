@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "vertex_formats.h"
 #include "uniform_snapshot.h"
+#include "geometry_snapshot.h"
 #include "index_conversion.h"
 #include "vertex_history.h"
 #include "vertex_snapshot_history.h"
@@ -127,6 +128,22 @@ UploadSlice snapshot(const void *data, size_t size, VkDeviceSize alignment) {
 
 UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
                             bool bounded) {
+  static const bool geometryCacheEnabled = [] {
+    const char* value = std::getenv("WWHD_VK_GEOMETRY_SNAPSHOTS");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  if (geometryCacheEnabled && bounded) {
+    static GeometrySnapshotCache<UploadSlice, VkDevice> geometry;
+    const auto before = geometry.counters;
+    auto slice = geometry.get(R.device, R.submissionGeneration, address,
+        mem::ptr(address), size, [](const void* source, size_t length) {
+          return snapshot(source, length, 4);
+        });
+    R.vertexReuseChecks += geometry.counters.checks - before.checks;
+    R.vertexReuseHits += geometry.counters.hits - before.hits;
+    R.vertexReuseBytes += geometry.counters.reusedBytes - before.reusedBytes;
+    return slice;
+  }
   static const bool enabled = [] {
     const char *value = std::getenv("WWHD_VK_REUSE_VERTEX_SNAPSHOTS");
     return value && std::strcmp(value, "1") == 0;

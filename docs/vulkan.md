@@ -313,6 +313,7 @@ reuse remains an opt-in experiment on every platform.
 | `WWHD_VK_DRAW_BATCH` | Defaults to `2048` when unset, on every platform. Set `0` to disable. Positive decimal values up to 1,048,576 select the batch size; malformed or out-of-range values disable batching. |
 | `WWHD_VK_DRAW_BATCH_CAP` | Accepts `1`, `2`, or `3`. When unset, defaults to `3`. An explicitly invalid value falls back to `2`. Has no effect with batching disabled. |
 | `WWHD_VK_REUSE_VERTEX_SNAPSHOTS=1` | Reuse a bounded vertex snapshot only after exact guest-byte comparison within the same fenced submission generation. Off by default; comparison overhead can outweigh saved copies. |
+| `WWHD_VK_GEOMETRY_SNAPSHOTS=1` | Opt-in host-backed geometry reuse across shapes and binding slots, including unchanged prefixes. Compares every requested byte; GPU slices stay scoped to device/submission generation. Retains at most 64 MiB of host payloads. Takes precedence over the older vertex snapshot cache for bounded requests; vertex-copy-window mode retains its separate path. See [GameCube-informed CPU measurements](WWHD_GameCube_CPU_Optimizations.md). |
 
 Draw batching keeps the four-slot fence retirement contract. More submissions can
 reduce the final GPU tail, but add attachment LOAD/STORE boundaries and descriptor
