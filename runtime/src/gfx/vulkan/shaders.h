@@ -43,7 +43,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetchShad
 struct ShaderStats {
     uint64_t stateHashLookups = 0, stateHashMemoHits = 0, stateHashBytes = 0;
     uint64_t fetchLookups = 0, fetchLastHits = 0;
-    uint64_t lookups = 0, lastHits = 0, variantHits = 0, compiles = 0, compileNs = 0;
+    uint64_t lookups = 0, lastHits = 0, variantHits = 0, variantAliases = 0, compiles = 0, compileNs = 0;
     uint64_t decompileNs = 0, spirvCompiles = 0, spirvCompileNs = 0, diskHits = 0, spirvReuseHits = 0;
     uint64_t diskLoads = 0, diskLoadNs = 0, diskSaves = 0, diskSaveNs = 0, diskSavedBytes = 0, diskSnapshotNs = 0;
 };

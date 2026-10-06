@@ -31,6 +31,8 @@ namespace gfxvk::vk {
 using Latte::REGADDR;
 namespace {
 std::unordered_map<uint64_t, std::unique_ptr<Shader>> shaders;
+std::unordered_map<uint64_t, Shader*> shaderAliases;          // keys whose translation matched a shader's
+std::unordered_map<std::string, Shader*> shadersByText;       // stage letter + GLSL -> first such shader
 std::unordered_map<uint64_t, LatteFetchShader*> fetchShaders;
 struct ProgramHash { uint64_t hash = 0, frame = ~uint64_t{0}; };
 std::unordered_map<uint64_t, ProgramHash> programHashes;
@@ -376,6 +378,10 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         ++stats.variantHits;
         return remember(it->second.get());
     }
+    if (auto it = shaderAliases.find(key); it != shaderAliases.end()) {
+        ++stats.variantHits;
+        return remember(it->second);
+    }
     auto started = std::chrono::steady_clock::now();
     struct CompileTimer {
         std::chrono::steady_clock::time_point start;
@@ -418,6 +424,29 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         auto main = shader->glsl.find("void main(");
         if (main != std::string::npos)
             shader->glsl.insert(main, "invariant gl_Position;\n");
+    }
+    // Keys include registers that do not change every shader's translation (a vertex shader's key
+    // has the render target formats; each stage has the other's input/output links), so one shader
+    // came back under many keys: on a Galaxy S25, 5,072 translated shaders had 686 distinct GLSL texts,
+    // each with its own pipelines, and the memory they took closed the game after about 35 minutes.
+    // A translation identical to an earlier one (GLSL and binding metadata) is that shader: the new key
+    // points to it, and its pipelines are shared.
+    {
+        const std::string text = std::string(vertex ? "v" : "p") + shader->glsl;
+        auto same = [&](const Shader* other) {
+            return !std::memcmp(&other->mapping, &shader->mapping, sizeof shader->mapping) &&
+                   !std::memcmp(&other->uniforms, &shader->uniforms, sizeof shader->uniforms) &&
+                   !std::memcmp(&other->descriptorRanks, &shader->descriptorRanks, sizeof shader->descriptorRanks);
+        };
+        if (auto it = shadersByText.find(text); it != shadersByText.end() && same(it->second)) {
+            Shader* existing = it->second;
+            free_decompiler(shader->dec);
+            shaders.erase(key);  // the new Shader object (shader is no longer valid)
+            shaderAliases[key] = existing;
+            ++stats.variantAliases;
+            return remember(existing);
+        }
+        shadersByText.emplace(text, shader);
     }
     stats.decompileNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now()-started).count();
@@ -624,6 +653,8 @@ void reset_shader_memoization() {
 void clear_shader_cache() {
     for (auto& [key, shader] : shaders) free_decompiler(shader->dec);
     shaders.clear();
+    shaderAliases.clear();
+    shadersByText.clear();
     reset_shader_memoization();
     // Fetch parsing allocations have shared interior pointers and no owning
     // destructor in the adapted Cemu parser. Keep its process-lifetime cache.
