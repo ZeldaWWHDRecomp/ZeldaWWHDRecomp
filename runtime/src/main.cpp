@@ -1,6 +1,5 @@
 // Wind Waker HD recompiled: entry point.
 #ifndef _WIN32
-#include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -24,6 +23,7 @@
 #include "gfx/renderer.h"
 #include "gx2/gx2.h"
 #include "recomp_table.h"
+#include "crash_addr.h"
 #include "crashrec.h"
 #include "input.h"
 #include "runtime.h"
@@ -56,7 +56,7 @@ static void crash_out(int fd, const char* s, size_t n) {
 static void crash_log_only(int fd, const char* s, size_t n) {
     if (fd >= 0 && write(fd, s, n) < 0) {}
 }
-static void crash_handler(int sig, siginfo_t* si, void*) {
+static void crash_handler(int sig, siginfo_t* si, void* uctx) {
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t base = (uintptr_t)PPC_MEM_BASE;
     char path[96];
@@ -76,6 +76,22 @@ static void crash_handler(int sig, siginfo_t* si, void*) {
     else
         n = snprintf(buf, sizeof buf, "\nCRASH: signal %d at host address %p\n", sig, si->si_addr);
     crash_out(fd, buf, n);
+    // the faulting instruction and the module holding it (a driver, an overlay's layer, the game)
+    char where[384], mpath[512] = "", line[1024];
+    if (uintptr_t pc = crash_addr::context_pc(uctx)) {
+        crash_addr::describe(where, sizeof where, pc, mpath, sizeof mpath);
+        n = crash_addr::fit(snprintf(line, sizeof line, "  host pc %p%s\n", (void*)pc, where), sizeof line);
+        crash_out(fd, line, n);
+        if (mpath[0]) {
+            n = crash_addr::fit(snprintf(line, sizeof line, "  module: %s\n", mpath), sizeof line);
+            crash_out(fd, line, n);
+        }
+    }
+    // a host fault address inside a module (a write to read-only data, a jump into a data section)
+    if (!(a >= base && a < base + 0x100000000ull) && crash_addr::describe(where, sizeof where, a)) {
+        n = crash_addr::fit(snprintf(line, sizeof line, "  fault address %p%s\n", si->si_addr, where), sizeof line);
+        crash_out(fd, line, n);
+    }
     Cpu* c = threads::current();
     if (c) {
         n = snprintf(buf, sizeof buf, "  guest lr=%08X ctr=%08X cr=%08X\n", c->lr, c->ctr, ppc_mfcr(c));
@@ -97,10 +113,7 @@ static void crash_handler(int sig, siginfo_t* si, void*) {
         }
         crash_out(fd, "\n", 1);
     }
-    void* frames[64];
-    int nf = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, nf, 2);
-    if (fd >= 0) backtrace_symbols_fd(frames, nf, fd);
+    crash_addr::host_backtrace(fd, crash_out, uctx);
     crashrec::crash_note(fd, crash_out);
     if (fd >= 0) {
         crash_log_only(fd, "\n--- last log lines ---\n", 24);
@@ -130,6 +143,7 @@ static void install_crash_handler() {
     sigaction(SIGBUS, &sa, nullptr);
     sigaction(SIGILL, &sa, nullptr);
     sigaction(SIGFPE, &sa, nullptr);
+    crash_addr::prime();
 }
 
 #else
@@ -145,15 +159,34 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     strftime(path,sizeof path,"captures/crash-%Y%m%d-%H%M%S.log",&tmv);
     int fd=_open(path,_O_WRONLY|_O_CREAT|_O_TRUNC|_O_BINARY,_S_IREAD|_S_IWRITE);
     char buf[256]; int n;
-    n=snprintf(buf,sizeof buf,"CRASH: Windows exception %08lX at %p\n",code,ex->ExceptionRecord->ExceptionAddress); win_crash_out(fd,buf,n);
+    // the module holding the faulting instruction (issue #41: a driver or an overlay's Vulkan layer)
+    char where[384], mpath[512]="", line[1024];
+    using crash_addr::fit;
+    crash_addr::describe(where,sizeof where,(uintptr_t)ex->ExceptionRecord->ExceptionAddress,mpath,sizeof mpath);
+    n=fit(snprintf(line,sizeof line,"CRASH: Windows exception %08lX at %p%s\n",code,ex->ExceptionRecord->ExceptionAddress,where),sizeof line); win_crash_out(fd,line,n);
+    if(mpath[0]){n=fit(snprintf(line,sizeof line,"  module: %s\n",mpath),sizeof line); win_crash_out(fd,line,n);}
+    // access violations (and in-page errors): read / write / execute, and of which address
+    const EXCEPTION_RECORD* er=ex->ExceptionRecord;
+    if((code==EXCEPTION_ACCESS_VIOLATION||code==EXCEPTION_IN_PAGE_ERROR)&&er->NumberParameters>=2){
+        const ULONG_PTR kind=er->ExceptionInformation[0], target=er->ExceptionInformation[1];
+        const char* what=kind==0?"read":kind==1?"write":kind==8?"execute (DEP)":"access";
+        const uintptr_t gbase=(uintptr_t)PPC_MEM_BASE;
+        n=fit(snprintf(line,sizeof line,"  %s: %s of address %p",code==EXCEPTION_ACCESS_VIOLATION?"access violation":"in-page error",
+                       what,(void*)target),sizeof line);
+        if(target>=gbase&&target<gbase+0x100000000ull) n+=fit(snprintf(line+n,sizeof line-n," (guest address %08X)",(unsigned)(target-gbase)),sizeof line-n);
+        else if(crash_addr::describe(where,sizeof where,target)) n+=fit(snprintf(line+n,sizeof line-n,"%s",where),sizeof line-n);
+        if(n>(int)sizeof line-2) n=(int)sizeof line-2;
+        line[n++]='\n'; win_crash_out(fd,line,n);
+    }
     if(Cpu* c=threads::current()){n=snprintf(buf,sizeof buf,"guest lr=%08X ctr=%08X\n",c->lr,c->ctr); win_crash_out(fd,buf,n);}
+    crash_addr::host_backtrace(fd,win_crash_out,ex->ContextRecord);
     crashrec::crash_note(fd,win_crash_out);
     if(fd>=0){win_crash_log_only(fd,"\n--- last log lines ---\n",24); log_ring_write(fd,win_crash_log_only); _close(fd); fprintf(stderr,"[crash] wrote %s\n",path);}
     if(g_ppc_trace) { FILE* f=fopen("trace_dump.txt","w"); if(f){trace_dump(f,3000);fclose(f);} }
     input::stop_rumble_now();  // controllers keep their last motor level after the process (issue #35)
     return EXCEPTION_EXECUTE_HANDLER;
 }
-static void install_crash_handler() { SetUnhandledExceptionFilter(crash_handler); }
+static void install_crash_handler() { SetUnhandledExceptionFilter(crash_handler); crash_addr::prime(); }
 #endif
 static void init_data_imports() {
     uint32_t alloc = 0, alloc_ex = 0, free_ = 0;
@@ -252,6 +285,13 @@ int main(int argc, char** argv) {
 #endif
     }
     install_crash_handler();
+    // test aid: WWHD_TEST_HOST_CRASH=1 crashes inside a system library (strlen of a bad pointer), so
+    // the crash log's module names can be checked (CTest crash_log_module, runtime/tools/crash_log_test.cmake)
+    if (getenv("WWHD_TEST_HOST_CRASH")) {
+        LOG("[boot] WWHD_TEST_HOST_CRASH: crashing on purpose in the C library");
+        size_t (*volatile len)(const char*) = strlen;
+        LOG("%zu", len((const char*)(uintptr_t)16));
+    }
     // Metal or Vulkan: --renderer=, WWHD_RENDERER_RUNTIME, Graphics > Renderer (gfx/renderer.h)
     render::choose(argc, argv);
 #ifdef WWHD_HAS_VULKAN

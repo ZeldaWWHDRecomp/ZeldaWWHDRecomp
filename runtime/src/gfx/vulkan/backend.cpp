@@ -1620,6 +1620,44 @@ static const char kUpdateDriver[] =
     "driver) and start the game again. "
 #endif
     "If no newer driver exists, this GPU cannot run the game's Vulkan renderer.";
+// The Vulkan layers the loader offers, once in the log (so also in a crash log's last lines).
+// Overlays install implicit layers that load into every Vulkan program (Steam, Discord, RivaTuner,
+// OBS, Overwolf, ReShade...); a crash inside one then shows up in the crash log's module names, and
+// this line says which were around. The list holds the explicit layers as well; implicit ones are
+// active unless their disable variable is set.
+static void log_instance_layers() {
+  if (!vkEnumerateInstanceLayerProperties)
+    return;
+  uint32_t count = 0;
+  if (vkEnumerateInstanceLayerProperties(&count, nullptr) != VK_SUCCESS)
+    return;
+  std::vector<VkLayerProperties> layers(count);
+  if (count && vkEnumerateInstanceLayerProperties(&count, layers.data()) < VK_SUCCESS)
+    return;
+  layers.resize(count);
+  // one log line holds 240 characters: several lines of up to 200 (each layer name is <= 256)
+  std::string line;
+  int lines = 0;
+  for (const VkLayerProperties &l : layers) {
+    char one[300];
+    snprintf(one, sizeof one, "%s%s (%u.%u.%u)", line.empty() ? "" : ", ", l.layerName,
+             VK_API_VERSION_MAJOR(l.specVersion), VK_API_VERSION_MINOR(l.specVersion),
+             VK_API_VERSION_PATCH(l.specVersion));
+    if (!line.empty() && line.size() + strlen(one) > 200) {
+      LOG("[vulkan] layers: %s,", line.c_str());
+      line.clear();
+      if (++lines == 4) {
+        LOG("[vulkan] layers: ... %u in all", count);
+        return;
+      }
+      snprintf(one, sizeof one, "%s (%u.%u.%u)", l.layerName, VK_API_VERSION_MAJOR(l.specVersion),
+               VK_API_VERSION_MINOR(l.specVersion), VK_API_VERSION_PATCH(l.specVersion));
+    }
+    line += one;
+  }
+  LOG("[vulkan] layers: %s", count ? line.c_str() : "none");
+}
+
 // Instance, device, submission slots and swapchains. `extensions`: the window system's instance
 // extensions; `create_surfaces` makes R.tv.surface / R.drc.surface once the instance exists.
 // The host has loaded the Vulkan loader's global functions (load_global_functions).
@@ -1643,6 +1681,7 @@ static void init_device(std::vector<const char *> extensions,
     throw std::runtime_error("The Vulkan runtime on this computer supports only Vulkan " +
                              version_text(loaderVersion) + "; the game needs Vulkan 1.1 or newer.\n\n" +
                              kUpdateDriver);
+  log_instance_layers();
   uint32_t en = 0;
   vkEnumerateInstanceExtensionProperties(nullptr, &en, nullptr);
   std::vector<VkExtensionProperties> ies(en);

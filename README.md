@@ -562,7 +562,9 @@ and the renderer are remembered in `~/Library/Application Support/wwhd/display.p
   choice); `WWHD_LOG_RUMBLE=1` logs the game's motor requests and what the motors do.
 - Crashes and game halts write `captures/crash-<time>.log` (crash address, registers, the guest call
   chain, a host backtrace and the last log lines; useful for bug reports, it contains only addresses,
-  function names and log text).
+  function names, the file names of the program's modules and log text). A crash address outside the
+  game code names its module and offset (`in amdvlk64.dll+0x1A2A01`): a graphics driver, or an
+  overlay's Vulkan layer; the log lists the Vulkan layers at start (`[vulkan] layers:`).
 - Debugging aids (frame/draw dumps, traces, scheduler statistics) are documented next to their
   code: grep for `WWHD_` in `runtime/src`.
 

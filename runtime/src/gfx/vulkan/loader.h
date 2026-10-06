@@ -48,6 +48,7 @@
 namespace gfxvk {
 extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 extern PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion;  // null: a Vulkan 1.0 loader
+extern PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;  // optional (log only)
 #define WWHD_VK_DECLARE(name) extern PFN_##name name;
 WWHD_VK_GLOBAL_FUNCTIONS(WWHD_VK_DECLARE)
 WWHD_VK_INSTANCE_FUNCTIONS(WWHD_VK_DECLARE)

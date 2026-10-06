@@ -6,6 +6,7 @@
 namespace gfxvk {
 PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
 PFN_vkEnumerateInstanceVersion vkEnumerateInstanceVersion = nullptr;
+PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties = nullptr;
 #define WWHD_VK_DEFINE(name) PFN_##name name = nullptr;
 WWHD_VK_GLOBAL_FUNCTIONS(WWHD_VK_DEFINE)
 WWHD_VK_INSTANCE_FUNCTIONS(WWHD_VK_DEFINE)
@@ -31,6 +32,9 @@ void load_global_functions(PFN_vkGetInstanceProcAddr gipa) {
   // Vulkan 1.1 loaders and newer; a 1.0 loader has none (the caller reports it)
   vkEnumerateInstanceVersion =
       reinterpret_cast<PFN_vkEnumerateInstanceVersion>(gipa(nullptr, "vkEnumerateInstanceVersion"));
+  // only for the log (the layers in the process); a loader without it is not refused
+  vkEnumerateInstanceLayerProperties = reinterpret_cast<PFN_vkEnumerateInstanceLayerProperties>(
+      gipa(nullptr, "vkEnumerateInstanceLayerProperties"));
 }
 
 void load_instance_functions(VkInstance instance) {
