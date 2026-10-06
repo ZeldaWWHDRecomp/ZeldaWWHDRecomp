@@ -179,7 +179,9 @@ if(WWHD_HAS_METAL)
   target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework Carbon" "-framework AudioToolbox" "-framework CoreAudio" compression)
 endif()
 if(WWHD_HAS_VULKAN)
-  target_compile_definitions(wwhd PRIVATE WWHD_HAS_VULKAN=1)
+  # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
+  # executable starts without a Vulkan loader or with an older one, and can say what is missing
+  target_compile_definitions(wwhd PRIVATE WWHD_HAS_VULKAN=1 VK_NO_PROTOTYPES)
   if(WWHD_HAS_METAL)
     # One app, two renderers: the Vulkan loader and glslang are weak imports, so the game still
     # starts (with Metal) on a Mac without them; the renderer checks for them before using Vulkan.
@@ -191,8 +193,14 @@ if(WWHD_HAS_VULKAN)
     foreach(lib Vulkan::Vulkan glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
       target_link_options(wwhd PRIVATE "LINKER:-weak_library,$<TARGET_FILE:${lib}>")
     endforeach()
-  else()
+  elseif(APPLE)
+    # SDL host on a Mac: Homebrew's loader is linked; SDL and the renderer find it in the process
     target_link_libraries(wwhd PRIVATE Vulkan::Vulkan glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+  else()
+    # Windows, Linux, Android: SDL loads the Vulkan loader at run time (SDL_Vulkan_LoadLibrary);
+    # only its headers are used here
+    target_include_directories(wwhd SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_link_libraries(wwhd PRIVATE glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
   endif()
 endif()
 if(WWHD_SDL_HOST)

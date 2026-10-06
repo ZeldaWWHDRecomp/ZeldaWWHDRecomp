@@ -159,10 +159,12 @@ computer (about two minutes); every later start launches the game directly.
    [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page and unzip it anywhere
    (a games folder, an external drive):
    - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer)
-   - **Windows**: x86-64, Windows 10 or 11, a GPU with Vulkan 1.3 drivers
+   - **Windows**: x86-64, Windows 10 or 11, a GPU with Vulkan 1.3 drivers (or Vulkan 1.1 / 1.2 drivers
+     with `VK_KHR_dynamic_rendering`)
    - **Linux**: x86-64 (`linux-x86_64`) or arm64 (`linux-aarch64`, e.g. Raspberry Pi 5, Asahi Linux
      on Apple Silicon, other ARM boards and laptops), glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
-     Fedora 36+, Arch, SteamOS 3, Raspberry Pi OS 12), a GPU with Vulkan 1.3 drivers. Take the zip
+     Fedora 36+, Arch, SteamOS 3, Raspberry Pi OS 12), a GPU with Vulkan 1.3 drivers (or 1.1 / 1.2 with
+     `VK_KHR_dynamic_rendering`). Take the zip
      that matches `uname -m` (`x86_64` or `aarch64`); setup says so if it doesn't.
 2. Start **Wind Waker HD** (`Wind Waker HD.app`, `Wind Waker HD.exe`, or `wind-waker-hd` /
    `Wind Waker HD.desktop` on Linux). The first start asks for:

@@ -1,5 +1,5 @@
 #pragma once
-#include <vulkan/vulkan.h>
+#include "loader.h"
 #ifdef WWHD_SDL_HOST
 #include <SDL3/SDL.h>
 #endif
@@ -62,6 +62,7 @@ struct GpuScopeToken { uint64_t generation=0; uint32_t index=UINT32_MAX; };
 struct Renderer {
  VkInstance instance=VK_NULL_HANDLE; VkPhysicalDevice physicalDevice=VK_NULL_HANDLE; VkDevice device=VK_NULL_HANDLE;
  VkPhysicalDeviceFeatures enabledFeatures{};
+ bool dynamicRenderingKHR=false; // VK_KHR_dynamic_rendering (device older than Vulkan 1.3)
  bool portabilitySubset=false,imageViewSwizzle=true,imageViewReinterpretation=true;
  bool samplerMipLodBias=true,separateStencilMaskRef=true,constantAlphaColorBlendFactors=true,vertexAttributeAccessBeyondStride=true,samplerMirrorClampToEdge=false;
  VkPhysicalDeviceProperties properties{}; VkQueue queue=VK_NULL_HANDLE; uint32_t queueFamily=0;

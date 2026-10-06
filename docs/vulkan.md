@@ -21,8 +21,8 @@ forward to the renderer chosen once at start-up:
 
 If Vulkan cannot start, the game falls back to Metal and shows why (log, a sheet on the TV window,
 the window title says "Metal (Vulkan unavailable)"): no Vulkan loader or glslang installed (both are
-weak imports, so the app still starts without them), no driver (MoltenVK), no device with Vulkan 1.3
-dynamic rendering. `WWHD_VK_FORCE_INIT_FAIL=1` forces this path for testing.
+weak imports, so the app still starts without them), no driver (MoltenVK), no device with dynamic
+rendering. `WWHD_VK_FORCE_INIT_FAIL=1` forces this path for testing.
 
 Both renderers use the same AppKit host (`gfx/display.mm`, `menu.mm`, `input.mm`,
 `controls_ui.mm`, `mods/mouse.mm`): TV and GamePad windows, full screen, GamePad screen modes
@@ -56,8 +56,16 @@ logs the window title.
 ## Build
 
 Use Clang/clang++ with CMake, Vulkan 1.3 headers and loader, glslang and zlib (and SDL3 and, on
-Windows/Linux, LZ4 for the SDL host). A GPU/driver supporting Vulkan 1.3 dynamic rendering is
-required. Dependencies must match the target architecture.
+Windows/Linux, LZ4 for the SDL host). A GPU/driver with dynamic rendering is required: Vulkan 1.3,
+or Vulkan 1.1 / 1.2 with `VK_KHR_dynamic_rendering`. Dependencies must match the target architecture.
+
+The executable imports no Vulkan functions (`VK_NO_PROTOTYPES`): `gfx/vulkan/loader.h` loads them
+at run time through the loader's `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr` (SDL host:
+`SDL_Vulkan_LoadLibrary`; macOS app: the weakly linked Homebrew loader). On Windows and Linux the
+Vulkan loader is not linked at all, so a missing loader or an older one (Vulkan 1.2 drivers on
+Windows lack `vkCmdBeginRendering`) no longer stops the program before it starts. Without a usable
+GPU, the SDL host shows a message box naming the GPU, its Vulkan and driver versions and what is
+missing, and exits.
 
 On macOS:
 
@@ -88,6 +96,10 @@ immutable upload payloads and deferred-buffer retirement by GPU readback.
 To enable Khronos validation, install the Vulkan validation layers and set
 `WWHD_VK_VALIDATION=1`. On Homebrew, set `VK_LAYER_PATH` to
 `/opt/homebrew/opt/vulkan-validationlayers/share/vulkan/explicit_layer.d`.
+Test aids for older drivers: `WWHD_VK_FORCE_API=1.2` (or `1.1`) makes the renderer treat every GPU as
+if it reported that Vulkan version, so a Vulkan 1.3 GPU takes the `VK_KHR_dynamic_rendering` path;
+`WWHD_VK_HIDE_EXTENSIONS=VK_KHR_dynamic_rendering` (comma-separated names) hides device extensions,
+which together with `WWHD_VK_FORCE_API=1.2` shows the "missing features" error.
 If the loader does not discover MoltenVK, set `VK_DRIVER_FILES` to its installed
 `MoltenVK_icd.json` (Homebrew places it below `$(brew --prefix molten-vk)/etc/vulkan/icd.d`).
 

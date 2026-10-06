@@ -22,6 +22,9 @@
 #endif
 
 #include "runtime.h"
+#ifdef WWHD_SDL_HOST
+#include <SDL3/SDL_messagebox.h>
+#endif
 
 #ifdef WWHD_HAS_METAL
 // AppKit host (gfx/display.mm): persistent settings, start-up message on the TV window
@@ -152,7 +155,21 @@ void init() {
 #ifdef WWHD_HAS_METAL
     if (b->api != Api::Metal) fallback = &metal_backend();
 #endif
-    if (!fallback) fatal("%s renderer could not start: %s", api_name(b->api), g_reason.c_str());
+    if (!fallback) {
+#ifdef WWHD_SDL_HOST
+        // a player starts the game from the launcher, without a terminal: say why in a message box
+        // (old graphics driver, no Vulkan) and end without a crash report
+        LOG("FATAL: %s renderer could not start: %s", api_name(b->api), g_reason.c_str());
+        const std::string text = std::string("The ") + api_name(b->api) + " renderer could not start.\n\n" + g_reason;
+        const char* hidden = getenv("WWHD_HIDDEN_WINDOWS");  // test runs: nothing pops up
+        if (!hidden || !*hidden || !strcmp(hidden, "0"))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Wind Waker HD", text.c_str(), nullptr);
+        fflush(stderr);
+        _Exit(1);
+#else
+        fatal("%s renderer could not start: %s", api_name(b->api), g_reason.c_str());
+#endif
+    }
     LOG("[gfx] %s renderer could not start: %s -- falling back to %s", api_name(b->api), g_reason.c_str(),
         api_name(fallback->api));
     select_decompiler_api(fallback->api);

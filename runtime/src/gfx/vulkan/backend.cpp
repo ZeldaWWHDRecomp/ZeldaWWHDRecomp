@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <future>
 #ifdef __APPLE__
+#include <dlfcn.h>
 #include <mach-o/dyld.h>
 #endif
 #include <stdexcept>
@@ -1532,8 +1533,96 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_message(
           data->pMessage);
   return VK_FALSE;
 }
+// Test aids for the paths of older drivers (docs/vulkan.md): WWHD_VK_FORCE_API=1.2 treats every GPU as
+// if it reported that Vulkan version (Vulkan 1.3 GPUs then take the VK_KHR_dynamic_rendering path);
+// WWHD_VK_HIDE_EXTENSIONS=VK_KHR_dynamic_rendering,... hides device extensions from the renderer.
+static uint32_t device_api_version(const VkPhysicalDeviceProperties &p) {
+  static const uint32_t forced = [] {
+    unsigned major, minor;
+    const char *e = getenv("WWHD_VK_FORCE_API");
+    return e && sscanf(e, "%u.%u", &major, &minor) == 2 ? VK_MAKE_API_VERSION(0, major, minor, 0) : ~0u;
+  }();
+  return forced < VK_MAKE_API_VERSION(0, VK_API_VERSION_MAJOR(p.apiVersion), VK_API_VERSION_MINOR(p.apiVersion), 0)
+             ? forced : p.apiVersion;
+}
+static std::vector<VkExtensionProperties> device_extensions(VkPhysicalDevice device) {
+  uint32_t n = 0;
+  vkEnumerateDeviceExtensionProperties(device, nullptr, &n, nullptr);
+  std::vector<VkExtensionProperties> des(n);
+  vkEnumerateDeviceExtensionProperties(device, nullptr, &n, des.data());
+  des.resize(n);
+  if (const char *hide = getenv("WWHD_VK_HIDE_EXTENSIONS"))
+    std::erase_if(des, [&](const VkExtensionProperties &e) {
+      for (const char *p = hide; *p;) {
+        size_t len = strcspn(p, ",");
+        if (len == strlen(e.extensionName) && !strncmp(p, e.extensionName, len))
+          return true;
+        p += len + (p[len] == ',');
+      }
+      return false;
+    });
+  return des;
+}
+static std::string version_text(uint32_t v) {
+  return std::to_string(VK_API_VERSION_MAJOR(v)) + "." + std::to_string(VK_API_VERSION_MINOR(v)) + "." +
+         std::to_string(VK_API_VERSION_PATCH(v));
+}
+// driverVersion: vendor-specific packing (NVIDIA, Intel on Windows); others use Vulkan's
+static std::string driver_version_text(const VkPhysicalDeviceProperties &p) {
+  const uint32_t v = p.driverVersion;
+  if (p.vendorID == 0x10DE)
+    return std::to_string(v >> 22) + "." + std::to_string((v >> 14) & 0xff) + "." +
+           std::to_string((v >> 6) & 0xff) + "." + std::to_string(v & 0x3f);
+#ifdef _WIN32
+  if (p.vendorID == 0x8086)
+    return std::to_string(v >> 14) + "." + std::to_string(v & 0x3fff);
+#endif
+  return version_text(v);
+}
+// How a GPU provides dynamic rendering, the renderer's only way of drawing: Vulkan 1.3 core, or
+// VK_KHR_dynamic_rendering on a Vulkan 1.1 / 1.2 driver. Shaders are SPIR-V 1.3 (Vulkan 1.1).
+enum class DynamicRendering { None, Core, KHR };
+static DynamicRendering dynamic_rendering(VkPhysicalDevice device, const VkPhysicalDeviceProperties &properties,
+                                          const std::vector<VkExtensionProperties> &des) {
+  const uint32_t api = device_api_version(properties);
+  if (api < VK_API_VERSION_1_1)
+    return DynamicRendering::None;
+  if (api >= VK_API_VERSION_1_3) {
+    VkPhysicalDeviceVulkan13Features f13{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    f2.pNext = &f13;
+    vkGetPhysicalDeviceFeatures2(device, &f2);
+    if (f13.dynamicRendering)
+      return DynamicRendering::Core;
+  }
+  // the extension requires VK_KHR_depth_stencil_resolve (core in 1.2), which requires
+  // VK_KHR_create_renderpass2 (core in 1.2)
+  if (!has_extension(des, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) ||
+      (api < VK_API_VERSION_1_2 && (!has_extension(des, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) ||
+                                    !has_extension(des, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME))))
+    return DynamicRendering::None;
+  VkPhysicalDeviceDynamicRenderingFeaturesKHR fdr{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
+  VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+  f2.pNext = &fdr;
+  vkGetPhysicalDeviceFeatures2(device, &f2);
+  return fdr.dynamicRendering ? DynamicRendering::KHR : DynamicRendering::None;
+}
+static const char kUpdateDriver[] =
+#ifdef _WIN32
+    "Install the newest graphics driver for this GPU (from the AMD, Intel or NVIDIA website, or through "
+    "Windows Update) and start the game again. "
+#elif defined(__APPLE__)
+    "Vulkan on a Mac needs MoltenVK and the Vulkan loader: brew install vulkan-loader molten-vk. "
+#else
+    "Install the newest graphics driver for this GPU (on Linux: an up-to-date Mesa, or the vendor's "
+    "driver) and start the game again. "
+#endif
+    "If no newer driver exists, this GPU cannot run the game's Vulkan renderer.";
 // Instance, device, submission slots and swapchains. `extensions`: the window system's instance
 // extensions; `create_surfaces` makes R.tv.surface / R.drc.surface once the instance exists.
+// The host has loaded the Vulkan loader's global functions (load_global_functions).
 static void init_device(std::vector<const char *> extensions,
                         const std::function<void()> &create_surfaces) {
   reset_pipeline_lookup_cache();
@@ -1547,6 +1636,13 @@ static void init_device(std::vector<const char *> extensions,
   setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "3", 0);
 #endif
   uint32_t n;
+  uint32_t loaderVersion = VK_API_VERSION_1_0;
+  if (vkEnumerateInstanceVersion)
+    vkEnumerateInstanceVersion(&loaderVersion);
+  if (loaderVersion < VK_API_VERSION_1_1)
+    throw std::runtime_error("The Vulkan runtime on this computer supports only Vulkan " +
+                             version_text(loaderVersion) + "; the game needs Vulkan 1.1 or newer.\n\n" +
+                             kUpdateDriver);
   uint32_t en = 0;
   vkEnumerateInstanceExtensionProperties(nullptr, &en, nullptr);
   std::vector<VkExtensionProperties> ies(en);
@@ -1585,6 +1681,7 @@ static void init_device(std::vector<const char *> extensions,
   ci.ppEnabledExtensionNames = extensions.data();
   vk_check(vkCreateInstance(&ci, nullptr, &R.instance),
            "create Vulkan instance");
+  load_instance_functions(R.instance);
   if (getenv("WWHD_VK_VALIDATION")) {
     auto create = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
         R.instance, "vkCreateDebugUtilsMessengerEXT");
@@ -1597,40 +1694,59 @@ static void init_device(std::vector<const char *> extensions,
   vkEnumeratePhysicalDevices(R.instance, &n, nullptr);
   std::vector<VkPhysicalDevice> devices(n);
   vkEnumeratePhysicalDevices(R.instance, &n, devices.data());
-  for (auto device : devices) {
-    VkPhysicalDeviceVulkan13Features f13{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    f2.pNext = &f13;
-    vkGetPhysicalDeviceFeatures2(device, &f2);
-    VkPhysicalDeviceProperties properties;
-    vkGetPhysicalDeviceProperties(device, &properties);
-    if (properties.apiVersion < VK_API_VERSION_1_3 || !f13.dynamicRendering)
-      continue;
-    uint32_t qn;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &qn, nullptr);
-    std::vector<VkQueueFamilyProperties> qs(qn);
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &qn, qs.data());
-    for (uint32_t q = 0; q < qn; q++) {
-      VkBool32 tv = 0, drc = VK_TRUE;
-      vkGetPhysicalDeviceSurfaceSupportKHR(device, q, R.tv.surface, &tv);
-      if (R.drc.surface)
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, q, R.drc.surface, &drc);
-      if ((qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && tv && drc) {
-        R.physicalDevice = device;
-        R.queueFamily = q;
-        R.gpuTimestampValidBits = qs[q].timestampValidBits;
-        break;
+  devices.resize(n);
+  // First the GPUs with Vulkan 1.3 (in the driver's order), then those with VK_KHR_dynamic_rendering
+  std::string unsuitable;  // the GPUs passed over, for the message when none is left
+  for (DynamicRendering want : {DynamicRendering::Core, DynamicRendering::KHR}) {
+    for (auto device : devices) {
+      VkPhysicalDeviceProperties properties;
+      vkGetPhysicalDeviceProperties(device, &properties);
+      const DynamicRendering have = dynamic_rendering(device, properties, device_extensions(device));
+      if (have != want) {
+        if (want == DynamicRendering::KHR && have == DynamicRendering::None)
+          unsuitable += std::string("\n") + properties.deviceName + ": Vulkan " +
+                        version_text(device_api_version(properties)) + ", driver " +
+                        driver_version_text(properties) +
+                        (device_api_version(properties) < VK_API_VERSION_1_1 ? "; older than Vulkan 1.1"
+                                                                             : "; VK_KHR_dynamic_rendering missing");
+        continue;
       }
+      uint32_t qn;
+      vkGetPhysicalDeviceQueueFamilyProperties(device, &qn, nullptr);
+      std::vector<VkQueueFamilyProperties> qs(qn);
+      vkGetPhysicalDeviceQueueFamilyProperties(device, &qn, qs.data());
+      for (uint32_t q = 0; q < qn; q++) {
+        VkBool32 tv = 0, drc = VK_TRUE;
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, q, R.tv.surface, &tv);
+        if (R.drc.surface)
+          vkGetPhysicalDeviceSurfaceSupportKHR(device, q, R.drc.surface, &drc);
+        if ((qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && tv && drc) {
+          R.physicalDevice = device;
+          R.queueFamily = q;
+          R.gpuTimestampValidBits = qs[q].timestampValidBits;
+          R.dynamicRenderingKHR = have == DynamicRendering::KHR;
+          break;
+        }
+      }
+      if (R.physicalDevice)
+        break;
+      unsuitable += std::string("\n") + properties.deviceName + ": cannot draw to the game window";
     }
     if (R.physicalDevice)
       break;
   }
   if (!R.physicalDevice)
-    throw std::runtime_error("Vulkan 1.3 dynamic rendering and "
-                             "graphics/presentation support required");
+    throw std::runtime_error(
+        devices.empty()
+            ? std::string("No graphics card with a Vulkan driver was found.\n\n") + kUpdateDriver
+            : "The graphics driver does not support the Vulkan features the game needs: Vulkan 1.3, or "
+              "Vulkan 1.1 / 1.2 with the VK_KHR_dynamic_rendering extension.\n" + unsuitable +
+                  "\n\n" + kUpdateDriver);
   vkGetPhysicalDeviceProperties(R.physicalDevice, &R.properties);
-  LOG("[vulkan] device: %s", R.properties.deviceName);
+  const uint32_t deviceApi = device_api_version(R.properties);
+  LOG("[vulkan] device: %s (Vulkan %s, driver %s%s)", R.properties.deviceName,
+      version_text(R.properties.apiVersion).c_str(), driver_version_text(R.properties).c_str(),
+      R.dynamicRenderingKHR ? "; dynamic rendering through VK_KHR_dynamic_rendering" : "");
   if (perf_enabled()) {
     const auto& limits=R.properties.limits;
     LOG("[vulkan uniforms] dynamic/set %u; uniform/stage %u; uniform/set %u; resources/stage %u; alignment %llu; range %u",
@@ -1638,11 +1754,15 @@ static void init_device(std::vector<const char *> extensions,
         limits.maxDescriptorSetUniformBuffers,limits.maxPerStageResources,
         (unsigned long long)limits.minUniformBufferOffsetAlignment,limits.maxUniformBufferRange);
   }
-  vkEnumerateDeviceExtensionProperties(R.physicalDevice, nullptr, &n, nullptr);
-  std::vector<VkExtensionProperties> des(n);
-  vkEnumerateDeviceExtensionProperties(R.physicalDevice, nullptr, &n,
-                                       des.data());
+  const std::vector<VkExtensionProperties> des = device_extensions(R.physicalDevice);
   std::vector<const char *> de{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  if (R.dynamicRenderingKHR) {
+    de.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    if (deviceApi < VK_API_VERSION_1_2) {
+      de.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+      de.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+    }
+  }
   if (has_extension(des, "VK_KHR_portability_subset"))
     de.push_back("VK_KHR_portability_subset");
   R.portabilitySubset =
@@ -1653,9 +1773,15 @@ static void init_device(std::vector<const char *> extensions,
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   VkPhysicalDeviceFeatures2 features{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-  features.pNext = &available12;
+  // VkPhysicalDeviceVulkan12Features: Vulkan 1.2 devices and newer
+  const bool vulkan12 = deviceApi >= VK_API_VERSION_1_2;
+  void **tail = &features.pNext;
+  if (vulkan12) {
+    *tail = &available12;
+    tail = &available12.pNext;
+  }
   if (R.portabilitySubset)
-    available12.pNext = &portability;
+    *tail = &portability;
   vkGetPhysicalDeviceFeatures2(R.physicalDevice, &features);
   if (R.portabilitySubset) {
     R.imageViewSwizzle = portability.imageViewFormatSwizzle;
@@ -1670,6 +1796,10 @@ static void init_device(std::vector<const char *> extensions,
   VkPhysicalDeviceVulkan12Features enabled12{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
   enabled12.samplerMirrorClampToEdge = available12.samplerMirrorClampToEdge;
+  if (!vulkan12 && has_extension(des, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME)) {
+    de.push_back(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);  // Vulkan 1.1: the extension
+    enabled12.samplerMirrorClampToEdge = VK_TRUE;
+  }
   R.samplerMirrorClampToEdge = enabled12.samplerMirrorClampToEdge;
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
@@ -1687,17 +1817,24 @@ static void init_device(std::vector<const char *> extensions,
   R.enabledFeatures = enabled;
   VkPhysicalDeviceVulkan13Features f13{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-  f13.dynamicRendering = VK_TRUE;
-  f13.pNext = &enabled12;
+  VkPhysicalDeviceDynamicRenderingFeaturesKHR fdr{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR};
+  f13.dynamicRendering = fdr.dynamicRendering = VK_TRUE;
+  void *chain = R.dynamicRenderingKHR ? static_cast<void *>(&fdr) : &f13;
+  tail = R.dynamicRenderingKHR ? &fdr.pNext : &f13.pNext;
+  if (vulkan12) {
+    *tail = &enabled12;
+    tail = &enabled12.pNext;
+  }
   if (R.portabilitySubset)
-    enabled12.pNext = &portability;
+    *tail = &portability;
   float priority = 1;
   VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
   qi.queueFamilyIndex = R.queueFamily;
   qi.queueCount = 1;
   qi.pQueuePriorities = &priority;
   VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-  di.pNext = &f13;
+  di.pNext = chain;
   di.queueCreateInfoCount = 1;
   di.pQueueCreateInfos = &qi;
   di.pEnabledFeatures = &enabled;
@@ -1705,6 +1842,7 @@ static void init_device(std::vector<const char *> extensions,
   di.ppEnabledExtensionNames = de.data();
   vk_check(vkCreateDevice(R.physicalDevice, &di, nullptr, &R.device),
            "create Vulkan device");
+  load_device_functions(R.device, R.dynamicRenderingKHR);
   vkGetDeviceQueue(R.device, R.queueFamily, 0, &R.queue);
   init_pipeline_cache();
   for (auto& slot:R.submissions) {
@@ -1800,6 +1938,15 @@ void init() {
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     throw std::runtime_error(SDL_GetError());
+  // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
+  // windows below use the same one
+  if (!SDL_Vulkan_LoadLibrary(nullptr))
+    throw std::runtime_error(std::string("Vulkan is not installed on this computer: the Vulkan runtime "
+#ifdef _WIN32
+                                         "(vulkan-1.dll) "
+#endif
+                                         "could not be loaded (") + SDL_GetError() + ").\n\n" + kUpdateDriver);
+  load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr()));
 #ifdef __ANDROID__
   SDL_AddEventWatch(lifecycle_watch, nullptr);
   const SDL_WindowFlags windowFlags = SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN;
@@ -2174,6 +2321,7 @@ void init_appkit(void *tvLayer, void *drcLayer) {
   if (!image_loaded("/libglslang"))
     throw std::runtime_error("glslang (shader compiler for Vulkan) is not installed. "
                              "Install it with: brew install glslang");
+  load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr")));
   if (!tvLayer)
     throw std::runtime_error("no TV window layer");
   R.tv.window = tvLayer;
