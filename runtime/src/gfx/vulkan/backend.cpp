@@ -2228,26 +2228,43 @@ static bool drc_key(const SDL_Event& event) {
   ::hostui::toggle_drc();
   return true;
 }
+// debug: a test variable's list of TV frames ("3500,3700"); due once per listed frame
+static bool test_frame_due(const std::vector<uint64_t> &frames, size_t &i) {
+  if (i >= frames.size() || frame_count() < frames[i]) return false;
+  i++;
+  return true;
+}
+static std::vector<uint64_t> test_frames(const char *var) {
+  std::vector<uint64_t> f;
+  if (const char *e = getenv(var))
+    for (const char *p = e; *p;) {
+      f.push_back(strtoull(p, (char **)&p, 10));
+      while (*p == ',') p++;
+    }
+  return f;
+}
 // debug: WWHD_TEST_DRC_KEY=3500,3700 simulates Ctrl+G at those frames (as display.mm's Cmd+G)
 static void test_drc_key() {
-  static const std::vector<uint64_t> frames = [] {
-    std::vector<uint64_t> f;
-    if (const char *e = getenv("WWHD_TEST_DRC_KEY"))
-      for (const char *p = e; *p;) {
-        f.push_back(strtoull(p, (char **)&p, 10));
-        while (*p == ',') p++;
-      }
-    return f;
-  }();
+  static const std::vector<uint64_t> frames = test_frames("WWHD_TEST_DRC_KEY");
   static size_t i = 0;
-  if (i < frames.size() && frame_count() >= frames[i]) {
-    i++;
+  if (test_frame_due(frames, i)) {
     LOG("[display] test: Ctrl+G at frame %llu", (unsigned long long)frame_count());
     ::hostui::toggle_drc();
   }
 }
 
-// full screen: F11 or Alt+Enter toggles the focused window (TV or GamePad)
+// full screen (the TV window's is remembered for the next start: hostui::tv_fullscreen_changed)
+static void toggle_fullscreen(SDL_Window* window) {
+  const bool full = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
+  const char* which = window == R.drc.window ? "GamePad window" : "TV window";
+  if (!SDL_SetWindowFullscreen(window, !full))
+    LOG("[display] %s: switching to %s failed: %s", which, full ? "windowed" : "full screen", SDL_GetError());
+  else
+    LOG("[display] %s %s", which, full ? "windowed" : "full screen");
+  if (window == R.tv.window)
+    ::hostui::tv_fullscreen_changed();
+}
+// F11 or Alt+Enter toggles the focused window (TV or GamePad)
 static bool fullscreen_key(const SDL_Event& event) {
   if (event.type != SDL_EVENT_KEY_DOWN || event.key.repeat) return false;
   const bool f11 = event.key.scancode == SDL_SCANCODE_F11 && !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI));
@@ -2255,14 +2272,18 @@ static bool fullscreen_key(const SDL_Event& event) {
                         (event.key.mod & SDL_KMOD_ALT);
   if (!f11 && !altEnter) return false;
   SDL_Window* window = SDL_GetWindowFromID(event.key.windowID);
-  if (!window) window = R.tv.window;
-  const bool full = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
-  const char* which = window == R.drc.window ? "GamePad window" : "TV window";
-  if (!SDL_SetWindowFullscreen(window, !full))
-    LOG("[display] %s: switching to %s failed: %s", which, full ? "windowed" : "full screen", SDL_GetError());
-  else
-    LOG("[display] %s %s", which, full ? "windowed" : "full screen");
+  toggle_fullscreen(window ? window : R.tv.window);
   return true;
+}
+// debug: WWHD_TEST_FULLSCREEN_KEY=3500,3700 simulates F11 on the TV window at those frames (with
+// WWHD_HIDDEN_WINDOWS the window stays hidden: SDL only notes the state for when it is shown)
+static void test_fullscreen_key() {
+  static const std::vector<uint64_t> frames = test_frames("WWHD_TEST_FULLSCREEN_KEY");
+  static size_t i = 0;
+  if (test_frame_due(frames, i)) {
+    LOG("[display] test: F11 at frame %llu", (unsigned long long)frame_count());
+    toggle_fullscreen(R.tv.window);
+  }
 }
 
 // Closing the TV window ends the game. SDL only sends SDL_EVENT_QUIT once every window is closed, so
@@ -2304,6 +2325,9 @@ void run_main_loop() {
             s->height = event.window.data2;
             s->resize = true;
           }
+          if (s == &R.tv && (event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ||
+                             event.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN))
+            ::hostui::tv_fullscreen_changed();  // also when the window manager switched it
           if (event.type == SDL_EVENT_WINDOW_MINIMIZED)
             s->visible = false;
           if (event.type == SDL_EVENT_WINDOW_RESTORED ||
@@ -2314,6 +2338,7 @@ void run_main_loop() {
     input::update();
     ::hostui::run_posted();  // option changes from the settings overlay (render thread)
     test_drc_key();
+    test_fullscreen_key();
     if (const int m = gfx::display_test_mode(frame_count()); m >= 0)
       ::hostui::set_drc_mode(m);
     overlay::set_density(SDL_GetWindowPixelDensity(R.tv.window));

@@ -49,5 +49,6 @@ void run_posted();                 // the functions post()ed since the last call
 void load_saved_options();         // start-up: graphics and GamePad screen options saved in settings.ini
 void toggle_drc();                 // Ctrl+G: show / hide the GamePad screen in the current mode
 void drc_window_closed();          // the GamePad window's close button (window mode: hidden until shown again)
+void tv_fullscreen_changed();      // the TV window may have entered or left full screen (remembered, as on macOS)
 
 }  // namespace hostui

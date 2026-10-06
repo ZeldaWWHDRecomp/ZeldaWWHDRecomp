@@ -18,7 +18,8 @@
 // WWHD_DRC_PIP, WWHD_SCALE_FILTER, WWHD_SIM_SCREEN, WWHD_TEST_TOUCH, WWHD_DRC_AUTO, WWHD_DRC_AUTO_LOG).
 //
 // Debug / test environment:
-//   WWHD_FULLSCREEN=1                    TV window enters full screen at start (takes over the screen!)
+//   WWHD_FULLSCREEN=0|1                  TV window starts windowed / in full screen instead of as it was left
+//                                        (that session's full screen is not saved; 1 takes over the screen!)
 //   WWHD_DUMP_PRESENT=1                  with WWHD_DUMP_FRAMES: also write frame_<n>_present.png (the composed
 //                                        TV window) and frame_<n>_present_drc.png (GamePad window, window mode)
 //   WWHD_TEST_DRC_KEY=3500,3700          frames at which Cmd+G (show/hide GamePad screen) is simulated
@@ -285,7 +286,7 @@ static void attach_metal_layers() {
     }
 }
 
-// remember frames (outside full screen) and full-screen state
+// remember frames (outside full screen) and full-screen state (fsKey nil: not remembered)
 static void track_window(NSWindow* win, NSRect* normal, NSString* frameKey, NSString* fsKey) {
     *normal = win.frame;
     auto save_frame = ^(NSNotification*) {
@@ -298,10 +299,11 @@ static void track_window(NSWindow* win, NSRect* normal, NSString* frameKey, NSSt
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillEnterFullScreenNotification object:win queue:nil
                                                   usingBlock:^(NSNotification*) {
         set_setting(frameKey, NSStringFromRect(*normal));
-        set_setting(fsKey, @YES);
+        if (fsKey) set_setting(fsKey, @YES);
     }];
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil
-                                                  usingBlock:^(NSNotification*) { set_setting(fsKey, @NO); }];
+    if (fsKey)
+        [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidExitFullScreenNotification object:win queue:nil
+                                                      usingBlock:^(NSNotification*) { set_setting(fsKey, @NO); }];
 }
 
 // show or hide the GamePad window to match the mode (main thread)
@@ -376,7 +378,8 @@ static void create_windows() {
     NSRect saved = NSRectFromString(g_settings[@"tvFrame"] ?: @"");
     if (frame_usable(saved)) [tv setFrame:saved display:NO];
     else [tv center];
-    track_window(tv, &g_tv_normal_frame, @"tvFrame", @"tvFullScreen");
+    // full screen as left (a WWHD_FULLSCREEN start leaves the saved state alone)
+    track_window(tv, &g_tv_normal_frame, @"tvFrame", display_fullscreen_env() ? nil : @"tvFullScreen");
     if (!getenv("WWHD_NO_GAMEPAD")) {
         // GamePad screen to the right of the TV window (or where it was last)
         NSRect f = tv.frame;
@@ -411,9 +414,9 @@ static void create_windows() {
         [tv makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }
-    // full screen as last time (never in test runs unless asked for)
-    bool fs = getenv("WWHD_FULLSCREEN") ? atoi(getenv("WWHD_FULLSCREEN")) != 0 : (!test && [g_settings[@"tvFullScreen"] boolValue]);
-    if (fs) dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(tv)) [tv toggleFullScreen:nil]; });
+    // full screen as last time (display_modes.cpp: never in test runs unless asked for, never with hidden windows)
+    if (display_start_fullscreen([g_settings[@"tvFullScreen"] boolValue], hidden_windows()))
+        dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(tv)) [tv toggleFullScreen:nil]; });
     if (!test && g_drc_window && drc_window_wanted() && [g_settings[@"drcFullScreen"] boolValue] &&
         screen_named(g_settings[@"drcScreen"]) && screen_named(g_settings[@"drcScreen"]) != tv.screen)
         dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(g_drc_window)) [g_drc_window toggleFullScreen:nil]; });

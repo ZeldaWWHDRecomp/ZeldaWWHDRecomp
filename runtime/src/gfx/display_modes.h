@@ -45,6 +45,13 @@ bool drc_mode_offered(int m);  // window: the host has a GamePad window
 // start-up overrides for tests, after the saved options were read (not saved):
 // WWHD_DRC_MODE, WWHD_DRC_PIP=br:0.25[:0.85], WWHD_SCALE_FILTER
 void display_env_overrides();
+// Full screen is remembered: the TV window starts as it was left (the hosts save tvFullScreen when it
+// enters or leaves full screen, display.plist / settings.ini). Whether to switch it to full screen at
+// start: WWHD_FULLSCREEN=0|1 overrides the saved state for this start (a session started with it does
+// not save its full-screen state: display_fullscreen_env); test runs (WWHD_NO_HOST_INPUT) switch only
+// with WWHD_FULLSCREEN=1 and hidden windows never do. Logs the decision.
+bool display_start_fullscreen(bool saved, bool hidden_windows);
+bool display_fullscreen_env();  // WWHD_FULLSCREEN is set
 // debug: WWHD_TEST_DRC_MODE=3400:gamepad,3600:pip switches the mode at those frames (as the settings
 // overlay does); the mode to switch to at this frame, -1 for none (host main thread)
 int display_test_mode(uint64_t frame);

@@ -596,6 +596,10 @@ void tab_display() {
     bool v;
     heading("Window");
     if (check("Full screen", hostui::fullscreen(), &v)) hostui::post([v] { hostui::set_fullscreen(v); });
+#ifndef __ANDROID__  // always full screen there
+    help(!strcmp(hostui::name(), "AppKit") ? "The TV window (Cmd+F); remembered for the next start"
+                                           : "The TV window (F11 or Alt+Enter); remembered for the next start");
+#endif
     heading("Picture scaling");
     static const char* const f[] = {"Smooth", "Sharp", "Integer scale (pixel exact)"};
     const bool fok = hostui::scale_filter_available();

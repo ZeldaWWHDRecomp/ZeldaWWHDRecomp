@@ -195,6 +195,13 @@ void load_saved_options() {
     g_shown = !input::pro_controller();  // Pro Controller: GamePad screen starts hidden (as on macOS)
     apply_drc_window();
     LOG("[display] GamePad screen mode: %s%s", kModeNames[g_mode], g_shown ? "" : " (hidden)");
+#ifndef __ANDROID__  // always full screen there
+    // TV window: full screen as it was left (tv_fullscreen_changed); test runs with hidden windows
+    // only log it
+    SDL_Window* tv = gfxvk::R.tv.window;
+    if (tv && display_start_fullscreen(v["tvFullScreen"] == "1", SDL_GetWindowFlags(tv) & SDL_WINDOW_HIDDEN))
+        set_fullscreen(true);
+#endif
 }
 
 int scale_filter() { return gfxvk::scale_filter(); }
@@ -208,6 +215,25 @@ bool fullscreen() { return gfxvk::R.tv.window && (SDL_GetWindowFlags(gfxvk::R.tv
 void set_fullscreen(bool on) {
     if (!gfxvk::R.tv.window) return;
     if (!SDL_SetWindowFullscreen(gfxvk::R.tv.window, on)) LOG("[display] TV window: full screen %s failed: %s", on ? "on" : "off", SDL_GetError());
+    tv_fullscreen_changed();
+}
+// full screen is remembered for the next start, as display.plist does on macOS (same key): saved
+// whenever the TV window's state differs from the saved one, whichever way it changed (F11, Alt+Enter,
+// the overlay, the window manager); a session started with WWHD_FULLSCREEN does not save it
+void tv_fullscreen_changed() {
+#ifndef __ANDROID__
+    if (gfx::display_fullscreen_env() || !gfxvk::R.tv.window) return;
+    const std::string on = fullscreen() ? "1" : "0";
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        load_locked();
+        auto it = g_values.find("tvFullScreen");
+        if ((it == g_values.end() ? std::string("0") : it->second) == on) return;
+        g_values["tvFullScreen"] = on;
+        save_locked();
+    }
+    LOG("[display] TV window full screen %s: remembered for the next start", on == "1" ? "on" : "off");
+#endif
 }
 // the GamePad screen modes of display_modes.h (as the AppKit host's Display menu)
 int drc_modes() { return gfx::kDrcModeCount; }

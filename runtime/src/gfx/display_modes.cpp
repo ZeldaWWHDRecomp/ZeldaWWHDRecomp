@@ -15,6 +15,8 @@
 //   WWHD_DRC_AUTO_LOG=1                  log the automatic mode's change measurements
 //   WWHD_TEST_DRC_MODE=3400:gamepad,3600:pip   switch the mode at those TV frames (as the settings overlay)
 //   WWHD_VIEW_BUTTON=0|1                 the touch screens' view button (on by default on Android only)
+//   WWHD_FULLSCREEN=0|1                  the TV window starts in full screen (1) or windowed (0), instead of as it
+//                                        was left (that session's full screen is not saved; 1 takes over the screen!)
 #include "display_modes.h"
 
 #include <algorithm>
@@ -82,6 +84,26 @@ void display_env_overrides() {
         }
     }
     if (const char* e = getenv("WWHD_SCALE_FILTER")) g_filter = find_name(kFilterNames, 3, e, g_filter);
+}
+
+bool display_fullscreen_env() {
+    const char* e = getenv("WWHD_FULLSCREEN");
+    return e && *e;
+}
+bool display_start_fullscreen(bool saved, bool hidden_windows) {
+    const bool env = display_fullscreen_env();
+    const bool on = env ? atoi(getenv("WWHD_FULLSCREEN")) != 0 : saved;
+    const char* why = env ? "WWHD_FULLSCREEN" : "as it was left";
+    if (!on) {
+        LOG("[display] TV window starts windowed (%s)", env ? "WWHD_FULLSCREEN=0" : "as it was left");
+        return false;
+    }
+    // test runs: never take over the user's screen unless asked for with WWHD_FULLSCREEN=1
+    const bool test = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+    const bool apply = !hidden_windows && (!test || env);
+    LOG("[display] TV window starts in full screen (%s)%s", why,
+        apply ? "" : hidden_windows ? "; hidden windows: not switched" : "; test run: not switched");
+    return apply;
 }
 
 int display_test_mode(uint64_t frame) {
