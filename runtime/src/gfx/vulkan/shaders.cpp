@@ -31,6 +31,7 @@ LatteDecompilerShader* FinishDecompiledShader(LatteDecompilerOutput_t& output);
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash hash,
     uint32* regs, uint32* code, uint32 size);
 
+void log_msg(const char* fmt, ...);  // runtime.h (not included here: the Cemu headers)
 namespace gfxvk::vk {
 using Latte::REGADDR;
 namespace {
@@ -259,8 +260,34 @@ std::unordered_map<uint64_t, ProgramUse> programUses;  // linkage key -> use
 std::unordered_map<uint64_t, Shader*> variants;         // full key -> shader (may be shared)
 std::unordered_multimap<uint64_t, Shader*> shadersByOutput;
 std::unordered_multimap<uint64_t, Shader*> shadersByModule;  // SPIR-V + resource mapping
-uint64_t variant_hash(const uint32_t* regs, bool vertex, const ProgramUse& use, uint64_t linkage) {
-    std::array<uint32_t, LATTE_NUM_MAX_TEX_UNITS + 32 + 4> words;
+// A pixel shader translated for the draw's vertex shader: the semantic ids that vertex shader
+// exports (its output parameters through SPI_VS_OUT_ID) and, for the key, the PS inputs none of
+// them feeds. Those inputs are constants in the translation, the GPU's default value for them
+// (SPI_PS_INPUT_CNTL DEFAULT_VAL, which the linkage words leave out, so the variant words have it
+// for these inputs; LatteDecompilerOptions::linkPSInputsToVS): a declared input with no output
+// made the Adreno driver refuse the pipeline.
+struct PsLink {
+    bool linked = false;
+    std::bitset<256> exports;
+    uint32_t unfed = 0;  // bit f: PS input f has no vertex shader output
+};
+PsLink ps_link(const uint32_t* regs, const Shader* vs) {
+    PsLink link;
+    if (!vs || !vs->dec) return link;
+    link.linked = true;
+    const uint32_t mask = vs->dec->outputParameterMask;
+    for (uint32_t i = 0; i < 32; ++i)
+        if (mask & (1u << i)) link.exports.set((regs[mmSPI_VS_OUT_ID_0 + i / 4] >> (8 * (i % 4))) & 0xFF);
+    const uint32_t control0 = regs[mmSPI_PS_IN_CONTROL_0];
+    const uint32_t inputs = std::min<uint32_t>(control0 & 0x3F, GPU7_PS_MAX_INPUTS);
+    const uint32_t position = (control0 >> 8) & 1 ? (control0 >> 10) & 0x1F : 0xFFFFFFFFu;
+    for (uint32_t f = 0; f < inputs; ++f)
+        if (f != position && !link.exports.test(regs[mmSPI_PS_INPUT_CNTL_0 + f] & 0xFF)) link.unfed |= 1u << f;
+    return link;
+}
+uint64_t variant_hash(const uint32_t* regs, bool vertex, const ProgramUse& use, uint64_t linkage,
+                      const PsLink& link) {
+    std::array<uint32_t, LATTE_NUM_MAX_TEX_UNITS + 32 + 4 + 1 + GPU7_PS_MAX_INPUTS> words;
     size_t count = 0;
     const uint32_t base = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
     for (uint32_t i = 0; i < use.unitCount; ++i) {
@@ -294,6 +321,11 @@ uint64_t variant_hash(const uint32_t* regs, bool vertex, const ProgramUse& use, 
         if (use.streamout)
             for (uint32_t buffer = 0; buffer < 4; ++buffer)
                 words[count++] = regs[mmVGT_STRMOUT_VTX_STRIDE_0 + buffer * 4];
+    } else {
+        // the inputs that read their default value, and that value (DEFAULT_VAL)
+        words[count++] = link.linked ? link.unfed : 0xFFFFFFFFu;
+        for (uint32_t f = 0; f < GPU7_PS_MAX_INPUTS; ++f)
+            if (link.unfed & (1u << f)) words[count++] = (regs[mmSPI_PS_INPUT_CNTL_0 + f] >> 8) & 3;
     }
     return hash_bytes(words.data(), count * sizeof(uint32_t), linkage ^ 0xC2B2AE3D27D4EB4Full);
 }
@@ -467,7 +499,7 @@ bool same_output(const Shader& a, const Shader& b) {
 // Latte program -> GLSL and its binding metadata (no SPIR-V). Also used by the verify mode, which
 // translates again under the current registers and compares.
 bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShader* fetch,
-               uint32_t address, uint32_t size, uint64_t base, bool packReplacement) {
+               uint32_t address, uint32_t size, uint64_t base, bool packReplacement, const PsLink& link) {
     if (!g_renderer || g_renderer->GetType() != RendererAPI::Vulkan) {
         shader.error = "Vulkan renderer was not selected before shader translation"; return false;
     }
@@ -477,6 +509,10 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     if (vertex && !fetch) { shader.error = "vertex shader has no fetch program"; return false; }
     LatteShader_UpdatePSInputs(const_cast<uint32_t*>(regs));
     LatteDecompilerOptions options;
+    if (!vertex && link.linked) {
+        options.linkPSInputsToVS = true;
+        options.vsOutputSemantics = link.exports;
+    }
     uint64_t packBase=0;
     if(mods::cemu::has_shaders()) {
         packBase=cemu_pack_hash::base(ppc_ptr(address),size,regs,vertex,fetch);
@@ -537,7 +573,8 @@ void first_difference(const std::string& a, const std::string& b, std::string& l
     left = line(a); right = line(b);
 }
 void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
-                uint32_t address, uint32_t size, uint64_t base, uint64_t key, const Shader& shader) {
+                uint32_t address, uint32_t size, uint64_t base, uint64_t key, const Shader& shader,
+                const PsLink& link) {
     const uint32_t rate = key_verify_rate();
     if (!rate || !shader.dec) return;
     uint64_t legacy = legacy_state_hash(regs, base, vertex) ^ (vertex ? fsKey * 31 : 0);
@@ -552,7 +589,7 @@ void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint
     auto started = std::chrono::steady_clock::now();
     Shader reference;
     reference.vertex = vertex;
-    bool built = decompile(reference, regs, vertex, fetch, address, size, base, false);
+    bool built = decompile(reference, regs, vertex, fetch, address, size, base, false, link);
     ++stats.verifyChecks;
     const std::string& translated = shader.translatedGlsl.empty() ? shader.glsl : shader.translatedGlsl;
     if (!built || reference.glsl != translated ||
@@ -684,7 +721,7 @@ LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint6
 }
 
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
-                  uint64_t frame, uint64_t stateGeneration) {
+                  uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs) {
     ++stats.lookups;
     auto& last = lastShaders[vertex ? 0 : 1];
     uint32_t primitive = regs[REGADDR::VGT_PRIMITIVE_TYPE] & 0x3F;
@@ -721,14 +758,16 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         linkage = hash_bytes(words.data(), count * sizeof(uint32_t), seed);
         if (memoEnabled && cacheLast) stateMemo.remember(vertex, words.data(), count, seed, linkage);
     }
-    // Level 2: the units and exports this program uses.
+    // Level 2: the units and exports this program uses; for a pixel shader, the inputs its
+    // vertex shader does not feed.
+    const PsLink link = vertex ? PsLink{} : ps_link(regs, linkedVs);
     auto& use = programUses[linkage];
     if (use.failed) return remember(use.failed);
     if (use.known) {
-        const uint64_t key = variant_hash(regs, vertex, use, linkage);
+        const uint64_t key = variant_hash(regs, vertex, use, linkage, link);
         if (auto it = variants.find(key); it != variants.end()) {
             ++stats.variantHits;
-            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *it->second);
+            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *it->second, link);
             return remember(it->second);
         }
     }
@@ -744,7 +783,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     auto owned = std::make_unique<Shader>();
     Shader* shader = owned.get();
     shader->vertex = vertex;
-    if (!decompile(*shader, regs, vertex, fetch, address, size, base, true)) {
+    if (!decompile(*shader, regs, vertex, fetch, address, size, base, true, link)) {
         // Failures are per linkage: the variant words need the program's analysis.
         shader->key = shader->pipelineId = linkage ^ 0xFA17EDull;
         use.failed = shader;
@@ -762,7 +801,15 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         use.streamout = vertex && dec.hasStreamoutBufferWrite;
         use.known = true;
     }
-    const uint64_t key = variant_hash(regs, vertex, use, linkage);
+    const uint64_t key = variant_hash(regs, vertex, use, linkage, link);
+    if (link.unfed) {
+        static int reported = 0;
+        if (reported < 20) {
+            ++reported;
+            ::log_msg("[vulkan] pixel shader %08X: %d inputs without a vertex shader output read their default value",
+                      address, __builtin_popcount(link.unfed));
+        }
+    }
     stats.decompileNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now()-started).count();
     if (key_verify_rate()) {

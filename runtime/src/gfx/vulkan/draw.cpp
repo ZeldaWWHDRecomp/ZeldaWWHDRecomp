@@ -968,46 +968,6 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   R.pipelineCreateNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now()-pipelineStarted).count();
   ++R.pipelineCreates;
-  if (result == VK_ERROR_UNKNOWN) {
-    // WORKAROUND (PR #30, see TODO.md): patches the GLSL text after the driver
-    // refused the pipeline. The proper fix is to link the pixel shader's inputs
-    // to the vertex shader's outputs in the shader translation, so inputs
-    // without an output read as zero up front on every driver.
-    // Pixel shader inputs that this vertex shader does not write (the Latte
-    // translation declares every input of the pixel shader): read as zero.
-    std::string glsl = ps->glsl;
-    size_t replaced = 0;
-    for (size_t at = 0; (at = glsl.find("layout(location = ", at)) != std::string::npos;) {
-      size_t end = glsl.find(';', at);
-      size_t name = glsl.find("in vec4 passParameterSem", at);
-      if (end == std::string::npos || name == std::string::npos || name > end) { at++; continue; }
-      std::string var = glsl.substr(name + 8, end - name - 8);
-      if (vs->glsl.find("out vec4 " + var + ";") == std::string::npos) {
-        std::string zero = "const vec4 " + var + " = vec4(0.0)";
-        glsl.replace(at, end - at, zero);
-        at += zero.size();
-        replaced++;
-      } else {
-        at = end;
-      }
-    }
-    std::string error;
-    auto spirv = replaced ? vk::compile_glsl(glsl, false, &error) : std::vector<uint32_t>{};
-    VkShaderModule zeroed = VK_NULL_HANDLE;
-    if (!spirv.empty()) {
-      VkShaderModuleCreateInfo mc{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-      mc.codeSize = spirv.size() * 4;
-      mc.pCode = spirv.data();
-      if (vkCreateShaderModule(R.device, &mc, nullptr, &zeroed) == VK_SUCCESS) {
-        stages[1].module = zeroed;
-        result = vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, &ci, nullptr, &p.pipeline);
-        vkDestroyShaderModule(R.device, zeroed, nullptr);
-      }
-    }
-    LOG("[vulkan] graphics pipeline vs %016llX ps %016llX: VK_ERROR_UNKNOWN; %zu pixel shader inputs without a vertex output read as zero: %s",
-        (unsigned long long)vs->key, (unsigned long long)ps->key, replaced,
-        result == VK_SUCCESS ? "built" : error.empty() ? "still fails" : error.c_str());
-  }
   for (auto m : modules)
     vkDestroyShaderModule(R.device, m, nullptr);
   if (result != VK_SUCCESS && result != VK_ERROR_OUT_OF_HOST_MEMORY &&
@@ -1861,7 +1821,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (!fs)
     throw std::runtime_error("missing Vulkan fetch shader");
   auto *vs = vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen);
-  auto *ps = vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen);
+  auto *ps = vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen,
+                           vs && vs->ready() ? vs : nullptr);
   rprof::mark(rprof::kShader);
   if (!vs || !vs->ready() || !ps || !ps->ready())
     throw std::runtime_error("Vulkan shader translation failed: " +
