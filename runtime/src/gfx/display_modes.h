@@ -63,6 +63,13 @@ bool drc_screen_shown(bool drc_window_visible);  // the "Show GamePad screen" st
 void display_show_drc(bool on);    // show / hide the GamePad screen in the current mode
 void display_set_mode(int m);      // a new mode (shown again unless off; auto starts unpinned)
 void display_touched();            // a touch on the overlay: auto mode keeps it up 2 s longer
+// The GamePad screen while paused (one screen: picture-in-picture or TV only): after + the view
+// switches to GamePad only once the TV picture stands still (the game paused; its menus, the map
+// and the save prompt are on the GamePad), and back when the TV picture moves again. A view chosen
+// meanwhile stays. On by default on Android; WWHD_DRC_PAUSE=0|1.
+bool pause_view();
+void set_pause_view(bool on);
+void display_plus_pressed();       // + went down (input_sdl.cpp)
 
 // pixel rectangles in the target (drawable), top-left origin
 struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float scale = 1; };

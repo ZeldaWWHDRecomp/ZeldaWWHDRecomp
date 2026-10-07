@@ -155,6 +155,71 @@ void display_set_mode(int m) {
 }
 void display_touched() { g_auto_until = std::max<double>(g_auto_until, display_now() + 2.0); }
 
+// ---------------------------------------------------------------- GamePad screen while paused
+static std::atomic<bool> g_pause_view{[] {
+    const char* e = getenv("WWHD_DRC_PAUSE");
+#ifdef __ANDROID__
+    return !e || atoi(e) != 0;
+#else
+    return e && atoi(e) != 0;
+#endif
+}()};
+static std::atomic<double> g_plus_at{-1};  // display_now() of the last +, -1: none pending
+static int g_pause_restore = -1;           // the view to go back to (-1: not switched); render thread
+static double g_pause_since = 0;           // display_now() of the switch
+bool pause_view() { return g_pause_view; }
+void set_pause_view(bool on) { g_pause_view = on; }
+void display_plus_pressed() {
+    if (g_pause_view) g_plus_at = display_now();
+}
+// tv_change: share of the TV signature's cells that changed since the last sample (-1: unknown)
+static void pause_view_update(float tv_change) {
+    static int still = 0, moving = 0;
+    if (g_pause_restore < 0) {
+        const double plus = g_plus_at;
+        if (!g_pause_view || plus < 0) return;
+        if (display_now() - plus > 2.0) {  // + did not pause the game (or the picture never settled)
+            g_plus_at = -1;
+            still = 0;
+            return;
+        }
+        still = tv_change >= 0 && tv_change < 0.01f ? still + 1 : 0;
+        const int mode = g_mode;
+        if (still >= 2 && (mode == kDrcPip || mode == kDrcOff || mode == kDrcAuto)) {
+            g_pause_restore = mode;
+            g_mode = kDrcGamePad;
+            g_plus_at = -1;
+            g_pause_since = display_now();
+            still = moving = 0;
+            LOG("[display] paused: GamePad screen shown");
+        }
+        return;
+    }
+    if (g_mode != kDrcGamePad || !g_pause_view) {  // another view was chosen meanwhile: it stays
+        g_pause_restore = -1;
+        g_plus_at = -1;
+        return;
+    }
+    auto resume = [&](const char* why) {
+        g_mode = g_pause_restore;
+        g_pause_restore = -1;
+        g_plus_at = -1;  // (the + that resumed does not start another wait)
+        moving = still = 0;
+        LOG("[display] resumed (%s): back to the TV picture", why);
+    };
+    const double now = display_now(), plus = g_plus_at;
+    if (plus > g_pause_since + 0.3) return resume("+");  // + again: the usual way out of the pause
+    // the pause's own transition (the TV picture dims) is not the game moving again
+    if (now - g_pause_since < 0.7) {
+        moving = 0;
+        return;
+    }
+    // the game resumed however the menu was left (B, after saving): the TV picture moves again, in
+    // 3 samples in a row (a calm scene changes little: 2% of the cells)
+    moving = tv_change > 0.02f ? moving + 1 : 0;
+    if (moving >= 3) resume("the TV picture moves");
+}
+
 // ---------------------------------------------------------------- layout
 static Box fit(float dw, float dh, float tw, float th, float* scale) {
     float s = std::min(dw / tw, dh / th);  // scale to fit: bars only when the aspect ratios differ
@@ -275,6 +340,21 @@ void display_auto_signature(const std::vector<float>& cur_in, const std::vector<
     static std::mutex mu;
     static std::vector<float> prev;
     std::lock_guard<std::mutex> lk(mu);
+    {
+        // the TV picture's change, for the GamePad screen while paused
+        static std::vector<float> prev_tv;
+        float tv_change = -1;
+        if (tv && tv->size() == kSigN) {
+            if (prev_tv.size() == kSigN) {
+                uint32_t changed = 0;
+                for (uint32_t i = 0; i < kSigN; i++)
+                    if (fabsf((*tv)[i] - prev_tv[i]) > 0.03f) changed++;
+                tv_change = (float)changed / kSigN;
+            }
+            prev_tv = *tv;
+        }
+        pause_view_update(tv_change);
+    }
     if (g_mode != kDrcAuto) { prev.clear(); return; }
     static float thresh = 0.12f, hold = 4.0f;
     static bool parsed = [] {
@@ -415,7 +495,13 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
     }
     p.sim = sim;
     p.pip_wanted = pip;
-    p.sample_auto = g_mode == kDrcAuto && have_drc && frame % 4 == 0;
+    // Sampling waits for the GPU on those frames (the signatures are read back at once): the
+    // automatic overlay samples every 4th frame; the GamePad screen while paused only while there is
+    // something to see, never in plain gameplay: every frame for at most 2 s after + (whether the game
+    // paused: the switch follows within 2-3 frames), every 4th frame while it shows the GamePad
+    // screen (the game is paused, whether it resumed).
+    const bool plusWaits = g_pause_view && g_plus_at >= 0, pauseShown = g_pause_view && g_pause_restore >= 0;
+    p.sample_auto = have_drc && (plusWaits || ((g_mode == kDrcAuto || pauseShown) && frame % 4 == 0));
     return p;
 }
 
