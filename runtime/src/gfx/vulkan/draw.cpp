@@ -11,6 +11,7 @@
 #include "settings.h"
 #include "vertex_formats.h"
 #include "uniform_snapshot.h"
+#include "descriptor_key.h"
 #include "index_conversion.h"
 #include "vertex_history.h"
 #include "vertex_snapshot_history.h"
@@ -1233,31 +1234,6 @@ void remember_descriptors(LastDescriptorSet &last, VkDescriptorSetLayout layout,
     else identity.image = *write.pImageInfo;
   }
 }
-std::string descriptor_key(VkDescriptorSetLayout layout,
-                           const VkWriteDescriptorSet *writes, uint32_t count) {
-  std::string key;
-  key.reserve(sizeof(layout) + count * 40);
-  append(key, &layout, sizeof(layout));
-  append(key, &count, sizeof(count));
-  for (uint32_t i = 0; i < count; ++i) {
-    const auto &write = writes[i];
-    append(key, &write.dstBinding, sizeof(write.dstBinding));
-    append(key, &write.descriptorType, sizeof(write.descriptorType));
-    if (write.pBufferInfo) {
-      const auto &info = *write.pBufferInfo;
-      append(key, &info.buffer, sizeof(info.buffer));
-      append(key, &info.range, sizeof(info.range));
-      if (write.descriptorType != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
-        append(key, &info.offset, sizeof(info.offset));
-    } else {
-      const auto &info = *write.pImageInfo;
-      append(key, &info.sampler, sizeof(info.sampler));
-      append(key, &info.imageView, sizeof(info.imageView));
-      append(key, &info.imageLayout, sizeof(info.imageLayout));
-    }
-  }
-  return key;
-}
 // A descriptor cannot sample the same subresource being written as an
 // attachment without a feedback-loop extension. Snapshot before rendering.
 // Separate stage/unit slots preserve every descriptor selected for one draw.
@@ -1724,7 +1700,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   // Resource preparation above must always run, even when the descriptor set
   // itself is reusable. Pool reset/slot activation invalidates every old set.
   static uint64_t cacheGeneration = ~uint64_t{0};
-  static std::unordered_map<std::string, VkDescriptorSet> descriptorCache;
+  static std::unordered_map<std::string, VkDescriptorSet,
+                            DescriptorKeyHash, std::equal_to<>> descriptorCache;
   static LastDescriptorSet lastDescriptors[2];
   if (cacheGeneration != R.submissionGeneration) {
     descriptorCache.clear();
@@ -1739,7 +1716,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     out.set = last.set;
     return out;
   }
-  auto key = descriptor_key(layout, writes.data(), writeCount);
+  const DescriptorKey<17 + LATTE_NUM_MAX_TEX_UNITS> keyStorage(layout, writes.data(), writeCount);
+  const auto key = keyStorage.view();
   if (auto found = descriptorCache.find(key); found != descriptorCache.end()) {
     ++R.descriptorCacheHits;
     out.set = found->second;
@@ -1755,7 +1733,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   for (uint32_t i = 0; i < writeCount; ++i) writes[i].dstSet = out.set;
   if (writeCount)
     vkUpdateDescriptorSets(R.device, writeCount, writes.data(), 0, nullptr);
-  descriptorCache.emplace(std::move(key), out.set);
+  descriptorCache.emplace(std::string(key), out.set);
   remember_descriptors(last, layout, out.set, writes.data(), writeCount);
   return out;
 }
