@@ -17,6 +17,7 @@
 #include "gx2_cmd.h"
 #include "gx2_regs.h"
 #include "gx2_texture_regs.h"
+#include "state_groups.h"
 #ifdef WWHD_HAS_VULKAN
 #include "shader_key_dirty.h"
 #include "gfx/vulkan/api.h"
@@ -71,6 +72,23 @@ static bool shader_irrelevant(uint32 reg) {
     return false;
 }
 static ShaderKeyDirtyStats shaderKeyDirtyStats;
+
+// register state groups (state_groups.h): the continued-draw fast path of the Vulkan renderer
+uint64_t g_full_state_version = 1;
+uint32_t g_dirty_groups = 0;
+static const struct StateGroupTable {
+    uint8_t group[kNumRegs];
+    StateGroupTable() { for (uint32 r = 0; r < kNumRegs; ++r) group[r] = state_group(r); }
+} g_state_groups;
+static inline void note_state_change(uint32 reg, uint32 old, uint32 value) {
+    const uint32 g = state_group_change(g_state_groups.group[reg], old, value);
+    g_dirty_groups |= 1u << g;
+    g_full_state_version += !((kSgContinuedMask >> g) & 1);
+}
+static inline void note_full_state_change() {
+    g_dirty_groups |= 1u << kSgOther;
+    ++g_full_state_version;
+}
 ShaderKeyDirtyStats shader_key_dirty_stats() { return shaderKeyDirtyStats; }
 
 #ifdef WWHD_HAS_VULKAN
@@ -87,6 +105,7 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
         const uint32 reg = first + i, value = v[i], old = g_regs[reg];
         if (old != value) {
             changed = true;
+            note_state_change(reg, old, value);
             if (classify) {
                 if (rprof::fast_class_reg(reg)) rprof::g_reg_dirty |= 1;
                 else rprof::note_other_reg(reg);
@@ -130,6 +149,8 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     }
 #endif
     if (memcmp(&g_regs[first], v, n * 4) != 0) {
+        for (uint32 i = 0; i < n; i++)
+            if (g_regs[first + i] != v[i]) note_state_change(first + i, g_regs[first + i], v[i]);
         if (rprof::enabled())  // draw classifier (render_prof.h)
             for (uint32 i = 0; i < n; i++)
                 if (g_regs[first + i] != v[i]) {
@@ -356,6 +377,7 @@ static void set_context(uint32 ctx) {
     g_shadow = it->second.data();
     memcpy(g_regs, g_shadow, sizeof(g_regs));
     g_shader_state_gen++;
+    note_full_state_change();
     rprof::g_reg_dirty |= 2;  // draw classifier: a context load counts as a full state change
 }
 
@@ -946,6 +968,7 @@ void gx2_ss_load(ss::Reader& r) {
     auto it = g_contexts.find(active);
     g_shadow = active && it != g_contexts.end() ? it->second.data() : nullptr;
     g_shader_state_gen++;
+    note_full_state_change();
     g_swap_interval = std::max<uint32>(r.u32(), 1);
     uint64_t guest_swaps = r.u64();
     {

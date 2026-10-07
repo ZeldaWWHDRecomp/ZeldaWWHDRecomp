@@ -249,6 +249,7 @@ Surface* surface_from_depth_buffer(uint32_t addr, uint32_t* firstSlice, uint32_t
 // ---------------------------------------------------------------- sampled textures
 static uint64_t sparse_hash(Surface* s);
 uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces;
+uint64_t g_surface_epoch = 1;  // backend.h
 
 Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     Latte::LATTE_SQ_TEX_RESOURCE_WORD0_N w0;
@@ -511,6 +512,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
 }
 void destroy_surface_image(Surface* s) {
     if(!s||!s->image)return;
+    ++g_surface_epoch;
     auto views=std::move(s->layerViews);if(s->view)views.push_back(s->view);
     for(auto& [key,view]:s->sampledViews)if(view)views.push_back(view);s->sampledViews.clear();
     defer_surface_image(s->image,s->memory,std::move(views));
@@ -629,7 +631,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     s->slices=std::max(d.slices,1u);s->pitch=d.pitch;s->mips=forRendering?1:std::max(d.mips,1u);
     s->format=d.format;s->dim=d.dim;s->tileMode=d.tileMode;s->swizzle=d.swizzle;s->isDepth=d.isDepth;
     s->fmt=format_info(d.format,d.isDepth);create_surface_image(s.get(),forRendering);
-    auto* raw=s.get();R.surfaces.emplace(d.addr,std::move(s));return raw;
+    auto* raw=s.get();R.surfaces.emplace(d.addr,std::move(s));++g_surface_epoch;return raw;
 }
 static uint32_t mip_base(Surface* s,uint32_t level) {
     if(!level)return s->addr;
@@ -708,7 +710,7 @@ void upload_surface(Surface* s) {
         defer_buffer(staging);
     }
     transition_image(s,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    s->contentHash=hash;s->writeSeq=next_write_seq();s->dirty=false;++g_stat_uploads;
+    s->contentHash=hash;s->writeSeq=next_write_seq();s->dirty=false;++g_stat_uploads;++g_surface_epoch;
 }
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
     uint32_t first,num;auto* s=surface_from_color_buffer(cb,&first,&num);if(!s)return;
@@ -804,6 +806,7 @@ void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32
         memcpy(mem::ptr(dbase+offset),rows.data()+(size_t(y)*bw+x)*sf.bytesPerBlock,sf.bytesPerBlock);
     }
     for(auto& [address,image]:R.surfaces)if(address==dbase){image->gpuWritten=false;image->dirty=true;image->lastCheckedFrame=~0ull;}
+    ++g_surface_epoch;
 }
 void copy_surface(uint32_t src,uint32_t srcMip,uint32_t srcSlice,uint32_t dst,uint32_t dstMip,uint32_t dstSlice) {
     copy_surface_impl(src,srcMip,srcSlice,dst,dstMip,dstSlice);
@@ -852,6 +855,7 @@ void invalidate(uint32_t flags,uint32_t addr,uint32_t size) {
     }
 }
 void ss_reset_surfaces() {
+    ++g_surface_epoch;
     reset_ao_private_cache();
     for(auto& [addr,s]:R.surfaces){s->guestLayout.reset();s->dirty=true;s->lastCheckedFrame=~0ull;}
 }

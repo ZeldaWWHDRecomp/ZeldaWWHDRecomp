@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "backend.h"
+#include "gx2/state_groups.h"
 #include "render_prof.h"
 #include "runtime.h"
 #include "shaders.h"
@@ -1473,10 +1474,236 @@ VkImageView feedback_view(Surface *source, const uint32_t *textureWords,
   destroy_surface_image(&temporary); // Temporary snapshots remain fence-retired.
   return view;
 }
+// ---------------------------------------------------------------- continued-draw fast path
+// WWHD_VK_FASTPATH=1: while only "continued" register groups changed since the previous resolved
+// draw (gx2/state_groups.h: ALU constants, uniform-block and vertex-buffer pointers, per-draw
+// dynamic words), in the same frame and surface epoch (backend.h), with the same primitive type and
+// graphics settings, a draw reuses that draw's fetch/vertex/pixel shaders, render targets, pipeline
+// and texture/sampler bindings (Cemu's continued draw pass: LatteCommandProcessor.cpp,
+// VulkanRendererCore.cpp). Uniforms, support uniforms (incl. texture scales), descriptor sets,
+// indices, vertex buffers and dynamic state are still prepared per draw, and every reused texture
+// still goes through upload_surface (write tracking/invalidations): an upload ends the epoch and the
+// draw resolves fully. Draws that sample one of their own targets' addresses (feedback loops and
+// lookups whose winner can change with the target's write sequence), AO replays and AO-substituted
+// textures are never continued.
+// WWHD_VK_FASTPATH_VERIFY=N (implies WWHD_VK_FASTPATH=1 unless it is 0): on every Nth continued draw
+// also run the full resolution, compare shaders, targets, pipeline and texture/sampler bindings,
+// count and log mismatches (the draw then uses the full result). Statistics every 120 frames.
+struct FastPathConfig {
+  bool on = false;
+  uint32_t verifyEvery = 0;
+};
+const FastPathConfig& fastpath_config() {
+  static const FastPathConfig config = [] {
+    FastPathConfig c;
+    if (const char* v = std::getenv("WWHD_VK_FASTPATH_VERIFY")) c.verifyEvery = uint32_t(std::max(0, std::atoi(v)));
+    const char* e = std::getenv("WWHD_VK_FASTPATH");
+    c.on = e ? std::atoi(e) != 0 : c.verifyEvery != 0;
+    if (!c.on) c.verifyEvery = 0;
+    if (c.on) LOG("[vulkan] continued-draw fast path on%s", c.verifyEvery ? " (verify mode)" : "");
+    return c;
+  }();
+  return config;
+}
+struct ContinuedTexture {
+  uint32_t unit = 0;
+  int binding = -1;
+  Surface* surface = nullptr;
+  VkImageView view = VK_NULL_HANDLE;
+  VkSampler sampler = VK_NULL_HANDLE;
+};
+struct ContinuedStage {
+  uint32_t count = 0;
+  bool continuable = true;
+  std::array<ContinuedTexture, LATTE_NUM_MAX_TEX_UNITS> textures{};
+  void add(const ContinuedTexture& t) {
+    if (count < textures.size()) textures[count++] = t;
+    else continuable = false;
+  }
+};
+struct DrawTargets {
+  std::array<Surface*, 8> colors{};
+  std::array<uint32_t, 8> slices{};
+  Surface* depth = nullptr;
+  uint32_t depthSlice = 0, width = 0, height = 0;
+  float sx = 1, sy = 1;
+  bool same(const DrawTargets& o) const {
+    return colors == o.colors && slices == o.slices && depth == o.depth && depthSlice == o.depthSlice &&
+           width == o.width && height == o.height && !std::memcmp(&sx, &o.sx, 4) && !std::memcmp(&sy, &o.sy, 4);
+  }
+};
+enum ContinuedReason : uint8_t {
+  kContinued, kNoState, kNewFrame, kRegisters, kSurfaces, kUpload, kPrimitive, kSettings,
+  kVerifyMismatch, kNotContinuable, kAoReplay, kReasons
+};
+const char* const continuedReasonNames[kReasons] = {
+  "continued", "no state", "new frame", "registers", "surfaces", "texture upload", "primitive",
+  "settings", "verify mismatch", "not continuable", "AO replay"};
+struct ContinuedDraw {
+  bool valid = false;
+  ContinuedReason invalidReason = kNoState;  // why the state is not valid
+  uint64_t stateVersion = 0, surfaceEpoch = 0, frame = ~uint64_t{0};
+  uint32_t prim = 0;
+  VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+  int aoMode = 0;
+  bool aoHires = false, aniso = false;
+  LatteFetchShader* fs = nullptr;
+  uint64_t fsKey = 0;
+  vk::Shader *vs = nullptr, *ps = nullptr;
+  DrawTargets targets;
+  Pipeline* pipeline = nullptr;
+  ContinuedStage stages[2];
+};
+ContinuedDraw continued;
+struct ContinuedStats {
+  uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
+  std::array<uint64_t, kReasons> reasons{};
+  std::array<uint64_t, gx2::kSgCount> groups{};  // register groups that ended a continuation
+  std::array<uint64_t, 8> mismatchKinds{};
+} continuedStats;
+const char* const mismatchKindNames[8] = {"fetch shader", "vertex shader", "pixel shader", "targets",
+                                          "pipeline", "texture count", "texture binding", "topology"};
+void report_continued_stats() {
+  auto& st = continuedStats;
+  if (R.frame < st.lastFrame + 120) return;
+  const double frames = double(R.frame - st.lastFrame);
+  if (st.draws) {
+    char buf[1024];
+    int k = std::snprintf(buf, sizeof buf, "[vulkan fastpath] frame %llu: %.1f%% of %.0f draws/frame continued; full:",
+                          (unsigned long long)R.frame, 100.0 * st.reasons[kContinued] / st.draws, st.draws / frames);
+    for (int i = 1; i < kReasons && k < int(sizeof buf); ++i)
+      if (st.reasons[i]) k += std::snprintf(buf + k, sizeof buf - k, " %s %.1f%%", continuedReasonNames[i], 100.0 * st.reasons[i] / st.draws);
+    if (st.reasons[kRegisters] && k < int(sizeof buf)) {
+      k += std::snprintf(buf + k, sizeof buf - k, "; groups/frame:");
+      for (int g = 0; g < gx2::kSgCount && k < int(sizeof buf); ++g)
+        if (st.groups[g]) k += std::snprintf(buf + k, sizeof buf - k, " %s %.0f", gx2::state_group_name(g), st.groups[g] / frames);
+    }
+    if (fastpath_config().verifyEvery && k < int(sizeof buf))
+      k += std::snprintf(buf + k, sizeof buf - k, "; verify: %llu checked, %llu mismatches (total %llu of %llu)",
+                         (unsigned long long)st.verified, (unsigned long long)st.mismatches,
+                         (unsigned long long)st.totalMismatches, (unsigned long long)st.totalVerified);
+    LOG("%s", buf);
+  }
+  const uint64_t totalMismatches = st.totalMismatches, totalVerified = st.totalVerified;
+  const auto kinds = st.mismatchKinds;
+  st = {};
+  st.lastFrame = R.frame;
+  st.totalMismatches = totalMismatches;
+  st.totalVerified = totalVerified;
+  st.mismatchKinds = kinds;
+}
+VkPrimitiveTopology primitive_topology(uint32_t prim) {
+  switch (prim) {
+  case 1: return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+  case 2: return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+  case 3: case 0x12: return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+  case 4: case 5: case 0x13: case 0x14: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  case 6: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+  default: return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+  }
+}
+// Render targets of a draw (both paths); false: the draw has no target.
+bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
+  t = {};
+  const auto &lcr = *reinterpret_cast<const LatteContextRegister *>(r);
+  auto mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
+  for (int i = 0; i < 8; i++)
+    if (mask & (1 << i))
+      t.colors[i] = color_target(r, i, &t.slices[i]);
+  t.depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(r, &t.depthSlice) : nullptr;
+  auto& colors = t.colors;
+  auto& depth = t.depth;
+  const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
+  const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
+  if (aoPrivateReplay && colors[0]) {
+    aoPrivateSource = colors[0]->addr;
+    colors[0] = private_ao_surface(aoPrivateColor, colors[0]);
+    t.slices[0] = 0;
+    if (depth) {
+      depth = private_ao_surface(aoPrivateDepth, depth);
+      t.depthSlice = 0;
+    }
+  }
+  Surface *target = depth;
+  for (auto *c : colors)
+    if (c) {
+      target = c;
+      break;
+    }
+  if (!target)
+    return false;
+  t.width = target->extent.width;
+  t.height = target->extent.height;
+  t.sx = target->sx;
+  t.sy = target->sy;
+  if (aoPrivateReplay && guestWidth) {
+    // the viewport registers describe the game's smaller buffer (x and y differ at other aspect ratios)
+    t.sx = float(colors[0]->extent.width) / guestWidth;
+    t.sy = guestHeight ? float(colors[0]->extent.height) / guestHeight : t.sx;
+  }
+  for (auto *&c : colors)
+    if (c && (c->extent.width != t.width || c->extent.height != t.height)) {
+      if (aoPrivateReplay) c = nullptr;
+      else throw std::runtime_error("mismatched Vulkan attachments");
+    }
+  if (depth && (depth->extent.width < t.width || depth->extent.height < t.height))
+    depth = nullptr;
+  return true;
+}
+// A sampled texture of a stage (both paths): lookup, AO substitution and the write-tracking check.
+// substituted: the private AO image replaced the guest texture.
+Surface* resolve_texture(const uint32_t* r, vk::Shader* sh, uint32_t unit, bool* substituted = nullptr) {
+  const uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+  auto *s = sampled_texture(r + texbase + unit * 7, sh->dec->textureUsesDepthCompare[unit]);
+  if (!s)
+    throw std::runtime_error("missing sampled texture");
+  if (!sh->vertex && ao_hires_enabled() && aoPrivateSource &&
+      s->addr == aoPrivateSource && aoPrivateFrame == R.frame &&
+      (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS) {
+    s = &aoPrivateColor;
+    if (substituted) *substituted = true;
+  }
+  upload_surface(s);
+  return s;
+}
+bool aliases_target(const Surface* s, const std::array<Surface*, 8>& colors, const Surface* depth) {
+  bool aliases = depth && s->image == depth->image;
+  for (auto *color : colors)
+    if (color && s->image == color->image)
+      aliases = true;
+  return aliases;
+}
+// a lookup at one of the draw's own target addresses can pick another surface once the target's
+// write sequence advances (find_or_create_surface): such textures are not continued
+bool shares_target_address(const Surface* s, const std::array<Surface*, 8>& colors, const Surface* depth) {
+  if (depth && depth->addr == s->addr) return true;
+  for (auto *color : colors)
+    if (color && color->addr == s->addr) return true;
+  return false;
+}
+VkSampler resolve_sampler(const uint32_t* r, vk::Shader* sh, uint32_t unit, const Surface* s) {
+  uint32_t samplerId = sh->dec->textureUnitSamplerAssignment[unit];
+  if (samplerId >= 18)
+    throw std::runtime_error("missing texture sampler");
+  uint32_t samplerBase = sh->vertex ? 18 : 0;
+  const uint32_t* samplerWords = r + REGADDR::SQ_TEX_SAMPLER_WORD0_0 +
+                                  (samplerBase + samplerId) * 3;
+  uint32_t patchedSampler[3];
+  if (!sh->vertex && ao_mode() >= 1 && unit == 0 &&
+      (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS) {
+    memcpy(patchedSampler, samplerWords, sizeof patchedSampler);
+    patchedSampler[0] = (patchedSampler[0] & ~0x7E00u) | (1u << 9) | (1u << 12);
+    samplerWords = patchedSampler;
+  }
+  return sampler(samplerWords, sh->dec->textureUsesDepthCompare[unit],
+                 s->fmt.kind != FormatInfo::FLOAT,
+                 !s->gpuWritten && s->mips > 1);
+}
 StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                           VkDescriptorSetLayout layout, bool dynamicUniforms, float sx, float sy,
                           const std::array<Surface *, 8> &colors,
-                          Surface *depth, FeedbackStatsProbe* feedbackProbe) {
+                          Surface *depth, FeedbackStatsProbe* feedbackProbe,
+                          const ContinuedStage* reuse = nullptr, ContinuedStage* record = nullptr) {
   StageResources out;
   auto &m = sh->mapping;
   // Descriptor info pointers must remain stable until this stage's one update.
@@ -1602,6 +1829,32 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   rprof::mark(rprof::kUniforms);
   uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS
                                 : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+  auto bindTexture = [&](uint32_t unit, int binding, Surface* s, VkImageView view, VkSampler samplerValue) {
+    int scaleOffset = sh->uniforms.offset_texScale[unit];
+    if (scaleOffset >= 0 && size_t(scaleOffset) + 8 <= supportUniforms.size()) {
+      const float scale[] = {s->sx, s->sy};
+      memcpy(supportUniforms.data() + scaleOffset, scale, sizeof scale);
+    }
+    if (imageCount >= imageInfos.size())
+      throw std::runtime_error("stage image descriptor capacity exceeded");
+    auto &info = imageInfos[imageCount++];
+    info = {samplerValue, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    auto &write = appendWrite(rankPlan.textures[unit]);
+    write.dstBinding = binding;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+  };
+  if (reuse) {
+    // continued draw: the previous draw's textures (upload_surface already ran for this draw)
+    for (uint32_t i = 0; i < reuse->count; ++i) {
+      const auto& t = reuse->textures[i];
+      transition_image(t.surface, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_SHADER_READ_BIT);
+      bindTexture(t.unit, t.binding, t.surface, t.view, t.sampler);
+    }
+  } else
   for (int i = 0; i < sh->dec->textureUnitListCount; i++) {
     uint32_t unit = sh->dec->textureUnitList[i];
     if (unit >= LATTE_NUM_MAX_TEX_UNITS)
@@ -1609,24 +1862,9 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     int binding = m.textureUnitToBindingPoint[unit];
     if (binding < 0)
       continue;
-    auto *s = sampled_texture(r + texbase + unit * 7,
-                              sh->dec->textureUsesDepthCompare[unit]);
-    if (!s)
-      throw std::runtime_error("missing sampled texture");
-    if (!sh->vertex && ao_hires_enabled() && aoPrivateSource &&
-        s->addr == aoPrivateSource && aoPrivateFrame == R.frame &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS)
-      s = &aoPrivateColor;
-    upload_surface(s);
-    int scaleOffset = sh->uniforms.offset_texScale[unit];
-    if (scaleOffset >= 0 && size_t(scaleOffset) + 8 <= supportUniforms.size()) {
-      const float scale[] = {s->sx, s->sy};
-      memcpy(supportUniforms.data() + scaleOffset, scale, sizeof scale);
-    }
-    bool aliases = depth && s->image == depth->image;
-    for (auto *color : colors)
-      if (color && s->image == color->image)
-        aliases = true;
+    bool substituted = false;
+    Surface* s = resolve_texture(r, sh, unit, &substituted);
+    bool aliases = aliases_target(s, colors, depth);
     VkImageView sampledView =
         aliases ? feedback_view(s, r + texbase + unit * 7, sh->vertex, unit, feedbackProbe)
                 : sampled_texture_view(s, r + texbase + unit * 7);
@@ -1635,31 +1873,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                        VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                        VK_ACCESS_SHADER_READ_BIT);
-    uint32_t samplerId = sh->dec->textureUnitSamplerAssignment[unit];
-    if (samplerId >= 18)
-      throw std::runtime_error("missing texture sampler");
-    uint32_t samplerBase = sh->vertex ? 18 : 0;
-    if (imageCount >= imageInfos.size())
-      throw std::runtime_error("stage image descriptor capacity exceeded");
-    auto &info = imageInfos[imageCount++];
-    const uint32_t* samplerWords = r + REGADDR::SQ_TEX_SAMPLER_WORD0_0 +
-                                    (samplerBase + samplerId) * 3;
-    uint32_t patchedSampler[3];
-    if (!sh->vertex && ao_mode() >= 1 && unit == 0 &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS) {
-      memcpy(patchedSampler, samplerWords, sizeof patchedSampler);
-      patchedSampler[0] = (patchedSampler[0] & ~0x7E00u) | (1u << 9) | (1u << 12);
-      samplerWords = patchedSampler;
+    VkSampler samplerValue = resolve_sampler(r, sh, unit, s);
+    bindTexture(unit, binding, s, sampledView, samplerValue);
+    if (record) {
+      if (aliases || substituted || shares_target_address(s, colors, depth)) record->continuable = false;
+      record->add({unit, binding, s, sampledView, samplerValue});
     }
-    info = {sampler(samplerWords, sh->dec->textureUsesDepthCompare[unit],
-                   s->fmt.kind != FormatInfo::FLOAT,
-                   !s->gpuWritten && s->mips > 1),
-                             sampledView,
-                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    auto &write = appendWrite(rankPlan.textures[unit]);
-    write.dstBinding = binding;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &info;
   }
   rprof::mark(rprof::kTextures);
   if (m.uniformVarsBufferBindingPoint >= 0)
@@ -1722,6 +1941,74 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   remember_descriptors(last, layout, out.set, writes.data(), writeCount);
   return out;
 }
+// WWHD_VK_FASTPATH_VERIFY: the full resolution of a continued draw, compared with the reused state
+bool verify_continued(const uint32_t* r, uint32_t prim) {
+  const auto& c = continued;
+  int kind = -1;
+  char detail[200] = "";
+  uint64_t fsKey = 0;
+  auto* fs = vk::get_fetch_shader(r, &fsKey, R.frame);
+  vk::Shader* vs = fs ? vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen) : nullptr;
+  vk::Shader* ps = fs ? vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen) : nullptr;
+  DrawTargets t;
+  if (fs != c.fs || fsKey != c.fsKey) kind = 0;
+  else if (vs != c.vs || !vs || !vs->ready()) kind = 1;
+  else if (ps != c.ps || !ps || !ps->ready()) kind = 2;
+  else if (primitive_topology(prim) != c.topology) kind = 7;
+  else if (!resolve_targets(r, ps, t) || !t.same(c.targets)) kind = 3;
+  else if (&pipeline(r, vs, ps, fs, c.topology, t.colors, t.depth) != c.pipeline) kind = 4;
+  else
+    for (int stage = 0; stage < 2 && kind < 0; ++stage) {
+      vk::Shader* sh = stage ? ps : vs;
+      const auto& cs = c.stages[stage];
+      const uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+      uint32_t n = 0;
+      for (int i = 0; i < sh->dec->textureUnitListCount && kind < 0; i++) {
+        const uint32_t unit = sh->dec->textureUnitList[i];
+        if (unit >= LATTE_NUM_MAX_TEX_UNITS) { kind = 6; break; }
+        const int binding = sh->mapping.textureUnitToBindingPoint[unit];
+        if (binding < 0) continue;
+        if (n >= cs.count) { kind = 5; break; }
+        const auto& e = cs.textures[n++];
+        Surface* s = resolve_texture(r, sh, unit);
+        const bool aliases = aliases_target(s, t.colors, t.depth);
+        VkImageView view = aliases ? VK_NULL_HANDLE : sampled_texture_view(s, r + texbase + unit * 7);
+        VkSampler smp = resolve_sampler(r, sh, unit, s);
+        if (e.unit != unit || e.binding != binding || e.surface != s || aliases || view != e.view || smp != e.sampler) {
+          kind = 6;
+          std::snprintf(detail, sizeof detail, " (%s unit %u: surface %08X%s/%08X, view %s, sampler %s%s)",
+                        stage ? "ps" : "vs", unit, s->addr, e.surface == s ? "" : " (cached differs)",
+                        e.surface ? e.surface->addr : 0, view == e.view ? "same" : "differs",
+                        smp == e.sampler ? "same" : "differs", aliases ? ", aliases a target" : "");
+        }
+      }
+      if (kind < 0 && n != cs.count) kind = 5;
+    }
+  if (kind < 0) return true;
+  auto& st = continuedStats;
+  ++st.mismatches;
+  ++st.totalMismatches;
+  ++st.mismatchKinds[kind];
+  static int logged = 0;
+  if (logged < 50) {
+    ++logged;
+    LOG("[vulkan fastpath] verify mismatch #%llu: %s%s; frame %llu draw %llu prim %u vs %08X ps %08X fs %08X",
+        (unsigned long long)st.totalMismatches, mismatchKindNames[kind], detail, (unsigned long long)R.frame,
+        (unsigned long long)R.drawCount, prim, r[mmSQ_PGM_START_VS] << 8, r[mmSQ_PGM_START_PS] << 8,
+        r[mmSQ_PGM_START_FS] << 8);
+  }
+  return false;
+}
+ContinuedReason continued_reason(uint32_t prim) {
+  const auto& c = continued;
+  if (!c.valid) return c.invalidReason;
+  if (c.frame != R.frame) return kNewFrame;
+  if (c.stateVersion != gx2::g_full_state_version) return kRegisters;
+  if (c.surfaceEpoch != g_surface_epoch) return kSurfaces;
+  if (c.prim != prim) return kPrimitive;
+  if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled()) return kSettings;
+  return kContinued;
+}
 } // namespace
 void reset_feedback_images() { reset_feedback_scratch(); }
 UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
@@ -1735,21 +2022,63 @@ UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
 }
 
 void reset_ao_private_cache() { aoPrivateFrame = ~0ull; aoPrivateSource = 0; }
-void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; }
+void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continued = {}; }
 uint64_t draw_batch_submissions() { return drawBatchSubmissions; }
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances) {
+  const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
   if (!count || !instances || ((prim == 0x13 || prim == 0x14) && count < 4))
     return;
   if (r[REGADDR::PA_CL_CLIP_CNTL] & (1 << 22))
     return;
   ((uint32_t *)r)[REGADDR::VGT_PRIMITIVE_TYPE] = prim;
+  // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
+  const auto& fastPath = fastpath_config();
+  const bool fastPathDraw = fastPath.on && !aoPrivateReplay;
+  bool fast = false;
+  if (fastPathDraw) {
+    report_continued_stats();
+    ContinuedReason reason = continued_reason(prim);
+    if (reason == kContinued) {
+      // guest writes to the reused textures (write tracking, GX2Invalidate) upload here; an upload
+      // can change lookups, so it ends the continuation
+      for (const auto& stage : continued.stages)
+        for (uint32_t i = 0; i < stage.count; ++i) upload_surface(stage.textures[i].surface);
+      if (g_surface_epoch != continued.surfaceEpoch) reason = kUpload;
+    }
+    if (reason == kContinued && fastPath.verifyEvery) {
+      static uint64_t verifyCounter = 0;
+      if (++verifyCounter % fastPath.verifyEvery == 0) {
+        ++continuedStats.verified;
+        ++continuedStats.totalVerified;
+        if (!verify_continued(r, prim)) reason = kVerifyMismatch;
+      }
+    }
+    fast = reason == kContinued;
+    ++continuedStats.draws;
+    ++continuedStats.reasons[reason];
+    if (reason == kRegisters)
+      for (int g = 0; g < gx2::kSgCount; ++g)
+        if ((dirtyGroups & ~gx2::kSgContinuedMask) >> g & 1) ++continuedStats.groups[g];
+    // a full draw records a new state below; exceptions leave none
+    continued.valid = false;
+    continued.invalidReason = kNoState;
+  }
   uint64_t fsKey = 0;
-  auto *fs = vk::get_fetch_shader(r, &fsKey, R.frame);
-  if (!fs)
-    throw std::runtime_error("missing Vulkan fetch shader");
-  auto *vs = vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen);
-  auto *ps = vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen);
+  LatteFetchShader* fs;
+  vk::Shader *vs, *ps;
+  if (fast) {
+    fs = continued.fs;
+    fsKey = continued.fsKey;
+    vs = continued.vs;
+    ps = continued.ps;
+  } else {
+    fs = vk::get_fetch_shader(r, &fsKey, R.frame);
+    if (!fs)
+      throw std::runtime_error("missing Vulkan fetch shader");
+    vs = vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen);
+    ps = vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen);
+  }
   rprof::mark(rprof::kShader);
   if (!vs || !vs->ready() || !ps || !ps->ready())
     throw std::runtime_error("Vulkan shader translation failed: " +
@@ -1881,51 +2210,17 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   }
   rprof::mark(rprof::kIndices);
-  const auto &lcr = *reinterpret_cast<const LatteContextRegister *>(r);
-  std::array<Surface *, 8> colors{};
-  uint32_t slices[8]{}, depthSlice = 0;
-  auto mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
-  for (int i = 0; i < 8; i++)
-    if (mask & (1 << i))
-      colors[i] = color_target(r, i, &slices[i]);
-  Surface *depth = LatteMRT::GetActiveDepthBufferMask(lcr)
-                       ? depth_target(r, &depthSlice)
-                       : nullptr;
-  const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
-  const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
-  if (aoPrivateReplay && colors[0]) {
-    aoPrivateSource = colors[0]->addr;
-    colors[0] = private_ao_surface(aoPrivateColor, colors[0]);
-    slices[0] = 0;
-    if (depth) {
-      depth = private_ao_surface(aoPrivateDepth, depth);
-      depthSlice = 0;
-    }
-  }
-  Surface *target = depth;
-  for (auto *c : colors)
-    if (c) {
-      target = c;
-      break;
-    }
-  if (!target)
+  DrawTargets targets;
+  if (fast) targets = continued.targets;
+  else if (!resolve_targets(r, ps, targets))
     return;
-  uint32_t width = target->extent.width, height = target->extent.height;
-  float sx = target->sx, sy = target->sy;
-  if (aoPrivateReplay && guestWidth) {
-    // the viewport registers describe the game's smaller buffer (x and y differ at other aspect ratios)
-    sx = float(colors[0]->extent.width) / guestWidth;
-    sy = guestHeight ? float(colors[0]->extent.height) / guestHeight : sx;
-  }
-  for (auto *&c : colors)
-    if (c && (c->extent.width != width || c->extent.height != height)) {
-      if (aoPrivateReplay) c = nullptr;
-      else throw std::runtime_error("mismatched Vulkan attachments");
-    }
-  if (depth && (depth->extent.width < width || depth->extent.height < height))
-    depth = nullptr;
+  auto& colors = targets.colors;
+  auto& slices = targets.slices;
+  Surface* depth = targets.depth;
+  const uint32_t depthSlice = targets.depthSlice, width = targets.width, height = targets.height;
+  const float sx = targets.sx, sy = targets.sy;
   rprof::mark(rprof::kTargets);
-  auto &p = pipeline(r, vs, ps, fs, topology, colors, depth);
+  auto &p = fast ? *continued.pipeline : pipeline(r, vs, ps, fs, topology, colors, depth);
   rprof::mark(rprof::kPipeline);
   if (!p.pipeline)
     return;  // the driver could not build it (logged once in pipeline())
@@ -1933,8 +2228,35 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if(vertex_window_stats_enabled()) report_vertex_window_stats();
   FeedbackStatsProbe feedbackProbe;
   auto* probe=feedback_stats_enabled()?&feedbackProbe:nullptr;
-  auto vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe);
-  auto pres = bind_stage(r, ps, p.sets[1], p.dynamicUniforms, sx, sy, colors, depth, probe);
+  const bool recordState = fastPathDraw && !fast;
+  if (recordState)
+    for (auto& stage : continued.stages) stage = {};
+  auto vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe,
+                         fast ? &continued.stages[0] : nullptr, recordState ? &continued.stages[0] : nullptr);
+  auto pres = bind_stage(r, ps, p.sets[1], p.dynamicUniforms, sx, sy, colors, depth, probe,
+                         fast ? &continued.stages[1] : nullptr, recordState ? &continued.stages[1] : nullptr);
+  if (fastPathDraw) {
+    // the resolved state of this draw: continued by the next draws while nothing breaking changes
+    auto& c = continued;
+    c.valid = fast || (c.stages[0].continuable && c.stages[1].continuable);
+    c.invalidReason = kNotContinuable;
+    if (!fast) {
+      c.stateVersion = gx2::g_full_state_version;
+      c.surfaceEpoch = g_surface_epoch;
+      c.frame = R.frame;
+      c.prim = prim;
+      c.topology = topology;
+      c.aoMode = ao_mode();
+      c.aoHires = ao_hires_enabled();
+      c.aniso = aniso_enabled();
+      c.fs = fs;
+      c.fsKey = fsKey;
+      c.vs = vs;
+      c.ps = ps;
+      c.targets = targets;
+      c.pipeline = &p;
+    }
+  }
   // Texture uploads, feedback copies, and sampling transitions above may have
   // ended the previous pass. Reuse only its exact active attachment set.
   bool reusePass = R.rendering && R.passTracked && R.passColors == colors &&
@@ -2018,7 +2340,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ri.pColorAttachments = attachments.data();
     ri.pDepthAttachment = depth ? &da : nullptr;
     ri.pStencilAttachment = depth && depth->fmt.stencil ? &da : nullptr;
-    if(R.gpuPassTimestampsEnabled) gpu_begin_render_scope(colors,depth,slices,depthSlice,width,height);
+    if(R.gpuPassTimestampsEnabled) gpu_begin_render_scope(colors,depth,slices.data(),depthSlice,width,height);
     vkCmdBeginRendering(cmd, &ri);
     ++R.renderPassCount;
     R.rendering = true;
@@ -2237,8 +2559,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   if(R.gpuPassTimestampsEnabled) gpu_count_render_draw();
   for (auto *color : colors)
-    if (color) mark_gpu_written(color);
-  if (depth) mark_gpu_written(depth);
+    if (color) mark_draw_target_written(color);
+  if (depth) mark_draw_target_written(depth);
   R.drawCount++;
   if (aoPrivateReplay) {
     aoPrivateFrame = R.frame;
@@ -2251,6 +2573,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       ~ReplayGuard() { aoPrivateReplay = false; }
     } guard;
     draw(r, prim, count, indexType, indexAddr, baseVertex, instances);
+    // the replay changes later lookups (aoPrivateSource/aoPrivateFrame, private images)
+    continued.valid = false;
+    continued.invalidReason = kAoReplay;
   }
   static const uint32_t drawBatch = parse_draw_batch(std::getenv("WWHD_VK_DRAW_BATCH"));
   static const uint32_t drawBatchCap =
