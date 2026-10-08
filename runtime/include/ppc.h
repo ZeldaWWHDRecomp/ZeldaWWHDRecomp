@@ -179,6 +179,13 @@ static inline double round25(double d) {
     return u64_as_f64(v);
 }
 static inline double to_single(double d) { return (double)(float)d; }
+/* check builds (WWHD_RECOMP_SINGLE_CHECK=1): a multiplier operand the recompiler found to be single
+ * precision, so round25 was left out (tools/recomp/ppc2c.py M), must come back unchanged from it */
+void ppc_single_failed(uint32_t at, double v);
+static inline double ppc_single_check(double v, uint32_t at) {
+    if (f64_as_u64(round25(v)) != f64_as_u64(v)) ppc_single_failed(at, v);
+    return v;
+}
 
 /* fcmpu / fcmpo. IEEE comparisons with a NaN are false, so lt/gt/eq need no NaN test; un is the
  * fourth outcome. FPSCR's FPCC field (which fcmp also sets) is not kept: only mffs and mcrfs read

@@ -45,6 +45,97 @@ def pass_on(var):
     return os.environ.get(var, "0" if os.environ.get("WWHD_RECOMP_PLAIN") == "1" else "1") != "0"
 
 
+# ---- single-precision register halves (round25 left out) ----
+# fmuls, fmadds and the ps_mul/ps_madd family round their multiplier operand to 25 mantissa bits
+# (round25, ppc.h), as the Wii U's FPU does: bit operations that move the value to an integer
+# register and back for every multiplication. A value that is already single precision (loaded by
+# lfs or psq_l, or the result of a single-precision instruction) has no bits below those, so round25
+# returns it unchanged. recomp.py follows which register halves hold such values through each
+# function (forward dataflow over its branches; the callee-saved f14-f31 survive calls) and the
+# translation leaves round25 out for them. WWHD_RECOMP_SINGLE=0 turns it off;
+# WWHD_RECOMP_SINGLE_CHECK=1 checks every operand left as it is at run time (ppc_single_check).
+SINGLE = pass_on("WWHD_RECOMP_SINGLE")
+SINGLE_CHECK = os.environ.get("WWHD_RECOMP_SINGLE_CHECK", "0") == "1"
+fp_state = 0  # bit 2n + half: register n's half (0 ps0, 1 ps1) holds a single-precision value
+cur_addr = 0  # the instruction being translated (for the check build)
+single_stats = [0, 0]  # multiplier operands: rounded, left as they are
+SAVED_FPRS = sum(3 << (2 * n) for n in range(14, 32))  # f14-f31, both halves
+
+
+def M(n, half):
+    """the multiplier operand of a single-precision multiplication: register n, half 0 (ps0) or 1"""
+    e = F0(n) if half == 0 else F1(n)
+    if SINGLE and fp_state >> (2 * n + half) & 1:
+        single_stats[1] += 1
+        return "ppc_single_check(%s, 0x%08Xu)" % (e, cur_addr) if SINGLE_CHECK else e
+    single_stats[0] += 1
+    return "round25(%s)" % e
+
+
+def fp_transfer(state, w, call_keeps_saved):
+    """the single-precision halves after the instruction w, given those before it. A call keeps the
+    callee-saved halves only when call_keeps_saved (ordinary callees restore f14-f31)."""
+    op = w >> 26
+    d, a, b, cc = (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, (w >> 6) & 31
+    k = lambda n, half: bool(state >> (2 * n + half) & 1)
+
+    def put(n, s0, s1):
+        m = 3 << (2 * n)
+        return (state & ~m) | (int(s0) << (2 * n)) | (int(s1) << (2 * n + 1))
+
+    if (op in (16, 18) and w & 1) or (op == 19 and ((w >> 1) & 0x3FF) in (16, 528) and w & 1):
+        return state & SAVED_FPRS if call_keeps_saved else 0
+    if op in (48, 49, 56, 57):  # lfs lfsu psq_l psq_lu (both halves)
+        return put(d, True, True)
+    if op in (50, 51):  # lfd lfdu (ps0 only)
+        return put(d, False, k(d, 1))
+    if op == 59:  # single-precision arithmetic: both halves get the rounded result
+        return put(d, True, True)
+    if op == 31:
+        xo = (w >> 1) & 0x3FF
+        if xo in (535, 567):  # lfsx lfsux
+            return put(d, True, True)
+        if xo in (599, 631):  # lfdx lfdux
+            return put(d, False, k(d, 1))
+        return state
+    if op == 63:  # double-precision forms write ps0 only
+        xo5 = (w >> 1) & 31
+        xo = (w >> 1) & 0x3FF
+        if xo5 == 23:  # fsel: one of its inputs
+            return put(d, k(b, 0) and k(cc, 0), k(d, 1))
+        if xo5 in (18, 20, 21, 22, 25, 26, 28, 29, 30, 31):
+            return put(d, False, k(d, 1))
+        if xo in (0, 32, 64, 711, 134, 38, 70):  # compares, FPSCR moves: no register written
+            return state
+        if xo == 12:  # frsp
+            return put(d, True, True)
+        if xo in (72, 40, 264, 136):  # fmr fneg fabs fnabs: ps0 from frB
+            return put(d, k(b, 0), k(d, 1))
+        return put(d, False, k(d, 1))  # fctiw(z), mffs, anything else
+    if op == 4:  # paired singles
+        xo5 = (w >> 1) & 31
+        xo = (w >> 1) & 0x3FF
+        if xo5 == 10:  # ps_sum0: ps1 from frC
+            return put(d, True, k(cc, 1))
+        if xo5 == 11:  # ps_sum1: ps0 from frC
+            return put(d, k(cc, 0), True)
+        if xo5 == 23:  # ps_sel
+            return put(d, k(b, 0) and k(cc, 0), k(b, 1) and k(cc, 1))
+        if xo5 in (12, 13, 14, 15, 18, 20, 21, 24, 25, 26, 28, 29, 30, 31):
+            return put(d, True, True)
+        if xo5 == 6:  # psq_lx psq_lux
+            return put(d, True, True)
+        if xo5 == 7:  # psq_stx psq_stux
+            return state
+        if xo in (0, 32, 64, 96, 1014):  # compares, dcbz_l
+            return state
+        if xo in (40, 72, 136, 264):  # ps_neg ps_mr ps_nabs ps_abs
+            return put(d, k(b, 0), k(b, 1))
+        if xo in (528, 560, 592, 624):  # ps_merge
+            src = {528: ((a, 0), (b, 0)), 560: ((a, 0), (b, 1)), 592: ((a, 1), (b, 0)), 624: ((a, 1), (b, 1))}[xo]
+            return put(d, k(*src[0]), k(*src[1]))
+        return put(d, False, False)
+    return state
 
 
 def ra0(a):
@@ -464,13 +555,17 @@ def translate59(w, d, a, b, cc):
         18: "%s / %s" % (fa, fb),
         20: "%s - %s" % (fa, fb),
         21: "%s + %s" % (fa, fb),
-        25: "%s * round25(%s)" % (fa, fc),
-        28: "%s * round25(%s) - %s" % (fa, fc, fb),
-        29: "%s * round25(%s) + %s" % (fa, fc, fb),
-        30: "-(%s * round25(%s) - %s)" % (fa, fc, fb),
-        31: "-(%s * round25(%s) + %s)" % (fa, fc, fb),
         24: "ppc_fres(%s)" % fb,
     }
+    if xo in (25, 28, 29, 30, 31):
+        mc = M(cc, 0)
+        ex.update({
+            25: "%s * %s" % (fa, mc),
+            28: "%s * %s - %s" % (fa, mc, fb),
+            29: "%s * %s + %s" % (fa, mc, fb),
+            30: "-(%s * %s - %s)" % (fa, mc, fb),
+            31: "-(%s * %s + %s)" % (fa, mc, fb),
+        })
     if xo not in ex:
         raise Unhandled("op59 xo=%d" % xo)
     return "{ double v = to_single(%s); %s = v; %s = v; }%s" % (ex[xo], F0(d), F1(d), fp_rc(w))
@@ -559,10 +654,10 @@ def translate4(w, d, a, b, cc):
     if xo5 in (10, 11, 12, 13, 14, 15, 18, 20, 21, 23, 24, 25, 26, 28, 29, 30, 31):
         if xo5 == 10: return "{ double v0 = to_single(%s + %s), v1 = %s; %s = v0; %s = v1; }" % (A0, B1, C1, F0(d), F1(d))
         if xo5 == 11: return "{ double v0 = %s, v1 = to_single(%s + %s); %s = v0; %s = v1; }" % (C0, A0, B1, F0(d), F1(d))
-        if xo5 == 12: return pair("%s * round25(%s)" % (A0, C0), "%s * round25(%s)" % (A1, C0))
-        if xo5 == 13: return pair("%s * round25(%s)" % (A0, C1), "%s * round25(%s)" % (A1, C1))
-        if xo5 == 14: return pair("%s * round25(%s) + %s" % (A0, C0, B0), "%s * round25(%s) + %s" % (A1, C0, B1))
-        if xo5 == 15: return pair("%s * round25(%s) + %s" % (A0, C1, B0), "%s * round25(%s) + %s" % (A1, C1, B1))
+        if xo5 == 12: return pair("%s * %s" % (A0, M(cc, 0)), "%s * %s" % (A1, M(cc, 0)))
+        if xo5 == 13: return pair("%s * %s" % (A0, M(cc, 1)), "%s * %s" % (A1, M(cc, 1)))
+        if xo5 == 14: return pair("%s * %s + %s" % (A0, M(cc, 0), B0), "%s * %s + %s" % (A1, M(cc, 0), B1))
+        if xo5 == 15: return pair("%s * %s + %s" % (A0, M(cc, 1), B0), "%s * %s + %s" % (A1, M(cc, 1), B1))
         if xo5 == 18: return pair("%s / %s" % (A0, B0), "%s / %s" % (A1, B1))
         if xo5 == 20: return pair("%s - %s" % (A0, B0), "%s - %s" % (A1, B1))
         if xo5 == 21: return pair("%s + %s" % (A0, B0), "%s + %s" % (A1, B1))
@@ -570,12 +665,12 @@ def translate4(w, d, a, b, cc):
             return "{ double v0 = ppc_fsel(%s, %s, %s), v1 = ppc_fsel(%s, %s, %s); %s = v0; %s = v1; }" % (
                 A0, B0, C0, A1, B1, C1, F0(d), F1(d))
         if xo5 == 24: return pair("ppc_fres(%s)" % B0, "ppc_fres(%s)" % B1)
-        if xo5 == 25: return pair("%s * round25(%s)" % (A0, C0), "%s * round25(%s)" % (A1, C1))
+        if xo5 == 25: return pair("%s * %s" % (A0, M(cc, 0)), "%s * %s" % (A1, M(cc, 1)))
         if xo5 == 26: return pair("ppc_frsqrte(%s)" % B0, "ppc_frsqrte(%s)" % B1)
-        if xo5 == 28: return pair("%s * round25(%s) - %s" % (A0, C0, B0), "%s * round25(%s) - %s" % (A1, C1, B1))
-        if xo5 == 29: return pair("%s * round25(%s) + %s" % (A0, C0, B0), "%s * round25(%s) + %s" % (A1, C1, B1))
-        if xo5 == 30: return pair("-(%s * round25(%s) - %s)" % (A0, C0, B0), "-(%s * round25(%s) - %s)" % (A1, C1, B1))
-        if xo5 == 31: return pair("-(%s * round25(%s) + %s)" % (A0, C0, B0), "-(%s * round25(%s) + %s)" % (A1, C1, B1))
+        if xo5 == 28: return pair("%s * %s - %s" % (A0, M(cc, 0), B0), "%s * %s - %s" % (A1, M(cc, 1), B1))
+        if xo5 == 29: return pair("%s * %s + %s" % (A0, M(cc, 0), B0), "%s * %s + %s" % (A1, M(cc, 1), B1))
+        if xo5 == 30: return pair("-(%s * %s - %s)" % (A0, M(cc, 0), B0), "-(%s * %s - %s)" % (A1, M(cc, 1), B1))
+        if xo5 == 31: return pair("-(%s * %s + %s)" % (A0, M(cc, 0), B0), "-(%s * %s + %s)" % (A1, M(cc, 1), B1))
     if xo5 in (6, 7):  # psq_lx psq_stx psq_lux psq_stux
         xo6 = (w >> 1) & 0x3F
         upd = xo6 in (38, 39)

@@ -7,11 +7,14 @@ Code-quality passes (each on by default; the variable set to 0 when generating t
   WWHD_RECOMP_CRLIVE       condition-register liveness: compares store only the CR bits read later (crlive.py)
   WWHD_RECOMP_LEAF         leaf functions keep guest registers and CR bits in C locals (leaflocal.py)
   WWHD_RECOMP_NONLEAF      functions with calls keep guest registers in C locals between calls (leaflocal.py)
+  WWHD_RECOMP_SINGLE       round25 left out for multiplier operands known to be single precision (ppc2c.py)
+  WWHD_RECOMP_SINGLE_IP    ... with entry states and return summaries across functions (singleflow.py)
   WWHD_RECOMP_GQR          paired-single loads/stores through GQRs the game never writes skip the GQR check
 WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes (the
 plain c->r[N] form that tools/true60 and tools/verify read).
 Checking builds (set to 1): WWHD_RECOMP_CR_CHECK (a dropped CR bit that is read aborts),
-WWHD_RECOMP_LEAF_POISON (scratch registers get garbage at returns).
+WWHD_RECOMP_LEAF_POISON (scratch registers get garbage at returns), WWHD_RECOMP_SINGLE_CHECK (an
+operand left unrounded that round25 would change is logged).
 
 Output:
   OUTDIR/funcs.h         prototypes of every recompiled function and import
@@ -27,12 +30,14 @@ import json
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from analyze import Program, sext
 from ppc2c import translate, Unhandled
 from rpx import R_PPC_ADDR16_HA, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI
 import ppc2c
+import singleflow
 import crlive
 import leaflocal
 
@@ -194,12 +199,129 @@ class Recompiler:
         return "imp_%s_%s" % (c_ident(lib.replace(".rpl", "")), c_ident(name))
 
     # --- emission ---
+    def find_saved_clobbers(self):
+        """Functions that leave a callee-saved register (r14-r31, f14-f31) changed when they return:
+        the compiler's register save/restore helpers (stores and loads through r11, the save helper
+        also puts the return address in r31, and the frame helpers that push or pop the caller's
+        stack frame for it). A function that does not both push and pop a stack frame and that sets
+        such a register, itself or in the code it falls or jumps into, counts as one: after a call
+        to it, f14-f31 are not assumed to keep their single-precision state (single_dataflow,
+        singleflow.py)."""
+        saved_set = re.compile(r"c->r\[(1[4-9]|2\d|3[01])\]\s*(=(?!=)|\|=)|c->f\[(1[4-9]|2\d|3[01])\]\.ps[01]\s*=(?!=)"
+                               r"|psq_load\(c, (1[4-9]|2\d|3[01]),")
+        tail = re.compile(r"MUSTTAIL return f_([0-9A-F]{8})\(c\)")
+        frame, sets, nexts = {}, {}, {}
+        for start in self.sorted_entries:
+            end = self.func_end(start)
+            self.cur_start, self.cur_end = start, end
+            self.labels = set()
+            push = pop = assigns = False
+            targets = set()
+            for a in range(start, end, 4):
+                w = self.p.word(a)
+                op, rd, ra = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+                if op == 37 and rd == 1 and ra == 1:  # stwu r1, d(r1): a frame is pushed
+                    push = True
+                if (op == 14 and rd == 1 and ra == 1 and not w & 0x8000) or (op == 32 and rd == 1 and ra == 1):
+                    pop = True  # addi r1, r1, +d / lwz r1, d(r1): and popped again
+                if op == 31 and rd == 1 and ra == 1 and ((w >> 1) & 0x3FF) == 183:  # stwux r1, r1, rB
+                    push = True
+                try:
+                    st = translate(a, w, self)
+                except Unhandled:
+                    continue
+                if saved_set.search(st):
+                    assigns = True
+                targets.update(int(t, 16) for t in tail.findall(st))
+            if end < self.p.text_hi:
+                targets.add(end)
+            # the frame helpers that push or pop the caller's frame have only one of the two
+            frame[start], sets[start], nexts[start] = push and pop, assigns, targets
+        clobbers = {f for f in self.sorted_entries if not frame[f] and sets[f]}
+        changed = True
+        while changed:
+            changed = False
+            for f in self.sorted_entries:
+                if f not in clobbers and not frame[f] and any(t in clobbers for t in nexts[f]):
+                    clobbers.add(f)
+                    changed = True
+        return clobbers
+
+    def single_dataflow(self, start, end):
+        """For each instruction of the function: the FPR halves known to hold single-precision values
+        before it (ppc2c.fp_transfer), as a bit mask. Forward dataflow over the function's branches:
+        where paths meet, a half counts only if it does on all of them. Nothing is known at the
+        entry, at instruction hooks (they may change registers) or in code no path reaches."""
+        n = (end - start) // 4
+        words = [self.p.word(start + 4 * i) for i in range(n)]
+        succ = []
+        for i, w in enumerate(words):
+            a = start + 4 * i
+            op, lk = w >> 26, w & 1
+            nxt = [i + 1] if i + 1 < n else []
+            if op == 18 and not lk:
+                t = branch_target(a, w)
+                out = [(t - start) // 4] if start <= t < end else []
+            elif op == 16 and not lk:
+                t = branch_target(a, w)
+                always = ((w >> 21) & 0x14) == 0x14
+                out = ([] if always else nxt) + ([(t - start) // 4] if start <= t < end else [])
+            elif op == 19 and ((w >> 1) & 0x3FF) in (16, 528) and not lk:
+                always = ((w >> 21) & 0x14) == 0x14
+                out = [] if always else list(nxt)
+                jt = self.p.jump_tables.get(a)
+                if jt:
+                    out += [(jt[0] + 4 * k - start) // 4 for k in range(jt[1]) if start <= jt[0] + 4 * k < end]
+            else:
+                out = nxt
+            succ.append(out)
+
+        def keeps_saved(i, w):
+            """a call whose callee restores f14-f31: not a register save/restore helper or a hook"""
+            a = start + 4 * i
+            if (w >> 26) == 19:
+                return True  # indirect: the calling convention
+            if a in self.p.import_calls or a in self.p.undef_calls:
+                return True
+            t = (sext(w & 0x03FFFFFC, 26) + (0 if w & 2 else a)) & 0xFFFFFFFF if (w >> 26) == 18 else \
+                (sext(w & 0xFFFC, 16) + (0 if w & 2 else a)) & 0xFFFFFFFF
+            return t not in self.saved_clobbers and t not in self.hooks
+
+        TOP = (1 << 64) - 1
+        state = [TOP] * n
+        state[0] = 0
+        sites = {(s - start) // 4 for s in self.sites if start <= s < end}
+        for i in sites:
+            state[i] = 0
+        reached = [False] * n
+        reached[0] = True
+        work = [0]
+        while work:
+            i = work.pop()
+            w = words[i]
+            out = ppc2c.fp_transfer(state[i], w, keeps_saved(i, w))
+            for j in succ[i]:
+                new = 0 if j in sites else state[j] & out
+                if not reached[j] or new != state[j]:
+                    reached[j] = True
+                    state[j] = new
+                    work.append(j)
+        return [state[i] if reached[i] else 0 for i in range(n)]
+
     def emit_function(self, start):
         self.cur_start, self.cur_end = start, self.func_end(start)
         self.labels = set()
         body = []
-        for a in range(start, self.cur_end, 4):
+        if not ppc2c.SINGLE:
+            single_in = None
+        elif self.singleflow:
+            single_in = self.singleflow.states(start)
+        else:
+            single_in = self.single_dataflow(start, self.cur_end)
+        for i, a in enumerate(range(start, self.cur_end, 4)):
             w = self.p.word(a)
+            ppc2c.fp_state = single_in[i] if single_in else 0
+            ppc2c.cur_addr = a
             try:
                 s = translate(a, w, self)
             except Unhandled as e:
@@ -263,6 +385,16 @@ class Recompiler:
         self.nonleaf_count = 0
         self.used_imports = set()
         self.imm_override = self.imm_override
+        self.saved_clobbers = self.find_saved_clobbers() if ppc2c.SINGLE else set()
+        # single-precision halves across functions (singleflow.py): entry states and return summaries
+        self.singleflow = None
+        if ppc2c.SINGLE and singleflow.INTERPROC:
+            t0 = time.time()
+            self.singleflow = singleflow.Solver(self).solve()
+            sys.stderr.write("single-precision summaries: %d function analyses, %.1f s\n" %
+                             (self.singleflow.rounds, time.time() - t0))
+        self.used_imports = set()  # the analysis passes translated everything once
+        ppc2c.single_stats[:] = [0, 0]
         files, cur, n = [], [], 0
         for start in self.sorted_entries:
             src, count = self.emit_function(start)
@@ -342,6 +474,8 @@ class Recompiler:
                 self.cr_stats[0], self.cr_stats[1], "on" if CRLIVE else "off", ", check build" if CR_CHECK else ""))
             f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
             f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
+            f.write("functions that change callee-saved registers (save/restore helpers): %d\n" % len(self.saved_clobbers))
+            f.write("single-precision multiplier operands: %d rounded (round25), %d known single\n" % tuple(ppc2c.single_stats))
             f.write("unhandled instruction kinds:\n")
             for k, v in self.unhandled.most_common():
                 f.write("  %6d  %s\n" % (v, k))

@@ -286,6 +286,17 @@ extern "C" void ppc_cr_poisoned(Cpu* c, int bit, uint32_t addr) {
     fatal("CR liveness: bit %d read at %08X without a live store (lr=%08X)", bit, addr, c->lr);
 }
 
+// WWHD_RECOMP_SINGLE_CHECK=1: a multiplier operand the recompiler found to be single precision, so
+// round25 was left out, would have been changed by round25 (ppc.h ppc_single_check)
+extern "C" void ppc_single_failed(uint32_t at, double v) {
+    static std::mutex m;
+    static std::unordered_map<uint32_t, uint64_t> seen;
+    std::lock_guard<std::mutex> lk(m);
+    if (seen[at]++ == 0 && seen.size() <= 100)
+        LOG("[single check] %08X: multiplier %.17g (%016llX) is not single precision", at, v,
+            (unsigned long long)f64_as_u64(v));
+}
+
 uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
     uint32_t save_lr = c->lr, save_ctr = c->ctr, save_sp = c->r[1];
     // open a minimal frame so the callee's LR save slot doesn't clobber our caller's frame
