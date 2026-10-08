@@ -1,0 +1,3 @@
+# Performance: game functions replaced by native versions with identical results (runtime/src/hooks_*.cpp)
+0281B4EC  # JAudio DSP: 8-tap filter over 80 samples (hooks_audio.cpp filter8)
+0281B970  # JAudio DSP: mix with a volume ramp over 80 samples (hooks_audio.cpp mix_ramp)
