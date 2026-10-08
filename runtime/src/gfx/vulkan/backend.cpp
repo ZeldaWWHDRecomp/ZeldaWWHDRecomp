@@ -131,7 +131,11 @@ void init_pipeline_cache() try {
     if (std::strcmp(explicitPath,"0")) {
       pipelineCachePath=explicitPath;
 #ifdef __ANDROID__
-      pipelineCachePath += "." + std::filesystem::path(drivers::pipeline_directory()).filename().string();
+      // Keep overrides in the driver's cache namespace so removing a driver removes every cache.
+      char key[32];
+      std::snprintf(key,sizeof key,"override-%016llx.bin",static_cast<unsigned long long>(
+          pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(explicitPath),std::strlen(explicitPath))));
+      pipelineCachePath = drivers::pipeline_directory()+"/"+key;
 #endif
     }
   } else if (const char* shaderPath=std::getenv("WWHD_SHADER_CACHE");
@@ -152,7 +156,12 @@ void init_pipeline_cache() try {
     }
     pipelineCachePath+=".bin";
 #ifdef __ANDROID__
-    if (shaderPath) pipelineCachePath += "." + std::filesystem::path(drivers::pipeline_directory()).filename().string();
+    if (shaderPath) {
+      char key[32];
+      std::snprintf(key,sizeof key,"shaders-%016llx-",static_cast<unsigned long long>(
+          pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(shaderPath),std::strlen(shaderPath))));
+      pipelineCachePath = drivers::pipeline_directory()+"/"+key+std::filesystem::path(pipelineCachePath).filename().string();
+    }
 #endif
   }
   std::vector<uint8_t> bytes;

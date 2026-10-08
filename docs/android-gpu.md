@@ -47,7 +47,8 @@ AdrenoTools schemaVersion 1 metadata and root-level arm64 ELF shared libraries, 
 API, and reuses the existing ZIP reader's traversal/symlink/size/CRC checks. Each successful install
 gets a unique identity, so two versions with identical names cannot share their pipeline cache.
 Removing an inactive driver deletes its default cache; the active driver requires a system-driver
-restart before removal. Explicit debug cache overrides are isolated by identity too.
+restart before removal. Explicit debug cache overrides are keyed by their requested path inside the same private
+driver directory, so removal deletes them too. Desktop override paths keep their existing behavior.
 
 libadrenotools is pinned to `8fae8ce254dfc1344527e05301e43f37dea2df80`, including its upstream
 liblinkernsbypass submodule. Both BSD-2-Clause notices ship in APK assets/licenses. Four upstream
@@ -72,7 +73,7 @@ state separate from Android JNI. It does not copy the fork's renderer or introdu
 | Synthetic ZIP and state-machine CTest | PASS: metadata/ELF/traversal/API rejection; selection; 119/120-frame probe; interrupted probe; load failure; cache removal |
 | Android arm64 native build (stub-generated game entry points) | PASS |
 | Android debug APK Java/resources/native packaging | PASS with Studio JBR; release artifact guard PASS (23 files checked) |
-| GitHub branch CI | Pending |
+| GitHub branch CI | Android PASS for 74c8476; Linux/Windows pending; follow-up cache change pending |
 | Snapdragon installation, custom-driver loading and surface/presentation | Untested; requires physical device |
 | Real-driver crash/hang recovery and cache behavior | Untested; state machine tested on host only |
 
