@@ -3,6 +3,8 @@
 #include "../screenshot.h"
 
 #include <atomic>
+#include <algorithm>
+#include <cmath>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -39,6 +41,29 @@ void show_startup_notice(const std::string& title, const std::string& text);
 void select_decompiler_api(render::Api api);
 
 namespace render {
+
+namespace {
+std::atomic<float> g_bloom{[] {
+    const char* e = std::getenv("WWHD_BLOOM_STRENGTH");
+    const float v = e ? std::strtof(e, nullptr) : 1.0f;
+    return std::isfinite(v) ? std::clamp(v, 0.0f, 2.0f) : 1.0f;
+}()};
+}
+float bloom_strength() { return g_bloom.load(std::memory_order_relaxed); }
+void set_bloom_strength(float v) {
+    if (!std::isfinite(v)) v = 1.0f;
+    g_bloom.store(std::clamp(v, 0.0f, 2.0f), std::memory_order_relaxed);
+}
+void scale_bloom_uniforms(void* remapped, size_t size) {
+    constexpr size_t intensityOffset = 2 * 16 + 2 * sizeof(float);
+    const float strength = bloom_strength();
+    if (strength == 1.0f || size < intensityOffset + sizeof(float)) return;
+    auto* dst = static_cast<unsigned char*>(remapped) + intensityOffset;
+    float intensity;
+    std::memcpy(&intensity, dst, sizeof intensity);
+    intensity *= strength;
+    std::memcpy(dst, &intensity, sizeof intensity);
+}
 
 const Backend* g_backend = nullptr;
 

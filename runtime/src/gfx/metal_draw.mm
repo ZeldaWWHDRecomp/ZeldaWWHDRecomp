@@ -1,3 +1,4 @@
+#include "renderer.h"
 #include <chrono>
 extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relevant register changes
 // Draw calls: shader translation (via the vendored decompiler), pipelines,
@@ -1103,6 +1104,9 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
                 if (!addr) continue;
                 for (auto& e : g.entries) memcpy(dst + e.mappedIndexOffset, mem::ptr(addr + e.indexOffset), 16);
             }
+            // Apply once before the Gaussian/mip chain, preserving the game's threshold and haze.
+            if (!vertex && (regs[mmSQ_PGM_START_PS] << 8) == 0x44F91200)
+                render::scale_bloom_uniforms(dst, buf.size() - dec->uniform.loc_remapped);
             // AO mode 2: the occlusion pass's VS (44BDF900) scales its noise coordinates by remapped[0].w
             // for a 640x360 grid; the pass draws 960x540, so tile the 4x4 noise per output pixel instead
             if (vertex && ao_mode() == 2 && (regs[mmSQ_PGM_START_VS] << 8) == 0x44BDF900)

@@ -136,6 +136,11 @@ inline bool ao_hires() { return g_backend->ao_hires(); }
 inline void set_ao_hires(bool v) { g_backend->set_ao_hires(v); }
 inline bool aniso() { return g_backend->aniso(); }
 inline void set_aniso(bool v) { g_backend->set_aniso(v); }
+// Bloom intensity multiplier: 0 off, 1 original, 2 double. Shared by both renderers.
+float bloom_strength();
+void set_bloom_strength(float strength);
+// The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
+void scale_bloom_uniforms(void* remapped, size_t size);
 inline bool fxaa() { return g_backend->fxaa(); }
 inline void set_fxaa(bool v) { g_backend->set_fxaa(v); }
 inline bool feature_available(Feature f) { return g_backend->feature_available(f); }

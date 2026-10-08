@@ -636,6 +636,15 @@ void tab_graphics() {
 
     heading("Effects");
     bool v;
+    float bloom = render::bloom_strength() * 100.0f;
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::SliderFloat("Bloom strength", &bloom, 0.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+        post_changed([bloom] { render::set_bloom_strength(bloom / 100.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Off##bloom")) post_changed([] { render::set_bloom_strength(0.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Default##bloom")) post_changed([] { render::set_bloom_strength(1.0f); });
+    help("Glow around bright areas. 100% matches the original game; 0% turns bloom off. Applies immediately.");
     const bool ao_ok = render::feature_available(render::kFeatureAO);
     static const char* const ao[] = {"AO: original", "AO: centre fix", "AO: centre + noise fix"};
     for (int i = 0; i < 3; i++) {

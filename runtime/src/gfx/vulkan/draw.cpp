@@ -1,3 +1,4 @@
+#include "../renderer.h"
 // Vulkan draw submission. Guest state conventions follow Cemu (MPL-2.0).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -1696,6 +1697,11 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   }
   else
     supportUniforms.clear();
+  // Bloom extract cThresholdParam.z: scale once, before blur/downsampling.
+  if (!sh->vertex && (r[mmSQ_PGM_START_PS] << 8) == 0x44F91200 &&
+      sh->uniforms.offset_remapped >= 0 && size_t(sh->uniforms.offset_remapped) < supportUniforms.size())
+    render::scale_bloom_uniforms(supportUniforms.data() + sh->uniforms.offset_remapped,
+                                supportUniforms.size() - sh->uniforms.offset_remapped);
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
   if (sh->vertex && ao_mode() == 2 &&
