@@ -95,6 +95,7 @@ Surface* private_ao_surface(Surface& dst, const Surface* like) {
     end_encoder();
     destroy_surface_image(&dst);
     dst = *like;
+    dst.mipChain.reset();
     dst.image = VK_NULL_HANDLE; dst.memory = VK_NULL_HANDLE;
     dst.view = VK_NULL_HANDLE;
     dst.layerViews.clear(); dst.sampledViews.clear(); dst.guestLayout.reset();
@@ -2044,6 +2045,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   Surface *depth = LatteMRT::GetActiveDepthBufferMask(lcr)
                        ? depth_target(r, &depthSlice)
                        : nullptr;
+  if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
   const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
   const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
   if (aoPrivateReplay && colors[0]) {

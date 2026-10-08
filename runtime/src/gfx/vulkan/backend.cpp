@@ -717,6 +717,8 @@ void transition_image(Surface *s, VkImageLayout layout,
   s->layout = layout;
 }
 static void cleanup_submission(Renderer::Submission& slot) {
+  for (auto& complete : slot.completions) complete();
+  slot.completions.clear();
   // The submit fence has completed; slices can now be overwritten safely.
   for (auto& block : slot.uploadBlocks) block.used = 0;
   for (auto b : slot.garbageBuffers) {
@@ -811,6 +813,7 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
   static uint64_t nextSubmissionSerial=0;
   slot.serial=++nextSubmissionSerial;
   slot.uploadBlocks=std::move(R.uploadBlocks);
+  slot.completions=std::move(R.completions);
   slot.garbageBuffers=std::move(R.garbageBuffers);
   slot.garbageImages=std::move(R.garbageImages);
   slot.garbageCacheRegions=std::move(R.garbageCacheRegions);

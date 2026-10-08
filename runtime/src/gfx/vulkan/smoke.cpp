@@ -574,6 +574,26 @@ int renderer_smoke_test() {
     mark_gpu_written(target);
     require(find_or_create_surface(t,false)==target,"sampling after the render did not find the render target");
     fprintf(stderr,"[renderer smoke] render target after a mipmapped sampled texture passed\n");
+    // Bloom renders level 1 separately, then binds the base descriptor with LOD clamped to 1.
+    // Distinct GPU colours prove that this reads the rendered mip rather than the base image.
+    SurfaceDesc mip=rt;mip.addr=t.mipAddr;mip.width=8;mip.height=8;mip.pitch=8;
+    auto* mipTarget=find_or_create_surface(mip,true);
+    const float baseColor[4]={0,0,1,1},mipColor[4]={0,1,0,1};
+    clear_image(*target,baseColor);clear_image(*mipTarget,mipColor);
+    uint32_t words[7]={1u|(1u<<3)|(1u<<8)|(15u<<19),15u|(0x1au<<26),
+        t.addr>>8,t.mipAddr>>8,(1u<<19)|(2u<<22)|(3u<<25),1,0};
+    auto* sampledMip=sampled_texture(words,false);
+    require(sampledMip!=target && sampledMip->mips==2,"GPU-rendered mip chain was not assembled");
+    const uint8_t mipBytes[4]={0,255,0,255};
+    rgba_is(read_image(*sampledMip,VK_IMAGE_ASPECT_COLOR_BIT,4,1),mipBytes,
+        "fixed-LOD rendered mip readback differs");
+    const uint8_t baseBytes[4]={0,0,255,255};
+    rgba_is(read_image(*sampledMip,VK_IMAGE_ASPECT_COLOR_BIT,4),baseBytes,"mip chain changed the base image");
+    const float changedColor[4]={1,0,0,1};const uint8_t changedBytes[4]={255,0,0,255};
+    clear_image(*mipTarget,changedColor);
+    auto* rebuilt=sampled_texture(words,false);
+    rgba_is(read_image(*rebuilt,VK_IMAGE_ASPECT_COLOR_BIT,4,1),changedBytes,"mip-only write did not rebuild the sampled chain");
+    fprintf(stderr,"[renderer smoke] GPU-rendered mip chain/base preservation/mip-only refresh passed\n");
    }
    {
     // A texel changed in place, unannounced, between the 256 words the former sampled check read
@@ -614,6 +634,29 @@ int renderer_smoke_test() {
    for(size_t i=0;i<stencils.size();++i){float value;memcpy(&value,depths.data()+i*4,4);require(value==0.25f&&stencils[i]==0xa5,"depth/stencil clear differs");}
    fprintf(stderr,"[renderer smoke] depth/stencil upload and clear passed\n");
    depth_copy_check();
+   {
+    auto peek=std::make_unique<Surface>();
+    peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);
+    peek->addr=mem::host_alloc(256,256);create_surface_image(peek.get(),true,VkExtent3D{16,16,1});
+    auto* surface=peek.get();auto entry=R.surfaces.emplace(peek->addr,std::move(peek));
+    uint32_t previousDepth=R.mainDepthAddr;R.mainDepthAddr=surface->addr;
+    uint32_t result=mem::host_alloc(256,256);uint32_t cells[]={320,240,result,0,0,result+4};
+    for(float z:{0.25f,1.0f}) {
+     transition_image(surface,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+     VkClearDepthStencilValue value{z,0};vkCmdClearDepthStencilImage(command_buffer(),surface->image,surface->layout,&value,1,&range);
+     peek_z(cells,6);flush();uint32_t expected=z==1.0f?0xFFFFFFu:0x3FFFFFu;
+     require(ld32(result)==expected&&ld32(result+4)==expected,"GPU depth peek differs");
+    }
+    // A drain retires the newest fence first; an older answer must not replace it.
+    for(float z:{0.25f,1.0f}) {
+     transition_image(surface,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+     VkClearDepthStencilValue value{z,0};vkCmdClearDepthStencilImage(command_buffer(),surface->image,surface->layout,&value,1,&range);
+     peek_z(cells,6);flush_async();
+    }
+    flush();require(ld32(result)==0xFFFFFFu&&ld32(result+4)==0xFFFFFFu,"older GPU depth answer replaced newer answer");
+    R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
+    fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
+   }
    volume_target_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);

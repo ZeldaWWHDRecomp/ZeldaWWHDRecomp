@@ -987,6 +987,7 @@ static Surface* hires_surface(Surface& dst, const Surface* like) {
         d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
         d.storageMode = MTLStorageModePrivate;
         dst = *like;
+        dst.mipChain.reset();
         dst.tex = [R.device newTextureWithDescriptor:d];
         dst.addr = 0;  // private: never found by address lookups
         dst.width = w;
@@ -1614,6 +1615,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     for (int i = 0; i < 8; i++)
         if (mask & (1 << i)) colors[i] = color_target(regs, i, &colorSlices[i]);
     Surface* depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(regs, &depthSlice) : nullptr;
+    if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
     uint32_t guestW = colors[0] ? colors[0]->width : 0;  // the game's target size (viewport registers refer to it)
     uint32_t guestH = colors[0] ? colors[0]->height : 0;
     if (g_hires_redraw) {

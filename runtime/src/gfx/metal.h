@@ -13,9 +13,12 @@
 #include "formats.h"
 
 namespace gfx {
+void peek_z(const uint32_t*, uint32_t);
 
 // A host texture backing a guest surface (render target, depth buffer or sampled texture).
 struct Surface {
+    std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
+    uint64_t mipChainSeq = ~0ull;
     id<MTLTexture> tex = nil;
     uint32_t addr = 0, mipAddr = 0;
     uint32_t width = 0, height = 0, slices = 1, pitch = 0, mips = 1;
@@ -66,6 +69,7 @@ struct Renderer {
     bool binding = false;  // a draw is binding its textures to the open encoder (no blits now)
     // attachments of the open render encoder
     Surface* passColor[8] = {};
+    uint32_t mainDepthAddr = 0;
     Surface* passDepth = nullptr;
     uint32_t passColorSlice[8] = {}, passDepthSlice = 0;
 

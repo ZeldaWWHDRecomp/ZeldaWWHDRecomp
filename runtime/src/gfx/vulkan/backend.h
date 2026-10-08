@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +20,8 @@ struct Buffer { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HA
 struct UploadSlice { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceSize offset=0,size=0; void* mapped=nullptr; };
 struct CachedGuestLayout;
 struct Surface {
+    std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
+    uint64_t mipChainSeq = ~0ull;
  VkImage image=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; VkImageView view=VK_NULL_HANDLE;
  VkImageType imageType=VK_IMAGE_TYPE_2D; VkImageViewType viewType=VK_IMAGE_VIEW_TYPE_2D;
  VkExtent3D extent{}; VkImageLayout layout=VK_IMAGE_LAYOUT_UNDEFINED; VkImageAspectFlags aspect=VK_IMAGE_ASPECT_COLOR_BIT; VkImageUsageFlags usage=0; VkImageCreateFlags createFlags=0;
@@ -99,6 +102,7 @@ struct Renderer {
  uint64_t pipelineCreates=0,pipelineCreateNs=0;
  std::array<Surface*,8> passColors{};
  std::array<uint32_t,8> passSlices{};
+ uint32_t mainDepthAddr=0;
  Surface* passDepth=nullptr;
  uint32_t passDepthSlice=0,passWidth=0,passHeight=0;
  bool passTracked=false;
@@ -117,6 +121,7 @@ struct Renderer {
  std::array<uint64_t,7> vertexHistoryDistances{};
  uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
  uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
+ std::vector<std::function<void()>> completions;
  std::vector<Buffer> garbageBuffers;
  std::vector<bufcache::Region> garbageCacheRegions; // buffer cache regions replaced while recording
  struct RetiredImage { VkImage image;VkDeviceMemory memory;std::vector<VkImageView> views; }; std::vector<RetiredImage> garbageImages;
@@ -137,6 +142,7 @@ struct Renderer {
   bool pending=false;
   uint64_t serial=0; // Submission order on the single graphics queue.
   std::vector<UploadBlock> uploadBlocks;
+  std::vector<std::function<void()>> completions;
   std::vector<Buffer> garbageBuffers;
   std::vector<RetiredImage> garbageImages;
   std::vector<bufcache::Region> garbageCacheRegions;

@@ -222,3 +222,5 @@
 027B8904  # agl ShaderProgramArchive init (debug WWHD_BOOTDBG, true60_test.cpp)
 027B82B8  # agl ShaderProgramArchive setup from sharc (debug WWHD_BOOTDBG, true60_test.cpp)
 02753D6C  # sead::ExpHeap::alloc (debug WWHD_HEAPLOG, true60_test.cpp)
+
+0252E388  # dDlst_peekZ_c::peekData: GPU depth answers for sun corona/lens flare (peekz.cpp)

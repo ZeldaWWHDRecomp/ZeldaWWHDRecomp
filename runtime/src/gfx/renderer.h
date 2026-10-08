@@ -35,6 +35,7 @@ struct Backend {
     void (*copy_surface)(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst, uint32_t dstMip, uint32_t dstSlice);
     void (*copy_to_scan)(uint32_t colorBuffer, uint32_t target);
     void (*swap)();
+    void (*peek_z)(const uint32_t* cells, uint32_t words);
     void (*set_frame_aspect)(float a);
     bool (*target_aspect_factors)(uint32_t w, uint32_t h, float& kx, float& ky);
     uint64_t (*frames_completed)();
@@ -111,6 +112,7 @@ inline void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint3
 }
 inline void copy_to_scan(uint32_t cb, uint32_t target) { g_backend->copy_to_scan(cb, target); }
 inline void swap() { g_backend->swap(); }
+inline void peek_z(const uint32_t* cells, uint32_t words) { g_backend->peek_z(cells, words); }
 inline void set_frame_aspect(float a) { g_backend->set_frame_aspect(a); }
 inline bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) { return g_backend->target_aspect_factors(w, h, kx, ky); }
 inline uint64_t frames_completed() { return g_backend->frames_completed(); }

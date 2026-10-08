@@ -39,6 +39,7 @@ enum Op : uint32_t {
     // aspect ratio (aspect.cpp), appended to keep the numbers of recorded display lists
     OP_SET_PROJ_REGS,   // first register, 16 values: a layout projection matrix (narrowed when drawing to the TV)
     OP_LAYOUT_ROOT,     // nw::lyt root pane: drawn into the target bound now (which screen it goes to)
+    OP_PEEK_Z,          // signed x/y in 640x480 space, guest result address (triples)
     OP_COUNT
 };
 

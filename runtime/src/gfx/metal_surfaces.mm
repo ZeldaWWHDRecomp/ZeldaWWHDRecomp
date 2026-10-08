@@ -1,3 +1,4 @@
+#include "gfx/render_mips.h"
 #include "mods/cemu_pack.h"
 #include <tuple>
 #include <atomic>
@@ -518,6 +519,68 @@ static uint64_t sparse_hash(Surface* s);
 static void check_texture(Surface* s);
 uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces;
 
+// Companion mip chains: preserve AGL's own blurred levels instead of sampling only level 0.
+// Based on GreenNaugahyde/ZeldaWWHDRecompAndroid commit 73b54e1, adapted to Metal.
+static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d) {
+    static const bool off = getenv("WWHD_NO_RT_MIPS") != nullptr;
+    if (off || !s || !s->tex || s->mips != 1 || d.mips <= 1 || s->fmt.depth || s->fmt.compressed ||
+        s->fmt.kind != FormatInfo::FLOAT || s->tex.textureType != MTLTextureType2D || s->slices != 1) return s;
+    uint32_t w = (uint32_t)s->tex.width, h = (uint32_t)s->tex.height, full = 1;
+    while ((std::max(w, h) >> full) > 0) full++;
+    uint32_t mips = std::min(d.mips, full);
+    if (mips <= 1) return s;
+    Surface* levels[16] = {};
+    uint64_t key = s->writeSeq * 0x9E3779B97F4A7C15ull;
+    for (uint32_t l = 1; l < mips; l++) {
+        levels[l] = gfx::render_mips::game_level(d, l, R.surfaces);
+        key = (key ^ (levels[l] ? levels[l]->writeSeq + l : l)) * 0xFF51AFD7ED558CCDull;
+    }
+    auto* c = s->mipChain.get();
+    if (c && (c->mips != mips || c->tex.width != w || c->tex.height != h || c->tex.pixelFormat != s->tex.pixelFormat)) {
+        s->mipChain.reset(); c = nullptr;
+    }
+    if (R.binding) return c ? c : s; // prepared by draw's texture preflight, before opening its encoder
+    if (!c) {
+        auto chain = std::make_shared<Surface>();
+        c = chain.get();
+        c->addr = s->addr; c->mipAddr = d.mipAddr;
+        c->width = s->width; c->height = s->height; c->slices = 1; c->mips = mips;
+        c->format = s->format; c->dim = s->dim; c->fmt = s->fmt;
+        c->sx = s->sx; c->sy = s->sy; c->gpuWritten = true;
+        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:s->tex.pixelFormat
+            width:w height:h mipmapped:YES];
+        td.mipmapLevelCount = mips;
+        td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView;
+        td.storageMode = MTLStorageModePrivate;
+        c->tex = [R.device newTextureWithDescriptor:td];
+        if (!c->tex) return s;
+        s->mipChain = std::move(chain); s->mipChainSeq = ~0ull;
+    }
+    if (s->mipChainSeq == key) return c;
+    end_encoder();
+    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
+        sourceSize:MTLSizeMake(w,h,1) toTexture:c->tex destinationSlice:0 destinationLevel:0
+        destinationOrigin:MTLOriginMake(0,0,0)];
+    [b endEncoding];
+    uint32_t fromGame = 0;
+    for (uint32_t l = 1; l < mips; l++) {
+        id<MTLTexture> dst = [c->tex newTextureViewWithPixelFormat:c->tex.pixelFormat textureType:MTLTextureType2D
+            levels:NSMakeRange(l,1) slices:NSMakeRange(0,1)];
+        id<MTLTexture> src = levels[l] ? levels[l]->tex :
+            [c->tex newTextureViewWithPixelFormat:c->tex.pixelFormat textureType:MTLTextureType2D
+                levels:NSMakeRange(l-1,1) slices:NSMakeRange(0,1)];
+        // Resampling also handles the console's floor rounding at e.g. 120x67, upscaled to 360x201
+        // when the companion mip is 360x202. Sampling keeps one coherent physical mip pyramid.
+        resample(src, dst, c->fmt, 1);
+        if (levels[l]) fromGame++;
+    }
+    s->mipChainSeq = key;
+    static int logged = 0;
+    if (logged++ < 8) LOG("[gfx] mip chain for %08X %ux%u: %u levels, %u of them the game's own", s->addr,w,h,mips,fromGame);
+    return c;
+}
+
 Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     Latte::LATTE_SQ_TEX_RESOURCE_WORD0_N w0;
     Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N w1;
@@ -578,7 +641,7 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
         s->lastCheckedFrame = R.frame;
         check_texture(s);
     }
-    return s;
+    return s && s->gpuWritten && d.mips > 1 && !isDepthSampler ? with_mip_chain(s, d) : s;
 }
 
 // Guest ranges of every level the upload reads (base first), computed once: a Surface's geometry
@@ -945,6 +1008,7 @@ namespace gfx {
 // a save state replaced guest memory: every CPU-side texture gets a full check on next use (render
 // targets keep their GPU contents; the next frame redraws them)
 void ss_reset_surfaces() {
+    R.mainDepthAddr = 0;
     for (auto& [a, s] : R.surfaces) {
         s->dirty = true;
         s->lastCheckedFrame = ~0ull;

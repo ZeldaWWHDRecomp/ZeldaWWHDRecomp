@@ -395,6 +395,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     case OP_COPY_SURFACE: kind = rprof::kOpCopy; break;
     case OP_COPY_TO_SCAN: kind = rprof::kOpScan; break;
     case OP_INVALIDATE: kind = rprof::kOpInvalidate; break;
+    case OP_PEEK_Z: kind = rprof::kOpCopy; break;
     case OP_FLUSH: kind = rprof::kOpFlush; break;
     case OP_DRAW_DONE: kind = rprof::kOpDrawDone; break;
     case OP_SWAP: kind = rprof::kOpSwap; break;
@@ -448,6 +449,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_SET_CONTEXT: set_context(p[0]); break;
     case OP_INVALIDATE: render::invalidate(p[0], p[1], p[2]); break;
     case OP_EXPAND_COLOR: case OP_EXPAND_DEPTH: break;  // MSAA/HiZ decompression: nothing to do on the host
+    case OP_PEEK_Z: render::peek_z(p, n); break;
     case OP_FLUSH: render::guest_flush(); break;  // Vulkan: asynchronous submission
     case OP_DRAW_DONE:
         // The Vulkan renderer writes GPU results back to guest memory only for linear surfaces (guest data is copied
