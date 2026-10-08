@@ -26,6 +26,9 @@
 #include "../crashrec.h"
 #include "../game_languages.h"
 #include "../gfx/renderer.h"
+#ifdef __ANDROID__
+#include "../gfx/vulkan/android_driver.h"
+#endif
 #ifdef WWHD_HAS_VULKAN
 #include "../gfx/vulkan/settings.h"
 namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
@@ -559,6 +562,25 @@ void tab_saves() {
 }
 
 void tab_graphics() {
+#ifdef __ANDROID__
+    heading("GPU driver (Snapdragon / Adreno)");
+    note("Active: %s", gfxvk::drivers::active_name().c_str());
+    auto driver_action = [](auto fn) { hostui::post([fn] { try { fn(); } catch (const std::exception& e) { LOG("[vulkan driver] %s", e.what()); } }); };
+    if (ImGui::Button("Install driver ZIP...")) driver_action([] { gfxvk::drivers::request_install(); });
+    auto selected = gfxvk::drivers::selection();
+    if (radio("System driver", selected.empty())) driver_action([] { gfxvk::drivers::select(""); });
+    for (const auto& driver : gfxvk::drivers::installed()) {
+        ImGui::PushID(driver.id.c_str());
+        auto id = driver.id;
+        if (radio((driver.name + " " + driver.version).c_str(), selected == id))
+            driver_action([id] { gfxvk::drivers::select(id); });
+        ImGui::SameLine();
+        if (ImGui::Button("Remove")) driver_action([id] { gfxvk::drivers::remove(id); });
+        ImGui::PopID();
+    }
+    note("%s", gfxvk::drivers::message().c_str());
+    help("Driver changes take effect on restart. An unfinished first 120-frame probe selects the system driver on the next start.");
+#endif
     if (render::can_choose()) {
         heading("Renderer (takes effect after a restart)");
         for (render::Api a : {render::Api::Metal, render::Api::Vulkan}) {

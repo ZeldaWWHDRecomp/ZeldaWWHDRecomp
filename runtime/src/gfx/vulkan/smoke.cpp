@@ -1,3 +1,5 @@
+#include "bc_decode.h"
+#include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
 #include "buffer_cache.h"
@@ -49,6 +51,29 @@ void clear_image(Surface& s,const float rgba[4]) {
  transition_image(&s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
  VkClearColorValue value{};std::copy(rgba,rgba+4,value.float32);VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,s.mips,0,s.arrayLayers};
  vkCmdClearColorImage(command_buffer(),s.image,s.layout,&value,1,&range);mark_gpu_written(&s);
+}
+void bc_surface_check() {
+ for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
+  SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
+  d.width=16;d.height=16;d.pitch=4;d.slices=2;d.mips=2;d.format=format;d.dim=5;
+  memset(mem::ptr(d.addr),0,65536);memset(mem::ptr(d.mipAddr),0,65536);
+  auto* s=find_or_create_surface(d,false);
+  if(!s->bcDecoded)continue;
+  upload_surface(s);auto uploads=g_stat_uploads;upload_surface(s);
+  require(g_stat_uploads==uploads,"BC upload cache did not hit");
+  const unsigned type=(format&63)-0x30,mode=type|((format&0x200)?256:0);
+  auto expected=[&](uint8_t fill){std::vector<uint8_t> block(bc::block_bytes(type),fill);return bc::pixel(block.data(),type,mode&256,0);};
+  auto zero=expected(0),changed=expected(255);
+  for(unsigned level=0;level<2;++level)for(unsigned layer=0;layer<2;++layer)
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,level,layer),zero.data(),"BC mip/layer upload differs");
+  memset(mem::ptr(d.mipAddr),255,65536);invalidate(2,d.mipAddr+16,4);upload_surface(s);
+  require(g_stat_uploads==uploads+1,"BC partial invalidation did not re-upload");
+  for(unsigned layer=0;layer<2;++layer){
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,0,layer),zero.data(),"BC mip invalidation modified base");
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,1,layer),changed.data(),"BC changed mip/layer differs");
+  }
+ }
+ fprintf(stderr,"[renderer smoke] BC production uploads, sRGB/signed views, mip/layer cache and invalidation passed\n");
 }
 void upload_arena_check() {
  const uint64_t before=R.uploadAllocations;
@@ -523,7 +548,7 @@ void dynamic_uniform_check(Surface& s) {
 }
 int renderer_smoke_test() {
  try {
-  mem::init();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
+  mem::init();bc_decode_smoke();bc_surface_check();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
    upload.s.addr=mem::host_alloc(65536,256);upload.s.mipAddr=mem::host_alloc(65536,256);

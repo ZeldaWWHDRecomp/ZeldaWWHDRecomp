@@ -66,6 +66,7 @@ void checkpoint_shader_cache(uint64_t frame);
 bool shader_cache_dirty();
 uint64_t shader_cache_changed_frame();
 bool save_shader_cache();
+std::vector<uint32_t> compile_compute(const std::string& source, std::string* error = nullptr);
 std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::string* error = nullptr);
 // Caller-owned CPU scratch; all active bytes are freshly zeroed and packed.
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,

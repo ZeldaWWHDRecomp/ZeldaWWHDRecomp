@@ -51,4 +51,10 @@ bin="$ndk/toolchains/llvm/prebuilt/$host"
 "$bin/bin/llvm-strip$exe" --strip-unneeded "$out/libmain.so" -o "$libs/libmain.so"  # 400 MB -> 52 MB
 cp "$(find "$out/_deps" -name libSDL3.so -print -quit)" "$libs/"
 cp "$bin/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$libs/"
+# libadrenotools loads these hooks by soname from ApplicationInfo.nativeLibraryDir.
+for hook in main_hook hook_impl file_redirect_hook gsl_alloc_hook; do
+    hook_file="$(find "$out/_deps" -name "lib${hook}.so" -print -quit)"
+    [ -n "$hook_file" ] || { echo "missing AdrenoTools hook: $hook"; exit 1; }
+    cp "$hook_file" "$libs/"
+done
 ls -la "$libs"

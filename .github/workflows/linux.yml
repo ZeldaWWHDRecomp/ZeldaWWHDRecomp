@@ -61,3 +61,15 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee smoke.log
           grep -q "PASS" smoke.log
           ! grep -q "VUID" smoke.log
+
+      - name: BC fallback smoke test (lavapipe + validation)
+        env:
+          WWHD_VK_VALIDATION: "1"
+          WWHD_VK_FORCE_BC_DECODE: "1"
+          WWHD_VK_BC_VERIFY: "1"
+        run: |
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee bc-smoke.log
+          grep -q "BC production uploads" bc-smoke.log
+          grep -q "synthetic GPU/CPU checks PASS" bc-smoke.log
+          ! grep -q "VUID" bc-smoke.log

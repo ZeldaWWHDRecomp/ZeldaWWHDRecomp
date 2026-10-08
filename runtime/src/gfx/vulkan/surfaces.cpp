@@ -1,4 +1,5 @@
 #include "gfx/render_mips.h"
+#include "bc_decode.h"
 #include "mods/cemu_pack.h"
 // Guest surfaces backed by Vulkan images. LatteAddrLib supplies guest tiling geometry.
 #include "backend.h"
@@ -595,6 +596,11 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
     uint32_t maxDim=std::max({s->extent.width,s->extent.height,s->extent.depth});
     uint32_t maxMips=1; while(maxDim>1){maxDim>>=1;++maxMips;}
     if(s->mips>maxMips)throw std::runtime_error("GX2 surface requests too many mip levels");
+    if (s->fmt.compressed) s->bcDecoded = bc_decode_required(format_info(s->format,s->isDepth));
+    if (s->bcDecoded) {
+        const bool sign = (s->format & 0x200) && (s->format & 0x3f) >= 0x34;
+        s->fmt.pixel = sign ? VK_FORMAT_R8G8B8A8_SNORM : (s->format & 0x400) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    }
     VkFormatProperties properties{}; vkGetPhysicalDeviceFormatProperties(R.physicalDevice,s->fmt.pixel,&properties);
     auto features=properties.optimalTilingFeatures;
     VkFormatFeatureFlags required=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
@@ -1118,6 +1124,7 @@ void upload_surface(Surface* s) {
     end_encoder();transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     for(uint32_t level=0;level<s->mips;++level) {
         std::vector<uint8_t> data;uint32_t w,h,slices;decode_level(s,level,mip_base(s,level),data,w,h,slices);
+        if (s->bcDecoded) { bc_decode_upload(s,level,data,w,h,slices); continue; }
         std::vector<VkBufferImageCopy> copies;std::vector<uint8_t> packed;
         bool threeD=s->imageType==VK_IMAGE_TYPE_3D;
         uint32_t layers=threeD?1:slices;

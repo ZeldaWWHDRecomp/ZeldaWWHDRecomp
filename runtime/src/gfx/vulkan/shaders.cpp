@@ -590,14 +590,13 @@ void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint
 
 void select_renderer() { g_renderer = std::make_unique<VulkanRenderer>(); }
 
-std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::string* error) {
+static std::vector<uint32_t> compile_stage(const std::string& source, EShLanguage stage, std::string* error) {
     static std::once_flag init;
     static bool initialized = false;
     std::call_once(init, [] { initialized = glslang::InitializeProcess(); });
     if (error) error->clear();
     auto fail = [&](const std::string& reason) { if (error) *error = reason; return std::vector<uint32_t>{}; };
     if (!initialized) return fail("glslang initialization failed");
-    EShLanguage stage = vertex ? EShLangVertex : EShLangFragment;
     glslang::TShader shader(stage);
     const char* text = source.c_str();
     shader.setStrings(&text, 1);
@@ -616,6 +615,13 @@ std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::
     glslang::GlslangToSpv(*program.getIntermediate(stage), words, &options);
     if (words.empty()) return fail("glslang emitted empty SPIR-V");
     return words;
+}
+
+std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::string* error) {
+    return compile_stage(source, vertex ? EShLangVertex : EShLangFragment, error);
+}
+std::vector<uint32_t> compile_compute(const std::string& source, std::string* error) {
+    return compile_stage(source, EShLangCompute, error);
 }
 
 DescriptorRankPlan make_descriptor_rank_plan(const LatteDecompilerShaderResourceMapping& mapping,

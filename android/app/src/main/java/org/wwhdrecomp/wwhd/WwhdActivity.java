@@ -1,6 +1,10 @@
 package org.wwhdrecomp.wwhd;
 
 import android.os.Bundle;
+import android.content.Intent;
+import android.app.AlertDialog;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import android.util.Log;
 import android.view.Display;
 import android.view.Window;
@@ -29,6 +33,42 @@ public class WwhdActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    private static final int GPU_DRIVER_REQUEST = 4972;
+    private static native String installGpuDriver(String path);
+    public void chooseGpuDriver() {
+        runOnUiThread(() -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), GPU_DRIVER_REQUEST));
+    }
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != GPU_DRIVER_REQUEST || result != RESULT_OK || data == null || data.getData() == null) return;
+        final android.net.Uri uri = data.getData();
+        // Copy the content URI into internal storage; no broad storage permissions needed.
+        new Thread(() -> {
+            File zip = null;
+            String error = "";
+            try {
+                zip = File.createTempFile("gpu-driver-", ".zip", getCacheDir());
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     FileOutputStream out = new FileOutputStream(zip)) {
+                    if (in == null) throw new java.io.IOException("Cannot read selected file");
+                    byte[] bytes = new byte[65536]; long total = 0; int count;
+                    while ((count = in.read(bytes)) != -1) {
+                        total += count;
+                        if (total > 512L * 1024 * 1024) throw new java.io.IOException("Driver ZIP exceeds 512 MiB");
+                        out.write(bytes, 0, count);
+                    }
+                }
+                error = installGpuDriver(zip.getAbsolutePath());
+            } catch (Exception e) { error = e.getMessage(); }
+            finally { if (zip != null) zip.delete(); }
+            final String problem = error;
+            runOnUiThread(() -> new AlertDialog.Builder(this).setTitle(problem == null || problem.isEmpty() ? "Driver installed" : "Driver installation failed")
+                .setMessage(problem == null || problem.isEmpty() ? "Select the driver in Graphics, then restart the game." : problem)
+                .setPositiveButton("OK", null).show());
+        }, "gpu-driver-install").start();
     }
 
     // Frame interpolation at 120/240 fps (runtime/src/platform/display_rate.cpp, called from native

@@ -498,3 +498,34 @@ if(WWHD_SDL_HOST)
   add_test(NAME sdl_mouse COMMAND mouse_sdl_test)
   add_test(NAME host_sleep COMMAND sleep_test)
 endif()
+
+add_executable(bc_reference_test runtime/tools/bc_reference_test.cpp)
+target_include_directories(bc_reference_test PRIVATE runtime/src)
+target_compile_options(bc_reference_test PRIVATE -UNDEBUG)
+add_test(NAME bc_reference COMMAND bc_reference_test)
+
+if(ANDROID)
+  include(FetchContent)
+  # libadrenotools and its pinned linkernsbypass submodule are BSD-2-Clause.
+  # The loader uses gipa directly; no volk dependency.
+  FetchContent_Declare(wwhd_adrenotools
+    GIT_REPOSITORY https://github.com/bylaws/libadrenotools.git
+    GIT_TAG 8fae8ce254dfc1344527e05301e43f37dea2df80
+    GIT_SUBMODULES lib/linkernsbypass)
+  function(wwhd_add_adrenotools)
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(wwhd_adrenotools)
+  endfunction()
+  wwhd_add_adrenotools()
+  target_link_libraries(wwhd PRIVATE adrenotools)
+  add_dependencies(wwhd main_hook hook_impl file_redirect_hook gsl_alloc_hook)
+endif()
+
+add_executable(driver_store_test runtime/tools/driver_store_test.cpp runtime/src/gfx/vulkan/driver_store.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(driver_store_test PRIVATE runtime/src runtime/third_party/fmt/include)
+target_link_libraries(driver_store_test PRIVATE ZLIB::ZLIB)
+target_compile_options(driver_store_test PRIVATE -UNDEBUG)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND NOT ANDROID)
+  add_test(NAME driver_store COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/runtime/tools/driver_store_test.py $<TARGET_FILE:driver_store_test>)
+endif()
