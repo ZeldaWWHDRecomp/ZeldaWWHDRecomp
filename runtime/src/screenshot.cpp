@@ -28,10 +28,12 @@ namespace screenshot {
 namespace {
 
 std::atomic<int> g_requests{0};
-std::mutex g_mu;  // names, setting, queue, last file
+// never destroyed: the detached worker waits on them until the process ends (destroying a condition
+// variable with a waiter at exit hangs on glibc)
+std::mutex& g_mu = *new std::mutex;  // names, setting, queue, last file
 int g_gamepad = -1;  // -1: not read yet
-std::string g_last_file;
-std::set<std::string> g_reserved;  // names handed out whose files are not written yet
+std::string& g_last_file = *new std::string;
+std::set<std::string>& g_reserved = *new std::set<std::string>;  // names handed out whose files are not written yet
 
 struct Job {
     std::string path;
@@ -44,8 +46,9 @@ struct Job {
     bool bgra = false;
     std::chrono::steady_clock::time_point queued;
 };
-std::deque<Job> g_jobs;
-std::condition_variable g_cv, g_cv_done;
+std::deque<Job>& g_jobs = *new std::deque<Job>;
+std::condition_variable& g_cv = *new std::condition_variable;
+std::condition_variable& g_cv_done = *new std::condition_variable;
 bool g_worker = false;
 constexpr size_t kMaxQueued = 6;  // pictures waiting to be encoded (about 25 MB each at 2x 16:9)
 
