@@ -156,6 +156,8 @@ class LanguageSourceBuild(unittest.TestCase):
         usa = setup.game_builds.Build({"name": "USA", "title_id": "0005000010143500",
                                        "rpx_sha256": hashlib.sha256(b"usa").hexdigest()})
         eu = setup.game_builds.Build({"name": "EU", "title_id": "0005000010143600",
+                                      "code_bounds": ["02000000", "03000000"],
+                                      "data_bounds": ["10000000", "10500000"],
                                       "rpx_sha256": hashlib.sha256(b"eu").hexdigest()})
         setup.game_builds.by_sha256 = lambda dg: next((b for b in (usa, eu) if b.sha256 == dg), None)
 
@@ -194,6 +196,8 @@ class GameVersion(unittest.TestCase):
         fake = [setup.game_builds.Build({"name": "USA", "title_id": "0005000010143500",
                                          "rpx_sha256": hashlib.sha256(b"made-up rpx").hexdigest()}),
                 setup.game_builds.Build({"name": "EU", "title_id": "0005000010143600",
+                                         "code_bounds": ["02000000", "03000000"],
+                                         "data_bounds": ["10000000", "10500000"],
                                          "rpx_sha256": hashlib.sha256(b"made-up eu rpx").hexdigest()})]
         setup.SUPPORTED_BUILDS = {b.title_id: b for b in fake}
         setup.game_builds.by_sha256 = lambda d: next((b for b in fake if b.sha256 == d), None)

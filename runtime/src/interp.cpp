@@ -387,7 +387,7 @@ extern "C" void hook_024FFC40(Cpu* c) {
         static std::vector<uint32_t> before;
         static std::unordered_map<uint32_t, int> cnt;
         static int n = 0;
-        const uint32_t lo = 0x10100000, hi = 0x10500000;
+        const uint32_t lo = GD(0x10100000), hi = 0x10500000;
         before.assign((uint32_t*)ppc_ptr(lo), (uint32_t*)ppc_ptr(hi));
         f_024FFC40_orig(c);
         const uint32_t* cur = (const uint32_t*)ppc_ptr(lo);

@@ -13,6 +13,14 @@
   "calls_checked": 163166,
   "data_addresses": 54760
  },
+ "code_bounds": [
+  "02000020",
+  "028F87F4"
+ ],
+ "data_bounds": [
+  "10000000",
+  "104DA1C8"
+ ],
  "code_steps": [
   [
    "02000020",

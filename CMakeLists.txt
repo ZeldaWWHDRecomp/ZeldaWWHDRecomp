@@ -440,6 +440,26 @@ target_include_directories(mod_cemu_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_cemu_test PRIVATE -UNDEBUG)
 add_test(NAME mod_cemu COMMAND mod_cemu_test)
 add_test(NAME portable_state COMMAND portable_state_test)
+# Verify the shipped EUR address tables without game code, plus the weak USA fallback.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME build_coverage COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+    -s "${CMAKE_SOURCE_DIR}/tools/recomp" -p "test*.py")
+  add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/guest_map_fixture.c"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/recomp/write_map_fixture.py"
+      "${CMAKE_BINARY_DIR}/guest_map_fixture.c"
+    DEPENDS tools/recomp/write_map_fixture.py tools/recomp/builds.py tools/recomp/builds/eu.json tools/recomp/recomp.py)
+  add_executable(guest_addr_test runtime/tools/guest_addr_test.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
+  target_include_directories(guest_addr_test PRIVATE runtime/include)
+  target_compile_options(guest_addr_test PRIVATE -UNDEBUG)
+  add_test(NAME guest_addr COMMAND guest_addr_test)
+  add_executable(guest_addr_identity_test runtime/tools/guest_addr_test.cpp runtime/src/guest_addr_identity.c)
+  target_include_directories(guest_addr_identity_test PRIVATE runtime/include)
+  target_compile_definitions(guest_addr_identity_test PRIVATE TEST_IDENTITY)
+  target_compile_options(guest_addr_identity_test PRIVATE -UNDEBUG)
+  add_test(NAME guest_addr_identity COMMAND guest_addr_identity_test)
+endif()
+
 add_test(NAME mod_manager COMMAND mod_manager_test)
 add_test(NAME mod_content_fs_off COMMAND mod_content_fs_test off)
 add_test(NAME mod_content_fs_on COMMAND mod_content_fs_test on)

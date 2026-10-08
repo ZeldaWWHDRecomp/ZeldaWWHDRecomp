@@ -30,6 +30,13 @@ class Build:
         self.name = d["name"]
         self.title_id = d["title_id"]
         self.sha256 = d["rpx_sha256"]
+        self.bounds = {kind: tuple(int(a, 16) for a in d[kind + "_bounds"])
+                       for kind in ("code", "data") if kind + "_bounds" in d}
+        if self.name != CANONICAL and len(self.bounds) != 2:
+            raise ValueError("noncanonical maps need verified code/data bounds")
+        for lo, hi in self.bounds.values():
+            if not 0 <= lo < hi <= 0xFFFFFFFF:
+                raise ValueError("invalid address bounds")
         self._code = _Shift(d.get("code_steps", []))
         self._data = _Shift(d.get("data_steps", []))
         self.differing = [(int(a, 16), int(s1), int(b, 16), int(s2))
@@ -43,11 +50,22 @@ class Build:
 
     def code(self, canon):
         """Canonical (USA) code address -> this build's address."""
+        self.require_address("code", canon)
+        if self.body_differs(canon) and canon not in self._differ_starts:
+            raise ValueError("%08X is inside changed code; no instruction mapping" % canon)
         return self._code.apply(canon)
 
     def data(self, canon):
         """Canonical (USA) data address -> this build's address."""
+        self.require_address("data", canon)
         return self._data.apply(canon)
+
+    def require_address(self, kind, address):
+        if self.canonical:
+            return
+        lo, hi = self.bounds[kind]
+        if not lo <= address < hi:
+            raise ValueError("%08X is outside verified %s bounds" % (address, kind))
 
     def canon_code(self, addr):
         """This build's code address -> the canonical one (the inverse of code()).
@@ -81,6 +99,11 @@ class _Shift:
 
     def __init__(self, steps):
         pairs = [(int(a, 16) if isinstance(a, str) else a, int(d)) for a, d in steps]
+        if pairs != sorted(pairs) or len({a for a, _ in pairs}) != len(pairs):
+            raise ValueError("address steps must be sorted and unique")
+        if any(not 0 <= a <= 0xFFFFFFFF or not -0x80000000 <= d <= 0x7FFFFFFF
+               or not 0 <= a + d <= 0xFFFFFFFF for a, d in pairs):
+            raise ValueError("invalid address step")
         self.starts = [a for a, _ in pairs]
         self.deltas = [d for _, d in pairs]
         self.i_starts = sorted(a + d for a, d in pairs)
@@ -98,7 +121,8 @@ class _Shift:
 def all_builds():
     builds = [canonical_build()]
     for path in sorted(glob.glob(os.path.join(HERE, "builds", "*.json"))):
-        builds.append(Build(json.load(open(path))))
+        with open(path, encoding="utf-8") as source:
+            builds.append(Build(json.load(source)))
     return builds
 
 
@@ -163,7 +187,9 @@ def read_hooks(paths, build):
     for path in paths:
         if not os.path.exists(path):
             continue
-        for lineno, line in enumerate(open(path), 1):
+        with open(path, encoding="utf-8") as source:
+            lines = source.readlines()
+        for lineno, line in enumerate(lines, 1):
             m = _BUILDS_RE.match(line.strip())
             if m:
                 only = [s.strip().lower() for s in re.split(r"[,\s]+", m.group(1)) if s.strip()]

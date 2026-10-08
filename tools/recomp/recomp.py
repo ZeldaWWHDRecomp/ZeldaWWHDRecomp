@@ -319,6 +319,13 @@ class Recompiler:
                 kind, ", ".join("{0x%08Xu, %d}" % (a, d) for a, d in steps)))
             f.write("const unsigned g_guest_%s_step_count = %d;\n" % (kind, len(steps)))
 
+        for kind in ("code", "data"):
+            lo, hi = b.bounds.get(kind, (0, 0))
+            f.write("const uint32_t g_guest_%s_lo = 0x%08Xu, g_guest_%s_hi = 0x%08Xu;\n" % (kind, lo, kind, hi))
+        changed = ", ".join("{0x%08Xu, 0x%08Xu}" % (a, a + size) for a, size, _, _ in b.differing)
+        f.write("const GuestChanged g_guest_changed_code[] = {%s};\n" % (changed or "{0u, 0u}"))
+        f.write("const unsigned g_guest_changed_code_count = %d;\n" % len(b.differing))
+
     def write_report(self, outdir, nfiles):
         with open(os.path.join(outdir, "report.txt"), "w") as f:
             f.write("build: %s (title %s)\n" % (self.build.name, self.build.title_id))

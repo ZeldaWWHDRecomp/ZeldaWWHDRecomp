@@ -72,8 +72,6 @@ struct DrawBatchState {
 };
 DrawBatchState drawBatchState;
 uint64_t drawBatchSubmissions = 0;
-constexpr uint32_t kDepthDownsamplePS = 0x3BB9DE00, kOcclusionPS = 0x44BDFD00;
-constexpr uint32_t kOcclusionVS = 0x44BDF900;
 bool aoPrivateReplay = false;
 uint32_t aoPrivateSource = 0;
 uint64_t aoPrivateFrame = ~0ull;
@@ -1705,7 +1703,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
   if (sh->vertex && ao_mode() == 2 &&
-      (r[mmSQ_PGM_START_VS] << 8) == kOcclusionVS && remapped >= 0 &&
+      sh->kind == gfx::ProgramKind::OcclusionVertex && remapped >= 0 &&
       size_t(remapped) + 16 <= supportUniforms.size()) {
     float noiseScale;
     memcpy(&noiseScale, supportUniforms.data() + remapped + 12, sizeof noiseScale);
@@ -1739,7 +1737,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       throw std::runtime_error("missing sampled texture");
     if (!sh->vertex && ao_hires_enabled() && aoPrivateSource &&
         s->addr == aoPrivateSource && aoPrivateFrame == R.frame &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS)
+        sh->kind == gfx::ProgramKind::OcclusionPixel)
       s = &aoPrivateColor;
     upload_surface(s);
     int scaleOffset = sh->uniforms.offset_texScale[unit];
@@ -1770,7 +1768,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                                     (samplerBase + samplerId) * 3;
     uint32_t patchedSampler[3];
     if (!sh->vertex && ao_mode() >= 1 && unit == 0 &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS) {
+        sh->kind == gfx::ProgramKind::OcclusionPixel) {
       memcpy(patchedSampler, samplerWords, sizeof patchedSampler);
       patchedSampler[0] = (patchedSampler[0] & ~0x7E00u) | (1u << 9) | (1u << 12);
       samplerWords = patchedSampler;
@@ -2439,7 +2437,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     return;
   }
   if (ao_hires_enabled() && colors[0] &&
-      (r[mmSQ_PGM_START_PS] << 8) == kDepthDownsamplePS) {
+      ps->kind == gfx::ProgramKind::DepthDownsample) {
     struct ReplayGuard {
       ReplayGuard() { aoPrivateReplay = true; aoPrivateFrame = ~0ull; }
       ~ReplayGuard() { aoPrivateReplay = false; }

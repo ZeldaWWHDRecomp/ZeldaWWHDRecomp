@@ -177,6 +177,9 @@ def derive(canon, other):
     data_steps = steps_of([(d, c.most_common(1)[0][0]) for d, c in sorted(seen.items())])
 
     return {
+        "code_bounds": [canon.p.text_lo, canon.p.text_hi],
+        "data_bounds": [min(s.addr for s in canon.p.rpx.sections if s.name in (".rodata", ".data", ".bss")),
+                        max(s.addr + s.size for s in canon.p.rpx.sections if s.name in (".rodata", ".data", ".bss"))],
         "code_steps": code_steps,
         "data_steps": data_steps,
         "differing_functions": [[canon.entries[i], canon.ends[i] - canon.entries[i],
@@ -205,6 +208,8 @@ def to_json(m, name, title, sha256, canon_sha256, canon_name):
         "comment": ("Canonical (%s) address -> %s address, as a piecewise constant shift. Derived and "
                     "checked by tools/recomp/mkbuildmap.py; numbers only, no game code." % (canon_name, name)),
         "checked": m["stats"],
+        "code_bounds": ["%08X" % a for a in m["code_bounds"]],
+        "data_bounds": ["%08X" % a for a in m["data_bounds"]],
         "code_steps": [["%08X" % a, d] for a, d in m["code_steps"]],
         "data_steps": [["%08X" % a, d] for a, d in m["data_steps"]],
         "differing_functions": [["%08X" % a, s1, "%08X" % b, s2] for a, s1, b, s2 in m["differing_functions"]],
@@ -246,9 +251,11 @@ def main():
         if other.sha256 != have["rpx_sha256"]:
             sys.exit("%s is not the build this map is for (SHA-256 %s..., expected %s...)" % (
                 args.rpx[1], other.sha256[:16], have["rpx_sha256"][:16]))
+        if canon.sha256 != have["derived_from"]["rpx_sha256"]:
+            sys.exit("canonical executable SHA-256 differs from the map's source")
         fresh = to_json(derive(canon, other), have["name"], have["title_id"], other.sha256,
                         canon.sha256, have["derived_from"]["name"])
-        same = all(fresh[k] == have.get(k) for k in ("code_steps", "data_steps", "differing_functions"))
+        same = all(fresh[k] == have.get(k) for k in ("code_steps", "data_steps", "differing_functions", "code_bounds", "data_bounds"))
         report(derive(canon, other))
         print("map in %s: %s" % (args.check, "unchanged" if same else "DIFFERS from the two binaries"))
         return 0 if same else 1

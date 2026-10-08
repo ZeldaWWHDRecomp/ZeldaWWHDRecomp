@@ -465,7 +465,7 @@ void link_preview_begin(uint32_t proc) {
     for (int i = 0; i < 3; i++) g_snap.env_player[i] = ld32(kEnvPlayerPos + 4 * i);
     for (auto& r : g_snap.regions) r.base = 0;
     region_begin(g_snap.regions[0], GD(0x1046CD10), 0x44);          // d_a_player statics (his kept position at +0x38)
-    region_begin(g_snap.regions[1], GD(0x10473FE8), 0x10474C68 - 0x10473FE8);  // dComIfGp play: player position/status words, button statuses
+    region_begin(g_snap.regions[1], GD(0x10473FE8), GD(0x10474C68) - GD(0x10473FE8));  // dComIfGp play: player position/status words, button statuses
     if (const char* e = getenv("WWHD_T60_EXTRA_REGION")) {  // debug: hunt for preview state (lo:size hex)
         uint32_t lo = (uint32_t)strtoul(e, nullptr, 16), sz = strchr(e, ':') ? (uint32_t)strtoul(strchr(e, ':') + 1, nullptr, 16) : 0;
         if (sz) region_begin(g_snap.regions[3], lo, sz);

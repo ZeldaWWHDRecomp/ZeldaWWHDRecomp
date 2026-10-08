@@ -22,13 +22,13 @@
 extern "C" {
 // Only the USA build is hooked here (tools/recomp/hooks_language.txt says "# builds: USA"): the
 // European and Japanese builds read their own region. The runtime ships for every build, so the
-// original function is declared weak and this hook is inert when it is not there (nothing calls it).
-__attribute__((weak)) void f_025F9448_orig(Cpu* c);  // SysSetting::update
+// A weak no-op keeps the unused wrapper linkable on every platform. The generated USA
+// original is strong and overrides it; the EUR build never calls this wrapper.
+__attribute__((weak)) void f_025F9448_orig(Cpu*) {}  // SysSetting::update
 }
 
 extern "C" void hook_025F9448(Cpu* c) {
     const uint32_t self = c->r[3];
-    if (!f_025F9448_orig) return;
     f_025F9448_orig(c);
     const game_lang::Start s = game_lang::current();
     if (!s.pack || !self) return;

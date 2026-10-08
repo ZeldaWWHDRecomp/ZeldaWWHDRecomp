@@ -922,6 +922,12 @@ Vendored third-party code keeps its own license: Cemu (MPL-2.0), metal-cpp (Apac
 
 ## Credits
 
+European-game builds and the executable-derived address map are by
+[ElFDA](https://github.com/ElFDA), contributed in [PR #77](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/77).
+The combined integration adds the runtime address audit and regional regression scenarios.
+Thanks also to [GreenNaugahyde](https://github.com/GreenNaugahyde) for the MPL-2.0 Android
+PAL work that informed the earlier desktop prototype.
+
 The Android port (`android/`, the Android parts of the runtime, the single-screen view) is by
 [rhemfur](https://github.com/rhemfur), who also contributed the paced frame interpolation, the
 Vulkan presentation and feedback-image work, and Linux/Windows fixes.

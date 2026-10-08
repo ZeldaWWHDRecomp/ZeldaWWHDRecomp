@@ -58,6 +58,25 @@ class Maps(unittest.TestCase):
     def setUp(self):
         self.eu = builds.by_name("EU")
 
+    def test_bounds_refuse_unverified_addresses(self):
+        for kind in ("code", "data"):
+            lo, hi = self.eu.bounds[kind]
+            translate = getattr(self.eu, kind)
+            for address in (lo - 1, hi, 0xFFFFFFFF):
+                with self.assertRaises(ValueError):
+                    translate(address)
+        with self.assertRaises(ValueError):
+            self.eu.data(0x145AC92C)  # an allocation is not a mapped global
+
+    def test_noncanonical_map_requires_bounds(self):
+        with self.assertRaisesRegex(ValueError, "bounds"):
+            builds.Build({"name": "EU", "title_id": "0005000010143600", "rpx_sha256": "0" * 64})
+
+    def test_invalid_shift_tables_are_refused(self):
+        for steps in (([8, 0], [4, 0]), ([4, 0], [4, 1]), ([4, -8],), ([4, 0x80000000],)):
+            with self.assertRaises(ValueError):
+                builds._Shift(steps)
+
     def test_steps_are_sorted_and_start_at_the_section(self):
         for shift in (self.eu._code, self.eu._data):
             self.assertEqual(shift.starts, sorted(shift.starts))
@@ -88,7 +107,8 @@ class Maps(unittest.TestCase):
         canon, canon_size, addr, size = next(d for d in self.eu.differing if d[3] < d[1])
         tail = canon + size + 4   # inside the canonical body, past the end of the build's
         self.assertTrue(self.eu.body_differs(tail))
-        self.assertNotEqual(self.eu.canon_code(self.eu.code(tail)), tail)
+        with self.assertRaises(ValueError):
+            self.eu.code(tail)
 
     def test_known_addresses(self):
         # from the derivation (docs/builds.md): the first run is unshifted, the last is +0x8C0
