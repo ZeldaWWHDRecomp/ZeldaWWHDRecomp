@@ -194,15 +194,21 @@ def run_once(args, variant, env_extra, index, out_dir):
     if args.uncapped:
         env["WWHD_VK_UNCAPPED"] = "1"
     env.update(env_extra)
-    if args.gate:
-        subprocess.run(args.gate, shell=True, check=False)  # e.g. wait for another benchmark to finish
-    while args.wait_for_others and other_games():
-        print("  waiting: another game process is running", file=sys.stderr)
-        time.sleep(30)
-    while args.max_load and load1() >= args.max_load:
-        print("  waiting: 1-minute load %.2f >= %.2f" % (load1(), args.max_load), file=sys.stderr, flush=True)
+    # Recheck both conditions together: a game can start while the load gate waits.
+    while True:
+        if args.gate:
+            subprocess.run(args.gate, shell=True, check=True)
+        games = other_games() if args.wait_for_others else []
+        busy_load = args.max_load and load1() >= args.max_load
+        if not games and not busy_load:
+            break
+        if games:
+            print("  waiting: another game process is running", file=sys.stderr, flush=True)
+        if busy_load:
+            print("  waiting: 1-minute load %.2f >= %.2f" % (load1(), args.max_load), file=sys.stderr, flush=True)
         time.sleep(30)
     load_before = load1()
+    load_peak = load_before
     started = time.time()
     with open(os.path.join(run_dir, "log"), "w") as log:
         proc = subprocess.Popen([os.path.abspath(binary), "--game", os.path.abspath(args.game), "--save", "save"],
@@ -210,6 +216,10 @@ def run_once(args, variant, env_extra, index, out_dir):
         status = "ok"
         try:
             while proc.poll() is None:
+                load_peak = max(load_peak, load1())
+                if args.max_load and load_peak >= args.max_load:
+                    status = "load exceeded limit"
+                    break
                 if os.path.exists(os.path.join(run_dir, "test_done")):
                     time.sleep(1)
                     break
@@ -224,6 +234,8 @@ def run_once(args, variant, env_extra, index, out_dir):
             stop(proc)
     if proc.poll() is None:
         raise RuntimeError("game process %d is still running" % proc.pid)
+    if status == "ok" and not os.path.exists(os.path.join(run_dir, "test_done")):
+        status = "exited before scenario completed"
     load_after = load1()
     shutil.rmtree(os.path.join(run_dir, "save"), ignore_errors=True)
     with open(os.path.join(run_dir, "log"), errors="replace") as f:
@@ -233,12 +245,14 @@ def run_once(args, variant, env_extra, index, out_dir):
         status = "no state load"
     windows = parse_prof(lines[loaded:] if loaded is not None else [])
     windows = windows[args.skip_windows:]
+    if status == "ok" and not windows:
+        status = "no measured profiling windows"
     paced = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[interp\] paced: " + NUM + "% of in-between", l)] if m]
     steps = [(float(m.group(1)), float(m.group(2))) for l in lines[loaded or 0:]
              for m in [re.search(r"\[interp\] " + NUM + r" logic steps/s \([^,]*, " + NUM + " frames per step", l)] if m]
     pacing = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[vulkan pacing\].*p95 " + NUM, l)] if m]
-    result = {"variant": variant, "run": index, "status": status, "env": env_extra, "load_before": load_before,
-              "load_after": load_after, "seconds": round(time.time() - started, 1), "windows": len(windows),
+    result = {"variant": variant, "binary": os.path.abspath(binary), "run": index, "status": status, "env": env_extra, "load_before": load_before,
+              "load_after": load_after, "load_peak": load_peak, "seconds": round(time.time() - started, 1), "windows": len(windows),
               "summary": summarize(windows) if windows else {}}
     tick = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[tick\] CPU " + NUM, l)] if m]
     logic = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"main thread CPU per pass: logic " + NUM, l)] if m]
@@ -290,7 +304,7 @@ def main():
     p.add_argument("--warmup", action="store_true", help="one discarded run first (warms the shader caches)")
     p.add_argument("--cache-dir", help="shader/pipeline caches shared by the runs (default: <out>/cache)")
     p.add_argument("--timeout", type=float, default=600)
-    p.add_argument("--max-load", type=float, default=0, help="wait until the 1-minute load is below this (0 disables)")
+    p.add_argument("--max-load", type=float, default=0, help="wait below this 1-minute load; discard a run if it exceeds the limit (0 disables)")
     p.add_argument("--gate", help="shell command run (and waited for) before every run")
     p.add_argument("--out", default=os.path.join(REPO, "build", "bench"))
     p.add_argument("--no-wait", dest="wait_for_others", action="store_false", help="don't wait for other game processes")
@@ -335,7 +349,8 @@ def main():
                         "stdev": statistics.stdev(vals) if len(vals) > 1 else 0.0, "n": len(vals)}
         table[name] = stats
     meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs", "display_hz")}
-    meta["binary"] = os.path.basename(args.binary)
+    meta["binary"] = os.path.abspath(args.binary)
+    meta["variant_binaries"] = {n: os.path.abspath(p) for n, p in args.variant_binaries.items()}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump({"meta": meta, "variants": table, "runs": results}, f, indent=1)
     keys = sorted({k for t in table.values() for k in t})
