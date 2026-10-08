@@ -95,7 +95,7 @@ state separate from Android JNI. It does not copy the fork's renderer or introdu
 | Synthetic ZIP and state-machine CTest | PASS: metadata/ELF/traversal/API rejection; selection; 119/120-frame probe; interrupted probe; load failure; cache removal |
 | Android arm64 native build (stub-generated game entry points) | PASS |
 | Android debug APK Java/resources/native packaging | PASS with Studio JBR; release artifact guard PASS (23 files checked) |
-| GitHub branch CI | 74c8476: Android/Linux/Windows PASS; 925a1d3: Android/Windows PASS, Linux running |
+| GitHub branch CI | 09eb00b: Android/Linux/Windows PASS (final implementation plus measurements) |
 | Snapdragon installation, custom-driver loading and surface/presentation | Untested; requires physical device |
 | Real-driver crash/hang recovery and cache behavior | Untested; state machine tested on host only |
 
@@ -111,3 +111,13 @@ Follow-up cache handling: [Android](https://github.com/ZeldaWWHDRecomp/ZeldaWWHD
 [Windows](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37811265640),
 [Linux](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37811265630).
 Local numeric comparison/timing records are retained under excluded `local-evidence/gpu-tests`.
+
+Final validated report/code head `09eb00b`: [Android](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37812410658),
+[Linux](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37812411070),
+[Windows](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37812410746), all PASS.
+Implementation commits: `74c8476` (decoder/custom drivers), `925a1d3` (complete per-driver cache
+cleanup); `09eb00b` records gameplay comparisons and measurements. This final documentation
+update records the CI results. All authors use Lukas S <lukasschaupp@gmail.com>.
+All local generated code, test executables, archives, dependency builds and Android build products
+were removed after verification. Only excluded derived validation records remain. No main/devel
+pushes, merges or GitHub posts were made.
