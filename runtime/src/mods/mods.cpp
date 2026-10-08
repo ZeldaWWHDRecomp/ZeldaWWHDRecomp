@@ -9,6 +9,8 @@
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,
 //                              Link's control), one line per event with the logic step
 #include "mods.h"
+#include "move_speed.h"
+#include "../input.h"
 
 #include <atomic>
 #include <cstdarg>
@@ -35,6 +37,10 @@ std::atomic<bool> g_mouse{env_on("WWHD_MOD_MOUSE_CAMERA")};
 std::atomic<float> g_sens{env_f("WWHD_MOD_MOUSE_SENS", 0.15f)};
 std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
+std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
+std::atomic<float> g_move_factor{clamp_move_speed(env_f("WWHD_MOD_MOVE_FACTOR", 1.5f))};
+std::atomic<uint32_t> g_move_button{input::kStickL};
+std::atomic<uint32_t> g_move_buttons{0};
 std::atomic<bool> g_scenes{env_on("WWHD_MOD_FAST_SCENES")};
 
 void note(const char* what, bool on) { LOG("[mods] %s %s", what, on ? "on" : "off"); }
@@ -64,6 +70,22 @@ bool quick_doors() { return g_doors.load(std::memory_order_relaxed); }
 void set_quick_doors(bool on) { g_doors = on; note("quick doors", on); }
 bool fast_scenes() { return g_scenes.load(std::memory_order_relaxed); }
 void set_fast_scenes(bool on) { g_scenes = on; note("fast scene changes", on); }
+
+bool move_speed() { return g_move.load(std::memory_order_relaxed); }
+void set_move_speed(bool on) { g_move = on; note("run/swim speed", on); }
+float move_speed_factor() { return g_move_factor.load(std::memory_order_relaxed); }
+void set_move_speed_factor(float factor) { g_move_factor = clamp_move_speed(factor); }
+uint32_t move_speed_button() { return g_move_button.load(std::memory_order_relaxed); }
+void set_move_speed_button(uint32_t button) {
+    constexpr uint32_t allowed = input::kStickL | input::kStickR | input::kL | input::kR | input::kZL | input::kZR;
+    if (button && !(button & (button - 1)) && (button & allowed)) g_move_button = button;
+}
+void move_speed_input(uint32_t buttons) { g_move_buttons.store(buttons, std::memory_order_relaxed); }
+float link_move_factor(uint32_t link) {
+    if (!move_speed() || !link) return 1.f;
+    return move_factor(true, ld32(link + 0x65F0), g_move_buttons.load(std::memory_order_relaxed),
+                       move_speed_button(), move_speed_factor());
+}
 
 uint64_t step() { return interp::logic_steps(); }
 double game_time() { return (double)interp::logic_steps() / 30.0; }

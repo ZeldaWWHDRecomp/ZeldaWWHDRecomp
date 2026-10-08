@@ -1028,6 +1028,20 @@ void tab_mods() {
                 float speed = mods::camera_speed();
                 if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
                     hostui::post([speed] { mods::set_camera_speed(speed); hostui::set("mod.direct-camera.speed", std::to_string(speed)); mods::packages::remember_option("direct-camera.speed", speed); });
+            } else if (selected == "move-speed") {
+                float speed = mods::move_speed_factor();
+                if (ImGui::SliderFloat("Run/swim multiplier", &speed, 1.25f, 4.f, "%.2fx"))
+                    hostui::post([speed] { mods::set_move_speed_factor(speed); hostui::set("mod.move-speed.factor", std::to_string(speed)); mods::packages::remember_option("move-speed.factor", speed); });
+                const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
+                const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
+                for (int i = 0; i < 6; ++i) {
+                    if (i) ImGui::SameLine();
+                    if (radio(names[i], mods::move_speed_button() == buttons[i])) {
+                        auto button = buttons[i];
+                        hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
+                    }
+                }
+                help("Hold to boost horizontal movement while running or swimming. Rebind the chosen game button in Controls.");
             } else if (selected == "mouse-camera") {
                 float sensitivity = mods::mouse_sensitivity();
                 if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))

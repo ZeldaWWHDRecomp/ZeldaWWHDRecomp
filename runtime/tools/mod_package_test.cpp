@@ -22,6 +22,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
+static bool move_on = false;
+bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
+float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
+uint32_t move_speed_button() { return 0x40000; } void set_move_speed_button(uint32_t) {}
+
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }

@@ -11,6 +11,7 @@
 
 #include "runtime.h"
 #include "true60.h"
+#include "mods/mods.h"
 
 extern "C" {
 void f_02416230_orig(Cpu* c);  // daPy_lk_c::setNormalSpeedF
@@ -52,15 +53,18 @@ extern "C" void site_023FD35C(Cpu* c) {
 // speed.y by dv during this step (f31 = speed.y before); adding dv * (1-dt)/2 makes the half steps
 // land exactly on the 30 Hz path (v += g; p += v), so jump arcs keep their height and length.
 extern "C" void site_023FD39C(Cpu* c) {
-    if (!link60()) return;
-    const float dt = true60::dt();
+    const bool half = link60();
+    // The vector argument is &Link->speed in every mode (r28 is Link at this site).
+    const float factor = mods::link_move_factor(c->r[4] - kSpeed);
+    if (!half && factor == 1.f) return; // preserve the stock path and all FP bits when off
+    const float dt = half ? true60::dt() : 1.f;
     uint32_t sp = c->r[4];  // &speed
     float vx = u32_as_f32(ld32(sp)), vy = u32_as_f32(ld32(sp + 4)), vz = u32_as_f32(ld32(sp + 8));
-    float dv = vy - (float)c->f[31].ps0;
+    float dv = half ? vy - (float)c->f[31].ps0 : 0.f;
     uint32_t v = scratch_vec();
-    st32(v, f32_as_u32(vx * dt));
-    st32(v + 4, f32_as_u32(vy * dt + dv * (1.0f - dt) * 0.5f));
-    st32(v + 8, f32_as_u32(vz * dt));
+    st32(v, f32_as_u32(vx * dt * factor));
+    st32(v + 4, half ? f32_as_u32(vy * dt + dv * (1.0f - dt) * 0.5f) : ld32(sp + 4));
+    st32(v + 8, f32_as_u32(vz * dt * factor));
     c->r[4] = v;
 }
 

@@ -25,6 +25,9 @@ const Entry catalogue[] = {
     {"quick-doors", "Quick doors", "Gameplay",
      "Run door-opening and closing events at four times their normal speed.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
+    {"move-speed", "Run/swim speed", "Gameplay",
+     "Hold the selected button to run or swim faster. Default: L3 (rebind it in Controls).",
+     "WWHD_MOD_MOVE_SPEED", move_speed, set_move_speed},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
@@ -56,7 +59,14 @@ void load_saved() {
         if (end != value.c_str() && *end == '\0' && std::isfinite(parsed) && parsed >= lo && parsed <= hi)
             apply(parsed);
     };
+    number("mod.move-speed.factor", "WWHD_MOD_MOVE_FACTOR", 1.25f, 4.f, set_move_speed_factor);
     number("mod.direct-camera.speed", "WWHD_MOD_CAMERA_SPEED", .5f, 2.f, set_camera_speed);
+    std::string button;
+    if (hostui::get("mod.move-speed.button", button)) {
+        char* end = nullptr;
+        auto value = std::strtoul(button.c_str(), &end, 10);
+        if (end != button.c_str() && *end == '\0' && value <= UINT32_MAX) set_move_speed_button(uint32_t(value));
+    }
     number("mod.mouse-camera.sensitivity", "WWHD_MOD_MOUSE_SENS", .08f, .3f, set_mouse_sensitivity);
 }
 bool set_enabled(std::string_view id, bool on) {
