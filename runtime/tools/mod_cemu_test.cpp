@@ -56,5 +56,15 @@ int main(int argc,char** argv) {
     std::string error;assert(cemu::compatible_shader_interface(spirv,spirv,error));
     auto changed=spirv;changed.back()=7;assert(!cemu::compatible_shader_interface(spirv,changed,error));
     changed=spirv;changed[18]=16;assert(!cemu::compatible_shader_interface(spirv,changed,error));
-    fs::remove_all(root);std::cout<<"Cemu rules, presets, conflicts, backend guard and shader layouts passed\n";
+    // Pixel inputs without a vertex shader output become the translation's constants.
+    const char* unfed[32]={};unfed[1]="vec4(0.0, 0.0, 0.0, 1.0)";unfed[12]="vec4(1.0, 1.0, 1.0, 1.0)";
+    auto pixel=cemu::const_pixel_inputs("layout(location = 0) in vec4 passParameterSem0;\nlayout(location=1) noperspective in vec4 passParameterSem3;\n"
+        "layout( location = 12 ) flat in vec4 tint;\nlayout(location = 12) out vec4 color;\nlayout(location = 1, component = 0) in vec4 other;\n// layout(location = 1) in vec2 uv;\n",unfed);
+    assert(pixel.find("layout(location = 0) in vec4 passParameterSem0;")!=std::string::npos);
+    assert(pixel.find("const vec4 passParameterSem3 = vec4(0.0, 0.0, 0.0, 1.0);")!=std::string::npos);
+    assert(pixel.find("const vec4 tint = vec4(1.0, 1.0, 1.0, 1.0);")!=std::string::npos);
+    assert(pixel.find("layout(location = 12) out vec4 color;")!=std::string::npos);
+    assert(pixel.find("layout(location = 1, component = 0) in vec4 other;")!=std::string::npos);
+    assert(pixel.find("layout(location = 1) in vec2 uv;")!=std::string::npos);
+    fs::remove_all(root);std::cout<<"Cemu rules, presets, conflicts, backend guard, shader layouts and unfed pixel inputs passed\n";
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include <cctype>
 #include <cstdint>
 #include <map>
 #include <sstream>
@@ -61,6 +62,42 @@ inline std::map<std::string,std::string> shader_interface(const std::vector<uint
         if(!result.emplace(key,type(type,v[0],0)).second)throw std::runtime_error("Duplicate shader binding/location");
     }
     return result;
+}
+// A pixel shader input that no vertex shader output feeds is a constant in the translated shader
+// (gfx/vulkan/shaders.cpp ps_link: the value SPI_PS_INPUT_CNTL DEFAULT_VAL gives it). The pack's
+// "layout(location = N) [flat|noperspective|smooth|centroid] in vec4 name;" for such an input
+// becomes the same constant, otherwise its interface has an input the original lacks.
+// values[N]: the constant for location N, or null for a fed input.
+inline std::string const_pixel_inputs(std::string source,const char* const (&values)[32]) {
+    auto ident=[](char c){return std::isalnum((unsigned char)c)||c=='_';};
+    auto space=[&](size_t& at){while(at<source.size()&&std::isspace((unsigned char)source[at]))at++;};
+    auto word=[&](size_t& at){size_t begin=at;while(at<source.size()&&ident(source[at]))at++;return source.substr(begin,at-begin);};
+    for(size_t start=source.find("layout");start!=std::string::npos;start=source.find("layout",start+1)) {
+        if(start&&ident(source[start-1]))continue;
+        size_t at=start+6;space(at);
+        if(at>=source.size()||source[at]!='(')continue;
+        at++;space(at);
+        if(word(at)!="location")continue;
+        space(at);if(at>=source.size()||source[at]!='=')continue;
+        at++;space(at);
+        size_t digits=at;while(at<source.size()&&std::isdigit((unsigned char)source[at]))at++;
+        if(at==digits||at-digits>2)continue;
+        const int location=std::stoi(source.substr(digits,at-digits));
+        space(at);if(at>=source.size()||source[at]!=')'||location>=32||!values[location])continue;
+        at++;
+        bool input=false;std::string type,name;
+        for(;;) {
+            space(at);auto token=word(at);
+            if(token=="flat"||token=="noperspective"||token=="smooth"||token=="centroid")continue;
+            if(token=="in"&&!input){input=true;continue;}
+            type=token;space(at);name=word(at);break;
+        }
+        space(at);
+        if(!input||type!="vec4"||name.empty()||at>=source.size()||source[at]!=';')continue;
+        const std::string constant="const vec4 "+name+" = "+values[location]+";";
+        source.replace(start,at+1-start,constant);
+    }
+    return source;
 }
 inline bool compatible_shader_interface(const std::vector<uint32_t>& original,const std::vector<uint32_t>& replacement,std::string& error) {
     try {
