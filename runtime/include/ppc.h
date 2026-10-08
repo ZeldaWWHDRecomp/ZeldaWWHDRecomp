@@ -195,6 +195,48 @@ static inline __attribute__((always_inline)) void cr_set_f_m(Cpu* c, int f, doub
     if (m & 8) c->cr[4 * f + 3] = (uint8_t)__builtin_isunordered(a, b); else PPC_CR_DEAD(c, 4 * f + 3);
 }
 
+/* The same compares for leaf functions that keep CR bits in C locals (tools/recomp/leaflocal.py):
+ * lt, gt, eq, so point at the field's four locals. */
+#ifdef PPC_CR_CHECK
+#define PPC_CRL_DEAD(p) (*(p) = 0x55)
+static inline uint8_t ppc_crl_read(Cpu* c, uint8_t v, int bit, uint32_t addr) {
+    if (__builtin_expect(v == 0x55, 0)) ppc_cr_poisoned(c, bit, addr);
+    return v;
+}
+#else
+#define PPC_CRL_DEAD(p) ((void)0)
+#endif
+static inline __attribute__((always_inline)) void crl_set_s_m(uint8_t* lt, uint8_t* gt, uint8_t* eq, uint8_t* so,
+                                                              const Cpu* c, int32_t a, int32_t b, int m) {
+    if (m & 1) *lt = a < b; else PPC_CRL_DEAD(lt);
+    if (m & 2) *gt = a > b; else PPC_CRL_DEAD(gt);
+    if (m & 4) *eq = a == b; else PPC_CRL_DEAD(eq);
+    if (m & 8) *so = c->xer_so; else PPC_CRL_DEAD(so);
+}
+static inline __attribute__((always_inline)) void crl_set_u_m(uint8_t* lt, uint8_t* gt, uint8_t* eq, uint8_t* so,
+                                                              const Cpu* c, uint32_t a, uint32_t b, int m) {
+    if (m & 1) *lt = a < b; else PPC_CRL_DEAD(lt);
+    if (m & 2) *gt = a > b; else PPC_CRL_DEAD(gt);
+    if (m & 4) *eq = a == b; else PPC_CRL_DEAD(eq);
+    if (m & 8) *so = c->xer_so; else PPC_CRL_DEAD(so);
+}
+static inline __attribute__((always_inline)) void crl_set_f_m(uint8_t* lt, uint8_t* gt, uint8_t* eq, uint8_t* so,
+                                                              const Cpu* c, double a, double b, int m) {
+    (void)c;
+    if (m & 1) *lt = a < b; else PPC_CRL_DEAD(lt);
+    if (m & 2) *gt = a > b; else PPC_CRL_DEAD(gt);
+    if (m & 4) *eq = a == b; else PPC_CRL_DEAD(eq);
+    if (m & 8) *so = (uint8_t)__builtin_isunordered(a, b); else PPC_CRL_DEAD(so);
+}
+static inline __attribute__((always_inline)) void crl0_rc_m(uint8_t* lt, uint8_t* gt, uint8_t* eq, uint8_t* so,
+                                                            const Cpu* c, uint32_t v, int m) {
+    crl_set_s_m(lt, gt, eq, so, c, (int32_t)v, 0, m);
+}
+#define crl_set_s(lt, gt, eq, so, c, a, b) crl_set_s_m(lt, gt, eq, so, c, a, b, 15)
+#define crl_set_u(lt, gt, eq, so, c, a, b) crl_set_u_m(lt, gt, eq, so, c, a, b, 15)
+#define crl_set_f(lt, gt, eq, so, c, a, b) crl_set_f_m(lt, gt, eq, so, c, a, b, 15)
+#define crl0_rc(lt, gt, eq, so, c, v) crl0_rc_m(lt, gt, eq, so, c, v, 15)
+
 static inline uint64_t ppc_fctiwz(double d) {
     int32_t r;
     if (isnan(d)) r = (int32_t)0x80000000;

@@ -2,7 +2,8 @@
 """Survey of per-step logic in the game's actors, for true 60 fps conversion planning.
 
 For every WWHD function named in build/names.tsv, grouped by GameCube source file, this counts in
-the generated code (build/gen):
+the generated code (build/gen, generated with WWHD_RECOMP_PLAIN=1: the plain c->r[N] form these patterns
+match, tools/recomp/recomp.py):
   - calls to the shared per-step primitives that true60.cpp already scales by dt
     (cLib_addCalc*/chase*, cLib_calcTimer, fopAcM_calcSpeed/posMove/posMoveF, J3DFrameCtrl::update,
     mDoExt_McaMorf::play, mDoExt_baseAnm::play, ...)
