@@ -34,9 +34,31 @@ Debug switches:
 | Compute synthetic tests | PASS: 7 format variants, 3 shapes including layers/tails, 12 seeds, 252 dispatches |
 | Production surface smoke | PASS: 10 linear/sRGB/signed formats, 2 mip levels, 2 layers, cache reuse and invalidation |
 | Native and forced `--renderer-smoke`, MoltenVK with validation | PASS; no validation errors; existing 3D-image maintenance9 forward-compatibility warnings |
-| Scripted native/forced frame comparison | Pending |
-| Upload-cost measurements | Pending |
+| Scripted native/forced frame comparison | PASS: two 1280×720 Windfall frames; details below |
+| Upload-cost measurements | PASS: CPU recording and verification costs measured below |
 | Mali/PowerVR device execution | Untested: no physical device available |
+
+Scripted MoltenVK comparison uses the same restored Windfall state, 30 fps, no inputs, private
+caches, copied saves, headless/no audio. Preselected tolerance: RGB mean absolute error ≤1/255,
+and ≥99% of pixels with maximum RGB channel error ≤3/255. Endpoint rounding can differ from
+native compressed filtering, and nonlinear material/edge operations amplify a small number of
+errors. The exact CPU/GPU fallback comparison remains byte-exact.
+
+| TV frame | RGB mean error (byte units) | Pixels within 3 | Maximum channel error |
+| --- | --- | --- | --- |
+| 900 | 0.108692 | 99.9252% | 67 |
+| 960 | 0.107773 | 99.9224% | 41 |
+
+There were zero GPU/CPU mismatches across 2,197 decoded mip uploads (78.9 MiB compressed input).
+With verification disabled, CPU recording cost per mip was median 18.2 µs / p95 53.5 µs after
+excluding the first upload; total 58.1 ms across 2,196 uploads. The first upload cost 54.5 ms,
+including shader/pipeline creation. After state restoration, 943 uploads cost 25.0 ms total,
+median 17.7 µs / p95 50.4 µs. Verification's GPU drains and CPU comparisons raised the median to
+301.4 µs / p95 2253.4 µs. These timings measure CPU upload work, not isolated GPU execution.
+Steady frame time was 33.78 ms native, 33.54 ms forced+verify and 33.54 ms forced without verify;
+render CPU was 3.41 / 3.25 / 3.31 ms. One shared-machine sample per variant cannot establish a
+speedup or a precise steady GPU overhead. Startup/restore costs and the forced allocation traffic
+remain relevant on mobile devices.
 
 ## Custom Android Vulkan drivers
 
@@ -73,7 +95,7 @@ state separate from Android JNI. It does not copy the fork's renderer or introdu
 | Synthetic ZIP and state-machine CTest | PASS: metadata/ELF/traversal/API rejection; selection; 119/120-frame probe; interrupted probe; load failure; cache removal |
 | Android arm64 native build (stub-generated game entry points) | PASS |
 | Android debug APK Java/resources/native packaging | PASS with Studio JBR; release artifact guard PASS (23 files checked) |
-| GitHub branch CI | Android PASS for 74c8476; Linux/Windows pending; follow-up cache change pending |
+| GitHub branch CI | 74c8476: Android/Linux/Windows PASS; 925a1d3: Android/Windows PASS, Linux running |
 | Snapdragon installation, custom-driver loading and surface/presentation | Untested; requires physical device |
 | Real-driver crash/hang recovery and cache behavior | Untested; state machine tested on host only |
 
@@ -81,3 +103,11 @@ rhemfur can validate a real Snapdragon device after merge. Physical-device follo
 system/Turnip selection, package install/remove, 120-frame success and termination before frame
 120, restart fallback notice, rotation/window recreation and driver-specific pipeline caches.
 No game files, generated game code, saves or screenshots are committed.
+
+CI evidence: [initial Android](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37810597403),
+[initial Linux including forced fallback smoke](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37810597404),
+[initial Windows](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37810597394).
+Follow-up cache handling: [Android](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37811265631),
+[Windows](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37811265640),
+[Linux](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/runs/37811265630).
+Local numeric comparison/timing records are retained under excluded `local-evidence/gpu-tests`.
