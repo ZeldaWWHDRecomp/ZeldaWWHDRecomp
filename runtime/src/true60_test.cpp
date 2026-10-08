@@ -256,8 +256,8 @@ void before_execute_link(uint32_t proc) {
                 for (uint32_t off : {0x2ECu,0x300u,0x314u}) { stf32(proc+off,x); stf32(proc+off+4,y); stf32(proc+off+8,z); }
                 st16(proc+0x322,(uint16_t)angle);st16(proc+0x32A,(uint16_t)angle);
                 // The HD executable restores these retained debug values at 0240D130 each update.
-                stf32(0x1046CD48,x);stf32(0x1046CD4C,y);stf32(0x1046CD50,z);
-                st16(0x1046CD12,(uint16_t)angle);st16(0x1046CD0A,(uint16_t)angle);
+                stf32(GD(0x1046CD48),x);stf32(GD(0x1046CD4C),y);stf32(GD(0x1046CD50),z);
+                st16(GD(0x1046CD12),(uint16_t)angle);st16(GD(0x1046CD0A),(uint16_t)angle);
                 warped=true;
             }
         }
