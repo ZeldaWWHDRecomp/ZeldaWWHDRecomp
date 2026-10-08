@@ -99,6 +99,32 @@ static inline void cr_set_u(Cpu* c, int f, uint32_t a, uint32_t b) {
     c->cr[4 * f + 0] = a < b; c->cr[4 * f + 1] = a > b; c->cr[4 * f + 2] = a == b; c->cr[4 * f + 3] = c->xer_so;
 }
 static inline void cr0_rc(Cpu* c, uint32_t v) { cr_set_s(c, 0, (int32_t)v, 0); }
+/* The recompiler's condition-register liveness pass (tools/recomp/crlive.py) stores only the bits
+ * that are read later: m has bit 0 = lt, 1 = gt, 2 = eq, 3 = so of the field. With PPC_CR_CHECK, the
+ * dropped bits get a poison value that ppc_cr_read() refuses (a check build of the recompiler). */
+#ifdef PPC_CR_CHECK
+#define PPC_CR_DEAD(c, i) ((c)->cr[i] = 0x55)
+void ppc_cr_poisoned(Cpu* c, int bit, uint32_t addr);
+static inline uint8_t ppc_cr_read(Cpu* c, int bit, uint32_t addr) {
+    if (__builtin_expect(c->cr[bit] == 0x55, 0)) ppc_cr_poisoned(c, bit, addr);
+    return c->cr[bit];
+}
+#else
+#define PPC_CR_DEAD(c, i) ((void)0)
+#endif
+static inline __attribute__((always_inline)) void cr_set_s_m(Cpu* c, int f, int32_t a, int32_t b, int m) {
+    if (m & 1) c->cr[4 * f + 0] = a < b; else PPC_CR_DEAD(c, 4 * f + 0);
+    if (m & 2) c->cr[4 * f + 1] = a > b; else PPC_CR_DEAD(c, 4 * f + 1);
+    if (m & 4) c->cr[4 * f + 2] = a == b; else PPC_CR_DEAD(c, 4 * f + 2);
+    if (m & 8) c->cr[4 * f + 3] = c->xer_so; else PPC_CR_DEAD(c, 4 * f + 3);
+}
+static inline __attribute__((always_inline)) void cr_set_u_m(Cpu* c, int f, uint32_t a, uint32_t b, int m) {
+    if (m & 1) c->cr[4 * f + 0] = a < b; else PPC_CR_DEAD(c, 4 * f + 0);
+    if (m & 2) c->cr[4 * f + 1] = a > b; else PPC_CR_DEAD(c, 4 * f + 1);
+    if (m & 4) c->cr[4 * f + 2] = a == b; else PPC_CR_DEAD(c, 4 * f + 2);
+    if (m & 8) c->cr[4 * f + 3] = c->xer_so; else PPC_CR_DEAD(c, 4 * f + 3);
+}
+static inline __attribute__((always_inline)) void cr0_rc_m(Cpu* c, uint32_t v, int m) { cr_set_s_m(c, 0, (int32_t)v, 0, m); }
 
 static inline uint32_t ppc_divw(uint32_t a, uint32_t b) {
     if (b == 0 || (a == 0x80000000u && b == 0xFFFFFFFFu)) return ((int32_t)a < 0) ? 0xFFFFFFFFu : 0;
@@ -160,6 +186,13 @@ static inline double to_single(double d) { return (double)(float)d; }
 static inline void cr_set_f(Cpu* c, int f, double a, double b) {
     c->cr[4 * f + 0] = a < b; c->cr[4 * f + 1] = a > b;
     c->cr[4 * f + 2] = a == b; c->cr[4 * f + 3] = (uint8_t)__builtin_isunordered(a, b);
+}
+/* cr_set_f storing only the bits in m (see cr_set_s_m) */
+static inline __attribute__((always_inline)) void cr_set_f_m(Cpu* c, int f, double a, double b, int m) {
+    if (m & 1) c->cr[4 * f + 0] = a < b; else PPC_CR_DEAD(c, 4 * f + 0);
+    if (m & 2) c->cr[4 * f + 1] = a > b; else PPC_CR_DEAD(c, 4 * f + 1);
+    if (m & 4) c->cr[4 * f + 2] = a == b; else PPC_CR_DEAD(c, 4 * f + 2);
+    if (m & 8) c->cr[4 * f + 3] = (uint8_t)__builtin_isunordered(a, b); else PPC_CR_DEAD(c, 4 * f + 3);
 }
 
 static inline uint64_t ppc_fctiwz(double d) {
