@@ -19,6 +19,7 @@
 #include <initializer_list>
 #include <string>
 
+#include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
 
@@ -42,7 +43,7 @@ uint32_t save_addr() {
     return a;
 }
 
-constexpr uint32_t kStageName = 0x1046F0B0 + 0x5134;  // current stage, as in savestate.cpp
+const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // current stage, as in savestate.cpp
 
 std::string stage() { return std::string((const char*)mem::ptr(kStageName), strnlen((const char*)mem::ptr(kStageName), 8)); }
 

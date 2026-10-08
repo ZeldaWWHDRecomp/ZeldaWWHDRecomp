@@ -1,4 +1,5 @@
 #include "cemu_pack.h"
+#include "guest_addr.h"
 #include "mod_archive.h"
 #include <algorithm>
 #include <atomic>
@@ -155,14 +156,17 @@ Pack parse(const fs::path& folder){
             {"wwhdaspecteur",{{"modulematches","0xb7e748de"},{"0x1004aaf0",".float ($aspectratio)"},{"0x101417e0",".float ($aspectratio)"},{"0x101658a8",".float ($aspectratio)"}}},
             {"wwhdaspectjap",{{"modulematches","0x74bd3f6a"},{"0x1004aaf0",".float ($aspectratio)"},{"0x101417f8",".float ($aspectratio)"},{"0x101658c0",".float ($aspectratio)"}}},
             {"wwhdaspectusa",{{"modulematches","0x475bd29f"},{"0x1004aaf0",".float ($aspectratio)"},{"0x101417d0",".float ($aspectratio)"},{"0x10165898",".float ($aspectratio)"}}}};
-        bool usa=false;std::set<std::string> seen;
+        // the section of the build this port was made from: its addresses are the ones the game has
+        const std::string build=g_guest_build_name;
+        const std::string want=build=="EU"?"wwhdaspecteur":build=="JP"?"wwhdaspectjap":"wwhdaspectusa";
+        bool mine=false;std::set<std::string> seen;
         for(auto section:ini(read(folder/"patches.txt"))) {
             require(expected.contains(section.name)&&seen.insert(section.name).second,"Unsupported Cemu patch section");
             for(auto& [key,value]:section.fields)value=lower(trim(value));
             require(section.fields==expected.at(section.name),"Only official WWHD aspect data patches are supported");
-            usa|=section.name=="wwhdaspectusa";
+            mine|=section.name==want;
         }
-        require(usa,"Missing WWHD USA aspect patch");pack.aspect_expression="$aspectRatio";
+        require(mine,"Missing WWHD "+build+" aspect patch");pack.aspect_expression="$aspectRatio";
     }
     require(!pack.textures.empty()||!pack.shaders.empty(),"Cemu pack contains no supported graphics or shader changes");
     prepare({Selection{"validation",pack,{}}});return pack;
