@@ -170,20 +170,6 @@ void tick(double t, bool ended) {
             input::pro_controller() == (mode == 2) ? "PASS" : "FAIL", mode, input::pro_controller() ? 2 : 1, t);
         mode = 0;
     }
-    // Only step numbers and clocks: no guest memory or save data in this timeline.
-    static FILE* timeline = [] {
-        const char* path = getenv("WWHD_LOGIC_TIMELINE");
-        return path ? fopen(path, "w") : nullptr;
-    }();
-    static uint64_t last_step = ~uint64_t(0);
-    uint64_t step = interp::logic_steps();
-    if (timeline && step != last_step) {
-        fprintf(timeline, "%llu %.9f %.9f\n", (unsigned long long)step, t,
-                timebase::now() / double(timebase::kTicksPerSec));
-        fflush(timeline);
-        last_step = step;
-    }
-
     // WWHD_TEST_SAVE=t:slot,... uses the selected kind (WWHD_FULL_SAVE_STATES=0|1).
     static std::vector<std::pair<double, int>> saves = [] {
         std::vector<std::pair<double, int>> v;
@@ -419,7 +405,19 @@ void before_execute_link(uint32_t proc) {
 
 namespace true60_test {
 uint64_t g_origin_step = 0;
-void set_origin_step(uint64_t s) { g_origin_step = s; }
+// Called at the actual logic-step boundary, including frames that do not poll input.
+void logic_step(uint64_t step) {
+    static FILE* timeline = [] {
+        const char* path = getenv("WWHD_LOGIC_TIMELINE");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    if (!timeline || !g_origin_step) return;
+    // Only step numbers and clocks: no guest memory or save data.
+    fprintf(timeline, "%llu %.9f %.9f\n", (unsigned long long)step, (step - g_origin_step) / 30.0,
+            timebase::now() / double(timebase::kTicksPerSec));
+    fflush(timeline);
+}
+void set_origin_step(uint64_t s) { g_origin_step = s; logic_step(s); }
 uint64_t origin_step() { return g_origin_step; }
 }
 

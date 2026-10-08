@@ -82,6 +82,8 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 
 }
 
+namespace true60_test { void logic_step(uint64_t step); }
+
 namespace interp {
 
 // Output frame rate with interpolation: 60, 120 or 240 (in-between frames per step: fps/30 - 1).
@@ -864,7 +866,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     paced_pass_start();
     true60::new_pass();
     true60::pass_begin(!enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
-    if (!enabled() || !g_hold_next) g_logic_steps++;
+    if (!enabled() || !g_hold_next) {
+        g_logic_steps++;
+        true60_test::logic_step(g_logic_steps);
+    }
     if (!enabled()) {
         g_hold_next = false;
         g_phase = 0;

@@ -411,7 +411,6 @@ static void park_gate(HostThread* t) {
 template <class Pred>
 static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable& cv, Pred pred, uint8_t kind, uint32_t obj,
                       const std::chrono::steady_clock::time_point* deadline = nullptr) {
-    threads::SchedulerTick::TimedWait timed(g_tick, deadline != nullptr);
     HostThread* t = t_self;
     while (!pred()) {
         if (deadline && std::chrono::steady_clock::now() >= *deadline) return false;
@@ -423,8 +422,10 @@ static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable&
         lk.unlock();
         threads::block_begin();
         lk.lock();
-        if (deadline) cv.wait_until(lk, *deadline, pred);
-        else cv.wait(lk, pred);
+        if (deadline) {
+            threads::SchedulerTick::TimedWait timed(g_tick);
+            cv.wait_until(lk, *deadline, pred);
+        } else cv.wait(lk, pred);
         lk.unlock();
         if (t) park_gate(t);
         threads::block_end();
@@ -1103,6 +1104,12 @@ static void alarm_thread() {
     for (;;) {
         if (g_alarm_queue.empty()) { g_alarm_cv.wait(lk); continue; }
         auto it = g_alarm_queue.begin();
+        // Cancelled/replaced deadlines are not pending guest waits. Do not keep
+        // the scheduler polling until a stale deadline that can never fire.
+        if (g_alarm_serial[it->second.guest] != it->second.serial) {
+            g_alarm_queue.erase(it);
+            continue;
+        }
         uint64_t now = timebase::now();
         if (it->first > now) {
             threads::SchedulerTick::TimedWait timed(g_tick);
@@ -1176,6 +1183,8 @@ HLE(coreinit, OSSetPeriodicAlarm) {
 HLE(coreinit, OSCancelAlarm) {
     std::lock_guard<std::mutex> lk(g_alarm_mutex);
     g_alarm_serial[arg(c, 0)] = 0;
+    g_alarm_cv.notify_all();
+    g_tick.notify();
     ret(c, 1);
 }
 HLE(coreinit, OSSetAlarmUserData) { st32(arg(c, 0) + 0x38, arg(c, 1)); }

@@ -13,6 +13,11 @@ int main() {
     {
         threads::SchedulerTick::TimedWait timed(tick);
         assert(!tick.wait_idle());
+        {
+            threads::SchedulerTick::TimedWait second(tick);
+            assert(!tick.wait_idle());
+        }
+        assert(!tick.wait_idle()); // one wait ending must not hide another deadline
     }
     auto start = std::chrono::steady_clock::now();
     assert(tick.wait_idle()); // safety wake, even if all notifications were missed
