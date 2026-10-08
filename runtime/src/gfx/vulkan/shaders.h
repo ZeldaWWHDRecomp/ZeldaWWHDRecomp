@@ -38,7 +38,8 @@ void select_renderer();
 // Pass the renderer frame to revalidate program bytes once per frame. Omitting
 // it keeps immediate revalidation for standalone callers and shader tools.
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame = ~uint64_t{0});
-// linkedVs (pixel shaders): the draw's vertex shader; inputs it has no output for read as zero.
+// linkedVs (pixel shaders): the draw's vertex shader; inputs it has no output for read the GPU's
+// default value for them (SPI_PS_INPUT_CNTL DEFAULT_VAL), as constants.
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetchShader, uint64_t fsKey,
     uint64_t frame = ~uint64_t{0}, uint64_t stateGeneration = ~uint64_t{0}, const Shader* linkedVs = nullptr);
 // Generation must advance for every shader-relevant register write (every register the key

@@ -187,8 +187,9 @@ uint64_t program_hash(uint32_t address, uint32_t size, uint64_t frame) {
 // - variant: per used texture unit its dimension and integer format; for vertex shaders, per
 //   exported parameter, its semantic id and the PS input it resolves to (location, flat,
 //   noperspective) instead of the whole PS input table and SPI_VS_OUT_ID; streamout strides of
-//   buffers it writes. The units and exports come from the program, so they are known once its
-//   first variant has been translated.
+//   buffers it writes; for pixel shaders, the inputs the draw's vertex shader does not feed and
+//   their DEFAULT_VAL (ps_link: those inputs are constants in the translation). The units and
+//   exports come from the program, so they are known once its first variant has been translated.
 // Render-target formats, buffer addresses, samplers and units the program does not sample are not
 // read by the GLSL translation (the Metal-only render-target-texture check is the one that does)
 // and are not in the key; the pipeline key has the attachment formats.
