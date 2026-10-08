@@ -68,6 +68,7 @@ float g_wheel = 0;              // wheel movement not yet used
 bool g_left = false;            // left button held (captured)
 uint64_t g_manual_step = ~0ull, g_subject_step = ~0ull;  // last step manualCamera / subjectCamera ran
 std::atomic<uint32_t> g_link{0};
+std::atomic<uint32_t> g_cam{0};   // dCamera_c of the subject camera (traces)
 uint64_t g_r3_from = 0, g_r3_to = 0;  // steps during which R3 is held by the wheel
 uint64_t g_r3_ready = 0;              // next step a wheel toggle may start
 bool g_synth = false;                 // filter_pad fed the mouse to the right stick this step
@@ -192,7 +193,17 @@ void filter_pad(input::PadState& s) {
     if (g_move_step != ~0ull && now > g_move_step + 8) g_dx = g_dy = 0;
     // gyro (motion/motion.h): the game turns its first-person (subject) camera with the GamePad's motion,
     // which every item aim uses too
-    motion::set_aiming(in_first_person() || aiming_item(link_proc()));
+    const bool aim = in_first_person() || aiming_item(link_proc());
+    motion::set_aiming(aim);
+    if (aim && trace_on()) {  // gyro measurements (docs/gyro.md): Link heading and body pitch, camera U / V while aiming
+        static uint64_t traced = ~0ull;
+        if (uint32_t l = g_link.load(std::memory_order_relaxed); l && traced != now) {
+            traced = now;
+            const uint32_t cam = g_cam.load(std::memory_order_relaxed);
+            trace("aim: proc %X heading %d body x %d camera U %d V %d", link_proc(), (int16_t)ld16(l + 0x322), (int16_t)ld16(l + 0x3D0),
+                  cam ? (int16_t)ld16(cam + 0x42) : 0, cam ? (int16_t)ld16(cam + 0x40) : 0);
+        }
+    }
     // the mouse as a gyro has the mouse while the game aims: no synthetic right stick then (the game
     // also ignores the gyro while the right stick is pushed)
     if (motion::mouse_drives_gyro()) g_dx = g_dy = 0;
@@ -319,6 +330,7 @@ extern "C" void hook_0250FDC8(Cpu* c) {
 extern "C" void hook_025071FC(Cpu* c) {
     if (g_subject_step == ~0ull || step() > g_subject_step + 2) trace("first person (subject camera) starts");
     g_subject_step = step();
+    g_cam.store(c->r[3], std::memory_order_relaxed);
     f_025071FC_orig(c);
 }
 

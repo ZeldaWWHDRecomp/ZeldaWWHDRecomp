@@ -10,6 +10,8 @@
 // display_plan() for the same layout (picture rectangles, GamePad overlay, scaling filter).
 //
 // Shortcuts: Cmd+F (or Ctrl+Cmd+F, or the green button) full screen; Cmd+G show/hide the GamePad screen.
+// Closing the TV window (close button, Cmd+W) quits the app, asking first while a game is in progress
+// (quit_prompt.mm); closing the GamePad window only hides it.
 // The Display menu holds the rest. Choices are kept in ~/Library/Application Support/wwhd/display.plist
 // (test runs with WWHD_NO_HOST_INPUT neither read nor write it unless WWHD_DISPLAY_SETTINGS names a file).
 //
@@ -51,12 +53,15 @@
 #include "imgui.h"
 #include "backends/imgui_impl_metal.h"
 #include "../overlay/overlay.h"
+#include "../screenshot.h"
 
 namespace mods { bool mouse_captured(); }
 
 namespace gfx {
 extern Renderer R;
 void install_menu(NSWindow* tv);  // menu.mm
+Class tv_window_class();           // quit_prompt.mm: closing the TV window quits (after asking)
+void install_quit_prompt(NSWindow* tv);
 bool fxaa_enabled();
 void dump_texture(id<MTLTexture> src, const char* name, bool async, bool srgbEncode);
 
@@ -251,7 +256,8 @@ static void screen_changed(int i) {
 }
 
 static NSWindow* make_window(int index, NSString* title, NSView* view, int w, int h, NSPoint origin) {
-    NSWindow* win = [[NSWindow alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, w, h)
+    Class cls = index == 0 ? tv_window_class() : [NSWindow class];
+    NSWindow* win = [[cls alloc] initWithContentRect:NSMakeRect(origin.x, origin.y, w, h)
                                                 styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                           NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                                                   backing:NSBackingStoreBuffered
@@ -291,6 +297,11 @@ static void attach_metal_layers() {
         CAMetalLayer* layer = attach_layer(i);
         scr.layer = layer;
         if (!layer) continue;
+        // The final SDR drawable contains sRGB colors. Let Core Animation match them to
+        // the monitor's profile, as MoltenVK does for VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
+        CGColorSpaceRef outputColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        layer.colorspace = outputColorSpace;
+        CGColorSpaceRelease(outputColorSpace);
         layer.device = R.device;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = YES;
@@ -388,6 +399,7 @@ static void create_windows() {
                                [[WWTvView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)], 1280, 720, NSMakePoint(0, 0));
     g_tv_window = tv;
     install_menu(tv);
+    install_quit_prompt(tv);
     NSRect saved = NSRectFromString(g_settings[@"tvFrame"] ?: @"");
     if (frame_usable(saved)) [tv setFrame:saved display:NO];
     else [tv center];
@@ -860,6 +872,59 @@ static void present_to_layer(Screen& scr, void (^draw)(id<MTLTexture>)) {
     [command_buffer() presentDrawable:drawable];
 }
 
+// Screenshot (screenshot.h): the picture at its own size, drawn as compose_tv draws it (FXAA, sRGB
+// encoding) into an 8-bit image of the window's pixel format (its pipelines exist already) without the
+// settings overlay, copied to a shared buffer in this frame's command buffer; the completion handler
+// hands the buffer to the encoding thread (no wait here)
+static void screenshot_screen(Screen& scr, const std::string& path, bool tv) {
+    const NSUInteger w = scr.tex.width, h = scr.tex.height;
+    // the TV window's pixel format for both pictures: its pipelines exist (the GamePad window's do not
+    // while the GamePad picture is only shown as the overlay)
+    const MTLPixelFormat pf = R.tv.layer ? R.tv.layer.pixelFormat : MTLPixelFormatRGBA8Unorm;
+    const bool bgra = pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB;
+    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
+                                   bgra || pf == MTLPixelFormatRGBA8Unorm_sRGB ? pf : MTLPixelFormatRGBA8Unorm
+                                                                         width:w height:h mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> t = [R.device newTextureWithDescriptor:d];
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = t;
+    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f);
+    [e endEncoding];
+    id<MTLBuffer> buf = [R.device newBufferWithLength:w * h * 4 options:MTLResourceStorageModeShared];
+    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    [b copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
+              toBuffer:buf destinationOffset:0 destinationBytesPerRow:w * 4 destinationBytesPerImage:w * h * 4];
+    [b endEncoding];
+    const uint64_t frame = R.frame;
+    const std::string file = path;
+    [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        const bool ok = cb.status == MTLCommandBufferStatusCompleted;
+        std::shared_ptr<const void> owner(nullptr, [buf](const void*) {});  // keeps the buffer until written
+        screenshot::write_async(file, (uint32_t)w, (uint32_t)h, w * 4, ok ? (const uint8_t*)buf.contents : nullptr, owner, frame, tv,
+                                bgra);
+    }];
+}
+static void take_screenshot(const PresentPlan& P) {
+    std::string tvPath, drcPath;
+    if (!R.tv.tex || !screenshot::take(R.frame, tvPath, drcPath)) return;
+    const CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+    screenshot_screen(R.tv, tvPath, true);
+    // the GamePad picture while it is shown (GamePad window, picture-in-picture, GamePad only)
+    if (!drcPath.empty() && R.drc.tex && (P.drc_window || P.pip_on || P.drc_only)) {
+        screenshot_screen(R.drc, drcPath, false);
+    } else if (!drcPath.empty()) {
+        LOG("[screenshot] GamePad picture not shown: only the TV picture saved");
+        screenshot::write_async(drcPath, 0, 0, 0, nullptr, nullptr, R.frame, false);
+    }
+    LOG("[screenshot] frame %llu: recorded in %.2f ms (render thread)", (unsigned long long)R.frame, (CFAbsoluteTimeGetCurrent() - t0) * 1000.0);
+}
+
 // Metal, called from swap(): compose and present the TV window (with the GamePad overlay) and the GamePad window
 void present_screens() {
     sample_screens();
@@ -875,6 +940,7 @@ void present_screens() {
     float dw = P.dw, dh = P.dh;
     bool pip = P.pip_wanted, drc_only = P.drc_only;
     g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
+    take_screenshot(P);
     if (P.sim) {
         present_to_layer(R.tv, ^(id<MTLTexture> t) {
             CGSize ds = R.tv.layer.drawableSize;

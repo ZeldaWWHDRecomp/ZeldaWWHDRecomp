@@ -187,20 +187,47 @@ layout, and file-only Cemu packs with Definition metadata. Explicit SDCafiine
 and Cemu title IDs must include WWHD USA `0005000010143500`. ZIP wrappers are
 accepted if they contain exactly one content directory. Multiple packs require
 selecting or extracting one pack first. Known loose pack files (including
-`permanent_3d.pack` and the USA-language `permanent_2d_*.pack` files) can also
-be selected directly, or imported from a folder/ZIP with their original
-filenames. They map to `Common/Pack/`. Unknown loose filenames require an
-explicit content tree.
+`permanent_3d.pack` and all nine `permanent_2d_<Us|Eu|Jp><Language>.pack`
+language packs) can also be selected directly, or imported from a folder/ZIP
+with their original filenames. They map to `Common/Pack/`. Other loose files
+are placed where the installed game has a file of the same name, when it has
+exactly one (for example `Title_00.szs` goes to `Common/Layout/`); files the
+game doesn't have (read-me texts, pictures) are not used, and the package
+description lists what was placed and what was not. A loose file whose name
+the game has several times, or an unknown `.pack`, requires an explicit
+content tree.
 
 The source filename supplies a stable `content.<name>` ID, so same-named imports
 count as updates; supply an explicit manifest for a different ID, descriptive
 metadata or version.
 
+### Fan translations
+
+A fan translation is usually a replaced 2D language pack
+(`permanent_2d_<Region><Language>.pack`: every message, the fonts and the 2D
+layouts), often with a replaced title logo (`Common/Layout/Title_00.szs`).
+Install it like any content mod: choose its folder or ZIP (loose files or a
+`content/` tree) and Install package, enable it and restart. The language pack
+applies to the language of the same name whatever region its file name has: a
+translation shipped as `permanent_2d_EuEnglish.pack` (made for the European
+game) replaces English in the USA game, and a `permanent_2d_UsEnglish.pack`
+replaces English when English comes from a European language source
+(docs/language-packs.md). A pack with the exact name the game asks for always
+comes first. Choose the language the translation replaces (usually English) in
+Settings > Language. No renaming is needed, and the game folder is never
+changed. Arabic and Hebrew translations are shaped and laid out right to left
+by the port itself (docs/rtl-text.md); a Cemu code patch that such a
+translation ships for that purpose is not needed. Install only its `content`
+folder: a package with a code patch is refused as a whole (see below).
+
 These conventions follow the upstream [SDCafiine documentation](https://github.com/wiiu-env/sdcafiine_plugin)
 and [Cemu graphic-pack format](https://github.com/cemu-project/cemu_graphic_packs/wiki/How-to-create-Graphic-Packs).
 Support here covers **content file replacement only**. The importer rejects
-code/meta/DLC folders, PPC patches, shader files and non-Definition Cemu rule
-sections. Randomizers and mixed code/data mods are not supported by this adapter.
+code/meta/DLC folders, PPC patches (`patches.txt` and Cemu `.asm` code patches),
+shader files and non-Definition Cemu rule sections. A mod that ships content
+files together with a Cemu code patch is refused as a whole, so part of it is
+never dropped silently; to use only its content files, select its `content`
+folder. Randomizers and mixed code/data mods are not supported by this adapter.
 
 An explicit package uses, for example:
 

@@ -44,6 +44,7 @@ filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with 
 | Climb mod stamina wheel | yes | yes (ported shader; not yet seen in a test run) |
 | Frame dumps `WWHD_DUMP_FRAMES`, `WWHD_DUMP_PRESENT` | yes | yes |
 | Capture frame (P) | pictures + draw log | pictures only (no draw log) |
+| Screenshot key (F10, `runtime/src/screenshot.h`) | yes | yes (read back at the submission's fence, no wait) |
 | Shader head start (`--warm-shaders`) | yes | no (Vulkan keeps its own SPIR-V / pipeline caches) |
 
 Other builds: `-DWWHD_RENDERER=METAL` (Metal only, no Vulkan dependencies) and
@@ -92,7 +93,21 @@ that the executable links or runs on Windows/Linux.
 This test does not read game assets. It checks GPU texture uploads, mip/layer
 readback, clears, blits, depth/stencil, a generated triangle and presentation.
 It also queues ten asynchronous submissions, wraps the four-slot ring, and checks
-immutable upload payloads and deferred-buffer retirement by GPU readback.
+immutable upload payloads and deferred-buffer retirement by GPU readback, and the
+scaled depth/stencil copies below (drawn, texel by texel, and through a real aspect-ratio and
+resolution change of a depth target).
+
+Scaled depth copies: a resolution or aspect-ratio change rescales every render target, and a
+scaled GX2CopySurface scales its source. Vulkan makes blits of depth/stencil formats optional,
+and some drivers (Adreno: `D16_UNORM` and `D32_SFLOAT`, issue #72) have none, so for such a format
+the copy is drawn instead (depth through `gl_FragDepth`, stencil one bit per pass, no
+`VK_EXT_shader_stencil_export` needed), with the texel a nearest-filter blit would pick. Devices
+that can blit keep the blit. The first time a format takes another path, one log line names it.
+If a device can neither blit nor draw a format, a whole destination is cleared (depth 1, stencil
+and colour 0) and a partial one keeps its contents, instead of aborting the game.
+`WWHD_VK_DEPTH_COPY=draw` forces the drawn copy on any device (test aid, e.g. on a desktop GPU);
+`WWHD_VK_DEPTH_COPY=none` takes neither the blit nor the draw for depth formats, which shows the
+last resort.
 To enable Khronos validation, install the Vulkan validation layers and set
 `WWHD_VK_VALIDATION=1`. On Homebrew, set `VK_LAYER_PATH` to
 `/opt/homebrew/opt/vulkan-validationlayers/share/vulkan/explicit_layer.d`.
@@ -295,7 +310,7 @@ a process sample showed a runtime initializer deadlock before `main`.
 The guest buffer cache replaces the per-draw copies of guest vertex arrays, index arrays and uniform
 blocks into the upload arena with persistent GPU copies keyed by guest address
 (`runtime/src/gfx/vulkan/buffer_cache_core.h`, glue in `buffer_cache.cpp`). It is **on by default on
-macOS** and **off on Windows, Linux and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
+macOS and desktop Linux** (Steam Deck included) and **off on Windows and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
 `WWHD_VK_BUFFER_CACHE=0` off on any platform.
 
 **Testers on Windows and Linux (and Android):** it stays opt-in there until it has been checked on
@@ -405,7 +420,8 @@ roughly 30 FPS while other CPU workloads were active.
 
 In the macOS app, the Save States menu and keys work as with Metal. In the SDL game window, `F1` through `F5` load slots 1 through 5;
 `Shift+F1` through `Shift+F5` save those slots. Repeated keydown events are ignored,
-and these keys do not reach the game's button mapping. Host-input-disabled scripted
+and these keys do not reach the game's button mapping. The Screenshot binding (F10 by default,
+Controls) works in every game window the same way; `WWHD_TEST_SCREENSHOT=<frames>` scripts it. Host-input-disabled scripted
 runs do not accept the shortcuts. State files remain in the configured state directory.
 
 A load must pass the existing allocation, thread, and guest-stack guards. A state

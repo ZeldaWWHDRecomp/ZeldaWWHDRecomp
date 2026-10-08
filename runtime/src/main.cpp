@@ -23,6 +23,7 @@
 
 #include "gfx/renderer.h"
 #include "mods/cemu_pack.h"
+#include "mods/content.h"
 #include "gx2/gx2.h"
 #include "recomp_table.h"
 #include "report_header.h"
@@ -330,6 +331,7 @@ int main(int argc, char** argv) {
 #endif
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
+    mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path
     mods::packages::initialize();
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {

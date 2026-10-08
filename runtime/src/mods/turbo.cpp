@@ -7,11 +7,11 @@
 // dDoor_info_c::getDemoAction (0252A684; knob doors, shutter doors 10/12, kddoor) or
 // daMbdoor_c::getDemoAction (021C0078) while their door event runs. While a door was in such a cut
 // during the step just run (not a TALK cut: locked-door messages run at normal speed), the frame gets
-// kDoorExtra more full logic steps: the steps of fpcM_Management between two executes (process
-// deletion, priority, creation, cCt_Counter) and fpcEx_Handler (every process: Link, door, camera,
-// event manager in the play scene). Drawing, scene management (fapGm_After) and the pad read stay
-// once per frame. Button presses ("trigger" bits) are cleared for the extra steps, so a press is
-// seen once.
+// kDoorExtra more logic steps: the steps of fpcM_Management between two executes (priority,
+// creation, cCt_Counter) and fpcEx_Handler (every process: Link, door, camera, event manager in the
+// play scene). Drawing, process deletion (fpcDt_Handler: its timers count drawn frames, see
+// turbo_steps.h), scene management (fapGm_After) and the pad read stay once per frame. Button
+// presses ("trigger" bits) are cleared for the extra steps, so a press is seen once.
 //
 // Fast scene changes: while an overlap (fade/wipe) process exists (l_fopOvlpM_overlap[0],
 // 101F36CC), the frame gets kSceneExtra more runs of the transition machinery only: process
@@ -22,8 +22,10 @@
 // Both act on full logic passes only (not on the 60 fps in-between passes) and in all 60 fps modes.
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 
 #include "mods.h"
+#include "turbo_steps.h"
 #include "runtime.h"
 
 extern "C" {
@@ -37,6 +39,7 @@ void f_025DF940(Cpu* c);       // fpcM_Execute (true60's per-process gate runs t
 void f_0252A684_orig(Cpu* c);  // dDoor_info_c::getDemoAction
 void f_021C0078_orig(Cpu* c);  // daMbdoor_c::getDemoAction
 void f_025DC86C_orig(Cpu* c);  // fopScnM_ChangeReq
+void f_025D57E0(Cpu* c);       // fopAcM_delete
 }
 
 namespace interp { bool hold_pass(); }
@@ -55,6 +58,31 @@ int env_i(const char* n, int d) {
 }
 const int kDoorExtra = env_i("WWHD_MOD_DOOR_EXTRA", 3);    // 4 logic steps per frame
 const int kSceneExtra = env_i("WWHD_MOD_SCENE_EXTRA", 3);  // 4 transition steps per frame
+// debug: WWHD_MOD_DOOR_DELETE=1 runs process deletion in the extra steps too (the behaviour before
+// the fix of issue #61, for A/B runs: it can delete a process whose packets are still listed)
+const StepParts kDoorStep = [] {
+    StepParts p = kDoorExtraStep;
+    if (env_i("WWHD_MOD_DOOR_DELETE", 0)) p.deletion = true;
+    return p;
+}();
+
+// traces (WWHD_MODS_TRACE): the processes in the delete queue whose timer has run out, which the
+// next fpcDt_Handler deletes (g_fpcDtTg_Queue 101F3A1C, see fpcDt_Handler 025DE024; delete tag:
+// +8 next node, +0xC process, +0x18 timer, fpcDtTg_Do 025DDE44)
+constexpr uint32_t kDeleteQueue = 0x101F3A1C;
+void trace_due_deletes(const char* when) {
+    if (!trace_on()) return;
+    uint32_t n = ld32(kDeleteQueue);
+    for (int k = 0; n && k < 512; k++, n = ld32(n + 8)) {
+        if (n < 0x10000000 || n >= 0x50000000) break;
+        int timer = (int16_t)ld16(n + 0x18);
+        if (timer > 0) continue;
+        uint32_t proc = ld32(n + 0xC);
+        uint32_t sub = proc ? ld32(proc + 0xF0) : 0;  // fopAc_ac_c::sub_method (true60.cpp kSubMethod)
+        uint32_t exec = sub >= 0x10000000 && sub < 0x50000000 ? ld32(sub + 8) : 0;
+        trace("%s: process %08X (execute %08X) due for deletion", when, proc, exec);
+    }
+}
 
 bool g_door_cut = false;  // a door asked for its cut during the logic step just run
 int g_door_action = -1;
@@ -113,6 +141,39 @@ void call(Cpu* c, void (*f)(Cpu*), uint32_t r3) {
     c->r[3] = r3;
     f(c);
 }
+
+// test aid (issue #61): WWHD_TEST_DOOR_DELETE=FN (hex) queues the first actor whose execute
+// function is FN for deletion (fopAcM_delete) right after the first logic step of each door event,
+// as an actor deleting itself in that step would (a rat going into its hole, a pot breaking, Tingle
+// leaving). FN=list traces the actors (execute function, position) instead.
+constexpr uint32_t kActorQueue = 0x101F3328;  // g_fopAcTg_Queue (fopAcIt_Executor 025D51DC)
+uint32_t actor_execute(uint32_t a) {
+    uint32_t sub = ld32(a + 0xF0);  // fopAc_ac_c::sub_method (true60.cpp kSubMethod)
+    return sub >= 0x10000000 && sub < 0x50000000 ? ld32(sub + 8) : 0;
+}
+void test_door_delete(Cpu* c) {
+    static const char* e = getenv("WWHD_TEST_DOOR_DELETE");
+    if (!e) return;
+    const bool list = !strcmp(e, "list");
+    const uint32_t fn = (uint32_t)strtoul(e, nullptr, 16);
+    uint32_t n = ld32(kActorQueue);
+    for (int k = 0; n && k < 2048; k++, n = ld32(n + 8)) {
+        if (n < 0x10000000 || n >= 0x50000000) break;
+        uint32_t a = ld32(n + 0xC);
+        if (!a) continue;
+        uint32_t x = actor_execute(a);
+        if (list) {
+            trace("actor %08X execute %08X at (%.0f, %.0f, %.0f)", a, x, ldf32(a + 0x314), ldf32(a + 0x318), ldf32(a + 0x31C));
+        } else if (x == fn) {
+            trace("test: queueing actor %08X (execute %08X) for deletion in the door event", a, x);
+            uint32_t lr = c->lr, r3 = c->r[3];
+            call(c, f_025D57E0, a);  // fopAcM_delete
+            c->lr = lr;
+            c->r[3] = r3;
+            return;
+        }
+    }
+}
 }  // namespace
 
 // interp.cpp's fpcEx_Handler hook, after the step's own execute
@@ -126,6 +187,7 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
     if (door != g_door_event) {
         g_door_event = door;
         trace("door event %s", door ? "running" : "done");
+        if (door) test_door_delete(c);
     }
     static bool ovl = false;
     if (overlap_active() != ovl) {
@@ -146,12 +208,15 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
                 }
                 cleared = true;
             }
-            call(c, f_0200E6EC_orig, 0);  // cCt_Counter(0) (end of the previous step)
-            call(c, f_025DE024_orig, 0);  // fpcDt_Handler
-            call(c, f_025E0EE4_orig, 0);  // fpcPi_Handler
-            call(c, f_025DDCEC_orig, 0);  // fpcCt_Handler
+            // (no fpcDt_Handler: process deletion stays once per frame, see turbo_steps.h, issue #61)
+            const StepParts& kStep = kDoorStep;
+            trace_due_deletes(kStep.deletion ? "extra step deletes" : "extra step leaves");
+            if (kStep.counter) call(c, f_0200E6EC_orig, 0);  // cCt_Counter(0) (end of the previous step)
+            if (kStep.deletion) call(c, f_025DE024_orig, 0);  // fpcDt_Handler
+            if (kStep.priority) call(c, f_025E0EE4_orig, 0);  // fpcPi_Handler
+            if (kStep.creation) call(c, f_025DDCEC_orig, 0);  // fpcCt_Handler
             g_door_cut = false;
-            call(c, f_025DE788_orig, execute_fn);
+            if (kStep.execute) call(c, f_025DE788_orig, execute_fn);
             g_extra_door++;
             door = g_door_cut;  // continue only while the door event still runs
             g_door_cut = false;

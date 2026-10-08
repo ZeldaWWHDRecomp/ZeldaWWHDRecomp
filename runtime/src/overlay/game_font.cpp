@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "../game_languages.h"
 #include "../runtime.h"
 
 namespace game_font {
@@ -85,6 +86,8 @@ bool sarc_find(const uint8_t* h, size_t n, const char* name, size_t* off, size_t
 
 // the language pack the game loads for this console language (US, EU and JP discs prefix the region)
 fs::path find_pack(int language, std::string* why) {
+    // a language source's pack (game_languages.h) is the one the game reads this run
+    if (const game_lang::Start s = game_lang::current(); s.pack) return fs::path(s.pack->host);
     static const char* const kWords[] = {"japanese", "english", "french", "german", "italian", "spanish",
                                          "chinese", "korean", "dutch", "portuguese", "russian", "chinese"};
     const std::string word = language >= 0 && language < 12 ? kWords[language] : "english";
@@ -120,38 +123,11 @@ fs::path find_pack(int language, std::string* why) {
 std::shared_ptr<const Glyphs> load(int language) {
     std::string why;
     const fs::path pack = find_pack(language, &why);
-    auto fail = [&](const std::string& reason) -> std::shared_ptr<const Glyphs> {
-        LOG("[text] the game's name font can't be read (%s): the text prompt offers its full character set", reason.c_str());
+    std::shared_ptr<const Glyphs> glyphs = pack.empty() ? nullptr : pack_font(pack.string(), &why);
+    if (!glyphs) {
+        LOG("[text] the game's name font can't be read (%s): the text prompt offers its full character set", why.c_str());
         return nullptr;
-    };
-    if (pack.empty()) return fail(why);
-    FILE* f = fopen(pack.string().c_str(), "rb");
-    if (!f) return fail("can't open " + pack.string());
-    std::vector<uint8_t> head(0x20);
-    std::vector<uint8_t> inner;
-    size_t off = 0, len = 0;
-    bool found = false;
-    if (fread(head.data(), 1, head.size(), f) == head.size() && !memcmp(head.data(), "SARC", 4)) {
-        Reader r{head.data(), head.size(), head[6] == 0xFE};
-        const uint32_t data = r.u32(0x0C);  // the header and name table end where the file data starts
-        if (data > 0x20 && data < (64u << 20)) {
-            head.resize(data);
-            if (fread(head.data() + 0x20, 1, data - 0x20, f) == data - 0x20 &&
-                sarc_find(head.data(), head.size(), "CKingMsg_bffnt.szs", &off, &len) && len < (64u << 20)) {
-                inner.resize(len);
-                found = fseek(f, (long)off, SEEK_SET) == 0 && fread(inner.data(), 1, len, f) == len;
-            }
-        }
     }
-    fclose(f);
-    if (!found) return fail("no CKingMsg_bffnt.szs in " + pack.string());
-    inner = yaz0(inner);
-    size_t foff = 0, flen = 0;
-    if (!sarc_find(inner.data(), inner.size(), "CKingMsg.bffnt", &foff, &flen) || foff > inner.size() || flen > inner.size() - foff)
-        return fail("no CKingMsg.bffnt in " + pack.filename().string());
-    auto glyphs = std::make_shared<Glyphs>();
-    if (!parse_bffnt(inner.data() + foff, flen, *glyphs) || glyphs->empty())
-        return fail("CKingMsg.bffnt in " + pack.filename().string() + " is no font");
     LOG("[text] the game's name font (CKingMsg.bffnt in %s) has %zu characters: the text prompt offers those",
         pack.filename().string().c_str(), glyphs->size());
     return glyphs;
@@ -183,6 +159,48 @@ bool parse_bffnt(const uint8_t* d, size_t n, Glyphs& out) {
         cmap = r.u32(b + 16);
     }
     return true;
+}
+
+std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why) {
+    const fs::path pack(pack_path);
+    FILE* f = fopen(pack.string().c_str(), "rb");
+    if (!f) {
+        *why = "can't open " + pack.string();
+        return nullptr;
+    }
+    std::vector<uint8_t> head(0x20);
+    std::vector<uint8_t> inner;
+    size_t off = 0, len = 0;
+    bool found = false;
+    if (fread(head.data(), 1, head.size(), f) == head.size() && !memcmp(head.data(), "SARC", 4)) {
+        Reader r{head.data(), head.size(), head[6] == 0xFE};
+        const uint32_t data = r.u32(0x0C);  // the header and name table end where the file data starts
+        if (data > 0x20 && data < (64u << 20)) {
+            head.resize(data);
+            if (fread(head.data() + 0x20, 1, data - 0x20, f) == data - 0x20 &&
+                sarc_find(head.data(), head.size(), "CKingMsg_bffnt.szs", &off, &len) && len < (64u << 20)) {
+                inner.resize(len);
+                found = fseek(f, (long)off, SEEK_SET) == 0 && fread(inner.data(), 1, len, f) == len;
+            }
+        }
+    }
+    fclose(f);
+    if (!found) {
+        *why = "no CKingMsg_bffnt.szs in " + pack.string();
+        return nullptr;
+    }
+    inner = yaz0(inner);
+    size_t foff = 0, flen = 0;
+    if (!sarc_find(inner.data(), inner.size(), "CKingMsg.bffnt", &foff, &flen) || foff > inner.size() || flen > inner.size() - foff) {
+        *why = "no CKingMsg.bffnt in " + pack.filename().string();
+        return nullptr;
+    }
+    auto glyphs = std::make_shared<Glyphs>();
+    if (!parse_bffnt(inner.data() + foff, flen, *glyphs) || glyphs->empty()) {
+        *why = "CKingMsg.bffnt in " + pack.filename().string() + " is no font";
+        return nullptr;
+    }
+    return glyphs;
 }
 
 std::shared_ptr<const Glyphs> name_glyphs(int language) {

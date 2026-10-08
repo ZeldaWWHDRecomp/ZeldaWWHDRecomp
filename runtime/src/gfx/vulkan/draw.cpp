@@ -1,3 +1,4 @@
+#include "../renderer.h"
 // Vulkan draw submission. Guest state conventions follow Cemu (MPL-2.0).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -95,6 +96,7 @@ Surface* private_ao_surface(Surface& dst, const Surface* like) {
     end_encoder();
     destroy_surface_image(&dst);
     dst = *like;
+    dst.mipChain.reset();
     dst.image = VK_NULL_HANDLE; dst.memory = VK_NULL_HANDLE;
     dst.view = VK_NULL_HANDLE;
     dst.layerViews.clear(); dst.sampledViews.clear(); dst.guestLayout.reset();
@@ -1695,6 +1697,11 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   }
   else
     supportUniforms.clear();
+  // Bloom extract cThresholdParam.z: scale once, before blur/downsampling.
+  if (!sh->vertex && (r[mmSQ_PGM_START_PS] << 8) == 0x44F91200 &&
+      sh->uniforms.offset_remapped >= 0 && size_t(sh->uniforms.offset_remapped) < supportUniforms.size())
+    render::scale_bloom_uniforms(supportUniforms.data() + sh->uniforms.offset_remapped,
+                                supportUniforms.size() - sh->uniforms.offset_remapped);
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
   if (sh->vertex && ao_mode() == 2 &&
@@ -2044,6 +2051,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   Surface *depth = LatteMRT::GetActiveDepthBufferMask(lcr)
                        ? depth_target(r, &depthSlice)
                        : nullptr;
+  if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
   const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
   const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
   if (aoPrivateReplay && colors[0]) {

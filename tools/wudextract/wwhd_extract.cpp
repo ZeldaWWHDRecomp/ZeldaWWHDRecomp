@@ -25,6 +25,10 @@
 // A key file holds 16 raw bytes or 32 hex digits (whitespace ignored). Keys are never printed.
 // --title T: a title id (16 hex digits; the highest version of it is used) or a folder name
 // (0005000010143500_v0). Without it an archive with a single title uses that one.
+// --only GLOB (repeatable): extract only the files whose path in the title (code/..., content/...,
+// meta/...) matches one of the patterns, without case; '*' matches any run of characters ('/' too),
+// '?' one character. The setup uses it to take only the language files of a second disc
+// (content/Common/Pack/permanent_2d_*.pack, meta/meta.xml).
 //
 // info on an archive prints "format wua", one "title ID VERSION FOLDER FILES BYTES" line per title
 // folder, and for the selected title "selected FOLDER", "title_id", "version", "files", "bytes".
@@ -429,6 +433,33 @@ std::string lower(std::string s) {
     return s;
 }
 
+// case-insensitive glob: '*' any run of characters (also '/'), '?' one character
+bool glob_match(const std::string& pat, const std::string& s) {
+    size_t p = 0, i = 0, star = std::string::npos, mark = 0;
+    while (i < s.size()) {
+        if (p < pat.size() && (pat[p] == '?' || tolower((unsigned char)pat[p]) == tolower((unsigned char)s[i]))) {
+            p++, i++;
+        } else if (p < pat.size() && pat[p] == '*') {
+            star = p++, mark = i;
+        } else if (star != std::string::npos) {
+            p = star + 1, i = ++mark;
+        } else {
+            return false;
+        }
+    }
+    while (p < pat.size() && pat[p] == '*') p++;
+    return p == pat.size();
+}
+
+// --only patterns: empty extracts everything
+std::vector<std::string> g_only;
+bool wanted(const std::string& path) {
+    if (g_only.empty()) return true;
+    for (auto& g : g_only)
+        if (glob_match(g, path)) return true;
+    return false;
+}
+
 // a name that is safe as one path component on every system
 bool safe_name(const std::string& n) {
     if (n.empty() || n == "." || n == "..") return false;
@@ -520,8 +551,11 @@ int run_archive(const std::string& cmd, const fs::path& path, const std::string&
     if (!t) fail(10, "the archive does not contain title " + title + " (it contains " + describe(titles) + ")");
     if (cmd == "info") return 0;
 
-    std::vector<std::pair<std::string, uint32_t>> files;
-    walk(*zr, t->node, "", files);
+    std::vector<std::pair<std::string, uint32_t>> files, all;
+    walk(*zr, t->node, "", all);
+    uint64_t wanted_bytes = 0;
+    for (auto& f : all)
+        if (wanted(f.first)) files.push_back(f), wanted_bytes += zr->node(f.second).size;
     try {
         if (progress) printf("phase verify\n");
         uint64_t last = 0;
@@ -537,7 +571,7 @@ int run_archive(const std::string& cmd, const fs::path& path, const std::string&
 
         fs::path out = upath(outdir);
         uint64_t done = 0, last_report = 0;
-        if (progress) printf("phase extract\nprogress 0 %llu\n", (unsigned long long)t->bytes), fflush(stdout);
+        if (progress) printf("phase extract\nprogress 0 %llu\n", (unsigned long long)wanted_bytes), fflush(stdout);
         for (auto& f : files) {
             fs::path dst = out / upath(f.first);
             std::error_code ec;
@@ -551,7 +585,7 @@ int run_archive(const std::string& cmd, const fs::path& path, const std::string&
                 done += n;
                 if (progress && done - last_report >= (32u << 20)) {
                     last_report = done;
-                    printf("progress %llu %llu\n", (unsigned long long)done, (unsigned long long)t->bytes);
+                    printf("progress %llu %llu\n", (unsigned long long)done, (unsigned long long)wanted_bytes);
                     fflush(stdout);
                 }
             });
@@ -559,7 +593,7 @@ int run_archive(const std::string& cmd, const fs::path& path, const std::string&
             if (!o) fail(9, "cannot write " + ustr(dst) + " (disk full?)");
             if (!progress) fprintf(stderr, "%s\n", f.first.c_str());
         }
-        if (progress) printf("progress %llu %llu\n", (unsigned long long)done, (unsigned long long)t->bytes), fflush(stdout);
+        if (progress) printf("progress %llu %llu\n", (unsigned long long)done, (unsigned long long)wanted_bytes), fflush(stdout);
     } catch (const zarchive::Error& e) {
         fail(e.damaged ? 8 : 7, e.msg);
     }
@@ -587,9 +621,10 @@ std::vector<std::string> get_args(int argc, char** argv) {
 
 int usage() {
     fprintf(stderr,
-            "usage: wwhd-extract [--disc-key FILE] [--common-key FILE] [--keys-stdin] [--progress]\n"
+            "usage: wwhd-extract [--disc-key FILE] [--common-key FILE] [--keys-stdin] [--progress] [--only GLOB]...\n"
             "                    info IMAGE | list IMAGE | extract IMAGE OUTDIR\n"
-            "       wwhd-extract [--title ID] [--progress] info ARCHIVE.wua | list ARCHIVE.wua | extract ARCHIVE.wua OUTDIR\n");
+            "       wwhd-extract [--title ID] [--progress] [--only GLOB]... info ARCHIVE.wua | list ARCHIVE.wua |\n"
+            "                    extract ARCHIVE.wua OUTDIR\n");
     return 2;
 }
 
@@ -602,6 +637,7 @@ int run(const std::vector<std::string>& args) {
         if (a == "--disc-key" && i + 1 < args.size()) disc_key_file = args[++i];
         else if (a == "--common-key" && i + 1 < args.size()) common_key_file = args[++i];
         else if (a == "--title" && i + 1 < args.size()) title = args[++i];
+        else if (a == "--only" && i + 1 < args.size()) g_only.push_back(args[++i]);
         else if (a == "--keys-stdin") keys_stdin = true;
         else if (a == "--progress") progress = true;
         else if (a == "-h" || a == "--help") return usage();
@@ -690,9 +726,14 @@ int run(const std::vector<std::string>& args) {
 
     fs::path out = upath(outdir);
     uint64_t done = 0, last_report = 0;
+    if (!g_only.empty()) {
+        total = 0;
+        for (auto& e : gm.entries)
+            if (selected(e) && wanted(e.path)) total += e.size;
+    }
     if (progress) printf("progress 0 %llu\n", (unsigned long long)total), fflush(stdout);
     for (auto& e : gm.entries) {
-        if (!selected(e)) continue;
+        if (!selected(e) || !wanted(e.path)) continue;
         if (e.path.find("..") != std::string::npos || e.path.empty() || e.path[0] == '/' || e.path[0] == '\\')
             fail(7, "unsafe path in the file table: " + e.path);
         fs::path dst = out / upath(e.path);

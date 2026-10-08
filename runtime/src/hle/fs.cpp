@@ -16,6 +16,8 @@
 #include "../runtime.h"
 #include "../write_watch.h"
 #include "../mods/content.h"
+#include "../game_languages.h"
+#include "../rtl_text.h"
 
 namespace {
 
@@ -113,10 +115,13 @@ std::string host_path(const std::string& guest) {
 #endif
 }
 
-// Optional content mods affect read-only content access only.
+// Optional content mods affect read-only content access only. A content mod's file comes first, then
+// the pack of the active language source (game_languages.h: the European or Japanese pack the player
+// chose, read under the name the game asks for), then the installed game.
 std::string read_path(const std::string& guest,const std::string& mode="rb") {
     auto override=mods::content::replacement(guest,mode);
     if(!override.empty())if(const char* trace=std::getenv("WWHD_TEST_CONTENT_TRACE");trace&&std::string(trace)=="1")LOG("[content-mod] read %s -> %s",guest.c_str(),override.c_str());
+    if(override.empty()&&(mode=="r"||mode=="rb"))override=game_lang::redirect(guest);
     return override.empty()?host_path(guest):override;
 }
 
@@ -141,6 +146,11 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     FILE* f = fopen(hp.c_str(), m.c_str());
     TRACE("[fs] open %s (%s) -> %s", gpath.c_str(), mode.c_str(), f ? "ok" : "not found");
     if (!f) return FS_NOT_FOUND;
+    if (mode.find_first_of("wa+") == std::string::npos) {
+        const size_t slash = gpath.find_last_of('/');
+        if (!mods::content::pack_language(slash == std::string::npos ? gpath : gpath.substr(slash + 1)).empty())
+            rtl_text::language_pack_opened(hp);  // right-to-left text for an Arabic or Hebrew pack
+    }
     std::lock_guard<std::mutex> lk(g_fs_mutex);
     uint32_t h = g_next_handle++;
     g_files[h] = {f, gpath, m};

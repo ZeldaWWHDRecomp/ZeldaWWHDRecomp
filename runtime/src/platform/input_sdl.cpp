@@ -8,6 +8,7 @@
 #include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../gfx/vulkan/settings.h"
 #include "../overlay/hostui.h"
 #include "../overlay/overlay.h"
@@ -261,17 +262,42 @@ bool has_rumble(){return true;}
 // battery and bandwidth). A gyro sample goes to motion.h with the latest accelerometer sample.
 static bool g_sensors_on=false;
 static std::map<SDL_JoystickID,std::array<float,3>> g_accel;
+// gyro watchdog: when a controller's sensors fall silent while the game window has the focus (SDL only sends
+// controller events to a focused window), they are switched off and on again, which also makes SDL send a
+// controller its sensor setup again (Bluetooth reconnects, another program reconfiguring it)
+static std::map<SDL_JoystickID,uint64_t> g_sensor_seen,g_sensor_kick;  // SDL_GetTicks() of the last sample / re-enable
 static bool has_motion(SDL_Gamepad* pad){return SDL_GamepadHasSensor(pad,SDL_SENSOR_GYRO)&&SDL_GamepadHasSensor(pad,SDL_SENSOR_ACCEL);}
 static void set_sensors_locked(SDL_Gamepad* pad,bool on){
  if(!has_motion(pad))return;
- SDL_SetGamepadSensorEnabled(pad,SDL_SENSOR_GYRO,on);SDL_SetGamepadSensorEnabled(pad,SDL_SENSOR_ACCEL,on);
+ const bool g=SDL_SetGamepadSensorEnabled(pad,SDL_SENSOR_GYRO,on),a=SDL_SetGamepadSensorEnabled(pad,SDL_SENSOR_ACCEL,on);
+ if(on&&!(g&&a))LOG("[gyro] %s: turning its motion sensors on failed: %s",SDL_GetGamepadName(pad),SDL_GetError());
+ if(on)g_sensor_seen[SDL_GetGamepadID(pad)]=SDL_GetTicks();
 }
 static void update_sensors(){
  const bool want=motion::wants_controller_sensors();
  std::lock_guard lk(g_pads_mu);
  int n=0;for(auto [id,pad]:g_controllers)if(SDL_GamepadConnected(pad)&&has_motion(pad))n++;
  motion::set_gyro_controllers(n);
- if(want==g_sensors_on)return;
+ static bool focused=true;
+ const bool focus=SDL_GetKeyboardFocus()!=nullptr;
+ if(focus!=focused){
+  focused=focus;
+  if(focus)for(auto& [id,t]:g_sensor_seen)t=SDL_GetTicks();  // events were paused: a fresh start for the watchdog
+  if(g_sensors_on)LOG("[gyro] the game window %s the focus%s",focus?"has":"lost",focus?"":": SDL pauses controller events until it is back");
+ }
+ if(want==g_sensors_on){
+  if(!want||!focus||getenv("WWHD_NO_HOST_INPUT"))return;
+  const uint64_t now=SDL_GetTicks();
+  for(auto [id,pad]:g_controllers){
+   if(!SDL_GamepadConnected(pad)||!has_motion(pad))continue;
+   uint64_t& seen=g_sensor_seen[id];uint64_t& kick=g_sensor_kick[id];
+   if(now-seen<2000||now-kick<5000)continue;
+   if(seen>=kick)LOG("[gyro] %s: no motion samples for %.1f s, turning its sensors off and on again (every 5 s until they come)",SDL_GetGamepadName(pad),(now-seen)/1000.0);
+   kick=now;
+   const uint64_t before=seen;set_sensors_locked(pad,false);set_sensors_locked(pad,true);seen=before;
+  }
+  return;
+ }
  g_sensors_on=want;g_accel.clear();
  for(auto [id,pad]:g_controllers)set_sensors_locked(pad,want);
  if(want)LOG("[gyro] controller motion sensors on (%d controller(s) with a gyro)",n);
@@ -396,8 +422,8 @@ void handle_event(const SDL_Event& event){
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
  if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);g_accel.erase(event.gdevice.which);motion::controller_gone(event.gdevice.which);}
- if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);g_accel.erase(event.gdevice.which);g_sensor_seen.erase(event.gdevice.which);g_sensor_kick.erase(event.gdevice.which);motion::controller_gone(event.gdevice.which);}
+ if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
  if(event.type==SDL_EVENT_WINDOW_FOCUS_LOST)release_keys();
  if(text_entry_event(event))return;
  if(g_done){
@@ -415,7 +441,10 @@ void handle_event(const SDL_Event& event){
   }return;
  }
  if(getenv("WWHD_NO_HOST_INPUT")&&!test_event(event))return;
- if(overlay_event(event)||test_event(event))return;  // posted test keys reach only the overlay
+ if(overlay_event(event))return;
+ // the Screenshot binding (F10 by default), in any game window; posted test keys take this path too
+ if(event.type==SDL_EVENT_KEY_DOWN&&!event.key.repeat){int code=keycode(event.key.scancode);if(code>=0&&screenshot::key_down(code))return;}
+ if(test_event(event))return;  // posted test keys reach only the overlay (and the Screenshot binding)
  // Save states belong to the game window, not auxiliary controls/text windows.
  if((event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP) &&
     g_prompt_window && event.key.windowID==SDL_GetWindowID(g_prompt_window) &&
@@ -491,7 +520,7 @@ void update(){
  // + went down: the view may switch to the GamePad screen while the game is paused
  {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus)gfx::display_plus_pressed();plus=now;}
  std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
- if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT"))motion::poll_recenter(v,g_keys);
+ if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(v,g_keys);screenshot::poll_controller(v);}
 }
 void prompt_text(const std::u16string& initial,int max_len,std::function<void(bool,std::u16string)> done){std::lock_guard lk(g_mu);g_initial=initial;g_pending_max_len=std::max(0,max_len);if(g_initial.size()>(size_t)g_pending_max_len)g_initial.resize(g_pending_max_len);g_pending=std::move(done);}
 // debug: WWHD_PRESS=1000-1010:8000,1500-1505:0008 holds VPAD buttons (hex) during TV frame ranges

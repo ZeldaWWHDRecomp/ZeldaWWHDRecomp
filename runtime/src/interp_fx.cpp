@@ -729,6 +729,9 @@ extern "C" void hook_0256A388(Cpu* c) { kankyo_move(c, kStar, f_0256A388_orig); 
 // switches buffers and simulates one step into the new one, so the other buffer holds the previous
 // step. The vertex fill (0251D864, from the cloth's draw, every pass) copies the current buffers
 // into the vertex buffer; on blended passes of a step with a simulation step it gets the blended grid.
+// The buffers are read in place (guest memory, big-endian words): wf/fw, not the host-order hf/fh
+// (blending byte-swapped words turned every moving vertex into garbage: issue #36, the Rito flags on
+// Dragon Roost Island drawn as huge stretched polygons on every in-between frame).
 constexpr uint32_t kClothFly = 0x98, kClothHoist = 0x9C, kClothPos = 0xB0, kClothCur = 0x1C0;
 struct ClothRec { uint8_t cur; uint64_t stepped_at; };  // buffer index at the last fill, logic step it changed
 std::unordered_map<uint32_t, ClothRec> g_cloth_cur;
@@ -760,9 +763,9 @@ extern "C" void hook_0251D864(Cpu* c) {
         saved.emplace_back(now, std::vector<uint32_t>(b, b + n));
         if (tr && arr == 0) {
             tr--;
-            LOG("[interp-fx] cloth %08X vertex 0 x %.3f -> %.3f, drawn %.3f", pk, hf(a[0]), hf(b[0]), lerp_f(hf(a[0]), hf(b[0]), t));
+            LOG("[interp-fx] cloth %08X vertex 0 x %.3f -> %.3f, drawn %.3f", pk, wf(a[0]), wf(b[0]), lerp_f(wf(a[0]), wf(b[0]), t));
         }
-        for (uint32_t q = 0; q < n; q++) b[q] = fh(lerp_f(hf(a[q]), hf(b[q]), t));
+        for (uint32_t q = 0; q < n; q++) b[q] = fw(lerp_f(wf(a[q]), wf(b[q]), t));
     }
     f_0251D864_orig(c);
     for (auto& [addr, w] : saved) memcpy(ppc_ptr(addr), w.data(), 4 * w.size());

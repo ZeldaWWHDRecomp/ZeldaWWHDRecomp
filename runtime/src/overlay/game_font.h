@@ -6,6 +6,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <unordered_set>
 
 namespace game_font {
@@ -16,6 +17,11 @@ using Glyphs = std::unordered_set<uint32_t>;  // code points (the font maps UTF-
 // font can't be read (the prompt then offers its full set; the reason is logged once). Any thread;
 // read once per language and kept.
 std::shared_ptr<const Glyphs> name_glyphs(int language);
+
+// The characters of the message font (CKingMsg.bffnt) in a 2D language pack file
+// (permanent_2d_*.pack): null with the reason in `why` when it can't be read. Also used by the
+// right-to-left text support (rtl_text_hooks.cpp) on the pack the game actually opened.
+std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why);
 
 // The code points a BFFNT (Wii U / 3DS font, either byte order) maps, from its CMAP blocks; false if
 // the data is no font. Exposed for tests.

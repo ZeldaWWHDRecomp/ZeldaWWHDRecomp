@@ -3,6 +3,7 @@
 #include "mods/cemu_pack.h"
 #include "mods/shader_interface.h"
 #include "graphic_pack_hash.h"
+#include "gfx/area_sample.h"
 #include "exact_state_memo.h"
 #include "render_prof.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
@@ -483,6 +484,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         options.legacyGraphicPackUniforms=!vertex&&mods::cemu::legacy_pixel_uniforms(packBase);
     }
     const uint64_t decompilerBase=mods::cemu::has_shaders()?packBase:base;
+    if (!vertex) options.areaSampledTextures = ::gfx::area_sample::units_for_pixel_shader(ppc_ptr(address), size);
     LatteDecompilerOutput_t output{};
     if (vertex) LatteDecompiler_DecompileVertexShader(decompilerBase, const_cast<uint32_t*>(regs),
         ppc_ptr(address), size, fetch, options, &output);
@@ -491,11 +493,24 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     if (!output.shader || output.shader->hasError || !output.shader->strBuf_shaderSource) {
         free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
     }
+    if (options.areaSampledTextures && packReplacement && mods::cemu::has_shaders() &&
+        !mods::cemu::shader_source(packBase, cemu_pack_hash::auxiliary(*output.shader, regs, vertex), vertex).empty()) {
+        // a graphics pack replaces this shader: translate it as Cemu does, so its interface matches
+        free_decompiler(output.shader);
+        options.areaSampledTextures = 0;
+        output = LatteDecompilerOutput_t{};
+        LatteDecompiler_DecompilePixelShader(decompilerBase, const_cast<uint32_t*>(regs), ppc_ptr(address), size, options, &output);
+        if (!output.shader || output.shader->hasError || !output.shader->strBuf_shaderSource) {
+            free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
+        }
+    }
     shader.dec = FinishDecompiledShader(output);
     shader.mapping = output.resourceMappingVK;
     shader.descriptorRanks = make_descriptor_rank_plan(shader.mapping, *shader.dec);
     shader.uniforms = output.uniformOffsetsVK;
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
+    if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, options.areaSampledTextures, false) <= 0)
+        fprintf(stderr, "[vulkan] pixel shader %08X: area-sampled taps not applied\n", address);
     if (vertex) {
         // Depth-only and shaded variants must rasterize identical positions.
         // Match Metal's [[invariant]] position output for multipass depth tests.

@@ -127,6 +127,8 @@ class Recompiler:
             return "MUSTTAIL return %s(c);" % self.imp_name(slot)
         if self.cur_start <= tgt < self.cur_end:
             self.labels.add(tgt)
+            if tgt <= addr:  # loop back-edge: re-read guest memory (spin waits, see PPC_LOOP in ppc.h)
+                return "PPC_LOOP(); goto L_%08X;" % tgt
             return "goto L_%08X;" % tgt
         if tgt in self.entries:
             return "MUSTTAIL return f_%08X(c);" % tgt
@@ -156,7 +158,9 @@ class Recompiler:
                 if self.cur_start <= slot < self.cur_end:
                     self.labels.add(slot)
                     cases.append("case 0x%08Xu: goto L_%08X;" % (slot, slot))
-            return "switch (c->ctr) { %s } c->pc = c->ctr; MUSTTAIL return ppc_dispatch(c);" % " ".join(cases)
+            back = any(self.cur_start <= base + 4 * i <= addr for i in range(count))  # may loop: see branch()
+            return "%sswitch (c->ctr) { %s } c->pc = c->ctr; MUSTTAIL return ppc_dispatch(c);" % (
+                "PPC_LOOP(); " if back else "", " ".join(cases))
         return "c->pc = c->ctr; MUSTTAIL return ppc_dispatch(c);"
 
     def imp_name(self, slot):

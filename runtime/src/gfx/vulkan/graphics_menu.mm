@@ -13,6 +13,7 @@ static constexpr float scales[]={1,1.5f,2,3};
 - (void)save:(NSMenuItem*)item { ss::request_save((int)item.tag); }
 - (void)load:(NSMenuItem*)item { ss::request_load((int)item.tag); }
 - (void)toggleCrashRecovery:(NSMenuItem*)item { crashrec::set_enabled(!crashrec::enabled()); }
+- (void)toggleFullStates:(NSMenuItem*)item { ss::set_full_states(!ss::full_states()); }
 - (void)loadAuto:(NSMenuItem*)item { crashrec::request_load((int)item.tag); }
 - (void)menuNeedsUpdate:(NSMenu*)menu {
     [menu removeAllItems];
@@ -21,8 +22,8 @@ static constexpr float scales[]={1,1.5f,2,3};
     auto label=[&](int slot) -> NSString* {
         const auto& info=slots[slot];
         if(!info.used)return @"empty";
-        NSString* title=[NSString stringWithFormat:@"%s%s%s",info.when.c_str(),
-            info.area.empty()?"":" · ",info.area.c_str()];
+        NSString* title=[NSString stringWithFormat:@"%s%s%s%s",info.when.c_str(),
+            info.area.empty()?"":" · ",info.area.c_str(),info.portable?"":" · full"];
         return info.compatible?title:[title stringByAppendingString:@" (incompatible)"];
     };
     for(int slot=1;slot<=ss::kSlots;++slot){
@@ -39,6 +40,11 @@ static constexpr float scales[]={1,1.5f,2,3};
         item.enabled=slots[slot].used&&slots[slot].compatible;
         item.toolTip=slot==1?@"In game: F1 opens the settings overlay (Saves)":[NSString stringWithFormat:@"Shortcut in game: F%d",slot];
     }
+    [menu addItem:NSMenuItem.separatorItem];  // full save states (savestate.h): off by default, for debugging
+    NSMenuItem* fs=[menu addItemWithTitle:@"Full Save States (large, contain game data, don't share)"
+        action:@selector(toggleFullStates:) keyEquivalent:@""];
+    fs.target=self;fs.state=ss::full_states()?NSControlStateValueOn:NSControlStateValueOff;
+    fs.enabled=!ss::full_states_forced();
     [menu addItem:NSMenuItem.separatorItem];  // crash recovery (crashrec.cpp)
     NSMenuItem* cr=[menu addItemWithTitle:[NSString stringWithFormat:@"Crash Recovery (automatic state every %d min)",
         (crashrec::interval_seconds()+30)/60] action:@selector(toggleCrashRecovery:) keyEquivalent:@""];

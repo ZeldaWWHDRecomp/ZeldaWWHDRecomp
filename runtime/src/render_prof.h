@@ -75,6 +75,10 @@ void frame_end(bool hold);
 
 // ---- game thread
 void add_sync(Sync site, uint64_t ns);
+// GPU results written back to guest memory (linear surfaces the CPU reads, issue #53): the time the
+// GX2DrawDone check spent walking the surfaces (walkNs), and per write-back its bytes and the time to
+// read them from the GPU (readNs, including the wait for the GPU)
+void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t readNs);
 
 // ---- any thread
 std::string latest_report();  // the last complete report ("" before the first one)

@@ -46,6 +46,10 @@ static void test_defaults() {
     s = press(m, {kVK_UpArrow, kVK_RightArrow});
     CHECK(s.rx == 1 && s.ry == 1);  // right stick: no diagonal scaling (as before)
     CHECK(press(m, {kVK_ANSI_Z}).buttons == 0);
+    // the Screenshot app action: F10, no controller input, never a GamePad button or stick
+    CHECK(m.keys[kScreenshot][0] == kVK_F10 && m.pad[kScreenshot] == kPadNone);
+    CHECK(press(m, {kVK_F10}).buttons == 0 && press(m, {kVK_F10}).lx == 0);
+    CHECK(action_bit(kScreenshot) == 0 && action_from_id("Screenshot") == kScreenshot);
     // no default key is reserved; no key is used twice
     for (int a = 0; a < kActionCount; a++)
         for (int k : m.keys[a]) {

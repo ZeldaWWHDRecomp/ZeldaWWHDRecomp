@@ -395,6 +395,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     case OP_COPY_SURFACE: kind = rprof::kOpCopy; break;
     case OP_COPY_TO_SCAN: kind = rprof::kOpScan; break;
     case OP_INVALIDATE: kind = rprof::kOpInvalidate; break;
+    case OP_PEEK_Z: kind = rprof::kOpCopy; break;
     case OP_FLUSH: kind = rprof::kOpFlush; break;
     case OP_DRAW_DONE: kind = rprof::kOpDrawDone; break;
     case OP_SWAP: kind = rprof::kOpSwap; break;
@@ -448,15 +449,18 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_SET_CONTEXT: set_context(p[0]); break;
     case OP_INVALIDATE: render::invalidate(p[0], p[1], p[2]); break;
     case OP_EXPAND_COLOR: case OP_EXPAND_DEPTH: break;  // MSAA/HiZ decompression: nothing to do on the host
+    case OP_PEEK_Z: render::peek_z(p, n); break;
     case OP_FLUSH: render::guest_flush(); break;  // Vulkan: asynchronous submission
     case OP_DRAW_DONE:
-        // The Vulkan renderer never writes GPU results back to guest memory (guest data is copied
+        // The Vulkan renderer writes GPU results back to guest memory only for linear surfaces (guest data is copied
         // into fenced upload slices when work is recorded), so GX2DrawDone needs this op executed
         // (render_sync in the HLE), not an idle GPU. Lazy DrawDone (lazy_draw_done(), the default)
         // queues the work instead of waiting for the whole device every frame. A payload word of 1
         // (save states) always waits for the idle GPU.
         if (lazy_draw_done() && !(n && p[0])) render::guest_flush();
         else render::wait_idle();
+        // except what the CPU reads back: linear render targets (the Picto Box picture, issue #53)
+        render::write_back();
         break;
     case OP_SWAP:
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)

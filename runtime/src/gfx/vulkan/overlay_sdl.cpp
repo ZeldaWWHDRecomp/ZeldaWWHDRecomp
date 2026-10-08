@@ -1,3 +1,4 @@
+#include "../renderer.h"
 // Settings overlay on the SDL host (Vulkan-only builds: Windows, Linux, Android): hostui.h on top of
 // the SDL windows and the Vulkan renderer's settings. Options are kept in <config dir>/settings.ini
 // (key=value lines; WWHD_SETTINGS names another file; test runs with WWHD_NO_HOST_INPUT use none).
@@ -15,7 +16,9 @@
 #include "runtime.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -162,6 +165,7 @@ void graphics_changed() {
     put("aoMode", {"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"}, std::to_string(gfxvk::ao_mode()));
     put("aoHires", {"WWHD_AO_HIRES"}, gfxvk::ao_hires_enabled() ? "1" : "0");
     put("aniso", {"WWHD_ANISO"}, gfxvk::aniso_enabled() ? "1" : "0");
+    put("bloomStrength", {"WWHD_BLOOM_STRENGTH"}, std::to_string(render::bloom_strength()));
     put("fxaa", {"WWHD_FXAA"}, gfxvk::fxaa_enabled() ? "1" : "0");
 #ifdef __ANDROID__
     // the player's choice: the phone pauses interpolation by itself (platform/perf_hint.cpp)
@@ -191,6 +195,7 @@ void load_saved_options() {
     if (saved("aoMode", {"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"})) gfxvk::set_ao_mode((int)num("aoMode"));
     if (saved("aoHires", {"WWHD_AO_HIRES"})) gfxvk::set_ao_hires(num("aoHires") != 0);
     if (saved("aniso", {"WWHD_ANISO"})) gfxvk::set_aniso(num("aniso") != 0);
+    if (saved("bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength((float)num("bloomStrength"));
     if (saved("fxaa", {"WWHD_FXAA"})) gfxvk::set_fxaa(num("fxaa") != 0);
     if (saved("interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps((int)num("interpFps"));
     if (saved("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode((int)num("fps60"));
@@ -303,6 +308,29 @@ void set_pro_controller(bool on) {
 }
 const char* name() { return "SDL"; }
 void set_clipboard(const std::string& text) { SDL_SetClipboardText(text.c_str()); }
+#ifdef __ANDROID__
+bool can_open_folder() { return false; }  // app-private storage: no file manager shows it
+void open_folder(const std::string&) {}
+#else
+bool can_open_folder() { return true; }
+void open_folder(const std::string& path) {
+    // file URL of the absolute path (Windows: file:///C:/...); SDL hands it to the desktop's file manager
+    std::error_code ec;
+    std::string p = std::filesystem::absolute(path, ec).generic_string();
+    if (ec) p = path;
+    std::string url = "file://";
+    if (!p.empty() && p[0] != '/') url += "/";
+    for (unsigned char c : p) {
+        if (isalnum(c) || strchr("/-_.~:", c)) url += (char)c;
+        else {
+            char hex[4];
+            snprintf(hex, sizeof hex, "%%%02X", c);
+            url += hex;
+        }
+    }
+    if (!SDL_OpenURL(url.c_str())) LOG("[overlay] cannot open %s: %s", url.c_str(), SDL_GetError());
+}
+#endif
 
 }  // namespace hostui
 #endif  // WWHD_SDL_HOST

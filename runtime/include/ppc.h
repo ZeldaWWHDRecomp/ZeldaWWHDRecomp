@@ -58,6 +58,15 @@ void ppc_preempt(Cpu* c);
         if (__builtin_expect(g_core_preempt[c->core], 0)) ppc_preempt(c);     \
     } while (0)
 
+/* loop back-edge (every backward branch inside a function): a compiler barrier. Guest memory is
+   shared with the other guest threads, but the generated loads are plain loads, and Cpu is
+   __restrict, so without it the compiler may load a guest word once before a call-free loop and spin
+   on the stale value forever: games busy-wait on locks and flags (`while (*lock == 1);`) that another
+   core changes (issue #62: LLVM 16/17, e.g. Apple clang 16 of Xcode 16, turn such a wait into
+   `b .`). The barrier only forces guest memory to be read again on the next iteration; the register
+   file stays in host registers (it is __restrict and not an operand). */
+#define PPC_LOOP() __asm__ __volatile__("" ::: "memory")
+
 /* ---- memory ---- */
 static inline uint8_t* ppc_ptr(uint32_t ea) { return PPC_MEM_BASE + ea; }
 static inline uint8_t ld8(uint32_t ea) { return *ppc_ptr(ea); }

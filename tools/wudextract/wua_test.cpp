@@ -346,6 +346,25 @@ int main(int argc, char** argv) {
                "no title folders -> exit 10");
     }
 
+    // --only on a European archive (a language source): just the packs and meta.xml, without case
+    {
+        ZWriter eu;
+        std::vector<FileSpec> want = {{"content/Common/Pack/permanent_2d_EuGerman.pack", pattern(400, 31)},
+                                      {"content/Common/Pack/permanent_2d_EuFrench.pack", pattern(500, 32)},
+                                      {"meta/meta.xml", pattern(300, 3)}};
+        for (auto& f : want) eu.add("0005000010143600_v0/" + f.path, f.data);
+        eu.add("0005000010143600_v0/code/cking.rpx", pattern(1000, 33));
+        eu.add("0005000010143600_v0/content/Common/Pack/permanent_3d.pack", pattern(600, 34));
+        write_file(work / "eu_lang.wua", eu.finish());
+        expect(run(x + " --title 0005000010143600 --only CONTENT/Common/Pack/permanent_2d_*.pack --only meta/meta.xml "
+                   "--progress extract " + q(work / "eu_lang.wua") + " " + q(work / "out_lang") + " > " +
+                   q(work / "progress_lang.txt")) == 0,
+               "extract --only (archive)");
+        check_tree(work / "out_lang", want, "  ... only the matching files");
+        expect(read_text(work / "progress_lang.txt").find("phase extract\nprogress 0 1200\n") != std::string::npos,
+               "  ... progress counts only them");
+    }
+
     // damaged archives
     {
         std::vector<uint8_t> t(arc.begin(), arc.end() - 1);

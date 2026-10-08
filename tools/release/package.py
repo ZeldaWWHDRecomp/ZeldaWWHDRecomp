@@ -17,6 +17,7 @@ there:
 Output: OUT_DIR/WindWakerHD-VERSION-NAME/ and OUT_DIR/WindWakerHD-VERSION-NAME.zip.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -230,7 +231,11 @@ def build_link_recipe(build, pkg, linkonly):
             if name in ("libgamecode.a", "gamecode.lib"):
                 recipe.append("{gamecode}")
                 continue
-            if a.lower().endswith(OBJ_EXT):
+            # the game's Windows resources (VERSIONINFO + manifest) from our own generated .rc
+            # (cmake/WindowsResources.cmake; windres writes a COFF object named .rc.res)
+            own_res = re.fullmatch(r"CMakeFiles/wwhd\.dir/generated/wwhd\.rc\.res",
+                                   os.path.relpath(path, build).replace("\\", "/"))
+            if a.lower().endswith(OBJ_EXT) or own_res:
                 # flatten CMakeFiles/wwhd.dir/runtime/src/x.cpp.o -> obj/runtime_src_x.cpp.o
                 rel = os.path.relpath(path, build).replace("\\", "/")
                 rel = re.sub(r"^CMakeFiles/[^/]+\.dir/", "", rel)
@@ -260,6 +265,37 @@ def build_link_recipe(build, pkg, linkonly):
     if objs == 0 or "{gamecode}" not in recipe:
         sys.exit("link line not understood (no objects or no libgamecode.a): " + " ".join(args))
     return args[0], recipe, objs, libs
+
+
+def add_windows_python(pkg, zip_path):
+    """The official embeddable Python, unpacked unmodified into tools/python (its exe and DLLs keep the PSF
+    signature). Checked against the pin in toolchains.json and every file against python-windows-files.json,
+    which tools/release/guard.py uses too."""
+    with open(os.path.join(ROOT, "tools", "installer", "toolchains.json")) as f:
+        pin = json.load(f)["python"]["windows"]
+    with open(os.path.join(ROOT, "tools", "release", "python-windows-files.json")) as f:
+        expected = json.load(f)
+    with open(zip_path, "rb") as f:
+        data = f.read()
+    if hashlib.sha256(data).hexdigest() != pin["sha256"] or expected["sha256"] != pin["sha256"]:
+        sys.exit("%s is not the pinned embeddable Python (SHA-256 mismatch with toolchains.json / "
+                 "python-windows-files.json)" % zip_path)
+    dest = os.path.join(pkg, "tools", "python")
+    names = set()
+    with zipfile.ZipFile(zip_path) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            body = z.read(info)
+            if expected["files"].get(info.filename) != hashlib.sha256(body).hexdigest():
+                sys.exit("unexpected file in the embeddable Python: " + info.filename)
+            out = os.path.join(dest, *info.filename.split("/"))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as f:
+                f.write(body)
+            names.add(info.filename)
+    if names != set(expected["files"]):
+        sys.exit("the embeddable Python lacks: " + ", ".join(sorted(set(expected["files"]) - names)))
 
 
 def copy(src, dst):
@@ -294,6 +330,8 @@ def main():
     ap.add_argument("--runtime-file", action="append", default=[], help="file to install next to the executable")
     ap.add_argument("--linkonly-lib", action="append", default=[], help="system library to ship for linking only")
     ap.add_argument("--setup-gui", help="the built graphical installer (wwhd-setup) to include")
+    ap.add_argument("--windows-python", help="windows: the pinned embeddable Python zip (toolchains.json python.windows), "
+                    "shipped unmodified as tools/python")
     ap.add_argument("--no-zip", action="store_true")
     a = ap.parse_args()
 
@@ -351,8 +389,13 @@ def main():
     if a.platform.startswith("macos"):
         copy(os.path.join(inst, "install-macos.command"), os.path.join(pkg, "tools", "Setup in Terminal.command"))
     elif a.platform.startswith("windows"):
+        # runs "Wind Waker HD.exe --console-setup", which runs setup.py with the bundled Python
+        if not a.setup_gui:
+            sys.exit("windows: --setup-gui is required (tools/Setup in a console window.bat runs Wind Waker HD.exe)")
+        if not a.windows_python:
+            sys.exit("windows: --windows-python is required (the setup runs with the bundled Python)")
+        add_windows_python(pkg, a.windows_python)
         copy(os.path.join(inst, "install-windows.bat"), os.path.join(pkg, "tools", "Setup in a console window.bat"))
-        copy(os.path.join(inst, "bootstrap-windows.ps1"), os.path.join(pkg, "tools", "installer", "bootstrap-windows.ps1"))
     else:
         copy(os.path.join(inst, "install-linux.sh"), os.path.join(pkg, "tools", "setup-in-terminal.sh"))
     # portable release: everything stays in this folder (setup.py and the game look for this file)
@@ -373,6 +416,8 @@ def main():
     entries = dict(VENDORED_LICENSES)
     # zstd: compiled into tools/bin/wwhd-extract on every platform (pinned source, cmake/Zstd.cmake)
     entries["Zstandard (BSD-3-Clause)"] = zstd_license
+    if a.platform.startswith("windows"):
+        entries["Python (PSF-2.0)"] = os.path.join(pkg, "tools", "python", "LICENSE.txt")
     for spec in a.license:
         k, _, v = spec.partition("=")
         entries[k] = v

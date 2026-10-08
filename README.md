@@ -12,6 +12,100 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Screenshot key:** **F10** saves the TV picture as a PNG in a `screenshots` folder next to the save
+  states (`~/Library/Application Support/wwhd/screenshots`, `%APPDATA%\WWHD\screenshots`,
+  `~/.config/wwhd/screenshots`; `data/user/screenshots` in a release folder), named
+  `WindWakerHD_YYYY-MM-DD_HH-MM-SS.png`. It is the frame shown when you press the key (also at 60/120/240
+  fps), at the internal resolution and aspect ratio (2x at 21:9: 3414x1440), with the game's own effects
+  and FXAA when on, but without the settings overlay or notices; "Screenshot saved" shows briefly. The
+  key can be changed (or a controller button added) in Controls ("Photo"); the Saves tab has **Open
+  screenshots folder** and an option to also save the GamePad screen (`..._GamePad.png`) while it is
+  shown. Saving happens in the background: the game does not stutter. Both renderers, all platforms.
+
+- **Frame interpolation fixes (60/120/240 fps and true 60):** the waving flags on Dragon Roost no
+  longer turn into huge stretched polygons on the in-between frames (issues #36, #70); the boat's sail
+  and yard and items Link carries (a bomb) no longer jump for single frames (issue #68); the stars in
+  the night sky no longer wobble when the camera turns (issue #68). 30 fps is unchanged.
+- **Fixed: the pause menu would not close at 120/240 fps** (issues #64, #74; probably also #73, no
+  control after an item-get message). The HD screens (the TV pause screen and others) advanced on every
+  drawn frame instead of once per game step, so the TV pause screen reopened itself right after
+  closing. They now update once per step, which also gives their fades their 30 fps speed back at
+  60/120/240 fps.
+
+### v0.2.8
+
+- **Fixed: the game could freeze at startup with 0 fps on some Macs** (issue #62, MacBook Air M1).
+  Newer Apple compilers turned the game's spin-wait loops into endless loops that never saw the other
+  core release the lock. Every loop in the game code now re-reads memory on each pass; no measurable
+  speed cost.
+- **Fixed: Android crashed when changing the aspect ratio or internal resolution on some phones**
+  (issue #72, Adreno 830). Phones whose driver cannot blit depth buffers now copy them with a small
+  draw instead; nothing aborts any more if a device can do neither. Thanks to @Blivii for the analysis
+  and the patch.
+- **Fixed: grid pattern in contact shadows at higher internal resolutions** (issue #66). The game's
+  shadow and ambient-occlusion blur now covers the same area as on the console at every resolution;
+  1x is unchanged and there is no measurable speed cost. Shadow maps still scale with the internal
+  resolution for sharp shadows; `WWHD_SHADOW_FIX=1` keeps them at the console's 1024x1024 instead,
+  for soft edges that never shimmer (issue #67).
+- **More languages (experimental):** with your own dump of the European or Japanese game, the port can
+  use its text, fonts and menus: German, Italian, British English, European French and Spanish, or
+  Japanese. See [docs/language-packs.md](docs/language-packs.md).
+- **Fan translations as content mods**, including **Arabic and Hebrew** drawn right to left (issue #60),
+  see [docs/mod-manager.md](docs/mod-manager.md) and [docs/rtl-text.md](docs/rtl-text.md).
+- **macOS: closing the TV window quits the game** (issue #65), as on Windows and Linux. During a game
+  it asks first: **Quit**, **Cancel** or **Save State and Quit**. `WWHD_QUIT_PROMPT=0` turns the
+  question off.
+- **Faster on Linux and Steam Deck (Vulkan):** the guest buffer cache is now on by default on desktop
+  Linux, as on macOS. It keeps unchanged vertex, index and uniform data on the GPU instead of copying it
+  every frame, which removed a 20 fps lock in busy views on an RK3588 board (issue #50). If you see broken
+  or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and please report it. Windows and Android
+  stay opt-in (`WWHD_VK_BUFFER_CACHE=1`).
+- **Save states are now small and can go into bug reports.** The **Save state** button (and
+  Shift+F1–F5, the Save States menu) now writes a *portable* state, `slotN.wwstate`: a few KB with
+  your progress (the same save data the game writes into `cking.sav`) and where Link stands (stage,
+  room, position, facing, time of day). It contains no game code and no game data, so you can attach
+  it to an issue; **Copy save for bug report** in the Saves tab copies the paths of the state and of
+  your `cking.sav`. Loading one puts that progress into the running game and takes Link there; it is
+  not an exact snapshot (enemies, a running cutscene and other actors start fresh). The old full
+  states (the whole running game, ~300 MB, contain game data: never share them) are still there for
+  debugging: Saves › *Full save states*, or `WWHD_FULL_SAVE_STATES=1`. Loading a slot loads either
+  kind; an older full state in a slot is kept and the Saves tab says so. A portable state can only be
+  saved while you control Link (not during a cutscene or dialogue); one saved on the boat puts Link
+  back on the boat. See [docs/portable-save-states.md](docs/portable-save-states.md).
+- **Fixed: "Quick doors" could crash the game going through a door** (issue #61, "PROGRAM HALT
+  J3DPacket.cpp:157"; reported in Tingle's jail on Windfall). The extra game steps that make doors
+  quicker also deleted actors (a pot, a rat, Tingle) faster than the game allows: an actor that
+  removed itself while a door opened was freed before its last drawn frame was done with. Deleting
+  now keeps its normal pace; doors are as quick as before.
+- **Gyro aiming fixes** (issues #45 and #71): a new **Turn left/right by** setting (settings overlay →
+  **Controls** → **Gyro…**) with the usual gyro conventions: **Player space** (default: turn the controller
+  left or right about the real vertical, however you hold it), **Yaw** (its own vertical axis) or **Roll**
+  (tilt it like a steering wheel). Before, rolling the controller turned the view and turning it depended
+  on how you held it. The default sensitivity is lower (0.5x, about one to one with your controller; the
+  range now goes down to 0.05x), and settings that still have the old default start at the new one.
+  Gyro aiming now also works in **Pro Controller** mode. For reports that the gyro stops after a while:
+  the port no longer stops when a controller's sensor timestamps stall, switches to the controller you
+  move when several are connected, turns a controller's sensors on again when they fall silent, and logs
+  `[gyro]` lines that say why motion stopped (including a drifting right stick, which makes the game
+  ignore the gyro). "Recenter" is now **Recalibrate** (learns the gyro's offset anew).
+
+### v0.2.7
+
+- **Fixed: taking a picture with the Picto Box crashed the game (Vulkan)** (issue #53). Right after
+  the shot the game renders small 3D colour-grading textures slice by slice, which the Vulkan renderer
+  did not support; on Metal the preview was black. Both renderers now render into 3D textures, and the
+  saved pictures show up in colour in the Picto Box album (they were black on both renderers before).
+- **Fixed: black shadows on macOS (Metal)** (issue #47). When macOS had to compile the game's shaders
+  from scratch (first start, or after a macOS update cleared its shader cache), the ambient-occlusion
+  pass could be skipped at the title screen while its shader was still compiling; the light buffer was
+  then created with the wrong layout and stayed wrong for the whole session, turning shadowed areas
+  black until a restart. Render targets no longer depend on that timing, and draws whose result the
+  game reuses are never skipped. A cold start now spends about 0.7 s more on the title screen once.
+- **Windows setup without PowerShell** (issue #58): the setup no longer runs a PowerShell script or
+  removes the "downloaded from the internet" mark, and `Wind Waker HD.exe` downloads nothing: the
+  official, signed embeddable Python now ships in the release (the Windows zip grows to about 19 MB).
+  The programs carry version information and a manifest. Some antivirus engines (BitDefender and
+  engines using it) may still flag the unsigned exe; that is a false positive and has been reported.
 - **120 and 240 fps** (settings overlay → **Graphics** → **Frame rate**, or the macOS Graphics
   menu): frame interpolation now also draws 3 or 7 blended frames between the game's 30 logic steps
   a second, for 120 Hz and 240 Hz displays. Camera, models, particles, sea and every other blended
@@ -32,6 +126,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
   Metal and Vulkan; `WWHD_UNCAPPED=1` turns it on at start.
 - **Keep game speed recovers faster after a hitch** (all frame rates): one slow frame (a shader
   compile, a scene load) no longer turns the in-between frames off for several seconds.
+- **Android:** full-size occlusion depth is off by default (it halved the worst GPU waits on an
+  Adreno 830, issue #56); the settings overlay can still turn it on.
+- **Smaller fixes:** cheaper reuse checks of upload memory on Macs and integrated GPUs (follow-up to
+  the v0.2.5 fix for issue #44), time limits for the Android CI build, and "mouse as
+  gyro" no longer loses part of a movement when a frame stalls.
 
 ### v0.2.6
 
@@ -328,8 +427,8 @@ First start, per system:
   When setup cannot continue it says what failed and what to do, and writes it to
   `data/setup-window.log` (or `~/Library/Logs/Wind Waker HD setup.log` when the folder is not writable).
 - **Windows**: the release is not code-signed, so SmartScreen may say "Windows protected your PC":
-  **More info › Run anyway**. The first start downloads Python (11 MB) and the compiler (llvm-mingw,
-  190 MB) into the release folder, SHA-256 checked, no administrator rights; at the end you can remove
+  **More info › Run anyway**. Python comes with the release (`tools/python`, the official embeddable
+  Python). The first start downloads the compiler (llvm-mingw, 190 MB) into the release folder, SHA-256 checked, no administrator rights; at the end you can remove
   the compiler again (it is only needed to repair, and downloaded again then).
 - **Linux**: start `wind-waker-hd` (or `Wind Waker HD.desktop`; some desktops ask to allow launching
   it first). It uses your Python 3 and downloads the compiler (zig, 55 MB; the x86-64 or arm64 build
@@ -565,7 +664,9 @@ the next start; picture scaling; the GamePad screen),
 gameplay mods and cheats (Graphics also has the Vulkan presentation mode), controls (the same controller drawing as Input > Controls…: select a
 button or chip and press the key or controller input to use; also on Windows and Linux) and the
 console language (only the languages your game contains can be chosen; the USA game has English,
-French and Spanish).
+French and Spanish; experimental: German, Italian, British English or Japanese from your own European
+or Japanese copy of the game, see [docs/language-packs.md](docs/language-packs.md); fan translations
+into Arabic or Hebrew are drawn right to left, see [docs/rtl-text.md](docs/rtl-text.md)).
 Mouse, keyboard (arrows, Enter, Esc) and controller (D-pad / stick, A, B; L / R switch tabs) all work.
 The game keeps running but gets no input while it is open; Esc, F1 or B closes it. On macOS it shows
 the same options as the menu bar, and both stay in sync. Shift+F1 still saves state slot 1; slot 1 is
@@ -616,14 +717,18 @@ twice is marked with a warning. Changes apply immediately, also while playing. A
 controller sticks and an option to invert the camera's up/down are at the bottom, with **Reset to
 Defaults…**. The mapping is saved to `~/Library/Application Support/WWHD/controls.json`
 (`WWHD_CONTROLS=<file>` uses another file); deleting it restores the defaults. The app's
-single-key shortcuts (R, O, M, N, 6–9, P, F1–F5, F12) and Esc can't be bound.
+single-key shortcuts (R, O, M, N, 6–9, P, F1–F5, F12) and Esc can't be bound. The **Screenshot**
+key (row "Photo", **F10** by default) is bound here like a button, to a key or a controller input.
 
 The **Graphics** menu in the menu bar switches fixes and enhancements while playing (the TV
 window title shows what is active and the current frame rate): 60 fps by frame interpolation
 (**6**; 120 and 240 fps in the menu and the settings overlay), true 60 fps (**7**, experimental), internal resolution 1x / 1.5x / 2x / 3x (**R**
 cycles; the game renders at 1280x720, 2x renders at 2560x1440), edge smoothing (FXAA, **8**),
 ambient-occlusion mode (**O** cycles), full-size occlusion depth (**M**), 16x anisotropic
-filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), and a frame capture for debugging (**P** or fn+F12, written to `captures/`;
+filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), **Take Screenshot** (**F10**,
+rebindable in Controls: the TV picture as a PNG at the internal resolution, without the settings
+overlay, in `~/Library/Application Support/wwhd/screenshots`; also *Open Screenshots Folder* and an
+option to save the GamePad screen too), and a frame capture for debugging (**P** or fn+F12, written to `captures/`;
 captures contain game imagery, so keep them to yourself). The Graphics choices are remembered
 between launches (macOS preferences; `defaults delete wwhd` resets them).
 True 60 (**7**) computes Link and the camera at 60 Hz while the game state after every 30 Hz step
@@ -640,10 +745,20 @@ magic / 5000 rupees, and infinite health, magic or ammo. Story cheats (all songs
 dungeon map/compass/boss key, a small key) can change or break story events, so use a spare save
 file. Cheats edit the live save data; save in game to keep them.
 
-The **Save States** menu saves the whole running game to one of 5 slots and loads it back
-(**Shift+F1–F5** save, **F2–F5** load; slot 1 loads from the F1 settings overlay); each slot shows its time and area. Slots are kept in
-`~/Library/Application Support/wwhd/states/` (about 270 MB each) and survive restarts; a slot
-made by an incompatible build is refused. Loading works once the game has reached gameplay.
+The **Save States** menu (and the Saves tab of the settings overlay) saves to one of 5 slots and
+loads it back (**Shift+F1–F5** save, **F2–F5** load; slot 1 loads from the F1 settings overlay);
+each slot shows its time and area. Slots are kept in `~/Library/Application Support/wwhd/states/`
+and survive restarts. By default a slot holds a **portable state** (`slotN.wwstate`, a few KB):
+your progress and Link's place, no game data, safe to attach to bug reports. Loading one works
+once a Quest Log is being played (it waits until then): the progress is put into the game and Link
+enters the saved stage at the saved spot (on the boat if he was on it). It is not an exact snapshot:
+enemies, cutscenes and other actors start fresh. A portable state can only be saved while you
+control Link (not during cutscenes, dialogue or stage changes). A state from another Quest Log is
+loaded into the one being played, with a notice.
+**Full save states** (Save States menu or Saves tab, off by default, for debugging;
+`WWHD_FULL_SAVE_STATES=1`) save the whole running game instead (`slotN.bin`, about 270 MB) and
+restore it exactly; they contain game code and data, **never share them**. A full state made by an
+incompatible build is refused. Loading a slot loads whichever kind it holds.
 
 **Crash Recovery** (Save States menu, off by default, or `WWHD_CRASH_RECOVERY=1`): every 2 minutes the
 game is saved into one of three automatic states (`states/auto/`, about 260 MB each; the save
@@ -669,9 +784,10 @@ remembered (`WWHD_RUMBLE=0` starts with it off). The macOS app does not drive co
 game turns the camera when the GamePad moves. The port turns its virtual GamePad with a host
 controller's gyro (SDL3; on the macOS app through GameController.framework), a Cemuhook (DSU) server
 or the mouse (Steam Input "gyro to mouse": while the game aims, the pointer is captured and the mouse
-turns the GamePad). Sensitivity and invert per axis, a recenter button or key, and the Cemuhook
-server, port and slot are saved; `WWHD_GYRO=off|controller|cemuhook|mouse` overrides the source at
-start. Details and what to test: `docs/gyro.md`.
+turns the GamePad); it works in GamePad and Pro Controller mode. The axis mode (player space, yaw or
+roll), sensitivity and invert per axis, a recalibrate button or key, and the Cemuhook server, port and
+slot are saved; `WWHD_GYRO=off|controller|cemuhook|mouse` overrides the source at start. Details,
+troubleshooting and what to test: `docs/gyro.md`.
 
 The **Display** menu: full screen for the TV window (**⌘F**, **⌃⌘F** or the green button; the
 pointer hides after 2 s without movement), picture scaling (smooth, sharp, or integer scale) and
@@ -685,23 +801,35 @@ Off-TV Play).
 and the renderer are remembered in `~/Library/Application Support/wwhd/display.plist`
 (delete it to reset).
 
+Closing the TV window (its close button or **⌘W**) quits the game, as on Linux and Windows; closing
+the GamePad window only hides it (**⌘G** brings it back). While a save file is being played, closing
+the TV window or **⌘Q** first asks *Quit Wind Waker HD?*: **Quit**, **Cancel** (keep playing), or
+**Save State and Quit**, which writes save state slot 1 (Save States menu) and then quits. On the
+title screen and the file select, before a file is loaded, it quits without asking.
+`WWHD_QUIT_PROMPT=0` turns the question off; scripted and hidden test runs never ask.
+
 ## Notes
 
 - Shaders are translated on first use and cached in `~/Library/Caches/wwhd/shaders.bin`; later
   runs replay that cache at startup.
 - [docs/performance.md](docs/performance.md) covers how to profile the port, measured fixes and
   open performance leads.
-- Useful environment variables: `WWHD_NO_AUDIO=1`, `WWHD_NO_GAMEPAD=1` (no second window), `WWHD_NO_CONTROLLERS=1` (SDL builds: ignore host game controllers), `WWHD_LANGUAGE=<code>` (console language: 1 English, 2 French, 5 Spanish, … — the USA/Asia disc carries English, French and Spanish; a language the game doesn't contain starts in English),
+- Useful environment variables: `WWHD_NO_AUDIO=1`, `WWHD_NO_GAMEPAD=1` (no second window), `WWHD_NO_CONTROLLERS=1` (SDL builds: ignore host game controllers), `WWHD_LANGUAGE=<code>` (console language: 1 English, 2 French, 5 Spanish, … — the USA/Asia disc carries English, French and Spanish; a language the game doesn't contain starts in English; with `WWHD_LANGUAGE_REGION=eu` or `jp` from a language source, docs/language-packs.md), `WWHD_RTL=0` / `1` (right-to-left text for Arabic and Hebrew packs off / forced on, docs/rtl-text.md),
   `WWHD_DRC_MODE=window|pip|auto|off|gamepad`, `WWHD_FULLSCREEN=0|1` (the TV window starts windowed / in
   full screen this time instead of as it was left; that session's full screen is not remembered), `WWHD_ASPECT=16:9|window|16:10|21:9|32:9|<w:h>`,
   `WWHD_AUDIO_VOLUME=0..1`, `WWHD_AUDIO_OUTPUT=auto|tv|gamepad` (the host plays the TV's sound, plus the GamePad's in Off-TV Play: auto; or only one of them), `WWHD_SHADER_CACHE=<file>|0`, `WWHD_AO_MODE=0..2`, `WWHD_AO_HIRES=0|1`, `WWHD_ANISO=0|1`, `WWHD_RES_SCALE=1|1.5|2|3`,
-  `WWHD_FXAA=0|1`, `WWHD_INTERP=1`, `WWHD_INTERP_FPS=60|120|240` (frame interpolation at that rate),
+  `WWHD_FXAA=0|1`, `WWHD_QUIT_PROMPT=0` (macOS: quit without asking, also during a game), `WWHD_INTERP=1`, `WWHD_INTERP_FPS=60|120|240` (frame interpolation at that rate),
   `WWHD_INTERP_PACED=0|1`, `WWHD_TRUE60=1` (start values for the Graphics menu; they
   override the remembered choices); `WWHD_DISPLAY_HZ=n` replaces the detected display refresh rate
   that 120/240 fps are capped to (0: no cap); `WWHD_UNCAPPED=1` starts with the debug switch
   "Uncapped" on (no frame limit, no vsync; the game runs faster than real time);
-  `WWHD_SHADOW_SCALE=n` gives the shadow maps their own resolution factor; `WWHD_STATE_DIR=<dir>`
-  stores save states elsewhere; `WWHD_RUMBLE=0|1` (SDL builds) start value for Controls > Rumble (overrides the remembered
+  `WWHD_SHADOW_FIX=1` keeps the shadow maps at the console's 1024x1024 at higher internal resolutions
+  (issue #67: soft, steady shadow edges as on the console; by default the maps scale with the internal
+  resolution, for sharper edges that can shimmer in places); `WWHD_SHADOW_SCALE=n` gives the shadow
+  maps their own resolution factor (overrides both); `WWHD_STATE_DIR=<dir>`
+  stores save states elsewhere; `WWHD_FULL_SAVE_STATES=0|1` full or portable save states for this
+  start; `WWHD_PORTABLE_LOAD=<file.wwstate>` loads that portable state (e.g. from a bug report) as
+  soon as a Quest Log is being played; `WWHD_RUMBLE=0|1` (SDL builds) start value for Controls > Rumble (overrides the remembered
   choice); `WWHD_LOG_RUMBLE=1` logs the game's motor requests and what the motors do.
 - Crashes and game halts write `captures/crash-<time>.log` (crash address, registers, the guest call
   chain, a host backtrace and the last log lines; useful for bug reports, it contains only addresses,

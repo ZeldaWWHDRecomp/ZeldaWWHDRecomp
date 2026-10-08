@@ -50,6 +50,7 @@ const Backend& vulkan_backend() {
         b.copy_surface = gfxvk::copy_surface;
         b.copy_to_scan = gfxvk::copy_to_scan;
         b.swap = gfxvk::swap;
+        b.peek_z = gfxvk::peek_z;
         b.set_frame_aspect = gfxvk::set_frame_aspect;
         b.target_aspect_factors = gfxvk::target_aspect_factors;
         b.frames_completed = gfxvk::frames_completed;
@@ -58,6 +59,7 @@ const Backend& vulkan_backend() {
         b.invalidate = gfxvk::invalidate;
         b.guest_flush = gfxvk::flush_async;
         b.wait_idle = gfxvk::wait_idle;
+        b.write_back = gfxvk::write_back_linear_targets;
         b.ss_reset = [] {
             gfxvk::ss_reset_surfaces();
             gfxvk::buffer_cache_invalidate_all();  // restored memory: every cached range is re-read

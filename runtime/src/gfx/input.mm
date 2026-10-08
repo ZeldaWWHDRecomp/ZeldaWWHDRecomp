@@ -17,6 +17,7 @@
 #include "renderer.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../true60.h"
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
@@ -194,11 +195,25 @@ static void update_motion_sensors() API_AVAILABLE(macos(11.0)) {
     const bool want = motion::wants_controller_sensors() && !getenv("WWHD_NO_HOST_INPUT");
     static NSMutableSet* active = [NSMutableSet set];  // controllers whose handler is installed
     int n = 0;
-    for (GCController* c in [GCController controllers]) {
+    NSArray<GCController*>* connected = [GCController controllers];
+    // controllers that went away: their handler goes with them (a reconnected controller is a new object)
+    for (GCController* c in [active allObjects])
+        if (![connected containsObject:c]) {
+            [active removeObject:c];
+            c.motion.valueChangedHandler = nil;
+            motion::controller_gone((uint64_t)(uintptr_t)(__bridge void*)c);
+        }
+    for (GCController* c in connected) {
         GCMotion* m = c.motion;
         if (!m || !m.hasRotationRate) continue;
         n++;
         const bool on = [active containsObject:c];
+        // the system can switch a controller's sensors off (another app, sleep); while the gyro is wanted they
+        // are switched on again (this runs every quarter second)
+        if (want && on && m.sensorsRequireManualActivation && !m.sensorsActive) {
+            LOG("[gyro] %s: its motion sensors were off, switching them on again", c.vendorName.UTF8String ?: "controller");
+            m.sensorsActive = YES;
+        }
         if (want == on) continue;
         if (want) {
             [active addObject:c];
@@ -252,6 +267,8 @@ void init() {
             bool repeat = e.type != NSEventTypeFlagsChanged && e.isARepeat;
             if (gfx::text_input_key((__bridge void*)e)) return nil;  // the game's text prompt: typed text
             if (overlay::key(code, down, repeat, m)) return nil;
+            // the Screenshot binding (F10 by default; posted test keys take this path too)
+            if (e.type == NSEventTypeKeyDown && !e.isARepeat && screenshot::key_down(code)) return nil;
             if (posted) return nil;  // test keys only reach the overlay
         }
         std::lock_guard<std::mutex> lk(g_mu);
@@ -281,7 +298,7 @@ void init() {
             g_pad = s;
             std::copy(v, v + input_map::kPadCount, g_host_values);
         }
-        // gyro: sensors on or off with the source, the recenter binding, the mouse gyro's capture
+        // gyro: sensors on or off with the source, the recalibrate binding, the mouse gyro's capture
         static int tick = 0;
         if (@available(macOS 11.0, *)) if (tick++ % 60 == 0) update_motion_sensors();
         if (!overlay::blocks_input() && !getenv("WWHD_NO_HOST_INPUT")) {
@@ -290,7 +307,8 @@ void init() {
                 std::lock_guard<std::mutex> lk(g_mu);
                 std::copy(g_keys, g_keys + 256, keys);
             }
-            motion::poll_recenter(v, keys);
+            motion::poll_recalibrate(v, keys);
+            screenshot::poll_controller(v);  // a controller input bound to Screenshot
         }
         mods::update_gyro_mouse();
     }];

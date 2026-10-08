@@ -257,6 +257,7 @@ struct LatteDecompilerOutputUniformOffsets
 struct LatteDecompilerOptions
 {
     bool legacyGraphicPackUniforms{false}; // Optional host adapter: pre-2026 pixel support block
+    uint32 areaSampledTextures{0}; // WWHD: pixel-shader units the host reads area-sampled (gfx/area_sample.h); declares their uf_texNScale
 	bool usesGeometryShader{ false };
 	// floating point math
 	bool strictMul{}; // if true, 0*anything=0 rule is emulated

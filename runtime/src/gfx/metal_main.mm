@@ -1,3 +1,4 @@
+#include "gfx/depth_peek.h"
 // Metal renderer: device, window, presentation, clears and copies.
 #import <AppKit/AppKit.h>
 #import <ImageIO/ImageIO.h>
@@ -17,6 +18,53 @@ namespace mods { void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex)
 
 namespace gfx {
 Renderer R;
+// GPU depth peeks for the game's sun visibility test (fork 73b54e1, Metal adaptation).
+void peek_z(const uint32_t* cells, uint32_t n) {
+    Surface* depth = nullptr;
+    auto range = R.surfaces.equal_range(R.mainDepthAddr);
+    for (auto it = range.first; it != range.second; ++it) {
+        auto* s = it->second.get();
+        if (s->isDepth && s->width == 1280 && s->height == 720 && s->tex &&
+            (!depth || s->writeSeq > depth->writeSeq)) depth = s;
+    }
+    uint32_t points = std::min(n / 3,64u);
+    if (!depth || !points) return;
+    auto format = depth->tex.pixelFormat;
+    if (format != MTLPixelFormatDepth16Unorm && format != MTLPixelFormatDepth32Float &&
+        format != MTLPixelFormatDepth32Float_Stencil8) return;
+    id<MTLBuffer> staging = [R.device newBufferWithLength:points*256 options:MTLResourceStorageModeShared];
+    if (!staging) return;
+    std::vector<uint32_t> destinations(points);
+    end_encoder();
+    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    for (uint32_t i=0; i<points; i++) {
+        int x = depth_peek::pixel(cells[i*3],(uint32_t)depth->tex.width,640);
+        int y = depth_peek::pixel(cells[i*3+1],(uint32_t)depth->tex.height,480);
+        [b copyFromTexture:depth->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x,y,0)
+            sourceSize:MTLSizeMake(1,1,1) toBuffer:staging destinationOffset:i*256 destinationBytesPerRow:256
+            destinationBytesPerImage:256 options:format == MTLPixelFormatDepth32Float_Stencil8 ?
+                MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone];
+        destinations[i] = cells[i*3+2];
+    }
+    [b endEncoding];
+    uint64_t ticket = depth_peek::next_ticket();
+    [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        if (cb.status != MTLCommandBufferStatusCompleted) return;
+        const uint8_t* raw = static_cast<const uint8_t*>(staging.contents);
+        std::vector<uint32_t> depths(points);
+        for (uint32_t i=0; i<points; i++) {
+            if (format == MTLPixelFormatDepth16Unorm) {
+                uint16_t v; memcpy(&v,raw+i*256,2);
+                depths[i] = v == 0xFFFF ? 0xFFFFFF : uint32_t(v) << 8;
+            } else {
+                float v; memcpy(&v,raw+i*256,4); depths[i] = depth_peek::from_float(v);
+            }
+        }
+        depth_peek::publish(ticket,destinations,depths);
+    }];
+}
+
+
 bool log_this_frame();
 
 // windows, full screen, the present shader and the composition of the screens: display.mm
@@ -134,7 +182,9 @@ static void clear_surface(Surface* s, const float* rgba, bool clearDepth, float 
     end_encoder();
     for (uint32_t slice = firstSlice; slice < firstSlice + numSlices; slice++) {
     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
-    rp.depthAttachment.slice = rp.stencilAttachment.slice = rp.colorAttachments[0].slice = slice;
+    rp.depthAttachment.slice = rp.stencilAttachment.slice = slice;
+    if (s->tex.textureType == MTLTextureType3D) rp.colorAttachments[0].depthPlane = slice;  // a volume's slice
+    else rp.colorAttachments[0].slice = slice;
     if (s->isDepth) {
         rp.depthAttachment.texture = s->tex;
         rp.depthAttachment.loadAction = clearDepth ? MTLLoadActionClear : MTLLoadActionLoad;

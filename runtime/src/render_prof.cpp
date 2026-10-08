@@ -174,6 +174,17 @@ void shader_variant(bool newProgram, bool onlyUnusedUnits, const char* const* gr
     for (int i = 0; i < groupCount; i++) shaderStats.groups[groups[i]]++;
 }
 
+std::atomic<uint64_t> wbWalkNs, wbWalks, wbCount, wbBytes, wbReadNs;
+void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t readNs) {
+    if (walkNs) {
+        wbWalkNs.fetch_add(walkNs, std::memory_order_relaxed);
+        wbWalks.fetch_add(1, std::memory_order_relaxed);
+    }
+    wbCount.fetch_add(surfaces, std::memory_order_relaxed);
+    wbBytes.fetch_add(bytes, std::memory_order_relaxed);
+    wbReadNs.fetch_add(readNs, std::memory_order_relaxed);
+}
+
 void add_sync(Sync site, uint64_t ns) {
     syncNs[site].fetch_add(ns, std::memory_order_relaxed);
     syncCount[site].fetch_add(1, std::memory_order_relaxed);
@@ -286,6 +297,12 @@ void frame_end(bool hold) {
         "render thread:%s",
         W.waitNs[kWaitGpu] / 1e6 / frames, W.waitCount[kWaitGpu] / frames, W.waitNs[kWaitAcquire] / 1e6 / frames,
         W.waitNs[kWaitPresent] / 1e6 / frames, syncs.empty() ? " none" : syncs.c_str());
+    {
+        uint64_t walks = wbWalks.exchange(0), walkNs = wbWalkNs.exchange(0), n = wbCount.exchange(0), bytes = wbBytes.exchange(0),
+                 readNs = wbReadNs.exchange(0);
+        add("[prof] write-back to guest memory: %llu surfaces, %.1f KiB, read %.3f ms; DrawDone checks %.2f/frame, %.2f us each",
+            (unsigned long long)n, bytes / 1024.0, readNs / 1e6, walks / frames, walks ? walkNs / 1e3 / walks : 0.0);
+    }
     static const char* upNames[kUploadKinds] = {"other", "vertex", "index", "ubo", "uniforms", "texture"};
     const double logicFrames = std::max(1.0, frames - W.holdFrames), holdFrames = std::max(1.0, (double)W.holdFrames);
     std::string up, upHold, uniq;

@@ -1,5 +1,6 @@
 // Internal interfaces between the GX2 layer and the renderer.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 
 struct LatteFetchShader;
@@ -29,6 +30,11 @@ void set_uncapped(bool on);
 // commands, in submission order. Guest structures are passed by guest address.
 namespace gx2 {
 constexpr uint32_t kDepthSlicesReg = 0xA002;  // our convention (unused register): depth buffer array size
+// our convention: CB_COLORn_TILE = view width | slices << 16 (bits 16..30) | kColorTarget3D. Slices are the
+// array size of a 2D array buffer, or the depth of a volume (3D) buffer, whose slice the view selects
+// (CB_COLORn_VIEW slice start). The game renders its 8x8x8 colour-grading volumes slice by slice that way.
+constexpr uint32_t kColorTarget3D = 0x80000000u;
+constexpr uint32_t color_target_slices(uint32_t tile) { return std::max<uint32_t>((tile >> 16) & 0x7FFF, 1); }
 }
 
 namespace gfx {
@@ -40,6 +46,7 @@ void clear_color(const uint32_t* regs, uint32_t colorBuffer, const float rgba[4]
 void clear_depth_stencil(const uint32_t* regs, uint32_t depthBuffer, float depth, uint32_t stencil, uint32_t flags);
 void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst, uint32_t dstMip, uint32_t dstSlice);
 void copy_to_scan(uint32_t colorBuffer, uint32_t target);  // target: 1 = TV, 4 = DRC (GamePad)
+void write_back_linear_targets();  // GX2DrawDone: linear render targets the CPU reads, to guest memory
 void swap();                     // present the TV scan buffer
 void set_frame_aspect(float a);  // aspect ratio of the TV picture from the next frame on (aspect.cpp)
 // render thread: a target of this guest size is made wider/taller this frame (kx, ky != 1)

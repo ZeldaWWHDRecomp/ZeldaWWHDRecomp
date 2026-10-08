@@ -140,6 +140,7 @@ Pack parse(const fs::path& folder){
         require(name!="code"&&name!="meta"&&name!="aoc","Cemu code patches, code/meta and DLC are unsupported");
         if(!e.is_regular_file())continue;
         auto extension=lower(e.path().extension().string());
+        require(extension!=".asm","Cemu code patches (.asm) cannot run in this port; only graphics rules and shaders are supported");
         require(extension!=".pack"&&extension!=".bfres"&&extension!=".bflim"&&extension!=".gtx"&&extension!=".dds"&&extension!=".png"&&extension!=".rpx"&&extension!=".rpl"&&extension!=".arc"&&extension!=".szs","Cemu resource replacements need a separate content package");
         std::smatch match;
         auto shader_name=e.path().filename().string();if(std::regex_match(shader_name,match,filename)){
