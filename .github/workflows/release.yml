@@ -82,6 +82,7 @@ jobs:
         run: |
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/recomp/test_builds.py
 
       - name: Package
         run: |
@@ -205,6 +206,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/recomp/test_builds.py
 
       - name: Package
         run: |

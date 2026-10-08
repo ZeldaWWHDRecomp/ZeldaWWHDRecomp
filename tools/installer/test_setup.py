@@ -69,12 +69,13 @@ class Paths(unittest.TestCase):
 
 
 class Titles(unittest.TestCase):
-    def test_usa_ok(self):
-        setup.check_title("0005000010143500")
+    def test_supported_ok(self):
+        setup.check_title("0005000010143500")   # USA, the canonical build
+        setup.check_title("0005000010143600")   # Europe (tools/recomp/builds/eu.json)
 
-    def test_other_regions(self):
-        with self.assertRaisesRegex(setup.SetupError, "Europe"):
-            setup.check_title("0005000010143600")
+    def test_unsupported(self):
+        with self.assertRaisesRegex(setup.SetupError, "Japan.*can be built from"):
+            setup.check_title("0005000010143400")
         with self.assertRaisesRegex(setup.SetupError, "not The Wind Waker HD"):
             setup.check_title("000500001010ec00")
 
@@ -110,9 +111,15 @@ class ArchiveTitles(unittest.TestCase):
         with self.assertRaisesRegex(setup.SetupError, "only the update"):
             setup.archive_choice(self.info([self.UPDATE]))
 
+    def test_european_archive(self):
+        eu, eu_update = _title("0005000010143600", 0), _title("0005000e10143600", 16)
+        folder, notes = setup.archive_choice(self.info([eu, eu_update], eu))
+        self.assertEqual(folder, "0005000010143600_v0")
+        self.assertIn("the update for The Wind Waker HD (Europe), version 16", notes[0])
+
     def test_other_region(self):
-        with self.assertRaisesRegex(setup.SetupError, "archive contains the Europe version"):
-            setup.archive_choice(self.info([_title("0005000010143600", 0), _title("0005000e10143600", 16)]))
+        with self.assertRaisesRegex(setup.SetupError, "archive contains the Japan version"):
+            setup.archive_choice(self.info([_title("0005000010143400", 0), _title("0005000e10143400", 16)]))
 
     def test_other_game(self):
         with self.assertRaisesRegex(setup.SetupError, "does not contain The Wind Waker HD.*title 00050000-1010EC00"):
@@ -134,8 +141,45 @@ class ArchiveTitles(unittest.TestCase):
         self.assertEqual(setup.EXTRACT_ERRORS[10], "wrong_title")
 
 
+class LanguageSourceBuild(unittest.TestCase):
+    """A language source lends a European or Japanese game's text to the USA code, so it is only for
+    the USA build (docs/language-packs.md, docs/builds.md)."""
+
+    def make(self, d, rpx):
+        os.makedirs(os.path.join(d, "code"), exist_ok=True)
+        with open(os.path.join(d, "code", "cking.rpx"), "wb") as f:
+            f.write(rpx)
+        return d
+
+    def setUp(self):
+        self.saved = setup.game_builds.by_sha256
+        usa = setup.game_builds.Build({"name": "USA", "title_id": "0005000010143500",
+                                       "rpx_sha256": hashlib.sha256(b"usa").hexdigest()})
+        eu = setup.game_builds.Build({"name": "EU", "title_id": "0005000010143600",
+                                      "rpx_sha256": hashlib.sha256(b"eu").hexdigest()})
+        setup.game_builds.by_sha256 = lambda dg: next((b for b in (usa, eu) if b.sha256 == dg), None)
+
+    def tearDown(self):
+        setup.game_builds.by_sha256 = self.saved
+
+    def test_usa_build_allows_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            setup.check_language_source_allowed(self.make(d, b"usa"))
+
+    def test_nothing_installed_yet_allows_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            setup.check_language_source_allowed(d)
+
+    def test_european_build_refuses_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, b"eu")
+            with self.assertRaisesRegex(setup.SetupError, "EU build.*own languages.*only for the USA build"):
+                setup.check_language_source_allowed(d)
+
+
 class GameVersion(unittest.TestCase):
-    """code/cking.rpx must be the file the port is built for (USA v0); synthetic files, made-up bytes."""
+    """code/cking.rpx must be one of the builds the port knows (version 0 of a region,
+    tools/recomp/builds.py); synthetic files, made-up bytes."""
 
     def make(self, d, rpx=b"made-up rpx", app_tid="0005000010143500", app_ver="0000"):
         os.makedirs(os.path.join(d, "code"), exist_ok=True)
@@ -146,22 +190,33 @@ class GameVersion(unittest.TestCase):
                     '<title_version type="hexBinary" length="2">%s</title_version></app>' % (app_tid, app_ver))
 
     def setUp(self):
-        self.saved = setup.SUPPORTED_RPX_SHA256
-        setup.SUPPORTED_RPX_SHA256 = hashlib.sha256(b"made-up rpx").hexdigest()
+        self.saved = (setup.SUPPORTED_BUILDS, setup.game_builds.by_sha256)
+        fake = [setup.game_builds.Build({"name": "USA", "title_id": "0005000010143500",
+                                         "rpx_sha256": hashlib.sha256(b"made-up rpx").hexdigest()}),
+                setup.game_builds.Build({"name": "EU", "title_id": "0005000010143600",
+                                         "rpx_sha256": hashlib.sha256(b"made-up eu rpx").hexdigest()})]
+        setup.SUPPORTED_BUILDS = {b.title_id: b for b in fake}
+        setup.game_builds.by_sha256 = lambda d: next((b for b in fake if b.sha256 == d), None)
 
     def tearDown(self):
-        setup.SUPPORTED_RPX_SHA256 = self.saved
+        setup.SUPPORTED_BUILDS, setup.game_builds.by_sha256 = self.saved
 
     def test_expected_file(self):
         with tempfile.TemporaryDirectory() as d:
             self.make(d)
-            setup.check_game_version(d)
+            self.assertEqual(setup.check_game_version(d).name, "USA")
+
+    def test_other_build(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.make(d, rpx=b"made-up eu rpx", app_tid="0005000010143600")
+            self.assertEqual(setup.check_game_version(d).name, "EU")
 
     def test_update_merged_in(self):
         with tempfile.TemporaryDirectory() as d:
             self.make(d, rpx=b"other code", app_ver="0010")
             with self.assertRaisesRegex(setup.SetupError, "version 16 of the game.*update merged in.*"
-                                                          "00050000-10143500, version 0.*Use the game's own files"):
+                                                          "00050000-10143500 \\(USA\\).*version 0.*"
+                                                          "Use the game's own files"):
                 setup.check_game_version(d)
             self.make(d, rpx=b"other code", app_tid="0005000E10143500", app_ver="0000")
             with self.assertRaisesRegex(setup.SetupError, "from the update.*merged in"):
@@ -170,16 +225,16 @@ class GameVersion(unittest.TestCase):
     def test_unknown_build(self):
         with tempfile.TemporaryDirectory() as d:
             self.make(d, rpx=b"damaged")
-            with self.assertRaisesRegex(setup.SetupError, "not the expected file \\(SHA-256 [0-9a-f]{16}\\.\\.\\.\\)"):
+            with self.assertRaisesRegex(setup.SetupError, "not a file the port knows \\(SHA-256 [0-9a-f]{16}\\.\\.\\.\\)"):
                 setup.check_game_version(d)
             os.remove(os.path.join(d, "code", "app.xml"))
-            with self.assertRaisesRegex(setup.SetupError, "not the expected file"):
+            with self.assertRaisesRegex(setup.SetupError, "not a file the port knows"):
                 setup.check_game_version(d)
 
-    def test_other_region(self):
+    def test_unsupported_region(self):
         with tempfile.TemporaryDirectory() as d:
-            self.make(d, rpx=b"eu", app_tid="0005000010143600")
-            with self.assertRaisesRegex(setup.SetupError, "The Wind Waker HD \\(Europe\\)"):
+            self.make(d, rpx=b"jp", app_tid="0005000010143400")
+            with self.assertRaisesRegex(setup.SetupError, "The Wind Waker HD \\(Japan\\)"):
                 setup.check_game_version(d)
 
     def test_missing(self):
@@ -189,8 +244,9 @@ class GameVersion(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("WWHD_GAME_DIR"), "WWHD_GAME_DIR (your own extracted game) not set")
     def test_real_game(self):
-        setup.SUPPORTED_RPX_SHA256 = self.saved
-        setup.check_game_version(os.environ["WWHD_GAME_DIR"])  # read only
+        setup.SUPPORTED_BUILDS, setup.game_builds.by_sha256 = self.saved
+        build = setup.check_game_version(os.environ["WWHD_GAME_DIR"])  # read only
+        self.assertIn(build.title_id, setup.SUPPORTED_BUILDS)
 
 
 class Recipe(unittest.TestCase):

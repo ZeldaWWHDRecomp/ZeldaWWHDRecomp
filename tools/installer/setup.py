@@ -70,16 +70,26 @@ TITLE_IDS = {
     "0005000010143600": "Europe",
     "0005000010143400": "Japan",
 }
-SUPPORTED_TITLE = "0005000010143500"
+# The builds of the game the port can be made from (tools/recomp/builds.py): the USA build is the
+# canonical one, every other is translated through its own address map (tools/recomp/builds/*.json).
+sys.path.insert(0, os.path.join(PKG, "tools", "recomp"))
+import builds as game_builds  # noqa: E402
+SUPPORTED_BUILDS = {b.title_id: b for b in game_builds.all_builds()}
+SUPPORTED_TITLE = game_builds.canonical_build().title_id
 # The translated code (tools/recomp, the hooks in tools/recomp/hooks*.txt, the runtime) is made for
-# the code of this version of the game: version 0, the disc and eShop release. Its update
-# (0005000E-10143500) brings other code, and its data files go with that code.
+# the code of version 0 of the game: the disc and eShop release. An update (0005000E-...) brings
+# other code, and its data files go with that code.
 SUPPORTED_VERSION = 0
-# SHA-256 of code/cking.rpx of that version (The Wind Waker HD, USA, 00050000-10143500, v0). A checksum
-# only: it identifies the file the port is built for and contains nothing of it (64 hex digits;
-# tools/release/guard.py flags only 32-digit, key-shaped strings). Every source is checked against
-# it before the code is translated (check_game_version).
-SUPPORTED_RPX_SHA256 = "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153"
+# Every build is identified by the SHA-256 of its code/cking.rpx (builds.py). A checksum only: it
+# identifies the file the port is built from and contains nothing of it (64 hex digits;
+# tools/release/guard.py flags only 32-digit, key-shaped strings). Every source is checked before
+# the code is translated (check_game_version).
+SUPPORTED_RPX_SHA256 = game_builds.canonical_build().sha256
+
+
+def supported_titles_text():
+    return " or ".join("%s-%s (%s)" % (b.title_id[:8].upper(), b.title_id[8:].upper(), b.name)
+                       for b in SUPPORTED_BUILDS.values())
 
 EXTRACT_ERRORS = {
     3: "disc_key_bad",
@@ -666,12 +676,14 @@ def disc_info(image, keys):
 
 
 def check_title(title_id):
-    if title_id != SUPPORTED_TITLE:
-        region = TITLE_IDS.get(title_id)
-        if region:
-            raise SetupError("this is the %s version of The Wind Waker HD (title %s). The port supports the USA "
-                             "version (00050000-10143500) only for now." % (region, title_id))
-        raise SetupError("this disc is not The Wind Waker HD (title id %s)" % title_id)
+    """Raises SetupError unless this is a version of the game the port can be built from."""
+    if title_id in SUPPORTED_BUILDS:
+        return
+    region = TITLE_IDS.get(title_id)
+    if region:
+        raise SetupError("this is the %s version of The Wind Waker HD (title %s). The port can be built from %s."
+                         % (region, title_id, supported_titles_text()))
+    raise SetupError("this disc is not The Wind Waker HD (title id %s)" % title_id)
 
 
 def title_desc(tid, version=None):
@@ -688,11 +700,23 @@ def title_desc(tid, version=None):
     return name + v
 
 
-def archive_info(path, title=SUPPORTED_TITLE):
-    """wwhd-extract info on a Cemu archive, asking for a title (the supported one; None: just list them).
+_ANY_SUPPORTED = object()   # archive_info: "whichever supported build the archive holds"
+
+
+def archive_info(path, title=_ANY_SUPPORTED):
+    """wwhd-extract info on a Cemu archive, asking for a title (by default: whichever supported build
+    the archive holds; None: just list them).
     Returns (problem, message, info);
     info: {"titles": [{id, version, folder, files, bytes}], "selected", "title_id", "version", "files", "bytes"}
     (also for problem "wrong_title": what the archive does contain)."""
+    if title is _ANY_SUPPORTED:
+        # which build is in there (one pass that only lists), then ask for that one
+        _, _, listed = _archive_info_one(path, None)
+        title = next((t["id"] for t in listed.get("titles", []) if t["id"] in SUPPORTED_BUILDS), SUPPORTED_TITLE)
+    return _archive_info_one(path, title)
+
+
+def _archive_info_one(path, title):
     p = subprocess.run([extractor()] + (["--title", title] if title else []) + ["info", path], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     err = p.stderr.decode("utf-8", "replace").strip()
@@ -727,21 +751,22 @@ def archive_choice(info):
                     check_title(t["id"])
                 except SetupError as e:
                     raise SetupError("this archive contains %s" % str(e)[len("this is "):])
-        if any(t["id"] == "0005000e" + SUPPORTED_TITLE[8:] for t in titles):
-            raise SetupError("this archive contains only the update for The Wind Waker HD (USA), not the game itself "
-                             "(title 00050000-10143500). In Cemu, make the archive with the game included "
-                             "(it contains: %s)." % found)
-        raise SetupError("this archive does not contain The Wind Waker HD (USA), title 00050000-10143500 "
-                         "(it contains: %s)." % found)
+        updates = ["0005000e" + t[8:] for t in SUPPORTED_BUILDS]
+        if any(t["id"] in updates for t in titles):
+            raise SetupError("this archive contains only the update for The Wind Waker HD, not the game itself "
+                             "(%s). In Cemu, make the archive with the game included (it contains: %s)."
+                             % (supported_titles_text(), found))
+        raise SetupError("this archive does not contain The Wind Waker HD, %s (it contains: %s)."
+                         % (supported_titles_text(), found))
     version = int(info.get("version", -1))
     if version != SUPPORTED_VERSION:
         raise SetupError("the game in this archive is version %d; the port is built for version %d of The Wind Waker "
-                         "HD (USA), the disc and eShop release (folder %s)." % (version, SUPPORTED_VERSION, info["selected"]))
+                         "HD, the disc and eShop release (folder %s)." % (version, SUPPORTED_VERSION, info["selected"]))
     notes = []
     for t in titles:
         if t["folder"] == info["selected"]:
             continue
-        if t["id"] == "0005000e" + SUPPORTED_TITLE[8:]:
+        if t["id"] in ["0005000e" + x[8:] for x in SUPPORTED_BUILDS]:
             notes.append("Not used: %s (%s). The port is built for the game's own code (version %d); the update "
                          "replaces that code, and its data files belong to the updated code, so the game is set up "
                          "from the base game alone." % (title_desc(t["id"], t["version"]), t["folder"], SUPPORTED_VERSION))
@@ -790,34 +815,37 @@ def file_sha256(path):
 
 GAME_VERSION_FIX = ("Use the game's own files: a disc image (.wud/.wux), a Cemu archive (.wua; setup takes the game from it "
                     "and leaves an update out), or the game's folder exactly as dumped (in Cemu: "
-                    "mlc01/usr/title/00050000/10143500, not the update in 0005000e/10143500), without update files "
-                    "copied over it.")
+                    "mlc01/usr/title/00050000/10143500 for the USA game, 10143600 for the European one; not the "
+                    "update in 0005000e/...), without update files copied over it.")
 
 
 def check_game_version(path):
-    """Raises SetupError unless code/cking.rpx is the one the port is built for (USA, version 0). The
-    translated code and its hooks are made for exactly that file, so this runs before translating."""
+    """The build of the game in `path` (tools/recomp/builds.py), or SetupError if it is not one the
+    port can be built from. The translated code and its hooks are made for exactly those files
+    (version 0 of each region), so this runs before translating."""
     rpx = os.path.join(path, "code", "cking.rpx")
     try:
         digest = file_sha256(rpx)
     except OSError as e:
         raise SetupError("cannot read %s: %s" % (rpx, e))
-    if digest == SUPPORTED_RPX_SHA256:
-        return
+    build = game_builds.by_sha256(digest)
+    if build:
+        return build
     tid, ver = code_title_version(path)
-    update = "0005000e" + SUPPORTED_TITLE[8:]
-    if tid and tid not in (SUPPORTED_TITLE, update):
+    updates = ["0005000e" + t[8:] for t in SUPPORTED_BUILDS]
+    if tid and tid not in SUPPORTED_BUILDS and tid not in updates:
         found = "the game code (code/cking.rpx) is from %s (title %s-%s)" % (title_desc(tid, ver), tid[:8].upper(),
                                                                             tid[8:].upper())
-    elif tid == update or ver:
+    elif tid in updates or ver:
         found = ("the game code (code/cking.rpx) is %s (per the folder's app.xml/meta.xml): this looks like the "
                  "game with an update merged in" % ("version %d of the game" % ver if ver else "from the update"))
     else:
-        found = ("the game code (code/cking.rpx) is not the expected file (SHA-256 %s...): not version 0 of the USA "
-                 "game, or a modified or damaged copy" % digest[:16])
-    LOG.write("cking.rpx SHA-256 %s, expected %s" % (digest, SUPPORTED_RPX_SHA256))
-    raise SetupError("%s. The port needs The Wind Waker HD (USA), title 00050000-10143500, version 0 (the disc or "
-                     "eShop release, without the update). %s" % (found, GAME_VERSION_FIX))
+        found = ("the game code (code/cking.rpx) is not a file the port knows (SHA-256 %s...): not version 0 of "
+                 "the game, or a modified or damaged copy" % digest[:16])
+    LOG.write("cking.rpx SHA-256 %s, known: %s" % (
+        digest, ", ".join("%s %s" % (b.name, b.sha256[:16]) for b in SUPPORTED_BUILDS.values())))
+    raise SetupError("%s. The port needs The Wind Waker HD, %s, version 0 (the disc or eShop release, without the "
+                     "update). %s" % (found, supported_titles_text(), GAME_VERSION_FIX))
 
 
 def valid_game_folder(path):
@@ -1106,11 +1134,32 @@ def remove_language_source(data_dir, region):
     return d
 
 
-def add_language_source(source, data_dir, keys=None, info=None):
+def installed_build(game_dir):
+    """The build the installed game files are, or None when nothing is installed yet."""
+    try:
+        return game_builds.by_sha256(file_sha256(os.path.join(game_dir, "code", "cking.rpx")))
+    except OSError:
+        return None
+
+
+def check_language_source_allowed(game_dir):
+    """A language source lends the text of a European or Japanese game to the USA game's code
+    (docs/language-packs.md). Only the USA build needs and can use one: the European build has those
+    five languages itself, and the port's region patch (hooks_language.txt) is for the USA code."""
+    build = installed_build(game_dir)
+    if build is None or build.canonical:
+        return
+    raise SetupError("the installed game is the %s build, which has its own languages; a language source is only "
+                     "for the USA build (docs/language-packs.md). Choose the language in the game's settings "
+                     "(F1) > Language instead." % build.name)
+
+
+def add_language_source(source, data_dir, keys=None, info=None, game_dir=None):
     """Takes the language packs of a European or Japanese game: source ("image", path) with keys and
     disc info (wwhd-extract info), ("archive", path) or ("folder", path). Returns [manifest] (an archive
     can hold both)."""
     kind, path = source
+    check_language_source_allowed(game_dir or os.path.join(data_dir, "game"))
     root = language_root(data_dir)
     os.makedirs(root, exist_ok=True)
     if free_space(root) < (200 << 20):
@@ -1759,7 +1808,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         if keys is None or info is None:
             keys, info = check_keys(source[1])
         check_title(info.get("title_id", ""))
-        say("  OK: The Wind Waker HD (USA), %s files, %s" % (info.get("files"), human(int(info.get("bytes", 0)))))
+        say("  OK: %s, %s files, %s" % (title_desc(info.get("title_id", "")), info.get("files"),
+                                        human(int(info.get("bytes", 0)))))
     elif kind == "archive":
         begin("archive")
         if not os.path.isfile(source[1]):
@@ -1780,8 +1830,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         tid = game_folder_title(source[1])
         if tid:
             check_title(tid)
-        check_game_version(source[1])
-        say("  OK: %s (USA, version 0)" % source[1])
+        build = check_game_version(source[1])
+        say("  OK: %s (%s, version 0)" % (source[1], build.name))
     elif kind == "installed":
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("no installed game files in %s; run setup with your disc image" % ctx.game_dir)
@@ -1892,7 +1942,8 @@ def run_language_source(args, ui, data_dir, path):
     if kind == "image":
         side_args = argparse.Namespace(disc_key=args.language_disc_key, common_key=args.common_key)
         keys, info = get_disc_keys(path, ui, side_args)
-    manifests = add_language_source((kind, path), data_dir, keys, info)
+    game_dir = read_state(data_dir).get("game_dir") or os.path.join(data_dir, "game")
+    manifests = add_language_source((kind, path), data_dir, keys, info, game_dir)
     for m in manifests:
         say("Added the %s languages: %s. Choose one in the game's settings (F1, Language); it applies on the next "
             "start.%s" % (LANGUAGE_REGION_NAMES[m["region"]], ", ".join(p["language"] for p in m["packs"]),
@@ -2158,7 +2209,7 @@ def gui_main(args):
             if not folder:
                 return fail(req, "invalid", "This folder does not contain an extracted game (code, content and meta).")
             tid = game_folder_title(folder)
-            if tid and tid != SUPPORTED_TITLE:
+            if tid and tid not in SUPPORTED_BUILDS:
                 try:
                     check_title(tid)
                 except SetupError as e:
@@ -2167,8 +2218,8 @@ def gui_main(args):
                 check_game_version(folder)
             except SetupError as e:
                 return fail(req, "wrong_version", str(e)[0].upper() + str(e)[1:])
-            return reply(req, kind="folder", path=folder, title="The Wind Waker HD (USA)", in_place=PORTABLE,
-                         bytes=folder_size(folder))
+            return reply(req, kind="folder", path=folder, title=title_desc(tid) if tid else "The Wind Waker HD",
+                         in_place=PORTABLE, bytes=folder_size(folder))
         if not os.path.isfile(p):
             return fail(req, "invalid", "File not found.")
         if p.lower().endswith(".wua"):
@@ -2233,7 +2284,7 @@ def gui_main(args):
                 if problem:
                     return fail(req, problem, KEY_MESSAGES.get(problem, err))
                 language_source_region(info.get("title_id"))
-            added = add_language_source((kind, path), ctx.data_dir, keys, info)
+            added = add_language_source((kind, path), ctx.data_dir, keys, info, ctx.game_dir)
         except SetupError as e:
             return fail(req, "language_source", str(e)[0].upper() + str(e)[1:])
         reply(req, sources=[{k: m.get(k) for k in ("region", "title_id", "source", "packs")} for m in added])
