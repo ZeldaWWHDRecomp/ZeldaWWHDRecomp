@@ -10,6 +10,13 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ## What's new in this update
 
+### Next update
+
+- **Frame interpolation fixes (60/120/240 fps and true 60):** the waving flags on Dragon Roost no
+  longer turn into huge stretched polygons on the in-between frames (issues #36, #70); the boat's sail
+  and yard and items Link carries (a bomb) no longer jump for single frames (issue #68); the stars in
+  the night sky no longer wobble when the camera turns (issue #68). 30 fps is unchanged.
+
 ### v0.2.8
 
 - **Fixed: the game could freeze at startup with 0 fps on some Macs** (issue #62, MacBook Air M1).
