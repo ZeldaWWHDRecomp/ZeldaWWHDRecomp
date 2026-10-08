@@ -44,6 +44,7 @@ filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with 
 | Climb mod stamina wheel | yes | yes (ported shader; not yet seen in a test run) |
 | Frame dumps `WWHD_DUMP_FRAMES`, `WWHD_DUMP_PRESENT` | yes | yes |
 | Capture frame (P) | pictures + draw log | pictures only (no draw log) |
+| Screenshot key (F10, `runtime/src/screenshot.h`) | yes | yes (read back at the submission's fence, no wait) |
 | Shader head start (`--warm-shaders`) | yes | no (Vulkan keeps its own SPIR-V / pipeline caches) |
 
 Other builds: `-DWWHD_RENDERER=METAL` (Metal only, no Vulkan dependencies) and
@@ -419,7 +420,8 @@ roughly 30 FPS while other CPU workloads were active.
 
 In the macOS app, the Save States menu and keys work as with Metal. In the SDL game window, `F1` through `F5` load slots 1 through 5;
 `Shift+F1` through `Shift+F5` save those slots. Repeated keydown events are ignored,
-and these keys do not reach the game's button mapping. Host-input-disabled scripted
+and these keys do not reach the game's button mapping. The Screenshot binding (F10 by default,
+Controls) works in every game window the same way; `WWHD_TEST_SCREENSHOT=<frames>` scripts it. Host-input-disabled scripted
 runs do not accept the shortcuts. State files remain in the configured state directory.
 
 A load must pass the existing allocation, thread, and guest-stack guards. A state

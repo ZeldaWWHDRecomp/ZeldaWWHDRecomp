@@ -12,6 +12,16 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Screenshot key:** **F10** saves the TV picture as a PNG in a `screenshots` folder next to the save
+  states (`~/Library/Application Support/wwhd/screenshots`, `%APPDATA%\WWHD\screenshots`,
+  `~/.config/wwhd/screenshots`; `data/user/screenshots` in a release folder), named
+  `WindWakerHD_YYYY-MM-DD_HH-MM-SS.png`. It is the frame shown when you press the key (also at 60/120/240
+  fps), at the internal resolution and aspect ratio (2x at 21:9: 3414x1440), with the game's own effects
+  and FXAA when on, but without the settings overlay or notices; "Screenshot saved" shows briefly. The
+  key can be changed (or a controller button added) in Controls ("Photo"); the Saves tab has **Open
+  screenshots folder** and an option to also save the GamePad screen (`..._GamePad.png`) while it is
+  shown. Saving happens in the background: the game does not stutter. Both renderers, all platforms.
+
 - **Frame interpolation fixes (60/120/240 fps and true 60):** the waving flags on Dragon Roost no
   longer turn into huge stretched polygons on the in-between frames (issues #36, #70); the boat's sail
   and yard and items Link carries (a bomb) no longer jump for single frames (issue #68); the stars in
@@ -707,14 +717,18 @@ twice is marked with a warning. Changes apply immediately, also while playing. A
 controller sticks and an option to invert the camera's up/down are at the bottom, with **Reset to
 Defaults…**. The mapping is saved to `~/Library/Application Support/WWHD/controls.json`
 (`WWHD_CONTROLS=<file>` uses another file); deleting it restores the defaults. The app's
-single-key shortcuts (R, O, M, N, 6–9, P, F1–F5, F12) and Esc can't be bound.
+single-key shortcuts (R, O, M, N, 6–9, P, F1–F5, F12) and Esc can't be bound. The **Screenshot**
+key (row "Photo", **F10** by default) is bound here like a button, to a key or a controller input.
 
 The **Graphics** menu in the menu bar switches fixes and enhancements while playing (the TV
 window title shows what is active and the current frame rate): 60 fps by frame interpolation
 (**6**; 120 and 240 fps in the menu and the settings overlay), true 60 fps (**7**, experimental), internal resolution 1x / 1.5x / 2x / 3x (**R**
 cycles; the game renders at 1280x720, 2x renders at 2560x1440), edge smoothing (FXAA, **8**),
 ambient-occlusion mode (**O** cycles), full-size occlusion depth (**M**), 16x anisotropic
-filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), and a frame capture for debugging (**P** or fn+F12, written to `captures/`;
+filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), **Take Screenshot** (**F10**,
+rebindable in Controls: the TV picture as a PNG at the internal resolution, without the settings
+overlay, in `~/Library/Application Support/wwhd/screenshots`; also *Open Screenshots Folder* and an
+option to save the GamePad screen too), and a frame capture for debugging (**P** or fn+F12, written to `captures/`;
 captures contain game imagery, so keep them to yourself). The Graphics choices are remembered
 between launches (macOS preferences; `defaults delete wwhd` resets them).
 True 60 (**7**) computes Link and the camera at 60 Hz while the game state after every 30 Hz step

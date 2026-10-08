@@ -258,8 +258,9 @@ Geo layout(bool pro, ImVec2 org, float w, float h) {
     group("Left stick (move)", {kLUp, kLDown, kLLeft, kLRight, kStickLClick}, stickRows, PU(d.lstick), false);
     group("Right stick (camera)", {kRUp, kRDown, kRLeft, kRRight, kStickRClick}, stickRows, PU(d.rstick), true);
     group("D-pad", {kDUp, kDDown, kDLeft, kDRight}, dirs, PU(d.dpad), false);
-    // app actions: the bottom of the left column, no leader line
-    group("Screenshot", {kScreenshot}, {"Screenshot"}, ImVec2(org.x, org.y + h), false);
+    // app actions: the bottom of the left column, no leader line ("Photo": the row label column is narrow;
+    // hovering shows "Screenshot (app)")
+    group("Photo", {kScreenshot}, {"Photo"}, ImVec2(org.x, org.y + h), false);
     g.groups.back().leader = false;
     for (auto& p : g.parts)
         if (p.kind == kPartRound) {

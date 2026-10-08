@@ -2,7 +2,7 @@
 // window like the GamePad inputs, also to a controller input) saves the TV picture as a PNG.
 //
 // What is saved: the TV picture of the frame shown when the key was pressed, as the game drew it, at
-// the internal resolution and aspect ratio (1280x720 at 1x 16:9, 2560x1080 at 1.5x 21:9, ...), after
+// the internal resolution and aspect ratio (1280x720 at 1x 16:9, 3414x1440 at 2x 21:9, ...), after
 // the game's own post-processing and the gameplay mods' HUD, with FXAA when it is on (the window's
 // scaling filter is left out: the picture is not resized). Never the settings overlay, the notices or
 // the performance overlay. Optionally (setting "Also save the GamePad screen", off by default) the
