@@ -201,6 +201,7 @@
 0256DDF8  # vrkumo_move: sky clouds drawn halfway
 0256A388  # dKyr_star_move: star twinkle drawn halfway
 0251D864  # dCloth_packet_c vertex fill: cloth drawn halfway after a simulation step
+02574144  # dKyr_drawStar: stars placed around the eye the pass was drawn with (interp.cpp)
 024EC1C8  # dAttDraw_c::draw: in true 60, the attention arrow is built from halfway values and the current camera
 025615B8  # dScnKy_env_light_c::settingTevStruct_plightcol_plus: candle flicker held on frames without logic (interp_fx.cpp)
 020198D8  # cM_rndF: the flicker random value inside it

@@ -306,7 +306,11 @@ bool g_exact_step = false;
 // this pass is a blended hold pass (no logic, drawn at pass_t())
 bool blended_hold() { return g_hold && g_phase < g_step_n; }
 // last camera state that was drawn normally, per camera process; the snap decision of the step
-struct Prev { uint32_t cam = 0; CamState s{}; bool valid = false; bool snap = true; uint64_t snap_step = ~0ull; };
+struct Prev {
+    uint32_t cam = 0; CamState s{}; bool valid = false; bool snap = true; uint64_t snap_step = ~0ull;
+    CamState drawn{};          // the camera as camera_draw drew it on pass drawn_pass (blended or exact)
+    uint64_t drawn_pass = ~0ull;
+};
 Prev g_prev[4];
 
 Prev* prev_for(uint32_t cam) {
@@ -354,6 +358,8 @@ extern "C" void hook_024FFC40(Cpu* c) {
             }
             if (p->snap_step == g_logic_steps && !p->snap) write_cam(cam, blend(p->s, cur, pass_t()));
         }
+        p->drawn = read_cam(cam);
+        p->drawn_pass = g_passes;
         // (also on a snap: the sound listener keeps following only the record pass's camera)
         g_cam_blended = p->valid;
         cam_trace(cam, "blended");
@@ -364,8 +370,11 @@ extern "C" void hook_024FFC40(Cpu* c) {
     }
     p->s = read_cam(cam);  // exact step: remember it for the next step's blended frames
     p->valid = true;
+    p->drawn = p->s;
+    p->drawn_pass = g_passes;
     cam_trace(cam, "exact");
     if (g_hold && true60::enabled()) {  // true 60: the half pass's camera is a preview (true60.cpp)
+        p->drawn_pass = ~0ull;  // (drawn with the preview: the stars keep the camera as it is)
         true60::camera_draw_preview(true);
         f_024FFC40_orig(c);
         true60::camera_draw_preview(false);
@@ -1159,4 +1168,31 @@ extern "C" void hook_020315CC(Cpu* c) {
         done_for = g_logic_steps;
     }
     f_020315CC_orig(c);
+}
+
+// The night sky's stars (dKyr_drawStar 02574144, from the star packet's draw, which runs when the
+// pass's draw lists are painted, after the per-frame function) are placed around the camera's eye
+// as it is at that moment: the exact step, as camera_draw put it back. The pass was drawn with the
+// blended camera, so on blended frames the stars sat around another eye than the one they were seen
+// from and jumped back and forth while the camera moved (issue #68, "stars on the sky at night").
+// They are placed with the camera as the pass drew it.
+extern "C" void f_02574144_orig(Cpu* c);
+extern "C" void hook_02574144(Cpu* c) {
+    using namespace interp;
+    if (!enabled()) {
+        f_02574144_orig(c);
+        return;
+    }
+    CamState exact[4];
+    bool swapped[4] = {};
+    for (int i = 0; i < 4; i++) {
+        Prev& p = g_prev[i];
+        if (!p.cam || p.drawn_pass != g_passes) continue;
+        exact[i] = read_cam(p.cam);
+        write_cam(p.cam, p.drawn);
+        swapped[i] = true;
+    }
+    f_02574144_orig(c);
+    for (int i = 3; i >= 0; i--)
+        if (swapped[i]) write_cam(g_prev[i].cam, exact[i]);
 }
