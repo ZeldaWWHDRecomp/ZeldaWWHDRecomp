@@ -22,6 +22,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     env:
       NDK_VERSION: 30.0.16248370
       SDK_PLATFORM: platforms;android-36
@@ -38,6 +39,7 @@ jobs:
         uses: gradle/actions/wrapper-validation@v4
 
       - name: Install the NDK and SDK packages
+        timeout-minutes: 15  # a stalled download fails fast instead of hanging until GitHub's 6 h limit
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build

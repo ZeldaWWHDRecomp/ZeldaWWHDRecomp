@@ -13,6 +13,8 @@
 //   WWHD_TEST_POKE=t:ADDR:HEX,...   at scenario time t (s, game time; see input.mm) writes the bytes
 //                                   HEX to guest memory at ADDR. ADDR is hex, or *PTR+OFF (the word
 //                                   at PTR plus OFF), e.g. *101F84DC+2E:38 equips the Hero's Sword.
+//   WWHD_LINK_WARP=step:x:y:z:angle  once, before Link's full-pass execute at origin step + step;
+//                                   updates the actor and the HD executable's retained position.
 //   WWHD_SAVEINFO_DUMP=path         at the end of the scenario (WWHD_TEST_END) writes the save-info
 //                                   block (dSv_info_c, *101F84DC, 0x12A0 bytes: what the game saves,
 //                                   plus the current stage/zone memory) to path; also at the times
@@ -29,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "guest_addr.h"
 #include "runtime.h"
 #include "true60.h"
 #include "savestate.h"
@@ -64,7 +67,7 @@ std::vector<Poke> parse_pokes() {
     }
     return v;
 }
-constexpr uint32_t kSaveInfoPtr = 0x101F84DC;  // dComIfGs save info (dSv_info_c), see dComIfGs_setSelectEquip 02522398
+const uint32_t kSaveInfoPtr = GD(0x101F84DC);  // dComIfGs save info (dSv_info_c), see dComIfGs_setSelectEquip 02522398
 constexpr uint32_t kSaveInfoSize = 0x12A0;
 void dump_saveinfo(const std::string& path) {
     uint32_t p = ld32(kSaveInfoPtr);
@@ -103,7 +106,7 @@ void tick(double t, bool ended) {
     static double sc_t = getenv("WWHD_TEST_SCENECHANGE") ? atof(getenv("WWHD_TEST_SCENECHANGE")) : -1;
     if (sc_t >= 0 && t >= sc_t) {
         sc_t = -1;
-        constexpr uint32_t kPlay = 0x1046F0B0, kStart = kPlay + 0x5134, kNext = kPlay + 0x5140;
+        const uint32_t kPlay = GD(0x1046F0B0), kStart = kPlay + 0x5134, kNext = kPlay + 0x5140;
         for (uint32_t i = 0; i < 12; i++) st8(kNext + i, ld8(kStart + i));
         st8(kNext + 12, 1);  // enabled
         st8(kNext + 13, 0);  // wipe
@@ -192,7 +195,7 @@ void after_execute(uint32_t proc, uint32_t fn, bool is_link, float dt) {
 void rng_trace() {
     static FILE* f = getenv("WWHD_RNG_TRACE") ? fopen(getenv("WWHD_RNG_TRACE"), "w") : nullptr;
     if (!f || interp::hold_pass()) return;
-    fprintf(f, "%llu %08X %08X %08X", (unsigned long long)interp::logic_steps(), ld32(0x101FF9D4), ld32(0x101FF9D8), ld32(0x101FF9DC));
+    fprintf(f, "%llu %08X %08X %08X", (unsigned long long)interp::logic_steps(), ld32(GD(0x101FF9D4)), ld32(GD(0x101FF9D4) + 4), ld32(GD(0x101FF9D4) + 8));
     // WWHD_MEM_WATCH=addr:len,... adds those bytes (hex) to each line
     static std::vector<std::pair<uint32_t, uint32_t>> w = [] {
         std::vector<std::pair<uint32_t, uint32_t>> v;
@@ -210,12 +213,12 @@ void rng_trace() {
         fprintf(f, " ");
         for (uint32_t i = 0; i < n; i++) fprintf(f, "%02X", ld8(a + i));
     }
-    fprintf(f, " c%08X\n", ld32(0x101FF560));
+    fprintf(f, " c%08X\n", ld32(GD(0x101FF560)));
     static int n = 0;
     if (++n % 30 == 0) fflush(f);
 }
 bool dumping() {
-    static const bool on = getenv("WWHD_ACTOR_DUMP") || getenv("WWHD_RNG_TRACE") || getenv("WWHD_MEM_DUMP") || getenv("WWHD_LINK_PRE");
+    static const bool on = getenv("WWHD_ACTOR_DUMP") || getenv("WWHD_RNG_TRACE") || getenv("WWHD_MEM_DUMP") || getenv("WWHD_LINK_PRE") || getenv("WWHD_LINK_WARP");
     return on;
 }
 }  // namespace true60_test
@@ -241,7 +244,24 @@ void hook_0255BA9C(Cpu* c) { light_trace(4, c); f_0255BA9C_orig(c); }
 
 namespace true60_test {
 // WWHD_LINK_PRE=path: Link's process (0x8284 bytes) right before each full-pass execute (same record format)
+uint64_t origin_step();
 void before_execute_link(uint32_t proc) {
+    // Visual comparison fixture: apply at an actor boundary, outside controller-read call stacks.
+    static bool warped = false;
+    if (!warped && !interp::hold_pass() && origin_step()) {
+        if (const char* e = getenv("WWHD_LINK_WARP")) {
+            unsigned long long step; float x,y,z; int angle;
+            if (sscanf(e,"%llu:%f:%f:%f:%d",&step,&x,&y,&z,&angle)==5 && interp::logic_steps() >= origin_step()+step) {
+                LOG("[test] warp Link %08X from %.1f %.1f %.1f to %.1f %.1f %.1f",proc,(float)ldf32(proc+0x314),(float)ldf32(proc+0x318),(float)ldf32(proc+0x31C),x,y,z);
+                for (uint32_t off : {0x2ECu,0x300u,0x314u}) { stf32(proc+off,x); stf32(proc+off+4,y); stf32(proc+off+8,z); }
+                st16(proc+0x322,(uint16_t)angle);st16(proc+0x32A,(uint16_t)angle);
+                // The HD executable restores these retained debug values at 0240D130 each update.
+                stf32(GD(0x1046CD48),x);stf32(GD(0x1046CD4C),y);stf32(GD(0x1046CD50),z);
+                st16(GD(0x1046CD12),(uint16_t)angle);st16(GD(0x1046CD0A),(uint16_t)angle);
+                warped=true;
+            }
+        }
+    }
     // WWHD_MEM_DUMP=path:addr:size: that memory before each full-pass execute of Link (same record format)
     static FILE* md = nullptr;
     static uint32_t md_a = 0, md_n = 0;
@@ -319,11 +339,11 @@ extern "C" void hook_025D6CE8(Cpu* c) {
     std::string ctx;
     if (f) {
         char t[16];
-        for (uint32_t o = 0; o < 0x30; o += 4) { snprintf(t, sizeof t, " %08X", ld32(0x104B45F8 + o)); ctx += t; }
+        for (uint32_t o = 0; o < 0x30; o += 4) { snprintf(t, sizeof t, " %08X", ld32(GD(0x104B45F8) + o)); ctx += t; }
         ctx += " | cull";
         uint32_t m = ld32(a + 0x348);
         for (uint32_t o = 0; o < 0x30 && m; o += 4) { snprintf(t, sizeof t, " %08X", ld32(m + o)); ctx += t; }
-        uint32_t vo = ld32(ld32(ld32(0x101F95D0) + 0x1024));
+        uint32_t vo = ld32(ld32(ld32(GD(0x101F95D0)) + 0x1024));
         snprintf(t, sizeof t, " | vis %08X", vo); ctx += t;
         for (uint32_t o = 0x600; o < 0x800 && vo; o += 4) { snprintf(t, sizeof t, " %08X", ld32(vo + o)); ctx += t; }
         ctx += " | box";

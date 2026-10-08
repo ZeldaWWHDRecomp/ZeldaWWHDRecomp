@@ -1,9 +1,12 @@
+#include "renderer.h"
 #include <chrono>
 extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relevant register changes
 // Draw calls: shader translation (via the vendored decompiler), pipelines,
 // resource binding and primitive submission. Binding conventions follow the
 // MSL the decompiler emits (as used by Cemu's Metal renderer).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "gfx/area_sample.h"
+#include "gfx/shader_identity.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
@@ -226,10 +229,41 @@ static void compile_done(std::atomic<int>& st, int v) {
 
 struct Shader {
     uint64_t key = 0;
+    gfx::ProgramKind kind = gfx::ProgramKind::Other;
     LatteDecompilerShader* dec = nullptr;
     id<MTLFunction> fn = nil;                 // valid once state == CS_READY
     std::atomic<int> state{CS_PENDING};
+    int attempts = 0;                         // Metal compiles started (render thread)
+    uint64_t retryFrame = 0;                  // a failed compile is retried from this frame on (0: not scheduled)
 };
+
+// A Metal compile or pipeline build can fail for reasons that have nothing to do with the source:
+// the compiler service (MTLCompilerService) being interrupted or out of memory, which is more likely
+// during the startup burst of cache replay and background builds. A failure used to be final for
+// the whole session, so one unlucky compile could drop a pass for good (issue #47: the ambient
+// occlusion pass missing left every shadowed area black until the next launch). Failed compiles are
+// retried a few times on later frames (backoff kRetryFrames * attempts); translation errors (no
+// MSL at all) still fail at once.
+// test aid: WWHD_TEST_FAIL_COMPILES=n fails the first n attempts of every shader and pipeline compile
+constexpr int kCompileAttempts = 4;
+constexpr uint64_t kRetryFrames = 30;
+static const int g_test_fail_compiles = getenv("WWHD_TEST_FAIL_COMPILES") ? atoi(getenv("WWHD_TEST_FAIL_COMPILES")) : 0;
+
+// render thread: true when a failed compile with attempts left is due for its retry (schedules the
+// retry on the first call after the failure)
+// (now: retry at once, for a draw that must not be skipped; see wait_compiled)
+template <class T>
+static bool retry_due(T* x, bool now = false) {
+    if (x->attempts >= kCompileAttempts) return false;
+    if (now) { x->retryFrame = 0; return true; }
+    if (!x->retryFrame) {
+        x->retryFrame = R.frame + kRetryFrames * (uint64_t)x->attempts;
+        return false;
+    }
+    if (R.frame < x->retryFrame) return false;
+    x->retryFrame = 0;
+    return true;
+}
 static std::unordered_map<uint64_t, Shader*> g_shaders;
 // Metal compiles (shaders and pipelines) started and not finished yet; background work holds back while it's high
 static std::atomic<int> g_compiles_in_flight{0};
@@ -237,8 +271,10 @@ static std::atomic<int> g_compiles_in_flight{0};
 static double g_t_decompile, g_t_msl, g_t_pipeline;
 static double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
-static void report_compile_error(const char* src, uint64_t key, NSError* err) {
-    LOG("[gfx] shader %016llx failed to compile: %s", (unsigned long long)key, err.localizedDescription.UTF8String);
+static void report_compile_error(const char* src, uint64_t key, NSError* err, int attempt, bool libraryBuilt) {
+    const char* why = libraryBuilt ? "entry point missing" : err ? err.localizedDescription.UTF8String : "no error given";
+    LOG("[gfx] shader %016llx failed to compile (attempt %d of %d%s): %s", (unsigned long long)key, attempt, kCompileAttempts,
+        attempt < kCompileAttempts ? ", will retry" : "", why ? why : "?");
     static std::atomic<int> dumped{0};
     if (dumped++ < 3) {
         FILE* f = fopen([NSString stringWithFormat:@"failed_shader_%016llx.metal", (unsigned long long)key].UTF8String, "w");
@@ -306,6 +342,8 @@ static std::string snap_texcoords(const char* src) {
 }
 
 static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
+    const int attempt = ++sh->attempts;
+    const bool injectFailure = attempt <= g_test_fail_compiles;
     MTLCompileOptions* opt = [MTLCompileOptions new];
     if (@available(macOS 15.0, *)) {
         opt.mathMode = MTLMathModeSafe;
@@ -332,19 +370,22 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     }
     if (g_sync_shaders) {
         NSError* err = nil;
-        id<MTLLibrary> lib = [R.device newLibraryWithSource:source options:opt error:&err];
-        if (!lib) { report_compile_error(src, key, err); sh->state = CS_FAILED; return; }
-        sh->fn = [lib newFunctionWithName:entry];
-        sh->state = sh->fn ? CS_READY : CS_FAILED;
+        id<MTLLibrary> lib = injectFailure ? nil : [R.device newLibraryWithSource:source options:opt error:&err];
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:entry] : nil;
+        if (!fn) { report_compile_error(src, key, err, attempt, lib != nil); sh->state = CS_FAILED; return; }
+        sh->fn = fn;
+        sh->state = CS_READY;
         return;
     }
     std::string copy = src;
     g_compiles_in_flight++;
     [R.device newLibraryWithSource:source options:opt completionHandler:^(id<MTLLibrary> lib, NSError* err) {
         g_compiles_in_flight--;
-        if (!lib) { report_compile_error(copy.c_str(), key, err); compile_done(sh->state, CS_FAILED); return; }
-        sh->fn = [lib newFunctionWithName:entry];
-        compile_done(sh->state, sh->fn ? CS_READY : CS_FAILED);
+        if (injectFailure) lib = nil;
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:entry] : nil;
+        if (!fn) { report_compile_error(copy.c_str(), key, err, attempt, lib != nil); compile_done(sh->state, CS_FAILED); return; }
+        sh->fn = fn;
+        compile_done(sh->state, CS_READY);
     }];
 }
 
@@ -425,6 +466,15 @@ static void compile_deferred(Shader* s) {
     compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
 }
 
+// render thread: start the retry of a failed Metal compile when it is due (see kCompileAttempts).
+// Shaders that failed to translate (no dec) never compiled and are not retried.
+static void retry_failed_compile(Shader* s, bool now = false) {
+    if (!s || !s->dec || s->state.load(std::memory_order_acquire) != CS_FAILED || !retry_due(s, now)) return;
+    LOG("[gfx] retrying shader %016llx compile (attempt %d of %d)", (unsigned long long)s->key, s->attempts + 1, kCompileAttempts);
+    s->state = CS_PENDING;
+    compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
+}
+
 static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
     uint32_t addr = regs[vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS] << 8;
     uint32_t size = regs[(vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS) + 1] << 3;
@@ -437,11 +487,13 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     if (it != g_shaders.end()) return it->second;
 
     auto* s = new Shader();
+    s->kind = gfx::program_kind(mem::ptr(addr), size, vertex);
     s->key = key;
     g_shaders[key] = s;
     double t0 = now_ms();
     LatteShader_UpdatePSInputs((uint32*)regs);
     LatteDecompilerOptions opt;
+    if (!vertex) opt.areaSampledTextures = gfx::area_sample::units_for_pixel_shader(mem::ptr(addr), size);
     LatteDecompilerOutput_t out{};
     if (vertex)
         LatteDecompiler_DecompileVertexShader(base, (uint32*)regs, mem::ptr(addr), size, fs, opt, &out);
@@ -453,6 +505,15 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         return s;
     }
     s->dec = FinishDecompiledShader(out);
+    if (opt.areaSampledTextures) {
+        std::string src = s->dec->strBuf_shaderSource->c_str();
+        if (gfx::area_sample::rewrite(src, opt.areaSampledTextures, true) > 0) {
+            s->dec->strBuf_shaderSource->reset();
+            s->dec->strBuf_shaderSource->add(std::string_view(src));
+        } else {
+            LOG("[gfx] pixel shader %08X: area-sampled taps not applied", addr);
+        }
+    }
     cache_record_shader(regs, vertex);
     double t1 = now_ms();
     g_t_decompile += t1 - t0;
@@ -526,6 +587,8 @@ static MTLStencilOperation stencil_op(uint32_t f) {
 struct Pipeline {
     id<MTLRenderPipelineState> state = nil;   // valid once status == CS_READY
     std::atomic<int> status{CS_PENDING};
+    int attempts = 0;                         // builds started (render thread)
+    uint64_t retryFrame = 0;                  // a failed build is retried from this frame on (0: not scheduled)
 };
 static std::unordered_map<uint64_t, Pipeline*> g_pipelines;
 
@@ -545,7 +608,17 @@ void set_ao_mode(int m) { g_ao_mode = m % 3; LOG("[gfx] ambient occlusion mode %
 // for a few frames after entering a new area. Instead wait for the compile, up to a per-frame budget
 // (WWHD_COMPILE_WAIT_MS, default 25; the game's frame is 33 ms and the GPU needs ~4 ms of it).
 // Pipelines built ahead of use (cache replay, head start) never wait.
+// Skipping is only harmless for targets the game redraws every frame. A draw into a target that is
+// new or wasn't drawn in the previous frame may be the only one its result gets (a buffer rendered
+// once, at a load or after a photo, or a pass's first frame), and a skipped one would leave that
+// result missing for as long as the game keeps using it (issue #47: the light buffer sampled before
+// its first render, black shadows for the session; the Picto Box colour-grading volume). Those draws
+// wait for their compile without the budget, like the Vulkan renderer does for every draw.
 static bool g_building_ahead = false;
+static bool g_draw_must_run = false;  // the current draw writes a target that isn't redrawn every frame
+static std::unordered_map<uint32_t, uint64_t> g_target_drawn;  // render target address -> frame of its last draw
+static uint64_t g_must_run_waits = 0;
+static double g_must_run_wait_ms = 0;
 static bool wait_compiled(const std::atomic<int>& st) {
     static const double budgetMs = getenv("WWHD_COMPILE_WAIT_MS") ? atof(getenv("WWHD_COMPILE_WAIT_MS")) : 25.0;
     if (g_building_ahead) return st.load(std::memory_order_acquire) == CS_READY;
@@ -553,6 +626,21 @@ static bool wait_compiled(const std::atomic<int>& st) {
     static double spent = 0;
     if (frame != R.frame) { frame = R.frame; spent = 0; }
     if (st.load(std::memory_order_acquire) != CS_PENDING) return st.load(std::memory_order_acquire) == CS_READY;
+    if (g_draw_must_run) {
+        double t0 = now_ms();
+        {
+            std::unique_lock<std::mutex> lk(g_compile_mu);
+            g_compile_cv.wait(lk, [&] { return st.load(std::memory_order_acquire) != CS_PENDING; });
+        }
+        double dt = now_ms() - t0;
+        spent += dt;
+        g_must_run_waits++;
+        g_must_run_wait_ms += dt;
+        static int logged = 0;
+        if (dt >= 30 && logged++ < 50)
+            LOG("[gfx] frame %llu: waited %.0f ms for a compile (draw into a target not redrawn every frame)", (unsigned long long)R.frame, dt);
+        return st.load(std::memory_order_acquire) == CS_READY;
+    }
     if (spent >= budgetMs) return false;
     double t0 = now_ms();
     {
@@ -590,11 +678,26 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
     h = hash_regs(regs, REGADDR::CB_COLOR_CONTROL, 1, h);
     h = hash_regs(regs, REGADDR::CB_TARGET_MASK, 1, h);
     auto it = g_pipelines.find(h);
-    if (it != g_pipelines.end())
-        return wait_compiled(it->second->status) ? it->second->state : nil;
-    auto* pl = new Pipeline();
-    g_pipelines[h] = pl;
-    cache_record_pipeline(regs, vs, ps, fsKey, tf);
+    Pipeline* pl;
+    if (it != g_pipelines.end()) {
+        pl = it->second;
+        // a failed build is retried a few times on later frames (see kCompileAttempts)
+        if (pl->status.load(std::memory_order_acquire) != CS_FAILED || !retry_due(pl, g_draw_must_run))
+            return wait_compiled(pl->status) ? pl->state : nil;
+        LOG("[gfx] retrying pipeline %016llx (attempt %d of %d)", (unsigned long long)h, pl->attempts + 1, kCompileAttempts);
+        pl->status = CS_PENDING;
+    } else {
+        pl = new Pipeline();
+        g_pipelines[h] = pl;
+        cache_record_pipeline(regs, vs, ps, fsKey, tf);
+    }
+    const int attempt = ++pl->attempts;
+    const bool injectFailure = attempt <= g_test_fail_compiles;
+    auto pipelineFailed = [h, attempt](NSError* err) {
+        const char* why = err ? err.localizedDescription.UTF8String : "no error given";
+        LOG("[gfx] pipeline %016llx creation failed (attempt %d of %d%s): %s", (unsigned long long)h, attempt, kCompileAttempts,
+            attempt < kCompileAttempts ? ", will retry" : "", why ? why : "?");
+    };
 
     MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs->fn;
@@ -662,16 +765,17 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
     if (g_sync_shaders) {
         NSError* err = nil;
         double t0 = now_ms();
-        pl->state = [R.device newRenderPipelineStateWithDescriptor:d error:&err];
+        pl->state = injectFailure ? nil : [R.device newRenderPipelineStateWithDescriptor:d error:&err];
         g_t_pipeline += now_ms() - t0;
-        if (!pl->state) LOG("[gfx] pipeline creation failed: %s", err.localizedDescription.UTF8String);
+        if (!pl->state) pipelineFailed(err);
         pl->status = pl->state ? CS_READY : CS_FAILED;
         return pl->state;
     }
     g_compiles_in_flight++;
     [R.device newRenderPipelineStateWithDescriptor:d completionHandler:^(id<MTLRenderPipelineState> p, NSError* err) {
         g_compiles_in_flight--;
-        if (!p) LOG("[gfx] pipeline creation failed: %s", err.localizedDescription.UTF8String);
+        if (injectFailure) p = nil;
+        if (!p) pipelineFailed(err);
         pl->state = p;
         compile_done(pl->status, p ? CS_READY : CS_FAILED);
     }];
@@ -870,7 +974,6 @@ static const bool g_snapshot = getenv("WWHD_SNAPSHOT") != nullptr;
 static std::atomic<bool> g_ao_hires{[] { const char* e = getenv("WWHD_AO_HIRES"); return !e || atoi(e) != 0; }()};
 bool ao_hires_enabled() { return g_ao_hires.load(std::memory_order_relaxed); }
 void set_ao_hires(bool v) { g_ao_hires = v; LOG("[gfx] full-size occlusion depth %s", v ? "on" : "off"); }
-constexpr uint32_t kDepthDownsamplePS = 0x3BB9DE00, kOcclusionPS = 0x44BDFD00;
 static bool g_hires_redraw = false;          // inside the second draw of the downsample
 static uint32_t g_hires_src = 0;             // guest address of the game's 640x360 buffer
 static uint64_t g_hires_frame = ~0ull;       // frame the private copy was last drawn
@@ -887,6 +990,7 @@ static Surface* hires_surface(Surface& dst, const Surface* like) {
         d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
         d.storageMode = MTLStorageModePrivate;
         dst = *like;
+        dst.mipChain.reset();
         dst.tex = [R.device newTextureWithDescriptor:d];
         dst.addr = 0;  // private: never found by address lookups
         dst.width = w;
@@ -895,6 +999,28 @@ static Surface* hires_surface(Surface& dst, const Surface* like) {
         dst.mips = 1;
         dst.sx = (float)pw / w;
         dst.sy = (float)ph / h;
+        // private textures start with undefined contents and every pass on them loads: clear once
+        // (colour 0, depth 1) so nothing the redraw doesn't cover reads leftover GPU memory
+        end_encoder();
+        MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (dst.fmt.depth) {
+            rp.depthAttachment.texture = dst.tex;
+            rp.depthAttachment.loadAction = MTLLoadActionClear;
+            rp.depthAttachment.clearDepth = 1.0;
+            rp.depthAttachment.storeAction = MTLStoreActionStore;
+            if (dst.fmt.stencil) {
+                rp.stencilAttachment.texture = dst.tex;
+                rp.stencilAttachment.loadAction = MTLLoadActionClear;
+                rp.stencilAttachment.clearStencil = 0;
+                rp.stencilAttachment.storeAction = MTLStoreActionStore;
+            }
+        } else {
+            rp.colorAttachments[0].texture = dst.tex;
+            rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+            rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+            rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        }
+        [[command_buffer() renderCommandEncoderWithDescriptor:rp] endEncoding];
     }
     return &dst;
 }
@@ -920,7 +1046,7 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         const uint32_t* tw = &regs[texBase + unit * 7];
         Surface* s = sampled_texture(tw, dec->textureUsesDepthCompare[unit]);
         if (!vertex && s && g_hires_src && s->addr == g_hires_src && g_hires_frame == R.frame && ao_hires_enabled() &&
-            (regs[mmSQ_PGM_START_PS] << 8) == kOcclusionPS)
+            sh->kind == gfx::ProgramKind::OcclusionPixel)
             s = &g_hires_color;
         id<MTLTexture> tex = s && s->tex ? texture_view(s, type, tw[4]) : nil;
         if (s && unit < 18) { texScale[unit][0] = s->sx; texScale[unit][1] = s->sy; }
@@ -936,7 +1062,7 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         // buffer while drawing 960x540; every third row lands half a texel off and shows as screen-fixed
         // lines on sloped ground in shadow. Bilinear for that one fetch matches its neighbour fetches.
         uint32_t patched[3];
-        if (ao_mode() >= 1 && !vertex && unit == 0 && (regs[mmSQ_PGM_START_PS] << 8) == 0x44BDFD00) {
+        if (ao_mode() >= 1 && !vertex && unit == 0 && sh->kind == gfx::ProgramKind::OcclusionPixel) {
             memcpy(patched, sw, sizeof patched);
             patched[0] = (patched[0] & ~0x7E00u) | (1u << 9) | (1u << 12);  // XY mag/min filter: bilinear
             sw = patched;
@@ -980,9 +1106,12 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
                 if (!addr) continue;
                 for (auto& e : g.entries) memcpy(dst + e.mappedIndexOffset, mem::ptr(addr + e.indexOffset), 16);
             }
+            // Apply once before the Gaussian/mip chain, preserving the game's threshold and haze.
+            if (!vertex && (regs[mmSQ_PGM_START_PS] << 8) == 0x44F91200)
+                render::scale_bloom_uniforms(dst, buf.size() - dec->uniform.loc_remapped);
             // AO mode 2: the occlusion pass's VS (44BDF900) scales its noise coordinates by remapped[0].w
             // for a 640x360 grid; the pass draws 960x540, so tile the 4x4 noise per output pixel instead
-            if (vertex && ao_mode() == 2 && (regs[mmSQ_PGM_START_VS] << 8) == 0x44BDF900)
+            if (vertex && ao_mode() == 2 && sh->kind == gfx::ProgramKind::OcclusionVertex)
                 ((float*)dst)[3] *= 1.5f;
         }
         if (dec->uniform.loc_uniformRegister >= 0)
@@ -1057,7 +1186,9 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
     for (int i = 0; i < 8; i++) {
         if (!colors[i]) continue;
         rp.colorAttachments[i].texture = colors[i]->tex;
-        rp.colorAttachments[i].slice = colorSlices[i];
+        // a volume's slice is a depth plane
+        if (colors[i]->tex.textureType == MTLTextureType3D) rp.colorAttachments[i].depthPlane = colorSlices[i];
+        else rp.colorAttachments[i].slice = colorSlices[i];
         rp.colorAttachments[i].loadAction = MTLLoadActionLoad;
         rp.colorAttachments[i].storeAction = MTLStoreActionStore;
         mark_gpu_written(colors[i]);
@@ -1355,13 +1486,16 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
         PipelineRecipe& r = g_pending_pipelines[i];
         auto vi = g_shaders.find(r.vsKey), pi = g_shaders.find(r.psKey);
         auto fi = g_fetch.find(r.fsKey);
+        auto finallyFailed = [](Shader* sh) { return sh->state == CS_FAILED && (!sh->dec || sh->attempts >= kCompileAttempts); };
         if (vi == g_shaders.end() || pi == g_shaders.end() || fi == g_fetch.end() || !fi->second ||
-            vi->second->state == CS_FAILED || pi->second->state == CS_FAILED) {
+            finallyFailed(vi->second) || finallyFailed(pi->second)) {
             g_pending_pipelines[i] = g_pending_pipelines.back();  // unusable recipe
             g_pending_pipelines.pop_back();
             g_recipes_dropped++;
             continue;
         }
+        retry_failed_compile(vi->second);
+        retry_failed_compile(pi->second);
         if (vi->second->state != CS_READY || pi->second->state != CS_READY) { i++; continue; }
         for (int k = 0; k < 8; k++) regs[REGADDR::CB_BLEND0_CONTROL + k] = r.blend[k];
         regs[REGADDR::CB_COLOR_CONTROL] = r.colorControl;
@@ -1412,6 +1546,9 @@ void report_skips() {
     if (n) LOG("[gfx] skipped draws:%s", buf);
     LOG("[gfx] %zu shaders, %zu pipelines; ms decompile %.0f, msl %.0f, pipeline %.0f", g_shaders.size(), g_pipelines.size(),
         g_t_decompile, g_t_msl, g_t_pipeline);
+    if (g_must_run_waits)
+        LOG("[gfx] draws that waited for their compile (targets not redrawn every frame): %llu, %.0f ms in all",
+            (unsigned long long)g_must_run_waits, g_must_run_wait_ms);
     extern uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces;
     extern uint64_t g_stat_hashed_bytes;
     uint64_t faults, protectedPages;
@@ -1452,7 +1589,25 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     }
     Shader* vs = get_shader(regs, true, fs, fsKey);
     Shader* ps = get_shader(regs, false, fs, fsKey);
-    if (!vs || !ps || vs->state == CS_FAILED || ps->state == CS_FAILED) { g_skip[SK_NO_SHADER]++; return; }
+    if (!vs || !ps || !vs->dec || !ps->dec) { g_skip[SK_NO_SHADER]++; return; }  // translation failed
+    // must this draw run even if its compile takes longer than the budget? (see wait_compiled)
+    const LatteContextRegister& lcr = *(const LatteContextRegister*)regs;
+    uint8_t mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
+    {
+        auto notRedrawn = [](uint32_t addr) {
+            auto it = g_target_drawn.find(addr);
+            return it == g_target_drawn.end() || it->second + 1 < R.frame;
+        };
+        bool must = false;
+        for (int i = 0; i < 8 && !must; i++)
+            if ((mask & (1 << i)) && regs[mmCB_COLOR0_BASE + i]) must = notRedrawn(regs[mmCB_COLOR0_BASE + i]);
+        if (!must && LatteMRT::GetActiveDepthBufferMask(lcr) && regs[mmDB_DEPTH_BASE]) must = notRedrawn(regs[mmDB_DEPTH_BASE]);
+        g_draw_must_run = must;
+    }
+    struct MustRunReset { ~MustRunReset() { g_draw_must_run = false; } } mustRunReset;
+    retry_failed_compile(vs, g_draw_must_run);
+    retry_failed_compile(ps, g_draw_must_run);
+    if (vs->state == CS_FAILED || ps->state == CS_FAILED) { g_skip[SK_NO_SHADER]++; return; }
     compile_deferred(vs);
     compile_deferred(ps);
     if (!wait_compiled(vs->state) || !wait_compiled(ps->state)) {
@@ -1461,13 +1616,12 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     }
     rprof::mark(rprof::kShader);
 
-    const LatteContextRegister& lcr = *(const LatteContextRegister*)regs;
     Surface* colors[8] = {};
     uint32_t colorSlices[8] = {}, depthSlice = 0;
-    uint8_t mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
     for (int i = 0; i < 8; i++)
         if (mask & (1 << i)) colors[i] = color_target(regs, i, &colorSlices[i]);
     Surface* depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(regs, &depthSlice) : nullptr;
+    if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
     uint32_t guestW = colors[0] ? colors[0]->width : 0;  // the game's target size (viewport registers refer to it)
     uint32_t guestH = colors[0] ? colors[0]->height : 0;
     if (g_hires_redraw) {
@@ -1591,8 +1745,10 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     rprof::mark(rprof::kVertex);
     {
         rprof::UploadKind uploads(rprof::kUpUbo);  // Metal: uniform snapshots and bindings of both stages
+        R.binding = true;
         bind_stage(enc, regs, vs, true, colors);
         bind_stage(enc, regs, ps, false, colors);
+        R.binding = false;
     }
     rprof::mark(rprof::kUniforms);
 
@@ -1617,6 +1773,9 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
                         baseVertex:baseVertex
                       baseInstance:0];
     }
+    for (int i = 0; i < 8; i++)
+        if (colors[i] && regs[mmCB_COLOR0_BASE + i]) g_target_drawn[regs[mmCB_COLOR0_BASE + i]] = R.frame;
+    if (depth && regs[mmDB_DEPTH_BASE]) g_target_drawn[regs[mmDB_DEPTH_BASE]] = R.frame;
     // debug: WWHD_DUMP_DRAWS=frame:i,j,k dumps color target 0 after those draws
     static uint64_t dumpFrame = ~0ull;
     static std::set<uint64_t> dumpDraws = [] {
@@ -1726,7 +1885,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         }
     }
     if (g_hires_redraw) { g_hires_frame = R.frame; return; }  // the private copy is ready for the occlusion pass
-    if (ao_hires_enabled() && colors[0] && (regs[mmSQ_PGM_START_PS] << 8) == kDepthDownsamplePS) {
+    if (ao_hires_enabled() && colors[0] && ps->kind == gfx::ProgramKind::DepthDownsample) {
         g_hires_redraw = true;
         draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
         g_hires_redraw = false;

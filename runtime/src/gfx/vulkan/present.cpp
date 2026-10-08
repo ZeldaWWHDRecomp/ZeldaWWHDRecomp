@@ -408,6 +408,35 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
  return rgba;
 }
 
+bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& height,bool& bgra) {
+ if(!screen.scan||!screen.scan->image||!sampleable(*screen.scan))return false;
+ width=screen.scan->extent.width;height=screen.scan->extent.height;
+ if(!width||!height)return false;
+ const bool srgb=screen.srgb.load();
+ Surface target;target.width=width;target.height=height;target.format=srgb?0x41a:0x1a;target.fmt=format_info(target.format,false);
+ // the TV window's format for both pictures: its pipeline exists (the GamePad window may have none)
+ const VkFormat sf=R.tv.swapchain?R.tv.swapFormat:VK_FORMAT_UNDEFINED;
+ if(sf==VK_FORMAT_B8G8R8A8_UNORM||sf==VK_FORMAT_B8G8R8A8_SRGB||sf==VK_FORMAT_R8G8B8A8_UNORM||sf==VK_FORMAT_R8G8B8A8_SRGB)
+  target.fmt.pixel=sf;
+ bgra=target.fmt.pixel==VK_FORMAT_B8G8R8A8_UNORM||target.fmt.pixel==VK_FORMAT_B8G8R8A8_SRGB;
+ create_surface_image(&target,true,VkExtent3D{width,height,1});
+ try {
+  ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.srgb.load();q.box={0,0,float(width),float(height)};
+  compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,{q},
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr);
+  buffer=create_readback_buffer(VkDeviceSize(width)*height*4);
+  transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+  auto cmd=command_buffer();
+  VkBufferImageCopy region{};region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.imageExtent={width,height,1};
+  vkCmdCopyImageToBuffer(cmd,target.image,target.layout,buffer.buffer,1,&region);
+  VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+  host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=buffer.buffer;host.size=VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+ }catch(...){destroy_surface_image(&target);if(buffer.buffer){defer_buffer(buffer);buffer={};}throw;}
+ destroy_surface_image(&target);  // deferred: freed when this submission retired
+ return true;
+}
+
 // ---------------------------------------------------------------- the climb mod's stamina wheel
 void draw_mod_overlay(Surface& scan) {
  if(!mods::climb_enabled()||!scan.image||!scan.view||!(scan.usage&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))return;

@@ -6,6 +6,7 @@
 #include "renderer.h"
 
 namespace gfx {
+void peek_z(const uint32_t*, uint32_t);
 void request_tv_dump(const std::string& path, int frames_ahead);
 void run_appkit_loop();
 uint64_t frame_count();
@@ -37,6 +38,7 @@ const Backend& metal_backend() {
         b.copy_surface = gfx::copy_surface;
         b.copy_to_scan = gfx::copy_to_scan;
         b.swap = gfx::swap;
+        b.peek_z = gfx::peek_z;
         b.set_frame_aspect = gfx::set_frame_aspect;
         b.target_aspect_factors = gfx::target_aspect_factors;
         b.frames_completed = gfx::frames_completed;
@@ -45,6 +47,7 @@ const Backend& metal_backend() {
         b.invalidate = gfx::invalidate;
         b.guest_flush = gfx::flush;
         b.wait_idle = gfx::wait_idle;
+        b.write_back = gfx::write_back_linear_targets;
         b.ss_reset = gfx::ss_reset_surfaces;
         b.frame_count = gfx::frame_count;
         b.request_tv_dump = gfx::request_tv_dump;

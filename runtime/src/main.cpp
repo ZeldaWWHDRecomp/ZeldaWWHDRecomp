@@ -12,6 +12,7 @@
 #endif
 #include <ctime>
 #include <filesystem>
+#include "guest_addr.h"
 #include "platform/host.h"
 #ifdef _WIN32
 #include <timeapi.h>
@@ -23,12 +24,14 @@
 
 #include "gfx/renderer.h"
 #include "mods/cemu_pack.h"
+#include "mods/content.h"
 #include "gx2/gx2.h"
 #include "recomp_table.h"
 #include "report_header.h"
 #include "crash_addr.h"
 #include "build_info.h"
 #include "crashrec.h"
+#include "crash_context.h"
 #include "input.h"
 #include "mods/manager.h"
 #include "mods/packages.h"
@@ -55,13 +58,15 @@ void mem_init_data_imports(uint32_t alloc_slot, uint32_t alloc_ex_slot, uint32_t
 // captures/crash-<time>.log (registers, guest return chain, host backtrace, crash recovery's
 // automatic state, the last log lines). Only write() and preformatted text after the crash.
 static int g_crash_fd = -1;
-static void crash_out(int fd, const char* s, size_t n) {
+static void crash_raw(int fd, const char* s, size_t n) {
     if (write(2, s, n) < 0) {}
     if (fd >= 0 && write(fd, s, n) < 0) {}
 }
-static void crash_log_only(int fd, const char* s, size_t n) {
+static void crash_log_raw(int fd, const char* s, size_t n) {
     if (fd >= 0 && write(fd, s, n) < 0) {}
 }
+static void crash_out(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_raw); }
+static void crash_log_only(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_log_raw); }
 static void crash_handler(int sig, siginfo_t* si, void* uctx) {
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t base = (uintptr_t)PPC_MEM_BASE;
@@ -120,6 +125,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
         crash_out(fd, "\n", 1);
     }
     crash_addr::host_backtrace(fd, crash_out, uctx);
+    crash_context::note(fd, crash_out);
     crashrec::crash_note(fd, crash_out);
     if (fd >= 0) {
         crash_log_only(fd, "\n--- last log lines ---\n", 24);
@@ -153,11 +159,13 @@ static void install_crash_handler() {
 }
 
 #else
-static void win_crash_out(int fd, const char* s, size_t n) {
+static void win_crash_raw(int fd, const char* s, size_t n) {
     fwrite(s, 1, n, stderr);
     if (fd >= 0) _write(fd, s, (unsigned)n);
 }
-static void win_crash_log_only(int fd, const char* s, size_t n) { if (fd >= 0) _write(fd, s, (unsigned)n); }
+static void win_crash_log_raw(int fd, const char* s, size_t n) { if (fd >= 0) _write(fd, s, (unsigned)n); }
+static void win_crash_out(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, win_crash_raw); }
+static void win_crash_log_only(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, win_crash_log_raw); }
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     auto code=ex->ExceptionRecord->ExceptionCode;
     std::error_code ec; std::filesystem::create_directories("captures",ec);
@@ -186,6 +194,7 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     }
     if(Cpu* c=threads::current()){n=snprintf(buf,sizeof buf,"guest lr=%08X ctr=%08X\n",c->lr,c->ctr); win_crash_out(fd,buf,n);}
     crash_addr::host_backtrace(fd,win_crash_out,ex->ContextRecord);
+    crash_context::note(fd,win_crash_out);
     crashrec::crash_note(fd,win_crash_out);
     if(fd>=0){win_crash_log_only(fd,"\n--- last log lines ---\n",24); log_ring_write(fd,win_crash_log_only); _close(fd); fprintf(stderr,"[crash] wrote %s\n",path);}
     if(g_ppc_trace) { FILE* f=fopen("trace_dump.txt","w"); if(f){trace_dump(f,3000);fclose(f);} }
@@ -295,6 +304,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
 #endif
     }
+    crash_context::initialize();
     install_crash_handler();
     // which build on which system: also in crash logs (their last log lines)
     LOG("[boot] Wind Waker HD %s (%s), %s", build::version(), build::commit(), reporthdr::os_description().c_str());
@@ -330,6 +340,7 @@ int main(int argc, char** argv) {
 #endif
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
+    mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path
     mods::packages::initialize();
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
@@ -355,8 +366,8 @@ int main(int argc, char** argv) {
     std::string rpx = config::game_dir + "/code/cking.rpx";
     if (!load_rpx(rpx, m)) fatal("cannot load %s", rpx.c_str());
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
-    LOG("[boot] loaded %s: entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(), m.entry, m.sda_base, m.sda2_base,
-        m.data_end);
+    LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),
+        g_guest_build_name, g_guest_build_title_id, m.entry, m.sda_base, m.sda2_base, m.data_end);
 
     dispatch::init();
     init_data_imports();

@@ -19,6 +19,12 @@ namespace gfxvk {
 // slower (issue #44). The copy is taken first and the factory writes the slice
 // from it, so both hold the same bytes even if the guest writes meanwhile.
 // runtime/tools/snapshot_cache_test.cpp poisons mapped bytes to prove it.
+//
+// Exception, directReads (R.uploadReadsDirect, backend.cpp allocate_upload): when the
+// upload memory is HOST_CACHED and HOST_COHERENT (Apple silicon/MoltenVK, many UMA
+// drivers), reads are as fast as heap reads; the entry then keeps no copy, the
+// factory gets the caller's bytes and reuse compares slice.mapped. The mode is
+// stored per entry, so a comparison always matches how its entry was made.
 template<class Slice, class Device>
 class UniformSnapshotCache {
 public:
@@ -30,11 +36,12 @@ public:
   } counters;
 
   // Caller must validate device uniform range limits before lookup. The factory
-  // receives the source to copy (the entry's CPU copy of the fresh bytes, or
-  // nullptr) and the requested length, including nullptr/zero-size.
+  // receives the source to copy (the entry's CPU copy of the fresh bytes, the
+  // fresh bytes themselves if directReads, or nullptr) and the requested length,
+  // including nullptr/zero-size.
   template<class Factory>
   Slice get(Device device, uint64_t generation, size_t slot,
-            const void* bytes, size_t size, Factory&& factory) {
+            const void* bytes, size_t size, bool directReads, Factory&& factory) {
     if (!initialized_ || device_ != device || generation_ != generation) {
       for (auto& entry : entries_) entry.clear();  // keeps the copies' capacity
       device_ = device;
@@ -54,7 +61,7 @@ public:
         ++counters.comparisons;
         // a zero-filled entry (made without source bytes) keeps no copy: its bytes are all zero
         equal = last.knownZero ? all_zero(bytes, size)
-                               : std::memcmp(bytes, last.bytes.data(), size) == 0;
+              : std::memcmp(bytes, last.direct ? last.slice.mapped : last.bytes.data(), size) == 0;
       }
       if (equal) {
         ++counters.hits;
@@ -63,7 +70,10 @@ public:
       }
     }
     const void* source = nullptr;
-    if (bytes && size) {
+    if (directReads) {
+      last.bytes.clear();
+      source = bytes;
+    } else if (bytes && size) {
       const auto* b = static_cast<const uint8_t*>(bytes);
       last.bytes.assign(b, b + size);
       source = last.bytes.data();
@@ -76,6 +86,7 @@ public:
       last.size = size;
       last.valid = true;
       last.knownZero = !bytes || !size;
+      last.direct = directReads;
     } else {
       last.clear();
     }
@@ -98,8 +109,9 @@ private:
     Slice slice{};
     size_t size = 0;
     bool valid = false, knownZero = false;
-    std::vector<uint8_t> bytes;  // the slice's first `size` bytes, on the CPU (empty if knownZero)
-    void clear() { slice = {}; size = 0; valid = knownZero = false; bytes.clear(); }
+    bool direct = false;  // compare slice.mapped (host-cached upload memory), not bytes
+    std::vector<uint8_t> bytes;  // the slice's first `size` bytes, on the CPU (empty if knownZero or direct)
+    void clear() { slice = {}; size = 0; valid = knownZero = direct = false; bytes.clear(); }
   };
   std::array<Entry, slotCount> entries_{};
   Device device_{};

@@ -32,6 +32,10 @@ function (`build/gen/code_*.c`):
   `musttail`. Indirect branches go through a dispatch table indexed by guest address.
 - **Memory.** Guest address `ea` lives at `0x200000000000 + ea` on the host. Loads and stores are
   plain memory accesses plus a byte swap (the Wii U is big-endian).
+- **One set of hooks for every regional build.** Functions are named by their address in the USA
+  build, which is the canonical id; translating another regional build shifts the hooks' and the
+  runtime's addresses through that build's map, so the generated symbols stay the same
+  ([builds.md](builds.md)).
 - **Exact semantics where it matters.**
   - Paired-single math, the GQR quantization registers, and Espresso's `fres`/`frsqrte` tables.
   - Single-precision rounding, with FMA contraction disabled.

@@ -1,3 +1,4 @@
+#include "../renderer.h"
 // Settings overlay on the SDL host (Vulkan-only builds: Windows, Linux, Android): hostui.h on top of
 // the SDL windows and the Vulkan renderer's settings. Options are kept in <config dir>/settings.ini
 // (key=value lines; WWHD_SETTINGS names another file; test runs with WWHD_NO_HOST_INPUT use none).
@@ -8,13 +9,16 @@
 #include "gfx/display_modes.h"
 #include "settings.h"
 #include "input.h"
+#include "interp.h"
 #include "overlay/hostui.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
 #include "runtime.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -22,7 +26,6 @@
 #include <mutex>
 #include <vector>
 
-namespace interp { int mode(); void set_mode(int m); bool paced_interpolation(); void set_paced_interpolation(bool on); }
 
 namespace hostui {
 namespace {
@@ -162,14 +165,18 @@ void graphics_changed() {
     put("aoMode", {"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"}, std::to_string(gfxvk::ao_mode()));
     put("aoHires", {"WWHD_AO_HIRES"}, gfxvk::ao_hires_enabled() ? "1" : "0");
     put("aniso", {"WWHD_ANISO"}, gfxvk::aniso_enabled() ? "1" : "0");
+    put("bloomStrength", {"WWHD_BLOOM_STRENGTH"}, std::to_string(render::bloom_strength()));
     put("fxaa", {"WWHD_FXAA"}, gfxvk::fxaa_enabled() ? "1" : "0");
 #ifdef __ANDROID__
     // the player's choice: the phone pauses interpolation by itself (platform/perf_hint.cpp)
-    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60"}, interp::mode() == 2 ? "2" : perf_hint::fps60_chosen() ? "1" : "0");
+    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, interp::mode() == 2 ? "2" : perf_hint::fps60_chosen() ? "1" : "0");
 #else
-    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60"}, std::to_string(interp::mode()));
+    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, std::to_string(interp::mode()));
 #endif
-    put("fps60Paced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation() ? "1" : "0");
+    // (fps60 is the mode, from before 120/240 fps; interpFps the interpolation's frame rate)
+    put("interpFps", {"WWHD_INTERP_FPS"}, std::to_string(interp::fps()));
+    put("fps60Paced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(60) ? "1" : "0");
+    put("fpsHighPaced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(120) ? "1" : "0");
     put("scaleFilter", {"WWHD_SCALE_FILTER"}, std::to_string(gfxvk::scale_filter()));
     put("vkPresentMode", {"WWHD_VK_PRESENT_MODE"}, std::to_string(gfxvk::present_mode()));
     save_locked();
@@ -188,9 +195,12 @@ void load_saved_options() {
     if (saved("aoMode", {"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"})) gfxvk::set_ao_mode((int)num("aoMode"));
     if (saved("aoHires", {"WWHD_AO_HIRES"})) gfxvk::set_ao_hires(num("aoHires") != 0);
     if (saved("aniso", {"WWHD_ANISO"})) gfxvk::set_aniso(num("aniso") != 0);
+    if (saved("bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength((float)num("bloomStrength"));
     if (saved("fxaa", {"WWHD_FXAA"})) gfxvk::set_fxaa(num("fxaa") != 0);
-    if (saved("fps60", {"WWHD_INTERP", "WWHD_TRUE60"})) interp::set_mode((int)num("fps60"));
-    if (saved("fps60Paced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation(num("fps60Paced") != 0);
+    if (saved("interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps((int)num("interpFps"));
+    if (saved("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode((int)num("fps60"));
+    if (saved("fps60Paced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(60, num("fps60Paced") != 0);
+    if (saved("fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(120, num("fpsHighPaced") != 0);
     if (saved("scaleFilter", {"WWHD_SCALE_FILTER"})) gfxvk::set_scale_filter((int)num("scaleFilter"));
     if (saved("vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode((int)num("vkPresentMode"));
     // GamePad screen (display_modes.h); the start-up test overrides after the saved choices
@@ -298,6 +308,29 @@ void set_pro_controller(bool on) {
 }
 const char* name() { return "SDL"; }
 void set_clipboard(const std::string& text) { SDL_SetClipboardText(text.c_str()); }
+#ifdef __ANDROID__
+bool can_open_folder() { return false; }  // app-private storage: no file manager shows it
+void open_folder(const std::string&) {}
+#else
+bool can_open_folder() { return true; }
+void open_folder(const std::string& path) {
+    // file URL of the absolute path (Windows: file:///C:/...); SDL hands it to the desktop's file manager
+    std::error_code ec;
+    std::string p = std::filesystem::absolute(path, ec).generic_string();
+    if (ec) p = path;
+    std::string url = "file://";
+    if (!p.empty() && p[0] != '/') url += "/";
+    for (unsigned char c : p) {
+        if (isalnum(c) || strchr("/-_.~:", c)) url += (char)c;
+        else {
+            char hex[4];
+            snprintf(hex, sizeof hex, "%%%02X", c);
+            url += hex;
+        }
+    }
+    if (!SDL_OpenURL(url.c_str())) LOG("[overlay] cannot open %s: %s", url.c_str(), SDL_GetError());
+}
+#endif
 
 }  // namespace hostui
 #endif  // WWHD_SDL_HOST

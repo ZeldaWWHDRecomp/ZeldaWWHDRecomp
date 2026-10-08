@@ -44,6 +44,7 @@ filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with 
 | Climb mod stamina wheel | yes | yes (ported shader; not yet seen in a test run) |
 | Frame dumps `WWHD_DUMP_FRAMES`, `WWHD_DUMP_PRESENT` | yes | yes |
 | Capture frame (P) | pictures + draw log | pictures only (no draw log) |
+| Screenshot key (F10, `runtime/src/screenshot.h`) | yes | yes (read back at the submission's fence, no wait) |
 | Shader head start (`--warm-shaders`) | yes | no (Vulkan keeps its own SPIR-V / pipeline caches) |
 
 Other builds: `-DWWHD_RENDERER=METAL` (Metal only, no Vulkan dependencies) and
@@ -92,7 +93,21 @@ that the executable links or runs on Windows/Linux.
 This test does not read game assets. It checks GPU texture uploads, mip/layer
 readback, clears, blits, depth/stencil, a generated triangle and presentation.
 It also queues ten asynchronous submissions, wraps the four-slot ring, and checks
-immutable upload payloads and deferred-buffer retirement by GPU readback.
+immutable upload payloads and deferred-buffer retirement by GPU readback, and the
+scaled depth/stencil copies below (drawn, texel by texel, and through a real aspect-ratio and
+resolution change of a depth target).
+
+Scaled depth copies: a resolution or aspect-ratio change rescales every render target, and a
+scaled GX2CopySurface scales its source. Vulkan makes blits of depth/stencil formats optional,
+and some drivers (Adreno: `D16_UNORM` and `D32_SFLOAT`, issue #72) have none, so for such a format
+the copy is drawn instead (depth through `gl_FragDepth`, stencil one bit per pass, no
+`VK_EXT_shader_stencil_export` needed), with the texel a nearest-filter blit would pick. Devices
+that can blit keep the blit. The first time a format takes another path, one log line names it.
+If a device can neither blit nor draw a format, a whole destination is cleared (depth 1, stencil
+and colour 0) and a partial one keeps its contents, instead of aborting the game.
+`WWHD_VK_DEPTH_COPY=draw` forces the drawn copy on any device (test aid, e.g. on a desktop GPU);
+`WWHD_VK_DEPTH_COPY=none` takes neither the blit nor the draw for depth formats, which shows the
+last resort.
 To enable Khronos validation, install the Vulkan validation layers and set
 `WWHD_VK_VALIDATION=1`. On Homebrew, set `VK_LAYER_PATH` to
 `/opt/homebrew/opt/vulkan-validationlayers/share/vulkan/explicit_layer.d`.
@@ -300,7 +315,7 @@ a process sample showed a runtime initializer deadlock before `main`.
 The guest buffer cache replaces the per-draw copies of guest vertex arrays, index arrays and uniform
 blocks into the upload arena with persistent GPU copies keyed by guest address
 (`runtime/src/gfx/vulkan/buffer_cache_core.h`, glue in `buffer_cache.cpp`). It is **on by default on
-macOS** and **off on Windows, Linux and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
+macOS and desktop Linux** (Steam Deck included) and **off on Windows and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
 `WWHD_VK_BUFFER_CACHE=0` off on any platform.
 
 **Testers on Windows and Linux (and Android):** it stays opt-in there until it has been checked on
@@ -390,7 +405,7 @@ Startup overrides match Metal: `WWHD_RES_SCALE` selects the initial internal sca
 (1–4); `WWHD_AO_MODE` selects AO mode 0–2. If `WWHD_AO_MODE` is absent, presence of
 `WWHD_NO_AO_QUIRK` selects mode 0, otherwise mode 2 is the default. The explicit AO
 mode takes precedence over the legacy flag, whose value is ignored.
-`WWHD_AO_HIRES` defaults to on; `0` disables it. `WWHD_ANISO` defaults to off and a
+`WWHD_AO_HIRES` defaults to on (off on Android, where the phone GPU is the limit in heavy views, issue #56); `0` disables it, `1` enables it. `WWHD_ANISO` defaults to off and a
 nonzero value enables it. `WWHD_FXAA` defaults to off and its presence enables it,
 including a value of `0`, matching Metal's existing behavior.
 `WWHD_SCALE_FILTER=smooth|sharp|integer` selects the initial presentation filter;
@@ -410,7 +425,8 @@ roughly 30 FPS while other CPU workloads were active.
 
 In the macOS app, the Save States menu and keys work as with Metal. In the SDL game window, `F1` through `F5` load slots 1 through 5;
 `Shift+F1` through `Shift+F5` save those slots. Repeated keydown events are ignored,
-and these keys do not reach the game's button mapping. Host-input-disabled scripted
+and these keys do not reach the game's button mapping. The Screenshot binding (F10 by default,
+Controls) works in every game window the same way; `WWHD_TEST_SCREENSHOT=<frames>` scripts it. Host-input-disabled scripted
 runs do not accept the shortcuts. State files remain in the configured state directory.
 
 A load must pass the existing allocation, thread, and guest-stack guards. A state
@@ -419,7 +435,7 @@ printed LR/SP values do not establish that deeper guest stack frames match. Load
 later can succeed if the worker threads reach compatible waits. Failed loads do not
 bypass these checks or establish a valid benchmark starting point.
 
-## The CPU never reads mapped upload memory
+## The CPU never reads mapped upload memory, unless it is host-cached
 
 The upload arena (`allocate_upload`) and the buffer cache's blocks are host-visible memory the CPU
 writes and the GPU reads. On discrete GPUs that memory is uncached or write-combined (plain
@@ -443,6 +459,30 @@ it is written and checks that the caches still find exactly the expected reuse h
 mapped GPU-input memory left is the buffer cache's opt-in diagnostic `WWHD_VK_BUFFER_CACHE_VERIFY=1`.
 Buffers the CPU is meant to read (captures, the GamePad overlay signatures) come from
 `create_readback_buffer`, which prefers host-cached memory.
+
+**Unless it is host-cached.** Where the arena's memory type is both `HOST_CACHED` and `HOST_COHERENT`,
+CPU reads cost what heap reads cost and the copies are pure overhead (on an M3 Max about 0.2 ms of
+render-thread time per frame at Outset, 60 fps). That is every memory type on Apple silicon (MoltenVK),
+and the usual case on UMA drivers (many Android GPUs, integrated GPUs that expose cached host memory).
+`allocate_upload` records the type of each arena block it creates (`R.uploadCached`, true only while
+every block is CACHED and COHERENT) and sets `R.uploadReadsDirect`; then:
+
+- the reuse caches keep no copy: an entry's slice is written from the fresh guest bytes and later
+  compared against `slice.mapped`, which holds exactly those bytes (slices are immutable until their
+  submission retires). The mode is stored per entry, so a comparison always matches how its entry was
+  made;
+- the native index scan of the uncached index path scans the arena slice.
+
+CACHED without COHERENT never counts: the arena requires COHERENT and does no flush or invalidate.
+Uncached memory (discrete GPUs, Windows/Linux AMD and NVIDIA) keeps the copy path unchanged. The reuse
+decisions and hit counts are identical in both modes; `snapshot_caches` runs every sequence in both
+(poisoned arena for the copy mode, a readable one for direct reads) and checks equal hits, and that
+direct reads against a poisoned arena miss.
+
+`WWHD_VK_UPLOAD_READS` overrides the choice for A/B runs: `auto` (default), `shadow` (always keep CPU
+copies, e.g. to measure the discrete-GPU path on a Mac) or `direct` (always read the slices; slow on
+uncached memory, a diagnostic only). The log line `[vulkan] upload arena memory: ...` reports the
+memory and the mode.
 
 ## CPU/GPU overlap: lazy DrawDone and asynchronous presentation (all platforms)
 
@@ -612,7 +652,7 @@ CPU paths not set to `1` and lazy DrawDone / async present when turned off. The 
 These switches require the exact value `1` and remain disabled by default.
 
 - `WWHD_VK_GPU_TIMESTAMPS`: measures submission timestamp intervals using two queries per fenced submission slot. Results are collected only after the existing completion fence, without query waits. The interval sum is not GPU busy time or the frame critical path; unsupported or zero-only timestamp results cannot establish GPU cost.
-- `WWHD_VK_UNCAPPED`: bypasses guest wall-clock flip eligibility for throughput diagnostics, while retaining FIFO GPU completion ordering. Frame-driven simulation accelerates; timebase/audio clocks remain real-time. This is not normal gameplay FPS.
+- `WWHD_VK_UNCAPPED`: bypasses guest wall-clock flip eligibility for throughput diagnostics, while retaining FIFO GPU completion ordering. Frame-driven simulation accelerates; timebase/audio clocks remain real-time. This is not normal gameplay FPS. The same switch is now in the settings overlay (Graphics → "Uncapped (debug: the game runs too fast)", not saved) and `WWHD_UNCAPPED=1` sets it for either renderer; while it is on, the swapchains present with immediate (or mailbox) instead of the chosen mode, and Metal turns the layers' displaySyncEnabled off.
 - `WWHD_VK_READY_FLIP_WAIT`: experimental waiting for an already-eligible pending flip to complete instead of sleeping another full guest tick. It preserves the existing minimum swap interval and GPU completion guards. Literal wait-for-vblank behavior changes for an eligible pending flip; keep opt-in until matched gameplay benchmarks and correctness checks establish suitability.
 - `WWHD_VK_READY_FLIP_PARK`: experimental eligible-flip completion wait after the save-state freeze gate and before guest-core reacquisition. The optional host callback runs while the thread is marked running and its guest core remains released; it keeps the existing flip eligibility and FIFO GPU guards. This avoids a second core release/acquire roundtrip. Default sleep behavior and Metal callers remain unchanged.
 - `WWHD_VK_NARROW_BARRIERS`: experimental layout-specific source dependency scopes. Destination scopes, image ranges, render-pass breaks and same-layout write barriers remain unchanged. Shader-read classification assumes the current vertex/fragment consumers; general and unknown layouts retain conservative scopes.

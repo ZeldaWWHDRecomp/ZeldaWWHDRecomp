@@ -45,6 +45,8 @@ void set_pro_controller(bool on);  // Input: keyboard and controllers act as a P
 
 const char* name();                // "AppKit" or "SDL"
 void set_clipboard(const std::string& text);  // main thread: put text on the system clipboard
+bool can_open_folder();            // open_folder works on this host (not on Android)
+void open_folder(const std::string& path);    // main thread: show a folder in the file manager (Finder, Explorer, ...)
 
 // SDL host only (gfx/vulkan/overlay_sdl.cpp, called by its main loop)
 void run_posted();                 // the functions post()ed since the last call

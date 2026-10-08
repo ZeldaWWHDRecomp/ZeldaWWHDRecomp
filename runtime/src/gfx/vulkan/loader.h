@@ -29,9 +29,9 @@
   X(vkCmdClearColorImage) X(vkCmdClearDepthStencilImage) X(vkCmdCopyBuffer) X(vkCmdCopyBufferToImage) \
   X(vkCmdCopyImage) X(vkCmdCopyImageToBuffer) X(vkCmdDraw) X(vkCmdDrawIndexed) X(vkCmdPipelineBarrier) \
   X(vkCmdPushConstants) X(vkCmdResetQueryPool) X(vkCmdSetBlendConstants) X(vkCmdSetScissor) \
-  X(vkCmdSetStencilReference) X(vkCmdSetViewport) X(vkCmdWriteTimestamp) X(vkCreateBuffer) \
+  X(vkCmdSetStencilReference) X(vkCmdSetStencilWriteMask) X(vkCmdSetViewport) X(vkCmdWriteTimestamp) X(vkCreateBuffer) \
   X(vkCreateCommandPool) X(vkCreateDescriptorPool) X(vkCreateDescriptorSetLayout) X(vkCreateFence) \
-  X(vkCreateGraphicsPipelines) X(vkCreateImage) X(vkCreateImageView) X(vkCreatePipelineCache) \
+  X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCreateGraphicsPipelines) X(vkCreateImage) X(vkCreateImageView) X(vkCreatePipelineCache) \
   X(vkCreatePipelineLayout) X(vkCreateQueryPool) X(vkCreateSampler) X(vkCreateSemaphore) \
   X(vkCreateShaderModule) X(vkCreateSwapchainKHR) X(vkDestroyBuffer) X(vkDestroyDescriptorSetLayout) \
   X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroyPipeline) X(vkDestroyPipelineLayout) \

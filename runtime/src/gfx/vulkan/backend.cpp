@@ -1,10 +1,17 @@
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
+#ifndef __ANDROID__
+#define WWHD_CREATE_WINDOW_SURFACE SDL_Vulkan_CreateSurface
+#else
+#define WWHD_CREATE_WINDOW_SURFACE drivers::create_surface
+#endif
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #define VK_USE_PLATFORM_METAL_EXT  // VK_EXT_metal_surface: AppKit views' CAMetalLayers
 #endif
 #include "backend.h"
+#include "bc_decode.h"
+#include "android_driver.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
 #include "report_header.h"
@@ -20,9 +27,11 @@
 #include "platform/input_sdl.h"
 #include <SDL3/SDL_vulkan.h>
 #endif
+#include "platform/display_rate.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
 #include "runtime.h"
+#include "screenshot.h"
 #include "shaders.h"
 #include "settings.h"
 #include "sparse_hash_memo.h"
@@ -50,7 +59,7 @@
 #include <vulkan/vulkan_beta.h>
 
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); }
-namespace interp { int mode(); }
+#include "../../interp.h"
 
 namespace gfxvk {
 Renderer R;
@@ -119,7 +128,16 @@ bool unpack_pipeline_cache(std::vector<uint8_t>& file) {
 }
 void init_pipeline_cache() try {
   if (const char* explicitPath=std::getenv("WWHD_VK_PIPELINE_CACHE")) {
-    if (std::strcmp(explicitPath,"0")) pipelineCachePath=explicitPath;
+    if (std::strcmp(explicitPath,"0")) {
+      pipelineCachePath=explicitPath;
+#ifdef __ANDROID__
+      // Keep overrides in the driver's cache namespace so removing a driver removes every cache.
+      char key[32];
+      std::snprintf(key,sizeof key,"override-%016llx.bin",static_cast<unsigned long long>(
+          pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(explicitPath),std::strlen(explicitPath))));
+      pipelineCachePath = drivers::pipeline_directory()+"/"+key;
+#endif
+    }
   } else if (const char* shaderPath=std::getenv("WWHD_SHADER_CACHE");
              !shaderPath || std::strcmp(shaderPath,"0")) {
     char ids[32];
@@ -127,11 +145,24 @@ void init_pipeline_cache() try {
     // a WWHD_SHADER_CACHE file (test runs, separate setups) keeps the pipeline cache next to it,
     // so such runs never write the user's own cache in the config folder
     pipelineCachePath=shaderPath ? std::string(shaderPath)+"."+ids
-                                 : host::config_dir()+"/shadercache/"+ids;
+                                 :
+#ifdef __ANDROID__
+                                   drivers::pipeline_directory()+"/"+ids;
+#else
+                                   host::config_dir()+"/shadercache/"+ids;
+#endif
     for (uint8_t byte : R.properties.pipelineCacheUUID) {
       char hex[3]; std::snprintf(hex,sizeof hex,"%02x",byte); pipelineCachePath+=hex;
     }
     pipelineCachePath+=".bin";
+#ifdef __ANDROID__
+    if (shaderPath) {
+      char key[32];
+      std::snprintf(key,sizeof key,"shaders-%016llx-",static_cast<unsigned long long>(
+          pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(shaderPath),std::strlen(shaderPath))));
+      pipelineCachePath = drivers::pipeline_directory()+"/"+key+std::filesystem::path(pipelineCachePath).filename().string();
+    }
+#endif
   }
   std::vector<uint8_t> bytes;
   if (!pipelineCachePath.empty()) {
@@ -320,6 +351,11 @@ Buffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
         break;
       }
   }
+  {
+    VkPhysicalDeviceMemoryProperties p;
+    vkGetPhysicalDeviceMemoryProperties(R.physicalDevice, &p);
+    b.properties = p.memoryTypes[ai.memoryTypeIndex].propertyFlags;
+  }
   vk_check(vkAllocateMemory(R.device, &ai, nullptr, &b.memory),
            "allocate buffer memory");
   vk_check(vkBindBufferMemory(R.device, b.buffer, b.memory, 0),
@@ -343,6 +379,39 @@ Buffer create_readback_buffer(VkDeviceSize size) {
 // index scans use CPU copies kept beside the slices (vertex_snapshot_history.h, uniform_snapshot.h,
 // draw.cpp's index paths, the buffer cache's index shadows); see docs/vulkan.md. The one exception is
 // the buffer cache's opt-in verify mode (WWHD_VK_BUFFER_CACHE_VERIFY=1, a diagnostic).
+// Unless the memory is host-cached: if the arena's memory type is HOST_CACHED and HOST_COHERENT (Apple
+// silicon/MoltenVK has only cached types; many UMA drivers too), reads cost what heap reads cost and the
+// copies only add time, so R.uploadReadsDirect lets the reuse caches and the native index scan read the
+// slices. CACHED without COHERENT never counts: the arena requires COHERENT (no flush/invalidate).
+// WWHD_VK_UPLOAD_READS=auto (default) | shadow (always keep CPU copies) | direct (always read slices).
+namespace {
+enum class UploadReads { Auto, Shadow, Direct };
+UploadReads upload_reads_mode() {
+  static const UploadReads mode = [] {
+    const char* e = std::getenv("WWHD_VK_UPLOAD_READS");
+    if (!e || !*e || !std::strcmp(e, "auto")) return UploadReads::Auto;
+    if (!std::strcmp(e, "shadow")) return UploadReads::Shadow;
+    if (!std::strcmp(e, "direct")) return UploadReads::Direct;
+    LOG("[vulkan] WWHD_VK_UPLOAD_READS=%s unknown (auto|shadow|direct): auto", e);
+    return UploadReads::Auto;
+  }();
+  return mode;
+}
+void note_upload_block(const Buffer& buffer) {
+  const VkMemoryPropertyFlags readable =
+      VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  const bool first = R.uploadAllocations == 0;
+  const bool cached = (buffer.properties & readable) == readable && (first || R.uploadCached);
+  const auto mode = upload_reads_mode();
+  const bool direct = mode == UploadReads::Direct || (mode == UploadReads::Auto && cached);
+  if (first || direct != R.uploadReadsDirect)
+    LOG("[vulkan] upload arena memory: %s; reuse checks %s (WWHD_VK_UPLOAD_READS=%s)",
+        cached ? "host-cached" : "not host-cached", direct ? "read the slices" : "keep CPU copies",
+        mode == UploadReads::Auto ? "auto" : mode == UploadReads::Shadow ? "shadow" : "direct");
+  R.uploadCached = cached;
+  R.uploadReadsDirect = direct;
+}
+}  // namespace
 UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
@@ -364,6 +433,7 @@ UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  note_upload_block(buffer);
   R.uploadBlocks.push_back({buffer,0});
   ++R.uploadAllocations;
   return slice(R.uploadBlocks.back());
@@ -440,7 +510,8 @@ static void init_gpu_timestamp_queries() {
     if (result != VK_SUCCESS) {
       // Initialization has submitted no work, so partial pools are safe to destroy.
       slot.timestampQueries = VK_NULL_HANDLE;
-      destroy_gpu_timestamp_queries();
+      bc_decode_shutdown();
+  destroy_gpu_timestamp_queries();
       LOG("[vulkan GPU timestamps] optional query pools unavailable (%d); disabled", int(result));
       return;
     }
@@ -676,6 +747,8 @@ void transition_image(Surface *s, VkImageLayout layout,
   s->layout = layout;
 }
 static void cleanup_submission(Renderer::Submission& slot) {
+  for (auto& complete : slot.completions) complete();
+  slot.completions.clear();
   // The submit fence has completed; slices can now be overwritten safely.
   for (auto& block : slot.uploadBlocks) block.used = 0;
   for (auto b : slot.garbageBuffers) {
@@ -770,6 +843,7 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
   static uint64_t nextSubmissionSerial=0;
   slot.serial=++nextSubmissionSerial;
   slot.uploadBlocks=std::move(R.uploadBlocks);
+  slot.completions=std::move(R.completions);
   slot.garbageBuffers=std::move(R.garbageBuffers);
   slot.garbageImages=std::move(R.garbageImages);
   slot.garbageCacheRegions=std::move(R.garbageCacheRegions);
@@ -929,7 +1003,7 @@ static void make_swapchain(Screen &s) {
       offeredNames += std::string(offeredNames.empty() ? "" : ", ") + present_mode_name(m);
     }
   if (&s == &R.tv) set_present_modes_offered(offered);
-  const int wanted = present_mode();
+  const int wanted = effective_present_mode();
   const int chosen = offered >> wanted & 1 ? wanted : kPresentFifo;
   ci.presentMode = kModes[chosen];
   if (chosen != s.presentMode || wanted != s.presentWanted)
@@ -937,6 +1011,9 @@ static void make_swapchain(Screen &s) {
         offeredNames.c_str(), chosen != wanted ? " - the requested mode is not offered" : "");
   s.presentMode = chosen;
   s.presentWanted = wanted;
+  // frame interpolation caps 120/240 fps to the display's refresh rate only when presenting waits
+  // for it (interp::output_fps)
+  if (&s == &R.tv) interp::set_present_vsync(chosen == kPresentFifo);
   ci.clipped = VK_TRUE;
   ci.oldSwapchain = s.swapchain;
   VkSwapchainKHR sc;
@@ -974,7 +1051,7 @@ static void recreate_surface(Screen &s) {
   if (s.surface)
     vkDestroySurfaceKHR(R.instance, s.surface, nullptr);
   s.surface = VK_NULL_HANDLE;
-  if (!SDL_Vulkan_CreateSurface(s.window, R.instance, nullptr, &s.surface)) {
+  if (!WWHD_CREATE_WINDOW_SURFACE(s.window, R.instance, nullptr, &s.surface)) {
     LOG("[vulkan] surface recreation: %s (retrying)", SDL_GetError());
     s.surface = VK_NULL_HANDLE;
     surfaceRecreate = true;
@@ -1036,7 +1113,7 @@ static void present(Screen &s) {
 #endif
   // Presentation changed (settings overlay): a new swapchain, as for a resize (also for a window that
   // is not shown right now, so the next frame it shows uses the new mode)
-  if (s.window && s.swapchain && s.presentWanted != present_mode())
+  if (s.window && s.swapchain && s.presentWanted != effective_present_mode())
     make_swapchain(s);
   if (!s.window || !s.visible || s.width <= 0 || s.height <= 0 || !s.scan ||
       !s.scan->image)
@@ -1278,7 +1355,90 @@ static void frame_dumps(uint64_t frame) {
     LOG("[gfx] capture of frame %llu written to %s", (unsigned long long)frame, dir);
   }
 }
+// Screenshots (screenshot.h): recorded into the frame's command buffer at the swap, read back once
+// that submission's fence has signalled (checked at later swaps: no wait), encoded on the screenshot
+// thread; the readback buffers come back from it to be freed on this thread.
+namespace {
+struct PendingShot {
+  std::string path;
+  bool tv = false;
+  uint64_t frame = 0;
+  Buffer buffer{};
+  uint32_t width = 0, height = 0;
+  bool bgra = false;
+  size_t slot = 0;
+  uint64_t serial = 0;  // 0: not submitted yet
+};
+std::vector<PendingShot> pendingShots;
+std::mutex shotBuffersMu;
+std::vector<Buffer> shotBuffersDone;
+}  // namespace
+static void take_screenshots(const gfx::PresentPlan &plan) {
+  std::string tvPath, drcPath;
+  if (!R.tv.scan || !R.tv.scan->image || !screenshot::take(R.frame + 1, tvPath, drcPath))
+    return;
+  auto shoot = [&](Screen &s, const std::string &path, bool tv) {
+    PendingShot p;
+    p.path = path;
+    p.tv = tv;
+    p.frame = R.frame + 1;
+    try {
+      if (!record_screenshot(s, p.buffer, p.width, p.height, p.bgra)) {
+        screenshot::write_async(path, 0, 0, 0, nullptr, nullptr, p.frame, tv);
+        return;
+      }
+    } catch (const std::exception &e) {
+      LOG("[screenshot] %s: %s", path.c_str(), e.what());
+      screenshot::write_async(path, 0, 0, 0, nullptr, nullptr, p.frame, tv);
+      return;
+    }
+    p.slot = R.activeSubmission;
+    pendingShots.push_back(std::move(p));
+  };
+  const auto t0 = std::chrono::steady_clock::now();
+  shoot(R.tv, tvPath, true);
+  // the GamePad picture while it is shown (GamePad window, picture-in-picture, GamePad only)
+  if (!drcPath.empty() && R.drc.scan && R.drc.scan->image && (plan.drc_window || plan.pip_on || plan.drc_only))
+    shoot(R.drc, drcPath, false);
+  else if (!drcPath.empty()) {
+    LOG("[screenshot] GamePad picture not shown: only the TV picture saved");
+    screenshot::write_async(drcPath, 0, 0, 0, nullptr, nullptr, R.frame + 1, false);
+  }
+  LOG("[screenshot] frame %llu: recorded in %.2f ms (render thread)", (unsigned long long)(R.frame + 1),
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+static void service_screenshots() {
+  {
+    std::lock_guard<std::mutex> lk(shotBuffersMu);
+    for (auto &b : shotBuffersDone)
+      defer_buffer(b);
+    shotBuffersDone.clear();
+  }
+  for (auto it = pendingShots.begin(); it != pendingShots.end();) {
+    auto &slot = R.submissions[it->slot];
+    if (!it->serial) {  // recorded in this swap: the submission of that slot holds it now
+      it->serial = slot.serial;
+      ++it;
+      continue;
+    }
+    // a slot reused for a newer submission retired ours first
+    const bool done = !slot.pending || slot.serial != it->serial || vkGetFenceStatus(R.device, slot.fence) == VK_SUCCESS;
+    if (!done) {
+      ++it;
+      continue;
+    }
+    Buffer b = it->buffer;
+    std::shared_ptr<const void> owner(nullptr, [b](const void *) {
+      std::lock_guard<std::mutex> lk(shotBuffersMu);
+      shotBuffersDone.push_back(b);
+    });
+    screenshot::write_async(it->path, it->width, it->height, size_t(it->width) * 4, static_cast<const uint8_t *>(b.mapped),
+                            std::move(owner), it->frame, it->tv, it->bgra);
+    it = pendingShots.erase(it);
+  }
+}
 void swap() {
+  service_screenshots();
   service_captures();
   frame_dumps(R.frame + 1);
   // the layout of both pictures (GamePad window, picture-in-picture, automatic overlay, GamePad only)
@@ -1303,6 +1463,7 @@ void swap() {
   set_present_plan(&plan);
   // settings overlay: built once, drawn into the TV window and its present dumps
   set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
+  take_screenshots(plan);
   bool sampled[2] = {};
   if (plan.sample_auto && drcScan) {
     sampled[0] = record_signature(0, *drcScan, R.drc.srgb.load());
@@ -1348,8 +1509,12 @@ void swap() {
     }
   }
   set_present_plan(nullptr);
+  service_screenshots();  // this frame's: the submission that holds them
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
   R.completed = R.frame;
+#ifdef __ANDROID__
+  if (tvScan) drivers::frame_done();
+#endif
   buffer_cache_end_frame();
   report_gpu_timestamps();
   perf_hint::frame_done();
@@ -1803,6 +1968,7 @@ static void init_device(std::vector<const char *> extensions,
         if ((qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) && tv && drc) {
           R.physicalDevice = device;
           R.queueFamily = q;
+          R.computeQueue = (qs[q].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
           R.gpuTimestampValidBits = qs[q].timestampValidBits;
           R.dynamicRenderingKHR = have == DynamicRendering::KHR;
           break;
@@ -1866,6 +2032,7 @@ static void init_device(std::vector<const char *> extensions,
   if (R.portabilitySubset) {
     R.imageViewSwizzle = portability.imageViewFormatSwizzle;
     R.imageViewReinterpretation = portability.imageViewFormatReinterpretation;
+    R.imageView2DOn3DImage = portability.imageView2DOn3DImage;
     R.samplerMipLodBias = portability.samplerMipLodBias;
     R.separateStencilMaskRef = portability.separateStencilMaskRef;
     R.constantAlphaColorBlendFactors =
@@ -1884,6 +2051,10 @@ static void init_device(std::vector<const char *> extensions,
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
   VkPhysicalDeviceFeatures enabled{};
+  // The game's BC1-BC5 textures need this core feature enabled, not just supported (Vulkan spec);
+  // devices without it (many Mali/PowerVR GPUs) decode BC uploads with a compute shader (bc_decode).
+  enabled.textureCompressionBC = available.textureCompressionBC;
+  if (!available.textureCompressionBC) LOG("[vulkan] device has no BC texture support; compute upload decoder enabled");
   enabled.samplerAnisotropy = available.samplerAnisotropy;
   enabled.independentBlend = available.independentBlend;
   enabled.depthClamp = available.depthClamp;
@@ -1943,6 +2114,7 @@ static void init_device(std::vector<const char *> extensions,
   vk_check(vkCreateFence(R.device, &fi, nullptr, &slot.fence),
            "create frame fence");
   VkDescriptorPoolSize sizes[] = {
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 65536},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 32768},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 32768},
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 65536}};
@@ -2026,7 +2198,11 @@ void init() {
                                          "(vulkan-1.dll) "
 #endif
                                          "could not be loaded (") + SDL_GetError() + ").\n\n" + kUpdateDriver);
-  load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr()));
+  auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+#ifdef __ANDROID__
+  if (auto custom = drivers::open_custom()) gipa = custom;
+#endif
+  load_global_functions(gipa);
 #ifdef __ANDROID__
   SDL_AddEventWatch(lifecycle_watch, nullptr);
   const SDL_WindowFlags windowFlags = SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN;
@@ -2069,10 +2245,10 @@ void init() {
       s->height = height;
     }
   init_device(std::vector<const char *>(se, se + n), [] {
-    if (!SDL_Vulkan_CreateSurface(R.tv.window, R.instance, nullptr,
+    if (!WWHD_CREATE_WINDOW_SURFACE(R.tv.window, R.instance, nullptr,
                                   &R.tv.surface))
       throw std::runtime_error(SDL_GetError());
-    if (R.drc.window && !SDL_Vulkan_CreateSurface(R.drc.window, R.instance,
+    if (R.drc.window && !WWHD_CREATE_WINDOW_SURFACE(R.drc.window, R.instance,
                                                   nullptr, &R.drc.surface))
       throw std::runtime_error(SDL_GetError());
   });
@@ -2087,6 +2263,7 @@ void save_renderer_caches() {
   // Called during orderly shutdown under the renderer execution lock.
   reset_feedback_images();
   wait_idle();
+  bc_decode_shutdown();
   destroy_gpu_timestamp_queries();
   vk::save_shader_cache();
   save_pipeline_cache();
@@ -2331,6 +2508,7 @@ static void test_fullscreen_key() {
 // with the GamePad window open the close button of the TV window did nothing. Closing the GamePad
 // window only hides it (WWHD_NO_GAMEPAD=1 starts without it).
 static void quit_game() {
+  screenshot::finish();  // the screenshots taken are written first
   gx2::checkpoint_vulkan_caches();
   std::_Exit(0);
 }
@@ -2385,6 +2563,11 @@ void run_main_loop() {
     overlay::set_density(SDL_GetWindowPixelDensity(R.tv.window));
     auto now = std::chrono::steady_clock::now();
     double elapsed = std::chrono::duration<double>(now - titleTime).count();
+    static auto polled = now;  // twice a second: frame interpolation's cap (and Android's display mode)
+    if (now - polled >= std::chrono::milliseconds(500) || polled == now) {
+      polled = now;
+      display_rate::poll(R.tv.window);
+    }
     if (elapsed >= 0.5 && !input::text_prompt_active()) {
       uint64_t frames = gx2::flips_presented();
       if (exitFrame && frame_count() >= exitFrame) {
@@ -2393,10 +2576,11 @@ void run_main_loop() {
       char title[160];
       int mode = interp::mode();
       std::snprintf(title, sizeof title,
-          "The Legend of Zelda: The Wind Waker HD (Vulkan) — %.0f fps%s · %gx%s",
+          "The Legend of Zelda: The Wind Waker HD (Vulkan) — %.0f fps%s%s · %gx%s",
           double(frames - titleFrames) / elapsed,
-          mode == 2 ? " · true 60" : mode == 1 ? " · 60 fps" : "",
+          mode ? " · " : "", mode ? interp::mode_name() : "",
           double(requested_res_scale()), fxaa_enabled() ? " · FXAA" : "");
+      if (gx2::uncapped()) std::strncat(title, " · UNCAPPED (debug)", sizeof title - std::strlen(title) - 1);
       SDL_SetWindowTitle(R.tv.window, title);
       titleFrames = frames;
       titleTime = now;

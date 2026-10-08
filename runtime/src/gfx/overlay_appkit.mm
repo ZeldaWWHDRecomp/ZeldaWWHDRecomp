@@ -81,6 +81,10 @@ void set_clipboard(const std::string& text) {
     [pb clearContents];
     [pb setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
 }
+bool can_open_folder() { return true; }
+void open_folder(const std::string& path) {
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()] isDirectory:YES]];
+}
 void run_posted() {}
 void load_saved_options() {}
 

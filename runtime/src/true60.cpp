@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "guest_addr.h"
 #include "runtime.h"
 #include "true60.h"
 
@@ -129,9 +130,9 @@ void ratio_arg(Cpu* c, int r) {
 
 // ---- processes ----
 namespace {
-constexpr uint32_t kRndSeeds = 0x101FF9D4;  // cM_rnd's three seeds r0, r1, r2 (cM_rnd 02019788: -0x62C/-0x628/-0x624 from 0x10200000)
+const uint32_t kRndSeeds = GD(0x101FF9D4);  // cM_rnd's three seeds r0, r1, r2 (cM_rnd 02019788: -0x62C/-0x628/-0x624 from 0x10200000)
 constexpr uint32_t kSubMethod = 0xF0;     // fopAc_ac_c::sub_method (GameCube 0xEC)
-constexpr uint32_t kDaPyExecute = 0x0240EBB0;  // daPy_Execute (tail-calls daPy_lk_c::execute 0240CDD0)
+const uint32_t kDaPyExecute = GC(0x0240EBB0);  // daPy_Execute (tail-calls daPy_lk_c::execute 0240CDD0)
 constexpr uint32_t kCurProc = 0x65F0;     // daPy_lk_c::mCurProc (GameCube 0x31D8)
 constexpr uint32_t kPos = 0x314, kOld = 0x300, kSpeed = 0x33C, kSpeedF = 0x370, kGravity = 0x374, kMaxFall = 0x378;
 constexpr uint32_t kShapeAngle = 0x328, kAngle = 0x320;
@@ -281,7 +282,7 @@ void init_link_procs() {
 // camera (dCamera_c::followCamera, whose smoothing is converted by tools/true60/sites_camera.txt);
 // other camera modes stay at 30 Hz and are interpolated. WWHD_TRUE60_CAMERA=0 keeps it at 30 Hz.
 constexpr uint32_t kCamMtd = 0x228;              // camera_class::mpMtd (GameCube 0x224)
-constexpr uint32_t kCameraExecute = 0x024FFA3C;  // camera_execute
+const uint32_t kCameraExecute = GC(0x024FFA3C);  // camera_execute
 constexpr uint32_t kDCamera = 0x248;             // camera_process_class::mCamera
 bool g_follow_called = false;  // followCamera ran during the camera's execute
 bool g_cam_follow = false;     // ... during its last execute
@@ -414,7 +415,7 @@ struct LinkSnap {
     Region regions[4];
     uint32_t env_player[3];  // g_env_light +0xB2C: Link's position for the scene lighting, set by his draw
 } g_snap;
-constexpr uint32_t kEnvPlayerPos = 0x10475A68 + 0xB2C;  // (found with WWHD_T60_ENVLOG)
+const uint32_t kEnvPlayerPos = GD(0x10475A68) + 0xB2C;  // (found with WWHD_T60_ENVLOG)
 void region_begin(Region& r, uint32_t base, uint32_t size) {
     r.base = base;
     r.before.resize(size / 4);
@@ -463,8 +464,8 @@ void link_preview_begin(uint32_t proc) {
     g_snap.link.assign(ppc_ptr(proc), ppc_ptr(proc) + kLinkSize);
     for (int i = 0; i < 3; i++) g_snap.env_player[i] = ld32(kEnvPlayerPos + 4 * i);
     for (auto& r : g_snap.regions) r.base = 0;
-    region_begin(g_snap.regions[0], 0x1046CD10, 0x44);          // d_a_player statics (his kept position at +0x38)
-    region_begin(g_snap.regions[1], 0x10473FE8, 0x10474C68 - 0x10473FE8);  // dComIfGp play: player position/status words, button statuses
+    region_begin(g_snap.regions[0], GD(0x1046CD10), 0x44);          // d_a_player statics (his kept position at +0x38)
+    region_begin(g_snap.regions[1], GD(0x10473FE8), GD(0x10474C68) - GD(0x10473FE8));  // dComIfGp play: player position/status words, button statuses
     if (const char* e = getenv("WWHD_T60_EXTRA_REGION")) {  // debug: hunt for preview state (lo:size hex)
         uint32_t lo = (uint32_t)strtoul(e, nullptr, 16), sz = strchr(e, ':') ? (uint32_t)strtoul(strchr(e, ':') + 1, nullptr, 16) : 0;
         if (sz) region_begin(g_snap.regions[3], lo, sz);
@@ -505,7 +506,7 @@ std::vector<uint8_t> g_cam_half;
 // the camera's execute also writes the play state's camera data (dComIfGp: 1047E720.., 104846B0..,
 // eye/center/up of the camera slots, read by the next pass's draws before its own camera_draw):
 // taken back word by word where the preview execute changed them
-constexpr uint32_t kPlayCamLo = 0x1046F0B0, kPlayCamHi = 0x10485000;
+const uint32_t kPlayCamLo = GD(0x1046F0B0), kPlayCamHi = GD(0x10485000);
 Region g_cam_play;
 uint64_t g_cam_half_pass = ~0ull, g_cam_restored = ~0ull;
 uint32_t g_cam_half_proc = 0;
@@ -564,11 +565,11 @@ struct HalfSave { uint32_t addr, size; std::vector<uint8_t> data; };
 // (found with WWHD_T60_DRAWWRITE: the words half-pass draws change; not the sound engine's areas
 // around 104B5000 and 104C1000, which the sound thread writes at the same time)
 HalfSave g_half_saves[] = {
-    {0x10474DE0, 0x10, {}},    // play state: lighting position written by Link's draw
-    {0x1047E720, 0x90, {}},    // play state: camera slot 0 draw data (written by daBg's draw)
-    {0x104846B0, 0x90, {}},    // play state: camera slot 1 draw data (daBg)
-    {0x1048CFF0, 0x80, {}},    // mDoLib_clipper
-    {0x104B45F8, 0x30, {}},    // J3D view matrix
+    {GD(0x10474DE0), 0x10, {}},    // play state: lighting position written by Link's draw
+    {GD(0x1047E720), 0x90, {}},    // play state: camera slot 0 draw data (written by daBg's draw)
+    {GD(0x104846B0), 0x90, {}},    // play state: camera slot 1 draw data (daBg)
+    {GD(0x1048CFF0), 0x80, {}},    // mDoLib_clipper
+    {GD(0x104B45F8), 0x30, {}},    // J3D view matrix
 };
 uint64_t g_half_saves_pass = ~0ull;
 void pass_begin(bool full) {
@@ -664,12 +665,12 @@ static uint32_t watch_val() {
 }
 static FILE* g_rx = getenv("WWHD_RND_EXEC") ? fopen(getenv("WWHD_RND_EXEC"), "w") : nullptr;  // debug
 static void rx_log(uint32_t proc, uint32_t s0) {
-    if (g_rx && ld32(0x101FF9D4) != s0)
+    if (g_rx && ld32(kRndSeeds) != s0)
         fprintf(g_rx, "%llu %d %08X %08X %08X\n", (unsigned long long)interp::logic_steps(), (int)half_pass(), proc, actor_execute_fn(proc), s0);
 }
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
-    uint32_t rx_s0 = ld32(0x101FF9D4);
+    uint32_t rx_s0 = ld32(kRndSeeds);
     struct WatchGuard { uint32_t p, v; ~WatchGuard() { watch_link("execute", p, v); } } watch_guard{proc, watch_val()};
     struct RxLog { uint32_t p, s; ~RxLog() { rx_log(p, s); } } rx_guard{proc, rx_s0};
     if (!enabled()) {
@@ -1158,7 +1159,7 @@ extern "C" void hook_025DF904(Cpu* c) {
         LOG("[drawlog] step %llu %s depth %d word %08X exec %08X", (unsigned long long)interp::logic_steps(), half_pass() ? "half" : "full", g_draw_depth, ld32(proc + off), actor_execute_fn(proc));
         static FILE* df = getenv("WWHD_DRAWLOG_DUMP") ? fopen(getenv("WWHD_DRAWLOG_DUMP"), "wb") : nullptr;
         if (df && !half_pass()) {  // the process and g_env_light at its draw, as an ADMP record of 0x400 + 0x2000 bytes
-            static uint32_t rlo = getenv("WWHD_DRAWLOG_RANGE") ? (uint32_t)strtoul(getenv("WWHD_DRAWLOG_RANGE"), nullptr, 16) : 0x10475A68;
+            static uint32_t rlo = getenv("WWHD_DRAWLOG_RANGE") ? (uint32_t)strtoul(getenv("WWHD_DRAWLOG_RANGE"), nullptr, 16) : GD(0x10475A68);
             static uint32_t rsz = getenv("WWHD_DRAWLOG_RANGE") && strchr(getenv("WWHD_DRAWLOG_RANGE"), ':') ? (uint32_t)strtoul(strchr(getenv("WWHD_DRAWLOG_RANGE"), ':') + 1, nullptr, 16) : 0x2000;
             uint64_t step = interp::logic_steps(); uint32_t full = 1, size = 0x400 + rsz; float dtv = 1.0f;
             fwrite("ADMP", 1, 4, df); fwrite(&step, 8, 1, df); fwrite(&full, 4, 1, df); fwrite(&dtv, 4, 1, df);
@@ -1185,20 +1186,20 @@ extern "C" void hook_025DF904(Cpu* c) {
     static const bool envlog = getenv("WWHD_T60_ENVLOG") != nullptr;  // debug: env-light words Link's half-pass draw/execute changes
     static std::vector<uint32_t> env_before;
     bool envdbg = envlog && proc == g_link && half_pass();
-    if (envdbg) env_before.assign((uint32_t*)ppc_ptr(0x10475A68), (uint32_t*)ppc_ptr(0x10475A68 + 0x2000));
+    if (envdbg) env_before.assign((uint32_t*)ppc_ptr(GD(0x10475A68)), (uint32_t*)ppc_ptr(GD(0x10475A68) + 0x2000));
     // debug: WWHD_T60_DRAWWRITE=1 logs static words (1046F0B0..104C3000) that half-pass actor draws change, with counts
     static const bool dwlog = getenv("WWHD_T60_DRAWWRITE") != nullptr;
     static std::vector<uint32_t> dw_before;
     bool dw = dwlog && half_pass() && g_draw_depth >= 2;
-    if (dw) dw_before.assign((uint32_t*)ppc_ptr(0x1046F0B0), (uint32_t*)ppc_ptr(0x104C3000));
+    if (dw) dw_before.assign((uint32_t*)ppc_ptr(GD(0x1046F0B0)), (uint32_t*)ppc_ptr(GD(0x104C3000)));
     f_025DF904_orig(c);
     if (dw) {
         static std::unordered_map<uint32_t, int> cnt;
         static std::unordered_map<uint32_t, uint32_t> who;
         static int n = 0;
-        const uint32_t* cur = (const uint32_t*)ppc_ptr(0x1046F0B0);
+        const uint32_t* cur = (const uint32_t*)ppc_ptr(GD(0x1046F0B0));
         for (size_t i = 0; i < dw_before.size(); i++)
-            if (cur[i] != dw_before[i]) { uint32_t a = 0x1046F0B0 + 4 * (uint32_t)i; cnt[a]++; who[a] = actor_execute_fn(proc); }
+            if (cur[i] != dw_before[i]) { uint32_t a = GD(0x1046F0B0) + 4 * (uint32_t)i; cnt[a]++; who[a] = actor_execute_fn(proc); }
         if (++n % 3000 == 0) {
             std::vector<std::pair<uint32_t, int>> v(cnt.begin(), cnt.end());
             std::sort(v.begin(), v.end());
@@ -1209,7 +1210,7 @@ extern "C" void hook_025DF904(Cpu* c) {
     }
     if (envdbg) {
         std::string o;
-        const uint32_t* cur = (const uint32_t*)ppc_ptr(0x10475A68);
+        const uint32_t* cur = (const uint32_t*)ppc_ptr(GD(0x10475A68));
         for (size_t i = 0; i < env_before.size(); i++)
             if (cur[i] != env_before[i]) { char t[16]; snprintf(t, sizeof t, " +%zX", 4 * i); o += t; }
         static int n = 0;
@@ -1277,7 +1278,7 @@ extern "C" void site_025B00B0(Cpu* c) {
     if (hold_world()) c->r[3] = 1;
 }
 extern "C" void hook_025CB6D4(Cpu* c) {
-    if (c->lr == 0x025B01F0u && hold_world()) return;
+    if (c->lr == GC(0x025B01F0u) && hold_world()) return;
     f_025CB6D4_orig(c);
 }
 

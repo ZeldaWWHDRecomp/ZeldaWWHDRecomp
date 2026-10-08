@@ -28,6 +28,15 @@ void set_quick_doors(bool on);
 bool fast_scenes();
 void set_fast_scenes(bool on);
 
+bool move_speed();
+void set_move_speed(bool on);
+float move_speed_factor();
+void set_move_speed_factor(float factor);
+uint32_t move_speed_button();
+void set_move_speed_button(uint32_t button);
+void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps
+float link_move_factor(uint32_t link);
+
 // ---- input (input.mm) ----
 // called at the end of input::read(): synthetic stick and buttons (mouse camera, R3 pulses)
 void filter_pad(input::PadState& s);

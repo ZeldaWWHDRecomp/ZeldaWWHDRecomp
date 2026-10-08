@@ -30,9 +30,13 @@ android {
     defaultConfig.manifestPlaceholders = [appIcon: gameIcon ? '@mipmap/ic_game' : '@mipmap/ic_launcher']
     packaging {
         jniLibs {
-            useLegacyPackaging = false  // stored uncompressed, mapped straight from the APK
+            useLegacyPackaging = true  // libadrenotools needs extracted hooks in nativeLibraryDir
             keepDebugSymbols += ['**/libmain.so']  // stripped by build_native.sh already
         }
     }
     lint { abortOnError = false }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.15.0'
 }

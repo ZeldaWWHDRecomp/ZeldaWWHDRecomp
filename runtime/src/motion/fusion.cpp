@@ -2,17 +2,20 @@
 #include "fusion.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace motion {
 
 static constexpr float kPi = 3.14159265358979f;
 static constexpr float kTwoPi = 2 * kPi;
 static constexpr float kStandardGravity = 9.80665f;
-// gravity feedback gain (rad/s per unit of tilt error). WWHD turns its first-person camera by the
-// frame-to-frame change of the GamePad's direction (see motion.h), so every correction shows up as camera
-// movement: the gain is small (Cemu uses 0.5) and the feedback only runs while the accelerometer
-// measures plain gravity (no shaking).
-static constexpr float kGravityGain = 0.05f;
+// gravity direction: how fast the accelerometer pulls the gyro-carried estimate (per second). Only the
+// player-space axis uses it, as the axis to turn about, so it can follow quickly (the estimate itself never
+// moves the view).
+static constexpr float kGravityGain = 3.0f;
+// player space: a turn about the controller's yaw and roll axes counts up to this much more than its share
+// about the vertical, so a controller held at an angle still turns easily (JoyShockMapper's "relax factor")
+static constexpr float kYawRelax = 1.41f;
 
 Quat Quat::axis_angle(Vec3 a, float r) {
     float len = a.length();
@@ -22,7 +25,7 @@ Quat Quat::axis_angle(Vec3 a, float r) {
 }
 void Quat::normalize() {
     float n = std::sqrt(w * w + x * x + y * y + z * z);
-    if (!(n > 0)) { *this = {}; return; }
+    if (!(n > 0) || !std::isfinite(n)) { *this = {}; return; }
     w /= n; x /= n; y /= n; z /= n;
 }
 Vec3 Quat::rotate(Vec3 v) const {
@@ -45,92 +48,123 @@ void from_dsu(const float g[3], const float a[3], Vec3& gyro_h, Vec3& acc_h) {
     acc_h = {a[0], -a[1], -a[2]};
 }
 
-// flat on the table, top away from the player: H turned 90 degrees about x
-static Quat flat_pose() { return Quat::axis_angle({1, 0, 0}, kPi / 2); }
-static const Vec3 kWorldDown{0, 0, 1}, kWorldForward{0, -1, 0};
-
-void Fusion::reset() {
-    q_ = flat_pose();
-    angle_ = angle_read_ = {};
-    window_ = 0;
+const char* axis_id(int a) {
+    static const char* ids[] = {"player", "yaw", "roll"};
+    return a >= 0 && a < kAxisModeCount ? ids[a] : ids[0];
+}
+const char* axis_label(int a) {
+    static const char* labels[] = {"Player space", "Yaw", "Roll"};
+    return a >= 0 && a < kAxisModeCount ? labels[a] : labels[0];
+}
+int axis_from_id(const char* id) {
+    for (int i = 0; i < kAxisModeCount; i++)
+        if (id && !strcmp(id, axis_id(i))) return i;
+    return -1;
 }
 
-void Fusion::recenter() {
-    // turn about the vertical so that the controller's forward (H z) points to world forward
-    Vec3 f = q_.rotate({0, 0, 1});
-    Vec3 h{f.x, f.y, 0};
-    if (h.length() > 0.05f) {
-        float yaw = std::atan2(h.x, -h.y);  // angle of f from world forward, about world z (down)
-        q_ = Quat::axis_angle(kWorldDown, -yaw) * q_;
-        q_.normalize();
+static bool finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+
+void Fusion::recalibrate() {
+    bias_samples_ = 0;  // the next rest replaces the bias (the old one stays until then)
+    still_time_ = 0;
+    have_grav_ = false;
+}
+
+Aim Fusion::aim_rate(Vec3 w, Vec3 g, int mode) {
+    switch (mode) {
+    case kYawAxis: return {w.y, w.x};
+    case kRollAxis: return {w.z, w.x};
+    default: {
+        // the turn about the vertical (gravity, frame H: +y is a right turn of a flat controller, +z a right
+        // turn of an upright one); the pitch axis (x) does not count, so tilting up never turns sideways
+        float world_yaw = g.y * w.y + g.z * w.z;
+        float yaw = std::min(std::fabs(world_yaw) * kYawRelax, std::sqrt(w.y * w.y + w.z * w.z));
+        return {std::copysign(yaw, world_yaw), w.x};
     }
-    angle_ = angle_read_ = {};
+    }
 }
 
-void Fusion::update(float dt, Vec3 gyro, Vec3 acc, const Tuning& t) {
+void Fusion::update(float dt, Vec3 gyro, Vec3 acc, int mode) {
     if (!(dt > 0)) return;
-    dt = std::min(dt, 0.1f);  // a stall (or a reconnected source) must not throw the pose around
-    have_acc_ = acc.length() > 1e-4f;
+    if (!finite(gyro) || !finite(acc)) return;  // a broken sample must not poison the bias or the gravity
+    dt = std::min(dt, 0.1f);  // a stall (or a reconnected source) must not throw the aim around
+    const float acc_len = acc.length();
+    const bool have_acc = acc_len > 1e-4f;
     // bias: running average of the rate while the controller rests (rate small and steady, gravity
     // steady near 1 g). Before the first estimate the rate limit is loose (some controllers rest at
     // 5 deg/s), afterwards tight, so slow aiming never ends up in the bias.
-    if (have_acc_) {
+    if (have_acc) {
         float acc_change = (acc - last_acc_h_).length();
         float limit = calibrated() ? 0.06f : 0.2f;
         bool still = (gyro - bias_).length() < limit && (gyro - last_gyro_h_).length() < 0.03f &&
-                     std::fabs(acc.length() - 1.0f) < 0.1f && acc_change < 0.02f;
+                     std::fabs(acc_len - 1.0f) < 0.1f && acc_change < 0.02f;
         still_time_ = still ? still_time_ + dt : 0;
         if (still_time_ > 0.3f) {
             bias_samples_ = std::min(bias_samples_ + 1, kBiasSamples * 10);
             bias_ = bias_ + (gyro - bias_) * (1.0f / bias_samples_);
         }
-        acc_var_ = acc_change;
         last_acc_h_ = acc;
-        acc_v_ = {acc.x, acc.y, -acc.z};  // gravity direction in the GamePad frame
     }
     last_gyro_h_ = gyro;
     Vec3 w = gyro - bias_;
     if (w.length() < kNoise) w = {};  // noise floor: a controller held still reports nothing
-    // tuning, applied to the turning the player sees: yaw about the world vertical (in body
-    // coordinates), pitch about the body's horizontal right axis
-    Vec3 down = q_.unrotate(kWorldDown);
-    Vec3 right = Vec3{1, 0, 0} - down * down.x;
-    if (right.length() > 0.1f) {
-        right = right * (1.0f / right.length());
-        float yaw = w.dot(down), pitch = w.dot(right);
-        float yaw2 = yaw * t.sensitivity_x * (t.invert_x ? -1.0f : 1.0f);
-        float pitch2 = pitch * t.sensitivity_y * (t.invert_y ? -1.0f : 1.0f);
-        w = w + down * (yaw2 - yaw) + right * (pitch2 - pitch);
+    rate_ = w.length();
+    // gravity direction in the controller's frame: carried along by the gyro (a fixed world vector turns
+    // against the body), pulled towards the accelerometer while it measures about 1 g (not shaken)
+    if (have_acc && !have_grav_) { grav_ = acc * (1.0f / acc_len); have_grav_ = true; }
+    grav_ = grav_ + grav_.cross(w) * dt;
+    if (have_acc) {
+        float err = std::fabs(acc_len - 1.0f);
+        if (err < 0.25f) grav_ = grav_ + (acc * (1.0f / acc_len) - grav_) * std::min(1.0f, kGravityGain * dt * (1 - err / 0.25f));
     }
-    Vec3 w_int = w;
-    // gravity feedback (tilt drift), only with the true pitch: it would pull a scaled or inverted pitch
-    // back to the physical one. Yaw is unobservable from gravity; the bias keeps it from drifting.
-    if (have_acc_ && t.sensitivity_y == 1.0f && !t.invert_y && std::fabs(acc.length() - 1.0f) < 0.05f) w_int = w_int - down.cross(acc * (1.0f / acc.length())) * kGravityGain;
-    // q' = q + q * (0, w dt / 2)
-    Quat d = q_ * Quat(0, w_int.x * 0.5f * dt, w_int.y * 0.5f * dt, w_int.z * 0.5f * dt);
-    q_ = {q_.w + d.w, q_.x + d.x, q_.y + d.y, q_.z + d.z};
-    q_.normalize();
-    // the GamePad frame is a mirror of H: the rate (a pseudo-vector) flips once more
-    Vec3 rate_v = Vec3{w.x, w.y, -w.z} * (-1.0f / kTwoPi);
-    last_rate_v_ = rate_v;
-    angle_ = angle_ + rate_v * dt;
-    window_ += dt;
+    float gl = grav_.length();
+    grav_ = gl > 1e-3f ? grav_ * (1.0f / gl) : Vec3{0, 1, 0};
+    Aim r = aim_rate(w, grav_, mode);
+    aim_.yaw += r.yaw * dt;
+    aim_.pitch += r.pitch * dt;
 }
 
-VpadMotion Fusion::vpad() {
+Aim Fusion::take() {
+    Aim a = aim_;
+    aim_ = {};
+    return a;
+}
+
+// flat on the table, top away from the player: H turned 90 degrees about x
+VirtualPad::VirtualPad() : q_(Quat::axis_angle({1, 0, 0}, kPi / 2)) {}
+
+void VirtualPad::turn(float dt, Aim a) {
+    if (!std::isfinite(a.yaw) || !std::isfinite(a.pitch)) return;
+    // right = +y, up = +x of frame H, about the virtual GamePad's own axes (q' = q * turn)
+    Vec3 v{a.pitch, a.yaw, 0};
+    if (float len = v.length(); len > 0) {
+        q_ = q_ * Quat::axis_angle(v, len);
+        q_.normalize();
+    }
+    // the GamePad frame is a mirror of H: the turn (a pseudo-vector) flips once more
+    Vec3 turn_v = Vec3{v.x, v.y, -v.z} * (-1.0f / kTwoPi);
+    angle_ = angle_ + turn_v;
+    if (dt > 0) {
+        last_rate_v_ = turn_v * (1.0f / dt);
+        window_ += dt;
+    }
+}
+
+VpadMotion VirtualPad::vpad() {
     VpadMotion m;
     // gyro: mean rate since the previous read
     if (window_ > 0) m.gyro = (angle_ - angle_read_) * (float)(1.0 / window_);
     else m.gyro = last_rate_v_;
+    last_rate_v_ = {};
     angle_read_ = angle_;
     window_ = 0;
     m.angle = angle_;
-    // acc: the accelerometer, or (mouse source) gravity from the pose
-    Vec3 g = have_acc_ ? acc_v_ : [&] { Vec3 d = q_.unrotate(kWorldDown); return Vec3{d.x, d.y, -d.z}; }();
+    // acc: gravity from the virtual pose (the game reads only dir; acc stays consistent with it)
+    Vec3 d = q_.unrotate({0, 0, 1});  // world down in frame H
     // VPAD acc is the specific force, gravity points the other way: flat on a table it reads (0, -1, 0)
-    m.acc = {-g.x, -g.y, -g.z};
+    m.acc = {-d.x, -d.y, d.z};
     m.acc_magnitude = m.acc.length();
-    m.acc_variation = have_acc_ ? acc_var_ : 0;
+    m.acc_variation = 0;
     // acc_xy: the GamePad's tilt in its screen plane (cos, sin), 1, 0 when upright
     float xy = std::sqrt(m.acc.x * m.acc.x + m.acc.y * m.acc.y);
     if (xy > 0.1f) { m.acc_xy[0] = -m.acc.y / xy; m.acc_xy[1] = m.acc.x / xy; }
@@ -140,15 +174,6 @@ VpadMotion Fusion::vpad() {
     m.dir[1] = sw(q_.rotate({0, 1, 0}));
     m.dir[2] = sw(q_.rotate({0, 0, -1}));
     return m;
-}
-
-Vec3 mouse_rate(const Quat& q, float dx, float dy, float dt, float degrees_per_point) {
-    if (!(dt > 0)) return {};
-    const float k = degrees_per_point * kPi / 180.0f / dt;
-    Vec3 down = q.unrotate(kWorldDown);
-    // mouse right turns right: about the down axis, positive (right-handed about down = clockwise
-    // seen from above); mouse up (dy < 0) tilts the top up: about the right axis, positive
-    return down * (dx * k) + Vec3{1, 0, 0} * (-dy * k);
 }
 
 }  // namespace motion

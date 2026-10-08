@@ -112,13 +112,53 @@ tools/bench/run_bench.py --binary build/cmake/wwhd --state-dir my_states --scene
 ```
 
 `--state-dir` holds `slot<N>.bin` files made with the game's save-state keys (outset: slot 3,
-windfall: slot 2, or `--slot`). `--fps 30|60|true60`, `--uncapped` (throughput), `--renderer metal`.
+windfall: slot 2, or `--slot`). `--fps 30|60|120|240|true60`, `--display-hz n` (the refresh rate
+120/240 fps are capped to; 0: no cap, for hidden-window runs), `--uncapped` (throughput),
+`--renderer metal`.
 The state is loaded at TV frame 450 (A presses from frame 120 skip the intro), the input starts 200
 frames later and is timed in game seconds, so 30 and 60 fps runs see the same input. Each run's
 `[prof]` reports (render-thread profiler, `docs/vulkan.md`) after two warm-up windows are averaged;
 `summary.json` / `summary.csv` hold the per-variant median, min, max and spread of frame time,
 swaps/s, logic steps/s, render-thread CPU and per-phase ms, GPU waits, game-thread waits, uploads by
 kind, unique guest bytes and draw classes. The load average before and after each run is recorded.
+
+## 120 and 240 fps frame interpolation (2026-10-07)
+
+Apple M3 Max, 120 Hz ProMotion display, Outset (slot 3, walking and turning), 40 s per run,
+`tools/bench/run_bench.py` (one game at a time), Vulkan (MoltenVK) unless noted. Hidden runs present
+nothing; visible runs present to the 120 Hz display. "In-between" is the share of the planned
+in-between frames drawn (paced), frames per step is interpolation's own count.
+
+| Mode | swaps/s | logic steps/s | in-between | frames/step |
+|---|---|---|---|---|
+| 60 fps, hidden (2 runs) | 59.95 | 29.99 | (not paced) | 2.00 |
+| 120 fps, hidden (2 runs) | 119.28 | 29.94 | 99.3% | 3.98 |
+| 240 fps, hidden, no display cap (2 runs) | 146.48 | 29.78 | 55.2% | 4.87 |
+| 240 fps, hidden, capped to the 120 Hz display | 119.72 | 29.97 | 99.7% | 3.99 |
+| 120 fps, hidden, `--display-hz 60` (fallback) | 59.94 | 29.99 | 100% | 2.00 |
+| 60 fps, visible | 59.85 | 29.94 | (not paced) | 2.00 |
+| 120 fps, visible (2 runs) | 114.72 | 29.67 | 94.2% | 3.83 |
+| 240 fps, visible (drawn at 120) | 115.18 | 29.67 | 94.7% | 3.84 |
+| 120 fps, visible, Metal | 108.07 | 29.13 | 88.7% | 3.66 |
+| 240 fps, visible, Metal (drawn at 120) | 111.66 | 29.57 | 92.7% | 3.78 |
+| 240 fps, uncapped, paced | 198.51 | 29.36 | 82.3% | 6.75 |
+| 240 fps, uncapped, not paced | 206.64 | 25.84 | - | 8.00 |
+| 30 fps, uncapped | 190.78 | 190.78 | - | 1 |
+
+- 240 fps is limited by the render thread on this machine: it needs 4.4–4.7 ms of CPU per frame,
+  more than one 4.17 ms tick, so an in-between pass takes two ticks and the pacer plans 3–5 of the
+  7 in-between frames (the game thread needs 3.8 ms per logic pass and 1.3 ms per in-between pass,
+  `WWHD_INTERP_PASS_STATS=1`). Uncapped, the same scene draws ~200 frames a second.
+- Logic stays at 29.6–30.0 steps a second in every paced mode; unpaced 240 fps uncapped shows what
+  pacing prevents (25.8).
+- Visible runs present at ~115 of 120 Hz (as 60 fps runs present at 59.85 of 60).
+- A camera trace (`WWHD_INTERP_CAM_TRACE`) at 240 fps shows the eye advancing in equal eighths of
+  the step (t = 1/8 … 7/8, exact at t = 1) and steps re-planned with fewer in-between frames
+  spaced at 1/7 etc.
+- 60 fps output is unchanged: TV frames 700–703 (exact and halfway frames) are bit-identical to
+  devel; later frames differ from devel by as much as two devel runs differ from each other.
+- Before the per-kind averages and the spike limit, one 76 ms in-between pass kept all in-between
+  frames off for 10 s at 120 fps (28.8 logic steps/s and 1% in-between frames in that window).
 
 ## Desktop CPU/GPU overlap and CPU path defaults (2026-10-07)
 

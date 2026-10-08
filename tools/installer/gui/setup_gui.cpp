@@ -7,9 +7,10 @@
 //
 // Only a front end. Everything the installation does (keys, extraction, recompiling, compiling,
 // the app, save import) is tools/installer/setup.py, which this program runs as a child process
-// through the release's own launcher ("Install Wind Waker HD.command", install.sh or
-// bootstrap-windows.ps1; they also fetch Python where needed) with --gui-protocol: JSON lines on
-// the child's stdout (events) and stdin (requests). See tools/installer/README.md.
+// through the release's own launcher ("Install Wind Waker HD.command" or install.sh; they also fetch Python
+// where needed) or, on Windows, directly with the embeddable Python the release ships in tools\python
+// (console_setup_win.cpp), with --gui-protocol: JSON lines on the child's stdout (events) and stdin (requests).
+// See tools/installer/README.md.
 //
 // Keys: a pasted Wii U common key is sent once over the stdin pipe and the buffer is cleared;
 // it is never shown, logged, stored or put on a command line.
@@ -18,6 +19,9 @@
 //   --automate FILE      scripted run for tests (see run_automation below)
 //   --screenshots DIR    where --automate / --self-test write PNG screenshots
 //   --self-test          start setup.py, wait for its hello, render the welcome screen, exit 0
+//   --console-setup ARGS (Windows, first argument only) the setup in the console window this program was
+//                        started from: run setup.py ARGS with the bundled Python, exit with its exit code
+//                        (tools\Setup in a console window.bat)
 // With SDL_VIDEO_DRIVER=offscreen the window is never shown (software rendering).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -38,6 +42,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+
+#include "console_setup_win.h"
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1004,7 +1010,6 @@ static void screen_starting() {
     ImGui::Spacing();
     mark(1);
     ImGui::TextUnformatted("Preparing the installer...");
-    muted("The first start on Windows downloads a small private copy of Python (11 MB).");
     if (!A.log.empty()) log_pane(260);
 }
 
@@ -1657,8 +1662,16 @@ static void start_child() {
 #if defined(__APPLE__)
     args = {"/bin/bash", A.pkg + "tools/Setup in Terminal.command"};
 #elif defined(_WIN32)
-    args = {"powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-            A.pkg + "tools\\installer\\bootstrap-windows.ps1"};
+    // the official embeddable Python shipped in the release (tools\python; no download, no script host)
+    if (!have_bundled_python(A.pkg)) {
+        fail("Setup could not start: " + bundled_python(A.pkg) + " is missing.",
+             "The release is incomplete: unzip it again (the whole zip, keeping its folders) and start Wind Waker "
+             "HD.exe from the unzipped folder.",
+             A.pkg);
+        return;
+    }
+    args = {bundled_python(A.pkg), A.pkg + "tools\\installer\\setup.py"};
+    SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "PYTHONDONTWRITEBYTECODE", "1", true);
 #else
     args = {"/bin/sh", A.pkg + "tools/setup-in-terminal.sh"};
 #endif
@@ -1772,6 +1785,11 @@ static bool game_ready(const std::string& pkg, const std::vector<std::string>& p
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    if (argc > 1 && !strcmp(argv[1], "--console-setup")) {
+        return console_setup(find_package().pkg, std::vector<std::string>(argv + 2, argv + argc));
+    }
+#endif
     std::string automate;
     bool want_setup = false;
     for (int i = 1; i < argc; i++) {

@@ -12,6 +12,7 @@
 // <states>/crash_recovery.cfg. WWHD_CRASH_RECOVERY_INTERVAL=<seconds> (default 120).
 // Test aid: WWHD_TEST_CRASH_AT=<TV frame> crashes on purpose.
 #include "crashrec.h"
+#include "crash_context.h"
 
 #include <atomic>
 #include <chrono>
@@ -138,6 +139,12 @@ int interval_seconds() {
 }
 
 void service() {
+    static auto next_context = std::chrono::steady_clock::time_point{};
+    auto context_now = std::chrono::steady_clock::now();
+    if (context_now >= next_context) {
+        crash_context::refresh();
+        next_context = context_now + std::chrono::seconds(1);
+    }
     bool on = enabled();
     // test aid: WWHD_TEST_CRASH_AT=<TV frame> crashes on purpose (checks the crash log and replay hints)
     static const uint64_t crash_at = getenv("WWHD_TEST_CRASH_AT") ? strtoull(getenv("WWHD_TEST_CRASH_AT"), nullptr, 10) : 0;

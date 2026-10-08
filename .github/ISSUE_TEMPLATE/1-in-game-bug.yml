@@ -5,7 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! A **save state** from the moment the problem happens lets us reproduce it in minutes instead of hours, so please add one if you can.
+        Thanks for reporting! A **save state** made where the problem happens (`slotN.wwstate`, a few KB) plus your **save file** (`cking.sav`) lets us reproduce it much faster, so please add them if you can.
+
+        **Never share full save states** (`slotN.bin`, hundreds of MB): they contain the game's own code and data from your console, which must not be shared publicly. The small `.wwstate` files only hold your progress and position.
 
         If a maintainer closed your issue and the problem comes back, comment `/reopen` on it (as the person who opened it) and it reopens automatically.
   - type: textarea
@@ -26,21 +28,22 @@ body:
     validations:
       required: true
   - type: textarea
-    id: savestate
+    id: savefile
     attributes:
-      label: Save state (link), or why you can't add one
+      label: Save state and save file, or why you can't add them
       description: |
-        **How to make a save state:**
-        1. In the game, go to the place where the problem happens (or just before it).
-        2. Press **Shift+F1** (Fn+Shift+F1 on most Mac keyboards), or open the settings overlay (**F1**, or hold Select / press Home on a controller) > **Save States** > save to a free slot.
-        3. Find the file `slotN.bin` (N = the slot number):
-           - Release (all systems): `data/user/states/` inside the folder you unzipped
-           - Built from source: macOS `~/Library/Application Support/wwhd/states/`, Linux `~/.config/wwhd/states/`, Windows `%APPDATA%\WWHD\states\`
-        4. The file is about 250–300 MB, too big for GitHub. Upload it (zipped if you like) to Google Drive, Dropbox, OneDrive or similar, and paste the share link here.
+        **Please attach a save state and your save file** (they only hold your progress and position, a few KB each):
+        1. Go to where the problem happens and save a state: **Shift+F1** (or another slot, Shift+F2–F5), or the **Save** button in the Saves tab of the settings overlay (F1). This writes `slotN.wwstate`.
+        2. In the Saves tab, **Copy save for bug report** copies where both files are:
+           - the state: `slotN.wwstate` in the states folder (shown in the Saves tab)
+           - the save file `cking.sav`: `data/save/user/cking.sav` inside the folder you unzipped (release), or `save/user/cking.sav` in the folder you start the game from (built from source, or the folder you pass with `--save`)
+        3. Zip both files and drag the zip into this box.
 
-        Save states only load in the same version they were made with, so please also fill in the version below.
-        If you can't add one (e.g. you can't reach that place again), write the reason here instead.
-      placeholder: "https://drive.google.com/... or: no save state because ..."
+        Also say where you were and what you did (island or dungeon, room, which file slot).
+
+        **Never attach or link full save states** (`slotN.bin`, hundreds of MB, made with the "Full save states" option): they contain the game's code and data and must not be shared.
+        If you can't add the files, write the reason here instead.
+      placeholder: "state.zip attached (slot1.wwstate + cking.sav), file 1, standing at ... or: no files because ..."
     validations:
       required: true
   - type: input

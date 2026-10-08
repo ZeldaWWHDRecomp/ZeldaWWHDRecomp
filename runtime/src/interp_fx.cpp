@@ -1,16 +1,22 @@
 // Frame interpolation of effects. See interp.cpp for the pass structure: logic pass (logic
-// N -> N+1, everything drawn halfway) and hold pass (no logic, everything drawn at N+1). In true 60
-// (true60.cpp) the full passes are the logic passes and the half passes the hold passes for every
-// 30 Hz process; things driven by 60 Hz processes (Link, the follow camera) are not blended.
+// S -> S+1, everything drawn at t = 1/(N+1)) and hold passes (no logic; hold pass k drawn at
+// t = (k+1)/(N+1), the last one, the record pass, at S+1). At 60 fps (N = 1) the logic pass is
+// drawn halfway and the one hold pass is the record pass. In true 60 (true60.cpp) the full passes
+// are the logic passes and the half passes the hold passes for every 30 Hz process; things driven
+// by 60 Hz processes (Link, the follow camera) are not blended.
 //
 // Per-step work in drawing code is held back on hold passes (it ran twice per step before):
 // particle calc, J3DFrameCtrl::update from Draw, the sea's scroll counter, bush calc; the world
 // systems in dScnPly_Draw (grass/tree/wood/flower calc, g_Counter.mTimer, ...) are held back by
 // true60.cpp (site_025B00B0).
-// On logic passes these are drawn halfway between the previous step and this one (the exact values
-// are back at the start of the next pass, after the painter has drawn the logic pass):
+// On blended passes these are drawn between the previous step and this one at the pass's fraction
+// (the exact values are back at the start of the next pass, after the painter has drawn the pass).
+// Values that only logic computes (particles, sprites, sway, waves) are blended on the logic pass,
+// which keeps the step's before/after pairs; blended hold passes re-apply them at their own
+// fraction (fx_hold_blend). Values computed while drawing (sea grid, material animations, cloth)
+// are blended by the drawing hooks on every blended pass:
 //   - particles: position, size, axis, alpha, colours, rotation; particles born this step are drawn
-//     half a step back along their velocity and their emitter's movement (wind trails, trails of
+//     (1-t) of a step back along their velocity and their emitter's movement (wind trails, trails of
 //     moving actors),
 //   - sea: wave heights and grid origin, texture scroll, wave crest sprites,
 //   - weather and sky sprites: rain, snow/ash, spores, fog, poison fog, sky clouds, stars,
@@ -35,15 +41,21 @@
 #include <unordered_map>
 #include <vector>
 
+#include "guest_addr.h"
+#include "interp_pacing.h"
 #include "runtime.h"
 #include "true60.h"
 
 namespace interp {
 bool enabled();
-bool hold_pass();       // pass without logic: everything is drawn at step N+1
-bool logic_pass();      // inside the loop body of a logic pass (drawing halfway)
+bool hold_pass();       // pass without logic (blended hold pass or record pass)
+bool logic_pass();      // inside the loop body of a logic pass (drawing blended)
+bool blend_draw();      // inside the loop body of a blended pass (logic pass or blended hold pass)
+bool record_pass();     // the step's last hold pass: drawn exactly, recorded for the next step
+float pass_t();         // blend fraction of this pass (1 = exact)
 bool in_execute();      // inside fpcEx_Handler (actor Execute)
-uint64_t hold_pass_count();
+uint64_t hold_pass_count();  // record passes so far (step stamp of the histories)
+uint64_t pass_count();       // every pass
 uint64_t logic_steps();   // logic steps run so far
 }  // namespace interp
 
@@ -82,8 +94,13 @@ uint32_t mask() {
 }
 bool on(uint32_t bit) { return interp::enabled() && (mask() & bit); }
 bool hold_back() { return interp::hold_pass() && on(8); }
-// halfway frames: logic pass, outside actor Execute
-bool halfway() { return interp::logic_pass() && !interp::in_execute(); }
+// blended frames: logic pass or blended hold pass, outside actor Execute
+bool halfway() { return interp::blend_draw() && !interp::in_execute(); }
+// blends at fraction t (interp_pacing.h); at t = 1/2 the original halfway arithmetic (60 fps draws
+// bit-identical frames)
+using interp::pacing::lerp_f;
+using interp::pacing::lerp_s16;
+using interp::pacing::lerp_u8;
 
 int trace_left(int part) {
     static int left[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
@@ -104,7 +121,7 @@ int trace_left(int part) {
 // +0xEC its scale (global = local * scale + offset).
 constexpr uint32_t kMgrGroups = 0x50, kEmtrPtcls = 0x1AC, kEmtrChildren = 0x1B8;
 constexpr uint32_t kPtclAge = 0x78, kPtclVel = 0x34;
-constexpr uint32_t kEmtrInfo = 0x104B5730, kInfoCenter = 0xE0, kInfoScale = 0xEC;
+const uint32_t kEmtrInfo = GD(0x104B5730), kInfoCenter = 0xE0, kInfoScale = 0xEC;
 constexpr int kPW = 12;  // words per particle state
 constexpr uint32_t kPtclWord[kPW] = {0x28, 0x2C, 0x30, 0x9C, 0xA0, 0x8C, 0x90, 0x94, 0xAC, 0xB8, 0xBC, 0xC0};
 enum { kWPos = 0, kWSize = 3, kWAxis = 5, kWAlpha = 8, kWPrm = 9, kWEnv = 10, kWRot = 11 };
@@ -116,6 +133,9 @@ struct PtclState {
 struct Applied {
     uint32_t ptcl;
     uint32_t w[kPW];  // exact values
+    uint32_t a[kPW];  // the previous step's values (blended particles)
+    float born[3];    // born this step: its whole first step (velocity and emitter movement)
+    bool is_born, extras;
 };
 std::unordered_map<uint32_t, PtclState> g_ptcl_before;  // step N, per particle (current group)
 std::vector<Applied> g_ptcl_applied;                    // particles currently showing halfway values
@@ -139,22 +159,22 @@ PtclState read_ptcl(uint32_t p) {
 void write_ptcl(uint32_t p, const uint32_t* w) {
     for (int i = 0; i < kPW; i++) *(uint32_t*)ppc_ptr(p + kPtclWord[i]) = w[i];
 }
-// halfway between two particle states: floats, colours per channel, the rotation angle the short way
-void mid_ptcl(const uint32_t* a, const uint32_t* b, uint32_t* m, bool extras) {
+// between two particle states at t: floats, colours per channel, the rotation angle the short way
+void mid_ptcl(const uint32_t* a, const uint32_t* b, uint32_t* m, bool extras, float t) {
     for (int i = 0; i < kPW; i++) m[i] = b[i];
-    for (int i = kWPos; i < kWSize + 2; i++) m[i] = fw(0.5f * (wf(a[i]) + wf(b[i])));
+    for (int i = kWPos; i < kWSize + 2; i++) m[i] = fw(lerp_f(wf(a[i]), wf(b[i]), t));
     if (!extras) return;
-    for (int i = kWAxis; i <= kWAlpha; i++) m[i] = fw(0.5f * (wf(a[i]) + wf(b[i])));
+    for (int i = kWAxis; i <= kWAlpha; i++) m[i] = fw(lerp_f(wf(a[i]), wf(b[i]), t));
     for (int i : {kWPrm, kWEnv}) {
         const uint8_t* x = (const uint8_t*)&a[i];
         const uint8_t* y = (const uint8_t*)&b[i];
         uint8_t* o = (uint8_t*)&m[i];
-        for (int k = 0; k < 4; k++) o[k] = (uint8_t)((x[k] + y[k] + 1) / 2);
+        for (int k = 0; k < 4; k++) o[k] = lerp_u8(x[k], y[k], t);
     }
     // rotation word: big-endian u16 angle in the first two bytes, its speed in the last two
     uint16_t ra = (uint16_t)(((const uint8_t*)&a[kWRot])[0] << 8 | ((const uint8_t*)&a[kWRot])[1]);
     uint16_t rb = (uint16_t)(((const uint8_t*)&b[kWRot])[0] << 8 | ((const uint8_t*)&b[kWRot])[1]);
-    uint16_t rm = (uint16_t)(ra + (int16_t)(rb - ra) / 2);
+    uint16_t rm = (uint16_t)lerp_s16((int16_t)ra, (int16_t)rb, t);
     ((uint8_t*)&m[kWRot])[0] = (uint8_t)(rm >> 8);
     ((uint8_t*)&m[kWRot])[1] = (uint8_t)rm;
 }
@@ -175,9 +195,30 @@ void ptcl_restore() {
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_applied.clear();
 }
+// a particle's drawn values at t (from its exact values and what the logic pass recorded)
+void ptcl_mid(const Applied& ap, float t, uint32_t* mid) {
+    if (ap.is_born) {  // drawn as if born (1-t) of a step earlier
+        memcpy(mid, ap.w, sizeof ap.w);
+        for (int i = 0; i < 3; i++) mid[kWPos + i] = fw(wf(ap.w[kWPos + i]) - (1 - t) * ap.born[i]);
+    } else {
+        mid_ptcl(ap.a, ap.w, mid, ap.extras, t);
+    }
+}
+// blended hold pass: the particles blended on the logic pass, at this pass's fraction (they were
+// put back to their exact values at the pass start, and the list kept)
+std::vector<Applied> g_ptcl_keep;
+void ptcl_reapply(float t) {
+    for (const Applied& ap : g_ptcl_keep) {
+        uint32_t mid[kPW];
+        ptcl_mid(ap, t, mid);
+        write_ptcl(ap.ptcl, mid);
+    }
+    g_ptcl_applied.swap(g_ptcl_keep);
+    g_ptcl_keep.clear();
+}
 
-// debug trace: how far the blended particles moved this step, and where the halfway value sits on
-// that step (0 = before, 1 = exact; 0.5 expected)
+// debug trace: how far the blended particles moved this step, and where the blended value sits on
+// that step (0 = before, 1 = exact; the pass's t expected)
 struct PtclTrace {
     double step = 0, frac = 0;
     int n = 0;
@@ -216,7 +257,7 @@ struct PtclTrace {
 // in its time block (*(this+0): +0 frame (after wrap/clamp), +4 start, +8 end, +0x10 the frame
 // mapping function: 027DA9E8 loops, 027DAAA0 clamps) and caches the frame at this+0x28. btk/brk
 // entry and many actors call it from Draw on every pass.
-constexpr uint32_t kLoopFn = 0x027DA9E8;
+const uint32_t kLoopFn = GC(0x027DA9E8);
 struct AnmRec {
     uint32_t ts = 0;
     float frame = 0;
@@ -225,8 +266,8 @@ struct AnmRec {
 std::unordered_map<uint32_t, AnmRec> g_anm;
 struct { uint32_t blended = 0, wrapped = 0, jumped = 0; } g_astats;
 
-// halfway frame between a (drawn at step N) and b (step N+1); returns b when it is not a small step
-float anm_mid(float a, float b, float start, float end, bool loop) {
+// frame at t between a (drawn at step S) and b (step S+1); returns b when it is not a small step
+float anm_mid(float a, float b, float start, float end, bool loop, float t) {
     float d = b - a;
     float len = end - start;
     if (loop && len > 0) {
@@ -237,7 +278,7 @@ float anm_mid(float a, float b, float start, float end, bool loop) {
         g_astats.jumped++;
         return b;
     }
-    float m = a + 0.5f * d;
+    float m = a + t * d;  // (0.5f * d at 60 fps)
     if (loop && len > 0) {
         if (m >= end) m -= len;
         else if (m < start) m += len;
@@ -264,16 +305,47 @@ bool g_sea_scroll_half = false;  // the next PSMTXTrans from the sea material se
 
 namespace {
 // ---------------------------------------------------------------------------------------------
-// Values shown halfway on a logic pass and put back at the start of the next pass (after the
-// painter has drawn the logic pass): (address, exact word), restored in reverse order.
-std::vector<std::pair<uint32_t, uint32_t>> g_temp;
-void temp_set32(uint32_t a, uint32_t v) {
-    g_temp.emplace_back(a, ld32(a));
-    st32(a, v);
+// Values shown blended on a logic pass and put back at the start of the next pass (after the
+// painter has drawn the pass): address, exact word (host order, as ld32), the previous step's value
+// and how to blend them, restored in reverse order. Blended hold passes apply them again at their
+// own fraction (temp_reapply).
+struct Temp {
+    uint32_t addr, exact, prev;
+    int8_t kind;  // kF32: host-order float word; kS16: the s16 at bit `shift` of the word
+    int8_t shift;
+};
+enum { kF32, kS16 };
+std::vector<Temp> g_temp, g_temp_keep;
+// the word to show at t; an s16 replaces only its half of the word as it is now (the other half
+// may be another blended s16: tree sway slots keep two in one word)
+uint32_t temp_value(const Temp& e, float t) {
+    if (e.kind == kF32) return f32_as_u32(lerp_f(u32_as_f32(e.prev), u32_as_f32(e.exact), t));
+    int16_t b = (int16_t)(e.exact >> e.shift);
+    uint16_t m = (uint16_t)lerp_s16((int16_t)e.prev, b, t);
+    return (ld32(e.addr) & ~(0xFFFFu << e.shift)) | ((uint32_t)m << e.shift);
+}
+// the word at a shown at t between prev (a host-order float word) and its exact value
+void temp_blend_f32(uint32_t a, uint32_t prev, float t) {
+    Temp e{a, ld32(a), prev, kF32, 0};
+    g_temp.push_back(e);
+    st32(a, temp_value(e, t));
+}
+// the s16 at a (halfword aligned) shown at t between prev and its exact value
+void temp_blend_s16(uint32_t a, int16_t prev, float t) {
+    uint32_t w = a & ~3u;
+    Temp e{w, ld32(w), (uint32_t)(uint16_t)prev, kS16, (int8_t)((a & 2) ? 0 : 16)};  // (big-endian word)
+    g_temp.push_back(e);
+    st32(w, temp_value(e, t));
 }
 void temp_restore() {
-    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it) st32(it->first, it->second);
+    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it) st32(it->addr, it->exact);
+    g_temp_keep.swap(g_temp);
     g_temp.clear();
+}
+void temp_reapply(float t) {  // blended hold pass, after temp_restore at the pass start
+    for (const Temp& e : g_temp_keep) st32(e.addr, temp_value(e, t));
+    g_temp.swap(g_temp_keep);
+    g_temp_keep.clear();
 }
 bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fabs(v) < 1e9f); }
 
@@ -283,9 +355,10 @@ bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fab
 // block, which true60.cpp (site_025B00B0) runs on full passes only. The sway of each kind is 8
 // shared animation slots written by its calc (in that block) as a function of mTimer: grass s16 +4
 // (slots at +0x18F0C, 0x38 apart), trees s16 +4/+6 (+0x2A9C, 0x84 apart), flowers s16 +4
-// (+0x35BC, 0x38 apart). On logic passes the slots are drawn halfway between the previous step's
-// and this step's values; the exact ones are back for the hold pass.
-constexpr uint32_t kCounterTimer = 0x101FF560;
+// (+0x35BC, 0x38 apart). On logic passes the slots are drawn blended between the previous step's
+// and this step's values (blended hold passes re-apply them); the exact ones are back for the record
+// pass.
+const uint32_t kCounterTimer = GD(0x101FF560);
 struct SwayKind {
     uint32_t base, stride;
     int fields;
@@ -297,9 +370,6 @@ struct SwayRec {
     uint64_t step = 0;  // logic pass it was recorded on (hold pass count)
     int16_t v[8][2];
 } g_sway[3];
-
-// halfway between two s16 angles, the short way round
-int16_t mid_s16(int16_t a, int16_t b) { return (int16_t)(a + (int16_t)(b - a) / 2); }
 
 void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
     const SwayKind& sk = kSway[k];
@@ -314,14 +384,11 @@ void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
             uint32_t a = pk + sk.base + sk.stride * i + sk.field[f];
             int16_t cur = (int16_t)ld16(a);
             if (valid) {
-                int16_t mid = mid_s16(r.v[i][f], cur);
+                temp_blend_s16(a, r.v[i][f], interp::pass_t());
                 if (tr && i == 0 && f == 0) {
                     tr--;
-                    LOG("[interp-fx] %s sway slot 0: %d -> %d, halfway %d", k == 0 ? "grass" : k == 1 ? "tree" : "flower", r.v[i][f], cur, mid);
+                    LOG("[interp-fx] %s sway slot 0: %d -> %d, drawn %d", k == 0 ? "grass" : k == 1 ? "tree" : "flower", r.v[i][f], cur, (int16_t)ld16(a));
                 }
-                uint32_t w = a & ~3u, sh = (a & 2) ? 0 : 16;  // the s16 inside its (big-endian) word
-                uint32_t word = ld32(w);
-                temp_set32(w, (word & ~(0xFFFFu << sh)) | ((uint32_t)(uint16_t)mid << sh));
             }
             r.v[i][f] = cur;
         }
@@ -347,7 +414,7 @@ struct WoodRec {
 // of effect records in a packet that g_env_light (10475A68) points to; WWHD's packets keep the
 // GameCube records (the J3DPacket base grew). On logic passes every float field of every record
 // that did not respawn this step (same status byte, small position change) is drawn halfway.
-constexpr uint32_t kEnvLight = 0x10475A68;
+const uint32_t kEnvLight = GD(0x10475A68);
 struct KankyoKind {
     const char* name;
     uint32_t env_off, base, stride;
@@ -396,7 +463,7 @@ void kankyo_move(Cpu* c, int k, void (*orig)(Cpu*)) {
             if (a[q] == b[q]) continue;
             float x = wf(a[q]), y = wf(b[q]);
             if (!plausible(x) || !plausible(y) || std::fabs(y - x) > 1e5f) continue;
-            temp_set32(pk + kk.base + e + 4 * q, f32_as_u32(0.5f * (x + y)));  // (host-order word)
+            temp_blend_f32(pk + kk.base + e + 4 * q, f32_as_u32(x), interp::pass_t());  // (host-order word)
             moved = true;
             if (tr[k] && q == 1 && x != y) t.frac += ((float)ldf32(pk + kk.base + e + 4 * q) - x) / (y - x), t.words++;  // as drawn
         }
@@ -430,9 +497,11 @@ constexpr uint32_t kWaveField[kWaveFields] = {0x0, 0x4, 0x8, 0x1C, 0x24, 0x28, 0
 constexpr uint32_t kWaveSkew[2] = {0x4240, 0x4244};
 struct WaveApplied {
     uint32_t pkt = 0;
-    std::vector<uint32_t> exact;  // kWaveFields words per sprite
-    uint32_t skew[2];
+    std::vector<uint32_t> exact, before;  // kWaveFields words per sprite: this step, the step before
+    std::vector<uint8_t> blend;           // per sprite: drawn blended (not respawned, small move)
+    uint32_t skew[2], skew_before[2];
 } g_wave;
+uint32_t g_wave_keep = 0;  // packet of the last restored blend (re-applied on blended hold passes)
 
 void wave_restore() {
     if (!g_wave.pkt) return;
@@ -440,7 +509,26 @@ void wave_restore() {
         for (int f = 0; f < kWaveFields; f++)
             st32(g_wave.pkt + kWaveEff + kWaveStride * i + kWaveField[f], g_wave.exact[kWaveFields * i + f]);
     for (int k = 0; k < 2; k++) st32(g_wave.pkt + kWaveSkew[k], g_wave.skew[k]);
+    g_wave_keep = g_wave.pkt;
     g_wave.pkt = 0;
+}
+// the crests (and the packet's skew) at t; the exact values are in g_wave.exact
+void wave_apply(float t) {
+    const uint32_t pk = g_wave.pkt;
+    for (int k = 0; k < 2; k++) st32(pk + kWaveSkew[k], fh(lerp_f(hf(g_wave.skew_before[k]), hf(g_wave.skew[k]), t)));
+    for (int i = 0; i < kWaves; i++) {
+        if (!g_wave.blend[i]) continue;
+        uint32_t e = pk + kWaveEff + kWaveStride * i;
+        const uint32_t* a = &g_wave.before[kWaveFields * i];
+        const uint32_t* w = &g_wave.exact[kWaveFields * i];
+        for (int f = 0; f < kWaveFields; f++) st32(e + kWaveField[f], fh(lerp_f(hf(a[f]), hf(w[f]), t)));
+    }
+}
+void wave_reapply(float t) {  // blended hold pass, after wave_restore at the pass start
+    if (!g_wave_keep) return;
+    g_wave.pkt = g_wave_keep;
+    g_wave_keep = 0;
+    wave_apply(t);
 }
 }  // namespace
 
@@ -488,12 +576,16 @@ extern "C" void hook_0256A448(Cpu* c) {
         status[i] = ld8(e + 0x34);
     }
     f_0256A448_orig(c);
+    g_wave_keep = 0;
     g_wave.pkt = pk;
     g_wave.exact.resize(kWaveFields * kWaves);
+    g_wave.before = before;
+    g_wave.blend.assign(kWaves, 0);
     for (int k = 0; k < 2; k++) {
         g_wave.skew[k] = ld32(pk + kWaveSkew[k]);
-        st32(pk + kWaveSkew[k], fh(0.5f * (hf(skew_before[k]) + hf(g_wave.skew[k]))));
+        g_wave.skew_before[k] = skew_before[k];
     }
+    const float t = interp::pass_t();
     static int tr = trace_left(5);
     int moving = 0;
     double frac = 0;
@@ -509,15 +601,16 @@ extern "C" void hook_0256A448(Cpu* c) {
         bool respawned = ld32(e + 0xC) != base[3 * i] || ld32(e + 0x10) != base[3 * i + 1] || ld32(e + 0x14) != base[3 * i + 2] ||
                          ld8(e + 0x34) != status[i];
         if (respawned || !(d2 <= 300.0f * 300.0f) || !(std::fabs(hf(w[4]) - hf(a[4])) < 1000.0f)) continue;
-        for (int f = 0; f < kWaveFields; f++) st32(e + kWaveField[f], fh(0.5f * (hf(a[f]) + hf(w[f]))));
+        g_wave.blend[i] = 1;
         if (tr && d2 > 1e-4f) {
             moving++;
-            frac += (hf(ld32(e)) - hf(a[0])) / (hf(w[0]) - hf(a[0]) != 0 ? (hf(w[0]) - hf(a[0])) : 1.0f);
+            frac += (lerp_f(hf(a[0]), hf(w[0]), t) - hf(a[0])) / (hf(w[0]) - hf(a[0]) != 0 ? (hf(w[0]) - hf(a[0])) : 1.0f);
         }
     }
+    wave_apply(t);
     if (tr && moving) {
         tr--;
-        LOG("[interp-fx] wave sprites: %d moving, halfway at %.3f of the step (x)", moving, frac / moving);
+        LOG("[interp-fx] wave sprites: %d moving, drawn at %.3f of the step (x)", moving, frac / moving);
     }
 }
 extern "C" void f_02582500_orig(Cpu* c);
@@ -596,7 +689,7 @@ extern "C" void hook_025D0994(Cpu* c) {
                 for (int q : {3, 7, 11}) d2 += (u32_as_f32(a[12 * r + q]) - u32_as_f32(b[12 * r + q])) * (u32_as_f32(a[12 * r + q]) - u32_as_f32(b[12 * r + q]));
             if (!(d2 < 400.0f * 400.0f)) continue;
             for (int q = 0; q < kWoodWords; q++)
-                if (a[q] != b[q]) temp_set32(pk + kWoodAnm + kWoodAnmStride * i + 4 * q, f32_as_u32(0.5f * (u32_as_f32(a[q]) + u32_as_f32(b[q]))));
+                if (a[q] != b[q]) temp_blend_f32(pk + kWoodAnm + kWoodAnmStride * i + 4 * q, a[q], interp::pass_t());
             if (tr && !changed) {
                 tr--;
                 LOG("[interp-fx] bush anim %d: sway matrix [0][1] %.4f -> %.4f, halfway %.4f", i, u32_as_f32(a[1]), u32_as_f32(b[1]), u32_as_f32(ld32(pk + kWoodAnm + kWoodAnmStride * i + 4)));
@@ -636,21 +729,31 @@ extern "C" void hook_0256A388(Cpu* c) { kankyo_move(c, kStar, f_0256A388_orig); 
 // +0xB8 / +0xC0 position / normal / back-normal buffers [2], +0x1C0 current buffer). cloth_move
 // switches buffers and simulates one step into the new one, so the other buffer holds the previous
 // step. The vertex fill (0251D864, from the cloth's draw, every pass) copies the current buffers
-// into the vertex buffer; on logic passes after a simulation step it gets the halfway grid.
+// into the vertex buffer; on blended passes of a step with a simulation step it gets the blended grid.
+// The buffers are read in place (guest memory, big-endian words): wf/fw, not the host-order hf/fh
+// (blending byte-swapped words turned every moving vertex into garbage: issue #36, the Rito flags on
+// Dragon Roost Island drawn as huge stretched polygons on every in-between frame).
 constexpr uint32_t kClothFly = 0x98, kClothHoist = 0x9C, kClothPos = 0xB0, kClothCur = 0x1C0;
-std::unordered_map<uint32_t, uint8_t> g_cloth_cur;  // buffer index seen at the cloth's last fill
+struct ClothRec { uint8_t cur; uint64_t stepped_at; };  // buffer index at the last fill, logic step it changed
+std::unordered_map<uint32_t, ClothRec> g_cloth_cur;
 extern "C" void hook_0251D864(Cpu* c) {
     uint32_t pk = c->r[3];
     uint8_t cur = (uint8_t)ld8(pk + kClothCur);
     auto it = g_cloth_cur.find(pk);
-    bool stepped = it != g_cloth_cur.end() && it->second != cur;
-    g_cloth_cur[pk] = cur;
+    const uint64_t step = interp::logic_steps();
+    uint64_t stepped_at = it != g_cloth_cur.end() ? it->second.stepped_at : ~0ull;
+    const bool changed = it != g_cloth_cur.end() && it->second.cur != cur;
+    if (changed) stepped_at = step;
+    // the step's blended hold passes see no change: the simulation step was the logic pass's
+    bool stepped = changed || (interp::hold_pass() && stepped_at == step);
+    g_cloth_cur[pk] = ClothRec{cur, stepped_at};
     int32_t fly = (int32_t)ld32(pk + kClothFly), hoist = (int32_t)ld32(pk + kClothHoist);
     if (!on(16) || !halfway() || !stepped || cur > 1 || fly <= 0 || hoist <= 0 || fly * hoist > 4096) {
         f_0251D864_orig(c);
         return;
     }
     const uint32_t n = 3 * (uint32_t)(fly * hoist);
+    const float t = interp::pass_t();
     std::vector<std::pair<uint32_t, std::vector<uint32_t>>> saved;
     static int tr = trace_left(6);
     for (uint32_t arr = 0; arr < 3; arr++) {  // positions, normals, back normals
@@ -661,31 +764,45 @@ extern "C" void hook_0251D864(Cpu* c) {
         saved.emplace_back(now, std::vector<uint32_t>(b, b + n));
         if (tr && arr == 0) {
             tr--;
-            LOG("[interp-fx] cloth %08X vertex 0 x %.3f -> %.3f, halfway %.3f", pk, hf(a[0]), hf(b[0]), 0.5f * (hf(a[0]) + hf(b[0])));
+            LOG("[interp-fx] cloth %08X vertex 0 x %.3f -> %.3f, drawn %.3f", pk, wf(a[0]), wf(b[0]), lerp_f(wf(a[0]), wf(b[0]), t));
         }
-        for (uint32_t q = 0; q < n; q++) b[q] = fh(0.5f * (hf(a[q]) + hf(b[q])));
+        for (uint32_t q = 0; q < n; q++) b[q] = fw(lerp_f(wf(a[q]), wf(b[q]), t));
     }
     f_0251D864_orig(c);
     for (auto& [addr, w] : saved) memcpy(ppc_ptr(addr), w.data(), 4 * w.size());
 }
 
 namespace { void fx_step_stats(); }
-// start of every pass (interp.cpp, per-frame function): the halfway values only live until the
-// logic pass has been painted (the painter runs after the per-frame function, before the next one)
+// start of every pass (interp.cpp, per-frame function): the blended values only live until the
+// pass has been painted (the painter runs after the per-frame function, before the next one). What
+// was blended is kept for the pass: a blended hold pass applies it again at its fraction.
 namespace interp {
 void light_trace_flush();
 void fx_pass_start() {
     light_trace_flush();
     g_passes++;
-    ptcl_restore();
+    for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
+    g_ptcl_keep = std::move(g_ptcl_applied);
+    g_ptcl_applied.clear();
+    g_wave_keep = 0;
     wave_restore();
     temp_restore();
+}
+// blended hold pass (after fx_pass_start and the save-state service, which want the exact values):
+// particles, wave crests, sprites, sway and bush animations at this pass's fraction. (Values that
+// drawing computes - sea grid, material animations, cloth, models, camera - are blended by their
+// hooks while the pass draws.)
+void fx_hold_blend(float t) {
+    if (on(1)) ptcl_reapply(t);
+    wave_reapply(t);
+    temp_reapply(t);
 }
 }  // namespace interp
 
 // dScnPly_Draw: start of drawing on every pass
 extern "C" void hook_025AF8A0(Cpu* c) {
-    ptcl_restore();  // (already done at the pass start)
+    // (already done at the pass start; a blended hold pass has its particles re-applied by now)
+    if (!(interp::hold_pass() && !interp::record_pass())) ptcl_restore();
     if (interp::logic_pass()) fx_step_stats();
     f_025AF8A0_orig(c);
 }
@@ -706,35 +823,38 @@ extern "C" void hook_0282167C(Cpu* c) {
     static const float kCut = 600.0f;
     static int tr_born = trace_left(5);
     const uint64_t step = interp::hold_pass_count();
+    const float t = interp::pass_t();
     for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t emtr) {
         auto it = g_ptcl_before.find(p);
         PtclState cur = read_ptcl(p);
         if (it == g_ptcl_before.end() || cur.age != it->second.age + 1.0f) {  // born this step (or a reused slot)
             g_pstats.fresh++;
             if (!on(64)) return;
-            // drawn as if born half a step earlier: back by half its own first step and half the
-            // emitter's movement since its last calc
+            // drawn as if born (1-t) of a step earlier: back by that much of its own first step and
+            // of the emitter's movement since its last calc (half a step at 60 fps)
             auto e = g_emtr.find(emtr);
             if (e == g_emtr.end() || e->second.step != step) return;
             const EmtrRec& er = e->second;
             bool moved = er.prev_step + 1 == step;
-            float d[3], d2 = 0;
+            float full[3], d2 = 0;
             for (int i = 0; i < 3; i++) {
-                d[i] = 0.5f * (wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * i)) * er.scale[i] + (moved ? er.now[i] - er.prev[i] : 0.0f));
-                d2 += d[i] * d[i];
+                full[i] = wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * i)) * er.scale[i] + (moved ? er.now[i] - er.prev[i] : 0.0f);
+                float d = 0.5f * full[i];  // (the gate below as at 60 fps, on half a step)
+                d2 += d * d;
             }
             if (!(d2 > 1e-8f && d2 < kCut * kCut / 4)) return;
+            Applied ap{p};
+            memcpy(ap.w, cur.w, sizeof ap.w);
+            memcpy(ap.born, full, sizeof full);
+            ap.is_born = true;
             uint32_t mid[kPW];
-            memcpy(mid, cur.w, sizeof mid);
-            for (int i = 0; i < 3; i++) mid[kWPos + i] = fw(wf(cur.w[kWPos + i]) - d[i]);
+            ptcl_mid(ap, t, mid);
             if (tr_born && d2 > 0.01f) {
                 tr_born--;
                 LOG("[interp-fx] particle born at %.2f %.2f %.2f, drawn halfway at %.2f %.2f %.2f (emitter moved %.2f %.2f %.2f)",
                     wf(cur.w[0]), wf(cur.w[1]), wf(cur.w[2]), wf(mid[0]), wf(mid[1]), wf(mid[2]), moved ? er.now[0] - er.prev[0] : 0.0f,
                     moved ? er.now[1] - er.prev[1] : 0.0f, moved ? er.now[2] - er.prev[2] : 0.0f);
             }
-            Applied ap{p};
-            memcpy(ap.w, cur.w, sizeof ap.w);
             g_ptcl_applied.push_back(ap);
             write_ptcl(p, mid);
             g_pstats.born++;
@@ -745,10 +865,13 @@ extern "C" void hook_0282167C(Cpu* c) {
         for (int i = 0; i < 3; i++) d2 += (wf(a.w[i]) - wf(cur.w[i])) * (wf(a.w[i]) - wf(cur.w[i]));
         if (!(d2 <= kCut * kCut)) return;  // teleported with its emitter
         uint32_t mid[kPW];
-        mid_ptcl(a.w, cur.w, mid, on(128));
+        mid_ptcl(a.w, cur.w, mid, on(128), t);
         if (!memcmp(mid, cur.w, sizeof mid)) return;
         Applied ap{p};
         memcpy(ap.w, cur.w, sizeof ap.w);
+        memcpy(ap.a, a.w, sizeof ap.a);
+        ap.is_born = false;
+        ap.extras = on(128);
         g_ptcl_applied.push_back(ap);
         write_ptcl(p, mid);
         g_pstats.blended++;
@@ -791,7 +914,7 @@ extern "C" void hook_027DF40C(Cpu* c) {
         return;
     }
     float cur = (float)ldf32(ts);
-    if (interp::hold_pass()) {  // drawn at step N+1: the "before" of the next halfway frame
+    if (interp::record_pass()) {  // drawn at step S+1: the "before" of the next step's blended frames
         AnmRec& r = g_anm[anm];
         r.ts = ts;
         r.frame = cur;
@@ -805,11 +928,11 @@ extern "C" void hook_027DF40C(Cpu* c) {
         f_027DF40C_orig(c);
         return;
     }
-    float mid = anm_mid(it->second.frame, cur, (float)ldf32(ts + 4), (float)ldf32(ts + 8), ld32(ts + 0x10) == kLoopFn);
+    float mid = anm_mid(it->second.frame, cur, (float)ldf32(ts + 4), (float)ldf32(ts + 8), ld32(ts + 0x10) == kLoopFn, interp::pass_t());
     static int tr = trace_left(2);
     if (tr) {
         tr--;
-        LOG("[interp-fx] anim %08X frames %.2f -> %.2f, halfway %.2f (%s)", anm, it->second.frame, cur, mid,
+        LOG("[interp-fx] anim %08X frames %.2f -> %.2f, drawn %.2f (%s)", anm, it->second.frame, cur, mid,
             ld32(ts + 0x10) == kLoopFn ? "loop" : "clamp");
     }
     if (mid == cur) {
@@ -892,8 +1015,8 @@ void plight_pos_hold(uint32_t ts) {
         return;
     }
     auto it = g_plight_pos.find(ts);
-    if (it == g_plight_pos.end() || it->second.step != step || it->second.restored == interp::hold_pass_count()) return;
-    it->second.restored = interp::hold_pass_count();
+    if (it == g_plight_pos.end() || it->second.step != step || it->second.restored == interp::pass_count()) return;
+    it->second.restored = interp::pass_count();  // (once per hold pass)
     for (int i = 0; i < 3; i++) st32(ts + 0x84 + 4 * i, it->second.w[i]);
 }
 }  // namespace
@@ -939,11 +1062,11 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
         for (int k = 0; k < 10 && sp >= 0x10000000; k++) { sp = ld32(sp); if (sp < 0x10000000) break; fprintf(lf, " %08X", ld32(sp + 4)); }
         fprintf(lf, "\n");
     }
-    if (lf && !depth && (c->lr == 0x025616CCu || getenv("WWHD_RND_REGS_ALL")))
+    if (lf && !depth && (c->lr == GC(0x025616CCu) || getenv("WWHD_RND_REGS_ALL")))
         fprintf(lf, "REGS %08X %08X %08X %08X %08X %08X %08X L %08X %08X %08X %08X %08X\n", c->r[24], c->r[26], c->r[27], c->r[28], c->r[29], c->r[30], c->r[31],
                 ld32(c->r[24] + 0x14), ld32(c->r[24] + 0x18), ld32(c->r[24] + 0x1C), ld32(c->r[24] + 0x28), ld32(c->r[24] + 0x2C));
     if (lf && !depth) fprintf(lf, "%llu %d %d %c %08X %08X\n", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(),
-                               (int)interp::in_execute(), fn, c->lr, ld32(0x101FF9D4));
+                               (int)interp::in_execute(), fn, c->lr, ld32(GD(0x101FF9D4)));
     if (!on(8) || interp::in_execute() || depth) {
         orig(c);
         return;
@@ -955,7 +1078,7 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
     uint64_t key = rnd_key(c, fn);
     if (interp::fx_hold_anim()) {
         RndRec& h = g_rnd_hold;
-        if (h.frame != interp::hold_pass_count()) h.frame = interp::hold_pass_count(), h.next.clear();
+        if (h.frame != interp::pass_count()) h.frame = interp::pass_count(), h.next.clear();  // (call counts per pass)
         uint32_t i = h.next[key]++;
         auto it = g_rnd_logic.vals.find(key);
         bool hit = it != g_rnd_logic.vals.end() && i < it->second.size();
@@ -969,10 +1092,10 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
         uint32_t seeds[3];
         bool keep = true60::enabled();
         if (keep)
-            for (int k = 0; k < 3; k++) seeds[k] = ld32(0x101FF9D4 + 4 * k);
+            for (int k = 0; k < 3; k++) seeds[k] = ld32(GD(0x101FF9D4) + 4 * k);
         orig(c);
         if (keep)
-            for (int k = 0; k < 3; k++) st32(0x101FF9D4 + 4 * k, seeds[k]);
+            for (int k = 0; k < 3; k++) st32(GD(0x101FF9D4) + 4 * k, seeds[k]);
         return;
     }
     RndRec& r = g_rnd_logic;
@@ -998,7 +1121,7 @@ extern "C" void hook_0246C5E8(Cpu* c) {
     }
     uint32_t* h = (uint32_t*)ppc_ptr(tab);
     float min_x = (float)ldf32(pk + kSeaMinX), min_z = (float)ldf32(pk + kSeaMinZ);
-    if (interp::hold_pass()) {
+    if (interp::record_pass()) {
         g_sea.packet = pk;
         g_sea.pass = interp::hold_pass_count();
         g_sea.min_x = min_x;
@@ -1012,17 +1135,18 @@ extern "C" void hook_0246C5E8(Cpu* c) {
         f_0246C5E8_orig(c);
         return;
     }
+    const float t = interp::pass_t();
     std::vector<uint32_t> exact(h, h + kSeaCells);
-    for (int i = 0; i < kSeaCells; i++) h[i] = fw(0.5f * (wf(g_sea.h[i]) + wf(exact[i])));
-    stf32(pk + kSeaMinX, 0.5f * (min_x + g_sea.min_x));
-    stf32(pk + kSeaMinZ, 0.5f * (min_z + g_sea.min_z));
+    for (int i = 0; i < kSeaCells; i++) h[i] = fw(lerp_f(wf(g_sea.h[i]), wf(exact[i]), t));
+    stf32(pk + kSeaMinX, t == 0.5f ? 0.5f * (min_x + g_sea.min_x) : lerp_f(g_sea.min_x, min_x, t));
+    stf32(pk + kSeaMinZ, t == 0.5f ? 0.5f * (min_z + g_sea.min_z) : lerp_f(g_sea.min_z, min_z, t));
     static int tr = trace_left(1);
     if (tr) {
         tr--;
         int k = 0;  // the vertex that moved most
         for (int i = 1; i < kSeaCells; i++)
             if (std::fabs(wf(exact[i]) - wf(g_sea.h[i])) > std::fabs(wf(exact[k]) - wf(g_sea.h[k]))) k = i;
-        LOG("[interp-fx] sea vertex %d,%d height %.3f -> %.3f, halfway %.3f; origin x %.1f -> %.1f", k % 65, k / 65, wf(g_sea.h[k]), wf(exact[k]),
+        LOG("[interp-fx] sea vertex %d,%d height %.3f -> %.3f, drawn %.3f; origin x %.1f -> %.1f", k % 65, k / 65, wf(g_sea.h[k]), wf(exact[k]),
             wf(h[k]), g_sea.min_x, min_x);
     }
     f_0246C5E8_orig(c);
@@ -1055,14 +1179,14 @@ extern "C" void hook_0246BD4C(Cpu* c) {
     }
 }
 
-// PSMTXTrans(m, x, y, z): the sea's scroll translation, half a step back on halfway frames
+// PSMTXTrans(m, x, y, z): the sea's scroll translation, (1-t) of a step back on blended frames
 extern "C" void hook_028E93CC(Cpu* c) {
-    if (g_sea_scroll_half && c->lr == 0x0246C958) {
+    if (g_sea_scroll_half && c->lr == GC(0x0246C958)) {
         static int tr = trace_left(3);
-        double y = c->f[2].ps0 - 0.5 / 300.0;
+        double y = c->f[2].ps0 - (1.0 - (double)interp::pass_t()) / 300.0;  // (0.5 / 300 at 60 fps)
         if (tr) {
             tr--;
-            LOG("[interp-fx] sea scroll %.5f, halfway %.5f", c->f[2].ps0, y);
+            LOG("[interp-fx] sea scroll %.5f, drawn %.5f", c->f[2].ps0, y);
         }
         c->f[2].ps0 = y;
     }
@@ -1111,7 +1235,7 @@ extern "C" void hook_024EC1C8(Cpu* c) {
         return;
     }
     const uint32_t fc = morf + kMorfFrameCtrl;
-    if (interp::hold_pass()) {  // half pass: exact; remembered for the next full pass
+    if (interp::record_pass()) {  // half pass: exact; remembered for the next full pass
         AttRec& r = g_att[self];
         for (int i = 0; i < 3; i++) r.pos[i] = (float)ldf32(pos + 4 * i);
         r.frame = (float)ldf32(fc + 4);
@@ -1129,13 +1253,13 @@ extern "C" void hook_024EC1C8(Cpu* c) {
     float d2 = 0, mp[3];
     for (int i = 0; i < 3; i++) {
         float cur = (float)ldf32(pos + 4 * i);
-        mp[i] = valid ? 0.5f * (it->second.pos[i] + cur) : cur;
+        mp[i] = valid ? lerp_f(it->second.pos[i], cur, interp::pass_t()) : cur;
         d2 += (mp[i] - cur) * (mp[i] - cur);
     }
     if (!(d2 < 200.0f * 200.0f)) for (int i = 0; i < 3; i++) mp[i] = (float)ldf32(pos + 4 * i);  // new target
     for (int i = 0; i < 3; i++) stf32(mid_pos + 4 * i, mp[i]);
     float frame = (float)ldf32(fc + 4);
-    float mf = valid ? anm_mid(it->second.frame, frame, (float)(int16_t)ld16(fc + 8), (float)(int16_t)ld16(fc + 0xA), true) : frame;
+    float mf = valid ? anm_mid(it->second.frame, frame, (float)(int16_t)ld16(fc + 8), (float)(int16_t)ld16(fc + 0xA), true, interp::pass_t()) : frame;
     static int tr = trace_left(6);
     if (tr) {
         tr--;
@@ -1156,10 +1280,13 @@ namespace interp {
 void fx_ss_reset() {
     g_ptcl_before.clear();
     g_ptcl_applied.clear();
+    g_ptcl_keep.clear();
     g_emtr.clear();
     g_anm.clear();
     g_temp.clear();
+    g_temp_keep.clear();
     g_wave.pkt = 0;
+    g_wave_keep = 0;
     g_wave_pkt = 0;
     g_cloth_cur.clear();
     g_att.clear();

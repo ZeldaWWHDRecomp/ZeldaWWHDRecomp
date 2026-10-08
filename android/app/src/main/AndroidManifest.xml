@@ -20,6 +20,12 @@
         android:isGame="true"
         android:appCategory="game"
         android:hardwareAccelerated="true">
+        <provider android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.crashlogs"
+            android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/crash_share_paths" />
+        </provider>
         <!-- lets simpleperf (NDK) profile the release build from adb shell -->
         <profileable android:shell="true" />
 

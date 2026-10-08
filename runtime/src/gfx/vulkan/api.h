@@ -6,6 +6,7 @@
 #include <string>
 
 namespace gfxvk {
+void peek_z(const uint32_t*, uint32_t);
 void init();                     // SDL host: windows + device; AppKit host: see init_appkit
 void run_main_loop();            // SDL host only (the AppKit host runs [NSApp run])
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr,
@@ -24,6 +25,7 @@ void invalidate(uint32_t flags, uint32_t addr, uint32_t size);
 void flush();                    // drain: submit and wait (readbacks, tools)
 void flush_async();              // GX2Flush: submit without waiting
 void wait_idle();
+void write_back_linear_targets();  // GX2DrawDone: linear render targets to guest memory (surfaces.cpp)
 uint64_t frame_count();
 void request_tv_dump(const std::string& path, int frames_ahead);
 void request_capture();

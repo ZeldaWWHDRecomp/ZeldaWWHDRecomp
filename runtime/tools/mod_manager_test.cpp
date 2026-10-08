@@ -22,6 +22,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
+static bool move_on = false;
+bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
+float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
+uint32_t move_speed_button() { return 0x40000; } void set_move_speed_button(uint32_t) {}
+
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
@@ -45,7 +50,7 @@ int main() {
     env("WWHD_NO_HOST_INPUT",nullptr);
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
-    assert(entries().size()==6);
+    assert(entries().size()==7);
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     preferences["mod.wall-climb.enabled"]="1";
     preferences["mod.quick-doors.enabled"]="invalid";
@@ -59,7 +64,8 @@ int main() {
     assert(set_enabled("quick-doors",true));assert(state[4]);
     assert(preferences["mod.quick-doors.enabled"]=="1");
     int prior=writes;assert(!set_enabled("unknown",true));assert(writes==prior);
-    disable_all();for(bool on:state) assert(!on);
+    assert(set_enabled("move-speed",true));assert(mods::move_speed());
+    disable_all();for(bool on:state) assert(!on);assert(!mods::move_speed());
     for(const auto& entry:entries()) assert(preferences[std::string("mod.")+entry.id+".enabled"]=="0");
     // Test isolation protects player settings even when toggles are exercised.
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);

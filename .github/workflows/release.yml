@@ -82,6 +82,7 @@ jobs:
         run: |
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/recomp/test_builds.py
 
       - name: Package
         run: |
@@ -205,6 +206,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/recomp/test_builds.py
 
       - name: Package
         run: |
@@ -305,11 +307,23 @@ jobs:
           ctest --test-dir build/rel --output-on-failure
           python tools/installer/test_setup.py
 
+      - name: Pinned embeddable Python, shipped in the release (tools/installer/toolchains.json)
+        # the setup runs with it (tools/python); the release itself downloads no Python (issue #58)
+        run: |
+          read -r URL SUM < <(python -c "
+          import json; p=json.load(open('tools/installer/toolchains.json'))['python']['windows']
+          print(p['url'], p['sha256'])" | tr -d '\r')
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          curl -fsSL -o "$T/python-embed.zip" "$URL"
+          echo "$SUM  $T/python-embed.zip" | sha256sum -c -
+          echo "WIN_PY_ZIP=$T/python-embed.zip" >> "$GITHUB_ENV"
+
       - name: Package
         run: |
           W="$(cygpath -m "$PWD")"  # native Windows Python cannot open /d/a/... paths
           python tools/release/package.py --build build/rel --platform windows-x86_64 --version "$VERSION" \
             --out dist --toolchain llvm-mingw-20260922 --setup-gui build/rel/wwhd-setup.exe \
+            --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
             --license "Vulkan-Headers (Apache-2.0)=$VULKAN_DIR/LICENSE.md" \
@@ -321,18 +335,61 @@ jobs:
       - name: Guard (no game code, game files or keys)
         run: python tools/release/guard.py dist/*.zip
 
-      - name: Installer self-test (unzipped release, placeholder code, Python and toolchain download)
+      - name: Unzip the release for the installer self-test
         shell: pwsh
         run: |
           $unz = Join-Path $env:RUNNER_TEMP 'unz'
           New-Item -ItemType Directory -Force -Path $unz | Out-Null
           Expand-Archive -Path (Get-ChildItem dist\*.zip).FullName -DestinationPath $unz
           $pkg = (Get-ChildItem $unz -Directory)[0].FullName
-          $data = Join-Path $env:RUNNER_TEMP 'data'
-          $env:WWHD_DATA_DIR = $data
-          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pkg\tools\installer\bootstrap-windows.ps1" `
-            --yes --no-launch --gen-dir "$env:GITHUB_WORKSPACE\build\gen-stub" --data-dir $data
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "WWHD_PKG=$pkg" >> $env:GITHUB_ENV
+          "WWHD_DATA_DIR=$(Join-Path $env:RUNNER_TEMP 'data')" >> $env:GITHUB_ENV
+          # no script host in the Windows release (antivirus false positives, issue #58)
+          if (Get-ChildItem $pkg -Recurse -Include *.ps1, *.vbs, *.js, *.hta) { throw "a script file is in the release" }
+          $bytes = [IO.File]::ReadAllBytes((Join-Path $pkg 'Wind Waker HD.exe'))
+          foreach ($enc in [Text.Encoding]::ASCII, [Text.Encoding]::Unicode) {
+            foreach ($word in 'powershell', 'ExecutionPolicy', 'Unblock-File') {
+              if ($enc.GetString($bytes).IndexOf($word, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Wind Waker HD.exe contains '$word'" }
+            }
+          }
+          # no download code: no network library among its imports (import names are ASCII)
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($dll in 'winhttp.dll', 'wininet.dll', 'urlmon.dll', 'ws2_32.dll', 'bcrypt.dll') {
+            if ($ascii.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Wind Waker HD.exe imports $dll" }
+          }
+          # the bundled Python is the official one, unmodified: its programs and DLLs keep the PSF signature
+          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python313.dll') {
+            $sig = Get-AuthenticodeSignature (Join-Path $pkg "tools\python\$f")
+            "tools\python\$f`: $($sig.Status), $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
+              throw "tools\python\$f does not carry a valid PSF signature"
+            }
+          }
+          # version information, a manifest and no debug sections (cmake/WindowsResources.cmake, WWHD_STRIP_RELEASE)
+          foreach ($f in 'Wind Waker HD.exe', 'tools\bin\wwhd-extract.exe') {
+            $p = Join-Path $pkg $f
+            $vi = (Get-Item $p).VersionInfo
+            if ($vi.ProductName -ne 'Wind Waker HD Recomp' -or $vi.CompanyName -ne 'ZeldaWWHDRecomp') { throw "$f has no version information" }
+            "$f`: $($vi.FileDescription), $($vi.ProductVersion), $($vi.OriginalFilename)"
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($p))
+            if ($text.IndexOf('.debug_info') -ge 0) { throw "$f still has debug sections" }
+            if ($text.IndexOf('requestedExecutionLevel') -lt 0) { throw "$f has no application manifest" }
+          }
+
+      - name: Installer self-test, setup in a console window (bundled Python, toolchain download)
+        # the .bat as a player starts it (it runs "Wind Waker HD.exe --console-setup"); no input
+        shell: cmd
+        run: |
+          call "%WWHD_PKG%\tools\Setup in a console window.bat" --yes --no-launch --gen-dir "%GITHUB_WORKSPACE%\build\gen-stub" --data-dir "%WWHD_DATA_DIR%" < NUL
+          if errorlevel 1 exit /b 1
+
+      - name: Installer self-test (unzipped release, placeholder code)
+        shell: pwsh
+        run: |
+          $pkg = $env:WWHD_PKG
+          $data = $env:WWHD_DATA_DIR
+          if (Test-Path (Join-Path $data 'python')) { throw "the setup downloaded a Python (it should use tools\python)" }
+          if (-not (Test-Path (Join-Path $data 'install.json'))) { throw "the console setup did not finish" }
           $exe = Join-Path $data 'bin\wwhd.exe'
           if (-not (Test-Path (Join-Path $data 'bin\SDL3.dll'))) { throw "SDL3.dll was not installed" }
           # no game files: the executable must start and stop with "cannot load ..." (abort() may leave
@@ -349,12 +406,55 @@ jobs:
           $null = $g.Handle  # keeps the process handle so ExitCode is available after it exits
           if (-not $g.WaitForExit(600000)) { $g.Kill(); throw "the setup program did not finish its self-test" }
           if ($g.ExitCode -ne 0) { throw "setup program self-test failed ($($g.ExitCode))" }
+          # the window on a fresh data folder: setup.py starts with the bundled Python, nothing is downloaded
+          $env:WWHD_DATA_DIR = Join-Path $env:RUNNER_TEMP 'data-gui'
+          $g = Start-Process -FilePath (Join-Path $pkg 'Wind Waker HD.exe') `
+            -ArgumentList '--self-test', '--data-dir', $env:WWHD_DATA_DIR -PassThru
+          $null = $g.Handle
+          if (-not $g.WaitForExit(600000)) { $g.Kill(); throw "the setup program did not finish its self-test (fresh data folder)" }
+          if ($g.ExitCode -ne 0) { throw "setup program self-test on a fresh data folder failed ($($g.ExitCode))" }
+          if (Test-Path (Join-Path $env:WWHD_DATA_DIR 'python')) { throw "the window downloaded a Python" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows-x86_64
           path: dist/*.zip
           if-no-files-found: error
+
+  # Uploads every release zip and the Windows "Wind Waker HD.exe" to VirusTotal and writes the results to the
+  # job summary and vt-report.json; on a published release the vt-notes job adds them to the release. It never
+  # fails the release; the publish job does not wait for it. Without the VT_API_KEY secret it only says so.
+  virustotal:
+    needs: [version, macos, linux, windows]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      VT_API_KEY: ${{ secrets.VT_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: VirusTotal scan (monitor only)
+        continue-on-error: true
+        run: |
+          if [ -n "$VT_API_KEY" ]; then echo "::add-mask::$VT_API_KEY"; fi
+          files=(dist/*.zip)
+          for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
+          python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: vt-report
+          path: vt-report.json
+          if-no-files-found: ignore
 
   publish:
     needs: [version, macos, linux, windows]
@@ -394,3 +494,32 @@ jobs:
         run: |
           gh release create "$VERSION" dist/*.zip dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
             --verify-tag
+
+  # Published releases: append the VirusTotal links and counts to the release notes and attach vt-report.json.
+  # Runs after both publish and the scan; any failure only leaves the release without the section.
+  vt-notes:
+    needs: [version, virustotal, publish]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vt-report
+          path: vt
+
+      - name: Add the VirusTotal section to the release
+        run: |
+          section="$(python3 tools/release/virustotal.py --render-notes vt/vt-report.json)"
+          if [ -z "$section" ]; then echo "no VirusTotal results: release unchanged"; exit 0; fi
+          gh release view "$VERSION" --json body -q .body > notes.md
+          printf '\n%s' "$section" >> notes.md
+          gh release edit "$VERSION" --notes-file notes.md
+          gh release upload "$VERSION" vt/vt-report.json --clobber

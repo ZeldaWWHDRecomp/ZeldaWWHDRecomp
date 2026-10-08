@@ -1,3 +1,4 @@
+#include "mods/mods.h"
 // Libraries the game uses for system integration and online features.
 // Online services (Miiverse, SpotPass, accounts) report "unavailable".
 #include "../crashrec.h"
@@ -106,9 +107,12 @@ HLE(vpad, VPADRead) {
         p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
     }
     last_p = p;
+    if (!input::pro_controller()) mods::move_speed_input(p.buttons);
     if (input::pro_controller()) {  // GamePad on the table: screen and touch only
         p.buttons = 0;
         p.lx = p.ly = p.rx = p.ry = 0;
+    } else if (!repeat) {
+        motion::right_stick(p.rx, p.ry);  // the game ignores the gyro while it is pushed (gyro diagnostics)
     }
     uint32_t hold = p.buttons;
     auto stick_dirs = [&](float x, float y, uint32_t up, uint32_t down, uint32_t left, uint32_t right) {

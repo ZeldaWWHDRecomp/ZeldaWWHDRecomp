@@ -20,6 +20,16 @@ Non-interactive use (tests, scripts):
   setup.py --yes --archive GAME.wua [...]
   setup.py --yes --game-dir EXTRACTED_GAME [...]
   setup.py --yes --gen-dir GENERATED_C --no-launch   (build check with placeholder code, no game)
+  setup.py --yes --language-source EUR_OR_JPN.wux|.wua|FOLDER [--language-disc-key FILE] --common-key FILE
+                                                     (experimental: text in German, Italian, Japanese... from
+                                                     your own European or Japanese game; see below)
+  setup.py --remove-language-source EU|JP
+
+Language sources (experimental, docs/language-packs.md): the USA game plays with the text, fonts and
+2D layouts of a European or Japanese copy of the game you also own. Only those language files are
+taken from it (content/Common/Pack/permanent_2d_*.pack, about 12 MB each) into data/game-lang/<EU|JP>;
+the game itself is still built from the USA game. Its languages then appear in the game's settings
+(Language). Tested with the European game; untested with the Japanese game so far.
 Keys can also come from the WIIU_COMMON_KEY environment variable / IMAGE.key next to the image.
 Keys are never printed, logged or stored.
 """
@@ -60,16 +70,26 @@ TITLE_IDS = {
     "0005000010143600": "Europe",
     "0005000010143400": "Japan",
 }
-SUPPORTED_TITLE = "0005000010143500"
+# The builds of the game the port can be made from (tools/recomp/builds.py): the USA build is the
+# canonical one, every other is translated through its own address map (tools/recomp/builds/*.json).
+sys.path.insert(0, os.path.join(PKG, "tools", "recomp"))
+import builds as game_builds  # noqa: E402
+SUPPORTED_BUILDS = {b.title_id: b for b in game_builds.all_builds()}
+SUPPORTED_TITLE = game_builds.canonical_build().title_id
 # The translated code (tools/recomp, the hooks in tools/recomp/hooks*.txt, the runtime) is made for
-# the code of this version of the game: version 0, the disc and eShop release. Its update
-# (0005000E-10143500) brings other code, and its data files go with that code.
+# the code of version 0 of the game: the disc and eShop release. An update (0005000E-...) brings
+# other code, and its data files go with that code.
 SUPPORTED_VERSION = 0
-# SHA-256 of code/cking.rpx of that version (The Wind Waker HD, USA, 00050000-10143500, v0). A checksum
-# only: it identifies the file the port is built for and contains nothing of it (64 hex digits;
-# tools/release/guard.py flags only 32-digit, key-shaped strings). Every source is checked against
-# it before the code is translated (check_game_version).
-SUPPORTED_RPX_SHA256 = "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153"
+# Every build is identified by the SHA-256 of its code/cking.rpx (builds.py). A checksum only: it
+# identifies the file the port is built from and contains nothing of it (64 hex digits;
+# tools/release/guard.py flags only 32-digit, key-shaped strings). Every source is checked before
+# the code is translated (check_game_version).
+SUPPORTED_RPX_SHA256 = game_builds.canonical_build().sha256
+
+
+def supported_titles_text():
+    return " or ".join("%s-%s (%s)" % (b.title_id[:8].upper(), b.title_id[8:].upper(), b.name)
+                       for b in SUPPORTED_BUILDS.values())
 
 EXTRACT_ERRORS = {
     3: "disc_key_bad",
@@ -284,19 +304,7 @@ def native_dialog(title, folder, filetypes):
             out = p.stdout.decode("utf-8").strip()
             return out.rstrip("/") if p.returncode == 0 and out else None
         if IS_WIN:
-            if folder:
-                ps = ("Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog;"
-                      "$d.Description='%s'; if($d.ShowDialog() -eq 'OK'){$d.SelectedPath}" % title.replace("'", "''"))
-            else:
-                flt = "|".join("%s|%s" % (n, p) for n, p in (filetypes or [])) + ("|" if filetypes else "") + "All files (*.*)|*.*"
-                ps = ("Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog;"
-                      "$d.Title='%s'; $d.Filter='%s'; if($d.ShowDialog() -eq 'OK'){$d.FileName}" %
-                      (title.replace("'", "''"), flt))
-            ps = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + ps
-            p = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL)
-            out = p.stdout.decode("utf-8", "replace").strip()
-            return out if p.returncode == 0 and out else None
+            return win_folder_dialog(title) if folder else win_file_dialog(title, filetypes)
         if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
             return None
         if shutil.which("zenity"):
@@ -311,6 +319,128 @@ def native_dialog(title, folder, filetypes):
         return out if p.returncode == 0 and out else None
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Windows: dialogs and shortcuts through the Windows API (ctypes)
+
+
+def _win_com():
+    import ctypes
+    ctypes.windll.ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED (dialogs and shell objects need STA)
+    return ctypes
+
+
+def win_file_dialog(title, filetypes):
+    """The standard Open dialog (GetOpenFileNameW). Returns the chosen file or None."""
+    ctypes = _win_com()
+    from ctypes import wintypes
+
+    class OPENFILENAMEW(ctypes.Structure):
+        _fields_ = [("lStructSize", wintypes.DWORD), ("hwndOwner", wintypes.HWND), ("hInstance", wintypes.HINSTANCE),
+                    ("lpstrFilter", wintypes.LPCWSTR), ("lpstrCustomFilter", wintypes.LPWSTR),
+                    ("nMaxCustFilter", wintypes.DWORD), ("nFilterIndex", wintypes.DWORD), ("lpstrFile", wintypes.LPWSTR),
+                    ("nMaxFile", wintypes.DWORD), ("lpstrFileTitle", wintypes.LPWSTR), ("nMaxFileTitle", wintypes.DWORD),
+                    ("lpstrInitialDir", wintypes.LPCWSTR), ("lpstrTitle", wintypes.LPCWSTR), ("Flags", wintypes.DWORD),
+                    ("nFileOffset", wintypes.WORD), ("nFileExtension", wintypes.WORD), ("lpstrDefExt", wintypes.LPCWSTR),
+                    ("lCustData", wintypes.LPARAM), ("lpfnHook", ctypes.c_void_p), ("lpTemplateName", wintypes.LPCWSTR),
+                    ("pvReserved", ctypes.c_void_p), ("dwReserved", wintypes.DWORD), ("FlagsEx", wintypes.DWORD)]
+
+    # "name\0pattern\0...\0\0", the same filters the dialog had before ("All files" last)
+    flt = ctypes.create_unicode_buffer("".join("%s\0%s\0" % (n, p) for n, p in (filetypes or [])) +
+                                       "All files (*.*)\0*.*\0\0")
+    buf = ctypes.create_unicode_buffer(32768)
+    ofn = OPENFILENAMEW()
+    ofn.lStructSize = ctypes.sizeof(OPENFILENAMEW)
+    ofn.lpstrFilter = ctypes.cast(flt, wintypes.LPCWSTR)
+    ofn.nFilterIndex = 1
+    ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
+    ofn.nMaxFile = len(buf)
+    ofn.lpstrTitle = title
+    ofn.Flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00000008  # EXPLORER | FILEMUSTEXIST | PATHMUSTEXIST | NOCHANGEDIR
+    get = ctypes.windll.comdlg32.GetOpenFileNameW
+    get.argtypes = [ctypes.POINTER(OPENFILENAMEW)]
+    get.restype = wintypes.BOOL
+    return buf.value if get(ctypes.byref(ofn)) and buf.value else None
+
+
+def win_folder_dialog(title):
+    """The standard folder picker (SHBrowseForFolderW). Returns the chosen folder or None."""
+    ctypes = _win_com()
+    from ctypes import wintypes
+
+    class BROWSEINFOW(ctypes.Structure):
+        _fields_ = [("hwndOwner", wintypes.HWND), ("pidlRoot", ctypes.c_void_p), ("pszDisplayName", wintypes.LPWSTR),
+                    ("lpszTitle", wintypes.LPCWSTR), ("ulFlags", wintypes.UINT), ("lpfn", ctypes.c_void_p),
+                    ("lParam", wintypes.LPARAM), ("iImage", ctypes.c_int)]
+
+    shell32 = ctypes.windll.shell32
+    shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BROWSEINFOW)]
+    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+    shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
+    shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+    ctypes.windll.ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    name = ctypes.create_unicode_buffer(260)
+    bi = BROWSEINFOW()
+    bi.pszDisplayName = ctypes.cast(name, wintypes.LPWSTR)
+    bi.lpszTitle = title
+    bi.ulFlags = 0x0001 | 0x0040  # BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE (resizable, "Make New Folder")
+    pidl = shell32.SHBrowseForFolderW(ctypes.byref(bi))
+    if not pidl:
+        return None
+    path = ctypes.create_unicode_buffer(32768)
+    ok = shell32.SHGetPathFromIDListW(pidl, path)
+    ctypes.windll.ole32.CoTaskMemFree(pidl)
+    return path.value if ok and path.value else None
+
+
+def win_known_folder(csidl):
+    """A shell folder (SHGetFolderPathW): 0x02 the Start menu's Programs, 0x10 the Desktop."""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(32768)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) != 0 or not buf.value:
+        raise OSError("SHGetFolderPathW(0x%x) failed" % csidl)
+    return buf.value
+
+
+def win_shortcut(link, target, arguments="", workdir="", icon=""):
+    """Writes a Windows shortcut (.lnk) with the shell's ShellLink object (IShellLinkW + IPersistFile)."""
+    ctypes = _win_com()
+    import uuid
+    from ctypes import wintypes
+
+    def guid(s):
+        return (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(s).bytes_le)
+
+    def method(obj, index, *argtypes):  # a COM method by its vtable slot; HRESULT failures raise OSError
+        vtbl = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+        return lambda *a: ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, *argtypes)(vtbl[index])(obj, *a)
+
+    def release(obj):
+        vtbl = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+        ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])(obj)
+
+    clsid_shell_link = guid("00021401-0000-0000-c000-000000000046")
+    iid_shell_link_w = guid("000214f9-0000-0000-c000-000000000046")
+    iid_persist_file = guid("0000010b-0000-0000-c000-000000000046")
+    create = ctypes.windll.ole32.CoCreateInstance
+    create.restype = ctypes.HRESULT
+    sl, pf = ctypes.c_void_p(), ctypes.c_void_p()
+    create(ctypes.byref(clsid_shell_link), None, 1, ctypes.byref(iid_shell_link_w), ctypes.byref(sl))  # INPROC_SERVER
+    try:
+        method(sl, 20, wintypes.LPCWSTR)(target)                     # IShellLinkW::SetPath
+        method(sl, 11, wintypes.LPCWSTR)(arguments)                  # SetArguments
+        method(sl, 9, wintypes.LPCWSTR)(workdir)                     # SetWorkingDirectory
+        if icon:
+            method(sl, 17, wintypes.LPCWSTR, ctypes.c_int)(icon, 0)  # SetIconLocation
+        method(sl, 0, ctypes.c_void_p, ctypes.c_void_p)(ctypes.byref(iid_persist_file), ctypes.byref(pf))  # QueryInterface
+        try:
+            method(pf, 6, wintypes.LPCWSTR, wintypes.BOOL)(link, True)  # IPersistFile::Save
+        finally:
+            release(pf)
+    finally:
+        release(sl)
+    return link
 
 
 # ---------------------------------------------------------------------------------------------
@@ -546,12 +676,14 @@ def disc_info(image, keys):
 
 
 def check_title(title_id):
-    if title_id != SUPPORTED_TITLE:
-        region = TITLE_IDS.get(title_id)
-        if region:
-            raise SetupError("this is the %s version of The Wind Waker HD (title %s). The port supports the USA "
-                             "version (00050000-10143500) only for now." % (region, title_id))
-        raise SetupError("this disc is not The Wind Waker HD (title id %s)" % title_id)
+    """Raises SetupError unless this is a version of the game the port can be built from."""
+    if title_id in SUPPORTED_BUILDS:
+        return
+    region = TITLE_IDS.get(title_id)
+    if region:
+        raise SetupError("this is the %s version of The Wind Waker HD (title %s). The port can be built from %s."
+                         % (region, title_id, supported_titles_text()))
+    raise SetupError("this disc is not The Wind Waker HD (title id %s)" % title_id)
 
 
 def title_desc(tid, version=None):
@@ -568,11 +700,24 @@ def title_desc(tid, version=None):
     return name + v
 
 
-def archive_info(path):
-    """wwhd-extract info on a Cemu archive, asking for the supported title. Returns (problem, message, info);
+_ANY_SUPPORTED = object()   # archive_info: "whichever supported build the archive holds"
+
+
+def archive_info(path, title=_ANY_SUPPORTED):
+    """wwhd-extract info on a Cemu archive, asking for a title (by default: whichever supported build
+    the archive holds; None: just list them).
+    Returns (problem, message, info);
     info: {"titles": [{id, version, folder, files, bytes}], "selected", "title_id", "version", "files", "bytes"}
     (also for problem "wrong_title": what the archive does contain)."""
-    p = subprocess.run([extractor(), "--title", SUPPORTED_TITLE, "info", path], stdin=subprocess.DEVNULL,
+    if title is _ANY_SUPPORTED:
+        # which build is in there (one pass that only lists), then ask for that one
+        _, _, listed = _archive_info_one(path, None)
+        title = next((t["id"] for t in listed.get("titles", []) if t["id"] in SUPPORTED_BUILDS), SUPPORTED_TITLE)
+    return _archive_info_one(path, title)
+
+
+def _archive_info_one(path, title):
+    p = subprocess.run([extractor()] + (["--title", title] if title else []) + ["info", path], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     err = p.stderr.decode("utf-8", "replace").strip()
     LOG.write("wwhd-extract info (archive): exit %d %s" % (p.returncode, err))
@@ -606,21 +751,22 @@ def archive_choice(info):
                     check_title(t["id"])
                 except SetupError as e:
                     raise SetupError("this archive contains %s" % str(e)[len("this is "):])
-        if any(t["id"] == "0005000e" + SUPPORTED_TITLE[8:] for t in titles):
-            raise SetupError("this archive contains only the update for The Wind Waker HD (USA), not the game itself "
-                             "(title 00050000-10143500). In Cemu, make the archive with the game included "
-                             "(it contains: %s)." % found)
-        raise SetupError("this archive does not contain The Wind Waker HD (USA), title 00050000-10143500 "
-                         "(it contains: %s)." % found)
+        updates = ["0005000e" + t[8:] for t in SUPPORTED_BUILDS]
+        if any(t["id"] in updates for t in titles):
+            raise SetupError("this archive contains only the update for The Wind Waker HD, not the game itself "
+                             "(%s). In Cemu, make the archive with the game included (it contains: %s)."
+                             % (supported_titles_text(), found))
+        raise SetupError("this archive does not contain The Wind Waker HD, %s (it contains: %s)."
+                         % (supported_titles_text(), found))
     version = int(info.get("version", -1))
     if version != SUPPORTED_VERSION:
         raise SetupError("the game in this archive is version %d; the port is built for version %d of The Wind Waker "
-                         "HD (USA), the disc and eShop release (folder %s)." % (version, SUPPORTED_VERSION, info["selected"]))
+                         "HD, the disc and eShop release (folder %s)." % (version, SUPPORTED_VERSION, info["selected"]))
     notes = []
     for t in titles:
         if t["folder"] == info["selected"]:
             continue
-        if t["id"] == "0005000e" + SUPPORTED_TITLE[8:]:
+        if t["id"] in ["0005000e" + x[8:] for x in SUPPORTED_BUILDS]:
             notes.append("Not used: %s (%s). The port is built for the game's own code (version %d); the update "
                          "replaces that code, and its data files belong to the updated code, so the game is set up "
                          "from the base game alone." % (title_desc(t["id"], t["version"]), t["folder"], SUPPORTED_VERSION))
@@ -669,34 +815,37 @@ def file_sha256(path):
 
 GAME_VERSION_FIX = ("Use the game's own files: a disc image (.wud/.wux), a Cemu archive (.wua; setup takes the game from it "
                     "and leaves an update out), or the game's folder exactly as dumped (in Cemu: "
-                    "mlc01/usr/title/00050000/10143500, not the update in 0005000e/10143500), without update files "
-                    "copied over it.")
+                    "mlc01/usr/title/00050000/10143500 for the USA game, 10143600 for the European one; not the "
+                    "update in 0005000e/...), without update files copied over it.")
 
 
 def check_game_version(path):
-    """Raises SetupError unless code/cking.rpx is the one the port is built for (USA, version 0). The
-    translated code and its hooks are made for exactly that file, so this runs before translating."""
+    """The build of the game in `path` (tools/recomp/builds.py), or SetupError if it is not one the
+    port can be built from. The translated code and its hooks are made for exactly those files
+    (version 0 of each region), so this runs before translating."""
     rpx = os.path.join(path, "code", "cking.rpx")
     try:
         digest = file_sha256(rpx)
     except OSError as e:
         raise SetupError("cannot read %s: %s" % (rpx, e))
-    if digest == SUPPORTED_RPX_SHA256:
-        return
+    build = game_builds.by_sha256(digest)
+    if build:
+        return build
     tid, ver = code_title_version(path)
-    update = "0005000e" + SUPPORTED_TITLE[8:]
-    if tid and tid not in (SUPPORTED_TITLE, update):
+    updates = ["0005000e" + t[8:] for t in SUPPORTED_BUILDS]
+    if tid and tid not in SUPPORTED_BUILDS and tid not in updates:
         found = "the game code (code/cking.rpx) is from %s (title %s-%s)" % (title_desc(tid, ver), tid[:8].upper(),
                                                                             tid[8:].upper())
-    elif tid == update or ver:
+    elif tid in updates or ver:
         found = ("the game code (code/cking.rpx) is %s (per the folder's app.xml/meta.xml): this looks like the "
                  "game with an update merged in" % ("version %d of the game" % ver if ver else "from the update"))
     else:
-        found = ("the game code (code/cking.rpx) is not the expected file (SHA-256 %s...): not version 0 of the USA "
-                 "game, or a modified or damaged copy" % digest[:16])
-    LOG.write("cking.rpx SHA-256 %s, expected %s" % (digest, SUPPORTED_RPX_SHA256))
-    raise SetupError("%s. The port needs The Wind Waker HD (USA), title 00050000-10143500, version 0 (the disc or "
-                     "eShop release, without the update). %s" % (found, GAME_VERSION_FIX))
+        found = ("the game code (code/cking.rpx) is not a file the port knows (SHA-256 %s...): not version 0 of "
+                 "the game, or a modified or damaged copy" % digest[:16])
+    LOG.write("cking.rpx SHA-256 %s, known: %s" % (
+        digest, ", ".join("%s %s" % (b.name, b.sha256[:16]) for b in SUPPORTED_BUILDS.values())))
+    raise SetupError("%s. The port needs The Wind Waker HD, %s, version 0 (the disc or eShop release, without the "
+                     "update). %s" % (found, supported_titles_text(), GAME_VERSION_FIX))
 
 
 def valid_game_folder(path):
@@ -774,11 +923,28 @@ def extract_game(image, keys, info, data_dir, title=None):
     need = total + (1 << 30)
     if free_space(data_dir) < need:
         raise SetupError("not enough free disk space in %s: %s needed" % (data_dir, human(need)))
+    run_extract(image, keys, tmp, title)
+    if not valid_game_folder(tmp):
+        raise SetupError("the extracted files are incomplete (no code/cking.rpx)")
+    try:
+        check_game_version(tmp)
+    except SetupError:
+        shutil.rmtree(tmp, ignore_errors=True)  # keeps the game files of an earlier setup
+        raise
+    replace_dir(tmp, dst)
+
+
+def run_extract(image, keys, out, title=None, only=None):
+    """wwhd-extract into out: a disc image (keys) or one title of a Cemu archive (title, no keys);
+    only: path patterns (wwhd-extract --only) to take just those files. Removes out on failure."""
     pr = Progress("extracting")
+    opts = []
+    for pattern in only or []:
+        opts += ["--only", pattern]
     if title:
-        cmd = [extractor(), "--title", title, "--progress", "extract", image, tmp]
+        cmd = [extractor(), "--title", title, "--progress"] + opts + ["extract", image, out]
     else:
-        cmd = [extractor(), "--keys-stdin", "--progress", "extract", image, tmp]
+        cmd = [extractor(), "--keys-stdin", "--progress"] + opts + ["extract", image, out]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     errbuf = []
     t = threading.Thread(target=lambda: errbuf.append(p.stderr.read()))
@@ -803,17 +969,9 @@ def extract_game(image, keys, info, data_dir, title=None):
     err = b"".join(errbuf).decode("utf-8", "replace").strip()
     LOG.write(err)
     if rc != 0:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
         raise SetupError("extracting the game failed: %s" % err)
     pr.done()
-    if not valid_game_folder(tmp):
-        raise SetupError("the extracted files are incomplete (no code/cking.rpx)")
-    try:
-        check_game_version(tmp)
-    except SetupError:
-        shutil.rmtree(tmp, ignore_errors=True)  # keeps the game files of an earlier setup
-        raise
-    replace_dir(tmp, dst)
 
 
 def copy_game_folder(src, data_dir):
@@ -846,6 +1004,225 @@ def replace_dir(new, dst):
         os.replace(dst, old)
     os.replace(new, dst)
     shutil.rmtree(old, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# language sources (experimental; docs/language-packs.md)
+#
+# The USA game code with the text, fonts and localised 2D layouts of the player's own European or
+# Japanese game: the game picks its 2D pack (content/Common/Pack/permanent_2d_<Region><Language>.pack:
+# every message, the fonts and the layouts) by the console language and region, and the runtime can
+# give it the European or Japanese ones (runtime/src/game_languages.h). Only those packs (and the
+# disc's meta.xml, for its title id) are taken from the second game, into data/game-lang/<EU|JP>.
+# The second game's code is never used. Tested with the European game; untested with the Japanese one.
+
+LANGUAGE_SOURCE_TITLES = {"0005000010143600": "EU", "0005000010143400": "JP"}
+LANGUAGE_SOURCE_FILES = ["content/Common/Pack/permanent_2d_*.pack", "meta/meta.xml"]
+# the packs the game knows per region (cking.rpx, 0x1048DD4C) and their languages
+LANGUAGE_PACKS = {
+    "EU": {"permanent_2d_euenglish.pack": "English", "permanent_2d_eufrench.pack": "French",
+           "permanent_2d_eugerman.pack": "German", "permanent_2d_euitalian.pack": "Italian",
+           "permanent_2d_euspanish.pack": "Spanish"},
+    "JP": {"permanent_2d_jpjapanese.pack": "Japanese"},
+}
+LANGUAGE_REGION_NAMES = {"EU": "Europe", "JP": "Japan"}
+LANGUAGE_SOURCE_MANIFEST = "language-source.json"
+
+
+def language_root(data_dir):
+    return os.path.join(data_dir, "game-lang")
+
+
+def language_source_region(title_id):
+    """EU or JP for the title id of a European or Japanese game; SetupError (why it can't be used) otherwise."""
+    tid = (title_id or "").lower()
+    if tid in LANGUAGE_SOURCE_TITLES:
+        return LANGUAGE_SOURCE_TITLES[tid]
+    if tid == SUPPORTED_TITLE:
+        raise SetupError("this is the USA game, whose languages (English, French, Spanish) the port already has. A "
+                         "language source is the European (00050000-10143600) or Japanese (00050000-10143400) game")
+    if tid[:8] in ("0005000e", "0005000c") and ("00050000" + tid[8:]) in TITLE_IDS:
+        raise SetupError("this is %s, not the game itself: a language source is the European or Japanese game "
+                         "(title 00050000-10143600 or 00050000-10143400)" % title_desc(tid))
+    raise SetupError("this is not the European or Japanese version of The Wind Waker HD (title %s); a language source "
+                     "is title 00050000-10143600 (Europe) or 00050000-10143400 (Japan)" % (tid or "unknown"))
+
+
+def find_dir_nocase(base, *parts):
+    """base/part/... matched without case (a disc's spelling on any host); None if a part is missing."""
+    at = base
+    for part in parts:
+        try:
+            names = os.listdir(at)
+        except OSError:
+            return None
+        hit = [n for n in names if n.lower() == part.lower() and os.path.isdir(os.path.join(at, n))]
+        if not hit:
+            return None
+        at = os.path.join(at, sorted(hit)[0])
+    return at
+
+
+def language_files_in(folder):
+    """The language packs in an extracted game folder: [(file name, path)], any case."""
+    pack = find_dir_nocase(folder, "content", "Common", "Pack")
+    if not pack:
+        return []
+    return sorted((n, os.path.join(pack, n)) for n in os.listdir(pack)
+                  if re.match(r"permanent_2d_.*\.pack$", n, re.I) and os.path.isfile(os.path.join(pack, n)))
+
+
+def finish_language_source(tmp, region, title_id, source_name, data_dir):
+    """Checks the packs taken into tmp (an extracted folder), writes its manifest and moves it to
+    data/game-lang/<region>. Returns the manifest."""
+    known = LANGUAGE_PACKS[region]
+    packs, ignored = [], []
+    for name, path in language_files_in(tmp):
+        if name.lower() not in known:
+            ignored.append(name)
+            os.remove(path)  # only the packs the game can load are kept
+            continue
+        with open(path, "rb") as f:
+            head = f.read(4)
+        if head != b"SARC":
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise SetupError("%s is not a language pack (damaged or not from the game)" % name)
+        packs.append({"file": name, "language": known[name.lower()], "bytes": os.path.getsize(path),
+                      "sha256": file_sha256(path)})
+    if not packs:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise SetupError("no language packs (content/Common/Pack/permanent_2d_%s*.pack) were found in this %s game"
+                         % ("Eu" if region == "EU" else "Jp", LANGUAGE_REGION_NAMES[region]))
+    for name in ignored:
+        say("  Not used: %s (the game does not know this pack)" % name)
+    manifest = {"format_version": 1, "region": region, "title_id": title_id, "source": source_name,
+                "packs": packs,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    with open(os.path.join(tmp, LANGUAGE_SOURCE_MANIFEST), "w") as f:
+        json.dump(manifest, f, indent=1)
+    dst = os.path.join(language_root(data_dir), region)
+    replace_dir(tmp, dst)
+    say("  %s game: %s" % (LANGUAGE_REGION_NAMES[region], ", ".join(p["language"] for p in packs)))
+    LOG.write("language source %s from %s: %s" % (region, source_name, ", ".join(p["file"] for p in packs)))
+    return manifest
+
+
+def language_sources(data_dir):
+    """The installed language sources: [manifest] (with "dir")."""
+    out = []
+    root = language_root(data_dir)
+    for region in sorted(LANGUAGE_PACKS):
+        d = os.path.join(root, region)
+        try:
+            with open(os.path.join(d, LANGUAGE_SOURCE_MANIFEST)) as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            continue
+        m["dir"] = d
+        out.append(m)
+    return out
+
+
+def remove_language_source(data_dir, region):
+    region = (region or "").upper()
+    if region not in LANGUAGE_PACKS:
+        raise SetupError("unknown language source %r (EU or JP)" % region)
+    d = os.path.join(language_root(data_dir), region)
+    if not os.path.isdir(d):
+        raise SetupError("there is no %s language source" % LANGUAGE_REGION_NAMES[region])
+    shutil.rmtree(d)
+    return d
+
+
+def installed_build(game_dir):
+    """The build the installed game files are, or None when nothing is installed yet."""
+    try:
+        return game_builds.by_sha256(file_sha256(os.path.join(game_dir, "code", "cking.rpx")))
+    except OSError:
+        return None
+
+
+def check_language_source_allowed(game_dir):
+    """A language source lends the text of a European or Japanese game to the USA game's code
+    (docs/language-packs.md). Only the USA build needs and can use one: the European build has those
+    five languages itself, and the port's region patch (hooks_language.txt) is for the USA code."""
+    build = installed_build(game_dir)
+    if build is None or build.canonical:
+        return
+    raise SetupError("the installed game is the %s build, which has its own languages; a language source is only "
+                     "for the USA build (docs/language-packs.md). Choose the language in the game's settings "
+                     "(F1) > Language instead." % build.name)
+
+
+def add_language_source(source, data_dir, keys=None, info=None, game_dir=None):
+    """Takes the language packs of a European or Japanese game: source ("image", path) with keys and
+    disc info (wwhd-extract info), ("archive", path) or ("folder", path). Returns [manifest] (an archive
+    can hold both)."""
+    kind, path = source
+    check_language_source_allowed(game_dir or os.path.join(data_dir, "game"))
+    root = language_root(data_dir)
+    os.makedirs(root, exist_ok=True)
+    if free_space(root) < (200 << 20):
+        raise SetupError("not enough free disk space in %s: about 200 MB needed" % root)
+    name = os.path.basename(path.rstrip("/\\"))
+    if kind == "image":
+        region = language_source_region(info.get("title_id"))
+        tmp = os.path.join(root, region + ".partial")
+        shutil.rmtree(tmp, ignore_errors=True)
+        run_extract(path, keys, tmp, only=LANGUAGE_SOURCE_FILES)
+        return [finish_language_source(tmp, region, info["title_id"].lower(), name, data_dir)]
+    if kind == "archive":
+        problem, err, ainfo = archive_info(path, title=None)
+        if problem and problem != "wrong_title":
+            raise SetupError("cannot read the archive: %s" % err)
+        titles = [t for t in ainfo.get("titles", []) if t["id"] in LANGUAGE_SOURCE_TITLES]
+        if not titles:
+            found = ", ".join("%s (%s)" % (title_desc(t["id"], t["version"]), t["folder"]) for t in ainfo.get("titles", []))
+            for t in ainfo.get("titles", []):
+                language_source_region(t["id"])  # raises with the reason (the USA game, an update...)
+            raise SetupError("this archive contains no European or Japanese Wind Waker HD (it contains: %s)"
+                             % (found or "no Wii U titles"))
+        out = []
+        for t in titles:
+            region = LANGUAGE_SOURCE_TITLES[t["id"]]
+            tmp = os.path.join(root, region + ".partial")
+            shutil.rmtree(tmp, ignore_errors=True)
+            run_extract(path, None, tmp, title=t["folder"], only=LANGUAGE_SOURCE_FILES)
+            out.append(finish_language_source(tmp, region, t["id"], "%s (%s)" % (name, t["folder"]), data_dir))
+        return out
+    if kind == "folder":
+        folder = path
+        if not os.path.isfile(os.path.join(folder, "meta", "meta.xml")) and \
+                os.path.isfile(os.path.join(os.path.dirname(folder), "meta", "meta.xml")):
+            folder = os.path.dirname(folder)
+        tid = game_folder_title(folder) or code_title_version(folder)[0]
+        region = language_source_region(tid)
+        files = language_files_in(folder)
+        tmp = os.path.join(root, region + ".partial")
+        shutil.rmtree(tmp, ignore_errors=True)
+        dst = os.path.join(tmp, "content", "Common", "Pack")
+        os.makedirs(dst)
+        os.makedirs(os.path.join(tmp, "meta"))
+        shutil.copyfile(os.path.join(folder, "meta", "meta.xml"), os.path.join(tmp, "meta", "meta.xml"))
+        total = sum(os.path.getsize(p) for _, p in files) or 1
+        pr, done = Progress("copying"), 0
+        for n, p in files:
+            shutil.copyfile(p, os.path.join(dst, n))
+            done += os.path.getsize(p)
+            pr.update(done, total, "%s of %s" % (human(done), human(total)))
+        pr.done()
+        return [finish_language_source(tmp, region, tid, name, data_dir)]
+    raise SetupError("unknown language source kind %r" % kind)
+
+
+def language_source_kind(path):
+    if os.path.isdir(path):
+        return "folder"
+    if path.lower().endswith(".wua"):
+        return "archive"
+    if path.lower().endswith((".wux", ".wud")):
+        return "image"
+    raise SetupError("choose a .wux or .wud disc image, a .wua Cemu archive or an extracted game folder")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1063,14 +1440,14 @@ def linux_launchers(data_dir, exe):
 
 
 def windows_shortcuts(data_dir, exe):
+    """Start menu and Desktop shortcuts to the built game (a failure is logged, not fatal)."""
     icon = write_game_icon(data_dir, ico=True)
-    icon_set = "$l.IconLocation='%s';" % icon.replace("'", "''") if icon else ""
-    ps = ("$s=(New-Object -ComObject WScript.Shell);"
-          "foreach($d in @([Environment]::GetFolderPath('Programs'),[Environment]::GetFolderPath('Desktop'))){"
-          "$l=$s.CreateShortcut((Join-Path $d '%s.lnk'));$l.TargetPath='%s';$l.Arguments='--game game --save save';"
-          "$l.WorkingDirectory='%s';%s$l.Save()}" % (APP_NAME, exe.replace("'", "''"), data_dir.replace("'", "''"),
-                                                    icon_set))
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for csidl in (0x02, 0x10):  # the Start menu's Programs, the Desktop
+        try:
+            win_shortcut(os.path.join(win_known_folder(csidl), APP_NAME + ".lnk"), exe, "--game game --save save",
+                         data_dir, icon or "")
+        except (OSError, AttributeError, ValueError) as e:
+            LOG.write("shortcut not created (folder 0x%x): %s" % (csidl, e))
 
 
 def launch(state, data_dir):
@@ -1116,9 +1493,10 @@ def create_shortcut():
                     "Exec=\"%s\" --setup\n" % (APP_NAME, target, PKG, target))
     else:
         link = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", APP_NAME + ".lnk")
-        ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%s');$s.TargetPath='%s';$s.WorkingDirectory='%s';"
-              "$s.Save()" % (link.replace("'", "''"), target.replace("'", "''"), PKG.replace("'", "''")))
-        subprocess.run(["powershell", "-NoProfile", "-Command", ps], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            win_shortcut(link, target, workdir=PKG)
+        except (OSError, AttributeError, ValueError) as e:
+            LOG.write("shortcut not created: %s" % e)
     say("  Shortcut: %s" % link)
     return link
 
@@ -1430,7 +1808,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         if keys is None or info is None:
             keys, info = check_keys(source[1])
         check_title(info.get("title_id", ""))
-        say("  OK: The Wind Waker HD (USA), %s files, %s" % (info.get("files"), human(int(info.get("bytes", 0)))))
+        say("  OK: %s, %s files, %s" % (title_desc(info.get("title_id", "")), info.get("files"),
+                                        human(int(info.get("bytes", 0)))))
     elif kind == "archive":
         begin("archive")
         if not os.path.isfile(source[1]):
@@ -1451,8 +1830,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         tid = game_folder_title(source[1])
         if tid:
             check_title(tid)
-        check_game_version(source[1])
-        say("  OK: %s (USA, version 0)" % source[1])
+        build = check_game_version(source[1])
+        say("  OK: %s (%s, version 0)" % (source[1], build.name))
     elif kind == "installed":
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("no installed game files in %s; run setup with your disc image" % ctx.game_dir)
@@ -1512,7 +1891,9 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     new_exe = exe + ".new" + EXE_SUFFIX
     link_game(tc, manifest, objs, work, new_exe)
     for rf in manifest.get("runtime_files", []):
-        shutil.copy2(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(exe_dir, rf))
+        # the data only (copy2 would also copy a downloaded file's "mark of the web" on Windows)
+        shutil.copyfile(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(exe_dir, rf))
+        shutil.copymode(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(exe_dir, rf))
     os.replace(new_exe, exe)
     say("  Built %s" % exe)
 
@@ -1552,6 +1933,24 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     return state
 
 
+def run_language_source(args, ui, data_dir, path):
+    """setup --language-source: the language packs of the player's European or Japanese game."""
+    say("")
+    say("Language source (experimental): %s" % path)
+    kind = language_source_kind(path)
+    keys = info = None
+    if kind == "image":
+        side_args = argparse.Namespace(disc_key=args.language_disc_key, common_key=args.common_key)
+        keys, info = get_disc_keys(path, ui, side_args)
+    game_dir = read_state(data_dir).get("game_dir") or os.path.join(data_dir, "game")
+    manifests = add_language_source((kind, path), data_dir, keys, info, game_dir)
+    for m in manifests:
+        say("Added the %s languages: %s. Choose one in the game's settings (F1, Language); it applies on the next "
+            "start.%s" % (LANGUAGE_REGION_NAMES[m["region"]], ", ".join(p["language"] for p in m["packs"]),
+                          " This is untested with the Japanese game so far: please report what looks wrong."
+                          if m["region"] == "JP" else ""))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Wind Waker HD setup", formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__)
@@ -1571,6 +1970,13 @@ def main():
     ap.add_argument("--shortcuts", action="store_true",
                     help="portable release: also add a shortcut (Applications / Start menu / applications menu)")
     ap.add_argument("--keep-work", action="store_true", help="keep the generated code and objects")
+    ap.add_argument("--language-source", metavar="PATH",
+                    help="experimental: take the language files (text, fonts, 2D layouts) of your European or "
+                         "Japanese game (.wux/.wud, .wua or extracted folder) into the installation; the game is "
+                         "still built from the USA game")
+    ap.add_argument("--language-disc-key", metavar="FILE", help="the disc key of the --language-source disc image "
+                    "(default: its IMAGE.key)")
+    ap.add_argument("--remove-language-source", metavar="EU|JP", help="remove a language source")
     ap.add_argument("--gui-protocol", action="store_true",
                     help="machine interface for the graphical installer (JSON lines; see tools/installer/README.md)")
     args = ap.parse_args()
@@ -1609,6 +2015,12 @@ def run(args, ui):
     say("Install folder: %s" % data_dir)
     state = ctx.state()
     installed = ctx.installed()
+    if args.remove_language_source:
+        say("Removed %s" % remove_language_source(data_dir, args.remove_language_source))
+        return 0
+    if args.language_source:
+        run_language_source(args, ui, data_dir, os.path.abspath(clean_path(args.language_source)))
+        return 0
 
     source = None  # ("image", path) | ("archive", path) | ("folder", path) | ("installed", game_dir) | ("gen", dir)
     if args.gen_dir:
@@ -1638,11 +2050,17 @@ def run(args, ui):
         else:
             i = ui.choose("The game is installed (%s). What do you want to do?" % version,
                           ["play", "repair (rebuild the game code; keeps game files and saves)",
-                           "reinstall from a disc image, Cemu archive or game folder", "quit"])
+                           "reinstall from a disc image, Cemu archive or game folder",
+                           "add the languages of your European or Japanese game (experimental)", "quit"])
             if i == 0:
                 launch(state, data_dir)
                 return 0
+            if i == 4:
+                return 0
             if i == 3:
+                p = ui.pick_path("Choose your European or Japanese Wind Waker HD (.wux/.wud disc image, .wua Cemu "
+                                 "archive or extracted folder)")
+                run_language_source(args, ui, data_dir, p)
                 return 0
             if i == 1:
                 source = ("installed", game_dir)
@@ -1719,6 +2137,10 @@ def run(args, ui):
 #   install      {source: image|archive|folder|installed, path?, jobs?}  -> streams step/progress/log, then
 #                                           reply {app, exe, data_dir}
 #   import_save  {kind: hd|gc, path, replace?}  -> message; problem "exists" if a save is there
+#   language_sources {}                  -> sources: [{region, title_id, source, packs: [{file, language, bytes}]}]
+#   add_language_source {path, disc_key_file?, common_key_file?, common_key_hex?}
+#                                        -> sources (the added ones); experimental (docs/language-packs.md)
+#   remove_language_source {region}      -> removed (the folder)
 #   launch       {}                      -> starts the installed game
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
@@ -1770,6 +2192,7 @@ def gui_main(args):
                   "installed": st if ctx.installed() else None, "game_files": valid_game_folder(ctx.game_dir),
                   "game_dir": ctx.game_dir, "save_exists": have_save(ctx.data_dir),
                   "legacy": bool(legacy_save or legacy_items), "free_bytes": free_space(ctx.data_dir),
+                  "language_sources": sources_reply(),
                   "toolchain": ctx.manifest["toolchain"]})
 
     def reply(req, ok=True, **kw):
@@ -1786,7 +2209,7 @@ def gui_main(args):
             if not folder:
                 return fail(req, "invalid", "This folder does not contain an extracted game (code, content and meta).")
             tid = game_folder_title(folder)
-            if tid and tid != SUPPORTED_TITLE:
+            if tid and tid not in SUPPORTED_BUILDS:
                 try:
                     check_title(tid)
                 except SetupError as e:
@@ -1795,8 +2218,8 @@ def gui_main(args):
                 check_game_version(folder)
             except SetupError as e:
                 return fail(req, "wrong_version", str(e)[0].upper() + str(e)[1:])
-            return reply(req, kind="folder", path=folder, title="The Wind Waker HD (USA)", in_place=PORTABLE,
-                         bytes=folder_size(folder))
+            return reply(req, kind="folder", path=folder, title=title_desc(tid) if tid else "The Wind Waker HD",
+                         in_place=PORTABLE, bytes=folder_size(folder))
         if not os.path.isfile(p):
             return fail(req, "invalid", "File not found.")
         if p.lower().endswith(".wua"):
@@ -1817,6 +2240,60 @@ def gui_main(args):
                         "folder.")
         src, _ = find_common_key(p)
         reply(req, kind="image", path=p, disc_key=find_sidecar_disc_key(p), common_key=src)
+
+    def request_keys(req, image):
+        """(keys, None) or (None, (problem, message)) from a request's key fields (check_keys, add_language_source)."""
+        keys = Keys()
+        if req.get("disc_key_file"):
+            keys.disc = read_key_file(req["disc_key_file"])
+            if not keys.disc:
+                return None, ("disc_key_bad", KEY_MESSAGES["disc_key_bad"])
+        else:
+            side = find_sidecar_disc_key(image)
+            keys.disc = read_key_file(side) if side else None
+            if not keys.disc:
+                return None, ("disc_key_missing", "No disc key was found next to the image: choose the key file.")
+        given = req.get("common_key_hex") or req.get("common_key_file")
+        if req.get("common_key_hex"):
+            keys.common = parse_key(req["common_key_hex"])
+        elif req.get("common_key_file"):
+            keys.common = read_key_file(req["common_key_file"])
+        else:
+            keys.common = find_common_key(image)[1]
+        if not keys.common:
+            return None, (("common_key_bad", KEY_MESSAGES["common_key_bad"]) if given
+                          else ("common_key_missing", "The Wii U common key is needed."))
+        return keys, None
+
+    def sources_reply():
+        return [{k: m.get(k) for k in ("region", "title_id", "source", "packs")} for m in language_sources(ctx.data_dir)]
+
+    def do_language_sources(req):
+        reply(req, sources=sources_reply())
+
+    def do_add_language_source(req):
+        path = req.get("path") or ""
+        try:
+            kind = language_source_kind(path)
+            keys = info = None
+            if kind == "image":
+                keys, why = request_keys(req, path)
+                if why:
+                    return fail(req, *why)
+                problem, err, info = disc_info(path, keys)
+                if problem:
+                    return fail(req, problem, KEY_MESSAGES.get(problem, err))
+                language_source_region(info.get("title_id"))
+            added = add_language_source((kind, path), ctx.data_dir, keys, info, ctx.game_dir)
+        except SetupError as e:
+            return fail(req, "language_source", str(e)[0].upper() + str(e)[1:])
+        reply(req, sources=[{k: m.get(k) for k in ("region", "title_id", "source", "packs")} for m in added])
+
+    def do_remove_language_source(req):
+        try:
+            reply(req, removed=remove_language_source(ctx.data_dir, req.get("region")))
+        except SetupError as e:
+            fail(req, "language_source", str(e))
 
     def check(req):
         image = req.get("image") or ""
@@ -1914,7 +2391,9 @@ def gui_main(args):
 
     handlers = {"probe": probe, "check_keys": check, "install": do_install, "import_save": save,
                 "import_existing": do_import_existing, "remove_toolchain": do_remove_toolchain,
-                "shortcut": do_shortcut, "launch": do_launch, "hello": lambda req: hello()}
+                "shortcut": do_shortcut, "launch": do_launch, "hello": lambda req: hello(),
+                "language_sources": do_language_sources, "add_language_source": do_add_language_source,
+                "remove_language_source": do_remove_language_source}
     hello()
     for line in sys.stdin:
         line = line.strip()

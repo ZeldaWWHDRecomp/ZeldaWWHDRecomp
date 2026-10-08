@@ -3,13 +3,21 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-namespace interp { int mode(); void set_mode(int); }
+#include "../../interp.h"
+#include "gx2/gx2.h"
 namespace gfxvk {
 namespace {
 int normalize(int v) { return (v % 3 + 3) % 3; }
 struct Settings {
     std::atomic<int> ao{std::getenv("WWHD_AO_MODE") ? normalize(std::atoi(std::getenv("WWHD_AO_MODE"))) : std::getenv("WWHD_NO_AO_QUIRK") ? 0 : 2};
-    std::atomic<bool> hires{!std::getenv("WWHD_AO_HIRES") || std::atoi(std::getenv("WWHD_AO_HIRES")) != 0};
+    // full-size occlusion depth: on by default, off on Android, where the phone GPU is the limit in heavy views
+    // (issue #56: halves the worst GPU wait on an Adreno 830); a saved choice or WWHD_AO_HIRES wins
+#ifdef __ANDROID__
+    static constexpr bool kHiresDefault = false;
+#else
+    static constexpr bool kHiresDefault = true;
+#endif
+    std::atomic<bool> hires{std::getenv("WWHD_AO_HIRES") ? std::atoi(std::getenv("WWHD_AO_HIRES")) != 0 : kHiresDefault};
     std::atomic<bool> aniso{std::getenv("WWHD_ANISO") && std::atoi(std::getenv("WWHD_ANISO")) != 0};
     std::atomic<bool> fxaa{std::getenv("WWHD_FXAA") && std::atoi(std::getenv("WWHD_FXAA")) != 0};
     std::atomic<int> filter{[] { const char* e = std::getenv("WWHD_SCALE_FILTER"); return e && !std::strcmp(e,"sharp") ? 1 : e && !std::strcmp(e,"integer") ? 2 : 0; }()};
@@ -32,6 +40,10 @@ void set_present_mode(int m) {
 bool present_mode_from_env() { return env_present_mode() >= 0; }
 bool present_mode_offered(int m) { return m >= 0 && m < kPresentModes && (g_offered.load() >> m & 1); }
 void set_present_modes_offered(unsigned mask) { g_offered = mask | 1u << kPresentFifo; }
+int effective_present_mode() {
+    if (!gx2::uncapped()) return present_mode();
+    return present_mode_offered(kPresentImmediate) ? kPresentImmediate : present_mode_offered(kPresentMailbox) ? kPresentMailbox : kPresentFifo;
+}
 const char* present_mode_name(int m) { return m == kPresentMailbox ? "mailbox" : m == kPresentImmediate ? "immediate" : "fifo"; }
 int ao_mode() { return settings().ao.load(std::memory_order_relaxed); }
 void set_ao_mode(int v) { settings().ao.store(normalize(v),std::memory_order_relaxed); LOG("[gfx] AO mode %d",ao_mode()); }
@@ -49,7 +61,8 @@ bool graphics_hotkey(char k,bool activate) {
     GraphicsFeature f;
     switch(k) {
     case 'R': if(activate) { constexpr float scales[]={1,1.5f,2,3}; float cur=requested_res_scale(); unsigned next=0; for(unsigned i=0;i<4;++i) if(cur<scales[i]-0.01f) { next=i; break; } set_res_scale(scales[next]); } return true;
-    case '6': case '7': if(activate) { int m=k=='6'?1:2; interp::set_mode(interp::mode()==m?0:m); } return true;
+    case '6': if(activate) interp::toggle_fps(60); return true;  // 60 fps frame interpolation on/off
+    case '7': if(activate) interp::set_mode(interp::mode()==2?0:2); return true;
     case 'O': f=GraphicsFeature::AO; break;
     case 'M': f=GraphicsFeature::AOHires; break;
     case 'N': f=GraphicsFeature::Anisotropy; break;

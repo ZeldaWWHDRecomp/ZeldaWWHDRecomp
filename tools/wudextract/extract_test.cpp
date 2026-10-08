@@ -256,6 +256,7 @@ int main(int argc, char** argv) {
                 {"meta/meta.xml", pattern(0, 3), 0},
                 {"content/Audiores/big.bin", pattern(0xFC00 * 2 + 1234, 4), 1},
                 {"content/small.bin", pattern(17, 5), 1},
+                {"content/Common/Pack/permanent_2d_EuGerman.pack", pattern(300, 10), 1},
                 {"content/skipme.bin", pattern(64, 6), 0, true}};
     // ticket in the system partition: encrypted title key + title id
     std::vector<uint8_t> tik(0x350, 0);
@@ -364,6 +365,23 @@ int main(int argc, char** argv) {
                " extract " + q(work / "disc.wux") + " " + q(work / "out_wux") + " 2> " + q(work / "log.txt")) == 0,
            "extract .wux (raw-bytes key files)");
     check_tree(work / "out_wux", "extracted .wux files match");
+
+    // --only: just the language files of a disc (the setup's language source), patterns without case
+    expect(run(x + ck + " --only content/common/pack/permanent_2d_*.pack --only META/meta.xml --progress extract " + q(wud) +
+               " " + q(work / "out_only") + " > " + q(work / "progress_only.txt")) == 0,
+           "extract --only");
+    {
+        bool ok = true;
+        for (auto& f : gm.files) {
+            fs::path p = work / "out_only" / f.path;
+            bool want = f.path == "meta/meta.xml" || f.path.rfind("content/Common/Pack/", 0) == 0;
+            ok &= want ? fs::exists(p) && read_file(p) == f.data : !fs::exists(p);
+        }
+        expect(ok, "--only extracts only the matching files");
+        auto t = read_file(work / "progress_only.txt");
+        std::string s(t.begin(), t.end());
+        expect(s.find("progress 0 300\n") == 0, "--only progress counts only the matching files");
+    }
 
     // keys over stdin
     write_text(work / "keys.txt", "disc " + hex(disc_key) + "\r\ncommon " + hex(common_key) + "\n");

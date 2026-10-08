@@ -1,3 +1,4 @@
+#include "crash_context.h"
 // coreinit: logging, dynamic loading, system info, and small odds and ends.
 #include "../overlay/hostui.h"
 #include "../crashrec.h"
@@ -103,6 +104,9 @@ static void report(const std::string& s) {
 // settings overlay (Language tab, hostui "language"; read once at start). Unset, out of range or not
 // a number: English. A language the disc has no pack for (game_languages.h) becomes English (or the
 // disc's first language without English), as the USA game itself does with one it doesn't know.
+// WWHD_LANGUAGE_REGION=eu|jp (else the saved "language_region") takes the language from a language
+// source of that region (game_lang::source_packs(), docs/language-packs.md) when it has that
+// language; language_region.cpp then tells the game that region.
 static uint32_t console_language() {
     static const uint32_t lang = [] {
         const char* why = "WWHD_LANGUAGE";
@@ -123,12 +127,27 @@ static uint32_t console_language() {
                 LOG("[config] console language %ld (%s)", v, why);
             }
         }
-        const int use = game_lang::usable((int)v);
-        if (use != v)
-            LOG("[config] %s is not on this disc (%s); the game gets %s", game_lang::name((int)v),
-                game_lang::region().c_str(), game_lang::name(use));
-        game_lang::set_started(use);
-        return (uint32_t)use;
+        // the region: WWHD_LANGUAGE_REGION, else (unless WWHD_LANGUAGE alone picked the language) the saved one
+        std::string region_text;
+        const char* env_language = getenv("WWHD_LANGUAGE");
+        if (const char* r = getenv("WWHD_LANGUAGE_REGION"); r && *r) region_text = r;
+        else if ((!env_language || !*env_language) && !hostui::get("language_region", region_text)) region_text.clear();
+        const int region = game_lang::region_from_code(region_text);
+        const game_lang::Start s = game_lang::choose((int)v, region);
+        if (s.pack) {
+            LOG("[config] %s from the language source (%s): %s%s", game_lang::name(s.language),
+                game_lang::region_name(s.region), s.pack->host.c_str(),
+                s.region == game_lang::kJapan ? " (untested with a Japanese game so far)" : "");
+        } else {
+            if (region != game_lang::kNoRegion && region != game_lang::kUsa)
+                LOG("[config] no %s language source has %s (%s); using the installed game's languages",
+                    game_lang::region_name(region), game_lang::name((int)v), game_lang::sources_dir().c_str());
+            if (s.language != v)
+                LOG("[config] %s is not on this disc (%s); the game gets %s", game_lang::name((int)v),
+                    game_lang::region().c_str(), game_lang::name(s.language));
+        }
+        game_lang::begin(s);
+        return (uint32_t)s.language;
     }();
     return lang;
 }
@@ -185,7 +204,7 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
     time_t t = time(nullptr);
     char path[96];
     strftime(path, sizeof path, "captures/crash-%Y%m%d-%H%M%S.log", localtime(&t));
-    FILE* f = fopen(path, "w");
+    FILE* f = tmpfile();
     if (!f) return;
     fprintf(f, "halt at %s:%u: %s\n", file.c_str(), line, msg.c_str());
     fprintf(f, "60 fps pass: %s; true 60 %s, half pass %d, executing process %08X", interp::phase_name(),
@@ -201,11 +220,19 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
     }
     static FILE* out_file;
     out_file = f;
-    auto out = [](int, const char* t, size_t n) { fwrite(t, 1, n, out_file); };
+    auto out = [](int, const char* t, size_t n) { crash_context::redact(0, {t,n}, [](int, const char* p, size_t k) { fwrite(p, 1, k, out_file); }); };
+    crash_context::note(0, out);
     crashrec::crash_note(0, out);
     fputs("\n--- last log lines ---\n", f);
     log_ring_write(0, out);
+    fflush(f);
+    rewind(f);
+    std::string report;
+    char chunk[4096];
+    while (size_t n = fread(chunk, 1, sizeof chunk, f)) report.append(chunk, n);
     fclose(f);
+    out_file = fopen(path, "w");
+    if (out_file) { out(0, report.data(), report.size()); fclose(out_file); }
     fprintf(stderr, "[crash] wrote %s\n", path);
 }
 

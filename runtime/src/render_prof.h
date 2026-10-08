@@ -28,6 +28,7 @@ enum Sync : int { kSyncDrawDone, kSyncCopySurface, kSyncFlip, kSyncOther, kSyncs
 
 bool enabled();
 uint64_t now_ns();
+uint64_t thread_cpu_ns();  // CPU time of the calling thread (0: not available)
 
 // ---- render thread
 extern bool g_draw_sampled;  // the current draw is sampled (phase marks are recorded)
@@ -74,6 +75,10 @@ void frame_end(bool hold);
 
 // ---- game thread
 void add_sync(Sync site, uint64_t ns);
+// GPU results written back to guest memory (linear surfaces the CPU reads, issue #53): the time the
+// GX2DrawDone check spent walking the surfaces (walkNs), and per write-back its bytes and the time to
+// read them from the GPU (readNs, including the wait for the GPU)
+void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t readNs);
 
 // ---- any thread
 std::string latest_report();  // the last complete report ("" before the first one)

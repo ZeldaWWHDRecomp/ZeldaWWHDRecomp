@@ -1,3 +1,5 @@
+#include "bc_decode.h"
+#include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
 #include "buffer_cache.h"
@@ -5,6 +7,7 @@
 #include "write_watch.h"
 #include "shaders.h"
 #include "gx2/gx2.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
 #include <algorithm>
 #include <cmath>
@@ -48,6 +51,29 @@ void clear_image(Surface& s,const float rgba[4]) {
  transition_image(&s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
  VkClearColorValue value{};std::copy(rgba,rgba+4,value.float32);VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,s.mips,0,s.arrayLayers};
  vkCmdClearColorImage(command_buffer(),s.image,s.layout,&value,1,&range);mark_gpu_written(&s);
+}
+void bc_surface_check() {
+ for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
+  SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
+  d.width=16;d.height=16;d.pitch=4;d.slices=2;d.mips=2;d.format=format;d.dim=5;
+  memset(mem::ptr(d.addr),0,65536);memset(mem::ptr(d.mipAddr),0,65536);
+  auto* s=find_or_create_surface(d,false);
+  if(!s->bcDecoded)continue;
+  upload_surface(s);auto uploads=g_stat_uploads;upload_surface(s);
+  require(g_stat_uploads==uploads,"BC upload cache did not hit");
+  const unsigned type=(format&63)-0x30,mode=type|((format&0x200)?256:0);
+  auto expected=[&](uint8_t fill){std::vector<uint8_t> block(bc::block_bytes(type),fill);return bc::pixel(block.data(),type,mode&256,0);};
+  auto zero=expected(0),changed=expected(255);
+  for(unsigned level=0;level<2;++level)for(unsigned layer=0;layer<2;++layer)
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,level,layer),zero.data(),"BC mip/layer upload differs");
+  memset(mem::ptr(d.mipAddr),255,65536);invalidate(2,d.mipAddr+16,4);upload_surface(s);
+  require(g_stat_uploads==uploads+1,"BC partial invalidation did not re-upload");
+  for(unsigned layer=0;layer<2;++layer){
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,0,layer),zero.data(),"BC mip invalidation modified base");
+   rgba_is(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4,1,layer),changed.data(),"BC changed mip/layer differs");
+  }
+ }
+ fprintf(stderr,"[renderer smoke] BC production uploads, sRGB/signed views, mip/layer cache and invalidation passed\n");
 }
 void upload_arena_check() {
  const uint64_t before=R.uploadAllocations;
@@ -158,6 +184,157 @@ void asynchronous_submission_check() {
   require(!slot.pending&&slot.garbageBuffers.empty()&&slot.garbageImages.empty(),"async drain left pending resources");
  defer_buffer(out);flush();
  fprintf(stderr,"[renderer smoke] ten async submissions, immutable snapshots, slot wrap and deferred retirement passed\n");
+}
+// Scaled depth copies without blits (surfaces.cpp draw_depth_copy). Vulkan makes blits of depth/stencil
+// formats optional and Adreno drivers report none for some, so resizing a depth target (a resolution or
+// aspect-ratio change) threw there and aborted the game. The draws are forced here on any device and
+// checked texel by texel against the nearest-filter mapping, through resample (all depth formats, two
+// layers, up and down, a partial region) and through the real resize path of an aspect-ratio change.
+void depth_copy_check() {
+ auto depthAt=[](uint32_t x,uint32_t y,uint32_t layer){return float((x*7+y*13+layer*5)%97)/96.0f;};
+ auto d16At=[](uint32_t x,uint32_t y,uint32_t layer){return uint16_t(x*1031+y*7919+layer*3);};
+ auto stencilAt=[](uint32_t x,uint32_t y,uint32_t layer){return uint8_t(x*37+y*11+layer*101);};
+ // texel bytes of one aspect of the pattern (depth: D16 as 2 bytes, else a float; stencil: 1 byte)
+ auto pattern=[&](const Surface& s,VkImageAspectFlags aspect,uint32_t layer,uint32_t w,uint32_t h){
+  const uint32_t bytes=aspect==VK_IMAGE_ASPECT_STENCIL_BIT?1:s.fmt.pixel==VK_FORMAT_D16_UNORM?2:4;
+  std::vector<uint8_t> out(size_t(w)*h*bytes);
+  for(uint32_t y=0;y<h;++y)for(uint32_t x=0;x<w;++x) {
+   uint8_t* p=out.data()+(size_t(y)*w+x)*bytes;
+   if(bytes==1)*p=stencilAt(x,y,layer);
+   else if(bytes==2){uint16_t v=d16At(x,y,layer);memcpy(p,&v,2);}
+   else {float v=depthAt(x,y,layer);memcpy(p,&v,4);}
+  }
+  return out;
+ };
+ auto fill=[&](Surface& s,uint32_t layers){
+  std::vector<VkImageAspectFlags> aspects{VK_IMAGE_ASPECT_DEPTH_BIT};if(s.fmt.stencil)aspects.push_back(VK_IMAGE_ASPECT_STENCIL_BIT);
+  transition_image(&s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  for(uint32_t layer=0;layer<layers;++layer)for(auto aspect:aspects) {
+   auto texels=pattern(s,aspect,layer,s.extent.width,s.extent.height);
+   Buffer staging=create_buffer(texels.size(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+   require(staging.mapped!=nullptr,"depth copy staging buffer is not mapped");memcpy(staging.mapped,texels.data(),texels.size());
+   VkBufferImageCopy copy{};copy.imageSubresource={aspect,0,layer,1};copy.imageExtent={s.extent.width,s.extent.height,1};
+   vkCmdCopyBufferToImage(command_buffer(),staging.buffer,s.image,s.layout,1,&copy);defer_buffer(staging);
+  }
+  mark_gpu_written(&s);
+ };
+ // dst's region (0,0)-(dstW,dstH) must hold the nearest source texel of (0,0)-(srcW,srcH); outside it, `outside`
+ auto check=[&](Surface& dst,uint32_t srcW,uint32_t srcH,uint32_t dstW,uint32_t dstH,uint32_t layers,const char* what,
+                float outsideDepth=0,uint8_t outsideStencil=0){
+  // dstW/dstH 0: no region, every texel must hold `outside`
+  const float sx=dstW?float(srcW)/float(dstW):0,sy=dstH?float(srcH)/float(dstH):0;
+  const uint32_t w=dst.extent.width,h=dst.extent.height;
+  for(uint32_t layer=0;layer<layers;++layer) {
+   const bool d16=dst.fmt.pixel==VK_FORMAT_D16_UNORM;
+   auto depths=read_image(dst,VK_IMAGE_ASPECT_DEPTH_BIT,d16?2:4,0,layer);
+   std::vector<uint8_t> stencils;if(dst.fmt.stencil)stencils=read_image(dst,VK_IMAGE_ASPECT_STENCIL_BIT,1,0,layer);
+   uint32_t bad=0;
+   for(uint32_t y=0;y<h;++y)for(uint32_t x=0;x<w;++x) {
+    const size_t i=size_t(y)*w+x;const bool inside=x<dstW&&y<dstH;
+    const uint32_t tx=std::min(uint32_t((float(x)+0.5f)*sx),srcW-1),ty=std::min(uint32_t((float(y)+0.5f)*sy),srcH-1);
+    if(d16){uint16_t v;memcpy(&v,depths.data()+i*2,2);if(inside&&v!=d16At(tx,ty,layer))++bad;}
+    else {float v;memcpy(&v,depths.data()+i*4,4);if(v!=(inside?depthAt(tx,ty,layer):outsideDepth))++bad;}
+    if(dst.fmt.stencil&&stencils[i]!=(inside?stencilAt(tx,ty,layer):outsideStencil))++bad;
+   }
+   if(bad){fprintf(stderr,"[renderer smoke] %s: %u of %u texels differ (layer %u)\n",what,bad,w*h,layer);require(false,what);}
+  }
+ };
+ const auto override=g_depthCopyOverride;g_depthCopyOverride=DepthCopyOverride::Draw;
+ const uint32_t sizes[3][2]={{64,37},{17,11},{40,24}};
+ for(uint32_t format:{0x05u,0x0Eu,0x11u}) {
+  Image src(40,24,format,true,2);require(src.s.extent.width==40&&src.s.extent.height==24,"depth copy source extent differs");
+  fill(src.s,2);
+  for(auto& size:sizes) {
+   Image dst(size[0],size[1],format,true,2);
+   resample(&src.s,&dst.s,2);
+   check(dst.s,40,24,size[0],size[1],2,"drawn depth copy (resample) differs from the nearest-filter mapping");
+  }
+  // a partial region from part of the source: the rest of the destination keeps its contents
+  if(format!=0x05) {
+   Image dst(48,32,format,true,1);
+   transition_image(&dst.s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+   VkClearDepthStencilValue value{0.75f,0x33};VkImageSubresourceRange range{dst.s.aspect,0,1,0,1};
+   vkCmdClearDepthStencilImage(command_buffer(),dst.s.image,dst.s.layout,&value,1,&range);
+   resample(&src.s,&dst.s,1,0.5f,0.75f,30,21);
+   check(dst.s,20,18,30,21,1,"drawn partial depth copy differs",0.75f,0x33);
+  }
+ }
+ fprintf(stderr,"[renderer smoke] drawn depth copies (D16, D32F, D32F+S8; layers, up/down, partial) passed\n");
+ // the last resort, a device that can neither blit nor draw the format: the scaled copy clears a whole
+ // destination (depth 1, stencil 0) and leaves a partial one alone, instead of throwing
+ g_depthCopyOverride=DepthCopyOverride::Unsupported;
+ {
+  Image src(40,24,0x11,true,1);fill(src.s,1);
+  Image dst(64,37,0x11,true,1);resample(&src.s,&dst.s,1);
+  check(dst.s,40,24,0,0,1,"unscalable depth copy did not clear the destination",1.0f,0);
+  Image part(48,32,0x11,true,1);
+  transition_image(&part.s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  VkClearDepthStencilValue value{0.75f,0x33};VkImageSubresourceRange range{part.s.aspect,0,1,0,1};
+  vkCmdClearDepthStencilImage(command_buffer(),part.s.image,part.s.layout,&value,1,&range);
+  resample(&src.s,&part.s,1,0.5f,0.75f,30,21);
+  check(part.s,20,18,0,0,1,"unscalable partial depth copy changed the destination",0.75f,0x33);
+ }
+ g_depthCopyOverride=DepthCopyOverride::Draw;
+ fprintf(stderr,"[renderer smoke] unscalable depth copies clear (whole) or keep (partial) the destination\n");
+ // the resize itself: a screen-shaped depth/stencil target, then a 21:9 aspect ratio and a 2x resolution
+ SurfaceDesc d;d.addr=mem::host_alloc(64*36*8,256);d.width=64;d.height=36;d.pitch=64;d.format=0x11;d.isDepth=true;d.dim=1;d.slices=1;
+ Surface* target=find_or_create_surface(d,true);
+ require(target&&target->extent.width==64&&target->extent.height==36,"depth target extent differs");
+ fill(*target,1);
+ set_frame_aspect(21.0f/9.0f);latch_res_scale();
+ require(find_or_create_surface(d,true)==target&&target->extent.width==84&&target->extent.height==36,"aspect change did not rescale the depth target");
+ check(*target,64,36,84,36,1,"depth target after an aspect-ratio change differs");
+ fill(*target,1);
+ set_res_scale(2);latch_res_scale();
+ require(find_or_create_surface(d,true)==target&&target->extent.width==168&&target->extent.height==72,"resolution change did not rescale the depth target");
+ check(*target,84,36,168,72,1,"depth target after a resolution change differs");
+ set_frame_aspect(16.0f/9.0f);set_res_scale(1);latch_res_scale();
+ require(find_or_create_surface(d,true)==target&&target->extent.width==64,"depth target did not return to its guest size");
+ g_depthCopyOverride=override;
+ fprintf(stderr,"[renderer smoke] depth/stencil target resized by aspect ratio and resolution without blits passed\n");
+}
+// Volume render targets (issue #53, the Picto Box): the game renders 8x8x8 colour-grading volumes
+// slice by slice (GX2 colour buffers of a 3D surface, the view selecting the slice) and samples them
+// as 3D textures. The render target must be a volume whose slices are attachments, and the sampled
+// lookup must return it (a 2D render target at that address made the 3D view throw).
+void volume_target_check() {
+ if(!R.imageView2DOn3DImage){fprintf(stderr,"[renderer smoke] volume render targets skipped (no imageView2DOn3DImage)\n");return;}
+ const uint32_t w=8,h=8,depth=4,slice=2;
+ std::vector<uint32_t> regs(0x10000,0);
+ uint32_t addr=mem::host_alloc(w*h*depth*4,256);
+ regs[mmCB_COLOR0_BASE]=addr;regs[mmCB_COLOR0_INFO]=0x1Au<<2;  // RGBA8 unorm
+ regs[mmCB_COLOR0_TILE]=w|(depth<<16)|gx2::kColorTarget3D;regs[mmCB_COLOR0_FRAG]=h;regs[mmCB_COLOR0_VIEW]=slice;
+ uint32_t selected=~0u;Surface* s=color_target(regs.data(),0,&selected);
+ require(s&&s->imageType==VK_IMAGE_TYPE_3D&&s->extent.depth==depth&&s->arrayLayers==1,"volume colour target is not a 3D image");
+ require(selected==slice,"volume colour target slice differs");
+ const float blue[4]={0,0,1,1};clear_image(*s,blue);
+ transition_image(s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+ VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(s,selected);target.imageLayout=s->layout;
+ target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[1]=1;target.clearValue.color.float32[3]=1;
+ VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea.extent={w,h};ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
+ auto cmd=command_buffer();vkCmdBeginRendering(cmd,&ri);R.rendering=true;end_encoder();mark_gpu_written(s);
+ auto read_slice=[&](uint32_t z) {
+  Buffer b=create_readback_buffer(w*h*4);
+  transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+  VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageOffset={0,0,int32_t(z)};copy.imageExtent={w,h,1};
+  auto c=command_buffer();vkCmdCopyImageToBuffer(c,s->image,s->layout,b.buffer,1,&copy);
+  VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.buffer=b.buffer;barrier.size=VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(c,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&barrier,0,nullptr);
+  try {flush();std::vector<uint8_t> result(w*h*4);memcpy(result.data(),b.mapped,result.size());defer_buffer(b);return result;}
+  catch(...){defer_buffer(b);throw;}
+ };
+ const uint8_t greenBytes[4]={0,255,0,255},blueBytes[4]={0,0,255,255};
+ rgba_is(read_slice(slice),greenBytes,"volume slice render differs");
+ rgba_is(read_slice(slice-1),blueBytes,"volume render wrote outside its slice");
+ // sampled as a volume (DIM_3D), it is this render target; a 2D sampled view never gets it
+ SurfaceDesc volume;volume.addr=addr;volume.width=w;volume.height=h;volume.slices=depth;volume.pitch=w;volume.format=0x1a;volume.dim=2;
+ require(find_or_create_surface(volume,false)==s,"sampled volume is not the rendered volume");
+ uint32_t textureWords[7]={2,0,0,0,(0u<<16)|(1u<<19)|(2u<<22)|(3u<<25),0,0};
+ require(sampled_texture_view(s,textureWords)!=VK_NULL_HANDLE,"sampled volume view creation failed");
+ SurfaceDesc flat=volume;flat.slices=1;flat.dim=1;
+ Surface* other=find_or_create_surface(flat,false);
+ require(other&&other!=s&&other->imageType==VK_IMAGE_TYPE_2D,"a 2D sampled view got the rendered volume");
+ fprintf(stderr,"[renderer smoke] volume render target slice, clear isolation and 3D sampling passed\n");
 }
 void triangle(Surface& s) {
  struct Resources {
@@ -371,7 +548,7 @@ void dynamic_uniform_check(Surface& s) {
 }
 int renderer_smoke_test() {
  try {
-  mem::init();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
+  mem::init();bc_decode_smoke();bc_surface_check();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
    upload.s.addr=mem::host_alloc(65536,256);upload.s.mipAddr=mem::host_alloc(65536,256);
@@ -408,6 +585,41 @@ int renderer_smoke_test() {
     rgba_is(read_image(*cached,VK_IMAGE_ASPECT_COLOR_BIT,4,1,layer),changedMip,"invalidated mip guest upload differs");
    }
    fprintf(stderr,"[renderer smoke] upload cache and interior mip invalidation/readback passed\n");
+   {
+    // A buffer sampled (with a two-level descriptor) before anything rendered it, then rendered:
+    // the render target must be its own one-level surface, not the sampled texture, and later
+    // sampling must find the target (issue #47).
+    SurfaceDesc t;t.addr=mem::host_alloc(16*16*4,256);t.mipAddr=mem::host_alloc(8*8*4,256);
+    t.width=16;t.height=16;t.pitch=16;t.slices=1;t.mips=2;t.format=0x1a;t.dim=1;
+    auto* tex=find_or_create_surface(t,false);
+    upload_surface(tex);
+    SurfaceDesc rt=t;rt.mipAddr=0;rt.mips=1;
+    auto* target=find_or_create_surface(rt,true);
+    require(target&&target!=tex&&target->mips==1,"render target adopted a sampled mipmapped texture");
+    mark_gpu_written(target);
+    require(find_or_create_surface(t,false)==target,"sampling after the render did not find the render target");
+    fprintf(stderr,"[renderer smoke] render target after a mipmapped sampled texture passed\n");
+    // Bloom renders level 1 separately, then binds the base descriptor with LOD clamped to 1.
+    // Distinct GPU colours prove that this reads the rendered mip rather than the base image.
+    SurfaceDesc mip=rt;mip.addr=t.mipAddr;mip.width=8;mip.height=8;mip.pitch=8;
+    auto* mipTarget=find_or_create_surface(mip,true);
+    const float baseColor[4]={0,0,1,1},mipColor[4]={0,1,0,1};
+    clear_image(*target,baseColor);clear_image(*mipTarget,mipColor);
+    uint32_t words[7]={1u|(1u<<3)|(1u<<8)|(15u<<19),15u|(0x1au<<26),
+        t.addr>>8,t.mipAddr>>8,(1u<<19)|(2u<<22)|(3u<<25),1,0};
+    auto* sampledMip=sampled_texture(words,false);
+    require(sampledMip!=target && sampledMip->mips==2,"GPU-rendered mip chain was not assembled");
+    const uint8_t mipBytes[4]={0,255,0,255};
+    rgba_is(read_image(*sampledMip,VK_IMAGE_ASPECT_COLOR_BIT,4,1),mipBytes,
+        "fixed-LOD rendered mip readback differs");
+    const uint8_t baseBytes[4]={0,0,255,255};
+    rgba_is(read_image(*sampledMip,VK_IMAGE_ASPECT_COLOR_BIT,4),baseBytes,"mip chain changed the base image");
+    const float changedColor[4]={1,0,0,1};const uint8_t changedBytes[4]={255,0,0,255};
+    clear_image(*mipTarget,changedColor);
+    auto* rebuilt=sampled_texture(words,false);
+    rgba_is(read_image(*rebuilt,VK_IMAGE_ASPECT_COLOR_BIT,4,1),changedBytes,"mip-only write did not rebuild the sampled chain");
+    fprintf(stderr,"[renderer smoke] GPU-rendered mip chain/base preservation/mip-only refresh passed\n");
+   }
    {
     // A texel changed in place, unannounced, between the 256 words the former sampled check read
     // (step 1 KiB here): page write tracking must still upload it on the next frame.
@@ -446,6 +658,31 @@ int renderer_smoke_test() {
    depths=read_image(depth.s,VK_IMAGE_ASPECT_DEPTH_BIT,4);stencils=read_image(depth.s,VK_IMAGE_ASPECT_STENCIL_BIT,1);
    for(size_t i=0;i<stencils.size();++i){float value;memcpy(&value,depths.data()+i*4,4);require(value==0.25f&&stencils[i]==0xa5,"depth/stencil clear differs");}
    fprintf(stderr,"[renderer smoke] depth/stencil upload and clear passed\n");
+   depth_copy_check();
+   {
+    auto peek=std::make_unique<Surface>();
+    peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);
+    peek->addr=mem::host_alloc(256,256);create_surface_image(peek.get(),true,VkExtent3D{16,16,1});
+    auto* surface=peek.get();auto entry=R.surfaces.emplace(peek->addr,std::move(peek));
+    uint32_t previousDepth=R.mainDepthAddr;R.mainDepthAddr=surface->addr;
+    uint32_t result=mem::host_alloc(256,256);uint32_t cells[]={320,240,result,0,0,result+4};
+    for(float z:{0.25f,1.0f}) {
+     transition_image(surface,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+     VkClearDepthStencilValue value{z,0};vkCmdClearDepthStencilImage(command_buffer(),surface->image,surface->layout,&value,1,&range);
+     peek_z(cells,6);flush();uint32_t expected=z==1.0f?0xFFFFFFu:0x3FFFFFu;
+     require(ld32(result)==expected&&ld32(result+4)==expected,"GPU depth peek differs");
+    }
+    // A drain retires the newest fence first; an older answer must not replace it.
+    for(float z:{0.25f,1.0f}) {
+     transition_image(surface,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+     VkClearDepthStencilValue value{z,0};vkCmdClearDepthStencilImage(command_buffer(),surface->image,surface->layout,&value,1,&range);
+     peek_z(cells,6);flush_async();
+    }
+    flush();require(ld32(result)==0xFFFFFFu&&ld32(result+4)==0xFFFFFFu,"older GPU depth answer replaced newer answer");
+    R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
+    fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
+   }
+   volume_target_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);
    auto capturePath=std::filesystem::temp_directory_path()/("wwhd-vulkan-smoke-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".png");

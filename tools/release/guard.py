@@ -12,8 +12,12 @@ licenses). This check rejects, by name and by content:
   - shader caches and head starts (shaders.bin, headstart.bin, template.bin, testcache.bin, *.metallib);
   - in every text file: a 32-hex-digit string (the shape of a Wii U key; SHA-256 sums are 64 digits
     and git hashes 40, which do not match).
+The Windows release's tools/python/ (the official embeddable Python) must hold exactly the files listed
+in tools/release/python-windows-files.json, each with its listed SHA-256.
 Exit status 1 lists every problem.
 """
+import hashlib
+import json
 import os
 import re
 import sys
@@ -42,6 +46,26 @@ KEYLIKE = re.compile(rb"(?<![0-9A-Fa-f])[0-9A-Fa-f]{32}(?![0-9A-Fa-f])")
 GEN_CODE = re.compile(rb"void f_[0-9A-F]{8}\(Cpu\* __restrict c\) \{\n")
 
 
+PYTHON_FILES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "python-windows-files.json")
+PYTHON_DIR = re.compile(r"(?:^|/)tools/python/(.+)$")
+
+
+def check_python(name, data, seen, problems):
+    """tools/python/...: only the pinned embeddable Python's own files, unmodified. Returns True when it was one."""
+    m = PYTHON_DIR.search(name.replace("\\", "/"))
+    if not m:
+        return False
+    with open(PYTHON_FILES) as f:
+        expected = json.load(f)["files"]
+    rel = m.group(1)
+    if rel not in expected:
+        problems.append("%s: not a file of the pinned embeddable Python" % name)
+    elif hashlib.sha256(data).hexdigest() != expected[rel]:
+        problems.append("%s: differs from the pinned embeddable Python" % name)
+    seen.add(rel)
+    return True
+
+
 def check_entry(name, data, problems):
     n = name.replace("\\", "/")
     for rx, why in BAD_NAME:
@@ -57,21 +81,31 @@ def check_entry(name, data, problems):
 
 
 def scan(path):
-    problems, count = [], 0
+    problems, count, python = [], 0, set()
+
+    def entry(name, data):
+        check_python(name, data, python, problems)
+        check_entry(name, data, problems)
+
     if os.path.isdir(path):
         for dp, _, fns in os.walk(path):
             for fn in fns:
                 full = os.path.join(dp, fn)
                 with open(full, "rb") as f:
-                    check_entry(os.path.relpath(full, path), f.read(), problems)
+                    entry(os.path.relpath(full, path), f.read())
                 count += 1
     else:
         with zipfile.ZipFile(path) as z:
             for info in z.infolist():
                 if info.is_dir():
                     continue
-                check_entry(info.filename, z.read(info), problems)
+                entry(info.filename, z.read(info))
                 count += 1
+    if python:
+        with open(PYTHON_FILES) as f:
+            missing = sorted(set(json.load(f)["files"]) - python)
+        if missing:
+            problems.append("tools/python/ lacks files of the pinned embeddable Python: " + ", ".join(missing))
     return problems, count
 
 

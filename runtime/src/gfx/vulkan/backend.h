@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -14,18 +15,23 @@
 #include "api.h"
 #include "buffer_cache_core.h"
 namespace gfxvk {
-struct Buffer { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; void* mapped=nullptr; VkDeviceSize size=0; };
+struct Buffer { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; void* mapped=nullptr; VkDeviceSize size=0;
+                VkMemoryPropertyFlags properties=0; /* of the memory type create_buffer chose */ };
 struct UploadSlice { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceSize offset=0,size=0; void* mapped=nullptr; };
 struct CachedGuestLayout;
 struct Surface {
+    std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
+    uint64_t mipChainSeq = ~0ull;
  VkImage image=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; VkImageView view=VK_NULL_HANDLE;
  VkImageType imageType=VK_IMAGE_TYPE_2D; VkImageViewType viewType=VK_IMAGE_VIEW_TYPE_2D;
- VkExtent3D extent{}; VkImageLayout layout=VK_IMAGE_LAYOUT_UNDEFINED; VkImageAspectFlags aspect=VK_IMAGE_ASPECT_COLOR_BIT; VkImageUsageFlags usage=0;
+ VkExtent3D extent{}; VkImageLayout layout=VK_IMAGE_LAYOUT_UNDEFINED; VkImageAspectFlags aspect=VK_IMAGE_ASPECT_COLOR_BIT; VkImageUsageFlags usage=0; VkImageCreateFlags createFlags=0;
  uint32_t arrayLayers=1; std::vector<VkImageView> layerViews;
  std::unordered_map<uint32_t,VkImageView> sampledViews;
  uint32_t addr=0,mipAddr=0,width=0,height=0,slices=1,pitch=0,mips=1,format=0,dim=1,tileMode=0,swizzle=0;
- bool isDepth=false,gpuWritten=false,dirty=true;
+ bool isDepth=false,gpuWritten=false,dirty=true,bcDecoded=false;
  uint64_t writeSeq=0,contentHash=0,lastCheckedFrame=~0ull,sparseHash=0;
+ bool formatViews=false; // another surface at this address has the same texel bits in another format (adopt_newer_alias)
+ uint64_t writtenBackSeq=0; // writeSeq when last written back to guest memory (linear surfaces, write_back_linear_targets)
  // CPU textures: write stamp (write_watch.h) of all levels' pages at the last full check
  uint64_t watchStamp=0; bool watched=false;
  uint32_t dataSize=0; FormatInfo fmt;
@@ -63,8 +69,10 @@ struct GpuScopeToken { uint64_t generation=0; uint32_t index=UINT32_MAX; };
 struct Renderer {
  VkInstance instance=VK_NULL_HANDLE; VkPhysicalDevice physicalDevice=VK_NULL_HANDLE; VkDevice device=VK_NULL_HANDLE;
  VkPhysicalDeviceFeatures enabledFeatures{};
+ bool computeQueue=false;
  bool dynamicRenderingKHR=false; // VK_KHR_dynamic_rendering (device older than Vulkan 1.3)
  bool portabilitySubset=false,imageViewSwizzle=true,imageViewReinterpretation=true;
+ bool imageView2DOn3DImage=true; // 2D views of volume slices (render targets); core Vulkan 1.1, optional in the portability subset
  bool samplerMipLodBias=true,separateStencilMaskRef=true,constantAlphaColorBlendFactors=true,vertexAttributeAccessBeyondStride=true,samplerMirrorClampToEdge=false;
  VkPhysicalDeviceProperties properties{}; VkQueue queue=VK_NULL_HANDLE; uint32_t queueFamily=0;
  bool gpuTimestampsEnabled=false,gpuPassTimestampsEnabled=false;
@@ -95,6 +103,7 @@ struct Renderer {
  uint64_t pipelineCreates=0,pipelineCreateNs=0;
  std::array<Surface*,8> passColors{};
  std::array<uint32_t,8> passSlices{};
+ uint32_t mainDepthAddr=0;
  Surface* passDepth=nullptr;
  uint32_t passDepthSlice=0,passWidth=0,passHeight=0;
  bool passTracked=false;
@@ -103,11 +112,17 @@ struct Renderer {
  struct UploadBlock { Buffer buffer; VkDeviceSize used=0; };
  std::vector<UploadBlock> uploadBlocks;
  uint64_t uploadAllocations=0,uploadBytes=0;
+ // Upload arena memory is HOST_CACHED|HOST_COHERENT (every block so far): CPU reads of it are as fast as
+ // heap reads (Apple silicon/MoltenVK, many UMA drivers). uploadReadsDirect: the snapshot reuse caches
+ // and the native index scan may read mapped upload slices instead of keeping CPU copies (auto: when
+ // uploadCached; WWHD_VK_UPLOAD_READS=shadow|direct forces a mode). Set by allocate_upload.
+ bool uploadCached=false,uploadReadsDirect=false;
  uint64_t vertexHistoryReuseChecks=0,vertexHistoryReuseHits=0,vertexHistoryReuseBytes=0;
  uint64_t vertexHistoryRequests=0,vertexHistoryMatches=0,vertexHistoryBytes=0;
  std::array<uint64_t,7> vertexHistoryDistances{};
  uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
  uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
+ std::vector<std::function<void()>> completions;
  std::vector<Buffer> garbageBuffers;
  std::vector<bufcache::Region> garbageCacheRegions; // buffer cache regions replaced while recording
  struct RetiredImage { VkImage image;VkDeviceMemory memory;std::vector<VkImageView> views; }; std::vector<RetiredImage> garbageImages;
@@ -128,6 +143,7 @@ struct Renderer {
   bool pending=false;
   uint64_t serial=0; // Submission order on the single graphics queue.
   std::vector<UploadBlock> uploadBlocks;
+  std::vector<std::function<void()>> completions;
   std::vector<Buffer> garbageBuffers;
   std::vector<RetiredImage> garbageImages;
   std::vector<bufcache::Region> garbageCacheRegions;
@@ -136,6 +152,7 @@ struct Renderer {
  size_t activeSubmission=0;
  Screen tv,drc;
  std::unordered_multimap<uint32_t,std::unique_ptr<Surface>> surfaces;
+ std::vector<Surface*> linearTargets; // linear-aligned colour surfaces (never removed, like surfaces): GX2DrawDone write-back
 };
 extern Renderer R;
 // Render-thread checkpoint; failures leave the cache dirty for a later retry.
@@ -182,6 +199,10 @@ Surface* surface_from_depth_buffer(uint32_t,uint32_t* firstSlice=nullptr,uint32_
 Surface* sampled_texture(const uint32_t*,bool);
 void upload_surface(Surface*);
 void resample(Surface*,Surface*,uint32_t slices,float uMax=1,float vMax=1,uint32_t dstW=0,uint32_t dstH=0);
+// scaled depth copies: blitted where the device can, else drawn (surfaces.cpp, issue #72);
+// WWHD_VK_DEPTH_COPY=draw / =none override this for tests
+enum class DepthCopyOverride { None, Draw, Unsupported };
+extern DepthCopyOverride g_depthCopyOverride;
 float res_scale();void set_res_scale(float);void latch_res_scale();
 uint64_t next_write_seq();
 inline void mark_gpu_written(Surface* s){s->gpuWritten=true;s->writeSeq=next_write_seq();}

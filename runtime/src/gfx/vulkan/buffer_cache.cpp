@@ -122,10 +122,11 @@ bool buffer_cache_verify() {
   return verify;
 }
 
-// On by default on macOS (verified there: 0 mismatches in verify mode over long gameplay runs); off on
-// Windows, Linux and Android until the verify run and the write-fault cost have been checked on those
-// hosts. WWHD_VK_BUFFER_CACHE=0|1 overrides the default everywhere.
-#if defined(__APPLE__)
+// On by default on macOS (verified there: 0 mismatches in verify mode over long gameplay runs) and on
+// desktop Linux (Steam Deck included; an RK3588 report in issue #50 went from a 20 fps lock to full speed
+// with it); off on Windows and Android until the verify run and the write-fault cost have been checked on
+// those hosts. WWHD_VK_BUFFER_CACHE=0|1 overrides the default everywhere.
+#if defined(__APPLE__) || (defined(__linux__) && !defined(__ANDROID__))
 constexpr bool kBufferCacheDefault = true;
 #else
 constexpr bool kBufferCacheDefault = false;

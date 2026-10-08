@@ -181,8 +181,12 @@ def run_once(args, variant, env_extra, index, out_dir):
         env["WWHD_TEST_RSTICK"] = rstick
     if args.renderer == "vulkan":
         env["WWHD_VK_CPU_ONLY_STATS"] = "1"
-    if args.fps == "60":
+    if args.fps in ("60", "120", "240"):
         env["WWHD_INTERP_AT_STEP"] = str(load_at + 60)
+        if args.fps != "60":  # the rate, without switching interpolation on before the step above
+            env["WWHD_INTERP"], env["WWHD_INTERP_FPS"] = "0", args.fps
+    if args.display_hz is not None:
+        env["WWHD_DISPLAY_HZ"] = str(args.display_hz)
     elif args.fps == "true60":
         env["WWHD_TRUE60_AT_STEP"] = str(load_at + 60)
     if args.uncapped:
@@ -225,14 +229,18 @@ def run_once(args, variant, env_extra, index, out_dir):
     windows = parse_prof(lines[loaded:] if loaded is not None else [])
     windows = windows[args.skip_windows:]
     paced = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[interp\] paced: " + NUM + "% of in-between", l)] if m]
+    steps = [(float(m.group(1)), float(m.group(2))) for l in lines[loaded or 0:]
+             for m in [re.search(r"\[interp\] " + NUM + r" logic steps/s \([^,]*, " + NUM + " frames per step", l)] if m]
     pacing = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[vulkan pacing\].*p95 " + NUM, l)] if m]
     result = {"variant": variant, "run": index, "status": status, "env": env_extra, "load_before": load_before,
               "load_after": load_after, "seconds": round(time.time() - started, 1), "windows": len(windows),
               "summary": summarize(windows) if windows else {}}
     if pacing:
         result["summary"]["vulkan_pacing_p95_ms"] = statistics.fmean(pacing[args.skip_windows:] or pacing)
-    if paced:  # WWHD_INTERP_PACED=1: share of in-between (60 fps) frames drawn, per 300 decisions
+    if paced:  # paced interpolation: share of in-between frames drawn, per 300 steps
         result["summary"]["paced_drawn_pct"] = statistics.fmean(paced[1:] or paced)
+    if steps:  # frame interpolation's own count: logic steps/s and frames per step, per 300 steps
+        result["summary"]["interp_frames_per_step"] = statistics.fmean(f for _, f in (steps[1:] or steps))
     with open(os.path.join(run_dir, "result.json"), "w") as f:
         json.dump({"result": result, "windows": windows}, f, indent=1)
     return result
@@ -246,7 +254,10 @@ def main():
     p.add_argument("--state-dir", required=True, help="folder with slot<N>.bin save states (read only)")
     p.add_argument("--scene", choices=sorted(SCENES), default="outset")
     p.add_argument("--slot", type=int, default=0, help="state slot (default: the scene's)")
-    p.add_argument("--fps", choices=["30", "60", "true60"], default="30", help="60 = frame interpolation")
+    p.add_argument("--fps", choices=["30", "60", "120", "240", "true60"], default="30",
+                   help="60, 120, 240 = frame interpolation (120/240: paced unless WWHD_INTERP_PACED=0)")
+    p.add_argument("--display-hz", type=int, help="WWHD_DISPLAY_HZ: the display refresh rate frame interpolation is "
+                   "capped to (0: no cap; default: the detected one, e.g. 120 on a ProMotion Mac)")
     p.add_argument("--renderer", choices=["vulkan", "metal"], default="vulkan")
     p.add_argument("--visible", action="store_true",
                    help="show the game windows (presentation, swapchain and vsync pacing are only exercised then)")
@@ -305,7 +316,7 @@ def main():
             stats[k] = {"median": statistics.median(vals), "mean": statistics.fmean(vals), "min": min(vals), "max": max(vals),
                         "stdev": statistics.stdev(vals) if len(vals) > 1 else 0.0, "n": len(vals)}
         table[name] = stats
-    meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs")}
+    meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs", "display_hz")}
     meta["binary"] = os.path.basename(args.binary)
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump({"meta": meta, "variants": table, "runs": results}, f, indent=1)
@@ -320,7 +331,7 @@ def main():
                 row += [("%.4g" % s[x]) if s else "" for x in ("median", "min", "max", "n")] if s else ["", "", "", ""]
             w.writerow(row)
     for k in ("frame_ms", "swaps_per_s", "logic_steps_per_s", "render_cpu_ms", "render_idle_ms", "wait_gpu_ms",
-              "game_wait_DrawDone_ms", "paced_drawn_pct", "upload_mib", "draws_per_frame"):
+              "game_wait_DrawDone_ms", "paced_drawn_pct", "interp_frames_per_step", "upload_mib", "draws_per_frame"):
         if any(k in t for t in table.values()):
             print("%-24s %s" % (k, "  ".join("%s %.2f [%.2f..%.2f]" % (n, table[n][k]["median"], table[n][k]["min"], table[n][k]["max"])
                                             for n, _ in variants if k in table[n])))

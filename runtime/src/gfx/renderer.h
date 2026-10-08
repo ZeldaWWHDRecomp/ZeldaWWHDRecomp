@@ -35,6 +35,7 @@ struct Backend {
     void (*copy_surface)(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst, uint32_t dstMip, uint32_t dstSlice);
     void (*copy_to_scan)(uint32_t colorBuffer, uint32_t target);
     void (*swap)();
+    void (*peek_z)(const uint32_t* cells, uint32_t words);
     void (*set_frame_aspect)(float a);
     bool (*target_aspect_factors)(uint32_t w, uint32_t h, float& kx, float& ky);
     uint64_t (*frames_completed)();
@@ -43,6 +44,7 @@ struct Backend {
     void (*invalidate)(uint32_t flags, uint32_t addr, uint32_t size);
     void (*guest_flush)();         // GX2Flush
     void (*wait_idle)();           // GX2DrawDone
+    void (*write_back)();          // GX2DrawDone: render results the CPU reads (linear targets) to guest memory
     void (*ss_reset)();            // a save state was loaded: forget surfaces and shader memos
     // any thread
     uint64_t (*frame_count)();
@@ -110,6 +112,7 @@ inline void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint3
 }
 inline void copy_to_scan(uint32_t cb, uint32_t target) { g_backend->copy_to_scan(cb, target); }
 inline void swap() { g_backend->swap(); }
+inline void peek_z(const uint32_t* cells, uint32_t words) { g_backend->peek_z(cells, words); }
 inline void set_frame_aspect(float a) { g_backend->set_frame_aspect(a); }
 inline bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) { return g_backend->target_aspect_factors(w, h, kx, ky); }
 inline uint64_t frames_completed() { return g_backend->frames_completed(); }
@@ -118,6 +121,7 @@ inline void set_tv_format(uint32_t f, bool tv) { g_backend->set_tv_format(f, tv)
 inline void invalidate(uint32_t flags, uint32_t addr, uint32_t size) { g_backend->invalidate(flags, addr, size); }
 inline void guest_flush() { g_backend->guest_flush(); }
 inline void wait_idle() { g_backend->wait_idle(); }
+inline void write_back() { if (g_backend->write_back) g_backend->write_back(); }
 inline void ss_reset() { g_backend->ss_reset(); }
 uint64_t frame_count();  // 0 before the renderer started
 inline void request_tv_dump(const std::string& path, int frames_ahead) { g_backend->request_tv_dump(path, frames_ahead); }
@@ -132,6 +136,11 @@ inline bool ao_hires() { return g_backend->ao_hires(); }
 inline void set_ao_hires(bool v) { g_backend->set_ao_hires(v); }
 inline bool aniso() { return g_backend->aniso(); }
 inline void set_aniso(bool v) { g_backend->set_aniso(v); }
+// Bloom intensity multiplier: 0 off, 1 original, 2 double. Shared by both renderers.
+float bloom_strength();
+void set_bloom_strength(float strength);
+// The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
+void scale_bloom_uniforms(void* remapped, size_t size);
 inline bool fxaa() { return g_backend->fxaa(); }
 inline void set_fxaa(bool v) { g_backend->set_fxaa(v); }
 inline bool feature_available(Feature f) { return g_backend->feature_available(f); }

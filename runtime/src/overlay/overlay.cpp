@@ -3,12 +3,17 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "perf_average.h"
+#ifdef __ANDROID__
+#include "android_telemetry.h"
+#endif
 
 #include <algorithm>
 #include <cstdarg>
 #include <functional>
 #include <atomic>
 #include <chrono>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -25,6 +30,9 @@
 #include "../crashrec.h"
 #include "../game_languages.h"
 #include "../gfx/renderer.h"
+#ifdef __ANDROID__
+#include "../gfx/vulkan/android_driver.h"
+#endif
 #ifdef WWHD_HAS_VULKAN
 #include "../gfx/vulkan/settings.h"
 namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
@@ -38,20 +46,15 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
+#include "../interp.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../render_prof.h"
 #include "../build_info.h"
 #include "../report_header.h"
 
-namespace interp {
-int mode();  // 0 off, 1 frame interpolation, 2 true 60
-void set_mode(int m);
-bool paced_interpolation();  // 60 fps frame interpolation keeps the game's speed (skips in-between frames)
-void set_paced_interpolation(bool on);
-float paced_drawn_share();  // share of in-between frames drawn lately (paced and on), -1 otherwise
-}
-namespace gx2 { uint64_t flips_presented(); }
+namespace gx2 { uint64_t flips_presented(); bool uncapped(); void set_uncapped(bool on); }
 
 namespace overlay {
 namespace {
@@ -61,6 +64,7 @@ double now_s() { return std::chrono::duration<double>(clock::now().time_since_ep
 
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_perf{false};
+PerfAverage g_average;
 std::atomic<float> g_density{1.0f};
 std::atomic<bool> g_wait_release{false};  // just closed: the game sees no buttons until all are released
 std::atomic<double> g_last_frame{0};      // frame() ran (alive(): the game's text prompt can show)
@@ -155,6 +159,8 @@ struct Ui {
     // language (applies on the next start)
     int language = -1;
     int language_at_start = -1;  // the language this start runs with (game_lang: the one on the disc)
+    int language_region = 0;     // game_lang region of a language source (0: the installed game)
+    int language_region_at_start = 0;
     bool linearized = false;
     bool just_opened = false;
     bool list_view = false;  // Controls: the table instead of the drawing
@@ -442,7 +448,13 @@ void tab_saves() {
     std::string msg = ss::last_message();
     if (!msg.empty()) note("%s", msg.c_str());
     heading("Save states");
-    note("A save state keeps the whole running game. Shift+F1..F5 save in game, F2..F5 load (F1 opens this menu).");
+    const bool full = ss::full_states();
+    if (full)
+        note("Full save states: the whole running game (large, contain game data: never share them). Shift+F1..F5 save in "
+             "game, F2..F5 load (F1 opens this menu).");
+    else
+        note("A save state keeps your progress and where Link stands (a few KB, no game data). Loading enters that place "
+             "with that progress; enemies and cutscenes start fresh. Shift+F1..F5 save in game, F2..F5 load (F1 opens this menu).");
     if (ImGui::BeginTable("slots", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableSetupColumn("Saved");
@@ -458,8 +470,18 @@ void tab_saves() {
             if (!s.used) ImGui::TextDisabled("empty");
             else {
                 std::string d = s.when + (s.area.empty() ? "" : "  -  " + s.area);
+                if (!s.portable) d += "  (full)";
                 if (!s.compatible) d += "  (incompatible)";
                 ImGui::TextUnformatted(d.c_str());
+                if (s.older_other && s.portable) {
+                    // decision: an older full state stays on disk; say so (it is large and must not be shared)
+                    ImGui::TextDisabled("also holds an older full state (slot%d.bin, %.0f MB)", i, s.older_bytes / 1048576.0);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Kept on disk, not loaded: the newer portable state is. It contains game data: "
+                                          "don't share it. Delete it in the states folder if you no longer need it.");
+                } else if (s.older_other) {
+                    ImGui::TextDisabled("also holds an older portable state (slot%d.wwstate)", i);
+                }
             }
             ImGui::TableNextColumn();
             if (ImGui::Button("Save")) {
@@ -477,6 +499,51 @@ void tab_saves() {
         }
         ImGui::EndTable();
     }
+    // bug reports: the portable state and the save file, never a full state
+    static double copiedAt = -10;
+    if (ImGui::Button("Copy save for bug report")) {
+        std::string text = ss::bug_report_text();
+        hostui::post([text] { hostui::set_clipboard(text); });
+        copiedAt = ImGui::GetTime();
+    }
+    if (ImGui::GetTime() - copiedAt < 2.0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("Copied");
+    }
+    help("Copies the paths of your newest save state and of your save file (cking.sav): attach both files to the bug "
+         "report. Save a state at the place of the problem first.");
+    note("States folder: %s", ss::states_dir().c_str());
+    bool fs;
+    if (check("Full save states (large, contain game data, don't share) - for debugging", full, &fs, !ss::full_states_forced()))
+        ss::set_full_states(fs);
+    help(ss::full_states_forced() ? "Set by WWHD_FULL_SAVE_STATES or a test variable for this start."
+                                  : "Saves the whole running game instead (about 300 MB per slot), exactly as it is. "
+                                    "These files contain game code and data: never attach them to a bug report.");
+    heading("Screenshots");
+    {
+        // the Screenshot binding (Controls tab): its keys and controller input
+        const input_map::Mapping m = input_map::current();
+        std::string keys;
+        for (int k : m.keys[input_map::kScreenshot])
+            if (k != input_map::kNoKey) keys += (keys.empty() ? "" : " or ") + input_map::key_label(k);
+        if (m.pad[input_map::kScreenshot] != input_map::kPadNone)
+            keys += (keys.empty() ? "controller " : " or controller ") + std::string(input_map::pad_short_label(m.pad[input_map::kScreenshot]));
+        if (keys.empty()) note("Screenshot is not bound: set a key in the Controls tab (Screenshot).");
+        else note("%s in game saves the TV picture as a PNG at the internal resolution, without this menu (change the key in Controls).", keys.c_str());
+    }
+    bool gp;
+    if (check("Also save the GamePad screen (while it is shown)", screenshot::gamepad_too(), &gp))
+        hostui::post([gp] { screenshot::set_gamepad_too(gp); });
+    help("A second file, ..._GamePad.png, while the GamePad picture is on screen (its window or the overlay in the TV picture).");
+    if (hostui::can_open_folder()) {
+        if (ImGui::Button("Open screenshots folder")) {
+            std::string d = screenshot::dir();
+            hostui::post([d] { hostui::open_folder(d); });
+        }
+        ImGui::SameLine();
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", screenshot::dir().c_str());
     heading("Crash Recovery");
     bool on;
     if (check("Crash Recovery (automatic state every few minutes)", crashrec::enabled(), &on)) crashrec::set_enabled(on);
@@ -500,6 +567,25 @@ void tab_saves() {
 }
 
 void tab_graphics() {
+#ifdef __ANDROID__
+    heading("GPU driver (Snapdragon / Adreno)");
+    note("Active: %s", gfxvk::drivers::active_name().c_str());
+    auto driver_action = [](auto fn) { hostui::post([fn] { try { fn(); } catch (const std::exception& e) { LOG("[vulkan driver] %s", e.what()); } }); };
+    if (ImGui::Button("Install driver ZIP...")) driver_action([] { gfxvk::drivers::request_install(); });
+    auto selected = gfxvk::drivers::selection();
+    if (radio("System driver", selected.empty())) driver_action([] { gfxvk::drivers::select(""); });
+    for (const auto& driver : gfxvk::drivers::installed()) {
+        ImGui::PushID(driver.id.c_str());
+        auto id = driver.id;
+        if (radio((driver.name + " " + driver.version).c_str(), selected == id))
+            driver_action([id] { gfxvk::drivers::select(id); });
+        ImGui::SameLine();
+        if (ImGui::Button("Remove")) driver_action([id] { gfxvk::drivers::remove(id); });
+        ImGui::PopID();
+    }
+    note("%s", gfxvk::drivers::message().c_str());
+    help("Driver changes take effect on restart. An unfinished first 120-frame probe selects the system driver on the next start.");
+#endif
     if (render::can_choose()) {
         heading("Renderer (takes effect after a restart)");
         for (render::Api a : {render::Api::Metal, render::Api::Vulkan}) {
@@ -517,20 +603,46 @@ void tab_graphics() {
         }
     }
     heading("Frame rate");
-    int m = interp::mode();
+    int m = interp::mode(), f = interp::fps();
     if (radio("30 fps (original)", m == 0)) post_changed([] { interp::set_mode(0); });
-    ImGui::SameLine();
-    if (radio("60 fps: frame interpolation", m == 1)) post_changed([] { interp::set_mode(1); });
-    ImGui::SameLine();
+    for (int r : {60, 120, 240}) {
+        ImGui::SameLine();
+        char label[16];
+        snprintf(label, sizeof label, "%d fps", r);
+        if (radio(label, m == 1 && f == r)) post_changed([r] { interp::set_fps(r); interp::set_mode(1); });
+    }
+    help("60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
+         "frames in between are drawn blended (1 in-between frame per step at 60 fps, 3 at 120 fps,\n"
+         "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.");
     if (radio("True 60 (experimental)", m == 2)) post_changed([] { interp::set_mode(2); });
     help("True 60 runs the game logic at 60 steps per second");
+    // the display's refresh rate, and what the chosen rate draws on it (interp::output_fps)
+    if (const int hz = interp::display_hz(); hz > 0) {
+        const int out = interp::output_fps();
+        if (m == 1 && out < f)
+            note("Your display: %d Hz. %d fps needs a %d Hz display; %d fps are drawn (the display cannot show more).", hz, f, f, out);
+        else if (m == 1 && f > hz + 2)
+            note("Your display: %d Hz. Frames beyond %d a second are drawn but not shown (presentation without vsync).", hz, hz);
+        else
+            note("Your display: %d Hz", hz);
+    } else if (m == 1 && f > 60) {
+        note("Display refresh rate unknown: %d fps are drawn; frames beyond the display's rate are not shown.", f);
+    }
     if (m == 1) {
         bool paced;
         if (check("Keep game speed", interp::paced_interpolation(), &paced, !getenv("WWHD_INTERP_PACED")))
             post_changed([paced] { interp::set_paced_interpolation(paced); });
-        help("When the computer cannot draw 60 frames a second, skip in-between frames instead of\n"
-             "slowing the whole game down. The performance overlay shows how many are drawn.");
+        help("When the computer cannot draw all frames, skip in-between frames instead of slowing the\n"
+             "whole game down. The performance overlay shows how many are drawn.\n"
+             "Saved separately for 60 fps (off by default) and 120/240 fps (on by default).");
     }
+    // debug only, not saved (gx2::uncapped)
+    bool unc;
+    if (check("Uncapped (debug: the game runs too fast)", gx2::uncapped(), &unc)) hostui::post([unc] { gx2::set_uncapped(unc); });
+    help("Debug only, to see how many frames a second this computer can draw: no frame limit and no\n"
+         "vsync. The game counts frames, so it runs faster than normal. The frame rate is in the window\n"
+         "title and the performance overlay. Not saved. (With frame interpolation and Keep game speed\n"
+         "on, the game logic still keeps 30 steps a second.)");
 
     heading("Internal resolution");
     static const float scales[] = {1.0f, 1.5f, 2.0f, 3.0f};
@@ -551,6 +663,15 @@ void tab_graphics() {
 
     heading("Effects");
     bool v;
+    float bloom = render::bloom_strength() * 100.0f;
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::SliderFloat("Bloom strength", &bloom, 0.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+        post_changed([bloom] { render::set_bloom_strength(bloom / 100.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Off##bloom")) post_changed([] { render::set_bloom_strength(0.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Default##bloom")) post_changed([] { render::set_bloom_strength(1.0f); });
+    help("Glow around bright areas. 100% matches the original game; 0% turns bloom off. Applies immediately.");
     const bool ao_ok = render::feature_available(render::kFeatureAO);
     static const char* const ao[] = {"AO: original", "AO: centre fix", "AO: centre + noise fix"};
     for (int i = 0; i < 3; i++) {
@@ -599,6 +720,7 @@ void tab_graphics() {
 #endif
     heading("Overlay");
     if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
+    if (ImGui::Button("Reset performance averages")) g_average.reset();
     // the render-thread profiler's latest report (render_prof.h), for performance bug reports
     static double copiedAt = -10;
     if (ImGui::Button("Copy performance report")) {
@@ -906,6 +1028,20 @@ void tab_mods() {
                 float speed = mods::camera_speed();
                 if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
                     hostui::post([speed] { mods::set_camera_speed(speed); hostui::set("mod.direct-camera.speed", std::to_string(speed)); mods::packages::remember_option("direct-camera.speed", speed); });
+            } else if (selected == "move-speed") {
+                float speed = mods::move_speed_factor();
+                if (ImGui::SliderFloat("Run/swim multiplier", &speed, 1.25f, 4.f, "%.2fx"))
+                    hostui::post([speed] { mods::set_move_speed_factor(speed); hostui::set("mod.move-speed.factor", std::to_string(speed)); mods::packages::remember_option("move-speed.factor", speed); });
+                const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
+                const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
+                for (int i = 0; i < 6; ++i) {
+                    if (i) ImGui::SameLine();
+                    if (radio(names[i], mods::move_speed_button() == buttons[i])) {
+                        auto button = buttons[i];
+                        hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
+                    }
+                }
+                help("Hold to boost horizontal movement while running or swimming. Rebind the chosen game button in Controls.");
             } else if (selected == "mouse-camera") {
                 float sensitivity = mods::mouse_sensitivity();
                 if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))
@@ -1060,11 +1196,17 @@ void save_gyro(const motion::Settings& g) {
 void load_gyro() {
     motion::Settings g;
     std::string v;
+    bool saved = false, axis = false;
     for (const char* k : motion::kKeys)
-        if (hostui::get(k, v)) motion::from_kv(g, k, v);
+        if (hostui::get(k, v)) {
+            motion::from_kv(g, k, v);
+            saved = true;
+            axis |= !strcmp(k, "gyro.axis");
+        }
+    if (saved && !axis) motion::upgrade_from_first_release(g);
     motion::set_settings(g);
 }
-// the Gyro window (Controls tab > Gyro...): source, sensitivity, invert, recenter, Cemuhook server
+// the Gyro window (Controls tab > Gyro...): source, axis, sensitivity, invert, recalibrate, Cemuhook server
 void gyro_window(bool& open) {
     const char* title = "Gyro aiming##gyro";
     if (open) { ImGui::OpenPopup(title); open = false; }
@@ -1074,24 +1216,41 @@ void gyro_window(bool& open) {
     bool v;
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34);
     note("On the Wii U you aim in first person (bow, hookshot, boomerang, telescope, Picto Box, grappling hook) by "
-         "moving the GamePad. The game's own Options > Gyro switch still decides whether it uses the motion.");
+         "moving the GamePad. This works with the GamePad and the Pro Controller choice alike. The game's own "
+         "Options > Gyro switch still decides whether it uses the motion, and it ignores the motion while the right "
+         "stick is pushed.");
     for (int i = 0; i < motion::kSourceCount; i++)
         if (radio(motion::source_label(i), g.source == i)) g.source = i;
     if (motion::env_override()) note("WWHD_GYRO=%s overrides the saved source.", getenv("WWHD_GYRO"));
     if (g.source == motion::kOff && motion::gyro_controllers() > 0) note("A controller with a gyro is connected: choose Controller gyro to use it.");
+    if (g.source == motion::kController || g.source == motion::kCemuhook) {
+        ImGui::TextUnformatted("Turn left/right by");
+        for (int a = 0; a < motion::kAxisModeCount; a++) {
+            ImGui::SameLine();
+            if (radio(motion::axis_label(a), g.tuning.axis == a)) g.tuning.axis = a;
+        }
+        help("Player space: turning the controller left or right about the real vertical, however you hold it "
+             "(recommended). Yaw: turning it about its own vertical axis (as if it lay flat). Roll: tilting it to "
+             "the side like a steering wheel. Tilting its top up or down always looks up or down.");
+    }
+    const float lo = motion::Tuning::kMinSensitivity, hi = motion::Tuning::kMaxSensitivity;
     ImGui::SetNextItemWidth(220);
-    ImGui::SliderFloat("Sensitivity left/right", &g.tuning.sensitivity_x, 0.1f, 5.0f, "%.2fx");
+    ImGui::SliderFloat("Sensitivity left/right", &g.tuning.sensitivity_x, lo, hi, "%.2fx", ImGuiSliderFlags_Logarithmic);
     ImGui::SameLine(0, 16);
     if (check("Invert##x", g.tuning.invert_x, &v)) g.tuning.invert_x = v;
     ImGui::SetNextItemWidth(220);
-    ImGui::SliderFloat("Sensitivity up/down", &g.tuning.sensitivity_y, 0.1f, 5.0f, "%.2fx");
+    ImGui::SliderFloat("Sensitivity up/down", &g.tuning.sensitivity_y, lo, hi, "%.2fx", ImGuiSliderFlags_Logarithmic);
     ImGui::SameLine(0, 16);
     if (check("Invert##y", g.tuning.invert_y, &v)) g.tuning.invert_y = v;
+    if (ImGui::Button("Default sensitivity"))
+        g.tuning.sensitivity_x = g.tuning.sensitivity_y = motion::Tuning::kDefaultSensitivity;
+    help("1.0 turns the view as far as moving a real Wii U GamePad by the same angle would (about twice the "
+         "controller's turn); the default 0.5 lets the view follow the controller about one to one.");
     if (g.source == motion::kMouse) {
         ImGui::SetNextItemWidth(220);
         ImGui::SliderFloat("Mouse: degrees per point", &g.mouse_degrees, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-        help("How far one point of mouse movement turns the GamePad. With Steam Input's gyro to mouse, tune this and "
-             "Steam's own sensitivity together.");
+        help("How far one point of mouse movement turns the GamePad (before the sensitivity above). With Steam "
+             "Input's gyro to mouse, tune this and Steam's own sensitivity together.");
         note("While the game aims, the pointer is captured and the mouse turns the GamePad (the mouse camera mod "
              "leaves it alone then).");
     }
@@ -1111,17 +1270,17 @@ void gyro_window(bool& open) {
         if (ImGui::SliderInt("Controller slot", &slot, 1, 4)) g.dsu_slot = slot - 1;
         note("A Cemuhook (DSU) server: DS4Windows, BetterJoy, SteamDeckGyroDSU or a phone app; default 127.0.0.1, port 26760.");
     }
-    // recenter: a controller input and/or a key
+    // recalibrate: a controller input and/or a key
     const char* pad_name = g.recenter_pad > 0 ? input_map::pad_label(g.recenter_pad) : "None";
     ImGui::SetNextItemWidth(220);
-    if (ImGui::BeginCombo("Recenter: controller", pad_name)) {
+    if (ImGui::BeginCombo("Recalibrate: controller", pad_name)) {
         for (int p = 0; p < input_map::kPadCount; p++)
             if (ImGui::Selectable(p ? input_map::pad_label(p) : "None", g.recenter_pad == p)) g.recenter_pad = p;
         ImGui::EndCombo();
     }
     std::string key_name = g.recenter_key >= 0 ? input_map::key_label(g.recenter_key) : "None";
     ImGui::SetNextItemWidth(220);
-    if (ImGui::BeginCombo("Recenter: key", key_name.c_str())) {
+    if (ImGui::BeginCombo("Recalibrate: key", key_name.c_str())) {
         if (ImGui::Selectable("None", g.recenter_key < 0)) g.recenter_key = -1;
         for (int k = 0; k < 256; k++) {
             std::string id = input_map::key_id(k);
@@ -1130,8 +1289,10 @@ void gyro_window(bool& open) {
         }
         ImGui::EndCombo();
     }
-    help("The button or key also reaches the game if the controls use it; pick a free one.");
-    if (ImGui::Button("Recenter now")) motion::recenter();
+    help("If the view drifts while the controller rests, recalibrate and put the controller down for a second: "
+         "the gyro's offset is learnt anew. The button or key also reaches the game if the controls use it; pick "
+         "a free one.");
+    if (ImGui::Button("Recalibrate now")) motion::recalibrate();
     ImGui::SameLine();
     ImGui::TextUnformatted(motion::status().c_str());
     ImGui::PopTextWrapPos();
@@ -1264,12 +1425,31 @@ int saved_language() {
     return 1;
 }
 
+// the region of the saved language when it comes from a language source (game_lang::kNoRegion: the game's own)
+int saved_language_region() {
+    std::string v;
+    if (hostui::get("language_region", v)) {
+        const int r = game_lang::region_from_code(v);
+        if (r != game_lang::kUsa) return r;
+    }
+    return game_lang::kNoRegion;
+}
+
 // "English, French and Spanish"
 std::string language_list(const std::vector<int>& langs) {
     std::string s;
     for (size_t k = 0; k < langs.size(); k++)
         s += std::string(k == 0 ? "" : k + 1 == langs.size() ? " and " : ", ") + game_lang::name(langs[k]);
     return s;
+}
+
+void choose_language(int language, int region) {
+    U.language = language;
+    U.language_region = region;
+    hostui::post([language, region] {
+        hostui::set("language", std::to_string(language));
+        hostui::set("language_region", game_lang::region_code(region));
+    });
 }
 
 void tab_about() {
@@ -1280,8 +1460,16 @@ void tab_about() {
     const int env_language = env_set && !*end && env_value >= 0 && env_value < game_lang::kLanguages ? (int)env_value : 1;
     if (U.language < 0) {
         U.language = saved_language();
-        U.language_at_start = game_lang::started();  // the game reads it early in the boot
-        if (U.language_at_start < 0) U.language_at_start = game_lang::usable(env_set ? env_language : U.language);
+        U.language_region = saved_language_region();
+        const game_lang::Start now = game_lang::current();
+        U.language_at_start = now.language;  // the game reads it early in the boot
+        U.language_region_at_start = now.pack ? now.region : game_lang::kNoRegion;
+        if (U.language_at_start < 0) {
+            const game_lang::Start s = game_lang::choose(env_set ? env_language : U.language,
+                                                         env_set ? game_lang::kNoRegion : U.language_region);
+            U.language_at_start = s.language;
+            U.language_region_at_start = s.pack ? s.region : game_lang::kNoRegion;
+        }
     }
     const std::vector<int>& avail = game_lang::available();
     heading("Console language (applies on the next start)");
@@ -1294,21 +1482,42 @@ void tab_about() {
     ImGui::BeginDisabled(env_set);
     for (int i : {1, 2, 5, 3, 4, 8, 9, 10, 7, 0, 6, 11}) {
         if (i != 1 && i != 3 && i != 9 && i != 0) ImGui::SameLine();  // rows of three
-        if (radio(game_lang::name(i), U.language == i, game_lang::is_available(i))) {
-            U.language = i;
-            hostui::post([i] { hostui::set("language", std::to_string(i)); });
+        if (radio(game_lang::name(i), U.language == i && U.language_region == game_lang::kNoRegion,
+                  game_lang::is_available(i)))
+            choose_language(i, game_lang::kNoRegion);
+    }
+    // the languages of the language sources (a European or Japanese disc of the player's, set up with
+    // the setup's --language-source): docs/language-packs.md
+    for (int region : {(int)game_lang::kEurope, (int)game_lang::kJapan}) {
+        const std::vector<int> langs = game_lang::source_languages(region);
+        if (langs.empty()) continue;
+        heading(region == game_lang::kEurope ? "From your European game (language source, experimental)"
+                                             : "From your Japanese game (language source, experimental)");
+        for (size_t k = 0; k < langs.size(); k++) {
+            if (k % 3) ImGui::SameLine();
+            const std::string label = std::string(game_lang::name(langs[k])) + " (" + game_lang::region_name(region) + ")";
+            if (radio(label.c_str(), U.language == langs[k] && U.language_region == region))
+                choose_language(langs[k], region);
         }
     }
+    if (!game_lang::source_languages(game_lang::kJapan).empty())
+        note("Japanese language sources are untested so far: report what looks wrong.");
     ImGui::EndDisabled();
+    const bool from_source = U.language_region != game_lang::kNoRegion &&
+                             game_lang::source_pack(U.language, U.language_region) != nullptr;
     if (env_set) {
         note("WWHD_LANGUAGE=%s is set for this start and takes precedence.", env);
         if (!game_lang::is_available(env_language))
             warn("%s is not on this disc: the game runs in %s.", game_lang::name(env_language),
                  game_lang::name(game_lang::usable(env_language)));
-    } else if (!game_lang::is_available(U.language)) {
+    } else if (U.language_region != game_lang::kNoRegion && !from_source) {
+        warn("%s (%s) is saved but its language source is missing (%s): the game runs in %s.",
+             game_lang::name(U.language), game_lang::region_name(U.language_region),
+             game_lang::sources_dir().c_str(), game_lang::name(game_lang::usable(U.language)));
+    } else if (!from_source && !game_lang::is_available(U.language)) {
         warn("%s is saved but is not on this disc: the game runs in %s. Choose one of the languages above.",
              game_lang::name(U.language), game_lang::name(game_lang::usable(U.language)));
-    } else if (U.language != U.language_at_start) {
+    } else if (U.language != U.language_at_start || (from_source ? U.language_region : 0) != U.language_region_at_start) {
         warn("%s is saved. Restart the game to apply it: the game reads the console language only when it starts.",
              game_lang::name(U.language));
     }
@@ -1346,11 +1555,19 @@ void perf_window(bool menu_open) {
                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##perf", nullptr, fl)) {
         ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
+        ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
+#ifdef __ANDROID__
+        static AndroidTelemetry telemetry;
+        static double next_read = 0;
+        if (t >= next_read) { telemetry.read(); next_read = t + 2; }
+        if (telemetry.busy >= 0) ImGui::Text("GPU busy %.0f%%", telemetry.busy);
+        for (const auto& [name, value] : telemetry.temperatures)
+            ImGui::Text("%s %.1f C", name.c_str(), value);
+#endif
         ImGui::PlotLines("##ft", U.frame_ms, 120, U.frame_i, nullptr, 0.0f, 50.0f, ImVec2(220, 36));
-        ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(),
-                            interp::mode() == 2 ? "true 60" : interp::mode() == 1 ? "60 fps" : "30 fps");
+        ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(), interp::mode_name());
         if (float share = interp::paced_drawn_share(); share >= 0)
-            ImGui::TextDisabled("60 fps frames drawn: %.0f%%", share * 100.0f);
+            ImGui::TextDisabled("in-between frames drawn: %.0f%%", share * 100.0f);
     }
     ImGui::End();
     (void)menu_open;
@@ -1530,11 +1747,16 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     U.last_present = t;
     g_last_frame = t;
+    g_average.sample(t, gx2::flips_presented(), interp::executed_steps(), int(render::active()),
+                     interp::mode(), interp::fps(), hostui::res_scale());
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    // save state notices (saved, refused during a cutscene, loaded into another Quest Log) show over the
+    // game for a few seconds while the menu is closed (the window title is not visible everywhere)
+    const std::string toast = open ? std::string() : ss::last_message();
     U.linearized = false;
-    if (!open && !perf && !text) {
+    if (!open && !perf && !text && toast.empty()) {
         if (U.init) {  // forget events and pressed keys while nothing is shown
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
@@ -1588,6 +1810,19 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
     }
     if (perf) perf_window(open);
+    if (!toast.empty()) {
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 24), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+        ImGui::SetNextWindowBgAlpha(0.7f);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(io.DisplaySize.x * 0.8f, FLT_MAX));
+        const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+        if (ImGui::Begin("##savestate_notice", nullptr, fl)) {
+            ImGui::PushTextWrapPos(io.DisplaySize.x * 0.75f);
+            ImGui::TextUnformatted(toast.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::End();
+    }
     ImGui::Render();
     return ImGui::GetDrawData();
 }

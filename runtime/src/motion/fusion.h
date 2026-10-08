@@ -1,22 +1,28 @@
-// Motion sensor math for the virtual GamePad gyro (see motion.h): axis mapping of the host sources,
-// orientation integration with gravity correction and gyro bias estimation, and the VPAD values.
+// Motion sensor math for the virtual GamePad gyro (see motion.h): axis mapping of the host sources, gyro
+// bias estimation, the gravity direction, the aim conventions (player space, yaw, roll) and the virtual
+// GamePad whose direction matrix VPADRead reports.
 //
 // Plain C++ (no SDL, no sockets), unit-tested in runtime/tools/motion_test.cpp.
 //
-// Frames. The VPAD values follow the conventions Cemu established by recording a real GamePad
-// (cemu/src/input/motion/MotionSample.h); WWHD's gyro aiming works with them in Cemu, so they are
-// what this port reproduces. Adapted from Cemu (MPL-2.0, https://github.com/cemu-project/Cemu):
-// the axis signs of the SDL and DSU sources, the attitude matrix layout and the gravity-feedback
-// gain; the code here is our own.
-//   - Host frame "H" (what Fusion integrates), right-handed: the SDL controller frame turned by 180
-//     degrees about X: x right, y down out of the face, z away from the player. acc_H is the gravity
-//     direction in g (at rest flat on a table: (0, 1, 0)); gyro_H is in radians per second.
-//   - World frame: the pose "flat on the table, top away from the player" is the 90 degree turn of
-//     H about X; gravity is world +Z.
-//   - GamePad frame (VPAD): x = H.x, y = H.y, z = -H.z (a mirror of H, as the hardware reports).
-//     VPAD gyro is in revolutions per second (1.0 = 360 deg/s), angle in revolutions, acc in g
-//     (specific force), dir = the GamePad's X, Y and Z axes in world coordinates (x, z, y swizzle),
-//     the identity when it lies flat with its top away from the player.
+// How the game reads it (docs/gyro.md): WWHD's first-person camera (dCamera_c::CalcSubjectAngle) only uses
+// the change of the GamePad's direction matrix from one frame to the next, R = Cᵀ·M with C the previous
+// frame's matrix: yaw input (R[2][0] − R[1][0])·30, pitch input R[2][1]·30, both used like a right-stick
+// value. R is the turn in the GamePad's own frame, so the port does not mirror the controller's pose: each
+// source works out how far the player turned (left/right, up/down) and the virtual GamePad turns by exactly
+// that about its own axes. The camera then follows the same way however the controller is held, nothing
+// jumps when a controller connects, disconnects or the source changes, and the pose can never drift into a
+// position where a turn reads as something else.
+//
+// Frames. Adapted from Cemu (MPL-2.0, https://github.com/cemu-project/Cemu): the axis signs of the SDL and
+// DSU sources and the VPAD layout; the code here is our own.
+//   - Host frame "H": the SDL controller frame turned by 180 degrees about X: x right, y down out of the
+//     face, z away from the player. acc_H is the gravity direction in g (at rest flat on a table:
+//     (0, 1, 0)); gyro_H is in radians per second. In H, turning a flat controller to the right is +y,
+//     tilting its top up is +x and rolling it to the right (right side down) is +z.
+//   - GamePad frame (VPAD): x = H.x, y = H.y, z = -H.z (a mirror of H, as the hardware reports). VPAD gyro is
+//     in revolutions per second (1.0 = 360 deg/s), angle in revolutions, acc in g (specific force), dir = the
+//     GamePad's X, Y and Z axes in world coordinates (x, z, y swizzle), the identity when it lies flat with
+//     its top away from the player.
 #pragma once
 #include <cmath>
 #include <cstdint>
@@ -68,51 +74,85 @@ void from_sdl(const float gyro[3], const float accel[3], Vec3& gyro_h, Vec3& acc
 // Cemuhook (DSU): gyro deg/s (pitch, yaw, roll) and acceleration in g, as DS4Windows and the others send
 void from_dsu(const float gyro_deg[3], const float accel_g[3], Vec3& gyro_h, Vec3& acc_h);
 
-// Settings the fusion applies to every source (Gyro settings in the overlay's Controls tab)
-struct Tuning {
-    float sensitivity_x = 1, sensitivity_y = 1;  // multiplier on yaw (horizontal) and pitch (vertical) turning
-    bool invert_x = false, invert_y = false;
-    bool operator==(const Tuning&) const = default;
+// Which motion of the controller turns the view left/right (the usual gyro aiming conventions, as in
+// JoyShockMapper and Steam Input). Up/down is always tilting the controller's top up or down.
+enum AxisMode : int {
+    kPlayerSpace,  // turning about the real vertical, however the controller is held (default)
+    kYawAxis,      // turning about the controller's own vertical axis (best held flat)
+    kRollAxis,     // rolling it like a steering wheel
+    kAxisModeCount
+};
+const char* axis_id(int a);     // "player", "yaw", "roll"
+const char* axis_label(int a);
+int axis_from_id(const char* id);  // -1 if unknown
+
+// How far the player turned the controller: radians to the right and up.
+struct Aim {
+    float yaw = 0, pitch = 0;
+    Aim operator+(Aim o) const { return {yaw + o.yaw, pitch + o.pitch}; }
 };
 
-// Orientation integration (Mahony-style complementary filter): gyro integrated in the body frame,
-// pulled towards the measured gravity (no drift in pitch and roll), and a gyro bias estimated while
-// the controller rests (no slow yaw drift). One instance per source.
+// The player's settings for every source (Gyro settings in the overlay's Controls tab). Sensitivity is the
+// virtual GamePad's turn per turn of the controller: at 1.0 the camera turns as far as with a real GamePad
+// turned by the same angle. The game turns its first-person camera about 1.9x the GamePad's left/right turn
+// and 1.5x its up/down tilt (measured in R3 look), so the default 0.5 is close to the view following the
+// controller one to one.
+struct Tuning {
+    static constexpr float kDefaultSensitivity = 0.5f, kMinSensitivity = 0.05f, kMaxSensitivity = 5.0f;
+    float sensitivity_x = kDefaultSensitivity, sensitivity_y = kDefaultSensitivity;  // left/right, up/down
+    bool invert_x = false, invert_y = false;
+    int axis = kPlayerSpace;  // AxisMode (controller sources; the mouse already moves left/right and up/down)
+    bool operator==(const Tuning&) const = default;
+    Aim apply(Aim a) const {
+        return {a.yaw * sensitivity_x * (invert_x ? -1.0f : 1.0f), a.pitch * sensitivity_y * (invert_y ? -1.0f : 1.0f)};
+    }
+};
+
+// One motion sensor (a controller or the Cemuhook slot): gyro bias estimation while the controller rests
+// (no slow drift), a noise floor, the gravity direction (accelerometer, carried along by the gyro) and the
+// aim it reads from the motion under an AxisMode.
 class Fusion {
 public:
-    Fusion() { reset(); }
-    void reset();          // flat, top away from the player; bias and angle kept
-    void recenter();       // heading back to "forward" (turn about gravity), angle zeroed, tilt kept
+    void recalibrate();    // learn the gyro bias anew the next time the controller rests
     // one sensor sample: dt seconds since the previous one, gyro_h rad/s, acc_h in g (zero vector: no
-    // accelerometer, e.g. the mouse source)
-    void update(float dt, Vec3 gyro_h, Vec3 acc_h, const Tuning& t);
-    // the VPAD values now; the gyro is the mean rate since the previous call (the game reads 30 or
-    // 60 times a second, sensors send 100-1000 samples), or the latest rate when nothing came
-    VpadMotion vpad();
-    Quat orientation() const { return q_; }
+    // accelerometer); the aim of this sample adds to what take() returns
+    void update(float dt, Vec3 gyro_h, Vec3 acc_h, int axis_mode);
+    Aim take();            // the aim since the previous take() (radians), and starts anew
     Vec3 bias() const { return bias_; }
+    Vec3 gravity() const { return grav_; }   // gravity direction in frame H (unit)
+    float rate() const { return rate_; }     // the latest bias-free turning rate (rad/s)
     bool calibrated() const { return bias_samples_ >= kBiasSamples; }
-    // the reported gyro is zero below this rate (rad/s, after bias removal): sensor noise
+    // the gyro reads zero below this rate (rad/s, after bias removal): sensor noise
     static constexpr float kNoise = 0.008f;
     static constexpr int kBiasSamples = 100;
+    // the aim rate (rad/s right / up) of a bias-free rate w (rad/s, frame H) with gravity direction g
+    // (frame H, unit)
+    static Aim aim_rate(Vec3 w, Vec3 g, int axis_mode);
 
 private:
-    Quat q_;
     Vec3 bias_;
     int bias_samples_ = 0;       // samples in the running bias average (capped: it follows slow changes)
     float still_time_ = 0;       // seconds the controller has rested
-    Vec3 last_acc_h_, last_gyro_h_, last_rate_v_;
-    Vec3 acc_v_{0, -1, 0};
-    float acc_var_ = 0;
-    Vec3 angle_, angle_read_;    // revolutions, VPAD frame
-    double window_ = 0;          // seconds integrated since the last vpad()
-    bool have_acc_ = false;
+    Vec3 last_acc_h_, last_gyro_h_;
+    Vec3 grav_{0, 1, 0};
+    bool have_grav_ = false;     // grav_ has been set from the accelerometer
+    float rate_ = 0;
+    Aim aim_;
 };
 
-// ---- the mouse as a gyro (Steam Input "gyro to mouse", or a plain mouse) ----
-// points moved since the previous call and the seconds between -> rate in frame H. The mouse turns the
-// controller about the world's vertical (left/right) and its own X axis (up/down), so it works for any
-// pose. degrees_per_point: sensitivity.
-Vec3 mouse_rate(const Quat& q, float dx, float dy, float dt, float degrees_per_point);
+// The virtual GamePad: turned about its own axes by the aim (radians, right / up), it reports the VPAD values.
+class VirtualPad {
+public:
+    VirtualPad();
+    void turn(float dt, Aim a);
+    // the VPAD values now; the gyro is the mean rate since the previous call (or the latest rate)
+    VpadMotion vpad();
+    Quat orientation() const { return q_; }
+
+private:
+    Quat q_;
+    Vec3 angle_, angle_read_, last_rate_v_;  // revolutions, VPAD frame
+    double window_ = 0;                      // seconds turned since the last vpad()
+};
 
 }  // namespace motion

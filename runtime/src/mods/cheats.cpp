@@ -4,8 +4,8 @@
 //
 // The save data is dSv_info_c of the GameCube decompilation (zeldaret/tww include/d/d_save.h),
 // unchanged in WWHD as far as used here. Each cheat does what the game's own item_func_*
-// (d_item.cpp) does for that item. It lives on the heap at the same address in every session; the
-// copy the file select reads/writes is elsewhere (0x144FDA00), so cheats last once the game is saved.
+// (d_item.cpp) does for that item. Resolve the live area through the mapped save global;
+// heap allocation addresses are not part of the executable address map.
 //
 // Note: the game itself takes the sword away in Forsaken Fortress (first visit) and the bow in the
 // Tower of the Gods when those stages load (d_s_play.cpp), cheat or not.
@@ -19,6 +19,7 @@
 #include <initializer_list>
 #include <string>
 
+#include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
 
@@ -38,11 +39,11 @@ constexpr uint32_t kTact = 0xBD, kTriforce = 0xBE;  // song bits (6), Triforce s
 constexpr uint32_t kStageKeys = 0x778 + 0x20, kStageDungeonItems = 0x778 + 0x21;  // bits: map, compass, boss key
 
 uint32_t save_addr() {
-    static const uint32_t a = getenv("WWHD_CHEAT_SAVE_ADDR") ? (uint32_t)strtoul(getenv("WWHD_CHEAT_SAVE_ADDR"), nullptr, 16) : 0x145AC92C;
-    return a;
+    const char* override_addr = getenv("WWHD_CHEAT_SAVE_ADDR");
+    return override_addr ? (uint32_t)strtoul(override_addr, nullptr, 16) : ld32(GD(0x101F84DC));
 }
 
-constexpr uint32_t kStageName = 0x1046F0B0 + 0x5134;  // current stage, as in savestate.cpp
+const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // current stage, as in savestate.cpp
 
 std::string stage() { return std::string((const char*)mem::ptr(kStageName), strnlen((const char*)mem::ptr(kStageName), 8)); }
 

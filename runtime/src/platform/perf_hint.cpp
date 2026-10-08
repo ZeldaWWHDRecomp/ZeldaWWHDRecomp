@@ -18,7 +18,7 @@
 
 #include "../runtime.h"
 
-namespace interp { int mode(); void set_mode(int); bool paced_interpolation(); }
+#include "../interp.h"
 
 namespace perf_hint {
 namespace {
@@ -199,8 +199,9 @@ void frame_done() {
     adapt_60(now.time_since_epoch().count());
     if (!enabled()) return;
     std::lock_guard<std::mutex> lk(g_mu);
-    // the budget of one presented frame: 33 ms at 30 fps, 17 ms with interpolation
-    const int64_t target = interp::mode() ? 16'666'667 : 33'333'333;
+    // the budget of one presented frame: 33 ms at 30 fps, 17 ms at 60 fps, 8 / 4 ms at 120 / 240 fps
+    const int frames = interp::frames_per_step();
+    const int64_t target = !interp::mode() ? 33'333'333 : frames <= 2 ? 16'666'667 : 33'333'333 / frames;
     if (g_changed) {
         // (re)create the session for the current set of threads
         g_changed = false;

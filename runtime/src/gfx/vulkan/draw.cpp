@@ -1,3 +1,4 @@
+#include "../renderer.h"
 // Vulkan draw submission. Guest state conventions follow Cemu (MPL-2.0).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -71,8 +72,6 @@ struct DrawBatchState {
 };
 DrawBatchState drawBatchState;
 uint64_t drawBatchSubmissions = 0;
-constexpr uint32_t kDepthDownsamplePS = 0x3BB9DE00, kOcclusionPS = 0x44BDFD00;
-constexpr uint32_t kOcclusionVS = 0x44BDF900;
 bool aoPrivateReplay = false;
 uint32_t aoPrivateSource = 0;
 uint64_t aoPrivateFrame = ~0ull;
@@ -95,6 +94,7 @@ Surface* private_ao_surface(Surface& dst, const Surface* like) {
     end_encoder();
     destroy_surface_image(&dst);
     dst = *like;
+    dst.mipChain.reset();
     dst.image = VK_NULL_HANDLE; dst.memory = VK_NULL_HANDLE;
     dst.view = VK_NULL_HANDLE;
     dst.layerViews.clear(); dst.sampledViews.clear(); dst.guestLayout.reset();
@@ -184,7 +184,8 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
     static const bool timed = std::getenv("WWHD_VK_STATS") != nullptr;
     std::chrono::steady_clock::time_point start;
     if (timed) start = std::chrono::steady_clock::now();
-    // the entry's CPU copy, never candidate->slice.mapped (upload memory: see vertex_snapshot_history.h)
+    // the entry's CPU copy, not candidate->slice.mapped, unless the entry was made with direct reads
+    // (host-cached upload memory: see vertex_snapshot_history.h)
     const bool equal = VertexSnapshotHistory<UploadSlice>::equal(*candidate, mem::ptr(address));
     if (timed)
       R.vertexReuseCompareNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -200,7 +201,7 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
       return history.last.slice;
     }
   }
-  return history.remember(address, size, mem::ptr(address), historyEnabled,
+  return history.remember(address, size, mem::ptr(address), historyEnabled, R.uploadReadsDirect,
                           [](const void* bytes, size_t n) { return snapshot(bytes, n, 4); });
 }
 
@@ -221,15 +222,17 @@ UploadSlice vertex_window_snapshot(uint32_t binding,uint32_t address,uint32_t re
     return e && !std::strcmp(e,"1");}();
   Entry* entry=reuse && binding<entries.size()?&entries[binding]:nullptr;
   const auto* fresh=static_cast<const uint8_t*>(source?source:mem::ptr(address))+begin;
-  // compares the entry's CPU copy of the window, never the mapped slice (vertex_snapshot_history.h)
+  // compares the entry's CPU copy of the window, not the mapped slice, unless the entry was made with
+  // direct reads (host-cached upload memory; vertex_snapshot_history.h)
   if(entry && entry->matches(address,reservation,begin,length)) {
     ++R.vertexReuseChecks;
     if(entry->equal(fresh)) {
       ++R.vertexReuseHits;R.vertexReuseBytes+=length;return entry->slice;
     }
   }
-  // the slice gets the bytes of the entry's copy (one read of guest memory)
-  const uint8_t* bytes=entry?entry->remember(address,reservation,begin,length,fresh):fresh;
+  // the slice gets the bytes of the entry's copy (one read of guest memory), or fresh if direct
+  const uint8_t* bytes=entry?entry->remember(address,reservation,begin,length,fresh,R.uploadReadsDirect)
+                            :fresh;
   auto slice=allocate_upload(std::max<uint32_t>(reservation,16),4);
   if(poisonUnused) std::memset(slice.mapped,0xCD,slice.size);
   std::memcpy(static_cast<uint8_t*>(slice.mapped)+begin,bytes,length);
@@ -1590,7 +1593,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       const char* value = std::getenv("WWHD_VK_REUSE_UNIFORM_SNAPSHOTS");
       return value && std::strcmp(value, "1") == 0;
     }();
-    // compares CPU copies of the slots' bytes, never mapped upload memory (uniform_snapshot.h)
+    // compares CPU copies of the slots' bytes, not mapped upload memory, unless the upload memory is
+    // host-cached (R.uploadReadsDirect; uniform_snapshot.h)
     static UniformSnapshotCache<UploadSlice, VkDevice> uniformCache;
     rprof::UploadKind uploads(logicalSlot == 16 ? rprof::kUpUniformVars : rprof::kUpUbo);
     auto fresh = [&](const void* source, size_t length) {
@@ -1602,7 +1606,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     const auto b = cached ? cachedSlice
         : reuseUniforms
         ? uniformCache.get(R.device, R.submissionGeneration,
-                           (sh->vertex ? 0 : 17) + logicalSlot, bytes, size, fresh)
+                           (sh->vertex ? 0 : 17) + logicalSlot, bytes, size,
+                           R.uploadReadsDirect, fresh)
         : fresh(bytes, size);
     if (reuseUniforms && preparation_stats_enabled()) {
       const auto& counts = uniformCache.counters;
@@ -1650,10 +1655,15 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   }
   else
     supportUniforms.clear();
+  // Bloom extract cThresholdParam.z: scale once, before blur/downsampling.
+  if (!sh->vertex && (r[mmSQ_PGM_START_PS] << 8) == 0x44F91200 &&
+      sh->uniforms.offset_remapped >= 0 && size_t(sh->uniforms.offset_remapped) < supportUniforms.size())
+    render::scale_bloom_uniforms(supportUniforms.data() + sh->uniforms.offset_remapped,
+                                supportUniforms.size() - sh->uniforms.offset_remapped);
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
   if (sh->vertex && ao_mode() == 2 &&
-      (r[mmSQ_PGM_START_VS] << 8) == kOcclusionVS && remapped >= 0 &&
+      sh->kind == gfx::ProgramKind::OcclusionVertex && remapped >= 0 &&
       size_t(remapped) + 16 <= supportUniforms.size()) {
     float noiseScale;
     memcpy(&noiseScale, supportUniforms.data() + remapped + 12, sizeof noiseScale);
@@ -1687,7 +1697,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       throw std::runtime_error("missing sampled texture");
     if (!sh->vertex && ao_hires_enabled() && aoPrivateSource &&
         s->addr == aoPrivateSource && aoPrivateFrame == R.frame &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS)
+        sh->kind == gfx::ProgramKind::OcclusionPixel)
       s = &aoPrivateColor;
     upload_surface(s);
     int scaleOffset = sh->uniforms.offset_texScale[unit];
@@ -1718,7 +1728,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                                     (samplerBase + samplerId) * 3;
     uint32_t patchedSampler[3];
     if (!sh->vertex && ao_mode() >= 1 && unit == 0 &&
-        (r[mmSQ_PGM_START_PS] << 8) == kOcclusionPS) {
+        sh->kind == gfx::ProgramKind::OcclusionPixel) {
       memcpy(patchedSampler, samplerWords, sizeof patchedSampler);
       patchedSampler[0] = (patchedSampler[0] & ~0x7E00u) | (1u << 9) | (1u << 12);
       samplerWords = patchedSampler;
@@ -2000,6 +2010,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   Surface *depth = LatteMRT::GetActiveDepthBufferMask(lcr)
                        ? depth_target(r, &depthSlice)
                        : nullptr;
+  if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
   const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
   const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
   if (aoPrivateReplay && colors[0]) {
@@ -2234,7 +2245,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   rprof::UploadKind indexUploads(rprof::kUpIndex);
   // Scan the actual immutable index snapshot, never a second guest read: the bytes of the buffer
   // cache entry's shadow, or of a CPU copy that the upload slice is written from. Never the slice's
-  // mapped memory: upload memory is uncached or write-combined on discrete GPUs (issue #44).
+  // mapped memory: upload memory is uncached or write-combined on discrete GPUs (issue #44). Unless it
+  // is host-cached (R.uploadReadsDirect): then the slice's mapped bytes are scanned, as fast as a copy.
   static std::vector<uint8_t> nativeIndexCopy;  // render thread only
   UploadSlice nativeIndexSlice{};
   const bool hostRestart = topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP ||
@@ -2252,9 +2264,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     } else {
       const size_t bytes = size_t(count) * indexBytes;
       const auto* guest = static_cast<const uint8_t*>(mem::ptr(indexAddr));
-      nativeIndexCopy.assign(guest, guest + bytes);
-      nativeIndexSlice = snapshot(nativeIndexCopy.data(), bytes, 4);
-      nativeIndexData = nativeIndexCopy.data();
+      if (R.uploadReadsDirect) {
+        nativeIndexSlice = snapshot(guest, bytes, 4);
+        nativeIndexData = nativeIndexSlice.mapped;
+      } else {
+        nativeIndexCopy.assign(guest, guest + bytes);
+        nativeIndexSlice = snapshot(nativeIndexCopy.data(), bytes, 4);
+        nativeIndexData = nativeIndexCopy.data();
+      }
       vertexExtent = indexed_vertex_extent(nativeIndexData, count,
                                            indexBytes, hostRestart,
                                            int32_t(baseVertex));
@@ -2381,7 +2398,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     return;
   }
   if (ao_hires_enabled() && colors[0] &&
-      (r[mmSQ_PGM_START_PS] << 8) == kDepthDownsamplePS) {
+      ps->kind == gfx::ProgramKind::DepthDownsample) {
     struct ReplayGuard {
       ReplayGuard() { aoPrivateReplay = true; aoPrivateFrame = ~0ull; }
       ~ReplayGuard() { aoPrivateReplay = false; }

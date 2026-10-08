@@ -13,9 +13,12 @@
 #include "formats.h"
 
 namespace gfx {
+void peek_z(const uint32_t*, uint32_t);
 
 // A host texture backing a guest surface (render target, depth buffer or sampled texture).
 struct Surface {
+    std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
+    uint64_t mipChainSeq = ~0ull;
     id<MTLTexture> tex = nil;
     uint32_t addr = 0, mipAddr = 0;
     uint32_t width = 0, height = 0, slices = 1, pitch = 0, mips = 1;
@@ -26,6 +29,8 @@ struct Surface {
     bool isDepth = false;
     bool gpuWritten = false;   // contents produced by the GPU; never reload from guest memory
     uint64_t writeSeq = 0;     // when the GPU last wrote it (several surfaces can alias one address)
+    bool formatViews = false;     // another surface at this address has the same texel bits in another format (adopt_newer_alias)
+    uint64_t writtenBackSeq = 0;  // writeSeq when last written back to guest memory (linear surfaces)
     uint64_t contentHash = 0;  // hash of all guest bytes (every level) at the last check
     uint64_t lastCheckedFrame = ~0ull;
     uint64_t sparseHash = 0;   // fallback without write tracking: cheap per-frame sampled check
@@ -61,8 +66,10 @@ struct Renderer {
 
     id<MTLCommandBuffer> cmd = nil;
     id<MTLRenderCommandEncoder> enc = nil;
+    bool binding = false;  // a draw is binding its textures to the open encoder (no blits now)
     // attachments of the open render encoder
     Surface* passColor[8] = {};
+    uint32_t mainDepthAddr = 0;
     Surface* passDepth = nullptr;
     uint32_t passColorSlice[8] = {}, passDepthSlice = 0;
 
@@ -81,6 +88,7 @@ struct Renderer {
 
     // surfaces keyed by guest address (several may share an address with different shapes)
     std::unordered_multimap<uint32_t, std::unique_ptr<Surface>> surfaces;
+    std::vector<Surface*> linearTargets;  // linear-aligned colour surfaces (never removed): GX2DrawDone write-back
 
     uint64_t frame = 0;
     uint64_t drawCount = 0;

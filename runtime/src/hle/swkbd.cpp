@@ -53,6 +53,30 @@ std::string narrow(const std::u16string& s) {
     return o;
 }
 
+// UTF-8 (WWHD_SWKBD_TEXT) to UTF-16; a malformed sequence becomes U+FFFD
+std::u16string utf8_to_u16(const char* s) {
+    std::u16string out;
+    const auto* p = (const unsigned char*)s;
+    while (*p) {
+        uint32_t c = *p++;
+        int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+        if (c >= 0x80 && !more) { out.push_back(0xFFFD); continue; }
+        if (more) c &= 0x3F >> more;
+        for (; more > 0; more--) {
+            if ((*p & 0xC0) != 0x80) { c = 0xFFFD; break; }
+            c = (c << 6) | (*p++ & 0x3F);
+        }
+        if (c >= 0x10000 && c != 0xFFFD) {
+            c -= 0x10000;
+            out.push_back((char16_t)(0xD800 + (c >> 10)));
+            out.push_back((char16_t)(0xDC00 + (c & 0x3FF)));
+        } else {
+            out.push_back((char16_t)c);
+        }
+    }
+    return out;
+}
+
 void read_receiver(uint32_t arg) {
     for (int i = 0; i < 6; i++) S.receiver[i] = ld32(arg + i * 4);
 }
@@ -68,7 +92,7 @@ void read_config(uint32_t a) {
 void start_prompt() {
     S.decided = S.cancelled = S.pending = S.live_pending = false;
     if (const char* t = getenv("WWHD_SWKBD_TEXT")) {
-        S.pending_text.assign(t, t + strlen(t));
+        S.pending_text = utf8_to_u16(t);  // "Łódź", "Größe": characters, not bytes
         if ((int)S.pending_text.size() > S.max_len) S.pending_text.resize(S.max_len);
         S.pending_ok = S.pending = true;
         return;

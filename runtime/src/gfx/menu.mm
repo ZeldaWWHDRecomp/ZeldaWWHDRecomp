@@ -1,5 +1,6 @@
-// Menu bar: app menu (Quit) and a Graphics menu to switch fixes and enhancements while playing.
-// Each option also has a single-key shortcut in the game window.
+// Menu bar: app menu (Quit, which asks first while a game is in progress: quit_prompt.mm), a Window
+// menu (Close Window on the TV window quits the same way) and a Graphics menu to switch fixes and
+// enhancements while playing. Each option also has a single-key shortcut in the game window.
 #import <Cocoa/Cocoa.h>
 #include <Carbon/Carbon.h>  // kVK_* key codes
 #include "../input.h"
@@ -7,7 +8,11 @@
 #include <sys/stat.h>
 #include <ctime>
 
+#include "../interp.h"
 #include "../savestate.h"
+#include "../screenshot.h"
+#include "../input_map.h"
+#include "../overlay/hostui.h"
 #include "../crashrec.h"
 #include "../aspect.h"
 #include "renderer.h"
@@ -38,14 +43,8 @@ static void cycle_res() {
 }
 
 
-namespace interp {
-int mode();  // 0 off, 1 frame interpolation, 2 true 60 (logic at 60 steps per second)
-void set_mode(int m);
-bool paced_interpolation();  // frame interpolation keeps the game's speed (settings overlay)
-void set_paced_interpolation(bool on);
-}
 
-namespace gx2 { uint64_t flips_presented(); }
+namespace gx2 { uint64_t flips_presented(); bool uncapped(); }
 #include "../mods/mods.h"
 #include "../overlay/overlay.h"
 namespace ax { void start_sound_trace(const char* path, double seconds); }
@@ -94,9 +93,14 @@ static void load_prefs() {
     if (saved(@"aoMode", {"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"})) render::set_ao_mode([pref(@"aoMode") intValue]);
     if (saved(@"aoHires", {"WWHD_AO_HIRES"})) render::set_ao_hires([pref(@"aoHires") boolValue]);
     if (saved(@"aniso", {"WWHD_ANISO"})) render::set_aniso([pref(@"aniso") boolValue]);
+    if (saved(@"bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength([pref(@"bloomStrength") floatValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
-    if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60"})) interp::set_mode([pref(@"fps60") intValue]);
-    if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation([pref(@"fps60Paced") boolValue]);
+    // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation, 2 true 60; the key predates
+    // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
+    if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
+    if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
+    if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
+    if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
     if (saved(@"vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode([pref(@"vkPresentMode") intValue]);
 #endif
@@ -107,9 +111,14 @@ static void save_prefs() {
     if (!env_set({"WWHD_AO_MODE", "WWHD_NO_AO_QUIRK"})) set_pref(@"aoMode", @(render::ao_mode()));
     if (!env_set({"WWHD_AO_HIRES"})) set_pref(@"aoHires", @(render::ao_hires()));
     if (!env_set({"WWHD_ANISO"})) set_pref(@"aniso", @(render::aniso()));
+    if (!env_set({"WWHD_BLOOM_STRENGTH"})) set_pref(@"bloomStrength", @(render::bloom_strength()));
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
-    if (!env_set({"WWHD_INTERP", "WWHD_TRUE60"})) set_pref(@"fps60", @(interp::mode()));
-    if (!env_set({"WWHD_INTERP_PACED"})) set_pref(@"fps60Paced", @(interp::paced_interpolation()));
+    if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
+    if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
+    if (!env_set({"WWHD_INTERP_PACED"})) {
+        set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
+        set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));
+    }
 #ifdef WWHD_HAS_VULKAN
     if (!env_set({"WWHD_VK_PRESENT_MODE"})) set_pref(@"vkPresentMode", @(gfxvk::present_mode()));
 #endif
@@ -133,7 +142,8 @@ static void update_title() {
     NSString* t = [NSString stringWithFormat:@"%@ \u2014 %@ \u00b7 %.0f fps%@ \u00b7 AO: %s%s \u00b7 AF: %s%@%@", kTitle, rnd, g_fps, res,
                                              ao[render::ao_mode()], render::ao_hires() ? " + full-size depth" : "",
                                              render::aniso() ? "16x" : "game",
-                                             interp::mode() == 2 ? @" \u00b7 true 60" : interp::mode() == 1 ? @" \u00b7 60 fps" : @"", render::fxaa() ? @" \u00b7 FXAA" : @""];
+                                             interp::mode() ? [@" \u00b7 " stringByAppendingString:@(interp::mode_name())] : @"", render::fxaa() ? @" \u00b7 FXAA" : @""];
+    if (gx2::uncapped()) t = [t stringByAppendingString:@" \u00b7 UNCAPPED (debug)"];
     std::string msg = ss::last_message();  // save state confirmations
     if (!msg.empty()) t = [NSString stringWithFormat:@"%@ \u2014 %@ \u2014 %s", kTitle, rnd, msg.c_str()];
     if (getenv("WWHD_LOG_TITLE") && ![t isEqualToString:g_tv.title]) {  // tests: the window title as it changes
@@ -175,6 +185,7 @@ static void choose_renderer(render::Api a) {
 - (void)save:(NSMenuItem*)item { ss::request_save((int)item.tag); }
 - (void)load:(NSMenuItem*)item { ss::request_load((int)item.tag); }
 - (void)toggleCrashRecovery:(NSMenuItem*)item { crashrec::set_enabled(!crashrec::enabled()); }
+- (void)toggleFullStates:(NSMenuItem*)item { ss::set_full_states(!ss::full_states()); }
 - (void)loadAuto:(NSMenuItem*)item { crashrec::request_load((int)item.tag); }
 - (void)menuNeedsUpdate:(NSMenu*)m {
     [m removeAllItems];
@@ -183,7 +194,8 @@ static void choose_renderer(render::Api a) {
     auto label = [&](int i) -> NSString* {
         const ss::SlotInfo& s = info[i];
         if (!s.used) return @"empty";
-        NSString* d = [NSString stringWithFormat:@"%s%s%s", s.when.c_str(), s.area.empty() ? "" : " · ", s.area.c_str()];
+        NSString* d = [NSString stringWithFormat:@"%s%s%s%s", s.when.c_str(), s.area.empty() ? "" : " · ", s.area.c_str(),
+                                                    s.portable ? "" : " · full"];
         return s.compatible ? d : [d stringByAppendingString:@" (incompatible)"];
     };
     for (int i = 1; i <= ss::kSlots; i++) {
@@ -200,6 +212,15 @@ static void choose_renderer(render::Api a) {
         it.enabled = info[i].used && info[i].compatible;
         it.toolTip = i == 1 ? @"In game: F1 (or \u2318,) opens the settings overlay (Saves)" : [NSString stringWithFormat:@"Shortcut in game: F%d", i];
     }
+    // full save states (savestate.h): off by default, for debugging
+    [m addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* fs = [m addItemWithTitle:@"Full Save States (large, contain game data, don't share)" action:@selector(toggleFullStates:)
+                           keyEquivalent:@""];
+    fs.target = self;
+    fs.state = ss::full_states() ? NSControlStateValueOn : NSControlStateValueOff;
+    fs.enabled = !ss::full_states_forced();
+    fs.toolTip = @"For debugging: Save makes a snapshot of the whole running game (about 300 MB). Off: Save makes a small "
+                 @"portable state (progress and position, no game data) that can be attached to bug reports.";
     // crash recovery (crashrec.cpp): automatic states every few minutes + recorded input
     [m addItem:[NSMenuItem separatorItem]];
     NSMenuItem* cr = [m addItemWithTitle:[NSString stringWithFormat:@"Crash Recovery (automatic state every %d min)",
@@ -226,9 +247,13 @@ static WWStateMenu* g_state_menu;
 @end
 
 @implementation WWGraphicsMenu
+- (void)setBloom:(NSMenuItem*)item { render::set_bloom_strength(item.tag / 100.0f); update_title(); }
 - (void)setAO:(NSMenuItem*)item { render::set_ao_mode((int)item.tag); update_title(); }
 - (void)toggleAniso:(NSMenuItem*)item { render::set_aniso(!render::aniso()); update_title(); }
 - (void)capture:(NSMenuItem*)item { render::request_capture(); }
+- (void)screenshot:(NSMenuItem*)item { screenshot::request(); }
+- (void)openScreenshots:(NSMenuItem*)item { hostui::open_folder(screenshot::dir()); }
+- (void)toggleScreenshotGamePad:(NSMenuItem*)item { screenshot::set_gamepad_too(!screenshot::gamepad_too()); }
 - (void)openSettings:(NSMenuItem*)item { overlay::set_open(!overlay::is_open()); }  // Cmd+, toggles
 - (void)setRenderer:(NSMenuItem*)item { choose_renderer((render::Api)item.tag); }
 - (void)recordSound:(NSMenuItem*)item { gfx::menu_hotkey(kVK_ANSI_9); }
@@ -238,6 +263,7 @@ static WWStateMenu* g_state_menu;
     gfx::set_host_setting("proController", item.tag == 1 ? "1" : "0");  // as the settings overlay saves it
 }
 - (void)toggleInterp:(NSMenuItem*)item { interp::set_mode(interp::mode() == item.tag ? 0 : (int)item.tag); update_title(); }
+- (void)toggleInterpFps:(NSMenuItem*)item { interp::toggle_fps((int)item.tag); update_title(); }
 - (void)toggleDrcWindow:(NSMenuItem*)item { gfx::show_drc_window(!gfx::drc_window_shown()); }
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
 - (void)toggleHires:(NSMenuItem*)item { render::set_ao_hires(!render::ao_hires()); update_title(); }
@@ -262,10 +288,14 @@ static WWStateMenu* g_state_menu;
     if (item.action == @selector(setController:))
         item.state = (item.tag == 1) == input::pro_controller() ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleInterp:)) item.state = interp::mode() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(toggleInterpFps:))
+        item.state = interp::mode() == 1 && interp::fps() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleDrcWindow:)) {
         item.state = gfx::drc_window_shown() ? NSControlStateValueOn : NSControlStateValueOff;
         return gfx::drc_window_available();
     }
+    if (item.action == @selector(setBloom:))
+        item.state = fabsf(render::bloom_strength() * 100.0f - item.tag) < 0.5f ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleFxaa:)) {
         item.state = render::fxaa() ? NSControlStateValueOn : NSControlStateValueOff;
         return render::feature_available(render::kFeatureFXAA);
@@ -279,6 +309,15 @@ static WWStateMenu* g_state_menu;
         return render::feature_available(render::kFeatureAniso);
     }
     if (item.action == @selector(capture:)) return render::feature_available(render::kFeatureCapture);
+    if (item.action == @selector(screenshot:)) {
+        // the Screenshot binding's key (Controls), shown in the title: it can be rebound
+        int k = input_map::current().keys[input_map::kScreenshot][0];
+        if (k == input_map::kNoKey) k = input_map::current().keys[input_map::kScreenshot][1];
+        item.title = k == input_map::kNoKey ? @"Take Screenshot"
+                                            : [NSString stringWithFormat:@"Take Screenshot (%s)", input_map::key_label(k).c_str()];
+    }
+    if (item.action == @selector(toggleScreenshotGamePad:))
+        item.state = screenshot::gamepad_too() ? NSControlStateValueOn : NSControlStateValueOff;
     return YES;
 }
 @end
@@ -374,11 +413,27 @@ void install_menu(NSWindow* tv) {
     add(g, @"    Centre + noise fix", @selector(setAO:), @"O", 2);
     add(g, @"Full-size occlusion depth (M)", @selector(toggleHires:), @"M");
     [g addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* bloomItem = [g addItemWithTitle:@"Bloom strength" action:nil keyEquivalent:@""];
+    NSMenu* bloomMenu = [[NSMenu alloc] initWithTitle:@"Bloom strength"];
+    bloomItem.submenu = bloomMenu;
+    add(bloomMenu, @"Off", @selector(setBloom:), @"", 0);
+    add(bloomMenu, @"50%", @selector(setBloom:), @"", 50);
+    add(bloomMenu, @"100% (default)", @selector(setBloom:), @"", 100);
+    add(bloomMenu, @"150%", @selector(setBloom:), @"", 150);
+    add(bloomMenu, @"200%", @selector(setBloom:), @"", 200);
     add(g, @"16x anisotropic filtering (N)", @selector(toggleAniso:), @"N");
     add(g, @"Edge smoothing, FXAA (8)", @selector(toggleFxaa:), @"8");
-    add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterp:), @"6", 1);
+    add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
+    add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);
+    add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);
     add(g, @"60 fps: true 60, game logic at 60 steps/s (7, experimental)", @selector(toggleInterp:), @"7", 2);
     [g addItem:[NSMenuItem separatorItem]];
+    add(g, @"Take Screenshot (F10)", @selector(screenshot:), @"").toolTip =
+        @"Saves the TV picture as a PNG (internal resolution, without the settings overlay) in the screenshots folder. "
+        @"The key can be changed in Input > Controls (Screenshot).";
+    add(g, @"    Also Save the GamePad Screen", @selector(toggleScreenshotGamePad:), @"").toolTip =
+        @"A second file, ..._GamePad.png, while the GamePad picture is shown (its window or the overlay)";
+    add(g, @"    Open Screenshots Folder", @selector(openScreenshots:), @"");
     add(g, @"Capture frame for debugging (P)", @selector(capture:), @"P").toolTip =
         render::active() == render::Api::Vulkan ? @"Shortcut in game: P. Vulkan: the TV, GamePad and window pictures (the draw log is Metal only)"
                                                  : @"Shortcut in game: P";
@@ -449,6 +504,17 @@ void install_menu(NSWindow* tv) {
     sm.delegate = g_state_menu;
     ssItem.submenu = sm;
 
+    // Window: the standard items. Close Window (Cmd+W) on the TV window quits, asking first while a
+    // game is in progress (quit_prompt.mm); on the GamePad window it only hides it
+    NSMenuItem* winItem = [bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""];
+    NSMenu* wm = [[NSMenu alloc] initWithTitle:@"Window"];
+    [wm addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [wm addItemWithTitle:@"Zoom" action:@selector(performZoom:) keyEquivalent:@""];
+    [wm addItem:[NSMenuItem separatorItem]];
+    [wm addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
+    winItem.submenu = wm;
+    NSApp.windowsMenu = wm;  // macOS lists the open windows below
+
     NSApp.mainMenu = bar;
     install_overlay_input();  // settings overlay (F1): mouse in the TV window (overlay_appkit.mm)
     update_title();
@@ -482,7 +548,7 @@ bool menu_hotkey(uint16_t code) {
     case kVK_ANSI_O: if (render::feature_available(render::kFeatureAO)) render::set_ao_mode((render::ao_mode() + 1) % 3); break;
     case kVK_ANSI_N: if (render::feature_available(render::kFeatureAniso)) render::set_aniso(!render::aniso()); break;
     case kVK_ANSI_M: if (render::feature_available(render::kFeatureAOHires)) render::set_ao_hires(!render::ao_hires()); break;
-    case kVK_ANSI_6: interp::set_mode(interp::mode() == 1 ? 0 : 1); break;
+    case kVK_ANSI_6: interp::toggle_fps(60); break;
     case kVK_ANSI_7: interp::set_mode(interp::mode() == 2 ? 0 : 2); break;
     case kVK_ANSI_8: if (render::feature_available(render::kFeatureFXAA)) render::set_fxaa(!render::fxaa()); break;
     case kVK_ANSI_R: cycle_res(); break;

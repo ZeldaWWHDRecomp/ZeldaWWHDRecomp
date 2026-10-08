@@ -13,12 +13,14 @@
 
 namespace input_map {
 
-// Wii U GamePad / Pro Controller inputs, in the order the Controls window lists them
+// Wii U GamePad / Pro Controller inputs, in the order the Controls window lists them, then the app
+// actions that are bound the same way (no VPAD bit; the hosts act on them, see screenshot.h)
 enum Action : int {
     kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kHome,
     kDUp, kDDown, kDLeft, kDRight, kStickLClick, kStickRClick,
     kLUp, kLDown, kLLeft, kLRight,   // left stick (move)
     kRUp, kRDown, kRLeft, kRRight,   // right stick (camera)
+    kScreenshot,                     // app action, not a GamePad input: save a screenshot (screenshot.h)
     kActionCount
 };
 const char* action_id(int a);     // JSON key, e.g. "ZL", "LeftStickUp"

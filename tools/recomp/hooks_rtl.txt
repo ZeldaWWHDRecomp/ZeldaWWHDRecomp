@@ -1,0 +1,13 @@
+# Right-to-left text for fan translations (runtime/src/rtl_text_hooks.cpp, runtime/src/rtl_text.h,
+# docs/rtl-text.md): nw::font / nw::lyt text writer of the USA build. Every hook passes straight through
+# unless the active language pack's message font has Arabic or Hebrew letters.
+02871328  # nw::font::CharStrmReader::ReadNextCharUTF16: Arabic letter forms, harakat the font lacks skipped
+028709E0  # nw::font::TextWriterBase<wchar_t>::PrintImpl: right-to-left order of each line's glyphs
+@02870A50 # PrintImpl: after the prologue (its stack frame: the reader at +0xD4, the print context at +0x20)
+@02870CC8 # PrintImpl: before the tag processor runs for a control code (new line, button icon tag)
+@02870CCC # PrintImpl: after the tag processor
+@02870FC8 # PrintImpl: after the automatic line break position is taken (break at spaces instead)
+@02870028 # TextWriterBase::CalcLineRectImpl (0x0286FFCC, the measuring of one line): after its prologue
+@028704CC # CalcLineRectImpl: after the automatic line break position is taken (the same, at spaces)
+0286E8B4  # nw::font::CharWriter::PrintGlyph: pen position and display list entry of each glyph
+028785C8  # nw::lyt::TextBox::DrawSelf: the text box (width, position, alignment) of the text being printed

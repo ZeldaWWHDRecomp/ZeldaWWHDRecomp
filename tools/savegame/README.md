@@ -46,6 +46,7 @@ functions.
 | `hd_save_info.py PATH` | progress of each file: hearts, rupees, magic, items, sword/shield, arrows/bombs, songs, Triforce shards, pearls, sail (Sail / Swift Sail), islands visited and charted, charts owned, dungeon items and bosses, return stage, time of day, deaths, New Game+ count, save counter. `PATH` = `cking.sav`, a `save/` or `save/user/` folder, or a `.gci`. `--short` (one line per file), `--json`, `--file N`. |
 | `hd2gc.py cking.sav -o OUT.gci` | the reverse direction (shared fields only), mainly for the round-trip check. `--set-gc-name` writes the HD name into the GameCube name field, `--template X.gci` copies the banner/icon block. |
 | `roundtrip_test.py cking.sav ...` | HD → GameCube layout → HD; every shared field must come back bit-identical (GameCube and HD checksums are verified on the way). |
+| `wwstate.py info STATE.wwstate` / `wwstate.py to-sav STATE.wwstate -o OUTDIR [--into cking.sav] [--file N]` | a portable save state (`slotN.wwstate`, [docs/portable-save-states.md](../../docs/portable-save-states.md), e.g. from a bug report): check it and show its place and progress, or write its save data as Quest Log N of a `cking.sav`. |
 
 Work on copies: none of the tools writes to its input. Use a converted save like any test save:
 `cp -R <folder>/user <test>/save/` and start the game with `--save <test>/save`.
