@@ -56,11 +56,13 @@ public class TouchControls extends View {
         // the top left corner has the game's view button and the show/hide button: nothing else there
         controls.add(new Control(KIND_STICK, 0, "", 0.14f, 0.70f, 0.13f));
         controls.add(new Control(KIND_STICK, 1, "", 0.68f, 0.80f, 0.11f));
-        final float ax = 0.86f, ay = 0.60f, d = 0.10f;  // A B X Y as on a Wii U GamePad
-        controls.add(new Control(KIND_BUTTON, SOUTH, "A", ax + d * 0.75f, ay, 0.055f));
-        controls.add(new Control(KIND_BUTTON, EAST, "B", ax, ay + d, 0.055f));
-        controls.add(new Control(KIND_BUTTON, WEST, "X", ax, ay - d, 0.055f));
-        controls.add(new Control(KIND_BUTTON, NORTH, "Y", ax - d * 0.75f, ay, 0.055f));
+        // A B X Y as on a Wii U GamePad. Controllers map by position (input_map.cpp: the bottom face
+        // button is the Wii U's B), so each one sends the button of the place it is drawn at
+        final float ax = 0.86f, ay = 0.60f, d = 0.10f;
+        controls.add(new Control(KIND_BUTTON, EAST, "A", ax + d * 0.75f, ay, 0.055f));
+        controls.add(new Control(KIND_BUTTON, SOUTH, "B", ax, ay + d, 0.055f));
+        controls.add(new Control(KIND_BUTTON, NORTH, "X", ax, ay - d, 0.055f));
+        controls.add(new Control(KIND_BUTTON, WEST, "Y", ax - d * 0.75f, ay, 0.055f));
         final float px = 0.14f, py = 0.36f, e = 0.075f;
         controls.add(new Control(KIND_BUTTON, DPAD_UP, "▲", px, py - e, 0.04f));
         controls.add(new Control(KIND_BUTTON, DPAD_DOWN, "▼", px, py + e, 0.04f));
