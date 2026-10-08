@@ -10,8 +10,32 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ## What's new in this update
 
-### Next update
+### v0.2.9
 
+- **Play the European version directly** (title 00050000-10143600): setup now also accepts the
+  European game on its own, without the USA version, and builds the port from it through an address
+  map derived from the two executables (every function and call matched; contributed by **@ElFDA**,
+  PR #77, with ideas from GreenNaugahyde's Android fork). German, Italian, British English, French and
+  Spanish are its own languages then. Hooks, mods and save states work as on the USA version.
+- **Bloom, distance haze and the sun's glare are back:** the game builds its glow from smaller
+  copies of the picture, which the port never made; now it does, on Metal and Vulkan, so the picture
+  looks like on the Wii U again. The sun's corona and lens flare react to whether the sun is hidden
+  (adapted from GreenNaugahyde's Android fork). New **Settings → Graphics → Effects → Bloom
+  strength** (0–200%, default 100%). On Macs, colours now go through the display's colour profile, as
+  with Vulkan.
+- **Android:** phones whose GPU can't read the game's compressed textures (many Mali and PowerVR
+  GPUs) now decode them on the GPU instead of showing black or broken textures; on Snapdragon phones
+  you can install and select custom Vulkan drivers such as Turnip (**Settings → Graphics**; a driver
+  that crashes or hangs in its first seconds falls back to the system driver on the next start). Both
+  follow the approach of [GreenNaugahyde's Android fork](https://github.com/GreenNaugahyde/ZeldaWWHDRecompAndroid),
+  rebuilt on our renderer. Not yet tested on real Mali/PowerVR/Snapdragon devices: reports welcome.
+- **Run and swim faster** (optional, Mods tab, off by default): hold L3 (or toggle) to boost Link's
+  running and swimming speed, 1.25x to 4x; works with true 60. The idea comes from GreenNaugahyde's
+  Android fork.
+- **Average frame rate** in the performance overlay (and GPU load and temperatures on Android where
+  readable); **crash logs** now include the settings in use, with your user paths removed, and Android
+  offers to share the log after a crash.
+- **Vulkan:** the compressed-texture feature is now enabled as the Vulkan specification requires.
 - **Screenshot key:** **F10** saves the TV picture as a PNG in a `screenshots` folder next to the save
   states (`~/Library/Application Support/wwhd/screenshots`, `%APPDATA%\WWHD\screenshots`,
   `~/.config/wwhd/screenshots`; `data/user/screenshots` in a release folder), named
@@ -925,8 +949,11 @@ Vendored third-party code keeps its own license: Cemu (MPL-2.0), metal-cpp (Apac
 European-game builds and the executable-derived address map are by
 [ElFDA](https://github.com/ElFDA), contributed in [PR #77](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/77).
 The combined integration adds the runtime address audit and regional regression scenarios.
-Thanks also to [GreenNaugahyde](https://github.com/GreenNaugahyde) for the MPL-2.0 Android
-PAL work that informed the earlier desktop prototype.
+Thanks also to [GreenNaugahyde](https://github.com/GreenNaugahyde) and the MPL-2.0
+[ZeldaWWHDRecompAndroid](https://github.com/GreenNaugahyde/ZeldaWWHDRecompAndroid) fork: its EUR
+address mapping informed the desktop prototype, and the rendered mip chains and sun depth peeks
+(bloom, haze, the sun's glare), the GPU decoder for compressed textures, custom Adreno driver
+support and the run/swim speed boost were adapted from or modelled on its work.
 
 The Android port (`android/`, the Android parts of the runtime, the single-screen view) is by
 [rhemfur](https://github.com/rhemfur), who also contributed the paced frame interpolation, the
