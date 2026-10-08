@@ -408,8 +408,14 @@ extern "C" void hook_024FFC40(Cpu* c) {
 // buffers the painter uses, concurrently with the rest of the main thread's draw.
 // Record pass: record each model's world matrices (step S+1, keyed by the joint matrix block).
 // Logic pass and blended hold passes: viewCalc and the UBO update run on blend(recorded step,
-// current step, pass_t()); in between, and after each of them, the exact matrices are back in
-// place, so game logic and attachments (swords, effects) keep reading the exact step.
+// current step, pass_t()), both on the main thread inside the viewCalc hook (the job skips the
+// model); right after, the exact matrices are back in place, so game logic and attachments
+// (swords, carried bombs, the boat's parts) keep reading the exact step.
+// (The UBO update used to stay on the job thread, with the blended matrices written into the
+// model's world matrices around it: that put them in guest memory while the main thread was still
+// drawing, and whatever it attached to the model in that window - an item in Link's hand, parts of
+// the boat - was placed from the blended matrices and then blended a second time: random one-frame
+// jumps of carried and attached models (issue #68).)
 namespace interp {
 float pass_t();
 namespace {
@@ -422,11 +428,11 @@ struct ModelPrev {
     std::vector<uint32_t> w;  // raw guest words, 12 per matrix
 };
 std::unordered_map<uint32_t, ModelPrev> g_models;
-struct ModelStats { uint32_t blended = 0, fresh = 0, cut = 0; std::atomic<uint32_t> changed{0}; } g_mstats;
-// blended matrices waiting for the model's UBO update (update_ubo thread), per model
-struct UboBlend { uint32_t mtx = 0; std::vector<uint32_t> exact, mid; };
+struct ModelStats { uint32_t blended = 0, fresh = 0, cut = 0; } g_mstats;
+// models whose UBO update of this pass already ran on the main thread (blended), per model: the
+// update_ubo job skips that many of its updates
 std::mutex g_ubo_mu;
-std::unordered_map<uint32_t, UboBlend> g_ubo;
+std::unordered_map<uint32_t, uint32_t> g_ubo_done;
 
 float wf(uint32_t w) { return u32_as_f32(__builtin_bswap32(w)); }
 uint32_t fw(float f) { return __builtin_bswap32(f32_as_u32(f)); }
@@ -568,40 +574,35 @@ extern "C" void hook_027F55FC(Cpu* c) {
     }
     g_mstats.blended++;
     trace_model("blended", jnt, n, mid.data());
+    {
+        std::lock_guard<std::mutex> lk(g_ubo_mu);
+        g_ubo_done[model]++;  // (before viewCalc queues the model for the job)
+    }
     memcpy(ppc_ptr(mtx), mid.data(), 4 * words);
     f_027F55FC_orig(c);
+    const uint32_t r3 = c->r[3];
+    c->r[3] = model;
+    f_027F5018_orig(c);  // the model's UBO update, here and now on the blended matrices
+    c->r[3] = r3;
     memcpy(ppc_ptr(mtx), saved.data(), 4 * words);
-    std::lock_guard<std::mutex> lk(g_ubo_mu);
-    g_ubo[model] = UboBlend{mtx, std::move(saved), std::move(mid)};
 }
 
 // J3DModel UBO update (027F5018), run by the "update_ubo" job thread while the main thread is
-// still drawing: copies the world matrices into the model's uniform buffers. On blended passes it
-// runs on the blended matrices prepared by viewCalc, then the exact ones are put back.
+// still drawing: copies the world matrices into the model's uniform buffers. A model blended by
+// the viewCalc hook had its update there already (on the blended matrices): skipped here.
 extern "C" void hook_027F5018(Cpu* c) {
     using namespace interp;
-    uint32_t model = c->r[3];
-    UboBlend b;
+    const uint32_t model = c->r[3];
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
-        auto it = g_ubo.find(model);
-        if (!enabled()) g_ubo.clear();  // switched off since viewCalc
-        if (!enabled() || it == g_ubo.end()) {
-            f_027F5018_orig(c);
+        if (!enabled()) g_ubo_done.clear();  // switched off since viewCalc
+        auto it = g_ubo_done.find(model);
+        if (it != g_ubo_done.end()) {
+            if (--it->second == 0) g_ubo_done.erase(it);
             return;
         }
-        b = std::move(it->second);
-        g_ubo.erase(it);
     }
-    const size_t bytes = 4 * b.exact.size();
-    if (memcmp(ppc_ptr(b.mtx), b.exact.data(), bytes) != 0) {  // changed since viewCalc
-        g_mstats.changed++;
-        f_027F5018_orig(c);
-        return;
-    }
-    memcpy(ppc_ptr(b.mtx), b.mid.data(), bytes);
     f_027F5018_orig(c);
-    memcpy(ppc_ptr(b.mtx), b.exact.data(), bytes);
 }
 
 // Per-frame function (0203593C): WWHD's own per-frame systems (HD menus, system UI, lighting setup)
@@ -618,7 +619,7 @@ void ss_reset() {
     g_models.clear();
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
-        g_ubo.clear();
+        g_ubo_done.clear();
     }
     g_record_passes += 8;  // step-stamped histories (models, effects) no longer match
     g_hold_next = false;
@@ -860,6 +861,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     }
     static uint64_t frames = 0;  // passes drawn with interpolation on (frames per step in the log)
     frames++;
+    {
+        std::lock_guard<std::mutex> lk(g_ubo_mu);
+        g_ubo_done.clear();  // (an update of the last pass the job never got to)
+    }
     if (g_hold_next) {
         // hold pass: the per-frame function runs, but its children only per kHoldRun and the loop
         // body draws without logic (blended at pass_t() before the record pass)
@@ -871,10 +876,6 @@ extern "C" void hook_0203593C(Cpu* c) {
         if (record_pass()) {
             g_record_passes++;
         } else {
-            {
-                std::lock_guard<std::mutex> lk(g_ubo_mu);
-                g_ubo.clear();  // not updated last pass (not drawn)
-            }
             fx_hold_blend(pass_t());  // the effects blended at logic time, at this pass's fraction
         }
         f_0203593C_orig(c);
@@ -886,10 +887,6 @@ extern "C" void hook_0203593C(Cpu* c) {
     g_phase = 0;
     g_step_n = plan_step();
     {
-        std::lock_guard<std::mutex> lk(g_ubo_mu);
-        g_ubo.clear();  // not updated last time (not drawn)
-    }
-    {
         PassTimer timer(0);
         f_0203593C_orig(c);  // logic pass (the loop body hook marks it)
     }
@@ -897,9 +894,9 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t n = 0, t0 = timebase::now(), f0 = 0;
     if (++n % 300 == 0) {
         uint64_t t = timebase::now();
-        LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut, %.1f changed before UBO update%s",
+        LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut%s",
             300.0 * timebase::kTicksPerSec / (double)(t - t0), mode_name(), (frames - f0) / 300.0, g_mstats.blended / 300.0,
-            g_mstats.fresh / 300.0, g_mstats.cut / 300.0, g_mstats.changed.exchange(0) / 300.0, pass_cpu_report().c_str());
+            g_mstats.fresh / 300.0, g_mstats.cut / 300.0, pass_cpu_report().c_str());
         t0 = t;
         f0 = frames;
         g_mstats.blended = g_mstats.fresh = g_mstats.cut = 0;
