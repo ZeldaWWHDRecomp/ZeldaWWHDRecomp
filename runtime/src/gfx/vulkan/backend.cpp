@@ -2051,6 +2051,8 @@ static void init_device(std::vector<const char *> extensions,
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
   VkPhysicalDeviceFeatures enabled{};
+  // The game's BC1-BC5 textures need this core feature enabled, not just supported (Vulkan spec);
+  // devices without it (many Mali/PowerVR GPUs) decode BC uploads with a compute shader (bc_decode).
   enabled.textureCompressionBC = available.textureCompressionBC;
   if (!available.textureCompressionBC) LOG("[vulkan] device has no BC texture support; compute upload decoder enabled");
   enabled.samplerAnisotropy = available.samplerAnisotropy;
@@ -2063,12 +2065,6 @@ static void init_device(std::vector<const char *> extensions,
   enabled.largePoints = available.largePoints;
   enabled.dualSrcBlend = available.dualSrcBlend;
   enabled.logicOp = available.logicOp;
-  // The game's textures are mostly BC1-BC5 and they are created as VK_FORMAT_BC* (formats.cpp);
-  // sampling them requires this core feature to be enabled, not just supported (Vulkan spec).
-  // Desktop GPUs and MoltenVK have it; many mobile GPUs (Mali, PowerVR) don't.
-  enabled.textureCompressionBC = available.textureCompressionBC;
-  if (!available.textureCompressionBC)
-    LOG("[vulkan] device has no BC texture support (textureCompressionBC): compressed game textures will not display correctly");
   R.enabledFeatures = enabled;
   VkPhysicalDeviceVulkan13Features f13{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
