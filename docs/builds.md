@@ -140,3 +140,34 @@ These scripts use private caches, states and screenshot folders and never modify
 input save. Keep extracted games and generated recompilation output outside Git
 checkouts. High interpolation rates check behavior, not physical 240 Hz display
 delivery or a performance guarantee.
+
+## Combined PR #77 validation (2026-10-08)
+
+ElFDA's two commits were rebased onto GitHub devel `54761fd3`, preserving their
+authorship. The desktop prototype's hardening uses PR #77's GC/GD tables throughout;
+there is one mapping pipeline. Builds used `-j 4`, external generated-code/build
+folders, extracted games outside Git, and copies of the input saves.
+
+Verified locally on Apple Silicon/macOS with the real version-0 executables:
+
+| Check | Result |
+|---|---|
+| Fresh EUR and USA builds, Metal + Vulkan, setup GUI | Pass |
+| CTest, each build (including map fixtures and coverage audit) | 33/33 pass |
+| Build-map/source-audit Python tests | 21/21 pass |
+| Installer tests, each real dump | 43 pass; Windows-only test skipped on macOS |
+| Re-derive EUR map from USA/EUR executables | Unchanged |
+| German portable house/Outset states across cold processes | Pass; position, angle and save data match |
+| Quest Log 1 state loaded into Quest Log 2 | Pass; notice and destination slot verified |
+| Sailing boat state across cold processes | Pass; aboard, heading and horizontal position verified |
+| Portable cutscene refusal, then saving after dialogue | Pass; no refused-state file written |
+| Full snapshot save/load and keeping it beside a portable state | Pass |
+| German pause/open/close, Metal/Vulkan, 120/240 interpolation passes | All four cases pass |
+| F10 TV + GamePad capture in those four cases | 16 valid PNGs; dimensions and chunk CRCs verified |
+| Italian/Metal and German/Vulkan Outset, interpolation/true60/30 fps | Pass; portable state written after switching |
+| USA/Metal Outset portable state across cold processes | Pass; position, angle and save data match |
+| USA/English/Vulkan Outset, interpolation/true60/30 fps | Pass; portable state written after switching |
+
+German pause text and Italian gameplay HUD text were also checked visually. This
+is local runtime validation; Android, Linux and Windows execution remains covered
+by their own CI/build and platform testing, not by these macOS game runs.
