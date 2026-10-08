@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "../audio_output_mode.h"
+#include "guest_addr.h"
 #include "../audio_out.h"
 #include "../runtime.h"
 
@@ -338,7 +339,7 @@ void init_buffers() {
 // TV fader at +0x194 and GamePad fader at +0x1AC (Player_fadeMaster 0202F14C).
 bool guest_obj(uint32_t a) { return a >= mem::kMem2Start && a < mem::kMem2End - 0x400 && !(a & 3); }
 bool read_game_faders(audio::Fader& tv, audio::Fader& drc) {
-    uint32_t mgr = ld32(0x1018EC64);
+    uint32_t mgr = ld32(GD(0x1018EC64));
     if (!guest_obj(mgr)) return false;
     uint32_t x = ld32(mgr + 0x10);
     if (!guest_obj(x)) return false;

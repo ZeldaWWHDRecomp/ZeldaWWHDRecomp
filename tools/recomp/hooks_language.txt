@@ -1,5 +1,9 @@
 # Language sources (runtime/src/language_region.cpp, docs/language-packs.md): the region and language of
 # a European or Japanese language pack are stored after the USA game's own reader of the console language.
+# builds: USA
+#   These hooks add what the European build has of its own: its reader of the console language and
+#   the German genitive of the player's name. On that build they would patch different code, so the
+#   recompiler skips this file there (tools/recomp/builds.py).
 025F9448  # SysSetting::update: reads cafe.language into the system setting object (0x101F4BAC)
 @025F8618 # player name for a message tag: remember the message id (r5) for the German genitive
 @025F8720 # ... after the name is copied: append the German genitive suffix (European code 0x025F85AC)

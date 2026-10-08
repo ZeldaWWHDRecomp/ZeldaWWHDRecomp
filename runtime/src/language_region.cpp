@@ -16,14 +16,19 @@
 #include <string>
 
 #include "game_languages.h"
+#include "guest_addr.h"
 #include "runtime.h"
 
 extern "C" {
-void f_025F9448_orig(Cpu* c);  // SysSetting::update
+// Only the USA build is hooked here (tools/recomp/hooks_language.txt says "# builds: USA"): the
+// European and Japanese builds read their own region. The runtime ships for every build, so the
+// original function is declared weak and this hook is inert when it is not there (nothing calls it).
+__attribute__((weak)) void f_025F9448_orig(Cpu* c);  // SysSetting::update
 }
 
 extern "C" void hook_025F9448(Cpu* c) {
     const uint32_t self = c->r[3];
+    if (!f_025F9448_orig) return;
     f_025F9448_orig(c);
     const game_lang::Start s = game_lang::current();
     if (!s.pack || !self) return;
@@ -31,7 +36,7 @@ extern "C" void hook_025F9448(Cpu* c) {
     st32(self + 0x14, (uint32_t)s.language);
     // the save's options, as the European game would keep them (only copied to 0x101EA6D2 by the
     // name scene in the USA code, never read there)
-    const uint32_t save = ld32(0x101F84DC);
+    const uint32_t save = ld32(GD(0x101F84DC));
     if (save) st8(save + 0x12F0 + 4, (uint8_t)game_lang::options_language(s.language));
     static bool logged = false;
     if (!logged) {
@@ -53,7 +58,7 @@ namespace {
 thread_local uint32_t t_name_message = 0;
 
 bool german_europe() {
-    const uint32_t setting = ld32(0x101F4BAC);
+    const uint32_t setting = ld32(GD(0x101F4BAC));
     return setting && ld32(setting + 0x10) == (uint32_t)game_lang::kEurope && ld32(setting + 0x14) == 3;
 }
 }  // namespace

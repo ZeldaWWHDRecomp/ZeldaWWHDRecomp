@@ -12,6 +12,7 @@
 #endif
 #include <ctime>
 #include <filesystem>
+#include "guest_addr.h"
 #include "platform/host.h"
 #ifdef _WIN32
 #include <timeapi.h>
@@ -357,8 +358,8 @@ int main(int argc, char** argv) {
     std::string rpx = config::game_dir + "/code/cking.rpx";
     if (!load_rpx(rpx, m)) fatal("cannot load %s", rpx.c_str());
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
-    LOG("[boot] loaded %s: entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(), m.entry, m.sda_base, m.sda2_base,
-        m.data_end);
+    LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),
+        g_guest_build_name, g_guest_build_title_id, m.entry, m.sda_base, m.sda2_base, m.data_end);
 
     dispatch::init();
     init_data_imports();

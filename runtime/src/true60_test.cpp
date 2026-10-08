@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "guest_addr.h"
 #include "runtime.h"
 #include "true60.h"
 #include "savestate.h"
@@ -66,7 +67,7 @@ std::vector<Poke> parse_pokes() {
     }
     return v;
 }
-constexpr uint32_t kSaveInfoPtr = 0x101F84DC;  // dComIfGs save info (dSv_info_c), see dComIfGs_setSelectEquip 02522398
+const uint32_t kSaveInfoPtr = GD(0x101F84DC);  // dComIfGs save info (dSv_info_c), see dComIfGs_setSelectEquip 02522398
 constexpr uint32_t kSaveInfoSize = 0x12A0;
 void dump_saveinfo(const std::string& path) {
     uint32_t p = ld32(kSaveInfoPtr);
@@ -105,7 +106,7 @@ void tick(double t, bool ended) {
     static double sc_t = getenv("WWHD_TEST_SCENECHANGE") ? atof(getenv("WWHD_TEST_SCENECHANGE")) : -1;
     if (sc_t >= 0 && t >= sc_t) {
         sc_t = -1;
-        constexpr uint32_t kPlay = 0x1046F0B0, kStart = kPlay + 0x5134, kNext = kPlay + 0x5140;
+        const uint32_t kPlay = GD(0x1046F0B0), kStart = kPlay + 0x5134, kNext = kPlay + 0x5140;
         for (uint32_t i = 0; i < 12; i++) st8(kNext + i, ld8(kStart + i));
         st8(kNext + 12, 1);  // enabled
         st8(kNext + 13, 0);  // wipe
@@ -194,7 +195,7 @@ void after_execute(uint32_t proc, uint32_t fn, bool is_link, float dt) {
 void rng_trace() {
     static FILE* f = getenv("WWHD_RNG_TRACE") ? fopen(getenv("WWHD_RNG_TRACE"), "w") : nullptr;
     if (!f || interp::hold_pass()) return;
-    fprintf(f, "%llu %08X %08X %08X", (unsigned long long)interp::logic_steps(), ld32(0x101FF9D4), ld32(0x101FF9D8), ld32(0x101FF9DC));
+    fprintf(f, "%llu %08X %08X %08X", (unsigned long long)interp::logic_steps(), ld32(GD(0x101FF9D4)), ld32(GD(0x101FF9D4) + 4), ld32(GD(0x101FF9D4) + 8));
     // WWHD_MEM_WATCH=addr:len,... adds those bytes (hex) to each line
     static std::vector<std::pair<uint32_t, uint32_t>> w = [] {
         std::vector<std::pair<uint32_t, uint32_t>> v;
@@ -212,7 +213,7 @@ void rng_trace() {
         fprintf(f, " ");
         for (uint32_t i = 0; i < n; i++) fprintf(f, "%02X", ld8(a + i));
     }
-    fprintf(f, " c%08X\n", ld32(0x101FF560));
+    fprintf(f, " c%08X\n", ld32(GD(0x101FF560)));
     static int n = 0;
     if (++n % 30 == 0) fflush(f);
 }
@@ -338,11 +339,11 @@ extern "C" void hook_025D6CE8(Cpu* c) {
     std::string ctx;
     if (f) {
         char t[16];
-        for (uint32_t o = 0; o < 0x30; o += 4) { snprintf(t, sizeof t, " %08X", ld32(0x104B45F8 + o)); ctx += t; }
+        for (uint32_t o = 0; o < 0x30; o += 4) { snprintf(t, sizeof t, " %08X", ld32(GD(0x104B45F8) + o)); ctx += t; }
         ctx += " | cull";
         uint32_t m = ld32(a + 0x348);
         for (uint32_t o = 0; o < 0x30 && m; o += 4) { snprintf(t, sizeof t, " %08X", ld32(m + o)); ctx += t; }
-        uint32_t vo = ld32(ld32(ld32(0x101F95D0) + 0x1024));
+        uint32_t vo = ld32(ld32(ld32(GD(0x101F95D0)) + 0x1024));
         snprintf(t, sizeof t, " | vis %08X", vo); ctx += t;
         for (uint32_t o = 0x600; o < 0x800 && vo; o += 4) { snprintf(t, sizeof t, " %08X", ld32(vo + o)); ctx += t; }
         ctx += " | box";

@@ -23,6 +23,7 @@
 // runtime allocations) and guest memory (MEM2, runtime objects, fixed slots, foreground bucket,
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
+#include "guest_addr.h"
 
 #ifdef __APPLE__
 #include <compression.h>
@@ -266,7 +267,7 @@ uint64_t game_id() {
 }
 
 // current stage (dComIfG_gameInfo.play: the start stage, 8 chars)
-constexpr uint32_t kStageName = 0x1046F0B0 + 0x5134;  // dStage_startStage_c (next stage at +0x5140)
+const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // dStage_startStage_c (next stage at +0x5140)
 std::string stage_name() {
     if (const char* e = getenv("WWHD_STATE_STAGE_ADDR")) {
         uint32_t a = (uint32_t)strtoul(e, nullptr, 16);
@@ -645,36 +646,39 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
 //         stage change the way the game restarts a room after a void-out: dSv_restart_c holds
 //         Link's room, position and angle, and the next stage gets point -1 (dStage_playerInit
 //         creates Link there).
-constexpr uint32_t kSaveInfoPtr = 0x101F84DC;       // dComIfGs save area (dSv_info_c at +0x20)
-constexpr uint32_t kPlay = 0x1046F0B0;              // g_dComIfG_gameInfo.play (dComIfG_getGameInfo 025200D4)
-constexpr uint32_t kStartStage = kPlay + 0x5134;    // dStage_startStage_c: name[8], point s16, room s8, layer s8
-constexpr uint32_t kNextStage = kPlay + 0x5140;     // dStage_nextStage_c: the same + enabled, wipe
-constexpr uint32_t kStageData = kPlay + 0x5150;     // dStage_stageDt_c (getStagInfo: vtable +0x15C)
-constexpr uint32_t kLinkPtr = kPlay + 0x5B34;       // mpPlayerPtr[0]: daPy_lk_c
-constexpr uint32_t kShipPtr = kPlay + 0x5B3C;       // dComIfGp_getShipActor: daShip_c (0 without a boat)
+// The addresses of the game's own globals and functions are canonical (USA) ids: GD()/GC() turn
+// them into this build's (runtime/include/guest_addr.h). An offset inside an object does not
+// change with the build, so only the base of each object is translated.
+const uint32_t kSaveInfoPtr = GD(0x101F84DC);       // dComIfGs save area (dSv_info_c at +0x20)
+const uint32_t kPlay = GD(0x1046F0B0);              // g_dComIfG_gameInfo.play (dComIfG_getGameInfo 025200D4)
+const uint32_t kStartStage = kPlay + 0x5134;    // dStage_startStage_c: name[8], point s16, room s8, layer s8
+const uint32_t kNextStage = kPlay + 0x5140;     // dStage_nextStage_c: the same + enabled, wipe
+const uint32_t kStageData = kPlay + 0x5150;     // dStage_stageDt_c (getStagInfo: vtable +0x15C)
+const uint32_t kLinkPtr = kPlay + 0x5B34;       // mpPlayerPtr[0]: daPy_lk_c
+const uint32_t kShipPtr = kPlay + 0x5B3C;       // dComIfGp_getShipActor: daShip_c (0 without a boat)
 constexpr uint32_t kActorPos = 0x314, kActorRoom = 0x326, kShapeAngleY = 0x32A;  // fopAc_ac_c (WWHD)
 constexpr uint32_t kLinkProc = 0x65F0;              // daPy_lk_c::mCurProc
 constexpr uint32_t kInfo = 0x20;                    // dSv_info_c in the save area
-constexpr uint32_t kDataNum = kInfo + 0x1290;       // dSv_info_c::mDataNum (Quest Log 0..2)
+const uint32_t kDataNum = kInfo + 0x1290;       // dSv_info_c::mDataNum (Quest Log 0..2)
 constexpr uint32_t kReturnPlace = 0x50;             // dSv_player_return_place_c (0xC bytes)
-constexpr uint32_t kMemoryTable = kInfo + 0x380;    // dSv_save_c::mSave[16] (dSv_memory_c, 0x24 each)
-constexpr uint32_t kTurnRestart = kInfo + 0x1258;   // dSv_turnRestart_c: pos 0, param 0xC, angle 0x10, room 0x12, ship pos 0x24, ship angle 0x30, has ship 0x34
-constexpr uint32_t kRestart = kInfo + 0x1128;       // dSv_restart_c: room 0, angle 0x16, pos 0x18, param 0x24, last speed 0x28, last mode 0x2C
+const uint32_t kMemoryTable = kInfo + 0x380;    // dSv_save_c::mSave[16] (dSv_memory_c, 0x24 each)
+const uint32_t kTurnRestart = kInfo + 0x1258;   // dSv_turnRestart_c: pos 0, param 0xC, angle 0x10, room 0x12, ship pos 0x24, ship angle 0x30, has ship 0x34
+const uint32_t kRestart = kInfo + 0x1128;       // dSv_restart_c: room 0, angle 0x16, pos 0x18, param 0x24, last speed 0x28, last mode 0x2C
 constexpr uint32_t kHdArea = 0x12C0;                // HD per-file data (SaveMgr getters 027200A0..)
 constexpr uint32_t kCardStatusB = 0x18;             // status B in the card block: time 0xC (f32), date 0x10 (u16)
 // game functions
-constexpr uint32_t fn_memory_to_card = 0x025BA9FC, fn_card_to_memory = 0x025BA7B0, fn_putSave = 0x025B9D24,
-                   fn_getSave = 0x025B9C9C, fn_setGameStartStage = 0x025217F8, fn_danInit = 0x025B9174,
-                   fn_eventInit = 0x025B8B10, fn_refreshGame = 0x02721880, fn_turnRestartSet = 0x025B998C;
+const uint32_t fn_memory_to_card = GC(0x025BA9FC), fn_card_to_memory = GC(0x025BA7B0), fn_putSave = GC(0x025B9D24),
+               fn_getSave = GC(0x025B9C9C), fn_setGameStartStage = GC(0x025217F8), fn_danInit = GC(0x025B9174),
+               fn_eventInit = GC(0x025B8B10), fn_refreshGame = GC(0x02721880), fn_turnRestartSet = GC(0x025B998C);
 // HD sections: (slot getter, live getter, live <- slot copy) and size in the file (SaveMgr read/write 02724764..)
 struct HdSection { uint32_t slot_get, live_get, copy; size_t size; std::vector<uint8_t> pstate::State::*field; };
 const HdSection kHdSections[] = {
-    {0x027200A0, 0x027200D0, 0x0271FCB4, pstate::kHdPlayerSize, &pstate::State::hd_player},
-    {0x027200D8, 0x027200F4, 0x0271FAC0, pstate::kHdStatusSize, &pstate::State::hd_status},
-    {0x027200FC, 0x02720118, 0x0271F914, pstate::kHdEventSize, &pstate::State::hd_event},
-    {0x02720180, 0x0272019C, 0x027208F4, pstate::kHdMapSize, &pstate::State::hd_map},
+    {GC(0x027200A0), GC(0x027200D0), GC(0x0271FCB4), pstate::kHdPlayerSize, &pstate::State::hd_player},
+    {GC(0x027200D8), GC(0x027200F4), GC(0x0271FAC0), pstate::kHdStatusSize, &pstate::State::hd_status},
+    {GC(0x027200FC), GC(0x02720118), GC(0x0271F914), pstate::kHdEventSize, &pstate::State::hd_event},
+    {GC(0x02720180), GC(0x0272019C), GC(0x027208F4), pstate::kHdMapSize, &pstate::State::hd_map},
 };
-constexpr uint32_t fn_name_obj = 0x02720154;  // per-file player name (SafeString: +0 UTF-16 text)
+const uint32_t fn_name_obj = GC(0x02720154);  // per-file player name (SafeString: +0 UTF-16 text)
 
 bool in_mem2(uint32_t a) { return a >= mem::kMem2Start && a < mem::kMem2End; }
 
@@ -729,14 +733,14 @@ bool gameplay_ready(std::string& why, bool& retry) {
 // wipe in progress, Link is the controlled actor, Link is not on a rope). The menu also refuses
 // while the Telescope or the Picto Box aims; that is left out (Link restarts standing, harmless).
 // Updated every frame for the event delay.
-constexpr uint32_t kEventRun = kPlay + 0x5292;     // dComIfGp_event_runCheck (dEvt_control_c mode)
-constexpr uint32_t kMesgStatus = kPlay + 0x5BB2;   // dComIfGp_getMesgStatus (messageState 025F795C)
-constexpr uint32_t kScopeMesgStatus = kPlay + 0x5BB3;
-constexpr uint32_t kMenuFlag = 0x101EA069;         // dMenu_flag (025986BC)
-constexpr uint32_t kPlayerPtr = kPlay + 0x5B2C;    // mpPlayer[0]: the controlled actor
-constexpr uint32_t kPlayerStatus0 = kPlay + 0x5CD8; // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
+const uint32_t kEventRun = kPlay + 0x5292;     // dComIfGp_event_runCheck (dEvt_control_c mode)
+const uint32_t kMesgStatus = kPlay + 0x5BB2;   // dComIfGp_getMesgStatus (messageState 025F795C)
+const uint32_t kScopeMesgStatus = kPlay + 0x5BB3;
+const uint32_t kMenuFlag = GD(0x101EA069);         // dMenu_flag (025986BC)
+const uint32_t kPlayerPtr = kPlay + 0x5B2C;    // mpPlayer[0]: the controlled actor
+const uint32_t kPlayerStatus0 = kPlay + 0x5CD8; // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
 constexpr uint32_t kSttsRope = 0x00800000;          // daPyStts0_UNK800000_e: set by Link's rope procedures (procRope*)
-constexpr uint32_t fn_ovlpDoingReq = 0x025DBE38;   // fopOvlpM_IsDoingReq (a wipe or scene overlap runs)
+const uint32_t fn_ovlpDoingReq = GC(0x025DBE38);   // fopOvlpM_IsDoingReq (a wipe or scene overlap runs)
 int g_event_wait = 0;                              // d_menu_window.cpp event_wait_frame
 void track_events() {
     if (ld8(kEventRun)) g_event_wait = 5;
@@ -1423,7 +1427,7 @@ void service(Cpu* c) {
     if (s && do_load(s)) {
         g_last_load_frame = render::frame_count();
         g_last_load_step = interp::logic_steps();
-        g_last_load_counter = ld32(0x101FF560);  // g_Counter.mTimer: the game's own step counter, part of the state
+        g_last_load_counter = ld32(GD(0x101FF560));  // g_Counter.mTimer: the game's own step counter, part of the state
         {
             std::lock_guard<std::mutex> lk(g_mu);
             g_load_ready.reset();
