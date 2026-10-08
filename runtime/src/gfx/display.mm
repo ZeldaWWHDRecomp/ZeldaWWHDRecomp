@@ -297,6 +297,11 @@ static void attach_metal_layers() {
         CAMetalLayer* layer = attach_layer(i);
         scr.layer = layer;
         if (!layer) continue;
+        // The final SDR drawable contains sRGB colors. Let Core Animation match them to
+        // the monitor's profile, as MoltenVK does for VK_COLOR_SPACE_SRGB_NONLINEAR_KHR.
+        CGColorSpaceRef outputColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        layer.colorspace = outputColorSpace;
+        CGColorSpaceRelease(outputColorSpace);
         layer.device = R.device;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = YES;
