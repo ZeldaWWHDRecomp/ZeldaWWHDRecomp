@@ -35,6 +35,16 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools", "savegame"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools", "recomp"))
+import builds
+
+release_map = None
+
+
+def data_address(usa):
+    native = release_map.data(usa) if release_map else usa
+    assert native is not None, "scenario address has no release mapping: %08X" % usa
+    return "%08X" % native
 
 
 def wait_for_quiet_machine():
@@ -142,7 +152,7 @@ def load_state(binary, game, save, work, name, state, quest_log=1, origin=3300):
     d2 = prepare(work, name + "-load", save, [state])
     shutil.move(os.path.join(d2, "states", os.path.basename(state)), os.path.join(d2, "states", "slot1.wwstate"))
     env = {"WWHD_PRESS": presses(quest_log=quest_log), "WWHD_TEST_ORIGIN": str(origin),
-           "WWHD_TEST_POKE": "1:*101F84DC+24:0063",  # 99 rupees before the load (the state has the save's own count)
+           "WWHD_TEST_POKE": "1:*%s+24:0063" % data_address(0x101F84DC),  # 99 rupees before the load
            "WWHD_STICK": "%d-%d:1:0" % (origin + 30, origin + 80),
            "WWHD_PORTABLE_LOAD_AT": "%d:1" % (origin + 90), "WWHD_PORTABLE_SAVE_AT": "%d:2" % (origin + 600)}
     log = run_game(binary, game, d2, env, lambda l: "slot 2: portable state written" in l or "slot 2: not saved" in l, 300)
@@ -191,7 +201,7 @@ def portable_case(binary, game, save_dir, work, name, warp, expect_stage, origin
     """make a portable state (after an optional stage-change poke and a walk), load it in a cold boot"""
     env = {"WWHD_STICK": "%d-%d:0:1" % (origin + 420, origin + 450), "WWHD_PORTABLE_SAVE_AT": "%d:1" % (origin + 540)}
     if warp:
-        env["WWHD_TEST_POKE"] = "1:104741F0:" + warp
+        env["WWHD_TEST_POKE"] = "1:%s:" % data_address(0x104741F0) + warp
     state1, _ = make_state(binary, game, save_dir, work, name, env)
     if not state1:
         return False, None
@@ -282,10 +292,15 @@ def event_case(binary, game, event_save, work):
 
 
 def main():
+    global release_map
     if len(sys.argv) < 5:
         print(__doc__)
         return 2
     binary, game, save_dir, work = (os.path.abspath(a) for a in sys.argv[1:5])
+    release_map = builds.identify(os.path.join(game, "code", "cking.rpx"))
+    if release_map is None:
+        raise ValueError("unsupported executable for the scenario")
+    print("%s scenario: game addresses mapped through the build registry" % release_map.name, flush=True)
     opt = lambda k: os.path.abspath(sys.argv[sys.argv.index(k) + 1]) if k in sys.argv else None  # noqa: E731
     skip_full = "--skip-full" in sys.argv
     only = opt("--only") and os.path.basename(opt("--only"))

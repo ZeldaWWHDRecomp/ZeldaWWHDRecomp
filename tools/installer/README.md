@@ -170,11 +170,11 @@ the GUI skips the key screen and the terminal setup asks for none.
 `wwhd-extract --title 0005000010143500 info GAME.wua` lists every title folder and the one selected;
 setup then decides (`archive_choice` in `setup.py`) and logs which title it uses and why:
 
-- the game itself, `0005000010143500_v0`, is used: the port's translated code and its hooks are made
-  for version 0 of the USA game (the disc and eShop release);
+- the game itself, `0005000010143500_v0` or `0005000010143600_v0`, is used: the port's translated code and its hooks are made
+  for version 0 of the USA or European game (the disc and eShop release);
 - an update (`0005000e10143500_v..`) is not used, neither its code (another version) nor its data
   files (they belong to the update's code); DLC or other titles are listed as not used;
-- another region, an archive with only the update, another game, or a version other than 0 stop
+- an unsupported region, an archive with only the update, another game, or a version other than 0 stop
   with an explanation.
 
 `wwhd-extract --title FOLDER --progress extract GAME.wua data/game.partial` first checks the archive's
@@ -186,9 +186,10 @@ archive written by the test) and `ArchiveTitles` in `test_setup.py`.
 
 ## Game version check
 
-The translated code and its hooks (`tools/recomp/hooks*.txt`) are made for one file: `code/cking.rpx`
-of The Wind Waker HD (USA), title 00050000-10143500, version 0. `setup.py` keeps its SHA-256
-(`SUPPORTED_RPX_SHA256`, a checksum only: it identifies the file and contains nothing of it;
+The hooks (`tools/recomp/hooks*.txt`) use canonical USA addresses. Setup accepts `code/cking.rpx`
+from The Wind Waker HD USA (00050000-10143500) or Europe (00050000-10143600), version 0.
+The build registry (`tools/recomp/builds.py`, `builds/eu.json`) keeps each SHA-256
+(a checksum only: it identifies the file and contains nothing of it;
 `guard.py` flags 32-digit, key-shaped strings, not 64-digit sums) and `check_game_version` compares
 it for every source before anything is translated: an extracted folder at the "folder" step (and
 already when the window probes it), a disc image or Cemu archive right after extracting (into
@@ -199,3 +200,5 @@ when `code/app.xml` or `meta/meta.xml` give a version above 0 or the update's ti
 `GameVersion` in `test_setup.py` (synthetic files; `WWHD_GAME_DIR=game` also checks your own copy).
 The recompiler reads only `code/cking.rpx` (the runtime checks at start that it matches the translated
 code); the other files in `code/` (`app.xml`, `cos.xml`) are metadata and are not checked.
+For Europe it emits mapped hooks and runtime address tables automatically; no USA dump or
+separate language source is needed. See [regional builds](../../docs/builds.md).

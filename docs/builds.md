@@ -57,6 +57,12 @@ It refuses to write a map unless the two executables really are the same program
 The map itself holds numbers only — address runs and shifts — and never any of the game's code.
 A build's `cking.rpx` is identified by its SHA-256, like the USA one always was.
 
+The map also records the canonical text and static-data bounds. Python and runtime
+mapping reject addresses outside those bounds and interior addresses in changed
+functions. Allocated objects must be found through mapped globals, not fixed heap
+addresses. Special AO shaders are identified by their program hash rather than the
+address where a regional build happens to allocate them.
+
 ## How the port uses it
 
 - **The recompiler** (`tools/recomp/recomp.py`) identifies the executable by its SHA-256, translates
@@ -104,3 +110,33 @@ lend a European or Japanese game's text to the USA code.
    (`runtime/src/mods/cemu_pack.cpp` picks the section for the build).
 4. The Japanese build also needs its own text handling: the port's region patch is written for the
    USA code, and the Japanese font and message layouts are untested here.
+
+## Regression checks
+
+`python3 -m unittest discover -s tools/recomp -p 'test*.py'` checks every active EUR
+hook, including the pause-menu site `02715310` and stars site `02574144`, and audits
+runtime game-address literals for GC/GD mapping. This source audit complements the
+executable comparison; it is not a C++ parser or a proof of object layouts. CTest
+also exercises the generated EUR map and the USA identity fallback without game data.
+
+On devel `54761fd3`, all 247 active EUR hook addresses map: 95 instruction sites and
+152 function wrappers. Every instruction site is in an unchanged body. Of the wrappers,
+151 have unchanged bodies; the HUD pane wrapper `02593B10` wraps a changed function at
+its mapped entry. The four USA language hooks are intentionally skipped because EUR
+supplies that behavior natively. There are 37,748 unchanged function bodies and 18
+regional differences out of 37,766 paired functions.
+
+With an extracted game and a disposable copy of an existing save, the scripts in
+`runtime/tools/` exercise the real game:
+
+- `portable_state_scenario.py`: stage/position/inventory restoration across processes,
+  Quest Log changes, boat restoration, cutscene refusal, and full-state regression.
+- `interp_menu_scenario.py`: pause/open/close at 120 and 240 interpolation passes on
+  both renderers, plus F10 TV/GamePad screenshots through the normal key handler.
+- `regional_game_scenario.py`: native German/Italian (or USA English), Outset gameplay,
+  interpolation and true60 mode switches, returning to 30 fps and saving a portable state.
+
+These scripts use private caches, states and screenshot folders and never modify the
+input save. Keep extracted games and generated recompilation output outside Git
+checkouts. High interpolation rates check behavior, not physical 240 Hz display
+delivery or a performance guarantee.
