@@ -291,6 +291,7 @@ by drawing code are not.**
 | `023F695C`…`023FB230`, `023FBCEC`, `023DBDD0`, `023FD4E4`, `023DC7AC` | Link's decision functions | fenced in previews |
 | `025E14A8`, `025DFAB8`, `02821448`, `0200E240`, `0253EC0C`, `0253ED80`, `025F0658`, `025B8AF4`, `025B51DC` | creation, emitters, colliders, events, fade, save data | fenced in previews |
 | `02593B10` | d_meter update | full passes only |
+| `02715310` (interp.cpp) | HD UI manager: screen updates after fpcM_Management (TV pause screen at +0x1EC) | full passes only (issues #64, #74) |
 | `025028B8` | dCamera_c::followCamera | marks the camera as following (60 Hz) |
 | `024EF968` | dBgS::MoveBgCrrPos | Link riding moving collision: 30 Hz |
 | `02018D40` | cM3dGSph::SetC | NaN centre in a camera step: skipped, step undone |

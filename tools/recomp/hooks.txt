@@ -8,6 +8,7 @@
 025DDCEC  # fpcCt_Handler: process creation (returns success)
 025D42C4  # fapGm_After: scene / transition / camera management
 0200E6EC  # cCt_Counter: frame counters
+02715310  # HD UI screens' update after the process executes (end of fpcM_Management): logic, once per step
 024FFC40  # camera_draw: blended camera on logic passes
 # children of the per-frame function; on hold passes each runs or is skipped (interp.cpp kHoldRun)
 02032FE8  # per-frame child 0

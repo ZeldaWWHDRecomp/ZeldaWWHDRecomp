@@ -5,7 +5,8 @@
 // 1 at 60 fps, 3 at 120, 7 at 240; the virtual vsync of gx2_core.cpp ticks fast enough for them)
 // but the game logic only on the first pass of each step:
 //   logic pass:  logic advances S -> S+1; everything is drawn at t = 1/(N+1) between S and S+1
-//   hold pass k (k = 1..N): no logic (no execute/create/delete, scene management, counters, audio);
+//   hold pass k (k = 1..N): no logic (no execute/create/delete, scene management, counters, audio,
+//                HD UI screen updates);
 //                everything is drawn again at t = (k+1)/(N+1); the last one (k = N) draws S+1
 //                exactly and records it as the "before" of the next step's blended frames
 // The painter at the start of each pass renders the previous pass's draw lists, so at 60 fps the
@@ -1034,7 +1035,7 @@ extern "C" void hook_02039834(Cpu* c) { g_hold_child_cpu = c; if (!hold_skip_chi
 
 // logic parts of fpcM_Management / fapGm_Execute, skipped on hold passes
 // debug: WWHD_INTERP_RUN=mask runs selected parts on hold passes too
-// (1 execute, 2 delete, 4 priority, 8 create, 16 fapGm_After, 32 counter)
+// (1 execute, 2 delete, 4 priority, 8 create, 16 fapGm_After, 32 counter, 64 HD UI screens)
 static bool skip(int bit) {
     static const int run = getenv("WWHD_INTERP_RUN") ? atoi(getenv("WWHD_INTERP_RUN")) : 0;
     return interp::g_hold && !(run & bit);
@@ -1055,6 +1056,18 @@ extern "C" void hook_025E0EE4(Cpu* c) { if (skip(4)) c->r[3] = 1; else f_025E0EE
 extern "C" void hook_025DDCEC(Cpu* c) { if (skip(8)) c->r[3] = 1; else f_025DDCEC_orig(c); }
 extern "C" void hook_025D42C4(Cpu* c) { if (!skip(16)) f_025D42C4_orig(c); }
 extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
+// WWHD's addition at the end of fpcM_Management (025DFA58): the HD UI manager (*101F8344) updates
+// three of its screens (vtable +0x5C of the objects at +0x214, +0x1EC and +0x1E4; +0x1EC is the TV
+// pause screen): state machines and frame-counted layout animations, i.e. logic. Run on every pass,
+// they advanced once per drawn frame instead of once per logic step (their fades ran 2x/4x/8x as fast
+// at 60/120/240 fps), and the TV pause screen, closed by the menu on a logic pass, reopened itself on
+// the next in-between pass (the game still counted as paused until the next logic pass). The menu's
+// "back to play" state checks the screen on logic passes only; with 3 or more in-between passes per
+// step it always found the screen open again and waited forever: the menu would not close (issues
+// #64, #74; #73, no control after an item-get message, looks like the same). Once per logic step, as
+// at 30 fps (true 60 too: these screens are 30 Hz logic).
+extern "C" void f_02715310_orig(Cpu* c);
+extern "C" void hook_02715310(Cpu* c) { if (!skip(64)) f_02715310_orig(c); }
 
 namespace interp {
 // The pads are read at the end of every frame. JUTGamePad derives "pressed this frame" from

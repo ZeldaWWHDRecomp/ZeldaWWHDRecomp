@@ -16,6 +16,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
   longer turn into huge stretched polygons on the in-between frames (issues #36, #70); the boat's sail
   and yard and items Link carries (a bomb) no longer jump for single frames (issue #68); the stars in
   the night sky no longer wobble when the camera turns (issue #68). 30 fps is unchanged.
+- **Fixed: the pause menu would not close at 120/240 fps** (issues #64, #74; probably also #73, no
+  control after an item-get message). The HD screens (the TV pause screen and others) advanced on every
+  drawn frame instead of once per game step, so the TV pause screen reopened itself right after
+  closing. They now update once per step, which also gives their fades their 30 fps speed back at
+  60/120/240 fps.
 
 ### v0.2.8
 
