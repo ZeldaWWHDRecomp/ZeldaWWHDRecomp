@@ -267,6 +267,11 @@ struct LatteDecompilerOptions
 	{
 		bool hasRoundingModeRTEFloat32{ false };
 	}spirvInstrinsics;
+	// WWHD: the pixel shader is translated for the draw's vertex shader. Its inputs with no matching
+	// vertex shader output become constants (the GPU's default value for them) instead of inputs:
+	// an input that no output writes made the Adreno driver refuse the pipeline (VK_ERROR_UNKNOWN).
+	bool linkPSInputsToVS{ false };
+	std::bitset<256> vsOutputSemantics; // semantic IDs the vertex shader exports
 };
 
 struct LatteDecompilerOutput_t

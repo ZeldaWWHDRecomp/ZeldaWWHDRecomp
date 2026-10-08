@@ -158,6 +158,11 @@ output mask (`CB_SHADER_MASK`), the alpha test and the front-face import. The va
 adds, for the texture units the program samples, their dimension and integer format, the
 semantic ids of the parameters a vertex shader exports, and streamout strides when it writes
 streamout; the units and exports are recorded from the program's first translation.
+A pixel shader is translated for the draw's vertex shader: an input that none of the vertex
+shader's exports feeds is declared as a constant with the GPU's default value for it
+(`SPI_PS_INPUT_CNTL` DEFAULT_VAL) instead of an input, so the pixel shader's variant key also has
+the mask of those inputs and their default values (`ps_link`). A declared input that no output
+writes made the Adreno driver refuse the pipeline (PR #30, the boat ride after the sword and shield).
 Render-target formats, samplers, buffer addresses and units the program does not sample
 are not in the key. Keys that still translate to an identical shader (GLSL, resource
 mapping, uniform offsets, descriptor ranks) share one shader and its pipelines.

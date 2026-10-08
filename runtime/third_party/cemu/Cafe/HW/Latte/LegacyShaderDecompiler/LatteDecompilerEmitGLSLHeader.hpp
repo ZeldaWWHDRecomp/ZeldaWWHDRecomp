@@ -417,6 +417,17 @@ namespace LatteDecompilerGLSL
 		{
 			if (psInputTable->import[i].semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX)
 				continue;
+			const auto* options = shaderContext->options;
+			if (options && options->linkPSInputsToVS && !options->vsOutputSemantics.test(psInputTable->import[i].semanticId))
+			{
+				// WWHD: no vertex shader output for this input (LatteDecompilerOptions::linkPSInputsToVS):
+				// the value the GPU gives such an input, SPI_PS_INPUT_CNTL DEFAULT_VAL (bits 8-9)
+				static const char* const defaults[4] = { "vec4(0.0, 0.0, 0.0, 0.0)", "vec4(0.0, 0.0, 0.0, 1.0)",
+					"vec4(1.0, 1.0, 1.0, 0.0)", "vec4(1.0, 1.0, 1.0, 1.0)" };
+				const uint32 defaultValue = (shaderContext->contextRegisters[mmSPI_PS_INPUT_CNTL_0 + i] >> 8) & 3;
+				src->addFmt("const vec4 passParameterSem{} = {};" _CRLF, psInputTable->import[i].semanticId, defaults[defaultValue]);
+				continue;
+			}
 			src->addFmt("layout(location = {}) ", i);
 			if (psInputTable->import[i].isFlat)
 				src->add("flat ");
