@@ -147,6 +147,7 @@ def summarize(windows):
 
 
 def run_once(args, variant, env_extra, index, out_dir):
+    binary = args.variant_binaries.get(variant, args.binary)
     run_dir = os.path.join(out_dir, "%s_%02d" % (variant, index))
     shutil.rmtree(run_dir, ignore_errors=True)
     os.makedirs(run_dir)
@@ -171,7 +172,8 @@ def run_once(args, variant, env_extra, index, out_dir):
         "XDG_CONFIG_HOME": os.path.join(run_dir, "config"),
         "WWHD_PRESS": presses, "WWHD_STATE_DIR": os.path.abspath(args.state_dir), "WWHD_STATE_LOAD_AT": "%d:%d" % (load_at, slot),
         "WWHD_TEST_ORIGIN": str(origin), "WWHD_TEST_END": str(args.seconds),
-        "WWHD_RENDERER_RUNTIME": args.renderer, "WWHD_PROFILE": "1",
+        "WWHD_RENDERER_RUNTIME": args.renderer, "WWHD_PROFILE": "1", "WWHD_TICK_STATS": "1",
+        "WWHD_INTERP_PASS_STATS": "1",
     })
     if not args.visible:
         env["WWHD_HIDDEN_WINDOWS"] = "1"  # nothing pops up, but nothing is presented either
@@ -197,10 +199,13 @@ def run_once(args, variant, env_extra, index, out_dir):
     while args.wait_for_others and other_games():
         print("  waiting: another game process is running", file=sys.stderr)
         time.sleep(30)
+    while args.max_load and load1() >= args.max_load:
+        print("  waiting: 1-minute load %.2f >= %.2f" % (load1(), args.max_load), file=sys.stderr, flush=True)
+        time.sleep(30)
     load_before = load1()
     started = time.time()
     with open(os.path.join(run_dir, "log"), "w") as log:
-        proc = subprocess.Popen([os.path.abspath(args.binary), "--game", os.path.abspath(args.game), "--save", "save"],
+        proc = subprocess.Popen([os.path.abspath(binary), "--game", os.path.abspath(args.game), "--save", "save"],
                                 cwd=run_dir, env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         status = "ok"
         try:
@@ -235,6 +240,12 @@ def run_once(args, variant, env_extra, index, out_dir):
     result = {"variant": variant, "run": index, "status": status, "env": env_extra, "load_before": load_before,
               "load_after": load_after, "seconds": round(time.time() - started, 1), "windows": len(windows),
               "summary": summarize(windows) if windows else {}}
+    tick = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"\[tick\] CPU " + NUM, l)] if m]
+    logic = [float(m.group(1)) for l in lines[loaded or 0:] for m in [re.search(r"main thread CPU per pass: logic " + NUM, l)] if m]
+    if tick:
+        result["summary"]["tick_cpu_ms_per_s"] = statistics.fmean(tick[1:] or tick)
+    if logic:
+        result["summary"]["logic_cpu_ms"] = statistics.fmean(logic[1:] or logic)
     if pacing:
         result["summary"]["vulkan_pacing_p95_ms"] = statistics.fmean(pacing[args.skip_windows:] or pacing)
     if paced:  # paced interpolation: share of in-between frames drawn, per 300 steps
@@ -249,6 +260,8 @@ def run_once(args, variant, env_extra, index, out_dir):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--binary", required=True, help="game executable (wwhd)")
+    p.add_argument("--variant-binary", action="append", default=[], metavar="NAME=PATH",
+                   help="executable for a named variant (keeps cross-build A/B runs interleaved)")
     p.add_argument("--game", default=os.path.join(REPO, "game"), help="extracted game folder (default: <repo>/game)")
     p.add_argument("--save", default=os.path.join(REPO, "save"), help="save folder, copied for every run (default: <repo>/save)")
     p.add_argument("--state-dir", required=True, help="folder with slot<N>.bin save states (read only)")
@@ -277,6 +290,7 @@ def main():
     p.add_argument("--warmup", action="store_true", help="one discarded run first (warms the shader caches)")
     p.add_argument("--cache-dir", help="shader/pipeline caches shared by the runs (default: <out>/cache)")
     p.add_argument("--timeout", type=float, default=600)
+    p.add_argument("--max-load", type=float, default=0, help="wait until the 1-minute load is below this (0 disables)")
     p.add_argument("--gate", help="shell command run (and waited for) before every run")
     p.add_argument("--out", default=os.path.join(REPO, "build", "bench"))
     p.add_argument("--no-wait", dest="wait_for_others", action="store_false", help="don't wait for other game processes")
@@ -284,6 +298,7 @@ def main():
     args = p.parse_args()
     if not os.path.exists(os.path.join(args.state_dir, "slot%d.bin" % (args.slot or SCENES[args.scene][0]))):
         p.error("no slot%d.bin in %s" % (args.slot or SCENES[args.scene][0], args.state_dir))
+    args.variant_binaries = dict(v.split("=", 1) for v in args.variant_binary)
     variants = []
     for v in args.variant or ["default:"]:
         name, _, envs = v.partition(":")
@@ -314,6 +329,9 @@ def main():
         for k in keys:
             vals = [s[k] for s in runs if k in s]
             stats[k] = {"median": statistics.median(vals), "mean": statistics.fmean(vals), "min": min(vals), "max": max(vals),
+                        "q1": statistics.quantiles(vals, n=4)[0] if len(vals) > 1 else vals[0],
+                        "q3": statistics.quantiles(vals, n=4)[2] if len(vals) > 1 else vals[0],
+                        "iqr": (statistics.quantiles(vals, n=4)[2] - statistics.quantiles(vals, n=4)[0]) if len(vals) > 1 else 0.0,
                         "stdev": statistics.stdev(vals) if len(vals) > 1 else 0.0, "n": len(vals)}
         table[name] = stats
     meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs", "display_hz")}

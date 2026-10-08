@@ -6,6 +6,7 @@
 #include <string>
 
 #include "portable_state.h"
+#include "full_state_header.h"
 
 using namespace pstate;
 
@@ -26,6 +27,7 @@ static State sample() {
     s.runtime = "v0.2.6 (abc1234)";
     s.created = "2026-10-08 14:03:11";
     s.file_slot = 1;
+    s.controller = 2;
     s.player_name = "Link";
     s.stage = "sea";
     s.start_point = 0;
@@ -82,6 +84,22 @@ int main() {
     State r;
     CHECK(read(text, r, why));
     CHECK(r.title_id == s.title_id && r.runtime == s.runtime && r.created == s.created);
+    CHECK(r.controller == 2);
+    bool pro = false; // switched to GamePad after saving
+    pro = ss::restored_pro_controller(r.controller, pro);
+    CHECK(pro);
+    State legacy;
+    CHECK(read(reseal(replace(text, "controller = 2\n", "")), legacy, why));
+    CHECK(legacy.controller == 0);
+    CHECK(!ss::restored_pro_controller(legacy.controller, false));
+    CHECK(ss::restored_pro_controller(legacy.controller, true));
+    for (const char* invalid : {"-1", "3", "Pro", "999999999999999999999"}) {
+        State x;
+        CHECK(!read(reseal(replace(text, "controller = 2", std::string("controller = ") + invalid)), x, why));
+    }
+    State bad_mode = s;
+    bad_mode.controller = 3;
+    CHECK(write(bad_mode, why).empty());
     CHECK(r.file_slot == 1 && r.player_name == "Link" && r.stage == "sea");
     CHECK(r.start_point == 0 && r.start_room == 44 && r.layer == -1 && r.room == 44);
     CHECK(r.pos[0] == s.pos[0] && r.pos[1] == s.pos[1] && r.pos[2] == s.pos[2]);  // exact (9 digits)

@@ -869,7 +869,12 @@ extern "C" void hook_0203593C(Cpu* c) {
         g_hold_next = false;
         g_phase = 0;
         g_step_n = 1;
-        f_0203593C_orig(c);
+        {
+            PassTimer timer(0);
+            f_0203593C_orig(c);
+        }
+        static unsigned stats_steps = 0;
+        if (pass_stats() && ++stats_steps % 300 == 0) LOG("[interp]%s", pass_cpu_report().c_str());
         return;
     }
     static uint64_t frames = 0;  // passes drawn with interpolation on (frames per step in the log)

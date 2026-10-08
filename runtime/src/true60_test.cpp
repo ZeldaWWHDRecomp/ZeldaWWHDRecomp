@@ -35,6 +35,7 @@
 #include "runtime.h"
 #include "true60.h"
 #include "savestate.h"
+#include "input.h"
 
 namespace interp { uint64_t logic_steps(); bool hold_pass(); }
 
@@ -78,10 +79,129 @@ void dump_saveinfo(const std::string& path) {
         LOG("[test] save info (%08X) written to %s", p, path.c_str());
     }
 }
+// Opt-in integration checks use the actual coreinit HLE on the guest main thread.
+// Only host-created scratch objects and a host callback are used; no game data is logged.
+std::atomic<unsigned> timing_callbacks{0};
+uint32_t timing_event = 0;
+void timing_callback(Cpu* c) {
+    ++timing_callbacks;
+    Cpu call = *c;
+    call.r[3] = timing_event;
+    hle_find("coreinit", "OSSignalEvent")(&call);
+}
+void timing_checks() {
+    Cpu call = *threads::current();
+    auto invoke = [&](const char* name) { hle_find("coreinit", name)(&call); };
+    auto delay = [&](unsigned ms) { return timebase::kTicksPerSec * ms / 1000; };
+    auto pair = [&](int r, uint64_t ticks) { call.r[r] = uint32_t(ticks >> 32); call.r[r + 1] = uint32_t(ticks); };
+    auto check = [](const char* name, bool ok) { LOG("[test] timed HLE %s %s", name, ok ? "PASS" : "FAIL"); };
+    auto sleep = [&](unsigned ms) { pair(3, delay(ms)); invoke("OSSleepTicks"); };
+    auto start = std::chrono::steady_clock::now();
+    sleep(2);
+    check("OSSleepTicks", std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(2));
+    timing_event = mem::host_alloc(0x60, 0x20);
+    call.r[3] = timing_event; call.r[4] = 0; call.r[5] = 0;
+    invoke("OSInitEvent");
+    auto wait_event = [&](unsigned ms) {
+        call.r[3] = timing_event; pair(5, delay(ms)); invoke("OSWaitEventWithTimeout");
+        return call.r[3] != 0;
+    };
+    start = std::chrono::steady_clock::now();
+    bool result = wait_event(2);
+    check("event timeout", !result && std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(2));
+    call.r[3] = timing_event; invoke("OSSignalEvent");
+    check("event signaled", wait_event(2));
+    call.r[3] = timing_event; invoke("OSResetEvent");
+    uint32_t alarm = mem::host_alloc(0x60, 0x20);
+    uint32_t callback = dispatch::register_host(timing_callback, "timed-wait-test");
+    call.r[3] = alarm; invoke("OSCreateAlarm");
+    auto arm = [&](unsigned ms) {
+        call.r[3] = alarm; pair(5, delay(ms)); call.r[7] = callback; invoke("OSSetAlarm");
+    };
+    arm(80); // the earlier replacement must interrupt the alarm thread's old deadline
+    start = std::chrono::steady_clock::now();
+    arm(3);
+    result = wait_event(500);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    check("alarm rearm/event wake", result && timing_callbacks == 1 && elapsed >= std::chrono::milliseconds(3) &&
+          elapsed < std::chrono::milliseconds(80));
+    call.r[3] = alarm; pair(5, timebase::guest_now() + delay(2)); pair(7, delay(2)); call.r[9] = callback;
+    invoke("OSSetPeriodicAlarm");
+    sleep(12);
+    check("periodic alarm", timing_callbacks >= 3);
+    call.r[3] = alarm; invoke("OSCancelAlarm");
+    sleep(5); // a callback already dispatched at cancellation may finish
+    auto count = timing_callbacks.load();
+    sleep(5);
+    check("alarm cancellation", timing_callbacks == count);
+}
 }  // namespace
 
 // called with the scenario time on every controller read (input.mm)
 void tick(double t, bool ended) {
+    static bool timing_done = false;
+    if (!timing_done && getenv("WWHD_TEST_TIMED_WAITS") && threads::current()) {
+        timing_done = true;
+        timing_checks();
+    }
+
+    // Host-only controller-mode regression script: t:mode (1 GamePad, 2 Pro).
+    auto parse_modes = [](const char* name) {
+        std::vector<std::pair<double, int>> modes;
+        for (const char* e = getenv(name); e && *e;) {
+            double at; int mode, n;
+            if (sscanf(e, "%lf:%d%n", &at, &mode, &n) != 2 || (mode != 1 && mode != 2)) break;
+            modes.emplace_back(at, mode);
+            e += n;
+            if (*e != ',') break;
+            ++e;
+        }
+        return modes;
+    };
+    static auto controllers = parse_modes("WWHD_TEST_CONTROLLER");
+    static auto checks = parse_modes("WWHD_TEST_CONTROLLER_CHECK");
+    for (auto& [at, mode] : controllers) if (mode && t >= at) {
+        input::set_pro_controller(mode == 2);
+        LOG("[test] controller set %d at %.3f", mode, t);
+        mode = 0;
+    }
+    for (auto& [at, mode] : checks) if (mode && t >= at) {
+        LOG("[test] controller check %s expected %d actual %d at %.3f",
+            input::pro_controller() == (mode == 2) ? "PASS" : "FAIL", mode, input::pro_controller() ? 2 : 1, t);
+        mode = 0;
+    }
+    // Only step numbers and clocks: no guest memory or save data in this timeline.
+    static FILE* timeline = [] {
+        const char* path = getenv("WWHD_LOGIC_TIMELINE");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    static uint64_t last_step = ~uint64_t(0);
+    uint64_t step = interp::logic_steps();
+    if (timeline && step != last_step) {
+        fprintf(timeline, "%llu %.9f %.9f\n", (unsigned long long)step, t,
+                timebase::now() / double(timebase::kTicksPerSec));
+        fflush(timeline);
+        last_step = step;
+    }
+
+    // WWHD_TEST_SAVE=t:slot,... uses the selected kind (WWHD_FULL_SAVE_STATES=0|1).
+    static std::vector<std::pair<double, int>> saves = [] {
+        std::vector<std::pair<double, int>> v;
+        for (const char* e = getenv("WWHD_TEST_SAVE"); e && *e;) {
+            double at; int slot, n;
+            if (sscanf(e, "%lf:%d%n", &at, &slot, &n) != 2) break;
+            v.emplace_back(at, slot);
+            e += n;
+            if (*e != ',') break;
+            ++e;
+        }
+        return v;
+    }();
+    for (auto& [at, slot] : saves) if (slot > 0 && t >= at) {
+        ss::request_save(slot);
+        LOG("[test] t=%.3f save slot %d", t, slot);
+        slot = 0;
+    }
     // WWHD_TEST_LOAD=t:slot,... loads a save state at scenario time t (once each)
     static std::vector<std::pair<double, int>> loads = [] {
         std::vector<std::pair<double, int>> v;

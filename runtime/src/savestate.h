@@ -72,6 +72,7 @@ struct SlotInfo {
     bool compatible = true;
     bool portable = false;  // the slot's (newer) file is a portable state
     std::string when;  // local time of the save
+    std::string controller; // empty for legacy states
     std::string area;  // stage name, if known
     std::string path;  // the slot's file
     bool older_other = false;  // the slot also has an older file of the other kind (kept, never deleted)

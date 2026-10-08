@@ -23,7 +23,7 @@ const char* const kTextKeys[] = {
     "format", "title_id", "title_version", "game_hash", "runtime", "created", "file_slot", "player_name",
     "stage", "start_point", "start_room", "layer", "room", "link_pos", "link_angle_y", "link_proc", "on_ship",
     "has_ship", "ship_pos", "ship_angle_y",
-    "time_of_day", "date",
+    "time_of_day", "date", "controller",
 };
 constexpr size_t kMaxText = 128;  // longest value of a text key
 
@@ -200,6 +200,7 @@ std::string write(const State& s, std::string& why) {
                   std::to_string(b.size);
             return "";
         }
+    if (s.controller < 0 || s.controller > 2) { why = "invalid controller"; return ""; }
     std::string o;
     auto kv = [&](const char* k, const std::string& v) { o += std::string(k) + " = " + v + "\n"; };
     o += "# Wind Waker HD portable save state: progress and position only (no game code or game data).\n";
@@ -211,6 +212,7 @@ std::string write(const State& s, std::string& why) {
     kv("game_hash", clean(s.game_hash));
     kv("runtime", clean(s.runtime));
     kv("created", clean(s.created));
+    if (s.controller) kv("controller", std::to_string(s.controller));
     kv("file_slot", std::to_string(s.file_slot));
     kv("player_name", clean(s.player_name));
     kv("stage", clean(s.stage));
@@ -308,6 +310,7 @@ bool read(const std::string& text, State& out, std::string& why) {
         dst = (int)n;
         return true;
     };
+    if (m.count("controller") && !get_int("controller", 0, 2, s.controller)) return false;
     int tv = 0, ship = 0, has_ship = 0;
     if (!get_int("title_version", 0, 0xFFFF, tv) || !get_int("file_slot", 0, 2, s.file_slot) ||
         !get_int("start_point", -32768, 32767, s.start_point) || !get_int("start_room", -128, 127, s.start_room) ||

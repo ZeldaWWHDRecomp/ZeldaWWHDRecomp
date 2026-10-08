@@ -470,6 +470,7 @@ void tab_saves() {
             if (!s.used) ImGui::TextDisabled("empty");
             else {
                 std::string d = s.when + (s.area.empty() ? "" : "  -  " + s.area);
+                if (!s.controller.empty()) d += "  -  " + s.controller;
                 if (!s.portable) d += "  (full)";
                 if (!s.compatible) d += "  (incompatible)";
                 ImGui::TextUnformatted(d.c_str());

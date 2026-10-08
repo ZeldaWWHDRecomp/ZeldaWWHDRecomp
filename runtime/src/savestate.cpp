@@ -24,6 +24,8 @@
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
 #include "guest_addr.h"
+#include "full_state_header.h"
+#include "input.h"
 
 #ifdef __APPLE__
 #include <compression.h>
@@ -93,18 +95,7 @@ constexpr uint32_t kVersion = 2; // liblz4 raw blocks, not Apple COMPRESSION_LZ4
 constexpr uint32_t kChunk = 0x10000;
 constexpr uint32_t kBlock = 8 << 20;  // compression block (raw bytes)
 
-struct Header {
-    char magic[8];
-    uint32_t version;
-    uint32_t header_size;
-    uint64_t created;       // unix time
-    char area[32];          // stage name
-    uint8_t build[16];      // LC_UUID of the executable that wrote it (informational)
-    uint64_t game_id;       // hash of cking.rpx
-    uint32_t cpu_size;      // sizeof(Cpu)
-    uint32_t blocks;        // compressed blocks that follow
-    uint64_t raw_size;      // payload bytes
-};
+using Header = FullStateHeader;
 
 enum : uint32_t {
     kSecThreads = 'THRD',
@@ -371,8 +362,8 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
 }
 
 bool read_header(FILE* f, Header& h, std::string& why) {
-    if (fread(&h, sizeof h, 1, f) != 1 || memcmp(h.magic, kMagic, 8) != 0) { why = "not a save state"; return false; }
-    if (h.version != kVersion || h.header_size != sizeof(Header)) { why = "saved by another version"; return false; }
+    if (!read_full_state_header(f, h, why)) return false;
+    if (h.version != kVersion) { why = "saved by another version"; return false; }
     if (h.cpu_size != sizeof(Cpu)) { why = "saved by an incompatible build"; return false; }
     if (h.game_id != game_id()) { why = "saved with a different game executable"; return false; }
     return true;
@@ -554,6 +545,7 @@ bool do_save(int slot) {
     build_uuid(h.build);
     h.game_id = game_id();
     h.cpu_size = sizeof(Cpu);
+    h.controller = input::pro_controller() ? 2 : 1;
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG("[savestate] slot %d: captured %.1f MB in %.1f ms (stage %s)", slot, payload->b.size() / 1048576.0, ms, stage.c_str());
@@ -610,6 +602,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
         return true;
     }
     restore_memory(*s);
+    if (s->h.controller) input::set_pro_controller(restored_pro_controller(s->h.controller, input::pro_controller()));
     Reader r = s->section(kSecAllocs);
     mem::raise_runtime_top(r.u32());
     r = s->section(kSecHeaps);
@@ -850,6 +843,7 @@ bool capture_portable(Cpu* c, pstate::State& s, std::string& why) {
     s.runtime = std::string(build::version()) + " (" + build::commit() + ")";
     s.created = now_text();
     s.file_slot = slot;
+    s.controller = input::pro_controller() ? 2 : 1;
     s.stage = stage;
     s.start_point = (int16_t)ld16(kStartStage + 8);
     s.start_room = (int8_t)ld8(kStartStage + 10);
@@ -925,6 +919,7 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     st8(kNextStage + 10, (uint8_t)s.room);
     st8(kNextStage + 11, (uint8_t)s.layer);
     st8(kNextStage + 13, 0);  // wipe: fade
+    if (s.controller) input::set_pro_controller(restored_pro_controller(s.controller, input::pro_controller()));
     st8(kNextStage + 12, 1);  // enabled
     return true;
 }
@@ -1167,11 +1162,12 @@ SlotInfo full_slot_info(int slot) {
     info.path = slot_path(slot);
     FILE* f = fopen(info.path.c_str(), "rb");
     if (!f) return info;
-    Header h;
+    Header h{};
     std::string why;
     info.used = true;
     info.compatible = read_header(f, h, why);
     fclose(f);
+    if (info.compatible) info.controller = controller_label(h.controller);
     if (info.compatible || memcmp(h.magic, kMagic, 8) == 0) {
         time_t t = (time_t)h.created;
         struct tm tmv;
@@ -1213,6 +1209,7 @@ SlotInfo portable_slot_info(int slot) {
             info.when = buf;
         } else info.when = s.created;
         info.area = area_label(s.stage.c_str());
+        info.controller = controller_label(s.controller);
     }
     return info;
 }

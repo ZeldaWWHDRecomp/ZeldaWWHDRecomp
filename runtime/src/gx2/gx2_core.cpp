@@ -17,6 +17,7 @@
 #include "gx2.h"
 #include "gx2_cmd.h"
 #include "gx2_regs.h"
+#include "register_blocks.h"
 #include "gx2_texture_regs.h"
 #ifdef WWHD_HAS_VULKAN
 #include "shader_key_dirty.h"
@@ -37,6 +38,7 @@ static uint32 g_regs[kNumRegs];
 static uint32* g_shadow = nullptr;  // register copy of the active GX2ContextState
 static std::unordered_map<uint32, std::vector<uint32>> g_contexts;
 static std::recursive_mutex g_exec_mutex;
+static RegisterBlocks<kNumRegs> g_register_blocks;
 
 uint32* regs() { return g_regs; }
 
@@ -117,7 +119,8 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
 #endif
 
 static void apply_regs(uint32 first, const uint32* v, uint32 n) {
-    if (first + n > kNumRegs) return;
+    if (first >= kNumRegs || n > kNumRegs - first) return;
+    g_register_blocks.touch(first, n);
 #ifdef WWHD_HAS_VULKAN
     // Vulkan renderer only (the Metal renderer keeps the original bulk path)
     static const bool fusedSmall = [] {
@@ -355,8 +358,20 @@ static void set_context(uint32 ctx) {
         return;
     }
     g_shadow = it->second.data();
-    memcpy(g_regs, g_shadow, sizeof(g_regs));
-    g_shader_state_gen++;
+    // Draw writes primitive type without updating the context shadow.
+    g_register_blocks.touch(uint32(REGADDR::VGT_PRIMITIVE_TYPE), 1);
+    if (g_register_blocks.restore(g_regs, g_shadow, [](uint32 reg, uint32 old, uint32 value) {
+        if (shader_irrelevant(reg)) return false;
+#ifdef WWHD_HAS_VULKAN
+        static const bool keyDirty = [] {
+            const char* e = getenv("WWHD_VK_SHADER_KEY_DIRTY");
+            return render::vulkan() && e && !strcmp(e, "1");
+        }();
+        uint32 mask;
+        if (keyDirty && vulkan_shader_key_mask(reg, mask)) return ((old ^ value) & mask) != 0;
+#endif
+        return true;
+    })) ++g_shader_state_gen;
     rprof::g_reg_dirty |= 2;  // draw classifier: a context load counts as a full state change
 }
 
@@ -962,6 +977,8 @@ void gx2_ss_load(ss::Reader& r) {
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     r.u32();
     r.bytes(g_regs, sizeof g_regs);
+    g_register_blocks = {};
+    g_register_blocks.include(g_regs);
     g_contexts.clear();
     uint32 n = r.u32();
     for (uint32 i = 0; i < n && r.ok; i++) {
@@ -969,6 +986,7 @@ void gx2_ss_load(ss::Reader& r) {
         auto& v = g_contexts[k];
         v.resize(words);
         r.bytes(v.data(), (size_t)words * 4);
+        if (words == kNumRegs) g_register_blocks.include(v.data());
     }
     uint32 active = r.u32();
     auto it = g_contexts.find(active);
