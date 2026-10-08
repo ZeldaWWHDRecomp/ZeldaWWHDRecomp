@@ -26,6 +26,7 @@ NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
 TRIVIA = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 LITERAL = re.compile(r'\b0[xX]([0-9a-fA-F]{1,8})(?![0-9a-fA-F])[uUlL]*\b')
 WRAPPED = re.compile(r'\b(GC|GD)\s*\([^;]*?\)', re.S)
+FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
 
 
 
@@ -36,6 +37,10 @@ def address_errors(source, name, mapping):
     errors = []
     for m in LITERAL.finditer(text):
         a = int(m[1], 16)
+        if a in FIXED_GAME_ALLOCATIONS:
+            line = text.count("\n", 0, m.start()) + 1
+            errors.append(f"{name}:{line}: fixed game allocation; use a mapped global or program identity")
+            continue
         kind = "code" if 0x02000000 <= a < 0x03000000 else "data" if 0x10000000 <= a < 0x10500000 else None
         # MEM2's base is a VM boundary throughout the runtime, never a global.
         if kind is None or a == 0x10000000 or (name, a) in NON_ADDRESS:
@@ -102,6 +107,8 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(address_errors("GC(0x2593B18);", "new.cpp", self.mapping))
         self.assertTrue(address_errors("GC(0x02593B18);", "new.cpp", self.mapping))
         self.assertTrue(address_errors("GD(0x104FFFF0);", "new.cpp", self.mapping))
+        self.assertTrue(address_errors("ld32(0x145AC92C);", "new.cpp", self.mapping))
+        self.assertTrue(address_errors("shader == 0x44BDFD00;", "new.cpp", self.mapping))
         self.assertFalse(address_errors("const uint32_t p = GD(0x101F84DC);", "new.cpp", self.mapping))
         self.assertFalse(address_errors("GC(0x027200A0)", "new.cpp", self.mapping))
 
