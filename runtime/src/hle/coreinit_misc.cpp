@@ -1,3 +1,4 @@
+#include "crash_context.h"
 // coreinit: logging, dynamic loading, system info, and small odds and ends.
 #include "../overlay/hostui.h"
 #include "../crashrec.h"
@@ -203,7 +204,7 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
     time_t t = time(nullptr);
     char path[96];
     strftime(path, sizeof path, "captures/crash-%Y%m%d-%H%M%S.log", localtime(&t));
-    FILE* f = fopen(path, "w");
+    FILE* f = tmpfile();
     if (!f) return;
     fprintf(f, "halt at %s:%u: %s\n", file.c_str(), line, msg.c_str());
     fprintf(f, "60 fps pass: %s; true 60 %s, half pass %d, executing process %08X", interp::phase_name(),
@@ -219,11 +220,19 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
     }
     static FILE* out_file;
     out_file = f;
-    auto out = [](int, const char* t, size_t n) { fwrite(t, 1, n, out_file); };
+    auto out = [](int, const char* t, size_t n) { crash_context::redact(0, {t,n}, [](int, const char* p, size_t k) { fwrite(p, 1, k, out_file); }); };
+    crash_context::note(0, out);
     crashrec::crash_note(0, out);
     fputs("\n--- last log lines ---\n", f);
     log_ring_write(0, out);
+    fflush(f);
+    rewind(f);
+    std::string report;
+    char chunk[4096];
+    while (size_t n = fread(chunk, 1, sizeof chunk, f)) report.append(chunk, n);
     fclose(f);
+    out_file = fopen(path, "w");
+    if (out_file) { out(0, report.data(), report.size()); fclose(out_file); }
     fprintf(stderr, "[crash] wrote %s\n", path);
 }
 

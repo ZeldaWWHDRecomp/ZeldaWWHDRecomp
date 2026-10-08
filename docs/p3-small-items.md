@@ -31,3 +31,25 @@ Validation: movement math across 30/60/120/240 presentations and 30/60 logic rat
 factors 1.25/1.5/2/4, off/hold/rebind and other procedures PASS; manager preferences/disable-all PASS.
 These are synthetic displacement tests, not measured Link displacement in the game. Actual scripted
 30/true60 land/swim runs remain pending; no in-game correctness claim from the math test alone.
+
+## Crash context and Android sharing
+
+Normal game-thread code refreshes a bounded snapshot once per second: renderer, resolution,
+frame mode/target, controller, built-in switches, enabled/active packages and WWHD environment.
+Startup context is available for a crash before game initialization. Secret/key/token/password
+variables are suppressed. Atomic bytes and revision checks keep handler reads free of locks and
+allocations; interrupted snapshots are explicitly reported. Home paths and user names are redacted
+in the context, module paths, recovery hints and saved log ring. Guest halt logs are redacted too.
+Android offers the newest crash report once on the next start, shares a copy from a narrowly scoped
+FileProvider cache directory using a temporary read grant. Sharing needs a player tap.
+
+Validation: redaction test PASS for configured and other Unix/Windows homes, user name and >4 KB
+output. Runtime source syntax checks PASS. Forced crash and Android build/share validation pending.
+
+Follow-up validation: native BOTH runtime links successfully (existing local game archive with
+only three hook-mismatched generated units rebuilt privately; no generated material committed).
+All six selected CTests PASS: mod_manager, mod_packages, crash_log_module, perf_average,
+move_speed, crash_redact. Forced host crash contains startup environment and redacted test HOME;
+the assertion rejects an unredacted HOME anywhere in the log. Android Java/resources APK build
+`:app:assembleDebug` PASS with Studio JBR (the system default Java 8 was unsuitable). This checks
+the Java/share integration, not native Android execution or a physical-device share intent.

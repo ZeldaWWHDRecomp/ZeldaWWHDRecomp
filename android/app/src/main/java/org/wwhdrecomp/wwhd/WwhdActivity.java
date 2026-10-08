@@ -5,6 +5,11 @@ import android.content.Intent;
 import android.app.AlertDialog;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import android.content.ClipData;
+import android.net.Uri;
+import androidx.core.content.FileProvider;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import android.util.Log;
 import android.view.Display;
 import android.view.Window;
@@ -33,6 +38,35 @@ public class WwhdActivity extends SDLActivity {
         }
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (files != null && savedInstanceState == null) offerCrashLog(files);
+    }
+
+    private void offerCrashLog(File files) {
+        File[] reports = new File(files, "captures").listFiles((dir, name) -> name.startsWith("crash-") && name.endsWith(".log"));
+        if (reports == null) return;
+        File latest = null;
+        for (File report : reports)
+            if (report.isFile() && (latest == null || report.lastModified() > latest.lastModified())) latest = report;
+        if (latest == null) return;
+        final File report = latest;
+        final String identity = report.getName() + ":" + report.lastModified();
+        if (identity.equals(getPreferences(MODE_PRIVATE).getString("offeredCrash", ""))) return;
+        getPreferences(MODE_PRIVATE).edit().putString("offeredCrash", identity).apply();
+        new AlertDialog.Builder(this).setTitle("Crash report available")
+            .setMessage("Share the latest crash report? It contains diagnostic settings and logs.")
+            .setNegativeButton("Later", null).setPositiveButton("Share", (dialog, which) -> {
+                try {
+                    File folder = new File(getCacheDir(), "crash-share");
+                    if (!folder.isDirectory() && !folder.mkdirs()) throw new java.io.IOException("Cannot create share folder");
+                    File copy = new File(folder, "crash.log");
+                    Files.copy(report.toPath(), copy.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".crashlogs", copy);
+                    Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    share.setClipData(ClipData.newRawUri("Crash report", uri));
+                    startActivity(Intent.createChooser(share, "Share crash report"));
+                } catch (Exception e) { Log.w("wwhd", "Cannot share crash report", e); }
+            }).show();
     }
 
     private static final int GPU_DRIVER_REQUEST = 4972;

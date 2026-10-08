@@ -36,3 +36,7 @@ android {
     }
     lint { abortOnError = false }
 }
+
+dependencies {
+    implementation 'androidx.core:core:1.15.0'
+}
