@@ -1,10 +1,15 @@
 # Language sources (experimental)
 
-The port is built from the USA game (title 00050000-10143500, version 0), which has English,
-French and Spanish. A **language source** adds the languages of a European or Japanese copy of
-the game that you also own: German, Italian, British English, European French and Spanish, or
-Japanese. The game is still built from and runs the USA code; only the text, the fonts and the
-localised 2D layouts are taken from the second game.
+A language source is for a port built from the **USA** game (title 00050000-10143500, version 0),
+which has English, French and Spanish. It adds the languages of a European or Japanese copy of the
+game that you also own: German, Italian, British English, European French and Spanish, or Japanese.
+The game is still built from and runs the USA code; only the text, the fonts and the localised 2D
+layouts are taken from the second game.
+
+> **Built from the European game instead?** Then you need none of this: that build has English,
+> French, German, Italian and Spanish itself and picks one by the console language, so choose it in
+> the settings (`F1`) > Language and restart. Setup refuses a language source there. See
+> [builds.md](builds.md).
 
 > **Status: tested with a real European dump** (German, Italian, French, Spanish, English: title,
 > file select, dialogues, GamePad menus, options, save prompt, name entry, the Pictograph Box; see

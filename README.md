@@ -1,6 +1,6 @@
 # The Legend of Zelda: The Wind Waker HD — native port (macOS, Linux, Windows, Android)
 
-A static recompilation of the Wii U version (USA) that runs natively on **macOS** (Apple Silicon),
+A static recompilation of the Wii U version (USA or European) that runs natively on **macOS** (Apple Silicon),
 **Linux**, **Windows** and **Android** (arm64; [build it yourself](#android-build-it-yourself)). The
 game's PowerPC code is translated to C ahead of time, the Cafe OS libraries the game uses are
 reimplemented natively, and GX2 graphics are implemented directly on Metal (macOS) or Vulkan (all
@@ -373,7 +373,8 @@ computer (about two minutes); every later start launches the game directly.
      release folder is used automatically). Keys are checked before anything is extracted, never
      stored, and not part of any log. A Cemu archive or an extracted folder needs no keys.
    - A Cemu archive (Cemu's "Convert to compressed Wii U archive (.wua)") often holds the game, its
-     update and DLC together. Setup uses the game itself, title 00050000-10143500 version 0, and says
+     update and DLC together. Setup uses the game itself, title 00050000-10143500 (USA) or
+     00050000-10143600 (Europe), version 0, and says
      so in its log; an update in the archive is not used: the port is built for the code of version 0,
      and the update's files belong to its newer code. The archive's checksum is verified before
      anything is extracted.
@@ -381,10 +382,13 @@ computer (about two minutes); every later start launches the game directly.
    Then it prepares the game (extract, translate the code to C, compile with a pinned compiler) and
    offers to bring in a save: a Wind Waker HD `cking.sav` folder (Cemu, Wii U), a GameCube `.gci`
    (converted to HD), or the saves and settings of an earlier installation or another Wind Waker HD
-   folder (copied, never moved). Only the USA version (title 00050000-10143500), version 0 (the disc
-   or eShop release, without the update) is supported: before translating, setup checks the game's
-   code (`code/cking.rpx`) against the SHA-256 of that version and explains what to use instead when
-   it differs (e.g. a game folder with an update copied over it).
+   folder (copied, never moved). The USA version (title 00050000-10143500) and the European one
+   (00050000-10143600) are supported, version 0 of either (the disc or eShop release, without the
+   update): before translating, setup checks the game's code (`code/cking.rpx`) against the SHA-256
+   of each and explains what to use instead when it matches neither (e.g. a game folder with an
+   update copied over it). The European game plays in English, French, German, Italian or Spanish —
+   its own text, chosen in the settings' Language tab. How one port serves both:
+   [docs/builds.md](docs/builds.md).
 3. That's it: start Wind Waker HD to play. To repair, update or change the game, hold **Shift** while
    starting it (macOS, Windows) or start it with `--setup` (Linux; also the "Setup" action of its
    menu entry).
@@ -446,8 +450,9 @@ Source builds (below) are not portable: they keep using `~/Library/Application S
 
 You also need, from your own console and disc:
 
-- a disc image of The Wind Waker HD (USA) in `.wud` or `.wux` format (or a Cemu archive, `.wua`:
-  `build/cmake/wwhd-extract --title 0005000010143500 extract game.wua game`, no keys);
+- a disc image of The Wind Waker HD (USA or Europe) in `.wud` or `.wux` format (or a Cemu archive,
+  `.wua`: `build/cmake/wwhd-extract --title 0005000010143500 extract game.wua game`, with
+  `0005000010143600` for the European game, no keys);
 - its disc key (16 bytes) in a `.key` file next to the image, with the same base name;
 - the Wii U common key, either in a file `common.key` (16 raw bytes or 32 hex digits) next to
   the image or in the current directory, or in the `WIIU_COMMON_KEY` environment variable
@@ -642,8 +647,9 @@ the next start; picture scaling; the GamePad screen),
 gameplay mods and cheats (Graphics also has the Vulkan presentation mode), controls (the same controller drawing as Input > Controls…: select a
 button or chip and press the key or controller input to use; also on Windows and Linux) and the
 console language (only the languages your game contains can be chosen; the USA game has English,
-French and Spanish; experimental: German, Italian, British English or Japanese from your own European
-or Japanese copy of the game, see [docs/language-packs.md](docs/language-packs.md); fan translations
+French and Spanish, the European one English, French, German, Italian and Spanish; experimental:
+those languages from your own European or Japanese copy of the game played with the USA code, see
+[docs/language-packs.md](docs/language-packs.md); fan translations
 into Arabic or Hebrew are drawn right to left, see [docs/rtl-text.md](docs/rtl-text.md)).
 Mouse, keyboard (arrows, Enter, Esc) and controller (D-pad / stick, A, B; L / R switch tabs) all work.
 The game keeps running but gets no input while it is open; Esc, F1 or B closes it. On macOS it shows

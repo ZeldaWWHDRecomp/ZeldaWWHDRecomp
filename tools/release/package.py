@@ -38,6 +38,7 @@ TOOL_FILES = [
     "tools/recomp/recomp.py",
     "tools/recomp/analyze.py",
     "tools/recomp/ppc2c.py",
+    "tools/recomp/builds.py",
     "tools/savegame/gc2hd.py",
     "tools/savegame/wwsave.py",
     "tools/savegame/README.md",
@@ -373,6 +374,11 @@ def main():
     for hp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp"))):
         if re.match(r"hooks.*\.txt$", hp):
             copy(os.path.join(ROOT, "tools", "recomp", hp), os.path.join(pkg, "tools", "recomp", hp))
+    # the address maps of the builds the port can be made from (tools/recomp/builds.py, docs/builds.md)
+    for bp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp", "builds"))):
+        if bp.endswith(".json"):
+            copy(os.path.join(ROOT, "tools", "recomp", "builds", bp),
+                 os.path.join(pkg, "tools", "recomp", "builds", bp))
     # the extractor must be self-contained: zstd from the pinned source, linked statically (cmake/Zstd.cmake)
     try:
         with open(os.path.join(build, "wwhd-zstd.txt")) as f:
