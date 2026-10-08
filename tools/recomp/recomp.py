@@ -11,6 +11,10 @@ it was translated from; the dispatch table maps this build's real addresses to t
 g_mod_hook_flags (runtime/src/mods/guest_mods.cpp), so guest mods (docs/mod-sdk-v2.md) can hook or
 replace any game function at runtime without rebuilding the game code.
 
+Code-quality passes (each on by default; the variable set to 0 when generating turns it off):
+  WWHD_RECOMP_GQR          paired-single loads/stores through GQRs the game never writes skip the GQR check
+WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes.
+
 Output:
   OUTDIR/funcs.h         prototypes of every recompiled function and import
   OUTDIR/code_NNN.c      recompiled functions
@@ -32,6 +36,11 @@ import builds as game_builds
 from analyze import Program, sext
 from ppc2c import translate, Unhandled
 from rpx import R_PPC_ADDR16_HA, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI
+import ppc2c
+
+# paired-single loads and stores through GQRs the game never writes skip the GQR check
+# (static_float_gqrs): on unless WWHD_RECOMP_GQR=0
+GQR_STATIC = ppc2c.pass_on("WWHD_RECOMP_GQR")
 
 
 def unknown_build_message(path):
@@ -280,10 +289,26 @@ class Recompiler:
         self.write_headers(outdir)
         self.write_report(outdir, len(files))
 
+    def static_float_gqrs(self):
+        """GQRs (bit n: GQRn) that no mtspr in the game's code writes. The runtime starts every
+        thread with GQR0, GQR1, GQR6 and GQR7 at 0 (threads.cpp) and GQR2-5 at quantized formats,
+        so only GQR0 and GQR1 can count."""
+        written = set()
+        for a in range(self.p.text_lo, self.p.text_hi, 4):
+            w = self.p.word(a)
+            if w >> 26 == 31 and (w >> 1) & 0x3FF == 467:  # mtspr
+                spr = ((w >> 16) & 31) | (((w >> 11) & 31) << 5)
+                if 912 <= spr <= 919 or 896 <= spr <= 903:
+                    written.add((spr - 912) if spr >= 912 else (spr - 896))
+        return sum(1 << n for n in (0, 1) if n not in written)
+
     def write_headers(self, outdir):
         func_slots = sorted(s for s, (lib, name, kind) in self.imports.items() if kind == "f")
         with open(os.path.join(outdir, "funcs.h"), "w") as f:
-            f.write('#pragma once\n#include "ppc.h"\n\n')
+            # GQRs no instruction of the game writes keep their initial value (0: plain floats), so paired-
+            # single loads and stores through them need no check of the GQR (ppc.h psq_load_l)
+            gqr = "#define PPC_GQR_STATIC_FLOAT 0x%02X\n" % self.static_float_gqrs() if GQR_STATIC else ""
+            f.write('#pragma once\n%s#include "ppc.h"\n\n' % gqr)
             for e in self.sorted_entries:
                 f.write("void f_%08X(Cpu* __restrict c);\n" % self.sym(e))
             f.write("\n/* hooked functions: hook_X is implemented in the runtime, f_X_orig is the game's code */\n")
