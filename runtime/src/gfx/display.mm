@@ -110,7 +110,7 @@ bool host_setting(const char* key, std::string& value) {
 }
 void set_host_setting(const char* key, const std::string& value) { set_setting(@(key), @(value.c_str())); }
 static void save_options() {
-    g_settings[@"drcMode"] = @(kModeNames[g_mode]);
+    g_settings[@"drcMode"] = @(kModeNames[display_saved_mode()]);
     g_settings[@"pipCorner"] = @(kCornerNames[g_corner]);
     g_settings[@"pipSize"] = @(g_pip_size.load());
     g_settings[@"pipOpacity"] = @(g_pip_opacity.load());

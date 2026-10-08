@@ -156,24 +156,31 @@ void display_set_mode(int m) {
 void display_touched() { g_auto_until = std::max<double>(g_auto_until, display_now() + 2.0); }
 
 // ---------------------------------------------------------------- GamePad screen while paused
-static std::atomic<bool> g_pause_view{[] {
+static const bool g_pause_view = [] {
     const char* e = getenv("WWHD_DRC_PAUSE");
 #ifdef __ANDROID__
     return !e || atoi(e) != 0;
 #else
     return e && atoi(e) != 0;
 #endif
-}()};
-static std::atomic<double> g_plus_at{-1};  // display_now() of the last +, -1: none pending
-static int g_pause_restore = -1;           // the view to go back to (-1: not switched); render thread
-static double g_pause_since = 0;           // display_now() of the switch
-bool pause_view() { return g_pause_view; }
-void set_pause_view(bool on) { g_pause_view = on; }
+}();
+static std::atomic<double> g_plus_at{-1};      // display_now() of the last +, -1: none pending
+// the view to go back to (-1: not switched) and the time of the switch: written by the sampling
+// (render thread; Metal: a completion handler), read by the hosts when they save the view
+static std::atomic<int> g_pause_restore{-1};
+static std::atomic<double> g_pause_since{0};
+static bool pause_switchable(int mode) { return mode == kDrcPip || mode == kDrcOff || mode == kDrcAuto; }
 void display_plus_pressed() {
-    if (g_pause_view) g_plus_at = display_now();
+    // only when the view can switch (or the switch is up: + resumes); other views never sample
+    if (g_pause_view && (pause_switchable(g_mode) || g_pause_restore >= 0)) g_plus_at = display_now();
 }
-// tv_change: share of the TV signature's cells that changed since the last sample (-1: unknown)
-static void pause_view_update(float tv_change) {
+int display_saved_mode() {
+    const int restore = g_pause_restore;
+    return restore >= 0 ? restore : int(g_mode);
+}
+// tv_change: share of the TV signature's cells that changed since the last sample (-1: unknown);
+// tv_dark: the TV picture is (nearly) black
+static void pause_view_update(float tv_change, bool tv_dark) {
     static int still = 0, moving = 0;
     if (g_pause_restore < 0) {
         const double plus = g_plus_at;
@@ -183,34 +190,38 @@ static void pause_view_update(float tv_change) {
             still = 0;
             return;
         }
-        still = tv_change >= 0 && tv_change < 0.01f ? still + 1 : 0;
+        // a still picture after +; not a black one (a fade to black, a loading screen)
+        still = tv_change >= 0 && tv_change < 0.01f && !tv_dark ? still + 1 : 0;
         const int mode = g_mode;
-        if (still >= 2 && (mode == kDrcPip || mode == kDrcOff || mode == kDrcAuto)) {
+        if (still >= 2 && pause_switchable(mode)) {
+            g_pause_since = display_now();
             g_pause_restore = mode;
             g_mode = kDrcGamePad;
             g_plus_at = -1;
-            g_pause_since = display_now();
             still = moving = 0;
             LOG("[display] paused: GamePad screen shown");
         }
         return;
     }
-    if (g_mode != kDrcGamePad || !g_pause_view) {  // another view was chosen meanwhile: it stays
+    if (g_mode != kDrcGamePad) {  // another view was chosen meanwhile: it stays
         g_pause_restore = -1;
         g_plus_at = -1;
         return;
     }
     auto resume = [&](const char* why) {
-        g_mode = g_pause_restore;
+        g_mode = int(g_pause_restore);
         g_pause_restore = -1;
         g_plus_at = -1;  // (the + that resumed does not start another wait)
         moving = still = 0;
         LOG("[display] resumed (%s): back to the TV picture", why);
     };
-    const double now = display_now(), plus = g_plus_at;
-    if (plus > g_pause_since + 0.3) return resume("+");  // + again: the usual way out of the pause
+    const double now = display_now(), plus = g_plus_at, since = g_pause_since;
+    if (plus >= 0) {
+        if (plus > since + 0.3) return resume("+");  // + again: the usual way out of the pause
+        g_plus_at = -1;  // a + right after the switch: ignored (and no more sampling every frame)
+    }
     // the pause's own transition (the TV picture dims) is not the game moving again
-    if (now - g_pause_since < 0.7) {
+    if (now - since < 0.7) {
         moving = 0;
         return;
     }
@@ -343,8 +354,11 @@ void display_auto_signature(const std::vector<float>& cur_in, const std::vector<
     {
         // the TV picture's change, for the GamePad screen while paused
         static std::vector<float> prev_tv;
-        float tv_change = -1;
+        float tv_change = -1, tv_mean = 1;
         if (tv && tv->size() == kSigN) {
+            tv_mean = 0;
+            for (float x : *tv) tv_mean += x;
+            tv_mean /= kSigN;
             if (prev_tv.size() == kSigN) {
                 uint32_t changed = 0;
                 for (uint32_t i = 0; i < kSigN; i++)
@@ -353,7 +367,7 @@ void display_auto_signature(const std::vector<float>& cur_in, const std::vector<
             }
             prev_tv = *tv;
         }
-        pause_view_update(tv_change);
+        pause_view_update(tv_change, tv_mean < 0.04f);  // (black: as the automatic overlay's "dark")
     }
     if (g_mode != kDrcAuto) { prev.clear(); return; }
     static float thresh = 0.12f, hold = 4.0f;

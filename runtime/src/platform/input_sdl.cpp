@@ -518,7 +518,8 @@ void update(){
  }
  auto state=input_map::controller_state(input_map::current(),v);
  // + went down: the view may switch to the GamePad screen while the game is paused
- {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus)gfx::display_plus_pressed();plus=now;}
+ // (not while the settings overlay or the text prompt takes the buttons: Start acts there)
+ {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus&&!overlay::blocks_input())gfx::display_plus_pressed();plus=now;}
  std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
  if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(v,g_keys);screenshot::poll_controller(v);}
 }

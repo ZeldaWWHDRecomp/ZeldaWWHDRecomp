@@ -67,9 +67,8 @@ void display_touched();            // a touch on the overlay: auto mode keeps it
 // switches to GamePad only once the TV picture stands still (the game paused; its menus, the map
 // and the save prompt are on the GamePad), and back when the TV picture moves again. A view chosen
 // meanwhile stays. On by default on Android; WWHD_DRC_PAUSE=0|1.
-bool pause_view();
-void set_pause_view(bool on);
 void display_plus_pressed();       // + went down (input_sdl.cpp)
+int display_saved_mode();          // the view to save: while the switch is up, the one it goes back to
 
 // pixel rectangles in the target (drawable), top-left origin
 struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float scale = 1; };
