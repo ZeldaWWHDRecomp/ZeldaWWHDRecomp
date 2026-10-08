@@ -4,6 +4,8 @@
 #include <cstdint>
 
 namespace interp {
+void record_executed_step(); // game thread; includes built-in turbo passes
+uint64_t executed_steps();    // actual actor logic passes, including true60 half steps
 int mode();                 // 0 off (30 fps), 1 frame interpolation (at fps()), 2 true 60
 void set_mode(int m);
 int fps();                  // frame interpolation's chosen frame rate: 60, 120 or 240

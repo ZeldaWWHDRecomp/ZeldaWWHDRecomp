@@ -3,6 +3,10 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "perf_average.h"
+#ifdef __ANDROID__
+#include "android_telemetry.h"
+#endif
 
 #include <algorithm>
 #include <cstdarg>
@@ -60,6 +64,7 @@ double now_s() { return std::chrono::duration<double>(clock::now().time_since_ep
 
 std::atomic<bool> g_open{false};
 std::atomic<bool> g_perf{false};
+PerfAverage g_average;
 std::atomic<float> g_density{1.0f};
 std::atomic<bool> g_wait_release{false};  // just closed: the game sees no buttons until all are released
 std::atomic<double> g_last_frame{0};      // frame() ran (alive(): the game's text prompt can show)
@@ -715,6 +720,7 @@ void tab_graphics() {
 #endif
     heading("Overlay");
     if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
+    if (ImGui::Button("Reset performance averages")) g_average.reset();
     // the render-thread profiler's latest report (render_prof.h), for performance bug reports
     static double copiedAt = -10;
     if (ImGui::Button("Copy performance report")) {
@@ -1535,6 +1541,15 @@ void perf_window(bool menu_open) {
                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##perf", nullptr, fl)) {
         ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
+        ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
+#ifdef __ANDROID__
+        static AndroidTelemetry telemetry;
+        static double next_read = 0;
+        if (t >= next_read) { telemetry.read(); next_read = t + 2; }
+        if (telemetry.busy >= 0) ImGui::Text("GPU busy %.0f%%", telemetry.busy);
+        for (const auto& [name, value] : telemetry.temperatures)
+            ImGui::Text("%s %.1f C", name.c_str(), value);
+#endif
         ImGui::PlotLines("##ft", U.frame_ms, 120, U.frame_i, nullptr, 0.0f, 50.0f, ImVec2(220, 36));
         ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(), interp::mode_name());
         if (float share = interp::paced_drawn_share(); share >= 0)
@@ -1718,6 +1733,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     U.last_present = t;
     g_last_frame = t;
+    g_average.sample(t, gx2::flips_presented(), interp::executed_steps(), int(render::active()),
+                     interp::mode(), interp::fps(), hostui::res_scale());
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();

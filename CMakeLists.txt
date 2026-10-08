@@ -529,3 +529,8 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND NOT ANDROID)
   add_test(NAME driver_store COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/runtime/tools/driver_store_test.py $<TARGET_FILE:driver_store_test>)
 endif()
+
+add_executable(perf_average_test runtime/tools/perf_average_test.cpp)
+target_include_directories(perf_average_test PRIVATE runtime/src)
+target_compile_options(perf_average_test PRIVATE -UNDEBUG)
+add_test(NAME perf_average COMMAND perf_average_test)

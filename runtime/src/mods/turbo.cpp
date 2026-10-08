@@ -26,6 +26,7 @@
 
 #include "guest_addr.h"
 #include "mods.h"
+#include "../interp.h"
 #include "turbo_steps.h"
 #include "runtime.h"
 
@@ -217,7 +218,7 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
             if (kStep.priority) call(c, f_025E0EE4_orig, 0);  // fpcPi_Handler
             if (kStep.creation) call(c, f_025DDCEC_orig, 0);  // fpcCt_Handler
             g_door_cut = false;
-            if (kStep.execute) call(c, f_025DE788_orig, execute_fn);
+            if (kStep.execute) { interp::record_executed_step(); call(c, f_025DE788_orig, execute_fn); }
             g_extra_door++;
             door = g_door_cut;  // continue only while the door event still runs
             g_door_cut = false;

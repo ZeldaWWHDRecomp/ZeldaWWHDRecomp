@@ -1,3 +1,4 @@
+#include "interp.h"
 #include "mods/packages.h"
 // Frame interpolation (60, 120 or 240 fps output, game logic unchanged at 30 steps per second).
 //
@@ -286,6 +287,7 @@ CamState blend(const CamState& a, const CamState& b, float t) {
     return m;
 }
 
+std::atomic<uint64_t> g_executed_steps{0};
 uint64_t g_logic_steps = 0; // full logic steps (all passes without a 60 fps mode)
 uint64_t g_passes = 0;      // every pass of the per-frame function
 bool g_hold = false;        // hold pass: draw only, no logic
@@ -1047,6 +1049,7 @@ static bool g_in_execute = false;  // inside fpcEx_Handler (actor Execute): logi
 namespace mods { void after_execute(Cpu* c, uint32_t execute_fn); }  // mods/turbo.cpp
 extern "C" void hook_025DE788(Cpu* c) {
     if (skip(1) && !true60::enabled()) return;  // true 60: the per-process gate decides (true60.cpp)
+    interp::record_executed_step();
     g_in_execute = true;
     uint32_t execute_fn = c->r[3];
     f_025DE788_orig(c);
@@ -1089,6 +1092,8 @@ bool hold_pass() { return g_hold; }
 // full (30 Hz) logic steps so far: test scenarios run on game time, so frame-time hitches (which
 // slow the frame-locked game down) don't shift the input against the game
 uint64_t logic_steps() { return g_logic_steps; }
+void record_executed_step() { g_executed_steps.fetch_add(1, std::memory_order_relaxed); }
+uint64_t executed_steps() { return g_executed_steps.load(std::memory_order_relaxed); }
 // pass state for the effect blending (interp_fx.cpp)
 bool logic_pass() { return g_logic_pass; }
 // inside the loop body of a blended pass (logic pass, or a blended hold pass at 120/240 fps)
