@@ -1,5 +1,6 @@
 // Renderer selection, start-up with fallback, and restart (see renderer.h).
 #include "renderer.h"
+#include "../screenshot.h"
 
 #include <atomic>
 #include <cerrno>
@@ -187,6 +188,7 @@ void run_main_loop() { g_backend->run_main_loop(); }
 
 void shutdown() {
     if (g_shut.exchange(true) || !g_backend || !g_backend->shutdown) return;
+    screenshot::finish();  // the screenshots taken are written first (the render thread keeps going)
     g_backend->shutdown();
 }
 

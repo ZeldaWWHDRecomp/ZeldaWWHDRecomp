@@ -15,7 +15,9 @@
 #include "runtime.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -303,6 +305,29 @@ void set_pro_controller(bool on) {
 }
 const char* name() { return "SDL"; }
 void set_clipboard(const std::string& text) { SDL_SetClipboardText(text.c_str()); }
+#ifdef __ANDROID__
+bool can_open_folder() { return false; }  // app-private storage: no file manager shows it
+void open_folder(const std::string&) {}
+#else
+bool can_open_folder() { return true; }
+void open_folder(const std::string& path) {
+    // file URL of the absolute path (Windows: file:///C:/...); SDL hands it to the desktop's file manager
+    std::error_code ec;
+    std::string p = std::filesystem::absolute(path, ec).generic_string();
+    if (ec) p = path;
+    std::string url = "file://";
+    if (!p.empty() && p[0] != '/') url += "/";
+    for (unsigned char c : p) {
+        if (isalnum(c) || strchr("/-_.~:", c)) url += (char)c;
+        else {
+            char hex[4];
+            snprintf(hex, sizeof hex, "%%%02X", c);
+            url += hex;
+        }
+    }
+    if (!SDL_OpenURL(url.c_str())) LOG("[overlay] cannot open %s: %s", url.c_str(), SDL_GetError());
+}
+#endif
 
 }  // namespace hostui
 #endif  // WWHD_SDL_HOST

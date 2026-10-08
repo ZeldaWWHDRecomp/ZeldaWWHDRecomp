@@ -10,6 +10,9 @@
 
 #include "../interp.h"
 #include "../savestate.h"
+#include "../screenshot.h"
+#include "../input_map.h"
+#include "../overlay/hostui.h"
 #include "../crashrec.h"
 #include "../aspect.h"
 #include "renderer.h"
@@ -245,6 +248,9 @@ static WWStateMenu* g_state_menu;
 - (void)setAO:(NSMenuItem*)item { render::set_ao_mode((int)item.tag); update_title(); }
 - (void)toggleAniso:(NSMenuItem*)item { render::set_aniso(!render::aniso()); update_title(); }
 - (void)capture:(NSMenuItem*)item { render::request_capture(); }
+- (void)screenshot:(NSMenuItem*)item { screenshot::request(); }
+- (void)openScreenshots:(NSMenuItem*)item { hostui::open_folder(screenshot::dir()); }
+- (void)toggleScreenshotGamePad:(NSMenuItem*)item { screenshot::set_gamepad_too(!screenshot::gamepad_too()); }
 - (void)openSettings:(NSMenuItem*)item { overlay::set_open(!overlay::is_open()); }  // Cmd+, toggles
 - (void)setRenderer:(NSMenuItem*)item { choose_renderer((render::Api)item.tag); }
 - (void)recordSound:(NSMenuItem*)item { gfx::menu_hotkey(kVK_ANSI_9); }
@@ -298,6 +304,15 @@ static WWStateMenu* g_state_menu;
         return render::feature_available(render::kFeatureAniso);
     }
     if (item.action == @selector(capture:)) return render::feature_available(render::kFeatureCapture);
+    if (item.action == @selector(screenshot:)) {
+        // the Screenshot binding's key (Controls), shown in the title: it can be rebound
+        int k = input_map::current().keys[input_map::kScreenshot][0];
+        if (k == input_map::kNoKey) k = input_map::current().keys[input_map::kScreenshot][1];
+        item.title = k == input_map::kNoKey ? @"Take Screenshot"
+                                            : [NSString stringWithFormat:@"Take Screenshot (%s)", input_map::key_label(k).c_str()];
+    }
+    if (item.action == @selector(toggleScreenshotGamePad:))
+        item.state = screenshot::gamepad_too() ? NSControlStateValueOn : NSControlStateValueOff;
     return YES;
 }
 @end
@@ -400,6 +415,12 @@ void install_menu(NSWindow* tv) {
     add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);
     add(g, @"60 fps: true 60, game logic at 60 steps/s (7, experimental)", @selector(toggleInterp:), @"7", 2);
     [g addItem:[NSMenuItem separatorItem]];
+    add(g, @"Take Screenshot (F10)", @selector(screenshot:), @"").toolTip =
+        @"Saves the TV picture as a PNG (internal resolution, without the settings overlay) in the screenshots folder. "
+        @"The key can be changed in Input > Controls (Screenshot).";
+    add(g, @"    Also Save the GamePad Screen", @selector(toggleScreenshotGamePad:), @"").toolTip =
+        @"A second file, ..._GamePad.png, while the GamePad picture is shown (its window or the overlay)";
+    add(g, @"    Open Screenshots Folder", @selector(openScreenshots:), @"");
     add(g, @"Capture frame for debugging (P)", @selector(capture:), @"P").toolTip =
         render::active() == render::Api::Vulkan ? @"Shortcut in game: P. Vulkan: the TV, GamePad and window pictures (the draw log is Metal only)"
                                                  : @"Shortcut in game: P";

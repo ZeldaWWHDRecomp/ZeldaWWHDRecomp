@@ -8,6 +8,7 @@
 #include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../gfx/vulkan/settings.h"
 #include "../overlay/hostui.h"
 #include "../overlay/overlay.h"
@@ -439,7 +440,10 @@ void handle_event(const SDL_Event& event){
   }return;
  }
  if(getenv("WWHD_NO_HOST_INPUT")&&!test_event(event))return;
- if(overlay_event(event)||test_event(event))return;  // posted test keys reach only the overlay
+ if(overlay_event(event))return;
+ // the Screenshot binding (F10 by default), in any game window; posted test keys take this path too
+ if(event.type==SDL_EVENT_KEY_DOWN&&!event.key.repeat){int code=keycode(event.key.scancode);if(code>=0&&screenshot::key_down(code))return;}
+ if(test_event(event))return;  // posted test keys reach only the overlay (and the Screenshot binding)
  // Save states belong to the game window, not auxiliary controls/text windows.
  if((event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP) &&
     g_prompt_window && event.key.windowID==SDL_GetWindowID(g_prompt_window) &&
@@ -512,7 +516,7 @@ void update(){
   stick(SDL_GAMEPAD_AXIS_LEFTX,SDL_GAMEPAD_AXIS_LEFTY,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight);stick(SDL_GAMEPAD_AXIS_RIGHTX,SDL_GAMEPAD_AXIS_RIGHTY,kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight);
  }
  auto state=input_map::controller_state(input_map::current(),v);std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
- if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT"))motion::poll_recalibrate(v,g_keys);
+ if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(v,g_keys);screenshot::poll_controller(v);}
 }
 void prompt_text(const std::u16string& initial,int max_len,std::function<void(bool,std::u16string)> done){std::lock_guard lk(g_mu);g_initial=initial;g_pending_max_len=std::max(0,max_len);if(g_initial.size()>(size_t)g_pending_max_len)g_initial.resize(g_pending_max_len);g_pending=std::move(done);}
 // debug: WWHD_PRESS=1000-1010:8000,1500-1505:0008 holds VPAD buttons (hex) during TV frame ranges

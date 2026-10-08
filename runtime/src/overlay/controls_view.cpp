@@ -81,6 +81,7 @@ struct Group {
     std::vector<std::string> labels;
     ImVec2 anchor;
     bool right = false;
+    bool leader = true;            // a line to the anchor (app actions have no part on the controller)
     ImVec2 a, b;                   // box
     std::vector<float> rows;       // row top y, one per action
 };
@@ -257,6 +258,9 @@ Geo layout(bool pro, ImVec2 org, float w, float h) {
     group("Left stick (move)", {kLUp, kLDown, kLLeft, kLRight, kStickLClick}, stickRows, PU(d.lstick), false);
     group("Right stick (camera)", {kRUp, kRDown, kRLeft, kRRight, kStickRClick}, stickRows, PU(d.rstick), true);
     group("D-pad", {kDUp, kDDown, kDLeft, kDRight}, dirs, PU(d.dpad), false);
+    // app actions: the bottom of the left column, no leader line
+    group("Screenshot", {kScreenshot}, {"Screenshot"}, ImVec2(org.x, org.y + h), false);
+    g.groups.back().leader = false;
     for (auto& p : g.parts)
         if (p.kind == kPartRound) {
             bool right = p.action == kPlus || p.action == kA || p.action == kB || p.action == kX || p.action == kY ||
@@ -489,6 +493,7 @@ void draw_controls(ControlsView& v, float w, float h) {
 
     // ---- leader lines (under the buttons)
     for (auto& gr : g.groups) {
+        if (!gr.leader) continue;
         bool h1 = false, warn = false;
         for (int a : gr.acts) {
             h1 |= hot(a);

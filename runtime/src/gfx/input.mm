@@ -17,6 +17,7 @@
 #include "renderer.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../true60.h"
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
@@ -266,6 +267,8 @@ void init() {
             bool repeat = e.type != NSEventTypeFlagsChanged && e.isARepeat;
             if (gfx::text_input_key((__bridge void*)e)) return nil;  // the game's text prompt: typed text
             if (overlay::key(code, down, repeat, m)) return nil;
+            // the Screenshot binding (F10 by default; posted test keys take this path too)
+            if (e.type == NSEventTypeKeyDown && !e.isARepeat && screenshot::key_down(code)) return nil;
             if (posted) return nil;  // test keys only reach the overlay
         }
         std::lock_guard<std::mutex> lk(g_mu);
@@ -305,6 +308,7 @@ void init() {
                 std::copy(g_keys, g_keys + 256, keys);
             }
             motion::poll_recalibrate(v, keys);
+            screenshot::poll_controller(v);  // a controller input bound to Screenshot
         }
         mods::update_gyro_mouse();
     }];

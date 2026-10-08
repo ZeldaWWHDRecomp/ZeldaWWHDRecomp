@@ -24,6 +24,7 @@
 #include "platform/host.h"
 #include "platform/perf_hint.h"
 #include "runtime.h"
+#include "screenshot.h"
 #include "shaders.h"
 #include "settings.h"
 #include "sparse_hash_memo.h"
@@ -1321,7 +1322,90 @@ static void frame_dumps(uint64_t frame) {
     LOG("[gfx] capture of frame %llu written to %s", (unsigned long long)frame, dir);
   }
 }
+// Screenshots (screenshot.h): recorded into the frame's command buffer at the swap, read back once
+// that submission's fence has signalled (checked at later swaps: no wait), encoded on the screenshot
+// thread; the readback buffers come back from it to be freed on this thread.
+namespace {
+struct PendingShot {
+  std::string path;
+  bool tv = false;
+  uint64_t frame = 0;
+  Buffer buffer{};
+  uint32_t width = 0, height = 0;
+  bool bgra = false;
+  size_t slot = 0;
+  uint64_t serial = 0;  // 0: not submitted yet
+};
+std::vector<PendingShot> pendingShots;
+std::mutex shotBuffersMu;
+std::vector<Buffer> shotBuffersDone;
+}  // namespace
+static void take_screenshots(const gfx::PresentPlan &plan) {
+  std::string tvPath, drcPath;
+  if (!R.tv.scan || !R.tv.scan->image || !screenshot::take(R.frame + 1, tvPath, drcPath))
+    return;
+  auto shoot = [&](Screen &s, const std::string &path, bool tv) {
+    PendingShot p;
+    p.path = path;
+    p.tv = tv;
+    p.frame = R.frame + 1;
+    try {
+      if (!record_screenshot(s, p.buffer, p.width, p.height, p.bgra)) {
+        screenshot::write_async(path, 0, 0, 0, nullptr, nullptr, p.frame, tv);
+        return;
+      }
+    } catch (const std::exception &e) {
+      LOG("[screenshot] %s: %s", path.c_str(), e.what());
+      screenshot::write_async(path, 0, 0, 0, nullptr, nullptr, p.frame, tv);
+      return;
+    }
+    p.slot = R.activeSubmission;
+    pendingShots.push_back(std::move(p));
+  };
+  const auto t0 = std::chrono::steady_clock::now();
+  shoot(R.tv, tvPath, true);
+  // the GamePad picture while it is shown (GamePad window, picture-in-picture, GamePad only)
+  if (!drcPath.empty() && R.drc.scan && R.drc.scan->image && (plan.drc_window || plan.pip_on || plan.drc_only))
+    shoot(R.drc, drcPath, false);
+  else if (!drcPath.empty()) {
+    LOG("[screenshot] GamePad picture not shown: only the TV picture saved");
+    screenshot::write_async(drcPath, 0, 0, 0, nullptr, nullptr, R.frame + 1, false);
+  }
+  LOG("[screenshot] frame %llu: recorded in %.2f ms (render thread)", (unsigned long long)(R.frame + 1),
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+static void service_screenshots() {
+  {
+    std::lock_guard<std::mutex> lk(shotBuffersMu);
+    for (auto &b : shotBuffersDone)
+      defer_buffer(b);
+    shotBuffersDone.clear();
+  }
+  for (auto it = pendingShots.begin(); it != pendingShots.end();) {
+    auto &slot = R.submissions[it->slot];
+    if (!it->serial) {  // recorded in this swap: the submission of that slot holds it now
+      it->serial = slot.serial;
+      ++it;
+      continue;
+    }
+    // a slot reused for a newer submission retired ours first
+    const bool done = !slot.pending || slot.serial != it->serial || vkGetFenceStatus(R.device, slot.fence) == VK_SUCCESS;
+    if (!done) {
+      ++it;
+      continue;
+    }
+    Buffer b = it->buffer;
+    std::shared_ptr<const void> owner(nullptr, [b](const void *) {
+      std::lock_guard<std::mutex> lk(shotBuffersMu);
+      shotBuffersDone.push_back(b);
+    });
+    screenshot::write_async(it->path, it->width, it->height, size_t(it->width) * 4, static_cast<const uint8_t *>(b.mapped),
+                            std::move(owner), it->frame, it->tv, it->bgra);
+    it = pendingShots.erase(it);
+  }
+}
 void swap() {
+  service_screenshots();
   service_captures();
   frame_dumps(R.frame + 1);
   // the layout of both pictures (GamePad window, picture-in-picture, automatic overlay, GamePad only)
@@ -1346,6 +1430,7 @@ void swap() {
   set_present_plan(&plan);
   // settings overlay: built once, drawn into the TV window and its present dumps
   set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
+  take_screenshots(plan);
   bool sampled[2] = {};
   if (plan.sample_auto && drcScan) {
     sampled[0] = record_signature(0, *drcScan, R.drc.srgb.load());
@@ -1391,6 +1476,7 @@ void swap() {
     }
   }
   set_present_plan(nullptr);
+  service_screenshots();  // this frame's: the submission that holds them
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
   R.completed = R.frame;
   buffer_cache_end_frame();
@@ -2375,6 +2461,7 @@ static void test_fullscreen_key() {
 // with the GamePad window open the close button of the TV window did nothing. Closing the GamePad
 // window only hides it (WWHD_NO_GAMEPAD=1 starts without it).
 static void quit_game() {
+  screenshot::finish();  // the screenshots taken are written first
   gx2::checkpoint_vulkan_caches();
   std::_Exit(0);
 }

@@ -28,6 +28,9 @@ namespace overlay { bool key(int,bool,bool,int){if(promptShown)++promptKeys;retu
  bool mouse_move(float,float){return false;} bool mouse_button(int,bool){return false;} bool mouse_wheel(float,float){return false;} }
 namespace text_entry { bool active(){return promptShown;} void text(const char* s){promptText+=s;} void preedit(const char*){} }
 namespace hostui { void graphics_changed(){} }
+// screenshot.h: the binding as the real one (keys bound to Screenshot take the key)
+static int shots=0;
+namespace screenshot { bool key_down(int code){for(int k:input_map::current().keys[input_map::kScreenshot])if(k==code){++shots;return true;}return false;} void poll_controller(const float*){} }
 // The runtime reads the C runtime's environment (getenv). On Windows SDL_setenv_unsafe only
 // changes the Win32 environment block, which the CRT copy does not see.
 static void set_env(const char* name,const char* value){
@@ -83,6 +86,13 @@ int main(){
   graphicsEvent(code,game,true);graphicsEvent(code,game,false,SDL_EVENT_KEY_UP);graphicsEvent(code,controls);graphicsEvent(code,game,false,SDL_EVENT_KEY_DOWN,SDL_KMOD_CTRL);assert(graphicsRequests==before+1);
  }
  assert(graphicsKey=='7');input::release_keys();
+ // Screenshot (F10 by default): one per press, never a held game key; rebinding moves it
+ graphicsEvent(SDL_SCANCODE_F10,game);graphicsEvent(SDL_SCANCODE_F10,game,true);assert(shots==1);
+ input::held_keys(held);assert(!held[input_map::key_from_id("F10")]);
+ graphicsEvent(SDL_SCANCODE_F10,game,false,SDL_EVENT_KEY_UP);
+ {auto m=input_map::current();m.keys[input_map::kScreenshot]={input_map::key_from_id("F9"),input_map::kNoKey};input_map::set_current(m,false);
+  graphicsEvent(SDL_SCANCODE_F10,game);assert(shots==1);graphicsEvent(SDL_SCANCODE_F9,game);assert(shots==2);
+  m.keys[input_map::kScreenshot]={input_map::key_from_id("F10"),input_map::kNoKey};input_map::set_current(m,false);input::release_keys();}
  set_env("WWHD_NO_HOST_INPUT","1");graphicsEvent(SDL_SCANCODE_R,game);assert(graphicsRequests==7);set_env("WWHD_NO_HOST_INPUT",nullptr);
  // the text prompt: typed text goes to it, keys of every game window to overlay::key, none to the game
  promptShown=true;input::update();
@@ -126,5 +136,5 @@ int main(){
  }
  rumble::reset();
  SDL_DestroyWindow(controls);SDL_DestroyWindow(game);input::set_prompt_window(nullptr);
- SDL_Quit();puts("input_sdl_test: keyboard mapping, focus, touch, Pro mode, guarded save-state shortcuts, text prompt routing, rumble passed");
+ SDL_Quit();puts("input_sdl_test: keyboard mapping, focus, touch, Pro mode, guarded save-state shortcuts, screenshot binding, text prompt routing, rumble passed");
 }

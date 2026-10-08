@@ -42,6 +42,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../interp.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../screenshot.h"
 #include "../render_prof.h"
 #include "../build_info.h"
 #include "../report_header.h"
@@ -510,6 +511,31 @@ void tab_saves() {
     help(ss::full_states_forced() ? "Set by WWHD_FULL_SAVE_STATES or a test variable for this start."
                                   : "Saves the whole running game instead (about 300 MB per slot), exactly as it is. "
                                     "These files contain game code and data: never attach them to a bug report.");
+    heading("Screenshots");
+    {
+        // the Screenshot binding (Controls tab): its keys and controller input
+        const input_map::Mapping m = input_map::current();
+        std::string keys;
+        for (int k : m.keys[input_map::kScreenshot])
+            if (k != input_map::kNoKey) keys += (keys.empty() ? "" : " or ") + input_map::key_label(k);
+        if (m.pad[input_map::kScreenshot] != input_map::kPadNone)
+            keys += (keys.empty() ? "controller " : " or controller ") + std::string(input_map::pad_short_label(m.pad[input_map::kScreenshot]));
+        if (keys.empty()) note("Screenshot is not bound: set a key in the Controls tab (Screenshot).");
+        else note("%s in game saves the TV picture as a PNG at the internal resolution, without this menu (change the key in Controls).", keys.c_str());
+    }
+    bool gp;
+    if (check("Also save the GamePad screen (while it is shown)", screenshot::gamepad_too(), &gp))
+        hostui::post([gp] { screenshot::set_gamepad_too(gp); });
+    help("A second file, ..._GamePad.png, while the GamePad picture is on screen (its window or the overlay in the TV picture).");
+    if (hostui::can_open_folder()) {
+        if (ImGui::Button("Open screenshots folder")) {
+            std::string d = screenshot::dir();
+            hostui::post([d] { hostui::open_folder(d); });
+        }
+        ImGui::SameLine();
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", screenshot::dir().c_str());
     heading("Crash Recovery");
     bool on;
     if (check("Crash Recovery (automatic state every few minutes)", crashrec::enabled(), &on)) crashrec::set_enabled(on);

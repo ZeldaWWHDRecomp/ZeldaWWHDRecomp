@@ -34,6 +34,7 @@ const ActionInfo kActions[kActionCount] = {
     {"LeftStickLeft", "Left stick ← (move)", 0}, {"LeftStickRight", "Left stick → (move)", 0},
     {"RightStickUp", "Right stick ↑ (camera)", 0}, {"RightStickDown", "Right stick ↓ (camera)", 0},
     {"RightStickLeft", "Right stick ← (camera)", 0}, {"RightStickRight", "Right stick → (camera)", 0},
+    {"Screenshot", "Screenshot (app)", 0},
 };
 
 struct PadInfo { const char* id; const char* label; };
@@ -172,11 +173,13 @@ Mapping Mapping::defaults() {
     key(kStickLClick, kVK_ANSI_X); key(kStickRClick, kVK_ANSI_V);
     key(kLUp, kVK_ANSI_W); key(kLDown, kVK_ANSI_S); key(kLLeft, kVK_ANSI_A); key(kLRight, kVK_ANSI_D);
     key(kRUp, kVK_UpArrow); key(kRDown, kVK_DownArrow); key(kRLeft, kVK_LeftArrow); key(kRRight, kVK_RightArrow);
+    key(kScreenshot, kVK_F10);  // free on every host (F11: SDL full screen, F12/P: debug frame capture)
     // controllers map by position: the bottom face button (Xbox A) is the Wii U's B
     const int pads[kActionCount] = {
         kPadB, kPadA, kPadY, kPadX, kPadLB, kPadRB, kPadLT, kPadRT, kPadMenu, kPadOptions, kPadHome,
         kPadDUp, kPadDDown, kPadDLeft, kPadDRight, kPadL3, kPadR3,
         kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
+        kPadNone,  // Screenshot: no controller input by default (every button already plays)
     };
     for (int a = 0; a < kActionCount; a++) m.pad[a] = pads[a];
     return m;

@@ -8,6 +8,7 @@ struct ImDrawData;
 namespace gfxvk {
 struct Screen;
 struct Surface;
+struct Buffer;
 // one picture (scaled into box) or filled rectangle of a window composition
 struct ComposeQuad {
  Surface* image=nullptr; bool sourceLinear=false; gfx::Box box; float alpha=1;
@@ -18,6 +19,12 @@ void set_present_plan(const gfx::PresentPlan* plan);
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter);
 // the composition of a window into an offscreen image, read back as display-encoded RGBA8
 std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t height,bool srgb);
+// screenshot.h: the picture of `screen` at its own size (as the window composition draws it: FXAA,
+// display encoding; no overlay) into an 8-bit image of the window's swapchain format (its pipeline
+// exists already; RGBA8 like the present dumps without a swapchain; `bgra` says which), copied into
+// `buffer` (a new readback buffer) in the current command buffer; read it once that submission
+// completed. False: nothing recorded
+bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& height,bool& bgra);
 // the climb mod's stamina wheel, drawn into the TV scan image (as mods/climb_hud.mm)
 void draw_mod_overlay(Surface& scan);
 // automatic GamePad overlay (display.mm): 32x18 signatures of the pictures (slot 0 GamePad, 1 TV)

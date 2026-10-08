@@ -1359,6 +1359,8 @@ std::string bug_report_text() {
     return out;
 }
 
+void notice(const std::string& text) { message("%s", text.c_str()); }
+
 std::string last_message() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_message.empty() || std::chrono::steady_clock::now() - g_message_time > std::chrono::seconds(g_message.size() > 60 ? 7 : 4)) return "";
