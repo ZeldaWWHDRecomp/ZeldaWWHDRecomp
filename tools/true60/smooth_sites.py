@@ -2,7 +2,8 @@
 """Find per-step exponential smoothing in recompiled functions: x += (target - x) * r.
 
 True 60 fps runs converted actors with a step length dt < 1; such a smoothing step then needs the
-ratio 1 - (1 - r)^dt. This scans the generated C (build/gen) of the given functions for the
+ratio 1 - (1 - r)^dt. This scans the generated C (build/gen, generated with WWHD_RECOMP_PLAIN=1 for
+the plain c->f[N] form, tools/recomp/recomp.py) of the given functions for the
 compiled forms of the expression and prints, per site, the instruction address and the register
 holding r, so tools/true60/gen_sites.py can emit instruction-level hooks for them.
 

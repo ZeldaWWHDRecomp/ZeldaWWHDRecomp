@@ -13,9 +13,13 @@ replace any game function at runtime without rebuilding the game code.
 
 Code-quality passes (each on by default; the variable set to 0 when generating turns it off):
   WWHD_RECOMP_CRLIVE       condition-register liveness: compares store only the CR bits read later (crlive.py)
+  WWHD_RECOMP_LEAF         leaf functions keep guest registers and CR bits in C locals (leaflocal.py)
+  WWHD_RECOMP_NONLEAF      functions with calls keep guest registers in C locals between calls (leaflocal.py)
   WWHD_RECOMP_GQR          paired-single loads/stores through GQRs the game never writes skip the GQR check
-WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes.
-Checking build (set to 1): WWHD_RECOMP_CR_CHECK (a dropped CR bit that is read aborts).
+WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes (the
+plain c->r[N] form that tools/true60 and tools/verify read).
+Checking builds (set to 1): WWHD_RECOMP_CR_CHECK (a dropped CR bit that is read aborts),
+WWHD_RECOMP_LEAF_POISON (scratch registers get garbage at returns).
 
 Output:
   OUTDIR/funcs.h         prototypes of every recompiled function and import
@@ -40,11 +44,17 @@ from ppc2c import translate, Unhandled
 from rpx import R_PPC_ADDR16_HA, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI
 import ppc2c
 import crlive
+import leaflocal
 
 # condition-register liveness (crlive.py): on unless WWHD_RECOMP_CRLIVE=0; WWHD_RECOMP_CR_CHECK=1
 # generates a checking build that poisons the dropped bits and aborts if one is ever read
 CRLIVE = ppc2c.pass_on("WWHD_RECOMP_CRLIVE")
 CR_CHECK = os.environ.get("WWHD_RECOMP_CR_CHECK", "0") == "1"
+# leaf functions keep guest registers in locals (leaflocal.py): on unless WWHD_RECOMP_LEAF=0
+LEAF = ppc2c.pass_on("WWHD_RECOMP_LEAF")
+# functions with calls keep guest registers in locals too (leaflocal.transform_nonleaf): on unless
+# WWHD_RECOMP_NONLEAF=0
+NONLEAF = ppc2c.pass_on("WWHD_RECOMP_NONLEAF")
 # paired-single loads and stores through GQRs the game never writes skip the GQR check
 # (static_float_gqrs): on unless WWHD_RECOMP_GQR=0
 GQR_STATIC = ppc2c.pass_on("WWHD_RECOMP_GQR")
@@ -262,6 +272,25 @@ class Recompiler:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
             # port's own hooks (interpolation, true 60) stay outermost and mods hook the game's code
             out.append("    PPC_MOD_HOOK(%d, 0x%08Xu);" % (self.ordinal[start], start))
+        tail_wb = ""
+        # registers in locals (leaflocal.py) only where no outside code can look at this function's
+        # registers mid-way: not in hooked functions, not in functions with instruction hooks
+        # (ppc_host_call(c, site_X) reads and changes the Cpu struct) and not in builds with guest mod
+        # hooks (a mod may hook or replace any function)
+        plain = hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
+        stmts = [s for _, _, s in body]
+        if LEAF and not plain and leaflocal.eligible(stmts):
+            prologue, stmts, tail_wb = leaflocal.transform(stmts)
+            body = [(a, w, s) for (a, w, _), s in zip(body, stmts)]
+            out += ["    %s" % p for p in prologue]
+            self.leaf_count += 1
+        elif NONLEAF and not plain:
+            done = leaflocal.transform_nonleaf(stmts, [a for a, _, _ in body])
+            if done:
+                prologue, stmts, tail_wb = done
+                body = [(a, w, s) for (a, w, _), s in zip(body, stmts)]
+                out += ["    %s" % p for p in prologue]
+                self.nonleaf_count += 1
         for a, w, s in body:
             if a in self.labels:
                 out.append("L_%08X: ;" % a)
@@ -272,7 +301,7 @@ class Recompiler:
         if self.cur_end < self.p.text_hi:
             # code falling into a hooked function continues with its original code
             nxt = ("f_%08X_orig" if self.cur_end in self.hooks else "f_%08X") % self.sym(self.cur_end)
-            out.append("    MUSTTAIL return %s(c);" % nxt)
+            out.append("    %sMUSTTAIL return %s(c);" % (tail_wb + " " if tail_wb else "", nxt))
         else:
             out.append("    ppc_unimplemented(c, 0x%08Xu, 0); /* fell off end of text */" % self.cur_end)
         out.append("}")
@@ -282,6 +311,8 @@ class Recompiler:
         os.makedirs(outdir, exist_ok=True)
         self.unhandled = collections.Counter()
         self.cr_stats = [0, 0]  # CR writers, writers with no live bit
+        self.leaf_count = 0
+        self.nonleaf_count = 0
         self.used_imports = set()
         self.imm_override = self.imm_override
         files, cur, n = [], [], 0
@@ -401,6 +432,8 @@ class Recompiler:
             f.write("imports used: %d of %d\n" % (len(self.used_imports), len(self.imports)))
             f.write("CR writers: %d, %d with no live bit (liveness %s%s)\n" % (
                 self.cr_stats[0], self.cr_stats[1], "on" if CRLIVE else "off", ", check build" if CR_CHECK else ""))
+            f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
+            f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
             f.write("unhandled instruction kinds:\n")
             for k, v in self.unhandled.most_common():
                 f.write("  %6d  %s\n" % (v, k))
