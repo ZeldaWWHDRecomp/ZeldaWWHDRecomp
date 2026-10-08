@@ -106,10 +106,14 @@ static inline uint32_t ppc_divw(uint32_t a, uint32_t b) {
 }
 static inline uint32_t ppc_divwu(uint32_t a, uint32_t b) { return b ? a / b : 0; }
 
-static inline uint32_t ppc_mfcr(const Cpu* c) {
-    uint32_t v = 0;
-    for (int i = 0; i < 32; i++) v |= (uint32_t)(c->cr[i] & 1) << (31 - i);
-    return v;
+/* eight CR bytes (0/1, little-endian host) to eight bits, the first byte in the top bit */
+static inline uint32_t ppc_cr_pack8(const uint8_t* p) {
+    uint64_t x;
+    memcpy(&x, p, 8);
+    return (uint32_t)(((x & 0x0101010101010101ull) * 0x8040201008040201ull) >> 56);
+}
+static inline __attribute__((always_inline)) uint32_t ppc_mfcr(const Cpu* c) {
+    return ppc_cr_pack8(c->cr) << 24 | ppc_cr_pack8(c->cr + 8) << 16 | ppc_cr_pack8(c->cr + 16) << 8 | ppc_cr_pack8(c->cr + 24);
 }
 static inline void ppc_mtcrf(Cpu* c, uint32_t crm, uint32_t v) {
     for (int f = 0; f < 8; f++)
@@ -150,11 +154,12 @@ static inline double round25(double d) {
 }
 static inline double to_single(double d) { return (double)(float)d; }
 
+/* fcmpu / fcmpo. IEEE comparisons with a NaN are false, so lt/gt/eq need no NaN test; un is the
+ * fourth outcome. FPSCR's FPCC field (which fcmp also sets) is not kept: only mffs and mcrfs read
+ * it, and this game has neither (ppc2c warns when it translates one). */
 static inline void cr_set_f(Cpu* c, int f, double a, double b) {
-    int un = isnan(a) || isnan(b);
-    c->cr[4 * f + 0] = !un && a < b; c->cr[4 * f + 1] = !un && a > b;
-    c->cr[4 * f + 2] = !un && a == b; c->cr[4 * f + 3] = (uint8_t)un;
-    c->fpscr = (c->fpscr & ~0xF000u) | ((uint32_t)(c->cr[4 * f] << 3 | c->cr[4 * f + 1] << 2 | c->cr[4 * f + 2] << 1 | un) << 12);
+    c->cr[4 * f + 0] = a < b; c->cr[4 * f + 1] = a > b;
+    c->cr[4 * f + 2] = a == b; c->cr[4 * f + 3] = (uint8_t)__builtin_isunordered(a, b);
 }
 
 static inline uint64_t ppc_fctiwz(double d) {
@@ -201,26 +206,57 @@ static inline uint32_t psq_quant(float v, uint32_t type, uint32_t scale) {
     default: return f32_as_u32(v);
     }
 }
-static inline void psq_load(Cpu* c, int fd, uint32_t ea, int w, int i) {
+/* quantized formats (GQR type 4-7): out of line, so the float case below stays small and inline.
+ * The _l forms take the two halves of the FPR separately (for code that keeps registers in C locals). */
+static __attribute__((noinline)) void psq_load_slow_l(Cpu* c, double* p0, double* p1, uint32_t ea, int w, int i) {
     uint32_t g = c->gqr[i], type = (g >> 16) & 7, scale = (g >> 24) & 0x3F;
     int sz = (type == 4 || type == 6) ? 1 : (type == 5 || type == 7) ? 2 : 4;
     uint32_t d0 = sz == 1 ? ld8(ea) : sz == 2 ? ld16(ea) : ld32(ea);
-    c->f[fd].ps0 = psq_dequant(d0, type, scale);
-    if (w) c->f[fd].ps1 = 1.0;
+    *p0 = psq_dequant(d0, type, scale);
+    if (w) *p1 = 1.0;
     else {
         uint32_t d1 = sz == 1 ? ld8(ea + 1) : sz == 2 ? ld16(ea + 2) : ld32(ea + 4);
-        c->f[fd].ps1 = psq_dequant(d1, type, scale);
+        *p1 = psq_dequant(d1, type, scale);
     }
 }
-static inline void psq_store(Cpu* c, int fs, uint32_t ea, int w, int i) {
+static __attribute__((noinline)) void psq_store_slow_l(Cpu* c, double v0, double v1, uint32_t ea, int w, int i) {
     uint32_t g = c->gqr[i], type = g & 7, scale = (g >> 8) & 0x3F;
     int sz = (type == 4 || type == 6) ? 1 : (type == 5 || type == 7) ? 2 : 4;
-    uint32_t d0 = psq_quant((float)c->f[fs].ps0, type, scale);
+    uint32_t d0 = psq_quant((float)v0, type, scale);
     if (sz == 1) st8(ea, d0); else if (sz == 2) st16(ea, d0); else st32(ea, d0);
     if (!w) {
-        uint32_t d1 = psq_quant((float)c->f[fs].ps1, type, scale);
+        uint32_t d1 = psq_quant((float)v1, type, scale);
         if (sz == 1) st8(ea + 1, d1); else if (sz == 2) st16(ea + 2, d1); else st32(ea + 4, d1);
     }
+}
+/* paired-single loads and stores: plain floats (GQR type 0-3) are nearly all of them. The generated
+ * code (funcs.h) sets bit n of PPC_GQR_STATIC_FLOAT when the game never writes GQRn, which then stays
+ * 0 (plain floats): with the constant GQR index of every call the check disappears (2,082 of the
+ * game's 2,106 paired loads and stores use GQR0 or GQR1). */
+#ifndef PPC_GQR_STATIC_FLOAT
+#define PPC_GQR_STATIC_FLOAT 0
+#endif
+static inline __attribute__((always_inline)) void psq_load_l(Cpu* c, double* p0, double* p1, uint32_t ea, int w, int i) {
+    if (((PPC_GQR_STATIC_FLOAT >> i) & 1) || __builtin_expect(((c->gqr[i] >> 16) & 7) < 4, 1)) {
+        *p0 = u32_as_f32(ld32(ea));
+        *p1 = w ? 1.0 : (double)u32_as_f32(ld32(ea + 4));
+        return;
+    }
+    psq_load_slow_l(c, p0, p1, ea, w, i);
+}
+static inline __attribute__((always_inline)) void psq_store_l(Cpu* c, double v0, double v1, uint32_t ea, int w, int i) {
+    if (((PPC_GQR_STATIC_FLOAT >> i) & 1) || __builtin_expect((c->gqr[i] & 7) < 4, 1)) {
+        st32(ea, f32_as_u32((float)v0));
+        if (!w) st32(ea + 4, f32_as_u32((float)v1));
+        return;
+    }
+    psq_store_slow_l(c, v0, v1, ea, w, i);
+}
+static inline __attribute__((always_inline)) void psq_load(Cpu* c, int fd, uint32_t ea, int w, int i) {
+    psq_load_l(c, &c->f[fd].ps0, &c->f[fd].ps1, ea, w, i);
+}
+static inline __attribute__((always_inline)) void psq_store(Cpu* c, int fs, uint32_t ea, int w, int i) {
+    psq_store_l(c, c->f[fs].ps0, c->f[fs].ps1, ea, w, i);
 }
 
 #ifdef __cplusplus
