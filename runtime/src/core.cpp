@@ -297,6 +297,12 @@ extern "C" void ppc_dispatch(Cpu* c) {
     MUSTTAIL return f(c);
 }
 
+// checking builds of the recompiler (tools/recomp/recomp.py): WWHD_RECOMP_CR_CHECK=1 poisons the CR
+// bits the liveness pass drops, and reading one stops here
+extern "C" void ppc_cr_poisoned(Cpu* c, int bit, uint32_t addr) {
+    fatal("CR liveness: bit %d read at %08X without a live store (lr=%08X)", bit, addr, c->lr);
+}
+
 uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
     uint32_t save_lr = c->lr, save_ctr = c->ctr, save_sp = c->r[1];
     // open a minimal frame so the callee's LR save slot doesn't clobber our caller's frame

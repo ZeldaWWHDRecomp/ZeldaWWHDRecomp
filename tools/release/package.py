@@ -43,6 +43,7 @@ TOOL_FILES = [
     "tools/recomp/analyze.py",
     "tools/recomp/ppc2c.py",
     "tools/recomp/builds.py",
+    "tools/recomp/crlive.py",
     "tools/guestmod/build_guest_mod.py",
     "tools/guestmod/guestmod.py",
     "tools/savegame/gc2hd.py",
