@@ -8,6 +8,8 @@ import shlex
 import subprocess
 import time
 
+from display_smoke import primary_preview_clear
+
 PACKAGE = "org.wwhdrecomp.wwhd"
 
 
@@ -28,6 +30,7 @@ def main():
     if adb("shell", "getprop", "ro.kernel.qemu") != "1": parser.error("requires an emulator")
     if args.apk: adb("install", "-r", str(args.apk))
     original = adb("shell", "settings", "get", "global", "overlay_display_devices")
+    immersive = adb("shell", "settings", "get", "secure", "immersive_mode_confirmations")
     settings = "/sdcard/Android/data/" + PACKAGE + "/files/config/wwhd/settings.ini"
     existing = subprocess.run(prefix + ["exec-out", "cat", settings], capture_output=True, timeout=20)
     if existing.returncode not in (0, 1): raise RuntimeError("Cannot inspect settings")
@@ -62,6 +65,8 @@ def main():
         adb("shell", "run-as", PACKAGE, "rm", "-f", "files/display-smoke.json", "files/display-smoke-command")
         adb("shell", "input", "-d", "0", "motionevent", "UP", "0", "0")
         adb("shell", "settings", "put", "global", "overlay_display_devices", "800x480/160")
+        # Suppress the emulator first-use fullscreen tutorial, which consumes touches.
+        adb("shell", "settings", "put", "secure", "immersive_mode_confirmations", "confirmed")
         adb("logcat", "-c")
         adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.DisplaySmokeActivity")
         initial = until("initial presentation", lambda m: m["dual"] and m["secondary_presented"] >= 10)
@@ -74,6 +79,17 @@ def main():
                 until("external removed", lambda m: not m["dual"])
                 broadcast("--es", "synthetic_fold", "horizontal")
                 until("fold panes ready", lambda m: m["dual"] and m["primary_height"] < initial["primary_height"])
+            if mode == "external-swapped":
+                previous = read("display-smoke.json")
+                # The emulator's floating 800x480 preview covers the main
+                # display's centre at CI's resolution. Keep the touch target
+                # centred, but use the same unobstructed preview as display_smoke.
+                adb("shell", "settings", "put", "global", "overlay_display_devices", "320x180/160")
+                until("swapped smaller preview presents", lambda m:
+                      m["dual"] and m["swap_active"] and
+                      (m["secondary_width"], m["secondary_height"]) == (320, 180) and
+                      m["primary_presented"] > previous["primary_presented"] + 10 and
+                      m["secondary_presented"] > previous["secondary_presented"] + 10)
             before = read("display-smoke.json")
             if mode == "external-normal":
                 ids = re.findall(r"secondary display=(\d+)", adb("logcat", "-d", "-s", "wwhd-display:I", "*:S"))
@@ -82,6 +98,8 @@ def main():
             elif mode == "external-swapped":
                 display, x, y = "0", before["primary_width"] // 2, before["primary_height"] // 2
                 adb("shell", "cmd", "statusbar", "collapse", check=False)
+                until("swapped target clear of emulator preview", lambda m:
+                      primary_preview_clear(adb("shell", "dumpsys", "input"), x, y))
             else:
                 display, x, y = "0", initial["primary_width"] // 2, initial["primary_height"] - before["secondary_height"] // 2
             def touch(action):
@@ -104,6 +122,9 @@ def main():
 
             after = until(mode + " Activity replaced with native thread retained", restored)
             touch("UP")
+            if mode == "external-swapped":
+                until("recreated swapped target clear of emulator preview", lambda m:
+                      primary_preview_clear(adb("shell", "dumpsys", "input"), x, y))
             touch("DOWN")
             until(mode + " touch after recreation", centered)
             touch("UP")
@@ -111,7 +132,9 @@ def main():
             replacement = read("display-smoke-activity.json")
             report["observations"].append({"check": mode + " retained identity", **replacement})
             if (after["primary_width"], after["primary_height"]) != (before["primary_width"], before["primary_height"]):
-                raise AssertionError("Recreation did not restore pane extent")
+                raise AssertionError(mode + " recreation did not restore pane extent: before=" +
+                                     repr((before["primary_width"], before["primary_height"])) + " after=" +
+                                     repr((after["primary_width"], after["primary_height"])))
         logs = adb("logcat", "-d", "-s", "SDL:V", "*:S")
         if len(re.findall(r"nativeInitSDLThread\(\)", logs)) != 1:
             raise AssertionError("Recreation restarted SDL_main")
@@ -127,6 +150,8 @@ def main():
                            check=True, capture_output=True, timeout=20)
         if original == "null": adb("shell", "settings", "delete", "global", "overlay_display_devices")
         else: adb("shell", "settings", "put", "global", "overlay_display_devices", original)
+        if immersive == "null": adb("shell", "settings", "delete", "secure", "immersive_mode_confirmations")
+        else: adb("shell", "settings", "put", "secure", "immersive_mode_confirmations", immersive)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"passed": report["passed"], "observations": len(report["observations"])}))
 

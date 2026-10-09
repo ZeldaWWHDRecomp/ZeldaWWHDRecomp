@@ -506,7 +506,18 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         setContentView(mLayout);
 
-        setWindowStyle(false);
+        if (retaining) {
+            // SDL keeps its native window and does not request fullscreen again.
+            // Restore that window's style on the replacement Activity. We are
+            // already on the UI thread: do not wait here for its resize callback.
+            Message style = commandHandler.obtainMessage();
+            style.arg1 = COMMAND_CHANGE_WINDOW_STYLE;
+            style.obj = mFullscreenModeActive ? 1 : 0;
+            commandHandler.handleMessage(style);
+            style.recycle();
+        } else {
+            setWindowStyle(false);
+        }
 
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
 
