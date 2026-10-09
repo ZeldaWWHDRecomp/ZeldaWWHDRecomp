@@ -47,12 +47,27 @@ def main():
     subprocess.run([sys.executable, str(REPO / "tools/installer/test_setup.py"), "GuestBuildConfig", "CodeModsBuild"], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/guestmod/test_public_sdk_index.py")], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/bench/test_run_bench.py")], check=True)
-    headers = ["bindings", "actor", "link", "camera", "items", "messages", "save", "data"]
-    command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
-               "-ffreestanding", "-fsyntax-only", "-x", "c", "-"]
-    for header in headers:
-        command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
-    subprocess.run(command, input="", text=True, check=True)
+    headers = ["bindings", "vectors", "actor", "link", "camera", "items", "messages", "save", "data"]
+    # Both supported source languages exercise nested public aggregate layout.
+    assertions = """
+#ifdef __cplusplus
+#define SDK_ASSERT(expression) static_assert(expression, "SDK layout")
+#else
+#define SDK_ASSERT(expression) _Static_assert(expression, "SDK layout")
+#endif
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.x) == 0x314);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.z) == 0x31C);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, shape_angle.y) == 0x32A);
+SDK_ASSERT(WWHD_PLAY_START_STAGE_NAME_OFFSET == 0x5134);
+SDK_ASSERT(WWHD_PLAY_EVENT_RUNNING_OFFSET == 0x5292);
+SDK_ASSERT(WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET == 0x514C);
+"""
+    for language in ("c", "c++"):
+        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
+                   "-ffreestanding", "-fsyntax-only", "-x", language, "-"]
+        for header in headers:
+            command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
+        subprocess.run(command, input=assertions, text=True, check=True)
     print("Host module compiler:", tc.desc, flush=True)
     subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "test_guestmod.py"), "-v"], check=True)
 

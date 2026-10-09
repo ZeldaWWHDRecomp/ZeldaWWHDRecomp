@@ -13,6 +13,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 
@@ -44,7 +45,7 @@ def layout(text, name):
         if kind.startswith('gptr<'):
             kind = 'u32'  # guest address, never a host pointer
         kind = re.sub(r'be<(\w+)>', r'\1', kind)
-        if kind not in PRIMITIVES:
+        if kind not in PRIMITIVES and kind not in AGGREGATES:
             continue
         fields.append((int(offset, 16), kind, field, array or ''))
     known = {f[2] for f in fields}
@@ -58,6 +59,9 @@ def layout(text, name):
             if kind in PRIMITIVES:
                 fields.append((int(offset[2], 16), kind, field, ''))
     fields.sort()
+    for offset, kind, field, array in fields:
+        if kind in AGGREGATES and (array or offset + AGGREGATES[kind] > int(size[1], 0)):
+            raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
     lines = [f'typedef union {name} {{', f'    u8 bytes[{size[1]}];']
     for offset, kind, field, array in fields:
         pad = f'u8 _pad_{field}[0x{offset:X}]; ' if offset else ''
@@ -68,15 +72,40 @@ def layout(text, name):
     return '\n'.join(lines) + '\n'
 
 
+def vectors(text):
+    """Only the public xyz component declarations, never methods or wrappers."""
+    lines = ['#pragma once', '#include "../wwhd_guest.h"']
+    for name, primitive, extent in [('cXyz', 'f32', 12), ('csXyz', 's16', 6)]:
+        body, _ = body_of(text, name)
+        declarations = re.findall(r'be<([^>]+)>\s+([^;{}]+);', body)
+        if declarations != [(primitive, 'x, y, z')]:
+            raise ValueError('public vector declaration changed: ' + name)
+        size = re.findall(r'WWHD_SIZE\(\s*' + name + r'\s*,\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*\)', text)
+        if len(size) != 1 or int(size[0], 0) != extent:
+            raise ValueError('public vector size changed: ' + name)
+        lines += [f'typedef struct {name} {{ {primitive} x, y, z; }} {name};']
+        # Assertions work in both C and C++ without exporting a helper macro.
+        for expression in [f'sizeof({name}) == {extent}'] + [
+                f'__builtin_offsetof({name}, {field}) == {i * (extent // 3)}'
+                for i, field in enumerate(('x', 'y', 'z'))]:
+            lines += ['#ifdef __cplusplus', f'static_assert({expression}, "{name} layout");',
+                      '#else', f'_Static_assert({expression}, "{name} layout");', '#endif']
+    return '\n'.join(lines) + '\n'
+
+
 def generate(root, output, revision):
     output.mkdir(parents=True, exist_ok=True)
+    vector_source = 'include/SSystem/SComponent/c_xyz.h'
+    vector_header = (f'/* Generated public declarations from ZeldaWWHDDecomp/wwhd {revision}.\n'
+                     f' * Source: wwhd_src/{vector_source}; CC0-1.0. */\n')
+    (output / 'vectors.h').write_text(vector_header + vectors((root / 'wwhd_src' / vector_source).read_text()))
     for subsystem, (source, names) in CURATED.items():
         text = (root / 'wwhd_src' / source).read_text()
         lines = [f'/* Generated from public ZeldaWWHDDecomp/wwhd {revision}.',
                  f' * Source: wwhd_src/{source}; CC0-1.0 (public-wwhd-LICENSE).',
-                 ' * Partial views: named scalar fields only; unknown fields remain bytes.',
+                 ' * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.',
                  ' * Source offset qualifications still apply; see the public source. */',
-                 '#pragma once', '#include "../wwhd_guest.h"',
+                 '#pragma once', '#include "../wwhd_guest.h"', '#include "vectors.h"',
                  '#ifndef WWHD_SDK_ASSERT', '#ifdef __cplusplus',
                  '#define WWHD_SDK_ASSERT(x, message) static_assert(x, message)', '#else',
                  '#define WWHD_SDK_ASSERT(x, message) _Static_assert(x, message)', '#endif', '#endif',

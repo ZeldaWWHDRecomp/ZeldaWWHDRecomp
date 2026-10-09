@@ -1,9 +1,10 @@
 /* Generated from public ZeldaWWHDDecomp/wwhd 47e1dbc3886cfd8233859dffd73efc41a04a9130.
  * Source: wwhd_src/include/d/actor/d_a_player_main.h; CC0-1.0 (public-wwhd-LICENSE).
- * Partial views: named scalar fields only; unknown fields remain bytes.
+ * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.
  * Source offset qualifications still apply; see the public source. */
 #pragma once
 #include "../wwhd_guest.h"
+#include "vectors.h"
 #ifndef WWHD_SDK_ASSERT
 #ifdef __cplusplus
 #define WWHD_SDK_ASSERT(x, message) static_assert(x, message)
@@ -204,6 +205,7 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m355E[0x69AE]; s16 m355E; };
     struct __attribute__((packed)) { u8 _pad_mEquipItem[0x69B0]; u16 mEquipItem; };
     struct __attribute__((packed)) { u8 _pad_m3562[0x69B2]; u16 m3562; };
+    struct __attribute__((packed)) { u8 _pad_m3564[0x69B4]; csXyz m3564; };
     struct __attribute__((packed)) { u8 _pad__69BA[0x69BA]; u8 _69BA[2]; };
     struct __attribute__((packed)) { u8 _pad_mCameraInfoIdx[0x69BC]; s32 mCameraInfoIdx; };
     struct __attribute__((packed)) { u8 _pad_mProcVar6[0x69C0]; s32 mProcVar6; };
@@ -266,6 +268,23 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m3658[0x6AB0]; u8 m3658[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m3668[0x6AC0]; u8 m3668[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m6AE0[0x6AE0]; u8 m6AE0[0x7B0]; };
+    struct __attribute__((packed)) { u8 _pad_m3688[0x7290]; cXyz m3688; };
+    struct __attribute__((packed)) { u8 _pad_mOldSpeed[0x729C]; cXyz mOldSpeed; };
+    struct __attribute__((packed)) { u8 _pad_m36A0[0x72A8]; cXyz m36A0; };
+    struct __attribute__((packed)) { u8 _pad_m36AC[0x72B4]; cXyz m36AC; };
+    struct __attribute__((packed)) { u8 _pad_m36B8[0x72C0]; cXyz m36B8; };
+    struct __attribute__((packed)) { u8 _pad_m36C4[0x72CC]; cXyz m36C4; };
+    struct __attribute__((packed)) { u8 _pad_m36D0[0x72D8]; cXyz m36D0; };
+    struct __attribute__((packed)) { u8 _pad_m36DC[0x72E4]; cXyz m36DC; };
+    struct __attribute__((packed)) { u8 _pad_mHookshotRootPos[0x72F0]; cXyz mHookshotRootPos; };
+    struct __attribute__((packed)) { u8 _pad_mBoomerangCatchPos[0x72FC]; cXyz mBoomerangCatchPos; };
+    struct __attribute__((packed)) { u8 _pad_m3700[0x7308]; cXyz m3700; };
+    struct __attribute__((packed)) { u8 _pad_m370C[0x7314]; cXyz m370C; };
+    struct __attribute__((packed)) { u8 _pad_m3718[0x7320]; cXyz m3718; };
+    struct __attribute__((packed)) { u8 _pad_m3724[0x732C]; cXyz m3724; };
+    struct __attribute__((packed)) { u8 _pad_m3730[0x7338]; cXyz m3730; };
+    struct __attribute__((packed)) { u8 _pad_m373C[0x7344]; cXyz m373C; };
+    struct __attribute__((packed)) { u8 _pad_m3748[0x7350]; cXyz m3748; };
     struct __attribute__((packed)) { u8 _pad_m3754[0x735C]; u8 m3754[0x60]; };
     struct __attribute__((packed)) { u8 _pad_mpSwBlur[0x73EC]; u32 mpSwBlur; };
     struct __attribute__((packed)) { u8 _pad_mFootData[0x73F0]; u8 mFootData[0x230]; };
@@ -452,6 +471,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m355C) == 0x69AC, "daPy_lk_c.m355C
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m355E) == 0x69AE, "daPy_lk_c.m355E");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mEquipItem) == 0x69B0, "daPy_lk_c.mEquipItem");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3562) == 0x69B2, "daPy_lk_c.m3562");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3564) == 0x69B4, "daPy_lk_c.m3564");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, _69BA) == 0x69BA, "daPy_lk_c._69BA");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCameraInfoIdx) == 0x69BC, "daPy_lk_c.mCameraInfoIdx");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mProcVar6) == 0x69C0, "daPy_lk_c.mProcVar6");
@@ -514,6 +534,23 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3648) == 0x6AA0, "daPy_lk_c.m3648
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3658) == 0x6AB0, "daPy_lk_c.m3658");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3668) == 0x6AC0, "daPy_lk_c.m3668");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m6AE0) == 0x6AE0, "daPy_lk_c.m6AE0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3688) == 0x7290, "daPy_lk_c.m3688");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mOldSpeed) == 0x729C, "daPy_lk_c.mOldSpeed");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36A0) == 0x72A8, "daPy_lk_c.m36A0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36AC) == 0x72B4, "daPy_lk_c.m36AC");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36B8) == 0x72C0, "daPy_lk_c.m36B8");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36C4) == 0x72CC, "daPy_lk_c.m36C4");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36D0) == 0x72D8, "daPy_lk_c.m36D0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36DC) == 0x72E4, "daPy_lk_c.m36DC");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mHookshotRootPos) == 0x72F0, "daPy_lk_c.mHookshotRootPos");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mBoomerangCatchPos) == 0x72FC, "daPy_lk_c.mBoomerangCatchPos");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3700) == 0x7308, "daPy_lk_c.m3700");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m370C) == 0x7314, "daPy_lk_c.m370C");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3718) == 0x7320, "daPy_lk_c.m3718");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3724) == 0x732C, "daPy_lk_c.m3724");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3730) == 0x7338, "daPy_lk_c.m3730");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m373C) == 0x7344, "daPy_lk_c.m373C");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3748) == 0x7350, "daPy_lk_c.m3748");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3754) == 0x735C, "daPy_lk_c.m3754");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpSwBlur) == 0x73EC, "daPy_lk_c.mpSwBlur");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFootData) == 0x73F0, "daPy_lk_c.mFootData");

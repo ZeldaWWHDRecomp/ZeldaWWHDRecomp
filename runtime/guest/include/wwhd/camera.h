@@ -1,9 +1,10 @@
 /* Generated from public ZeldaWWHDDecomp/wwhd 47e1dbc3886cfd8233859dffd73efc41a04a9130.
  * Source: wwhd_src/include/d/d_camera.h; CC0-1.0 (public-wwhd-LICENSE).
- * Partial views: named scalar fields only; unknown fields remain bytes.
+ * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.
  * Source offset qualifications still apply; see the public source. */
 #pragma once
 #include "../wwhd_guest.h"
+#include "vectors.h"
 #ifndef WWHD_SDK_ASSERT
 #ifdef __cplusplus
 #define WWHD_SDK_ASSERT(x, message) static_assert(x, message)
@@ -28,14 +29,19 @@ typedef union camSphChkdata_l {
     u8 bytes[0x20];
     struct __attribute__((packed)) { u32 field_0x0; };
     struct __attribute__((packed)) { u8 _pad_field_0x4[0x4]; f32 field_0x4; };
+    struct __attribute__((packed)) { u8 _pad_field_0x8[0x8]; cXyz field_0x8; };
+    struct __attribute__((packed)) { u8 _pad_field_0x14[0x14]; cXyz field_0x14; };
 } camSphChkdata_l;
 WWHD_SDK_ASSERT(sizeof(camSphChkdata_l) == 0x20, "camSphChkdata_l size");
 WWHD_SDK_ASSERT(__builtin_offsetof(camSphChkdata_l, field_0x0) == 0x0, "camSphChkdata_l.field_0x0");
 WWHD_SDK_ASSERT(__builtin_offsetof(camSphChkdata_l, field_0x4) == 0x4, "camSphChkdata_l.field_0x4");
+WWHD_SDK_ASSERT(__builtin_offsetof(camSphChkdata_l, field_0x8) == 0x8, "camSphChkdata_l.field_0x8");
+WWHD_SDK_ASSERT(__builtin_offsetof(camSphChkdata_l, field_0x14) == 0x14, "camSphChkdata_l.field_0x14");
 
 typedef union dCamForcusLine {
     u8 bytes[0x70];
     struct __attribute__((packed)) { u8 mEffectLine[0x38]; };
+    struct __attribute__((packed)) { u8 _pad_m38[0x38]; cXyz m38; };
     struct __attribute__((packed)) { u8 _pad_m48[0x48]; u8 m48; };
     struct __attribute__((packed)) { u8 _pad_m49[0x49]; u8 m49; };
     struct __attribute__((packed)) { u8 _pad__4A[0x4A]; u8 _4A[2]; };
@@ -53,6 +59,7 @@ typedef union dCamForcusLine {
 } dCamForcusLine;
 WWHD_SDK_ASSERT(sizeof(dCamForcusLine) == 0x70, "dCamForcusLine size");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamForcusLine, mEffectLine) == 0x0, "dCamForcusLine.mEffectLine");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamForcusLine, m38) == 0x38, "dCamForcusLine.m38");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamForcusLine, m48) == 0x48, "dCamForcusLine.m48");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamForcusLine, m49) == 0x49, "dCamForcusLine.m49");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamForcusLine, _4A) == 0x4A, "dCamForcusLine._4A");
@@ -73,17 +80,24 @@ typedef union dCamera_c {
     struct __attribute__((packed)) { u32 mpCamera; };
     struct __attribute__((packed)) { u8 _pad_mActive[0x4]; u8 mActive; };
     struct __attribute__((packed)) { u8 _pad_mPause[0x5]; u8 mPause; };
+    struct __attribute__((packed)) { u8 _pad_mCenter[0x10]; cXyz mCenter; };
+    struct __attribute__((packed)) { u8 _pad_mEye[0x1C]; cXyz mEye; };
+    struct __attribute__((packed)) { u8 _pad_mUp[0x28]; cXyz mUp; };
     struct __attribute__((packed)) { u8 _pad__036[0x36]; u8 _036[2]; };
     struct __attribute__((packed)) { u8 _pad_mFovy[0x38]; f32 mFovy; };
     struct __attribute__((packed)) { u8 _pad_m064[0x64]; f32 m064; };
     struct __attribute__((packed)) { u8 _pad_m068[0x68]; s32 m068; };
     struct __attribute__((packed)) { u8 _pad__06E[0x6E]; u8 _06E[2]; };
+    struct __attribute__((packed)) { u8 _pad_m070[0x70]; cXyz m070; };
     struct __attribute__((packed)) { u8 _pad_m07C[0x7C]; u32 m07C; };
     struct __attribute__((packed)) { u8 _pad_m080[0x80]; u32 m080; };
+    struct __attribute__((packed)) { u8 _pad_m084[0x84]; cXyz m084; };
+    struct __attribute__((packed)) { u8 _pad_m090[0x90]; cXyz m090; };
     struct __attribute__((packed)) { u8 _pad_m09C[0x9C]; f32 m09C; };
     struct __attribute__((packed)) { u8 _pad__0A2[0xA2]; u8 _0A2[2]; };
     struct __attribute__((packed)) { u8 _pad_mStageMapToolCameraIdx[0xE4]; s32 mStageMapToolCameraIdx; };
     struct __attribute__((packed)) { u8 _pad_m0E8[0xE8]; s32 m0E8; };
+    struct __attribute__((packed)) { u8 _pad_mExtendedPos[0xEC]; cXyz mExtendedPos; };
     struct __attribute__((packed)) { u8 _pad__0F8[0xF8]; u8 _0F8[8]; };
     struct __attribute__((packed)) { u8 _pad_m100[0x100]; u8 m100; };
     struct __attribute__((packed)) { u8 _pad_m101[0x101]; u8 m101; };
@@ -155,6 +169,8 @@ typedef union dCamera_c {
     struct __attribute__((packed)) { u8 _pad_m31C[0x320]; u8 m31C; };
     struct __attribute__((packed)) { u8 _pad_m31D[0x321]; u8 m31D; };
     struct __attribute__((packed)) { u8 _pad__322[0x322]; u8 _322[2]; };
+    struct __attribute__((packed)) { u8 _pad_m320[0x324]; cXyz m320; };
+    struct __attribute__((packed)) { u8 _pad_m32C[0x330]; cXyz m32C; };
     struct __attribute__((packed)) { u8 _pad_m33C[0x340]; u32 m33C; };
     struct __attribute__((packed)) { u8 _pad_m340[0x344]; u8 m340[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m350[0x354]; s32 m350; };
@@ -165,6 +181,7 @@ typedef union dCamera_c {
     struct __attribute__((packed)) { u8 _pad__365[0x365]; u8 _365[3]; };
     struct __attribute__((packed)) { u8 _pad_m364[0x368]; s32 m364; };
     struct __attribute__((packed)) { u8 _pad_m368[0x36C]; f32 m368; };
+    struct __attribute__((packed)) { u8 _pad_m36C[0x370]; cXyz m36C; };
     struct __attribute__((packed)) { u8 _pad_mWork[0x37C]; u8 mWork[0x80]; };
     struct __attribute__((packed)) { u8 _pad_mEventFlags[0x510]; u32 mEventFlags; };
     struct __attribute__((packed)) { u8 _pad_mCurStyle[0x514]; s32 mCurStyle; };
@@ -188,13 +205,19 @@ typedef union dCamera_c {
     struct __attribute__((packed)) { u8 _pad_m550[0x554]; s32 m550; };
     struct __attribute__((packed)) { u8 _pad_m554[0x558]; s32 m554; };
     struct __attribute__((packed)) { u8 _pad_m558[0x55C]; u8 m558[4]; };
+    struct __attribute__((packed)) { u8 _pad_m55C[0x560]; cXyz m55C; };
+    struct __attribute__((packed)) { u8 _pad_mCenterShake[0x56C]; cXyz mCenterShake; };
+    struct __attribute__((packed)) { u8 _pad_mEyeShake[0x578]; cXyz mEyeShake; };
     struct __attribute__((packed)) { u8 _pad_mFovYShake[0x584]; f32 mFovYShake; };
     struct __attribute__((packed)) { u8 _pad__58A[0x58A]; u8 _58A[2]; };
     struct __attribute__((packed)) { u8 _pad_m588[0x58C]; s32 m588; };
     struct __attribute__((packed)) { u8 _pad_m58C[0x590]; s32 m58C; };
     struct __attribute__((packed)) { u8 _pad_mBlureTimer[0x594]; s32 mBlureTimer; };
+    struct __attribute__((packed)) { u8 _pad_mBlureRotation[0x598]; csXyz mBlureRotation; };
     struct __attribute__((packed)) { u8 _pad_m59A[0x59E]; s16 m59A; };
     struct __attribute__((packed)) { u8 _pad_mBlurePositionType[0x5A0]; s32 mBlurePositionType; };
+    struct __attribute__((packed)) { u8 _pad_mBlurePosition[0x5A4]; cXyz mBlurePosition; };
+    struct __attribute__((packed)) { u8 _pad_mBlureScale[0x5B0]; cXyz mBlureScale; };
     struct __attribute__((packed)) { u8 _pad_mBlureAlpha[0x5BC]; f32 mBlureAlpha; };
     struct __attribute__((packed)) { u8 _pad__5C0[0x5C0]; u8 _5C0[4]; };
     struct __attribute__((packed)) { u8 _pad_mCurRoomCamEntry[0x5C4]; u8 mCurRoomCamEntry[0x14]; };
@@ -231,17 +254,24 @@ WWHD_SDK_ASSERT(sizeof(dCamera_c) == 0x8E0, "dCamera_c size");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mpCamera) == 0x0, "dCamera_c.mpCamera");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mActive) == 0x4, "dCamera_c.mActive");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mPause) == 0x5, "dCamera_c.mPause");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mCenter) == 0x10, "dCamera_c.mCenter");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mEye) == 0x1C, "dCamera_c.mEye");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mUp) == 0x28, "dCamera_c.mUp");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _036) == 0x36, "dCamera_c._036");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mFovy) == 0x38, "dCamera_c.mFovy");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m064) == 0x64, "dCamera_c.m064");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m068) == 0x68, "dCamera_c.m068");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _06E) == 0x6E, "dCamera_c._06E");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m070) == 0x70, "dCamera_c.m070");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m07C) == 0x7C, "dCamera_c.m07C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m080) == 0x80, "dCamera_c.m080");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m084) == 0x84, "dCamera_c.m084");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m090) == 0x90, "dCamera_c.m090");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m09C) == 0x9C, "dCamera_c.m09C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _0A2) == 0xA2, "dCamera_c._0A2");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mStageMapToolCameraIdx) == 0xE4, "dCamera_c.mStageMapToolCameraIdx");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m0E8) == 0xE8, "dCamera_c.m0E8");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mExtendedPos) == 0xEC, "dCamera_c.mExtendedPos");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _0F8) == 0xF8, "dCamera_c._0F8");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m100) == 0x100, "dCamera_c.m100");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m101) == 0x101, "dCamera_c.m101");
@@ -313,6 +343,8 @@ WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m318) == 0x31C, "dCamera_c.m318");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m31C) == 0x320, "dCamera_c.m31C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m31D) == 0x321, "dCamera_c.m31D");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _322) == 0x322, "dCamera_c._322");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m320) == 0x324, "dCamera_c.m320");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m32C) == 0x330, "dCamera_c.m32C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m33C) == 0x340, "dCamera_c.m33C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m340) == 0x344, "dCamera_c.m340");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m350) == 0x354, "dCamera_c.m350");
@@ -323,6 +355,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m360) == 0x364, "dCamera_c.m360");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _365) == 0x365, "dCamera_c._365");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m364) == 0x368, "dCamera_c.m364");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m368) == 0x36C, "dCamera_c.m368");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m36C) == 0x370, "dCamera_c.m36C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mWork) == 0x37C, "dCamera_c.mWork");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mEventFlags) == 0x510, "dCamera_c.mEventFlags");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mCurStyle) == 0x514, "dCamera_c.mCurStyle");
@@ -346,13 +379,19 @@ WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m54C) == 0x550, "dCamera_c.m54C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m550) == 0x554, "dCamera_c.m550");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m554) == 0x558, "dCamera_c.m554");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m558) == 0x55C, "dCamera_c.m558");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m55C) == 0x560, "dCamera_c.m55C");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mCenterShake) == 0x56C, "dCamera_c.mCenterShake");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mEyeShake) == 0x578, "dCamera_c.mEyeShake");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mFovYShake) == 0x584, "dCamera_c.mFovYShake");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _58A) == 0x58A, "dCamera_c._58A");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m588) == 0x58C, "dCamera_c.m588");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m58C) == 0x590, "dCamera_c.m58C");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlureTimer) == 0x594, "dCamera_c.mBlureTimer");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlureRotation) == 0x598, "dCamera_c.mBlureRotation");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, m59A) == 0x59E, "dCamera_c.m59A");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlurePositionType) == 0x5A0, "dCamera_c.mBlurePositionType");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlurePosition) == 0x5A4, "dCamera_c.mBlurePosition");
+WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlureScale) == 0x5B0, "dCamera_c.mBlureScale");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mBlureAlpha) == 0x5BC, "dCamera_c.mBlureAlpha");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, _5C0) == 0x5C0, "dCamera_c._5C0");
 WWHD_SDK_ASSERT(__builtin_offsetof(dCamera_c, mCurRoomCamEntry) == 0x5C4, "dCamera_c.mCurRoomCamEntry");
