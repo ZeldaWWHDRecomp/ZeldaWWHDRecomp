@@ -73,17 +73,21 @@ std::string message(){std::lock_guard guard(mutex);return status;}
 std::string pipeline_directory(){std::lock_guard guard(mutex);return storage().cache(active_id).string();}
 void select(const std::string& id){std::lock_guard guard(mutex);storage().select(id);status="Driver selection saved. Restart the game to apply.";}
 void remove(const std::string& id){std::lock_guard guard(mutex);if(id==active_id){status="Select the system driver and restart before removing the active driver";throw std::runtime_error(status);}storage().remove(id);status="Driver and its pipeline cache removed.";}
-void request_install() {
+void request_install(bool afterFailure) {
     auto env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());auto activity=static_cast<jobject>(SDL_GetAndroidActivity());
-    auto cls=env->GetObjectClass(activity);auto method=env->GetMethodID(cls,"chooseGpuDriver","()V");env->CallVoidMethod(activity,method);env->DeleteLocalRef(cls);env->DeleteLocalRef(activity);
+    auto cls=env->GetObjectClass(activity);auto method=env->GetMethodID(cls,"chooseGpuDriver","(Z)V");env->CallVoidMethod(activity,method,jboolean(afterFailure));env->DeleteLocalRef(cls);env->DeleteLocalRef(activity);
 }
-std::string install_file(const std::string& file) {
+std::string install_file(const std::string& file,bool select) {
     std::lock_guard guard(mutex);
-    try {storage().install(file,android_get_device_api_level());status="Driver installed. Select it and restart to apply.";return "";}
+    try {
+        auto id=storage().install(file,android_get_device_api_level());
+        if(select)storage().select(id);
+        status=select?"Driver installed and selected.":"Driver installed. Select it and restart to apply.";return "";
+    }
     catch(const std::exception& e){status=e.what();return status;}
 }
 }
-extern "C" JNIEXPORT jstring JNICALL Java_org_wwhdrecomp_wwhd_WwhdActivity_installGpuDriver(JNIEnv* env,jclass,jstring path) {
-    const char* utf=env->GetStringUTFChars(path,nullptr);auto error=gfxvk::drivers::install_file(utf?utf:"");if(utf)env->ReleaseStringUTFChars(path,utf);return env->NewStringUTF(error.c_str());
+extern "C" JNIEXPORT jstring JNICALL Java_org_wwhdrecomp_wwhd_WwhdActivity_installGpuDriver(JNIEnv* env,jclass,jstring path,jboolean select) {
+    const char* utf=env->GetStringUTFChars(path,nullptr);auto error=gfxvk::drivers::install_file(utf?utf:"",select);if(utf)env->ReleaseStringUTFChars(path,utf);return env->NewStringUTF(error.c_str());
 }
 #endif
