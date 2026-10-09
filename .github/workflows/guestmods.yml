@@ -1,0 +1,57 @@
+# Mod packages contain synthetic PowerPC code only; compile with setup's actual host toolchains.
+name: guestmods
+on:
+  push:
+  pull_request:
+jobs:
+  public-headers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/checkout@v4
+        with:
+          repository: ZeldaWWHDDecomp/wwhd
+          ref: 47e1dbc3886cfd8233859dffd73efc41a04a9130
+          path: build/public-wwhd
+      - name: Verify committed public declarations
+        run: python tools/guestmod/regenerate_sdk.py --public-clone build/public-wwhd --check
+  modules:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: PowerPC clang and lld (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: PowerPC clang and lld (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm lld
+      - name: PowerPC clang and lld (Windows, all-target MSYS2 build)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-python
+      - name: Build and test guest modules with setup toolchain
+        if: runner.os != 'Windows'
+        run: python tools/guestmod/ci_guestmods.py
+      - name: Build and test guest modules with llvm-mingw host compiler
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          export WWHD_PPC_CLANG="$(cygpath -m /clang64/bin/clang.exe)"
+          export WWHD_PPC_LLD="$(cygpath -m /clang64/bin/ld.lld.exe)"
+          python tools/guestmod/ci_guestmods.py
