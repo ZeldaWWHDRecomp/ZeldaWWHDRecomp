@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Performance overlay: GPU, driver and per-thread timing.** Settings → Graphics → Performance
+  overlay now also shows the GPU and its driver, the CPU time of the game and render threads and the
+  GPU time per frame (each with its average), so you can see at a glance whether the CPU or the GPU
+  is the limit. On Android it adds the system's thermal state and the battery temperature next to
+  the GPU load and temperatures. **Copy performance report** includes all of it; please paste it into
+  performance bug reports. Ideas and the Android battery handling come from GreenNaugahyde's Android
+  fork.
 - **Fixed: mini-game countdowns ran too fast at 60, 120 and 240 fps** (issue #105). The letter
   sorting on Dragon Roost could not be won at 60 fps or more; its 30-second limit ran out in 15 (at
   120 fps in about 8). The game's shared countdown (also used by the Windfall auction, the boat race and
