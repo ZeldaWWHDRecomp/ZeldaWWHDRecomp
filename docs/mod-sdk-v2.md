@@ -765,8 +765,8 @@ The callback should only read game state and record HUD elements.
 
 ```c
 #include "wwhd_guest.h"
-#include "game/bindings.h"
-#include "game/link.h"
+#include "wwhd/bindings.h"
+#include "wwhd/link.h"
 
 static wwhd_hud_element box;
 static void draw(u32 list) {

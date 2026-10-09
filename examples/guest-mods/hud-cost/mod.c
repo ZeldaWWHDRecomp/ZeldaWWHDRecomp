@@ -1,7 +1,7 @@
 /* Functional performance fixture: exactly 200 rectangles, or no registered HUD. */
 #include "wwhd_guest.h"
-#include "game/bindings.h"
-#include "game/link.h"
+#include "wwhd/bindings.h"
+#include "wwhd/link.h"
 
 static wwhd_hud_element element;
 static void draw(u32 list) {
