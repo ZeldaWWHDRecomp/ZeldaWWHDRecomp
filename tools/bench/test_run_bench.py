@@ -8,6 +8,18 @@ import run_bench as bench
 
 
 class BenchmarkTests(unittest.TestCase):
+    def test_invalid_warmup_stops_before_measured_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv = ['run_bench.py', '--binary', '/unused/game', '--state-dir', '/unused/states',
+                    '--warmup', '--runs', '10', '--out', directory]
+            with patch.object(bench.sys, 'argv', argv), patch.object(bench.os.path, 'exists', return_value=True), \
+                 patch.object(bench, 'run_once', return_value={'status': 'load exceeded limit'}) as run:
+                with self.assertRaises(SystemExit) as stopped:
+                    bench.main()
+                self.assertEqual(stopped.exception.code, 1)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.args[1], 'warmup')
+
     def run_fake(self, root, complete, phase=None, profile=True):
         (root / 'source').mkdir()
         args = types.SimpleNamespace(binary='/unused/base', variant_binaries={'new': '/unused/new'},

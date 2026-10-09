@@ -321,7 +321,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     results = []
     if args.warmup:
-        run_once(args, "warmup", variants[0][1], 0, args.out)
+        warmup = run_once(args, "warmup", variants[0][1], 0, args.out)
+        if warmup["status"] != "ok":
+            p.exit(1, "warmup failed: %s; no measured runs started\n" % warmup["status"])
     for i in range(args.runs):
         order = variants if i % 2 == 0 else list(reversed(variants))  # A B, B A, ...
         for name, env in order:
