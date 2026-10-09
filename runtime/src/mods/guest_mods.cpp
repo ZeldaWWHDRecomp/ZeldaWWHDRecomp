@@ -228,25 +228,9 @@ void init() {
     // start_guests invokes callbacks under the package-manager mutex. Resolve its
     // directory before entering those callbacks to avoid recursively locking it.
     const auto cache=(std::filesystem::path(packages::directory()).parent_path()/"GuestBuild").string();
-    std::unique_ptr<BuildBridge> bridge;
-    auto tools=[&]() -> BuildBridge& {
-        if(!g_mod_hook_count)throw std::runtime_error("Guest mods require game code built with --mod-hooks; run setup with guest hooks enabled");
-        if(!bridge){
-            const char* path=std::getenv("WWHD_GUEST_BUILD_CONFIG");
-            auto candidate=std::make_unique<BuildBridge>(BuildBridge::read(path?path:"guest-sdk.json",cache));
-            if(!std::filesystem::is_regular_file(candidate->builder)||!std::filesystem::is_directory(candidate->include))
-                throw std::runtime_error("Guest mod build tools are missing; run setup again from a complete release folder");
-            for(const auto* command:{&candidate->python,&candidate->compiler}) {
-                const std::filesystem::path executable(command->front());
-                if(executable.has_parent_path()&&!std::filesystem::is_regular_file(executable))
-                    throw std::runtime_error("Guest mod compiler or Python is missing; run setup again and keep the downloaded compiler");
-            }
-            bridge=std::move(candidate);
-        }
-        return *bridge;
-    };
-    packages::start_guests([&](const packages::GuestPackage& pkg) {
-        auto result=tools().run(pkg.path,0x7F000000,true,g_guest_build_name);
+    auto inspect=[cache](const packages::GuestPackage& pkg) {
+        if(!g_mod_hook_count)throw std::runtime_error("Guest mods require code-mod support; rebuild and restart first");
+        auto result=BuildBridge::installed(cache).run(pkg.path,0x7F000000,true,g_guest_build_name);
         if(result.get("elf_sha256").string()!=pkg.fingerprint)throw std::runtime_error("Guest ELF changed; review its trust confirmation again");
         const auto& size=result.get("allocation_size");
         if(size.type!=mods::json::Value::Number||size.number<=0||size.number>0x1000000||std::floor(size.number)!=size.number)
@@ -254,15 +238,22 @@ void init() {
         uint32_t module_bytes=uint32_t(size.number);
         if(pkg.heap_size>0x1000000-module_bytes)throw std::runtime_error("Guest module and heap exceed the mod region");
         return (module_bytes+pkg.heap_size+0xFFFF)&~0xFFFFu;
-    },[&](const packages::GuestPackage& pkg,uint32_t base) {
-        auto result=tools().run(pkg.path,base,false,g_guest_build_name);
+    };
+    auto build=[cache](const packages::GuestPackage& pkg,uint32_t base) {
+        if(!g_mod_hook_count)throw std::runtime_error("Guest mods require code-mod support; rebuild and restart first");
+        auto result=BuildBridge::installed(cache).run(pkg.path,base,false,g_guest_build_name);
         if(result.get("elf_sha256").string()!=pkg.fingerprint)throw std::runtime_error("Guest ELF changed; review its trust confirmation again");
-        auto module=result.get("module").string();std::string error;
         const auto& memory=result.get("allocation_size");
         if(memory.type!=mods::json::Value::Number||memory.number<=0||memory.number>0x1000000||std::floor(memory.number)!=memory.number||pkg.heap_size>0x1000000-uint32_t(memory.number))
             throw std::runtime_error("Invalid guest module allocation size");
         uint32_t reserved=(uint32_t(memory.number)+pkg.heap_size+0xFFFF)&~0xFFFFu;
-        if(module.empty()||!load_one(module,error,pkg,base,reserved))throw std::runtime_error(error.empty()?"Guest builder returned no module":error);
+        return packages::GuestBuilt{result.get("module").string(),reserved};
+    };
+    packages::set_guest_builder(inspect,build);
+    packages::start_guests(inspect,[build](const packages::GuestPackage& pkg,uint32_t base) {
+        auto result=build(pkg,base);std::string error;
+        if(result.module.empty()||!load_one(result.module,error,pkg,base,result.allocation_size))
+            throw std::runtime_error(error.empty()?"Guest builder returned no module":error);
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
 }

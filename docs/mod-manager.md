@@ -84,6 +84,17 @@ failure, with saved game-source paths redacted. A successful tool must produce
 all declared data-relative `outputs`; its setup receipt is bound to the package
 fingerprint. Updating a helper invalidates that receipt as well as native trust.
 
+Installed-package details show each declared setup step, including shared game
+source selection, choices, confirmations, tool execution and guest preparation.
+Tools and guest builds run in a background worker. Options and profiles cannot
+change during preparation. Guest preparation uses the same persisted address
+allocator and build bridge as startup, including the installed game's region
+mapping. A failed build retains its allocation for a stable retry. A successful
+build leaves the package inactive; enabling it takes effect after restart.
+The readiness receipt checks the ELF, region, allocation and cached module's
+presence. Startup still validates the build cache and rebuilds stale modules.
+If code-mod support is off, preparation offers the existing rebuild dialog.
+
 Native code is never loaded without a matching confirmation, also when a
 profile switch, an older `profiles.json` or an updated library would enable it.
 Such a package stays unloaded and is switched off in that profile, and the tab
@@ -199,7 +210,8 @@ Select a single local pack with a `content/` directory, or its ZIP. Installation
 starts disabled. Enable it and restart the game. Disable it and restart to restore
 original reads; then it can be updated or removed. Profiles choose the next
 launch's content set. Active content is deliberately immutable for the session.
-Content packages contain no native code and never ask for a native confirmation.
+Content payloads need no native-code confirmation. A content package with a
+preparation tool asks for confirmation before that tool runs.
 
 The importer accepts a simple `MyMod/content/...` tree, a single-pack SDCafiine
 layout, and file-only Cemu packs with Definition metadata. Explicit SDCafiine
@@ -278,8 +290,7 @@ resolver. Missing paths fall through unchanged. Directory enumeration retains
 original names but reports replacement sizes for replaced entries: this adapter
 targets replacement of existing resources, not discovery of new files or
 deletion/hiding. Conflicting enabled packages are rejected, rather than silently
-choosing a load order. Content packages currently cannot declare runtime options
-or dependencies. Native packages can depend on content packages, but wait until
+choosing a load order. Content packages can declare setup options, but cannot declare dependencies. Native packages can depend on content packages, but wait until
 the required startup content is active.
 
 Installed payloads should not be edited externally while the game runs.

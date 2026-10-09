@@ -20,6 +20,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "imgui.h"
@@ -831,6 +832,7 @@ struct NativeConfirm {
     std::string id, name;                                // the package the player is enabling
     std::vector<std::pair<std::string, std::string>> native;  // what needs confirming (it, dependencies)
     bool open_now = false;
+    std::function<void()> after_confirm;
 };
 void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     using namespace mods::packages;
@@ -851,7 +853,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         note("You won't be asked again for this version of the mod.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        accept = ImGui::Button("Enable", ImVec2(120, 0));
+        accept = ImGui::Button(c.after_confirm?"Continue":"Enable", ImVec2(120, 0));
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
@@ -861,7 +863,8 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         bool ok = true;
         for (const auto& [id, name] : c.native) ok = ok && confirm_native(id, error);
         if (ok) {
-            if(needs_code_mod_support(c.id)) {
+            if(c.after_confirm)c.after_confirm();
+            else if(needs_code_mod_support(c.id)) {
                 mods::code::request(true,c.id);
             } else enable(c.id, true, error);
         }
@@ -871,6 +874,78 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+}
+
+struct SetupWorker {
+    std::mutex mutex;
+    std::thread thread;
+    bool running=false;
+    std::string id,error,output;
+    ~SetupWorker(){if(thread.joinable())thread.join();}
+};
+SetupWorker& setup_work(){static SetupWorker worker;return worker;}
+void start_setup(const std::string& id,const mods::catalogue::Step& step) {
+    auto& setup_worker=setup_work();
+    std::lock_guard guard(setup_worker.mutex);if(setup_worker.running)return;
+    if(setup_worker.thread.joinable())setup_worker.thread.join();
+    setup_worker.running=true;setup_worker.id=id;setup_worker.error.clear();setup_worker.output.clear();
+    setup_worker.thread=std::thread([id,step] {
+        auto& setup_worker=setup_work();
+        std::string error,output;
+        if(step.type=="build_guest_mod")mods::packages::prepare_guest(id,error);
+        else mods::packages::run_setup_tool(id,step.id,error,output);
+        std::lock_guard guard(setup_worker.mutex);setup_worker.error=std::move(error);
+        setup_worker.output=std::move(output);setup_worker.running=false;
+    });
+}
+void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
+    using namespace mods::packages;
+    auto steps=setup_steps(mod.id);if(steps.empty())return;
+    auto& setup_worker=setup_work();
+    heading("Setup");
+    bool busy;std::string failure,output;
+    {std::lock_guard guard(setup_worker.mutex);busy=setup_worker.running;
+     if(setup_worker.id==mod.id){failure=setup_worker.error;output=setup_worker.output;}}
+    for(const auto& status:steps) {
+        const auto& step=status.step;ImGui::PushID(step.id.c_str());
+        ImGui::TextWrapped("%s%s%s",status.satisfied?"Ready: ":"",step.title.c_str(),step.optional?" (optional)":"");
+        if(!step.explanation.empty())ImGui::TextWrapped("%s",step.explanation.c_str());
+        ImGui::BeginDisabled(busy);
+        if(step.type=="game_path") {
+            auto choose=[game=step.game,id=mod.id](bool folder) {
+                hostui::choose_mod_source(folder,[game,id](std::string path) {
+                    if(path.empty())return;std::string error;set_game_source(game,path,error);
+                    auto& setup_worker=setup_work();
+                    std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
+                });
+            };
+            if(step.game.starts_with("gc_")&&ImGui::Button("Choose disc image…"))choose(false);
+            if(step.game.starts_with("gc_"))ImGui::SameLine();
+            if(ImGui::Button("Choose extracted game folder…"))choose(true);
+        }else if(step.type=="choice"||step.type=="confirm") {
+            auto option=std::find_if(mod.options.begin(),mod.options.end(),[&](const auto& o){return o.id==step.option;});
+            if(step.type=="confirm") {
+                if(ImGui::Button("Confirm"))configure(mod.id,step.option,true,error);
+            }else if(option!=mod.options.end()&&ImGui::BeginCombo("Choice",option->value.string().c_str())) {
+                for(const auto& value:step.choices)if(ImGui::Selectable(value.c_str()))configure(mod.id,step.option,value,error);
+                ImGui::EndCombo();
+            }
+        }else {
+            ImGui::BeginDisabled(mod.active||(step.type=="run_tool"&&mod.enabled));
+            if(ImGui::Button(step.type=="build_guest_mod"?"Build guest module":"Run preparation tool")) {
+                auto proceed=[id=mod.id,step] {
+                    if(step.type=="build_guest_mod"&&needs_code_mod_support(id))mods::code::request(true,id);
+                    else start_setup(id,step);
+                };
+                auto native=unconfirmed_native(mod.id);
+                if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndDisabled();ImGui::PopID();
+    }
+    if(busy)note("Preparing mod files…");
+    if(!failure.empty()){ImGui::TextWrapped("%s",failure.c_str());if(!output.empty())ImGui::TextWrapped("%s",output.c_str());}
 }
 
 void package_controls() {
@@ -989,6 +1064,7 @@ void package_controls() {
                 if (!option.description.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", option.description.c_str());
                 ImGui::PopID();
             }
+            setup_controls(mod,confirm,error);
             if(mod.restart_required) note("Changes apply on the next game start. Active files stay loaded until exit.");
             ImGui::BeginDisabled(mod.enabled || mod.active);
             if (ImGui::Button("Remove package")) remove(mod.id, error);

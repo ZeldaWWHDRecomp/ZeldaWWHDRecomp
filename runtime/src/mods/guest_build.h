@@ -40,6 +40,18 @@ struct BuildBridge {
         if(b.builder.empty()||b.include.empty())throw std::runtime_error("Incomplete guest build configuration; run setup again");
         return b;
     }
+    static BuildBridge installed(const std::string& cache) {
+        const char* path=std::getenv("WWHD_GUEST_BUILD_CONFIG");
+        auto b=read(path?path:"guest-sdk.json",cache);
+        if(!std::filesystem::is_regular_file(b.builder)||!std::filesystem::is_directory(b.include))
+            throw std::runtime_error("Guest mod build tools are missing; run setup again from a complete release folder");
+        for(const auto* command:{&b.python,&b.compiler}) {
+            const std::filesystem::path executable(command->front());
+            if(executable.has_parent_path()&&!std::filesystem::is_regular_file(executable))
+                throw std::runtime_error("Guest mod compiler or Python is missing; run setup again and keep the downloaded compiler");
+        }
+        return b;
+    }
     mods::json::Value run(const std::string& package,uint32_t base,bool inspect,const std::string& build="USA") const {
         auto command=python;command.push_back(builder);command.push_back(package);
         command.insert(command.end(),{"--base",std::to_string(base),"--build",build,"--json"});

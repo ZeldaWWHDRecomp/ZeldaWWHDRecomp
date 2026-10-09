@@ -81,6 +81,33 @@ int main(int argc, char** argv) {
         bool supported=std::string(argv[2])=="on";set_code_mod_support(supported);initialize();
         assert(view("guest-fixture").enabled==supported);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--guest-prepare") {
+        auto root=fs::temp_directory_path()/("wwhd-guest-prepare-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");auto storage=root/"manager";
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        auto manifest=mods::json::parse(R"({"format_version":1,"id":"prepare-guest","name":"Prepared guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"setup":[{"id":"build","type":"build_guest_mod","title":"Build guest module"}]})");
+        for(const auto* id:{"prepare-guest","reserved-guest"}) {
+            auto source=storage/"Mods"/id;fs::create_directories(source);manifest["id"]=id;
+            std::ofstream(source/"manifest.json")<<mods::json::dump(manifest);
+            std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);
+        }
+        std::ofstream(storage/"profiles.json")<<R"({"format_version":1,"active":"Default","profiles":{"Default":{}},"guest_regions":{"reserved-guest":{"base":2130706432,"size":65536}}})";
+        initialize();std::string error;int inspected=0,built=0;bool fail=true;uint32_t assigned=0;
+        auto module=root/"synthetic.module";
+        set_guest_builder([&](const GuestPackage& pkg){++inspected;assert(pkg.id=="prepare-guest");assert(!list().empty());std::string busy;assert(!configure(pkg.id,"unused",true,busy)&&busy.find("preparation")!=std::string::npos);assert(!select_profile("Default",busy)&&busy.find("preparation")!=std::string::npos);assert(!enable(pkg.id,true,busy)&&busy.find("operation")!=std::string::npos);return 131072u;},
+            [&](const GuestPackage&,uint32_t base){++built;assigned=base;if(fail)throw std::runtime_error("synthetic compile failure");std::ofstream(module)<<"synthetic module";return GuestBuilt{module.string(),131072};});
+        assert(!prepare_guest("prepare-guest",error)&&inspected==0);
+        set_code_mod_support(true);assert(!prepare_guest("prepare-guest",error)&&inspected==0);
+        assert(confirm_native("prepare-guest",error));
+        assert(!prepare_guest("prepare-guest",error)&&error=="synthetic compile failure");
+        assert(assigned==0x7F010000&&!setup_steps("prepare-guest")[0].satisfied);
+        fail=false;assert(prepare_guest("prepare-guest",error)&&assigned==0x7F010000);
+        assert(inspected==2&&built==2&&setup_steps("prepare-guest")[0].satisfied);
+        assert(!view("prepare-guest").active&&!view("prepare-guest").enabled);
+        assert(enable("prepare-guest",true,error));frame(1);assert(!view("prepare-guest").active&&view("prepare-guest").pending_restart);
+        fs::remove(module);assert(!setup_steps("prepare-guest")[0].satisfied);
+        fs::remove_all(root);std::cout<<"guest preparation preserves assignments/trust/restart gate passed\n";return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--guest-startup") {
         auto root=fs::temp_directory_path()/("wwhd-guest-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         auto storage=root/"manager";
