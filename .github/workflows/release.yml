@@ -156,7 +156,7 @@ jobs:
           # SDL3's documented Linux build dependencies (SDL3 docs/README-linux.md, Ubuntu 22.04+ set), so
           # the shipped SDL3 has every backend (X11, Wayland, PipeWire/PulseAudio/ALSA, input, IME);
           # libvulkan1 is only linked against (players use their own Vulkan loader)
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config xz-utils libvulkan1 \
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config xz-utils libcurl4-openssl-dev libvulkan1 \
             libasound2-dev libpulse-dev libaudio-dev libfribidi-dev libjack-dev libsndio-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
             libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev \
