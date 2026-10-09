@@ -747,3 +747,46 @@ if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING,
     /* layout contains the current stable preset name. */
 }
 ```
+
+### HUD recording API v1 (phase 2)
+
+`wwhd_hud_register(draw, screen)` registers one draw callback per mod; passing a
+null callback unregisters it and clears its lists. Register from an ordinary game
+hook. The host calls `void draw(u32 list)` after each actual actor logic pass,
+including true-60 half steps. Re-registering the same callback does not create an
+extra call. Emit elements with `wwhd_hud_emit(list, &element)`; the host commits the
+list when the callback returns. The game CPU registers are restored afterwards.
+The callback should only read game state and record HUD elements.
+
+Elements use the packed `wwhd_hud_element` declaration in `wwhd_guest.h`. Put the
+element and UTF-8 text in static storage or this mod's heap. Kinds include filled
+and outlined rectangles/circles, signed-delta lines, text and images. Initialize
+`thickness` to 1 and `u1`/`v1` to 1. Circle `size` is its radius; text `size` is its
+height. Images support normalized UV subrects, RGBA tint and rotation in radians
+about their center. Blending is alpha or additive. Geometry must be finite;
+invalid UTF-8, invalid handles or exceeded recording limits invalidate the entire
+list. Diagnostic messages appear in the Mods tab.
+
+TV coordinates are 1280 × 720, GamePad coordinates 854 × 480. A both-screen list
+uses TV coordinates scaled to each screen. The default center anchor follows the
+centered game canvas. Left/right corner and edge anchors move the authored edge
+to the displayed edge at wider aspect ratios. Top/bottom retain the height-based
+layout. Anchor values and primitive constants are declared in `wwhd_guest.h`.
+
+Each list has at most 1024 elements, 32768 conservatively estimated vertices and
+64 KiB UTF-8 bytes (the vertex budget can impose a smaller text limit). A mod may
+have two pending lists and one published list per target. Images have owned,
+nontransferable handles with a per-mod limit of 32 live images and 16 MiB decoded
+RGBA. Released images remain charged while in-flight immutable lists retain them.
+
+`wwhd_hud_texture(WWHD_HUD_PACKAGE, "assets/example.png")` loads only package
+artwork under `assets/` or `textures/`; `WWHD_HUD_DATA` loads relative to this mod's
+own data directory. It never reads game-memory textures. Cache the returned handle
+between steps and release it with `wwhd_hud_release`. Failures return zero.
+
+Draw lists are held unchanged between logic steps, including interpolation
+presentation frames; positions are not interpolated. This preserves continuous
+visibility while motion updates at the logic rate. Full save states contain the
+mod's guest memory, but no host lists or decoded textures. Compare
+`wwhd_hud_epoch()` each callback and reload cached image handles when it changes;
+the next logic step rebuilds the list even if the restored step counter repeats.

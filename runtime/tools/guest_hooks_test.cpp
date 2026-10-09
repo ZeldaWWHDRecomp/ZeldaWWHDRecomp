@@ -67,6 +67,13 @@ void start_guests(const GuestInspect& inspect, const GuestLoad&) {
     in_startup_callback=false;
 }
 }
+static unsigned hud_calls=0;
+uint32_t guest_call(Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args) {
+    assert(fn==0x7F000080&&args.size()==1);++hud_calls;
+    auto list=*args.begin();c->pc=fn;c->r[3]=list;c->r[4]=0x7F000600;
+    guestmods::svc_hud_emit(c);assert(c->r[3]==1);
+    c->r[10]=0xBAD;return 0;
+}
 void log_msg(const char*, ...) {}
 [[noreturn]] void fatal(const char*, ...) { std::abort(); }
 int main() {
@@ -149,6 +156,24 @@ int main() {
     guestmods::g_loaded[0].heap->initialize();c.r[3]=32;guestmods::svc_malloc(&c);
     assert(c.r[3]==data_base+0x1010);guestmods::svc_free(&c);
     c.r[3]=data_base+0x300;guestmods::svc_input(&c);assert(ld32(data_base+0x300)==0);
+    // Packed guest element decoding and automatic per-step recording/publication.
+    WWHDGuestFunc functions[]={{data_base+0x80,nullptr}};module.funcs=functions;module.func_count=1;
+    uint32_t element=data_base+0x600;memset(mem::ptr(element),0,72);
+    st32(element,0);stf32(element+20,20);stf32(element+24,30);stf32(element+32,1);
+    stf32(element+48,1);stf32(element+52,1);st32(element+56,0x12345678);
+    c.r[3]=data_base+0x84;c.r[4]=2;guestmods::svc_hud_register(&c);assert(c.r[3]==0);
+    c.r[3]=data_base+0x80;c.r[4]=2;guestmods::svc_hud_register(&c);assert(c.r[3]==1);
+    Cpu saved=c;guestmods::draw_frame(&c,4);assert(hud_calls==1&&memcmp(&saved,&c,sizeof c)==0);
+    auto tv=guestmods::hud::store().snapshot(0),drc=guestmods::hud::store().snapshot(1);
+    assert(tv.size()==1&&drc.size()==1&&tv[0]==drc[0]);
+    assert(tv[0]->commands[0].rgba==0x12345678&&tv[0]->commands[0].w==20);
+    guestmods::draw_frame(&c,4);assert(hud_calls==1);
+    guestmods::draw_frame(&c,5);assert(hud_calls==2);
+    auto epoch=guestmods::hud::store().state_generation();guestmods::state_loaded();
+    assert(!guestmods::hud::store().active()&&guestmods::hud::store().state_generation()!=epoch);
+    guestmods::draw_frame(&c,5);assert(hud_calls==3); // rebuilt even if restored clock repeats
+    c.r[3]=0;c.r[4]=2;guestmods::svc_hud_register(&c);assert(c.r[3]==1);
+    guestmods::draw_frame(&c,6);assert(hud_calls==3&&!guestmods::hud::store().active());
 #ifdef _WIN32
     VirtualFree(data,0,MEM_RELEASE);
 #else

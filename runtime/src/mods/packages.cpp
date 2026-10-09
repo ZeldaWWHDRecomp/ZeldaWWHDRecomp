@@ -4,6 +4,7 @@
 #include "mod_archive.h"
 #include "mod_hash.h"
 #include "guest_png.h"
+#include "guest_hud.h"
 #include "content.h"
 #include "cemu_pack.h"
 #include "../platform/host.h"
@@ -318,7 +319,7 @@ void initialize(){
     }catch(const std::exception& e){last_problem=e.what();ready=false;records.clear();fprintf(stderr,"[mod-manager] %s\n",e.what());}
 }
 std::string directory(){std::lock_guard guard(mutex);return ready?(root/"Mods").string():"";}
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}v.options=m.options;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 bool install(const std::string& source,std::string& error,std::string* installed_id_out){return operation(error,[&]{
     auto nonce=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());auto stage=root/(".stage-"+nonce),backup=root/(".backup-"+nonce);fs::path target;bool backed=false,moved=false;
