@@ -8,6 +8,7 @@
 #include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../true60.h"
 #include "../screenshot.h"
 #include "../gfx/vulkan/settings.h"
 #include "../overlay/hostui.h"
@@ -630,14 +631,39 @@ struct Scenario {
 }  // namespace
 }  // namespace input
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
+namespace true60_test { void set_origin_step(uint64_t s); void tick(double t, bool ended); }
 namespace input {
 static void apply_scenario(PadState& s) {
-    static const Scenario sc;
-    if (!sc.origin || render::frame_count() < sc.origin) return;
+    static Scenario sc;
+    // WWHD_TEST_ORIGIN_LOAD=n: the scenario starts n logic steps after the last save-state load (a
+    // load completes asynchronously, so a fixed frame can fall a step apart between two runs)
+    static const char* ol = getenv("WWHD_TEST_ORIGIN_LOAD");
+    uint64_t ol_step = 0;
+    // (the clock is the number of Link's full-pass executes since the load, true60::link_steps: the
+    // pass at which a load lands differs between runs, and the steps after it are the game's)
+    if (ol) {
+        if (!true60::state_loaded()) return;
+        static uint64_t found = 0;
+        if (!found) {
+            int64_t past = (int64_t)true60::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
+            if (past < 0) return;
+            found = interp::logic_steps() - (uint64_t)past;  // the logic step at which the count reached it
+        }
+        ol_step = found;
+        sc.origin = 1;
+    }
+    if (!sc.origin || (!ol && render::frame_count() < sc.origin)) return;
     // scenario time = game time: full logic steps / 30 (frame-time hitches don't shift the input)
-    static const uint64_t s0 = [] {
+    static const uint64_t s0 = [ol_step] {
+        if (ol_step) {
+            LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
+                (unsigned long long)ol_step);
+            true60_test::set_origin_step(ol_step);
+            return ol_step;
+        }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
             (unsigned long long)interp::logic_steps());
+        true60_test::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
     double t = (double)(interp::logic_steps() - s0) / 30.0;
@@ -652,6 +678,7 @@ static void apply_scenario(PadState& s) {
         LOG("[test] t=%.3f s: end", t);
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
+    true60_test::tick(t, sc.end > 0 && t >= sc.end);
     for (auto& p : sc.sticks)
         if (t >= p.from && t < p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : sc.rsticks)

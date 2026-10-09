@@ -34,6 +34,7 @@
 #include "screenshot.h"
 #include "shaders.h"
 #include "settings.h"
+#include "savestate.h"
 #include "sparse_hash_memo.h"
 #include "write_watch.h"
 #include <algorithm>
@@ -693,41 +694,46 @@ void end_encoder() {
     }
   }
 }
-struct ImageSourceScope {
-  VkPipelineStageFlags stage;
-  VkAccessFlags access;
-};
-static ImageSourceScope image_source_scope(VkImageLayout layout, bool narrow) {
-  if (layout == VK_IMAGE_LAYOUT_UNDEFINED)
-    return {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
-  if (narrow) {
-    switch (layout) {
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
-    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-      return {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-      return {VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-      // Current image consumers are VS/PS only. Add any future compute or
-      // input-attachment consumers here before using this opt-in path for them.
-      return {VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-              VK_ACCESS_SHADER_READ_BIT};
-    default: break; // GENERAL/self-copy and unknown layouts remain conservative.
-    }
-  }
-  return {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-          VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+bool narrow_barriers() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("WWHD_VK_NARROW_BARRIERS");
+    // Precise resource dependencies are the default; retain the conservative escape hatch.
+    return !e || std::strcmp(e, "0") != 0;
+  }();
+  return enabled;
+}
+void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags access) {
+  auto d = derive_dependency(buffer.use, stage, access);
+  if (!d.needed) return;
+  end_encoder();
+  VkBufferMemoryBarrier b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  b.srcAccessMask = d.sourceAccess;
+  b.dstAccessMask = access;
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.buffer = buffer.buffer;
+  b.size = VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(command_buffer(), d.source, d.destination, 0, 0, nullptr, 1, &b, 0, nullptr);
 }
 void transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
-  // Repeated read-only texture bindings require no barrier or pass break.
-  if (s->layout == layout && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-      access == VK_ACCESS_SHADER_READ_BIT) return;
+  const bool conservativePassBreak = s->layout != layout ||
+      layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
+  if (narrow_barriers() && stage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT &&
+      access == (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT) &&
+      layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    access = VK_ACCESS_SHADER_READ_BIT;
+  }
+  const bool changed = s->layout != layout;
+  const auto dependency = derive_dependency(s->use, stage, access, changed);
+  if (narrow_barriers()) {
+    if (!dependency.needed) {
+      // Barrier elision must not also change dynamic-rendering pass boundaries.
+      if (conservativePassBreak) end_encoder();
+      return;
+    }
+  } else if (!changed && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+             access == VK_ACCESS_SHADER_READ_BIT) return;
   end_encoder();
   VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.oldLayout = s->layout;
@@ -735,15 +741,12 @@ void transition_image(Surface *s, VkImageLayout layout,
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image = s->image;
   b.subresourceRange = {s->aspect, 0, s->mips, 0, s->arrayLayers};
-  static const bool narrow = [] {
-    const char* e = std::getenv("WWHD_VK_NARROW_BARRIERS");
-    return e && !std::strcmp(e, "1");
-  }();
-  const auto source = image_source_scope(s->layout, narrow);
-  b.srcAccessMask = source.access;
+  b.srcAccessMask = narrow_barriers() ? dependency.sourceAccess :
+      (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
   b.dstAccessMask = access;
-  vkCmdPipelineBarrier(command_buffer(), source.stage,
-                       stage, 0, 0, nullptr, 0, nullptr, 1, &b);
+  vkCmdPipelineBarrier(command_buffer(), narrow_barriers() ? dependency.source :
+      (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
+      stage, 0, 0, nullptr, 0, nullptr, 1, &b);
   s->layout = layout;
 }
 static void cleanup_submission(Renderer::Submission& slot) {
@@ -1029,6 +1032,7 @@ static void make_swapchain(Screen &s) {
   s.images.resize(n);
   vkGetSwapchainImagesKHR(R.device, sc, &n, s.images.data());
   s.layouts.assign(n, VK_IMAGE_LAYOUT_UNDEFINED);
+  s.imageUses.assign(n, {});
   prepare_present_screen(s,shaderPresentation,captureTransfer);
   s.resize = false;
 }
@@ -1232,6 +1236,8 @@ static void present(Screen &s) {
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &b);
     s.layouts[index] = b.newLayout;
+    s.imageUses[index] = {};
+    derive_dependency(s.imageUses[index], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
   }
   record_present_capture(s,index);
   VkSemaphore finishedSemaphore = s.finished;
@@ -1338,6 +1344,32 @@ static void frame_dumps(uint64_t frame) {
     dump_scan(R.drc, "frame_" + std::to_string(frame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))
       request_present_dump("frame_" + std::to_string(frame) + "_present.png");
+  }
+  // Test captures relative to the completed full-state load, whose actual
+  // renderer frame can vary even when WWHD_STATE_LOAD_AT is fixed.
+  static const std::vector<uint64_t> loadFrames = [] {
+    std::vector<uint64_t> f;
+    if (const char* e = getenv("WWHD_DUMP_LOAD_FRAMES"))
+      for (const char* p = e; *p;) {
+        char* end;
+        auto value = strtoull(p, &end, 10);
+        if (end == p) break;
+        f.push_back(value);
+        p = end;
+        while (*p == ',') ++p;
+      }
+    return f;
+  }();
+  const uint64_t loaded = loadFrames.empty() ? 0 : ss::last_load_frame();
+  if (loaded && frame >= loaded &&
+      std::find(loadFrames.begin(), loadFrames.end(), frame - loaded) != loadFrames.end()) {
+    const auto stem = "load_frame_" + std::to_string(frame - loaded);
+    dump_scan(R.tv, stem + ".png");
+    dump_scan(R.drc, stem + "_drc.png");
+    if (getenv("WWHD_DUMP_PRESENT")) request_present_dump(stem + "_present.png");
+    LOG("[gfx] load-relative capture: load frame %llu, frame %llu, offset %llu",
+        (unsigned long long)loaded, (unsigned long long)frame,
+        (unsigned long long)(frame - loaded));
   }
   // P / F12 (Graphics menu): the pictures of this frame in captures/<time>/ (WWHD_CAPTURE=<frame>
   // scripts it when WWHD_CAPTURE_PATH is not used); the Metal renderer also writes a draw log
@@ -1731,9 +1763,9 @@ void set_tv_format(uint32_t format, bool tv) {
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_message(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
     const VkDebugUtilsMessengerCallbackDataEXT *data, void *) {
-  fprintf(stderr, "[vulkan validation %s] %s\n",
+  LOG("[vulkan validation %s] %s: %s",
           severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning",
-          data->pMessage);
+          data->pMessageIdName ? data->pMessageIdName : "validation", data->pMessage);
   return VK_FALSE;
 }
 // Test aids for the paths of older drivers (docs/vulkan.md): WWHD_VK_FORCE_API=1.2 treats every GPU as
@@ -1906,8 +1938,13 @@ static void init_device(std::vector<const char *> extensions,
   VkDebugUtilsMessengerCreateInfoEXT debug{
       VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
   const char *layer = "VK_LAYER_KHRONOS_validation";
+  VkValidationFeatureEnableEXT syncFeature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+  VkValidationFeaturesEXT validation{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+  validation.enabledValidationFeatureCount = 1;
+  validation.pEnabledValidationFeatures = &syncFeature;
   if (getenv("WWHD_VK_VALIDATION")) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
     ci.enabledLayerCount = 1;
     ci.ppEnabledLayerNames = &layer;
     debug.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
@@ -1916,7 +1953,8 @@ static void init_device(std::vector<const char *> extensions,
                         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     debug.pfnUserCallback = debug_message;
-    ci.pNext = &debug;
+    validation.pNext = &debug;
+    ci.pNext = &validation;
   }
   VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   ai.pApplicationName = "WWHD Vulkan";
@@ -1926,6 +1964,7 @@ static void init_device(std::vector<const char *> extensions,
   ci.ppEnabledExtensionNames = extensions.data();
   vk_check(vkCreateInstance(&ci, nullptr, &R.instance),
            "create Vulkan instance");
+  debug.pNext = nullptr;
   load_instance_functions(R.instance);
   if (getenv("WWHD_VK_VALIDATION")) {
     auto create = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(

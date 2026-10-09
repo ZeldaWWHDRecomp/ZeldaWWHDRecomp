@@ -40,6 +40,7 @@ void main() { result=color*texture(image,tc); }
 struct Params { float scale[2], translate[2]; int32_t linear, pad[3]; };
 
 struct Texture {
+    ResourceUse use;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -181,9 +182,10 @@ void barrier(VkCommandBuffer cmd, Texture& t, VkImageLayout to, VkAccessFlags sr
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = t.image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    b.srcAccessMask = src;
+    auto dependency = derive_dependency(t.use, to_stage, dst, t.layout != to);
+    b.srcAccessMask = narrow_barriers() ? dependency.sourceAccess : src;
     b.dstAccessMask = dst;
-    vkCmdPipelineBarrier(cmd, from_stage, to_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
+    vkCmdPipelineBarrier(cmd, narrow_barriers() ? dependency.source : from_stage, to_stage, 0, 0, nullptr, 0, nullptr, 1, &b);
     t.layout = to;
 }
 

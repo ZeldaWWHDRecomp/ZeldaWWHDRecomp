@@ -24,6 +24,8 @@
 #include "gfx/vulkan/api.h"
 #endif
 #include "runtime.h"
+#include "savestate.h"
+#include "guest_addr.h"
 #include "../aspect.h"
 #include "gfx/renderer.h"
 #include "platform/perf_hint.h"
@@ -479,6 +481,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
     case OP_SWAP:
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
+        if (n >= 3 && p[2]) render::request_capture();
         render::swap();
         break;
     case OP_SET_PROJ_REGS: {
@@ -786,7 +789,27 @@ HLE(gx2, GX2SwapScanBuffers) {
     const uint64_t steps = interp::logic_steps();
     const bool hold = steps == lastSteps;
     lastSteps = steps;
-    emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
+    // Opt-in correctness capture: select the guest frame before it enters
+    // the asynchronous render queue. Renderer-frame parity is not a game clock.
+    static const char* captureCounter = getenv("WWHD_TEST_CAPTURE_LOAD_COUNTER");
+    static const char* captureStep = getenv("WWHD_TEST_CAPTURE_LOAD_STEP");
+    bool capture = false;
+    if ((captureCounter || captureStep) && ss::last_load_frame()) {
+        static uint64_t capturedLoad = 0;
+        const auto loaded = ss::last_load_frame();
+        const uint32_t counter = ld32(GD(0x101FF560));
+        const uint64_t offset = captureStep ? steps - ss::last_load_step()
+                                            : uint32_t(counter - ss::last_load_counter());
+        const uint64_t target = strtoull(captureStep ? captureStep : captureCounter, nullptr, 10);
+        if (capturedLoad != loaded && !hold && offset == target) {
+            capturedLoad = loaded;
+            capture = true;
+            LOG("[test] capture at loaded %s +%llu (game counter %08X), full pass",
+                captureStep ? "logic step" : "game counter",(unsigned long long)offset,counter);
+        }
+    }
+    if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
+    else emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
     {
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
@@ -930,7 +953,6 @@ HLE(gx2, GX2SampleTopGPUCycle) { if (arg(c, 0)) st64(arg(c, 0), timebase::guest_
 HLE(gx2, GX2SampleBottomGPUCycle) { if (arg(c, 0)) st64(arg(c, 0), timebase::guest_now()); }
 
 // ---------------------------------------------------------------- save states
-#include "../savestate.h"
 
 // the game is frozen between frames: finish all queued GPU work and let pending flips execute, so no
 // command reads guest memory while it is replaced and the swap/flip counts agree

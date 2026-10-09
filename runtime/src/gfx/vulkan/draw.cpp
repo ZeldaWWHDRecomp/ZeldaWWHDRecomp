@@ -1716,8 +1716,11 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                 : sampled_texture_view(s, r + texbase + unit * 7);
     if (!aliases)
       transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       narrow_barriers()
+                           ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+                                         : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                           : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
                        VK_ACCESS_SHADER_READ_BIT);
     uint32_t samplerId = sh->dec->textureUnitSamplerAssignment[unit];
     if (samplerId >= 18)
