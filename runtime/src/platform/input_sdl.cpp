@@ -213,6 +213,9 @@ static std::map<SDL_JoystickID,Uint16> g_rumble_sent;  // the level each control
 static std::atomic<bool> g_rumble_quit{false};
 static std::atomic<Uint64> g_rumble_update_ms{0};  // SDL_GetTicks of the latest update
 static void rumble_all_locked(Uint16 level,Uint32 ms){
+ // after SDL_Quit (a host that shuts SDL down, the tests) the gamepads are gone: an atexit or the
+ // watchdog must not touch them (SDL 3.4 frees them; it crashed input_sdl_test at exit on Linux)
+ if(!SDL_WasInit(SDL_INIT_GAMEPAD))return;
  for(auto id:g_rumble_controllers){
   auto i=g_controllers.find(id);
   if(i==g_controllers.end()||!SDL_GamepadConnected(i->second))continue;
