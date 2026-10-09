@@ -112,6 +112,11 @@ static float target_scale(const Surface* s) {
     if(!s->fmt.compressed&&s->mips==1&&mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     if (s->fmt.compressed || s->mips > 1) return 1.0f;
     static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE")) : 0.0f;
+    static const bool shadow_logged = [] {  // issue #67: show that the switch was picked up
+        if (shadow) LOG("[gfx] WWHD_SHADOW_SCALE=%g: shadow maps at %gx the console's 1024x1024", shadow, shadow);
+        return true;
+    }();
+    (void)shadow_logged;
     if (shadow && s->isDepth && s->slices > 1) return shadow;
     return res_scale();
 }
