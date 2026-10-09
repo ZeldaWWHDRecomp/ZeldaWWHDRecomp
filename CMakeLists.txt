@@ -133,6 +133,10 @@ file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS runtime/src/*.cpp runtime/src/*.c ru
                                             runtime/src/overlay/*.cpp)
 list(APPEND RUNTIME_SOURCES runtime/src/platform/perf_hint.cpp)  # Android performance hints (no-op elsewhere)
 list(APPEND RUNTIME_SOURCES ${WWHD_BUILD_INFO})
+if(APPLE)
+  list(APPEND RUNTIME_SOURCES runtime/src/platform/https.mm)
+  set_source_files_properties(runtime/src/platform/https.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
 file(GLOB GX2_SOURCES CONFIGURE_DEPENDS runtime/src/gx2/*.cpp)
 # renderer selection / dispatch (runtime/src/gfx/renderer.cpp) and the GamePad screen modes / TV window
 # layout both window hosts share (display_modes.cpp): every configuration
@@ -645,4 +649,12 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(barrier_state_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(barrier_state_test PRIVATE -UNDEBUG)
   add_test(NAME barrier_state COMMAND barrier_state_test)
+endif()
+
+if(APPLE)
+  add_executable(https_test runtime/tools/https_test.cpp runtime/src/platform/https.mm)
+  target_include_directories(https_test PRIVATE runtime/src)
+  target_compile_options(https_test PRIVATE -UNDEBUG)
+  target_link_libraries(https_test PRIVATE "-framework Foundation")
+  add_test(NAME https_transport COMMAND https_test)
 endif()

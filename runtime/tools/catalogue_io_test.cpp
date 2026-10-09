@@ -1,4 +1,5 @@
 #include "mods/catalogue_io.h"
+#include "platform/download_file.h"
 #include <cassert>
 #include <chrono>
 
@@ -12,6 +13,17 @@ int main() {
     assert(mods::hash::sha256_text("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     assert(mods::hash::sha256_text("")=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     try {
+        auto download=root/"download.tmp";
+        {host::DownloadFile out(download,3);out.append("a",1);out.append("bc",2);assert(out.size()==3);out.finish();}
+        assert(read_bounded(download,3)=="abc");
+        rejects([&]{host::DownloadFile out(download,3);});
+        assert(read_bounded(download,3)=="abc");fs::remove(download);
+        rejects([&]{host::DownloadFile out(download,2);out.append("a",1);out.append("bc",2);});
+        assert(!fs::exists(download));
+        {host::DownloadFile out(download,3);out.append("a",1);}
+        assert(!fs::exists(download));
+        rejects([&]{host::DownloadFile out(download,0);});
+        assert(!fs::exists(download));
         auto file=root/"packages"/"synthetic.zip";
         {std::ofstream out(file,std::ios::binary);out<<"abc";}
         Download d{"packages/synthetic.zip","ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",3};
