@@ -5,6 +5,7 @@ Pass --reference DIR to compare every C/header byte against a desktop run.
 This module uses no subprocesses, so the Android embedding can invoke main().
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +27,41 @@ def synthetic_rpx():
     struct.pack_into(">10I", data, 132, 7, 3, 0, 0,
                      len(data) + len(code), len(names), 0, 0, 1, 0)
     return bytes(data) + code + names
+
+
+@contextmanager
+def fixture_build_context(hook_directory=None):
+    """Register only authored bytes and omit hooks outside the authored text.
+
+    The real recompiler validates every hook against the selected executable;
+    real-game hook addresses cannot exist in this three-instruction test ELF.
+    Restore shared lookup/hook functions on success, failure and cancellation.
+    """
+    search = list(sys.path)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import builds
+    digest = hashlib.sha256(synthetic_rpx()).hexdigest()
+    build = builds.Build({"name": "USA", "title_id": "0005000010143500", "rpx_sha256": digest})
+    lookup, read_hooks, hook_files = builds.by_sha256, builds.read_hooks, builds.hook_files
+    def fixture_hooks(files, selected):
+        entries, skipped = read_hooks(files, selected)
+        if selected.sha256 == digest:
+            entries = [entry for entry in entries if 0x02000000 <= entry[2] < 0x0200000C]
+        return entries, skipped
+    builds.by_sha256 = lambda value: build if value == digest else lookup(value)
+    builds.read_hooks = fixture_hooks
+    builds.hook_files = lambda directory=None: hook_files(directory or hook_directory)
+    try:
+        yield build
+    finally:
+        builds.by_sha256, builds.read_hooks, builds.hook_files = lookup, read_hooks, hook_files
+        sys.path[:] = search
+
+
+def translate(rpx, output):
+    with fixture_build_context():
+        from recomp import Recompiler
+        Recompiler(str(rpx)).run(str(output), 30000)
 
 
 HARNESS = r'''#include "funcs.h"
@@ -57,7 +93,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Import the real recompiler, with its normal hooks and instruction emitter.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from recomp import Recompiler
 
     args.output.mkdir(parents=True, exist_ok=True)
     fixture = args.output / "synthetic.rpx"
@@ -67,7 +102,7 @@ def main(argv=None):
     if generated.exists():
         raise ValueError("use a fresh output directory: " + str(generated))
     start = time.monotonic()
-    Recompiler(str(fixture)).run(str(generated), 30000)
+    translate(fixture, generated)
     elapsed = time.monotonic() - start
     (generated / "harness.c").write_text(HARNESS, encoding="utf-8")
     actual = inventory(generated)

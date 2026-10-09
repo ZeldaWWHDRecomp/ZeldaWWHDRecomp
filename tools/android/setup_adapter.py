@@ -288,7 +288,7 @@ class Adapter:
                   "translator": self.hash_tree(self.package / "tools/recomp")}
         # Bytecode/cache files are not part of the shipped translator identity.
         inputs["translator"] = {name: value for name, value in inputs["translator"].items()
-                                if Path(name).suffix in (".py", ".txt")}
+                                if Path(name).suffix in (".py", ".txt", ".json")}
         identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
         stage = self.storage / ("translation-" + identity)
         state = stage / "complete.json"

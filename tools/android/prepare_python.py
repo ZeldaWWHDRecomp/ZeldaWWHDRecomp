@@ -64,6 +64,29 @@ def verified_download(url, archive, expected):
         temporary.unlink(missing_ok=True)
 
 
+def source_files(root, test_fixtures=False):
+    source_paths = [root / "tools/installer/setup.py", root / "tools/android/setup_adapter.py",
+                    root / "tools/android/native_process.py",
+                    root / "tools/android/ondevice_setup.py",
+                    root / "tools/rpx.py"]
+    source_paths += [path for path in (root / "tools/recomp").rglob("*")
+                     if path.is_file() and (path.suffix in (".py", ".txt") or (path.parent.name == "builds" and path.suffix == ".json"))
+                     and path.name != "android_fixture.py" and "__pycache__" not in path.parts]
+    if test_fixtures:
+        source_paths += [root / "tools/android/debug_fixture_build.py",
+                         root / "tools/android/embedding_smoke.py", root / "tools/recomp/android_fixture.py"]
+    return source_paths
+
+
+def runtime_fixture_source(directory):
+    # The tiny translation has no real-game hooks. Its funcs.h therefore cannot
+    # declare the placeholder runtime hook wrappers; carry their own prototypes.
+    directory = Path(directory)
+    header = (directory / "funcs.h").read_bytes().replace(b"#pragma once\n", b"")
+    source = (directory / "code_000.c").read_bytes().replace(b'#include "funcs.h"\n', b"")
+    return header + source
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--abi", choices=BUILDS, required=True)
@@ -73,6 +96,8 @@ def main():
     parser.add_argument("--extraction-fixture", type=Path, help="test-only authored ZArchive")
     parser.add_argument("--service-fixture", action="store_true", help="include debug-only synthetic service entry point; never use in release packages")
     args = parser.parse_args()
+    if args.extraction_fixture and not args.service_fixture:
+        parser.error("--extraction-fixture requires debug-only --service-fixture")
     started = time.monotonic()
     root = Path(__file__).resolve().parents[2]
     out = args.out.resolve()
@@ -106,12 +131,7 @@ def main():
         for path in sorted((prefix / "lib/python3.14").rglob("*")):
             if path.is_file() and "__pycache__" not in path.parts:
                 write_entry(bundle, path.relative_to(prefix), path.read_bytes())
-    source_paths = [root / "tools/installer/setup.py", root / "tools/android/setup_adapter.py",
-                    root / "tools/android/native_process.py",
-                    root / "tools/android/ondevice_setup.py",
-                    root / "tools/android/embedding_smoke.py", root / "tools/rpx.py"]
-    source_paths += [path for path in (root / "tools/recomp").rglob("*")
-                     if path.is_file() and path.suffix in (".py", ".txt") and "__pycache__" not in path.parts]
+    source_paths = source_files(root, args.service_fixture)
     with zipfile.ZipFile(assets / "python-source.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted(source_paths): write_entry(bundle, path.relative_to(root), path.read_bytes())
         if args.service_fixture:
@@ -134,6 +154,7 @@ def main():
                         raise ValueError("Invalid runtime SDK path")
                     write_entry(bundle, item.filename, sdk.read(item))
             shutil.copyfile(sdk_assets / "runtime-sdk.json", assets / "runtime-sdk.json")
+        if args.runtime_sdk and args.service_fixture:
             # Authored placeholders satisfy runtime references absent from the
             # tiny synthetic translation; they are used only by the debug probe.
             import sys
@@ -142,8 +163,8 @@ def main():
             import tempfile
             with tempfile.TemporaryDirectory(dir=out) as temporary:
                 stubgen.main(temporary)
-                write_entry(bundle, "tools/android/runtime_fixture.c", (Path(temporary) / "code_000.c").read_bytes())
-        else:
+                write_entry(bundle, "tools/android/runtime_fixture.c", runtime_fixture_source(temporary))
+        if not args.runtime_sdk:
             for path in sorted((root / "runtime/include").rglob("*")):
                 if path.is_file(): write_entry(bundle, Path("sdk/include") / path.relative_to(root / "runtime/include"), path.read_bytes())
     metrics = {"version": VERSION, "abi": args.abi, "url": url, "sha256": expected,

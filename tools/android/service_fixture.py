@@ -1,4 +1,5 @@
 """Explicitly packaged debug service fixture; production ondevice_setup stays validating."""
+from debug_fixture_build import register as register_fixture_build
 import argparse
 import ctypes
 from pathlib import Path
@@ -13,8 +14,7 @@ def fixture_adapter(*args, resource_probe=False):
     adapter = Adapter(*args)
     package = adapter.package
     # The accepted digest is fixed to authored fixture bytes, never the selected input's digest.
-    import hashlib
-    adapter.setup.SUPPORTED_RPX_SHA256 = hashlib.sha256(synthetic_rpx()).hexdigest()
+    register_fixture_build(adapter.setup)
     original = adapter.setup.recompile
     original_compile = adapter.compile
 

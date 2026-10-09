@@ -1,4 +1,5 @@
 """Game-free adapter checks using the production installer and recompiler."""
+from debug_fixture_build import register as register_fixture_build
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -71,13 +72,13 @@ class TranslationTests(unittest.TestCase):
     def adapter(self, revision="port-v1", pause=lambda: False):
         adapter = Adapter(PACKAGE, self.root / "jobs", revision, self.events.append, pause)
         # Only the fixture's test-local installer accepts synthetic game bytes.
-        adapter.setup.SUPPORTED_RPX_SHA256 = digest(self.rpx)
+        register_fixture_build(adapter.setup)
         return adapter
 
     def test_matches_desktop_and_resumes_after_worker_restart(self):
         desktop = self.root / "desktop"
-        subprocess.run([sys.executable, str(PACKAGE / "tools/recomp/recomp.py"),
-                        str(self.rpx), str(desktop)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); from android_fixture import translate; translate(sys.argv[2], sys.argv[3])",
+                        str(PACKAGE / "tools/recomp"), str(self.rpx), str(desktop)], check=True, stdout=subprocess.DEVNULL)
         generated = self.adapter().translate(self.game)
         self.assertEqual(inventory(desktop), inventory(generated))
         restarted = self.adapter()
@@ -108,7 +109,7 @@ class TranslationTests(unittest.TestCase):
                         ignore=shutil.ignore_patterns("__pycache__"))
         def adapter():
             value = Adapter(package, self.root / "jobs", "same-port", self.events.append)
-            value.setup.SUPPORTED_RPX_SHA256 = digest(self.rpx)
+            register_fixture_build(value.setup)
             return value
         previous = adapter().translate(self.game)
         expected = inventory(previous)
@@ -176,8 +177,8 @@ class TranslationTests(unittest.TestCase):
                              for thread in threading.enumerate()))
         generated = self.adapter().translate(self.game)
         desktop = self.root / "desktop-after-pause"
-        subprocess.run([sys.executable, str(PACKAGE / "tools/recomp/recomp.py"),
-                        str(self.rpx), str(desktop)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); from android_fixture import translate; translate(sys.argv[2], sys.argv[3])",
+                        str(PACKAGE / "tools/recomp"), str(self.rpx), str(desktop)], check=True, stdout=subprocess.DEVNULL)
         self.assertEqual(inventory(generated), inventory(desktop))
 
     def test_pause_before_work(self):

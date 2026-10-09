@@ -1,4 +1,5 @@
 """Real shared translation/host compilation through the durable job runner."""
+from debug_fixture_build import register as register_fixture_build
 import ctypes
 import fcntl
 import importlib.util
@@ -53,7 +54,7 @@ class SetupJobTests(unittest.TestCase):
 
     def adapter(self, *args):
         adapter = Adapter(*args)
-        adapter.setup.SUPPORTED_RPX_SHA256 = digest(self.game / "code/cking.rpx")
+        register_fixture_build(adapter.setup)
         original = adapter.setup.recompile
         def recompile(game, generated):
             count = original(game, generated)

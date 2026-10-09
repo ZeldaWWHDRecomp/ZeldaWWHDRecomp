@@ -10,6 +10,7 @@ on:
       - tools/android/**
       - tools/recomp/**
       - tools/rpx.py
+      - tools/release/guard.py
       - tools/installer/setup.py
       - .github/workflows/android-display-smoke.yml
 
@@ -36,9 +37,9 @@ jobs:
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
           ABI=x86_64 GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
-          python3 tools/android/prepare_python.py --abi x86_64 --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python
+          python3 tools/android/prepare_python.py --abi x86_64 --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python --service-fixture
           android/gradlew -p android --no-daemon -PwwhdAbi=x86_64 -PwwhdPythonDir="$PWD/build/embedded-python/package" assembleDebug
-          python3 tools/release/guard.py android/app/build/outputs/apk/debug/*.apk
+          python3 tools/release/guard.py --allow-android-test-fixtures android/app/build/outputs/apk/debug/*.apk
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

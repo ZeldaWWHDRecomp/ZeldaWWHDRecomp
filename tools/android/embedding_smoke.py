@@ -1,4 +1,5 @@
 """Game-free entry point used only by the debug PythonSmokeActivity."""
+from debug_fixture_build import register as register_fixture_build
 import json
 from pathlib import Path
 import shutil
@@ -81,7 +82,7 @@ def main(argv):
     first = Adapter(package, output / "checkpoints", "synthetic-v1", events.append)
     # Test-local validation override: production Adapter always checks the
     # supported game hash. No game bytes or keys are part of this fixture.
-    first.setup.SUPPORTED_RPX_SHA256 = digest(game / "code/cking.rpx")
+    register_fixture_build(first.setup)
     if extractor:
         archive = package / "tools/android/extraction-fixture.bin"
         pause = [False]
@@ -89,7 +90,7 @@ def main(argv):
             if event.get("event") == "progress": pause[0] = True
         interrupted = Adapter(package, output / "paused-extraction", "synthetic-v1",
                               pause_on_progress, lambda: pause[0])
-        interrupted.setup.SUPPORTED_RPX_SHA256 = first.setup.SUPPORTED_RPX_SHA256
+        register_fixture_build(interrupted.setup)
         try:
             interrupted.extract(archive, "archive", extractor["path"], extractor["identity"], wwhd_native.run)
         except Paused:
@@ -132,7 +133,7 @@ def main(argv):
     requested = threading.Event()
     interrupted = Adapter(package, output / "paused-translation", "synthetic-v1",
                           events.append, requested.is_set)
-    interrupted.setup.SUPPORTED_RPX_SHA256 = first.setup.SUPPORTED_RPX_SHA256
+    register_fixture_build(interrupted.setup)
     original_translate = ppc2c.translate
     def slow_instruction(*args):
         requested.set()
@@ -164,7 +165,7 @@ def main(argv):
     if inventory(generated) != expected:
         raise AssertionError("shared installer translation differs from fixture")
     restarted = Adapter(package, output / "checkpoints", "synthetic-v1", events.append)
-    restarted.setup.SUPPORTED_RPX_SHA256 = first.setup.SUPPORTED_RPX_SHA256
+    register_fixture_build(restarted.setup)
     def unexpected(*args):
         raise AssertionError("completed translation was not reused")
     restarted.setup.recompile = unexpected
@@ -299,7 +300,7 @@ int synthetic_check(void) {
                 "input": {"kind": "folder", "path": "input/game"}, "compiler": compiler}))
             def fixture_adapter(*args):
                 adapter = Adapter(*args)
-                adapter.setup.SUPPORTED_RPX_SHA256 = first.setup.SUPPORTED_RPX_SHA256
+                register_fixture_build(adapter.setup)
                 original_translate = adapter.setup.recompile
                 original_compile = adapter.compile
                 def translate_fixture(game_path, destination):

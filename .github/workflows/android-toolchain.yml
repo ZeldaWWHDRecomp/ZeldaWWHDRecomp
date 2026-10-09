@@ -32,6 +32,7 @@ on:
       - tools/android/package_runtime.py
       - tools/android/runtime_smoke.py
       - tools/android/service_fixture.py
+      - tools/android/debug_fixture_build.py
       - tools/android/setup_build_smoke.py
       - tools/android/package_update_fixture.py
       - tools/android/setup_rebuild_smoke.py
@@ -40,6 +41,7 @@ on:
       - tools/android/resource_sampler.py
       - tools/android/display_smoke.py
       - tools/release/package.py
+      - tools/release/guard.py
       - android/**
       - .github/workflows/android-toolchain.yml
 
@@ -111,7 +113,7 @@ jobs:
           python3 tools/android/package_runtime.py --build android/build/game --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" --out build/runtime-sdk
           python3 tools/android/prepare_python.py --abi "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python --runtime-sdk build/runtime-sdk --extraction-fixture build/extraction-fixture.bin --service-fixture
           android/gradlew -p android --no-daemon -PwwhdAbi="${{ matrix.abi }}" -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
-          python3 tools/release/guard.py android/app/build/outputs/apk/debug/app-debug.apk
+          python3 tools/release/guard.py --allow-android-test-fixtures android/app/build/outputs/apk/debug/app-debug.apk
       - name: Build actual runtime SDK update fixtures
         if: matrix.abi == 'x86_64'
         run: |
@@ -123,7 +125,7 @@ jobs:
             python3 tools/android/package_update_fixture.py --package build/embedded-python/package --ndk "$ANDROID_HOME/ndk/30.0.16248370" --revision "$fixture_revision" "${fixture_args[@]}" --out "build/update-fixtures/python-v$fixture_revision" > "build/update-fixtures/v$fixture_revision.json"
             android/gradlew -p android --no-daemon --max-workers=2 -PwwhdAbi=x86_64 -PwwhdPythonDir="$PWD/build/update-fixtures/python-v$fixture_revision" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
             cp android/app/build/outputs/apk/debug/app-debug.apk "build/update-fixtures/v$fixture_revision.apk"
-            python3 tools/release/guard.py "build/update-fixtures/v$fixture_revision.apk"
+            python3 tools/release/guard.py --allow-android-test-fixtures "build/update-fixtures/v$fixture_revision.apk"
             python3 - <<'PY'
           import shutil
           from pathlib import Path

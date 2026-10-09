@@ -7,7 +7,7 @@ from unittest.mock import patch
 import unittest
 import zipfile
 
-from prepare_python import write_entry, verified_download
+from prepare_python import write_entry, verified_download, runtime_fixture_source
 
 
 class ResourceIdentityTests(unittest.TestCase):
@@ -24,6 +24,24 @@ class ResourceIdentityTests(unittest.TestCase):
             item = archive.getinfo("tools/setup.py")
             self.assertEqual(item.date_time, (1980, 1, 1, 0, 0, 0))
             self.assertEqual(archive.read(item), b"authored source")
+
+    def test_runtime_placeholders_compile_without_real_game_hook_header(self):
+        import shutil
+        import subprocess
+        import sys
+        if not shutil.which("clang"):
+            self.skipTest("host clang required")
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temp:
+            subprocess.run([sys.executable, str(root / "tools/recomp/stubgen.py"), temp],
+                           check=True, stdout=subprocess.DEVNULL)
+            source = Path(temp) / "runtime_fixture.c"
+            source.write_bytes(runtime_fixture_source(temp))
+            # No generated funcs.h may be needed: the synthetic translation's
+            # header intentionally contains only its three-instruction program.
+            (Path(temp) / "funcs.h").unlink()
+            subprocess.run(["clang", "-std=c11", "-fsyntax-only", "-I" + str(root / "runtime/include"),
+                            str(source)], check=True)
 
 
 class DownloadTests(unittest.TestCase):

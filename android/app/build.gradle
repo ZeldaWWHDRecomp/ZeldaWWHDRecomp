@@ -65,7 +65,9 @@ tasks.register('verifyReleasePython') {
         if (pythonPackage != null) {
             def archive = new java.util.zip.ZipFile(file(pythonPackage + '/assets/python-source.zip'))
             try {
-                if (archive.getEntry('tools/android/service_fixture.py') != null)
+                if (['tools/android/service_fixture.py', 'tools/android/debug_fixture_build.py',
+                     'tools/android/embedding_smoke.py', 'tools/recomp/android_fixture.py',
+                     'tools/android/extraction-fixture.bin', 'tools/android/runtime_fixture.c'].any { archive.getEntry(it) != null })
                     throw new GradleException('Synthetic service resources are debug-only; repackage Python without --service-fixture')
             } finally { archive.close() }
         }

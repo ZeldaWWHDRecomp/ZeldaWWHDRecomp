@@ -1,4 +1,5 @@
 """Extraction fault checks through the unchanged installer's pipe protocol."""
+from debug_fixture_build import register as register_fixture_build
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,11 +18,12 @@ class ExtractionTests(unittest.TestCase):
         self.image.write_bytes(b"authored fixture identity")
         self.calls, self.events = [], []
         self.rpx = self.root / "synthetic.rpx"
-        self.rpx.write_bytes(b"authored synthetic executable")
+        from debug_fixture_build import synthetic_rpx
+        self.rpx.write_bytes(synthetic_rpx())
 
     def adapter(self, pause=lambda: False):
         adapter = Adapter(PACKAGE, self.root / "jobs", "port-v1", self.events.append, pause)
-        adapter.setup.SUPPORTED_RPX_SHA256 = digest(self.rpx)
+        register_fixture_build(adapter.setup)
         return adapter
 
     def runner(self, command, **options):
@@ -67,7 +69,7 @@ class ExtractionTests(unittest.TestCase):
         (game / "content/fixture.bin").write_bytes(b"corrupt")
         self.assertEqual(game, self.extract())
         self.assertEqual(expected, inventory(game))
-        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(len(self.calls), 6)
 
     def test_failed_new_input_preserves_completed_generation(self):
         game = self.extract()
@@ -89,7 +91,7 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(adapter.setup.SetupError, "not enough free disk space"):
             self.extract(adapter)
         self.assertEqual(inventory(previous), expected)
-        self.assertEqual(len(self.calls), 3)  # Two original commands; only info for failed input.
+        self.assertEqual(len(self.calls), 5)  # Listing + selected-title info + extraction; two info calls on retry.
         self.assertFalse(list((self.root / "jobs").rglob("pending-*")))
 
     def test_pause_during_native_execution_keeps_no_partial_checkpoint(self):
