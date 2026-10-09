@@ -315,7 +315,7 @@ class BuildInterfaceTest(unittest.TestCase):
                     header.write("\n/* ABI changed */\n")
                 self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
             self.assertEqual(module.read_bytes(), b"fixture module")
-            self.assertEqual(list((root / "cache").iterdir()), [module.parent])
+            self.assertEqual([p.name for p in (root / "cache").iterdir()], [key])
 
     def test_package_paths_and_ids(self):
         with tempfile.TemporaryDirectory() as d:

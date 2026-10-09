@@ -4,6 +4,7 @@
 #include <array>
 #include <algorithm>
 #include <compare>
+#include <cstdint>
 #include <charconv>
 #include <set>
 

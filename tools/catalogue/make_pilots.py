@@ -19,7 +19,7 @@ with source.open("rb") as stream: header = stream.read(32)
 if header[:6] != b"GZLE01" or header[28:32] != bytes.fromhex("c2339f3d"):
     raise SystemExit("Expected a USA GameCube source")
 # Authored synthetic output: no source bytes are copied.
-Path("pilot-prepared.txt").write_text("Synthetic preparation complete\\n", encoding="utf-8")
+Path("pilot-prepared.txt").write_bytes(b"Synthetic preparation complete\\n")
 print("Synthetic preparation complete")
 '''
 
