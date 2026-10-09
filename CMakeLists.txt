@@ -542,3 +542,13 @@ add_executable(crash_redact_test runtime/tools/crash_redact_test.cpp)
 target_include_directories(crash_redact_test PRIVATE runtime/src)
 target_compile_options(crash_redact_test PRIVATE -UNDEBUG)
 add_test(NAME crash_redact COMMAND crash_redact_test)
+
+# Cheats must preserve sword ownership: it controls Medli/Makar story placement (#85).
+add_executable(cheats_test runtime/tools/cheats_test.cpp runtime/src/mods/cheats.cpp runtime/src/guest_addr_identity.c)
+target_include_directories(cheats_test PRIVATE runtime/src runtime/include)
+target_compile_options(cheats_test PRIVATE -UNDEBUG)
+add_test(NAME cheats_story_progress COMMAND cheats_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME repair_medli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/savegame/repair_medli_test.py")
+  add_test(NAME medli_scenario_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/runtime/tools/medli_scenario_test.py")
+endif()

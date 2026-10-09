@@ -47,9 +47,37 @@ functions.
 | `hd2gc.py cking.sav -o OUT.gci` | the reverse direction (shared fields only), mainly for the round-trip check. `--set-gc-name` writes the HD name into the GameCube name field, `--template X.gci` copies the banner/icon block. |
 | `roundtrip_test.py cking.sav ...` | HD → GameCube layout → HD; every shared field must come back bit-identical (GameCube and HD checksums are verified on the way). |
 | `wwstate.py info STATE.wwstate` / `wwstate.py to-sav STATE.wwstate -o OUTDIR [--into cking.sav] [--file N]` | a portable save state (`slotN.wwstate`, [docs/portable-save-states.md](../../docs/portable-save-states.md), e.g. from a bug report): check it and show its place and progress, or write its save data as Quest Log N of a `cking.sav`. |
+| `wwsave.py repair-medli cking.sav -o OUTDIR [--file N]` | repair an early save whose premature Master Sword ownership hides Medli (#85). Writes a repaired `OUTDIR/cking.sav` and an exact `OUTDIR/cking.sav.before-medli.bak`; never changes the input or overwrites existing output files. Quest Log N defaults to 1. |
 
 Work on copies: none of the tools writes to its input. Use a converted save like any test save:
 `cp -R <folder>/user <test>/save/` and start the game with `--save <test>/save`.
+
+## Medli missing on the first Dragon Roost visit (#85)
+
+The old **Master Sword + Mirror Shield** cheat also recorded ownership of every sword upgrade.
+The game uses those ownership bits as story milestones: the Earth Temple upgrade removes Medli
+from her earlier locations. Turning mods off or restarting does not undo changes already saved.
+The corrected cheat equips the weapons without changing ownership and is labelled **until reload**;
+loading a Quest Log or portable state restores the equipment earned in that playthrough.
+
+For an affected early save, close the game and run:
+
+```sh
+python3 tools/savegame/wwsave.py repair-medli /path/to/cking.sav -o medli-repaired --file 1
+python3 tools/savegame/hd_save_info.py medli-repaired/cking.sav --file 1
+```
+
+Use the actual Quest Log number (1–3). Keep the source and the generated `.bak`, then replace the
+game's `cking.sav` with `medli-repaired/cking.sav` and load that Quest Log normally. The tool restores
+the Hero's Sword and its ownership in that Quest Log; it preserves the shield, inventory, event
+flags, other progress, and the other Quest Logs. It verifies the save checksums and refuses saves
+past the first pearl, New Game+ saves, or saves without the premature sword flags. It does not
+guess earned sword progress in later saves.
+
+An old portable state still contains the old flags: do not load it over the repaired save. Make
+a fresh portable state after loading the repair. If your only current progress is in a portable
+state, first use `wwstate.py to-sav STATE.wwstate -o state-copy --into /path/to/cking.sav`, then repair
+`state-copy/cking.sav` as above, choosing the state's Quest Log. Neither step changes its input.
 
 ## File formats
 

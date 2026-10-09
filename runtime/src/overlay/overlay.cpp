@@ -1056,7 +1056,7 @@ void tab_mods() {
     heading("Cheats (save in game to keep them)");
     if (ImGui::Button("Give all items")) mods::request_cheat(mods::kCheatItems);
     ImGui::SameLine();
-    if (ImGui::Button("Master Sword + Mirror Shield")) mods::request_cheat(mods::kCheatSword);
+    if (ImGui::Button("Equip Master Sword + Mirror Shield (until reload)")) mods::request_cheat(mods::kCheatSword);
     ImGui::SameLine();
     if (ImGui::Button("20 hearts, double magic, 5000 rupees")) mods::request_cheat(mods::kCheatStats);
     static const std::pair<const char*, int> inf[] = {{"Infinite health", mods::kInfHealth}, {"Infinite magic", mods::kInfMagic},
