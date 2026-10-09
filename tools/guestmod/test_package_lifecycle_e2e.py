@@ -104,6 +104,7 @@ def main():
     parser.add_argument('--max-game-sessions', type=int, choices=range(1, 5), default=4)
     parser.add_argument('--timeout', type=int, default=600)
     parser.add_argument('--min-free-gib', type=int, default=15, help='Explicit local disk floor; 0 disables the gate when authorized')
+    parser.add_argument('--allow-concurrent-benchmark', action='store_true', help='Authorized functional checks only; results are not performance evidence')
     args = parser.parse_args()
     if args.min_free_gib < 0:
         parser.error('Disk floor must be nonnegative')
@@ -156,7 +157,7 @@ def main():
         return value['profiles'][value['active']]
 
     def run(name, support, extra=None, overlay=True, done_marker=None, want_enabled=None):
-        if len(gates.other_games()) >= args.max_game_sessions or gates.other_benchmarks():
+        if len(gates.other_games()) >= args.max_game_sessions or (gates.other_benchmarks() and not args.allow_concurrent_benchmark):
             raise RuntimeError('Functional game limit reached or a benchmark is active')
         selected = selected_build(data, support)
         expected_executable = Path(selected['executable'])
@@ -207,7 +208,7 @@ def main():
                         raise RuntimeError(name + ' timed out')
                     if shutil.disk_usage(phase).free < args.min_free_gib * 1024**3:
                         raise RuntimeError('Free disk fell below the configured floor')
-                    if len(gates.other_games(process.pid)) >= args.max_game_sessions or gates.other_benchmarks():
+                    if len(gates.other_games(process.pid)) >= args.max_game_sessions or (gates.other_benchmarks() and not args.allow_concurrent_benchmark):
                         raise RuntimeError('Functional game limit reached or benchmark started')
                     time.sleep(1)
             finally:
@@ -271,7 +272,7 @@ def main():
     removed = run('disabled-remove-after-restart', 1, {'WWHD_TEST_MOD_REMOVE': ident})
     assert not phases['disabled-remove-after-restart']['guest_loaded']
     assert '[mods] removed ' + ident in removed and not (manager / 'Mods' / ident).exists()
-    result = {'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
+    result = {'allow_concurrent_benchmark': args.allow_concurrent_benchmark, 'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
               'setup_receipts_verified': True, 'disabled_until_restart': True, 'rebuild_provenance': rebuilds,
               'package_sha256': hashlib.sha256(args.package.read_bytes()).hexdigest(),
               'launcher_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
