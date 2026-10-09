@@ -81,6 +81,73 @@ void controller_values(float* v) {
     }
 }
 
+// ---- the labels printed on a pad's face buttons (issue #78's Automatic preset)
+
+// The letter on one face button, from its SF Symbol name ("xbox.button.a", "ps.button.cross") or
+// its localized name ("A Button"). kUnknown when the host does not say.
+static input_map::FaceLabel button_letter(GCControllerButtonInput* in) {
+    using FL = input_map::FaceLabel;
+    if (!in) return FL::kUnknown;
+    NSString* s = nil;
+    if (@available(macOS 11.0, *)) s = in.sfSymbolsName.length ? in.sfSymbolsName : in.localizedName;
+    if (!s.length) return FL::kUnknown;
+    NSString* t = s.lowercaseString;
+    if ([t containsString:@"cross"]) return FL::kA;
+    if ([t containsString:@"circle"]) return FL::kB;
+    if ([t containsString:@"square"]) return FL::kX;
+    if ([t containsString:@"triangle"]) return FL::kY;
+    // "xbox.button.a", "A Button", "Button B": the one letter that is a word of its own
+    NSArray<NSString*>* words = [t componentsSeparatedByCharactersInSet:NSCharacterSet.letterCharacterSet.invertedSet];
+    for (NSString* w in words) {
+        if ([w isEqualToString:@"a"]) return FL::kA;
+        if ([w isEqualToString:@"b"]) return FL::kB;
+        if ([w isEqualToString:@"x"]) return FL::kX;
+        if ([w isEqualToString:@"y"]) return FL::kY;
+    }
+    return FL::kUnknown;
+}
+
+// A pad whose buttons do not name themselves (older MFi, some HID): guess the family from what it
+// says it is. Xbox/PlayStation letters sit where the letters are; Nintendo's are the other way.
+static void family_letters(GCController* c, input_map::FaceLabel out[4]) {
+    using FL = input_map::FaceLabel;
+    NSString* who = [NSString stringWithFormat:@"%@ %@", c.vendorName ?: @"", c.productCategory ?: @""].lowercaseString;
+    BOOL nintendo = [who containsString:@"nintendo"] || [who containsString:@"switch"] || [who containsString:@"joy-con"] ||
+                    [who containsString:@"joycon"] || [who containsString:@"wii"];
+    BOOL xboxish = [who containsString:@"xbox"] || [who containsString:@"microsoft"] || [who containsString:@"sony"] ||
+                   [who containsString:@"dualsense"] || [who containsString:@"dualshock"] || [who containsString:@"playstation"] ||
+                   [who containsString:@"steam"] || [who containsString:@"stadia"] || [who containsString:@"luna"];
+    if (nintendo) {
+        out[0] = FL::kB; out[1] = FL::kA; out[2] = FL::kY; out[3] = FL::kX;  // south, east, west, north
+    } else if (xboxish) {
+        out[0] = FL::kA; out[1] = FL::kB; out[2] = FL::kX; out[3] = FL::kY;
+    }
+}
+
+// Connect order of the pads we have seen: GameController's own list is not that order, and the
+// Automatic preset follows the first pad still connected.
+static NSMutableArray<GCController*>* g_connect_order;
+
+static void note_dominant_labels() {
+    using FL = input_map::FaceLabel;
+    FL labels[4] = {FL::kUnknown, FL::kUnknown, FL::kUnknown, FL::kUnknown};
+    GCController* dominant = nil;
+    for (GCController* c in [g_connect_order copy]) {
+        if (c.extendedGamepad) { dominant = c; break; }
+    }
+    if (dominant) {
+        GCExtendedGamepad* g = dominant.extendedGamepad;
+        GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};  // south, east, west, north
+        bool any = false;
+        for (int i = 0; i < 4; i++) {
+            labels[i] = button_letter(face[i]);
+            any |= labels[i] != FL::kUnknown;
+        }
+        if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
+    }
+    input_map::note_face_labels(labels);
+}
+
 // the latest controller_values (the timer below), for the settings overlay's navigation
 static float g_host_values[input_map::kPadCount];
 void host_controller_values(float* v) {
@@ -289,6 +356,20 @@ void init() {
         memset(g_keys, 0, sizeof(g_keys));
     }];
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
+    // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
+    g_connect_order = [NSMutableArray array];
+    for (GCController* c in [GCController controllers]) [g_connect_order addObject:c];
+    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+        GCController* c = n.object;
+        if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
+        note_dominant_labels();
+    }];
+    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+        [g_connect_order removeObject:n.object];
+        note_dominant_labels();
+    }];
+    note_dominant_labels();
     // GameController values are polled on the main thread
     [NSTimer scheduledTimerWithTimeInterval:1.0 / 240 repeats:YES block:^(NSTimer*) {
         float v[input_map::kPadCount];

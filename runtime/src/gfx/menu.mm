@@ -268,7 +268,8 @@ static WWStateMenu* g_state_menu;
 - (void)setFaceLayout:(NSMenuItem*)item {
     // issue #78: which host face buttons drive the Wii U's A/B/X/Y (the same as the Controls window)
     input_map::Mapping m = input_map::current();
-    input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+    if (item.tag == 2) input_map::set_face_auto(m, true);
+    else input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
     input_map::set_current(m);
 }
 - (void)toggleInterp:(NSMenuItem*)item { interp::set_mode(interp::mode() == item.tag ? 0 : (int)item.tag); update_title(); }
@@ -465,6 +466,9 @@ void install_menu(NSWindow* tv) {
     add(in, @"    By label (Xbox)", @selector(setFaceLayout:), @"", 1).toolTip =
         @"The button named A is A: on an Xbox pad A accepts/acts and B goes back (issue #78). "
         @"Rewrites the A/B/X/Y controller bindings only";
+    add(in, @"    Automatic", @selector(setFaceLayout:), @"", 2).toolTip =
+        @"Follows the labels printed on the pad that was plugged in first: by label on an Xbox pad, "
+        @"by position on a Nintendo one";
     [in addItem:[NSMenuItem separatorItem]];
     add(in, @"Show GamePad screen (\u2318G)", @selector(toggleDrcWindow:), @"");
     [in addItem:gfx::controls_menu_item()];

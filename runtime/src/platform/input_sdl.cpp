@@ -36,6 +36,7 @@ static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
 static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
+static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
 static SDL_Window* g_prompt_window=nullptr;
 static std::function<void(bool,std::u16string)> g_pending,g_done;
@@ -308,13 +309,51 @@ static void sensor_event(const SDL_GamepadSensorEvent& e){
  auto a=g_accel.find(e.which);if(a==g_accel.end())return;
  motion::controller_sample((uint64_t)e.which,e.sensor_timestamp,e.data,a->second.data());
 }
+// What the dominant pad (first connected still present) has printed on its face buttons, in the
+// order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
+static void dominant_labels(input_map::FaceLabel out[4]){
+ using FL=input_map::FaceLabel;
+ for(int i=0;i<4;i++)out[i]=FL::kUnknown;
+ std::lock_guard lk(g_pads_mu);
+ for(SDL_JoystickID id:g_order){
+  auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
+  SDL_Gamepad* pad=i->second;
+  auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{
+   switch(SDL_GetGamepadButtonLabel(pad,b)){
+   case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
+   case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
+   case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
+   case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
+   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
+   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
+   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
+   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
+   default:return FL::kUnknown;}};
+  out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+  out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  return;  // one pad decides, the first connected
+ }
+}
+// outside g_pads_mu: input_map may write controls.json
+static void note_dominant_labels(){
+ input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
+}
 static void open_controller(SDL_JoystickID id){
  std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
- if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;
+ if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;g_order.push_back(id);
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
   if(SDL_RumbleGamepad(pad,0,0,0))g_rumble_controllers.insert(id);
   if(g_sensors_on)set_sensors_locked(pad,true);}
+}
+static void close_controller(SDL_JoystickID id){
+ {std::lock_guard lk(g_pads_mu);
+  auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}
+  std::erase(g_order,id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);
+  g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
+ motion::controller_gone(id);
+ note_dominant_labels();  // the dominant pad may have changed
 }
 void init(){
  input_map::load_startup();
@@ -322,6 +361,7 @@ void init(){
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
   int count=0;auto* ids=SDL_GetGamepads(&count);for(int i=0;i<count;i++)open_controller(ids[i]);SDL_free(ids);
+  note_dominant_labels();  // before the first read, so Automatic is settled at startup
   SDL_AddEventWatch(rumble_quit_watch,nullptr);
   atexit(stop_rumble_now);  // std::exit: the game's exit(), its main thread returned
   std::thread(rumble_watchdog).detach();
@@ -421,8 +461,8 @@ static bool text_entry_event(const SDL_Event& event){
 void handle_event(const SDL_Event& event){
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
- if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);g_accel.erase(event.gdevice.which);g_sensor_seen.erase(event.gdevice.which);g_sensor_kick.erase(event.gdevice.which);motion::controller_gone(event.gdevice.which);}
+ if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
  if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
  if(event.type==SDL_EVENT_WINDOW_FOCUS_LOST)release_keys();
  if(text_entry_event(event))return;
