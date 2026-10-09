@@ -263,10 +263,15 @@ target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 # External native package fixture and isolated lifecycle/integration tests.
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
-add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/packages.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/packages.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_package_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_package_test PRIVATE ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+add_executable(guest_png_test runtime/tools/guest_png_test.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(guest_png_test PRIVATE runtime/src)
+target_compile_options(guest_png_test PRIVATE -UNDEBUG)
+target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
+add_test(NAME guest_png COMMAND guest_png_test)
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
 add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)

@@ -3,6 +3,7 @@
 #include "mods.h"
 #include "mod_archive.h"
 #include "mod_hash.h"
+#include "guest_png.h"
 #include "content.h"
 #include "cemu_pack.h"
 #include "../platform/host.h"
@@ -151,7 +152,21 @@ Manifest manifest(const fs::path& path){
             m.files=content::index(checked);
             for(const auto& [name,file]:m.files)m.content_hashes.emplace_back(name,sha256_file(file));
         }
-        if(!m.files.empty()||fs::exists(path/"textures")||fs::exists(path/"assets"))m.trust_fingerprint=package_fingerprint(path);
+        if(!m.files.empty()||fs::exists(path/"textures")||fs::exists(path/"assets")) {
+            m.trust_fingerprint=package_fingerprint(path);
+            for(const auto* folder:{"textures","assets"})if(fs::exists(path/folder)) {
+                require(fs::is_directory(path/folder),"Guest image folder must be a directory");
+                size_t pixels=0,count=0;
+                for(const auto& entry:fs::recursive_directory_iterator(path/folder))if(entry.is_regular_file()) {
+                    auto extension=entry.path().extension().string();
+                    for(char& c:extension)if(c>='A'&&c<='Z')c+='a'-'A';
+                    if(extension!=".png")continue;
+                    require(++count<=32,"Guest package exceeds 32 HUD textures");
+                    auto image=guestmods::hud::load_png(path,entry.path().lexically_relative(path).generic_string());
+                    pixels+=image.rgba.size();require(pixels<=guestmods::hud::kMaxTextureBytes,"Guest package HUD textures exceed 16 MiB decoded");
+                }
+            }
+        }
     }
     if(m.trust_fingerprint.empty())m.trust_fingerprint=m.fingerprint;
     if(m.kind=="content")require(m.dependencies.empty()&&m.options.empty(),"Content packages do not support dependencies or runtime options yet");

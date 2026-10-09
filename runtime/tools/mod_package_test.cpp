@@ -153,6 +153,11 @@ int main(int argc, char** argv) {
         {std::ofstream elf(root/"source/mod.elf",std::ios::binary|std::ios::app);elf << "changed";}
         assert(install((root/"source").string(),error));
         assert(!view("guest-fixture").native_confirmed); // trust fingerprints the ELF, not its name
+        fs::create_directories(root/"source/assets");
+        std::ofstream(root/"source/assets/bad.png")<<"invalid synthetic PNG";
+        assert(!install((root/"source").string(),error));
+        assert(error.find("PNG")!=std::string::npos);
+        fs::remove_all(root/"source/assets");
         {std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":2}})";}
         assert(!install((root/"source").string(),error));
         fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;

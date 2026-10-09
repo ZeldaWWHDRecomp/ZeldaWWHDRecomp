@@ -221,7 +221,11 @@ content activates only after the guest module loads successfully; a failed modul
 leaves its content inactive. Content uses the same path conflicts and overlay rules
 as content-only packages. Enabling or disabling either part requires restart.
 Package images must be original modder artwork; never distribute game assets.
-PNG loading and validation are described with the HUD service once available.
+PNG files in `textures/` and `assets/` are validated during installation. Each
+image is limited to 2048 × 2048 pixels and 16 MiB encoded; a package may contain
+at most 32 images with 16 MiB total decoded RGBA pixels. Invalid PNGs reject the
+installation. Image paths must stay inside the package and may not use symlinks.
+The HUD service also applies these checks when loading generated per-mod data.
 The manager freezes the enabled guest set and options during initialization.
 After memory and dispatch initialization, before guest threads start, it inspects,
 allocates, builds and loads that set in dependency order. Failures appear in each
