@@ -12,6 +12,12 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **The log file is now off by default.** Turn it on in Settings (F1) > Graphics > Bug reports >
+  **Write a log file**; from the next start the game writes `captures/wwhd.log` in its data folder
+  (the previous run's is kept as `wwhd-previous.log`), with your user paths removed as in crash logs.
+  Please turn it on before reproducing a bug and attach the file to the report.
+  `WWHD_LOG_FILE=1` turns it on for one run, `WWHD_LOG_FILE=<path>` writes it elsewhere,
+  `WWHD_LOG_FILE=0` turns it off.
 - **Mod SDK v2, phase 2: HUD drawing for code mods.** PowerPC code mods can now draw on screen
   (text, images, gauges) on both Metal and Vulkan, ship their own original images and content files
   in one package, and read port settings such as the resolution. See `examples/guest-mods/hud-demo`

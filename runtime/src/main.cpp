@@ -25,6 +25,7 @@
 #include <thread>
 
 #include "gfx/renderer.h"
+#include "overlay/hostui.h"
 #include "mods/cemu_pack.h"
 #include "mods/content.h"
 #include "gx2/gx2.h"
@@ -283,15 +284,17 @@ static void log_file_sink(const char* s, size_t n) {
         log_file_raw(g_log_fd, note, sizeof note - 1);
     }
 }
+// Off unless the player turns on Settings > Graphics > "Write a log file" (saved as logFile=1),
+// or WWHD_LOG_FILE is set: 1 = the default file, a path = that file, 0 = off.
 static void start_log_file() {
     const char* e = getenv("WWHD_LOG_FILE");
     if (e && !strcmp(e, "0")) return;
-#ifdef __ANDROID__
-    if (!e || !*e) return;
-#endif
-    std::string path = e && *e ? e : "captures/wwhd.log";
+    const bool chosen = e && *e && strcmp(e, "1");  // a path
+    std::string saved;
+    if (!(e && *e) && !(hostui::get("logFile", saved) && saved == "1")) return;
+    std::string path = chosen ? e : "captures/wwhd.log";
     std::error_code ec;
-    if (!(e && *e)) {
+    if (!chosen) {
         std::filesystem::create_directories("captures", ec);
         std::filesystem::remove("captures/wwhd-previous.log", ec);
         std::filesystem::rename(path, "captures/wwhd-previous.log", ec);

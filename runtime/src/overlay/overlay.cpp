@@ -764,6 +764,16 @@ void tab_graphics() {
         ImGui::TextDisabled("Copied");
     }
     help("Where the renderer spends its time over the last few seconds, as text for a bug report");
+    heading("Bug reports");
+    // read once at start-up (main.cpp start_log_file); WWHD_LOG_FILE decides when set
+    static bool logFile = [] { std::string v; return hostui::get("logFile", v) && v == "1"; }();
+    if (check("Write a log file", logFile, &v, !getenv("WWHD_LOG_FILE"))) {
+        logFile = v;
+        hostui::post([v] { hostui::set("logFile", v ? "1" : "0"); });
+    }
+    help("From the next start: captures/wwhd.log in the game's data folder (the previous run's is kept as "
+         "wwhd-previous.log), with your user paths removed. Turn it on before reproducing a bug and attach "
+         "the file to the bug report.");
 }
 
 void tab_display() {
