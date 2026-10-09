@@ -5,6 +5,11 @@
 #include <cmath>
 
 int main() {
+    // No guest HUD must be a no-op even without an ImGui context. Opening the
+    // port's own overlay must not initialize guest draw lists or take snapshots.
+    assert(!overlay::guesthud::active());
+    overlay::guesthud::frame();
+    assert(ImGui::GetCurrentContext()==nullptr);
     ImGui::CreateContext();
     auto& io=ImGui::GetIO();
     io.IniFilename=nullptr;io.DisplaySize=ImVec2(1280,720);io.DeltaTime=1.f/60;

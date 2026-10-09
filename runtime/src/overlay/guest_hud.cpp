@@ -75,6 +75,9 @@ void backend_destroyed() {
 }
 bool active() {return !textures.empty()||store().active();}
 void frame() {
+    // The port overlay may be open without any guest HUD. Avoid snapshots,
+    // allocations and ImGui work then; active() also covers retiring textures.
+    if(!active())return;
     auto tv=store().snapshot(0),drc=store().snapshot(1);
     std::set<const Image*> used;
     for(const auto* screen:{&tv,&drc})for(const auto& list:*screen)for(const auto& command:list->commands)
