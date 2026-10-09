@@ -137,6 +137,14 @@ HLE(vpad, VPADRead) {
     }
     stf32(st + 0x0C, p.lx); stf32(st + 0x10, p.ly);
     stf32(st + 0x14, p.rx); stf32(st + 0x18, p.ry);
+    static FILE* sample_trace = getenv("WWHD_VPAD_TRACE") ? fopen(getenv("WWHD_VPAD_TRACE"), "w") : nullptr;
+    if (sample_trace) {
+        fprintf(sample_trace, "%llu %d %08X %08X %08X %.6f %.6f %.6f %.6f\n",
+                (unsigned long long)interp::logic_steps(), (int)repeat, ld32(st),
+                ld32(st + 4), ld32(st + 8), ldf32(st + 0x0C), ldf32(st + 0x10),
+                ldf32(st + 0x14), ldf32(st + 0x18));
+        fflush(sample_trace);
+    }
     {  // motion sensors (motion/motion.h). WWHD reads only the direction matrix (0x6C..0x8F): its
        // first-person camera turns by the change from one frame to the next (dCamera_c::CalcSubjectAngle)
         const motion::VpadMotion m = motion::vpad(repeat);
