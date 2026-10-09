@@ -10,7 +10,7 @@ int main() {
  auto h=s.open("a",48000,1);assert(h>0);
  int16_t samples[kMaxSubmit];std::fill_n(samples,kMaxSubmit,10000);
  assert(s.submit("b",h,samples,1,1)==kInvalid);
- assert(s.close("b",h)==kInvalid);
+ assert(s.close("b",h)==kInvalid);assert(s.available("b",h)==kInvalid);
  assert(s.submit("a",h,samples,1,2)==kInvalid);
  assert(s.submit("a",h,samples,kMaxSubmit+1,1)==kInvalid);
  assert(s.submit("a",h,nullptr,1,1)==kInvalid);
@@ -18,8 +18,9 @@ int main() {
  assert(s.available("a",h)==0);assert(s.submit("a",h,samples,1,1)==0);
  int16_t out[8]={30000,-30000,0,0,0,0,0,0};s.mix(out,2);
  assert(out[0]==32767&&out[1]==-20000&&out[2]==10000&&out[3]==10000);
- assert(s.available("a",h)==2);assert(s.submit("a",h,samples,3,1)==2);
+ assert(s.available("a",h)==2);samples[0]=-1234;samples[1]=-2345;assert(s.submit("a",h,samples,3,1)==2);
  s.mix(out,2,true);assert(s.available("a",h)==2);
+ std::vector<int16_t> drained((kFrames-2)*2,0);s.mix(drained.data(),kFrames-2);assert(drained[drained.size()-4]==-1234&&drained[drained.size()-2]==-2345);
  auto epoch=s.epoch();s.reset();assert(s.epoch()!=epoch);
  assert(s.available("a",h)==kInvalid);assert(s.close("a",h)==kInvalid);
  auto fresh=s.open("a",48000,2);assert(fresh>h);
