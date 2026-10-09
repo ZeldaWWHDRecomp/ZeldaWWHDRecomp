@@ -15,27 +15,46 @@ for `labels`; `position`, `custom` and absent keys produce an empty list. Textur
 handles are cached and rebuilt after a full-state load. It targets TV only, with
 top-right anchors; it does not change the player's controls.
 
-The current implementation is an **overdraw candidate pending game-frame
-calibration**, not a verified replacement for every game HUD state. Its placement
-coordinates are grouped in `mod.c` for calibration. Visibility during menus,
-cutscenes and contextual prompts still needs verification.
+The example uses overdraw, with geometry and visibility taken from the actual HD
+`CommandGuide_00` button panes. Its private, bounded pane view comes from the
+public port's `runtime/src/aspect.cpp` and the "HD layouts" section of
+`docs/decomp-notes.md`: parent/children, global matrix, visibility flags, local
+alpha and pane names. This does not add declarations to the generated SDK headers.
+A hook at the published `nw::lyt::Pane::Draw` address discovers the five named
+panes in the TV cluster, records their matrix positions and multiplies visible
+ancestors' alpha. It ignores the separate projected A prompt and the parked DRC
+cluster. Texture and pane caches reset when the HUD epoch changes.
+
+The callback uses the last drawn snapshot, rather than reading matrices that the
+game may subsequently animate for another screen. While the public decomp's
+`dScnPly_isPause` predicate is true, it holds the last TV snapshot: Pause displays
+a captured game picture, and hiding the replacement would expose the original
+button lettering again. Outside Pause, stale snapshots expire. Matrix positions
+already include any port aspect adjustment; the example removes the HUD service's
+right-anchor expansion once before emitting them. This follows the game's real
+button placement, including a centred cluster when the port centres that layout.
 
 The public CC0 HD decomp at commit
 `47e1dbc3886cfd8233859dffd73efc41a04a9130` exposes `updateHudStatus`,
-`updateButtonCounter`, `meterXYAlpha` and HUD pane alpha helpers in
-`wwhd_src/d/d_meter_00.cpp`, `d_meter_01.cpp` and `d_meter_02.cpp`. These update
-state for several HUD elements; they do not expose a simple independent A/B/X/Y/R
-texture setter. Overdraw uses only the supported HUD service and the face-layout
-setting. A deeper hook implementation could follow the individual pane geometry,
-visibility and fades and replace or suppress the original button pictures, but
-would need a verified pane layout and separate treatment of contextual icons.
-The frame tests determine whether overdraw is sufficient before choosing the
-final route for issue #78.
+`updateButtonCounter`, `meterXYAlpha` and legacy HUD pane helpers. The legacy
+pane alpha fields are unused by these HD button pictures, so they are not used
+for visibility. A deeper implementation could replace the individual HD picture
+textures directly; that would require additional public picture-material layout
+and renderer integration. Overdraw keeps original art in the mod package and
+uses the supported HUD service.
+
+Local functional checks verified gameplay placement, Pause/resume, and a synthetic
+ancestor fade on USA/Metal, including 60 fps interpolation and 21:9. Regional,
+backend, 300-frame, state-load and contextual-cutscene checks are separate; do not
+infer complete coverage from those short placement checks. Overdraw also cannot
+reproduce the game's Pause blur/filter on replacement artwork.
 
 For a local live-preset check, use `tools/guestmod/test_hud_e2e.py` with
 `--package button-icons --layout labels --switch-layout position --frames 300`,
 plus its required binary, game, copied-save source, regional state and output
-arguments. `--switch-after` selects the reload time in scenario seconds. The
+arguments. Use `--boot --keep-state` to create a state with this package first;
+full states from another guest-mod set restore that set's module data and are
+rejected by the checker. `--switch-after` selects the reload time in scenario seconds. The
 checker creates a second private controls JSON and applies it through the same
 live mapping setter as the Controls window; it does not overwrite the player's
 controls. A passing check requires both captured endpoint states, exactly one
