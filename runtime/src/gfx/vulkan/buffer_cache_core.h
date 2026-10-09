@@ -156,7 +156,7 @@ struct Entry {
   // caller memo of data derived from the region's bytes (index extents); cleared on upload
   uint64_t memoKey = ~uint64_t{0};
   uint32_t memo[3] = {};
-  std::vector<uint8_t> shadow;  // CPU copy of the bytes (index entries: extent scans)
+  std::vector<uint8_t> shadow;  // CPU copy of the uploaded bytes (verify mode: Cache::keepShadow)
 };
 
 struct Stats {
@@ -171,6 +171,8 @@ enum Status { kHit, kMiss, kBypass };
 
 class Cache {
  public:
+  // verify mode: keep a CPU copy of every upload, so verify() never reads the mapped GPU memory
+  bool keepShadow = false;
   static constexpr uint32_t kChurnLimit = 3, kChurnFrames = 4;
   static constexpr uint64_t kFirstBackoff = 64, kMaxBackoff = 2048;
   static constexpr uint64_t kIdleFrames = 1800;  // evicted after this many frames without use
@@ -237,6 +239,12 @@ class Cache {
       return false;
     }
     std::memcpy(region.mapped, bytes, outSize);
+    if (keepShadow) {
+      const auto* b = static_cast<const uint8_t*>(bytes);
+      e.shadow.assign(b, b + outSize);
+    } else {
+      e.shadow.clear();
+    }
     e.region = region;
     e.size = e.armSize;
     e.outSize = outSize;
@@ -253,18 +261,20 @@ class Cache {
 
   // Verify mode: compares the region's first n bytes with freshly computed ones. A difference with a
   // newer stamp on the range is a write racing this check (counted, not a mismatch). Diagnostics only
-  // (WWHD_VK_BUFFER_CACHE_VERIFY=1): the one place that reads mapped GPU memory, which is uncached or
-  // write-combined on discrete GPUs and slow to read. Nothing else may (docs/vulkan.md).
+  // (WWHD_VK_BUFFER_CACHE_VERIFY=1). It compares against the CPU copy of the upload (keepShadow): the
+  // mapped GPU memory is uncached or write-combined on discrete GPUs, and reading it made verify mode
+  // run at ~1 fps on an RX 6700 XT (issue #91). Without a copy it falls back to the mapped bytes.
   bool verify(Entry& e, const void* expected, uint32_t n, uint32_t* firstDiff = nullptr) {
     ++stats.verifyChecks;
     n = std::min(n, e.outSize);
     const auto* a = static_cast<const uint8_t*>(expected);
-    if (!std::memcmp(a, e.region.mapped, n)) return true;
+    const uint8_t* have = e.shadow.size() >= n ? e.shadow.data() : e.region.mapped;
+    if (!std::memcmp(a, have, n)) return true;
     if (wwatch::changed_since(e.addr, e.size, e.stamp)) { ++stats.verifyRaced; return true; }
     ++stats.verifyMismatches;
     if (firstDiff) {
       uint32_t i = 0;
-      while (i < n && a[i] == e.region.mapped[i]) ++i;
+      while (i < n && a[i] == have[i]) ++i;
       *firstDiff = i;
     }
     return false;

@@ -267,6 +267,23 @@ int main() {
     e->region.mapped[5] ^= 0xFF;
     g_mem[v + 9] ^= 0xFF;  // a write after the lookup: stamped, so "raced"
     assert(cache.verify(*e, g_mem + v, P) && cache.stats.verifyRaced == 1 && cache.stats.verifyMismatches == 1);
+    // with keepShadow (the runtime's verify mode) the check uses the CPU copy, never the mapped bytes
+    {
+        TestBacking sb;
+        Cache shadowed(sb);
+        shadowed.keepShadow = true;
+        shadowed.set_frame(frame);
+        const uint32_t w = 0xA40000;
+        Entry* s;
+        use(shadowed, w, P, &s);
+        assert(s->shadow.size() == P && !memcmp(s->shadow.data(), g_mem + w, P));
+        s->region.mapped[3] ^= 0xFF;  // the GPU copy is not read in this mode
+        assert(shadowed.verify(*s, g_mem + w, P) && shadowed.stats.verifyMismatches == 0);
+        s->region.mapped[3] ^= 0xFF;
+        s->shadow[7] ^= 0xFF;  // a stale copy (missed invalidation) is still caught
+        uint32_t d = 0;
+        assert(!shadowed.verify(*s, g_mem + w, P, &d) && d == 7 && shadowed.stats.verifyMismatches == 1);
+    }
     printf("verify: ok\n");
 
     // 13. a concurrent writer (the game thread) against lookups (the render thread): every hit's bytes

@@ -99,6 +99,7 @@ State& state() {
     if (heap < (1ull << 30)) b.budget = std::min<uint64_t>(b.budget, heap / 2);
     break;
   }
+  created->cache.keepShadow = buffer_cache_verify();  // verify() then never reads GPU memory
   LOG("[vulkan buffer cache] on%s: budget %llu MiB, %s memory, hints %s", buffer_cache_verify() ? " (verify mode)" : "",
       (unsigned long long)(b.budget >> 20),
       (b.flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "device-local host-visible" : "host-visible",

@@ -333,6 +333,9 @@ blocks into the upload arena with persistent GPU copies keyed by guest address
 0 verify mismatches, ~13 more presented fps in heavy views on an Adreno 830) and Windows (issue #91:
 13-19% less render-thread time on an RX 6700 XT, no geometry problems); `WWHD_VK_BUFFER_CACHE=1` turns it on and
 `WWHD_VK_BUFFER_CACHE=0` off on any platform.
+Verify mode (`WWHD_VK_BUFFER_CACHE_VERIFY=1`) keeps a CPU copy of every upload and compares guest
+memory against it, so it never reads the mapped GPU memory (uncached on discrete GPUs: it ran at ~1 fps
+on an RX 6700 XT before, issue #91).
 
 **Verify mode:** on drivers whose upload memory is not host-cached (e.g. AMD on Windows) the verify
 mode reads it back and becomes unusably slow; it is a diagnostic, not needed for normal play. Earlier
