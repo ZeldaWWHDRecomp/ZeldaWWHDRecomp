@@ -139,6 +139,7 @@ struct Renderer {
   VkQueryPool timestampQueries=VK_NULL_HANDLE;
   bool timestampRecorded=false;
   uint64_t timestampFrame=0;
+  uint32_t perfQuery=UINT32_MAX;
   static constexpr uint32_t maxGpuScopes=256;
   struct GpuScope { GpuScopeMetadata metadata{}; uint64_t draws=0,generation=0; bool ended=false; };
   std::array<GpuScope,maxGpuScopes> gpuScopes{};

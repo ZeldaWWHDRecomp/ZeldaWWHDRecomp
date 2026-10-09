@@ -17,6 +17,8 @@
 //   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
 //                                              (headless tests only; open the Mods tab separately)
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
+//   WWHD_TEST_PERF_REPORT=<file>                export the clipboard report in a headless test
+//   WWHD_TEST_PERF_REPORT_AT=<frame>            export at this presented frame (default 300)
 #pragma once
 #include <cstdint>
 

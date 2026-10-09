@@ -37,6 +37,7 @@
 #include "interp_pacing.h"
 #include "guest_addr.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "runtime.h"
 #include "savestate.h"
 #include "true60.h"
@@ -889,6 +890,7 @@ extern "C" void hook_0203593C(Cpu* c) {
             }
         }
     } countdown_trace{enabled() && g_hold_next};
+    perf::game_frame();
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();

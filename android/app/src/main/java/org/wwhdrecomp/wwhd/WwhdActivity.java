@@ -25,6 +25,9 @@ public class WwhdActivity extends SDLActivity {
         return HttpsDownload.download(url, destination, limit);
     }
 
+    // Public thermal/battery APIs, sampled by the overlay/report via JNI at most once a second.
+    public static String performanceThermals() { return PerformanceThermals.read(mSingleton); }
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };

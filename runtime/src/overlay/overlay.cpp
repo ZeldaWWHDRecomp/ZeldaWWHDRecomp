@@ -57,6 +57,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../render_prof.h"
+#include "../perf_metrics.h"
 #include "../build_info.h"
 #include "../report_header.h"
 
@@ -573,6 +574,52 @@ void tab_saves() {
     }
 }
 
+std::string performance_device() {
+    std::string device = render::device();
+#ifdef __APPLE__
+    if (!render::vulkan()) device += ", driver: " + reporthdr::os_description();
+#endif
+#ifdef __ANDROID__
+    const auto driver = gfxvk::drivers::active_name();
+    if (!driver.empty()) device += " (" + driver + ")";
+#endif
+    return device.empty() ? "GPU/driver: n/a" : device;
+}
+
+std::string performance_report() {
+    float sum = 0, worst = 0;
+    for (float f : U.frame_ms) { sum += f; worst = std::max(worst, f); }
+    char frame[180];
+    snprintf(frame, sizeof frame, "FPS %.1f (average %.1f), frame %.2f ms (worst %.2f), average logic steps/s %.1f\n",
+             U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
+    std::string report = std::string(frame) + perf::summary();
+#ifdef __ANDROID__
+    report += android_telemetry() + "\n";
+#endif
+    report += "CPU time is thread running time per output frame. GPU submission intervals may include stalls; not GPU load.\n";
+    const std::string detailed = rprof::latest_report();
+    report += detailed.empty() ? "No detailed report yet: play for a few seconds, then copy again.\n" : detailed;
+    // which build, system, GPU and rendering-path switches (report_header.h)
+    reporthdr::Info h;
+    h.version = build::version();
+    h.commit = build::commit();
+    h.os = reporthdr::os_description();
+    h.gpu = performance_device();
+    h.renderer = render::vulkan() ? "Vulkan" : "Metal";
+    h.host = hostui::name();
+    h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? "60 fps interpolation" : "30 fps";
+    h.scale = hostui::res_scale();
+#ifdef WWHD_HAS_VULKAN
+    if (render::vulkan()) {
+        h.bufferCache = gfxvk::buffer_cache_enabled();
+        h.overrides = reporthdr::vulkan_overrides([](const char* n) -> const char* { return getenv(n); });
+    }
+#endif
+    if (const int g = motion::settings().source; g != motion::kOff) h.gyro = motion::source_id(g);
+    report = reporthdr::format(h) + report;
+    return report;
+}
+
 void tab_graphics() {
 #ifdef __ANDROID__
     heading("GPU driver (Snapdragon / Adreno)");
@@ -732,30 +779,11 @@ void tab_graphics() {
 #endif
     heading("Overlay");
     if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
-    if (ImGui::Button("Reset performance averages")) g_average.reset();
+    if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); }
     // the render-thread profiler's latest report (render_prof.h), for performance bug reports
     static double copiedAt = -10;
     if (ImGui::Button("Copy performance report")) {
-        std::string report = rprof::latest_report();
-        // which build, system, GPU and rendering-path switches (report_header.h)
-        reporthdr::Info h;
-        h.version = build::version();
-        h.commit = build::commit();
-        h.os = reporthdr::os_description();
-        h.gpu = render::device();
-        h.renderer = render::vulkan() ? "Vulkan" : "Metal";
-        h.host = hostui::name();
-        h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? "60 fps interpolation" : "30 fps";
-        h.scale = hostui::res_scale();
-#ifdef WWHD_HAS_VULKAN
-        if (render::vulkan()) {
-            h.bufferCache = gfxvk::buffer_cache_enabled();
-            h.overrides = reporthdr::vulkan_overrides([](const char* n) -> const char* { return getenv(n); });
-        }
-#endif
-        if (const int g = motion::settings().source; g != motion::kOff) h.gyro = motion::source_id(g);
-        report = reporthdr::format(h) +
-                 (report.empty() ? std::string("No report yet: play for a few seconds, then copy again.\n") : report);
+        std::string report = performance_report();
         hostui::post([report] { hostui::set_clipboard(report); });
         copiedAt = ImGui::GetTime();
     }
@@ -1882,13 +1910,11 @@ void perf_window(bool menu_open) {
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Slow motion: %.0f of 30 logic steps/s. Turn on Keep game speed", rate);
         }
 #ifdef __ANDROID__
-        static AndroidTelemetry telemetry;
-        static double next_read = 0;
-        if (t >= next_read) { telemetry.read(); next_read = t + 2; }
-        if (telemetry.busy >= 0) ImGui::Text("GPU busy %.0f%%", telemetry.busy);
-        for (const auto& [name, value] : telemetry.temperatures)
-            ImGui::Text("%s %.1f C", name.c_str(), value);
+        ImGui::TextUnformatted(android_telemetry().c_str());
 #endif
+        ImGui::Separator();
+        ImGui::TextUnformatted(performance_device().c_str());
+        ImGui::TextUnformatted(perf::summary().c_str());
         ImGui::PlotLines("##ft", U.frame_ms, 120, U.frame_i, nullptr, 0.0f, 50.0f, ImVec2(220, 36));
         ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(), interp::mode_name());
         if (float share = interp::paced_drawn_share(); share >= 0)
@@ -2078,6 +2104,19 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    perf::set_demand(perf, open && U.tab == kGraphics);
+    // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
+    static const char* testReport = getenv("WWHD_TEST_PERF_REPORT");
+    static const uint64_t reportAt = getenv("WWHD_TEST_PERF_REPORT_AT")
+        ? strtoull(getenv("WWHD_TEST_PERF_REPORT_AT"), nullptr, 10) : 300;
+    static bool reportWritten = false;
+    if (testReport && !reportWritten && gx2::flips_presented() >= reportAt) {
+        if (FILE* f = fopen(testReport, "w")) {
+            const std::string report = performance_report();
+            fwrite(report.data(), 1, report.size(), f); fclose(f);
+            reportWritten = true;
+        }
+    }
     // save state notices (saved, refused during a cutscene, loaded into another Quest Log) show over the
     // game for a few seconds while the menu is closed (the window title is not visible everywhere)
     const std::string toast = open ? std::string() : ss::last_message();

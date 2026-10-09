@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "write_watch.h"
 #include "shaders.h"
 #include "gx2/gx2.h"
@@ -719,6 +720,37 @@ int renderer_smoke_test() {
   }
   // Ensure deferred objects left by readback and stack-owned images are actually reclaimed.
   command_buffer();flush();require(R.garbageBuffers.empty()&&R.garbageImages.empty()&&R.garbageCacheRegions.empty(),"deferred Vulkan resources were not reclaimed");
+  // Exercise the actual timestamp command sites, not just the demand predicate.
+  if (!getenv("WWHD_VK_GPU_TIMESTAMPS") && !getenv("WWHD_VK_GPU_PASS_TIMESTAMPS")) {
+    perf::set_demand(false, false);
+    auto before = perf::counters();
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "hidden overlay wrote timestamps");
+    // Queue families with zero timestamp bits must silently keep the GPU reading unavailable.
+    auto validBits = R.gpuTimestampValidBits;
+    R.gpuTimestampValidBits = 0;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "unsupported queue wrote timestamps");
+    perf::set_demand(false, false);
+    R.gpuTimestampValidBits = validBits;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    auto measured = perf::counters();
+    if (R.gpuTimestampValidBits && R.properties.limits.timestampPeriod > 0)
+      require(measured.timestamp_writes == before.timestamp_writes + 2, "visible overlay did not write timestamp pair");
+    require(measured.query_reads == before.query_reads, "overlay read timestamps in the recorded frame");
+    ++R.frame; command_buffer(); flush();
+    measured = perf::counters();
+    if (measured.query_reads > before.query_reads)
+      require(measured.minimum_query_age >= 1, "overlay read timestamps without a frame of delay");
+    perf::set_demand(false, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == measured.timestamp_writes, "hiding overlay kept writing timestamps");
+    require(perf::counters().query_reads == measured.query_reads, "hidden overlay polled query results");
+    LOG("[renderer smoke] overlay timestamp writes: hidden 0, on %llu, hidden again 0",
+        (unsigned long long)(measured.timestamp_writes - before.timestamp_writes));
+  }
   save_pipeline_cache();
   LOG("[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present");return 0;
  }catch(const std::exception& e){LOG("[renderer smoke] FAIL: %s",e.what());try {command_buffer();flush();}catch(...){}return 1;}
