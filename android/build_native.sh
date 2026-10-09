@@ -59,9 +59,11 @@ bin="$ndk/toolchains/llvm/prebuilt/$host"
 cp "$(find "$out/_deps" -name libSDL3.so -print -quit)" "$libs/"
 cp "$bin/sysroot/usr/lib/$target_triple/libc++_shared.so" "$libs/"
 # libadrenotools loads these hooks by soname from ApplicationInfo.nativeLibraryDir.
-for hook in main_hook hook_impl file_redirect_hook gsl_alloc_hook; do
-    hook_file="$(find "$out/_deps" -name "lib${hook}.so" -print -quit)"
-    [ -n "$hook_file" ] || { echo "missing AdrenoTools hook: $hook"; exit 1; }
-    cp "$hook_file" "$libs/"
-done
+if [ "$abi" = arm64-v8a ]; then  # libadrenotools is arm64-only
+    for hook in main_hook hook_impl file_redirect_hook gsl_alloc_hook; do
+        hook_file="$(find "$out/_deps" -name "lib${hook}.so" -print -quit)"
+        [ -n "$hook_file" ] || { echo "missing AdrenoTools hook: $hook"; exit 1; }
+        cp "$hook_file" "$libs/"
+    done
+fi
 ls -la "$libs"

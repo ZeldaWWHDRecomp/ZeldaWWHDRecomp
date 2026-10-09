@@ -7,7 +7,9 @@
 #include <android/native_window.h>
 #include <android/api-level.h>
 #include <vulkan/vulkan_android.h>
+#if WWHD_ADRENOTOOLS
 #include <adrenotools/driver.h>
+#endif
 #include <dlfcn.h>
 #include <jni.h>
 #include <memory>
@@ -51,7 +53,12 @@ PFN_vkGetInstanceProcAddr open_custom() {
         auto list=s.list();auto item=std::find_if(list.begin(),list.end(),[&](const auto& d){return d.id==s.selected();});
         if(item==list.end()||item->min_api>android_get_device_api_level())exception_report::raise("Selected driver is unavailable or requires a newer Android version");
         auto hooks=hook_directory();auto dir=item->directory.string()+"/";
+#if WWHD_ADRENOTOOLS
         driver_handle=adrenotools_open_libvulkan(RTLD_NOW|RTLD_LOCAL,ADRENOTOOLS_DRIVER_CUSTOM,nullptr,hooks.c_str(),dir.c_str(),item->library.c_str(),nullptr,nullptr);
+#else
+        (void)hooks;(void)dir;
+        throw std::runtime_error("Custom drivers need an arm64 device; using the system driver");
+#endif
         auto gipa=driver_handle?reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(driver_handle,"vkGetInstanceProcAddr")):nullptr;
         if(!gipa)exception_report::raise("Custom driver could not load; using the system driver");
         active_id=item->id;active_label=item->name+" "+item->version;
