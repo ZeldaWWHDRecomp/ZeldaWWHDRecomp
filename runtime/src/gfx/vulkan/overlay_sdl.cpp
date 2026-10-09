@@ -13,6 +13,7 @@
 #include "overlay/hostui.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
+#include "platform/dual_display.h"
 #include "runtime.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -218,6 +219,9 @@ void load_saved_options() {
     if (saved("fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(120, num("fpsHighPaced") != 0);
     if (saved("scaleFilter", {"WWHD_SCALE_FILTER"})) gfxvk::set_scale_filter((int)num("scaleFilter"));
     if (saved("vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode((int)num("vkPresentMode"));
+#ifdef __ANDROID__
+    if (v.count("androidSwapDisplays")) dual_display::requested_swap = num("androidSwapDisplays") != 0;
+#endif
     // GamePad screen (display_modes.h); the start-up test overrides after the saved choices
     using namespace gfx;
     if (v.count("drcMode")) {
@@ -247,6 +251,13 @@ void set_scale_filter(int f) {
     graphics_changed();
 }
 bool scale_filter_available() { return gfxvk::graphics_feature_available(gfxvk::GraphicsFeature::ScaleFilter); }
+#ifdef __ANDROID__
+bool displays_swapped() { return dual_display::requested_swap; }
+void set_displays_swapped(bool swapped) {
+    dual_display::requested_swap = swapped;
+    set("androidSwapDisplays", swapped ? "1" : "0");
+}
+#endif
 
 bool fullscreen() { return gfxvk::R.tv.window && (SDL_GetWindowFlags(gfxvk::R.tv.window) & SDL_WINDOW_FULLSCREEN); }
 void set_fullscreen(bool on) {

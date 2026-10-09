@@ -34,9 +34,10 @@
   X(vkCreateComputePipelines) X(vkCmdDispatch) X(vkCreateGraphicsPipelines) X(vkCreateImage) X(vkCreateImageView) X(vkCreatePipelineCache) \
   X(vkCreatePipelineLayout) X(vkCreateQueryPool) X(vkCreateSampler) X(vkCreateSemaphore) \
   X(vkCreateShaderModule) X(vkCreateSwapchainKHR) X(vkDestroyBuffer) X(vkDestroyDescriptorSetLayout) \
+  X(vkDestroyCommandPool) X(vkDestroyDescriptorPool) \
   X(vkDestroyImage) X(vkDestroyImageView) X(vkDestroyPipeline) X(vkDestroyPipelineLayout) \
   X(vkDestroyQueryPool) X(vkDestroySampler) X(vkDestroySemaphore) X(vkDestroyShaderModule) \
-  X(vkDestroySwapchainKHR) X(vkDeviceWaitIdle) X(vkEndCommandBuffer) X(vkFreeMemory) \
+  X(vkDestroySwapchainKHR) X(vkDestroyFence) X(vkDeviceWaitIdle) X(vkEndCommandBuffer) X(vkFreeMemory) \
   X(vkGetBufferMemoryRequirements) X(vkGetDeviceQueue) X(vkGetFenceStatus) X(vkGetImageMemoryRequirements) \
   X(vkGetPipelineCacheData) X(vkGetQueryPoolResults) X(vkGetSwapchainImagesKHR) X(vkMapMemory) \
   X(vkQueuePresentKHR) X(vkQueueSubmit) X(vkQueueWaitIdle) X(vkResetCommandPool) X(vkResetDescriptorPool) \

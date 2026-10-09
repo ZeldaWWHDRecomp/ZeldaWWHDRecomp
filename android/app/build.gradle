@@ -15,7 +15,7 @@ android {
         targetSdk 36
         versionCode 1
         versionName "0.1"
-        ndk { abiFilters 'arm64-v8a' }
+        ndk { abiFilters providers.gradleProperty('wwhdAbi').getOrElse('arm64-v8a') }
     }
     buildTypes {
         release {
@@ -24,6 +24,21 @@ android {
         }
     }
     sourceSets.main.jniLibs.srcDirs = ['libs']
+    def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
+    if (pythonPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(pythonPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(pythonPackage + '/assets')]
+    }
+    def toolchainPackage = providers.gradleProperty('wwhdToolchainDir').orNull
+    if (toolchainPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(toolchainPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(toolchainPackage + '/assets')]
+    }
+    def extractorPackage = providers.gradleProperty('wwhdExtractorDir').orNull
+    if (extractorPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(extractorPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(extractorPackage + '/assets')]
+    }
     // the game's own icon (android/make_icon.py, from your game files; git-ignored), else SDL's
     def gameIcon = file('local-res').exists()
     if (gameIcon) sourceSets.main.res.srcDirs += ['local-res']
@@ -32,6 +47,7 @@ android {
         jniLibs {
             useLegacyPackaging = true  // libadrenotools needs extracted hooks in nativeLibraryDir
             keepDebugSymbols += ['**/libmain.so']  // stripped by build_native.sh already
+            if (toolchainPackage != null || extractorPackage != null) keepDebugSymbols += ['**/libwwhd-*.so']  // preserve pinned tool bytes
         }
     }
     lint { abortOnError = false }
@@ -39,4 +55,20 @@ android {
 
 dependencies {
     implementation 'androidx.core:core:1.15.0'
+    implementation 'androidx.window:window:1.5.1'
+    implementation 'androidx.window:window-java:1.5.1'
 }
+
+tasks.register('verifyReleasePython') {
+    doLast {
+        def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
+        if (pythonPackage != null) {
+            def archive = new java.util.zip.ZipFile(file(pythonPackage + '/assets/python-source.zip'))
+            try {
+                if (archive.getEntry('tools/android/service_fixture.py') != null)
+                    throw new GradleException('Synthetic service resources are debug-only; repackage Python without --service-fixture')
+            } finally { archive.close() }
+        }
+    }
+}
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'verifyReleasePython' }

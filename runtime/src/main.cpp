@@ -52,6 +52,9 @@ namespace interp { void set_mode(int); }
 
 #ifdef WWHD_HAS_VULKAN
 namespace gfxvk { int renderer_smoke_test(); }
+#ifdef __ANDROID__
+namespace gfxvk { int android_display_smoke_test(); void save_renderer_caches(); }
+#endif
 #endif
 #ifdef WWHD_HAS_METAL
 int gfx_headstart_warm();  // gfx/shader_headstart.mm
@@ -387,6 +390,9 @@ int main(int argc, char** argv) {
     bool warm_shaders = false;
 #ifdef WWHD_HAS_VULKAN
     bool renderer_smoke = false;
+#ifdef __ANDROID__
+    bool display_smoke = false;
+#endif
 #endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) config::game_dir = argv[++i];
@@ -395,6 +401,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
 #ifdef WWHD_HAS_VULKAN
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
+#ifdef __ANDROID__
+        else if (!strcmp(argv[i], "--shared-general-smoke")) setenv("WWHD_VK_SHARED_GENERAL", "1", 1);
+        else if (!strcmp(argv[i], "--isolated-secondary-smoke")) setenv("WWHD_VK_ISOLATED_SECONDARY", "1", 1);
+        else if (!strcmp(argv[i], "--display-smoke")) {
+            renderer_smoke = true; display_smoke = true;
+            setenv("WWHD_VK_GPU_TIMESTAMPS", "1", 0); // optional, game-free measurements
+            setenv("WWHD_VK_STATS", "1", 0); // attribute acquire/present/submission delays
+        }
+#endif
 #endif
     }
     crash_context::initialize();
@@ -439,10 +454,17 @@ int main(int argc, char** argv) {
             try {
                 render::g_backend->init();
             } catch (const std::exception& e) {
-                fprintf(stderr, "[renderer smoke] FAIL: Vulkan could not start: %s\n", e.what());
+                LOG("[renderer smoke] FAIL: Vulkan could not start: %s", e.what());
                 return;
             }
-            result = gfxvk::renderer_smoke_test();
+#ifdef __ANDROID__
+            if (display_smoke) {
+                result = gfxvk::android_display_smoke_test();
+                gfxvk::save_renderer_caches();
+            }
+            else
+#endif
+                result = gfxvk::renderer_smoke_test();
         });
         return result;
     }

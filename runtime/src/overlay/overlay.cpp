@@ -826,6 +826,10 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok)) hostui::post([i] { hostui::set_scale_filter(i); });
     }
     heading("GamePad screen");
+#ifdef __ANDROID__
+    if (check("Swap TV and GamePad displays", hostui::displays_swapped(), &v))
+        hostui::post([v] { hostui::set_displays_swapped(v); });
+#endif
     // the modes of display_modes.h; a host offers those it can show (no "Separate window" without one,
     // as on Android)
     const int mode = hostui::drc_mode();

@@ -57,6 +57,8 @@ struct Screen {
  std::atomic<bool> visible{true},srgb{false},resize{false};
  int presentMode=-1,presentWanted=-1; // present mode of the swapchain, and the setting it was made for
  std::atomic<int> width{1280},height{720};
+ uint64_t swapchainGeneration=0; // renderer-thread lifecycle diagnostics
+ std::atomic<uint64_t> presented{0}; // successful queue presentations, for display diagnostics
 };
 struct GpuScopeMetadata {
  uint32_t kind=0; // 0 render pass, 1 feedback copy.
@@ -69,10 +71,33 @@ struct GpuScopeMetadata {
  bool depthOnly=false;
 };
 struct GpuScopeToken { uint64_t generation=0; uint32_t index=UINT32_MAX; };
+inline constexpr std::array<const char*,9> secondaryStageNames{
+ "acquire", "acquire_wait", "ready_fd", "record", "submit", "draw_wait", "returned_fd", "present", "primary_snapshot_record"};
 struct Renderer {
  VkInstance instance=VK_NULL_HANDLE; VkPhysicalDevice physicalDevice=VK_NULL_HANDLE; VkDevice device=VK_NULL_HANDLE;
+ std::unordered_map<VkFormat,VkFormatProperties> formatProperties;
  VkPhysicalDeviceFeatures enabledFeatures{};
  bool computeQueue=false;
+ std::atomic<bool> secondaryPresentHeld{false}; // game-free blocked-present diagnostic
+ std::atomic<bool> secondaryInjectAcquireLoss{false},secondaryInjectPresentLoss{false}; // authored WSI diagnostics
+ std::atomic<bool> secondaryInjectQueryLoss{false};
+ std::atomic<uint64_t> secondarySurfaceLosses{0};
+ std::atomic<bool> secondaryAcquireHeld{false}; // game-free blocked-acquisition diagnostic
+ uint32_t primaryRequestedQueues=1;
+ std::atomic<uint32_t> secondaryDeviceSwapchains{0},secondarySharedSnapshots{0};
+ std::atomic<uint64_t> secondaryLocalQueueWaits{0};
+ // Opt-in diagnostic CPU wall times, including driver waits; not GPU busy times.
+ std::atomic<bool> secondaryProfile{false};
+ std::array<std::atomic<uint64_t>,secondaryStageNames.size()> secondaryStageNs{},secondaryStageCalls{};
+ bool secondaryIsolated=false; // separate logical-device WSI worker
+ bool secondaryAcquirePending=false;
+ bool secondaryPresentPending=false; // renderer-thread mailbox ownership
+ std::atomic<uint64_t> secondaryPresentSkipped{0};
+ VkQueue secondaryQueue=VK_NULL_HANDLE;
+ uint32_t secondaryQueueFamily=0;
+ bool secondaryRetirementHeld=false; // game-free diagnostic loop only
+ bool secondaryPresentFences=false; // Android: optional swapchain-maintenance presentation retirement
+ std::atomic<uint64_t> secondaryIdleWaits{0},secondaryRetired{0},secondaryRetirementPending{0};
  bool dynamicRenderingKHR=false; // VK_KHR_dynamic_rendering (device older than Vulkan 1.3)
  bool portabilitySubset=false,imageViewSwizzle=true,imageViewReinterpretation=true;
  bool imageView2DOn3DImage=true; // 2D views of volume slices (render targets); core Vulkan 1.1, optional in the portability subset
@@ -83,7 +108,7 @@ struct Renderer {
  struct GpuTimestampStats {
   double intervalNs=0,maxIntervalNs=0;
   uint64_t submissions=0,unavailable=0,zeroIntervals=0;
- } gpuTimestampStats;
+ } gpuTimestampStats, gpuTimestampLifetimeStats;
  VkPipelineCache pipelineCache=VK_NULL_HANDLE;
  bool pipelineCacheDirty=false;
  uint64_t pipelineCacheChangedFrame=0;
@@ -167,6 +192,8 @@ void flush_async();
 void reset_pipeline_lookup_cache();
 uint64_t draw_batch_submissions();
 void vk_check(VkResult result,const char* operation);
+// Immutable physical-device capabilities, cached on the renderer thread.
+const VkFormatProperties& format_properties(VkFormat format);
 uint32_t memory_type(uint32_t bits,VkMemoryPropertyFlags properties);
 // preferred: extra property flags used when a memory type has them (else the required ones only)
 Buffer create_buffer(VkDeviceSize size,VkBufferUsageFlags usage,VkMemoryPropertyFlags properties,
@@ -192,7 +219,8 @@ void transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPEL
 void forget_texture_views();
 void service_captures();
 void request_tv_dump(const std::string&, int);
-void create_surface_image(Surface*,bool forRendering,VkExtent3D explicitExtent = {});
+void create_surface_image(Surface*,bool forRendering,VkExtent3D explicitExtent = {},
+                          uint32_t sharedQueueFamily = VK_QUEUE_FAMILY_IGNORED);
 void reset_ao_private_cache();
 void destroy_surface_image(Surface*);
 VkImageView layer_view(Surface*,uint32_t slice);

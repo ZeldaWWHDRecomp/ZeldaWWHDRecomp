@@ -224,6 +224,12 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     // This is what SDL runs in. It invokes SDL_main(), eventually
     protected static Thread mSDLThread;
+    private static boolean mRetainedNativeSession;
+    private boolean mReusingNativeSession;
+
+    /** App opt-in: keep a live native engine when Android replaces only the Activity. */
+    protected boolean retainNativeSessionOnRecreation() { return false; }
+    protected final boolean isReusingNativeSession() { return mReusingNativeSession; }
     protected static boolean mSDLMainFinished = false;
     protected static boolean mActivityCreated = false;
     private static SDLFileDialogState mFileDialogState = null;
@@ -349,10 +355,13 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         Log.v(TAG, "Model: " + Build.MODEL);
         Log.v(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
-
+        final boolean retaining = mRetainedNativeSession && retainNativeSessionOnRecreation() &&
+                mSDLThread != null && mSDLThread.isAlive() && !mSDLMainFinished;
+        mReusingNativeSession = retaining;
+        mRetainedNativeSession = false;
 
         /* Control activity re-creation */
-        if (mSDLMainFinished || mActivityCreated) {
+        if (!retaining && (mSDLMainFinished || mActivityCreated)) {
               boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
               if (mSDLMainFinished) {
                   Log.v(TAG, "SDL main() finished");
@@ -426,7 +435,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         /* Control activity re-creation */
         /* Robustness: check that the native code is run for the first time.
          * (Maybe Activity was reset, but not the native code.) */
-        {
+        if (!retaining) {
             int run_count = SDLActivity.nativeCheckSDLThreadCounter(); /* get and increment a native counter */
             if (run_count != 0) {
                 boolean allow_recreate = SDLActivity.nativeAllowRecreateActivity();
@@ -441,10 +450,22 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
 
         // Set up JNI
-        SDL.setupJNI();
-
-        // Initialize state
-        SDL.initialize();
+        if (!retaining) {
+            SDL.setupJNI();
+            SDL.initialize();
+        } else {
+            // Do not replace native lifecycle mutexes/semaphores, restart SDL_main,
+            // or reset controller/audio state while the engine is still running.
+            mSurface = null;
+            mTextEdit = null;
+            mLayout = null;
+            mClipboardHandler = null;
+            mIsResumedCalled = false;
+            mHasFocus = false;
+            mNextNativeState = NativeState.PAUSED;
+            mCurrentNativeState = NativeState.PAUSED;
+            Log.i(TAG, "retained native session attached to replacement Activity");
+        }
 
         // So we can call stuff from static callbacks
         mSingleton = this;
@@ -452,7 +473,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
         mClipboardHandler = new SDLClipboardHandler();
 
-        mHIDDeviceManager = HIDDeviceManager.acquire(this);
+        if (!retaining) mHIDDeviceManager = HIDDeviceManager.acquire(getApplicationContext());
 
         // Set up the surface
         mSurface = createSDLSurface(this);
@@ -686,6 +707,19 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onDestroy() {
         Log.v(TAG, "onDestroy()");
+
+        if (mClipboardHandler != null) {
+            mClipboardHandler.release();
+            mClipboardHandler = null;
+        }
+        if (retainNativeSessionOnRecreation() && isChangingConfigurations() && !isFinishing() &&
+                !mBrokenLibraries && mSDLThread != null && mSDLThread.isAlive() && !mSDLMainFinished) {
+            mRetainedNativeSession = true;
+            Log.i(TAG, "retaining native session during Activity recreation");
+            super.onDestroy();
+            return;
+        }
+        mRetainedNativeSession = false;
 
         if (mHIDDeviceManager != null) {
             HIDDeviceManager.release(mHIDDeviceManager);
@@ -1805,21 +1839,24 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
      * This method is called by SDL using JNI.
      */
     public static boolean clipboardHasText() {
-        return mClipboardHandler.clipboardHasText();
+        SDLClipboardHandler handler = mClipboardHandler;
+        return handler != null && handler.clipboardHasText();
     }
 
     /**
      * This method is called by SDL using JNI.
      */
     public static String clipboardGetText() {
-        return mClipboardHandler.clipboardGetText();
+        SDLClipboardHandler handler = mClipboardHandler;
+        return handler != null ? handler.clipboardGetText() : "";
     }
 
     /**
      * This method is called by SDL using JNI.
      */
     public static void clipboardSetText(String string) {
-        mClipboardHandler.clipboardSetText(string);
+        SDLClipboardHandler handler = mClipboardHandler;
+        if (handler != null) handler.clipboardSetText(string);
     }
 
     /**
@@ -2199,6 +2236,10 @@ class SDLClipboardHandler implements
     SDLClipboardHandler() {
        mClipMgr = (ClipboardManager) SDL.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
        mClipMgr.addPrimaryClipChangedListener(this);
+    }
+
+    public void release() {
+        mClipMgr.removePrimaryClipChangedListener(this);
     }
 
     public boolean clipboardHasText() {

@@ -1,0 +1,243 @@
+name: Android-hosted compiler
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - tools/android/build_toolchain.py
+      - tools/android/package_toolchain.py
+      - tools/android/package_extractor.py
+      - tools/android/extraction_fixture.cpp
+      - tools/android/native_process.py
+      - tools/android/ondevice_setup.py
+      - tools/android/setup_service_smoke.py
+      - tools/android/setup_import_smoke.py
+      - tools/android/picker_smoke.py
+      - tools/android/SetupPolicyTest.java
+      - tools/android/ResourceVerifierTest.java
+      - tools/android/ResourceCacheCleanupTest.java
+      - tools/wudextract/**
+      - tools/android/test_*.py
+      - tools/recomp/**
+      - tools/rpx.py
+      - tools/installer/setup.py
+      - runtime/include/**
+      - runtime/src/**
+      - CMakeLists.txt
+      - cmake/**
+      - tools/android/setup_adapter.py
+      - tools/android/prepare_python.py
+      - tools/android/embedding_smoke.py
+      - tools/android/python_smoke.py
+      - tools/android/package_runtime.py
+      - tools/android/runtime_smoke.py
+      - tools/android/service_fixture.py
+      - tools/android/setup_build_smoke.py
+      - tools/android/package_update_fixture.py
+      - tools/android/setup_rebuild_smoke.py
+      - tools/android/resource_recovery_smoke.py
+      - tools/android/resource_pause_smoke.py
+      - tools/android/resource_sampler.py
+      - tools/android/display_smoke.py
+      - tools/release/package.py
+      - android/**
+      - .github/workflows/android-toolchain.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: 87f0227cb60147a26a1eeb4fb06e3b505e9c7261
+          path: build/llvm-source
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libzstd-dev
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.16248370" "platforms;android-36" "build-tools;35.0.0"
+      - name: Build compiler that runs on Android
+        run: |
+          python3 tools/android/build_toolchain.py --source build/llvm-source \
+            --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" \
+            --out build/compiler --jobs 4
+      - name: Validate and prepare APK executable delivery
+        run: |
+          python3 -m unittest discover -s tools/android -p 'test_*.py'
+          javac -d build/setup-policy-test android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPolicy.java tools/android/SetupPolicyTest.java
+          java -cp build/setup-policy-test SetupPolicyTest
+          javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java
+          java -cp build/resource-verifier-test org.wwhdrecomp.wwhd.ResourceVerifierTest
+          javac -d build/resource-cleanup-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceCacheCleanup.java tools/android/ResourceCacheCleanupTest.java
+          java -cp build/resource-cleanup-test org.wwhdrecomp.wwhd.ResourceCacheCleanupTest
+          python3 tools/android/package_toolchain.py --compiler build/compiler/package --out build/compiler/apk-package
+      - name: Archive and checksum
+        run: |
+          tar -czf "build/android-clang-${{ matrix.abi }}.tar.gz" -C build/compiler/package .
+          sha256sum "build/android-clang-${{ matrix.abi }}.tar.gz" > "build/android-clang-${{ matrix.abi }}.tar.gz.sha256"
+          tar -czf "build/android-clang-apk-${{ matrix.abi }}.tar.gz" -C build/compiler/apk-package .
+          sha256sum "build/android-clang-apk-${{ matrix.abi }}.tar.gz" > "build/android-clang-apk-${{ matrix.abi }}.tar.gz.sha256"
+      - name: Remove compiler build intermediates before APK and emulator work
+        run: |
+          python3 - <<'PY'
+          import shutil
+          for path in ("build/compiler/native", "build/compiler/target", "build/llvm-source"):
+              shutil.rmtree(path)
+          PY
+          df -h .
+      - name: Build compiler-enabled synthetic APK
+        run: |
+          python3 tools/recomp/stubgen.py build/gen-stub
+          ABI="${{ matrix.abi }}" GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          cmake --build android/build/game --target wwhd-extract --parallel 4
+          python3 tools/android/package_extractor.py --build android/build/game --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" --out build/extractor-apk
+          python3 tools/recomp/android_fixture.py --output build/extraction-fixture-source
+          c++ -std=c++17 tools/android/extraction_fixture.cpp tools/wudextract/crypto.cpp -lzstd -o build/extraction-fixture-writer
+          build/extraction-fixture-writer build/extraction-fixture-source/synthetic.rpx build/extraction-fixture.bin
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" --out build/runtime-sdk
+          python3 tools/android/prepare_python.py --abi "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python --runtime-sdk build/runtime-sdk --extraction-fixture build/extraction-fixture.bin --service-fixture
+          android/gradlew -p android --no-daemon -PwwhdAbi="${{ matrix.abi }}" -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
+          python3 tools/release/guard.py android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Build actual runtime SDK update fixtures
+        if: matrix.abi == 'x86_64'
+        run: |
+          mkdir -p build/update-fixtures
+          cp android/app/build/outputs/apk/debug/app-debug.apk build/update-fixtures/base.apk
+          for fixture_revision in 1 2 3; do
+            fixture_args=()
+            if [ "$fixture_revision" -eq 3 ]; then fixture_args+=(--fail-link); fi
+            python3 tools/android/package_update_fixture.py --package build/embedded-python/package --ndk "$ANDROID_HOME/ndk/30.0.16248370" --revision "$fixture_revision" "${fixture_args[@]}" --out "build/update-fixtures/python-v$fixture_revision" > "build/update-fixtures/v$fixture_revision.json"
+            android/gradlew -p android --no-daemon --max-workers=2 -PwwhdAbi=x86_64 -PwwhdPythonDir="$PWD/build/update-fixtures/python-v$fixture_revision" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
+            cp android/app/build/outputs/apk/debug/app-debug.apk "build/update-fixtures/v$fixture_revision.apk"
+            python3 tools/release/guard.py "build/update-fixtures/v$fixture_revision.apk"
+            python3 - <<'PY'
+          import shutil
+          from pathlib import Path
+          for name in ('merged_jni_libs', 'merged_native_libs', 'stripped_native_libs', 'assets', 'compressed_assets'):
+              shutil.rmtree(Path('android/app/build/intermediates') / name, ignore_errors=True)
+          PY
+          done
+          cp build/update-fixtures/base.apk android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Enable emulator acceleration
+        if: matrix.abi == 'x86_64'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Verify setup and compiler loading on minimum supported Android API
+        if: matrix.abi == 'x86_64'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          avd-name: wwhd-min-api
+          arch: x86_64
+          target: google_apis
+          disk-size: 8G
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -memory 2048
+          disable-animations: true
+          script: >-
+            python3 tools/android/runtime_smoke.py --serial emulator-5554 --expected-api 33 --compiler-only --apk android/app/build/outputs/apk/debug/app-debug.apk --require-extractor --output build/api33/runtime-smoke-result.json &&
+            python3 tools/android/setup_service_smoke.py --serial emulator-5554 --output build/api33/setup-service-result.json &&
+            python3 tools/android/setup_build_smoke.py --serial emulator-5554 --reuse-installed --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/api33/setup-build-result.json
+      - name: Remove minimum-API emulator storage
+        if: always() && matrix.abi == 'x86_64'
+        run: |
+          python3 - <<'PY'
+          import shutil
+          import subprocess
+          import time
+          from pathlib import Path
+          # The emulator action stops its process before returning. Confirm exit
+          # before deleting this AVD, including when its test script failed.
+          for attempt in range(20):
+              commands = [line.split() for line in subprocess.check_output(
+                  ["ps", "-eo", "args="], text=True).splitlines()]
+              live = any("-avd" in command and command.index("-avd") + 1 < len(command)
+                         and command[command.index("-avd") + 1] == "wwhd-min-api"
+                         for command in commands)
+              if not live: break
+              time.sleep(1)
+          else:
+              raise RuntimeError("Minimum-API emulator still live; keep its storage")
+          root = Path.home() / ".android/avd"
+          shutil.rmtree(root / "wwhd-min-api.avd", ignore_errors=True)
+          (root / "wwhd-min-api.ini").unlink(missing_ok=True)
+          PY
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --uninstall "system-images;android-33;google_apis;x86_64"
+          df -h .
+      - name: Translate, compile, link, load and resume inside the app
+        if: matrix.abi == 'x86_64'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disk-size: 8G
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -memory 2048
+          disable-animations: true
+          script: >-
+            python3 tools/android/runtime_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --require-extractor --expected-api 35 --require-isolated-device --exercise-lifecycle --output build/runtime-smoke-result.json &&
+            python3 tools/android/setup_service_smoke.py --serial emulator-5554 --output build/setup-service-result.json &&
+            python3 tools/android/setup_build_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --sample-resources --output build/setup-build-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/resource-recovery-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --resource compiler --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/compiler-resource-recovery-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --damage-complete --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/resource-cache-repair-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --damage-complete --resource compiler --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/compiler-cache-repair-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --obsolete-generations --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/python-cache-cleanup-result.json &&
+            python3 tools/android/resource_recovery_smoke.py --serial emulator-5554 --obsolete-generations --resource compiler --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/compiler-cache-cleanup-result.json &&
+            python3 tools/android/resource_pause_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/python-resource-pause-result.json &&
+            python3 tools/android/resource_pause_smoke.py --serial emulator-5554 --resource compiler --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/compiler-resource-pause-result.json &&
+            python3 tools/android/setup_import_smoke.py --serial emulator-5554 --output build/setup-import-result.json &&
+            python3 tools/android/picker_smoke.py --serial emulator-5554 --reboot --output build/picker-result.json &&
+            python3 tools/android/setup_rebuild_smoke.py --serial emulator-5554 --initial-apk build/update-fixtures/v1.apk --updated-apk build/update-fixtures/v2.apk --failed-apk build/update-fixtures/v3.apk --output build/setup-rebuild-result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-hosted-clang-${{ matrix.abi }}-${{ github.sha }}
+          path: |
+            build/android-clang-*.tar.gz
+            build/android-clang-*.tar.gz.sha256
+            build/compiler/package/build.json
+            build/api33/
+            build/runtime-smoke-result*.json
+            build/runtime-smoke-result*.log
+            build/runtime-smoke-result*.png
+            build/setup-service-result.json
+            build/setup-service-result.log
+            build/setup-service-result.png
+            build/setup-build-result.json
+            build/setup-build-result.log
+            build/resource-recovery-result.json
+            build/compiler-resource-recovery-result.json
+            build/resource-cache-repair-result.json
+            build/compiler-cache-repair-result.json
+            build/python-cache-cleanup-result.json
+            build/compiler-cache-cleanup-result.json
+            build/python-resource-pause-result.json
+            build/compiler-resource-pause-result.json
+            build/setup-rebuild-result.json
+            build/setup-rebuild-result.log
+            build/update-fixtures/v*.json
+            build/setup-import-result.json
+            build/picker-result.json
+            build/picker-result*.png
+            build/runtime-sdk/assets/runtime-sdk.json
+            build/runtime-sdk/assets/runtime-sdk.zip
+            build/extractor-apk/assets/extractor-apk.json
+            android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

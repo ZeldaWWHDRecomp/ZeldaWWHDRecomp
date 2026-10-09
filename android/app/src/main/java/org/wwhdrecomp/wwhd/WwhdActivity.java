@@ -30,6 +30,65 @@ public class WwhdActivity extends SDLActivity {
     // Public thermal/battery APIs, sampled by the overlay/report via JNI at most once a second.
     public static String performanceThermals() { return PerformanceThermals.read(mSingleton); }
 
+
+    protected GamePadDisplay gamePadDisplay;
+    private File onDeviceGame;
+    private AndroidGame.Selection selection;
+    private static AndroidGame.Selection sessionSelection;
+    private static File sessionLibrary;
+
+    @Override protected boolean retainNativeSessionOnRecreation() { return true; }
+
+    @Override public void loadLibraries() {
+        if (isReusingNativeSession()) {
+            // A setup update must not change the loaded engine or assets mid-session.
+            selection = sessionSelection;
+            onDeviceGame = sessionLibrary;
+            return;
+        }
+        selection = AndroidGame.selected(this);
+        onDeviceGame = selection != null ? selection.library : null;
+        if (onDeviceGame == null) {
+            super.loadLibraries();
+        } else {
+            System.loadLibrary("SDL3");
+            System.load(onDeviceGame.getAbsolutePath());
+            Log.i("wwhd-game", "Loaded on-device game " + onDeviceGame.getAbsolutePath());
+            if (selection.game != null) Log.i("wwhd-game", "Selected game assets " + selection.game.getAbsolutePath());
+        }
+        sessionSelection = selection;
+        sessionLibrary = onDeviceGame;
+    }
+
+    @Override protected String getMainSharedObject() {
+        return onDeviceGame != null ? onDeviceGame.getAbsolutePath() : super.getMainSharedObject();
+    }
+
+    @Override protected String[] getArguments() {
+        return selection != null && selection.game != null ?
+            new String[] {"--game", selection.game.getAbsolutePath()} : super.getArguments();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        // Only start after SDL successfully loaded the native game library.
+        if (!mBrokenLibraries) {
+            if (gamePadDisplay == null) gamePadDisplay = new GamePadDisplay(this, mLayout, mSurface);
+            gamePadDisplay.start();
+        }
+    }
+
+    /** Render-thread notification; surface replacement always belongs to the UI thread. */
+    public void recoverGamePadSurface(long generation) {
+        runOnUiThread(() -> {
+            if (gamePadDisplay != null) gamePadDisplay.recoverSurface(generation);
+        });
+    }
+
+    @Override protected void onPause() {
+        if (gamePadDisplay != null) gamePadDisplay.stop();
+        super.onPause();
+    }
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };

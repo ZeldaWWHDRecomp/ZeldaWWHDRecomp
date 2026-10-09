@@ -579,7 +579,7 @@ static uint32_t element_offset(const LatteAddrLib::AddrSurfaceInfo_OUT& info, La
 } // namespace gfxvk
 
 namespace gfxvk {
-void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExtent) {
+void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExtent, uint32_t sharedQueueFamily) {
     if (!s || !s->width || !s->height || !s->slices || !s->mips)
         exception_report::raise("Vulkan surface has empty dimensions");
     if (s->image) exception_report::raise("Vulkan surface image must be retired before replacement");
@@ -636,6 +636,12 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
     imageInfo.imageType=s->imageType; imageInfo.format=s->fmt.pixel; imageInfo.extent=s->extent;
     imageInfo.mipLevels=s->mips;imageInfo.arrayLayers=s->arrayLayers;imageInfo.samples=VK_SAMPLE_COUNT_1_BIT;
     imageInfo.tiling=VK_IMAGE_TILING_OPTIMAL;imageInfo.usage=usage;s->usage=usage;s->createFlags=imageInfo.flags;imageInfo.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+    const uint32_t queueFamilies[]={R.queueFamily,sharedQueueFamily};
+    if(sharedQueueFamily!=VK_QUEUE_FAMILY_IGNORED && sharedQueueFamily!=R.queueFamily) {
+        imageInfo.sharingMode=VK_SHARING_MODE_CONCURRENT;
+        imageInfo.queueFamilyIndexCount=2;
+        imageInfo.pQueueFamilyIndices=queueFamilies;
+    }
     imageInfo.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
     try {
         check_vk(vkCreateImage(R.device,&imageInfo,nullptr,&s->image),"create image");
