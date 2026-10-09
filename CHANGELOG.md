@@ -19,6 +19,12 @@ what is on `devel` and not released yet (also in the
   option (off by default) saves the second rebuild when you want code mods. Updates and repairs keep
   your choice, and Settings → Mods shows it immediately. Details:
   [docs/setup-code-mods.md](docs/setup-code-mods.md).
+
+- **Fixed: the settings menu scrolled back up after the left stick had been used** (issue #111).
+  A left stick that rests slightly off-centre kept scrolling the menu, even while you scrolled with
+  the mouse. Now the mouse takes over as soon as you move, click, scroll or drag the scroll bar; the
+  controller takes over again with its next new input. Controls:
+  [docs/overlay-controls.md](docs/overlay-controls.md).
 - **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
   catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
   now work on all platforms; on Android the on-screen keyboard opens for these fields.
