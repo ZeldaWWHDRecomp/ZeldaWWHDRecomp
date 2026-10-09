@@ -327,6 +327,7 @@ int main(int argc, char** argv) {
         assert(view("r2").graphics_conflicts.size()==1);
         assert(enable("r2",true,error,true));assert(!view("r1").enabled&&view("r2").enabled);
         std::ifstream saved(storage/"profiles.json");auto persisted=mods::json::parse(std::string(std::istreambuf_iterator<char>(saved),{}));
+        saved.close();  // Windows: an open read handle makes the rewrite below fail silently
         assert(!persisted.get("profiles").get("Default").get("enabled").get("b").boolean);
         assert(host::run_process({argv[0],"--cemu-conflicts-restart",storage.string()}).code==0);
         persisted["profiles"]["Default"]["enabled"]["b"]=true;
