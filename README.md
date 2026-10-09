@@ -499,6 +499,17 @@ the TV window or **⌘Q** first asks *Quit Wind Waker HD?*: **Quit**, **Cancel**
 title screen and the file select, before a file is loaded, it quits without asking.
 `WWHD_QUIT_PROMPT=0` turns the question off; scripted and hidden test runs never ask.
 
+### Steam Deck
+
+In Gaming Mode the Steam button belongs to Steam and there is no keyboard, so keyboard shortcuts
+(and a menu key set to a keyboard key) can't reach the game (issue #112):
+
+- **Settings overlay:** hold the **View** button (two squares, left of the screen) for half a second.
+  Save states are in its first tab (Saves).
+- **Save-state shortcuts:** in Steam, open the game's controller settings and map the back buttons
+  (L4/R4/L5/R5) to keyboard keys: **Shift+F1** saves slot 1, **F2–F5** load slots 2–5,
+  **Shift+F2–F5** save them. Steam sends those keys to the game.
+
 ## Notes
 
 - Shaders are translated on first use and cached in `~/Library/Caches/wwhd/shaders.bin`; later
