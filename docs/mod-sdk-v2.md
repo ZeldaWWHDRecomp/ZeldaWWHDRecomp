@@ -442,10 +442,15 @@ need public-source declarations and offset checks before the port uses them.
 
 The cache builder still runs locally against the player's own files. Put its results in the
 mod's own data folder, with flat filenames; split files larger than the phase 1 1 MiB
-per-call limit. A future catalogue preparation step can manage this. A guest package cannot
+per-call limit. The catalogue can manage this with a shared `game_path` step for the regional
+GameCube dump, a trusted packaged `run_tool` that writes map PNGs into mod data,
+and `build_guest_mod` for the installed USA/EU build. A guest package cannot
 read the prototype's arbitrary external cache path through the phase 1 file service.
-Verify no state reads or resource uploads when disabled, and compare the panel on both
-renderers once the HUD interface exists. Full visual parity is therefore phase 2 work.
+Load generated PNGs through `wwhd_hud_texture(WWHD_HUD_DATA, ...)`, draw the map
+and rotated heading quad through HUD API v1, and reload texture handles when
+`wwhd_hud_epoch()` changes. Verify no state reads or resource uploads when disabled,
+and compare the panel on both renderers. The HUD service is implemented in this
+phase; the minimap port and full visual parity remain separate work.
 
 For **dragon**, rewrite `Cpu*`/host-memory wrappers as typed PowerPC hooks and replacements.
 Use public names for Link execute, camera follow, Valoo lifecycle, resources, song handling
@@ -462,8 +467,10 @@ new-game/reset behavior. Full states restore guest quest/heap state, but externa
 files are not rewound: do not immediately overwrite restored state by rereading a newer
 file. Save-slot copy behavior and state-load notification need explicit follow-up tests.
 Use game resource/effect functions for locally available models, animations and effects.
-The letter/flight panels await HUD support, and synthesized melody mixing awaits the audio
-stream interface. Test cancellation, ordinary story actors, boat/leaf recovery, save slots,
+The letter/flight panels can use HUD API v1 text, quads and gauges; synthesized
+melody mixing still awaits an audio stream interface. A future catalogue entry
+uses `kind: guest`, USA/EU build declarations and `build_guest_mod`; it must not
+ship models or sounds extracted from the game. Test cancellation, ordinary story actors, boat/leaf recovery, save slots,
 true-60 timing and simultaneous minimap placement before claiming parity. Existing route,
 collision and presentation limitations remain separate from the SDK port.
 
