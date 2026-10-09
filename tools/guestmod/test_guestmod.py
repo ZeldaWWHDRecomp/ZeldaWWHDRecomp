@@ -291,6 +291,8 @@ class BuildInterfaceTest(unittest.TestCase):
                 self.assertEqual(result["valid"], ["fixture"])
                 self.assertEqual(probe.call_count, 1)  # one version probe, no compile per package
                 self.assertEqual(probe.call_args.args[0], ["clang", "--version"])
+                with mock.patch.object(builder.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="compiler two")):
+                    self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
                 for changed in ({"base": base + 65536}, {"module": str(root / "unrelated")}, {"base": True}):
                     self.assertEqual(builder.check_cached([{**request, **changed}], root / "cache", cc, include)["valid"], [])
                 (pkg / "mod.elf").write_bytes(b"changed ELF")
