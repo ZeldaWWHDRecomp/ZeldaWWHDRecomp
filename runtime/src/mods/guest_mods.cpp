@@ -167,9 +167,15 @@ void svc_setting_changed(Cpu* c) {
 }
 // PCM is signed 16-bit big-endian in the guest, copied before returning.
 void svc_audio_epoch(Cpu* c) {auto v=pcm::store().epoch();c->r[3]=uint32_t(v>>32);c->r[4]=uint32_t(v);}
-void svc_audio_open(Cpu* c) {c->r[3]=uint32_t(pcm::store().open(owner(c).id,c->r[3],c->r[4]));}
+void svc_audio_open(Cpu* c) {
+    auto& mod=owner(c);c->r[3]=uint32_t(pcm::store().open(mod.id,c->r[3],c->r[4]));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] open %d epoch %llu",mod.id.c_str(),int32_t(c->r[3]),(unsigned long long)pcm::store().epoch());
+}
 void svc_audio_available(Cpu* c) {c->r[3]=uint32_t(pcm::store().available(owner(c).id,c->r[3]));}
-void svc_audio_close(Cpu* c) {c->r[3]=uint32_t(pcm::store().close(owner(c).id,c->r[3]));}
+void svc_audio_close(Cpu* c) {
+    auto& mod=owner(c);uint32_t handle=c->r[3];c->r[3]=uint32_t(pcm::store().close(mod.id,handle));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] close %u result %d",mod.id.c_str(),handle,int32_t(c->r[3]));
+}
 void svc_audio_submit(Cpu* c) {
     auto& mod=owner(c);uint32_t h=c->r[3],a=c->r[4],frames=c->r[5],channels=c->r[6];
     c->r[3]=uint32_t(pcm::kInvalid);
@@ -177,6 +183,7 @@ void svc_audio_submit(Cpu* c) {
     int16_t samples[pcm::kMaxSubmit*2];
     for(uint32_t i=0;i<frames*channels;++i)samples[i]=int16_t(ld16(a+i*2));
     c->r[3]=uint32_t(pcm::store().submit(mod.id,h,samples,frames,channels));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] submit %u requested %u accepted %d",mod.id.c_str(),h,frames,int32_t(c->r[3]));
 }
 // HUD services use packed big-endian guest structures, never host struct casts.
 std::string hud_path(const Loaded& mod,uint32_t address) {

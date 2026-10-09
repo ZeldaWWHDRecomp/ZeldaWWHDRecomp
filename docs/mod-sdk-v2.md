@@ -460,3 +460,6 @@ and resume from restored guest musical state; previously played sound is not
 rewound. Disabling takes effect at restart, so no streams survive a changed mod
 set. This service does not add backend device-reconnection facilities beyond
 those of the existing output backend.
+
+For bounded service-call diagnostics, `WWHD_AUDIO_STREAM_TRACE=1` logs open/submit/close
+results and epochs, never sample payloads. Leave it unset for normal operation.
