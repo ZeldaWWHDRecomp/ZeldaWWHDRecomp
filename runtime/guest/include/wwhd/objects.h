@@ -4,6 +4,12 @@
 #pragma once
 #include "../wwhd_guest.h"
 
+/* wwhd_src/f_op/f_op_actor.cpp */
+#define WWHD_OFFSET_actor_profile_methods 0x24
+/* wwhd_src/d/d_save_local.h */
+#define WWHD_OFFSET_save_inventory 0x5C
+/* wwhd_src/d/d_save_local.h */
+#define WWHD_COUNT_save_inventory 0x15
 /* wwhd_src/d/actor/d_a_player_main_04.cpp */
 #define WWHD_OFFSET_Link_equipped_item_model 0x4440
 /* wwhd_src/d/actor/d_a_npc_aj1.cpp */

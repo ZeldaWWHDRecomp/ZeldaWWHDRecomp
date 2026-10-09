@@ -3,6 +3,9 @@ import re
 
 # Each pattern captures the numeric operand in a specific public declaration/use.
 FACTS = [
+    ('WWHD_OFFSET_actor_profile_methods', 'f_op/f_op_actor.cpp', r'st\(actor \+ 0xF0, ld\(profile \+ (0x[0-9A-Fa-f]+)\)\);'),
+    ('WWHD_OFFSET_save_inventory', 'd/d_save_local.h', r'if \(\(s32\)idx < 0x15\) return ld8\(b \+ (0x[0-9A-Fa-f]+) \+ idx\);'),
+    ('WWHD_COUNT_save_inventory', 'd/d_save_local.h', r'if \(\(s32\)idx < (0x[0-9A-Fa-f]+)\) return ld8\(b \+ 0x5C \+ idx\);'),
     ('WWHD_OFFSET_Link_equipped_item_model', 'd/actor/d_a_player_main_04.cpp', r'LK_FIELD\(u32, (0x[0-9A-Fa-f]+)\) == 0 /\* mpEquipItemModel \*/'),
     ('WWHD_OFFSET_actor_attention_flags', 'd/actor/d_a_npc_aj1.cpp', r'gabi::store<u32>\(gabi::ea\(this\) \+ (0x[0-9A-Fa-f]+), 0xA\); /\* attention_info.flags \*/'),
     ('WWHD_ALLOC_SIZE_line_mat0', 'm_Do/m_Do_ext_line.cpp', r'ext_lineMat0Ctor\(void\* self\)[^\n]*?call<u32>\(0x0273AD10,(0x[0-9A-Fa-f]+)\)'),
