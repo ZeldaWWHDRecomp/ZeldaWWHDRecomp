@@ -7,13 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **Run/swim speed: separate multipliers, held or toggled, with a stamina bar.** The boost now has
-  one multiplier for running and one for swimming (1 leaves that state alone), a hold or
-  press-to-toggle choice for its button, a stamina bar that limits how long a boost lasts (0 has no
-  limit; the bar refills whenever you are not boosting) and a smooth ramp instead of an instant
-  jump. The locomotion animation follows the boost, so Link's legs keep up with the ground instead
-  of skating (true 60 included). Saved settings and mod profiles carry over: a file from before the
-  split has its single factor applied to both states.
+- **Run/swim speed: separate multipliers, held or toggled, with a stamina bar and a cooldown.** The
+  boost now has one multiplier for running (1.75x by default) and one for swimming (1.5x), a hold or
+  press-to-toggle choice for its button, a stamina bar that limits how long a boost lasts (6 s by
+  default, 0 for no limit) and a cooldown before it can run again (3 s by default, 0 for none; the
+  emptied bar refills over the cooldown). The factor ramps in instead of jumping, the locomotion
+  animation follows it so Link's legs keep up with the ground instead of skating (true 60 included),
+  and both go back to normal the moment he stops running or swimming. Saved settings and mod profiles
+  carry over: a file from before the split has its single factor applied to both states.
 
 - **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams
   per mod, mixed into the game's audio and following its volume and mute (and fast forward). The

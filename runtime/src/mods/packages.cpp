@@ -230,6 +230,7 @@ void save_move_speed_options(Value& options) {
     options["move-speed.land"] = double(move_speed_land_factor());
     options["move-speed.swim"] = double(move_speed_swim_factor());
     options["move-speed.stamina"] = double(move_speed_stamina_seconds());
+    options["move-speed.cooldown"] = double(move_speed_cooldown_seconds());
     options["move-speed.mode"] = double((int)move_speed_mode());
     options["move-speed.button"] = double(move_speed_button());
 }
@@ -241,10 +242,11 @@ void load_move_speed_options(const Value& options) {
     };
     // a profiles.json from before the split stored one factor, which applied to both states
     const auto& old = options.get("move-speed.factor");
-    const float legacy = old.type == Value::Number && old.number >= 1.0 && old.number <= 4.0 ? float(old.number) : 1.5f;
-    number("move-speed.land", "WWHD_MOD_MOVE_FACTOR", 1.0, 4.0, legacy, set_move_speed_land_factor);
-    number("move-speed.swim", "WWHD_MOD_MOVE_SWIM", 1.0, 4.0, legacy, set_move_speed_swim_factor);
-    number("move-speed.stamina", "WWHD_MOD_MOVE_STAMINA", 0.0, 60.0, 4.f, set_move_speed_stamina_seconds);
+    const bool legacy = old.type == Value::Number && old.number >= 1.0 && old.number <= 4.0;
+    number("move-speed.land", "WWHD_MOD_MOVE_FACTOR", 1.0, 4.0, legacy ? float(old.number) : kDefaultLandFactor, set_move_speed_land_factor);
+    number("move-speed.swim", "WWHD_MOD_MOVE_SWIM", 1.0, 4.0, legacy ? float(old.number) : kDefaultSwimFactor, set_move_speed_swim_factor);
+    number("move-speed.stamina", "WWHD_MOD_MOVE_STAMINA", 0.0, 60.0, kDefaultStaminaSeconds, set_move_speed_stamina_seconds);
+    number("move-speed.cooldown", "WWHD_MOD_MOVE_COOLDOWN", 0.0, 60.0, kDefaultCooldownSeconds, set_move_speed_cooldown_seconds);
     const auto& mode = options.get("move-speed.mode");
     set_move_speed_mode(mode.type == Value::Number && mode.number != 0 ? MoveMode::kToggle : MoveMode::kHold);
     const auto& button = options.get("move-speed.button");

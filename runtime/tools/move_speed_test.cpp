@@ -38,14 +38,20 @@ static void test_target() {
 }
 
 static void test_clamp() {
-    assert(clamp_factor(std::numeric_limits<float>::quiet_NaN()) == 1.5f);
-    assert(clamp_factor(std::numeric_limits<float>::infinity()) == 1.5f);
+    assert(clamp_factor(std::numeric_limits<float>::quiet_NaN()) == 1.75f);
+    assert(clamp_factor(std::numeric_limits<float>::infinity()) == 1.75f);
     assert(clamp_factor(0.f) == 1.f);
     assert(clamp_factor(100.f) == 4.f);
     assert(clamp_factor(.5f) == 1.f);
-    assert(clamp_stamina_seconds(std::numeric_limits<float>::quiet_NaN()) == 4.f);
+    assert(clamp_stamina_seconds(std::numeric_limits<float>::quiet_NaN()) == 6.f);
     assert(clamp_stamina_seconds(-1.f) == 0.f);
     assert(clamp_stamina_seconds(1000.f) == 60.f);
+    assert(clamp_cooldown_seconds(std::numeric_limits<float>::quiet_NaN()) == 3.f);
+    assert(clamp_cooldown_seconds(-1.f) == 0.f);
+    assert(clamp_cooldown_seconds(1000.f) == 60.f);
+    // the defaults a fresh settings file gets
+    assert(kDefaultLandFactor == 1.75f && kDefaultSwimFactor == 1.50f);
+    assert(kDefaultStaminaSeconds == 6.f && kDefaultCooldownSeconds == 3.f);
 }
 
 static void test_ramp() {
@@ -78,7 +84,7 @@ static void test_animation() {
     assert(animation_factor(1.5f) == 1.5f);
     assert(animation_factor(4.f) == 4.f);
     assert(animation_factor(100.f) == 4.f);
-    assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.5f);
+    assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.75f);
 }
 
 static void test_stamina() {
@@ -102,6 +108,21 @@ static void test_stamina() {
     assert(s == 1.f);
 }
 
+static void test_cooldown() {
+    const float dt = 1.f / 30.f;
+    // the cooldown is the bar's refill time: an empty bar is full again after exactly that long
+    float s = 0.f;
+    for (int i = 0; i < 3 * 30 - 1; ++i) s = refill_stamina_over(s, 3.f, dt);
+    assert(s < 1.f);
+    s = refill_stamina_over(s, 3.f, dt);
+    assert(s == 1.f);
+    // 0 fills at once, so the boost is always ready
+    assert(refill_stamina_over(0.f, 0.f, dt) == 1.f);
+    assert(refill_stamina_over(.4f, 0.f, dt) == 1.f);
+    // a full bar stays full
+    assert(refill_stamina_over(1.f, 3.f, dt) == 1.f);
+}
+
 int main() {
     test_distance();
     test_target();
@@ -109,5 +130,6 @@ int main() {
     test_ramp();
     test_animation();
     test_stamina();
+    test_cooldown();
     return 0;
 }

@@ -42,11 +42,12 @@ std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
 std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
 std::atomic<int> g_move_mode{(int)MoveMode::kHold};
-std::atomic<float> g_move_land{clamp_factor(env_f("WWHD_MOD_MOVE_FACTOR", 1.5f))};
+std::atomic<float> g_move_land{clamp_factor(env_f("WWHD_MOD_MOVE_FACTOR", kDefaultLandFactor))};
 // before the split there was one factor: WWHD_MOD_MOVE_FACTOR still feeds swimming when the
 // swimming variable is not given
-std::atomic<float> g_move_swim{clamp_factor(env_f("WWHD_MOD_MOVE_SWIM", env_f("WWHD_MOD_MOVE_FACTOR", 1.5f)))};
-std::atomic<float> g_move_stamina_seconds{clamp_stamina_seconds(env_f("WWHD_MOD_MOVE_STAMINA", 4.f))};
+std::atomic<float> g_move_swim{clamp_factor(env_f("WWHD_MOD_MOVE_SWIM", env_f("WWHD_MOD_MOVE_FACTOR", kDefaultSwimFactor)))};
+std::atomic<float> g_move_stamina_seconds{clamp_stamina_seconds(env_f("WWHD_MOD_MOVE_STAMINA", kDefaultStaminaSeconds))};
+std::atomic<float> g_move_cooldown_seconds{clamp_cooldown_seconds(env_f("WWHD_MOD_MOVE_COOLDOWN", kDefaultCooldownSeconds))};
 std::atomic<uint32_t> g_move_button{input::kStickL};
 std::atomic<uint32_t> g_move_buttons{0};  // the live sample, from input::read()
 // Live tick state. Only link_move_factor (the game's logic thread) writes these; the HUD reads the
@@ -134,6 +135,8 @@ float move_speed_swim_factor() { return g_move_swim.load(std::memory_order_relax
 void set_move_speed_swim_factor(float factor) { g_move_swim = clamp_factor(factor); }
 float move_speed_stamina_seconds() { return g_move_stamina_seconds.load(std::memory_order_relaxed); }
 void set_move_speed_stamina_seconds(float seconds) { g_move_stamina_seconds = clamp_stamina_seconds(seconds); }
+float move_speed_cooldown_seconds() { return g_move_cooldown_seconds.load(std::memory_order_relaxed); }
+void set_move_speed_cooldown_seconds(float seconds) { g_move_cooldown_seconds = clamp_cooldown_seconds(seconds); }
 uint32_t move_speed_button() { return g_move_button.load(std::memory_order_relaxed); }
 void set_move_speed_button(uint32_t button) {
     constexpr uint32_t allowed = input::kStickL | input::kStickR | input::kL | input::kR | input::kZL | input::kZR;
@@ -174,15 +177,20 @@ float link_move_factor(uint32_t link) {
             g_move_stamina = drain_stamina(g_move_stamina, seconds, dt);
             if (g_move_stamina.load(std::memory_order_relaxed) <= 0.f) g_move_exhausted = true;
         } else {
-            g_move_stamina = refill_stamina(g_move_stamina, seconds, dt);
+            // the cooldown is the bar's refill time: 0 fills it at once (the boost is always ready)
+            g_move_stamina = refill_stamina_over(g_move_stamina, move_speed_cooldown_seconds(), dt);
             if (g_move_stamina.load(std::memory_order_relaxed) >= 1.f) g_move_exhausted = false;
         }
         const bool active = g_move_engaged && !g_move_exhausted;
         g_move_boosted = active && is_move_proc(proc);
         g_move_swimming = active && proc == kProcSwimMove;
-        g_move_ramp = ramp_towards(g_move_ramp, move_target(active, proc, move_speed_land_factor(),
-                                                            move_speed_swim_factor()),
-                                   kRampTau, dt);
+        // The loop is over the moment he stops running or swimming: the factor and the animation go
+        // back to normal at once instead of easing out, so nothing stays boosted while he stands.
+        g_move_ramp = is_move_proc(proc)
+                          ? ramp_towards(g_move_ramp, move_target(active, proc, move_speed_land_factor(),
+                                                                  move_speed_swim_factor()),
+                                         kRampTau, dt)
+                          : 1.f;
         apply_anim_ramp();  // the legs follow the ramp, so they do not skate at 2x
     }
     return g_move_ramp.load(std::memory_order_relaxed);

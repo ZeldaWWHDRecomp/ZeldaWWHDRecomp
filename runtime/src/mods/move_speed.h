@@ -15,9 +15,15 @@ constexpr uint32_t kProcSwimMove = 0x37;  // daPy_PROC PROC_SWIM_MOVE
 inline bool is_move_proc(uint32_t proc) { return proc == kProcMove || proc == kProcSwimMove; }
 
 // 1 disables the boost in that state; at exactly 1 the 023FD39C site keeps the stock path.
-inline float clamp_factor(float f) { return std::isfinite(f) ? std::clamp(f, 1.f, 4.f) : 1.5f; }
+inline float clamp_factor(float f) { return std::isfinite(f) ? std::clamp(f, 1.f, 4.f) : 1.75f; }
 // seconds of boosting on a full bar; 0 = no limit
-inline float clamp_stamina_seconds(float s) { return std::isfinite(s) ? std::clamp(s, 0.f, 60.f) : 4.f; }
+inline float clamp_stamina_seconds(float s) { return std::isfinite(s) ? std::clamp(s, 0.f, 60.f) : 6.f; }
+// seconds to wait after the bar empties before the boost can be used again; 0 = none
+inline float clamp_cooldown_seconds(float s) { return std::isfinite(s) ? std::clamp(s, 0.f, 60.f) : 3.f; }
+
+// The defaults a fresh settings file gets when the mod is switched on.
+constexpr float kDefaultLandFactor = 1.75f, kDefaultSwimFactor = 1.50f;
+constexpr float kDefaultStaminaSeconds = 6.f, kDefaultCooldownSeconds = 3.f;
 
 // The factor this step moves towards, before the ramp. `boosting` already folds in the button,
 // the mode and the stamina; land/swim are the two dials.
@@ -53,6 +59,13 @@ inline float refill_stamina(float s, float seconds, float dt) {
     if (!(seconds > 0.f)) return 1.f;
     const float next = s + dt / seconds;
     return next > 1.f - 1e-4f ? 1.f : std::max(next, 0.f);
+}
+
+// The cooldown: how long the emptied bar takes to come back, i.e. the wait before the boost can run
+// again. It is the bar's refill time, so both dials mean something (6 s of boost, 3 s of cooldown =
+// a 9 s cycle); 0 refills at once, so the boost is always available.
+inline float refill_stamina_over(float s, float cooldown_seconds, float dt) {
+    return cooldown_seconds > 0.f ? refill_stamina(s, cooldown_seconds, dt) : 1.f;
 }
 
 }  // namespace mods

@@ -41,6 +41,8 @@ float move_speed_swim_factor();                   // swimming (PROC_SWIM_MOVE)
 void set_move_speed_swim_factor(float factor);
 float move_speed_stamina_seconds();              // seconds of boosting on a full bar; 0 = unlimited
 void set_move_speed_stamina_seconds(float seconds);
+float move_speed_cooldown_seconds();             // wait after the bar empties; 0 = none
+void set_move_speed_cooldown_seconds(float seconds);
 uint32_t move_speed_button();
 void set_move_speed_button(uint32_t button);
 void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps

@@ -1434,6 +1434,9 @@ void tab_mods() {
                 float seconds = mods::move_speed_stamina_seconds();
                 if (ImGui::SliderFloat("Boost time", &seconds, 0.f, 20.f, seconds <= 0.f ? "no limit" : "%.1f s"))
                     hostui::post([seconds] { mods::set_move_speed_stamina_seconds(seconds); hostui::set("mod.move-speed.stamina", std::to_string(seconds)); mods::packages::remember_option("move-speed.stamina", seconds); });
+                float cooldown = mods::move_speed_cooldown_seconds();
+                if (ImGui::SliderFloat("Cooldown", &cooldown, 0.f, 20.f, cooldown <= 0.f ? "none" : "%.1f s"))
+                    hostui::post([cooldown] { mods::set_move_speed_cooldown_seconds(cooldown); hostui::set("mod.move-speed.cooldown", std::to_string(cooldown)); mods::packages::remember_option("move-speed.cooldown", cooldown); });
                 const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
                 const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
                 for (int i = 0; i < 6; ++i) {
@@ -1443,9 +1446,10 @@ void tab_mods() {
                         hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
                     }
                 }
-                help("A multiplier of 1 leaves that state alone. Boost time is how long a full bar lasts; 0 has "
-                     "no limit, and the bar refills whenever you are not boosting. Rebind the chosen game "
-                     "button in Controls.");
+                help("A multiplier of 1 leaves that state alone. Boost time is how long a full bar lasts; "
+                     "0 has no limit, and the bar refills whenever you are not boosting. Cooldown is the "
+                     "extra wait after the bar runs out (0 for none). Rebind the chosen game button in "
+                     "Controls.");
             } else if (selected == "mouse-camera") {
                 float sensitivity = mods::mouse_sensitivity();
                 if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))
