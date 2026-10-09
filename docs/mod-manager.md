@@ -356,7 +356,9 @@ graphics-pack compatibility or the visual accuracy of every preset.
 Catalogue downloads use the operating system's certificate validation and accept
 HTTPS URLs only, including redirects. Downloads have a byte limit, five-redirect
 limit and a two-minute transfer deadline; failed transfers remove partial files.
-macOS uses Foundation. Linux uses the system `libcurl.so.4`, loaded when a download
+macOS uses Foundation, Windows uses WinHTTP and Android uses
+HttpsURLConnection. Android requires the INTERNET permission for explicit
+catalogue requests. Linux uses the system `libcurl.so.4`, loaded when a download
 is requested. Install the distribution's `libcurl4` package to enable downloads;
 local package installation and offline startup do not load it. Linux developers
 need libcurl headers (`libcurl4-openssl-dev` on Ubuntu). The build does not link

@@ -21,6 +21,10 @@ import java.io.File;
 
 // The game: SDL loads libmain.so and runs its SDL_main (runtime/src/main.cpp).
 public class WwhdActivity extends SDLActivity {
+    public static String downloadCatalogue(String url, String destination, long limit) {
+        return HttpsDownload.download(url, destination, limit);
+    }
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };
