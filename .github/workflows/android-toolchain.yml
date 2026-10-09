@@ -114,6 +114,7 @@ jobs:
           python3 tools/android/prepare_python.py --abi "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python --runtime-sdk build/runtime-sdk --extraction-fixture build/extraction-fixture.bin --service-fixture
           android/gradlew -p android --no-daemon -PwwhdAbi="${{ matrix.abi }}" -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
           python3 tools/release/guard.py --allow-android-test-fixtures android/app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p build/tester-apk && cp android/app/build/outputs/apk/debug/app-debug.apk "build/tester-apk/wwhd-ondevice-debug-${{ matrix.abi }}.apk"
       - name: Build actual runtime SDK update fixtures
         if: matrix.abi == 'x86_64'
         run: |
@@ -212,6 +213,7 @@ jobs:
           name: android-hosted-clang-${{ matrix.abi }}-${{ github.sha }}
           path: |
             build/android-clang-*.tar.gz
+            build/tester-apk/
             build/android-clang-*.tar.gz.sha256
             build/compiler/package/build.json
             build/api33/
