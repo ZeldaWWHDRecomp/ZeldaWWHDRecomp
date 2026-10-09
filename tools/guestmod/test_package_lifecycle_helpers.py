@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import zipfile
-from test_package_lifecycle_e2e import local_catalogue, required_setup_receipts, selected_build
+from test_package_lifecycle_e2e import local_catalogue, required_setup_receipts, selected_build, read_database
 
 
 class LifecycleHelpers(unittest.TestCase):
@@ -45,6 +45,16 @@ class LifecycleHelpers(unittest.TestCase):
             (cache/'ready.json').write_text(json.dumps(ready))
             with self.assertRaises(ValueError):
                 selected_build(data,False)
+
+    def test_only_initial_missing_profile_uses_native_defaults(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = Path(temporary)
+            self.assertEqual(read_database(manager, True)['profiles']['Default']['enabled'], {})
+            with self.assertRaises(FileNotFoundError):
+                read_database(manager)
+            (manager / 'profiles.json').write_text('invalid')
+            with self.assertRaises(json.JSONDecodeError):
+                read_database(manager, True)
 
     def test_every_required_receipt_and_option_is_checked(self):
         setup=[{'id':'source','type':'game_path','game':'gc_wind_waker'},

@@ -83,6 +83,15 @@ def selected_build(data, hooks):
             'executable_sha256': digest, 'rebuild_kind': 'cached' if active['cached'] else 'fresh'}
 
 
+def read_database(manager, allow_default=False):
+    path = manager / 'profiles.json'
+    if allow_default and not path.exists():
+        # Installing a disabled package need not persist the untouched default profile.
+        return {'format_version': 1, 'active': 'Default',
+                'profiles': {'Default': {'enabled': {}}}}
+    return json.loads(path.read_text())
+
+
 def process_executable(pid):
     proc = Path('/proc') / str(pid) / 'exe'
     if proc.is_symlink():
@@ -149,11 +158,11 @@ def main():
     assert status == off['selection'] and status['hooks'] is False
     rebuilds['prepare-off'] = off
 
-    def database():
-        return json.loads((manager / 'profiles.json').read_text())
+    def database(allow_default=False):
+        return read_database(manager, allow_default)
 
-    def profile():
-        value = database()
+    def profile(allow_default=False):
+        value = database(allow_default)
         return value['profiles'][value['active']]
 
     def run(name, support, extra=None, overlay=True, done_marker=None, want_enabled=None):
@@ -237,7 +246,7 @@ def main():
                     done_marker='[code mods] rebuild ready; restart required')
     assert '[catalogue] refreshed ' in installed and '[catalogue] installed ' + ident + ' disabled' in installed
     assert '[code mods] rebuild ready; restart required' in installed
-    assert not profile().get('enabled', {}).get(ident, False)
+    assert not profile(allow_default=True).get('enabled', {}).get(ident, False)
     assert not phases['install-support-off']['guest_loaded']
     on = selected_build(data, True)
     assert on['selection']['fingerprint'] != off['selection']['fingerprint']
