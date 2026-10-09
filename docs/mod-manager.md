@@ -81,8 +81,10 @@ supported game-source ID) substitute within one argument without word splitting.
 `gc_wind_waker` accepts the supported USA, European or Japanese GameCube disc
 identifiers, for tools that use the same input format across regions. Region-specific
 IDs still require their exact region. Disc headers are checked for both plain ISO
-files and extracted folders containing `sys/boot.bin`; compressed disc formats are
-not accepted. Tools must separately validate the resources and formats they consume.
+files, RVZ containers and extracted folders containing `sys/boot.bin`. RVZ selection
+checks its uncompressed embedded disc identifier and GameCube magic; the setup tool
+must separately validate container checksums, compression and resource formats.
+Other compressed disc formats are not accepted.
 Game-source paths are saved locally under shared `game_sources` settings and
 validated again when used. The tool's bounded final output is available on
 failure, with saved game-source paths redacted. A successful tool must produce

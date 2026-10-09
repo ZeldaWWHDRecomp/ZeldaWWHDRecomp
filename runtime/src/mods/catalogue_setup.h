@@ -15,6 +15,18 @@ inline bool valid_game_source(const std::string& game,const std::filesystem::pat
             if(fs::is_symlink(file)||!fs::is_regular_file(file))return false;
             std::ifstream input(file,std::ios::binary);std::array<unsigned char,32> header{};
             input.read(reinterpret_cast<char*>(header.data()),header.size());
+            if(input.gcount()==32&&std::equal(header.begin(),header.begin()+4,"RVZ\1")) {
+                // RVZ stores the original disc header uncompressed in its disc
+                // descriptor. Resource decoding remains the setup tool's job.
+                // Format: Dolphin docs/WiaAndRvz.md (file head 0x48, dhead +0x10).
+                auto word=[&](size_t p){return (uint32_t(header[p])<<24)|(uint32_t(header[p+1])<<16)|
+                    (uint32_t(header[p+2])<<8)|header[p+3];};
+                if(word(8)>0x01000000||word(12)<0xDC||word(12)>4096)return false;
+                input.seekg(0x48);std::array<unsigned char,4> type{};
+                input.read(reinterpret_cast<char*>(type.data()),type.size());
+                if(input.gcount()!=4||type!=std::array<unsigned char,4>{0,0,0,1})return false;
+                input.seekg(0x58);input.read(reinterpret_cast<char*>(header.data()),header.size());
+            }
             const std::string id(reinterpret_cast<char*>(header.data()),6);
             const bool known=game=="gc_wind_waker" ?
                 std::any_of(discs.begin(),discs.end(),[&](const auto& disc){return disc.second==id;}) : id==it->second;

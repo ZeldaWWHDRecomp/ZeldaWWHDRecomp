@@ -26,6 +26,20 @@ int main() {
         header[28]=0;
         {std::ofstream out(regional,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
         assert(!valid_game_source("gc_wind_waker",regional));
+        auto compressed=root/"synthetic.rvz";
+        std::array<unsigned char,0x78> rvz{};
+        std::copy_n("RVZ\1",4,rvz.begin());rvz[4]=1;rvz[12+3]=0xDC;rvz[0x4B]=1;
+        std::copy_n("GZLE01",6,rvz.begin()+0x58);
+        rvz[0x74]=0xC2;rvz[0x75]=0x33;rvz[0x76]=0x9F;rvz[0x77]=0x3D;
+        auto write_rvz=[&](){std::ofstream out(compressed,std::ios::binary);out.write(reinterpret_cast<char*>(rvz.data()),rvz.size());};
+        write_rvz();assert(valid_game_source("gc_wind_waker",compressed)&&valid_game_source("gc_usa",compressed));
+        assert(!valid_game_source("gc_eur",compressed));
+        std::copy_n("GZLP01",6,rvz.begin()+0x58);write_rvz();
+        assert(valid_game_source("gc_eur",compressed)&&valid_game_source("gc_wind_waker",compressed));
+        rvz[8]=2;write_rvz();assert(!valid_game_source("gc_wind_waker",compressed));rvz[8]=0;
+        rvz[0x4B]=2;write_rvz();assert(!valid_game_source("gc_wind_waker",compressed));rvz[0x4B]=1;
+        {std::ofstream out(compressed,std::ios::binary);out.write(reinterpret_cast<char*>(rvz.data()),0x60);}
+        assert(!valid_game_source("gc_wind_waker",compressed));
         Sources any_region;assert(any_region.set("gc_wind_waker",root/"extracted"));
         assert(!any_region.get("gc_wind_waker").empty());
         auto generic_steps=mods::json::parse(R"([{"id":"source","type":"game_path","title":"Choose source","game":"gc_wind_waker"}])");
