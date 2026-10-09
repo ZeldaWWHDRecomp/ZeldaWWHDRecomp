@@ -956,6 +956,49 @@ class CodeModsBuild(unittest.TestCase):
             self.assertEqual(json.loads(status.read_text())["state"], "error")
 
 
+class MacAppIcon(unittest.TestCase):
+    """The installed macOS app gets the game's own icon, made from the player's game files."""
+
+    def _game(self, d):
+        import struct
+        meta = os.path.join(d, "game", "meta")
+        os.makedirs(meta)
+        w = h = 4
+        header = bytes([0, 0, 2]) + bytes(9) + struct.pack("<HH", w, h) + bytes([32, 8])
+        with open(os.path.join(meta, "iconTex.tga"), "wb") as f:
+            f.write(header + bytes([10, 20, 30, 255]) * (w * h))
+
+    def test_icns_holds_the_png(self):
+        import struct
+        with tempfile.TemporaryDirectory() as d:
+            self._game(d)
+            png = setup.game_icon_png(d)
+            icns = setup.mac_icns(png)
+            self.assertEqual(icns[:4], b"icns")
+            self.assertEqual(struct.unpack(">I", icns[4:8])[0], len(icns))
+            self.assertEqual(icns[8:12], b"ic07")
+            self.assertEqual(icns[16:], png)
+
+    @unittest.skipUnless(sys.platform == "darwin", "codesign")
+    def test_mac_app_icon_only_with_game_icon(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "exe")
+            with open(exe, "w") as f:
+                f.write("#!/bin/sh\n")
+            for with_icon in (False, True):
+                data = os.path.join(d, "data%d" % with_icon)
+                os.makedirs(data)
+                if with_icon:
+                    self._game(data)
+                app = os.path.join(d, "Apps%d" % with_icon, "Wind Waker HD.app")
+                setup.mac_app(app, exe, data, "v0.2.11")
+                with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+                    info = plistlib.load(f)
+                self.assertEqual(info.get("CFBundleIconFile"), "AppIcon" if with_icon else None)
+                self.assertEqual(os.path.isfile(os.path.join(app, "Contents", "Resources", "AppIcon.icns")), with_icon)
+
+
 class Download(unittest.TestCase):
     """setup.download: retries, resume with range requests, the player's own copy (issue #113)."""
     DATA = bytes(range(256)) * 4096  # 1 MiB of fixture bytes

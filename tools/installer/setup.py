@@ -1545,6 +1545,12 @@ def link_game(tc, manifest, objs, work, out_exe):
 # launchers
 
 
+def mac_icns(png):
+    """An .icns holding one PNG image (128x128 'ic07'; macOS scales it for larger sizes)."""
+    entry = b"ic07" + struct.pack(">I", 8 + len(png)) + png
+    return b"icns" + struct.pack(">I", 8 + len(entry)) + entry
+
+
 def mac_app(app_path, exe_src, data_dir, version):
     """~/Applications/Wind Waker HD.app: the game binary plus a launcher that points it at the data folder."""
     tmp = app_path + ".tmp"
@@ -1569,9 +1575,19 @@ def mac_app(app_path, exe_src, data_dir, version):
   <key>CFBundleVersion</key><string>%s</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>%s
 </dict></plist>
-""" % (APP_NAME, APP_NAME, version.lstrip("v"), version.lstrip("v"))
+"""
+    # the game's own icon (made here from the player's game files; the release ships none)
+    png = game_icon_png(data_dir)
+    icon_key = ""
+    if png:
+        resources = os.path.join(tmp, "Contents", "Resources")
+        os.makedirs(resources)
+        with open(os.path.join(resources, "AppIcon.icns"), "wb") as f:
+            f.write(mac_icns(png))
+        icon_key = "\n  <key>CFBundleIconFile</key><string>AppIcon</string>"
+    plist = plist % (APP_NAME, APP_NAME, version.lstrip("v"), version.lstrip("v"), icon_key)
     with open(os.path.join(tmp, "Contents", "Info.plist"), "w") as f:
         f.write(plist)
     subprocess.run(["codesign", "--force", "--deep", "-s", "-", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

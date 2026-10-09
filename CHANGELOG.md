@@ -29,6 +29,10 @@ what is on `devel` and not released yet (also in the
 - **Fixed: in development builds every catalogue mod showed "Unavailable for this port version"**.
   Development builds now carry the last release's version plus the commit (for example
   `v0.2.11-devel.1a2b3c4d`), so the catalogue can check compatibility.
+
+- **macOS: the game has its icon again.** Setup now gives the installed app the game's own icon,
+  made from your game files (the release can't ship it), and the game shows it in the Dock while it
+  runs. Existing installations get it with the next update or repair.
 - **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
   catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
   now work on all platforms; on Android the on-screen keyboard opens for these fields.

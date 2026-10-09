@@ -58,6 +58,32 @@
 #include "../overlay/guest_hud.h"
 #include "../screenshot.h"
 
+// The game's own icon in the Dock: meta/iconTex.tga of the game folder (uncompressed 32-bit TGA,
+// 128x128 in Wind Waker HD), as the SDL host does for its windows. Nothing happens without it.
+static void set_dock_icon() {
+    NSData* data = [NSData dataWithContentsOfFile:@((config::game_dir + "/meta/iconTex.tga").c_str())];
+    const uint8_t* d = (const uint8_t*)data.bytes;
+    if (data.length < 18 || d[1] != 0 || d[2] != 2 || d[16] != 32) return;  // no colour map, true colour, 32 bpp
+    const NSInteger w = d[12] | d[13] << 8, h = d[14] | d[15] << 8, start = 18 + d[0];
+    if (!w || !h || w > 1024 || h > 1024 || (NSInteger)data.length < start + w * h * 4) return;
+    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:w pixelsHigh:h
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+        bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:w * 4 bitsPerPixel:32];
+    if (!rep) return;
+    const bool topDown = d[17] & 0x20;  // otherwise the first row is the bottom one
+    for (NSInteger y = 0; y < h; y++) {
+        const uint8_t* src = d + start + (topDown ? y : h - 1 - y) * w * 4;
+        uint8_t* dst = rep.bitmapData + y * rep.bytesPerRow;
+        for (NSInteger x = 0; x < w; x++) {  // BGRA -> RGBA
+            dst[x * 4] = src[x * 4 + 2]; dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4]; dst[x * 4 + 3] = src[x * 4 + 3];
+        }
+    }
+    NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+    [image addRepresentation:rep];
+    NSApp.applicationIconImage = image;
+}
+
 namespace mods { bool mouse_captured(); }
 
 namespace gfx {
@@ -396,6 +422,7 @@ static void create_windows() {
     // keyboard focus from the user's game
     bool test = getenv("WWHD_NO_HOST_INPUT") != nullptr;
     [NSApp setActivationPolicy:test ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
+    if (!test) set_dock_icon();
     load_settings();
     load_options();
     NSWindow* tv = make_window(0, @"The Legend of Zelda: The Wind Waker HD (recompiled)",
