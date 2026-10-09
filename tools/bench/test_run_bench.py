@@ -22,7 +22,7 @@ class BenchmarkTests(unittest.TestCase):
 
     def run_fake(self, root, complete, phase=None, profile=True):
         (root / 'source').mkdir()
-        args = types.SimpleNamespace(binary='/unused/base', variant_binaries={'new': '/unused/new'},
+        args = types.SimpleNamespace(binary=str(root / 'base'), variant_binaries={'new': str(root / 'new')},
             save=str(root / 'source'), game='/unused/game', state_dir='/unused/states', scene='still', slot=1,
             load_frame=450, origin=650, cache_dir=None, press_from=120, press_every=30, renderer='metal',
             fps='30', visible=False, display_hz=0, uncapped=False, gate=None, wait_for_others=True,
@@ -56,7 +56,7 @@ class BenchmarkTests(unittest.TestCase):
         with patch.object(bench.subprocess, 'Popen', Process), patch.object(bench, 'other_games', games), \
              patch.object(bench, 'load1', load), patch.object(bench.time, 'sleep', sleep):
             result = bench.run_once(args, 'new', {}, 1, str(root / 'out'))
-        self.assertEqual(launched, ['/unused/new'])
+        self.assertEqual(launched, [bench.os.path.abspath(root / 'new')])
         return result
 
     def test_exit_after_loading_without_completing_is_not_success(self):
@@ -73,7 +73,7 @@ class BenchmarkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = self.run_fake(pathlib.Path(directory), True, [0])
         self.assertEqual(result['status'], 'ok')
-        self.assertEqual(result['binary'], '/unused/new')
+        self.assertEqual(result['binary'], bench.os.path.abspath(pathlib.Path(directory) / 'new'))
 """Benchmark statistics and profiler extraction tests; no game input."""
 import unittest
 import contextlib
