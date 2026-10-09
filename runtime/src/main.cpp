@@ -13,6 +13,8 @@
 #include <ctime>
 #include <filesystem>
 #include "guest_addr.h"
+#include "mods/guest_mods.h"
+#include "mods/code_mods.h"
 #include "platform/host.h"
 #ifdef _WIN32
 #include <timeapi.h>
@@ -255,6 +257,7 @@ static void default_vulkan_cpu_paths() {
 }
 
 int main(int argc, char** argv) {
+    mods::code::startup(argc, argv);
     apply_portable_mode();
     default_vulkan_cpu_paths();
 #ifdef _WIN32
@@ -341,6 +344,7 @@ int main(int argc, char** argv) {
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
     mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path
+    mods::packages::set_code_mod_support(guestmods::hooks_built() && mods::code::enabled());
     mods::packages::initialize();
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
@@ -370,6 +374,7 @@ int main(int argc, char** argv) {
         g_guest_build_name, g_guest_build_title_id, m.entry, m.sda_base, m.sda2_base, m.data_end);
 
     dispatch::init();
+    guestmods::init();  // trusted manager packages, before guest threads start
     init_data_imports();
     mem_setup_heaps(m.data_end);
     threads::init(m);

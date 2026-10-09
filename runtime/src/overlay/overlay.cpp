@@ -24,6 +24,7 @@
 
 #include "imgui.h"
 #include "hostui.h"
+#include "../mods/code_mods.h"
 #include "controls_view.h"
 #include "text_entry.h"
 #include "../aspect.h"
@@ -854,7 +855,11 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     if (accept) {
         bool ok = true;
         for (const auto& [id, name] : c.native) ok = ok && confirm_native(id, error);
-        if (ok) enable(c.id, true, error);
+        if (ok) {
+            if(needs_code_mod_support(c.id)) {
+                mods::code::request(true,c.id);
+            } else enable(c.id, true, error);
+        }
     }
     if (answered) {
         c = NativeConfirm{};
@@ -911,7 +916,13 @@ void package_controls() {
     });
     ImGui::SetNextItemWidth(-140);
     ImGui::InputText("Package path", source, sizeof source);
-    if (ImGui::Button("Install package")) install(source, error);
+    bool install_now=ImGui::Button("Install package");
+    static const char* test_install=g_no_host?getenv("WWHD_TEST_MOD_INSTALL"):nullptr;
+    if(test_install){snprintf(source,sizeof source,"%s",test_install);test_install=nullptr;install_now=true;}
+    if(install_now) {
+        std::string installed_id;
+        if(install(source,error,&installed_id)&&needs_code_mod_support(installed_id))mods::code::request(true);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Refresh packages")) refresh(error);
     auto path = directory();
@@ -926,16 +937,20 @@ void package_controls() {
         if (test_enable && mod.id == test_enable) { toggled = on = true; test_enable = nullptr; }
         if (toggled) {
             auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
-            if (native.empty()) enable(mod.id, on, error);
+            if (native.empty()) {
+                if(on&&needs_code_mod_support(mod.id)) {
+                    mods::code::request(true,mod.id);
+                } else enable(mod.id, on, error);
+            }
             else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
         if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
         if (expanded) {
-            note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
+            note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "guest" ? "Guest mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
                  mod.pending_restart ? "Restart required" : mod.active ? "Active" : mod.enabled ? "Waiting for game update" : "Disabled");
-            if (mod.kind == "native" && mod.compatible)
+            if ((mod.kind == "native" || mod.kind == "guest") && mod.compatible)
                 note(mod.native_confirmed ? "Runs native code with the game's permissions (you confirmed this version)."
                                           : "Runs native code with the game's permissions. Enabling it asks you to confirm first.");
             if (!mod.author.empty()) note("By %s", mod.author.c_str());
@@ -980,7 +995,43 @@ void package_controls() {
     native_confirm_dialog(confirm, error);
 }
 
+void code_mod_dialog() {
+    auto status=mods::code::status();
+    if(!status.requested)return;
+    // Explicit test acceptance drives the same offer/rebuild path in an isolated,
+    // input-free run. The normal native-code trust check still runs first.
+    static bool test_accepted=false;
+    if(g_no_host&&getenv("WWHD_TEST_CODE_MOD_REBUILD")&&!test_accepted&&!status.building&&!status.ready) {
+        test_accepted=true;mods::code::begin();
+    }
+    ImGui::OpenPopup("Rebuild code-mod support");
+    if(ImGui::BeginPopupModal("Rebuild code-mod support",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
+        if(status.ready) {
+            ImGui::TextWrapped("Game code is ready. Restart the game to apply the change.");
+            if(!status.error.empty())ImGui::TextWrapped("%s",status.error.c_str());
+            if(ImGui::Button("Restart now"))hostui::post([] {std::string error;if(!mods::code::restart(error))fprintf(stderr,"[code mods] %s\n",error.c_str());});
+            ImGui::SameLine();
+            if(ImGui::Button("Later")){mods::code::dismiss();ImGui::CloseCurrentPopup();}
+        } else if(status.building) {
+            ImGui::TextUnformatted(status.stage.c_str());
+            if(status.total)ImGui::ProgressBar(float(status.done)/status.total,ImVec2(360,0));
+            if(ImGui::Button("Cancel rebuild"))mods::code::cancel();
+        } else {
+            if(status.target)ImGui::TextWrapped("This mod needs code-mod support. Enable it now?");
+            ImGui::TextWrapped("Code mods need the game code to be rebuilt %s mod support, about 5 minutes. Rebuild now?",status.target?"with":"without");
+            if(!status.error.empty())ImGui::TextWrapped("%s",status.error.c_str());
+            if(ImGui::Button("Rebuild now"))mods::code::begin();
+            ImGui::SameLine();
+            if(ImGui::Button("Cancel")){mods::code::dismiss();ImGui::CloseCurrentPopup();}
+        }
+        ImGui::EndPopup();
+    }
+}
+
 void tab_mods() {
+    bool code_mods=mods::code::enabled();
+    if(ImGui::Checkbox("Enable code mods (PowerPC mods)",&code_mods))mods::code::request(code_mods);
+    note("Changing code-mod support rebuilds the game code and requires a restart.");
     bool v;
     heading("Mod manager");
     note("Built-in mods are part of this recomp build. Your choices are saved; all start off by default.");
@@ -1595,6 +1646,7 @@ void settings_window() {
             if (controller_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
             if (controller_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
         }
+        code_mod_dialog();
         if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_FittingPolicyShrink)) {
             for (int i = 0; i < kTabs; i++) {
                 ImGuiTabItemFlags f = U.select_tab == i ? ImGuiTabItemFlags_SetSelected : 0;

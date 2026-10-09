@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "mods/guest_identity.h"
 
 namespace pstate {
 
@@ -49,6 +50,7 @@ struct State {
     int controller = 0;         // optional: 0 unknown, 1 GamePad, 2 Pro Controller
     int file_slot = 0;          // Quest Log 0..2 (dSv_info_c::mDataNum)
     std::string player_name;    // UTF-8
+    std::vector<guestmods::ModIdentity> guest_mods; // enabled IDs + versions, no mod memory
     // place
     std::string stage;          // dComIfGp start stage name ("sea", "M_NewD2", ...)
     int start_point = 0, start_room = 0, layer = -1;  // how the stage was entered

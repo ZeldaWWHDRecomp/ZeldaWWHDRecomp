@@ -36,6 +36,7 @@ Keys are never printed, logged or stored.
 import argparse
 import getpass
 import glob
+import code_mods
 import hashlib
 import json
 import os
@@ -1229,11 +1230,11 @@ def language_source_kind(path):
 # build
 
 
-def recompile(game_dir, gen_dir):
+def recompile(game_dir, gen_dir, hooks=False):
     shutil.rmtree(gen_dir, ignore_errors=True)
     rpx = os.path.join(game_dir, "code", "cking.rpx")
-    out = run_logged([sys.executable, os.path.join(PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir],
-                     what="translating the game code")
+    out = run_logged([sys.executable, os.path.join(PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir] + (["--mod-hooks"] if hooks else []),
+                     env=dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0"), what="translating the game code")
     n = len(glob.glob(os.path.join(gen_dir, "code_*.c")))
     if n == 0:
         raise SetupError("the recompiler wrote no code")
@@ -1276,7 +1277,7 @@ def fwd(p):
     return p.replace("\\", "/")
 
 
-def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs):
+def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None):
     os.makedirs(obj_dir, exist_ok=True)
     srcs = sorted(glob.glob(os.path.join(gen_dir, "code_*.c")))
     srcs += [os.path.join(gen_dir, f) for f in ("table.c", "imports.c")]
@@ -1291,6 +1292,8 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs):
     failures = []
 
     def one(src):
+        if cancel:
+            cancel()
         obj = os.path.join(obj_dir, os.path.basename(src) + ".o")
         cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
         p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -1300,6 +1303,8 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs):
                 failures.append((src, out))
                 LOG.write("$ " + " ".join(cmd) + "\n" + out)
             done[0] += 1
+            if progress:
+                progress(done[0], total)
             pr.update(done[0], total, "%d of %d files" % (done[0], total))
         return obj
 
@@ -1378,6 +1383,34 @@ def mac_app(app_path, exe_src, data_dir, version):
     subprocess.run(["codesign", "--force", "--deep", "-s", "-", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.makedirs(os.path.dirname(app_path), exist_ok=True)
     replace_dir(tmp, app_path)
+
+
+def write_guest_build_config(data_dir, tc):
+    """Remember setup's real local toolchain for runtime guest builds (no shell command strings)."""
+    def stored_path(path):
+        if PORTABLE and os.path.isabs(path):
+            for root in (PKG, data_dir):
+                try:
+                    inside = os.path.commonpath([os.path.abspath(root), path]) == os.path.abspath(root)
+                except ValueError:  # another Windows drive
+                    inside = False
+                if inside:
+                    relative = os.path.relpath(path, data_dir)
+                    return relative if relative.startswith(".") else "." + os.sep + relative
+        return path
+
+    config = {"format_version": 2, "python": [stored_path(sys.executable)],
+              "compiler": [stored_path(tc.cc[0])] + tc.cc[1:],
+              "builder": stored_path(os.path.join(PKG, "tools", "guestmod", "build_guest_mod.py")),
+              "include": stored_path(os.path.join(PKG, "sdk", "include")),
+              "setup": stored_path(os.path.join(PKG, "tools", "installer", "setup.py")),
+              "data_dir": stored_path(os.path.abspath(data_dir))}
+    if tc.env and tc.env.get("ZIG_GLOBAL_CACHE_DIR"):
+        config["zig_cache"] = stored_path(tc.env["ZIG_GLOBAL_CACHE_DIR"])
+    path = os.path.join(data_dir, "guest-sdk.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    os.replace(path + ".tmp", path)
 
 
 def game_icon_png(data_dir):
@@ -1506,7 +1539,7 @@ def toolchain_dir(data_dir):
 
 
 def remove_toolchain(data_dir):
-    """Deletes the downloaded compiler (it is needed again only to repair; then it is downloaded again)."""
+    """Deletes the downloaded compiler (repair and guest mod builds need setup to restore it)."""
     d = toolchain_dir(data_dir)
     n = folder_size(d) if os.path.isdir(d) else 0
     shutil.rmtree(d, ignore_errors=True)
@@ -1875,7 +1908,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         begin("translate")
         t0 = time.time()
         gen_dir = os.path.join(work, "gen")
-        nfiles = recompile(ctx.game_dir, gen_dir)
+        nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)))
         say("  %d source files (%d s)" % (nfiles, time.time() - t0))
 
     begin("compile")
@@ -1900,7 +1933,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     state = {"version": ctx.version, "platform": manifest["platform"], "exe": exe, "data_dir": data_dir,
              "game_dir": ctx.game_dir, "portable": PORTABLE,
              "installed": time.strftime("%Y-%m-%d %H:%M:%S"), "toolchain": manifest["toolchain"],
-             "placeholder_code": kind == "gen"}
+             "placeholder_code": kind == "gen",
+             "code_mods": code_mods.hooks_option(getattr(args, "code_mods", None))}
     if PORTABLE:
         # the game keeps its settings, save states and caches in data/user (runtime: host::portable_user_dir)
         with open(os.path.join(exe_dir, "portable.txt"), "w") as f:
@@ -1925,10 +1959,16 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         else:
             windows_shortcuts(data_dir, exe)
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
+    if kind != "gen":
+        try:
+            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], exe, gen_dir, objs)
+        except (OSError, SetupError) as e:
+            LOG.write("Initial code-mod cache skipped: " + str(e))
     if not args.keep_work:
         shutil.rmtree(work, ignore_errors=True)
     if kind != "gen":
         os.makedirs(os.path.join(data_dir, "save"), exist_ok=True)
+    write_guest_build_config(data_dir, tc)
     write_state(data_dir, state)
     return state
 
@@ -1962,6 +2002,10 @@ def main():
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
+    ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (default off; WWHD_CODE_MODS override)")
+    ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
+    ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON")
+    ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists")
     ap.add_argument("--repair", action="store_true", help="rebuild the game code from the installed game files")
     ap.add_argument("--jobs", type=int, help="parallel compiler processes")
     ap.add_argument("--yes", action="store_true", help="non-interactive (also WWHD_SETUP_NONINTERACTIVE=1)")
@@ -2009,6 +2053,12 @@ def main():
 
 def run(args, ui):
     ctx = Ctx(args)
+    if getattr(args, "rebuild_code_mods", False):
+        if not valid_game_folder(ctx.game_dir):
+            raise SetupError("No installed game files to rebuild from; run setup first")
+        code_mods.rebuild(sys.modules[__name__], ctx, code_mods.hooks_option(args.code_mods),
+                          args.code_mods_status, args.code_mods_cancel)
+        return 0
     version, data_dir, game_dir = ctx.version, ctx.data_dir, ctx.game_dir
     say("The Legend of Zelda: The Wind Waker HD - native PC port, setup %s" % version)
     say("This release contains no game files. Setup builds the game from your own dump of the game.")
@@ -2106,8 +2156,8 @@ def run(args, ui):
             state["shortcut"] = create_shortcut()
             write_state(data_dir, state)
         tdir = toolchain_dir(data_dir)
-        if os.path.isdir(tdir) and ui.yesno("Remove the downloaded compiler (%s)? It is only needed to repair the game "
-                                            "and is downloaded again then." % human(folder_size(tdir)), True):
+        if os.path.isdir(tdir) and ui.yesno("Remove the downloaded compiler (%s)? Repair and guest mod builds need it; "
+                                            "run setup again to restore it." % human(folder_size(tdir)), False):
             remove_toolchain(data_dir)
     say("")
     say("Done. Saves are in %s" % os.path.join(data_dir, "save"))

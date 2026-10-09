@@ -13,6 +13,8 @@
 #include "../screenshot.h"
 #include "../input_map.h"
 #include "../overlay/hostui.h"
+#include "../overlay/overlay.h"
+#include "../mods/code_mods.h"
 #include "../crashrec.h"
 #include "../aspect.h"
 #include "renderer.h"
@@ -455,6 +457,9 @@ void install_menu(NSWindow* tv) {
     // Gameplay: optional mods, all off by default (runtime/src/mods/). One line per option.
     NSMenuItem* gpItem = [bar addItemWithTitle:@"Gameplay" action:nil keyEquivalent:@""];
     NSMenu* gp = [[NSMenu alloc] initWithTitle:@"Gameplay"];
+    toggle(gp, @"Enable code mods (PowerPC mods)", ^BOOL { return mods::code::enabled(); }, ^(BOOL on) {
+        mods::code::request(on);overlay::set_open(true);
+    }, @"Rebuild game code with mod support; confirmation is in Settings > Mods");
     [gp addItemWithTitle:@"Camera" action:nil keyEquivalent:@""].enabled = NO;
     toggle(gp, @"    Direct right-stick camera (no easing)", ^BOOL { return mods::direct_camera(); }, ^(BOOL on) { mods::set_direct_camera(on); },
            @"The right stick turns the camera at a constant rate as soon as it is pushed");

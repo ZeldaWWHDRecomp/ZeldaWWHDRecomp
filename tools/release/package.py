@@ -39,12 +39,15 @@ TOOL_FILES = [
     "tools/recomp/analyze.py",
     "tools/recomp/ppc2c.py",
     "tools/recomp/builds.py",
+    "tools/guestmod/build_guest_mod.py",
+    "tools/guestmod/guestmod.py",
     "tools/savegame/gc2hd.py",
     "tools/savegame/wwsave.py",
     "tools/savegame/README.md",
 ]
 INSTALLER_FILES = [
     "tools/installer/setup.py",
+    "tools/installer/code_mods.py",
     "tools/installer/toolchains.json",
     "tools/installer/README.md",
 ]
@@ -347,6 +350,8 @@ def main():
     driver, link, nobj, nlib = build_link_recipe(build, pkg, a.linkonly_lib)
     cflags = gamecode_flags(build)
     shutil.copytree(os.path.join(ROOT, "runtime", "include"), os.path.join(pkg, "sdk", "include"))
+    shutil.copytree(os.path.join(ROOT, "runtime", "guest", "include"),
+                    os.path.join(pkg, "sdk", "guest", "include"))
     runtime_files = []
     for f in a.runtime_file:
         copy(f, os.path.join(pkg, "sdk", "runtime", os.path.basename(f)))

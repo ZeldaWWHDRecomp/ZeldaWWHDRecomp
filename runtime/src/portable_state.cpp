@@ -32,6 +32,9 @@ const Blob* find_blob(const std::string& k) {
         if (k == b.key) return &b;
     return nullptr;
 }
+bool is_guest_key(const std::string& k,const std::string& v) {
+    return k.starts_with("guest_mod.")&&guestmods::valid_identity({k.substr(10),v});
+}
 bool is_text_key(const std::string& k) {
     for (auto* t : kTextKeys)
         if (k == t) return true;
@@ -213,6 +216,12 @@ std::string write(const State& s, std::string& why) {
     kv("runtime", clean(s.runtime));
     kv("created", clean(s.created));
     if (s.controller) kv("controller", std::to_string(s.controller));
+    if(s.guest_mods.size()>256){why="too many guest mods";return {};}
+    std::map<std::string,std::string> guest_ids;
+    for(const auto& mod:s.guest_mods){
+        if(!guestmods::valid_identity(mod)||!guest_ids.emplace(mod.id,mod.version).second){why="invalid or duplicate guest mod identity";return {};}
+        kv(("guest_mod."+mod.id).c_str(),mod.version);
+    }
     kv("file_slot", std::to_string(s.file_slot));
     kv("player_name", clean(s.player_name));
     kv("stage", clean(s.stage));
@@ -245,7 +254,7 @@ bool blob_check(const std::string& text, std::string& why) {
     std::vector<std::pair<std::string, std::string>> kv;
     std::string body, ck;
     if (!lines_of(text, kv, body, ck, why)) return false;
-    size_t binary = 0;
+    size_t binary = 0,guest_count=0;
     for (auto& [k, v] : kv) {
         if (const Blob* b = find_blob(k)) {
             if (v.size() != 2 * b->size) {
@@ -253,6 +262,9 @@ bool blob_check(const std::string& text, std::string& why) {
                 return false;
             }
             binary += b->size;
+        } else if (is_guest_key(k,v)) {
+            if(++guest_count>256){why="too many guest mods";return false;}
+            // bounded ID/version metadata, not a binary field
         } else if (is_text_key(k)) {
             if (v.size() > kMaxText) {
                 why = "field " + k + " is too long";
@@ -342,6 +354,8 @@ bool read(const std::string& text, State& out, std::string& why) {
     s.game_hash = m["game_hash"];
     s.runtime = m["runtime"];
     s.created = m["created"];
+    for(const auto& [key,value]:m)if(is_guest_key(key,value))s.guest_mods.push_back({key.substr(10),value});
+    if(s.guest_mods.size()>256){why="too many guest mods";return false;}
     s.player_name = m["player_name"];
     s.stage = m["stage"];
     if (s.stage.empty() || s.stage.size() > 7) {

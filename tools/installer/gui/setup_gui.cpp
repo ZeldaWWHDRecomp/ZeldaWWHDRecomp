@@ -433,7 +433,7 @@ struct App {
     bool portable = false, legacy = false;
     std::string package, game_dir;
     double free_bytes = 0, source_bytes = 0, toolchain_bytes = 0;
-    bool opt_remove_toolchain = true, opt_shortcut = false;
+    bool opt_remove_toolchain = false, opt_shortcut = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
     bool exec_game = false;                                  // start the game when the window has closed
@@ -1372,7 +1372,7 @@ static void screen_done() {
         if (A.toolchain_bytes > 0) {
             checkbox(("Remove the downloaded compiler (" + format_size(A.toolchain_bytes) + ")").c_str(),
                             &A.opt_remove_toolchain);
-            muted("It is only needed to repair the game, and is downloaded again then.");
+            muted("Keep it for guest mod builds and repairs. Run setup again to restore it if removed.");
         }
         checkbox(
 #if defined(__APPLE__)
