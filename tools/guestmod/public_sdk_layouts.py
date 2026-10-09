@@ -6,6 +6,9 @@ has its own offset assertion; no host wrapper implementation is copied.
 import re
 
 CURATED = {
+    'ptmf': ('include/d/actor/d_a_npc_ba1.h', ['ProcFunc_l']),
+    'valoo': ('d/actor/d_a_dr.cpp', ['dr_class']),
+    'medli': ('include/d/actor/d_a_npc_md.h', ['daNpc_Md_c']),
     'messages': ('include/d/actor/d_a_tag_msg.h', ['daTag_Msg_c']),
     'actor': ('include/f_op/f_op_actor.h', ['actor_place', 'dKy_tevstr_c', 'fopAc_ac_c']),
     'link': ('include/d/actor/d_a_player_main.h', ['daPy_actorKeep_l', 'daPy_lk_c']),
@@ -13,7 +16,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
-AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20}
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 
@@ -31,7 +34,7 @@ def body_of(text, name):
     raise ValueError('unclosed public layout: ' + name)
 
 
-def layout(text, name):
+def layout(text, name, selected=None):
     size = re.search(r'WWHD_SIZE\(\s*' + re.escape(name) + r'\s*,\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*\)', text)
     if not size:
         raise ValueError('missing public size: ' + name)
@@ -58,6 +61,10 @@ def layout(text, name):
             kind = re.sub(r'be<(\w+)>', r'\1', declaration[1])
             if kind in PRIMITIVES:
                 fields.append((int(offset[2], 16), kind, field, ''))
+    if selected is not None:
+        fields = [field for field in fields if field[2] in selected]
+        if {field[2] for field in fields} != set(selected):
+            raise ValueError("public selected fields changed: " + name)
     fields.sort()
     for offset, kind, field, array in fields:
         if kind in AGGREGATES and (array or offset + AGGREGATES[kind] > int(size[1], 0)):
@@ -110,6 +117,9 @@ def generate(root, output, revision):
                  '#define WWHD_SDK_ASSERT(x, message) static_assert(x, message)', '#else',
                  '#define WWHD_SDK_ASSERT(x, message) _Static_assert(x, message)', '#endif', '#endif',
                  'WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");', '']
+        if subsystem != 'ptmf':
+            lines.append('#include "ptmf.h"')
         for name in names:
-            lines.append(layout(text, name))
+            selected = {'daNpc_Md_c': {'mpMorf'}, 'dr_class': {'mpMorf', 'mMode', 'mCurrBckIdx'}}.get(name)
+            lines.append(layout(text, name, selected))
         (output / (subsystem + '.h')).write_text('\n'.join(lines))

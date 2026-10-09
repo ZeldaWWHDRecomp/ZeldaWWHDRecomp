@@ -14,6 +14,7 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
 typedef union cSGlobe_l {
     u8 bytes[0x8];
     struct __attribute__((packed)) { f32 mRadius; };

@@ -14,6 +14,7 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
 typedef union daItemBase_c {
     u8 bytes[0x750];
     struct __attribute__((packed)) { u8 _pad_mpModel[0x3B4]; u32 mpModel; };

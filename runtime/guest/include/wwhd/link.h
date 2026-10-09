@@ -14,6 +14,7 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
 typedef union daPy_actorKeep_l {
     u8 bytes[8];
     struct __attribute__((packed)) { u32 mID; };
@@ -78,6 +79,7 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m_tex_anm_heap[0x65D0]; u8 m_tex_anm_heap[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m_tex_scroll_heap[0x65E0]; u8 m_tex_scroll_heap[0x10]; };
     struct __attribute__((packed)) { u8 _pad_mCurProc[0x65F0]; s32 mCurProc; };
+    struct __attribute__((packed)) { u8 _pad_mCurProcFunc[0x65F4]; ProcFunc_l mCurProcFunc; };
     struct __attribute__((packed)) { u8 _pad_mFootEffect[0x65FC]; u8 mFootEffect[0x98]; };
     struct __attribute__((packed)) { u8 _pad_m3280[0x6694]; u8 m3280[0x14]; };
     struct __attribute__((packed)) { u8 _pad_mSwimTailEcallBack[0x66A8]; u8 mSwimTailEcallBack[0x50]; };
@@ -344,6 +346,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_old_fdata) == 0x65CC, "daPy_lk_c
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_tex_anm_heap) == 0x65D0, "daPy_lk_c.m_tex_anm_heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_tex_scroll_heap) == 0x65E0, "daPy_lk_c.m_tex_scroll_heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProc) == 0x65F0, "daPy_lk_c.mCurProc");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProcFunc) == 0x65F4, "daPy_lk_c.mCurProcFunc");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFootEffect) == 0x65FC, "daPy_lk_c.mFootEffect");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3280) == 0x6694, "daPy_lk_c.m3280");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSwimTailEcallBack) == 0x66A8, "daPy_lk_c.mSwimTailEcallBack");

@@ -4,6 +4,7 @@ from public_sdk_index import DECL, VERIFY, mask_declarations, symbols_header
 from public_sdk_layouts import layout, vectors
 from public_sdk_bindings import bindings, guest_type
 from public_sdk_data import declarations, play_declarations
+from public_sdk_semantics import semantic_declarations
 
 
 class PublicDeclarations(unittest.TestCase):
@@ -85,6 +86,41 @@ class PublicDeclarations(unittest.TestCase):
         duplicate['d/d_s_play_4.cpp'] *= 2
         with self.assertRaisesRegex(ValueError, 'public play'):
             play_declarations(duplicate.__getitem__)
+
+    def test_ptmf_layout_and_selected_actor_fields(self):
+        source = """struct ProcFunc_l {
+            /* 0x0 */ be<s16> d; /* 0x2 */ be<s16> i; /* 0x4 */ be<u32> f;
+        }; WWHD_SIZE(ProcFunc_l, 8);"""
+        output = layout(source, 'ProcFunc_l', {'d', 'i', 'f'})
+        self.assertIn('sizeof(ProcFunc_l) == 8', output)
+        self.assertIn('__builtin_offsetof(ProcFunc_l, f) == 0x4', output)
+        actor = 'struct A { /* 0x4 */ gptr<Model> mpMorf; /* 0x8 */ u32 other; }; WWHD_SIZE(A, 0xC);'
+        output = layout(actor, 'A', {'mpMorf'})
+        self.assertIn('u32 mpMorf', output)
+        self.assertNotIn('other', output)
+        with self.assertRaisesRegex(ValueError, 'selected fields'):
+            layout(actor.replace('mpMorf', 'changed'), 'A', {'mpMorf'})
+
+    def test_public_song_contracts_and_chime_offset_fail_closed(self):
+        player = ('s32 judge = gabi::call<s32>(0x025E1F34 /* mDoAud_tact_judge */, '
+                  '(s32)mProcVar5, (s32)mProcVar3);'
+                  'm3624 = gabi::call<u32>(0x025E1EFC /* mDoAud_tact_getBeat */);'
+                  'gabi::call(0x025E1E94 /* mDoAud_tact_reset */);')
+        chime = ('/* 0x3B4 */ gptr<mDoExt_McaMorf> mpMorf;'
+                 'WWHD_OFFSET(Act_c, mpMorf, 0x3B4);')
+        def generate(player_source=player, chime_source=chime):
+            return semantic_declarations(lambda source: player_source if 'player' in source else chime_source, 'public')
+        output = generate()
+        self.assertIn('s32, wwhd_tact_judge, (s32 index, s32 direction)', output)
+        self.assertIn('void, wwhd_tact_reset, (void)', output)
+        self.assertIn('WWHD_OFFSET_daObjGong_Act_c_mpMorf 0x3B4', output)
+        for original in ['0x025E1F34', '0x025E1EFC', '0x025E1E94', '(s32)mProcVar3']:
+            with self.assertRaisesRegex(ValueError, 'public song'):
+                generate(player.replace(original, 'changed'))
+        with self.assertRaisesRegex(ValueError, 'public chime'):
+            generate(chime_source=chime.replace('0x3B4);', '0x3B8);'))
+        with self.assertRaisesRegex(ValueError, 'public chime'):
+            generate(chime_source=chime + chime)
 
     def test_unsupported_signature_is_reported(self):
         index = {'revision': 'public', 'functions': [

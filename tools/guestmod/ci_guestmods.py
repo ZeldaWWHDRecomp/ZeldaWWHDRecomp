@@ -47,7 +47,7 @@ def main():
     subprocess.run([sys.executable, str(REPO / "tools/installer/test_setup.py"), "GuestBuildConfig", "CodeModsBuild"], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/guestmod/test_public_sdk_index.py")], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/bench/test_run_bench.py")], check=True)
-    headers = ["bindings", "vectors", "actor", "link", "camera", "items", "messages", "save", "data"]
+    headers = ["bindings", "vectors", "ptmf", "valoo", "medli", "audio", "actor", "link", "camera", "items", "messages", "save", "data"]
     # Both supported source languages exercise nested public aggregate layout.
     assertions = """
 #ifdef __cplusplus
@@ -55,6 +55,14 @@ def main():
 #else
 #define SDK_ASSERT(expression) _Static_assert(expression, "SDK layout")
 #endif
+SDK_ASSERT(sizeof(ProcFunc_l) == 8);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, d) == 0);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, i) == 2);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, f) == 4);
+SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProcFunc) == 0x65F4);
+SDK_ASSERT(__builtin_offsetof(dr_class, mpMorf) == 0x3D0);
+SDK_ASSERT(__builtin_offsetof(daNpc_Md_c, mpMorf) == 0x618);
+SDK_ASSERT(WWHD_OFFSET_daObjGong_Act_c_mpMorf == 0x3B4);
 SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.x) == 0x314);
 SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.z) == 0x31C);
 SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, shape_angle.y) == 0x32A);

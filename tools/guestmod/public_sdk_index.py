@@ -122,6 +122,9 @@ def main():
         from public_sdk_data import declarations
         (args.layouts_dir / 'data.h').write_text(declarations(
             lambda source: (args.public_clone / 'wwhd_src' / source).read_text(), result['revision']))
+        from public_sdk_semantics import semantic_declarations
+        (args.layouts_dir / 'audio.h').write_text(semantic_declarations(
+            lambda source: (args.public_clone / 'wwhd_src' / source).read_text(), result['revision']))
         print(f'Typed declarations: {len(result["functions"])-len(skipped)}; unsupported signatures: {len(skipped)}')
     if args.symbols_header:
         args.symbols_header.parent.mkdir(parents=True, exist_ok=True)

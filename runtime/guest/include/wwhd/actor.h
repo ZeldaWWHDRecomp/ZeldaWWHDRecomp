@@ -14,6 +14,7 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
 typedef union actor_place {
     u8 bytes[0x14];
     struct __attribute__((packed)) { cXyz pos; };
