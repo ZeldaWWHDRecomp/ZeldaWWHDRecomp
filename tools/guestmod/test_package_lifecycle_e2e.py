@@ -112,6 +112,8 @@ def main():
     parser.add_argument('--mode', choices=('30', 'interp60', 'true60'), default='30')
     parser.add_argument('--max-game-sessions', type=int, choices=range(1, 5), default=4)
     parser.add_argument('--timeout', type=int, default=600)
+    parser.add_argument('--jobs', type=int, choices=range(1, 5), default=4,
+                        help='Installer compiler jobs; reserve capacity for other workers')
     parser.add_argument('--min-free-gib', type=int, default=15, help='Explicit local disk floor; 0 disables the gate when authorized')
     parser.add_argument('--allow-concurrent-benchmark', action='store_true', help='Authorized functional checks only; results are not performance evidence')
     args = parser.parse_args()
@@ -151,7 +153,7 @@ def main():
     with (args.out / 'prepare-off-installer.log').open('w') as log:
         subprocess.run([sys.executable, str(release / 'tools/installer/setup.py'),
                         '--yes', '--data-dir', str(data), '--rebuild-code-mods', '--code-mods', '0',
-                        '--jobs', '4', '--code-mods-status', str(off_status)],
+                        '--jobs', str(args.jobs), '--code-mods-status', str(off_status)],
                        stdout=log, stderr=subprocess.STDOUT, check=True)
     off = selected_build(data, False)
     status = json.loads(off_status.read_text())
@@ -281,7 +283,7 @@ def main():
     removed = run('disabled-remove-after-restart', 1, {'WWHD_TEST_MOD_REMOVE': ident})
     assert not phases['disabled-remove-after-restart']['guest_loaded']
     assert '[mods] removed ' + ident in removed and not (manager / 'Mods' / ident).exists()
-    result = {'allow_concurrent_benchmark': args.allow_concurrent_benchmark, 'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
+    result = {'installer_jobs': args.jobs, 'allow_concurrent_benchmark': args.allow_concurrent_benchmark, 'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
               'setup_receipts_verified': True, 'disabled_until_restart': True, 'rebuild_provenance': rebuilds,
               'package_sha256': hashlib.sha256(args.package.read_bytes()).hexdigest(),
               'launcher_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
