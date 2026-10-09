@@ -457,8 +457,11 @@ position (the bottom face button is the Wii U's B), and they can be remapped in 
 **Face buttons** in the settings overlay (F1 → Controls) or the Input menu switches that preset:
 *by position (Nintendo)* is the default; *by label (Xbox)* makes the button named A drive the Wii
 U's A instead — on an Xbox pad that means A accepts/acts and B goes back (issue #78), and the X/Y
-items follow the printed labels too. The choice rewrites the four face bindings only; keyboard keys
-and the other inputs stay as they are, and a hand-edited face binding shows as *custom*.
+items follow the printed labels too. *Automatic* reads the labels printed on the pad that was
+plugged in first and follows them, so an Xbox pad plays by label and a Nintendo pad by position
+without touching the setting. The choice rewrites the four face bindings only; keyboard keys
+and the other inputs stay as they are, and a hand-edited face binding shows as *custom* (which also
+leaves Automatic).
 The **Input** menu switches whether keyboard and controllers act as the Wii U GamePad (default)
 or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with the Pro
 Controller, the GamePad window keeps its screen and touch input.

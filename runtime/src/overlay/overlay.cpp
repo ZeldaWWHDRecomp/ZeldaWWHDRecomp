@@ -1480,7 +1480,7 @@ void start_capture(int a, int col) {
 
 void clear_binding(int a, int col) {
     input_map::Mapping m = input_map::current();
-    if (col == kColPad) m.pad[a] = input_map::kPadNone;
+    if (col == kColPad) input_map::set_pad_binding(m, a, input_map::kPadNone);
     else m.keys[a][col] = input_map::kNoKey;
     input_map::set_current(m);
 }
@@ -1494,7 +1494,7 @@ void apply_capture() {
     bool done = false;
     if (code == -1) done = true;  // Esc: cancel
     else if (code == -3) {         // Backspace / Delete: clear
-        if (colm == kColPad) m.pad[a] = kPadNone;
+        if (colm == kColPad) set_pad_binding(m, a, kPadNone);
         else m.keys[a][colm == kColAny ? 0 : colm] = kNoKey;
         input_map::set_current(m);
         done = true;
@@ -1518,7 +1518,7 @@ void apply_capture() {
         if (!U.cap_pad_released) U.cap_pad_released = !any;
         else if (pressed > 0) {
             if (colm == kColPad || colm == kColAny) {
-                m.pad[a] = pressed;
+                set_pad_binding(m, a, pressed);
                 input_map::set_current(m);
             }
             done = true;  // (key slots: any controller input cancels)
@@ -1717,20 +1717,31 @@ void tab_controls() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Face buttons");
     ImGui::SameLine();
-    if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition), fl == input_map::FaceLayout::kPosition)) {
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition),
+              !m.face_auto && fl == input_map::FaceLayout::kPosition)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
         input_map::set_current(m);
     }
     ImGui::SameLine();
-    if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels), fl == input_map::FaceLayout::kLabels)) {
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels),
+              !m.face_auto && fl == input_map::FaceLayout::kLabels)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
+        input_map::set_current(m);
+    }
+    ImGui::SameLine();
+    if (radio("automatic", m.face_auto)) {
+        input_map::set_face_auto(m, true);
         input_map::set_current(m);
     }
     help("How the controller's face buttons drive the Wii U's A/B/X/Y. By position: the bottom "
          "button is B (Nintendo layout). By label: the button named A is A — on an Xbox pad that "
-         "makes A accept/act and B go back (issue #78). Only these four bindings are rewritten; "
+         "makes A accept/act and B go back (issue #78). Automatic reads the labels printed on the "
+         "pad that was plugged in first and follows them. Only these four bindings are rewritten; "
          "keyboard keys and the other inputs stay as they are.");
-    if (fl == input_map::FaceLayout::kCustom) {
+    if (m.face_auto) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(-> %s)", input_map::face_layout_label(fl));
+    } else if (fl == input_map::FaceLayout::kCustom) {
         ImGui::SameLine();
         ImGui::TextDisabled("(custom)");
     }
