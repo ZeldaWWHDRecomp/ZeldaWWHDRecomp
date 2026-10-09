@@ -15,6 +15,10 @@ there:
     libraries copied into sdk/ and libgamecode.a replaced by the player's own.
 
 Output: OUT_DIR/WindWakerHD-VERSION-NAME/ and OUT_DIR/WindWakerHD-VERSION-NAME.zip.
+
+The zip is the portable release (portable.txt). For the single-file Linux AppImage (issue #55) run
+tools/release/appimage.py on the folder this produced: it drops portable.txt, so the read-only mount
+sends every write to the per-user folders.
 """
 import argparse
 import hashlib

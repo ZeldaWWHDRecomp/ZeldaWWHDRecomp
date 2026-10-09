@@ -1938,6 +1938,11 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
              "installed": time.strftime("%Y-%m-%d %H:%M:%S"), "toolchain": manifest["toolchain"],
              "placeholder_code": kind == "gen",
              "code_mods": code_mods.hooks_option(getattr(args, "code_mods", None))}
+    if os.environ.get("APPIMAGE"):
+        # an AppImage (issue #55): its mount is read-only, so nothing is written beside it and
+        # portable.txt is not created. Record which image this was installed from: install.json is
+        # the "what was prepared" file and the setup window reports it back in its hello message.
+        state["appimage"] = os.environ["APPIMAGE"]
     if PORTABLE:
         # the game keeps its settings, save states and caches in data/user (runtime: host::portable_user_dir)
         with open(os.path.join(exe_dir, "portable.txt"), "w") as f:

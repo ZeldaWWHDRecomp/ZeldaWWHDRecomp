@@ -233,6 +233,30 @@ jobs:
       - name: Guard (no game code, game files or keys)
         run: python3 tools/release/guard.py dist/*.zip
 
+      - name: AppImage (issue #55)
+        # one file, no unzipping: drops portable.txt, so setup keeps everything in the per-user folders.
+        # The trailing slash in the glob picks the packaged folder, not its .zip.
+        run: |
+          python3 tools/release/appimage.py dist/WindWakerHD-*/ --out dist
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE"/dist/*.AppImage --appimage-extract)
+          python3 tools/release/guard.py "$RUNNER_TEMP"/squashfs-root
+          # the real mount is read-only: make the extracted tree that too, so a write into <image>/data
+          # would fail here instead of silently working on a writable temp dir
+          chmod -R a-w "$RUNNER_TEMP"/squashfs-root
+          APP=$(echo "$GITHUB_WORKSPACE"/dist/*.AppImage)
+          chmod +x "$APP"
+          # an explicit data folder is honoured
+          SDL_VIDEO_DRIVER=offscreen "$APP" --appimage-extract-and-run --self-test --data-dir "$RUNNER_TEMP/data-appi"
+          test -f "$RUNNER_TEMP/data-appi/setup.log"
+          # without one: the per-user folder, never <image>/data, and the image stays untouched (issue #55)
+          XDG_DATA_HOME="$RUNNER_TEMP/xdg-data" XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-conf" \
+            SDL_VIDEO_DRIVER=offscreen "$RUNNER_TEMP/squashfs-root/AppRun" --self-test
+          test -f "$RUNNER_TEMP/xdg-data/wwhd/setup.log"
+          test ! -e "$RUNNER_TEMP/squashfs-root/data"
+          test ! -e "$GITHUB_WORKSPACE/dist/data"
+          test ! -e "$GITHUB_WORKSPACE/dist/portable.txt"
+          chmod -R u+w "$RUNNER_TEMP"/squashfs-root && rm -rf "$RUNNER_TEMP"/squashfs-root
+
       - name: Installer self-test (unzipped release, placeholder code, toolchain download)
         run: |
           mkdir -p "$RUNNER_TEMP/unz" && cd "$RUNNER_TEMP/unz" && unzip -q "$GITHUB_WORKSPACE"/dist/*.zip
@@ -260,7 +284,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.AppImage
           if-no-files-found: error
 
   windows:
@@ -453,7 +479,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -n "$VT_API_KEY" ]; then echo "::add-mask::$VT_API_KEY"; fi
-          files=(dist/*.zip)
+          files=(dist/*.zip dist/*.AppImage)
           for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
           python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
 
@@ -488,7 +514,7 @@ jobs:
 
       - name: Checksums and release notes
         run: |
-          cd dist && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
+          cd dist && sha256sum *.zip *.AppImage > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
           python3 tools/release/notes.py README.md "$VERSION" dist/SHA256SUMS.txt > dist/notes.md
           cat dist/notes.md
           python3 tools/release/guard.py dist
@@ -501,7 +527,7 @@ jobs:
       - name: Publish GitHub Release
         if: env.PUBLISH == 'true'
         run: |
-          gh release create "$VERSION" dist/*.zip dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
+          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
             --verify-tag
 
   # Published releases: append the VirusTotal links and counts to the release notes and attach vt-report.json.

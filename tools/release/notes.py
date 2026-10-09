@@ -40,7 +40,10 @@ Everything stays in that folder.
   Keep the app inside the unzipped folder (move the whole folder, not just the app)
 - Windows (x86-64): `Wind Waker HD.exe` (SmartScreen: "More info" > "Run anyway")
 - Linux (glibc 2.35+, Vulkan): `wind-waker-hd`; `linux-x86_64` for x86-64, `linux-aarch64` for arm64
-  (Raspberry Pi 5, Asahi Linux, ARM laptops)
+  (Raspberry Pi 5, Asahi Linux, ARM laptops). Or one file: `chmod +x` the `.AppImage` and start it
+  from anywhere (Steam Deck included); its game, code, saves and settings go to `~/.local/share/wwhd`
+  and `~/.config/wwhd` instead of beside it (Ubuntu 24.04+: `libfuse2t64`, or
+  `--appimage-extract-and-run`)
 
 See "Install (releases)" in the README for details.
 

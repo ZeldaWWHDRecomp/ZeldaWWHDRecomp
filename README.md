@@ -461,7 +461,10 @@ computer (about two minutes); every later start launches the game directly.
      on Apple Silicon, other ARM boards and laptops), glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
      Fedora 36+, Arch, SteamOS 3, Raspberry Pi OS 12), a GPU with Vulkan 1.3 drivers (or 1.1 / 1.2 with
      `VK_KHR_dynamic_rendering`). Take the zip
-     that matches `uname -m` (`x86_64` or `aarch64`); setup says so if it doesn't.
+     that matches `uname -m` (`x86_64` or `aarch64`); setup says so if it doesn't. Or take the
+     single-file **AppImage** (same two architectures) instead of the zip (issue #55): `chmod +x` it
+     and start it from anywhere, Steam Deck included. Nothing is unzipped and the file itself is never
+     written to.
 2. Start **Wind Waker HD** (`Wind Waker HD.app`, `Wind Waker HD.exe`, or `wind-waker-hd` /
    `Wind Waker HD.desktop` on Linux). The first start asks for:
    - your **disc image** (`.wux` or `.wud`), a **Cemu archive** (`.wua`), or an already **extracted
@@ -517,6 +520,11 @@ First start, per system:
   it first). It uses your Python 3 and downloads the compiler (zig, 55 MB; the x86-64 or arm64 build
   matching your system) into the release folder;
   you can remove it at the end.
+- **Linux (AppImage)**: `chmod +x WindWakerHD-*-linux-*.AppImage`, then start that file (from a file
+  manager, a terminal or Steam as a non-Steam game). It needs no unzipping and no writable folder of
+  its own. Ubuntu 24.04 and newer have no FUSE by default: install `libfuse2t64` (`libfuse2` on older
+  releases), or start it with `--appimage-extract-and-run`. Repair or change the game with `--setup`.
+  Everything it creates is listed under "Everything stays in the release folder" below.
 
 **Everything stays in the release folder** (in `data/`): the built game, the extracted game files,
 saves (`data/save`), settings, controls, save states and shader caches (`data/user`), crash logs
@@ -526,13 +534,21 @@ the end. To remove everything, delete the folder. Starting a newer release: unzi
 one, start it, choose your game (the old folder's `data/game` can be used in place) and copy your saves
 and settings from the old folder.
 
+The **Linux AppImage is not a portable folder** (issue #55): its file is read-only, so the game, its
+code and saves go to `~/.local/share/wwhd` and the settings, controls, save states and caches to
+`~/.config/wwhd` (or `$XDG_DATA_HOME` / `$XDG_CONFIG_HOME`; `--data-dir FOLDER` chooses another place
+for the first, for example an SD card on a Steam Deck). Nothing is written beside the `.AppImage`; the
+menu entry the setup adds starts the same game. To remove everything, delete the file and those two
+folders.
+
 The setup also runs in a terminal (the fallback): `tools/Setup in Terminal.command` (macOS),
 `tools/Setup in a console window.bat` (Windows), `tools/setup-in-terminal.sh` (Linux). How it works
 and the interface between the window and `tools/installer/setup.py`:
 [tools/installer/README.md](tools/installer/README.md). Scripted use: `tools/installer/setup.py --help`.
 
-Source builds (below) are not portable: they keep using `~/Library/Application Support/wwhd`,
-`%APPDATA%\WWHD` or `~/.config/wwhd`, as before.
+Source builds (below) and the Linux AppImage are not portable: they keep using the per-user folders
+(`~/Library/Application Support/wwhd`, `%LOCALAPPDATA%\WWHD` for the game and saves,
+`~/.config/wwhd` for the settings on Linux), as before.
 
 ## Requirements (building from source)
 
