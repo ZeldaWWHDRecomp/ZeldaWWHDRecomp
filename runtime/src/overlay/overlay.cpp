@@ -4,6 +4,7 @@
 // changes on their main thread (hostui.h).
 #include "overlay.h"
 #include "guest_hud.h"
+#include "setup_test.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -21,6 +22,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -938,7 +940,47 @@ void start_setup(const std::string& id,const mods::catalogue::Step& step) {
         else mods::packages::run_setup_tool(id,step.id,error,output);
         std::lock_guard guard(setup_worker.mutex);setup_worker.error=std::move(error);
         setup_worker.output=std::move(output);setup_worker.running=false;
+        if(g_no_host&&getenv("WWHD_TEST_MOD_SETUP"))LOG("[setup test] worker %s %s %s",
+            id.c_str(),step.id.c_str(),setup_worker.error.empty()?"ready":"failed");
     });
+}
+diagnostic::SetupPlan& setup_test_plan() {
+    static auto plan=diagnostic::read_setup_plan(g_no_host,getenv("WWHD_MOD_MANAGER_DIR"),
+        getenv("WWHD_TEST_MOD_SETUP"),getenv("WWHD_TEST_GAME_SOURCES"));
+    return plan;
+}
+void setup_test_actions(const mods::packages::View& mod,const std::vector<mods::packages::SetupView>& steps,
+        NativeConfirm& confirm,std::string& error,bool busy,const std::string& failure) {
+    auto& plan=setup_test_plan();if(plan.id!=mod.id)return;
+    static std::set<std::string> attempted;
+    static bool stopped=false,completed=false;
+    if(stopped||completed)return;
+    auto stop=[&](const char* reason){stopped=true;error=reason;LOG("[setup test] failed %s: %s",mod.id.c_str(),reason);};
+    if(!plan.error.empty()){stop(plan.error.c_str());return;}
+    if(busy)return;
+    if(!failure.empty()){stop("Setup worker failed");return;}
+    auto next=diagnostic::next_required_step(steps);
+    if(next==steps.size()){completed=true;LOG("[setup test] ready %s",mod.id.c_str());return;}
+    const auto& step=steps[next].step;
+    if(attempted.contains(step.id))return; // a pending trust/rebuild requires its normal response/restart
+    attempted.insert(step.id);
+    LOG("[setup test] action %s %s %s",mod.id.c_str(),step.id.c_str(),step.type.c_str());
+    using namespace mods::packages;
+    if(step.type=="game_path") {
+        auto source=plan.sources.get(step.game).string();
+        if(source.empty()||!set_game_source(step.game,source,error)){stop("Game source refused");return;}
+        LOG("[setup test] source ready %s %s",mod.id.c_str(),step.id.c_str());
+    }else if(step.type=="choice"||step.type=="confirm") {
+        auto value=step.type=="confirm"?mods::json::Value(true):mods::json::Value(step.choices.front());
+        if(!configure(mod.id,step.option,value,error))stop("Setup option refused");
+    }else {
+        auto proceed=[id=mod.id,step] {
+            if(step.type=="build_guest_mod"&&mods::packages::needs_code_mod_support(id))mods::code::request(true,id);
+            else start_setup(id,step);
+        };
+        auto native=unconfirmed_native(mod.id);
+        if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
+    }
 }
 void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
     using namespace mods::packages;
@@ -948,6 +990,7 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     bool busy;std::string failure,output;
     {std::lock_guard guard(setup_worker.mutex);busy=setup_worker.running;
      if(setup_worker.id==mod.id){failure=setup_worker.error;output=setup_worker.output;}}
+    setup_test_actions(mod,steps,confirm,error,busy,failure);
     for(const auto& status:steps) {
         const auto& step=status.step;ImGui::PushID(step.id.c_str());
         ImGui::TextWrapped("%s%s%s",status.satisfied?"Ready: ":"",step.title.c_str(),step.optional?" (optional)":"");
@@ -1198,7 +1241,8 @@ void package_controls() {
         ImGui::PushID(mod.id.c_str());
         bool on = mod.enabled;
         bool toggled = ImGui::Checkbox("##package_enabled", &on);
-        if (test_enable && mod.id == test_enable) { toggled = on = true; test_enable = nullptr; }
+        if (test_enable && mod.id == test_enable && (setup_test_plan().id!=mod.id ||
+            (setup_test_plan().error.empty()&&diagnostic::setup_ready(setup_steps(mod.id))))) { toggled = on = true; test_enable = nullptr; }
         if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
         if (toggled) {
             auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
@@ -1211,6 +1255,7 @@ void package_controls() {
         }
         ImGui::SameLine();
         if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
+        if(setup_test_plan().id==mod.id)ImGui::SetNextItemOpen(true);
         if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());

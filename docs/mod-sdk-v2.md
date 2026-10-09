@@ -268,8 +268,6 @@ lack that service and refuse the module during loading. Existing HUD v1 mods
 continue to load without it. Do not emulate clipping by moving or shrinking the
 image, since that changes registration at a map boundary.
 
-
-
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated
 between logic steps.
@@ -351,3 +349,39 @@ been made with the matching option), and setup accepts `--code-mods 0|1`.
 **Tests:** `tools/guestmod/test_guestmod.py` (set `WWHD_PPC_CLANG` and `WWHD_PPC_LLD`), the
 `guestmods` CI workflow (examples compiled with each platform's host compiler), and the
 opt-in real-game driver `tools/guestmod/test_code_mods_e2e.py`.
+
+### Opt-in catalogue and setup lifecycle checks
+
+`tools/guestmod/test_package_lifecycle_e2e.py` exercises a reviewed guest ZIP and
+its real catalogue metadata. Supply an installed release/data directory, regional
+normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
+private game-source JSON and a private output folder. The JSON maps declared game
+IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
+for a mod without a game-source step. Run separately with `--region USA`/`EU` and
+`--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
+
+The driver refreshes and installs through the catalogue worker, rebuilds code-mod
+support while the package remains disabled, restarts, selects/validates sources,
+runs preparation and builds the guest module through normal setup workers, then
+enables it for the following restart. It checks setup receipts, declared output
+files, regional build allocation and module existence, activation after restart,
+disable-until-restart and removal. Normal saves are copied for each process; full
+states are never transferred between versions. Only owned game processes are
+stopped. The default functional session limit is four and disk floor is 15 GiB;
+these checks do not measure performance.
+
+The setup diagnostics require all of `WWHD_NO_HOST_INPUT`, an explicit
+`WWHD_MOD_MANAGER_DIR`, `WWHD_TEST_MOD_SETUP` and an absolute private
+`WWHD_TEST_GAME_SOURCES` JSON path. They call the same source validators and setup
+APIs as the UI, and do not accept native-code trust automatically. The driver uses
+the existing explicit isolated-test trust switch; native file-picker interaction
+and the trust dialog still require separate UI review. Ordinary runs never select
+setup actions from these inputs.
+
+Local verification copies the supplied ZIP beside a private catalogue index and
+uses the existing relative-file fixture exception. This verifies catalogue
+parsing, hashes, installation and setup, but does not verify remote hosting.
+Published catalogues continue to require absolute HTTPS package URLs. Runtime
+captures need visual review to establish each mod's visible behavior; successful
+loading and receipts alone are not a visual acceptance test.
+

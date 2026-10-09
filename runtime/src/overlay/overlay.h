@@ -16,6 +16,9 @@
 //   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
 //   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
 //                                              (headless tests only; open the Mods tab separately)
+//   WWHD_TEST_MOD_SETUP=<id>               drive required setup steps with normal APIs/trust
+//   WWHD_TEST_GAME_SOURCES=<absolute JSON>  game-ID -> local path; setup diagnostics require
+//                                              NO_HOST_INPUT and explicit MOD_MANAGER_DIR too
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
 //   WWHD_TEST_PERF_REPORT=<file>                export the clipboard report in a headless test
 //   WWHD_TEST_PERF_REPORT_AT=<frame>            export at this presented frame (default 300)

@@ -740,6 +740,11 @@ target_include_directories(guest_settings_test PRIVATE runtime/src)
 target_compile_options(guest_settings_test PRIVATE -UNDEBUG)
 add_test(NAME guest_settings COMMAND guest_settings_test)
 
+add_executable(setup_test_plan_test runtime/tools/setup_test_plan_test.cpp)
+target_include_directories(setup_test_plan_test PRIVATE runtime/src)
+target_compile_options(setup_test_plan_test PRIVATE -UNDEBUG)
+add_test(NAME setup_test_plan COMMAND setup_test_plan_test)
+
 add_executable(guest_hud_test runtime/tools/guest_hud_test.cpp)
 target_include_directories(guest_hud_test PRIVATE runtime/src)
 target_compile_options(guest_hud_test PRIVATE -UNDEBUG)
