@@ -723,7 +723,8 @@ void tab_graphics() {
     int am = aspect::mode();
     for (int i = aspect::kOriginal; i <= aspect::k32x9; i++) {
         if (i) ImGui::SameLine();
-        if (radio(aspect::mode_name(i), am == i)) post_changed([i] { aspect::set_mode(i); });
+        if (radio(aspect::mode_name(i), am == i))
+            post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
     }
 
     heading("Effects");
@@ -2137,6 +2138,11 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
+        // the saved aspect ratio (WWHD_ASPECT wins; issue #108: it was not remembered)
+        if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {
+            const int m = atoi(v.c_str());
+            if (m >= aspect::kOriginal && m <= aspect::k32x9) aspect::set_mode(m);
+        }
         // the saved gyro settings (WWHD_GYRO overrides the source)
         hostui::post([] { load_gyro(); });
     }

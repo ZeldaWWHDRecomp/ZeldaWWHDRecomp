@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the aspect ratio wasn't remembered** (issue #108). The choice in Settings → Graphics →
+  Aspect ratio (or the macOS menu) now stays after a restart, like the other graphics options.
+  `WWHD_ASPECT` still overrides it.
 - **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams
   per mod, mixed into the game's audio and following its volume and mute (and fast forward). The
   dragon example mod uses it for its melody. Mods without audio don't change anything.

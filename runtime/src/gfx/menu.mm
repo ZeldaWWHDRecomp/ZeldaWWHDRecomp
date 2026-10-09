@@ -278,7 +278,11 @@ static WWStateMenu* g_state_menu;
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
 - (void)toggleHires:(NSMenuItem*)item { render::set_ao_hires(!render::ao_hires()); update_title(); }
 - (void)setRes:(NSMenuItem*)item { set_res(kResScales[item.tag]); update_title(); }
-- (void)setAspect:(NSMenuItem*)item { aspect::set_mode((int)item.tag); update_title(); }
+- (void)setAspect:(NSMenuItem*)item {
+    aspect::set_mode((int)item.tag);
+    gfx::set_host_setting("aspectMode", std::to_string((int)item.tag));  // as the settings overlay saves it
+    update_title();
+}
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if (item.action == @selector(setRes:))
         item.state = fabsf(kResScales[item.tag] - current_res_scale()) < 0.01f ? NSControlStateValueOn : NSControlStateValueOff;
