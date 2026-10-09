@@ -1,7 +1,12 @@
 """Regression for the CI emulator preview intercepting swapped primary touches."""
 import unittest
+from contextlib import redirect_stdout
+import io
+from pathlib import Path
+import subprocess
+import tempfile
 
-from display_smoke import primary_preview_clear
+from display_smoke import primary_preview_clear, capture_timeout_evidence
 
 
 def dispatcher(region, transform='IDENTITY', rows='', flags='NOT_FOCUSABLE', display=0):
@@ -12,6 +17,39 @@ def dispatcher(region, transform='IDENTITY', rows='', flags='NOT_FOCUSABLE', dis
 {rows}    Windows:
       0: name=authored Overlay #1: 800x480, 160 dpi, id=1, displayId={display}, inputConfig={flags}, frame=[0,0][0,0], touchableRegion={region}, ownerPid=1
 '''
+
+
+class TimeoutEvidenceTests(unittest.TestCase):
+    def test_records_all_services_before_cleanup(self):
+        calls = []
+        def adb(*args):
+            calls.append(args)
+            return "authored " + args[-1]
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "nested/result.json"
+            capture_timeout_evidence(adb, output)
+            self.assertEqual(calls, [("shell", "dumpsys", service) for service in ("input", "window", "display")])
+            for service in ("input", "window", "display"):
+                self.assertEqual(output.with_suffix("." + service + ".txt").read_text(), "authored " + service + "\n")
+
+    def test_failed_capture_does_not_hide_assertion_or_skip_other_services(self):
+        def adb(*args):
+            if args[-1] == "input":
+                raise subprocess.CalledProcessError(1, "authored adb")
+            return "authored " + args[-1]
+        with tempfile.TemporaryDirectory() as temp, redirect_stdout(io.StringIO()) as warning:
+            output = Path(temp) / "result.json"
+            capture_timeout_evidence(adb, output)
+            self.assertIn("Cannot capture input", warning.getvalue())
+            self.assertTrue(output.with_suffix(".window.txt").is_file())
+            self.assertTrue(output.with_suffix(".display.txt").is_file())
+
+    def test_unwritable_output_does_not_replace_failed_assertion(self):
+        with tempfile.TemporaryDirectory() as temp, redirect_stdout(io.StringIO()) as warning:
+            parent = Path(temp) / "occupied"
+            parent.write_text("authored regular file")
+            capture_timeout_evidence(lambda *args: "authored dump", parent / "result.json")
+            self.assertEqual(warning.getvalue().count("Cannot capture"), 3)
 
 
 class PrimaryPreviewTests(unittest.TestCase):

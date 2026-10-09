@@ -611,6 +611,8 @@ int android_display_smoke_test() {
   }
   auto start = std::chrono::steady_clock::now();
   auto report = start;
+  uint64_t touchEventsSeen = 0, touchEventsHandled = 0;
+  SDL_SetHint("WWHD_DISPLAY_SMOKE_INPUT_TRACE", "1");
   std::chrono::steady_clock::time_point lastPrimary;
   uint64_t lastPrimaryCount=R.tv.presented.load(),timingEpoch=0;
   auto timingStarted=start;
@@ -635,7 +637,18 @@ int android_display_smoke_test() {
    SDL_Event event;
    while (SDL_PollEvent(&event)) {
     if (event.type == SDL_EVENT_QUIT) return 0;
-    android_display_touch_event(event);
+    const bool touchHandled = android_display_touch_event(event);
+    if (event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION ||
+        event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+     ++touchEventsSeen;
+     if (touchHandled) ++touchEventsHandled;
+     LOG("[display smoke input] type=%u finger=%lld window=%u primary=%u x=%f y=%f handled=%d dual=%d swapped=%d",
+         unsigned(event.type), (long long)event.tfinger.fingerID, event.tfinger.windowID,
+         SDL_GetWindowID(R.tv.window), event.tfinger.x, event.tfinger.y, int(touchHandled),
+         int(gfx::g_has_drc_window), int(dual_display::active_swap.load()));
+    }
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED || event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+     LOG("[display smoke input] focus type=%u window=%u", unsigned(event.type), event.window.windowID);
     if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED &&
         event.window.windowID == SDL_GetWindowID(R.tv.window)) {
      R.tv.width = event.window.data1; R.tv.height = event.window.data2;
@@ -755,6 +768,8 @@ int android_display_smoke_test() {
         << ",\"swap_active\":" << (dual_display::active_swap ? "true" : "false")
         << ",\"scale_filter\":" << hostui::scale_filter()
         << ",\"primary_width\":" << R.tv.width.load() << ",\"primary_height\":" << R.tv.height.load()
+        << ",\"touch_events_seen\":" << touchEventsSeen
+        << ",\"touch_events_handled\":" << touchEventsHandled
         << ",\"touch\":" << (pad.touch ? "true" : "false")
         << ",\"tx\":" << pad.tx << ",\"ty\":" << pad.ty << "}\n";
     out.close();

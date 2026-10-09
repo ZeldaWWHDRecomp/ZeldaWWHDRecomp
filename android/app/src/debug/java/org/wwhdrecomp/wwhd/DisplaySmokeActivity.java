@@ -4,6 +4,17 @@ package org.wwhdrecomp.wwhd;
 public final class DisplaySmokeActivity extends WwhdActivity {
     private String syntheticPosture;
 
+    @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == android.view.MotionEvent.ACTION_DOWN || action == android.view.MotionEvent.ACTION_UP ||
+                action == android.view.MotionEvent.ACTION_CANCEL) {
+            android.util.Log.i("wwhd-display", "smoke input action=" + action +
+                    " receiver_display=" + (getDisplay() == null ? -1 : getDisplay().getDisplayId()) + " source=" + event.getSource() +
+                    " x=" + event.getX() + " y=" + event.getY() + " flags=" + event.getFlags());
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
     @Override protected void onCreate(android.os.Bundle state) {
         super.onCreate(state);
         if (state != null) syntheticPosture = state.getString("smoke_posture");

@@ -69,6 +69,17 @@ def primary_preview_clear(dump, x, y):
     return found
 
 
+def capture_timeout_evidence(adb, output):
+    """Collect routing evidence without replacing the original failed assertion."""
+    for service in ("input", "window", "display"):
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.with_suffix("." + service + ".txt").write_text(
+                adb("shell", "dumpsys", service) + "\n")
+        except (subprocess.SubprocessError, OSError) as error:
+            print("Cannot capture " + service + " timeout evidence: " + str(error), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
@@ -155,6 +166,10 @@ def main():
             except (ValueError, subprocess.CalledProcessError):
                 pass
             time.sleep(.2)
+        # Preserve routing/lifecycle evidence before finally releases the held
+        # pointer and removes the overlay. A clear-preview snapshot alone cannot
+        # establish which window actually received a later injected event.
+        capture_timeout_evidence(adb, args.output)
         raise AssertionError(label + " timed out; last metrics=" + repr(latest))
 
     def overlay(value):

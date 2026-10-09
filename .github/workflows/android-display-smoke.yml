@@ -70,6 +70,9 @@ jobs:
             build/display-smoke-result.json
             build/display-smoke-result.log
             build/display-smoke-result.displays.txt
+            build/display-smoke-result.input.txt
+            build/display-smoke-result.window.txt
+            build/display-smoke-result.display.txt
             build/display-smoke-result.png
             build/display-smoke-result-swapped.png
             build/display-smoke-result-fold-*.png

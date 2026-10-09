@@ -3356,6 +3356,12 @@ bool android_display_touch_event(const SDL_Event& event) {
     buttonDown = 0;
   }
   const bool dual = gfx::g_has_drc_window;
+  if (event.type == SDL_EVENT_FINGER_DOWN && SDL_GetHintBoolean("WWHD_DISPLAY_SMOKE_INPUT_TRACE", false)) {
+    std::lock_guard<std::mutex> guard(secondaryMutex);
+    LOG("[display smoke input] down layout=%llu fingerHeld=%lld capture=%d changed=%d viewport=%f,%f,%f,%f",
+        (unsigned long long)currentGeneration, (long long)touchFinger, int(overlay::captures()),
+        int(secondaryChanged), primaryTouchBox.x, primaryTouchBox.y, primaryTouchBox.w, primaryTouchBox.h);
+  }
   if (dual && !dual_display::active_swap) {
     touchFinger = buttonFinger = 0;
     buttonDown = 0;
