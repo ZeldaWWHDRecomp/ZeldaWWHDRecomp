@@ -545,29 +545,91 @@ def load_toolchains():
         return json.load(f)
 
 
-def download(url, dst, sha256, size_hint, label):
-    """Downloads url to dst with a progress bar and checks the SHA-256 before keeping it."""
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def local_copy(name, sha256):
+    """A copy of a download the player saved themselves (issue #113: when setup cannot download it):
+    the file name from the URL, in the release folder or the setup folder, with the expected SHA-256."""
+    for folder in (PKG, HERE):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            if file_sha256(path) == sha256:
+                return path
+            say("  Ignoring %s: it is not the expected file (SHA-256 differs)." % path)
+    return None
+
+
+def download_error(url, e):
+    text = str(e)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text:
+        why = ("the secure connection was refused because its certificate could not be checked. This usually "
+               "means an antivirus or security program scans HTTPS connections, or a proxy intercepts them.")
+    else:
+        why = "%s." % text.rstrip(".")
+    name = os.path.basename(url.split("?")[0])
+    return SetupError("download failed: %s\nRun setup again (it resumes where it stopped). If it keeps failing, "
+                      "download %s in your browser, put %s in the Wind Waker HD folder and run setup again."
+                      % (why, url, name))
+
+
+DOWNLOAD_ATTEMPTS = 6
+
+
+def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wait=2.0):
+    """Downloads url to dst with a progress bar and checks the SHA-256 before keeping it. Interrupted
+    downloads are retried and resume where they stopped (HTTP range requests); a copy the player
+    downloaded themselves is used instead when present (local_copy)."""
+    name = os.path.basename(url.split("?")[0])
+    own = local_copy(name, sha256)
+    if own:
+        say("  Using %s" % own)
+        shutil.copyfile(own, dst + ".part")
+        os.replace(dst + ".part", dst)
+        return
     tmp = dst + ".part"
     say("  Downloading %s" % url)
-    h = hashlib.sha256()
-    req = urllib.request.Request(url, headers={"User-Agent": "wwhd-setup"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-            total = int(r.headers.get("Content-Length") or size_hint or 0)
-            pr = Progress(label)
-            done = 0
-            while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-                h.update(chunk)
-                done += len(chunk)
-                pr.update(done, total or done, human(done))
-            pr.done(human(done))
-    except OSError as e:
-        raise SetupError("download failed: %s\nCheck your internet connection and run setup again." % e)
-    if h.hexdigest() != sha256:
+    pr = Progress(label)
+    last = None
+    for attempt in range(attempts):
+        have = os.path.getsize(tmp) if os.path.isfile(tmp) else 0
+        headers = {"User-Agent": "wwhd-setup"}
+        if have:
+            headers["Range"] = "bytes=%d-" % have
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                resumed = have and getattr(r, "status", 200) == 206
+                mode = "ab" if resumed else "wb"
+                done = have if resumed else 0
+                length = int(r.headers.get("Content-Length") or 0)
+                total = (done + length) if length else int(size_hint or 0)
+                with open(tmp, mode) as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        pr.update(done, total or done, human(done))
+                if total and done < total:
+                    raise OSError("the connection closed after %s of %s" % (human(done), human(total)))
+            break
+        except OSError as e:  # urllib's errors, timeouts and resets are all OSErrors
+            last = e
+            if getattr(e, "code", None) == 416 and os.path.isfile(tmp):  # a stale or oversized partial file
+                os.remove(tmp)
+            if "CERTIFICATE_VERIFY_FAILED" in str(e) or attempt == attempts - 1:
+                raise download_error(url, e)
+            say("  Download interrupted (%s); retrying..." % e)
+            time.sleep(wait * (2 ** attempt))
+    pr.done(human(os.path.getsize(tmp)))
+    if file_sha256(tmp) != sha256:
         os.remove(tmp)
         raise SetupError("the download of %s is corrupt or was changed (SHA-256 mismatch); nothing was installed. "
                          "Run setup again; if this repeats, report it." % url)

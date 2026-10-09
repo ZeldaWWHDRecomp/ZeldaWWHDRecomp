@@ -830,5 +830,75 @@ class CodeModsBuild(unittest.TestCase):
             self.assertEqual(json.loads(status.read_text())["state"], "error")
 
 
+class Download(unittest.TestCase):
+    """setup.download: retries, resume with range requests, the player's own copy (issue #113)."""
+    DATA = bytes(range(256)) * 4096  # 1 MiB of fixture bytes
+    SHA = hashlib.sha256(DATA).hexdigest()
+
+    class Response:
+        def __init__(self, data, status, fail_after=None):
+            self.data, self.status, self.fail_after, self.pos = data, status, fail_after, 0
+            self.headers = {"Content-Length": str(len(data))}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            if self.fail_after is not None and self.pos >= self.fail_after:
+                raise ConnectionResetError("connection reset by peer")
+            end = min(len(self.data), self.pos + n, self.fail_after if self.fail_after is not None else len(self.data))
+            chunk = self.data[self.pos:end]; self.pos = end
+            return chunk
+
+    def serve(self, fail_first):
+        calls = []
+        def urlopen(req, timeout=None):
+            rng = req.get_header("Range")
+            calls.append(rng)
+            start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+            body = self.DATA[start:]
+            fail = 300000 if (fail_first and len(calls) == 1) else None
+            return self.Response(body, 206 if rng else 200, fail)
+        return urlopen, calls
+
+    def test_resumes_after_interruption(self):
+        urlopen, calls = self.serve(fail_first=True)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            dst = os.path.join(d, "out", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), self.DATA)
+            self.assertEqual(calls, [None, "bytes=300000-"])
+
+    def test_gives_up_with_hint(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("timed out")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test",
+                               attempts=2, wait=0)
+            self.assertIn("put tc.zip in the Wind Waker HD folder", str(e.exception))
+
+    def test_certificate_error_names_security_software(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test", wait=0)
+            self.assertIn("antivirus or security program", str(e.exception))
+
+    def test_uses_players_own_copy(self):
+        def urlopen(req, timeout=None):
+            raise AssertionError("must not download")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with open(os.path.join(d, "tc.zip"), "wb") as f:
+                f.write(self.DATA)
+            dst = os.path.join(d, "toolchain", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
