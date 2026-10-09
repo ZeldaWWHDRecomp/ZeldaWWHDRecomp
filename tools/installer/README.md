@@ -18,7 +18,14 @@ A release folder contains `portable.txt`. Then everything stays in `<release>/da
 | `data/user/` | settings, controls, graphics options, save states, shader caches (`host::portable_user_dir()`) |
 | `data/captures/` | crash logs (the game runs in `data/`) |
 | `data/install.json`, `data/setup.log` | what was prepared (paths inside `data/` relative, so the folder can move), and the setup log |
-| `data/toolchain/`, `data/python/` | the downloaded compiler (Windows, Linux; removable at the end) and Python (Linux without Python 3; the Windows release ships its Python in `tools/python`) |
+| `data/toolchain/`, `data/python/` | the downloaded compiler (Windows, Linux; kept by default for guest mods and repair) and Python (Linux without Python 3; the Windows release ships its Python in `tools/python`) |
+
+Guest builds use `data/guest-sdk.json`: setup's compiler argument vector, Python, translator
+and runtime headers. Version 2 stores paths inside the portable release relative to the config
+file, so moving the release folder preserves them; external/system tools remain absolute.
+The Zig global cache also stays in the selected toolchain directory. Version 1 configs remain
+readable. Removing the downloaded compiler is optional, but guest builds then require running
+setup again to restore it. No environment secrets are persisted in this file.
 
 Runtime side: a `portable.txt` next to the game executable makes `host::config_dir()` return
 `<folder>/user` (`runtime/src/platform/host.h`); `main.cpp` points the macOS-only paths (save states,

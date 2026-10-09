@@ -10,6 +10,16 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ## What's new in this update
 
+### Next update
+
+- **Guest mod SDK v2 (phase 1, opt-in):** portable PowerPC ELF packages, restart-only
+  mod-manager integration, typed options, per-mod memory and files, and save-state mod
+  warnings. Generated public HD headers and examples are described in
+  [the SDK guide](docs/mod-sdk-v2.md), including the historical 15-pair A/B summary;
+  noise exceeds the measured effect. **Enable code mods (PowerPC mods)** in Settings → Mods
+  rebuilds game code with hooks and requires a restart; support starts off, with no hook checks
+  emitted for players who leave it off. Completed builds are cached separately.
+
 ### v0.2.10
 
 - **Fixed: the cheats in v0.2.9 wrote to the wrong place in the save data** (Give all items, Master

@@ -112,7 +112,8 @@ native library once before it loads (see Native code confirmation). Unload callb
 mod is disabled/profile-switched, before its library closes; process termination
 is not a guaranteed cleanup callback.
 
-This ABI supports frame-driven native mods. It does **not** provide arbitrary
+This ABI supports frame-driven native mods. (Function hooks and replacements are the subject
+of the PowerPC guest mod prototype, [mod-sdk-v2.md](mod-sdk-v2.md).) It does **not** provide arbitrary
 translated-function interception, PPC instruction patch execution, texture
 providers, or compatibility with Zelda64Recomp/BlueWake packages.
 
