@@ -6,6 +6,8 @@
 // Test/start-up switches: WWHD_MOD_<NAME>=1 (see mods.cpp).
 #pragma once
 #include <cstdint>
+
+#include "move_speed.h"  // MoveMode (the run/swim speed mod's public vocabulary)
 #include "fast_forward.h"
 
 struct Cpu;
@@ -31,8 +33,14 @@ void set_fast_scenes(bool on);
 
 bool move_speed();
 void set_move_speed(bool on);
-float move_speed_factor();
-void set_move_speed_factor(float factor);
+MoveMode move_speed_mode();                      // hold the button, or press it once
+void set_move_speed_mode(MoveMode mode);
+float move_speed_land_factor();                  // running (PROC_MOVE)
+void set_move_speed_land_factor(float factor);
+float move_speed_swim_factor();                   // swimming (PROC_SWIM_MOVE)
+void set_move_speed_swim_factor(float factor);
+float move_speed_stamina_seconds();              // seconds of boosting on a full bar; 0 = unlimited
+void set_move_speed_stamina_seconds(float seconds);
 uint32_t move_speed_button();
 void set_move_speed_button(uint32_t button);
 void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps

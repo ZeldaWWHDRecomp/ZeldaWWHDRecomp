@@ -1420,9 +1420,20 @@ void tab_mods() {
                     hostui::post([mute] { mods::set_fast_forward_mute(mute); hostui::set("mod.fast-forward.mute", mute ? "1" : "0"); mods::packages::remember_option("fast-forward.mute", mute); });
                 help("Hold during a cutscene or conversation. Prompts still wait for input. Rebind the selected game button in Controls. Unmuted audio plays at a higher pitch.");
             } else if (selected == "move-speed") {
-                float speed = mods::move_speed_factor();
-                if (ImGui::SliderFloat("Run/swim multiplier", &speed, 1.25f, 4.f, "%.2fx"))
-                    hostui::post([speed] { mods::set_move_speed_factor(speed); hostui::set("mod.move-speed.factor", std::to_string(speed)); mods::packages::remember_option("move-speed.factor", speed); });
+                if (radio("Hold the button", mods::move_speed_mode() == mods::MoveMode::kHold))
+                    hostui::post([] { mods::set_move_speed_mode(mods::MoveMode::kHold); hostui::set("mod.move-speed.mode", "0"); mods::packages::remember_option("move-speed.mode", 0); });
+                ImGui::SameLine();
+                if (radio("Press to toggle", mods::move_speed_mode() == mods::MoveMode::kToggle))
+                    hostui::post([] { mods::set_move_speed_mode(mods::MoveMode::kToggle); hostui::set("mod.move-speed.mode", "1"); mods::packages::remember_option("move-speed.mode", 1); });
+                float running = mods::move_speed_land_factor();
+                if (ImGui::SliderFloat("Running", &running, 1.f, 4.f, "%.2fx"))
+                    hostui::post([running] { mods::set_move_speed_land_factor(running); hostui::set("mod.move-speed.land", std::to_string(running)); mods::packages::remember_option("move-speed.land", running); });
+                float swimming = mods::move_speed_swim_factor();
+                if (ImGui::SliderFloat("Swimming", &swimming, 1.f, 4.f, "%.2fx"))
+                    hostui::post([swimming] { mods::set_move_speed_swim_factor(swimming); hostui::set("mod.move-speed.swim", std::to_string(swimming)); mods::packages::remember_option("move-speed.swim", swimming); });
+                float seconds = mods::move_speed_stamina_seconds();
+                if (ImGui::SliderFloat("Boost time", &seconds, 0.f, 20.f, seconds <= 0.f ? "no limit" : "%.1f s"))
+                    hostui::post([seconds] { mods::set_move_speed_stamina_seconds(seconds); hostui::set("mod.move-speed.stamina", std::to_string(seconds)); mods::packages::remember_option("move-speed.stamina", seconds); });
                 const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
                 const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
                 for (int i = 0; i < 6; ++i) {
@@ -1432,7 +1443,9 @@ void tab_mods() {
                         hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
                     }
                 }
-                help("Hold to boost horizontal movement while running or swimming. Rebind the chosen game button in Controls.");
+                help("A multiplier of 1 leaves that state alone. Boost time is how long a full bar lasts; 0 has "
+                     "no limit, and the bar refills whenever you are not boosting. Rebind the chosen game "
+                     "button in Controls.");
             } else if (selected == "mouse-camera") {
                 float sensitivity = mods::mouse_sensitivity();
                 if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))

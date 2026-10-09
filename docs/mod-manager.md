@@ -32,8 +32,9 @@ guide the design; any future reuse requires a separate license review.
 Open the in-game settings overlay (F1, Fn+F1 on many Macs, Cmd+, or Settings in
 the menu) and select **Mods**. The searchable built-in catalogue manages the
 mods that are part of this build: direct camera, mouse camera, first-person
-shortcut, wall climbing, quick doors and fast scenes. Descriptions and options
-appear beside the selected entry. All defaults are off.
+shortcut, wall climbing, run/swim speed, quick doors, fast forward and fast
+scene changes. Descriptions and options appear beside the selected entry. All
+defaults are off.
 
 The Installed packages section accepts a local folder or `.wwhdmod` ZIP. Choose
 it with the file/folder picker, then press Install package. Installed packages

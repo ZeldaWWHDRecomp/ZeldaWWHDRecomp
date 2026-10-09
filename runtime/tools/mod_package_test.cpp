@@ -35,9 +35,15 @@ void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_
 bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
 
 static bool move_on = false;
+static float move_land = 1.5f, move_swim = 1.5f, move_seconds = 4.f;
+static int move_mode = (int)MoveMode::kHold;
+static uint32_t move_button = 0x40000;
 bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
-float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
-uint32_t move_speed_button() { return 0x40000; } void set_move_speed_button(uint32_t) {}
+float move_speed_land_factor() { return move_land; } void set_move_speed_land_factor(float f) { if (f >= 1 && f <= 4) move_land = f; }
+float move_speed_swim_factor() { return move_swim; } void set_move_speed_swim_factor(float f) { if (f >= 1 && f <= 4) move_swim = f; }
+float move_speed_stamina_seconds() { return move_seconds; } void set_move_speed_stamina_seconds(float s) { if (s >= 0 && s <= 60) move_seconds = s; }
+MoveMode move_speed_mode() { return (MoveMode)move_mode; } void set_move_speed_mode(MoveMode m) { move_mode = (int)m; }
+uint32_t move_speed_button() { return move_button; } void set_move_speed_button(uint32_t b) { if (b && !(b & (b - 1))) move_button = b; }
 
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
