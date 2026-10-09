@@ -9,6 +9,7 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LattePSInputDefault.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "gx2/gx2.h"
 #include "gx2/gx2_regs.h"
@@ -561,11 +562,9 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         if(!custom.empty()) {
             if(!vertex&&link.unfed) {
                 // the inputs the translation made constants (ps_link), with the same values
-                static const char* const defaults[4]={"vec4(0.0, 0.0, 0.0, 0.0)","vec4(0.0, 0.0, 0.0, 1.0)",
-                    "vec4(1.0, 1.0, 1.0, 0.0)","vec4(1.0, 1.0, 1.0, 1.0)"};
                 const char* values[32]={};
                 for(uint32_t f=0;f<GPU7_PS_MAX_INPUTS&&f<32;f++)
-                    if(link.unfed&(1u<<f))values[f]=defaults[(regs[mmSPI_PS_INPUT_CNTL_0+f]>>8)&3];
+                    if(link.unfed&(1u<<f))values[f]=LattePSInputDefaultGLSL(regs[mmSPI_PS_INPUT_CNTL_0+f]);
                 custom=mods::cemu::const_pixel_inputs(std::move(custom),values);
             }
             std::string error;

@@ -12,6 +12,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Fixed: Cemu graphics packs that replace pixel shaders (e.g. Contrasty, NoSSAO, RemoveHUD) partly
+  didn't apply on Vulkan since v0.2.10.** Shader inputs that no vertex shader feeds are constants in the
+  translation since v0.2.10, and the packs' declarations of them now become the same constants
+  (PR #87, thanks @rhemfur).
+
 - **Android: smoother in busy views.** The Vulkan buffer cache is now on by default on Android too. It
   keeps unchanged vertex, index and uniform data on the GPU instead of copying it every frame. On a
   Galaxy S25 Ultra (Adreno 830) heavy Outset views went from about 34 to 47 frames per second with
