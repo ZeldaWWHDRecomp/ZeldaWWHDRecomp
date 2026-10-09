@@ -988,12 +988,17 @@ void catalogue_controls(std::string& focus) {
         if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
         snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
     }
-    bool busy,loaded;Loaded catalogue;std::string error,message;
+    bool busy,loaded,fresh_install=false;Loaded catalogue;std::string error,message;
     {
         std::lock_guard guard(worker.mutex);busy=worker.running;loaded=worker.loaded;
         catalogue=worker.catalogue;error=worker.error;message=worker.message;
-        if(!worker.installed.empty()){focus=std::move(worker.installed);worker.installed.clear();}
+        if(!worker.installed.empty()){
+            focus=std::move(worker.installed);worker.installed.clear();fresh_install=true;
+        }
     }
+    // Match local-folder installs: offer support immediately, while keeping the
+    // newly installed package disabled until its own trust/setup flow completes.
+    if(fresh_install&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
     heading("Browse catalogue");
     note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
     ImGui::BeginDisabled(busy);
