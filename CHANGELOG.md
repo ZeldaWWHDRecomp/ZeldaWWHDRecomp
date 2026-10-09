@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Controls: an Automatic face-button preset** (PR #102, thanks @mhbxyz). It reads the labels
+  printed on the pad that was plugged in first and follows them, so an Xbox or PlayStation pad plays
+  by label and a Nintendo pad by position, without touching the setting.
 - **Fixed: with Fast scene changes on, Grandma kept her back to Link when handing over the shield**
   (issue #116, found and fixed by GreenNaugahyde). The mod no longer creates the new scene's
   characters ahead of time; fades and scene changes stay almost as fast.
