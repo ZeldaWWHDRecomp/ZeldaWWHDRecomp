@@ -50,6 +50,19 @@ int main() {
         rejects([&]{load("https://example.org/index.json",{},root/"temporary");});
         Fetch offline=[](const auto&,const auto&,uint64_t){throw std::runtime_error("Offline");};
         rejects([&]{load("https://example.org/index.json",offline,root/"temporary");});
+        std::string url="https://example.org/index.json";
+        Fetch synthetic=[](const auto&,const auto& path,uint64_t){std::ofstream(path)<<"{\"format_version\":1,\"mods\":[]}";};
+        auto cache=root/"cache";
+        assert(refresh_cached(url,synthetic,cache).index.entries.empty());
+        assert(cached(url,cache).index.entries.empty());
+        rejects([&]{cached("https://other.example/index.json",cache);});
+        rejects([&]{refresh_cached(url,offline,cache);});
+        assert(cached(url,cache).index.entries.empty());
+        Fetch invalid=[](const auto&,const auto& path,uint64_t){std::ofstream(path)<<"invalid";};
+        rejects([&]{refresh_cached(url,invalid,cache);});
+        assert(cached(url,cache).index.entries.empty());
+        assert(std::distance(fs::directory_iterator(cache),fs::directory_iterator{})==1);
+
     }catch(...){fs::remove_all(root);throw;}
     fs::remove_all(root);
 }

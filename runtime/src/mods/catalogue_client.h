@@ -2,6 +2,7 @@
 #pragma once
 #include "catalogue_io.h"
 #include "mod_archive.h"
+#include "../platform/download_file.h"
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -21,6 +22,41 @@ inline Loaded load(const std::string& source,const Fetch& fetch,const std::files
     require(source.find("://")==std::string::npos,"Catalogue URL must use HTTPS");
     auto file=std::filesystem::absolute(source);
     return {parse(read_bounded(file,2*1024*1024),true),std::filesystem::canonical(file.parent_path())};
+}
+// Cache keys bind metadata to its source; changing URLs cannot reuse another index.
+inline std::filesystem::path cache_path(const std::string& source,const std::filesystem::path& work) {
+    return work/("index-"+hash::sha256_text(source)+".json");
+}
+inline Loaded cached(const std::string& source,const std::filesystem::path& work) {
+    require(https_url(source)||source.find("://")==std::string::npos,"Catalogue URL must use HTTPS");
+    auto text=read_bounded(cache_path(source,work),2*1024*1024);
+    std::filesystem::path fixtures;
+    if(!https_url(source))fixtures=std::filesystem::absolute(source).parent_path();
+    return {parse(text,!fixtures.empty()),fixtures};
+}
+inline Loaded refresh_cached(const std::string& source,const Fetch& fetch,const std::filesystem::path& work) {
+    namespace fs=std::filesystem;
+    fs::create_directories(work);require(!fs::is_symlink(work),"Catalogue cache folder is a symlink");
+    static std::atomic<uint64_t> serial{0};
+    auto nonce=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(serial++);
+    auto temporary=work/(".index-"+nonce),staged=work/(".cache-"+nonce),backup=work/(".backup-"+nonce);
+    auto target=cache_path(source,work);bool backed=false,moved=false;
+    try {
+        auto result=load(source,fetch,temporary);
+        auto text=read_bounded(https_url(source)?temporary:fs::path(source),2*1024*1024);
+        // Validate exactly the bytes being cached, even if a local fixture changed during the read.
+        result.index=parse(text,!result.fixture_root.empty());
+        {host::DownloadFile output(staged,2*1024*1024);output.append(text.data(),text.size());output.finish();}
+        require(!fs::is_symlink(target),"Catalogue cache file is a symlink");
+        if(fs::exists(target)){fs::rename(target,backup);backed=true;}
+        fs::rename(staged,target);moved=true;
+        std::error_code ignored;fs::remove(backup,ignored);fs::remove(temporary,ignored);
+        return result;
+    }catch(...) {
+        std::error_code ignored;fs::remove(temporary,ignored);fs::remove(staged,ignored);
+        if(backed&&!moved)fs::rename(backup,target,ignored);
+        throw;
+    }
 }
 inline void check_manifest(const Entry& entry,const json::Value& manifest) {
     require(manifest.type==json::Value::Object,"Package manifest is missing");

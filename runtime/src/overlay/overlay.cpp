@@ -1005,12 +1005,17 @@ void catalogue_controls(std::string& focus) {
             auto root=std::filesystem::path(mods::packages::directory())/"Catalogue";
             require(!root.parent_path().empty(),"Mod manager storage is unavailable");
             std::filesystem::create_directories(root);
-            auto temporary=root/("index-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".json");
-            try {
-                auto result=load(selected,host::download_https,temporary);
-                std::error_code ignored;std::filesystem::remove(temporary,ignored);
-                std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;worker.message="Catalogue refreshed";
-            }catch(...){std::error_code ignored;std::filesystem::remove(temporary,ignored);throw;}
+            auto result=refresh_cached(selected,host::download_https,root);
+            std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;worker.message="Catalogue refreshed";
+        });
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Load offline catalogue")) {
+        std::string selected=source;
+        catalogue_action([selected](CatalogueWorker& worker) {
+            auto result=cached(selected,std::filesystem::path(mods::packages::directory())/"Catalogue");
+            std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;
+            worker.message="Showing cached catalogue; versions may be out of date";
         });
     }
     ImGui::EndDisabled();

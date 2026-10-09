@@ -373,5 +373,8 @@ three-part version, and an enabled or active package must be disabled first.
 Install verifies the downloaded size and SHA-256 plus package/index metadata,
 then uses the manager's atomic installer. Packages start disabled and their setup
 details open in Installed packages. Nothing is enabled or downloaded automatically.
-Failed refreshes preserve the last successfully loaded catalogue for the current
-session; installed packages remain available without a network connection.
+Successful refreshes save validated metadata in the manager’s Catalogue folder.
+Load offline catalogue reads this cache without a network request, including
+after a restart, and labels its versions as potentially out of date. Cache keys
+are bound to the selected URL or fixture path. Failed or invalid refreshes keep
+the previous cache; installed packages remain available without a network connection.
