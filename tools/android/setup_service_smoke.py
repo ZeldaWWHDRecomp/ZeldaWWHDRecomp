@@ -141,7 +141,7 @@ def main():
         no_wake()
         control("resume")
         failure = until("unsupported input error", lambda value: value.get("state") == "failed", 90)
-        if "not the expected file" not in failure.get("error", ""):
+        if "not a file the port knows" not in failure.get("error", ""):
             raise AssertionError("Unsupported input lost its useful installer error")
         no_wake()
         if "isForeground=true" in shell("dumpsys", "activity", "services", PACKAGE):
