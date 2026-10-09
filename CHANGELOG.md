@@ -10,6 +10,10 @@ what is on `devel` and not released yet (also in the
 - **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams
   per mod, mixed into the game's audio and following its volume and mute (and fast forward). The
   dragon example mod uses it for its melody. Mods without audio don't change anything.
+
+- **Fixed: the settings overlay scrolled by itself, and B closed it while assigning a button** (issue
+  #111). A slightly drifting controller stick no longer scrolls the menu (the sticks now have a dead
+  zone there), and assigning B to a control no longer also closes the overlay.
 - **Mod SDK v2: more for code mods.** New public declarations (actor profiles, save inventory,
   animation, matrix emitters, flight position and lighting, song handling) and HUD clipping, used by
   the two example mods in the mod repository: a GameCube-style minimap and the Valoo dragon ride.

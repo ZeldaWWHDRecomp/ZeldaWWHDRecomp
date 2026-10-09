@@ -379,7 +379,11 @@ void read_controller() {
 
 void feed_gamepad(ImGuiIO& io, bool enabled) {
     using namespace input_map;
-    auto key = [&](ImGuiKey k, int p) { io.AddKeyAnalogEvent(k, enabled && U.values[p] > 0.5f, enabled ? U.values[p] : 0.0f); };
+    // Dead zone (issue #111): a slightly drifting stick fed as an analog value scrolls ImGui windows by itself.
+    auto key = [&](ImGuiKey k, int p) {
+        const float v = enabled && U.values[p] >= 0.25f ? U.values[p] : 0.0f;
+        io.AddKeyAnalogEvent(k, v > 0.5f, v);
+    };
     key(ImGuiKey_GamepadFaceDown, kPadA);
     key(ImGuiKey_GamepadFaceRight, kPadB);
     key(ImGuiKey_GamepadFaceLeft, kPadX);
@@ -1517,6 +1521,7 @@ void apply_capture() {
                 input_map::set_current(m);
             }
             done = true;  // (key slots: any controller input cancels)
+            g_pad_b_used = true;  // issue #111: the input just assigned (B too) does not also close the menu this frame
         }
     }
     if (!done && now_s() - U.cap_started > 8) done = true;  // nothing pressed: give up
