@@ -17,7 +17,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
-AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16}
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16, 'daPy_mtxFollowEcallBack_c': 12}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 
@@ -129,6 +129,7 @@ def generate(root, output, revision):
             lines.append('#include "ptmf.h"')
         if subsystem in ('link',):
             lines.append('#include "animation.h"')
+            lines.append('#include "objects.h"')
         for name in names:
             selected = {'mDoExt_McaMorf': {'mpModel', 'mFrameCtrl'}, 'daNpc_Md_c': {'mpMorf'}, 'dr_class': {'mpMorf', 'mMode', 'mCurrBckIdx'}}.get(name)
             lines.append(layout(text, name, selected))

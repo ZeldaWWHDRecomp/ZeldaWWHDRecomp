@@ -4,6 +4,10 @@
 #pragma once
 #include "../wwhd_guest.h"
 
+/* wwhd_src/d/actor/d_a_player_main_04.cpp */
+#define WWHD_OFFSET_Link_equipped_item_model 0x4440
+/* wwhd_src/d/actor/d_a_npc_aj1.cpp */
+#define WWHD_OFFSET_actor_attention_flags 0x39C
 /* wwhd_src/m_Do/m_Do_ext_line.cpp */
 #define WWHD_ALLOC_SIZE_line_mat0 0x148
 /* wwhd_src/m_Do/m_Do_ext_line.cpp */
@@ -54,6 +58,8 @@
 #define WWHD_PLAY_BG_COLLISION_OFFSET 0x12A0
 /* wwhd_src/include/d/d_com_inf_game.h */
 #define WWHD_PLAY_PLAYER_STATUS0_OFFSET 0x5CD8
+/* wwhd_src/include/d/actor/d_a_player.h; declared fields in public order, size 0xC. */
+typedef struct { u32 mVtable, mpEmitter, mpMatrix; } daPy_mtxFollowEcallBack_c;
 /* wwhd_src/include/d/d_com_inf_game.h; GHS places the vtable after the string pointer. */
 typedef struct { u32 mStringTop, __vtbl; } wwhd_safe_string;
 /* wwhd_src/SSystem/SComponent/c_API_controller.cpp */

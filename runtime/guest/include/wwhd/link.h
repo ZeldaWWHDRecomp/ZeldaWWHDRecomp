@@ -16,6 +16,7 @@ WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target")
 
 #include "ptmf.h"
 #include "animation.h"
+#include "objects.h"
 typedef union daPy_actorKeep_l {
     u8 bytes[8];
     struct __attribute__((packed)) { u32 mID; };
@@ -86,6 +87,8 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_mFootEffect[0x65FC]; u8 mFootEffect[0x98]; };
     struct __attribute__((packed)) { u8 _pad_m3280[0x6694]; u8 m3280[0x14]; };
     struct __attribute__((packed)) { u8 _pad_mSwimTailEcallBack[0x66A8]; u8 mSwimTailEcallBack[0x50]; };
+    struct __attribute__((packed)) { u8 _pad_m32E4[0x66F8]; daPy_mtxFollowEcallBack_c m32E4; };
+    struct __attribute__((packed)) { u8 _pad_m32F0[0x6704]; daPy_mtxFollowEcallBack_c m32F0; };
     struct __attribute__((packed)) { u8 _pad_mSmokeEcallBack[0x6710]; u8 mSmokeEcallBack[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m331C[0x6730]; u8 m331C[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m332C[0x6740]; u8 m332C[0x10]; };
@@ -95,10 +98,13 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m338C[0x67A0]; u8 m338C[0x1C]; };
     struct __attribute__((packed)) { u8 _pad_m33A8[0x67BC]; u8 m33A8[0x10]; };
     struct __attribute__((packed)) { u8 _pad_mDmEcallBack[0x67CC]; u8 mDmEcallBack[0x30]; };
+    struct __attribute__((packed)) { u8 _pad_m33E8[0x67FC]; daPy_mtxFollowEcallBack_c m33E8; };
     struct __attribute__((packed)) { u8 _pad_mFanSwingCb[0x6808]; u8 mFanSwingCb[0xC]; };
     struct __attribute__((packed)) { u8 _pad_m3400[0x6814]; u8 m3400[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m3410[0x6824]; u8 m3410[0x1C]; };
+    struct __attribute__((packed)) { u8 _pad_m342C[0x6840]; daPy_mtxFollowEcallBack_c m342C; };
     struct __attribute__((packed)) { u8 _pad_m3438[0x684C]; u8 m3438[0x1C]; };
+    struct __attribute__((packed)) { u8 _pad_m3454[0x6868]; daPy_mtxFollowEcallBack_c m3454; };
     struct __attribute__((packed)) { u8 _pad_m3460[0x6874]; u8 m3460[0x20]; };
     struct __attribute__((packed)) { u8 _pad_mpAttention[0x6894]; u32 mpAttention; };
     struct __attribute__((packed)) { u8 _pad_mpAttnEntryA[0x6898]; u32 mpAttnEntryA; };
@@ -355,6 +361,8 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProcFunc) == 0x65F4, "daPy_lk_
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFootEffect) == 0x65FC, "daPy_lk_c.mFootEffect");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3280) == 0x6694, "daPy_lk_c.m3280");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSwimTailEcallBack) == 0x66A8, "daPy_lk_c.mSwimTailEcallBack");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m32E4) == 0x66F8, "daPy_lk_c.m32E4");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m32F0) == 0x6704, "daPy_lk_c.m32F0");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSmokeEcallBack) == 0x6710, "daPy_lk_c.mSmokeEcallBack");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m331C) == 0x6730, "daPy_lk_c.m331C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m332C) == 0x6740, "daPy_lk_c.m332C");
@@ -364,10 +372,13 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m336C) == 0x6780, "daPy_lk_c.m336C
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m338C) == 0x67A0, "daPy_lk_c.m338C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33A8) == 0x67BC, "daPy_lk_c.m33A8");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mDmEcallBack) == 0x67CC, "daPy_lk_c.mDmEcallBack");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33E8) == 0x67FC, "daPy_lk_c.m33E8");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFanSwingCb) == 0x6808, "daPy_lk_c.mFanSwingCb");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3400) == 0x6814, "daPy_lk_c.m3400");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3410) == 0x6824, "daPy_lk_c.m3410");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m342C) == 0x6840, "daPy_lk_c.m342C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3438) == 0x684C, "daPy_lk_c.m3438");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3454) == 0x6868, "daPy_lk_c.m3454");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3460) == 0x6874, "daPy_lk_c.m3460");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpAttention) == 0x6894, "daPy_lk_c.mpAttention");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpAttnEntryA) == 0x6898, "daPy_lk_c.mpAttnEntryA");
