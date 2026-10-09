@@ -4,6 +4,7 @@
 #include "mods/climb.h"
 #include "overlay/hostui.h"
 #include "platform/process.h"
+#include "mods/catalogue_client.h"
 #include <cassert>
 #include <cstdlib>
 #include <map>
@@ -70,6 +71,33 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==4&&std::string(argv[1])=="--catalogue-pilots") {
+        auto fixtures=fs::absolute(argv[2]),storage=fixtures/"manager";
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        initialize();std::string error;
+        auto index=mods::catalogue::load((fixtures/"index.json").string(),{},fixtures/"unused");
+        assert(index.index.entries.size()==2);
+        for(const auto& entry:index.index.entries) {
+            mods::catalogue::StagedPackage staged(entry,mods::catalogue::Version::parse("0.2.10"),"USA",platform_key(),fixtures/"work",index.fixture_root,{});
+            assert(install(staged.path().string(),error));assert(!view(entry.id).enabled&&!view(entry.id).active);
+        }
+        assert(!view("catalogue-setup-pilot").native_confirmed);
+        assert(set_game_source("gc_usa",(fixtures/"synthetic-gc-usa.iso").string(),error));
+        assert(configure("catalogue-setup-pilot","colour","green",error));
+        assert(configure("catalogue-setup-pilot","consent",true,error));
+        auto config=mods::json::parse(R"({"format_version":1,"python":[],"compiler":["unused"],"builder":"unused","include":"unused"})");
+        config["python"].array={mods::json::Value(argv[3])};
+        auto path=fixtures/"guest-sdk.json";{std::ofstream output(path);output<<mods::json::dump(config);}
+        env("WWHD_GUEST_BUILD_CONFIG",path.string().c_str());std::string output;
+        assert(!run_setup_tool("catalogue-setup-pilot","prepare",error,output));
+        assert(confirm_native("catalogue-setup-pilot",error));
+        assert(run_setup_tool("catalogue-setup-pilot","prepare",error,output));
+        for(const auto& step:setup_steps("catalogue-setup-pilot"))assert(step.satisfied);
+        assert(fs::file_size(storage/"Data/catalogue-setup-pilot/pilot-prepared.txt")==31);
+        fs::remove(fixtures/"synthetic-gc-usa.iso");assert(!setup_steps("catalogue-setup-pilot")[0].satisfied);
+        assert(remove("catalogue-content-pilot",error)&&remove("catalogue-setup-pilot",error));
+        std::cout<<"Catalogue pilots install/trust/source/options/real Python tool/remove passed\n";return 0;
+    }
     if(argc==5&&std::string(argv[1])=="--setup-tool") {
         std::ifstream input(argv[2]);std::string script{std::istreambuf_iterator<char>(input),{}};
         std::cout<<"Source: "<<argv[4]<<"\n";

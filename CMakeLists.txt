@@ -692,3 +692,8 @@ if(NOT ANDROID)
       -P ${CMAKE_SOURCE_DIR}/runtime/tools/https_java_test.cmake)
   endif()
 endif()
+
+if(Python3_Interpreter_FOUND AND NOT ANDROID)
+  add_test(NAME catalogue_pilots COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/catalogue/test_pilots.py $<TARGET_FILE:mod_package_test>)
+endif()
