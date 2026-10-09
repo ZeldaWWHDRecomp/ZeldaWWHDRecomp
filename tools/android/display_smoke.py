@@ -18,6 +18,57 @@ import time
 PACKAGE = "org.wwhdrecomp.wwhd"
 
 
+def primary_preview_clear(dump, x, y):
+    """Wait for a published emulator preview that cannot consume this touch.
+
+    InputDispatcher reports regions in physical display coordinates; its display
+    transform maps them to the logical coordinates used by `input -d 0`.
+    Keyboard focus alone is insufficient: OverlayDisplayWindow is not focusable
+    but still consumes primary-display touches for moving/resizing its preview.
+    """
+    display = re.search(r"(?ms)^  Display: 0\n(.*?)(?=^  Display: |\Z)", dump)
+    if not display:
+        return False
+    block = display[1]
+    header = block.split("    Windows:", 1)[0]
+    transform = re.search(r"transform[^\n]*", header)
+    if not transform:
+        return False
+    if "IDENTITY" in transform[0]:
+        matrix = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+    else:
+        rows = re.findall(r"(?m)^\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*$", header)
+        if len(rows) != 3:
+            raise AssertionError("Cannot parse primary InputDispatcher display transform")
+        matrix = tuple(tuple(map(float, row)) for row in rows)
+        if matrix[2] != (0, 0, 1):
+            raise AssertionError("Unsupported primary InputDispatcher display transform")
+    found = False
+    for line in block.splitlines():
+        if not re.search(r"^\s*\d+: name=.*?Overlay #\d+:.*?\bdisplayId=0,", line):
+            continue
+        found = True
+        if re.search(r"\b(?:NOT_TOUCHABLE|NOT_VISIBLE|NO_INPUT_CHANNEL)\b", line):
+            continue
+        region = re.search(r"touchableRegion=(.*?)(?:, ownerPid=|$)", line)
+        if not region:
+            raise AssertionError("Emulator preview has no reported touch region")
+        if region[1] == "<empty>":
+            continue
+        rectangles = re.findall(r"\[(-?\d+),\s*(-?\d+)\]\[(-?\d+),\s*(-?\d+)\]", region[1])
+        if not rectangles:
+            raise AssertionError("Cannot parse emulator preview touch region")
+        for rectangle in rectangles:
+            left, top, right, bottom = map(int, rectangle)
+            corners = [(matrix[0][0]*px + matrix[0][1]*py + matrix[0][2],
+                        matrix[1][0]*px + matrix[1][1]*py + matrix[1][2])
+                       for px, py in ((left, top), (right, top), (left, bottom), (right, bottom))]
+            if (min(px for px, _ in corners) <= x < max(px for px, _ in corners) and
+                    min(py for _, py in corners) <= y < max(py for _, py in corners)):
+                return False
+    return found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
@@ -106,6 +157,28 @@ def main():
     def overlay(value):
         if value == "null": adb("shell", "settings", "delete", "global", "overlay_display_devices")
         else: adb("shell", "settings", "put", "global", "overlay_display_devices", value)
+
+    def primary_touch_preview(label):
+        # OverlayDisplayWindow consumes primary touches to move its floating
+        # preview. Its default 400x240 footprint covers CI's 640x320 centre.
+        # Use a smaller logical secondary only for primary-input checks; keep
+        # secondary touch, swapchain stress and timing at their original sizes.
+        previous = metrics()
+        overlay("320x180/160")
+        current = until(label + " smaller preview presents", lambda m:
+                        m["dual"] and m["swap_active"] and m["secondary_width"] == 320 and
+                        m["secondary_height"] == 180 and
+                        m["primary_presented"] >= previous["primary_presented"] + 10 and
+                        m["secondary_presented"] >= previous["secondary_presented"] + 10)
+        x, y = current["primary_width"] // 2, current["primary_height"] // 2
+        primary_touch_clear(label, x, y)
+        return current, x, y
+
+    def primary_touch_clear(label, x, y):
+        adb("shell", "cmd", "statusbar", "collapse")
+        until(label + " target clear of emulator preview", lambda m:
+              m["dual"] and m["swap_active"] and
+              primary_preview_clear(adb("shell", "dumpsys", "input"), x, y))
 
     try:
         adb("shell", "am", "force-stop", PACKAGE)
@@ -203,16 +276,15 @@ def main():
         for scaling in range(3):
             command("filter" + str(scaling))
             until("scaling " + str(scaling), lambda m: m["scale_filter"] == scaling)
-        # Primary input must target the resumed app rather than an expanded SystemUI panel.
-        adb("shell", "cmd", "statusbar", "collapse")
+        primary, primary_x, primary_y = primary_touch_preview("primary touch")
         adb("shell", "input", "-d", "0", "motionevent", "DOWN",
-            str(swapped["primary_width"] // 2), str(swapped["primary_height"] // 2))
+            str(primary_x), str(primary_y))
         until("primary GamePad touch", lambda m: m["touch"] and abs(m["tx"] - .5) < .08 and abs(m["ty"] - .5) < .08)
         adb("shell", "input", "-d", "0", "motionevent", "UP",
-            str(swapped["primary_width"] // 2), str(swapped["primary_height"] // 2))
+            str(primary_x), str(primary_y))
         until("primary touch released", lambda m: not m["touch"])
         adb("shell", "input", "-d", "0", "motionevent", "DOWN",
-            str(swapped["primary_width"] // 2), str(swapped["primary_height"] // 2))
+            str(primary_x), str(primary_y))
         until("primary touch held for removal", lambda m: m["touch"])
         # Removing a surface while a finger is down must release the GamePad.
         overlay("null")
@@ -220,7 +292,7 @@ def main():
                         m["primary_presented"] >= connected["primary_presented"] + 10)
         resumed = until("primary continues", lambda m: m["primary_presented"] >= removed["primary_presented"] + 10)
         adb("shell", "input", "-d", "0", "motionevent", "UP",
-            str(swapped["primary_width"] // 2), str(swapped["primary_height"] // 2))
+            str(primary_x), str(primary_y))
         overlay("800x480/160")
         reconnected = until("reconnected", lambda m: m["dual"] and m["swap_active"] and m["secondary_presented"] >= removed["secondary_presented"] + 10 and
               m["primary_presented"] > resumed["primary_presented"])
@@ -410,7 +482,7 @@ def main():
             raise AssertionError("secondary swapchains did not adopt portrait and restored landscape dimensions")
         if args.exercise_primary_rotation:
             command("swap1")
-            baseline = until("primary rotation baseline", lambda m: m["dual"] and m["swap_active"])
+            baseline, _, _ = primary_touch_preview("primary rotation baseline")
             for orientation, label in ((1, "portrait"), (0, "landscape")):
                 before = metrics()
                 adb("shell", "am", "broadcast", "-a", PACKAGE + ".SMOKE_FOLD", "-p", PACKAGE,
@@ -422,6 +494,7 @@ def main():
                                 m["primary_presented"] > before["primary_presented"] + 10 and
                                 m["secondary_presented"] > before["secondary_presented"] + 10)
                 x, y = rotated["primary_width"] // 2, rotated["primary_height"] // 2
+                primary_touch_clear("rotated primary " + label + " touch", x, y)
                 adb("shell", "input", "motionevent", "DOWN", str(x), str(y))
                 until("rotated primary GamePad touch", lambda m:
                       m["touch"] and abs(m["tx"] - .5) < .08 and abs(m["ty"] - .5) < .08)
@@ -429,6 +502,11 @@ def main():
                 until("rotated primary touch released", lambda m: not m["touch"])
             if (rotated["primary_width"], rotated["primary_height"]) != (baseline["primary_width"], baseline["primary_height"]):
                 raise AssertionError("Primary rotation did not restore original extent")
+            overlay("800x480/160")
+            until("secondary restored after primary rotation", lambda m:
+                  m["dual"] and m["swap_active"] and m["secondary_width"] == 800 and
+                  m["secondary_height"] == 480 and
+                  m["secondary_presented"] >= rotated["secondary_presented"] + 10)
         if args.exercise_folds:
             command("swap0")
             overlay("null")
