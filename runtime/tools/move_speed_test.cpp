@@ -72,6 +72,15 @@ static void test_ramp() {
     assert(ramp_towards(1.f, 4.f, .15f, 0.f) == 4.f);
 }
 
+static void test_animation() {
+    // the animation plays at the movement's factor, and 1 is the authored rate untouched
+    assert(animation_factor(1.f) == 1.f);
+    assert(animation_factor(1.5f) == 1.5f);
+    assert(animation_factor(4.f) == 4.f);
+    assert(animation_factor(100.f) == 4.f);
+    assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.5f);
+}
+
 static void test_stamina() {
     const float dt = 1.f / 30.f;
     // a full bar lasts its stated seconds of boosting
@@ -98,6 +107,7 @@ int main() {
     test_target();
     test_clamp();
     test_ramp();
+    test_animation();
     test_stamina();
     return 0;
 }

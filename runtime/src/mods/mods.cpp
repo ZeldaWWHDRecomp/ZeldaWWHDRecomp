@@ -20,6 +20,8 @@
 
 #include "runtime.h"
 
+extern "C" void f_023DE788_orig(Cpu* c);  // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame)
+
 namespace interp { uint64_t logic_steps(); }
 
 namespace mods {
@@ -58,6 +60,38 @@ std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
 constexpr float kRampTau = 0.15f;  // seconds; the ramp's time constant
 std::atomic<bool> g_scenes{env_on("WWHD_MOD_FAST_SCENES")};
+
+// ---- the animation cadence follows the boost (daPy_lk_c::setFrameCtrl 023DE788) ----
+// The rate the game stores is the authored one: true60 only scales the advance inside
+// J3DFrameCtrl::update, transiently, so scaling the stored rate composes with true 60. The hook
+// records what the game asked for, the per-step tick follows the ramp, and the authored rate goes
+// back when the boost ends. An entry the game overwrote itself is dropped, so the mod never fights
+// the game for a field it owns.
+struct AnimCtrl { uint32_t ctrl; float authored, written; };
+AnimCtrl g_anim[4];
+int g_anim_n = 0;
+
+void anim_forget(uint32_t ctrl) {
+    for (int i = 0; i < g_anim_n; ++i)
+        if (g_anim[i].ctrl == ctrl) { g_anim[i] = g_anim[--g_anim_n]; return; }
+}
+void anim_scale(uint32_t ctrl, float authored, float factor) {
+    for (int i = 0; i < g_anim_n; ++i)
+        if (g_anim[i].ctrl == ctrl) { g_anim[i] = {ctrl, authored, authored * factor}; return; }
+    if (g_anim_n < (int)(sizeof g_anim / sizeof g_anim[0])) g_anim[g_anim_n++] = {ctrl, authored, authored * factor};
+}
+void apply_anim_ramp() {
+    const float ramp = animation_factor(g_move_ramp.load(std::memory_order_relaxed));
+    for (int i = 0; i < g_anim_n;) {
+        AnimCtrl& a = g_anim[i];
+        if (u32_as_f32(ld32(a.ctrl)) != a.written) { a = g_anim[--g_anim_n]; continue; }
+        const float next = a.authored * ramp;
+        st32(a.ctrl, f32_as_u32(next));
+        a.written = next;
+        if (ramp == 1.f) { a = g_anim[--g_anim_n]; continue; }
+        ++i;
+    }
+}
 
 void note(const char* what, bool on) { LOG("[mods] %s %s", what, on ? "on" : "off"); }
 }  // namespace
@@ -119,6 +153,7 @@ float link_move_factor(uint32_t link) {
         g_move_exhausted = false;
         g_move_boosted = false;
         g_move_swimming = false;
+        apply_anim_ramp();  // ramp is 1: put the authored animation rates back
         return 1.f;
     }
     const uint32_t held = g_move_buttons.load(std::memory_order_relaxed) & move_speed_button();
@@ -148,12 +183,27 @@ float link_move_factor(uint32_t link) {
         g_move_ramp = ramp_towards(g_move_ramp, move_target(active, proc, move_speed_land_factor(),
                                                             move_speed_swim_factor()),
                                    kRampTau, dt);
+        apply_anim_ramp();  // the legs follow the ramp, so they do not skate at 2x
     }
     return g_move_ramp.load(std::memory_order_relaxed);
 }
 
-uint64_t step() { return interp::logic_steps(); }
-double game_time() { return (double)interp::logic_steps() / 30.0; }
+// daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame): r4 = frameCtrl, f1 = rate.
+// While a boost runs on Link in a movement procedure the rate follows the ramp, so the legs keep up
+// with the ground instead of skating. Scaling the argument also covers the next animation the
+// procedure starts; apply_anim_ramp keeps a running one in step while the ramp moves.
+extern "C" void hook_023DE788(Cpu* c) {
+    const float factor = animation_factor(g_move_ramp.load(std::memory_order_relaxed));
+    if (factor != 1.f && move_speed() && is_move_proc(ld32(c->r[3] + 0x65F0))) {
+        anim_scale(c->r[4], (float)c->f[1].ps0, factor);
+        c->f[1].ps0 = (float)(c->f[1].ps0 * factor);
+    } else {
+        anim_forget(c->r[4]);
+    }
+    f_023DE788_orig(c);
+}
+
+uint64_t step() { return interp::logic_steps(); }double game_time() { return (double)interp::logic_steps() / 30.0; }
 
 static FILE* g_trace = [] {
     const char* p = getenv("WWHD_MODS_TRACE");

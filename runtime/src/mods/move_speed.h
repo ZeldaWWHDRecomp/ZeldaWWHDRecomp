@@ -37,6 +37,10 @@ inline float ramp_towards(float current, float target, float tau, float dt) {
     return std::fabs(next - target) < 1e-3f ? target : next;
 }
 
+// How fast the locomotion animation plays under a boost: the same factor as the movement, so the
+// legs keep up with the ground instead of skating. 1 leaves the authored rate alone.
+inline float animation_factor(float ramp) { return ramp == 1.f ? 1.f : clamp_factor(ramp); }
+
 // One step of the bar. `dt` in seconds, `seconds` of boosting on a full bar (0 = unlimited).
 // Both snap on the ends: accumulating dt/seconds in binary floats never lands exactly on 0 or 1,
 // and the exhausted/refilled transitions must be exact.
