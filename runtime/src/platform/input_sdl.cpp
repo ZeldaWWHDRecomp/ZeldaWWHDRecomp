@@ -176,8 +176,13 @@ static bool overlay_event(const SDL_Event& event){
  case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:{
   if(event.key.windowID!=tv)return false;
   int code=keycode(event.key.scancode);
+  // paste in an overlay text field: Dear ImGui reads the clipboard text the host passes here
+  if(event.type==SDL_EVENT_KEY_DOWN&&event.key.scancode==SDL_SCANCODE_V&&(event.key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))&&overlay::wants_text()){
+   char* clip=SDL_GetClipboardText();overlay::set_clipboard_text(clip?clip:"");SDL_free(clip);
+  }
   return code>=0&&overlay::key(code,event.type==SDL_EVENT_KEY_DOWN,event.key.repeat,overlay_mods(event.key.mod));
  }
+ case SDL_EVENT_TEXT_INPUT: return overlay::text(event.text.text);  // typed into an overlay text field
  case SDL_EVENT_MOUSE_MOTION:{
   if(event.motion.windowID!=tv)return false;
   int w=1,h=1;SDL_GetWindowSize(g_prompt_window,&w,&h);
@@ -537,8 +542,9 @@ void update(){
  if(cancelled)cancelled(false,{});
  // SDL text input in every game window while the overlay's text prompt shows (typed text, input methods;
  // on Android it brings up the system keyboard); the input method's candidates open over the prompt
+ // (also while a text field of the settings overlay has the keyboard)
  static bool entry_text=false;
- if(text_entry::active()!=entry_text&&!g_done){
+ if((text_entry::active()||overlay::wants_text())!=entry_text&&!g_done){
   entry_text=!entry_text;int n=0;
   if(SDL_Window** ws=SDL_GetWindows(&n)){
    for(int i=0;i<n;i++){

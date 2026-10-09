@@ -14,6 +14,10 @@ what is on `devel` and not released yet (also in the
 - **Mods tab: a "Reset to default" button for the catalogue address.** It puts back the official
   mod catalogue if the address was changed. Download errors now also show the server's status code
   (for example "HTTP 404"), so a wrong address is easier to tell apart from a connection problem.
+
+- **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
+  catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
+  now work on all platforms; on Android the on-screen keyboard opens for these fields.
 - **Cemu graphics packs that conflict can no longer both be switched on** (issue #68). The Mods tab
   shows "Conflicts with …" before you enable a pack; enabling it asks whether to switch (the other
   pack is turned off). Each pack shows what is active now and what changes after a restart, with a

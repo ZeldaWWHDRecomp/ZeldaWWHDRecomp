@@ -48,6 +48,12 @@ enum Mods : int { kShift = 1, kCtrl = 2, kAlt = 4, kSuper = 8 };
 bool key(int code, bool down, bool repeat, int mods);
 // pointer in the TV window, normalised to its content area (0..1 from the top left); return true while
 // the overlay is open (the event is the overlay's, not the game's or the mouse camera's)
+// typed characters (UTF-8, after the key event that produced them); true while the overlay is open
+bool text(const char* utf8);
+// the system clipboard's text, read by the host just before it passes Ctrl/Cmd+V on (main thread)
+void set_clipboard_text(const char* utf8);
+// a text field of the overlay has the keyboard (hosts turn on text input / the on-screen keyboard)
+bool wants_text();
 bool mouse_move(float nx, float ny);
 bool mouse_button(int button, bool down);  // 0 left, 1 right, 2 middle
 bool mouse_wheel(float dx, float dy);      // in lines, +y = away from the user

@@ -86,14 +86,19 @@ bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also 
 
 // input events from the host's main thread, replayed into ImGui on the render thread
 struct Event {
-    enum Kind { Key, MousePos, MouseButton, Wheel, Focus } kind;
+    enum Kind { Key, MousePos, MouseButton, Wheel, Focus, Text } kind;
     int code = 0;
     bool down = false;
     float x = 0, y = 0;
     int mods = 0;
+    std::string text = {};  // Text: typed characters (UTF-8)
 };
 std::mutex g_mu;
 std::vector<Event> g_events;
+// the system clipboard as the host last read it (main thread, before it passes the paste shortcut on);
+// Dear ImGui reads it on the render thread when Ctrl/Cmd+V reaches a text field
+std::string g_clipboard;
+std::atomic<bool> g_wants_text{false};  // a text field of the overlay has the keyboard
 std::atomic<int> g_capture_key{-2};  // remap: key pressed while capturing (-2 none, -1 cancel, -3 clear)
 std::atomic<bool> g_capturing_keys{false};
 // keys held while the overlay is open (the Controls tab lights them; the game never sees them)
@@ -275,6 +280,18 @@ void init_context() {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.BackendPlatformName = "wwhd";
     io.ConfigNavCaptureKeyboard = true;
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    pio.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
+        static std::string copy;
+        std::lock_guard<std::mutex> lk(g_mu);
+        copy = g_clipboard;
+        return copy.c_str();
+    };
+    pio.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) {
+        std::string copy = text ? text : "";
+        { std::lock_guard<std::mutex> lk(g_mu); g_clipboard = copy; }
+        hostui::post([copy] { hostui::set_clipboard(copy); });
+    };
     setup_style();
     setup_fonts();
     ImGui::GetStyle().FontSizeBase = 17.0f;
@@ -2148,6 +2165,18 @@ bool key(int code, bool down, bool repeat, int mods) {
     push({Event::Key, code, down, 0, 0, mods});
     return true;
 }
+bool text(const char* utf8) {
+    if (!is_open() || g_no_host_keys || !utf8 || !*utf8) return false;
+    Event e{Event::Text};
+    e.text = utf8;
+    push(e);
+    return true;
+}
+void set_clipboard_text(const char* utf8) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_clipboard = utf8 ? utf8 : "";
+}
+bool wants_text() { return is_open() && g_wants_text.load(); }
 bool mouse_move(float nx, float ny) {
     if (!captures() || g_no_host) return false;
     push({Event::MousePos, 0, false, nx, ny, 0});
@@ -2272,12 +2301,14 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         case Event::MousePos: io.AddMousePosEvent(e.x * io.DisplaySize.x, e.y * io.DisplaySize.y); break;
         case Event::MouseButton: io.AddMouseButtonEvent(e.code, e.down); break;
         case Event::Wheel: io.AddMouseWheelEvent(e.x, e.y); break;
+        case Event::Text: io.AddInputCharactersUTF8(e.text.c_str()); break;
         default: break;
         }
     }
     apply_capture();
     feed_gamepad(io, open && U.cap_action < 0);  // the text prompt reads the controller itself
     ImGui::NewFrame();
+    g_wants_text = open && io.WantTextInput;
     guesthud::frame();
     if (open) settings_window();
     if (text) {

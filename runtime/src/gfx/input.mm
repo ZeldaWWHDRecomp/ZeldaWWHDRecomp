@@ -308,7 +308,16 @@ void init() {
     start_test_keys();
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
-        if (e.modifierFlags & NSEventModifierFlagCommand) return e;  // keep Cmd-Q etc.
+        // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
+        if (e.modifierFlags & NSEventModifierFlagCommand) {
+            const uint16_t k = e.keyCode;
+            const bool editing = k == kVK_ANSI_A || k == kVK_ANSI_C || k == kVK_ANSI_V || k == kVK_ANSI_X || k == kVK_ANSI_Z;
+            if (!(editing && overlay::wants_text())) return e;
+            if (k == kVK_ANSI_V && e.type == NSEventTypeKeyDown) {
+                NSString* s = [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+                overlay::set_clipboard_text(s ? s.UTF8String : "");
+            }
+        }
         if (NSApp.keyWindow.sheetParent || NSApp.modalWindow) return e;  // text prompt has focus
         if (gfx::controls_window_is_key()) return e;  // Controls window: keys go to it, not the game
         uint16_t code = e.keyCode & 0xFF;
@@ -322,7 +331,20 @@ void init() {
             bool down = e.type == NSEventTypeKeyDown || (e.type == NSEventTypeFlagsChanged && modifier_down(code, f));
             bool repeat = e.type != NSEventTypeFlagsChanged && e.isARepeat;
             if (gfx::text_input_key((__bridge void*)e)) return nil;  // the game's text prompt: typed text
-            if (overlay::key(code, down, repeat, m)) return nil;
+            if (overlay::key(code, down, repeat, m)) {
+                // typed characters for the overlay's text fields (not shortcuts, not function/arrow keys)
+                if (e.type == NSEventTypeKeyDown && !(m & (overlay::kCtrl | overlay::kSuper)) && overlay::is_open()) {
+                    NSString* chars = e.characters ?: @"";
+                    NSMutableString* typed = [NSMutableString string];
+                    for (NSUInteger i = 0; i < chars.length; ++i) {
+                        unichar c = [chars characterAtIndex:i];
+                        if (c < 0x20 || c == 0x7F || (c >= 0xF700 && c <= 0xF8FF)) continue;  // control, NSF*FunctionKey
+                        [typed appendFormat:@"%C", c];
+                    }
+                    if (typed.length) overlay::text(typed.UTF8String);
+                }
+                return nil;
+            }
             // the Screenshot binding (F10 by default; posted test keys take this path too)
             if (e.type == NSEventTypeKeyDown && !e.isARepeat && screenshot::key_down(code)) return nil;
             if (posted) return nil;  // test keys only reach the overlay
