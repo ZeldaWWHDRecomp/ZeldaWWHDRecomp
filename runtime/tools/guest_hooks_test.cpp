@@ -7,15 +7,12 @@
 #endif
 
 static std::vector<int> calls;
-static void body(Cpu* c) {
-    PPC_MOD_HOOK(0, 0x02000000u);
-    calls.push_back(3);
-    c->r[3] += 1;
-}
+extern "C" void guest_hooks_body(Cpu* c);
+extern "C" void guest_hooks_record_body() { calls.push_back(3); }
 static void port(Cpu* c) {
     calls.push_back(1);
     c->r[3] *= 2; // stand-in for true-60 scaling before game code / replacements
-    body(c);
+    guest_hooks_body(c);
     calls.push_back(6);
 }
 static void entry(Cpu* c) { calls.push_back(2); assert(c->r[3] == 10); c->r[3] = 999; }
@@ -30,9 +27,11 @@ extern "C" {
 extern const char g_guest_build_name[] = "USA";
 extern const RecompEntry g_recomp_funcs[] = {{0x02000000, port}};
 extern const unsigned g_recomp_func_count = 1;
-static const PpcFunc test_mod_bodies[] = {body};
+static const PpcFunc test_mod_bodies[] = {guest_hooks_body};
 static uint8_t test_mod_flags[1]{};
 volatile int g_core_preempt[3]{};
+int g_ppc_trace = 0;
+void ppc_trace_enter(uint32_t) {}
 void ppc_dispatch(Cpu*) { std::abort(); }
 void ppc_unimplemented(Cpu*, uint32_t, uint32_t) { std::abort(); }
 void ppc_trap(Cpu*, uint32_t) { std::abort(); }

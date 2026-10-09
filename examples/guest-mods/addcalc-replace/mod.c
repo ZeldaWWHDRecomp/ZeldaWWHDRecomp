@@ -5,7 +5,7 @@
  * src/SSystem/SComponent/c_lib.cpp); this file is written for the example. */
 #include "wwhd_guest.h"
 
-#include "game/functions.h"
+#include "wwhd/functions.h"
 
 #define ADDCALC2 WWHD_ADDR_cLib_addCalc2_hd
 

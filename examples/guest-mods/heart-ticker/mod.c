@@ -2,9 +2,9 @@
  * every `every` logic steps, from full to half, then refills them (never below half: harmless).
  * Written for this example; names and layouts come from the generated public HD SDK. */
 #include "wwhd_guest.h"
-#include "game/bindings.h"
-#include "game/link.h"
-#include "game/save.h"
+#include "wwhd/bindings.h"
+#include "wwhd/link.h"
+#include "wwhd/save.h"
 
 static u32 steps, returns;
 static f32 smooth;

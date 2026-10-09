@@ -106,7 +106,7 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
 
     def test_public_headers_c_and_cpp(self):
         headers = ("bindings", "actor", "link", "camera", "items", "save", "messages", "data")
-        source = "".join('#include "game/%s.h"\n' % name for name in headers)
+        source = "".join('#include "wwhd/%s.h"\n' % name for name in headers)
         for language, standard in (("c", "c11"), ("c++", "c++17")):
             with self.subTest(language=language):
                 subprocess.run([CLANG] + FLAGS + ["-x", language, "-std=" + standard,
@@ -199,7 +199,7 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
     def test_register_pair_module_executes(self):
         # Leaf guest functions need no guest RAM: this executes the actual translated module.
         src = r'''
-#include "game/bindings.h"
+#include "wwhd/bindings.h"
 WWHD_REPLACE(0x02000000, wwhd_gpr_pair, pair_result, (void)) {
     return 0x1122334455667788ULL;
 }
@@ -265,6 +265,14 @@ int main(int argc, char** argv) {
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_source_and_release_include_roots(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(builder, "REPO", d):
+            self.assertEqual(builder.default_include(), os.path.join(d, "runtime", "include"))
+            installed = Path(d, "sdk", "include")
+            installed.mkdir(parents=True)
+            (installed / "wwhd_guest_abi.h").write_text("/* ABI fixture */")
+            self.assertEqual(builder.default_include(), str(installed))
+
     def test_package_paths_and_ids(self):
         with tempfile.TemporaryDirectory() as d:
             pkg = Path(d, "pkg"); pkg.mkdir()

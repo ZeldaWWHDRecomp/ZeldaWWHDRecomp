@@ -149,9 +149,9 @@ class Translator:
         except ValueError as exc:
             # Public declaration names are available in source checkouts and release SDKs.
             from pathlib import Path
-            header = Path(HERE).parents[1] / "runtime/guest/include/game/functions.h"
+            header = Path(HERE).parents[1] / "runtime/guest/include/wwhd/functions.h"
             if not header.is_file():
-                header = Path(HERE).parents[1] / "sdk/guest/include/game/functions.h"
+                header = Path(HERE).parents[1] / "sdk/guest/include/wwhd/functions.h"
             name = ""
             if header.is_file():
                 match = re.search(r"^#define WWHD_ADDR_(\w+) 0x%08X$" % address,

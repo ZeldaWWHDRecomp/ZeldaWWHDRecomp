@@ -49,6 +49,15 @@ def default_cc():
     return ["clang"]
 
 
+def default_include():
+    # Installed packages carry the runtime ABI separately from the public wwhd/
+    # guest declarations; the translated module includes only this ABI directory.
+    installed = os.path.join(REPO, "sdk", "include")
+    if os.path.isfile(os.path.join(installed, "wwhd_guest_abi.h")):
+        return installed
+    return os.path.join(REPO, "runtime", "include")
+
+
 def abi_version(include):
     with open(os.path.join(include, "wwhd_guest_abi.h"), encoding="utf-8") as f:
         for line in f:
@@ -161,7 +170,7 @@ def main():
     compiler_args = ap.add_mutually_exclusive_group()
     compiler_args.add_argument("--cc-json", help="compiler argument vector as JSON (for setup/manager)")
     compiler_args.add_argument("--cc", help="compiler command (default: $CC, xcrun clang on macOS, clang)")
-    ap.add_argument("--include", default=os.path.join(REPO, "runtime", "include"),
+    ap.add_argument("--include", default=default_include(),
                     help="runtime headers (ppc.h, wwhd_guest_abi.h); sdk/include in a release")
     ap.add_argument("--zig-cache", help="setup-selected Zig global cache directory")
     ap.add_argument("--json", action="store_true")

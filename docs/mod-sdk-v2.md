@@ -271,8 +271,8 @@ python3 tools/guestmod/regenerate_sdk.py --public-clone build/public-wwhd
 python3 tools/guestmod/regenerate_sdk.py --public-clone build/public-wwhd --check
 ```
 
-`game/functions.h` gives every public verified function a named hook address.
-Ambiguous names retain an address suffix. `game/bindings.h` declares callable
+`wwhd/functions.h` gives every public verified function a named hook address.
+Ambiguous names retain an address suffix. `wwhd/bindings.h` declares callable
 functions with supported signatures; object pointers are opaque `void*`, and
 names use a `wwhd_` prefix. Unsupported signatures are reported rather than guessed.
 The JSON inventory retains their original public declarations for further curation.
@@ -287,7 +287,7 @@ the PowerPC register order with each desktop host compiler.
 These addresses target USA version 0. Functions absent from the public decomp
 remain hookable by address when hook checks are compiled in.
 
-`game/data.h` names the public save/resource pointer slots, matrix stack, zero
+`wwhd/data.h` names the public save/resource pointer slots, matrix stack, zero
 vector and item table bases/strides. It contains no initialized game data.
 
 Curated `actor.h`, `link.h`, `camera.h`, `items.h` and `messages.h` provide partial
@@ -528,7 +528,7 @@ Modders do not need devkitPPC, and this SDK does not bundle a modder compiler.
 
 ### Write and build
 
-Include `wwhd_guest.h` and the generated `game` headers. Hook targets use
+Include `wwhd_guest.h` and the generated `wwhd` headers. Hook targets use
 `WWHD_ADDR_<public_name>`; callable declarations use `wwhd_<public_name>` where the
 name is unique. Ambiguous names have an address suffix. Entry hooks receive the game's
 arguments. Return hooks receive those arguments again and preserve the game result.
@@ -536,7 +536,7 @@ Only one replacement may own a target; a conflict reports both package IDs.
 
 ```c
 #include "wwhd_guest.h"
-#include "game/functions.h"
+#include "wwhd/functions.h"
 
 WWHD_HOOK(WWHD_ADDR_daPy_Execute, on_link_step, (void* link)) {
     static u32 steps;

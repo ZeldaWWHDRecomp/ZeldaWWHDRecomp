@@ -16,7 +16,7 @@ make CLANG=/opt/homebrew/opt/llvm/bin/clang LLD=/opt/homebrew/opt/lld/bin/ld.lld
 ```
 
 Each folder is then a package (`manifest.json` + `mod.elf`). The source uses generated
-public HD function names and layouts from `runtime/guest/include/game`.
+public HD function names and layouts from `runtime/guest/include/wwhd`.
 
 Install each folder through **Mods → Installed packages → Choose folder → Install package**,
 enable it, accept the ELF trust confirmation, and restart. Set heart-ticker's `every` option

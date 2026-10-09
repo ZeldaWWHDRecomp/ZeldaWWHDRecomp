@@ -570,11 +570,16 @@ target_include_directories(guest_validation_test PRIVATE runtime/include runtime
 target_compile_options(guest_validation_test PRIVATE -UNDEBUG)
 add_test(NAME guest_validation COMMAND guest_validation_test)
 
-add_executable(guest_hooks_test runtime/tools/guest_hooks_test.cpp)
+add_executable(guest_hooks_test runtime/tools/guest_hooks_test.cpp runtime/tools/guest_hooks_body.c)
+# The entry musttail regression must reach the optimized backend even in Debug builds.
+set_source_files_properties(runtime/tools/guest_hooks_body.c PROPERTIES COMPILE_OPTIONS "-O3")
 target_include_directories(guest_hooks_test PRIVATE runtime/include runtime/src)
 target_compile_options(guest_hooks_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hooks_test PRIVATE ${CMAKE_DL_LIBS})
 add_test(NAME guest_hooks COMMAND guest_hooks_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME release_sdk_package COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_sdk_package.py")
+endif()
 
 add_executable(process_test runtime/tools/process_test.cpp)
 target_include_directories(process_test PRIVATE runtime/src)
