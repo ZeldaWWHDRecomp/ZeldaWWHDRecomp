@@ -123,6 +123,15 @@ arguments (r3–r10 and f1–f8 are restored before every hook), a return hook l
 value (r3, r4, f1) as the function produced it, a replacement is the function. r1/r2/r13 are
 preserved by every callee (ABI). Return hooks run in reverse load order.
 
+### Apple clang 17 compatibility
+
+The hook flag test deliberately has no `__builtin_expect` hint. Apple clang 17's cold-block
+outliner can move an unlikely hook return into a helper with a different return type, making
+its `musttail` call invalid. Keeping this branch ordinary preserves the guaranteed tail call
+in the generated function; it does not add a plain-call fallback or change hooks-off code.
+The release workflow compiles the generated-style hook entry at `-O3` with Xcode 16.4 explicitly,
+and the hook runtime test exercises that entry in every build configuration.
+
 ### Port hooks, frame interpolation and true 60
 
 The check sits in the game code (`f_X`, or `f_X_orig` behind a port hook), so the port's

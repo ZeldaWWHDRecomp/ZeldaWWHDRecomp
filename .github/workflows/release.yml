@@ -70,6 +70,15 @@ jobs:
       - name: Install build tools
         run: brew install ninja
 
+      - name: Generated hook entry with Apple clang 17
+        # Keep the oldest supported Apple backend covered even if the runner default changes.
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          xcrun clang --version
+          xcrun clang -O3 -std=gnu11 -arch arm64 -mmacosx-version-min=14.0 \
+            -I runtime/include -c runtime/tools/guest_hooks_body.c -o "$RUNNER_TEMP/guest-hooks-clang17.o"
+
       - name: Build runtime (Release, Metal) against placeholder guest code
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
