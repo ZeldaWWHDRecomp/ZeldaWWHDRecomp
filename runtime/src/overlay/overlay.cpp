@@ -379,9 +379,9 @@ void read_controller() {
 
 void feed_gamepad(ImGuiIO& io, bool enabled) {
     using namespace input_map;
-    // Dead zone (issue #111): a slightly drifting stick fed as an analog value scrolls ImGui windows by itself.
+    // Dead zone (issue #111): a drifting stick fed as an analog value moves or scrolls ImGui by itself.
     auto key = [&](ImGuiKey k, int p) {
-        const float v = enabled && U.values[p] >= 0.25f ? U.values[p] : 0.0f;
+        const float v = enabled && U.values[p] >= 0.35f ? U.values[p] : 0.0f;
         io.AddKeyAnalogEvent(k, v > 0.5f, v);
     };
     key(ImGuiKey_GamepadFaceDown, kPadA);
@@ -396,8 +396,8 @@ void feed_gamepad(ImGuiIO& io, bool enabled) {
     key(ImGuiKey_GamepadLStickDown, kPadLSDown);
     key(ImGuiKey_GamepadLStickLeft, kPadLSLeft);
     key(ImGuiKey_GamepadLStickRight, kPadLSRight);
-    key(ImGuiKey_GamepadRStickUp, kPadRSUp);
-    key(ImGuiKey_GamepadRStickDown, kPadRSDown);
+    // The right stick is not fed: ImGui only scrolls windows with it, continuously, so even a stick that
+    // drifts past any dead zone scrolled the menu (issue #111). D-pad, left stick and wheel scroll.
     key(ImGuiKey_GamepadL2, kPadLT);
     key(ImGuiKey_GamepadR2, kPadRT);
     key(ImGuiKey_GamepadStart, kPadMenu);
