@@ -118,8 +118,11 @@ def make_appdir(pkg, appdir):
     """PKG_DIR as an AppDir: no portable.txt (read-only mount), plus AppRun, .desktop and the icon."""
     # data/ is an installation, portable.txt would send every write into the read-only mount
     # (setup.py PORTABLE, host::portable)
+    # the zip's own "Wind Waker HD.desktop" (an `sh -c 'cd ...'` launcher for the unpacked folder) is
+    # not a valid entry inside an AppImage, and appimagetool validates every .desktop at the root;
+    # the AppImage gets its own wwhd.desktop below
     shutil.copytree(pkg, appdir, symlinks=True,
-                    ignore=shutil.ignore_patterns("data", "portable.txt", ".appimagetool-*"))
+                    ignore=shutil.ignore_patterns("data", "portable.txt", ".appimagetool-*", "*.desktop"))
     with open(os.path.join(appdir, "AppRun"), "w") as f:
         f.write(APPRUN)
     os.chmod(os.path.join(appdir, "AppRun"), 0o755)
