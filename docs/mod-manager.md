@@ -95,8 +95,12 @@ change during preparation. Guest preparation uses the same persisted address
 allocator and build bridge as startup, including the installed game's region
 mapping. A failed build retains its allocation for a stable retry. A successful
 build leaves the package inactive; enabling it takes effect after restart.
-The readiness receipt checks the ELF, region, allocation and cached module's
-presence. Startup still validates the build cache and rebuilds stale modules.
+Readiness checks the ELF, region, allocation and cached module, then validates
+the full build cache key in one startup batch outside the manager lock. The key
+includes the selected compiler and version, flags, translator, ABI and source
+inputs. Stale or unavailable entries stay unsatisfied; a successful preparation
+marks the package ready immediately. The UI reads this cached readiness without
+running tools each frame. Startup also validates and rebuilds stale modules.
 If code-mod support is off, preparation offers the existing rebuild dialog.
 
 Native code is never loaded without a matching confirmation, also when a
