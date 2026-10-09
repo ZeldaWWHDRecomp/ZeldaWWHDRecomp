@@ -80,6 +80,9 @@ def main():
     parser.add_argument("--require-isolated-device", action="store_true", help="force separate queue-zero logical devices and require that path")
     parser.add_argument("--require-present-worker", action="store_true", help="fail if the driver lacks the dedicated secondary queue path")
     parser.add_argument("--measure-timing", action="store_true", help="measure 180 primary intervals with secondary disabled, enabled, held and disconnected")
+    parser.add_argument("--timing-report-only", action="store_true",
+                        help="record primary timing regressions in the result instead of failing (shared CI emulators: "
+                             "software rendering, noisy cadence); functional checks stay strict")
     parser.add_argument("--exercise-folds", action="store_true", help="inject synthetic window hinges; exercise real pane surfaces, not hardware posture detection")
     parser.add_argument("--exercise-primary-rotation", action="store_true", help="rotate the primary Activity to portrait and back while secondary presents")
     parser.add_argument("--exercise-dismissal", action="store_true", help="dismiss the secondary window without removing its display; require automatic recovery")
@@ -467,7 +470,12 @@ def main():
                 if (measured["primary_intervals_ms"]["p50"] > timing_thresholds["primary_p50_ms"] or
                         measured["primary_intervals_ms"]["p99"] > timing_thresholds["primary_p99_ms"] or
                         measured["primary_intervals_ms"]["max"] > timing_thresholds["primary_worst_ms"]):
-                    raise AssertionError("Primary timing regression with secondary " + label)
+                    if not args.timing_report_only:
+                        raise AssertionError("Primary timing regression with secondary " + label)
+                    timing_context.setdefault("regressions_reported", []).append(
+                        {"label": label, "primary_intervals_ms": measured["primary_intervals_ms"]})
+                    print("WARNING: primary timing regression with secondary " + label +
+                          " (reported only: --timing-report-only)", flush=True)
             command("worker0")
             until("timing worker drained", lambda m: not m["secondary_present_pending"] and not m["dual"])
             overlay("800x480/160")
