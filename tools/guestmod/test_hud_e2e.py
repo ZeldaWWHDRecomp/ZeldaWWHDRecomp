@@ -60,7 +60,11 @@ def inspect_frames(root, first, count, package):
                     offset = 0
                 else:
                     boxes, targets = regions, colours
-                    offset = image.width - 1280 * scale
+                    # The game's CommandGuide stays in the centred 1280-wide
+                    # region: aspect.cpp deliberately excludes its N_All_00
+                    # container from edge-pane expansion. Follow the actual
+                    # button pictures, rather than accepting far-right overdraw.
+                    offset = (image.width - 1280 * scale) / 2
                 counts = []
                 for (x, y, w, h), colour in zip(boxes, targets):
                     crop = image.crop((round(x * scale + offset), round(y * scale),
