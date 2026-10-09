@@ -34,6 +34,15 @@ graphics options in `user/graphics.plist` instead of NSUserDefaults; the Control
 autosave its frame. Without the marker (source builds) nothing changes. Shortcuts (Applications link,
 Start menu, applications menu) are only created when the player asks for one.
 
+Without `portable.txt` (a source build, or a Linux AppImage: its mount is read-only, issue #55) the
+same tree lives in the per-user folders of earlier releases instead: `data/` above becomes
+`~/Library/Application Support/wwhd`, `%LOCALAPPDATA%\WWHD` or `$XDG_DATA_HOME/wwhd`
+(`~/.local/share/wwhd`), and `data/user/` becomes that platform's `host::config_dir()`
+(`~/.config/wwhd` on Linux). `setup.py default_data_dir()` and `gui/setup_gui.cpp data_dir_of()`
+implement the same rule; `tools/release/appimage.py` drops `portable.txt` from the package for exactly
+this reason. `install.json` then keeps `exe` and `game_dir` as absolute paths (`rel_to_data` is a
+no-op without the marker).
+
 ## Pieces
 
 | file | what |

@@ -69,8 +69,11 @@ __attribute__((visibility("hidden")))
 #endif
 extern uint8_t* g_mod_hook_flags;
 void ppc_mod_run(Cpu* c);
+/* Do not mark this branch unlikely: Apple clang 17 can outline a cold hook
+   return into an i1-returning helper, invalidating the void musttail call.
+   Keep the entry branch ordinary so musttail stays in its original function. */
 #define PPC_MOD_HOOK(i, a) do {                                               \
-        if (__builtin_expect(g_mod_hook_flags[i], 0)) {                       \
+        if (g_mod_hook_flags[i]) {                                           \
             if (c->mod_skip != (a)) { c->pc = (a); MUSTTAIL return ppc_mod_run(c); } \
             c->mod_skip = 0;                                                  \
         }                                                                     \

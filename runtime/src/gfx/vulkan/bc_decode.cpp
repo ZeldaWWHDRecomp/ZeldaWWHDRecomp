@@ -63,10 +63,9 @@ Buffer dispatch(const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_
     vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,1,&set,0,nullptr);
     uint32_t params[]={w,h,slices,mode};vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof params,params);
     vkCmdDispatch(cmd,gx,gy,1);
-    VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT|(readback?VK_ACCESS_HOST_READ_BIT:0);
-    barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.buffer=output.buffer;barrier.size=VK_WHOLE_SIZE;
-    vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT|(readback?VK_PIPELINE_STAGE_HOST_BIT:0),0,0,nullptr,1,&barrier,0,nullptr);
+    derive_dependency(output.use,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_WRITE_BIT);
+    transition_buffer(output,VK_PIPELINE_STAGE_TRANSFER_BIT|(readback?VK_PIPELINE_STAGE_HOST_BIT:0),
+                      VK_ACCESS_TRANSFER_READ_BIT|(readback?VK_ACCESS_HOST_READ_BIT:0));
     defer_buffer(input);return output;
 }
 void verify(Buffer output,const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_t slices,uint32_t mode) {

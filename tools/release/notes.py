@@ -1,31 +1,37 @@
 #!/usr/bin/env python3
-"""Release notes from README.md: install instructions + the "What's new" section + checksums.
+"""Release notes from CHANGELOG.md: install instructions + the release's changes + checksums.
 
-usage: notes.py README.md VERSION SHA256SUMS.txt > notes.md
+usage: notes.py CHANGELOG.md VERSION SHA256SUMS.txt [--devel COMMIT] > notes.md
 
-"What's new" has one "### vX.Y.Z" block per release; the notes take the block for VERSION (or the
-whole section when there is none).
+--devel: notes for the rolling development pre-release; VERSION is then "Next update", the block
+of unreleased changes.
+
+CHANGELOG.md has one "## vX.Y.Z" section per release; the notes take the section for VERSION
+(none found: a pointer to the changelog).
 """
 import re
 import sys
 
 
-def section(text, title_prefix):
-    m = re.search(r"^## %s.*?$\n(.*?)(?=^## )" % re.escape(title_prefix), text, re.S | re.M)
+def section(text, title):
+    m = re.search(r"^## %s\s*$\n(.*?)(?=^## |\Z)" % re.escape(title), text, re.S | re.M)
     return m.group(1).strip() if m else ""
 
 
 def main():
-    readme, version, sums = sys.argv[1:4]
-    with open(readme, encoding="utf-8") as f:
+    changelog, version, sums = sys.argv[1:4]
+    devel = sys.argv[5] if len(sys.argv) > 5 and sys.argv[4] == "--devel" else None
+    with open(changelog, encoding="utf-8") as f:
         text = f.read()
-    new = section(text, "What's new")
-    # only this release's own changes: the "### vX.Y.Z" block of "What's new"
-    m = re.search(r"^### %s\s*$\n(.*?)(?=^### |\Z)" % re.escape(version), new, re.S | re.M)
-    if m:
-        new = m.group(1).strip()
+    new = section(text, version)
     with open(sums) as f:
         checksums = f.read().strip()
+    if devel:
+        print("""**Development build of devel @ %s: not a release.** It has the changes below that are not
+released yet, and has had less testing than a release. Use it to try a fix, and include the commit
+(%s) when you report a problem. The latest release is on the Releases page.
+""" % (devel[:7], devel[:7]))
+        version = "development build"
     print("""**The Wind Waker HD, native PC port, %s**
 
 This release contains **no game files, no game code and no keys**. You need your own disc dump
@@ -40,7 +46,10 @@ Everything stays in that folder.
   Keep the app inside the unzipped folder (move the whole folder, not just the app)
 - Windows (x86-64): `Wind Waker HD.exe` (SmartScreen: "More info" > "Run anyway")
 - Linux (glibc 2.35+, Vulkan): `wind-waker-hd`; `linux-x86_64` for x86-64, `linux-aarch64` for arm64
-  (Raspberry Pi 5, Asahi Linux, ARM laptops)
+  (Raspberry Pi 5, Asahi Linux, ARM laptops). Or one file: `chmod +x` the `.AppImage` and start it
+  from anywhere (Steam Deck included); its game, code, saves and settings go to `~/.local/share/wwhd`
+  and `~/.config/wwhd` instead of beside it (Ubuntu 24.04+: `libfuse2t64`, or
+  `--appimage-extract-and-run`)
 
 See "Install (releases)" in the README for details.
 
@@ -53,7 +62,7 @@ See "Install (releases)" in the README for details.
 ```
 %s
 ```
-""" % (version, new or "See the README.", checksums))
+""" % (version, new or "See CHANGELOG.md.", checksums))
 
 
 if __name__ == "__main__":

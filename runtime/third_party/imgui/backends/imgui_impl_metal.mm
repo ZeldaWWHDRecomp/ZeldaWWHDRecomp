@@ -43,6 +43,7 @@
 //  2018-07-05: Metal: Added new Metal backend implementation.
 
 #include "imgui.h"
+#include "../../../src/overlay/guest_hud.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_metal.h"
 #import <time.h>
@@ -61,6 +62,7 @@
 // render pipeline state. These are used as cache keys.
 @interface FramebufferDescriptor : NSObject<NSCopying>
 @property (nonatomic, assign) unsigned long  sampleCount;
+@property (nonatomic, assign) BOOL additive; // WWHD guest HUD blend pipeline variant
 @property (nonatomic, assign) MTLPixelFormat colorPixelFormat;
 @property (nonatomic, assign) MTLPixelFormat depthPixelFormat;
 @property (nonatomic, assign) MTLPixelFormat stencilPixelFormat;
@@ -255,6 +257,18 @@ void ImGui_ImplMetal_RenderDrawData(ImDrawData* draw_data, id<MTLCommandBuffer> 
                 // User callback, registered via ImDrawList::AddCallback()
                 if (pcmd->UserCallback == ImGui_ImplMetal_DrawCallback_ResetRenderState)
                     ImGui_ImplMetal_SetupRenderState(draw_data, commandBuffer, commandEncoder, renderPipelineState, vertexBuffer, vertexBufferOffset);
+                else if (pcmd->UserCallback == overlay::guesthud::blend_callback)
+                {
+                    FramebufferDescriptor* descriptor = [ctx.framebufferDescriptor copy];
+                    descriptor.additive = pcmd->UserCallbackData != nullptr;
+                    id<MTLRenderPipelineState> blendPipeline = ctx.renderPipelineStateCache[descriptor];
+                    if (blendPipeline == nil)
+                    {
+                        blendPipeline = [ctx renderPipelineStateForFramebufferDescriptor:descriptor device:commandBuffer.device];
+                        ctx.renderPipelineStateCache[descriptor] = blendPipeline;
+                    }
+                    [commandEncoder setRenderPipelineState:blendPipeline];
+                }
                 else
                     pcmd->UserCallback(draw_list, pcmd);
             }
@@ -289,6 +303,10 @@ void ImGui_ImplMetal_RenderDrawData(ImDrawData* draw_data, id<MTLCommandBuffer> 
                 if (tex_id != ImTextureID_Invalid)
                     [commandEncoder setFragmentTexture:(__bridge id<MTLTexture>)(void*)(intptr_t)(tex_id) atIndex:0];
 
+                MTLPixelFormat format = ctx.framebufferDescriptor.colorPixelFormat;
+                uint32_t linearTexture = overlay::guesthud::image_texture(uint64_t(tex_id)) &&
+                    (format == MTLPixelFormatBGRA8Unorm_sRGB || format == MTLPixelFormatRGBA8Unorm_sRGB);
+                [commandEncoder setFragmentBytes:&linearTexture length:sizeof(linearTexture) atIndex:0];
                 [commandEncoder setVertexBufferOffset:(vertexBufferOffset + pcmd->VtxOffset * sizeof(ImDrawVert)) atIndex:0];
                 [commandEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                                            indexCount:pcmd->ElemCount
@@ -414,6 +432,7 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
         if (tex->RefCount == 1)
             ImGui_ImplMetal_DestroyTexture(tex);
 
+    overlay::guesthud::backend_destroyed();
     [bd->SharedMetalContext.renderPipelineStateCache removeAllObjects];
     bd->SharedMetalContext.samplerStateLinear = nil;
     bd->SharedMetalContext.samplerStateNearest = nil;
@@ -492,6 +511,7 @@ void ImGui_ImplMetal_Shutdown()
 {
     FramebufferDescriptor* copy = [[FramebufferDescriptor allocWithZone:zone] init];
     copy.sampleCount = self.sampleCount;
+    copy.additive = self.additive;
     copy.colorPixelFormat = self.colorPixelFormat;
     copy.depthPixelFormat = self.depthPixelFormat;
     copy.stencilPixelFormat = self.stencilPixelFormat;
@@ -505,7 +525,7 @@ void ImGui_ImplMetal_Shutdown()
     NSUInteger df = _depthPixelFormat & 0x3FF;
     NSUInteger sf = _stencilPixelFormat & 0x3FF;
     NSUInteger hash = (sf << 22) | (df << 12) | (cf << 2) | sc;
-    return hash;
+    return hash ^ (self.additive ? ((NSUInteger)1 << 32) : 0);
 }
 
 - (BOOL)isEqual:(id)object
@@ -513,7 +533,7 @@ void ImGui_ImplMetal_Shutdown()
     FramebufferDescriptor* other = object;
     if (![other isKindOfClass:[FramebufferDescriptor class]])
         return NO;
-    return other.sampleCount == self.sampleCount      &&
+    return other.additive == self.additive && other.sampleCount == self.sampleCount      &&
     other.colorPixelFormat   == self.colorPixelFormat &&
     other.depthPixelFormat   == self.depthPixelFormat &&
     other.stencilPixelFormat == self.stencilPixelFormat;
@@ -620,8 +640,10 @@ void ImGui_ImplMetal_Shutdown()
     "\n"
     "fragment half4 fragment_main(VertexOut in [[stage_in]],\n"
     "                             texture2d<half, access::sample> texture [[texture(0)]],\n"
-    "                             sampler textureSampler [[sampler(0)]]) {\n"
+    "                             sampler textureSampler [[sampler(0)]],\n"
+    "                             constant uint& linearTexture [[buffer(0)]]) {\n"
     "    half4 texColor = texture.sample(textureSampler, in.texCoords);\n"
+    "    if (linearTexture != 0) texColor.rgb = select(pow((texColor.rgb + half3(0.055)) / half3(1.055), half3(2.4)), texColor.rgb / half3(12.92), texColor.rgb <= half3(0.04045));\n"
     "    return half4(in.color) * texColor;\n"
     "}\n";
 
@@ -664,7 +686,7 @@ void ImGui_ImplMetal_Shutdown()
     pipelineDescriptor.colorAttachments[0].blendingEnabled = YES;
     pipelineDescriptor.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
     pipelineDescriptor.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-    pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    pipelineDescriptor.colorAttachments[0].destinationRGBBlendFactor = descriptor.additive ? MTLBlendFactorOne : MTLBlendFactorOneMinusSourceAlpha;
     pipelineDescriptor.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
     pipelineDescriptor.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
     pipelineDescriptor.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;

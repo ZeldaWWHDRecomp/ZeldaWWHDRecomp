@@ -9,3 +9,6 @@
 028766CC  # nw::lyt::Pane::CalculateMtx: edge anchoring of TV layout panes
 02877100  # nw::lyt::Pane::Draw: which screen each layout root is drawn to
 028F8250  # nw::font text draw (projection matrix pointer at content+4): TV text drawn undistorted, centred
+
+@0287714C # Pane::Draw: scope native-content clipping around DrawSelf
+@02877150 # Pane::Draw: end DrawSelf clipping before visiting children

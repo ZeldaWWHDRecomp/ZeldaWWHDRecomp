@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "id": "hud-cost",
+  "name": "200-element HUD cost fixture",
+  "version": "0.1.0",
+  "game_id": "wwhd-usa",
+  "kind": "guest",
+  "guest": {"api_version": 1, "elf": "mod.elf"},
+  "options": [{"id": "draw", "type": "bool", "name": "Draw 200 rectangles", "default": false}]
+}

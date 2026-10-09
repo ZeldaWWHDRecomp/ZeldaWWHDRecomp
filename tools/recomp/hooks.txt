@@ -9,6 +9,9 @@
 025D42C4  # fapGm_After: scene / transition / camera management
 0200E6EC  # cCt_Counter: frame counters
 02715310  # HD UI screens' update after the process executes (end of fpcM_Management): logic, once per step
+025C5A8C  # shared minigame timer: HD puts its update in the draw slot; logic once per 30 Hz step
+@026277A8 # Boat-race timer formatting: presentation-only fractional milliseconds
+@026E9C24 # Shared HUD timer formatting: presentation-only fractional milliseconds
 024FFC40  # camera_draw: blended camera on logic passes
 # children of the per-frame function; on hold passes each runs or is skipped (interp.cpp kHoldRun)
 02032FE8  # per-frame child 0
@@ -224,3 +227,6 @@
 02753D6C  # sead::ExpHeap::alloc (debug WWHD_HEAPLOG, true60_test.cpp)
 
 0252E388  # dDlst_peekZ_c::peekData: GPU depth answers for sun corona/lens flare (peekz.cpp)
+
+026E9A38 # Retire shared HUD countdown presentation history before layout destruction
+0262769C # Retire boat-race countdown presentation history before layout destruction

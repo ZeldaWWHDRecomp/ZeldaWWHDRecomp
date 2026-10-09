@@ -145,6 +145,8 @@ void positions_test() {
     pane(special_a, "P_ASpecial_00", 0, -1.5f); child(groups[4], special_a);
     pane(item_x, "L_XItemIcon_00", -2, 12); child(face_panes[2], item_x);
     pane(trigger, "P_ZR_00", 66, 96); child(cluster, trigger);
+    // Current aspect anchoring recognises world-positioned roots by their floating prompt.
+    pane(base + 0x4A00, "L_CommandA_00", 0, -247); child(cluster, base + 0x4A00);
 
     const std::array<uint32_t, 12> nodes = {cluster, groups[0], groups[1], groups[2], groups[3], groups[4],
         face_panes[0], face_panes[2], face_panes[3], special_a, item_x, trigger};

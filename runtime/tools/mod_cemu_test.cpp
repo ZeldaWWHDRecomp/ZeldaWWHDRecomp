@@ -18,6 +18,14 @@ int main(int argc,char** argv) {
         if(argc==3){fs::path output=argv[2];fs::create_directories(output);cemu::set_vulkan(true);cemu::activate({{"public-pack",pack,{}}});for(size_t i=0;i<pack.shaders.size();i++){auto& shader=pack.shaders[i];std::ofstream(output/(std::to_string(i)+(shader.vertex?".vert":".frag")))<<cemu::shader_source(shader.base,shader.aux,shader.vertex);}}
         return 0;
     }
+    // titleIds (issue #103): the installed build's title, any case/spacing; USA-only packs don't load on EU
+    const std::string usa="0005000010143500",eu="0005000010143600";
+    assert(cemu::targets_title("0005000010143500",usa)&&!cemu::targets_title("0005000010143500",eu));
+    assert(cemu::targets_title("0005000010143600",eu)&&!cemu::targets_title("0005000010143600",usa));
+    assert(cemu::targets_title("0005000010143400, 0005000010143500 ,0005000010143600",eu));
+    assert(cemu::targets_title("0005000010143400,0005000010143500,0005000010143600",usa));
+    assert(cemu::targets_title(" \"00050000101435AA\",0005000010143600\r",eu)&&!cemu::targets_title("0005000010143400",usa));
+    assert(!cemu::targets_title("",usa)&&!cemu::targets_title("00050000101435",usa));
     assert(cemu::expression("max(2, $width / 2) + floor(1.9)",{{"$width",8}})==5);
     assert(cemu::expression("0x80e",{})==2062);
     rejects([]{cemu::expression("1/0",{});});rejects([]{cemu::expression("$missing",{});});

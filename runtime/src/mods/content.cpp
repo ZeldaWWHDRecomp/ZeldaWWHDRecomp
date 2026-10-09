@@ -1,4 +1,6 @@
 #include "content.h"
+#include "cemu_pack.h"
+#include "guest_addr.h"
 #include "mod_archive.h"
 #include "mod_json.h"
 #include <cstdio>
@@ -51,7 +53,7 @@ void import_legacy(const fs::path& stage,const std::string& source_name){
         if(e.is_directory()){
             if(name=="content")candidates.push_back(e.path());
             require(name!="code"&&name!="meta"&&name!="aoc", "Only content replacements are supported; code, meta and DLC folders cannot be imported");
-            if(name.size()==16&&name.starts_with("00050000"))require(name=="0005000010143500","This SDCafiine pack targets another game or region (requires WWHD USA)");
+            if(name.size()==16&&name.starts_with("00050000"))require(name==lower(g_guest_build_title_id),(std::string("This SDCafiine pack targets another game or region (requires title ")+g_guest_build_title_id+", "+g_guest_build_name+")").c_str());
         }else{
             auto ext=lower(e.path().extension().string());
             if(ext==".pack")loose_packs.push_back(e.path());
@@ -65,7 +67,7 @@ void import_legacy(const fs::path& stage,const std::string& source_name){
                 require(rules.find("[texture")==std::string::npos&&rules.find("[control")==std::string::npos&&rules.find("[preset")==std::string::npos,"Cemu texture/control/preset rules require an adapter; this import supports file-only packs");
                 std::istringstream lines(rules);std::string line;
                 while(std::getline(lines,line)){auto start=line.find_first_not_of(" \t\r");if(start!=std::string::npos&&line[start]=='['){auto end=line.find(']',start);require(end!=std::string::npos&&line.substr(start,end-start+1)=="[definition]","Only Definition metadata is supported in file-only Cemu packs");}}
-                auto title=rules.find("titleids");if(title!=std::string::npos){auto end=rules.find('\n',title);auto line=rules.substr(title,end-title);require(line.find("0005000010143500")!=std::string::npos,"Cemu pack does not target WWHD USA");}
+                auto title=rules.find("titleids");if(title!=std::string::npos){auto end=rules.find('\n',title);auto line=rules.substr(title,end-title);auto eq=line.find('=');require(eq!=std::string::npos&&cemu::targets_title(line.substr(eq+1),g_guest_build_title_id),(std::string("Cemu pack does not target this version of the game (")+g_guest_build_name+", title "+g_guest_build_title_id+")").c_str());}
             }
         }
     }

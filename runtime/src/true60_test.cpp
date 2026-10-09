@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,7 @@
 #include "true60.h"
 #include "savestate.h"
 #include "input.h"
+#include "input_map.h"
 
 namespace interp { uint64_t logic_steps(); bool hold_pass(); }
 
@@ -139,6 +141,33 @@ void timing_checks() {
 
 // called with the scenario time on every controller read (input.mm)
 void tick(double t, bool ended) {
+    // Opt-in live preset regression: WWHD_TEST_CONTROLS=t:path loads a private
+    // controls JSON once at scenario time t. Apply through the same live mapping
+    // setter as the Controls window, without writing the user's controls file.
+    struct ControlsReload { double at = 0; std::string path; bool done = false; };
+    static ControlsReload controls = [] {
+        ControlsReload result;
+        if (const char* value = getenv("WWHD_TEST_CONTROLS")) {
+            char* end = nullptr;
+            result.at = strtod(value, &end);
+            if (end != value && std::isfinite(result.at) && result.at >= 0 && *end == ':' && end[1])
+                result.path = end + 1; // retain colons in Windows drive paths
+            else
+                LOG("[test] invalid WWHD_TEST_CONTROLS (expected seconds:path)");
+        }
+        return result;
+    }();
+    if (!controls.done && !controls.path.empty() && t >= controls.at) {
+        controls.done = true;
+        input_map::Mapping mapping;
+        std::string error;
+        if (input_map::load_file(controls.path, mapping, &error)) {
+            input_map::set_current(mapping, false);
+            LOG("[test] controls reload PASS at %.3f generation %u", t, input_map::generation());
+        } else {
+            LOG("[test] controls reload FAIL at %.3f: %s", t, error.c_str());
+        }
+    }
     static bool timing_done = false;
     if (!timing_done && getenv("WWHD_TEST_TIMED_WAITS") && threads::current()) {
         timing_done = true;

@@ -13,7 +13,12 @@
 // Test switches:
 //   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, mods,
 //                                              controls, about) at TV frame <frame> (default 1)
+//   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
+//   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
+//                                              (headless tests only; open the Mods tab separately)
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
+//   WWHD_TEST_PERF_REPORT=<file>                export the clipboard report in a headless test
+//   WWHD_TEST_PERF_REPORT_AT=<frame>            export at this presented frame (default 300)
 #pragma once
 #include <cstdint>
 
@@ -52,6 +57,6 @@ void set_density(float pixels_per_point);  // TV window backing scale (HiDPI)
 ImDrawData* frame(float pw, float ph, void (*renderer_init)());
 // The same draw data for a target with sRGB encoding: vertex colours converted to linear once per
 // frame (the Metal backend draws colours as they are; the Vulkan renderer converts in its shader).
-void linearize_colors(ImDrawData* d);
+void linearize_colors(ImDrawData* d,bool fresh_copy=false);
 
 }  // namespace overlay

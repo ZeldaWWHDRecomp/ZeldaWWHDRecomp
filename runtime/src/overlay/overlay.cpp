@@ -3,6 +3,7 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "guest_hud.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -20,6 +21,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "imgui.h"
@@ -44,6 +46,9 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../mods/mods.h"
 #include "../mods/manager.h"
 #include "../mods/packages.h"
+#include "../mods/catalogue_client.h"
+#include "../platform/https.h"
+#include "guest_addr.h"
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
@@ -52,6 +57,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../render_prof.h"
+#include "../perf_metrics.h"
 #include "../build_info.h"
 #include "../report_header.h"
 
@@ -568,6 +574,52 @@ void tab_saves() {
     }
 }
 
+std::string performance_device() {
+    std::string device = render::device();
+#ifdef __APPLE__
+    if (!render::vulkan()) device += ", driver: " + reporthdr::os_description();
+#endif
+#ifdef __ANDROID__
+    const auto driver = gfxvk::drivers::active_name();
+    if (!driver.empty()) device += " (" + driver + ")";
+#endif
+    return device.empty() ? "GPU/driver: n/a" : device;
+}
+
+std::string performance_report() {
+    float sum = 0, worst = 0;
+    for (float f : U.frame_ms) { sum += f; worst = std::max(worst, f); }
+    char frame[180];
+    snprintf(frame, sizeof frame, "FPS %.1f (average %.1f), frame %.2f ms (worst %.2f), average logic steps/s %.1f\n",
+             U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
+    std::string report = std::string(frame) + perf::summary();
+#ifdef __ANDROID__
+    report += android_telemetry() + "\n";
+#endif
+    report += "CPU time is thread running time per output frame. GPU submission intervals may include stalls; not GPU load.\n";
+    const std::string detailed = rprof::latest_report();
+    report += detailed.empty() ? "No detailed report yet: play for a few seconds, then copy again.\n" : detailed;
+    // which build, system, GPU and rendering-path switches (report_header.h)
+    reporthdr::Info h;
+    h.version = build::version();
+    h.commit = build::commit();
+    h.os = reporthdr::os_description();
+    h.gpu = performance_device();
+    h.renderer = render::vulkan() ? "Vulkan" : "Metal";
+    h.host = hostui::name();
+    h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? "60 fps interpolation" : "30 fps";
+    h.scale = hostui::res_scale();
+#ifdef WWHD_HAS_VULKAN
+    if (render::vulkan()) {
+        h.bufferCache = gfxvk::buffer_cache_enabled();
+        h.overrides = reporthdr::vulkan_overrides([](const char* n) -> const char* { return getenv(n); });
+    }
+#endif
+    if (const int g = motion::settings().source; g != motion::kOff) h.gyro = motion::source_id(g);
+    report = reporthdr::format(h) + report;
+    return report;
+}
+
 void tab_graphics() {
 #ifdef __ANDROID__
     heading("GPU driver (Snapdragon / Adreno)");
@@ -632,11 +684,16 @@ void tab_graphics() {
     }
     if (m == 1) {
         bool paced;
-        if (check("Keep game speed", interp::paced_interpolation(), &paced, !getenv("WWHD_INTERP_PACED")))
+        if (check("Keep game speed (recommended)", interp::paced_interpolation(), &paced, !getenv("WWHD_INTERP_PACED")))
             post_changed([paced] { interp::set_paced_interpolation(paced); });
         help("When the computer cannot draw all frames, skip in-between frames instead of slowing the\n"
              "whole game down. The performance overlay shows how many are drawn.\n"
+             "Off: every logic step waits for all of its frames, so if the frame target is not reached\n"
+             "(e.g. 120/240 fps at a high internal resolution) the whole game runs in slow motion.\n"
              "Saved separately for 60 fps (off by default) and 120/240 fps (on by default).");
+        if (!interp::paced_interpolation())
+            note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
+                 "overlay then shows fewer than 30 logic steps/s). Turn it on to keep the game's speed.", interp::fps());
     }
     // debug only, not saved (gx2::uncapped)
     bool unc;
@@ -722,30 +779,11 @@ void tab_graphics() {
 #endif
     heading("Overlay");
     if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
-    if (ImGui::Button("Reset performance averages")) g_average.reset();
+    if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); }
     // the render-thread profiler's latest report (render_prof.h), for performance bug reports
     static double copiedAt = -10;
     if (ImGui::Button("Copy performance report")) {
-        std::string report = rprof::latest_report();
-        // which build, system, GPU and rendering-path switches (report_header.h)
-        reporthdr::Info h;
-        h.version = build::version();
-        h.commit = build::commit();
-        h.os = reporthdr::os_description();
-        h.gpu = render::device();
-        h.renderer = render::vulkan() ? "Vulkan" : "Metal";
-        h.host = hostui::name();
-        h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? "60 fps interpolation" : "30 fps";
-        h.scale = hostui::res_scale();
-#ifdef WWHD_HAS_VULKAN
-        if (render::vulkan()) {
-            h.bufferCache = gfxvk::buffer_cache_enabled();
-            h.overrides = reporthdr::vulkan_overrides([](const char* n) -> const char* { return getenv(n); });
-        }
-#endif
-        if (const int g = motion::settings().source; g != motion::kOff) h.gyro = motion::source_id(g);
-        report = reporthdr::format(h) +
-                 (report.empty() ? std::string("No report yet: play for a few seconds, then copy again.\n") : report);
+        std::string report = performance_report();
         hostui::post([report] { hostui::set_clipboard(report); });
         copiedAt = ImGui::GetTime();
     }
@@ -754,6 +792,16 @@ void tab_graphics() {
         ImGui::TextDisabled("Copied");
     }
     help("Where the renderer spends its time over the last few seconds, as text for a bug report");
+    heading("Bug reports");
+    // read once at start-up (main.cpp start_log_file); WWHD_LOG_FILE decides when set
+    static bool logFile = [] { std::string v; return hostui::get("logFile", v) && v == "1"; }();
+    if (check("Write a log file", logFile, &v, !getenv("WWHD_LOG_FILE"))) {
+        logFile = v;
+        hostui::post([v] { hostui::set("logFile", v ? "1" : "0"); });
+    }
+    help("From the next start: captures/wwhd.log in the game's data folder (the previous run's is kept as "
+         "wwhd-previous.log), with your user paths removed. Turn it on before reproducing a bug and attach "
+         "the file to the bug report.");
 }
 
 void tab_display() {
@@ -826,6 +874,7 @@ struct NativeConfirm {
     std::string id, name;                                // the package the player is enabling
     std::vector<std::pair<std::string, std::string>> native;  // what needs confirming (it, dependencies)
     bool open_now = false;
+    std::function<void()> after_confirm;
 };
 void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     using namespace mods::packages;
@@ -846,7 +895,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         note("You won't be asked again for this version of the mod.");
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        accept = ImGui::Button("Enable", ImVec2(120, 0));
+        accept = ImGui::Button(c.after_confirm?"Continue":"Enable", ImVec2(120, 0));
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
@@ -856,7 +905,8 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         bool ok = true;
         for (const auto& [id, name] : c.native) ok = ok && confirm_native(id, error);
         if (ok) {
-            if(needs_code_mod_support(c.id)) {
+            if(c.after_confirm)c.after_confirm();
+            else if(needs_code_mod_support(c.id)) {
                 mods::code::request(true,c.id);
             } else enable(c.id, true, error);
         }
@@ -868,6 +918,216 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     ImGui::EndPopup();
 }
 
+struct SetupWorker {
+    std::mutex mutex;
+    std::thread thread;
+    bool running=false;
+    std::string id,error,output;
+    ~SetupWorker(){if(thread.joinable())thread.join();}
+};
+SetupWorker& setup_work(){static SetupWorker worker;return worker;}
+void start_setup(const std::string& id,const mods::catalogue::Step& step) {
+    auto& setup_worker=setup_work();
+    std::lock_guard guard(setup_worker.mutex);if(setup_worker.running)return;
+    if(setup_worker.thread.joinable())setup_worker.thread.join();
+    setup_worker.running=true;setup_worker.id=id;setup_worker.error.clear();setup_worker.output.clear();
+    setup_worker.thread=std::thread([id,step] {
+        auto& setup_worker=setup_work();
+        std::string error,output;
+        if(step.type=="build_guest_mod")mods::packages::prepare_guest(id,error);
+        else mods::packages::run_setup_tool(id,step.id,error,output);
+        std::lock_guard guard(setup_worker.mutex);setup_worker.error=std::move(error);
+        setup_worker.output=std::move(output);setup_worker.running=false;
+    });
+}
+void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
+    using namespace mods::packages;
+    auto steps=setup_steps(mod.id);if(steps.empty())return;
+    auto& setup_worker=setup_work();
+    heading("Setup");
+    bool busy;std::string failure,output;
+    {std::lock_guard guard(setup_worker.mutex);busy=setup_worker.running;
+     if(setup_worker.id==mod.id){failure=setup_worker.error;output=setup_worker.output;}}
+    for(const auto& status:steps) {
+        const auto& step=status.step;ImGui::PushID(step.id.c_str());
+        ImGui::TextWrapped("%s%s%s",status.satisfied?"Ready: ":"",step.title.c_str(),step.optional?" (optional)":"");
+        if(!step.explanation.empty())ImGui::TextWrapped("%s",step.explanation.c_str());
+        ImGui::BeginDisabled(busy);
+        if(step.type=="game_path") {
+            auto choose=[game=step.game,id=mod.id](bool folder) {
+                hostui::choose_mod_source(folder,[game,id](std::string path) {
+                    if(path.empty())return;std::string error;set_game_source(game,path,error);
+                    auto& setup_worker=setup_work();
+                    std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
+                });
+            };
+            if(step.game.starts_with("gc_")&&ImGui::Button("Choose disc image…"))choose(false);
+            if(step.game.starts_with("gc_"))ImGui::SameLine();
+            if(ImGui::Button("Choose extracted game folder…"))choose(true);
+        }else if(step.type=="choice"||step.type=="confirm") {
+            auto option=std::find_if(mod.options.begin(),mod.options.end(),[&](const auto& o){return o.id==step.option;});
+            if(step.type=="confirm") {
+                if(ImGui::Button("Confirm"))configure(mod.id,step.option,true,error);
+            }else if(option!=mod.options.end()&&ImGui::BeginCombo("Choice",option->value.string().c_str())) {
+                for(const auto& value:step.choices)if(ImGui::Selectable(value.c_str()))configure(mod.id,step.option,value,error);
+                ImGui::EndCombo();
+            }
+        }else {
+            ImGui::BeginDisabled(mod.active||(step.type=="run_tool"&&mod.enabled));
+            if(ImGui::Button(step.type=="build_guest_mod"?"Build guest module":"Run preparation tool")) {
+                auto proceed=[id=mod.id,step] {
+                    if(step.type=="build_guest_mod"&&needs_code_mod_support(id))mods::code::request(true,id);
+                    else start_setup(id,step);
+                };
+                auto native=unconfirmed_native(mod.id);
+                if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndDisabled();ImGui::PopID();
+    }
+    if(busy)note("Preparing mod files…");
+    if(!failure.empty()){ImGui::TextWrapped("%s",failure.c_str());if(!output.empty())ImGui::TextWrapped("%s",output.c_str());}
+}
+
+struct CatalogueWorker {
+    std::mutex mutex;
+    std::thread thread;
+    bool running=false,loaded=false;
+    mods::catalogue::Loaded catalogue;
+    std::string error,message,installed;
+    ~CatalogueWorker(){if(thread.joinable())thread.join();}
+};
+CatalogueWorker& catalogue_work(){static CatalogueWorker worker;return worker;}
+mods::catalogue::Version catalogue_port_version() {
+    std::string version=build::version();
+    if(version.starts_with("v"))version.erase(0,1);
+    version=version.substr(0,version.find('+'));
+    return mods::catalogue::Version::parse(version);
+}
+void catalogue_action(std::function<void(CatalogueWorker&)> action) {
+    auto& worker=catalogue_work();std::lock_guard guard(worker.mutex);
+    if(worker.running)return;
+    if(worker.thread.joinable())worker.thread.join();
+    worker.running=true;worker.error.clear();worker.message.clear();
+    worker.thread=std::thread([action=std::move(action)] {
+        auto& worker=catalogue_work();
+        try{action(worker);}catch(const std::exception& error){std::lock_guard guard(worker.mutex);worker.error=error.what();}
+        std::lock_guard guard(worker.mutex);worker.running=false;
+    });
+}
+void catalogue_controls(std::string& focus) {
+    using namespace mods::catalogue;
+    auto& worker=catalogue_work();
+    static char source[2049]={},search[256]={};
+    static bool initialized=false;
+    if(!initialized) {
+        std::string saved="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
+        hostui::get("mod.catalogue.url",saved);
+        if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
+        snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
+    }
+    static const char* test_install=g_no_host?getenv("WWHD_TEST_CATALOGUE_INSTALL"):nullptr;
+    static bool test_refreshed=false;
+    bool busy,loaded,fresh_install=false;Loaded catalogue;std::string error,message;
+    {
+        std::lock_guard guard(worker.mutex);busy=worker.running;loaded=worker.loaded;
+        catalogue=worker.catalogue;error=worker.error;message=worker.message;
+        if(!worker.installed.empty()){
+            focus=std::move(worker.installed);worker.installed.clear();fresh_install=true;
+        }
+    }
+    // Match local-folder installs: offer support immediately, while keeping the
+    // newly installed package disabled until its own trust/setup flow completes.
+    if(fresh_install&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
+    heading("Browse catalogue");
+    note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
+    ImGui::BeginDisabled(busy);
+    ImGui::InputText("Catalogue URL",source,sizeof source);
+    bool refresh_now=ImGui::Button("Refresh catalogue");
+    if(test_install&&!test_refreshed&&!busy){refresh_now=true;test_refreshed=true;}
+    if(refresh_now) {
+        std::string selected=source;
+        if(!getenv("WWHD_MOD_CATALOGUE"))hostui::post([selected]{hostui::set("mod.catalogue.url",selected);});
+        catalogue_action([selected](CatalogueWorker& worker) {
+            auto root=std::filesystem::path(mods::packages::directory())/"Catalogue";
+            require(!root.parent_path().empty(),"Mod manager storage is unavailable");
+            std::filesystem::create_directories(root);
+            auto result=refresh_cached(selected,host::download_https,root);
+            std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;worker.message="Catalogue refreshed";
+            LOG("[catalogue] refreshed %zu entries",worker.catalogue.index.entries.size());
+        });
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Load offline catalogue")) {
+        std::string selected=source;
+        catalogue_action([selected](CatalogueWorker& worker) {
+            auto result=cached(selected,std::filesystem::path(mods::packages::directory())/"Catalogue");
+            std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;
+            worker.message="Showing cached catalogue; versions may be out of date";
+        });
+    }
+    ImGui::EndDisabled();
+    if(busy)note("Catalogue operation in progress…");
+    if(!error.empty())ImGui::TextWrapped("%s",error.c_str());
+    if(!message.empty())note("%s",message.c_str());
+    if(!loaded){note("Catalogue has not been loaded. Installed packages remain available offline.");return;}
+    if(!error.empty())note("Showing the last successfully loaded catalogue.");
+    ImGui::InputText("Search mods",search,sizeof search);
+    std::string query=search;
+    auto lower=[](std::string text){for(char& c:text)if(c>='A'&&c<='Z')c+=32;return text;};
+    query=lower(query);
+    auto installed=mods::packages::list();
+    for(const auto& entry:catalogue.index.entries) {
+        if(!query.empty()&&lower(entry.name+" "+entry.id+" "+entry.description).find(query)==std::string::npos)continue;
+        ImGui::PushID(entry.id.c_str());
+        if(test_install&&entry.id==test_install)ImGui::SetNextItemOpen(true);
+        if(ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str())) {
+            ImGui::TextWrapped("%s",entry.description.c_str());
+            for(const auto& author:entry.authors)note("By %s",author.c_str());
+            for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
+            for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
+            for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
+            note("Package: %s",entry.kind.c_str());
+            if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))
+                note("Contains executable code. Setup or enabling requires confirmation.");
+            const bool android_guest=entry.kind=="guest"&&mods::packages::platform_key().starts_with("android");
+            bool compatible=false;
+            try{compatible=entry.compatible(catalogue_port_version(),g_guest_build_name,mods::packages::platform_key());}catch(...){}
+            if(android_guest)note("Guest mods are not supported on Android yet.");
+            else if(!compatible)note("Unavailable for this port version, game build or platform.");
+            auto found=std::find_if(installed.begin(),installed.end(),[&](const auto& mod){return mod.id==entry.id;});
+            bool present=found!=installed.end(),update=false;
+            if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
+            if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
+            if(!android_guest) {
+                ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
+                bool install_now=ImGui::Button(present?"Update":"Install");
+                if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
+                if(install_now) {
+                    auto fixtures=catalogue.fixture_root;
+                    catalogue_action([entry,fixtures](CatalogueWorker& worker) {
+                        StagedPackage package(entry,catalogue_port_version(),g_guest_build_name,mods::packages::platform_key(),
+                            std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
+                        std::string error,id;
+                        require(mods::packages::install(package.path().string(),error,&id),error);
+                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                    });
+                }
+                ImGui::EndDisabled();
+            }
+            if(present) {
+                if(!android_guest)ImGui::SameLine();
+                ImGui::BeginDisabled(busy||found->enabled||found->active);
+                if(ImGui::Button("Remove")){std::string failure;if(!mods::packages::remove(entry.id,failure)){std::lock_guard guard(worker.mutex);worker.error=failure;}}
+                ImGui::EndDisabled();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+}
+
 void package_controls() {
     using namespace mods::packages;
     static std::string error;
@@ -875,6 +1135,8 @@ void package_controls() {
     // debug: WWHD_TEST_MOD_ENABLE=<package id> ticks that package's checkbox once in test runs (the
     // confirmation then shows for unconfirmed native code)
     static const char* test_enable = g_no_host ? getenv("WWHD_TEST_MOD_ENABLE") : nullptr;
+    static const char* test_disable = g_no_host ? getenv("WWHD_TEST_MOD_DISABLE") : nullptr;
+    static const char* test_remove = g_no_host ? getenv("WWHD_TEST_MOD_REMOVE") : nullptr;
     static char source[1024] = {}, new_profile[65] = {};
     static std::mutex picker_mutex;
     static std::string picked;
@@ -882,6 +1144,8 @@ void package_controls() {
         std::lock_guard guard(picker_mutex);
         if (!picked.empty()) { snprintf(source, sizeof source, "%s", picked.c_str()); picked.clear(); }
     }
+    static std::string catalogue_focus;
+    catalogue_controls(catalogue_focus);
     heading("Profiles");
     auto current = current_profile();
     if (ImGui::BeginCombo("Active profile", current.c_str())) {
@@ -935,6 +1199,7 @@ void package_controls() {
         bool on = mod.enabled;
         bool toggled = ImGui::Checkbox("##package_enabled", &on);
         if (test_enable && mod.id == test_enable) { toggled = on = true; test_enable = nullptr; }
+        if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
         if (toggled) {
             auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
             if (native.empty()) {
@@ -945,18 +1210,21 @@ void package_controls() {
             else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
-        if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
+        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
+        else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
         if (expanded) {
             note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "guest" ? "Guest mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
                  mod.pending_restart ? "Restart required" : mod.active ? "Active" : mod.enabled ? "Waiting for game update" : "Disabled");
-            if ((mod.kind == "native" || mod.kind == "guest") && mod.compatible)
+            if ((mod.kind == "native" || mod.kind == "guest" || !mod.setup_tools.empty()) && mod.compatible)
                 note(mod.native_confirmed ? "Runs native code with the game's permissions (you confirmed this version)."
                                           : "Runs native code with the game's permissions. Enabling it asks you to confirm first.");
             if (!mod.author.empty()) note("By %s", mod.author.c_str());
             ImGui::TextWrapped("%s", mod.description.c_str());
             if (!mod.reason.empty()) ImGui::TextWrapped("%s", mod.reason.c_str());
             if (!mod.status.empty()) ImGui::TextWrapped("%s", mod.status.c_str());
+            for(const auto& [path,hash]:mod.content_hashes)note("Content SHA-256 %s: %s",path.c_str(),hash.c_str());
             for (const auto& dependency : mod.dependencies) note("Requires %s", dependency.c_str());
             for (const auto& conflict : mod.conflicts) note("Conflicts with %s", conflict.c_str());
             for (const auto& option : mod.options) {
@@ -984,9 +1252,12 @@ void package_controls() {
                 if (!option.description.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", option.description.c_str());
                 ImGui::PopID();
             }
+            setup_controls(mod,confirm,error);
             if(mod.restart_required) note("Changes apply on the next game start. Active files stay loaded until exit.");
             ImGui::BeginDisabled(mod.enabled || mod.active);
-            if (ImGui::Button("Remove package")) remove(mod.id, error);
+            bool remove_now=ImGui::Button("Remove package");
+            if(test_remove&&mod.id==test_remove&&!mod.enabled&&!mod.active){remove_now=true;test_remove=nullptr;}
+            if(remove_now&&remove(mod.id,error))LOG("[mods] removed %s",mod.id.c_str());
             ImGui::EndDisabled();
             ImGui::TreePop();
         }
@@ -1630,14 +1901,20 @@ void perf_window(bool menu_open) {
     if (ImGui::Begin("##perf", nullptr, fl)) {
         ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
+        {
+            // slow motion: frame interpolation without Keep game speed below its frame target
+            static double t0 = 0; static uint64_t s0 = 0; static double rate = 30;
+            if (t0 == 0 || t - t0 < 0) { t0 = t; s0 = interp::executed_steps(); }
+            else if (t - t0 >= 2.0) { rate = (double)(interp::executed_steps() - s0) / (t - t0); t0 = t; s0 = interp::executed_steps(); }
+            if (interp::mode() == 1 && !interp::paced_interpolation() && rate > 1 && rate < 26)
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Slow motion: %.0f of 30 logic steps/s. Turn on Keep game speed", rate);
+        }
 #ifdef __ANDROID__
-        static AndroidTelemetry telemetry;
-        static double next_read = 0;
-        if (t >= next_read) { telemetry.read(); next_read = t + 2; }
-        if (telemetry.busy >= 0) ImGui::Text("GPU busy %.0f%%", telemetry.busy);
-        for (const auto& [name, value] : telemetry.temperatures)
-            ImGui::Text("%s %.1f C", name.c_str(), value);
+        ImGui::TextUnformatted(android_telemetry().c_str());
 #endif
+        ImGui::Separator();
+        ImGui::TextUnformatted(performance_device().c_str());
+        ImGui::TextUnformatted(perf::summary().c_str());
         ImGui::PlotLines("##ft", U.frame_ms, 120, U.frame_i, nullptr, 0.0f, 50.0f, ImVec2(220, 36));
         ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(), interp::mode_name());
         if (float share = interp::paced_drawn_share(); share >= 0)
@@ -1827,11 +2104,24 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    perf::set_demand(perf, open && U.tab == kGraphics);
+    // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
+    static const char* testReport = getenv("WWHD_TEST_PERF_REPORT");
+    static const uint64_t reportAt = getenv("WWHD_TEST_PERF_REPORT_AT")
+        ? strtoull(getenv("WWHD_TEST_PERF_REPORT_AT"), nullptr, 10) : 300;
+    static bool reportWritten = false;
+    if (testReport && !reportWritten && gx2::flips_presented() >= reportAt) {
+        if (FILE* f = fopen(testReport, "w")) {
+            const std::string report = performance_report();
+            fwrite(report.data(), 1, report.size(), f); fclose(f);
+            reportWritten = true;
+        }
+    }
     // save state notices (saved, refused during a cutscene, loaded into another Quest Log) show over the
     // game for a few seconds while the menu is closed (the window title is not visible everywhere)
     const std::string toast = open ? std::string() : ss::last_message();
     U.linearized = false;
-    if (!open && !perf && !text && toast.empty()) {
+    if (!open && !perf && !text && toast.empty() && !guesthud::active()) {
         if (U.init) {  // forget events and pressed keys while nothing is shown
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
@@ -1873,6 +2163,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     apply_capture();
     feed_gamepad(io, open && U.cap_action < 0);  // the text prompt reads the controller itself
     ImGui::NewFrame();
+    guesthud::frame();
     if (open) settings_window();
     if (text) {
         float pad[input_map::kPadCount];
@@ -1902,9 +2193,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     return ImGui::GetDrawData();
 }
 
-void linearize_colors(ImDrawData* d) {
-    if (!d || U.linearized) return;
-    U.linearized = true;
+void linearize_colors(ImDrawData* d,bool fresh_copy) {
+    if (!d || (!fresh_copy && U.linearized)) return;
+    if (!fresh_copy) U.linearized = true;
     static uint8_t table[256];
     static bool made = false;
     if (!made) {

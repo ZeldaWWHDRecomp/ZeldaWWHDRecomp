@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "write_watch.h"
 #include "shaders.h"
 #include "gx2/gx2.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <filesystem>
@@ -548,6 +550,18 @@ void dynamic_uniform_check(Surface& s) {
 }
 int renderer_smoke_test() {
  try {
+  // Test-only calibration: CI requires the layer to report this intentional WAW.
+  if(std::getenv("WWHD_VK_SYNC_NEGATIVE_CONTROL")) {
+   Buffer b=create_buffer(16,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+   auto cmd=command_buffer();
+   auto fill=reinterpret_cast<PFN_vkCmdFillBuffer>(vkGetDeviceProcAddr(R.device,"vkCmdFillBuffer"));
+   require(fill!=nullptr,"sync negative control needs vkCmdFillBuffer");
+   fill(cmd,b.buffer,0,16,0);
+   fill(cmd,b.buffer,0,16,1);
+   flush();defer_buffer(b);
+   LOG("[renderer smoke] sync negative control submitted two unordered writes");
+   command_buffer();flush();return 0;
+  }
   mem::init();bc_decode_smoke();bc_surface_check();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
@@ -682,7 +696,6 @@ int renderer_smoke_test() {
     R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
     fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
    }
-   volume_target_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);
    auto capturePath=std::filesystem::temp_directory_path()/("wwhd-vulkan-smoke-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".png");
@@ -702,12 +715,44 @@ int renderer_smoke_test() {
    std::vector<uint8_t> decoded((64*4+1)*64);uLongf decodedSize=decoded.size();require(header&&uncompress(decoded.data(),&decodedSize,compressed.data(),compressed.size())==Z_OK&&decodedSize==decoded.size(),"PNG capture decompression differs");
    size_t pngCenter=32*(64*4+1)+1+32*4;require(decoded[pngCenter]==255&&decoded[pngCenter+1]==0&&decoded[pngCenter+2]==0,"PNG capture triangle center differs");
    fprintf(stderr,"[renderer smoke] queued GPU PNG capture passed: %s\n",capturePath.string().c_str());
-   require(R.tv.swapchain!=VK_NULL_HANDLE,"smoke presentation did not create a swapchain");fprintf(stderr,"[renderer smoke] scan-buffer swapchain presentation passed\n");
+   require(R.tv.swapchain!=VK_NULL_HANDLE,"smoke presentation did not create a swapchain");LOG("[renderer smoke] scan-buffer swapchain presentation and PNG readback passed");
+   volume_target_check();
   }
   // Ensure deferred objects left by readback and stack-owned images are actually reclaimed.
   command_buffer();flush();require(R.garbageBuffers.empty()&&R.garbageImages.empty()&&R.garbageCacheRegions.empty(),"deferred Vulkan resources were not reclaimed");
+  // Exercise the actual timestamp command sites, not just the demand predicate.
+  if (!getenv("WWHD_VK_GPU_TIMESTAMPS") && !getenv("WWHD_VK_GPU_PASS_TIMESTAMPS")) {
+    perf::set_demand(false, false);
+    auto before = perf::counters();
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "hidden overlay wrote timestamps");
+    // Queue families with zero timestamp bits must silently keep the GPU reading unavailable.
+    auto validBits = R.gpuTimestampValidBits;
+    R.gpuTimestampValidBits = 0;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "unsupported queue wrote timestamps");
+    perf::set_demand(false, false);
+    R.gpuTimestampValidBits = validBits;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    auto measured = perf::counters();
+    if (R.gpuTimestampValidBits && R.properties.limits.timestampPeriod > 0)
+      require(measured.timestamp_writes == before.timestamp_writes + 2, "visible overlay did not write timestamp pair");
+    require(measured.query_reads == before.query_reads, "overlay read timestamps in the recorded frame");
+    ++R.frame; command_buffer(); flush();
+    measured = perf::counters();
+    if (measured.query_reads > before.query_reads)
+      require(measured.minimum_query_age >= 1, "overlay read timestamps without a frame of delay");
+    perf::set_demand(false, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == measured.timestamp_writes, "hiding overlay kept writing timestamps");
+    require(perf::counters().query_reads == measured.query_reads, "hidden overlay polled query results");
+    LOG("[renderer smoke] overlay timestamp writes: hidden 0, on %llu, hidden again 0",
+        (unsigned long long)(measured.timestamp_writes - before.timestamp_writes));
+  }
   save_pipeline_cache();
-  fprintf(stderr,"[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present\n");return 0;
- }catch(const std::exception& e){fprintf(stderr,"[renderer smoke] FAIL: %s\n",e.what());try {command_buffer();flush();}catch(...){}return 1;}
+  LOG("[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present");return 0;
+ }catch(const std::exception& e){LOG("[renderer smoke] FAIL: %s",e.what());try {command_buffer();flush();}catch(...){}return 1;}
 }
 } // namespace gfxvk

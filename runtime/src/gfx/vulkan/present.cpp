@@ -4,6 +4,7 @@
 #include "shaders.h"
 #include "settings.h"
 #include "mods/climb.h"
+#include "overlay/guest_hud.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -262,15 +263,27 @@ bool sampleable(const Surface& source) {
 }
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
-             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr) {
+             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr) {
  end_encoder();
+ ImDrawData* gamepadOverlay=nullptr;
+ // The GamePad scan may also be shown inside the TV composition (PIP or Off-TV).
+ if(R.tv.scan&&R.drc.scan&&!quads.empty()&&quads.front().image==R.tv.scan.get())for(const auto& q:quads)
+  if(q.image==R.drc.scan.get()) {
+   gamepadOverlay=overlay::guesthud::gamepad_region(float(extent.width),float(extent.height),q.box.x,q.box.y,q.box.w,q.box.h,q.alpha);
+   break;
+  }
+ if(gamepadOverlay)overlay_prepare(gamepadOverlay);
  if(overlay)overlay_prepare(overlay);
  for(auto& q:quads)
   if(q.image)transition_image(q.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+ ResourceUse initial;
+ if(!use) use=&initial; // acquired swap image: acquire semaphore owns prior presentation
+ auto dependency=derive_dependency(*use,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,layout!=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
  auto cmd=command_buffer();VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};barrier.oldLayout=layout;barrier.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
  barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.image=image;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
- barrier.srcAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
- vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+ barrier.srcAccessMask=narrow_barriers()?dependency.sourceAccess:VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+ vkCmdPipelineBarrier(cmd,narrow_barriers()?dependency.source:VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&barrier);
  VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};attachment.imageView=view;attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
  attachment.clearValue.color.float32[3]=1;
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
@@ -302,6 +315,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   auto params=present_params(fxaa&&linear,filter,scale,sourceLinear,targetLinear);params.alpha=q.alpha;
   vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);vkCmdDraw(cmd,3,1,0,0);
  }
+ if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear);
  if(overlay)overlay_draw(overlay,cmd,format,extent,targetLinear);  // settings overlay on top
  vkCmdEndRendering(cmd);
  barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=finalLayout;barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
@@ -388,7 +402,7 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  if(fxaa_enabled()&&!linear)throw std::runtime_error("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
-         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr);
+         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex));
  return true;
 }
 
@@ -401,7 +415,7 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
  try {
   int filter=0;auto quads=screen_quads(screen,VkExtent2D{width,height},filter);
   compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,quads,
-          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr);
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(width,height),&target.use);
   rgba=read_surface_rgba(target,false);  // display-encoded already (sRGB target, or encoded values)
  }catch(...){destroy_surface_image(&target);throw;}
  destroy_surface_image(&target);
@@ -423,15 +437,14 @@ bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& h
  try {
   ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.srgb.load();q.box={0,0,float(width),float(height)};
   compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,{q},
-          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr);
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr,&target.use);
   buffer=create_readback_buffer(VkDeviceSize(width)*height*4);
   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
   auto cmd=command_buffer();
   VkBufferImageCopy region{};region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.imageExtent={width,height,1};
   vkCmdCopyImageToBuffer(cmd,target.image,target.layout,buffer.buffer,1,&region);
-  VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-  host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=buffer.buffer;host.size=VK_WHOLE_SIZE;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+  derive_dependency(buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  transition_buffer(buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
  }catch(...){destroy_surface_image(&target);if(buffer.buffer){defer_buffer(buffer);buffer={};}throw;}
  destroy_surface_image(&target);  // deferred: freed when this submission retired
  return true;
@@ -521,9 +534,8 @@ bool record_signature(int slot,Surface& source,bool sourceLinear) {
  level_barrier(cmd,g.signatureImage,0,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,W,Rd);
  VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={gfx::kSignatureW,gfx::kSignatureH,1};
  vkCmdCopyImageToBuffer(cmd,g.signatureImage,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,g.buffer.buffer,1,&copy);
- VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=W;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
- host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=g.buffer.buffer;host.size=VK_WHOLE_SIZE;
- vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+ derive_dependency(g.buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+ transition_buffer(g.buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
  // the blits decode sRGB images to linear values: encode them like the Metal path does
  g.linear=sourceLinear||srgb_format(source.fmt.pixel);g.pending=true;
  return true;
@@ -575,13 +587,13 @@ void record_present_capture(Screen& screen,uint32_t imageIndex) {
   image.oldLayout=screen.layouts.at(imageIndex);image.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   image.srcQueueFamilyIndex=image.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
   image.image=screen.images.at(imageIndex);image.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-  image.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;image.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&image);
+  auto dependency=derive_dependency(screen.imageUses.at(imageIndex),VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT,true);
+  image.srcAccessMask=narrow_barriers()?dependency.sourceAccess:VK_ACCESS_MEMORY_WRITE_BIT;image.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+  vkCmdPipelineBarrier(cmd,narrow_barriers()?dependency.source:VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&image);
   VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={uint32_t(width),uint32_t(height),1};
   vkCmdCopyImageToBuffer(cmd,image.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture.buffer.buffer,1,&copy);
-  VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-  host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=capture.buffer.buffer;host.size=VK_WHOLE_SIZE;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+  derive_dependency(capture.buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  transition_buffer(capture.buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
   image.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;image.newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   image.srcAccessMask=VK_ACCESS_TRANSFER_READ_BIT;image.dstAccessMask=0;
   vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,nullptr,0,nullptr,1,&image);

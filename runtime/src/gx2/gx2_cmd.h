@@ -40,6 +40,7 @@ enum Op : uint32_t {
     OP_SET_PROJ_REGS,   // first register, 16 values: a layout projection matrix (narrowed when drawing to the TV)
     OP_LAYOUT_ROOT,     // nw::lyt root pane: drawn into the target bound now (which screen it goes to)
     OP_PEEK_Z,          // signed x/y in 640x480 space, guest result address (triples)
+    OP_LAYOUT_CONTENT,  // DrawSelf scope: clip TV menu content to the native layout region
     OP_COUNT
 };
 

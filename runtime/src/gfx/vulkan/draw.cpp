@@ -1,3 +1,5 @@
+#include "aspect.h"
+#include "aspect_panes.h"
 #include "../renderer.h"
 // Vulkan draw submission. Guest state conventions follow Cemu (MPL-2.0).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
@@ -1714,8 +1716,11 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                 : sampled_texture_view(s, r + texbase + unit * 7);
     if (!aliases)
       transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       narrow_barriers()
+                           ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+                                         : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                           : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
                        VK_ACCESS_SHADER_READ_BIT);
     uint32_t samplerId = sh->dec->textureUnitSamplerAssignment[unit];
     if (samplerId >= 18)
@@ -2211,6 +2216,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
            y = clamp((tl >> 16) & 0x7fff, sy, height),
            ex = clamp(br & 0x7fff, sx, width),
            ey = clamp((br >> 16) & 0x7fff, sy, height);
+  float ax, ay;
+  if (aspect::content_clip() && target_aspect_factors(r[mmCB_COLOR0_TILE] & 0xFFFF, r[mmCB_COLOR0_FRAG], ax, ay))
+    aspect::panes::clip(width, height, ax, ay, x, y, ex, ey);
   if (ex <= x || ey <= y) {
     end_encoder();
     return;

@@ -6,10 +6,10 @@ LLD ?= ld.lld
 SDK ?= ../../runtime/guest/include
 CFLAGS = --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib \
          -fno-jump-tables -ffunction-sections -fdata-sections -I$(SDK)
-MODS = heart-ticker addcalc-replace
+MODS = heart-ticker addcalc-replace hud-demo button-icons hud-cost
 
 all: $(MODS:%=%/mod.elf)
-%/mod.o: %/mod.c $(SDK)/wwhd_guest.h $(wildcard $(SDK)/game/*.h)
+%/mod.o: %/mod.c $(SDK)/wwhd_guest.h $(wildcard $(SDK)/wwhd/*.h)
 	$(CLANG) $(CFLAGS) -c $< -o $@
 %/mod.elf: %/mod.o
 	$(LLD) -m elf32ppc -r $< -o $@

@@ -145,6 +145,9 @@ extern bool g_trace_hle;
 void log_msg(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 [[noreturn]] void fatal(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 #define LOG(...) log_msg(__VA_ARGS__)
+// every later log line also goes to `sink` (one line without '\n'); nullptr stops (main.cpp: log file)
+void log_set_sink(void (*sink)(const char*, size_t));
+void log_ring_write(int fd, void (*out)(int, const char*, size_t));  // the recent lines, oldest first
 // writes the last ~200 log lines through out(fd, text, len) (used by crash logs; no locking)
 void log_ring_write(int fd, void (*out)(int, const char*, size_t));
 #define TRACE(...) do { if (g_trace_hle) log_msg(__VA_ARGS__); } while (0)

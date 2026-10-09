@@ -104,3 +104,45 @@ unsigned long long wwhd_logic_step(void);
 void* memcpy(void* dst, const void* src, unsigned long n);
 void* memmove(void* dst, const void* src, unsigned long n);
 void* memset(void* dst, int v, unsigned long n);
+
+/* Read-only port settings v1. Stable types; unknown keys and wrong types return 0.
+ * Successful reads return bytes including the string terminator; short buffers
+ * are unchanged. A null buffer with capacity 0 queries the required byte count.
+ * Buffers and key strings must belong to this mod's code/data/heap region. */
+#define WWHD_SETTING_API_VERSION 1
+enum { WWHD_SETTING_STRING=1, WWHD_SETTING_BOOL=2, WWHD_SETTING_U32=3, WWHD_SETTING_F64=4 };
+u32 wwhd_setting_get(const char* key,u32 type,void* buffer,u32 capacity);
+/* Per-key observed revision, initially 1; 0 means absent. Compare for inequality. */
+unsigned long long wwhd_setting_changed(const char* key);
+
+/* HUD v1. Register from a game hook; callback receives a recording-list handle once
+ * per logic step. Its immutable output is held for every presentation until the next
+ * step. TV=0 (1280x720), DRC=1 (854x480), both=2 (TV coordinates scaled to each screen).
+ * Element/text/path buffers must be static or allocated in this mod's heap. */
+#define WWHD_HUD_API_VERSION 1
+enum { WWHD_HUD_TV=0,WWHD_HUD_DRC=1,WWHD_HUD_BOTH=2 };
+enum { WWHD_HUD_RECT=0,WWHD_HUD_TEXT=1,WWHD_HUD_IMAGE=2,WWHD_HUD_RECT_OUTLINE=3,
+       WWHD_HUD_CIRCLE=4,WWHD_HUD_CIRCLE_OUTLINE=5,WWHD_HUD_LINE=6 };
+enum { WWHD_HUD_CENTER=0,WWHD_HUD_TOP_LEFT=1,WWHD_HUD_TOP=2,WWHD_HUD_TOP_RIGHT=3,
+       WWHD_HUD_LEFT=4,WWHD_HUD_RIGHT=5,WWHD_HUD_BOTTOM_LEFT=6,WWHD_HUD_BOTTOM=7,WWHD_HUD_BOTTOM_RIGHT=8 };
+enum { WWHD_HUD_ALPHA=0,WWHD_HUD_ADDITIVE=1 };
+enum { WWHD_HUD_PACKAGE=0,WWHD_HUD_DATA=1 };
+typedef struct {
+    u32 kind,anchor,blend;
+    f32 x,y,w,h,size,thickness,rotation;
+    f32 u0,v0,u1,v1;
+    u32 rgba,image;
+    const char* text;
+    u32 text_bytes;
+} wwhd_hud_element;
+/* x/y is the top-left except circles (center). w/h is extent, or signed line delta.
+ * size is circle radius / text height. Rotation is radians about image center.
+ * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0. */
+u32 wwhd_hud_register(void (*callback)(u32 list),u32 screen);
+u32 wwhd_hud_emit(u32 list,const wwhd_hud_element* element);
+/* PNG path relative to this package's assets/ or textures/, or this mod's Data folder.
+ * Returns an owned handle, zero on failure. Reuse handles between logic steps. */
+u32 wwhd_hud_texture(u32 source,const char* path);
+u32 wwhd_hud_release(u32 image);
+/* Changes after full state load; old handles are invalid. Reload PNGs on a change. */
+unsigned long long wwhd_hud_epoch(void);

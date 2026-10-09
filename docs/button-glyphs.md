@@ -139,6 +139,10 @@ the playable executable was rebuilt with that correction. Synthetic checks estab
 hook behaviour, not actual GPU appearance. The 17 build-map tests also passed, and the EU map
 reports all three new hooked bodies unchanged.
 
+Before opening the PR, current `devel` was merged and the playable USA code regenerated
+again. The complete Linux build and expanded suite passed: **78/78 CTest tests**, including
+the glyph regression composed with the updated aspect anchoring.
+
 Regenerate and rebuild the real game code with the new hook list before play-testing.
 The requester tested the final Linux/Vulkan playable build and confirmed the corrected
 appearance after the HUD placement, native-font and orientation fixes.

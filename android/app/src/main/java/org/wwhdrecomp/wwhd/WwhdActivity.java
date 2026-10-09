@@ -21,6 +21,13 @@ import java.io.File;
 
 // The game: SDL loads libmain.so and runs its SDL_main (runtime/src/main.cpp).
 public class WwhdActivity extends SDLActivity {
+    public static String downloadCatalogue(String url, String destination, long limit) {
+        return HttpsDownload.download(url, destination, limit);
+    }
+
+    // Public thermal/battery APIs, sampled by the overlay/report via JNI at most once a second.
+    public static String performanceThermals() { return PerformanceThermals.read(mSingleton); }
+
     @Override
     protected String[] getLibraries() {
         return new String[] { "SDL3", "main" };

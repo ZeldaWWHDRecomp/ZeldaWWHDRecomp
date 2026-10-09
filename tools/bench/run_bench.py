@@ -13,7 +13,8 @@ Example (two variants, interleaved A B B A ..., 6 runs each, 60 fps interpolatio
       --variant base:WWHD_VK_LAZY_DRAW_DONE=0,WWHD_VK_ASYNC_PRESENT=0 --variant new:
 
 Scenes (input is timed in game seconds from TV frame --origin, so 30 and 60 fps runs see the same
-input): outset = walk and look around on Outset Island (state slot 3 by default), windfall = walk
+input; --origin-load-steps instead anchors both input and interpolation to the completed load):
+outset = walk and look around on Outset Island (state slot 3 by default), windfall = walk
 through Windfall town (slot 2), still = no input (any slot). The state file must be
 <state-dir>/slot<N>.bin, made with the game's own save-state keys.
 """
@@ -247,7 +248,7 @@ def paired_statistics(results, names):
         return {}
     reference, comparison = names
     paired = {}
-    for metric in ("frame_ms", "logic_cpu_ms"):
+    for metric in ("frame_ms", "logic_cpu_ms", "render_cpu_ms"):
         groups = {}
         for run in results:
             if run["status"] == "ok" and metric in run["summary"]:
@@ -314,8 +315,17 @@ def run_once(args, variant, env_extra, index, out_dir):
         env["WWHD_TEST_RSTICK"] = rstick
     if args.renderer == "vulkan":
         env["WWHD_VK_CPU_ONLY_STATS"] = "1"
+    origin_load_steps = getattr(args, "origin_load_steps", None)
+    if origin_load_steps is not None:
+        env["WWHD_TEST_ORIGIN_LOAD"] = str(origin_load_steps)
     if args.fps in ("60", "120", "240"):
-        env["WWHD_INTERP_AT_STEP"] = str(load_at + 60)
+        if origin_load_steps is not None:
+            # Both inputs and the mode switch must use the restored game clock.
+            # An absolute boot step changes RNG evolution when a load lands late.
+            env["WWHD_INTERP"] = "0"
+            env["WWHD_TEST_MODE"] = "1@0"
+        else:
+            env["WWHD_INTERP_AT_STEP"] = str(load_at + 60)
         if args.fps != "60":  # the rate, without switching interpolation on before the step above
             env["WWHD_INTERP"], env["WWHD_INTERP_FPS"] = "0", args.fps
     if args.display_hz is not None:
@@ -450,6 +460,8 @@ def main():
     # presses from frame 120 skip the intro and title (validated 2026-10-07 at loads 360 and 600)
     p.add_argument("--load-frame", type=int, default=450, help="TV frame of the state load")
     p.add_argument("--origin", type=int, default=650, help="TV frame where the scripted input starts")
+    p.add_argument("--origin-load-steps", type=int,
+                   help="start inputs and interpolation after this many post-load Link steps (overrides --origin)")
     p.add_argument("--press-from", type=int, default=120,
                    help="first TV frame of the A presses through the intro and title (-1: load frame - 300)")
     p.add_argument("--press-every", type=int, default=30, help="frames between A presses")
@@ -476,6 +488,8 @@ def main():
         p.error("--quiet-load-max must be positive")
     if args.min_free_gb < 0:
         p.error("--min-free-gb must be nonnegative")
+    if args.origin_load_steps is not None and args.origin_load_steps < 0:
+        p.error("--origin-load-steps must be non-negative")
     if not os.path.exists(os.path.join(args.state_dir, "slot%d.bin" % (args.slot or SCENES[args.scene][0]))):
         p.error("no slot%d.bin in %s" % (args.slot or SCENES[args.scene][0], args.state_dir))
     variants = []

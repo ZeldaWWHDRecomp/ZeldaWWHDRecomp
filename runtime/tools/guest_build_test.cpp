@@ -9,7 +9,13 @@ int main(int argc,char** argv) {
         std::string package=argv[3];
         if(package=="failure"){std::cout<<"compiler diagnostics\n{\"ok\":false,\"error\":\"compile failed\"}\n";return 1;}
         if(package=="bad-json"){std::cout<<"not JSON\n";return 0;}
-        assert(package=="package with spaces & % and $()");
+        bool checking=package=="--check-cache-json";
+        if(checking) {
+            auto requests=mods::json::parse(argv[4]);
+            assert(requests.array.size()==1);
+            assert(requests.array[0].get("package").string()=="package with spaces & % and $()");
+            assert(requests.array[0].get("base").number==0x7F000000);
+        } else assert(package=="package with spaces & % and $()");
         bool inspect=false,cc=false,zig=false,build=false;
         for(int i=4;i<argc;++i){
             if(std::string(argv[i])=="--build"){assert(i+1<argc&&std::string(argv[++i])=="EU");build=true;}
@@ -21,6 +27,7 @@ int main(int argc,char** argv) {
             }
         }
         assert(inspect!=cc&&zig==!inspect&&build);
+        if(checking){std::cout<<"diagnostic line\n{\"ok\":true,\"valid\":[\"fixture\"]}\n";return 0;}
         std::cout<<"diagnostic line\n{\"ok\":true,\"allocation_size\":65536,\"module\":\"module path\"}\n";
         return 0;
     }
@@ -31,6 +38,10 @@ int main(int argc,char** argv) {
     b.builder="builder with spaces";b.include="headers with spaces";b.cache="cache with spaces";
     assert(b.run("package with spaces & % and $()",0x7F000000,true,"EU").get("allocation_size").number==65536);
     assert(b.run("package with spaces & % and $()",0x7F000000,false,"EU").get("module").text=="module path");
+    Value requests;requests.type=Value::Array;Value request;
+    request["id"]="fixture";request["package"]="package with spaces & % and $()";
+    request["base"]=double(0x7F000000);request["module"]="module path";requests.array.push_back(request);
+    assert(b.check_cached(requests,"EU").get("valid").array[0].string()=="fixture");
     bool failed=false;
     try{b.run("failure",0x7F000000,false);}catch(const std::exception& e){failed=std::string(e.what())=="compile failed";}
     assert(failed);failed=false;

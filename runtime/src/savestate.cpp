@@ -586,6 +586,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     ax_ss_load(r);
     r = s->section(kSecGx2);
     gx2_ss_load(r);
+    guestmods::state_loaded();
     interp::ss_reset();
     aspect::ss_reset();
     rumble::reset();     // an effect running before the load is not the restored game's

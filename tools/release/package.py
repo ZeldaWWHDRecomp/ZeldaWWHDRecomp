@@ -15,6 +15,10 @@ there:
     libraries copied into sdk/ and libgamecode.a replaced by the player's own.
 
 Output: OUT_DIR/WindWakerHD-VERSION-NAME/ and OUT_DIR/WindWakerHD-VERSION-NAME.zip.
+
+The zip is the portable release (portable.txt). For the single-file Linux AppImage (issue #55) run
+tools/release/appimage.py on the folder this produced: it drops portable.txt, so the read-only mount
+sends every write to the per-user folders.
 """
 import argparse
 import hashlib
@@ -323,6 +327,13 @@ def make_zip(src_dir, zip_path):
                     z.writestr(info, f.read(), compresslevel=9)
 
 
+def copy_sdk_headers(pkg):
+    """Shared by every platform: public declarations use wwhd/, never a game/ tree."""
+    shutil.copytree(os.path.join(ROOT, "runtime", "include"), os.path.join(pkg, "sdk", "include"))
+    shutil.copytree(os.path.join(ROOT, "runtime", "guest", "include"),
+                    os.path.join(pkg, "sdk", "guest", "include"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
@@ -349,9 +360,7 @@ def main():
 
     driver, link, nobj, nlib = build_link_recipe(build, pkg, a.linkonly_lib)
     cflags = gamecode_flags(build)
-    shutil.copytree(os.path.join(ROOT, "runtime", "include"), os.path.join(pkg, "sdk", "include"))
-    shutil.copytree(os.path.join(ROOT, "runtime", "guest", "include"),
-                    os.path.join(pkg, "sdk", "guest", "include"))
+    copy_sdk_headers(pkg)
     runtime_files = []
     for f in a.runtime_file:
         copy(f, os.path.join(pkg, "sdk", "runtime", os.path.basename(f)))
@@ -417,6 +426,7 @@ def main():
         add_setup_gui(pkg, a.platform, a.setup_gui, a.version)
 
     copy(os.path.join(ROOT, "README.md"), os.path.join(pkg, "README.md"))
+    copy(os.path.join(ROOT, "CHANGELOG.md"), os.path.join(pkg, "CHANGELOG.md"))
     lic = os.path.join(ROOT, "LICENSE")
     if os.path.isfile(lic):
         copy(lic, os.path.join(pkg, "LICENSE"))

@@ -40,6 +40,18 @@ struct BuildBridge {
         if(b.builder.empty()||b.include.empty())throw std::runtime_error("Incomplete guest build configuration; run setup again");
         return b;
     }
+    static BuildBridge installed(const std::string& cache) {
+        const char* path=std::getenv("WWHD_GUEST_BUILD_CONFIG");
+        auto b=read(path?path:"guest-sdk.json",cache);
+        if(!std::filesystem::is_regular_file(b.builder)||!std::filesystem::is_directory(b.include))
+            throw std::runtime_error("Guest mod build tools are missing; run setup again from a complete release folder");
+        for(const auto* command:{&b.python,&b.compiler}) {
+            const std::filesystem::path executable(command->front());
+            if(executable.has_parent_path()&&!std::filesystem::is_regular_file(executable))
+                throw std::runtime_error("Guest mod compiler or Python is missing; run setup again and keep the downloaded compiler");
+        }
+        return b;
+    }
     mods::json::Value run(const std::string& package,uint32_t base,bool inspect,const std::string& build="USA") const {
         auto command=python;command.push_back(builder);command.push_back(package);
         command.insert(command.end(),{"--base",std::to_string(base),"--build",build,"--json"});
@@ -49,6 +61,17 @@ struct BuildBridge {
             mods::json::Value cc;cc.type=mods::json::Value::Array;for(const auto& a:compiler)cc.array.emplace_back(a);
             command.insert(command.end(),{"--out",cache,"--include",include,"--cc-json",mods::json::dump(cc)});
         }
+        return invoke(command);
+    }
+    mods::json::Value check_cached(const mods::json::Value& requests,const std::string& build="USA") const {
+        auto command=python;command.push_back(builder);
+        mods::json::Value cc;cc.type=mods::json::Value::Array;for(const auto& a:compiler)cc.array.emplace_back(a);
+        command.insert(command.end(),{"--check-cache-json",mods::json::dump(requests),"--build",build,
+            "--out",cache,"--include",include,"--cc-json",mods::json::dump(cc),"--json"});
+        if(!zig_cache.empty())command.insert(command.end(),{"--zig-cache",zig_cache});
+        return invoke(command);
+    }
+    static mods::json::Value invoke(const std::vector<std::string>& command) {
         auto process=host::run_process(command);
         if(!process.error.empty())throw std::runtime_error("Guest mod build failed: "+process.error);
         auto end=process.output.find_last_not_of("\r\n");

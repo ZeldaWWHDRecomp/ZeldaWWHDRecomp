@@ -24,5 +24,21 @@ int main() {
     overlay::AndroidTelemetry telemetry; telemetry.read(root); assert(telemetry.busy == 25);
     std::ofstream(root / "class/kgsl/kgsl-3d0/gpubusy") << "25 0";
     telemetry.read(root); assert(telemetry.busy == -1);
+    std::filesystem::create_directories(root / "class/devfreq/mali-gpu");
+    std::ofstream(root / "class/devfreq/mali-gpu/load") << "42";
+    std::filesystem::create_directories(root / "class/thermal/thermal_zone0");
+    std::ofstream(root / "class/thermal/thermal_zone0/type") << "soc";
+    std::ofstream(root / "class/thermal/thermal_zone0/temp") << "45300";
+    telemetry.read(root);
+    assert(telemetry.busy == 42);
+    assert(telemetry.temperatures.size() == 1 && telemetry.temperatures[0].second == 45.3);
+    auto text = overlay::format_android_telemetry(telemetry, "Thermal: light; battery: 25.0 C");
+    assert(text == "Thermal: light; battery: 25.0 C\nGPU busy 42%\nsoc 45.3 C");
+    assert(overlay::format_android_telemetry(telemetry, "Thermal: n/a; battery: n/a") ==
+           "Thermal: n/a; battery: n/a\nGPU busy 42%\nsoc 45.3 C");
     std::filesystem::remove_all(root);
+    telemetry.read(root);
+    assert(telemetry.busy == -1 && telemetry.temperatures.empty());
+    assert(overlay::format_android_telemetry(telemetry, "Thermal: n/a; battery: n/a") ==
+           "Thermal: n/a; battery: n/a");
 }

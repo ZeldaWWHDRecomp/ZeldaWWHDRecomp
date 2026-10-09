@@ -106,7 +106,7 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
 
     def test_public_headers_c_and_cpp(self):
         headers = ("bindings", "actor", "link", "camera", "items", "save", "messages", "data")
-        source = "".join('#include "game/%s.h"\n' % name for name in headers)
+        source = "".join('#include "wwhd/%s.h"\n' % name for name in headers)
         for language, standard in (("c", "c11"), ("c++", "c++17")):
             with self.subTest(language=language):
                 subprocess.run([CLANG] + FLAGS + ["-x", language, "-std=" + standard,
@@ -121,7 +121,7 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
         return os.path.join(d, "mod.elf")
 
     def test_examples_build(self):
-        for mod in ("heart-ticker", "addcalc-replace"):
+        for mod in ("heart-ticker", "addcalc-replace", "hud-demo", "button-icons", "hud-cost"):
             with tempfile.TemporaryDirectory() as d:
                 pkg = os.path.join(d, "pkg")
                 os.makedirs(pkg)
@@ -172,8 +172,19 @@ WWHD_REPLACE(0x02005678, void, repl, (void)) { ptr = helper; orig_fn(); wwhd_log
     def test_host_services_compile(self):
         src = r'''
 #include "wwhd_guest.h"
+_Static_assert(sizeof(wwhd_hud_element)==72, "HUD wire ABI");
+static void draw(u32 list) {
+    static wwhd_hud_element element = {.kind=WWHD_HUD_RECT,.w=10,.h=20,.thickness=1,.u1=1,.v1=1,.rgba=0xFFFFFFFF};
+    wwhd_hud_emit(list,&element);
+}
 WWHD_HOOK(0x02000000, all_services, (void)) {
+    wwhd_hud_register(draw,WWHD_HUD_BOTH);
+    u32 image=wwhd_hud_texture(WWHD_HUD_PACKAGE,"assets/original.png");
+    wwhd_hud_release(image);
+    wwhd_log_int("hud epoch",(int)wwhd_hud_epoch());
     char* p = wwhd_malloc(64);
+    wwhd_setting_get("input.face_layout",WWHD_SETTING_STRING,p,64);
+    wwhd_log_int("settings revision",(int)wwhd_setting_changed("input.face_layout"));
     wwhd_input_state pad;
     wwhd_input_read(&pad);
     wwhd_config_string("choice", p, 64);
@@ -191,7 +202,9 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
             for address, (kind, name) in t.imports.items():
                 if kind == "svc":
                     self.assertIn("c->pc = 0x%08Xu;" % address, translated, name)
-            self.assertIn("wwhd_file_write", t.services)
+            for name in ("wwhd_file_write","wwhd_hud_register","wwhd_hud_emit","wwhd_hud_texture",
+                         "wwhd_hud_release","wwhd_hud_epoch","wwhd_setting_get","wwhd_setting_changed"):
+                self.assertIn(name,t.services)
             Path(d, "manifest.json").write_text(json.dumps({"kind": "guest", "id": "services", "guest": {"api_version": 1}}))
             result = builder.build(d, str(Path(d, "cache")), 0x7F000000, builder.default_cc(), str(Path(REPO, "runtime/include")))
             self.assertTrue(result["ok"])
@@ -199,7 +212,7 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
     def test_register_pair_module_executes(self):
         # Leaf guest functions need no guest RAM: this executes the actual translated module.
         src = r'''
-#include "game/bindings.h"
+#include "wwhd/bindings.h"
 WWHD_REPLACE(0x02000000, wwhd_gpr_pair, pair_result, (void)) {
     return 0x1122334455667788ULL;
 }
@@ -265,6 +278,45 @@ int main(int argc, char** argv) {
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_source_and_release_include_roots(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(builder, "REPO", d):
+            self.assertEqual(builder.default_include(), os.path.join(d, "runtime", "include"))
+            installed = Path(d, "sdk", "include")
+            installed.mkdir(parents=True)
+            (installed / "wwhd_guest_abi.h").write_text("/* ABI fixture */")
+            self.assertEqual(builder.default_include(), str(installed))
+
+    def test_read_only_batch_cache_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); pkg = root / "pkg"; pkg.mkdir()
+            (pkg / "manifest.json").write_text(json.dumps({"id": "fixture", "kind": "guest", "guest": {"api_version": 1}}))
+            (pkg / "mod.elf").write_bytes(b"fixture ELF")
+            include = root / "include"; include.mkdir()
+            for name in ("ppc.h", "wwhd_guest_abi.h"):
+                shutil.copy(Path(REPO, "runtime", "include", name), include)
+            cc = ["clang"]; base = 0x7F000000
+            key = builder.cache_key(b"fixture ELF", "fixture", base, cc, include, version="compiler one")
+            module = root / "cache" / key / ("fixture" + builder.module_ext())
+            module.parent.mkdir(parents=True); module.write_bytes(b"fixture module")
+            request = {"id": "fixture", "package": str(pkg), "base": base, "module": str(module)}
+            with mock.patch.object(builder.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="compiler one")) as probe:
+                result = builder.check_cached([request, {**request, "id": "other"}], root / "cache", cc, include)
+                self.assertEqual(result["valid"], ["fixture"])
+                self.assertEqual(probe.call_count, 1)  # one version probe, no compile per package
+                self.assertEqual(probe.call_args.args[0], ["clang", "--version"])
+                with mock.patch.object(builder.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="compiler two")):
+                    self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
+                for changed in ({"base": base + 65536}, {"module": str(root / "unrelated")}, {"base": True}):
+                    self.assertEqual(builder.check_cached([{**request, **changed}], root / "cache", cc, include)["valid"], [])
+                (pkg / "mod.elf").write_bytes(b"changed ELF")
+                self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
+                (pkg / "mod.elf").write_bytes(b"fixture ELF")
+                with (include / "ppc.h").open("a") as header:
+                    header.write("\n/* ABI changed */\n")
+                self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
+            self.assertEqual(module.read_bytes(), b"fixture module")
+            self.assertEqual([p.name for p in (root / "cache").iterdir()], [key])
+
     def test_package_paths_and_ids(self):
         with tempfile.TemporaryDirectory() as d:
             pkg = Path(d, "pkg"); pkg.mkdir()

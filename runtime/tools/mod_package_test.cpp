@@ -4,6 +4,7 @@
 #include "mods/climb.h"
 #include "overlay/hostui.h"
 #include "platform/process.h"
+#include "mods/catalogue_client.h"
 #include <cassert>
 #include <cstdlib>
 #include <map>
@@ -70,9 +71,87 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==4&&std::string(argv[1])=="--catalogue-pilots") {
+        auto fixtures=fs::absolute(argv[2]),storage=fixtures/"manager";
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        initialize();std::string error;
+        auto index=mods::catalogue::load((fixtures/"index.json").string(),{},fixtures/"unused");
+        assert(index.index.entries.size()==2);
+        for(const auto& entry:index.index.entries) {
+            mods::catalogue::StagedPackage staged(entry,mods::catalogue::Version::parse("0.2.10"),"USA",platform_key(),fixtures/"work",index.fixture_root,{});
+            assert(install(staged.path().string(),error));assert(!view(entry.id).enabled&&!view(entry.id).active);
+        }
+        assert(!view("catalogue-setup-pilot").native_confirmed);
+        assert(set_game_source("gc_usa",(fixtures/"synthetic-gc-usa.iso").string(),error));
+        assert(configure("catalogue-setup-pilot","colour","green",error));
+        assert(configure("catalogue-setup-pilot","consent",true,error));
+        auto config=mods::json::parse(R"({"format_version":1,"python":[],"compiler":["unused"],"builder":"unused","include":"unused"})");
+        config["python"].array={mods::json::Value(argv[3])};
+        auto path=fixtures/"guest-sdk.json";{std::ofstream output(path);output<<mods::json::dump(config);}
+        env("WWHD_GUEST_BUILD_CONFIG",path.string().c_str());std::string output;
+        assert(!run_setup_tool("catalogue-setup-pilot","prepare",error,output));
+        assert(confirm_native("catalogue-setup-pilot",error));
+        assert(run_setup_tool("catalogue-setup-pilot","prepare",error,output));
+        for(const auto& step:setup_steps("catalogue-setup-pilot"))assert(step.satisfied);
+        assert(fs::file_size(storage/"Data/catalogue-setup-pilot/pilot-prepared.txt")==31);
+        fs::remove(fixtures/"synthetic-gc-usa.iso");assert(!setup_steps("catalogue-setup-pilot")[0].satisfied);
+        assert(remove("catalogue-content-pilot",error)&&remove("catalogue-setup-pilot",error));
+        std::cout<<"Catalogue pilots install/trust/source/options/real Python tool/remove passed\n";return 0;
+    }
+    if(argc==5&&std::string(argv[1])=="--setup-tool") {
+        std::ifstream input(argv[2]);std::string script{std::istreambuf_iterator<char>(input),{}};
+        std::cout<<"Source: "<<argv[4]<<"\n";
+        if(script.find("fail")!=std::string::npos||std::getenv("WWHD_TEST_SETUP_FAILURE")){
+            std::cout<<"synthetic final failure\n";return 7;
+        }
+        assert(fs::equivalent(fs::current_path(),argv[3]));
+        std::ofstream("result.bin")<<"synthetic prepared output";return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--guest-pending-check") {
         bool supported=std::string(argv[2])=="on";set_code_mod_support(supported);initialize();
         assert(view("guest-fixture").enabled==supported);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--guest-prepare") {
+        auto root=fs::temp_directory_path()/("wwhd-guest-prepare-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");auto storage=root/"manager";
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        auto manifest=mods::json::parse(R"({"format_version":1,"id":"prepare-guest","name":"Prepared guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"setup":[{"id":"build","type":"build_guest_mod","title":"Build guest module"}]})");
+        for(const auto* id:{"prepare-guest","reserved-guest"}) {
+            auto source=storage/"Mods"/id;fs::create_directories(source);manifest["id"]=id;
+            std::ofstream(source/"manifest.json")<<mods::json::dump(manifest);
+            std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);
+        }
+        std::ofstream(storage/"profiles.json")<<R"({"format_version":1,"active":"Default","profiles":{"Default":{}},"guest_regions":{"reserved-guest":{"base":2130706432,"size":65536}}})";
+        initialize();std::string error;int inspected=0,built=0;bool fail=true;uint32_t assigned=0;
+        auto module=root/"synthetic.module";
+        set_guest_builder([&](const GuestPackage& pkg){++inspected;assert(pkg.id=="prepare-guest");assert(!list().empty());std::string busy;assert(!configure(pkg.id,"unused",true,busy)&&busy.find("preparation")!=std::string::npos);assert(!select_profile("Default",busy)&&busy.find("preparation")!=std::string::npos);assert(!enable(pkg.id,true,busy)&&busy.find("operation")!=std::string::npos);return 131072u;},
+            [&](const GuestPackage&,uint32_t base){++built;assigned=base;if(fail)throw std::runtime_error("synthetic compile failure");std::ofstream(module)<<"synthetic module";return GuestBuilt{module.string(),131072};});
+        assert(!prepare_guest("prepare-guest",error)&&inspected==0);
+        set_code_mod_support(true);assert(!prepare_guest("prepare-guest",error)&&inspected==0);
+        assert(confirm_native("prepare-guest",error));
+        assert(!prepare_guest("prepare-guest",error)&&error=="synthetic compile failure");
+        assert(assigned==0x7F010000&&!setup_steps("prepare-guest")[0].satisfied);
+        fail=false;assert(prepare_guest("prepare-guest",error)&&assigned==0x7F010000);
+        assert(inspected==2&&built==2&&setup_steps("prepare-guest")[0].satisfied);
+        int cache_checks=0;
+        auto check_cache=[&](const mods::json::Value& requests) {
+            ++cache_checks;assert(requests.array.size()==1);
+            assert(requests.array[0].get("id").string()=="prepare-guest");
+            assert(requests.array[0].get("base").number==assigned);
+            return std::vector<std::string>{};
+        };
+        set_guest_builder({}, {}, check_cache);
+        assert(cache_checks==1&&!setup_steps("prepare-guest")[0].satisfied);
+        assert(!setup_steps("prepare-guest")[0].satisfied&&cache_checks==1);
+        set_guest_builder({}, {}, [&](const mods::json::Value& requests) {
+            ++cache_checks;assert(requests.array.size()==1);
+            return std::vector<std::string>{"prepare-guest"};
+        });
+        assert(cache_checks==2&&setup_steps("prepare-guest")[0].satisfied);
+        assert(!view("prepare-guest").active&&!view("prepare-guest").enabled);
+        assert(enable("prepare-guest",true,error));frame(1);assert(!view("prepare-guest").active&&view("prepare-guest").pending_restart);
+        fs::remove(module);assert(!setup_steps("prepare-guest")[0].satisfied);
+        fs::remove_all(root);std::cout<<"guest preparation preserves assignments/trust/restart gate passed\n";return 0;
     }
     if(argc==2&&std::string(argv[1])=="--guest-startup") {
         auto root=fs::temp_directory_path()/("wwhd-guest-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -84,12 +163,16 @@ int main(int argc, char** argv) {
             auto m=mods::json::parse(R"({"format_version":1,"id":"guest-a","name":"Fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})");
             m["id"]=id;
             if(std::string(id)=="guest-b")m["dependencies"]=mods::json::parse(R"([{"id":"guest-a"}])");
+            fs::create_directories(source/"content/Common");
+            std::ofstream(source/"content/Common"/(std::string(id)+".txt"))<<"original fixture content";
             std::ofstream(source/"manifest.json")<<mods::json::dump(m);
             {std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
         }
         std::ofstream(storage/"profiles.json") << R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"guest-a":true,"guest-b":true,"guest-c":true}}},"guest_regions":{"guest-a":{"base":2130771968,"size":65536},"guest-b":{"base":2130771968,"size":65536}}})";
         set_code_mod_support(true);
         initialize();std::string error;
+        assert(mods::content::replacement("Common/guest-a.txt").empty());
+        assert(view("guest-a").content_hashes.size()==1);
         assert(configure("guest-a","amount",5,error));
         int inspected=0,loaded=0;std::map<std::string,uint32_t> bases;
         auto inspect=[&](const GuestPackage& pkg){++inspected;assert(pkg.options.get("amount").number==3);return uint32_t(65536);};
@@ -97,6 +180,9 @@ int main(int argc, char** argv) {
             if(pkg.id=="guest-c")throw std::runtime_error("synthetic compiler failure");};
         start_guests(inspect,load);
         assert(inspected==3&&loaded==3);
+        assert(!mods::content::replacement("Common/guest-a.txt").empty());
+        assert(!mods::content::replacement("Common/guest-b.txt").empty());
+        assert(mods::content::replacement("Common/guest-c.txt").empty());
         assert(bases.at("guest-a")==0x7F010000); // valid persisted region retained
         assert(bases.at("guest-b")==0x7F000000); // duplicate saved reservation repaired
         assert(bases.at("guest-c")==0x7F020000);
@@ -111,7 +197,8 @@ int main(int argc, char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--guest-metadata") {
         auto root=fs::temp_directory_path()/("wwhd-guest-metadata-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        fs::create_directories(root/"source");
+        fs::create_directories(root/"source/content/Common");
+        std::ofstream(root/"source/content/Common/fixture.txt")<<"original fixture content";
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
         env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
         std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})";
@@ -138,9 +225,42 @@ int main(int argc, char** argv) {
         assert(!configure("guest-fixture","amount",99,error));
         frame(1);assert(!view("guest-fixture").active); // never load a PowerPC ELF as a host library
         assert(enable("guest-fixture",false,error));
+        std::ofstream(root/"source/content/Common/fixture.txt")<<"changed fixture content";
+        assert(install((root/"source").string(),error));
+        assert(!view("guest-fixture").native_confirmed); // content changes revoke package trust
+        assert(confirm_native("guest-fixture",error));
         {std::ofstream elf(root/"source/mod.elf",std::ios::binary|std::ios::app);elf << "changed";}
         assert(install((root/"source").string(),error));
         assert(!view("guest-fixture").native_confirmed); // trust fingerprints the ELF, not its name
+        fs::create_directories(root/"source/assets");
+        std::ofstream(root/"source/assets/bad.png")<<"invalid synthetic PNG";
+        assert(!install((root/"source").string(),error));
+        assert(error.find("PNG")!=std::string::npos);
+        fs::remove_all(root/"source/assets");
+        fs::rename(root/"source/mod.elf",root/"source/saved.elf");
+        assert(!install((root/"source").string(),error));
+        assert(error.find("ELF is missing")!=std::string::npos);
+        fs::rename(root/"source/saved.elf",root/"source/mod.elf");
+        std::ifstream manifest_file(root/"source/manifest.json");
+        std::string manifest_text((std::istreambuf_iterator<char>(manifest_file)),{});
+        manifest_file.close();
+        auto missing_content=mods::json::parse(manifest_text);
+        missing_content["content_dir"]="missing";
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(missing_content);
+        assert(!install((root/"source").string(),error));
+        std::ofstream(root/"source/manifest.json")<<manifest_text;
+        assert(install((root/"source").string(),error));
+        assert(confirm_native("guest-fixture",error));
+        assert(enable("guest-fixture",true,error));
+        fs::create_directories(root/"overlap/content/Common");
+        std::ofstream(root/"overlap/content/Common/fixture.txt")<<"different original fixture";
+        std::ofstream(root/"overlap/manifest.json")<<R"({"format_version":1,"id":"content-overlap","name":"Overlap","version":"1.0.0","game_id":"wwhd-usa","kind":"content","content_dir":"content"})";
+        assert(install((root/"overlap").string(),error));
+        assert(!enable("content-overlap",true,error));
+        assert(error.find("Content file conflict")!=std::string::npos);
+        assert(view("guest-fixture").enabled&&!view("content-overlap").enabled);
+        assert(enable("guest-fixture",false,error));
+        assert(enable("content-overlap",true,error));
         {std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":2}})";}
         assert(!install((root/"source").string(),error));
         fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;
@@ -308,6 +428,52 @@ int main(int argc, char** argv) {
     assert(install(native.string(),error));assert(!find().native_confirmed);
     assert(remove("fixture",error));assert(enable("climb-preset",false,error));frame(30);assert(remove("climb-preset",error));
     assert(list().empty());
+    // A settings/content package can ship a preparation tool: the same confirmation
+    // covers the whole package, so changed imported helpers also invalidate trust.
+    auto toolpkg=root/"SetupFixture";fs::create_directories(toolpkg/"tools");
+    std::ofstream(toolpkg/"manifest.json")<<R"({"format_version":1,"id":"setup-fixture","name":"Setup fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"wall-climb":true},"setup":[{"id":"prepare","type":"run_tool","title":"Prepare fixture","tool":"tools/prepare.py","arguments":["{data}","{game:gc_usa}"],"outputs":["result.bin"]}]})";
+    std::ofstream(toolpkg/"tools"/"prepare.py")<<"# synthetic preparation tool\n";
+    std::ofstream(toolpkg/"tools"/"helper.py")<<"# synthetic helper\n";
+    assert(install(toolpkg.string(),error));assert(!view("setup-fixture").native_confirmed);
+    assert(view("setup-fixture").setup_tools==std::vector<std::string>{"tools/prepare.py"});
+    auto setup_confirmation=unconfirmed_native("setup-fixture");
+    assert(setup_confirmation.size()==1&&setup_confirmation[0].second.find("tools/prepare.py")!=std::string::npos);
+    assert(!enable("setup-fixture",true,error));assert(confirm_native("setup-fixture",error));
+    assert(view("setup-fixture").native_confirmed);
+    std::string output;assert(!run_setup_tool("setup-fixture","prepare",error,output)); // missing source
+    auto disc=fs::absolute(root/"synthetic.iso");std::array<unsigned char,32> disc_header{};
+    std::copy_n("GZLE01",6,disc_header.begin());disc_header[28]=0xC2;disc_header[29]=0x33;disc_header[30]=0x9F;disc_header[31]=0x3D;
+    {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(disc_header.data()),disc_header.size());}
+    assert(!set_game_source("gc_eur",disc.string(),error)&&set_game_source("gc_usa",disc.string(),error));
+    auto build_config=fs::absolute(root/"setup-tools.json");
+    auto build_json=mods::json::parse(R"({"format_version":1,"python":[],"compiler":["unused"],"builder":"unused","include":"unused"})");
+    build_json["python"].array={mods::json::Value(fs::absolute(argv[0]).string()),mods::json::Value("--setup-tool")};
+    {std::ofstream config(build_config);config<<mods::json::dump(build_json);}
+    env("WWHD_GUEST_BUILD_CONFIG",build_config.string().c_str());
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    assert(output.find(disc.string())==std::string::npos&&output.find("[game source]")!=std::string::npos);
+    assert(setup_steps("setup-fixture")[0].satisfied);
+    auto other_disc=disc.parent_path()/"other-synthetic.iso";fs::copy_file(disc,other_disc);
+    assert(set_game_source("gc_usa",other_disc.string(),error));
+    assert(!setup_steps("setup-fixture")[0].satisfied); // changed source selection
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    assert(setup_steps("setup-fixture")[0].satisfied);
+    env("WWHD_TEST_SETUP_FAILURE","1");
+    assert(!run_setup_tool("setup-fixture","prepare",error,output));
+    env("WWHD_TEST_SETUP_FAILURE",nullptr);
+    assert(!setup_steps("setup-fixture")[0].satisfied); // old result.bin still exists
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    fs::rename(other_disc,other_disc.string()+".moved");
+    assert(!setup_steps("setup-fixture")[0].satisfied); // source moved after success
+    fs::rename(other_disc.string()+".moved",other_disc);
+    std::ofstream(toolpkg/"tools"/"helper.py",std::ios::app)<<"# changed helper\n";
+    assert(install(toolpkg.string(),error));assert(!view("setup-fixture").native_confirmed);
+    assert(!setup_steps("setup-fixture")[0].satisfied&&!run_setup_tool("setup-fixture","prepare",error,output));
+    std::ofstream(toolpkg/"tools"/"prepare.py",std::ios::app)<<"# fail\n";
+    assert(install(toolpkg.string(),error)&&confirm_native("setup-fixture",error));
+    assert(!run_setup_tool("setup-fixture","prepare",error,output)&&output.find("synthetic final failure")!=std::string::npos);
+    assert(!setup_steps("setup-fixture")[0].satisfied);env("WWHD_GUEST_BUILD_CONFIG",nullptr);
+    assert(remove("setup-fixture",error));
     if(argc == 4) {
         assert(install(argv[3],error));
         auto id=list().at(0).id;

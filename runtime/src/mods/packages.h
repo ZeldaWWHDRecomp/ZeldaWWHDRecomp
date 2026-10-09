@@ -1,5 +1,6 @@
 #pragma once
 #include "mod_json.h"
+#include "catalogue_schema.h"
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -7,7 +8,7 @@
 #include <vector>
 namespace mods::packages {
 inline constexpr const char* kGameId="wwhd-usa";
-inline constexpr const char* kManagerVersion="1.2.0";
+inline constexpr const char* kManagerVersion="1.3.0";
 struct Option {
     std::string id,name,description,type;
     json::Value value,default_value;
@@ -20,6 +21,8 @@ struct View {
     bool native_confirmed=true; // false: code the player has not confirmed (native library or guest ELF)
     std::vector<Option> options;
     std::vector<std::string> dependencies,conflicts;
+    std::vector<std::string> setup_tools; // package-relative executables covered by native confirmation
+    std::vector<std::pair<std::string,std::string>> content_hashes;
 };
 // Supplied from the running executable marker, never from a saved preference.
 void set_code_mod_support(bool built);
@@ -38,6 +41,11 @@ std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::st
 // this package ID and the SHA-256 of its current platform library or guest ELF (changed code asks again).
 bool confirm_native(const std::string& id,std::string& error);
 bool configure(const std::string& id,const std::string& option,const json::Value& value,std::string& error);
+struct SetupView {catalogue::Step step;bool satisfied=false;};
+std::vector<SetupView> setup_steps(const std::string& id);
+bool set_game_source(const std::string& game,const std::string& path,std::string& error);
+// Run on a worker thread after native confirmation; never holds the manager lock while running.
+bool run_setup_tool(const std::string& id,const std::string& step,std::string& error,std::string& last_output);
 void disable_all();
 std::vector<std::string> profiles();
 std::string current_profile();
@@ -57,6 +65,11 @@ struct GuestPackage {
 };
 using GuestInspect = std::function<uint32_t(const GuestPackage&)>; // reserved bytes, 64 KiB aligned
 using GuestLoad = std::function<void(const GuestPackage&, uint32_t base)>;
+struct GuestBuilt {std::string module;uint32_t allocation_size=0;};
+using GuestBuild = std::function<GuestBuilt(const GuestPackage&,uint32_t base)>;
+using GuestCacheCheck = std::function<std::vector<std::string>(const json::Value& requests)>;
+void set_guest_builder(GuestInspect inspect,GuestBuild build,GuestCacheCheck check = {});
+bool prepare_guest(const std::string& id,std::string& error); // builds the cached module; activation requires restart
 // After dispatch/memory init, before guest threads. Build/load errors remain visible in list().
 void start_guests(const GuestInspect& inspect, const GuestLoad& load);
 void frame(uint64_t step); // actual load/configure/unload and callbacks: game thread only

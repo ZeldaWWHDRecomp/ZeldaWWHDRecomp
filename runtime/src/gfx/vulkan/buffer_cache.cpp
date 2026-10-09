@@ -99,6 +99,7 @@ State& state() {
     if (heap < (1ull << 30)) b.budget = std::min<uint64_t>(b.budget, heap / 2);
     break;
   }
+  created->cache.keepShadow = buffer_cache_verify();  // verify() then never reads GPU memory
   LOG("[vulkan buffer cache] on%s: budget %llu MiB, %s memory, hints %s", buffer_cache_verify() ? " (verify mode)" : "",
       (unsigned long long)(b.budget >> 20),
       (b.flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "device-local host-visible" : "host-visible",
@@ -126,13 +127,10 @@ bool buffer_cache_verify() {
 // desktop Linux (Steam Deck included; an RK3588 report in issue #50 went from a 20 fps lock to full speed
 // with it) and on Android (issue #56: Galaxy S25 Ultra, 115.8 M verify checks with 0 mismatches and 0
 // protect failures; heavy Outset views 33.8 -> 47.0 presented fps, render thread 14.2 -> 10.4 ms/frame,
-// uploads 21.7 -> 10.1 MiB/frame). Off on Windows until the verify run and the write-fault cost have
-// been checked there (issue #91). WWHD_VK_BUFFER_CACHE=0|1 overrides the default everywhere.
-#if defined(__APPLE__) || defined(__linux__)
+// uploads 21.7 -> 10.1 MiB/frame) and on Windows (issue #91: RX 6700 XT, render thread 13-19% less,
+// uploads ~20 -> ~10 MiB/frame, no geometry problems over many sessions; the verify mode itself is
+// unusable there, it reads back non-host-cached memory). WWHD_VK_BUFFER_CACHE=0|1 overrides it.
 constexpr bool kBufferCacheDefault = true;
-#else
-constexpr bool kBufferCacheDefault = false;
-#endif
 
 bool buffer_cache_enabled() {
   static const bool enabled = [] {

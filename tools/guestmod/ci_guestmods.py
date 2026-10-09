@@ -51,7 +51,7 @@ def main():
     command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
                "-ffreestanding", "-fsyntax-only", "-x", "c", "-"]
     for header in headers:
-        command += ["-include", str(REPO / f"runtime/guest/include/game/{header}.h")]
+        command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
     subprocess.run(command, input="", text=True, check=True)
     print("Host module compiler:", tc.desc, flush=True)
     subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "test_guestmod.py"), "-v"], check=True)
