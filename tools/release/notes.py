@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Release notes from README.md: install instructions + the "What's new" section + checksums.
 
-usage: notes.py README.md VERSION SHA256SUMS.txt > notes.md
+usage: notes.py README.md VERSION SHA256SUMS.txt [--devel COMMIT] > notes.md
+
+--devel: notes for the rolling development pre-release; VERSION is then "Next update", the block
+of unreleased changes.
 
 "What's new" has one "### vX.Y.Z" block per release; the notes take the block for VERSION (or the
 whole section when there is none).
@@ -17,6 +20,7 @@ def section(text, title_prefix):
 
 def main():
     readme, version, sums = sys.argv[1:4]
+    devel = sys.argv[5] if len(sys.argv) > 5 and sys.argv[4] == "--devel" else None
     with open(readme, encoding="utf-8") as f:
         text = f.read()
     new = section(text, "What's new")
@@ -26,6 +30,12 @@ def main():
         new = m.group(1).strip()
     with open(sums) as f:
         checksums = f.read().strip()
+    if devel:
+        print("""**Development build of devel @ %s: not a release.** It has the changes below that are not
+released yet, and has had less testing than a release. Use it to try a fix, and include the commit
+(%s) when you report a problem. The latest release is on the Releases page.
+""" % (devel[:7], devel[:7]))
+        version = "development build"
     print("""**The Wind Waker HD, native PC port, %s**
 
 This release contains **no game files, no game code and no keys**. You need your own disc dump
