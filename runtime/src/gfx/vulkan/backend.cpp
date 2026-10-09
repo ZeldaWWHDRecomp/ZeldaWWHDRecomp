@@ -1046,6 +1046,8 @@ static void make_swapchain(Screen &s) {
   vk_check(device_wait_idle(), "resize device idle");
 #endif
 #ifdef __ANDROID__
+  if(&s==&R.tv && R.primaryInjectQueryLoss.exchange(false))
+    vk_check(VK_ERROR_SURFACE_LOST_KHR,"authored primary surface capability loss");
   if(&s==&R.drc && R.secondaryInjectQueryLoss.exchange(false))
     vk_check(VK_ERROR_SURFACE_LOST_KHR,"authored secondary surface capability loss");
 #endif
@@ -1224,6 +1226,12 @@ static void make_swapchain(Screen &s) {
 // it a new one when it comes back. Meanwhile nothing is presented (the game keeps running); then
 // the Vulkan surface and swapchain are created again for the window's new native surface.
 static std::atomic<bool> surfaceLost{false}, surfaceRecreate{false};
+static void recover_primary_surface() {
+  ++R.primarySurfaceLosses;
+  surfaceLost = true;
+  surfaceRecreate = true;
+}
+
 static void recreate_surface(Screen &s) {
   if (!SDL_GetPointerProperty(SDL_GetWindowProperties(s.window),
                               SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr)) {
@@ -1797,7 +1805,9 @@ static void present(Screen &s) {
         return;
       }
       LOG("[vulkan] no swapchain (%s); waiting for a new surface", e.what());
-      surfaceLost = true;  // the surface went away while the app is in the background
+      // Fast Activity replacement can coalesce pause/resume without a new
+      // foreground event. Retry against SDL's current native surface ourselves.
+      recover_primary_surface();
       return;
     }
   }
@@ -1871,7 +1881,11 @@ static void present(Screen &s) {
     const VkFence fence=secondaryAcquireFence;
     const bool fencePending=secondaryAcquireFencePending;
     secondaryPresentWorker->submit([device,swapchain,acquireSemaphore,fence,fencePending] {
-      while(R.secondaryAcquireHeld.load())std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      while(R.secondaryAcquireHeld.load()) {
+        R.secondaryAcquireWaiting=true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      R.secondaryAcquireWaiting=false;
       if(secondaryDrawing.pending) {
         VkResult ready=vkGetFenceStatus(device,secondaryDrawing.fence);
         if(ready==VK_NOT_READY)return SecondaryPresentResult{VK_NOT_READY,0,true,0,fencePending};
@@ -1913,7 +1927,7 @@ static void present(Screen &s) {
   }
 #ifdef __ANDROID__
   if (ar == VK_ERROR_SURFACE_LOST_KHR) {
-    if (&s == &R.tv) surfaceLost = true;
+    if (&s == &R.tv) recover_primary_surface();
     else secondary_surface_lost();
     return;
   }
@@ -2109,7 +2123,7 @@ static void present(Screen &s) {
     s.resize = true;
   else if (pr == VK_SUBOPTIMAL_KHR) {
   } else if (pr == VK_ERROR_SURFACE_LOST_KHR) {
-    if (&s == &R.tv) surfaceLost = true;
+    if (&s == &R.tv) recover_primary_surface();
     else secondary_surface_lost();
   }
   else

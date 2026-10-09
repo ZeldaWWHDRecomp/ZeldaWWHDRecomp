@@ -97,7 +97,7 @@ def main():
     parser.add_argument("--exercise-folds", action="store_true", help="inject synthetic window hinges; exercise real pane surfaces, not hardware posture detection")
     parser.add_argument("--exercise-primary-rotation", action="store_true", help="rotate the primary Activity to portrait and back while secondary presents")
     parser.add_argument("--exercise-dismissal", action="store_true", help="dismiss the secondary window without removing its display; require automatic recovery")
-    parser.add_argument("--exercise-surface-loss", action="store_true", help="inject secondary acquisition/presentation/query loss and require host recovery")
+    parser.add_argument("--exercise-surface-loss", action="store_true", help="inject primary query and secondary acquisition/presentation/query loss; require recovery")
     parser.add_argument("--disable-gpu-timestamps", action="store_true", help="measure CPU cadence without optional GPU query instrumentation")
     parser.add_argument("--shared-general", action="store_true", help="compare GENERAL shared-image layout on the forced isolated-device fixture")
     args = parser.parse_args()
@@ -253,6 +253,13 @@ def main():
             until("recovered secondary touch", lambda m:
                   m["touch"] and abs(m["tx"] - .5) < .08 and abs(m["ty"] - .5) < .08)
         if args.exercise_surface_loss:
+            primary_loss = metrics()
+            command("lose_primary_query")
+            until("primary surface loss recovers without lifecycle transition", lambda m:
+                  m["primary_surface_losses"] == primary_loss["primary_surface_losses"] + 1 and
+                  m["primary_swapchains"] > primary_loss["primary_swapchains"] and
+                  m["primary_presented"] >= primary_loss["primary_presented"] + 60 and
+                  m["secondary_presented"] >= primary_loss["secondary_presented"] + 10)
             for fault in ("lose_acquire", "lose_present", "lose_query"):
                 ids = re.findall(r"secondary display=(\d+)", adb("logcat", "-d", "-s", "wwhd-display:I", "*:S"))
                 held = metrics()
@@ -354,8 +361,11 @@ def main():
                   not m["secondary_present_held"] and m["dual"] and m["swap_active"] and
                   m["secondary_presented"] >= blocked["secondary_presented"] + 10)
             command("acquire1")
+            # A queued acquisition can follow one last in-flight present. Take
+            # the frozen-counter baseline only after the worker reaches the hold.
             acquiring = until("secondary acquisition held", lambda m:
-                              m["secondary_acquire_held"] and m["secondary_acquire_pending"])
+                              m["secondary_acquire_held"] and m["secondary_acquire_pending"] and
+                              m["secondary_acquire_waiting"])
             until("main progresses during blocked secondary acquisition", lambda m:
                   m["primary_presented"] >= acquiring["primary_presented"] + 60 and
                   m["secondary_presented"] == acquiring["secondary_presented"] and m["secondary_acquire_pending"])

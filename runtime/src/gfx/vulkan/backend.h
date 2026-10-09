@@ -82,6 +82,9 @@ struct Renderer {
  std::atomic<bool> secondaryInjectAcquireLoss{false},secondaryInjectPresentLoss{false}; // authored WSI diagnostics
  std::atomic<bool> secondaryInjectQueryLoss{false};
  std::atomic<uint64_t> secondarySurfaceLosses{0};
+ std::atomic<bool> secondaryAcquireWaiting{false}; // worker acknowledged the acquisition hold
+ std::atomic<uint64_t> primarySurfaceLosses{0};
+ std::atomic<bool> primaryInjectQueryLoss{false}; // game-free primary recovery diagnostic
  std::atomic<bool> secondaryAcquireHeld{false}; // game-free blocked-acquisition diagnostic
  uint32_t primaryRequestedQueues=1;
  std::atomic<uint32_t> secondaryDeviceSwapchains{0},secondarySharedSnapshots{0};

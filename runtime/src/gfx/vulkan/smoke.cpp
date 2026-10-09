@@ -686,6 +686,7 @@ int android_display_smoke_test() {
       catch(const std::exception& error) { LOG("[vulkan] two-device shared image shader probe failed: %s",error.what()); }
     }
     if (value == "lose_query") { R.secondaryInjectQueryLoss=true;R.drc.resize=true; }
+    if (value == "lose_primary_query") { R.primaryInjectQueryLoss=true; R.tv.resize=true; }
     if (value == "acquire1") R.secondaryAcquireHeld=true;
     if (value == "acquire0") R.secondaryAcquireHeld=false;
     if (value == "timestamps0") R.gpuTimestampsEnabled=false;
@@ -726,6 +727,7 @@ int android_display_smoke_test() {
     }
     out << "]";
     out << ",\"primary_presented\":" << R.tv.presented.load()
+        << ",\"primary_surface_losses\":" << R.primarySurfaceLosses.load()
         << ",\"primary_swapchains\":" << R.tv.swapchainGeneration
         << ",\"secondary_presented\":" << R.drc.presented.load()
         << ",\"timing_epoch\":" << timingEpoch
@@ -755,6 +757,7 @@ int android_display_smoke_test() {
         << ",\"secondary_queue_family\":" << R.secondaryQueueFamily
         << ",\"secondary_present_held\":" << (R.secondaryPresentHeld.load() ? "true" : "false")
         << ",\"secondary_present_pending\":" << (R.secondaryPresentPending ? "true" : "false")
+        << ",\"secondary_acquire_waiting\":" << (R.secondaryAcquireWaiting.load() ? "true" : "false")
         << ",\"secondary_acquire_held\":" << (R.secondaryAcquireHeld.load() ? "true" : "false")
         << ",\"secondary_acquire_pending\":" << (R.secondaryAcquirePending ? "true" : "false")
         << ",\"secondary_surface_losses\":" << R.secondarySurfaceLosses.load()

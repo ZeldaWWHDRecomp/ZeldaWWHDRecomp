@@ -241,7 +241,11 @@ void AndroidIsolatedPresenter::resize(int mode) {
 }
 void AndroidIsolatedPresenter::acquire() {
  impl->dispatch(Operation::Acquire,[this] {
-  while(R.secondaryAcquireHeld.load())std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  while(R.secondaryAcquireHeld.load()) {
+   R.secondaryAcquireWaiting=true;
+   std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  R.secondaryAcquireWaiting=false;
   if(R.secondaryInjectAcquireLoss.exchange(false))return VK_ERROR_SURFACE_LOST_KHR;
   auto& s=*impl;
   if(!s.swapchain)return VK_NOT_READY;
