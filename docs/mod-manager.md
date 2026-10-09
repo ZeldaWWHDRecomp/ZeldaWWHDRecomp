@@ -355,9 +355,25 @@ replacement adapter documented above.
 
 Preset expressions support finite arithmetic, parentheses, variables,
 min/max/floor/ceil/round; missing variables and cycles are rejected. Dimension
-limits are 1–16384 and aspect ratios 1–4. Overlapping rules from different
-enabled packs and duplicate shader variants are rejected. Both imported presets
-and changes to an enabled pack are checked before saving the profile.
+limits are 1–16384 and aspect ratios 1–4. Packs that change the same shader
+variant, overlap graphics rules or both set the aspect ratio cannot be enabled
+together. The list shows “Conflicts with …” before enabling. Ticking a conflicting
+pack opens a **Switch / Cancel** dialog; Switch saves the new choice and disables
+its conflicting packs in one change. Cancel leaves the profile alone. The dialog
+supports mouse, keyboard and controller, with Cancel focused initially.
+
+Each pack shows **Active now** and **After restart** separately. A restart-pending
+note and **Restart now** button appear at the top of Mods. Switching packs keeps
+the current pack active until restart, then applies the chosen pack; details
+continue to show applied/rejected shader counts as shaders are encountered.
+
+Old profiles with conflicting packs are repaired and saved before activation:
+the currently active pack wins, otherwise the earliest recorded enable wins.
+Legacy profiles without enable history use package ID as a deterministic tie
+breaker. A one-time, dismissible notice in Mods names each disabled pack. Profile
+switches and preset changes use the same repair rule. Independent packs still
+work together. There is no pack order or partial mixing: **a combined pack is
+needed to get both effects** from conflicting packs.
 
 Primary format reference: [Cemu graphics pack documentation](https://github.com/cemu-project/cemu_graphic_packs/wiki/How-to-create-Graphic-Packs).
 Compatibility was checked against the public [WWHD Resolution pack](https://github.com/cemu-project/cemu_graphic_packs/tree/master/Resolutions/WindWakerHD_Resolution)

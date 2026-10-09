@@ -276,6 +276,65 @@ int main(int argc, char** argv) {
         fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;
     }
     if(argc == 3 && std::string(argv[1]) == "--restart") return restart_check(argv[2]);
+    if(argc==3&&(std::string(argv[1])=="--cemu-conflicts-restart"||std::string(argv[1])=="--cemu-conflicts-legacy")){
+        env("WWHD_MOD_MANAGER_DIR",argv[2]);mods::cemu::set_vulkan(true);initialize();
+        assert(view("a").enabled&&view("a").active&&!view("a").pending_restart);
+        assert(!view("b").enabled&&!view("b").active);
+        assert(take_notices().size()==(std::string(argv[1])=="--cemu-conflicts-legacy"?1:0));
+        mods::cemu::report_shader(1,2,false,true,{});
+        assert(view("a").status.find("1 applied")!=std::string::npos);
+        return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--cemu-conflicts"){
+        auto root=fs::temp_directory_path()/("wwhd-cemu-conflicts-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto storage=root/"storage";
+        auto make=[&](const std::string& id,const std::string& rules,int shader){
+            auto folder=storage/"Mods"/id;fs::create_directories(folder);
+            std::ofstream(folder/"manifest.json")<<"{\"format_version\":1,\"id\":\""<<id<<"\",\"name\":\""<<id<<"\",\"version\":\"1.0.0\",\"game_id\":\"wwhd-usa\",\"kind\":\"cemu\",\"cemu_dir\":\"\"}";
+            std::ofstream(folder/"rules.txt")<<"[Definition]\nname=Test\ntitleIds=0005000010143500\nversion=4\n"<<rules;
+            if(shader)std::ofstream(folder/(shader==1?"0000000000000001_0000000000000002_ps.txt":"0000000000000003_0000000000000004_ps.txt"))<<"#version 420\nvoid main(){}\n";
+        };
+        make("a","",1);make("b","",1);make("c","",2);make("d","",1);
+        std::ofstream(storage/"Mods/d/0000000000000003_0000000000000004_ps.txt")<<"#version 420\nvoid main(){}\n";
+        make("r1","[TextureRedefine]\nwidth=640\noverwriteWidth=1280\n",0);
+        make("r2","[Preset]\nname=Separate\n$width=320\n[Preset]\nname=Overlap\n$width=640\n[TextureRedefine]\nwidth=$width\noverwriteWidth=1280\n",0);
+        auto legacy=mods::json::parse(R"({"enabled":{"a":true,"b":true,"c":true},"enabled_since":{"a":2,"b":1},"enable_serial":2})");
+        mods::json::Value db;db["format_version"]=1;db["active"]="Default";db["profiles"]["Default"]=legacy;
+        db["profiles"]["Legacy"]=legacy;db["profiles"]["Legacy"]["enabled_since"]["a"]=0;
+        std::ofstream(storage/"profiles.json")<<mods::json::dump(db);
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());mods::cemu::set_vulkan(true);initialize();
+        assert(!view("a").enabled&&view("b").enabled&&view("b").active&&view("c").active);
+        auto messages=take_notices();assert(messages.size()==1&&messages[0]=="a was turned off: it conflicts with b");assert(take_notices().empty());
+        assert(view("a").graphics_conflicts.size()==1&&view("a").graphics_conflicts[0].id=="b");
+        std::string error;
+        assert(!enable("a",true,error)); // Cancel / ordinary enable cannot mutate the profile.
+        assert(view("b").enabled&&!view("a").enabled);
+        assert(view("d").graphics_conflicts.size()==2);
+        assert(enable("d",true,error,true));assert(view("d").enabled&&!view("b").enabled&&!view("c").enabled);
+        assert(enable("b",true,error,true)&&enable("c",true,error));assert(!view("d").enabled);
+        fs::create_directory(storage/"profiles.json.tmp"); // Failed save must leave both choices untouched.
+        assert(!enable("a",true,error,true));assert(view("b").enabled&&!view("a").enabled);
+        fs::remove(storage/"profiles.json.tmp");
+        assert(enable("a",true,error,true));
+        assert(view("a").enabled&&!view("b").enabled&&view("c").enabled);
+        assert(!view("a").active&&view("a").pending_restart&&view("b").active&&view("b").pending_restart);
+        assert(select_profile("Legacy",error)); // Actual active pack wins over this profile's history.
+        assert(!view("a").enabled&&view("b").enabled&&take_notices().size()==1);
+        assert(select_profile("Default",error));assert(view("a").enabled&&!view("b").enabled);
+        assert(enable("r1",true,error)&&enable("r2",true,error)); // Independent rules coexist.
+        assert(configure("r2","preset-0","Overlap",error)); // Imported / selected overlapping preset is repaired.
+        assert(view("r1").enabled&&!view("r2").enabled&&take_notices().size()==1);
+        assert(view("r2").graphics_conflicts.size()==1);
+        assert(enable("r2",true,error,true));assert(!view("r1").enabled&&view("r2").enabled);
+        std::ifstream saved(storage/"profiles.json");auto persisted=mods::json::parse(std::string(std::istreambuf_iterator<char>(saved),{}));
+        assert(!persisted.get("profiles").get("Default").get("enabled").get("b").boolean);
+        assert(host::run_process({argv[0],"--cemu-conflicts-restart",storage.string()}).code==0);
+        persisted["profiles"]["Default"]["enabled"]["b"]=true;
+        persisted["profiles"]["Default"].object.erase("enabled_since");
+        {std::ofstream output(storage/"profiles.json");output<<mods::json::dump(persisted);}
+        assert(host::run_process({argv[0],"--cemu-conflicts-legacy",storage.string()}).code==0);
+        fs::remove_all(root);std::cout<<"Synthetic Cemu conflict previews, atomic switch, migration, profiles, presets and restart passed\n";return 0;
+    }
     if(argc==2&&(std::string(argv[1])=="--cemu-startup"||std::string(argv[1])=="--cemu-backend")){
         bool backend=std::string(argv[1])=="--cemu-backend";
         auto root=fs::temp_directory_path()/("wwhd-cemu-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

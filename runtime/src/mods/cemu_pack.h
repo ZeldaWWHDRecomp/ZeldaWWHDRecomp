@@ -35,6 +35,8 @@ Pack parse(const std::filesystem::path& folder);
 json::Value options(const Pack& pack);
 void import_legacy(const std::filesystem::path& stage,const std::string& source_name);
 struct Selection {std::string id;Pack pack;json::Value config;};
+// Empty for independent packs; throws for invalid graphics rules.
+std::string conflict_reason(const Selection& a,const Selection& b);
 void validate(const std::vector<Selection>& selections);
 void activate(const std::vector<Selection>& selections); // before guest execution only
 void set_vulkan(bool available); // requested at startup, then actual backend after fallback

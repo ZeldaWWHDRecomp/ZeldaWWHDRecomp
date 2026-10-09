@@ -5,6 +5,7 @@
 #include "overlay.h"
 #include "guest_hud.h"
 #include "setup_test.h"
+#include "graphics_switch.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -1180,6 +1181,7 @@ void package_controls() {
     using namespace mods::packages;
     static std::string error;
     static NativeConfirm confirm;
+    static GraphicsSwitch graphics_choice;
     // debug: WWHD_TEST_MOD_ENABLE=<package id> ticks that package's checkbox once in test runs (the
     // confirmation then shows for unconfirmed native code)
     static const char* test_enable = g_no_host ? getenv("WWHD_TEST_MOD_ENABLE") : nullptr;
@@ -1250,13 +1252,16 @@ void package_controls() {
             (setup_test_plan().error.empty()&&diagnostic::setup_ready(setup_steps(mod.id))))) { toggled = on = true; test_enable = nullptr; }
         if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
         if (toggled) {
-            auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
-            if (native.empty()) {
-                if(on&&needs_code_mod_support(mod.id)) {
-                    mods::code::request(true,mod.id);
-                } else enable(mod.id, on, error);
+            if(on&&!mod.graphics_conflicts.empty())graphics_choice={mod.id,mod.name,mod.graphics_conflicts,true};
+            else {
+                auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
+                if (native.empty()) {
+                    if(on&&needs_code_mod_support(mod.id)) {
+                        mods::code::request(true,mod.id);
+                    } else enable(mod.id, on, error);
+                }
+                else confirm = {mod.id, mod.name, std::move(native), true};
             }
-            else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
         if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
@@ -1264,6 +1269,11 @@ void package_controls() {
         if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
+        if(mod.kind=="cemu"){
+            note("Active now: %s · After restart: %s",mod.active?"On":"Off",mod.enabled?"On":"Off");
+            if(mod.pending_restart)note(mod.enabled?"Active after restart":"Turned off after restart");
+            for(const auto& conflict:mod.graphics_conflicts)note("Conflicts with %s (%s)",conflict.name.c_str(),conflict.reason.c_str());
+        }
         if (expanded) {
             note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "guest" ? "Guest mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
                  mod.pending_restart ? "Restart required" : mod.active ? "Active" : mod.enabled ? "Waiting for game update" : "Disabled");
@@ -1313,6 +1323,9 @@ void package_controls() {
         }
         ImGui::PopID();
     }
+    auto switch_action=graphics_switch_dialog(graphics_choice,controller_pressed(input_map::kPadB));
+    if(switch_action==GraphicsSwitchAction::Switch)enable(graphics_choice.id,true,error,true);
+    if(switch_action==GraphicsSwitchAction::Cancel)g_pad_b_used=true;
     native_confirm_dialog(confirm, error);
 }
 
@@ -1350,11 +1363,20 @@ void code_mod_dialog() {
 }
 
 void tab_mods() {
+    auto packages=mods::packages::list();
+    if(std::any_of(packages.begin(),packages.end(),[](const auto& pack){return pack.pending_restart;})){
+        note("Restart pending: saved pack choices will apply after restart. Active packs stay loaded until then.");
+        if(ImGui::Button("Restart now"))hostui::post([]{render::restart();});
+    }
     bool code_mods=mods::code::enabled();
     if(ImGui::Checkbox("Enable code mods (PowerPC mods)",&code_mods))mods::code::request(code_mods);
     note("Changing code-mod support rebuilds the game code and requires a restart.");
     bool v;
     heading("Mod manager");
+    static std::vector<std::string> migration_notes;
+    for(auto& message:mods::packages::take_notices())migration_notes.push_back(std::move(message));
+    for(const auto& message:migration_notes)note("%s",message.c_str());
+    if(!migration_notes.empty()&&ImGui::Button("Dismiss pack notices"))migration_notes.clear();
     note("Built-in mods are part of this recomp build. Your choices are saved; all start off by default.");
     static ImGuiTextFilter search;
     search.Draw("Search mods", 260);

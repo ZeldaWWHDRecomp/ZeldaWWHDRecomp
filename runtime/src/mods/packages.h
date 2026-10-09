@@ -15,10 +15,12 @@ struct Option {
     double minimum=0,maximum=1,step=1;
     std::vector<std::string> choices;
 };
+struct Conflict {std::string id,name,reason;};
 struct View {
     std::string id,name,version,author,description,kind,reason,status;
     bool enabled=false,active=false,compatible=false,restart_required=false,pending_restart=false;
     bool native_confirmed=true; // false: code the player has not confirmed (native library or guest ELF)
+    std::vector<Conflict> graphics_conflicts; // currently enabled packs, before enabling
     std::vector<Option> options;
     std::vector<std::string> dependencies,conflicts;
     std::vector<std::string> setup_tools; // package-relative executables covered by native confirmation
@@ -33,7 +35,8 @@ std::vector<View> list();
 bool install(const std::string& source,std::string& error,std::string* installed_id=nullptr); // directory or ZIP/.wwhdmod
 bool remove(const std::string& id,std::string& error);
 bool enable_after_code_rebuild(const std::string& id,std::string& error); // requires the same trust confirmation
-bool enable(const std::string& id,bool on,std::string& error); // refuses unconfirmed native code
+// switch_conflicts is the confirmed Switch action: disable conflicting Cemu packs atomically.
+bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts=false); // refuses unconfirmed native code
 // Native packages that enabling `id` would newly turn on (itself and disabled dependencies) whose
 // code the player has not confirmed yet, as {id, name}. Empty: enable() needs no confirmation.
 std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::string& id);
@@ -46,6 +49,8 @@ std::vector<SetupView> setup_steps(const std::string& id);
 bool set_game_source(const std::string& game,const std::string& path,std::string& error);
 // Run on a worker thread after native confirmation; never holds the manager lock while running.
 bool run_setup_tool(const std::string& id,const std::string& step,std::string& error,std::string& last_output);
+// Notices are consumed once by the Mods tab.
+std::vector<std::string> take_notices();
 void disable_all();
 std::vector<std::string> profiles();
 std::string current_profile();

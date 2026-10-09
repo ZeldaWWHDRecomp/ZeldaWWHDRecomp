@@ -93,7 +93,7 @@ std::string expand(const std::string& source,const std::map<std::string,double>&
     }
     auto version=result.find("#version");require(version!=std::string::npos,"Cemu shader has no GLSL version");auto end=result.find('\n',version);require(end!=std::string::npos,"Invalid shader version");result.replace(version,end-version,"#version 450\n#ifndef VULKAN\n#define VULKAN 1\n#endif");return result;
 }
-Prepared prepare(const std::vector<Selection>& selections){
+Prepared prepare(const std::vector<Selection>& selections,bool expand_sources=true){
     Prepared out;
     for(const auto& selection:selections){auto vars=variables(selection.pack,selection.config);
         if(!selection.pack.aspect_expression.empty()){require(out.aspect==0,"Multiple Cemu aspect packs conflict");auto ratio=expression(selection.pack.aspect_expression,vars);require(ratio>=1&&ratio<=4,"Cemu aspect ratio outside native 1:1–4:1 range");out.aspect=float(ratio);out.aspect_shaders=!selection.pack.shaders.empty();}
@@ -102,7 +102,7 @@ Prepared prepare(const std::vector<Selection>& selections){
             require(p.out_width||p.out_height,"Texture rule has no supported overwrite dimensions");
             out.rules.push_back(std::move(p));
         }
-        for(const auto& shader:selection.pack.shaders){auto [it,inserted]=out.shaders.emplace(ShaderKey{shader.base,shader.aux,shader.vertex},PreparedShader{selection.id,expand(shader.source,vars)});require(inserted,"Cemu shader conflict between "+selection.id+" and "+it->second.owner);}
+        for(const auto& shader:selection.pack.shaders){auto [it,inserted]=out.shaders.emplace(ShaderKey{shader.base,shader.aux,shader.vertex},PreparedShader{selection.id,expand_sources?expand(shader.source,vars):std::string{}});require(inserted,"Cemu shader conflict between "+selection.id+" and "+it->second.owner);}
     }
     for(size_t i=0;i<out.rules.size();i++)for(size_t j=i+1;j<out.rules.size();j++){
         const auto& a=out.rules[i];const auto& b=out.rules[j];if(a.owner==b.owner)continue;
@@ -186,6 +186,15 @@ void import_legacy(const fs::path& stage,const std::string& source_name){
     auto id=lower(fs::path(source_name).stem().string());for(char& c:id)if(!((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'))c='-';if(id.size()>58)id.resize(58);require(!id.empty(),"Missing Cemu pack name");
     json::Value m;m["format_version"]=1;m["id"]="cemu."+id;m["name"]=pack.name;m["version"]="1.0.0";m["game_id"]="wwhd-usa";m["minimum_manager_version"]="1.2.0";m["kind"]="cemu";auto relative=rules.front().parent_path().lexically_relative(stage).generic_string();m["cemu_dir"]=relative=="."?"":relative;m["description"]=pack.description;m["options"]=options(pack);
     std::ofstream out(stage/"manifest.json");out<<json::dump(m)<<'\n';out.close();require(bool(out),"Cannot write imported Cemu manifest");
+}
+std::string conflict_reason(const Selection& a,const Selection& b){
+    auto x=prepare({a},false),y=prepare({b},false);
+    for(const auto& [key,shader]:x.shaders)if(y.shaders.contains(key))return "both change the same shader";
+    if(x.aspect&&y.aspect)return "both change the aspect ratio";
+    auto overlaps=[](const auto& a,const auto& b){return a.empty()||b.empty()||std::any_of(a.begin(),a.end(),[&](auto n){return std::find(b.begin(),b.end(),n)!=b.end();});};
+    for(const auto& a:x.rules)for(const auto& b:y.rules)
+        if((!a.width||!b.width||a.width==b.width)&&(!a.height||!b.height||a.height==b.height)&&(!a.depth||!b.depth||a.depth==b.depth)&&overlaps(a.formats,b.formats)&&overlaps(a.tiles,b.tiles))return "overlapping graphics rules";
+    return {};
 }
 void validate(const std::vector<Selection>& selections){prepare(selections);}
 void activate(const std::vector<Selection>& selections){require(!present.load(),"Cemu graphics packs already activated");active=prepare(selections);shader_present.store(!active.shaders.empty(),std::memory_order_release);present.store(!active.rules.empty()||!active.shaders.empty(),std::memory_order_release);}
