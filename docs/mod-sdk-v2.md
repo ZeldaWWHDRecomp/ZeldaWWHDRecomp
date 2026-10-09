@@ -1,6 +1,8 @@
-# Mod SDK v2: PowerPC guest mods (design study and prototype)
+# Mod SDK v2: PowerPC guest mods
 
-Status: **prototype** on branch `sdk2-guest-mods`, off by default. The Native SDK v1
+Status: phase 1 is merged; code-mod support is off by default. Phase 2 HUD,
+combined packages and settings are under validation. Historical prototype design
+and measurements are retained below. The Native SDK v1
 (`runtime/include/wwhd_mod.h`, [mod-manager.md](mod-manager.md)) stays supported and unchanged.
 
 Code mods for this port are written in C (or C++) against mod headers and compiled for the
@@ -703,11 +705,14 @@ Metal and Vulkan A/B gate demonstrates at most 2% median overhead.
 
 ## Remaining work
 
-Phase 2 covers the [HUD/audio interfaces](#phase-2-interfaces-and-integration),
-state-load notifications, broader translator coverage and ELF fuzzing, cross-mod exports,
-and catalogue integration. The [minimap and dragon porting plan](#porting-the-existing-minimap-and-dragon-prototypes)
-identifies their required services and reusable game-side hooks. Runtime mod-set changes
-continue to require a restart.
+The current phase 2 covers HUD drawing, combined guest/content/art packages and
+read-only port settings, with `hud-demo` and `button-icons` as the required pilots.
+The minimap is a stretch goal; dragon and audio are outside this phase's scope.
+The earlier [HUD/audio interface study](#phase-2-interfaces-and-integration) and
+[minimap and dragon porting plan](#porting-the-existing-minimap-and-dragon-prototypes)
+remain future design references. Broader translator coverage, ELF fuzzing,
+cross-mod exports and catalogue integration remain separate follow-up work.
+Runtime mod-set changes continue to require a restart.
 
 The broad generated declarations remain committed so modders can discover public names
 without running the generator. A smaller curated set would suffice for the current two
@@ -741,7 +746,7 @@ coalesce, including a change reverted before the next read. Read the setting
 once per logic step for reactive HUDs; immutable startup keys stay constant.
 
 ```c
-char layout[16];
+static char layout[16];
 if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING,
                      layout, sizeof layout)) {
     /* layout contains the current stable preset name. */
@@ -757,6 +762,31 @@ including true-60 half steps. Re-registering the same callback does not create a
 extra call. Emit elements with `wwhd_hud_emit(list, &element)`; the host commits the
 list when the callback returns. The game CPU registers are restored afterwards.
 The callback should only read game state and record HUD elements.
+
+```c
+#include "wwhd_guest.h"
+#include "game/bindings.h"
+#include "game/link.h"
+
+static wwhd_hud_element box;
+static void draw(u32 list) {
+    box = (wwhd_hud_element){
+        .kind = WWHD_HUD_RECT, .anchor = WWHD_HUD_TOP_LEFT,
+        .x = 20, .y = 96, .w = 160, .h = 40,
+        .thickness = 1, .u1 = 1, .v1 = 1, .rgba = 0x204060C0
+    };
+    wwhd_hud_emit(list, &box);
+}
+WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
+    (void)link;
+    wwhd_hud_register(draw, WWHD_HUD_BOTH);
+}
+```
+
+See `examples/guest-mods/hud-demo` for original PNG artwork, heart-count text and
+texture handle renewal after loading a state. `button-icons` demonstrates typed
+preset reads; its overdraw placement and contextual visibility are still under
+validation. The examples' README describes the opt-in local frame-check driver.
 
 Elements use the packed `wwhd_hud_element` declaration in `wwhd_guest.h`. Put the
 element and UTF-8 text in static storage or this mod's heap. Kinds include filled

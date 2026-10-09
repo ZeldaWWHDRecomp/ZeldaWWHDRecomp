@@ -10,14 +10,15 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+from run_bench import other_games as running_games, other_benchmarks
 
-def other_games():
-    result = subprocess.run(["ps", "-axo", "pid,comm"], check=True,
-                            capture_output=True, text=True)
-    return [line.strip() for line in result.stdout.splitlines()
-            if line.rstrip().endswith("/wwhd") or "run_bench.py" in line]
+
+def other_games(own_pid=None):
+    return running_games(own_pid) + other_benchmarks()
 
 
 def disk_ok(path):
@@ -139,6 +140,8 @@ def main():
             deadline = time.monotonic() + args.timeout
             while process.poll() is None and not (root / "test_done").exists():
                 disk_ok(root)
+                if other_games(process.pid):
+                    raise RuntimeError("another game or benchmark started; case interrupted")
                 if time.monotonic() > deadline:
                     raise RuntimeError("game case timed out")
                 time.sleep(1)
