@@ -34,16 +34,17 @@ int main(int argc, char **argv) {
     assert(argc == 3);
     std::string mode = argv[2];
     const bool stereo = mode.starts_with("stereo");
-    const bool tone = mode == "tone";
-    mute = mode == "mute" || mode == "stereo-mute";
+    const bool tone = mode.find("tone") != std::string::npos;
+    const bool zero = mode == "zero";
+    mute = mode.find("mute") != std::string::npos;
     env("WWHD_NO_AUDIO", "1");
     env("WWHD_AUDIO_SPEAKERS", stereo ? "stereo" : "surround");
-    env("WWHD_AUDIO_VOLUME", "0.5");
+    env("WWHD_AUDIO_VOLUME", zero ? "0" : "0.5");
     env("WWHD_AUDIO_DUMP", argv[1]);
     audio::init();
     const int channels = audio::channels();
     assert(channels == (stereo ? 2 : 6));
-    if (mode == "fast" || mode == "stereo-fast" || mute)
+    if (mode.find("fast") != std::string::npos || mute)
         game_clock::set_rate(4);
     const int rate = game_clock::rate(), frames = 48000;
     if (tone)
@@ -55,9 +56,9 @@ int main(int argc, char **argv) {
     assert(h > 0);
     std::vector<int16_t> source(144 * channels), guest(144 * 2);
     std::vector<int16_t> expected;
-    for (int second = 0; second < (tone ? 6 : 1) * rate; ++second) {
+    for (int second = 0; second < (tone ? channels : 1) * rate; ++second) {
         if (tone)
-            assert(!strcmp(audio::speaker_test_channel(), audio::kSpeakerNames[second]));
+            assert(!strcmp(audio::speaker_test_channel(), audio::kSpeakerNames[second / rate]));
         for (int begin = 0; begin < frames; begin += 144) {
             int count = std::min(144, frames - begin);
             for (int i = 0; i < count; ++i) {
@@ -79,7 +80,7 @@ int main(int argc, char **argv) {
                                                                                              : 0);
                             sum += int16_t(std::clamp(sample, -32768, 32767) * 0.5f);
                         }
-                        expected.push_back(mute ? 0 : sum / rate);
+                        expected.push_back(mute || zero ? 0 : sum / rate);
                     }
         }
     }
@@ -93,13 +94,13 @@ int main(int argc, char **argv) {
         file.read(reinterpret_cast<char *>(actual.data()), actual.size() * 2);
         assert(file.good() && actual == expected);
     } else {
-        for (int speaker = 0; speaker < 6; ++speaker) {
+        for (int speaker = 0; speaker < channels; ++speaker) {
             bool heard = false;
             for (int frame = 0; frame < 48000; ++frame) {
                 int16_t samples[6];
-                file.read(reinterpret_cast<char *>(samples), 12);
+                file.read(reinterpret_cast<char *>(samples), channels * 2);
                 assert(file.good());
-                for (int ch = 0; ch < 6; ++ch) {
+                for (int ch = 0; ch < channels; ++ch) {
                     if (ch != speaker || frame >= 31200)
                         assert(samples[ch] == 0);
                     else {
@@ -111,6 +112,7 @@ int main(int argc, char **argv) {
             assert(heard);
         }
     }
+    assert(file.peek() == std::char_traits<char>::eof());
     file.close();
     std::remove(argv[1]);
 }
