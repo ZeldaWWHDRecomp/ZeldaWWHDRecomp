@@ -208,7 +208,20 @@ re-validates hook targets on load (every target must be a function entry of this
 ### Manager startup and local tools (phase 1)
 
 Guest packages use the same one-time code trust dialog as native packages. The
-fingerprint is the SHA-256 of `mod.elf`, so rebuilding a module does not ask again.
+fingerprint for a code-only package is the SHA-256 of `mod.elf`, so rebuilding
+a host module does not ask again. A combined guest package may add `content/`
+(or an explicit relative `content_dir`) and its own `textures/` or `assets/`.
+Its single trust decision covers a sorted inventory of every package file, including
+the ELF, manifest and content. Changing any file requires confirmation again.
+Content file SHA-256 values appear in package details.
+
+Combined packages are all-or-nothing: with code mods off, neither guest code nor
+content applies. The existing enable-code-mods offer remains available. On restart,
+content activates only after the guest module loads successfully; a failed module
+leaves its content inactive. Content uses the same path conflicts and overlay rules
+as content-only packages. Enabling or disabling either part requires restart.
+Package images must be original modder artwork; never distribute game assets.
+PNG loading and validation are described with the HUD service once available.
 The manager freezes the enabled guest set and options during initialization.
 After memory and dispatch initialization, before guest threads start, it inspects,
 allocates, builds and loads that set in dependency order. Failures appear in each

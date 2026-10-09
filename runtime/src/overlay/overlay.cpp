@@ -962,6 +962,7 @@ void package_controls() {
             ImGui::TextWrapped("%s", mod.description.c_str());
             if (!mod.reason.empty()) ImGui::TextWrapped("%s", mod.reason.c_str());
             if (!mod.status.empty()) ImGui::TextWrapped("%s", mod.status.c_str());
+            for(const auto& [path,hash]:mod.content_hashes)note("Content SHA-256 %s: %s",path.c_str(),hash.c_str());
             for (const auto& dependency : mod.dependencies) note("Requires %s", dependency.c_str());
             for (const auto& conflict : mod.conflicts) note("Conflicts with %s", conflict.c_str());
             for (const auto& option : mod.options) {
