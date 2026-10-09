@@ -55,7 +55,8 @@ std::atomic<uint32_t> g_move_buttons{0};  // the live sample, from input::read()
 std::atomic<float> g_move_ramp{1.f};
 std::atomic<float> g_move_stamina{1.f};  // 0..1
 std::atomic<bool> g_move_exhausted{false};
-bool g_move_engaged = false;   // hold: mirrors the button; toggle: latched on press
+bool g_move_engaged = false;   // hold: mirrors the button; toggle: the cycle is running
+bool g_move_armed = false;     // toggle: a press armed a cycle that has not started moving yet
 bool g_move_held_prev = false;
 std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
@@ -150,6 +151,7 @@ void move_speed_input(uint32_t buttons) { g_move_buttons.store(buttons, std::mem
 float link_move_factor(uint32_t link) {
     if (!move_speed() || !link) {
         g_move_engaged = false;
+        g_move_armed = false;
         g_move_held_prev = false;
         g_move_ramp = 1.f;
         g_move_stamina = 1.f;
@@ -167,7 +169,15 @@ float link_move_factor(uint32_t link) {
         const bool was_held = g_move_held_prev;
         g_move_held_prev = held != 0;
         if (move_speed_mode() == MoveMode::kToggle) {
-            if (held && !was_held) g_move_engaged = !g_move_engaged;
+            // One press starts one cycle and another press stops it. The cycle also ends by itself the
+            // moment he stops running or swimming, or when the bar runs out, so cycles never queue up
+            // behind each other: boosting again always takes a new press.
+            if (held && !was_held) {
+                if (g_move_armed || g_move_engaged) g_move_armed = g_move_engaged = false;
+                else g_move_armed = true;
+            }
+            if (g_move_armed && is_move_proc(proc)) g_move_engaged = true;
+            if (g_move_exhausted || (g_move_engaged && !is_move_proc(proc))) g_move_armed = g_move_engaged = false;
         } else {
             g_move_engaged = held != 0;
         }

@@ -35,7 +35,7 @@ void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_
 bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
 
 static bool move_on = false;
-static float move_land = 1.75f, move_swim = 1.5f, move_seconds = 6.f, move_cooldown = 3.f;
+static float move_land = 1.5f, move_swim = 1.25f, move_seconds = 5.f, move_cooldown = 3.f;
 static int move_mode = (int)MoveMode::kHold;
 static uint32_t move_button = 0x40000;
 bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }

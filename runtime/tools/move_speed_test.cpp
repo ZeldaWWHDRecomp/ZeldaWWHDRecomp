@@ -38,20 +38,20 @@ static void test_target() {
 }
 
 static void test_clamp() {
-    assert(clamp_factor(std::numeric_limits<float>::quiet_NaN()) == 1.75f);
-    assert(clamp_factor(std::numeric_limits<float>::infinity()) == 1.75f);
+    assert(clamp_factor(std::numeric_limits<float>::quiet_NaN()) == 1.50f);
+    assert(clamp_factor(std::numeric_limits<float>::infinity()) == 1.50f);
     assert(clamp_factor(0.f) == 1.f);
     assert(clamp_factor(100.f) == 4.f);
     assert(clamp_factor(.5f) == 1.f);
-    assert(clamp_stamina_seconds(std::numeric_limits<float>::quiet_NaN()) == 6.f);
+    assert(clamp_stamina_seconds(std::numeric_limits<float>::quiet_NaN()) == 5.f);
     assert(clamp_stamina_seconds(-1.f) == 0.f);
     assert(clamp_stamina_seconds(1000.f) == 60.f);
     assert(clamp_cooldown_seconds(std::numeric_limits<float>::quiet_NaN()) == 3.f);
     assert(clamp_cooldown_seconds(-1.f) == 0.f);
     assert(clamp_cooldown_seconds(1000.f) == 60.f);
     // the defaults a fresh settings file gets
-    assert(kDefaultLandFactor == 1.75f && kDefaultSwimFactor == 1.50f);
-    assert(kDefaultStaminaSeconds == 6.f && kDefaultCooldownSeconds == 3.f);
+    assert(kDefaultLandFactor == 1.50f && kDefaultSwimFactor == 1.25f);
+    assert(kDefaultStaminaSeconds == 5.f && kDefaultCooldownSeconds == 3.f);
 }
 
 static void test_ramp() {
@@ -84,7 +84,7 @@ static void test_animation() {
     assert(animation_factor(1.5f) == 1.5f);
     assert(animation_factor(4.f) == 4.f);
     assert(animation_factor(100.f) == 4.f);
-    assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.75f);
+    assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.50f);
 }
 
 static void test_stamina() {
