@@ -70,14 +70,23 @@ public class WwhdActivity extends SDLActivity {
     }
 
     private static final int GPU_DRIVER_REQUEST = 4972;
-    private static native String installGpuDriver(String path);
-    public void chooseGpuDriver() {
+    private static native String installGpuDriver(String path, boolean select);
+    // afterFailure: the renderer could not start with the system driver (renderer.cpp), so the
+    // installed driver is selected and the app ends; it runs from the next start
+    private boolean driverAfterFailure;
+    public void chooseGpuDriver(boolean afterFailure) {
+        driverAfterFailure = afterFailure;
         runOnUiThread(() -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), GPU_DRIVER_REQUEST));
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != GPU_DRIVER_REQUEST || result != RESULT_OK || data == null || data.getData() == null) return;
+        if (request != GPU_DRIVER_REQUEST) return;
+        final boolean afterFailure = driverAfterFailure;
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            if (afterFailure) endApp();
+            return;
+        }
         final android.net.Uri uri = data.getData();
         // Copy the content URI into internal storage; no broad storage permissions needed.
         new Thread(() -> {
@@ -95,14 +104,22 @@ public class WwhdActivity extends SDLActivity {
                         out.write(bytes, 0, count);
                     }
                 }
-                error = installGpuDriver(zip.getAbsolutePath());
+                error = installGpuDriver(zip.getAbsolutePath(), afterFailure);
             } catch (Exception e) { error = e.getMessage(); }
             finally { if (zip != null) zip.delete(); }
             final String problem = error;
-            runOnUiThread(() -> new AlertDialog.Builder(this).setTitle(problem == null || problem.isEmpty() ? "Driver installed" : "Driver installation failed")
-                .setMessage(problem == null || problem.isEmpty() ? "Select the driver in Graphics, then restart the game." : problem)
-                .setPositiveButton("OK", null).show());
+            final boolean ok = problem == null || problem.isEmpty();
+            runOnUiThread(() -> new AlertDialog.Builder(this).setTitle(ok ? "Driver installed" : "Driver installation failed")
+                .setMessage(!ok ? problem : afterFailure ? "The game uses it from the next start: open the game again."
+                                                         : "Select the driver in Graphics, then restart the game.")
+                .setCancelable(!afterFailure)
+                .setPositiveButton("OK", afterFailure ? (dialog, which) -> endApp() : null).show());
         }, "gpu-driver-install").start();
+    }
+
+    private void endApp() {
+        finishAndRemoveTask();
+        System.exit(0);
     }
 
     // Frame interpolation at 120/240 fps (runtime/src/platform/display_rate.cpp, called from native

@@ -27,6 +27,10 @@
 #include "runtime.h"
 #ifdef WWHD_SDL_HOST
 #include <SDL3/SDL_messagebox.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_timer.h>
+#include "vulkan/android_driver.h"
+#endif
 #endif
 
 #ifdef WWHD_HAS_METAL
@@ -188,6 +192,31 @@ void init() {
         LOG("FATAL: %s renderer could not start: %s", api_name(b->api), g_reason.c_str());
         const std::string text = std::string("The ") + api_name(b->api) + " renderer could not start.\n\n" + g_reason;
         const char* hidden = getenv("WWHD_HIDDEN_WINDOWS");  // test runs: nothing pops up
+#ifdef __ANDROID__
+        // An Adreno GPU whose system driver is too old can run a custom driver (Mesa Turnip, for
+        // example), but the settings overlay that installs one needs a running renderer: the error
+        // offers it instead. The activity installs and selects it and ends the app.
+        if ((!hidden || !*hidden || !strcmp(hidden, "0")) && g_reason.find("Adreno") != std::string::npos) {
+            // short: the Android message box does not scroll, its buttons go below the screen
+            const size_t at = g_reason.rfind("\n\n", g_reason.find("Adreno"));
+            const std::string gpu = g_reason.substr(at == std::string::npos ? 0 : at + 2,
+                                                    g_reason.find("\n\n", g_reason.find("Adreno")) - (at == std::string::npos ? 0 : at + 2));
+            const std::string offer = "The graphics driver is too old for the game's Vulkan renderer.\n\n" + gpu +
+                                      "\n\nA custom driver for Adreno GPUs (a driver ZIP package, for example Mesa "
+                                      "Turnip) can replace it.";
+            const SDL_MessageBoxButtonData buttons[] = {
+                {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quit"},
+                {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Install GPU driver..."}};
+            const SDL_MessageBoxData box{SDL_MESSAGEBOX_ERROR, nullptr, "Wind Waker HD", offer.c_str(), 2, buttons, nullptr};
+            int choice = 0;
+            if (SDL_ShowMessageBox(&box, &choice) && choice == 1) {
+                gfxvk::drivers::request_install(true);
+                for (;;) SDL_Delay(1000);  // WwhdActivity ends the app once the driver is installed
+            }
+            fflush(stderr);
+            _Exit(1);
+        }
+#endif
         if (!hidden || !*hidden || !strcmp(hidden, "0"))
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Wind Waker HD", text.c_str(), nullptr);
         fflush(stderr);
