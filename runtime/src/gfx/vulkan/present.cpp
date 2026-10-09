@@ -432,7 +432,7 @@ void compose_headless_diagnostic(Screen& screen) {
  compose(target.image,target.view,target.layout,extent,target.fmt.pixel,quads,
          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),overlayDraw,&target.use);
  unsigned commands=0;
- if(overlayDraw)for(int i=0;i<overlayDraw->CmdListsCount;++i)commands+=overlayDraw->CmdLists[i]->CmdBuffer.Size;
+ if(overlayDraw)for(const auto* list:overlayDraw->CmdLists)commands+=list->CmdBuffer.Size;
  const unsigned vertices=overlayDraw?overlayDraw->TotalVtxCount:0,indices=overlayDraw?overlayDraw->TotalIdxCount:0;
  if(counter.encoded(diagnostic,vertices,indices,commands))
   fprintf(stderr,"[headless-compose] Vulkan encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu\n",counter.frames,vertices,indices,commands,

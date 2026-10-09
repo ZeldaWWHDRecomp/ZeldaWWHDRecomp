@@ -968,7 +968,7 @@ void present_screens() {
         if(!target)throw std::runtime_error("headless Metal composition target allocation failed");
         compose_tv(target,L);
         unsigned commands=0;
-        if(g_overlay_draw)for(int i=0;i<g_overlay_draw->CmdListsCount;++i)commands+=g_overlay_draw->CmdLists[i]->CmdBuffer.Size;
+        if(g_overlay_draw)for(const auto* list:g_overlay_draw->CmdLists)commands+=list->CmdBuffer.Size;
         const unsigned vertices=g_overlay_draw?g_overlay_draw->TotalVtxCount:0,indices=g_overlay_draw?g_overlay_draw->TotalIdxCount:0;
         if(counter.encoded(diagnostic,vertices,indices,commands))
             LOG("[headless-compose] Metal encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu",counter.frames,vertices,indices,commands,
