@@ -37,6 +37,12 @@ static std::mutex g_log_mutex;
 static constexpr int kLogRing = 200, kLogLine = 240;
 static char g_log_ring[kLogRing][kLogLine];
 static std::atomic<uint32_t> g_log_next{0};
+// the log file (main.cpp, captures/wwhd.log): every line in full, under the log lock
+static void (*g_log_sink)(const char*, size_t) = nullptr;
+void log_set_sink(void (*sink)(const char*, size_t)) {
+    std::lock_guard<std::mutex> lk(g_log_mutex);
+    g_log_sink = sink;
+}
 
 void log_msg(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_log_mutex);
@@ -48,6 +54,14 @@ void log_msg(const char* fmt, ...) {
     vsnprintf(line, kLogLine, fmt, ap2);
     va_end(ap2);
     g_log_next++;
+    if (g_log_sink) {
+        char full[4096];
+        va_list ap3;
+        va_copy(ap3, ap);
+        int n = vsnprintf(full, sizeof full, fmt, ap3);
+        va_end(ap3);
+        if (n > 0) g_log_sink(full, std::min((size_t)n, sizeof full - 1));
+    }
 #ifdef __ANDROID__
     __android_log_vprint(ANDROID_LOG_INFO, "wwhd", fmt, ap);  // adb logcat -s wwhd
     va_end(ap);

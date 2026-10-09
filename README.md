@@ -12,6 +12,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **A log file for every run:** `captures/wwhd.log` in the game's data folder (the previous run's is
+  kept as `wwhd-previous.log`), with your user paths removed as in crash logs. Attach it to bug
+  reports; on Windows the game's console output was otherwise lost. `WWHD_LOG_FILE=<path>` writes it
+  elsewhere, `WWHD_LOG_FILE=0` turns it off.
+
 - **Vulkan: precise GPU synchronization (barriers)**, on by default on Android, where tile-based GPUs
   are expected to gain the most. On desktop it's opt-in for testing: start with
   `WWHD_VK_NARROW_BARRIERS=1` and please report flicker or wrong pixels (`=0` forces the old path).

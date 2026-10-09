@@ -256,6 +256,57 @@ static void default_vulkan_cpu_paths() {
     }
 }
 
+// captures/wwhd.log: the whole log of this run (the previous run's is kept as wwhd-previous.log), so
+// players can attach it to an issue; on Windows the console output of the game is otherwise lost.
+// User paths are redacted as in crash logs. WWHD_LOG_FILE=<path> writes elsewhere, =0 turns it off
+// (Android: off unless set; logcat has it). The file stops at 64 MiB.
+static int g_log_fd = -1;
+static size_t g_log_bytes = 0;
+static constexpr size_t kLogFileMax = 64u << 20;
+static void log_file_raw(int fd, const char* s, size_t n) {
+#ifdef _WIN32
+    if (fd >= 0) _write(fd, s, (unsigned)n);
+#else
+    if (fd >= 0 && write(fd, s, n) < 0) {}
+#endif
+}
+static void log_file_line(int fd, const char* s, size_t n) {
+    crash_context::redact(fd, {s, n}, log_file_raw);
+    if (n == 0 || s[n - 1] != '\n') log_file_raw(fd, "\n", 1);
+}
+static void log_file_sink(const char* s, size_t n) {
+    if (g_log_fd < 0 || g_log_bytes > kLogFileMax) return;
+    log_file_line(g_log_fd, s, n);
+    g_log_bytes += n + 1;
+    if (g_log_bytes > kLogFileMax) {
+        static const char note[] = "[log] the log file reached 64 MiB; later lines go to the console only\n";
+        log_file_raw(g_log_fd, note, sizeof note - 1);
+    }
+}
+static void start_log_file() {
+    const char* e = getenv("WWHD_LOG_FILE");
+    if (e && !strcmp(e, "0")) return;
+#ifdef __ANDROID__
+    if (!e || !*e) return;
+#endif
+    std::string path = e && *e ? e : "captures/wwhd.log";
+    std::error_code ec;
+    if (!(e && *e)) {
+        std::filesystem::create_directories("captures", ec);
+        std::filesystem::remove("captures/wwhd-previous.log", ec);
+        std::filesystem::rename(path, "captures/wwhd-previous.log", ec);
+    }
+#ifdef _WIN32
+    g_log_fd = _open(path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+    g_log_fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+#endif
+    if (g_log_fd < 0) { LOG("[log] cannot write %s", path.c_str()); return; }
+    log_ring_write(g_log_fd, log_file_line);  // the lines logged before (only the boot so far)
+    log_set_sink(log_file_sink);
+    LOG("[log] writing %s", path.c_str());
+}
+
 int main(int argc, char** argv) {
     mods::code::startup(argc, argv);
     apply_portable_mode();
@@ -309,6 +360,7 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     install_crash_handler();
+    start_log_file();
     // which build on which system: also in crash logs (their last log lines)
     LOG("[boot] Wind Waker HD %s (%s), %s", build::version(), build::commit(), reporthdr::os_description().c_str());
     // test aid: WWHD_TEST_HOST_CRASH=1 crashes inside a system library (strlen of a bad pointer), so
