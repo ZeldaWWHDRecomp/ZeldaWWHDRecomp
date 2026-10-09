@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "https.h"
 #include "download_file.h"
 #include "../mods/catalogue_schema.h"
@@ -12,19 +13,19 @@ namespace host {
 namespace {
 struct Close {void operator()(void* handle)const{if(handle)WinHttpCloseHandle(handle);}};
 using Handle=std::unique_ptr<void,Close>;
-void check(BOOL ok){if(!ok)throw std::runtime_error("HTTPS download failed; check the connection and try again");}
+void check(BOOL ok){if(!ok)exception_report::raise("HTTPS download failed; check the connection and try again");}
 std::wstring wide(const std::string& text) {
     int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),nullptr,0);
-    if(!size)throw std::runtime_error("Invalid HTTPS URL");
+    if(!size)exception_report::raise("Invalid HTTPS URL");
     std::wstring out(size,L'\0');check(MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,text.data(),int(text.size()),out.data(),size));return out;
 }
 }
 void download_https(const std::string& url,const std::filesystem::path& destination,uint64_t limit) {
-    if(!mods::catalogue::https_url(url))throw std::runtime_error("Download URL must use HTTPS");
+    if(!mods::catalogue::https_url(url))exception_report::raise("Download URL must use HTTPS");
     auto address=wide(url);URL_COMPONENTS parts{};parts.dwStructSize=sizeof parts;
     parts.dwHostNameLength=parts.dwUrlPathLength=parts.dwExtraInfoLength=DWORD(-1);
     check(WinHttpCrackUrl(address.c_str(),DWORD(address.size()),0,&parts));
-    if(parts.nScheme!=INTERNET_SCHEME_HTTPS)throw std::runtime_error("Download URL must use HTTPS");
+    if(parts.nScheme!=INTERNET_SCHEME_HTTPS)exception_report::raise("Download URL must use HTTPS");
     std::wstring host(parts.lpszHostName,parts.dwHostNameLength),path(parts.lpszUrlPath,parts.dwUrlPathLength);
     if(parts.dwExtraInfoLength)path.append(parts.lpszExtraInfo,parts.dwExtraInfoLength);
     if(path.empty())path=L"/";
@@ -42,10 +43,10 @@ void download_https(const std::string& url,const std::filesystem::path& destinat
     check(WinHttpReceiveResponse(request.get(),nullptr));
     DWORD status=0,size=sizeof status;
     check(WinHttpQueryHeaders(request.get(),WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX));
-    if(status!=200)throw std::runtime_error("HTTPS server did not return a successful response");
+    if(status!=200)exception_report::raise("HTTPS server did not return a successful response");
     char buffer[16384];
     for(;;) {
-        if(std::chrono::steady_clock::now()-started>std::chrono::seconds(120))throw std::runtime_error("HTTPS download timed out");
+        if(std::chrono::steady_clock::now()-started>std::chrono::seconds(120))exception_report::raise("HTTPS download timed out");
         DWORD bytes=0;check(WinHttpReadData(request.get(),buffer,sizeof buffer,&bytes));
         if(!bytes)break;file.append(buffer,bytes);
     }

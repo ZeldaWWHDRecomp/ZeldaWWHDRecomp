@@ -1,4 +1,5 @@
 #pragma once
+#include "../exception_report.h"
 // Internal, opt-in renderer diagnostic. No public SDK surface or ordinary drawing work.
 #include <cstdint>
 #include <cstdlib>
@@ -25,14 +26,14 @@ inline Policy parse(const char* frames,const char* hidden,const char* no_input) 
 }
 inline const Policy& policy() {
     static const auto result=parse(std::getenv("WWHD_TEST_OFFSCREEN_FRAMES"),std::getenv("WWHD_HIDDEN_WINDOWS"),std::getenv("WWHD_NO_HOST_INPUT"));
-    if(result.invalid)throw std::runtime_error("WWHD_TEST_OFFSCREEN_FRAMES requires 1..10000, hidden windows and no host input");
+    if(result.invalid)exception_report::raise("WWHD_TEST_OFFSCREEN_FRAMES requires 1..10000, hidden windows and no host input");
     return result;
 }
 struct Counter {
     unsigned frames=0;
     uint64_t vertices=0,indices=0,commands=0;
     void require_capacity(const Policy& p) const {
-        if(!p.enabled()||frames>=p.limit)throw std::runtime_error("headless composition diagnostic frame limit exhausted");
+        if(!p.enabled()||frames>=p.limit)exception_report::raise("headless composition diagnostic frame limit exhausted");
     }
     bool encoded(const Policy& p,unsigned v,unsigned i,unsigned c) {
         require_capacity(p);++frames;vertices+=v;indices+=i;commands+=c;

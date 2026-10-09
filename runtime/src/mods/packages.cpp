@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "packages.h"
 #include "manager.h"
 #include "mods.h"
@@ -60,7 +61,7 @@ content::Files startup_content;
 std::string last_problem;
 std::atomic<bool> dirty{false},running{false},profile_changed{false};
 ReadMemory read_memory=nullptr;WriteMemory write_memory=nullptr;
-void require(bool ok,const std::string& message){if(!ok)throw std::runtime_error(message);}
+void require(bool ok,const std::string& message){if(!ok)exception_report::raise(message);}
 bool id_ok(const std::string& s){return !s.empty()&&s.size()<=64&&s[0]!='.'&&std::all_of(s.begin(),s.end(),[](unsigned char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.';});}
 std::array<unsigned,3> version(const std::string& s) {
     std::array<unsigned,3> result{};size_t p=0;
@@ -301,7 +302,7 @@ void load(Live& item,const Record& record,const Value& configuration){
 #ifdef _WIN32
     item.library=LoadLibraryW(path.wstring().c_str());require(item.library,"Cannot load native mod library");auto init=reinterpret_cast<WWHDModInitV1>(GetProcAddress(static_cast<HMODULE>(item.library),"wwhd_mod_init_v1"));
 #else
-    item.library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);if(!item.library){const char* reason=dlerror();throw std::runtime_error(reason?reason:"Cannot load native library");}auto init=reinterpret_cast<WWHDModInitV1>(dlsym(item.library,"wwhd_mod_init_v1"));
+    item.library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);if(!item.library){const char* reason=dlerror();exception_report::raise(reason?reason:"Cannot load native library");}auto init=reinterpret_cast<WWHDModInitV1>(dlsym(item.library,"wwhd_mod_init_v1"));
 #endif
     require(init,"Native library has no wwhd_mod_init_v1 entry point");
     c.host={sizeof(WWHDModHostV1),1,&c,kGameId,c.path.c_str(),

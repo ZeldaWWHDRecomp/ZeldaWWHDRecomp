@@ -224,7 +224,7 @@ static void render_thread_main() {
 
 static void enqueue(Op op, const uint32* payload, uint32 n) {
     static std::once_flag once;
-    std::call_once(once, [] { std::thread(render_thread_main).detach(); });
+    std::call_once(once, [] { std::thread([] { exception_report::boundary("GX2 render thread", render_thread_main); }).detach(); });
     std::lock_guard<std::mutex> lk(g_q_mutex);
     g_q_pending.push_back(op | (n << 8));
     g_q_pending.insert(g_q_pending.end(), payload, payload + n);

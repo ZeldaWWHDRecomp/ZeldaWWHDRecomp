@@ -1,5 +1,6 @@
 // Declarative setup validation. Paths stay in local settings, never in diagnostic text.
 #pragma once
+#include "../exception_report.h"
 #include "catalogue_io.h"
 #include <array>
 #include <cctype>
@@ -94,7 +95,7 @@ inline std::vector<std::string> tool_arguments(const Step& step,const Sources& s
             else if(key=="package")replacement=std::filesystem::absolute(package).string();
             else if(key.starts_with("game:")) {
                 replacement=sources.get(key.substr(5));require(!replacement.empty(),"Required game source is missing or moved");
-            }else throw std::runtime_error("Unknown setup argument reference");
+            }else exception_report::raise("Unknown setup argument reference");
             arg.replace(from,end-from+1,replacement);from+=replacement.size();
         }
         result.push_back(std::move(arg));

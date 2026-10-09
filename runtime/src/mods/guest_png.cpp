@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "guest_png.h"
 #include "mod_archive.h"
 #include <array>
@@ -12,7 +13,7 @@
 
 namespace guestmods::hud {
 namespace {
-void require(bool ok,const char* message) {if(!ok)throw std::runtime_error(message);}
+void require(bool ok,const char* message) {if(!ok)exception_report::raise(message);}
 }
 Pixels decode_png(std::span<const uint8_t> bytes) {
     constexpr std::array<uint8_t,8> signature{137,80,78,71,13,10,26,10};
@@ -42,6 +43,6 @@ Pixels load_png(const std::filesystem::path& root,const std::string& relative) t
     require(bool(file.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(size))),"HUD texture could not be read");
     return decode_png(bytes);
 } catch(const std::filesystem::filesystem_error&) {
-    throw std::runtime_error("HUD texture filesystem could not be read");
+    exception_report::raise("HUD texture filesystem could not be read");
 }
 } // namespace guestmods::hud

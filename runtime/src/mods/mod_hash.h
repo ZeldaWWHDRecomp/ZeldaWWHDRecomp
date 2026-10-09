@@ -1,4 +1,5 @@
 #pragma once
+#include "../exception_report.h"
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -25,7 +26,7 @@ inline std::string sha256_stream(std::istream& f){
     std::vector<unsigned char> buffer(1<<16);unsigned char pending[128];size_t used=0;uint64_t total=0;
     while(f){f.read(reinterpret_cast<char*>(buffer.data()),std::streamsize(buffer.size()));size_t n=size_t(f.gcount());total+=n;
         for(size_t i=0;i<n;){size_t take=std::min<size_t>(64-used,n-i);std::copy_n(buffer.data()+i,take,pending+used);used+=take;i+=take;if(used==64){block(pending);used=0;}}}
-    if(!f.eof())throw std::runtime_error("Cannot read file for SHA-256");
+    if(!f.eof())exception_report::raise("Cannot read file for SHA-256");
     pending[used++]=0x80;size_t end=used<=56?64:128;std::fill(pending+used,pending+end,0);
     for(int i=0;i<8;i++)pending[end-1-i]=uint8_t((total*8)>>(8*i));
     block(pending);if(end==128)block(pending+64);
@@ -33,7 +34,7 @@ inline std::string sha256_stream(std::istream& f){
     return hex;
 }
 inline std::string sha256_file(const std::filesystem::path& p) {
-    std::ifstream input(p,std::ios::binary);if(!input)throw std::runtime_error("Cannot read file for SHA-256");
+    std::ifstream input(p,std::ios::binary);if(!input)exception_report::raise("Cannot read file for SHA-256");
     return sha256_stream(input);
 }
 inline std::string sha256_text(const std::string& text) {

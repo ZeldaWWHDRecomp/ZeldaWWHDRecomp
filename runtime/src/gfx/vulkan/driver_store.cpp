@@ -1,3 +1,4 @@
+#include "../../exception_report.h"
 #include "driver_store.h"
 #include "mods/mod_archive.h"
 #include "mods/mod_json.h"
@@ -8,7 +9,7 @@
 namespace gfxvk::drivers {
 namespace fs=std::filesystem;
 namespace {
-void require(bool ok,const char* error){if(!ok)throw std::runtime_error(error);}
+void require(bool ok,const char* error){if(!ok)exception_report::raise(error);}
 bool id_ok(const std::string& id) {return id.size()==32&&id.find_first_not_of("0123456789abcdef")==id.npos;}
 std::string text(const fs::path& file,size_t limit=16384) {
     if(!fs::exists(file))return {};

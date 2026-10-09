@@ -30,6 +30,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include "../exception_report.h"
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -962,11 +963,11 @@ void present_screens() {
         static headless_compose::Counter counter;
         counter.require_capacity(diagnostic);
         if(dw!=headless_compose::width||dh!=headless_compose::height)
-            throw std::runtime_error("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+            exception_report::raise("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
         const auto format=R.tv.srgb?MTLPixelFormatRGBA8Unorm_sRGB:MTLPixelFormatRGBA8Unorm;
         if(!target||target.device!=R.device||target.pixelFormat!=format)
             target=offscreen(headless_compose::width,headless_compose::height,R.tv.srgb);
-        if(!target)throw std::runtime_error("headless Metal composition target allocation failed");
+        if(!target)exception_report::raise("headless Metal composition target allocation failed");
         compose_tv(target,L);
         unsigned commands=0;
         if(g_overlay_draw)for(const auto* list:g_overlay_draw->CmdLists)commands+=list->CmdBuffer.Size;

@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "mod_archive.h"
 #include <fstream>
 #include <algorithm>
@@ -14,7 +15,7 @@ bool relative_path(const std::string& name) {
     for(const auto& part:p)if(part==".."||part=="."||part.empty())return false;
     return true;
 }
-static void require(bool ok,const char* error){if(!ok)throw std::runtime_error(error);}
+static void require(bool ok,const char* error){if(!ok)exception_report::raise(error);}
 void stage(const fs::path& source,const fs::path& dest) {
     require(!fs::exists(dest),"Staging directory already exists");fs::create_directories(dest);
     uint64_t total=0;size_t entries=0;

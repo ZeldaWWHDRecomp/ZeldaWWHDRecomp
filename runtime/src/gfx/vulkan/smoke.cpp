@@ -1,3 +1,4 @@
+#include "../../exception_report.h"
 #include "bc_decode.h"
 #include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
@@ -10,6 +11,7 @@
 #include "gx2/gx2.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
+#include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -27,7 +29,7 @@ namespace gfxvk {
 extern uint64_t g_stat_full_checks, g_stat_uploads;
 void request_tv_dump(const std::string&,int);
 namespace {
-void require(bool condition,const char* message) { if(!condition)throw std::runtime_error(message); }
+void require(bool condition,const char* message) { if(!condition)exception_report::raise(message); }
 struct Image {
  Surface s;
  Image(uint32_t w,uint32_t h,uint32_t format,bool depth=false,uint32_t layers=1,uint32_t mips=1) {
@@ -54,6 +56,45 @@ void clear_image(Surface& s,const float rgba[4]) {
  VkClearColorValue value{};std::copy(rgba,rgba+4,value.float32);VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,s.mips,0,s.arrayLayers};
  vkCmdClearColorImage(command_buffer(),s.image,s.layout,&value,1,&range);mark_gpu_written(&s);
 }
+// A colour placeholder used by a comparison instruction must retain colour tiling while
+// providing a Vulkan depth image. A subsequently rendered depth alias takes precedence.
+void colour_comparison_check() {
+ for (uint32_t tile : {1u,2u}) {
+  uint32_t addr=mem::host_alloc(4096,256);
+  memset(mem::ptr(addr),0,4096);
+  auto offset=[&](uint32_t x,uint32_t y) {
+   if(tile==1)return (y*8+x)*4;
+   return LatteAddrLib::ComputeSurfaceAddrFromCoordMicroTiled(x,y,0,32,8,8,
+       Latte::E_HWTILEMODE::TM_1D_TILED_THIN1,false);
+  };
+  for(uint32_t y=0;y<4;++y)for(uint32_t x=0;x<4;++x) {
+   uint8_t rgba[4]={uint8_t((x+y*4)*17),uint8_t(255-x*17),uint8_t(y*31),255};
+   memcpy(mem::ptr(addr)+offset(x,y),rgba,4);
+  }
+  uint32_t words[7]={1u|(tile<<3)|(3u<<19),3u|(0x1au<<26),addr>>8,0,
+                    (1u<<19)|(2u<<22)|(3u<<25),0,0};
+  auto* color=sampled_texture(words,false);
+  require(color&&!color->fmt.depth,"comparison fixture colour upload failed");
+  auto* compared=sampled_texture(words,true);
+  require(compared&&compared!=color&&compared->fmt.pixel==VK_FORMAT_D32_SFLOAT,
+          "RGBA8 comparison texture was not converted to depth");
+  auto data=read_image(*compared,VK_IMAGE_ASPECT_DEPTH_BIT,4);
+  for(uint32_t i=0;i<16;++i) {
+   float value;memcpy(&value,data.data()+i*4,4);
+   require(std::abs(value-float(i)/15.0f)<0.000001f,"colour comparison upload/tiling differs");
+  }
+  SurfaceDesc depth;depth.addr=addr;depth.width=depth.height=4;depth.pitch=8;
+  depth.format=0x11;depth.isDepth=true;depth.tileMode=tile;
+  auto* rendered=find_or_create_surface(depth,true);
+  transition_image(rendered,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  VkClearDepthStencilValue value{0.25f,0};VkImageSubresourceRange range{rendered->aspect,0,1,0,1};
+  vkCmdClearDepthStencilImage(command_buffer(),rendered->image,rendered->layout,&value,1,&range);
+  mark_gpu_written(rendered);
+  require(sampled_texture(words,true)==rendered,"rendered depth alias lost to the colour comparison placeholder");
+ }
+ fprintf(stderr,"[renderer smoke] colour comparison conversion, colour tiling and rendered depth alias passed\n");
+}
+
 void bc_surface_check() {
  for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
   SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
@@ -344,7 +385,7 @@ void triangle(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nvoid main(){vec2 p[3]=vec2[3](vec2(-0.8,-0.8),vec2(0.8,-0.8),vec2(0,0.8));gl_Position=vec4(p[gl_VertexIndex],0,1);}",true,objects.vs);
@@ -384,7 +425,7 @@ void vertex_window_check(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(location=0) in vec3 position;layout(location=1) in vec4 tint;layout(location=0) out vec4 vertexColor;void main(){gl_Position=vec4(position.xy,0,1);vertexColor=gl_VertexIndex==int(position.z)?tint:vec4(0,0,1,1);}",true,objects.vs);
@@ -479,7 +520,7 @@ void dynamic_uniform_check(Surface& s) {
   ~Resources(){for(auto set:sets)if(set)vkDestroyDescriptorSetLayout(R.device,set,nullptr);if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(set=0,binding=7,std140) uniform Transform{vec4 transform;} ;layout(set=0,binding=1,std140) uniform Tint{vec4 tint;};layout(location=0) out vec4 vcolor;void main(){vec2 p[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));gl_Position=vec4(p[gl_VertexIndex]*transform.xy+transform.zw,0,1);vcolor=tint;}",true,objects.vs);
@@ -673,6 +714,7 @@ int renderer_smoke_test() {
    for(size_t i=0;i<stencils.size();++i){float value;memcpy(&value,depths.data()+i*4,4);require(value==0.25f&&stencils[i]==0xa5,"depth/stencil clear differs");}
    fprintf(stderr,"[renderer smoke] depth/stencil upload and clear passed\n");
    depth_copy_check();
+   colour_comparison_check();
    {
     auto peek=std::make_unique<Surface>();
     peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);

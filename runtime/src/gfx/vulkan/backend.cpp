@@ -9,6 +9,7 @@
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #define VK_USE_PLATFORM_METAL_EXT  // VK_EXT_metal_surface: AppKit views' CAMetalLayers
 #endif
+#include "../../exception_report.h"
 #include "backend.h"
 #include "bc_decode.h"
 #include "android_driver.h"
@@ -246,7 +247,7 @@ PipelineCacheWriteResult write_pipeline_cache(std::vector<uint8_t> bytes,
     std::error_code ec;
     auto parent=std::filesystem::path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent,ec);
-    if (ec) throw std::runtime_error(ec.message());
+    if (ec) exception_report::raise(ec.message());
     temporary=path+".tmp-"+std::to_string(start.time_since_epoch().count());
     FILE* file=std::fopen(temporary.c_str(),"wb");
     if (file) {
@@ -321,7 +322,7 @@ void save_pipeline_cache() try {
 }
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS)
-    throw std::runtime_error(std::string(op) + ": Vulkan result " +
+    exception_report::raise(std::string(op) + ": Vulkan result " +
                              std::to_string(r));
 }
 uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) {
@@ -330,7 +331,7 @@ uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) {
   for (uint32_t i = 0; i < p.memoryTypeCount; i++)
     if ((bits & (1u << i)) && (p.memoryTypes[i].propertyFlags & flags) == flags)
       return i;
-  throw std::runtime_error("No compatible Vulkan memory type");
+  exception_report::raise("No compatible Vulkan memory type");
 }
 Buffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                      VkMemoryPropertyFlags flags, VkMemoryPropertyFlags preferred) {
@@ -977,7 +978,7 @@ static void make_swapchain(Screen &s) {
   vkGetPhysicalDeviceSurfaceFormatsKHR(R.physicalDevice, s.surface, &n,
                                        fs.data());
   if (fs.empty())
-    throw std::runtime_error("No presentation formats");
+    exception_report::raise("No presentation formats");
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
   if (fs.size() == 1 && fs[0].format == VK_FORMAT_UNDEFINED)
@@ -1005,7 +1006,7 @@ static void make_swapchain(Screen &s) {
       break;
   }
   if (!found)
-    throw std::runtime_error("No swapchain format supports image blits");
+    exception_report::raise("No swapchain format supports image blits");
   VkExtent2D extent = caps.currentExtent;
   if (extent.width == UINT32_MAX)
     extent = {std::clamp<uint32_t>(std::max(s.width.load(), 1),
@@ -1037,7 +1038,7 @@ static void make_swapchain(Screen &s) {
   const VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
 #endif
   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
-    throw std::runtime_error("Swapchain cannot receive scan-buffer blits");
+    exception_report::raise("Swapchain cannot receive scan-buffer blits");
   VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
   ci.surface = s.surface;
   ci.minImageCount = std::max(caps.minImageCount, 2u);
@@ -1207,10 +1208,10 @@ static void present(Screen &s) {
   vkGetPhysicalDeviceFormatProperties(R.physicalDevice, s.scan->fmt.pixel,
                                       &sourceFormat);
   if (!(sourceFormat.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT))
-    throw std::runtime_error(
+    exception_report::raise(
         "Scan-buffer format does not support presentation blits");
   if (s.scan->fmt.kind != FormatInfo::FLOAT)
-    throw std::runtime_error("Integer scan buffers cannot be blitted to "
+    exception_report::raise("Integer scan buffers cannot be blitted to "
                              "normalized presentation images");
   VkFilter filter = (sourceFormat.optimalTilingFeatures &
                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
@@ -1979,7 +1980,7 @@ static void init_device(std::vector<const char *> extensions,
   if (vkEnumerateInstanceVersion)
     vkEnumerateInstanceVersion(&loaderVersion);
   if (loaderVersion < VK_API_VERSION_1_1)
-    throw std::runtime_error("The Vulkan runtime on this computer supports only Vulkan " +
+    exception_report::raise("The Vulkan runtime on this computer supports only Vulkan " +
                              version_text(loaderVersion) + "; the game needs Vulkan 1.1 or newer.\n\n" +
                              kUpdateDriver);
   log_instance_layers();
@@ -1988,11 +1989,11 @@ static void init_device(std::vector<const char *> extensions,
   std::vector<VkExtensionProperties> ies(en);
   vkEnumerateInstanceExtensionProperties(nullptr, &en, ies.data());
   if (!has_extension(ies, VK_KHR_SURFACE_EXTENSION_NAME))
-    throw std::runtime_error("No Vulkan driver found (MoltenVK on a Mac: brew install molten-vk; "
+    exception_report::raise("No Vulkan driver found (MoltenVK on a Mac: brew install molten-vk; "
                              "or point VK_DRIVER_FILES at its MoltenVK_icd.json)");
   for (const char *e : extensions)
     if (!has_extension(ies, e))
-      throw std::runtime_error(std::string("the Vulkan driver lacks instance extension ") + e);
+      exception_report::raise(std::string("the Vulkan driver lacks instance extension ") + e);
   VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   if (has_extension(ies, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
     extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -2084,7 +2085,7 @@ static void init_device(std::vector<const char *> extensions,
       break;
   }
   if (!R.physicalDevice)
-    throw std::runtime_error(
+    exception_report::raise(
         devices.empty()
             ? std::string("No graphics card with a Vulkan driver was found.\n\n") + kUpdateDriver
             : "The graphics driver does not support the Vulkan features the game needs: Vulkan 1.3, or "
@@ -2291,11 +2292,11 @@ void init() {
   if (hidden_windows())
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))
-    throw std::runtime_error(std::string("Vulkan is not installed on this computer: the Vulkan runtime "
+    exception_report::raise(std::string("Vulkan is not installed on this computer: the Vulkan runtime "
 #ifdef _WIN32
                                          "(vulkan-1.dll) "
 #endif
@@ -2316,7 +2317,7 @@ void init() {
 #endif
   R.tv.window = SDL_CreateWindow("Wind Waker HD — Vulkan", 1280, 720, windowFlags);
   if (!R.tv.window)
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
 #ifdef __ANDROID__
   // one surface: the GamePad picture is drawn into it (display_modes.h: picture-in-picture, GamePad
   // only), never a window of its own
@@ -2326,7 +2327,7 @@ void init() {
     // the other modes draw the GamePad picture into the TV window (gfx/display_modes.h)
     R.drc.window = SDL_CreateWindow("GamePad — Vulkan", 854, 480, windowFlags | SDL_WINDOW_HIDDEN);
     if (!R.drc.window)
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
     R.drc.visible = false;
     gfx::g_has_drc_window = true;
   }
@@ -2337,22 +2338,22 @@ void init() {
   uint32_t n;
   const char *const *se = SDL_Vulkan_GetInstanceExtensions(&n);
   if (!se)
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
   for (Screen *s : {&R.tv, &R.drc})
     if (s->window) {
       int width = 0, height = 0;
       if (!SDL_GetWindowSizeInPixels(s->window, &width, &height))
-        throw std::runtime_error(SDL_GetError());
+        exception_report::raise(SDL_GetError());
       s->width = width;
       s->height = height;
     }
   init_device(std::vector<const char *>(se, se + n), [] {
     if (!WWHD_CREATE_WINDOW_SURFACE(R.tv.window, R.instance, nullptr,
                                   &R.tv.surface))
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
     if (R.drc.window && !WWHD_CREATE_WINDOW_SURFACE(R.drc.window, R.instance,
                                                   nullptr, &R.drc.surface))
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
   });
   mods::mouse_init(R.tv.window);
   input::set_prompt_window(R.tv.window);
@@ -2726,23 +2727,23 @@ static bool image_loaded(const char *part) {
 }
 void init_appkit(void *tvLayer, void *drcLayer) {
   if (const char *e = getenv("WWHD_VK_FORCE_INIT_FAIL"); e && *e && strcmp(e, "0"))
-    throw std::runtime_error("Vulkan start-up failure forced for testing (WWHD_VK_FORCE_INIT_FAIL)");
+    exception_report::raise("Vulkan start-up failure forced for testing (WWHD_VK_FORCE_INIT_FAIL)");
   // weak imports (CMakeLists.txt): a Mac without them still starts the game with Metal
   if (!image_loaded("/libvulkan"))
-    throw std::runtime_error("The Vulkan loader (libvulkan) is not installed. "
+    exception_report::raise("The Vulkan loader (libvulkan) is not installed. "
                              "Install it with: brew install vulkan-loader molten-vk");
   if (!image_loaded("/libglslang"))
-    throw std::runtime_error("glslang (shader compiler for Vulkan) is not installed. "
+    exception_report::raise("glslang (shader compiler for Vulkan) is not installed. "
                              "Install it with: brew install glslang");
   load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr")));
   if (!tvLayer)
-    throw std::runtime_error("no TV window layer");
+    exception_report::raise("no TV window layer");
   R.tv.window = tvLayer;
   R.drc.window = drcLayer;
   init_device({VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME}, [&] {
     auto create = (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(R.instance, "vkCreateMetalSurfaceEXT");
     if (!create)
-      throw std::runtime_error("vkCreateMetalSurfaceEXT unavailable");
+      exception_report::raise("vkCreateMetalSurfaceEXT unavailable");
     for (Screen *s : {&R.tv, &R.drc}) {
       if (!s->window)
         continue;

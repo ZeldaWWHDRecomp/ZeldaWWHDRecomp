@@ -234,7 +234,7 @@ class Recompiler:
         out = []
         if hooked:
             # runtime hook: callers reach hook_X, which may call the original code (f_X_orig)
-            out.append("void f_%08X(Cpu* __restrict c) { hook_%08X(c); }\n" % (name, name))
+            out.append("void f_%08X(Cpu* __restrict c) { ppc_host_call(c, hook_%08X); }\n" % (name, name))
         out += ["void %s(Cpu* __restrict c) {" % fname, "    PPC_ENTER(0x%08Xu);" % start]
         if self.mod_hooks:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
@@ -244,7 +244,7 @@ class Recompiler:
             if a in self.labels:
                 out.append("L_%08X: ;" % a)
             if a in self.sites:
-                out.append("    site_%08X(c);" % self.sym(a))
+                out.append("    ppc_host_call(c, site_%08X);" % self.sym(a))
             out.append("    %s /* %08X: %08X */" % (s, a, w))
         # fall through into the next function
         if self.cur_end < self.p.text_hi:

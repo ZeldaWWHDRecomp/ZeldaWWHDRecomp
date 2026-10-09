@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ppc.h"
+#include "exception_report.h"
 
 // ---- guest memory layout ----
 namespace mem {
@@ -131,10 +132,16 @@ struct HleReg {
 PpcFunc hle_find(const char* lib, const char* name);  // null if not implemented
 PpcFunc hle_find_any(const char* name);
 
+struct GuestExit { uint32_t value; };
 #define HLE(lib, name)                                                        \
-    extern "C" void imp_##lib##_##name(Cpu* c);                                \
-    static HleReg hle_reg_##lib##_##name(#lib, #name, imp_##lib##_##name);   \
-    extern "C" void imp_##lib##_##name(Cpu* c)
+    static void hle_impl_##lib##_##name(Cpu* c);                               \
+    extern "C" void imp_##lib##_##name(Cpu* c) {                               \
+        exception_report::boundary<GuestExit>("HLE " #lib "." #name, [&] {      \
+            hle_impl_##lib##_##name(c);                                       \
+        });                                                                  \
+    }                                                                        \
+    static HleReg hle_reg_##lib##_##name(#lib, #name, imp_##lib##_##name);       \
+    static void hle_impl_##lib##_##name(Cpu* c)
 
 // argument helpers (PPC SysV ABI)
 inline uint32_t arg(Cpu* c, int i) { return c->r[3 + i]; }

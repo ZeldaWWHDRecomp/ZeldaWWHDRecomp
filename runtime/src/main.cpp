@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #endif
 #include <ctime>
+#include <mutex>
+#include <csignal>
 #include <filesystem>
 #include "guest_addr.h"
 #include "mods/guest_mods.h"
@@ -133,6 +135,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
     crash_addr::host_backtrace(fd, crash_out, uctx);
     crash_context::note(fd, crash_out);
     crashrec::crash_note(fd, crash_out);
+    exception_report::note(fd, crash_out);
     if (fd >= 0) {
         crash_log_only(fd, "\n--- last log lines ---\n", 24);
         log_ring_write(fd, crash_log_only);
@@ -161,6 +164,7 @@ static void install_crash_handler() {
     sigaction(SIGBUS, &sa, nullptr);
     sigaction(SIGILL, &sa, nullptr);
     sigaction(SIGFPE, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
     crash_addr::prime();
 }
 
@@ -202,12 +206,22 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     crash_addr::host_backtrace(fd,win_crash_out,ex->ContextRecord);
     crash_context::note(fd,win_crash_out);
     crashrec::crash_note(fd,win_crash_out);
+    exception_report::note(fd,win_crash_out);
     if(fd>=0){win_crash_log_only(fd,"\n--- last log lines ---\n",24); log_ring_write(fd,win_crash_log_only); _close(fd); fprintf(stderr,"[crash] wrote %s\n",path);}
     if(g_ppc_trace) { FILE* f=fopen("trace_dump.txt","w"); if(f){trace_dump(f,3000);fclose(f);} }
     input::stop_rumble_now();  // controllers keep their last motor level after the process (issue #35)
     return EXCEPTION_EXECUTE_HANDLER;
 }
-static void install_crash_handler() { SetUnhandledExceptionFilter(crash_handler); crash_addr::prime(); }
+static void abort_handler(int) {
+    // CRT abort is not an SEH fault; route it through our existing Windows crash writer.
+    RaiseException(0x40000015u /* STATUS_FATAL_APP_EXIT */, EXCEPTION_NONCONTINUABLE, 0, nullptr);
+    _exit(134);
+}
+static void install_crash_handler() {
+    SetUnhandledExceptionFilter(crash_handler);
+    std::signal(SIGABRT, abort_handler);
+    crash_addr::prime();
+}
 #endif
 static void init_data_imports() {
     uint32_t alloc = 0, alloc_ex = 0, free_ = 0;
@@ -303,8 +317,9 @@ static void index_game_functions() {
 
 // Off unless the player turns on Settings > Graphics > "Write a log file" (saved as logFile=1),
 // or WWHD_LOG_FILE is set: 1 = the default file, a path = that file, 0 = off.
-static void start_log_file() {
+static void start_log_file(bool error = false) {
     const char* e = getenv("WWHD_LOG_FILE");
+    if (error) e = "1"; // preserve diagnostics even when continuous logging is disabled
     if (e && !strcmp(e, "0")) return;
     const bool chosen = e && *e && strcmp(e, "1");  // a path
     std::string saved;
@@ -326,6 +341,8 @@ static void start_log_file() {
     log_set_sink(log_file_sink);
     LOG("[log] writing %s", path.c_str());
 }
+
+extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
 
 int main(int argc, char** argv) {
     mods::code::startup(argc, argv);
@@ -382,6 +399,20 @@ int main(int argc, char** argv) {
     index_game_functions();
     install_crash_handler();
     start_log_file();
+    exception_report::sink.store(+[](const char* message) noexcept {
+        static std::once_flag error_log;
+        std::call_once(error_log, [] { if (g_log_fd < 0) start_log_file(true); });
+        LOG("[runtime error] %s", message);
+    }, std::memory_order_release);
+    if (const char* mode = getenv("WWHD_TEST_RUNTIME_ERROR")) {
+        if (!strcmp(mode, "fatal")) fatal("synthetic fatal message");
+        synthetic_game_frame(nullptr, +[](Cpu*) {
+            const char* mode = getenv("WWHD_TEST_RUNTIME_ERROR");
+            if (!strcmp(mode, "explicit")) exception_report::raise("synthetic explicit message");
+            if (!strcmp(mode, "library")) throw std::out_of_range("synthetic library message");
+            throw 42;
+        });
+    }
     // which build on which system: also in crash logs (their last log lines)
     LOG("[boot] Wind Waker HD %s (%s), %s", build::version(), build::commit(), reporthdr::os_description().c_str());
     // test aid: WWHD_TEST_HOST_CRASH=1 crashes inside a system library (strlen of a bad pointer), so

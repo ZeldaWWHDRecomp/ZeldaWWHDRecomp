@@ -14,6 +14,7 @@ enum class Convert : uint8_t {
     ABGR1555,    // Latte 5_5_5_1 -> RGBA8
     RGBA4,       // Latte 4_4_4_4 -> RGBA8
     RG4,         // Latte 4_4 -> RG8
+    RGBA8_DEPTH, // normalized colour red channel -> D32F for comparison sampling
     D24S8,       // 24-bit depth + 8-bit stencil -> D32_SFLOAT_S8_UINT
     D24_R32F,    // 24-bit depth sampled as a color texture -> R32_SFLOAT
     X24_8_32F,   // 32F depth + 8 stencil in 64 bits -> D32_SFLOAT_S8_UINT
@@ -32,6 +33,10 @@ struct FormatInfo {
 
 // isDepth: the surface is used as a depth buffer (selects depth pixel formats)
 FormatInfo format_info(uint32_t gx2Format, bool isDepth);
+
+// Comparison sampling can read a colour texture (for example an unrendered shadow-map placeholder).
+// Keep its colour guest layout, but give Vulkan a depth image for its comparison sampler.
+FormatInfo comparison_format_info(uint32_t gx2Format);
 
 // convert one row of `count` texels (or blocks) from guest layout to host layout
 void convert_row(Convert c, const uint8_t* src, uint8_t* dst, uint32_t count);

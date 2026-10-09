@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "content.h"
 #include "cemu_pack.h"
 #include "guest_addr.h"
@@ -15,7 +16,7 @@ namespace {
 Files active;
 std::atomic<bool> present{false};
 std::string lower(std::string s){for(char& c:s)if(c>='A'&&c<='Z')c+= 'a'-'A';return s;}
-void require(bool ok,const char* reason){if(!ok)throw std::runtime_error(reason);}
+void require(bool ok,const char* reason){if(!ok)exception_report::raise(reason);}
 }
 // The 2D language packs the game names (Common/Pack/permanent_2d_<Us|Eu|Jp><Language>.pack, cking.rpx
 // 0x1048DD4C) and its other packs. A fan translation is usually one of the language packs.

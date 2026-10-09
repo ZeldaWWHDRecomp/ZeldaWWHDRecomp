@@ -40,6 +40,7 @@ typedef struct Cpu {
 typedef void (*PpcFunc)(Cpu*);
 
 /* runtime entry points */
+void ppc_host_call(Cpu* c, PpcFunc fn);           /* guarded native hook/site entry */
 void ppc_dispatch(Cpu* c);                       /* call/jump to c->pc */
 void ppc_unimplemented(Cpu* c, uint32_t addr, uint32_t insn);
 void ppc_trap(Cpu* c, uint32_t addr);

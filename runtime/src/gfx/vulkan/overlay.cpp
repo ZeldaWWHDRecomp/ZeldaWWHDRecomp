@@ -2,6 +2,7 @@
 // composition (present.cpp compose()). The renderer's own command buffer, upload arena, descriptor
 // pool and pipeline cache are used, so the overlay needs no queue submissions of its own and works
 // for every target format (swap images in any encoding, offscreen present dumps).
+#include "../../exception_report.h"
 #include "backend.h"
 #include "present.h"
 #include "shaders.h"
@@ -66,7 +67,7 @@ Resources res;
 VkShaderModule module(const char* source, bool vertex) {
     std::string error;
     auto words = vk::compile_glsl(source, vertex, &error);
-    if (words.empty() || !error.empty()) throw std::runtime_error("Vulkan overlay shader: " + error);
+    if (words.empty() || !error.empty()) exception_report::raise("Vulkan overlay shader: " + error);
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = words.size() * 4;
     ci.pCode = words.data();
@@ -76,7 +77,7 @@ VkShaderModule module(const char* source, bool vertex) {
 }
 
 void ensure_resources() {
-    if (res.device && res.device != R.device) throw std::runtime_error("Vulkan overlay resources outlived their device");
+    if (res.device && res.device != R.device) exception_report::raise("Vulkan overlay resources outlived their device");
     res.device = R.device;
     if (!res.descriptors) {
         VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -211,7 +212,7 @@ void update_texture(VkCommandBuffer cmd, ImTextureData* tex) {
         return;
     }
     if (tex->Status != ImTextureStatus_WantCreate && tex->Status != ImTextureStatus_WantUpdates) return;
-    if (tex->Format != ImTextureFormat_RGBA32) throw std::runtime_error("Vulkan overlay: unexpected texture format");
+    if (tex->Format != ImTextureFormat_RGBA32) exception_report::raise("Vulkan overlay: unexpected texture format");
     Texture* t = (Texture*)(uintptr_t)tex->GetTexID();
     if (tex->Status == ImTextureStatus_WantCreate || !t || t->width != tex->Width || t->height != tex->Height) {
         destroy(t);
