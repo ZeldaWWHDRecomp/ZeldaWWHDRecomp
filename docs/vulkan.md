@@ -665,7 +665,9 @@ CPU paths not set to `1` and lazy DrawDone / async present when turned off. The 
 
 ## Resource dependencies
 
-The default precise path records each image's last write scope
+Precise barriers are **on by default on Android** and **opt-in on desktop**
+(`WWHD_VK_NARROW_BARRIERS=1`) until they have been checked on native Windows/Linux drivers; on MoltenVK
+they measured neutral (7 interleaved pairs). The precise path records each image's last write scope
 and accumulated reader stages, including attachments, feedback copies, mip chains, composition
 and readbacks. Texture bindings name the shader stage that actually reads them. Barrier elision
 preserves the conservative dynamic-rendering pass boundaries. Source access masks contain writes only; a write waits for all pending readers.
@@ -675,7 +677,8 @@ Image ranges remain whole-resource. Buffer compute/readback dependencies use the
 coherent upload/cache slices are immutable until their submission fence retires, so submission
 makes host writes visible without an extra GPU barrier. All resources use one queue family.
 
-`WWHD_VK_NARROW_BARRIERS=0` selects conservative image scopes on every Vulkan platform.
+`WWHD_VK_NARROW_BARRIERS=0` selects conservative image scopes and `=1` the precise path, on every
+Vulkan platform.
 Scripted synchronization and frame-equivalence checks cover the default path. Stable conservative scenes
 require bit-identical precise frames. For a scene with conservative repeat variation, compare five
 captures per path: candidate differences must stay within the conservative pixels, value ranges and

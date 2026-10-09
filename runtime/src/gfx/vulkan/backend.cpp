@@ -697,8 +697,15 @@ void end_encoder() {
 bool narrow_barriers() {
   static const bool enabled = [] {
     const char* e = std::getenv("WWHD_VK_NARROW_BARRIERS");
-    // Precise resource dependencies are the default; retain the conservative escape hatch.
-    return !e || std::strcmp(e, "0") != 0;
+    // Precise resource dependencies: on by default on Android (tile-based GPUs, where the gain is
+    // expected; device numbers pending), opt-in on desktop until native Windows/Linux drivers have
+    // been checked (neutral on MoltenVK). WWHD_VK_NARROW_BARRIERS=1|0 overrides it everywhere.
+    if (e && *e) return std::strcmp(e, "0") != 0;
+#ifdef __ANDROID__
+    return true;
+#else
+    return false;
+#endif
   }();
   return enabled;
 }

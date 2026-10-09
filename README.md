@@ -12,6 +12,10 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Vulkan: precise GPU synchronization (barriers)**, on by default on Android, where tile-based GPUs
+  are expected to gain the most. On desktop it's opt-in for testing: start with
+  `WWHD_VK_NARROW_BARRIERS=1` and please report flicker or wrong pixels (`=0` forces the old path).
+
 - **Fixed: Cemu graphics packs for the European version** were refused with "Cemu pack does not
   target WWHD USA" (issue #103). A pack is now accepted when its `titleIds` name the version you
   installed (USA `0005000010143500` or EU `0005000010143600`). SDCafiine-style folders named after the
