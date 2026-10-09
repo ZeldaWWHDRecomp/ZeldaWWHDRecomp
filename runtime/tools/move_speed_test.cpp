@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cmath>
 #include <limits>
+#include <string>
 
 using namespace mods;
 
@@ -85,6 +86,15 @@ static void test_animation() {
     assert(animation_factor(4.f) == 4.f);
     assert(animation_factor(100.f) == 4.f);
     assert(animation_factor(std::numeric_limits<float>::quiet_NaN()) == 1.50f);
+    // the dash option only swaps the locomotion walk, and only while boosting
+    assert(boost_anim(kAnmWalk, MoveAnim::kDash, true) == kAnmDash);
+    assert(boost_anim(kAnmWalk, MoveAnim::kDash, false) == kAnmWalk);
+    assert(boost_anim(kAnmWalk, MoveAnim::kNative, true) == kAnmWalk);
+    assert(boost_anim(kAnmDash, MoveAnim::kDash, true) == kAnmDash);   // already the dash
+    assert(boost_anim(0, MoveAnim::kDash, true) == 0);                 // ANM_WAITS is not touched
+    assert(boost_anim(0x35, MoveAnim::kDash, true) == 0x35);           // nor any other clip
+    assert(std::string(move_anim_label(MoveAnim::kNative)) == "native");
+    assert(std::string(move_anim_label(MoveAnim::kDash)) == "dash");
 }
 
 static void test_stamina() {

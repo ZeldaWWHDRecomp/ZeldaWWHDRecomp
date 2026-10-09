@@ -232,6 +232,7 @@ void save_move_speed_options(Value& options) {
     options["move-speed.stamina"] = double(move_speed_stamina_seconds());
     options["move-speed.cooldown"] = double(move_speed_cooldown_seconds());
     options["move-speed.mode"] = double((int)move_speed_mode());
+    options["move-speed.anim"] = std::string(move_anim_label(move_speed_anim()));
     options["move-speed.button"] = double(move_speed_button());
 }
 void load_move_speed_options(const Value& options) {
@@ -249,6 +250,8 @@ void load_move_speed_options(const Value& options) {
     number("move-speed.cooldown", "WWHD_MOD_MOVE_COOLDOWN", 0.0, 60.0, kDefaultCooldownSeconds, set_move_speed_cooldown_seconds);
     const auto& mode = options.get("move-speed.mode");
     set_move_speed_mode(mode.type == Value::Number && mode.number != 0 ? MoveMode::kToggle : MoveMode::kHold);
+    const auto& anim = options.get("move-speed.anim");
+    set_move_speed_anim(anim.type == Value::String && anim.text == "dash" ? MoveAnim::kDash : MoveAnim::kNative);
     const auto& button = options.get("move-speed.button");
     if (button.type == Value::Number && button.number >= 0 && button.number <= UINT32_MAX && std::floor(button.number) == button.number)
         set_move_speed_button(uint32_t(button.number));

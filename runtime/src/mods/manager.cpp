@@ -99,6 +99,9 @@ void load_saved() {
     std::string mode;
     if (hostui::get("mod.move-speed.mode", mode) && (mode == "0" || mode == "1"))
         set_move_speed_mode(mode == "1" ? MoveMode::kToggle : MoveMode::kHold);
+    std::string anim;
+    if (hostui::get("mod.move-speed.anim", anim) && (anim == "native" || anim == "dash"))
+        set_move_speed_anim(anim == "dash" ? MoveAnim::kDash : MoveAnim::kNative);
     number("mod.direct-camera.speed", "WWHD_MOD_CAMERA_SPEED", .5f, 2.f, set_camera_speed);
     std::string button;
     if (hostui::get("mod.move-speed.button", button)) {

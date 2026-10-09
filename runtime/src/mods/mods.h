@@ -35,6 +35,9 @@ bool move_speed();
 void set_move_speed(bool on);
 MoveMode move_speed_mode();                      // hold the button, or press it once
 void set_move_speed_mode(MoveMode mode);
+MoveAnim move_speed_anim();                      // native clip played faster, or the game's dash
+void set_move_speed_anim(MoveAnim anim);
+uint32_t move_boost_anim(uint32_t anm);          // the locomotion clip to use right now (getAnmData)
 float move_speed_land_factor();                  // running (PROC_MOVE)
 void set_move_speed_land_factor(float factor);
 float move_speed_swim_factor();                   // swimming (PROC_SWIM_MOVE)

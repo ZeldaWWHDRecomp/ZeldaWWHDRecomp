@@ -10,6 +10,15 @@ namespace mods {
 // How the boost is engaged. Toggle is what the README already promised ("hold L3 (or toggle)").
 enum class MoveMode { kHold, kToggle };
 
+// Which locomotion clip the boost uses: the native one, played faster, or the game's own dash motion
+// (ANM_DASH, the clip setBlendMoveAnime picks for fast moves while turning). Both are the game's art.
+enum class MoveAnim { kNative, kDash };
+constexpr uint32_t kAnmWalk = 1, kAnmDash = 2;  // daAlink_ANM ids, d_a_player_main_02.cpp:3555-3600
+inline uint32_t boost_anim(uint32_t anm, MoveAnim mode, bool boosting) {
+    return boosting && mode == MoveAnim::kDash && anm == kAnmWalk ? kAnmDash : anm;
+}
+inline const char* move_anim_label(MoveAnim a) { return a == MoveAnim::kDash ? "dash" : "native"; }
+
 constexpr uint32_t kProcMove = 0x06;      // daPy_PROC PROC_MOVE
 constexpr uint32_t kProcSwimMove = 0x37;  // daPy_PROC PROC_SWIM_MOVE
 inline bool is_move_proc(uint32_t proc) { return proc == kProcMove || proc == kProcSwimMove; }

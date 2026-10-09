@@ -21,6 +21,7 @@
 #include "runtime.h"
 
 extern "C" void f_023DE788_orig(Cpu* c);  // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame)
+extern "C" void f_023E048C_orig(Cpu* c);  // daPy_lk_c::getAnmData(anmId) -> resource index
 
 namespace interp { uint64_t logic_steps(); }
 
@@ -42,6 +43,11 @@ std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
 std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
 std::atomic<int> g_move_mode{(int)MoveMode::kHold};
+// WWHD_MOD_MOVE_ANIM=dash (any leading 'd') is the test aid for the dash clip
+std::atomic<int> g_move_anim{[]{
+    const char* e = getenv("WWHD_MOD_MOVE_ANIM");
+    return e && *e && (e[0] == 'd' || e[0] == 'D') ? (int)MoveAnim::kDash : (int)MoveAnim::kNative;
+}()};
 std::atomic<float> g_move_land{clamp_factor(env_f("WWHD_MOD_MOVE_FACTOR", kDefaultLandFactor))};
 // before the split there was one factor: WWHD_MOD_MOVE_FACTOR still feeds swimming when the
 // swimming variable is not given
@@ -131,6 +137,15 @@ MoveMode move_speed_mode() { return (MoveMode)g_move_mode.load(std::memory_order
 void set_move_speed_mode(MoveMode mode) {
     g_move_mode = (int)mode;
     LOG("[mods] run/swim boost is %s", mode == MoveMode::kToggle ? "a toggle" : "held");
+}
+MoveAnim move_speed_anim() { return (MoveAnim)g_move_anim.load(std::memory_order_relaxed); }
+void set_move_speed_anim(MoveAnim anim) {
+    g_move_anim = (int)anim;
+    LOG("[mods] run/swim boost animation: %s", move_anim_label(anim));
+}
+uint32_t move_boost_anim(uint32_t anm) {
+    if (!move_speed() || !g_move_boosted.load(std::memory_order_relaxed)) return anm;
+    return boost_anim(anm, move_speed_anim(), true);
 }
 float move_speed_land_factor() { return g_move_land.load(std::memory_order_relaxed); }
 void set_move_speed_land_factor(float factor) { g_move_land = clamp_factor(factor); }
@@ -238,6 +253,14 @@ extern "C" void hook_023DE788(Cpu* c) {
         anim_forget(c->r[4]);
     }
     f_023DE788_orig(c);
+}
+
+// daPy_lk_c::getAnmData(anmId): r4 is the animation id. The draw of the locomotion clip happens here
+// (setBlendMoveAnime resolves ANM_WALK through it), so the boost can swap it for the game's own dash
+// motion without touching the blend itself.
+extern "C" void hook_023E048C(Cpu* c) {
+    c->r[4] = move_boost_anim(c->r[4]);
+    f_023E048C_orig(c);
 }
 
 uint64_t step() { return interp::logic_steps(); }double game_time() { return (double)interp::logic_steps() / 30.0; }

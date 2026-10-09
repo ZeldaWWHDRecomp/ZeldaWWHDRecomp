@@ -1425,6 +1425,11 @@ void tab_mods() {
                 ImGui::SameLine();
                 if (radio("Press to toggle", mods::move_speed_mode() == mods::MoveMode::kToggle))
                     hostui::post([] { mods::set_move_speed_mode(mods::MoveMode::kToggle); hostui::set("mod.move-speed.mode", "1"); mods::packages::remember_option("move-speed.mode", 1); });
+                if (radio("Native animation, played faster", mods::move_speed_anim() == mods::MoveAnim::kNative))
+                    hostui::post([] { mods::set_move_speed_anim(mods::MoveAnim::kNative); hostui::set("mod.move-speed.anim", "native"); });
+                ImGui::SameLine();
+                if (radio("Dash animation while boosting", mods::move_speed_anim() == mods::MoveAnim::kDash))
+                    hostui::post([] { mods::set_move_speed_anim(mods::MoveAnim::kDash); hostui::set("mod.move-speed.anim", "dash"); });
                 float running = mods::move_speed_land_factor();
                 if (ImGui::SliderFloat("Running", &running, 1.f, 4.f, "%.2fx"))
                     hostui::post([running] { mods::set_move_speed_land_factor(running); hostui::set("mod.move-speed.land", std::to_string(running)); mods::packages::remember_option("move-speed.land", running); });
@@ -1448,8 +1453,8 @@ void tab_mods() {
                 }
                 help("A multiplier of 1 leaves that state alone. Boost time is how long a full bar lasts; "
                      "0 has no limit, and the bar refills whenever you are not boosting. Cooldown is the "
-                     "extra wait after the bar runs out (0 for none). Rebind the chosen game button in "
-                     "Controls.");
+                     "extra wait after the bar runs out (0 for none). The dash option uses the game's own "
+                     "dash clip while boosting. Rebind the chosen game button in Controls.");
             } else if (selected == "mouse-camera") {
                 float sensitivity = mods::mouse_sensitivity();
                 if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))
