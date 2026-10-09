@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the boat's sail fluttered too fast at 60, 120 and 240 fps** (issue #68). The sail cloth was
+  drawn with its exact pose against the in-between camera, which added an extra jump on every
+  in-between frame. Its drawing is now interpolated, and so are the other cloth pieces drawn the same
+  way: pirate sails and skull flags, fortress flags, buoy flags and their poles, and capes such as
+  Phantom Ganon's. 30 fps is unchanged.
 - **New Gameplay mod: fast forward cutscenes and dialogue** (off by default; Settings → Gameplay).
   Hold ZR during a cutscene or a conversation and the game runs 2×, 3× or 4× faster (your choice; the
   button can be changed). Nothing is skipped: the game plays every frame, only faster, so the story
