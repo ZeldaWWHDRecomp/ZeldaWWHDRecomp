@@ -475,6 +475,15 @@ python3 tools/guestmod/build_guest_mod.py <ModManager>/Mods/<id> --out <ModManag
   (from its memory size, stored in `profiles.json`) and rebuilds when it changes.
 - The last stdout line is JSON: `ok`, `module`, `cached`, `error`. The manager shows `error`
   in the package details and keeps the package unloaded.
+- At startup, prepared modules are checked against the current builder cache key,
+  including the ELF, assigned base, installed game build, compiler version and ABI
+  inputs. A stale receipt leaves `build_guest_mod` unsatisfied. This read-only check
+  runs in one batch with one compiler-version probe; drawing the Mods tab does not
+  start build tools. Successful preparation marks the new receipt ready immediately.
+  The builder's `--check-cache-json` option accepts an array of
+  `{id, package, base, module}` receipts alongside `--out`, `--include`, `--cc-json`
+  and `--build`; its JSON result is `{ok: true, valid: [id, ...]}`. It never compiles
+  or writes modules.
 - On start, the runtime loads the modules of the enabled guest packages before any guest code
   runs (the prototype takes `WWHD_GUEST_MODS=path,...`). Enabling, disabling and changing the
   load order need a restart in the first version (hooks are installed before the game

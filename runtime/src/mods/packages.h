@@ -66,7 +66,8 @@ using GuestInspect = std::function<uint32_t(const GuestPackage&)>; // reserved b
 using GuestLoad = std::function<void(const GuestPackage&, uint32_t base)>;
 struct GuestBuilt {std::string module;uint32_t allocation_size=0;};
 using GuestBuild = std::function<GuestBuilt(const GuestPackage&,uint32_t base)>;
-void set_guest_builder(GuestInspect inspect,GuestBuild build);
+using GuestCacheCheck = std::function<std::vector<std::string>(const json::Value& requests)>;
+void set_guest_builder(GuestInspect inspect,GuestBuild build,GuestCacheCheck check = {});
 bool prepare_guest(const std::string& id,std::string& error); // builds the cached module; activation requires restart
 // After dispatch/memory init, before guest threads. Build/load errors remain visible in list().
 void start_guests(const GuestInspect& inspect, const GuestLoad& load);

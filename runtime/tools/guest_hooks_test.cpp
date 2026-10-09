@@ -47,7 +47,7 @@ namespace dispatch { void set(uint32_t, PpcFunc) {} }
 namespace mods::packages {
 static bool in_startup_callback=false, inspected=false;
 std::string directory() { assert(!in_startup_callback); return {}; }
-void set_guest_builder(GuestInspect, GuestBuild) {}
+void set_guest_builder(GuestInspect, GuestBuild, GuestCacheCheck) {}
 void start_guests(const GuestInspect& inspect, const GuestLoad&) {
     // Real start_guests holds the manager mutex while invoking callbacks. Its
     // directory accessor cannot be called recursively from the build bridge.

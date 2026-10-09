@@ -110,16 +110,22 @@ def inspect_package(pkg, base, game_build=None):
             "elf_sha256": hashlib.sha256(elf).hexdigest()}
 
 
-def cache_key(elf, mod_id, base, cc, include, game_build=None):
+def compiler_version(cc):
     version = subprocess.run(cc + ["--version"], capture_output=True, text=True)
     if version.returncode:
         raise guestmod.ModError("the local compiler is unavailable")
+    return version.stdout
+
+
+def cache_key(elf, mod_id, base, cc, include, game_build=None, version=None):
+    if version is None:
+        version = compiler_version(cc)
     h = hashlib.sha256()
     game_build = game_build or canonical_build()
     parts = [elf, mod_id.encode(), b"%08X" % base, guestmod.TRANSLATOR_VERSION.encode(),
              abi_version(include).encode(),
              json.dumps(vars(game_build), sort_keys=True, default=lambda v: vars(v)).encode(),
-             json.dumps([cc, version.stdout, CFLAGS, module_ext()]).encode()]
+             json.dumps([cc, version, CFLAGS, module_ext()]).encode()]
     # Version strings alone miss edits between releases. Hash the actual translation/ABI inputs.
     inputs = [Path(__file__), Path(guestmod.__file__), Path(HERE).parent / "recomp" / "ppc2c.py",
               Path(include) / "ppc.h", Path(include) / "wwhd_guest_abi.h",
@@ -128,6 +134,31 @@ def cache_key(elf, mod_id, base, cc, include, game_build=None):
     for part in parts:
         h.update(hashlib.sha256(part).digest())
     return h.hexdigest()
+
+
+def check_cached(requests, out, cc, include, game_build=None):
+    """Read-only startup validation; one compiler probe for the whole batch."""
+    if not isinstance(requests, list) or len(requests) > 4096:
+        raise guestmod.ModError("invalid guest cache check batch")
+    if not requests:
+        return {"ok": True, "valid": []}
+    version = compiler_version(cc)
+    valid = []
+    for request in requests:
+        try:
+            man, elf = package_elf(request["package"])
+            if man["id"] != request["id"]:
+                continue
+            base = request["base"]
+            if not isinstance(base, int) or isinstance(base, bool) or not guestmod.REGION_START <= base < 0x80000000 or base & 0xFFFF:
+                continue
+            key = cache_key(elf, man["id"], base, cc, include, game_build, version)
+            module = Path(out, key, man["id"] + module_ext())
+            if module.is_file() and not module.is_symlink() and module.resolve() == Path(request["module"]).resolve():
+                valid.append(man["id"])
+        except (guestmod.ModError, OSError, ValueError, KeyError, TypeError):
+            continue
+    return {"ok": True, "valid": valid}
 
 
 def build(pkg, out, base, cc, include, game_build=None):
@@ -161,7 +192,8 @@ def build(pkg, out, base, cc, include, game_build=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("package")
+    ap.add_argument("package", nargs="?")
+    ap.add_argument("--check-cache-json", help="read-only batch of package/id/base/module cache receipts")
     ap.add_argument("--out", help="module cache directory (required unless --inspect)")
     ap.add_argument("--inspect", action="store_true", help="report memory layout without compiling")
     ap.add_argument("--build", default="USA", help="installed game build (USA or EU)")
@@ -181,7 +213,11 @@ def main():
             raise guestmod.ModError("unknown installed game build: " + a.build)
         if a.zig_cache:
             os.environ["ZIG_GLOBAL_CACHE_DIR"] = os.path.abspath(a.zig_cache)
+        if a.inspect and a.check_cache_json is not None:
+            raise guestmod.ModError("cache checks cannot inspect a package")
         if a.inspect:
+            if not a.package:
+                raise guestmod.ModError("package is required")
             r = inspect_package(a.package, a.base, game_build)
         elif not a.out:
             raise guestmod.ModError("--out is required when building")
@@ -189,10 +225,16 @@ def main():
             cc = json.loads(a.cc_json) if a.cc_json else shlex.split(a.cc) if a.cc else default_cc()
             if not isinstance(cc, list) or not cc or any(not isinstance(x, str) or not x or "\0" in x for x in cc):
                 raise guestmod.ModError("invalid compiler argument vector")
-            r = build(a.package, a.out, a.base, cc, a.include, game_build)
+            if a.check_cache_json is not None:
+                r = check_cached(json.loads(a.check_cache_json), a.out, cc, a.include, game_build)
+            elif a.package:
+                r = build(a.package, a.out, a.base, cc, a.include, game_build)
+            else:
+                raise guestmod.ModError("package is required")
     except (guestmod.ModError, OSError, ValueError, KeyError) as e:
         r = {"ok": False, "error": str(e)}
     print(json.dumps(r) if a.json else ("inspected %s" % r["id"] if a.inspect and r["ok"] else
+                                  "checked %d cached modules" % len(r["valid"]) if r["ok"] and a.check_cache_json is not None else
                                   "built %s" % r["module"] if r["ok"] else "error: " + r["error"]))
     sys.exit(0 if r["ok"] else 1)
 

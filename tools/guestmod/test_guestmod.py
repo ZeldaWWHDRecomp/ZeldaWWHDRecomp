@@ -273,6 +273,35 @@ class BuildInterfaceTest(unittest.TestCase):
             (installed / "wwhd_guest_abi.h").write_text("/* ABI fixture */")
             self.assertEqual(builder.default_include(), str(installed))
 
+    def test_read_only_batch_cache_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); pkg = root / "pkg"; pkg.mkdir()
+            (pkg / "manifest.json").write_text(json.dumps({"id": "fixture", "kind": "guest", "guest": {"api_version": 1}}))
+            (pkg / "mod.elf").write_bytes(b"fixture ELF")
+            include = root / "include"; include.mkdir()
+            for name in ("ppc.h", "wwhd_guest_abi.h"):
+                shutil.copy(Path(REPO, "runtime", "include", name), include)
+            cc = ["clang"]; base = 0x7F000000
+            key = builder.cache_key(b"fixture ELF", "fixture", base, cc, include, version="compiler one")
+            module = root / "cache" / key / ("fixture" + builder.module_ext())
+            module.parent.mkdir(parents=True); module.write_bytes(b"fixture module")
+            request = {"id": "fixture", "package": str(pkg), "base": base, "module": str(module)}
+            with mock.patch.object(builder.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="compiler one")) as probe:
+                result = builder.check_cached([request, {**request, "id": "other"}], root / "cache", cc, include)
+                self.assertEqual(result["valid"], ["fixture"])
+                self.assertEqual(probe.call_count, 1)  # one version probe, no compile per package
+                self.assertEqual(probe.call_args.args[0], ["clang", "--version"])
+                for changed in ({"base": base + 65536}, {"module": str(root / "unrelated")}, {"base": True}):
+                    self.assertEqual(builder.check_cached([{**request, **changed}], root / "cache", cc, include)["valid"], [])
+                (pkg / "mod.elf").write_bytes(b"changed ELF")
+                self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
+                (pkg / "mod.elf").write_bytes(b"fixture ELF")
+                with (include / "ppc.h").open("a") as header:
+                    header.write("\n/* ABI changed */\n")
+                self.assertEqual(builder.check_cached([request], root / "cache", cc, include)["valid"], [])
+            self.assertEqual(module.read_bytes(), b"fixture module")
+            self.assertEqual(list((root / "cache").iterdir()), [module.parent])
+
     def test_package_paths_and_ids(self):
         with tempfile.TemporaryDirectory() as d:
             pkg = Path(d, "pkg"); pkg.mkdir()

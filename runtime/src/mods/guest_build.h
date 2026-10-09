@@ -61,6 +61,17 @@ struct BuildBridge {
             mods::json::Value cc;cc.type=mods::json::Value::Array;for(const auto& a:compiler)cc.array.emplace_back(a);
             command.insert(command.end(),{"--out",cache,"--include",include,"--cc-json",mods::json::dump(cc)});
         }
+        return invoke(command);
+    }
+    mods::json::Value check_cached(const mods::json::Value& requests,const std::string& build="USA") const {
+        auto command=python;command.push_back(builder);
+        mods::json::Value cc;cc.type=mods::json::Value::Array;for(const auto& a:compiler)cc.array.emplace_back(a);
+        command.insert(command.end(),{"--check-cache-json",mods::json::dump(requests),"--build",build,
+            "--out",cache,"--include",include,"--cc-json",mods::json::dump(cc),"--json"});
+        if(!zig_cache.empty())command.insert(command.end(),{"--zig-cache",zig_cache});
+        return invoke(command);
+    }
+    static mods::json::Value invoke(const std::vector<std::string>& command) {
         auto process=host::run_process(command);
         if(!process.error.empty())throw std::runtime_error("Guest mod build failed: "+process.error);
         auto end=process.output.find_last_not_of("\r\n");

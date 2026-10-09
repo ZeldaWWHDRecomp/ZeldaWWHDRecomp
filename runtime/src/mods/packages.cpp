@@ -53,6 +53,7 @@ bool ready=false,guests_started=false,code_mod_support=false;
 std::vector<std::string> guest_startup_ids;
 GuestInspect guest_inspect;
 GuestBuild guest_build;
+std::set<std::string> validated_guest_cache;
 std::string last_problem;
 std::atomic<bool> dirty{false},running{false},profile_changed{false};
 ReadMemory read_memory=nullptr;WriteMemory write_memory=nullptr;
@@ -366,7 +367,7 @@ std::vector<SetupView> setup_steps(const std::string& id) {
         else if(step.type=="build_guest_mod") {
             const auto& built=database.get("guest_prepared").get(id);
             const auto& region=database.get("guest_regions").get(id);
-            satisfied=r.active||(built.get("elf").string()==r.manifest.fingerprint&&
+            satisfied=r.active||(validated_guest_cache.contains(id)&&built.get("elf").string()==r.manifest.fingerprint&&
                 built.get("build").string()==g_guest_build_name&&built.get("base")==region.get("base")&&
                 built.get("size")==region.get("size")&&fs::is_regular_file(built.get("module").string()));
         }
@@ -491,8 +492,28 @@ bool delete_profile(const std::string& name,std::string& error){return operation
 void remember_builtin(const std::string& id,bool on){std::string error;operation(error,[&]{profile()["builtins"][id]=on;save();dirty=true;});}
 void remember_option(const std::string& id,double value){std::string error;operation(error,[&]{profile()["builtin_options"][id]=value;save();});}
 bool refresh(std::string& error){return operation(error,[&]{for(const auto& [id,r]:records)require(!r.active&&!r.loading&&!wanted(id),(r.manifest.kind=="content"||r.manifest.kind=="cemu"||r.manifest.kind=="guest")?"Disable content mods and restart before rescanning":"Disable installed mods before rescanning");scan();dirty=true;});}
-void set_guest_builder(GuestInspect inspect,GuestBuild build) {
-    std::lock_guard guard(mutex);guest_inspect=std::move(inspect);guest_build=std::move(build);
+void set_guest_builder(GuestInspect inspect,GuestBuild build,GuestCacheCheck check) {
+    Value requests;requests.type=Value::Array;
+    {
+        std::lock_guard guard(mutex);guest_inspect=std::move(inspect);guest_build=std::move(build);
+        validated_guest_cache.clear();
+        for(const auto& [id,r]:records) {
+            const auto& receipt=database.get("guest_prepared").get(id);
+            const auto& base=receipt.get("base");
+            if(r.manifest.kind!="guest"||receipt.get("elf").string()!=r.manifest.fingerprint||
+               receipt.get("build").string()!=g_guest_build_name||base.type!=Value::Number||
+               base.number<0x7F000000||base.number>=0x80000000||std::floor(base.number)!=base.number)continue;
+            Value request;request["id"]=id;request["package"]=r.path.string();request["base"]=base;
+            request["module"]=receipt.get("module");requests.array.push_back(std::move(request));
+        }
+    }
+    // Probe the selected compiler once for the entire batch, outside the manager
+    // mutex. The Mods tab only reads this in-memory result, never starts tools.
+    if(check&&!requests.array.empty())try {
+        auto valid=check(requests);std::lock_guard guard(mutex);
+        for(const auto& id:valid)if(std::any_of(requests.array.begin(),requests.array.end(),
+            [&](const Value& request){return request.get("id").string()==id;}))validated_guest_cache.insert(id);
+    }catch(const std::exception&) {/* unavailable/stale tools leave the setup step unsatisfied */}
 }
 bool prepare_guest(const std::string& id,std::string& error) {
     GuestInspect inspect;GuestBuild build;GuestPackage pkg;bool marked=false;
@@ -518,6 +539,7 @@ bool prepare_guest(const std::string& id,std::string& error) {
             auto& receipt=database["guest_prepared"][id];receipt["elf"]=pkg.fingerprint;receipt["build"]=g_guest_build_name;
             receipt["base"]=double(base);receipt["size"]=database.get("guest_regions").get(id).get("size");receipt["module"]=fs::absolute(result.module).string();
             try{save();}catch(...){database=previous;throw;}
+            validated_guest_cache.insert(id);
             r.loading=false;r.error.clear();r.status="Guest module ready; restart to activate";marked=false;
         }
         error.clear();return true;

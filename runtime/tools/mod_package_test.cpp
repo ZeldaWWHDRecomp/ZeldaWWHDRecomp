@@ -133,6 +133,21 @@ int main(int argc, char** argv) {
         assert(assigned==0x7F010000&&!setup_steps("prepare-guest")[0].satisfied);
         fail=false;assert(prepare_guest("prepare-guest",error)&&assigned==0x7F010000);
         assert(inspected==2&&built==2&&setup_steps("prepare-guest")[0].satisfied);
+        int cache_checks=0;
+        auto check_cache=[&](const mods::json::Value& requests) {
+            ++cache_checks;assert(requests.array.size()==1);
+            assert(requests.array[0].get("id").string()=="prepare-guest");
+            assert(requests.array[0].get("base").number==assigned);
+            return std::vector<std::string>{};
+        };
+        set_guest_builder({}, {}, check_cache);
+        assert(cache_checks==1&&!setup_steps("prepare-guest")[0].satisfied);
+        assert(!setup_steps("prepare-guest")[0].satisfied&&cache_checks==1);
+        set_guest_builder({}, {}, [&](const mods::json::Value& requests) {
+            ++cache_checks;assert(requests.array.size()==1);
+            return std::vector<std::string>{"prepare-guest"};
+        });
+        assert(cache_checks==2&&setup_steps("prepare-guest")[0].satisfied);
         assert(!view("prepare-guest").active&&!view("prepare-guest").enabled);
         assert(enable("prepare-guest",true,error));frame(1);assert(!view("prepare-guest").active&&view("prepare-guest").pending_restart);
         fs::remove(module);assert(!setup_steps("prepare-guest")[0].satisfied);

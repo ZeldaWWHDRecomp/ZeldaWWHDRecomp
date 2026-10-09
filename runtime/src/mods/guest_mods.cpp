@@ -249,7 +249,16 @@ void init() {
         uint32_t reserved=(uint32_t(memory.number)+pkg.heap_size+0xFFFF)&~0xFFFFu;
         return packages::GuestBuilt{result.get("module").string(),reserved};
     };
-    packages::set_guest_builder(inspect,build);
+    packages::set_guest_builder(inspect,build,[cache](const mods::json::Value& requests) {
+        auto result=BuildBridge::installed(cache).check_cached(requests,g_guest_build_name);
+        const auto& valid=result.get("valid");
+        if(valid.type!=mods::json::Value::Array)throw std::runtime_error("Invalid guest cache check result");
+        std::vector<std::string> ids;for(const auto& id:valid.array) {
+            if(id.type!=mods::json::Value::String)throw std::runtime_error("Invalid guest cache check ID");
+            ids.push_back(id.text);
+        }
+        return ids;
+    });
     packages::start_guests(inspect,[build](const packages::GuestPackage& pkg,uint32_t base) {
         auto result=build(pkg,base);std::string error;
         if(result.module.empty()||!load_one(result.module,error,pkg,base,result.allocation_size))
