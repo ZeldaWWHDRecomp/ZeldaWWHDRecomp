@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+namespace mods { bool fast_forward_mute(){return false;} }  // fast forward (mods/fast_forward.cpp): not exercised here
 void log_msg(const char*,...) {}
 static void env(const char* key,const char* value) {
 #ifdef _WIN32
