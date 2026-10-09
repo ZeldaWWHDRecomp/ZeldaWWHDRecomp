@@ -254,7 +254,7 @@ chosen sounds and follow from the random-number deviation below.
 
 ### Known deviation: random-number sequence
 
-Accepted by the user (2026-10-03). **The converted logic consumes exactly the random numbers of
+**The converted logic consumes exactly the random numbers of
 the 30 fps game, and the game state after every full pass is bit-identical; random numbers drawn
 by drawing code are not.**
 
@@ -316,37 +316,7 @@ Debug aids: `WWHD_LINK_TRACE`, `WWHD_CAM_TRACE`, `WWHD_ACTOR_DUMP=path:FN|link:S
 | play state | g_dComIfG_gameInfo.play | 1046F0B0 | select items +0x5BBB (X, Y, Z), start/next stage +0x5134/+0x5140 |
 
 
-### Plan for the rest (estimates for one person with these tools)
-
-- **Global systems, about 1 week.**
-  - *Particles at 60 Hz* (JPABaseEmitter calc/calcParticle/calcCreatePtcls: emission rate,
-    velocity, lifetime and key frames per dt; WWHD's JPA is partly restructured): 2–3 days. Today
-    they step at 30 Hz without interpolation.
-  - *World systems in the scene draw* (grass/tree/flower sway, magma, ice): 1–2 days. Today they
-    are held at 30 Hz.
-  - *Other camera modes* (lock-on, talk, event, …): the same site tooling, 134 inline sites in
-    d_camera.cpp, 1–2 days with a trajectory comparison per mode.
-- **The rest of Link, about 1 week.**
-  - 59 procedures with inline per-step code (`proc_audit.py`: speed changes, angle steps, rope and
-    climb movement);
-  - swimming buoyancy and the swim meter;
-  - Link's items (boomerang, hookshot, arrows are separate actors);
-  - riding the ship, which needs the ship (d_a_ship: 97 primitive calls, 94 position/speed stores)
-    at 60 Hz first.
-- **Enemies, NPCs, objects.** Per actor: the survey line, a site list for its inline physics and
-  timers (like `sites_camera.txt`), and a comparison run.
-  - Objects and tags with no per-step logic (108 files) can be switched on with a list.
-  - Typical NPCs and enemies need 10–40 sites: about 1–3 hours each with the tools, and the
-    comparison needs a reproducible way to meet them.
-  - Bosses and minigames: 1–2 days each.
-  - About 300 files with real per-step logic: roughly 2–3 months for everything. Less if a generic
-    pass handles the common `pos += speed` / `speed.y -= g` forms and timer arrays automatically
-    (the struct-snapshot timer hold that Link uses, applied to whole actors).
-- **Cutscenes and events** (event manager, JStudio `forward(1)`): about 1 week, but only useful
-  once the actors that appear in them run at 60 Hz. Until then they stay at 30 Hz with
-  interpolation, which is already correct and smooth.
-
-### Per-step logic in the other actors (survey for the next conversions)
+### Per-step logic in the other actors (survey)
 
 `tools/true60/actor_survey.py [d_a_]` scans the generated code of every named actor function and
 writes `build/true60_survey.tsv`, one line per GameCube source file. It reports:
@@ -419,56 +389,24 @@ Most active files (score = primitive calls + 5 × counters + pos/speed stores):
 | d_a_bb.cpp | 23 | 46 | s16-0x49A, s16+0x4C6, s16+0x4C8 | 44 | — |
 | d_a_bl.cpp | 21 | 26 | s16+0x422 | 69 | — |
 
-## Fixed: intermittent boot crash (agl shader archive setup)
+## GX2CopySurface completes before it returns
 
-**Cause: a late GX2CopySurface write from the render thread into freed and reused guest memory.**
-Fixed on fix-boot-race: GX2CopySurface now waits for the render thread (`render_sync`) before it returns.
-This is likely also the root cause of the Android (Snapdragon 8 Gen 3) boot crash that PR #31 works around
-by pinning all threads to one core: with one core the render thread runs late every time.
+The game relies on `GX2CopySurface` being finished when the call returns. agl's tile-mode conversion
+(027B5EEC, during boot on the Prepare Thread) allocates a temporary surface, copies into it with
+`GX2CopySurface`, immediately copies it back with `OSBlockMove` and frees it. When the port only queued
+the copy for the render thread, a late copy could land after the heap had reused that memory (for agl's
+shader program array), which crashed boot intermittently (SIGBUS at guest address 4 in 027B90AC).
 
-- **Signature.** SIGBUS at guest address 4 about 0.5 s after `[thread] start "Prepare Thread"`.
-  - Call path: Prepare Thread 0274A7A4 → 0203EE2C → 0203EA88 → 027B59F4 → 02786520 (agl shader program
-    setup for `agl_resource_cafe_dev.sarc`).
-  - The crash is in 027B90AC, called from 02786520's second loop (lr 02786700). It reads
-    `*(*(prog+0x7c)+4)` with program 0's +0x7c = 0. Program array 21EFE28C (56 × 0x84, object 226FE868).
-  - The first archive setup (027B8904) had filled +0x7c correctly (21F13190). The value was lost afterwards.
-- **Writer.** `gfx::copy_surface_impl`'s CPU re-tile path on the "GX2 render" thread wrote
-  21EFE300..21EFE4FF. Found with a write-protect watch (`WWHD_BOOTDBG_PROT=1`) and confirmed with `WWHD_COPYDBG=1`.
-- **Cause.** agl's tile-mode conversion 027B5EEC (called from the Prepare Thread) does five things:
-  1. allocates a temporary surface from the heap (here at 21EFE300, 0x200 bytes);
-  2. calls `GX2CopySurface` (linear source → temporary, call site lr 027B5FD4);
-  3. immediately calls `OSBlockMove`, copying the temporary back over the source;
-  4. calls `DCFlushRangeNoSync`;
-  5. frees the temporary.
+`HLE(gx2, GX2CopySurface)` therefore calls `render_sync` after queueing the copy, unless a display list is
+being recorded (display lists run when called). This applies to both backends. It costs about 50 syncs
+during boot and none during gameplay (`WWHD_SYNC_STATS=1`, site "CopySurface").
 
-  So the game treats the copy as finished when GX2CopySurface returns. The port only queued it for the render
-  thread. When that thread ran late, the copy landed after the heap had reused the temporary's memory for the
-  program array. It zeroed program 0's +0x7c whenever it landed between the array setup and the second loop.
-  The port also lost the copy's result: the game had already read the temporary.
-- **Fix.** `HLE(gx2, GX2CopySurface)` calls `render_sync` after queueing the copy, unless a display list is
-  being recorded (display lists run when called). This applies to both backends.
-  - Cost: about 50 syncs at boot (agl resource setup), in the first 5 s. None in steady gameplay or after
-    state loads in Outset, on the sea (Windfall pier) or in Dragon Roost Cavern (`WWHD_SYNC_STATS=1`, site
-    "CopySurface").
-  - The per-sync ms cost is to be measured on an idle machine (TODO.md).
-- **Evidence (h6, 2026-10-06, strictly one boot at a time, load average 6 to 8 on 16 cores).**
-  - Stressed with `WWHD_GX2_DELAY_COPY` (the render thread stalls before each copy):
-    - unfixed, 15 or 30 ms: 14 of 14 boots crash with the identical signature;
-    - unfixed, 45 ms: 0 of 4 (the write then lands after the second loop's read);
-    - fixed, 15 or 30 ms: 0 of 28.
-  - Not stressed: unfixed 0 of 30, fixed 0 of 60. With one instance on a lightly loaded machine the natural
-    rate is too low to tell the two apart. Earlier rates were about 1 in 12 with 8 instances and 1 in 15 to
-    1 in 88 with 2, and on Android with all threads on one core every boot crashed.
-- **Debug aids (all off by default).**
-  - `WWHD_GX2_DELAY_COPY=ms` (gx2_core.cpp): the regression repro.
-  - `WWHD_COPYDBG=1`: logs each GX2CopySurface issue (thread, lr, images) and each CPU-path execution (range,
-    time).
-  - In true60_test.cpp:
-    - `WWHD_BOOTDBG=1` (02786520 / 027B8904 / 027B82B8 logs);
-    - `WWHD_BOOTDBG_SLOW=ms`;
-    - `WWHD_BOOTDBG_PROT=1` (write-protect the first program array's page and log the writing thread with a
-      backtrace);
-    - `WWHD_HEAPLOG=1`.
+Debug aids, all off by default:
+- `WWHD_GX2_DELAY_COPY=ms` (gx2_core.cpp): the render thread waits before each copy; reproduces the
+  crash on a build without the sync;
+- `WWHD_COPYDBG=1`: logs each GX2CopySurface (thread, lr, images) and each CPU-path execution;
+- in true60_test.cpp: `WWHD_BOOTDBG=1`, `WWHD_BOOTDBG_SLOW=ms`, `WWHD_BOOTDBG_PROT=1` (write-protects the
+  first program array's page and logs the writing thread) and `WWHD_HEAPLOG=1`.
 
 ## Effects interpolation (runtime/src/interp_fx.cpp)
 
