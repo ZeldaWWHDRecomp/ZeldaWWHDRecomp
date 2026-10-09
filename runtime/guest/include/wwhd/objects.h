@@ -4,6 +4,14 @@
 #pragma once
 #include "../wwhd_guest.h"
 
+/* wwhd_src/include/bindings.h */
+#define WWHD_OFFSET_actor_process_id 4
+/* wwhd_src/d/actor/d_a_player_main_04.cpp */
+#define WWHD_OFFSET_Link_left_hand_position 0x3F0
+/* wwhd_src/d/actor/d_a_player_main_04.cpp */
+#define WWHD_OFFSET_Link_ground_height 0x8A0
+/* wwhd_src/d/actor/d_a_player_main_03.cpp */
+#define WWHD_OFFSET_pad_trigger 0x18
 /* wwhd_src/f_op/f_op_actor.cpp */
 #define WWHD_OFFSET_actor_profile_methods 0x24
 /* wwhd_src/d/d_save_local.h */

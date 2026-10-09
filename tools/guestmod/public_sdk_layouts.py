@@ -17,7 +17,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
-AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16, 'daPy_mtxFollowEcallBack_c': 12}
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16, 'daPy_mtxFollowEcallBack_c': 12, 'dKy_tevstr_c': 0x1C8}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 

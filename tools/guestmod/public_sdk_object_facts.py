@@ -3,6 +3,10 @@ import re
 
 # Each pattern captures the numeric operand in a specific public declaration/use.
 FACTS = [
+    ('WWHD_OFFSET_actor_process_id', 'include/bindings.h', r'inline u32 fopAcM_GetID\(void\* p\) \{ return p \? gabi::load<u32>\(gabi::ea\(p\) \+ ([0-9]+)\) : 0xFFFFFFFFu; \}'),
+    ('WWHD_OFFSET_Link_left_hand_position', 'd/actor/d_a_player_main_04.cpp', r'cXyz_pl\(gabi::at<cXyz>\(gabi::ea\(this\) \+ (0x[0-9A-Fa-f]+)\) /\* mLeftHandPos \*/'),
+    ('WWHD_OFFSET_Link_ground_height', 'd/actor/d_a_player_main_04.cpp', r'if \(roof_height > LK_FIELD\(f32, (0x[0-9A-Fa-f]+)\) /\* mAcch.GetGroundH\(\) \*/\)'),
+    ('WWHD_OFFSET_pad_trigger', 'd/actor/d_a_player_main_03.cpp', r'static inline u32 lk_hdPadTrig\(\) \{ return gabi::load<u32>\(gabi::load<u32>\(0x101F5088\) \+ (0x[0-9A-Fa-f]+)\); \}'),
     ('WWHD_OFFSET_actor_profile_methods', 'f_op/f_op_actor.cpp', r'st\(actor \+ 0xF0, ld\(profile \+ (0x[0-9A-Fa-f]+)\)\);'),
     ('WWHD_OFFSET_save_inventory', 'd/d_save_local.h', r'if \(\(s32\)idx < 0x15\) return ld8\(b \+ (0x[0-9A-Fa-f]+) \+ idx\);'),
     ('WWHD_COUNT_save_inventory', 'd/d_save_local.h', r'if \(\(s32\)idx < (0x[0-9A-Fa-f]+)\) return ld8\(b \+ 0x5C \+ idx\);'),

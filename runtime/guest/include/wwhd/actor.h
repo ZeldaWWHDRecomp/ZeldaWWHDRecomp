@@ -47,6 +47,7 @@ typedef union fopAc_ac_c {
     struct __attribute__((packed)) { u8 _pad__0B8[0xB8]; u8 _0B8[0xF4 - 0xB8]; };
     struct __attribute__((packed)) { u8 _pad_heap[0xF4]; u32 heap; };
     struct __attribute__((packed)) { u8 _pad__0F8[0xF8]; u8 _0F8[0x110 - 0xF8]; };
+    struct __attribute__((packed)) { u8 _pad_tevStr[0x110]; dKy_tevstr_c tevStr; };
     struct __attribute__((packed)) { u8 _pad_setID[0x2D8]; u16 setID; };
     struct __attribute__((packed)) { u8 _pad_group[0x2DA]; u8 group; };
     struct __attribute__((packed)) { u8 _pad_cullType[0x2DB]; u8 cullType; };
@@ -89,6 +90,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, __vtbl) == 0xB4, "fopAc_ac_c.__vt
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _0B8) == 0xB8, "fopAc_ac_c._0B8");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, heap) == 0xF4, "fopAc_ac_c.heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _0F8) == 0xF8, "fopAc_ac_c._0F8");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, tevStr) == 0x110, "fopAc_ac_c.tevStr");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, setID) == 0x2D8, "fopAc_ac_c.setID");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, group) == 0x2DA, "fopAc_ac_c.group");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, cullType) == 0x2DB, "fopAc_ac_c.cullType");
