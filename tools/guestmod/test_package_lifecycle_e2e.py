@@ -136,7 +136,7 @@ def main():
 
     # An environment flag cannot turn a hook-enabled executable into an off build.
     # Materialize and select the real off cache before the first launcher process.
-    if gates.other_benchmarks():
+    if gates.other_benchmarks() and not args.allow_concurrent_benchmark:
         raise RuntimeError('A benchmark is active; do not start an installer rebuild')
     off_status = args.out / 'prepare-off-status.json'
     with (args.out / 'prepare-off-installer.log').open('w') as log:

@@ -393,4 +393,3 @@ parsing, hashes, installation and setup, but does not verify remote hosting.
 Published catalogues continue to require absolute HTTPS package URLs. Runtime
 captures need visual review to establish each mod's visible behavior; successful
 loading and receipts alone are not a visual acceptance test.
-
