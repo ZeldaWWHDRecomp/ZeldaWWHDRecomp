@@ -7,10 +7,20 @@ from unittest.mock import patch
 import unittest
 import zipfile
 
-from prepare_python import write_entry, verified_download, runtime_fixture_source
+from prepare_python import write_entry, verified_download, runtime_fixture_source, source_files
 
 
 class ResourceIdentityTests(unittest.TestCase):
+    def test_installer_sibling_is_bundled_when_present(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sibling = root / "tools/installer/code_mods.py"
+            sibling.parent.mkdir(parents=True)
+            self.assertNotIn(sibling, source_files(root))
+            sibling.write_text("# authored production sibling\n")
+            self.assertIn(sibling, source_files(root))
+            self.assertIn(sibling, source_files(root, True))
+
     def test_same_source_bytes_have_same_archive_identity(self):
         def bundle(name, data):
             stream = io.BytesIO()

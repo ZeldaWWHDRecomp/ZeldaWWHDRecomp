@@ -71,6 +71,11 @@ class Adapter:
         spec = importlib.util.spec_from_file_location(
             "wwhd_android_installer", self.package / "tools/installer/setup.py")
         self.setup = importlib.util.module_from_spec(spec)
+        # Match direct setup.py execution: installer siblings must be importable
+        # when the unchanged installer is loaded through an importlib spec.
+        installer_path = str(self.package / "tools/installer")
+        if installer_path not in sys.path:
+            sys.path.insert(0, installer_path)
         spec.loader.exec_module(self.setup)
 
     def boundary(self):

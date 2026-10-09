@@ -17,6 +17,21 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
+class InstallerImportTests(unittest.TestCase):
+    def test_importlib_installer_can_import_its_siblings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            installer = root / "tools/installer"
+            installer.mkdir(parents=True)
+            (installer / "setup.py").write_text("import authored_installer_sibling\nvalue = authored_installer_sibling.value\n")
+            (installer / "authored_installer_sibling.py").write_text("value = 42\n")
+            try:
+                with patch.object(sys, "path", list(sys.path)):
+                    self.assertEqual(Adapter(root, root / "jobs", "test").setup.value, 42)
+            finally:
+                sys.modules.pop("authored_installer_sibling", None)
+
+
 class ChecksumPauseTests(unittest.TestCase):
     def test_pause_between_bounded_reads_closes_input(self):
         import io

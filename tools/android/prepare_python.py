@@ -69,6 +69,11 @@ def source_files(root, test_fixtures=False):
                     root / "tools/android/native_process.py",
                     root / "tools/android/ondevice_setup.py",
                     root / "tools/rpx.py"]
+    # Newer desktop installers import this production sibling. Older branches
+    # do not have it; support both without changing installer behavior.
+    code_mods = root / "tools/installer/code_mods.py"
+    if code_mods.is_file():
+        source_paths.append(code_mods)
     source_paths += [path for path in (root / "tools/recomp").rglob("*")
                      if path.is_file() and (path.suffix in (".py", ".txt") or (path.parent.name == "builds" and path.suffix == ".json"))
                      and path.name != "android_fixture.py" and "__pycache__" not in path.parts]
