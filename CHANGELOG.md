@@ -23,8 +23,9 @@ what is on `devel` and not released yet (also in the
 - **Setup: more reliable compiler download** (issue #113). If the download of the compiler (about
   190 MB on Windows) is interrupted, setup now retries and resumes where it stopped instead of failing.
   If it still can't download it, you can download the file in your browser and put it in the Wind Waker
-  HD folder: setup checks it and uses it. The error message now also says when an antivirus or security
-  program blocked the connection.
+  HD folder: setup checks it and uses it. On Windows, when the secure connection can't be verified
+  ("unable to get local issuer certificate", usually a root certificate Windows hasn't fetched yet),
+  setup now downloads with Windows' own curl instead.
 - **Fixed: the boat's sail fluttered too fast at 60, 120 and 240 fps** (issue #68). The sail cloth was
   drawn with its exact pose against the in-between camera, which added an extra jump on every
   in-between frame. Its drawing is now interpolated, and so are the other cloth pieces drawn the same

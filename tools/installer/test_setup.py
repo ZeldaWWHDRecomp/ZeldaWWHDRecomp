@@ -888,6 +888,21 @@ class Download(unittest.TestCase):
                 setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test", wait=0)
             self.assertIn("antivirus or security program", str(e.exception))
 
+    def test_certificate_error_falls_back_to_windows_curl(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate")
+        def curl_download(curl, url, tmp):
+            with open(tmp, "wb") as f:
+                f.write(self.DATA)
+            return True
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d), \
+                mock.patch.object(setup, "windows_curl", lambda: "curl.exe"), \
+                mock.patch.object(setup, "curl_download", curl_download):
+            dst = os.path.join(d, "tc.zip")
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
+
     def test_uses_players_own_copy(self):
         def urlopen(req, timeout=None):
             raise AssertionError("must not download")

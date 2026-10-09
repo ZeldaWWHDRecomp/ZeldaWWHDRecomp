@@ -568,8 +568,9 @@ def local_copy(name, sha256):
 def download_error(url, e):
     text = str(e)
     if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text:
-        why = ("the secure connection was refused because its certificate could not be checked. This usually "
-               "means an antivirus or security program scans HTTPS connections, or a proxy intercepts them.")
+        why = ("the secure connection's certificate could not be checked. Either Windows lacks a root certificate "
+               "that it normally fetches on demand, or an antivirus or security program or a proxy intercepts "
+               "HTTPS connections")
     else:
         why = "%s." % text.rstrip(".")
     name = os.path.basename(url.split("?")[0])
@@ -579,6 +580,24 @@ def download_error(url, e):
 
 
 DOWNLOAD_ATTEMPTS = 6
+
+
+def windows_curl():
+    """Windows' own curl.exe (Windows 10 1803 and later). It verifies certificates through Windows,
+    which fetches missing root certificates on demand; Python's ssl module only reads the store as it
+    is, so a fresh Windows can fail there with "unable to get local issuer certificate" (issue #113)."""
+    if os.name != "nt":
+        return None
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")
+    return path if os.path.isfile(path) else None
+
+
+def curl_download(curl, url, tmp):
+    """Downloads url to tmp with curl.exe (resuming tmp); True when curl reports success."""
+    say("  Python could not verify the certificate; downloading with Windows' curl instead.")
+    cmd = [curl, "--location", "--fail", "--silent", "--show-error", "--retry", "5", "--continue-at", "-",
+           "--output", tmp, url]
+    return subprocess.run(cmd).returncode == 0
 
 
 def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wait=2.0):
@@ -624,7 +643,12 @@ def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wai
             last = e
             if getattr(e, "code", None) == 416 and os.path.isfile(tmp):  # a stale or oversized partial file
                 os.remove(tmp)
-            if "CERTIFICATE_VERIFY_FAILED" in str(e) or attempt == attempts - 1:
+            if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                curl = windows_curl()
+                if curl and curl_download(curl, url, tmp):
+                    break
+                raise download_error(url, e)
+            if attempt == attempts - 1:
                 raise download_error(url, e)
             say("  Download interrupted (%s); retrying..." % e)
             time.sleep(wait * (2 ** attempt))
