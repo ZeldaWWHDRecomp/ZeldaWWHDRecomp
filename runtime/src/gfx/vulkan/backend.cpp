@@ -37,6 +37,7 @@
 #include "shaders.h"
 #include "settings.h"
 #include "savestate.h"
+#include "gfx/capture_schedule.h"
 #include "sparse_hash_memo.h"
 #include "write_watch.h"
 #include <algorithm>
@@ -1410,16 +1411,8 @@ static void request_present_dump(const std::string& path) { gfx::request_present
 static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
-  static const std::vector<uint64_t> frames = [] {
-    std::vector<uint64_t> f;
-    if (const char *e = getenv("WWHD_DUMP_FRAMES"))
-      for (const char *p = e; *p;) {
-        f.push_back(strtoull(p, (char **)&p, 10));
-        while (*p == ',') p++;
-      }
-    return f;
-  }();
-  if (std::find(frames.begin(), frames.end(), frame) != frames.end()) {
+  static const auto frames = capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+  if (capture_schedule::contains(frames, frame)) {
     dump_scan(R.tv, "frame_" + std::to_string(frame) + ".png");
     dump_scan(R.drc, "frame_" + std::to_string(frame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))
@@ -1427,29 +1420,17 @@ static void frame_dumps(uint64_t frame) {
   }
   // Test captures relative to the completed full-state load, whose actual
   // renderer frame can vary even when WWHD_STATE_LOAD_AT is fixed.
-  static const std::vector<uint64_t> loadFrames = [] {
-    std::vector<uint64_t> f;
-    if (const char* e = getenv("WWHD_DUMP_LOAD_FRAMES"))
-      for (const char* p = e; *p;) {
-        char* end;
-        auto value = strtoull(p, &end, 10);
-        if (end == p) break;
-        f.push_back(value);
-        p = end;
-        while (*p == ',') ++p;
-      }
-    return f;
-  }();
+  static const auto loadFrames = capture_schedule::parse(getenv("WWHD_DUMP_LOAD_FRAMES"));
   const uint64_t loaded = loadFrames.empty() ? 0 : ss::last_load_frame();
-  if (loaded && frame >= loaded &&
-      std::find(loadFrames.begin(), loadFrames.end(), frame - loaded) != loadFrames.end()) {
-    const auto stem = "load_frame_" + std::to_string(frame - loaded);
+  if (capture_schedule::relative_due(loadFrames, frame, loaded)) {
+    const auto stem = capture_schedule::stem(frame - loaded, true);
     dump_scan(R.tv, stem + ".png");
     dump_scan(R.drc, stem + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT")) request_present_dump(stem + "_present.png");
-    LOG("[gfx] load-relative capture: load frame %llu, frame %llu, offset %llu",
+    LOG("[gfx] load-relative capture: load frame %llu, frame %llu, offset %llu, load step %llu, step %llu",
         (unsigned long long)loaded, (unsigned long long)frame,
-        (unsigned long long)(frame - loaded));
+        (unsigned long long)(frame - loaded), (unsigned long long)ss::last_load_step(),
+        (unsigned long long)interp::logic_steps());
   }
   // P / F12 (Graphics menu): the pictures of this frame in captures/<time>/ (WWHD_CAPTURE=<frame>
   // scripts it when WWHD_CAPTURE_PATH is not used); the Metal renderer also writes a draw log
