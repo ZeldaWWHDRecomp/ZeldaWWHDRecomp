@@ -49,3 +49,12 @@ placement, contextual prompts, fades and menu visibility. Use `--keep-frames`
 for that inspection; otherwise images are deleted after the result is recorded.
 Outputs include private game images and paths and must never be uploaded,
 committed or included in packages or CI artifacts.
+
+Full states are tied to the game's region. If no compatible state is available,
+use `--boot --keep-state` to boot the copied normal save and create a private
+regional state before capture. Boot cases default to frame 3000; `--first-frame`
+can adjust that for a save's menu/loading sequence. Review that the captured
+scene is gameplay, then use its `states/slot1.bin` as `--state` in later cases.
+The driver verifies that a full-state file with a recognized header was created
+and checks HUD colour presence. Review the log and scene before reusing it;
+boot automation does not cover every menu sequence.

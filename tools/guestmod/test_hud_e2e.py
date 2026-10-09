@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -60,8 +61,13 @@ def inspect_frames(root, first, count, package):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("binary", "game", "save", "state", "out"):
+    for name in ("binary", "game", "save", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
+    seed = parser.add_mutually_exclusive_group(required=True)
+    seed.add_argument("--state", type=Path, help="compatible full state from the same game region")
+    seed.add_argument("--boot", action="store_true", help="boot the copied save and create a regional full state")
+    parser.add_argument("--keep-state", action="store_true", help="retain the private state for subsequent cases")
+    parser.add_argument("--first-frame", type=int, help="first consecutive dump frame (700 with a state, 3000 at boot)")
     parser.add_argument("--renderer", choices=("metal", "vulkan"), required=True)
     parser.add_argument("--package", choices=("hud-demo", "button-icons"), required=True)
     parser.add_argument("--fps", type=int, choices=(30, 60), default=30)
@@ -74,8 +80,13 @@ def main():
     if not 1 <= args.frames <= 300:
         parser.error("frames must be between 1 and 300")
     repo = Path(__file__).resolve().parents[2]
-    args.binary, args.game, args.save, args.state, args.out = (
-        p.resolve() for p in (args.binary, args.game, args.save, args.state, args.out))
+    args.binary, args.game, args.save, args.out = (
+        p.resolve() for p in (args.binary, args.game, args.save, args.out))
+    if args.state:
+        args.state = args.state.resolve()
+    first = args.first_frame if args.first_frame is not None else (3000 if args.boot else 700)
+    if first < 700:
+        parser.error("first-frame must be at least 700 to allow startup and state restoration")
     if other_games():
         parser.error("another game or benchmark is running; retry in a quiet window")
     disk_ok(args.out.parent)
@@ -90,7 +101,8 @@ def main():
     for item in (root / "save").rglob("*"):
         item.chmod(0o755 if item.is_dir() else 0o644)
     (root / "states").mkdir()
-    shutil.copy2(args.state, root / "states" / "slot1.bin")
+    if args.state:
+        shutil.copy2(args.state, root / "states" / "slot1.bin")
     package_root = root / "manager" / "Mods" / args.package
     shutil.copytree(source, package_root, ignore=shutil.ignore_patterns("*.o"))
     (root / "manager" / "profiles.json").write_text(json.dumps({
@@ -105,7 +117,6 @@ def main():
                "position": dict(A="B", B="A", X="Y", Y="X"),
                "custom": dict(A="X", B="B", X="A", Y="Y")}
     (root / "controls.json").write_text(json.dumps({"version": 1, "controller": layouts[args.layout]}))
-    first = 700
     env = {k: v for k, v in os.environ.items() if not k.startswith("WWHD_")}
     env.update({"WWHD_CODE_MODS": "1", "WWHD_NO_AUDIO": "1", "WWHD_NO_HOST_INPUT": "1",
                 "WWHD_HIDDEN_WINDOWS": "1", "WWHD_UNCAPPED": "1",
@@ -120,15 +131,19 @@ def main():
                 "WWHD_DISPLAY_SETTINGS": str(root / "display.plist"),
                 "WWHD_CONTROLS": str(root / "controls.json"),
                 "XDG_CONFIG_HOME": str(root / "config"),
-                "WWHD_STATE_DIR": str(root / "states"), "WWHD_STATE_LOAD_AT": "450:1",
-                "WWHD_TEST_ORIGIN": "650", "WWHD_TEST_END": "30",
-                "WWHD_PRESS": ",".join("%d-%d:8000" % (f, f+8) for f in range(150, 450, 30)),
+                "WWHD_STATE_DIR": str(root / "states"),
+                "WWHD_TEST_ORIGIN": str(first-50), "WWHD_TEST_END": "30",
+                "WWHD_PRESS": ",".join("%d-%d:8000" % (f, f+8) for f in range(150, first-200 if args.boot else 450, 30)),
                 "WWHD_DUMP_FRAMES": ",".join(map(str, range(first, first + args.frames))),
                 "WWHD_DUMP_PRESENT": "1", "WWHD_SIM_SCREEN": "2560x1080" if args.wide else "1280x720"})
     if args.wide:
         env["WWHD_ASPECT"] = "21:9"
+    if args.boot:
+        env["WWHD_STATE_SAVE_AT"] = "%d:1" % (first-30)
+    else:
+        env["WWHD_STATE_LOAD_AT"] = "450:1"
     if args.fps == 60:
-        env["WWHD_INTERP_AT_STEP"] = "510"
+        env["WWHD_INTERP_AT_STEP"] = str(first-190 if args.boot else 510)
     # Recheck immediately before launching; there is no cross-worker game lock.
     if other_games():
         raise RuntimeError("another game started while preparing the case")
@@ -155,12 +170,18 @@ def main():
                     process.wait()
     if not (root / "test_done").exists():
         raise RuntimeError("game exited before test_done; inspect private runtime.log")
+    if args.boot:
+        with (root / "states" / "slot1.bin").open("rb") as state_file:
+            header = state_file.read(104)
+        if len(header) < 96 or header[:8] != b"WWHDSTAT" or struct.unpack_from("<I", header, 12)[0] not in (96, 104):
+            raise RuntimeError("boot case did not produce a recognized full-state header")
     observations = inspect_frames(root, first, args.frames, args.package)
     expected = args.package == "hud-demo" or args.layout == "labels"
     passed = all(all(n >= 20 for n in row["pixels"]) if expected
                  else all(n < 20 for n in row["pixels"]) for row in observations)
     report = {"package": args.package, "renderer": args.renderer, "fps": args.fps,
-              "layout": args.layout, "wide": args.wide, "frames": args.frames,
+              "layout": args.layout, "wide": args.wide, "frames": args.frames, "boot": args.boot,
+              "regional_state_created": args.boot,
               "colour_presence_pass": passed, "observations": observations,
               "limitations": "Colour presence does not prove fades, contextual visibility or live preset changes."}
     (root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -168,7 +189,8 @@ def main():
         for path in root.glob("frame_*.png"):
             path.unlink()
     # Full states are large; preserve evidence, not the disposable input copies.
-    shutil.rmtree(root / "states")
+    if not args.keep_state:
+        shutil.rmtree(root / "states")
     shutil.rmtree(root / "save")
     print(json.dumps({k: v for k, v in report.items() if k != "observations"}))
     if not passed:
