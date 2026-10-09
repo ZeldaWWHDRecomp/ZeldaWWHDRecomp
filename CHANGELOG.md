@@ -37,6 +37,13 @@ what is on `devel` and not released yet (also in the
   install. The Vulkan loader and MoltenVK come with the game and are always the ones it uses (never a
   Homebrew copy). Metal stays the default, and if Vulkan can't start, the game falls back to Metal
   and says why. This also makes Cemu graphics packs with GLSL shaders usable on the Mac.
+
+
+- **5.1 surround sound** (issue #115). Settings → Audio → Speakers: **Surround 5.1** (restart after
+  changing it) sends the game's six separate surround channels, as the Wii U does with its Surround
+  TV setting. **Test speakers** plays a tone on each speaker in turn and names it, so the wiring is
+  easy to check. Stereo stays the default; if the output can't do 5.1, the game stays in stereo and
+  says so. Details: [docs/surround-audio.md](docs/surround-audio.md).
 - **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
   catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
   now work on all platforms; on Android the on-screen keyboard opens for these fields.
