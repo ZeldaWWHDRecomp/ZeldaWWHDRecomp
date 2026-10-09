@@ -3,6 +3,7 @@
 #include "mods/mods.h"
 #include "mods/climb.h"
 #include "overlay/hostui.h"
+#include "platform/process.h"
 #include <cassert>
 #include <cstdlib>
 #include <map>
@@ -69,6 +70,81 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==3&&std::string(argv[1])=="--guest-pending-check") {
+        bool supported=std::string(argv[2])=="on";set_code_mod_support(supported);initialize();
+        assert(view("guest-fixture").enabled==supported);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--guest-startup") {
+        auto root=fs::temp_directory_path()/("wwhd-guest-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto storage=root/"manager";
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS","guest-a,guest-b,guest-c");
+        for(const auto* id:{"guest-a","guest-b","guest-c"}) {
+            auto source=storage/"Mods"/id;fs::create_directories(source);
+            auto m=mods::json::parse(R"({"format_version":1,"id":"guest-a","name":"Fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})");
+            m["id"]=id;
+            if(std::string(id)=="guest-b")m["dependencies"]=mods::json::parse(R"([{"id":"guest-a"}])");
+            std::ofstream(source/"manifest.json")<<mods::json::dump(m);
+            {std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        }
+        std::ofstream(storage/"profiles.json") << R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"guest-a":true,"guest-b":true,"guest-c":true}}},"guest_regions":{"guest-a":{"base":2130771968,"size":65536},"guest-b":{"base":2130771968,"size":65536}}})";
+        set_code_mod_support(true);
+        initialize();std::string error;
+        assert(configure("guest-a","amount",5,error));
+        int inspected=0,loaded=0;std::map<std::string,uint32_t> bases;
+        auto inspect=[&](const GuestPackage& pkg){++inspected;assert(pkg.options.get("amount").number==3);return uint32_t(65536);};
+        auto load=[&](const GuestPackage& pkg,uint32_t base){++loaded;bases[pkg.id]=base;
+            if(pkg.id=="guest-c")throw std::runtime_error("synthetic compiler failure");};
+        start_guests(inspect,load);
+        assert(inspected==3&&loaded==3);
+        assert(bases.at("guest-a")==0x7F010000); // valid persisted region retained
+        assert(bases.at("guest-b")==0x7F000000); // duplicate saved reservation repaired
+        assert(bases.at("guest-c")==0x7F020000);
+        assert(view("guest-a").active&&view("guest-b").active&&!view("guest-c").active);
+        assert(view("guest-c").reason=="synthetic compiler failure");
+        assert(view("guest-a").pending_restart); // options changed after startup snapshot
+        assert(enable("guest-b",false,error));
+        frame(1);assert(view("guest-b").active&&view("guest-b").pending_restart);
+        start_guests(inspect,load);assert(inspected==3&&loaded==3); // never live reload
+        assert(!remove("guest-b",error));
+        fs::remove_all(root);std::cout << "guest startup allocation/lifecycle passed\n";return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--guest-metadata") {
+        auto root=fs::temp_directory_path()/("wwhd-guest-metadata-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})";
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        initialize();std::string error;
+        assert(install((root/"source").string(),error));
+        assert(view("guest-fixture").compatible&&view("guest-fixture").restart_required);
+        assert(!view("guest-fixture").native_confirmed);
+        assert(unconfirmed_native("guest-fixture").size()==1);
+        assert(!enable("guest-fixture",true,error));
+        assert(confirm_native("guest-fixture",error));
+        assert(needs_code_mod_support("guest-fixture"));
+        assert(enable_after_code_rebuild("guest-fixture",error));
+        assert(!view("guest-fixture").enabled); // queuing cannot enable the old running build
+        assert(host::run_process({argv[0],"--guest-pending-check","off"}).code==0);
+        assert(host::run_process({argv[0],"--guest-pending-check","on"}).code==0);
+        assert(!enable("guest-fixture",true,error));
+        assert(error.find("code-mod support")!=std::string::npos);
+        set_code_mod_support(true);
+        assert(!needs_code_mod_support("guest-fixture"));
+        assert(enable("guest-fixture",true,error));
+        assert(view("guest-fixture").pending_restart);
+        assert(configure("guest-fixture","amount",4,error));
+        assert(!configure("guest-fixture","amount",99,error));
+        frame(1);assert(!view("guest-fixture").active); // never load a PowerPC ELF as a host library
+        assert(enable("guest-fixture",false,error));
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary|std::ios::app);elf << "changed";}
+        assert(install((root/"source").string(),error));
+        assert(!view("guest-fixture").native_confirmed); // trust fingerprints the ELF, not its name
+        {std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":2}})";}
+        assert(!install((root/"source").string(),error));
+        fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;
+    }
     if(argc == 3 && std::string(argv[1]) == "--restart") return restart_check(argv[2]);
     if(argc==2&&(std::string(argv[1])=="--cemu-startup"||std::string(argv[1])=="--cemu-backend")){
         bool backend=std::string(argv[1])=="--cemu-backend";

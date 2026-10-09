@@ -6,11 +6,59 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import setup  # noqa: E402
 
 KEY_HEX = "0011223344556677" "8899aabbccddeeff"  # made-up test value
+
+
+class GuestBuildConfig(unittest.TestCase):
+    def test_toolchain_argument_vector(self):
+        with tempfile.TemporaryDirectory() as d:
+            tc = setup.Toolchain(["compiler with spaces", "cc", "-target", "x86_64-linux-gnu.2.35"], [], [])
+            setup.write_guest_build_config(d, tc)
+            with open(os.path.join(d, "guest-sdk.json"), encoding="utf-8") as f:
+                config = json.load(f)
+            self.assertEqual(config["compiler"], tc.cc)
+            self.assertEqual(config["python"], [sys.executable])
+            self.assertTrue(config["builder"].endswith("build_guest_mod.py"))
+            self.assertFalse(os.path.exists(os.path.join(d, "guest-sdk.json.tmp")))
+
+
+    def test_portable_paths_survive_release_move(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = os.path.join(directory, "release")
+            data = os.path.join(release, "data")
+            paths = {"python": os.path.join(release, "tools", "python", "python.exe"),
+                     "compiler": os.path.join(data, "toolchain", "bin", "zig"),
+                     "builder": os.path.join(release, "tools", "guestmod", "build_guest_mod.py")}
+            for path in paths.values():
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write("")  # fixture paths only
+            os.makedirs(os.path.join(release, "sdk", "include"))
+            cache = os.path.join(data, "toolchain", "zig-cache")
+            tc = setup.Toolchain([paths["compiler"], "cc", "-target", "x86_64-linux-gnu.2.35"], [], [],
+                                 env={"ZIG_GLOBAL_CACHE_DIR": cache, "UNRELATED_ENV": "not-persisted"})
+            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup.sys, "executable", paths["python"]):
+                setup.write_guest_build_config(data, tc)
+            moved = os.path.join(directory, "moved-release")
+            os.rename(release, moved)
+            moved_data = os.path.join(moved, "data")
+            with open(os.path.join(moved_data, "guest-sdk.json")) as f:
+                config = json.load(f)
+            self.assertEqual(config["format_version"], 2)
+            for key in ("python", "compiler"):
+                self.assertFalse(os.path.isabs(config[key][0]))
+                self.assertTrue(os.path.isfile(os.path.join(moved_data, config[key][0])))
+            self.assertTrue(os.path.isfile(os.path.join(moved_data, config["builder"])))
+            self.assertTrue(os.path.isdir(os.path.join(moved_data, config["include"])))
+            self.assertEqual(os.path.normpath(os.path.join(moved_data, config["zig_cache"])),
+                             os.path.join(moved_data, "toolchain", "zig-cache"))
+            self.assertNotIn("UNRELATED_ENV", config)
+
 
 
 class Keys(unittest.TestCase):
@@ -497,6 +545,143 @@ class LanguageSources(unittest.TestCase):
         finally:
             setup.run_extract, setup.archive_info = saved
         self.assertEqual(setup.LANGUAGE_SOURCE_FILES, ["content/Common/Pack/permanent_2d_*.pack", "meta/meta.xml"])
+
+
+class CodeModsBuild(unittest.TestCase):
+    def test_option_default_and_override(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(setup.code_mods.hooks_option())
+        with mock.patch.dict(os.environ, {"WWHD_CODE_MODS": "1"}):
+            self.assertTrue(setup.code_mods.hooks_option())
+            self.assertFalse(setup.code_mods.hooks_option("0"))
+        with self.assertRaises(ValueError):
+            setup.code_mods.hooks_option("yes")
+
+    def test_fingerprint_tracks_build_inputs_and_mode(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game/code").mkdir(parents=True)
+            (root / "game/code/cking.rpx").write_bytes(b"synthetic test input")
+            (root / "sdk").mkdir()
+            source = root / "sdk/runtime.o"
+            source.write_bytes(b"runtime fixture")
+            def key(hooks=False, compiler="clang", manifest=None):
+                return setup.code_mods.fingerprint(root, manifest or {"exe": "game"},
+                                                   root / "game", compiler, hooks)
+            first = key()
+            self.assertEqual(first, key())
+            self.assertNotEqual(first, key(True))
+            self.assertNotEqual(first, key(compiler="new clang"))
+            self.assertNotEqual(first, key(manifest={"exe": "other"}))
+            source.write_bytes(b"updated runtime fixture")
+            self.assertNotEqual(first, key())
+
+    def test_cache_modes_corruption_and_failed_link(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game/code").mkdir(parents=True)
+            (root / "game/code/cking.rpx").write_bytes(b"synthetic input")
+            (root / "sdk").mkdir()
+            data = root / "data"
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(root / "game"),
+                                  manifest={"toolchain": {}, "exe": "fixture"},
+                                  args=SimpleNamespace(jobs=4))
+            mode = []
+            def translate(game, gen, hooks=False):
+                Path(gen).mkdir(); mode[:] = [hooks]
+            def compile_code(tc, manifest, gen, obj, jobs, **kwargs):
+                Path(obj).mkdir(); kwargs["cancel"](); kwargs["progress"](1, 1)
+                return []
+            def link(tc, manifest, objs, work, target):
+                Path(target).write_bytes(b"hooks on" if mode[0] else b"hooks off")
+            tc = SimpleNamespace(cc=["fixture compiler"], env={})
+            with mock.patch.multiple(setup, PKG=root, PORTABLE=False), \
+                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                 mock.patch.object(setup, "run_logged", return_value="fixture compiler version"), \
+                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                 mock.patch.object(setup, "recompile", side_effect=translate) as recomp, \
+                 mock.patch.object(setup, "compile_gamecode", side_effect=compile_code), \
+                 mock.patch.object(setup, "link_game", side_effect=link) as linker:
+                data.mkdir()
+                initial = root / "initial.exe"
+                initial.write_bytes(b"hooks off")
+                generated = root / "initial-gen"
+                generated.mkdir()
+                setup.code_mods.remember_installed(setup, ctx, tc, False, initial, generated, [])
+                off = setup.code_mods.rebuild(setup, ctx, False)
+                self.assertTrue(off["cached"])
+                on = setup.code_mods.rebuild(setup, ctx, True)
+                self.assertNotEqual(off["fingerprint"], on["fingerprint"])
+                self.assertTrue(Path(off["exe"]).is_file())
+                again = setup.code_mods.rebuild(setup, ctx, False)
+                self.assertTrue(again["cached"])
+                self.assertEqual(recomp.call_count, 1)
+                # Bad metadata rebuilds rather than trusting an unrelated executable.
+                ready = Path(on["exe"]).parents[1] / "ready.json"
+                ready.write_text("broken json")
+                previous = (data / "code-mods-active.json").read_bytes()
+                linker.side_effect = setup.SetupError("synthetic link failure")
+                with self.assertRaisesRegex(setup.SetupError, "link failure"):
+                    setup.code_mods.rebuild(setup, ctx, True)
+                self.assertEqual((data / "code-mods-active.json").read_bytes(), previous)
+                self.assertTrue(Path(off["exe"]).is_file())
+                self.assertFalse(list(data.glob("*.partial")))
+
+    def test_build_lock_excludes_concurrent_writer_and_reopens(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "code-build.lock"
+            first = setup.code_mods.BuildLock(path, setup.SetupError)
+            try:
+                with self.assertRaisesRegex(setup.SetupError, "Another code-mod rebuild"):
+                    setup.code_mods.BuildLock(path, setup.SetupError)
+            finally:
+                first.close()
+            second = setup.code_mods.BuildLock(path, setup.SetupError)
+            second.close()
+
+    def test_low_space_evicts_only_inactive_owned_cache(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            active, inactive = "a" * 64, "b" * 64
+            for key in (active, inactive):
+                cache = root / "code-builds" / key
+                cache.mkdir(parents=True)
+                (cache / "ready.json").write_text(json.dumps({"fingerprint": key}))
+            unrelated = root / "code-builds" / "unrecognized"
+            unrelated.mkdir()
+            (root / "code-mods-active.json").write_text(json.dumps({"fingerprint": active}))
+            with mock.patch.object(setup, "free_space", side_effect=[0, 3 << 30]):
+                setup.code_mods.make_build_space(setup, root)
+            self.assertTrue((root / "code-builds" / active).is_dir())
+            self.assertFalse((root / "code-builds" / inactive).exists())
+            self.assertTrue(unrelated.is_dir())
+            with mock.patch.object(setup, "free_space", return_value=0):
+                with self.assertRaisesRegex(setup.SetupError, "previous build retained"):
+                    setup.code_mods.make_build_space(setup, root)
+            self.assertTrue((root / "code-builds" / active).is_dir())
+
+    def test_cancel_preserves_selection_and_releases_lock(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            active = root / "code-mods-active.json"
+            active.write_text('{"previous": true}')
+            cancel = root / "cancel"
+            cancel.touch()
+            status = root / "status.json"
+            ctx = SimpleNamespace(data_dir=d)
+            with self.assertRaisesRegex(setup.SetupError, "cancelled"):
+                setup.code_mods.rebuild(setup, ctx, True, status, cancel)
+            self.assertEqual(active.read_text(), '{"previous": true}')
+            with self.assertRaisesRegex(setup.SetupError, "cancelled"):
+                setup.code_mods.rebuild(setup, ctx, True, status, cancel)
+            self.assertEqual(json.loads(status.read_text())["state"], "error")
 
 
 if __name__ == "__main__":

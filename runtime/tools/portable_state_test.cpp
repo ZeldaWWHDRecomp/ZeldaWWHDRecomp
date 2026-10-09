@@ -113,6 +113,18 @@ int main() {
     CHECK(r.time_of_day == 187.5f && r.date == 12);
     CHECK(r.savedata == s.savedata && r.hd_player == s.hd_player && r.hd_status == s.hd_status &&
           r.hd_event == s.hd_event && r.hd_map == s.hd_map);
+    // Guest identities round-trip without mod code/data; missing metadata means the empty set.
+    {
+        State modded=s;modded.guest_mods={{"heart-ticker","0.1.0"},{"addcalc-replace","1.2.3"}};
+        auto with_mods=write(modded,why);State loaded;
+        CHECK(!with_mods.empty()&&read(with_mods,loaded,why));
+        CHECK(!guestmods::different_mods(loaded.guest_mods,modded.guest_mods));
+        CHECK(guestmods::different_mods(loaded.guest_mods,s.guest_mods));
+        CHECK(read(text,loaded,why)&&loaded.guest_mods.empty());
+        modded.guest_mods.push_back(modded.guest_mods[0]);CHECK(write(modded,why).empty());
+        modded.guest_mods={{"../invalid","1.0.0"}};CHECK(write(modded,why).empty());
+        CHECK(!read(reseal(replace(with_mods,"guest_mod.heart-ticker = 0.1.0","guest_mod.heart-ticker = bad/version")),loaded,why));
+    }
     // CRLF line ends (a file passed through a Windows editor or mail client) still read
     {
         std::string crlf;

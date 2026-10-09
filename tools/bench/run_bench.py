@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import statistics
 import subprocess
@@ -57,8 +58,94 @@ def other_games(own_pid=None):
 def load1():
     try:
         return os.getloadavg()[0]
-    except OSError:
+    except (OSError, AttributeError):
         return -1.0
+
+
+
+def benchmark_pids(process_listing, own_pid):
+    found = []
+    for line in process_listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if not pid.isdigit() or int(pid) == own_pid:
+            continue
+        try:
+            argv = shlex.split(command.strip())
+        except ValueError:
+            continue
+        if argv and os.path.basename(argv[0]).casefold().startswith("python") and any(
+                os.path.basename(arg) == "run_bench.py" for arg in argv[1:]):
+            found.append(int(pid))
+    return found
+
+
+def other_benchmarks():
+    result = subprocess.run(["ps", "-Ao", "pid=,args="], capture_output=True, text=True, check=True)
+    return benchmark_pids(result.stdout, os.getpid())
+
+
+def worker_pids(process_listing, own_pid):
+    """Builds and test drivers; inspect executable/script names, never shell text."""
+    found = []
+    builds = {"ninja", "make", "gmake", "clang", "clang++", "gcc", "g++", "cc", "c++",
+              "ld", "ld.lld", "lld", "xcodebuild", "cargo", "rustc", "swiftc", "ctest", "pytest"}
+    for line in process_listing.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if not pid.isdigit() or int(pid) == own_pid:
+            continue
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            continue
+        if not argv:
+            continue
+        executable = os.path.basename(argv[0]).casefold()
+        busy = executable in builds or (executable == "cmake" and "--build" in argv)
+        if executable.startswith("python"):
+            script = next((a for a in argv[1:] if not a.startswith('-')), '')
+            name = os.path.basename(script).casefold()
+            busy = busy or any(word in name for word in ("test", "smoke", "bench")) or name in {
+                "recomp.py", "build_guest_mod.py", "guestmod.py", "setup.py", "ppc2c.py"}
+        if busy:
+            found.append(int(pid))
+    return found
+
+
+def other_workers():
+    result = subprocess.run(["ps", "-Ao", "pid=,args="], capture_output=True, text=True, check=True)
+    return worker_pids(result.stdout, os.getpid())
+
+
+def quiet_reasons(args):
+    reasons = []
+    if args.quiet_load_max is not None:
+        load = load1()
+        if load < 0:
+            raise RuntimeError("cannot read load average for quiet-machine gate")
+        if load >= args.quiet_load_max:
+            reasons.append("load1 %.2f is not below %.2f" % (load, args.quiet_load_max))
+    if args.exclusive_bench:
+        others = other_benchmarks()
+        if others:
+            reasons.append("another run_bench.py is running: " + ", ".join(map(str, others)))
+    if getattr(args, "exclusive_work", False):
+        others = other_workers()
+        if others:
+            reasons.append("another build/test driver is running: " + ", ".join(map(str, others)))
+    if args.min_free_gb:
+        free = shutil.disk_usage(args.out).free / 1e9
+        if free < args.min_free_gb:
+            reasons.append("free disk %.2f GB is below %.2f GB" % (free, args.min_free_gb))
+    return reasons
+
+
+def wait_for_quiet(args):
+    while True:
+        reasons = quiet_reasons(args)
+        if not reasons:
+            return
+        print("  waiting: " + "; ".join(reasons), file=sys.stderr, flush=True)
+        time.sleep(30)
 
 
 def stop(proc):
@@ -130,7 +217,7 @@ def parse_prof(lines):
                 cur["copied_" + name + "_mib"] = float(c)
         elif body.startswith("draw classes"):
             m = re.match(r"draw classes: " + NUM + r"% same registers, " + NUM + r"% only buffer pointers/ALU constants, " +
-                         NUM + r"% other \(" + NUM + " draws/frame\)", body)
+                         NUM + r"% other \(" + NUM + r" draws/frame\)", body)
             if m:
                 cur["draws_same_pct"], cur["draws_fast_pct"] = float(m.group(1)), float(m.group(2))
                 cur["draws_other_pct"], cur["draws_per_frame"] = float(m.group(3)), float(m.group(4))
@@ -146,8 +233,52 @@ def summarize(windows):
     return {k: statistics.fmean([w[k] for w in windows if k in w]) for k in keys}
 
 
+
+def run_statistics(values):
+    """Statistics over runs; inclusive quartiles are defined for small samples too."""
+    q1, _, q3 = statistics.quantiles(values, n=4, method="inclusive") if len(values) > 1 else [values[0]] * 3
+    return {"median": statistics.median(values), "mean": statistics.fmean(values),
+            "min": min(values), "max": max(values), "q1": q1, "q3": q3, "iqr": q3 - q1,
+            "stdev": statistics.stdev(values) if len(values) > 1 else 0.0, "n": len(values)}
+
+
+def paired_statistics(results, names):
+    if len(names) != 2:
+        return {}
+    reference, comparison = names
+    paired = {}
+    for metric in ("frame_ms", "logic_cpu_ms"):
+        groups = {}
+        for run in results:
+            if run["status"] == "ok" and metric in run["summary"]:
+                groups.setdefault(run["run"], {})[run["variant"]] = run["summary"][metric]
+        pairs = []
+        for index, values in sorted(groups.items()):
+            if reference not in values or comparison not in values:
+                continue
+            a, b = values[reference], values[comparison]
+            pairs.append({"pair": index, "reference": a, "comparison": b,
+                          "difference_ms": b - a, "difference_pct": (b / a - 1) * 100 if a else None})
+        if pairs:
+            a = run_statistics([p["reference"] for p in pairs])
+            b = run_statistics([p["comparison"] for p in pairs])
+            differences = run_statistics([p["difference_ms"] for p in pairs])
+            paired[metric] = {"pairs": pairs, "difference_ms": differences,
+                              "difference_pct": run_statistics([p["difference_pct"] for p in pairs if p["difference_pct"] is not None]),
+                              "run_iqr_exceeds_median_difference": max(a["iqr"], b["iqr"]) > abs(b["median"] - a["median"]),
+                              "paired_iqr_exceeds_paired_median": differences["iqr"] > abs(differences["median"])}
+    return {"reference": reference, "comparison": comparison, "metrics": paired}
+
+
+def logic_cpu_samples(lines):
+    """Actual main-thread logic pass CPU time, with renderer/vsync waits excluded."""
+    return [float(match[1]) for line in lines
+            for match in [re.search(r"main thread CPU per pass: logic " + NUM + r" ms", line)] if match]
+
+
 def run_once(args, variant, env_extra, index, out_dir):
     binary = args.variant_binaries.get(variant, args.binary)
+    wait_for_quiet(args)
     run_dir = os.path.join(out_dir, "%s_%02d" % (variant, index))
     shutil.rmtree(run_dir, ignore_errors=True)
     os.makedirs(run_dir)
@@ -192,6 +323,7 @@ def run_once(args, variant, env_extra, index, out_dir):
     elif args.fps == "true60":
         env["WWHD_TRUE60_AT_STEP"] = str(load_at + 60)
     if args.uncapped:
+        env["WWHD_UNCAPPED"] = "1"
         env["WWHD_VK_UNCAPPED"] = "1"
     env.update(env_extra)
     # Recheck both conditions together: a game can start while the load gate waits.
@@ -207,6 +339,8 @@ def run_once(args, variant, env_extra, index, out_dir):
         if busy_load:
             print("  waiting: 1-minute load %.2f >= %.2f" % (load1(), args.max_load), file=sys.stderr, flush=True)
         time.sleep(30)
+    binary = args.variant_binaries.get(variant, args.binary)
+    wait_for_quiet(args)
     load_before = load1()
     load_peak = load_before
     started = time.time()
@@ -226,6 +360,9 @@ def run_once(args, variant, env_extra, index, out_dir):
                 if time.time() - started > args.timeout:
                     status = "timeout"
                     break
+                if quiet_reasons(args):
+                    status = "disturbed"
+                    break
                 if args.watch_others and other_games(proc.pid):
                     status = "disturbed"  # another game started meanwhile: the timings are not usable
                     break
@@ -237,6 +374,8 @@ def run_once(args, variant, env_extra, index, out_dir):
     if status == "ok" and not os.path.exists(os.path.join(run_dir, "test_done")):
         status = "exited before scenario completed"
     load_after = load1()
+    if args.quiet_load_max is not None and load_after >= args.quiet_load_max:
+        status = "disturbed"
     shutil.rmtree(os.path.join(run_dir, "save"), ignore_errors=True)
     with open(os.path.join(run_dir, "log"), errors="replace") as f:
         lines = f.read().splitlines()
@@ -271,6 +410,23 @@ def run_once(args, variant, env_extra, index, out_dir):
     return result
 
 
+def run_with_retries(args, name, env, index, out_dir):
+    failures = 0
+    while failures < 3:
+        r = run_once(args, name, env, index, out_dir)
+        print("%s run %d: %s, %d windows, load %.1f -> %.1f, %s" % (
+            name, index, r["status"], r["windows"], r["load_before"], r["load_after"],
+            ", ".join("%s %.2f" % (k, r["summary"][k]) for k in ("frame_ms", "swaps_per_s", "render_cpu_ms",
+                                                                  "wait_gpu_ms") if k in r["summary"])), flush=True)
+        if r["status"] == "ok":
+            return r
+        # A shared-machine interruption must not consume a required sample. run_once
+        # waits for the same quiet gates before retrying this position in the A/B order.
+        if not args.retry_disturbed or r["status"] != "disturbed":
+            failures += 1
+    return r
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--binary", required=True, help="game executable (wwhd)")
@@ -288,7 +444,7 @@ def main():
     p.add_argument("--renderer", choices=["vulkan", "metal"], default="vulkan")
     p.add_argument("--visible", action="store_true",
                    help="show the game windows (presentation, swapchain and vsync pacing are only exercised then)")
-    p.add_argument("--uncapped", action="store_true", help="WWHD_VK_UNCAPPED=1: throughput, not gameplay pacing")
+    p.add_argument("--uncapped", action="store_true", help="uncapped throughput on either renderer, not gameplay pacing")
     p.add_argument("--seconds", type=float, default=60, help="scenario length in game seconds after --origin")
     # the state load restores the whole game state, so it only needs the boot to have finished; A
     # presses from frame 120 skip the intro and title (validated 2026-10-07 at loads 360 and 600)
@@ -305,36 +461,47 @@ def main():
     p.add_argument("--cache-dir", help="shader/pipeline caches shared by the runs (default: <out>/cache)")
     p.add_argument("--timeout", type=float, default=600)
     p.add_argument("--max-load", type=float, default=0, help="wait below this 1-minute load; discard a run if it exceeds the limit (0 disables)")
+    p.add_argument("--quiet-load-max", type=float, help="wait until load1 is below this value; discard disturbed runs")
+    p.add_argument("--exclusive-bench", action="store_true", help="wait while any other run_bench.py is running")
+    p.add_argument("--exclusive-work", action="store_true", help="wait for other builds/test drivers; discard runs if they start")
+    p.add_argument("--retry-disturbed", action="store_true",
+                   help="retry interrupted samples until quiet, preserving the interleaved order; other failures remain bounded")
+    p.add_argument("--min-free-gb", type=float, default=0, help="minimum free decimal GB before/during each run")
     p.add_argument("--gate", help="shell command run (and waited for) before every run")
     p.add_argument("--out", default=os.path.join(REPO, "build", "bench"))
     p.add_argument("--no-wait", dest="wait_for_others", action="store_false", help="don't wait for other game processes")
     p.add_argument("--no-watch", dest="watch_others", action="store_false", help="don't discard runs disturbed by another game")
     args = p.parse_args()
+    if args.quiet_load_max is not None and args.quiet_load_max <= 0:
+        p.error("--quiet-load-max must be positive")
+    if args.min_free_gb < 0:
+        p.error("--min-free-gb must be nonnegative")
     if not os.path.exists(os.path.join(args.state_dir, "slot%d.bin" % (args.slot or SCENES[args.scene][0]))):
         p.error("no slot%d.bin in %s" % (args.slot or SCENES[args.scene][0], args.state_dir))
-    args.variant_binaries = dict(v.split("=", 1) for v in args.variant_binary)
     variants = []
     for v in args.variant or ["default:"]:
         name, _, envs = v.partition(":")
         env = dict(kv.split("=", 1) for kv in envs.split(",") if kv)
         variants.append((name, env))
+    args.variant_binaries = {}
+    for spec in args.variant_binary:
+        name, separator, binary = spec.partition("=")
+        if not separator or not binary or name not in {n for n, _ in variants} or name in args.variant_binaries:
+            p.error("--variant-binary needs one NAME=PATH for an existing, unique variant")
+        if not os.path.isfile(binary):
+            p.error("variant binary does not exist: " + binary)
+        args.variant_binaries[name] = os.path.abspath(binary)
     os.makedirs(args.out, exist_ok=True)
     results = []
     if args.warmup:
+        args.variant_binaries["warmup"] = args.variant_binaries.get(variants[0][0], args.binary)
         warmup = run_once(args, "warmup", variants[0][1], 0, args.out)
         if warmup["status"] != "ok":
             p.exit(1, "warmup failed: %s; no measured runs started\n" % warmup["status"])
     for i in range(args.runs):
         order = variants if i % 2 == 0 else list(reversed(variants))  # A B, B A, ...
         for name, env in order:
-            for attempt in range(3):
-                r = run_once(args, name, env, i + 1, args.out)
-                print("%s run %d: %s, %d windows, load %.1f -> %.1f, %s" % (
-                    name, i + 1, r["status"], r["windows"], r["load_before"], r["load_after"],
-                    ", ".join("%s %.2f" % (k, r["summary"][k]) for k in ("frame_ms", "swaps_per_s", "render_cpu_ms",
-                                                                          "wait_gpu_ms") if k in r["summary"])), flush=True)
-                if r["status"] == "ok":
-                    break
+            r = run_with_retries(args, name, env, i + 1, args.out)
             results.append(r)
     # per-variant statistics over the runs
     table = {}
@@ -344,17 +511,15 @@ def main():
         stats = {}
         for k in keys:
             vals = [s[k] for s in runs if k in s]
-            stats[k] = {"median": statistics.median(vals), "mean": statistics.fmean(vals), "min": min(vals), "max": max(vals),
-                        "q1": statistics.quantiles(vals, n=4)[0] if len(vals) > 1 else vals[0],
-                        "q3": statistics.quantiles(vals, n=4)[2] if len(vals) > 1 else vals[0],
-                        "iqr": (statistics.quantiles(vals, n=4)[2] - statistics.quantiles(vals, n=4)[0]) if len(vals) > 1 else 0.0,
-                        "stdev": statistics.stdev(vals) if len(vals) > 1 else 0.0, "n": len(vals)}
+            stats[k] = run_statistics(vals)
         table[name] = stats
-    meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs", "display_hz")}
-    meta["binary"] = os.path.abspath(args.binary)
-    meta["variant_binaries"] = {n: os.path.abspath(p) for n, p in args.variant_binaries.items()}
+    meta = {k: getattr(args, k) for k in ("scene", "fps", "renderer", "uncapped", "visible", "seconds", "runs", "display_hz",
+                                                   "quiet_load_max", "exclusive_bench", "exclusive_work", "min_free_gb", "retry_disturbed")}
+    meta["binary"] = os.path.basename(args.binary)
+    meta["variant_binaries"] = {name: os.path.basename(path) for name, path in args.variant_binaries.items() if name != "warmup"}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
-        json.dump({"meta": meta, "variants": table, "runs": results}, f, indent=1)
+        json.dump({"meta": meta, "variants": table, "runs": results,
+                   "paired_differences": paired_statistics(results, [name for name, _ in variants])}, f, indent=1)
     keys = sorted({k for t in table.values() for k in t})
     with open(os.path.join(args.out, "summary.csv"), "w", newline="") as f:
         w = csv.writer(f)
