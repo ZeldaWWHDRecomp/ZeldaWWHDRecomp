@@ -43,11 +43,15 @@ textures directly; that would require additional public picture-material layout
 and renderer integration. Overdraw keeps original art in the mod package and
 uses the supported HUD service.
 
-Local functional checks verified gameplay placement, Pause/resume, and a synthetic
-ancestor fade on USA/Metal, including 60 fps interpolation and 21:9. Regional,
-backend, 300-frame, state-load and contextual-cutscene checks are separate; do not
-infer complete coverage from those short placement checks. Overdraw also cannot
-reproduce the game's Pause blur/filter on replacement artwork.
+Local functional checks passed on USA and EUR, Metal and Vulkan, at 30 and
+60 fps, with 300 consecutive captured TV frames per case. Representative 21:9
+placement, live preset transitions in both directions, Pause/resume and a paused
+full-state restore also passed. On USA/Metal, actual swimming and low-air gameplay
+hid B/X/Y/R while A remained visible; drowning faded all replacements to black.
+A synthetic ancestor-alpha check verified inherited fading. These checks do not
+prove moving-HUD smoothness or pixel equality across backends. NPC dialogue and
+story cutscenes remain untested. Overdraw also cannot reproduce the game's Pause
+blur/filter on replacement artwork.
 
 For a local live-preset check, use `tools/guestmod/test_hud_e2e.py` with
 `--package button-icons --layout labels --switch-layout position --frames 300`,
