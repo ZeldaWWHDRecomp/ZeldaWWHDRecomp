@@ -12,6 +12,13 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Windows: smoother in busy views.** The Vulkan buffer cache is now on by default on Windows too
+  (it already was on macOS, Linux and Android): unchanged vertex, index and uniform data stay on the
+  GPU instead of being copied every frame. On an RX 6700 XT that cut the render thread's time per
+  frame by 13–19% and halved the data uploaded (issue #91, thanks @darklinkpower for all the
+  measurements). If you see broken or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and
+  please report it.
+
 - **A log file for every run:** `captures/wwhd.log` in the game's data folder (the previous run's is
   kept as `wwhd-previous.log`), with your user paths removed as in crash logs. Attach it to bug
   reports; on Windows the game's console output was otherwise lost. `WWHD_LOG_FILE=<path>` writes it
