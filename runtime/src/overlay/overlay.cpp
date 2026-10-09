@@ -6,6 +6,7 @@
 #include "guest_hud.h"
 #include "setup_test.h"
 #include "graphics_switch.h"
+#include "gamepad_nav.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -154,6 +155,8 @@ struct Ui {
     // controller
     float values[input_map::kPadCount] = {};
     float prev[input_map::kPadCount] = {};
+    GamepadNavigation gamepad_navigation;
+    ImVec2 mouse_position = {-FLT_MAX, -FLT_MAX};
     double options_since = -1;
     bool options_latched = false;
     // remap capture: action, column (0, 1 keys; 2 controller)
@@ -185,6 +188,7 @@ Ui U;
 
 bool controller_down(int p) { return U.values[p] > 0.5f; }
 bool controller_pressed(int p) { return U.values[p] > 0.5f && U.prev[p] <= 0.5f; }
+bool navigation_pressed(int p) { return U.gamepad_navigation.pressed(U.values, U.prev, p); }
 
 void post_changed(std::function<void()> fn) {
     hostui::post([fn] {
@@ -393,32 +397,6 @@ void read_controller() {
         for (int p = 1; p < kPadCount; p++) any |= U.values[p] > 0.3f;
         if (!any) g_wait_release = false;
     }
-}
-
-void feed_gamepad(ImGuiIO& io, bool enabled) {
-    using namespace input_map;
-    // Dead zone (issue #111): a drifting stick fed as an analog value moves or scrolls ImGui by itself.
-    auto key = [&](ImGuiKey k, int p) {
-        const float v = enabled && U.values[p] >= 0.35f ? U.values[p] : 0.0f;
-        io.AddKeyAnalogEvent(k, v > 0.5f, v);
-    };
-    key(ImGuiKey_GamepadFaceDown, kPadA);
-    key(ImGuiKey_GamepadFaceRight, kPadB);
-    key(ImGuiKey_GamepadFaceLeft, kPadX);
-    key(ImGuiKey_GamepadFaceUp, kPadY);
-    key(ImGuiKey_GamepadDpadUp, kPadDUp);
-    key(ImGuiKey_GamepadDpadDown, kPadDDown);
-    key(ImGuiKey_GamepadDpadLeft, kPadDLeft);
-    key(ImGuiKey_GamepadDpadRight, kPadDRight);
-    key(ImGuiKey_GamepadLStickUp, kPadLSUp);
-    key(ImGuiKey_GamepadLStickDown, kPadLSDown);
-    key(ImGuiKey_GamepadLStickLeft, kPadLSLeft);
-    key(ImGuiKey_GamepadLStickRight, kPadLSRight);
-    // The right stick is not fed: ImGui only scrolls windows with it, continuously, so even a stick that
-    // drifts past any dead zone scrolled the menu (issue #111). D-pad, left stick and wheel scroll.
-    key(ImGuiKey_GamepadL2, kPadLT);
-    key(ImGuiKey_GamepadR2, kPadRT);
-    key(ImGuiKey_GamepadStart, kPadMenu);
 }
 
 // ---------------------------------------------------------------- widgets
@@ -924,7 +902,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
-        if (controller_pressed(input_map::kPadB)) { answered = true; accept = false; g_pad_b_used = true; }
+        if (navigation_pressed(input_map::kPadB)) { answered = true; accept = false; g_pad_b_used = true; }
     }
     if (accept) {
         bool ok = true;
@@ -1346,7 +1324,7 @@ void package_controls() {
         }
         ImGui::PopID();
     }
-    auto switch_action=graphics_switch_dialog(graphics_choice,controller_pressed(input_map::kPadB));
+    auto switch_action=graphics_switch_dialog(graphics_choice,navigation_pressed(input_map::kPadB));
     if(switch_action==GraphicsSwitchAction::Switch)enable(graphics_choice.id,true,error,true);
     if(switch_action==GraphicsSwitchAction::Cancel)g_pad_b_used=true;
     native_confirm_dialog(confirm, error);
@@ -2068,8 +2046,8 @@ void settings_window() {
     if (ImGui::Begin("Wind Waker HD  -  Settings", &open, fl)) {
         // L / R on a controller switch tabs
         if (U.cap_action < 0 && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
-            if (controller_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
-            if (controller_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
+            if (navigation_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
+            if (navigation_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
         }
         code_mod_dialog();
         if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_FittingPolicyShrink)) {
@@ -2098,7 +2076,7 @@ void settings_window() {
     ImGui::End();
     // B (not while choosing an input or in a list) or the close button closes the menu
     if (!open) set_open(false);
-    if (U.cap_action < 0 && controller_pressed(input_map::kPadB) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+    if (U.cap_action < 0 && navigation_pressed(input_map::kPadB) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
         set_open(false);
     g_pad_b_used = false;
 }
@@ -2289,6 +2267,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         std::lock_guard<std::mutex> lk(g_mu);
         events.swap(g_events);
     }
+    bool mouse_used = false;
     for (const Event& e : events) {
         switch (e.kind) {
         case Event::Key:
@@ -2298,15 +2277,19 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             io.AddKeyEvent(ImGuiMod_Super, e.mods & kSuper);
             if (ImGuiKey k = imgui_key(e.code); k != ImGuiKey_None) io.AddKeyEvent(k, e.down);
             break;
-        case Event::MousePos: io.AddMousePosEvent(e.x * io.DisplaySize.x, e.y * io.DisplaySize.y); break;
-        case Event::MouseButton: io.AddMouseButtonEvent(e.code, e.down); break;
-        case Event::Wheel: io.AddMouseWheelEvent(e.x, e.y); break;
+        case Event::MousePos:
+            mouse_used |= e.x != U.mouse_position.x || e.y != U.mouse_position.y;
+            U.mouse_position = ImVec2(e.x, e.y);
+            io.AddMousePosEvent(e.x * io.DisplaySize.x, e.y * io.DisplaySize.y);
+            break;
+        case Event::MouseButton: mouse_used = true; io.AddMouseButtonEvent(e.code, e.down); break;
+        case Event::Wheel: mouse_used |= e.x != 0 || e.y != 0; io.AddMouseWheelEvent(e.x, e.y); break;
         case Event::Text: io.AddInputCharactersUTF8(e.text.c_str()); break;
         default: break;
         }
     }
     apply_capture();
-    feed_gamepad(io, open && U.cap_action < 0);  // the text prompt reads the controller itself
+    U.gamepad_navigation.feed(io, U.values, U.prev, open && U.cap_action < 0, mouse_used);  // the text prompt reads the controller itself
     ImGui::NewFrame();
     g_wants_text = open && io.WantTextInput;
     guesthud::frame();
