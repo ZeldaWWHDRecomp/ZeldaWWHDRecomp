@@ -22,6 +22,7 @@ struct View {
     std::vector<Option> options;
     std::vector<std::string> dependencies,conflicts;
     std::vector<std::string> setup_tools; // package-relative executables covered by native confirmation
+    std::vector<std::pair<std::string,std::string>> content_hashes;
 };
 // Supplied from the running executable marker, never from a saved preference.
 void set_code_mod_support(bool built);

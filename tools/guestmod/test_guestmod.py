@@ -121,7 +121,7 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
         return os.path.join(d, "mod.elf")
 
     def test_examples_build(self):
-        for mod in ("heart-ticker", "addcalc-replace"):
+        for mod in ("heart-ticker", "addcalc-replace", "hud-demo", "button-icons", "hud-cost"):
             with tempfile.TemporaryDirectory() as d:
                 pkg = os.path.join(d, "pkg")
                 os.makedirs(pkg)
@@ -172,8 +172,19 @@ WWHD_REPLACE(0x02005678, void, repl, (void)) { ptr = helper; orig_fn(); wwhd_log
     def test_host_services_compile(self):
         src = r'''
 #include "wwhd_guest.h"
+_Static_assert(sizeof(wwhd_hud_element)==72, "HUD wire ABI");
+static void draw(u32 list) {
+    static wwhd_hud_element element = {.kind=WWHD_HUD_RECT,.w=10,.h=20,.thickness=1,.u1=1,.v1=1,.rgba=0xFFFFFFFF};
+    wwhd_hud_emit(list,&element);
+}
 WWHD_HOOK(0x02000000, all_services, (void)) {
+    wwhd_hud_register(draw,WWHD_HUD_BOTH);
+    u32 image=wwhd_hud_texture(WWHD_HUD_PACKAGE,"assets/original.png");
+    wwhd_hud_release(image);
+    wwhd_log_int("hud epoch",(int)wwhd_hud_epoch());
     char* p = wwhd_malloc(64);
+    wwhd_setting_get("input.face_layout",WWHD_SETTING_STRING,p,64);
+    wwhd_log_int("settings revision",(int)wwhd_setting_changed("input.face_layout"));
     wwhd_input_state pad;
     wwhd_input_read(&pad);
     wwhd_config_string("choice", p, 64);
@@ -191,7 +202,9 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
             for address, (kind, name) in t.imports.items():
                 if kind == "svc":
                     self.assertIn("c->pc = 0x%08Xu;" % address, translated, name)
-            self.assertIn("wwhd_file_write", t.services)
+            for name in ("wwhd_file_write","wwhd_hud_register","wwhd_hud_emit","wwhd_hud_texture",
+                         "wwhd_hud_release","wwhd_hud_epoch","wwhd_setting_get","wwhd_setting_changed"):
+                self.assertIn(name,t.services)
             Path(d, "manifest.json").write_text(json.dumps({"kind": "guest", "id": "services", "guest": {"api_version": 1}}))
             result = builder.build(d, str(Path(d, "cache")), 0x7F000000, builder.default_cc(), str(Path(REPO, "runtime/include")))
             self.assertTrue(result["ok"])

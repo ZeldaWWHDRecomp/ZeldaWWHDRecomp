@@ -1066,6 +1066,7 @@ extern "C" void hook_025DE788(Cpu* c) {
     f_025DE788_orig(c);
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
     if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);mods::packages::frame(interp::g_logic_steps);}
+    guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;
 }
 extern "C" void hook_025DE024(Cpu* c) { if (!skip(2)) f_025DE024_orig(c); }

@@ -10,6 +10,9 @@
 #include "packages.h"
 #include "guest_heap.h"
 #include "guest_files.h"
+#include "guest_settings.h"
+#include "guest_hud.h"
+#include "guest_png.h"
 #include "input.h"
 #include "true60.h"
 #include "guest_addr.h"
@@ -61,7 +64,10 @@ struct Chain {
 };
 std::unordered_map<uint32_t, Chain> g_chains;  // built before the game starts, read-only afterwards
 struct Loaded {
-    std::string path,id,version;
+    std::string path,id,version,package_path,data_path;
+    uint32_t hud_callback=0,hud_screen=0;
+    uint64_t hud_step=0;
+    bool hud_called=false;
     const WWHDGuestModuleV1* m=nullptr;
     uint32_t region_size=0;
     mods::json::Value options;
@@ -70,6 +76,8 @@ struct Loaded {
 };
 std::vector<Loaded> g_loaded;
 std::atomic<uint64_t> g_logic_step{0};
+std::atomic<bool> g_hud_callbacks{false};
+std::mutex g_hud_mutex;
 Loaded& owner(Cpu* c) {
     for(auto& mod:g_loaded)
         if(c->pc>=mod.m->mem_base&&c->pc-mod.m->mem_base<mod.m->mem_size)return mod;
@@ -124,12 +132,99 @@ void svc_input(Cpu* c) {
 }
 void svc_logic_dt(Cpu* c) {c->f[1].ps0=double(true60::dt())/30.0;}
 void svc_logic_step(Cpu* c) {uint64_t step=g_logic_step.load(std::memory_order_relaxed);c->r[3]=uint32_t(step>>32);c->r[4]=uint32_t(step);}
+bool setting_buffer(const Loaded& mod,uint32_t address,uint32_t bytes) {
+    return address>=mod.m->mem_base&&uint64_t(address)+bytes<=uint64_t(mod.m->mem_base)+mod.region_size;
+}
+std::string setting_key(const Loaded& mod,uint32_t address) {
+    std::string key;
+    for(uint32_t i=0;i<64;++i) {
+        if(!setting_buffer(mod,address+i,1))return {};
+        char byte=char(ld8(address+i));if(!byte)return key;
+        if(byte<32||byte>126)return {};key+=byte;
+    }
+    return {};
+}
+void svc_setting_get(Cpu* c) {
+    auto& mod=owner(c);auto key=setting_key(mod,c->r[3]);
+    auto value=settings::read(key);uint32_t expected=c->r[4],destination=c->r[5],capacity=c->r[6];c->r[3]=0;
+    if(!value||value->type()!=expected)return;
+    uint32_t bytes=value->type()==settings::String?uint32_t(std::get<std::string>(value->data).size()+1):value->type()==settings::Number?8:4;
+    if(!destination&&!capacity){c->r[3]=bytes;return;}
+    if(capacity<bytes||!setting_buffer(mod,destination,bytes))return;
+    switch(value->type()) {
+        case settings::String:memcpy(mem::ptr(destination),std::get<std::string>(value->data).c_str(),bytes);break;
+        case settings::Boolean:st32(destination,std::get<bool>(value->data));break;
+        case settings::Unsigned:st32(destination,std::get<uint32_t>(value->data));break;
+        case settings::Number:stf64(destination,std::get<double>(value->data));break;
+        default:return;
+    }
+    c->r[3]=bytes;
+}
+void svc_setting_changed(Cpu* c) {
+    auto& mod=owner(c);auto value=settings::read(setting_key(mod,c->r[3]));
+    uint64_t revision=value?value->revision:0;c->r[3]=uint32_t(revision>>32);c->r[4]=uint32_t(revision);
+}
+// HUD services use packed big-endian guest structures, never host struct casts.
+std::string hud_path(const Loaded& mod,uint32_t address) {
+    std::string path;
+    for(uint32_t i=0;i<512;++i){
+        if(!setting_buffer(mod,address+i,1))return {};
+        char ch=char(ld8(address+i));if(!ch)return path;path+=ch;
+    }
+    return {};
+}
+void svc_hud_register(Cpu* c) {
+    auto& mod=owner(c);uint32_t callback=c->r[3],screen=c->r[4];c->r[3]=0;
+    std::lock_guard lock(g_hud_mutex);
+    if(screen>2){hud::store().note(mod.id,"HUD registration failed: invalid screen");return;}
+    if(callback) {
+        bool found=false;for(uint32_t i=0;i<mod.m->func_count;++i)found|=mod.m->funcs[i].addr==callback;
+        if(!found){hud::store().note(mod.id,"HUD registration failed: callback must belong to this mod");return;}
+    }
+    if(mod.hud_callback!=callback||mod.hud_screen!=screen)mod.hud_called=false;
+    mod.hud_callback=callback;mod.hud_screen=screen;
+    if(!callback)hud::store().drop(mod.id);
+    bool any=false;for(const auto& loaded:g_loaded)any|=loaded.hud_callback!=0;
+    g_hud_callbacks.store(any,std::memory_order_release);c->r[3]=1;
+}
+void svc_hud_texture(Cpu* c) {
+    auto& mod=owner(c);uint32_t source=c->r[3];auto path=hud_path(mod,c->r[4]);c->r[3]=0;
+    if(source>1||path.empty()){hud::store().note(mod.id,"HUD PNG load failed: invalid source or path");return;}
+    // Package textures are deliberately restricted to the two artwork folders.
+    if(source==0&&!path.starts_with("assets/")&&!path.starts_with("textures/")){hud::store().note(mod.id,"HUD PNG load failed: package images must be in assets/ or textures/");return;}
+    try {
+        auto pixels=hud::load_png(source?mod.data_path:mod.package_path,path);
+        c->r[3]=hud::store().create_image(mod.id,pixels.width,pixels.height,pixels.width*4,pixels.rgba.data(),pixels.rgba.size());
+        if(!c->r[3])hud::store().note(mod.id,"HUD PNG load failed: per-mod image quota exceeded");
+    }catch(const std::exception&){hud::store().note(mod.id,"HUD PNG load failed: missing, invalid or oversized texture");}
+}
+void svc_hud_release(Cpu* c) {c->r[3]=hud::store().release(owner(c).id,c->r[3]);}
+void svc_hud_epoch(Cpu* c) {auto epoch=hud::store().state_generation();c->r[3]=uint32_t(epoch>>32);c->r[4]=uint32_t(epoch);}
+void svc_hud_emit(Cpu* c) {
+    auto& mod=owner(c);uint32_t list=c->r[3],a=c->r[4];c->r[3]=0;
+    if(!setting_buffer(mod,a,72)){hud::store().fail(mod.id,list,"HUD draw list dropped: invalid element buffer");return;}
+    hud::Command command;
+    command.kind=hud::Command::Kind(ld32(a));command.anchor=hud::Anchor(ld32(a+4));command.blend=hud::Blend(ld32(a+8));
+    command.x=ldf32(a+12);command.y=ldf32(a+16);command.w=ldf32(a+20);command.h=ldf32(a+24);
+    command.size=ldf32(a+28);command.thickness=ldf32(a+32);command.rotation=ldf32(a+36);
+    command.u0=ldf32(a+40);command.v0=ldf32(a+44);command.u1=ldf32(a+48);command.v1=ldf32(a+52);
+    command.rgba=ld32(a+56);uint32_t image=ld32(a+60),text=ld32(a+64),bytes=ld32(a+68);
+    if(command.kind==hud::Command::Text) {
+        if(bytes>hud::kMaxText||!setting_buffer(mod,text,bytes)){hud::store().fail(mod.id,list,"HUD draw list dropped: invalid text buffer");return;}
+        command.text.assign(reinterpret_cast<const char*>(mem::ptr(text)),bytes);
+    }
+    c->r[3]=command.kind==hud::Command::Picture?hud::store().picture(mod.id,list,image,std::move(command)):
+              hud::store().append(mod.id,list,std::move(command));
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
+    {"wwhd_hud_register",svc_hud_register},{"wwhd_hud_texture",svc_hud_texture},
+    {"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
+    {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
     {"wwhd_logic_dt",svc_logic_dt},{"wwhd_logic_step",svc_logic_step},
     {"memcpy", svc_memcpy},      {"memmove", svc_memcpy},       {"memset", svc_memset},
 };
@@ -183,7 +278,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
             return false;
         }
     Loaded loaded;
-    loaded.path=path;loaded.id=pkg.id;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;
+    loaded.path=path;loaded.package_path=pkg.path;loaded.data_path=pkg.data_path;loaded.id=pkg.id;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;
     loaded.files=std::make_unique<Files>(pkg.data_path);
     uint32_t heap_base=(m->mem_base+m->mem_size+15)&~15u;
     loaded.heap=std::make_unique<Heap>(mem::ptr(heap_base),heap_base,pkg.heap_size);
@@ -274,6 +369,28 @@ std::vector<ModIdentity> enabled_mods() {
 bool hooks_built() { return g_mod_hook_count != 0 && g_mod_hook_flags && g_mod_bodies; }
 
 void frame(uint64_t step) {g_logic_step.store(step,std::memory_order_relaxed);}
+void draw_frame(Cpu* c,uint64_t step) {
+    if(!c||!g_hud_callbacks.load(std::memory_order_acquire))return;
+    for(auto& mod:g_loaded) {
+        uint32_t callback,screen;
+        {
+            std::lock_guard lock(g_hud_mutex);
+            if(!mod.hud_callback||(mod.hud_called&&mod.hud_step==step))continue;
+            mod.hud_step=step;mod.hud_called=true;callback=mod.hud_callback;screen=mod.hud_screen;
+        }
+        auto list=hud::store().begin(mod.id,screen);
+        if(!list){hud::store().drop(mod.id);continue;}
+        Cpu saved=*c;
+        try {guest_call(c,callback,{list});hud::store().commit(mod.id,list);}
+        catch(...) {hud::store().fail(mod.id,list,"HUD callback failed; draw list dropped");hud::store().commit(mod.id,list);}
+        *c=saved;
+    }
+}
+void state_loaded() {
+    std::lock_guard lock(g_hud_mutex);
+    hud::store().reset();
+    for(auto& mod:g_loaded)mod.hud_called=false;
+}
 
 }  // namespace guestmods
 

@@ -248,7 +248,7 @@ def paired_statistics(results, names):
         return {}
     reference, comparison = names
     paired = {}
-    for metric in ("frame_ms", "logic_cpu_ms"):
+    for metric in ("frame_ms", "logic_cpu_ms", "render_cpu_ms"):
         groups = {}
         for run in results:
             if run["status"] == "ok" and metric in run["summary"]:

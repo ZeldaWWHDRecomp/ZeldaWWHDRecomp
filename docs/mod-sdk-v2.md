@@ -1,6 +1,8 @@
-# Mod SDK v2: PowerPC guest mods (design study and prototype)
+# Mod SDK v2: PowerPC guest mods
 
-Status: **prototype** on branch `sdk2-guest-mods`, off by default. The Native SDK v1
+Status: phase 1 is merged; code-mod support is off by default. Phase 2 HUD,
+combined packages and settings are under validation. Historical prototype design
+and measurements are retained below. The Native SDK v1
 (`runtime/include/wwhd_mod.h`, [mod-manager.md](mod-manager.md)) stays supported and unchanged.
 
 Code mods for this port are written in C (or C++) against mod headers and compiled for the
@@ -208,7 +210,24 @@ re-validates hook targets on load (every target must be a function entry of this
 ### Manager startup and local tools (phase 1)
 
 Guest packages use the same one-time code trust dialog as native packages. The
-fingerprint is the SHA-256 of `mod.elf`, so rebuilding a module does not ask again.
+fingerprint for a code-only package is the SHA-256 of `mod.elf`, so rebuilding
+a host module does not ask again. A combined guest package may add `content/`
+(or an explicit relative `content_dir`) and its own `textures/` or `assets/`.
+Its single trust decision covers a sorted inventory of every package file, including
+the ELF, manifest and content. Changing any file requires confirmation again.
+Content file SHA-256 values appear in package details.
+
+Combined packages are all-or-nothing: with code mods off, neither guest code nor
+content applies. The existing enable-code-mods offer remains available. On restart,
+content activates only after the guest module loads successfully; a failed module
+leaves its content inactive. Content uses the same path conflicts and overlay rules
+as content-only packages. Enabling or disabling either part requires restart.
+Package images must be original modder artwork; never distribute game assets.
+PNG files in `textures/` and `assets/` are validated during installation. Each
+image is limited to 2048 × 2048 pixels and 16 MiB encoded; a package may contain
+at most 32 images with 16 MiB total decoded RGBA pixels. Invalid PNGs reject the
+installation. Image paths must stay inside the package and may not use symlinks.
+The HUD service also applies these checks when loading generated per-mod data.
 The manager freezes the enabled guest set and options during initialization.
 After memory and dispatch initialization, before guest threads start, it inspects,
 allocates, builds and loads that set in dependency order. Failures appear in each
@@ -423,10 +442,15 @@ need public-source declarations and offset checks before the port uses them.
 
 The cache builder still runs locally against the player's own files. Put its results in the
 mod's own data folder, with flat filenames; split files larger than the phase 1 1 MiB
-per-call limit. A future catalogue preparation step can manage this. A guest package cannot
+per-call limit. The catalogue can manage this with a shared `game_path` step for the regional
+GameCube dump, a trusted packaged `run_tool` that writes map PNGs into mod data,
+and `build_guest_mod` for the installed USA/EU build. A guest package cannot
 read the prototype's arbitrary external cache path through the phase 1 file service.
-Verify no state reads or resource uploads when disabled, and compare the panel on both
-renderers once the HUD interface exists. Full visual parity is therefore phase 2 work.
+Load generated PNGs through `wwhd_hud_texture(WWHD_HUD_DATA, ...)`, draw the map
+and rotated heading quad through HUD API v1, and reload texture handles when
+`wwhd_hud_epoch()` changes. Verify no state reads or resource uploads when disabled,
+and compare the panel on both renderers. The HUD service is implemented in this
+phase; the minimap port and full visual parity remain separate work.
 
 For **dragon**, rewrite `Cpu*`/host-memory wrappers as typed PowerPC hooks and replacements.
 Use public names for Link execute, camera follow, Valoo lifecycle, resources, song handling
@@ -443,8 +467,10 @@ new-game/reset behavior. Full states restore guest quest/heap state, but externa
 files are not rewound: do not immediately overwrite restored state by rereading a newer
 file. Save-slot copy behavior and state-load notification need explicit follow-up tests.
 Use game resource/effect functions for locally available models, animations and effects.
-The letter/flight panels await HUD support, and synthesized melody mixing awaits the audio
-stream interface. Test cancellation, ordinary story actors, boat/leaf recovery, save slots,
+The letter/flight panels can use HUD API v1 text, quads and gauges; synthesized
+melody mixing still awaits an audio stream interface. A future catalogue entry
+uses `kind: guest`, USA/EU build declarations and `build_guest_mod`; it must not
+ship models or sounds extracted from the game. Test cancellation, ordinary story actors, boat/leaf recovery, save slots,
 true-60 timing and simultaneous minimap placement before claiming parity. Existing route,
 collision and presentation limitations remain separate from the SDK port.
 
@@ -695,12 +721,134 @@ Metal and Vulkan A/B gate demonstrates at most 2% median overhead.
 
 ## Remaining work
 
-Phase 2 covers the [HUD/audio interfaces](#phase-2-interfaces-and-integration),
-state-load notifications, broader translator coverage and ELF fuzzing, cross-mod exports,
-and catalogue integration. The [minimap and dragon porting plan](#porting-the-existing-minimap-and-dragon-prototypes)
-identifies their required services and reusable game-side hooks. Runtime mod-set changes
-continue to require a restart.
+The current phase 2 covers HUD drawing, combined guest/content/art packages and
+read-only port settings, with `hud-demo` and `button-icons` as the required pilots.
+The minimap is a stretch goal; dragon and audio are outside this phase's scope.
+The earlier [HUD/audio interface study](#phase-2-interfaces-and-integration) and
+[minimap and dragon porting plan](#porting-the-existing-minimap-and-dragon-prototypes)
+remain future design references. Broader translator coverage, ELF fuzzing,
+cross-mod exports and catalogue integration remain separate follow-up work.
+Runtime mod-set changes continue to require a restart.
 
 The broad generated declarations remain committed so modders can discover public names
 without running the generator. A smaller curated set would suffice for the current two
 examples, but would limit other mods; curation can be evaluated separately.
+
+## Read-only port settings v1
+
+`wwhd_setting_get(key, type, buffer, capacity)` returns the number of bytes
+written, or zero for an unknown key, wrong type, invalid mod-owned buffer or
+insufficient capacity. Failure leaves the buffer unchanged. Pass a null buffer
+and zero capacity to query the required size. String lengths include the NUL;
+numeric values use guest big-endian encoding. The service never changes a port
+setting. `WWHD_SETTING_API_VERSION` is 1; existing keys retain their types and
+meanings when new keys are added.
+
+| Key | Type | Values |
+| --- | --- | --- |
+| `input.face_layout` | STRING | `position`, `labels`, `custom`; inferred from current face bindings |
+| `input.controller_mode` | STRING | `gamepad`, `pro` |
+| `game.language` | U32 | Effective Wii U language code 0–11, including source/availability fallback; selected at startup |
+| `game.build` | STRING | `USA`, `EU`; the running executable's game build |
+| `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
+| `display.aspect` | F64 | Aspect ratio latched for the current game frame |
+| `render.interp_fps` | U32 | Effective presented target: 30 without interpolation, display-capped interpolation rate, or 60 in true-60 mode |
+| `render.true60` | BOOL | 32-bit zero or one |
+
+`wwhd_setting_changed(key)` returns a per-key observed revision: initially one,
+zero for absent keys, incremented when a read observes a different typed value.
+Compare revisions for inequality. Multiple changes between observations may
+coalesce, including a change reverted before the next read. Read the setting
+once per logic step for reactive HUDs; immutable startup keys stay constant.
+
+```c
+static char layout[16];
+if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING,
+                     layout, sizeof layout)) {
+    /* layout contains the current stable preset name. */
+}
+```
+
+### HUD recording API v1 (phase 2)
+
+`wwhd_hud_register(draw, screen)` registers one draw callback per mod; passing a
+null callback unregisters it and clears its lists. Register from an ordinary game
+hook. The host calls `void draw(u32 list)` after each actual actor logic pass,
+including true-60 half steps. Re-registering the same callback does not create an
+extra call. Emit elements with `wwhd_hud_emit(list, &element)`; the host commits the
+list when the callback returns. The game CPU registers are restored afterwards.
+The callback should only read game state and record HUD elements.
+
+```c
+#include "wwhd_guest.h"
+#include "wwhd/bindings.h"
+#include "wwhd/link.h"
+
+static wwhd_hud_element box;
+static void draw(u32 list) {
+    box = (wwhd_hud_element){
+        .kind = WWHD_HUD_RECT, .anchor = WWHD_HUD_TOP_LEFT,
+        .x = 20, .y = 96, .w = 160, .h = 40,
+        .thickness = 1, .u1 = 1, .v1 = 1, .rgba = 0x204060C0
+    };
+    wwhd_hud_emit(list, &box);
+}
+WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
+    (void)link;
+    wwhd_hud_register(draw, WWHD_HUD_BOTH);
+}
+```
+
+See `examples/guest-mods/hud-demo` for original PNG artwork, heart-count text and
+texture handle renewal after loading a state. `button-icons` demonstrates typed
+preset reads and follows the actual HD button panes for placement and visibility.
+Local USA/EUR Metal/Vulkan checks cover 30/60 fps, live preset transitions, Pause
+and full-state restoration; swimming and drowning checks cover contextual hiding
+and fading. Story dialogue/cutscenes and moving-HUD smoothness remain untested.
+The examples' README describes the opt-in local frame-check driver.
+
+Elements use the packed `wwhd_hud_element` declaration in `wwhd_guest.h`. Put the
+element and UTF-8 text in static storage or this mod's heap. Kinds include filled
+and outlined rectangles/circles, signed-delta lines, text and images. Initialize
+`thickness` to 1 and `u1`/`v1` to 1. Circle `size` is its radius; text `size` is its
+height. Images support normalized UV subrects, RGBA tint and rotation in radians
+about their center. Blending is alpha or additive. Geometry must be finite;
+invalid UTF-8, invalid handles or exceeded recording limits invalidate the entire
+list. Diagnostic messages appear in the Mods tab.
+
+TV coordinates are 1280 × 720, GamePad coordinates 854 × 480. A both-screen list
+uses TV coordinates scaled to each screen. The default center anchor follows the
+centered game canvas. Left/right corner and edge anchors move the authored edge
+to the displayed edge at wider aspect ratios. Top/bottom retain the height-based
+layout. Anchor values and primitive constants are declared in `wwhd_guest.h`.
+
+Each list has at most 1024 elements, 32768 conservatively estimated vertices and
+64 KiB UTF-8 bytes (the vertex budget can impose a smaller text limit). A mod may
+have two pending lists and one published list per target. Images have owned,
+nontransferable handles with a per-mod limit of 32 live images and 16 MiB decoded
+RGBA. Released images remain charged while in-flight immutable lists retain them.
+
+`wwhd_hud_texture(WWHD_HUD_PACKAGE, "assets/example.png")` loads only package
+artwork under `assets/` or `textures/`; `WWHD_HUD_DATA` loads relative to this mod's
+own data directory. It never reads game-memory textures. Cache the returned handle
+between steps and release it with `wwhd_hud_release`. Failures return zero.
+
+Draw lists are held unchanged between logic steps, including interpolation
+presentation frames; positions are not interpolated. This preserves continuous
+visibility while motion updates at the logic rate. Full save states contain the
+mod's guest memory, but no host lists or decoded textures. Compare
+`wwhd_hud_epoch()` each callback and reload cached image handles when it changes;
+the next logic step rebuilds the list even if the restored step counter repeats.
+
+
+The HUD renderer feeds these lists to the existing Metal/Vulkan overlay composition
+pass. TV drawing is clipped to the fitted game picture rather than the window's
+letterbox bars. GamePad lists are drawn in its window and its TV picture-in-picture
+region, with the region's opacity. The port's settings overlay stays above the HUD.
+Both backends use source-alpha blending; additive commands change the destination
+RGB factor to one and restore alpha blending afterwards. PNG sample colours are
+converted from display encoding when the target is sRGB, matching the vertex tint
+conversion. No new render pass or queue submission is introduced. With no drawing
+mod and no pending texture retirement, the existing closed-overlay early return
+remains in effect. Renderer tests cover geometry and draw-command generation;
+GPU pixel comparisons and measured costs are separate runtime validation.

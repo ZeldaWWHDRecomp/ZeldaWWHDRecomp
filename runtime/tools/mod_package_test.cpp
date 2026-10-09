@@ -163,12 +163,16 @@ int main(int argc, char** argv) {
             auto m=mods::json::parse(R"({"format_version":1,"id":"guest-a","name":"Fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})");
             m["id"]=id;
             if(std::string(id)=="guest-b")m["dependencies"]=mods::json::parse(R"([{"id":"guest-a"}])");
+            fs::create_directories(source/"content/Common");
+            std::ofstream(source/"content/Common"/(std::string(id)+".txt"))<<"original fixture content";
             std::ofstream(source/"manifest.json")<<mods::json::dump(m);
             {std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
         }
         std::ofstream(storage/"profiles.json") << R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"guest-a":true,"guest-b":true,"guest-c":true}}},"guest_regions":{"guest-a":{"base":2130771968,"size":65536},"guest-b":{"base":2130771968,"size":65536}}})";
         set_code_mod_support(true);
         initialize();std::string error;
+        assert(mods::content::replacement("Common/guest-a.txt").empty());
+        assert(view("guest-a").content_hashes.size()==1);
         assert(configure("guest-a","amount",5,error));
         int inspected=0,loaded=0;std::map<std::string,uint32_t> bases;
         auto inspect=[&](const GuestPackage& pkg){++inspected;assert(pkg.options.get("amount").number==3);return uint32_t(65536);};
@@ -176,6 +180,9 @@ int main(int argc, char** argv) {
             if(pkg.id=="guest-c")throw std::runtime_error("synthetic compiler failure");};
         start_guests(inspect,load);
         assert(inspected==3&&loaded==3);
+        assert(!mods::content::replacement("Common/guest-a.txt").empty());
+        assert(!mods::content::replacement("Common/guest-b.txt").empty());
+        assert(mods::content::replacement("Common/guest-c.txt").empty());
         assert(bases.at("guest-a")==0x7F010000); // valid persisted region retained
         assert(bases.at("guest-b")==0x7F000000); // duplicate saved reservation repaired
         assert(bases.at("guest-c")==0x7F020000);
@@ -190,7 +197,8 @@ int main(int argc, char** argv) {
     }
     if(argc==2&&std::string(argv[1])=="--guest-metadata") {
         auto root=fs::temp_directory_path()/("wwhd-guest-metadata-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        fs::create_directories(root/"source");
+        fs::create_directories(root/"source/content/Common");
+        std::ofstream(root/"source/content/Common/fixture.txt")<<"original fixture content";
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
         env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
         std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"},"options":[{"id":"amount","name":"Amount","type":"number","min":1,"max":10,"default":3}]})";
@@ -217,9 +225,42 @@ int main(int argc, char** argv) {
         assert(!configure("guest-fixture","amount",99,error));
         frame(1);assert(!view("guest-fixture").active); // never load a PowerPC ELF as a host library
         assert(enable("guest-fixture",false,error));
+        std::ofstream(root/"source/content/Common/fixture.txt")<<"changed fixture content";
+        assert(install((root/"source").string(),error));
+        assert(!view("guest-fixture").native_confirmed); // content changes revoke package trust
+        assert(confirm_native("guest-fixture",error));
         {std::ofstream elf(root/"source/mod.elf",std::ios::binary|std::ios::app);elf << "changed";}
         assert(install((root/"source").string(),error));
         assert(!view("guest-fixture").native_confirmed); // trust fingerprints the ELF, not its name
+        fs::create_directories(root/"source/assets");
+        std::ofstream(root/"source/assets/bad.png")<<"invalid synthetic PNG";
+        assert(!install((root/"source").string(),error));
+        assert(error.find("PNG")!=std::string::npos);
+        fs::remove_all(root/"source/assets");
+        fs::rename(root/"source/mod.elf",root/"source/saved.elf");
+        assert(!install((root/"source").string(),error));
+        assert(error.find("ELF is missing")!=std::string::npos);
+        fs::rename(root/"source/saved.elf",root/"source/mod.elf");
+        std::ifstream manifest_file(root/"source/manifest.json");
+        std::string manifest_text((std::istreambuf_iterator<char>(manifest_file)),{});
+        manifest_file.close();
+        auto missing_content=mods::json::parse(manifest_text);
+        missing_content["content_dir"]="missing";
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(missing_content);
+        assert(!install((root/"source").string(),error));
+        std::ofstream(root/"source/manifest.json")<<manifest_text;
+        assert(install((root/"source").string(),error));
+        assert(confirm_native("guest-fixture",error));
+        assert(enable("guest-fixture",true,error));
+        fs::create_directories(root/"overlap/content/Common");
+        std::ofstream(root/"overlap/content/Common/fixture.txt")<<"different original fixture";
+        std::ofstream(root/"overlap/manifest.json")<<R"({"format_version":1,"id":"content-overlap","name":"Overlap","version":"1.0.0","game_id":"wwhd-usa","kind":"content","content_dir":"content"})";
+        assert(install((root/"overlap").string(),error));
+        assert(!enable("content-overlap",true,error));
+        assert(error.find("Content file conflict")!=std::string::npos);
+        assert(view("guest-fixture").enabled&&!view("content-overlap").enabled);
+        assert(enable("guest-fixture",false,error));
+        assert(enable("content-overlap",true,error));
         {std::ofstream(root/"source/manifest.json") << R"({"format_version":1,"id":"guest-fixture","name":"Guest fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":2}})";}
         assert(!install((root/"source").string(),error));
         fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;

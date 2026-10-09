@@ -3,6 +3,7 @@
 #include "../overlay/hostui.h"
 #include "../crashrec.h"
 #include "../game_languages.h"
+#include "../console_language.h"
 #include <cstdlib>
 #include "../true60.h"
 #include <filesystem>
@@ -107,7 +108,7 @@ static void report(const std::string& s) {
 // WWHD_LANGUAGE_REGION=eu|jp (else the saved "language_region") takes the language from a language
 // source of that region (game_lang::source_packs(), docs/language-packs.md) when it has that
 // language; language_region.cpp then tells the game that region.
-static uint32_t console_language() {
+uint32_t console_language() {
     static const uint32_t lang = [] {
         const char* why = "WWHD_LANGUAGE";
         std::string saved;

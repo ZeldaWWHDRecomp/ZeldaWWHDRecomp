@@ -6,6 +6,8 @@
 #include "catalogue_setup.h"
 #include "guest_build.h"
 #include "guest_addr.h"
+#include "guest_png.h"
+#include "guest_hud.h"
 #include "content.h"
 #include "cemu_pack.h"
 #include "../platform/host.h"
@@ -32,17 +34,17 @@ namespace fs=std::filesystem;
 using json::Value;
 struct Requirement {std::string id,version;};
 struct Manifest {
-    std::string id,name,version,author,description,kind,binary,problem,fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
+    std::string id,name,version,author,description,kind,binary,problem,fingerprint,trust_fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
     std::vector<Requirement> dependencies;
     std::vector<std::string> conflicts;
     std::vector<Option> options;
     std::map<std::string,bool> settings;
     content::Files files;
+    std::vector<std::pair<std::string,std::string>> content_hashes;
     std::shared_ptr<cemu::Pack> graphics;
     uint32_t heap_size=256*1024;
     std::vector<catalogue::Step> setup;
     std::vector<std::string> setup_tools;
-    std::string trust_fingerprint;
 };
 struct Record {Manifest manifest;fs::path path;bool active=false,loading=false;std::string status,error;Value startup_config;};
 std::mutex mutex;
@@ -54,6 +56,7 @@ std::vector<std::string> guest_startup_ids;
 GuestInspect guest_inspect;
 GuestBuild guest_build;
 std::set<std::string> validated_guest_cache;
+content::Files startup_content;
 std::string last_problem;
 std::atomic<bool> dirty{false},running{false},profile_changed{false};
 ReadMemory read_memory=nullptr;WriteMemory write_memory=nullptr;
@@ -67,17 +70,16 @@ std::array<unsigned,3> version(const std::string& s) {
 std::string string_field(const Value& v,const char* key,bool optional=false,size_t limit=8192){const auto& f=v.get(key);if(optional&&f.type==Value::Null)return {};require(f.type==Value::String&&f.text.size()<=limit&&f.text.find('\0')==std::string::npos,"Invalid field: "+std::string(key));return f.text;}
 using hash::sha256_file;
 std::string package_fingerprint(const fs::path& path) {
-    std::map<std::string,std::string> files;uint64_t bytes=0;
-    for(const auto& file:fs::recursive_directory_iterator(path)) {
-        require(!file.is_symlink(),"Setup packages may not contain symlinks");
-        if(file.is_directory())continue;
-        require(file.is_regular_file(),"Setup package contains a special file");
-        bytes+=file.file_size();require(files.size()<4096&&bytes<=512ull*1024*1024,"Setup package exceeds limits");
-        files.emplace(file.path().lexically_relative(path).generic_string(),sha256_file(file.path()));
+    std::map<std::string,std::string> inventory;uint64_t bytes=0;
+    for(const auto& entry:fs::recursive_directory_iterator(path)) {
+        require(!entry.is_symlink(),"Packages may not contain symlinks");
+        if(entry.is_directory())continue;
+        require(entry.is_regular_file(),"Package contains a special file");
+        bytes+=entry.file_size();require(inventory.size()<4096&&bytes<=512ull*1024*1024,"Package exceeds limits");
+        inventory.emplace(entry.path().lexically_relative(path).generic_string(),sha256_file(entry.path()));
     }
-    std::string inventory;
-    for(const auto& [name,hash]:files){inventory+=name;inventory+='\0';inventory+=hash;inventory+='\n';}
-    return hash::sha256_text(inventory);
+    std::string text;for(const auto& [name,hash]:inventory){text+=name;text+='\0';text+=hash;text+='\n';}
+    return hash::sha256_text(text);
 }
 std::string read_text(const fs::path& p){require(fs::is_regular_file(p)&&!fs::is_symlink(p)&&fs::file_size(p)<=1024*1024,"Missing or oversized JSON file: "+p.filename().string());std::ifstream f(p,std::ios::binary);return {std::istreambuf_iterator<char>(f),{}};}
 bool valid_option(const Option& o,const Value& v){
@@ -161,7 +163,33 @@ Manifest manifest(const fs::path& path){
             require(step.type=="confirm"?option->type=="bool":option->type=="enum"&&option->choices==step.choices,"Setup option schema differs from manifest");
         }
     }
+    if(m.kind=="guest") {
+        auto folder=string_field(v,"content_dir",true,512);
+        if(folder.empty()&&fs::exists(path/"content"))folder="content";
+        if(!folder.empty()) {
+            require(archive::relative_path(folder),"Invalid guest content directory");
+            auto checked=path;for(const auto& part:fs::path(folder)){checked/=part;require(!fs::is_symlink(checked),"Guest content paths may not use symlinks");}
+            m.files=content::index(checked);
+            for(const auto& [name,file]:m.files)m.content_hashes.emplace_back(name,sha256_file(file));
+        }
+        if(!m.files.empty()||fs::exists(path/"textures")||fs::exists(path/"assets")) {
+            m.trust_fingerprint=package_fingerprint(path);
+            for(const auto* folder:{"textures","assets"})if(fs::exists(path/folder)) {
+                require(fs::is_directory(path/folder),"Guest image folder must be a directory");
+                size_t pixels=0,count=0;
+                for(const auto& entry:fs::recursive_directory_iterator(path/folder))if(entry.is_regular_file()) {
+                    auto extension=entry.path().extension().string();
+                    for(char& c:extension)if(c>='A'&&c<='Z')c+='a'-'A';
+                    if(extension!=".png")continue;
+                    require(++count<=32,"Guest package exceeds 32 HUD textures");
+                    auto image=guestmods::hud::load_png(path,entry.path().lexically_relative(path).generic_string());
+                    pixels+=image.rgba.size();require(pixels<=guestmods::hud::kMaxTextureBytes,"Guest package HUD textures exceed 16 MiB decoded");
+                }
+            }
+        }
+    }
     if(!m.setup_tools.empty())m.trust_fingerprint=package_fingerprint(path);
+    if(m.trust_fingerprint.empty())m.trust_fingerprint=m.fingerprint;
     if(m.kind=="content")require(m.dependencies.empty(),"Content packages do not support dependencies yet");
     return m;
 }
@@ -309,7 +337,7 @@ void initialize(){
                     enabled.insert(id);
                 };
                 for(const auto& [id,value]:profile().get("code_mod_pending").object) {
-                    require(records.contains(id)&&records.at(id).manifest.fingerprint==value.string(),"Pending code mod changed; confirm its code again");add(id);
+                    require(records.contains(id)&&records.at(id).manifest.trust_fingerprint==value.string(),"Pending code mod changed; confirm its code again");add(id);
                 }
                 order(enabled);validate_conflicts(enabled,&planned);
                 profile()["builtins"]=planned;
@@ -340,7 +368,7 @@ void initialize(){
                 record.active=true;record.status=std::to_string(record.manifest.graphics->textures.size())+" texture rules, "+std::to_string(record.manifest.graphics->shaders.size())+" shader candidates";
             }}
             cemu::activate(graphics);
-            content::activate(std::move(files));
+            startup_content=files;content::activate(std::move(files));
             for(const auto& id:sequence)for(const auto& [setting,on]:records.at(id).manifest.settings) {
             const auto* entry=manager::find(setting);
             if(entry->restart_required&&!std::getenv(entry->startup_env))entry->apply(on);
@@ -429,7 +457,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
         return false;
     }
 }
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}v.options=m.options;v.setup_tools=m.setup_tools;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 bool install(const std::string& source,std::string& error,std::string* installed_id_out){return operation(error,[&]{
     auto nonce=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());auto stage=root/(".stage-"+nonce),backup=root/(".backup-"+nonce);fs::path target;bool backed=false,moved=false;
@@ -467,7 +495,7 @@ bool enable_after_code_rebuild(const std::string& id,std::string& error){return 
         const auto& r=records.at(current);require(confirmed(r),r.manifest.name+" contains native code that has not been confirmed");
         for(const auto& dep:r.manifest.dependencies)if(!dep.id.starts_with("builtin:"))check(dep.id);
     };check(id);
-    auto previous=database;profile()["code_mod_pending"][id]=records.at(id).manifest.fingerprint;
+    auto previous=database;profile()["code_mod_pending"][id]=records.at(id).manifest.trust_fingerprint;
     try{save();}catch(...){database=previous;throw;}
 });}
 bool enable(const std::string& id,bool on,std::string& error){std::vector<std::string> builtin_dependencies;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");auto enabled=enabled_set();if(on){
@@ -552,12 +580,14 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
     std::lock_guard guard(mutex);
     if(!ready||guests_started)return;
     guests_started=true;
+    auto files=startup_content;
     for(const auto& id:guest_startup_ids) {
         auto it=records.find(id);if(it==records.end())continue;
         auto& r=it->second;
         try {
             require(code_mod_support,"Guest mods are disabled: enable code mods, rebuild and restart first");
             require(confirmed(r),kUnconfirmed);
+            if(r.manifest.trust_fingerprint!=r.manifest.fingerprint)require(package_fingerprint(r.path)==r.manifest.trust_fingerprint,"Package changed; reinstall and confirm it again");
             for(const auto& dep:r.manifest.dependencies)if(!dep.id.starts_with("builtin:")) {
                 const auto& dependency=records.at(dep.id);
                 require(dependency.active||dependency.manifest.kind=="settings",
@@ -567,12 +597,14 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
             uint32_t bytes=inspect(pkg);
             uint32_t base=assign_guest_region(id,bytes);
             load(pkg,base);
-            r.active=true;r.error.clear();r.status="Guest module loaded";
+            files.insert(r.manifest.files.begin(),r.manifest.files.end());
+            r.active=true;r.error.clear();r.status=r.manifest.files.empty()?"Guest module loaded":"Guest module and content loaded";
         } catch(const std::exception& e) {
             r.active=false;r.error=e.what();
             fprintf(stderr,"[mod-manager] %s not loaded: %s\n",id.c_str(),e.what());
         }
     }
+    content::activate(std::move(files));
 }
 void set_memory_access(ReadMemory read,WriteMemory write){read_memory=read;write_memory=write;}
 void frame(uint64_t step){

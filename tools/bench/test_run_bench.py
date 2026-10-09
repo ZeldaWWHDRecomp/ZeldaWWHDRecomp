@@ -94,7 +94,7 @@ class BenchmarkStatistics(unittest.TestCase):
     def test_pair_differences_match_pair_numbers_in_ab_ba_order(self):
         def sample(name, pair, value, status='ok'):
             return {'variant': name, 'run': pair, 'status': status,
-                    'summary': {'frame_ms': value, 'logic_cpu_ms': value / 2}}
+                    'summary': {'frame_ms': value, 'logic_cpu_ms': value / 2, 'render_cpu_ms': value / 4}}
         results = [sample('base', 1, 10), sample('hooks', 1, 12),
                    sample('hooks', 2, 8), sample('base', 2, 10),
                    sample('base', 3, 10), sample('hooks', 3, 14),
@@ -106,6 +106,10 @@ class BenchmarkStatistics(unittest.TestCase):
         self.assertEqual(report['difference_ms']['n'], 3)
         self.assertTrue(report['run_iqr_exceeds_median_difference'])
         self.assertTrue(report['paired_iqr_exceeds_paired_median'])
+        render = run_bench.paired_statistics(results, ['base', 'hooks'])['metrics']['render_cpu_ms']
+        self.assertEqual([p['difference_ms'] for p in render['pairs']], [.5, -.5, 1])
+        self.assertEqual(render['difference_ms']['n'], 3)
+        self.assertEqual(render['difference_ms']['median'], .5)
 
     def test_worker_detection_checks_programs_not_shell_command_text(self):
         listing = '''101 /usr/bin/python3 /repo/tools/bench/run_bench.py
