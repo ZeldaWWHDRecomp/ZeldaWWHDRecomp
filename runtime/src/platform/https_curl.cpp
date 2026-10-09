@@ -73,7 +73,10 @@ void download_https(const std::string& url,const std::filesystem::path& destinat
     auto result=curl.perform(easy);
     if(!transfer.failure.empty())exception_report::raise(transfer.failure);
     long status=0;
-    if(result!=CURLE_OK||curl.info(easy,CURLINFO_RESPONSE_CODE,&status)!=CURLE_OK||status!=200)
+    bool have_status=curl.info(easy,CURLINFO_RESPONSE_CODE,&status)==CURLE_OK&&status!=0;
+    if(have_status&&status!=200)
+        exception_report::raise("HTTPS server did not return a successful response (HTTP "+std::to_string(status)+")");
+    if(result!=CURLE_OK||!have_status)
         exception_report::raise("HTTPS download failed; check the connection and try again");
     transfer.file.finish();
 }

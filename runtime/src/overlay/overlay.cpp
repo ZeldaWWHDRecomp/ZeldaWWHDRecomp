@@ -1065,13 +1065,14 @@ void catalogue_action(std::function<void(CatalogueWorker&)> action) {
         std::lock_guard guard(worker.mutex);worker.running=false;
     });
 }
+constexpr const char* kDefaultCatalogue="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
 void catalogue_controls(std::string& focus) {
     using namespace mods::catalogue;
     auto& worker=catalogue_work();
     static char source[2049]={},search[256]={};
     static bool initialized=false;
     if(!initialized) {
-        std::string saved="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
+        std::string saved=kDefaultCatalogue;
         hostui::get("mod.catalogue.url",saved);
         if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
         snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
@@ -1115,6 +1116,11 @@ void catalogue_controls(std::string& focus) {
             std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;
             worker.message="Showing cached catalogue; versions may be out of date";
         });
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Reset to default")) {
+        snprintf(source,sizeof source,"%s",kDefaultCatalogue);
+        if(!getenv("WWHD_MOD_CATALOGUE"))hostui::post([]{hostui::set("mod.catalogue.url",std::string(kDefaultCatalogue));});
     }
     ImGui::EndDisabled();
     if(busy)note("Catalogue operation in progress…");

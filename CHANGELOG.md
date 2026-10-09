@@ -11,6 +11,9 @@ what is on `devel` and not released yet (also in the
   printed on the pad that was plugged in first and follows them, so an Xbox or PlayStation pad plays
   by label and a Nintendo pad by position, without touching the setting.
 
+- **Mods tab: a "Reset to default" button for the catalogue address.** It puts back the official
+  mod catalogue if the address was changed. Download errors now also show the server's status code
+  (for example "HTTP 404"), so a wrong address is easier to tell apart from a connection problem.
 - **Cemu graphics packs that conflict can no longer both be switched on** (issue #68). The Mods tab
   shows "Conflicts with …" before you enable a pack; enabling it asks whether to switch (the other
   pack is turned off). Each pack shows what is active now and what changes after a restart, with a

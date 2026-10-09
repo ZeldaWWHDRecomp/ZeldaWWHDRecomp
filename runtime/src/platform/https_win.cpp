@@ -43,7 +43,7 @@ void download_https(const std::string& url,const std::filesystem::path& destinat
     check(WinHttpReceiveResponse(request.get(),nullptr));
     DWORD status=0,size=sizeof status;
     check(WinHttpQueryHeaders(request.get(),WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&status,&size,WINHTTP_NO_HEADER_INDEX));
-    if(status!=200)exception_report::raise("HTTPS server did not return a successful response");
+    if(status!=200)exception_report::raise("HTTPS server did not return a successful response (HTTP "+std::to_string(status)+")");
     char buffer[16384];
     for(;;) {
         if(std::chrono::steady_clock::now()-started>std::chrono::seconds(120))exception_report::raise("HTTPS download timed out");

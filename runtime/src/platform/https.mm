@@ -25,7 +25,8 @@
         didReceiveResponse:(NSURLResponse*)response
         completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
     if(![response isKindOfClass:[NSHTTPURLResponse class]] || ((NSHTTPURLResponse*)response).statusCode!=200) {
-        failure="HTTPS server did not return a successful response";
+        long status=[response isKindOfClass:[NSHTTPURLResponse class]]?(long)((NSHTTPURLResponse*)response).statusCode:0;
+        failure="HTTPS server did not return a successful response (HTTP "+std::to_string(status)+")";
         handler(NSURLSessionResponseCancel);return;
     }
     handler(NSURLSessionResponseAllow);
