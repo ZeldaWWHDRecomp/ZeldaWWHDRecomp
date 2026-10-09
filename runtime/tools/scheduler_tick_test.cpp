@@ -7,11 +7,17 @@
 using namespace std::chrono_literals;
 int main() {
     threads::SchedulerTick tick;
+    assert(!tick.has_ready_contender());
     tick.ready_delta(1);
+    tick.ready_delta(1);
+    tick.ready_delta(-1);
+    assert(tick.has_ready_contender()); // another queued thread still needs scanning
     assert(!tick.wait_idle()); // ready contender must retain time-slice polling
     tick.ready_delta(-1);
+    assert(!tick.has_ready_contender());
     {
         threads::SchedulerTick::TimedWait timed(tick);
+        assert(!tick.has_ready_contender()); // deadlines alone need no core scan
         assert(!tick.wait_idle());
         {
             threads::SchedulerTick::TimedWait second(tick);

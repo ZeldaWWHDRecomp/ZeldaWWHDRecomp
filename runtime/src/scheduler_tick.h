@@ -13,6 +13,7 @@ class SchedulerTick {
     std::atomic<unsigned> ready{0}, timed{0};
     uint64_t generation = 0;
 public:
+    bool has_ready_contender() const { return ready.load() != 0; }
     void ready_delta(int delta) {
         if (ready.fetch_add(delta) == 0 && delta > 0) notify();
     }

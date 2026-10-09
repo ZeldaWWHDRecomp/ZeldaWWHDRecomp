@@ -312,6 +312,12 @@ static void sched_tick_thread() {
             next_report += std::chrono::seconds(5);
             threads::report_sched();
         }
+        // Timed waits retain the polling cadence, but cannot require preemption
+        // without a ready contender. Queue insertion accounts for contenders
+        // under the core lock and requests higher-priority preemption directly.
+        // A contender arriving after this check is examined on the next tick,
+        // just as one arriving after its core was scanned in the original loop.
+        if (!g_tick.has_ready_contender()) continue;
         for (int core = 0; core < 3; core++) {
             CoreSched& k = g_sched[core];
             std::lock_guard<std::mutex> lk(k.m);
