@@ -3,7 +3,7 @@
 // F1 opens and closes it (Esc closes); on macOS also Cmd+, (app menu > Settings...; most Mac keyboards
 // send F1 only with Fn unless the top row is set to standard function keys); on a controller, hold Select/Minus for half a second or press
 // Home. While it is open the game sees no buttons (it keeps running) and the overlay takes keyboard,
-// mouse and controller. Tabs: Saves, Graphics, Display, Mods, Controls, Language / About. Every option
+// mouse and controller. Tabs: Saves, Graphics, Display, Audio, Mods, Controls, Language / About. Every option
 // calls the same functions as the macOS menu bar (which stays in sync) or the SDL host's shortcuts.
 // When the game asks for text, the overlay shows its text prompt (text_entry.h) with the same input rules.
 //
@@ -11,7 +11,7 @@
 // thread once per TV present (frame()); option changes go back to the main thread (hostui::post).
 //
 // Test switches:
-//   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, mods,
+//   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, audio, mods,
 //                                              controls, about) at TV frame <frame> (default 1)
 //   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
 //   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker

@@ -64,17 +64,17 @@ public:
     }
     // Called by AX producer, not the device callback. No allocation or waiting.
     // Missing input is silence; muted streams still drain without delayed playback.
-    void mix(int16_t* stereo,uint32_t frames,bool muted=false) {
+    void mix(int16_t* stereo,uint32_t frames,bool muted=false,int channels=2) {
         if(!active())return;
         std::unique_lock lock(mutex_,std::try_to_lock);if(!lock.owns_lock())return;
         for(uint32_t i=0;i<frames;++i) {
-            int32_t left=stereo[i*2],right=stereo[i*2+1];
+            int32_t left=stereo[i*channels],right=stereo[i*channels+1];
             for(auto& s:streams_)if(s.handle&&s.count) {
                 if(!muted){left+=s.samples[s.read*2];right+=s.samples[s.read*2+1];}
                 s.read=(s.read+1)%kFrames;--s.count;
             }
-            stereo[i*2]=int16_t(std::clamp(left,-32768,32767));
-            stereo[i*2+1]=int16_t(std::clamp(right,-32768,32767));
+            stereo[i*channels]=int16_t(std::clamp(left,-32768,32767));
+            stereo[i*channels+1]=int16_t(std::clamp(right,-32768,32767));
         }
     }
 };

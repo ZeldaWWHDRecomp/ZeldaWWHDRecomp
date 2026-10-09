@@ -1,3 +1,4 @@
+#include "../../audio_out.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -2613,6 +2614,7 @@ static void test_fullscreen_key() {
 // with the GamePad window open the close button of the TV window did nothing. Closing the GamePad
 // window only hides it (WWHD_NO_GAMEPAD=1 starts without it).
 static void quit_game() {
+  audio::finish_dump();  // _Exit bypasses atexit handlers
   screenshot::finish();  // the screenshots taken are written first
   gx2::checkpoint_vulkan_caches();
   std::_Exit(0);

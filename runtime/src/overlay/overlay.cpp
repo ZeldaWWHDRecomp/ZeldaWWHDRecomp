@@ -3,6 +3,7 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "../audio_out.h"
 #include "guest_hud.h"
 #include "setup_test.h"
 #include "graphics_switch.h"
@@ -144,9 +145,9 @@ ImGuiKey imgui_key(int code) {
 }
 
 // ---------------------------------------------------------------- UI state (render thread)
-enum Tab { kSaves, kGraphics, kDisplay, kMods, kControls, kAbout, kTabs };
-const char* const kTabNames[kTabs] = {"Saves", "Graphics", "Display", "Mods", "Controls", "Language / About"};
-const char* const kTabIds[kTabs] = {"saves", "graphics", "display", "mods", "controls", "about"};
+enum Tab { kSaves, kGraphics, kDisplay, kAudio, kMods, kControls, kAbout, kTabs };
+const char* const kTabNames[kTabs] = {"Saves", "Graphics", "Display", "Audio", "Mods", "Controls", "Language / About"};
+const char* const kTabIds[kTabs] = {"saves", "graphics", "display", "audio", "mods", "controls", "about"};
 
 struct Ui {
     bool init = false;
@@ -2029,6 +2030,25 @@ void perf_window(bool menu_open) {
     (void)menu_open;
 }
 
+void tab_audio() {
+    int speakers = audio::requested_surround() ? 1 : 0;
+    if (ImGui::Combo("Speakers", &speakers, "Stereo\0Surround 5.1\0"))
+        hostui::post([speakers] { audio::set_requested_surround(speakers == 1); });
+    note("Restart the game after changing Speakers.");
+    if (audio::surround_fallback())
+        note("Surround 5.1 unavailable on this output. Using stereo; restart after connecting a 5.1 device.");
+    if (audio::output_device_changed())
+        note("Output device changed. Audio is muted; restart the game to use the current device.");
+    note("Current output: %s", audio::channels() == 6 ? "Surround 5.1" : "Stereo");
+    if (const char *ch = audio::speaker_test_channel()) {
+        note("Speaker test: %s", ch);
+        if (ImGui::Button("Stop speaker test"))
+            audio::stop_speaker_test();
+    } else if (ImGui::Button("Test speakers"))
+        audio::start_speaker_test();
+    note("Plays each active channel in turn at a low level. Subwoofer uses an 80 Hz tone.");
+}
+
 void settings_window() {
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 ds = io.DisplaySize;
@@ -2062,6 +2082,7 @@ void settings_window() {
                     case kSaves: tab_saves(); break;
                     case kGraphics: tab_graphics(); break;
                     case kDisplay: tab_display(); break;
+                    case kAudio: tab_audio(); break;
                     case kMods: tab_mods(); break;
                     case kControls: tab_controls(); break;
                     default: tab_about(); break;
