@@ -19,13 +19,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
 from run_bench import other_games as running_games, other_benchmarks
 
 
-def other_games(own_pid=None):
-    return running_games(own_pid) + other_benchmarks()
+def other_games(own_pid=None, limit=1):
+    games = running_games(own_pid)
+    return (games if len(games) >= limit else []) + other_benchmarks()
 
 
 def disk_ok(path):
     if shutil.disk_usage(path).free < 15 * 1024**3:
         raise RuntimeError("free disk is below 15 GiB")
+
+
+def cleanup_inputs(root, keep_state=False, keep_frames=False):
+    if not keep_frames:
+        for path in root.glob("frame_*.png"):
+            path.unlink()
+    if not keep_state:
+        shutil.rmtree(root / "states", ignore_errors=True)
+    shutil.rmtree(root / "save", ignore_errors=True)
 
 
 def inspect_frames(root, first, count, package):
@@ -65,7 +75,7 @@ def main():
     for name in ("binary", "game", "save", "out"):
         parser.add_argument("--" + name, type=Path, required=True)
     seed = parser.add_mutually_exclusive_group(required=True)
-    seed.add_argument("--state", type=Path, help="compatible full state from the same game region")
+    seed.add_argument("--state", type=Path, help="compatible full state from the same region and guest-mod set")
     seed.add_argument("--boot", action="store_true", help="boot the copied save and create a regional full state")
     parser.add_argument("--keep-state", action="store_true", help="retain the private state for subsequent cases")
     parser.add_argument("--first-frame", type=int, help="first consecutive dump frame (700 with a state, 3000 at boot)")
@@ -81,6 +91,8 @@ def main():
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--timeout", type=float, default=300)
     parser.add_argument("--keep-frames", action="store_true")
+    parser.add_argument("--max-game-sessions", type=int, choices=range(1, 5), default=1,
+                        help="concurrent functional game limit; benchmarks remain exclusive (default: 1)")
     args = parser.parse_args()
     if not 1 <= args.frames <= 300:
         parser.error("frames must be between 1 and 300")
@@ -97,8 +109,8 @@ def main():
     first = args.first_frame if args.first_frame is not None else (3000 if args.boot else 700)
     if first < 700:
         parser.error("first-frame must be at least 700 to allow startup and state restoration")
-    if other_games():
-        parser.error("another game or benchmark is running; retry in a quiet window")
+    if other_games(limit=args.max_game_sessions):
+        parser.error("functional game limit reached or a benchmark is running")
     disk_ok(args.out.parent)
     if args.out.exists():
         parser.error("output directory must be new (private saves and caches are never reused)")
@@ -159,18 +171,27 @@ def main():
     if args.fps == 60:
         env["WWHD_INTERP_AT_STEP"] = str(first-190 if args.boot else 510)
     # Recheck immediately before launching; there is no cross-worker game lock.
-    if other_games():
-        raise RuntimeError("another game started while preparing the case")
+    if other_games(limit=args.max_game_sessions):
+        raise RuntimeError("functional game limit reached or a benchmark started while preparing the case")
     with (root / "runtime.log").open("w") as log:
         process = subprocess.Popen([str(args.binary), "--game", str(args.game),
                                     "--save", str(root / "save")], cwd=root, env=env,
                                    stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + args.timeout
+            state_checked = not args.state
             while process.poll() is None and not (root / "test_done").exists():
                 disk_ok(root)
-                if other_games(process.pid):
-                    raise RuntimeError("another game or benchmark started; case interrupted")
+                if not state_checked:
+                    # A full state restores guest-module data too. Loading a
+                    # different pilot's memory cannot validate this pilot's HUD.
+                    log.flush()
+                    text = (root / "runtime.log").read_text(errors="replace")
+                    if "guest mod set differs from this state" in text:
+                        raise RuntimeError("state guest-mod set differs; use --boot or a state saved with this package")
+                    state_checked = "[savestate] Loaded slot" in text
+                if other_games(process.pid, args.max_game_sessions):
+                    raise RuntimeError("functional game limit exceeded or a benchmark started; case interrupted")
                 if time.monotonic() > deadline:
                     raise RuntimeError("game case timed out")
                 time.sleep(1)
@@ -182,8 +203,13 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+            if not (root / "test_done").exists():
+                cleanup_inputs(root, keep_frames=args.keep_frames)
     if not (root / "test_done").exists():
         raise RuntimeError("game exited before test_done; inspect private runtime.log")
+    if args.state and "guest mod set differs from this state" in (root / "runtime.log").read_text(errors="replace"):
+        cleanup_inputs(root, keep_frames=args.keep_frames)
+        raise RuntimeError("state guest-mod set differs; use --boot or a state saved with this package")
     if args.boot:
         with (root / "states" / "slot1.bin").open("rb") as state_file:
             header = state_file.read(104)
@@ -215,13 +241,8 @@ def main():
               "switch_layout": args.switch_layout, "live_switch_pass": switch_verified,
               "limitations": "Colour presence does not prove fades or contextual visibility."}
     (root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    if not args.keep_frames:
-        for path in root.glob("frame_*.png"):
-            path.unlink()
     # Full states are large; preserve evidence, not the disposable input copies.
-    if not args.keep_state:
-        shutil.rmtree(root / "states")
-    shutil.rmtree(root / "save")
+    cleanup_inputs(root, keep_state=args.keep_state, keep_frames=args.keep_frames)
     print(json.dumps({k: v for k, v in report.items() if k != "observations"}))
     if not passed:
         raise SystemExit(1)
