@@ -40,6 +40,14 @@ double ppc_fres(double x) { return x; }
 double ppc_frsqrte(double x) { return x; }
 void ppc_preempt(Cpu*) {}
 }
+namespace guestmods::settings {
+std::optional<Value> read(const std::string& key) {
+    if(key=="input.face_layout")return Value{std::string("labels"),7};
+    if(key=="render.true60")return Value{true,8};
+    if(key=="display.aspect")return Value{21.0/9,9};
+    return {};
+}
+}
 namespace input {PadState read() {return {};}}
 namespace true60 {float dt() {return 0.5f;}}
 namespace mem { std::string read_cstr(uint32_t) { return "option"; } }
@@ -110,6 +118,24 @@ int main() {
     c.r[3]=1;c.r[4]=9;guestmods::svc_config_int(&c);assert(c.r[3]==9); // non-integral numeric option
     guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/60.0);
     guestmods::frame(0x100000002ull);guestmods::svc_logic_step(&c);assert(c.r[3]==1&&c.r[4]==2);
+    guestmods::g_loaded[0].region_size=0x10000;
+    auto read_setting=[&](const char* key,uint32_t type,uint32_t destination,uint32_t capacity) {
+        std::strcpy(reinterpret_cast<char*>(mem::ptr(data_base+0x400)),key);
+        c.r[3]=data_base+0x400;c.r[4]=type;c.r[5]=destination;c.r[6]=capacity;
+        guestmods::svc_setting_get(&c);return c.r[3];
+    };
+    auto target=data_base+0x500;
+    assert(read_setting("input.face_layout",1,target,32)==7);
+    assert(std::string(reinterpret_cast<char*>(mem::ptr(target)))=="labels");
+    assert(read_setting("input.face_layout",1,0,0)==7);
+    assert(read_setting("input.face_layout",2,target,32)==0);
+    assert(read_setting("unknown",1,target,32)==0);
+    assert(read_setting("input.face_layout",1,target,2)==0&&ld8(target)=='l');
+    assert(read_setting("input.face_layout",1,data_base+0xFFFF,32)==0);
+    assert(read_setting("render.true60",2,target,4)==4&&ld32(target)==1);
+    assert(read_setting("display.aspect",4,target,8)==8&&ldf64(target)==21.0/9);
+    std::strcpy(reinterpret_cast<char*>(mem::ptr(data_base+0x400)),"input.face_layout");
+    c.r[3]=data_base+0x400;guestmods::svc_setting_changed(&c);assert(c.r[3]==0&&c.r[4]==7);
     WWHDGuestModuleV1 second{};second.mem_base=0x7F010000;second.mem_size=4096;
     guestmods::Loaded another;another.id="second";another.m=&second;another.options["option"]=84;
     guestmods::g_loaded.push_back(std::move(another));c.pc=0x7F010100;c.r[3]=1;

@@ -695,3 +695,38 @@ continue to require a restart.
 The broad generated declarations remain committed so modders can discover public names
 without running the generator. A smaller curated set would suffice for the current two
 examples, but would limit other mods; curation can be evaluated separately.
+
+## Read-only port settings v1
+
+`wwhd_setting_get(key, type, buffer, capacity)` returns the number of bytes
+written, or zero for an unknown key, wrong type, invalid mod-owned buffer or
+insufficient capacity. Failure leaves the buffer unchanged. Pass a null buffer
+and zero capacity to query the required size. String lengths include the NUL;
+numeric values use guest big-endian encoding. The service never changes a port
+setting. `WWHD_SETTING_API_VERSION` is 1; existing keys retain their types and
+meanings when new keys are added.
+
+| Key | Type | Values |
+| --- | --- | --- |
+| `input.face_layout` | STRING | `position`, `labels`, `custom`; inferred from current face bindings |
+| `input.controller_mode` | STRING | `gamepad`, `pro` |
+| `game.language` | U32 | Effective Wii U language code 0–11, including source/availability fallback; selected at startup |
+| `game.build` | STRING | `USA`, `EU`; the running executable's game build |
+| `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
+| `display.aspect` | F64 | Aspect ratio latched for the current game frame |
+| `render.interp_fps` | U32 | Effective presented target: 30 without interpolation, display-capped interpolation rate, or 60 in true-60 mode |
+| `render.true60` | BOOL | 32-bit zero or one |
+
+`wwhd_setting_changed(key)` returns a per-key observed revision: initially one,
+zero for absent keys, incremented when a read observes a different typed value.
+Compare revisions for inequality. Multiple changes between observations may
+coalesce, including a change reverted before the next read. Read the setting
+once per logic step for reactive HUDs; immutable startup keys stay constant.
+
+```c
+char layout[16];
+if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING,
+                     layout, sizeof layout)) {
+    /* layout contains the current stable preset name. */
+}
+```

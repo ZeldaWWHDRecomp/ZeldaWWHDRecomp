@@ -10,6 +10,7 @@
 #include "packages.h"
 #include "guest_heap.h"
 #include "guest_files.h"
+#include "guest_settings.h"
 #include "input.h"
 #include "true60.h"
 #include "guest_addr.h"
@@ -124,12 +125,45 @@ void svc_input(Cpu* c) {
 }
 void svc_logic_dt(Cpu* c) {c->f[1].ps0=double(true60::dt())/30.0;}
 void svc_logic_step(Cpu* c) {uint64_t step=g_logic_step.load(std::memory_order_relaxed);c->r[3]=uint32_t(step>>32);c->r[4]=uint32_t(step);}
+bool setting_buffer(const Loaded& mod,uint32_t address,uint32_t bytes) {
+    return address>=mod.m->mem_base&&uint64_t(address)+bytes<=uint64_t(mod.m->mem_base)+mod.region_size;
+}
+std::string setting_key(const Loaded& mod,uint32_t address) {
+    std::string key;
+    for(uint32_t i=0;i<64;++i) {
+        if(!setting_buffer(mod,address+i,1))return {};
+        char byte=char(ld8(address+i));if(!byte)return key;
+        if(byte<32||byte>126)return {};key+=byte;
+    }
+    return {};
+}
+void svc_setting_get(Cpu* c) {
+    auto& mod=owner(c);auto key=setting_key(mod,c->r[3]);
+    auto value=settings::read(key);uint32_t expected=c->r[4],destination=c->r[5],capacity=c->r[6];c->r[3]=0;
+    if(!value||value->type()!=expected)return;
+    uint32_t bytes=value->type()==settings::String?uint32_t(std::get<std::string>(value->data).size()+1):value->type()==settings::Number?8:4;
+    if(!destination&&!capacity){c->r[3]=bytes;return;}
+    if(capacity<bytes||!setting_buffer(mod,destination,bytes))return;
+    switch(value->type()) {
+        case settings::String:memcpy(mem::ptr(destination),std::get<std::string>(value->data).c_str(),bytes);break;
+        case settings::Boolean:st32(destination,std::get<bool>(value->data));break;
+        case settings::Unsigned:st32(destination,std::get<uint32_t>(value->data));break;
+        case settings::Number:stf64(destination,std::get<double>(value->data));break;
+        default:return;
+    }
+    c->r[3]=bytes;
+}
+void svc_setting_changed(Cpu* c) {
+    auto& mod=owner(c);auto value=settings::read(setting_key(mod,c->r[3]));
+    uint64_t revision=value?value->revision:0;c->r[3]=uint32_t(revision>>32);c->r[4]=uint32_t(revision);
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
+    {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
     {"wwhd_logic_dt",svc_logic_dt},{"wwhd_logic_step",svc_logic_step},
     {"memcpy", svc_memcpy},      {"memmove", svc_memcpy},       {"memset", svc_memset},
 };

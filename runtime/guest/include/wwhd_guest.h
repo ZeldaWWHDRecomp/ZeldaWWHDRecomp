@@ -104,3 +104,13 @@ unsigned long long wwhd_logic_step(void);
 void* memcpy(void* dst, const void* src, unsigned long n);
 void* memmove(void* dst, const void* src, unsigned long n);
 void* memset(void* dst, int v, unsigned long n);
+
+/* Read-only port settings v1. Stable types; unknown keys and wrong types return 0.
+ * Successful reads return bytes including the string terminator; short buffers
+ * are unchanged. A null buffer with capacity 0 queries the required byte count.
+ * Buffers and key strings must belong to this mod's code/data/heap region. */
+#define WWHD_SETTING_API_VERSION 1
+enum { WWHD_SETTING_STRING=1, WWHD_SETTING_BOOL=2, WWHD_SETTING_U32=3, WWHD_SETTING_F64=4 };
+u32 wwhd_setting_get(const char* key,u32 type,void* buffer,u32 capacity);
+/* Per-key observed revision, initially 1; 0 means absent. Compare for inequality. */
+unsigned long long wwhd_setting_changed(const char* key);
