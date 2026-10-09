@@ -632,11 +632,16 @@ void tab_graphics() {
     }
     if (m == 1) {
         bool paced;
-        if (check("Keep game speed", interp::paced_interpolation(), &paced, !getenv("WWHD_INTERP_PACED")))
+        if (check("Keep game speed (recommended)", interp::paced_interpolation(), &paced, !getenv("WWHD_INTERP_PACED")))
             post_changed([paced] { interp::set_paced_interpolation(paced); });
         help("When the computer cannot draw all frames, skip in-between frames instead of slowing the\n"
              "whole game down. The performance overlay shows how many are drawn.\n"
+             "Off: every logic step waits for all of its frames, so if the frame target is not reached\n"
+             "(e.g. 120/240 fps at a high internal resolution) the whole game runs in slow motion.\n"
              "Saved separately for 60 fps (off by default) and 120/240 fps (on by default).");
+        if (!interp::paced_interpolation())
+            note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
+                 "overlay then shows fewer than 30 logic steps/s). Turn it on to keep the game's speed.", interp::fps());
     }
     // debug only, not saved (gx2::uncapped)
     bool unc;
@@ -1630,6 +1635,14 @@ void perf_window(bool menu_open) {
     if (ImGui::Begin("##perf", nullptr, fl)) {
         ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
+        {
+            // slow motion: frame interpolation without Keep game speed below its frame target
+            static double t0 = 0; static uint64_t s0 = 0; static double rate = 30;
+            if (t0 == 0 || t - t0 < 0) { t0 = t; s0 = interp::executed_steps(); }
+            else if (t - t0 >= 2.0) { rate = (double)(interp::executed_steps() - s0) / (t - t0); t0 = t; s0 = interp::executed_steps(); }
+            if (interp::mode() == 1 && !interp::paced_interpolation() && rate > 1 && rate < 26)
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Slow motion: %.0f of 30 logic steps/s. Turn on Keep game speed", rate);
+        }
 #ifdef __ANDROID__
         static AndroidTelemetry telemetry;
         static double next_read = 0;

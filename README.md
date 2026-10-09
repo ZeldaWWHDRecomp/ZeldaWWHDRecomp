@@ -19,6 +19,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
   measurements). If you see broken or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and
   please report it.
 
+- **"Keep game speed" explained in the settings:** with it off, the whole game runs in slow motion
+  whenever the frame target isn't reached (e.g. 120/240 fps at 2x). The settings now say so, the
+  option is marked as recommended, and the performance overlay warns when the game drops below
+  30 logic steps a second because of it (issue #91).
+
 - **A log file for every run:** `captures/wwhd.log` in the game's data folder (the previous run's is
   kept as `wwhd-previous.log`), with your user paths removed as in crash logs. Attach it to bug
   reports; on Windows the game's console output was otherwise lost. `WWHD_LOG_FILE=<path>` writes it
