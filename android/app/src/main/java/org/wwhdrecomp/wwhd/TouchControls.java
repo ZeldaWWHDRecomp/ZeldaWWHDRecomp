@@ -4,7 +4,9 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.hardware.input.InputManager;
 import android.util.SparseArray;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -17,15 +19,19 @@ import java.util.List;
 // under the view button (top left) that shows or hides them (remembered). They are a virtual SDL gamepad
 // (runtime/src/platform/touch_pad.cpp), so the game reads them like a controller. Touches that land
 // on no control go on to the game as before (the GamePad picture, the view button), the way
-// SDLSurface passes them.
-public class TouchControls extends View {
-    private static native void nativeSetPad(int buttons, float lx, float ly, float rx, float ry, float lt, float rt);
+// SDLSurface passes them. While a game controller is connected they are hidden, and the next touch
+// brings them back.
+public class TouchControls extends View implements InputManager.InputDeviceListener {
+    private static native void nativeSetPad(int buttons, int face, float lx, float ly, float rx, float ry, float lt, float rt);
     private static native void nativeDetachPad();
 
     // SDL_GamepadButton numbers
-    private static final int SOUTH = 0, EAST = 1, WEST = 2, NORTH = 3, BACK = 4, START = 6,
+    private static final int BACK = 4, START = 6,
             LEFT_SHOULDER = 9, RIGHT_SHOULDER = 10, DPAD_UP = 11, DPAD_DOWN = 12, DPAD_LEFT = 13, DPAD_RIGHT = 14;
-    private static final int KIND_BUTTON = 0, KIND_STICK = 1, KIND_TRIGGER = 2, KIND_TOGGLE = 3;
+    private static final int KIND_BUTTON = 0, KIND_STICK = 1, KIND_TRIGGER = 2, KIND_TOGGLE = 3, KIND_FACE = 4;
+    // KIND_FACE codes: the Wii U button drawn on it (touch_face.h sends the pad button the controls
+    // mapping binds to it, so the drawn A is the Wii U's A with either face-button preset)
+    private static final int FACE_A = 0, FACE_B = 1, FACE_X = 2, FACE_Y = 3;
 
     private static final class Control {
         final int kind, code;  // code: button number, stick 0/1, trigger 0/1
@@ -45,7 +51,10 @@ public class TouchControls extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), edge = new Paint(Paint.ANTI_ALIAS_FLAG),
             text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final SharedPreferences prefs;
-    private boolean shown;
+    private final InputManager inputs;
+    private boolean shown;      // the player's choice (the show/hide button), remembered
+    private boolean controller; // a game controller is connected and no touch came since
+    private boolean toggleTo;   // what the show/hide button sets when released (shown before the touch: hide)
     private int lastButtons = -1;
     private float lastLx, lastLy, lastRx, lastRy, lastLt, lastRt;
 
@@ -53,16 +62,20 @@ public class TouchControls extends View {
         super(context);
         prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         shown = prefs.getBoolean("touch_controls", true);
+        inputs = (InputManager) context.getSystemService(Context.INPUT_SERVICE);
+        if (inputs != null) {
+            inputs.registerInputDeviceListener(this, null);
+            for (int id : inputs.getInputDeviceIds()) controller |= isController(InputDevice.getDevice(id));
+        }
         // the top left corner has the game's view button and the show/hide button: nothing else there
         controls.add(new Control(KIND_STICK, 0, "", 0.14f, 0.70f, 0.13f));
         controls.add(new Control(KIND_STICK, 1, "", 0.68f, 0.80f, 0.11f));
-        // A B X Y as on a Wii U GamePad. Controllers map by position (input_map.cpp: the bottom face
-        // button is the Wii U's B), so each one sends the button of the place it is drawn at
+        // A B X Y where a Wii U GamePad has them
         final float ax = 0.86f, ay = 0.60f, d = 0.10f;
-        controls.add(new Control(KIND_BUTTON, EAST, "A", ax + d * 0.75f, ay, 0.055f));
-        controls.add(new Control(KIND_BUTTON, SOUTH, "B", ax, ay + d, 0.055f));
-        controls.add(new Control(KIND_BUTTON, NORTH, "X", ax, ay - d, 0.055f));
-        controls.add(new Control(KIND_BUTTON, WEST, "Y", ax - d * 0.75f, ay, 0.055f));
+        controls.add(new Control(KIND_FACE, FACE_A, "A", ax + d * 0.75f, ay, 0.055f));
+        controls.add(new Control(KIND_FACE, FACE_B, "B", ax, ay + d, 0.055f));
+        controls.add(new Control(KIND_FACE, FACE_X, "X", ax, ay - d, 0.055f));
+        controls.add(new Control(KIND_FACE, FACE_Y, "Y", ax - d * 0.75f, ay, 0.055f));
         final float px = 0.14f, py = 0.36f, e = 0.075f;
         controls.add(new Control(KIND_BUTTON, DPAD_UP, "▲", px, py - e, 0.04f));
         controls.add(new Control(KIND_BUTTON, DPAD_DOWN, "▼", px, py + e, 0.04f));
@@ -98,12 +111,12 @@ public class TouchControls extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (shown) for (Control c : controls) drawControl(canvas, c);
+        if (active()) for (Control c : controls) drawControl(canvas, c);
         drawControl(canvas, toggle);
     }
 
     private void drawControl(Canvas canvas, Control c) {
-        final boolean on = c.pressed || (c.kind == KIND_TOGGLE && shown);
+        final boolean on = c.pressed || (c.kind == KIND_TOGGLE && active());
         fill.setColor(on ? 0x90FFFFFF : 0x38FFFFFF);
         edge.setColor(0x80FFFFFF);
         canvas.drawCircle(c.cx, c.cy, c.r, fill);
@@ -120,7 +133,7 @@ public class TouchControls extends View {
 
     private Control hit(float x, float y) {
         if (near(toggle, x, y, 1.3f)) return toggle;
-        if (!shown) return null;
+        if (!active()) return null;
         Control best = null;
         float bestD = Float.MAX_VALUE;
         for (Control c : controls) {
@@ -148,6 +161,8 @@ public class TouchControls extends View {
         if (action == MotionEvent.ACTION_DOWN && event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER)
             return false;  // mouse and stylus: SDLSurface underneath as before
         final int index = event.getActionIndex();
+        final boolean wasActive = active();
+        if (action == MotionEvent.ACTION_DOWN && controller) { controller = false; lastButtons = -1; }  // back
         switch (action) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
@@ -159,6 +174,7 @@ public class TouchControls extends View {
                     forward(event, index, action);
                 } else if (c == toggle) {
                     c.pressed = true;
+                    toggleTo = !wasActive;  // hidden for a controller: the button brings them back
                 } else {
                     c.pressed = true;
                     if (c.kind == KIND_STICK) moveStick(c, x, y);
@@ -187,7 +203,7 @@ public class TouchControls extends View {
                     if (c == null) { forward(event, i, all ? MotionEvent.ACTION_CANCEL : action); continue; }
                     c.pressed = false;
                     if (c.kind == KIND_STICK) { c.sx = 0; c.sy = 0; }
-                    if (c == toggle && !all) setShown(!shown);
+                    if (c == toggle && !all) setShown(toggleTo);
                 }
                 break;
             }
@@ -213,23 +229,52 @@ public class TouchControls extends View {
         prefs.edit().putBoolean("touch_controls", on).apply();
         for (Control c : controls) { c.pressed = false; c.sx = 0; c.sy = 0; }
         for (int i = owner.size() - 1; i >= 0; i--) if (owner.valueAt(i) != null && owner.valueAt(i) != toggle) owner.removeAt(i);
+        controller = false;
         if (!on) { nativeDetachPad(); lastButtons = -1; }
     }
 
+    // shown, and not hidden for a connected controller
+    private boolean active() { return shown && !controller; }
+
+    private static boolean isController(InputDevice d) {
+        if (d == null || d.isVirtual()) return false;
+        final int s = d.getSources();
+        return (s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+                || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+
+    @Override public void onInputDeviceAdded(int id) {
+        if (controller || !isController(InputDevice.getDevice(id))) return;
+        controller = true;
+        for (Control c : controls) { c.pressed = false; c.sx = 0; c.sy = 0; }
+        for (int i = owner.size() - 1; i >= 0; i--) if (owner.valueAt(i) != null && owner.valueAt(i) != toggle) owner.removeAt(i);
+        if (shown) { nativeDetachPad(); lastButtons = -1; }
+        invalidate();
+    }
+    @Override public void onInputDeviceRemoved(int id) {
+        if (!controller || inputs == null) return;
+        boolean any = false;
+        for (int other : inputs.getInputDeviceIds()) any |= other != id && isController(InputDevice.getDevice(other));
+        if (!any) { controller = false; invalidate(); }
+    }
+    @Override public void onInputDeviceChanged(int id) {}
+
     private void update() {
-        if (!shown) return;
-        int buttons = 0;
+        if (!active()) return;
+        int buttons = 0, face = 0;
         float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         for (Control c : controls) {
             if (c.kind == KIND_BUTTON && c.pressed) buttons |= 1 << c.code;
+            else if (c.kind == KIND_FACE && c.pressed) face |= 1 << c.code;
             else if (c.kind == KIND_TRIGGER && c.pressed) { if (c.code == 0) lt = 1; else rt = 1; }
             else if (c.kind == KIND_STICK) { if (c.code == 0) { lx = c.sx; ly = c.sy; } else { rx = c.sx; ry = c.sy; } }
         }
+        buttons |= face << 16;  // (only for the change check below)
         if (buttons == lastButtons && lx == lastLx && ly == lastLy && rx == lastRx && ry == lastRy && lt == lastLt && rt == lastRt)
             return;
         lastButtons = buttons; lastLx = lx; lastLy = ly; lastRx = rx; lastRy = ry; lastLt = lt; lastRt = rt;
         try {
-            nativeSetPad(buttons, lx, ly, rx, ry, lt, rt);
+            nativeSetPad(buttons & 0xFFFF, face, lx, ly, rx, ry, lt, rt);
         } catch (UnsatisfiedLinkError e) {
             // libmain.so not loaded yet (very first touch): the next change sends it
             lastButtons = -1;

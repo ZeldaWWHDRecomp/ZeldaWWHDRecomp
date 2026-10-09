@@ -6,6 +6,7 @@
 #include <jni.h>
 #include <mutex>
 #include "../runtime.h"
+#include "touch_face.h"
 
 namespace {
 std::mutex g_mu;
@@ -30,9 +31,11 @@ bool attach() {
 }
 }  // namespace
 
-// buttons: bit n is SDL_GamepadButton n; sticks -1..1 (y down), triggers 0..1
+// buttons: bit n is SDL_GamepadButton n, except the face buttons; face: bit 0..3 = the drawn A, B,
+// X, Y (touch_face.h presses the pad buttons the mapping binds to them); sticks -1..1 (y down),
+// triggers 0..1
 extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeSetPad(
-    JNIEnv*, jclass, jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat lt, jfloat rt) {
+    JNIEnv*, jclass, jint buttons, jint face, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat lt, jfloat rt) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!attach()) return;
     auto axis = [](float v) { return (Sint16)SDL_clamp(v * 32767.0f, -32768.0f, 32767.0f); };
@@ -42,8 +45,9 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeS
     SDL_SetJoystickVirtualAxis(g_pad, SDL_GAMEPAD_AXIS_RIGHTY, axis(ry));
     SDL_SetJoystickVirtualAxis(g_pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, axis(lt));
     SDL_SetJoystickVirtualAxis(g_pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, axis(rt));
+    const uint32_t pressed = uint32_t(buttons) | touch_face::buttons(uint32_t(face), input_map::current());
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT && b < 31; b++)
-        SDL_SetJoystickVirtualButton(g_pad, b, (buttons >> b) & 1);
+        SDL_SetJoystickVirtualButton(g_pad, b, (pressed >> b) & 1);
 }
 
 // the controls were hidden: the gamepad goes away (a physical controller is the only one again)
