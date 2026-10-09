@@ -6,6 +6,7 @@ has its own offset assertion; no host wrapper implementation is copied.
 import re
 
 CURATED = {
+    'animation': ('include/m_Do/m_Do_ext.h', ['J3DFrameCtrl', 'mDoExt_McaMorf']),
     'ptmf': ('include/d/actor/d_a_npc_ba1.h', ['ProcFunc_l']),
     'valoo': ('d/actor/d_a_dr.cpp', ['dr_class']),
     'medli': ('include/d/actor/d_a_npc_md.h', ['daNpc_Md_c']),
@@ -16,7 +17,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
-AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8}
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 
@@ -67,8 +68,15 @@ def layout(text, name, selected=None):
             raise ValueError("public selected fields changed: " + name)
     fields.sort()
     for offset, kind, field, array in fields:
-        if kind in AGGREGATES and (array or offset + AGGREGATES[kind] > int(size[1], 0)):
-            raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
+        if kind in AGGREGATES:
+            count = 1
+            if array:
+                match = re.fullmatch(r'\[(0x[0-9A-Fa-f]+|[0-9]+)\]', array)
+                if not match:
+                    raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
+                count = int(match[1], 0)
+            if count < 1 or offset + AGGREGATES[kind] * count > int(size[1], 0):
+                raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
     lines = [f'typedef union {name} {{', f'    u8 bytes[{size[1]}];']
     for offset, kind, field, array in fields:
         pad = f'u8 _pad_{field}[0x{offset:X}]; ' if offset else ''
@@ -119,7 +127,9 @@ def generate(root, output, revision):
                  'WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");', '']
         if subsystem != 'ptmf':
             lines.append('#include "ptmf.h"')
+        if subsystem in ('link',):
+            lines.append('#include "animation.h"')
         for name in names:
-            selected = {'daNpc_Md_c': {'mpMorf'}, 'dr_class': {'mpMorf', 'mMode', 'mCurrBckIdx'}}.get(name)
+            selected = {'mDoExt_McaMorf': {'mpModel', 'mFrameCtrl'}, 'daNpc_Md_c': {'mpMorf'}, 'dr_class': {'mpMorf', 'mMode', 'mCurrBckIdx'}}.get(name)
             lines.append(layout(text, name, selected))
         (output / (subsystem + '.h')).write_text('\n'.join(lines))

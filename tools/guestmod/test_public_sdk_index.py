@@ -5,6 +5,7 @@ from public_sdk_layouts import layout, vectors
 from public_sdk_bindings import bindings, guest_type
 from public_sdk_data import declarations, play_declarations
 from public_sdk_semantics import semantic_declarations
+from public_sdk_object_facts import unique_number, function_body
 
 
 class PublicDeclarations(unittest.TestCase):
@@ -121,6 +122,35 @@ class PublicDeclarations(unittest.TestCase):
             generate(chime_source=chime.replace('0x3B4);', '0x3B8);'))
         with self.assertRaisesRegex(ValueError, 'public chime'):
             generate(chime_source=chime + chime)
+
+    def test_public_object_facts_reject_ambiguity_and_wrong_scope(self):
+        pattern = r'field = (0x[0-9A-Fa-f]+);'
+        self.assertEqual(unique_number('field = 0x144;', pattern, 'points'), '0x144')
+        for source in ('', 'field = 0x144; field = 0x148;'):
+            with self.assertRaisesRegex(ValueError, 'public object fact'):
+                unique_number(source, pattern, 'points')
+        source = ('void first() { if (active) { field = 0x144; } /* } */ }'
+                  'void second() { field = 0x148; }')
+        self.assertEqual(unique_number(function_body(source, 'first'), pattern, 'points'), '0x144')
+        with self.assertRaisesRegex(ValueError, 'public object fact'):
+            unique_number(function_body('void first() {} void second() { field = 0x148; }', 'first'), pattern, 'points')
+        with self.assertRaisesRegex(ValueError, 'unclosed public function'):
+            function_body('void first() {', 'first')
+
+    def test_animation_aggregate_extent_and_unknown_fields(self):
+        source = ('struct Animation { /* 0x90 */ gptr<Model> mpModel;'
+                  '/* 0x98 */ J3DFrameCtrl mFrameCtrl; /* 0xA8 */ Unknown opaque; };'
+                  'WWHD_SIZE(Animation, 0xC8);')
+        output = layout(source, 'Animation', {'mpModel', 'mFrameCtrl'})
+        self.assertIn('J3DFrameCtrl mFrameCtrl', output)
+        self.assertNotIn('opaque', output)
+        array_source = source.replace('J3DFrameCtrl mFrameCtrl;', 'J3DFrameCtrl mFrameCtrl[2];')
+        self.assertIn('mFrameCtrl[2]', layout(array_source, 'Animation', {'mpModel', 'mFrameCtrl'}))
+        for expression in ('[0]', '[4]', '[1 + 1]'):
+            with self.assertRaisesRegex(ValueError, 'aggregate extent'):
+                layout(array_source.replace('[2]', expression), 'Animation', {'mpModel', 'mFrameCtrl'})
+        with self.assertRaisesRegex(ValueError, 'aggregate extent'):
+            layout(source.replace('0xC8', '0xA0'), 'Animation', {'mpModel', 'mFrameCtrl'})
 
     def test_unsupported_signature_is_reported(self):
         index = {'revision': 'public', 'functions': [

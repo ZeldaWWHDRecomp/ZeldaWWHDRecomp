@@ -15,6 +15,7 @@
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
 #include "ptmf.h"
+#include "animation.h"
 typedef union daPy_actorKeep_l {
     u8 bytes[8];
     struct __attribute__((packed)) { u32 mID; };
@@ -64,6 +65,8 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_mAnmRatioUpper[0x5818]; u8 mAnmRatioUpper[0x30]; };
     struct __attribute__((packed)) { u8 _pad_m_anm_heap_under[0x5848]; u8 m_anm_heap_under[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m_anm_heap_upper[0x5868]; u8 m_anm_heap_upper[0x30]; };
+    struct __attribute__((packed)) { u8 _pad_mFrameCtrlUnder[0x5898]; J3DFrameCtrl mFrameCtrlUnder[2]; };
+    struct __attribute__((packed)) { u8 _pad_mFrameCtrlUpper[0x58B8]; J3DFrameCtrl mFrameCtrlUpper[3]; };
     struct __attribute__((packed)) { u8 _pad_mSightPacket[0x58E8]; u8 mSightPacket[0xC08]; };
     struct __attribute__((packed)) { u8 _pad_mJAIZelAnime[0x64F0]; u8 mJAIZelAnime[0x98]; };
     struct __attribute__((packed)) { u8 _pad_m_sanm_buffer[0x6588]; u32 m_sanm_buffer; };
@@ -331,6 +334,8 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mAnmRatioUnder) == 0x57F8, "daPy_l
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mAnmRatioUpper) == 0x5818, "daPy_lk_c.mAnmRatioUpper");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_anm_heap_under) == 0x5848, "daPy_lk_c.m_anm_heap_under");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_anm_heap_upper) == 0x5868, "daPy_lk_c.m_anm_heap_upper");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFrameCtrlUnder) == 0x5898, "daPy_lk_c.mFrameCtrlUnder");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFrameCtrlUpper) == 0x58B8, "daPy_lk_c.mFrameCtrlUpper");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSightPacket) == 0x58E8, "daPy_lk_c.mSightPacket");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mJAIZelAnime) == 0x64F0, "daPy_lk_c.mJAIZelAnime");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_sanm_buffer) == 0x6588, "daPy_lk_c.m_sanm_buffer");
