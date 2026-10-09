@@ -12,6 +12,11 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Fixed: mini-game countdowns ran too fast at 60, 120 and 240 fps** (issue #105). The letter
+  sorting on Dragon Roost could not be won at 60 fps or more; its 30-second limit ran out in 15 (at
+  120 fps in about 8). The game's shared countdown (also used by the Windfall auction, the boat race and
+  the timed challenges) now counts game steps, not displayed frames, and its display stays smooth.
+  30 fps is unchanged.
 - **The log file is now off by default.** Turn it on in Settings (F1) > Graphics > Bug reports >
   **Write a log file**; from the next start the game writes `captures/wwhd.log` in its data folder
   (the previous run's is kept as `wwhd-previous.log`), with your user paths removed as in crash logs.

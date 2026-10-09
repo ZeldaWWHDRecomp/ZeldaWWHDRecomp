@@ -635,6 +635,19 @@ Limits: timers updated through other patterns (`if (t) t--` through a temporary 
 through the cLib_calcTimer template with the address in a non-argument register) are missed.
 Free functions on `xxx_class*` count as that class.
 
+### The shared mini-game timer (issue #105)
+
+The shared TIMER process (letter sorting on Dragon Roost, the Windfall auction, the boat race, the
+volcano and Orca training challenges) installs `025C5A8C` (`dTimer_c::_execute`, EU `025C5A4C`) in its
+**draw** method slot (`101EE73C + 0x10`), so it runs through `fpcLf_Draw`, not the execute queue.
+Interpolation and true 60 hold actor execution on in-between frames but still draw, so the countdown
+at `this + 0x10C` ran 2× fast at 60 fps and 4× at 120. `runtime/src/countdown.cpp` runs the callback
+on full game steps only and refreshes its text between steps (through the HD UI hook `02715310`) so the
+display stays smooth. Actor-local countdowns (`OBJ_TIMER` at `023A232C`, the flight challenge) already
+run in execute and were correct. `runtime/tools/countdown_scenario.py` checks timer ticks per game step
+in all frame modes (it needs a local checkpoint in a running mini-game; `--check-trace` checks a trace
+written with `WWHD_COUNTDOWN_TRACE`).
+
 ## Structure layouts (GameCube → WWHD)
 
 `tools/decomp/layout.py` aligns the loads/stores through `this` (or the first argument) of every

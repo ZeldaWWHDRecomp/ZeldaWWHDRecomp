@@ -1,4 +1,5 @@
 #include "interp.h"
+#include "countdown.h"
 #include "mods/guest_mods.h"
 #include "mods/packages.h"
 // Frame interpolation (60, 120 or 240 fps output, game logic unchanged at 30 steps per second).
@@ -39,6 +40,8 @@
 #include "runtime.h"
 #include "savestate.h"
 #include "true60.h"
+#include "gx2/gx2.h"
+#include "gfx/renderer.h"
 
 
 extern "C" {
@@ -630,6 +633,7 @@ void fx_hold_blend(float t);   // interp_fx.cpp: blended hold pass: logic-time e
 void fx_ss_reset();
 // a save state was loaded: nothing may blend across the jump
 void ss_reset() {
+    countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_last_step = 0;
     g_models.clear();
@@ -853,6 +857,38 @@ std::string pass_cpu_report() {
 
 extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
+    // Opt-in countdown trace: scalar timing measurements only, no save or asset data.
+    struct CountdownTrace {
+        bool hold;
+        ~CountdownTrace() {
+            static FILE* out = getenv("WWHD_COUNTDOWN_TRACE") ? fopen(getenv("WWHD_COUNTDOWN_TRACE"), "w") : nullptr;
+            if (!out) return;
+            const uint32_t timer = ld32(GD(0x1046F0B0) + 0x5CF0);
+            if (timer < mem::kMem2Start || timer >= mem::kMem2End - 0x136) return;
+            static bool paced = false;
+            if (!paced && getenv("WWHD_COUNTDOWN_REALTIME")) {
+                gx2::set_uncapped(false);
+                paced = true;
+            }
+            const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            fprintf(out, "%llu %llu %d %.6f %u %u %u %u\n", (unsigned long long)g_passes,
+                    (unsigned long long)g_logic_steps, int(hold), wall, ld32(timer + 0x114),
+                    unsigned(ld8(timer + 0x124)), unsigned(ld8(timer + 0x122)), ld32(timer + 0x10C));
+            fflush(out);
+            static bool captured = false;
+            if (!captured && !g_hold_next) {
+                const char* capture = getenv("WWHD_COUNTDOWN_CAPTURE");
+                unsigned frames = 0; int n = 0;
+                if (capture && sscanf(capture, "%u:%n", &frames, &n) == 1 && n && capture[n] &&
+                    ld32(timer + 0x10C) == frames) {
+                    // Tests can align the capture with the painter's delayed draw lists.
+                    const char* ahead = getenv("WWHD_COUNTDOWN_CAPTURE_AHEAD");
+                    render::request_tv_dump(capture + n, ahead ? std::clamp(atoi(ahead), 1, 16) : 1);
+                    captured = true;
+                }
+            }
+        }
+    } countdown_trace{enabled() && g_hold_next};
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
@@ -1085,7 +1121,10 @@ extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // #64, #74; #73, no control after an item-get message, looks like the same). Once per logic step, as
 // at 30 fps (true 60 too: these screens are 30 Hz logic).
 extern "C" void f_02715310_orig(Cpu* c);
-extern "C" void hook_02715310(Cpu* c) { if (!skip(64)) f_02715310_orig(c); }
+extern "C" void hook_02715310(Cpu* c) {
+    if (!skip(64)) f_02715310_orig(c);
+    else countdown::refresh(c);
+}
 
 namespace interp {
 // The pads are read at the end of every frame. JUTGamePad derives "pressed this frame" from
