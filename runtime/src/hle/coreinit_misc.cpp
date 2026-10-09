@@ -5,6 +5,7 @@
 #include "../game_languages.h"
 #include "../console_language.h"
 #include <cstdlib>
+#include <cstring>
 #include "../true60.h"
 #include <filesystem>
 #include <ctime>
@@ -208,6 +209,25 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
     FILE* f = tmpfile();
     if (!f) return;
     fprintf(f, "halt at %s:%u: %s\n", file.c_str(), line, msg.c_str());
+    // The game's own halt (sead) passes OSPanic only its own place; the failed check's file, line and
+    // message are still in the callers' saved arguments on the guest stack. List every readable text
+    // the stack points to in the executable's data (idea from GreenNaugahyde's Android fork).
+    {
+        std::string found;
+        for (uint32_t o = 0; o < 0x260 && found.size() < 1200; o += 4) {
+            const uint32_t p = ld32(c->r[1] + o);
+            if (p < 0x10000000 || p >= 0x10800000) continue;
+            const char* t = (const char*)mem::ptr(p);
+            const size_t len = strnlen(t, 160);
+            if (len < 4 || len >= 160) continue;
+            bool text = true;
+            for (size_t i = 0; i < len && text; i++) text = t[i] >= 0x20 && t[i] < 0x7F;
+            if (!text) continue;
+            const std::string str(t, len);
+            if (found.find("\"" + str + "\"") == std::string::npos) found += "    \"" + str + "\"\n";
+        }
+        if (!found.empty()) fprintf(f, "texts on the game stack (the failed check's place and message):\n%s", found.c_str());
+    }
     fprintf(f, "60 fps pass: %s; true 60 %s, half pass %d, executing process %08X", interp::phase_name(),
             true60::enabled() ? "on" : "off", (int)true60::half_pass(), true60::exec_proc());
     if (uint32_t p = true60::exec_proc()) fprintf(f, " (words %08X %08X %08X %08X)", ld32(p), ld32(p + 4), ld32(p + 8), ld32(p + 12));

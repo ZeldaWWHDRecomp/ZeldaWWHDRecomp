@@ -35,6 +35,31 @@ namespace crash_addr {
 #define CRASH_ADDR_FMT "0x%llx"
 #endif
 
+static const uintptr_t* g_game_host = nullptr;
+static const uint32_t* g_game_guest = nullptr;
+static size_t g_game_count = 0;
+
+void set_game_functions(const uintptr_t* host, const uint32_t* guest, size_t n) {
+    g_game_host = host;
+    g_game_guest = guest;
+    g_game_count = n;
+}
+
+// " [game function 0200EDC8+0x1c]" for an address in game code; binary search, no heap (crash handler)
+static int game_function(char* buf, size_t cap, uintptr_t addr) {
+    const size_t n = g_game_count;
+    if (!n || addr < g_game_host[0] || (addr > g_game_host[n - 1] && addr - g_game_host[n - 1] > 0x40000)) return 0;
+    size_t lo = 0, hi = n;  // the last entry <= addr
+    while (hi - lo > 1) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (g_game_host[mid] <= addr) lo = mid; else hi = mid;
+    }
+    // game functions are rarely larger than 256 KiB: farther away it is not game code
+    if (addr - g_game_host[lo] > 0x40000) return 0;
+    return fit(snprintf(buf, cap, " [game function %08X+0x%llx]", g_game_guest[lo],
+                        (unsigned long long)(addr - g_game_host[lo])), cap);
+}
+
 static const char* base_name(const char* p) {
     const char* b = p;
     for (const char* s = p; *s; s++)
@@ -72,6 +97,7 @@ int describe(char* buf, size_t cap, uintptr_t addr, char* path, size_t path_cap)
         n += fit(snprintf(buf + n, cap - n, " [%s+0x%llx]", di.dli_sname,
                             (unsigned long long)(addr - (uintptr_t)di.dli_saddr)), cap - n);
 #endif
+    if ((size_t)n < cap - 1) n += game_function(buf + n, cap - n, addr);
     if (path && path_cap) snprintf(path, path_cap, "%s", full);
     return n;
 }

@@ -23,6 +23,9 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
+#include <algorithm>
 
 #include "gfx/renderer.h"
 #include "overlay/hostui.h"
@@ -284,6 +287,20 @@ static void log_file_sink(const char* s, size_t n) {
         log_file_raw(g_log_fd, note, sizeof note - 1);
     }
 }
+// Crash backtraces name the game function of an address in game code (crash_addr.h): the compiled
+// functions' host entries, sorted, with their game addresses. Built once; never freed.
+static void index_game_functions() {
+    std::vector<std::pair<uintptr_t, uint32_t>> v;
+    v.reserve(g_recomp_func_count);
+    for (unsigned i = 0; i < g_recomp_func_count; i++)
+        if (g_recomp_funcs[i].fn) v.push_back({(uintptr_t)g_recomp_funcs[i].fn, g_recomp_funcs[i].addr});
+    std::sort(v.begin(), v.end());
+    auto* host = new uintptr_t[v.size()];
+    auto* guest = new uint32_t[v.size()];
+    for (size_t i = 0; i < v.size(); i++) host[i] = v[i].first, guest[i] = v[i].second;
+    crash_addr::set_game_functions(host, guest, v.size());
+}
+
 // Off unless the player turns on Settings > Graphics > "Write a log file" (saved as logFile=1),
 // or WWHD_LOG_FILE is set: 1 = the default file, a path = that file, 0 = off.
 static void start_log_file() {
@@ -362,6 +379,7 @@ int main(int argc, char** argv) {
 #endif
     }
     crash_context::initialize();
+    index_game_functions();
     install_crash_handler();
     start_log_file();
     // which build on which system: also in crash logs (their last log lines)
