@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New Gameplay mod: fast forward cutscenes and dialogue** (off by default; Settings → Gameplay).
+  Hold ZR during a cutscene or a conversation and the game runs 2×, 3× or 4× faster (your choice; the
+  button can be changed). Nothing is skipped: the game plays every frame, only faster, so the story
+  and events end exactly as without it. Questions still wait for your answer, holding the button in
+  normal play does nothing, and letting go returns to your frame rate setting. Sound is muted while
+  fast-forwarding (it would play sped up); that can be turned off. Idea and clock from
+  GreenNaugahyde's Android fork.
 - **Performance overlay: GPU, driver and per-thread timing.** Settings → Graphics → Performance
   overlay now also shows the GPU and its driver, the CPU time of the game and render threads and the
   GPU time per frame (each with its average), so you can see at a glance whether the CPU or the GPU
