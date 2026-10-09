@@ -10,6 +10,8 @@
 #include "input_map.h"
 #include "rumble.h"
 #include "platform/input_sdl.h"
+static int audioResets=0;
+namespace audio {void flush(){++audioResets;}}
 static int savedSlot=0, loadedSlot=0, saveRequests=0, loadRequests=0;
 namespace ss { void request_save(int slot){savedSlot=slot;++saveRequests;} void request_load(int slot){loadedSlot=slot;++loadRequests;} }
 static int graphicsRequests=0; static char graphicsKey=0;
@@ -47,6 +49,10 @@ static void set_env(const char* name,const char* value){
 int main(){
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
  assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));
+ SDL_Event device{};device.type=SDL_EVENT_AUDIO_DEVICE_REMOVED;device.adevice.recording=false;
+ input::handle_event(device);assert(audioResets==1);
+ device.adevice.recording=true;input::handle_event(device);assert(audioResets==1);
+ device.adevice.recording=false;device.type=SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED;input::handle_event(device);assert(audioResets==2);
  input::init();input_map::set_current(input_map::Mapping::defaults(),false);
  auto key=[](SDL_Scancode code,bool down){SDL_Event e{};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.scancode=code;input::handle_event(e);};
  key(SDL_SCANCODE_K,true);assert(input::read().buttons&input::kA);
