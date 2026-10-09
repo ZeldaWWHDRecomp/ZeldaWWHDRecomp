@@ -448,14 +448,15 @@ static void create_windows() {
         screen_named(g_settings[@"drcScreen"]) && screen_named(g_settings[@"drcScreen"]) != tv.screen)
         dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(g_drc_window)) [g_drc_window toggleFullScreen:nil]; });
 
-    // full screen: hide the pointer after 2 s without movement (not while the mouse camera holds it)
+    // hide the pointer after 2 s without movement while the game window is active, in a window too
+    // (issue #109); not while the settings overlay is open or the mouse camera holds it
     [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer*) {
         static NSPoint last = {-1, -1};
         static double moved = 0;
         static bool hidden = false;
         NSPoint p = [NSEvent mouseLocation];
         if (!NSEqualPoints(p, last)) { last = p; moved = display_now(); hidden = false; }
-        if (!hidden && is_fullscreen(g_tv_window) && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() &&
+        if (!hidden && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() && !overlay::is_open() &&
             display_now() - moved > 2.0) {
             [NSCursor setHiddenUntilMouseMoves:YES];
             hidden = true;

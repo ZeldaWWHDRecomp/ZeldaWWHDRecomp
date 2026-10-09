@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **The mouse pointer now hides when you don't use the mouse** (issue #109). After 2 seconds without
+  mouse movement it disappears from the game window, in full screen and in a window, on Windows,
+  Linux and macOS; moving the mouse shows it again. It stays visible while the settings overlay is open.
 - **Fixed: the aspect ratio wasn't remembered** (issue #108). The choice in Settings → Graphics →
   Aspect ratio (or the macOS menu) now stays after a restart, like the other graphics options.
   `WWHD_ASPECT` still overrides it.

@@ -2630,9 +2630,20 @@ void run_main_loop() {
   // Deterministic shutdown hook for cache durability tests.
   const char* exitAt=getenv("WWHD_EXIT_AT_FRAME");
   const uint64_t exitFrame=exitAt ? std::strtoull(exitAt,nullptr,10) : 0;
+  // Issue #109: the mouse pointer hides after 2 s without mouse use while the game window has focus
+  // (not while the settings overlay is open, which needs it; the mouse camera captures it itself).
+  auto mouseUsed = std::chrono::steady_clock::now();
+  bool pointerHidden = false;
   for (;;) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+      if ((event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which != SDL_TOUCH_MOUSEID) ||
+          ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+           event.button.which != SDL_TOUCH_MOUSEID) ||
+          event.type == SDL_EVENT_MOUSE_WHEEL) {
+        mouseUsed = std::chrono::steady_clock::now();
+        if (pointerHidden) { SDL_ShowCursor(); pointerHidden = false; }
+      }
       if (event.type == SDL_EVENT_QUIT) quit_game();
       if (close_request(event)) continue;
       if (fullscreen_key(event)) continue;
@@ -2657,6 +2668,17 @@ void run_main_loop() {
         }
     }
     input::update();
+#ifndef __ANDROID__
+    {
+      const bool focused = R.tv.window && (SDL_GetWindowFlags(R.tv.window) & SDL_WINDOW_INPUT_FOCUS);
+      const bool keep = !focused || overlay::is_open() || mods::mouse_captured();
+      if (pointerHidden && keep) { SDL_ShowCursor(); pointerHidden = false; mouseUsed = std::chrono::steady_clock::now(); }
+      else if (!pointerHidden && !keep && std::chrono::steady_clock::now() - mouseUsed > std::chrono::seconds(2)) {
+        SDL_HideCursor();
+        pointerHidden = true;
+      }
+    }
+#endif
     ::hostui::run_posted();  // option changes from the settings overlay (render thread)
     test_drc_key();
     test_fullscreen_key();
