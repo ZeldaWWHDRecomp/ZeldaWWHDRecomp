@@ -211,7 +211,7 @@ if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING, layout, sizeof la
 }
 ```
 
-## Drawing on screen (HUD API v1)
+## Drawing on screen (HUD API v2)
 
 Register one draw callback with `wwhd_hud_register(draw, screen)` from a game hook (a null
 callback unregisters it). The port calls `draw(list)` after each logic step; record elements
@@ -251,6 +251,24 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
 - **Limits:** per list 1024 elements and 64 KiB of text; per mod 32 images and 16 MiB of
   decoded pixels. An invalid element (bad UTF-8, bad handle, non-finite numbers, over the
   limits) drops the whole list, with a message in the Mods tab.
+
+HUD v2 adds bounded clip rectangles without changing the 72-byte element layout.
+Record `WWHD_HUD_CLIP_PUSH` and `WWHD_HUD_CLIP_POP` with
+`wwhd_hud_clip(list, &element)`, using the normal element initialization above.
+Push uses `x/y/w/h` and `anchor`; its screen-aligned rectangle intersects the
+current parent clip and screen. Geometry, image rotation and UVs remain unchanged.
+Pop restores the parent. Up to 16 nested clips are allowed; underflow, overflow or
+an unbalanced callback drops the entire list. Clips belong to one recording list
+and cannot affect another mod. Send ordinary drawing elements through
+`wwhd_hud_emit`; that service rejects clip commands.
+
+`WWHD_HUD_API_VERSION` is 2; the guest module ABI and manifest `guest.api_version`
+remain 1. Importing `wwhd_hud_clip` is the runtime capability check: older hosts
+lack that service and refuse the module during loading. Existing HUD v1 mods
+continue to load without it. Do not emulate clipping by moving or shrinking the
+image, since that changes registration at a map boundary.
+
+
 
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated

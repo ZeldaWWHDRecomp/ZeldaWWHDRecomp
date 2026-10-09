@@ -200,11 +200,14 @@ void svc_hud_texture(Cpu* c) {
 }
 void svc_hud_release(Cpu* c) {c->r[3]=hud::store().release(owner(c).id,c->r[3]);}
 void svc_hud_epoch(Cpu* c) {auto epoch=hud::store().state_generation();c->r[3]=uint32_t(epoch>>32);c->r[4]=uint32_t(epoch);}
-void svc_hud_emit(Cpu* c) {
+void svc_hud_record(Cpu* c,bool clip_only) {
     auto& mod=owner(c);uint32_t list=c->r[3],a=c->r[4];c->r[3]=0;
     if(!setting_buffer(mod,a,72)){hud::store().fail(mod.id,list,"HUD draw list dropped: invalid element buffer");return;}
     hud::Command command;
-    command.kind=hud::Command::Kind(ld32(a));command.anchor=hud::Anchor(ld32(a+4));command.blend=hud::Blend(ld32(a+8));
+    command.kind=hud::Command::Kind(ld32(a));
+    bool clip=command.kind==hud::Command::ClipPush||command.kind==hud::Command::ClipPop;
+    if(clip!=clip_only){hud::store().fail(mod.id,list,"HUD draw list dropped: wrong recording service");return;}
+    command.anchor=hud::Anchor(ld32(a+4));command.blend=hud::Blend(ld32(a+8));
     command.x=ldf32(a+12);command.y=ldf32(a+16);command.w=ldf32(a+20);command.h=ldf32(a+24);
     command.size=ldf32(a+28);command.thickness=ldf32(a+32);command.rotation=ldf32(a+36);
     command.u0=ldf32(a+40);command.v0=ldf32(a+44);command.u1=ldf32(a+48);command.v1=ldf32(a+52);
@@ -216,6 +219,8 @@ void svc_hud_emit(Cpu* c) {
     c->r[3]=command.kind==hud::Command::Picture?hud::store().picture(mod.id,list,image,std::move(command)):
               hud::store().append(mod.id,list,std::move(command));
 }
+void svc_hud_emit(Cpu* c) {svc_hud_record(c,false);}
+void svc_hud_clip(Cpu* c) {svc_hud_record(c,true);}
 const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
@@ -223,7 +228,7 @@ const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
     {"wwhd_hud_register",svc_hud_register},{"wwhd_hud_texture",svc_hud_texture},
-    {"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
+    {"wwhd_hud_clip",svc_hud_clip},{"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
     {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
     {"wwhd_logic_dt",svc_logic_dt},{"wwhd_logic_step",svc_logic_step},
     {"memcpy", svc_memcpy},      {"memmove", svc_memcpy},       {"memset", svc_memset},
