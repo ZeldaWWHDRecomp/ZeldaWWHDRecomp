@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "overlay/game_font.h"
+#include "button_glyphs.h"
 #include "rtl_text.h"
 #include "runtime.h"
 
@@ -365,10 +366,14 @@ extern "C" void hook_0286E8B4(Cpu* c) {
 }
 
 // lyt::TextBox::DrawSelf (r3 = text box): its width for right alignment
-extern "C" void hook_028785C8(Cpu* c) {
+static void draw_rtl_text_box(Cpu* c) {
     if (!g_on.load(std::memory_order_relaxed)) return f_028785C8_orig(c);
     const float saved = t_box_width;
     t_box_width = (float)ldf32(c->r[3] + 0x3C);
     f_028785C8_orig(c);
     t_box_width = saved;
+}
+
+extern "C" void hook_028785C8(Cpu* c) {
+    button_glyphs::draw_text_box(c, draw_rtl_text_box);
 }

@@ -1,0 +1,6 @@
+# Xbox-style colour treatment when Face buttons is by label (runtime/src/button_glyphs.cpp).
+# Function-entry hooks, canonical USA addresses; the EU map supplies the matching functions.
+0286E9F0  # CharWriter::Print: identify face glyphs in the cached list, without changing letters
+028F7C7C  # generate TextBox GPU vertices: colour marked glyphs and record the rendered style
+02874D54  # lyt::Picture::DrawSelf: HUD ABXY backgrounds, including the floating A prompt
+# The existing 028785C8 DrawSelf hook (hooks_rtl.txt) checks for a style change before the cache gate.
