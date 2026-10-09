@@ -37,6 +37,8 @@ int main(int argc,char** argv) {
     rejects([]{decode_png({});});rejects([]{decode_png(png(2049));});
     rejects([]{decode_png(png(0));});
     auto truncated=bytes;truncated.resize(40);rejects([&]{decode_png(truncated);});
+    auto oversized=bytes;oversized.resize(kMaxTextureBytes+1);
+    rejects([&]{decode_png(oversized);});
     namespace fs=std::filesystem;
     auto root=fs::temp_directory_path()/("wwhd-png-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(root/"assets");
@@ -44,6 +46,16 @@ int main(int argc,char** argv) {
     assert(load_png(root,"assets/pixel.png").rgba==image.rgba);
     rejects([&]{load_png(root,"../pixel.png");});rejects([&]{load_png(root,"/pixel.png");});
     rejects([&]{load_png(root,"missing.png");});
+    {std::ofstream file(root/"assets/oversized.png",std::ios::binary);file.put(0);}
+    fs::resize_file(root/"assets/oversized.png",kMaxTextureBytes+1);
+    rejects([&]{load_png(root,"assets/oversized.png");});
+    // Filesystem failures must not disclose the player's package/Data path.
+    try {
+        load_png(root,"assets/"+std::string(5000,'x')+".png");
+        assert(false);
+    } catch(const std::exception& e) {
+        assert(std::string(e.what()).find(root.string())==std::string::npos);
+    }
     std::error_code ec;fs::create_directory_symlink(root/"assets",root/"linked",ec);
     if(!ec)rejects([&]{load_png(root,"linked/pixel.png");});
     fs::remove_all(root);

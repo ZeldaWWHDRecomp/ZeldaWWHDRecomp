@@ -27,7 +27,7 @@ Pixels decode_png(std::span<const uint8_t> bytes) {
     require(bool(pixels),"HUD PNG could not be decoded");
     return {uint32_t(width),uint32_t(height),{pixels.get(),pixels.get()+size_t(width)*height*4}};
 }
-Pixels load_png(const std::filesystem::path& root,const std::string& relative) {
+Pixels load_png(const std::filesystem::path& root,const std::string& relative) try {
     namespace fs=std::filesystem;
     require(mods::archive::relative_path(relative),"Invalid HUD texture path");
     auto path=root;
@@ -41,5 +41,7 @@ Pixels load_png(const std::filesystem::path& root,const std::string& relative) {
     std::ifstream file(path,std::ios::binary);std::vector<uint8_t> bytes(size);
     require(bool(file.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(size))),"HUD texture could not be read");
     return decode_png(bytes);
+} catch(const std::filesystem::filesystem_error&) {
+    throw std::runtime_error("HUD texture filesystem could not be read");
 }
 } // namespace guestmods::hud
