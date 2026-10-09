@@ -356,7 +356,13 @@ std::vector<SetupView> setup_steps(const std::string& id) {
     for(const auto& step:r.manifest.setup) {
         bool satisfied=false;
         if(step.type=="game_path")satisfied=!sources.get(step.game).empty();
-        else if(step.type=="run_tool")satisfied=database.get("setup_receipts").get(id).get(step.id).string()==trust_fingerprint(r.manifest)&&catalogue::outputs_satisfied(step,root/"Data"/id);
+        else if(step.type=="run_tool") {
+            try {
+                satisfied=database.get("setup_receipts").get(id).get(step.id).string()==
+                    catalogue::tool_receipt(step,sources,r.path,root/"Data"/id,trust_fingerprint(r.manifest))&&
+                    catalogue::outputs_satisfied(step,root/"Data"/id);
+            }catch(const std::exception&){satisfied=false;}
+        }
         else if(step.type=="build_guest_mod") {
             const auto& built=database.get("guest_prepared").get(id);
             const auto& region=database.get("guest_regions").get(id);
@@ -392,13 +398,17 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
             fs::create_directories(data);
             require(!fs::is_symlink(data)&&!fs::is_symlink(data.parent_path()),"Mod data folder is a symlink");
             catalogue::Sources sources(database.get("game_sources"));command=catalogue::tool_arguments(step,sources,r.path,data);
+            fingerprint=catalogue::tool_receipt(step,sources,r.path,data,trust_fingerprint(r.manifest));
             for(const auto& [game,path]:sources.local_settings().object)if(path.type==Value::String&&!path.text.empty())private_paths.push_back(path.text);
             if(fs::path(command[0]).extension()==".py") {
                 const char* config=std::getenv("WWHD_GUEST_BUILD_CONFIG");
                 auto bridge=guestmods::BuildBridge::read(config?config:"guest-sdk.json",(root/"GuestBuild").string());
                 command.insert(command.begin(),bridge.python.begin(),bridge.python.end());
             }
-            fingerprint=trust_fingerprint(r.manifest);r.loading=true;r.status="Preparing local mod files";marked=true;
+            // A failed rerun must not reuse an earlier success and leftover outputs.
+            auto previous=database;database["setup_receipts"][id].object.erase(step_id);
+            try{save();}catch(...){database=previous;throw;}
+            r.loading=true;r.status="Preparing local mod files";marked=true;
         }
         auto result=host::run_process(command,data.string());
         last_output=result.output.substr(result.output.size()>16384?result.output.size()-16384:0);

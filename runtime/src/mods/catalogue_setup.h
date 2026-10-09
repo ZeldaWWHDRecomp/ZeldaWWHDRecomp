@@ -85,4 +85,13 @@ inline std::vector<std::string> tool_arguments(const Step& step,const Sources& s
     }
     return result;
 }
+inline std::string tool_receipt(const Step& step,const Sources& sources,
+        const std::filesystem::path& package,const std::filesystem::path& data,
+        const std::string& package_fingerprint) {
+    std::string inventory=package_fingerprint;
+    for(const auto& argument:tool_arguments(step,sources,package,data)) {
+        inventory.push_back('\0');inventory+=argument;
+    }
+    return hash::sha256_text(inventory);
+}
 } // namespace mods::catalogue

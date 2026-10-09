@@ -101,7 +101,9 @@ int main(int argc, char** argv) {
     if(argc==5&&std::string(argv[1])=="--setup-tool") {
         std::ifstream input(argv[2]);std::string script{std::istreambuf_iterator<char>(input),{}};
         std::cout<<"Source: "<<argv[4]<<"\n";
-        if(script.find("fail")!=std::string::npos){std::cout<<"synthetic final failure\n";return 7;}
+        if(script.find("fail")!=std::string::npos||std::getenv("WWHD_TEST_SETUP_FAILURE")){
+            std::cout<<"synthetic final failure\n";return 7;
+        }
         assert(fs::equivalent(fs::current_path(),argv[3]));
         std::ofstream("result.bin")<<"synthetic prepared output";return 0;
     }
@@ -395,6 +397,19 @@ int main(int argc, char** argv) {
     assert(run_setup_tool("setup-fixture","prepare",error,output));
     assert(output.find(disc.string())==std::string::npos&&output.find("[game source]")!=std::string::npos);
     assert(setup_steps("setup-fixture")[0].satisfied);
+    auto other_disc=disc.parent_path()/"other-synthetic.iso";fs::copy_file(disc,other_disc);
+    assert(set_game_source("gc_usa",other_disc.string(),error));
+    assert(!setup_steps("setup-fixture")[0].satisfied); // changed source selection
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    assert(setup_steps("setup-fixture")[0].satisfied);
+    env("WWHD_TEST_SETUP_FAILURE","1");
+    assert(!run_setup_tool("setup-fixture","prepare",error,output));
+    env("WWHD_TEST_SETUP_FAILURE",nullptr);
+    assert(!setup_steps("setup-fixture")[0].satisfied); // old result.bin still exists
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    fs::rename(other_disc,other_disc.string()+".moved");
+    assert(!setup_steps("setup-fixture")[0].satisfied); // source moved after success
+    fs::rename(other_disc.string()+".moved",other_disc);
     std::ofstream(toolpkg/"tools"/"helper.py",std::ios::app)<<"# changed helper\n";
     assert(install(toolpkg.string(),error));assert(!view("setup-fixture").native_confirmed);
     assert(!setup_steps("setup-fixture")[0].satisfied&&!run_setup_tool("setup-fixture","prepare",error,output));

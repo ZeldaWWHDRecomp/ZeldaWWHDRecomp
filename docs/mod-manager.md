@@ -82,7 +82,11 @@ Game-source paths are saved locally under shared `game_sources` settings and
 validated again when used. The tool's bounded final output is available on
 failure, with saved game-source paths redacted. A successful tool must produce
 all declared data-relative `outputs`; its setup receipt is bound to the package
-fingerprint. Updating a helper invalidates that receipt as well as native trust.
+fingerprint and resolved argument list, including selected game-source paths.
+Updating a helper invalidates that receipt as well as native trust. Selecting a
+different source or moving the required source makes the step unsatisfied.
+Starting a rerun clears its earlier receipt before launching the tool, so a
+failed rerun cannot appear ready because old output files remain on disk.
 
 Installed-package details show each declared setup step, including shared game
 source selection, choices, confirmations, tool execution and guest preparation.
