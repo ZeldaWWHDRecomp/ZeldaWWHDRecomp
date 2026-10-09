@@ -1529,6 +1529,10 @@ def link_game(tc, manifest, objs, work, out_exe):
     args = [sub(a, m) for a in manifest["link"]]
     if IS_LINUX:
         args += ["-Wl,-rpath,$ORIGIN"]
+    elif IS_MAC:
+        # the runtime libraries the release installs next to the game (manifest runtime_files: the Vulkan
+        # loader and MoltenVK) are found there, never in Homebrew or elsewhere on the Mac
+        args += ["-Wl,-rpath,@executable_path"]
     if tc.rsp:
         rsp = os.path.join(work, "link.rsp")
         with open(rsp, "w") as f:
@@ -1551,13 +1555,16 @@ def mac_icns(png):
     return b"icns" + struct.pack(">I", 8 + len(entry)) + entry
 
 
-def mac_app(app_path, exe_src, data_dir, version):
-    """~/Applications/Wind Waker HD.app: the game binary plus a launcher that points it at the data folder."""
+def mac_app(app_path, exe_src, data_dir, version, runtime_files=()):
+    """~/Applications/Wind Waker HD.app: the game binary plus a launcher that points it at the data folder.
+    runtime_files (next to exe_src) go next to the binary as well: its rpath is @executable_path."""
     tmp = app_path + ".tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     macos = os.path.join(tmp, "Contents", "MacOS")
     os.makedirs(macos)
     shutil.copy2(exe_src, os.path.join(macos, "wwhd"))
+    for rf in runtime_files:
+        shutil.copy2(os.path.join(os.path.dirname(exe_src), rf), os.path.join(macos, rf))
     launcher = os.path.join(macos, "launch")
     with open(launcher, "w") as f:
         f.write('#!/bin/sh\n# written by the Wind Waker HD setup\ncd "%s" || exit 1\nexec "$(dirname "$0")/wwhd" '
@@ -2208,8 +2215,10 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     elif not args.no_shortcuts and kind != "gen":
         if IS_MAC:
             app = os.path.join(ctx.app_dir, APP_NAME + ".app")
-            mac_app(app, exe, data_dir, ctx.version)
-            os.remove(exe)  # the app holds the game binary
+            mac_app(app, exe, data_dir, ctx.version, manifest.get("runtime_files", []))
+            os.remove(exe)  # the app holds the game binary (and its runtime files)
+            for rf in manifest.get("runtime_files", []):
+                os.remove(os.path.join(exe_dir, rf))
             if not os.listdir(exe_dir):
                 os.rmdir(exe_dir)
             state["app"] = app

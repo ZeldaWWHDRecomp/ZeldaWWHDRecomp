@@ -39,7 +39,8 @@ computer (about two minutes); every later start launches the game directly.
 1. Download the zip for your system from the
    [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page and unzip it anywhere
    (a games folder, an external drive):
-   - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer)
+   - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer; Vulkan through MoltenVK, included, can
+     be picked in Graphics > Renderer)
    - **Windows**: x86-64, Windows 10 or 11, a GPU with Vulkan 1.3 drivers (or Vulkan 1.1 / 1.2 drivers
      with `VK_KHR_dynamic_rendering`)
    - **Linux**: x86-64 (`linux-x86_64`) or arm64 (`linux-aarch64`, e.g. Raspberry Pi 5, Asahi Linux

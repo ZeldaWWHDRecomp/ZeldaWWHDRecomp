@@ -1916,7 +1916,8 @@ static const char kUpdateDriver[] =
     "Install the newest graphics driver for this GPU (from the AMD, Intel or NVIDIA website, or through "
     "Windows Update) and start the game again. "
 #elif defined(__APPLE__)
-    "Vulkan on a Mac needs MoltenVK and the Vulkan loader: brew install vulkan-loader molten-vk. "
+    "Vulkan on a Mac needs MoltenVK and the Vulkan loader (the release ships both next to the game; "
+    "source builds: brew install vulkan-loader molten-vk). "
 #else
     "Install the newest graphics driver for this GPU (on Linux: an up-to-date Mesa, or the vendor's "
     "driver) and start the game again. "
@@ -1989,8 +1990,9 @@ static void init_device(std::vector<const char *> extensions,
   std::vector<VkExtensionProperties> ies(en);
   vkEnumerateInstanceExtensionProperties(nullptr, &en, ies.data());
   if (!has_extension(ies, VK_KHR_SURFACE_EXTENSION_NAME))
-    exception_report::raise("No Vulkan driver found (MoltenVK on a Mac: brew install molten-vk; "
-                             "or point VK_DRIVER_FILES at its MoltenVK_icd.json)");
+    exception_report::raise("No Vulkan driver found (MoltenVK on a Mac: the release ships it next to the "
+                             "game as libMoltenVK.dylib with MoltenVK_icd.json; source builds: brew install "
+                             "molten-vk; or point VK_DRIVER_FILES at a MoltenVK_icd.json)");
   for (const char *e : extensions)
     if (!has_extension(ies, e))
       exception_report::raise(std::string("the Vulkan driver lacks instance extension ") + e);
@@ -2718,23 +2720,45 @@ void run_main_loop() {
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 // AppKit host: the TV / GamePad windows of gfx/display.mm, shared with the Metal renderer. Each view
 // has a CAMetalLayer; Vulkan presents to it through VK_EXT_metal_surface (MoltenVK).
-static bool image_loaded(const char *part) {
+static const char *image_loaded(const char *part) {
   for (uint32_t i = 0, n = _dyld_image_count(); i < n; i++)
     if (const char *name = _dyld_get_image_name(i))
       if (strstr(name, part))
-        return true;
-  return false;
+        return name;
+  return nullptr;
+}
+// The macOS release ships the Vulkan loader and MoltenVK next to the game (tools/release/macos_vulkan.py;
+// the game's rpath is its own folder, so that loader is the one dyld loads). Point the loader at the
+// MoltenVK beside it unless the player chose drivers (VK_DRIVER_FILES / VK_ICD_FILENAMES); source
+// builds without that file keep the loader's own search (Homebrew's MoltenVK).
+static void use_bundled_driver() {
+  for (const char *var : {"VK_DRIVER_FILES", "VK_ICD_FILENAMES"})
+    if (const char *v = getenv(var); v && *v) {
+      LOG("[vulkan] drivers from %s: %s", var, v);
+      return;
+    }
+  std::string icd = host::exe_dir() + "/MoltenVK_icd.json";
+  if (host::exe_dir().empty() || access(icd.c_str(), R_OK) != 0)
+    return;
+  setenv("VK_DRIVER_FILES", icd.c_str(), 1);
+  LOG("[vulkan] driver: bundled MoltenVK (%s)", icd.c_str());
 }
 void init_appkit(void *tvLayer, void *drcLayer) {
   if (const char *e = getenv("WWHD_VK_FORCE_INIT_FAIL"); e && *e && strcmp(e, "0"))
     exception_report::raise("Vulkan start-up failure forced for testing (WWHD_VK_FORCE_INIT_FAIL)");
   // weak imports (CMakeLists.txt): a Mac without them still starts the game with Metal
-  if (!image_loaded("/libvulkan"))
-    exception_report::raise("The Vulkan loader (libvulkan) is not installed. "
-                             "Install it with: brew install vulkan-loader molten-vk");
+  const char *loader = image_loaded("/libvulkan");
+  if (!loader)
+    exception_report::raise("The Vulkan loader (libvulkan) is missing. The release ships it next to the game "
+                             "(libvulkan.1.dylib): run the setup again to repair it. Source builds: "
+                             "brew install vulkan-loader molten-vk");
+  LOG("[vulkan] loader: %s", loader);
+#ifdef WWHD_GLSLANG_WEAK
   if (!image_loaded("/libglslang"))
     exception_report::raise("glslang (shader compiler for Vulkan) is not installed. "
                              "Install it with: brew install glslang");
+#endif
+  use_bundled_driver();
   load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr")));
   if (!tvLayer)
     exception_report::raise("no TV window layer");

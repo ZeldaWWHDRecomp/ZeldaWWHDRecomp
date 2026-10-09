@@ -410,7 +410,7 @@ void install_menu(NSWindow* tv) {
         add(g, @"    Metal", @selector(setRenderer:), @"", (NSInteger)render::Api::Metal).toolTip =
             @"Apple's Metal: the original renderer, all features";
         add(g, @"    Vulkan (MoltenVK)", @selector(setRenderer:), @"", (NSInteger)render::Api::Vulkan).toolTip =
-            [@"Vulkan through MoltenVK (needs: brew install vulkan-loader molten-vk glslang). Falls back to Metal if it cannot start." stringByAppendingString:why];
+            [@"Vulkan through MoltenVK (included in the release; source builds: brew install vulkan-loader molten-vk glslang). Falls back to Metal if it cannot start." stringByAppendingString:why];
         [g addItem:[NSMenuItem separatorItem]];
     }
     [g addItemWithTitle:@"Internal resolution (R cycles)" action:nil keyEquivalent:@""].enabled = NO;

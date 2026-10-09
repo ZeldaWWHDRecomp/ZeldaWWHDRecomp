@@ -125,12 +125,21 @@ jobs:
           xcrun clang -O3 -std=gnu11 -arch arm64 -mmacosx-version-min=14.0 \
             -I runtime/include -c runtime/tools/guest_hooks_body.c -o "$RUNNER_TEMP/guest-hooks-clang17.o"
 
-      - name: Build runtime (Release, Metal) against placeholder guest code
+      - name: Vulkan loader and MoltenVK (pinned Khronos sources and release, shipped next to the game)
+        # tools/release/macos_vulkan.py: Vulkan-Headers and Vulkan-Loader built from their tags, MoltenVK's
+        # prebuilt macOS release (SHA-256 pinned), thinned to arm64 and ad-hoc signed
+        run: python3 tools/release/macos_vulkan.py --work "$RUNNER_TEMP/vk"
+
+      - name: Build runtime (Release, Metal + Vulkan) against placeholder guest code
+        # BOTH: Metal stays the default; Graphics > Renderer can pick Vulkan (MoltenVK). glslang, zlib and
+        # zstd are built statically from pinned sources (WWHD_BUNDLED_DEPS); the loader is a weak import.
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
-          cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=METAL \
+          cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" -DWWHD_SETUP_GUI=ON \
-            -DWWHD_BUNDLED_ZSTD=ON
+            -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
+            -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
+            -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib"
           cmake --build build/rel
 
       - name: Unit tests
@@ -142,8 +151,18 @@ jobs:
 
       - name: Package
         run: |
+          VK="$RUNNER_TEMP/vk"
           python3 tools/release/package.py --build build/rel --platform macos-arm64 --version "$VERSION" \
-            --out dist --toolchain xcode-clt --setup-gui build/rel/wwhd-setup
+            --out dist --toolchain xcode-clt --setup-gui build/rel/wwhd-setup \
+            --runtime-file "$VK/runtime/libvulkan.1.dylib" \
+            --runtime-file "$VK/runtime/libMoltenVK.dylib" \
+            --runtime-file "$VK/runtime/MoltenVK_icd.json" \
+            --license "Vulkan-Loader (Apache-2.0)=$VK/licenses/Vulkan-Loader.txt" \
+            --license "MoltenVK (Apache-2.0)=$VK/licenses/MoltenVK.txt" \
+            --license "Vulkan-Headers (Apache-2.0)=$VK/licenses/Vulkan-Headers.txt" \
+            --license "glslang (BSD-3-Clause and others)=$PWD/build/rel/_deps/glslang-src/LICENSE.txt" \
+            --license "zlib (zlib)=$PWD/build/rel/_deps/zlib-src/LICENSE" \
+            --license "SDL3 (zlib)=$PWD/build/rel/_deps/sdl3-src/LICENSE.txt"
 
       - name: Guard (no game code, game files or keys)
         run: python3 tools/release/guard.py dist/*.zip
@@ -157,6 +176,36 @@ jobs:
           "$RUNNER_TEMP/data/bin/wwhd" --game "$RUNNER_TEMP/nogame" > run.log 2>&1 || true
           cat run.log
           grep -q "cannot load" run.log
+          # Vulkan (MoltenVK): the game loads the loader installed next to it, nothing from Homebrew or
+          # from this build machine
+          B="$RUNNER_TEMP/data/bin"
+          ls -l "$B"
+          for f in libvulkan.1.dylib libMoltenVK.dylib MoltenVK_icd.json; do test -f "$B/$f"; done
+          otool -L "$B/wwhd" | tail -n +2 | tee libs.txt
+          grep -q "@rpath/libvulkan.1.dylib" libs.txt
+          otool -l "$B/wwhd" | grep -A2 LC_RPATH | tee rpaths.txt
+          grep -q "path @executable_path " rpaths.txt
+          for f in "$B/wwhd" "$B/libvulkan.1.dylib" "$B/libMoltenVK.dylib"; do
+            otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/|@rpath/lib(vulkan\.1|MoltenVK)\.dylib$)' \
+              && { echo "::error::$f links a library from outside the release or the system"; exit 1; }
+            codesign --verify "$f"
+          done
+          if otool -l "$B/wwhd" | grep -A2 LC_RPATH | grep -E "path /"; then
+            echo "::error::build-machine rpath in the game"; exit 1
+          fi
+          # the bundled loader + MoltenVK start on this runner's (virtual) GPU, without the game
+          VK_LOADER_DEBUG=driver "$B/wwhd" --renderer-smoke > vk.log 2>&1 && smoke=ok || smoke=failed
+          cat vk.log | head -c 20000
+          grep -q "\[vulkan\] loader: $B/libvulkan.1.dylib" vk.log
+          grep -q "\[vulkan\] driver: bundled MoltenVK ($B/MoltenVK_icd.json)" vk.log
+          test "$smoke" = ok
+          # without the loader the game still starts (weak import) and Vulkan says why it cannot start, the
+          # reason the game shows when it falls back to Metal (that fallback needs the game: not testable here)
+          mv "$B/libvulkan.1.dylib" "$RUNNER_TEMP/"
+          "$B/wwhd" --renderer-smoke > nolib.log 2>&1 || true
+          cat nolib.log
+          grep -q "Vulkan loader (libvulkan) is missing" nolib.log
+          mv "$RUNNER_TEMP/libvulkan.1.dylib" "$B/"
           # the graphical installer: starts setup.py through the launcher and renders its first screen
           SDL_VIDEO_DRIVER=offscreen "./Wind Waker HD.app/Contents/MacOS/wind-waker-hd" --self-test \
             --screenshots "$RUNNER_TEMP" --data-dir "$RUNNER_TEMP/data"

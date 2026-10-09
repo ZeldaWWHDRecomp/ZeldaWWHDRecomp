@@ -233,9 +233,18 @@ if(WWHD_HAS_VULKAN)
     # different boost changed LatteDecompilerShader's layout and crashed the first shader translation)
     target_include_directories(wwhd SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>
                                             $<TARGET_PROPERTY:glslang::glslang,INTERFACE_INCLUDE_DIRECTORIES>)
-    foreach(lib Vulkan::Vulkan glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
-      target_link_options(wwhd PRIVATE "LINKER:-weak_library,$<TARGET_FILE:${lib}>")
-    endforeach()
+    # Release builds (WWHD_BUNDLED_DEPS) compile glslang statically into the game and ship the Vulkan
+    # loader and MoltenVK next to it (tools/release/macos_vulkan.py); only shared libraries are weak.
+    target_link_options(wwhd PRIVATE "LINKER:-weak_library,$<TARGET_FILE:Vulkan::Vulkan>")
+    get_target_property(WWHD_GLSLANG_TYPE glslang::glslang TYPE)
+    if(WWHD_GLSLANG_TYPE STREQUAL "SHARED_LIBRARY")
+      target_compile_definitions(wwhd PRIVATE WWHD_GLSLANG_WEAK=1)
+      foreach(lib glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+        target_link_options(wwhd PRIVATE "LINKER:-weak_library,$<TARGET_FILE:${lib}>")
+      endforeach()
+    else()
+      target_link_libraries(wwhd PRIVATE glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+    endif()
   elseif(APPLE)
     # SDL host on a Mac: Homebrew's loader is linked; SDL and the renderer find it in the process
     target_link_libraries(wwhd PRIVATE Vulkan::Vulkan glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
