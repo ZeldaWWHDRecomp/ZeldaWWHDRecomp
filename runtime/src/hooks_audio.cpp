@@ -5,8 +5,9 @@
 //
 // The results are identical to the original: the same order of operations, each step computed in
 // double and rounded to single exactly as fmadds/frsp do (ppc.h's to_single, round25, ppc_fctiwz),
-// and the same constants read from the game's data. Only the volatile registers (r0, r3-r12, f0-f13,
-// ctr, xer, cr0/cr1) end differently, which callers do not rely on (PowerPC EABI).
+// and the same constants read from the game's data (GD(): the installed build's address, USA or EU).
+// Only the volatile registers (r0, r3-r12, f0-f13, ctr, xer, cr0/cr1) end differently, which callers
+// do not rely on (PowerPC EABI).
 //
 // WWHD_HOOK_CHECK=1 runs the original on a snapshot first and compares every call (debugging).
 // Listed in tools/recomp/hooks_perf.txt.
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <vector>
 
+#include "guest_addr.h"
 #include "runtime.h"
 
 extern "C" void f_0281B4EC_orig(Cpu* c);
@@ -29,8 +31,8 @@ inline uint16_t low16(uint64_t fctiw) { return (uint16_t)(uint32_t)fctiw; }
 void filter8(Cpu* c) {
     uint32_t in = c->r[4];
     const uint32_t coef = c->r[5];
-    const double maxv = ldf32d(0x10170620), minv = ldf32d(0x10170624), start = ldf32d(0x10170628),
-                 scale = round25(ldf32d(0x1017062C));
+    const double maxv = ldf32d(GD(0x10170620)), minv = ldf32d(GD(0x10170624)), start = ldf32d(GD(0x10170628)),
+                 scale = round25(ldf32d(GD(0x1017062C)));
     double k[8];
     for (int t = 0; t < 8; t++) k[t] = round25(to_single((double)lds16(coef + 2 * t)));
     for (int n = 0; n < 80; n++, in += 2) {
@@ -51,13 +53,13 @@ void filter8(Cpu* c) {
 // f_0281B970: dst[n] += src[n] * volume, the volume ramping from f1 to f2 over 80 samples; clamped,
 // in place. r4: dst (int16), r5: src (int16). Returns the final volume in f1.
 void mix_ramp(Cpu* c) {
-    const double zero = ldf32d(0x10170840);
+    const double zero = ldf32d(GD(0x10170840));
     if (c->f[1].ps0 == zero && c->f[2].ps0 == zero) {
         c->f[1].ps0 = zero;
         return;
     }
-    const double maxv = ldf32d(0x10170848), minv = ldf32d(0x1017084C);
-    const double step = to_single(to_single(c->f[2].ps0 - c->f[1].ps0) / ldf32d(0x10170844));
+    const double maxv = ldf32d(GD(0x10170848)), minv = ldf32d(GD(0x1017084C));
+    const double step = to_single(to_single(c->f[2].ps0 - c->f[1].ps0) / ldf32d(GD(0x10170844)));
     double vol = c->f[1].ps0;
     uint32_t dst = c->r[4], src = c->r[5];
     for (int n = 0; n < 80; n++, dst += 2, src += 2) {
