@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod SDK v2: more for code mods.** New public declarations (actor profiles, save inventory,
+  animation, matrix emitters, flight position and lighting, song handling) and HUD clipping, used by
+  the two example mods in the mod repository: a GameCube-style minimap and the Valoo dragon ride.
+- **Setup now uses Python 3.14** (bundled on Windows, downloaded on Linux and macOS as before). Mod
+  setup steps can now read GameCube disc images in RVZ format, not only ISO.
 - **Fixed: the boat's sail fluttered too fast at 60, 120 and 240 fps** (issue #68). The sail cloth was
   drawn with its exact pose against the in-between camera, which added an extra jump on every
   in-between frame. Its drawing is now interpolated, and so are the other cloth pieces drawn the same
