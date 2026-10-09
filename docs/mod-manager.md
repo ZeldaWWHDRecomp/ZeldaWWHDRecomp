@@ -363,3 +363,15 @@ is requested. Install the distribution's `libcurl4` package to enable downloads;
 local package installation and offline startup do not load it. Linux developers
 need libcurl headers (`libcurl4-openssl-dev` on Ubuntu). The build does not link
 libcurl into the executable.
+
+The Mods panel's Browse catalogue section loads metadata only when Refresh is
+selected. The URL is saved in local settings; `WWHD_MOD_CATALOGUE` overrides it
+and can name a local index for fixtures. Search matches mod names, IDs and
+descriptions. Details show authors, licences, dependencies and setup steps.
+Incompatible entries cannot be installed. Update is offered only for a newer
+three-part version, and an enabled or active package must be disabled first.
+Install verifies the downloaded size and SHA-256 plus package/index metadata,
+then uses the manager's atomic installer. Packages start disabled and their setup
+details open in Installed packages. Nothing is enabled or downloaded automatically.
+Failed refreshes preserve the last successfully loaded catalogue for the current
+session; installed packages remain available without a network connection.

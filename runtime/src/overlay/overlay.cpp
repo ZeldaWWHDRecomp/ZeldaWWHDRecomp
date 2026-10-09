@@ -45,6 +45,9 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../mods/mods.h"
 #include "../mods/manager.h"
 #include "../mods/packages.h"
+#include "../mods/catalogue_client.h"
+#include "../platform/https.h"
+#include "guest_addr.h"
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
@@ -948,6 +951,118 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     if(!failure.empty()){ImGui::TextWrapped("%s",failure.c_str());if(!output.empty())ImGui::TextWrapped("%s",output.c_str());}
 }
 
+struct CatalogueWorker {
+    std::mutex mutex;
+    std::thread thread;
+    bool running=false,loaded=false;
+    mods::catalogue::Loaded catalogue;
+    std::string error,message,installed;
+    ~CatalogueWorker(){if(thread.joinable())thread.join();}
+};
+CatalogueWorker& catalogue_work(){static CatalogueWorker worker;return worker;}
+mods::catalogue::Version catalogue_port_version() {
+    std::string version=build::version();
+    if(version.starts_with("v"))version.erase(0,1);
+    version=version.substr(0,version.find('+'));
+    return mods::catalogue::Version::parse(version);
+}
+void catalogue_action(std::function<void(CatalogueWorker&)> action) {
+    auto& worker=catalogue_work();std::lock_guard guard(worker.mutex);
+    if(worker.running)return;
+    if(worker.thread.joinable())worker.thread.join();
+    worker.running=true;worker.error.clear();worker.message.clear();
+    worker.thread=std::thread([action=std::move(action)] {
+        auto& worker=catalogue_work();
+        try{action(worker);}catch(const std::exception& error){std::lock_guard guard(worker.mutex);worker.error=error.what();}
+        std::lock_guard guard(worker.mutex);worker.running=false;
+    });
+}
+void catalogue_controls(std::string& focus) {
+    using namespace mods::catalogue;
+    auto& worker=catalogue_work();
+    static char source[2049]={},search[256]={};
+    static bool initialized=false;
+    if(!initialized) {
+        std::string saved="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
+        hostui::get("mod.catalogue.url",saved);
+        if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
+        snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
+    }
+    bool busy,loaded;Loaded catalogue;std::string error,message;
+    {
+        std::lock_guard guard(worker.mutex);busy=worker.running;loaded=worker.loaded;
+        catalogue=worker.catalogue;error=worker.error;message=worker.message;
+        if(!worker.installed.empty()){focus=std::move(worker.installed);worker.installed.clear();}
+    }
+    heading("Browse catalogue");
+    note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
+    ImGui::BeginDisabled(busy);
+    ImGui::InputText("Catalogue URL",source,sizeof source);
+    if(ImGui::Button("Refresh catalogue")) {
+        std::string selected=source;
+        if(!getenv("WWHD_MOD_CATALOGUE"))hostui::post([selected]{hostui::set("mod.catalogue.url",selected);});
+        catalogue_action([selected](CatalogueWorker& worker) {
+            auto root=std::filesystem::path(mods::packages::directory())/"Catalogue";
+            require(!root.parent_path().empty(),"Mod manager storage is unavailable");
+            std::filesystem::create_directories(root);
+            auto temporary=root/("index-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".json");
+            try {
+                auto result=load(selected,host::download_https,temporary);
+                std::error_code ignored;std::filesystem::remove(temporary,ignored);
+                std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;worker.message="Catalogue refreshed";
+            }catch(...){std::error_code ignored;std::filesystem::remove(temporary,ignored);throw;}
+        });
+    }
+    ImGui::EndDisabled();
+    if(busy)note("Catalogue operation in progress…");
+    if(!error.empty())ImGui::TextWrapped("%s",error.c_str());
+    if(!message.empty())note("%s",message.c_str());
+    if(!loaded){note("Catalogue has not been loaded. Installed packages remain available offline.");return;}
+    if(!error.empty())note("Showing the last successfully loaded catalogue.");
+    ImGui::InputText("Search mods",search,sizeof search);
+    std::string query=search;
+    auto lower=[](std::string text){for(char& c:text)if(c>='A'&&c<='Z')c+=32;return text;};
+    query=lower(query);
+    auto installed=mods::packages::list();
+    for(const auto& entry:catalogue.index.entries) {
+        if(!query.empty()&&lower(entry.name+" "+entry.id+" "+entry.description).find(query)==std::string::npos)continue;
+        ImGui::PushID(entry.id.c_str());
+        if(ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str())) {
+            ImGui::TextWrapped("%s",entry.description.c_str());
+            for(const auto& author:entry.authors)note("By %s",author.c_str());
+            for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
+            for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
+            for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
+            bool compatible=false;
+            try{compatible=entry.compatible(catalogue_port_version(),g_guest_build_name,mods::packages::platform_key());}catch(...){}
+            if(!compatible)note("Unavailable for this port version, game build or platform.");
+            auto found=std::find_if(installed.begin(),installed.end(),[&](const auto& mod){return mod.id==entry.id;});
+            bool present=found!=installed.end(),update=false;
+            if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
+            if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
+            ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
+            if(ImGui::Button(present?"Update":"Install")) {
+                auto fixtures=catalogue.fixture_root;
+                catalogue_action([entry,fixtures](CatalogueWorker& worker) {
+                    StagedPackage package(entry,catalogue_port_version(),g_guest_build_name,mods::packages::platform_key(),
+                        std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
+                    std::string error,id;
+                    require(mods::packages::install(package.path().string(),error,&id),error);
+                    std::lock_guard guard(worker.mutex);worker.installed=id;worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                });
+            }
+            ImGui::EndDisabled();
+            if(present) {
+                ImGui::SameLine();ImGui::BeginDisabled(busy||found->enabled||found->active);
+                if(ImGui::Button("Remove")){std::string failure;if(!mods::packages::remove(entry.id,failure)){std::lock_guard guard(worker.mutex);worker.error=failure;}}
+                ImGui::EndDisabled();
+            }
+            ImGui::TreePop();
+        }
+        ImGui::PopID();
+    }
+}
+
 void package_controls() {
     using namespace mods::packages;
     static std::string error;
@@ -962,6 +1077,8 @@ void package_controls() {
         std::lock_guard guard(picker_mutex);
         if (!picked.empty()) { snprintf(source, sizeof source, "%s", picked.c_str()); picked.clear(); }
     }
+    static std::string catalogue_focus;
+    catalogue_controls(catalogue_focus);
     heading("Profiles");
     auto current = current_profile();
     if (ImGui::BeginCombo("Active profile", current.c_str())) {
@@ -1025,7 +1142,8 @@ void package_controls() {
             else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
-        if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
+        else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
         if (expanded) {
             note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "guest" ? "Guest mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
