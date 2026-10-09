@@ -1371,6 +1371,28 @@ void tab_controls() {
                     ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::Checkbox("List view", &U.list_view);
     help("A plain table of all inputs instead of the controller drawing");
+    // face-button preset (issue #78): which host face buttons drive A/B/X/Y
+    const input_map::FaceLayout fl = input_map::face_layout(m);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Face buttons");
+    ImGui::SameLine();
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition), fl == input_map::FaceLayout::kPosition)) {
+        input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
+        input_map::set_current(m);
+    }
+    ImGui::SameLine();
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels), fl == input_map::FaceLayout::kLabels)) {
+        input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
+        input_map::set_current(m);
+    }
+    help("How the controller's face buttons drive the Wii U's A/B/X/Y. By position: the bottom "
+         "button is B (Nintendo layout). By label: the button named A is A — on an Xbox pad that "
+         "makes A accept/act and B go back (issue #78). Only these four bindings are rewritten; "
+         "keyboard keys and the other inputs stay as they are.");
+    if (fl == input_map::FaceLayout::kCustom) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(custom)");
+    }
     // status line: capture prompt > note > hovered input > duplicates > help
     std::string status;
     ImVec4 sc(0.70f, 0.78f, 0.84f, 1.0f);

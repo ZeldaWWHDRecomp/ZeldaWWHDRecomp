@@ -72,6 +72,47 @@ static void test_defaults() {
     CHECK(std::fabs(s.lx + 0.6f) < 1e-6 && std::fabs(s.ry - 0.3f) < 1e-6);
 }
 
+static void test_face_layout() {
+    Mapping m = Mapping::defaults();
+    // the default is the by-position (Nintendo) preset
+    CHECK(face_layout(m) == FaceLayout::kPosition);
+    CHECK(m.pad[kA] == kPadB && m.pad[kB] == kPadA && m.pad[kX] == kPadY && m.pad[kY] == kPadX);
+    // by label (Xbox): A accepts/acts, B goes back (issue #78)
+    apply_face_layout(m, FaceLayout::kLabels);
+    CHECK(face_layout(m) == FaceLayout::kLabels);
+    CHECK(m.pad[kA] == kPadA && m.pad[kB] == kPadB && m.pad[kX] == kPadX && m.pad[kY] == kPadY);
+    float v[kPadCount] = {};
+    v[kPadA] = 1;
+    CHECK(controller_state(m, v).buttons == input::kA);
+    v[kPadA] = 0; v[kPadB] = 1;
+    CHECK(controller_state(m, v).buttons == input::kB);
+    v[kPadB] = 0; v[kPadX] = 1;
+    CHECK(controller_state(m, v).buttons == input::kX);
+    // keyboard keys and the non-face controller bindings are not rewritten by the preset
+    CHECK(m.keys[kA] == Mapping::defaults().keys[kA]);
+    CHECK(m.keys[kB] == Mapping::defaults().keys[kB]);
+    CHECK(m.keys[kX] == Mapping::defaults().keys[kX]);
+    CHECK(m.keys[kY] == Mapping::defaults().keys[kY]);
+    CHECK(m.pad[kL] == Mapping::defaults().pad[kL]);
+    CHECK(m.pad[kZL] == Mapping::defaults().pad[kZL]);
+    CHECK(m.pad[kPlus] == Mapping::defaults().pad[kPlus]);
+    CHECK(m.pad[kStickLClick] == Mapping::defaults().pad[kStickLClick]);
+    CHECK(m.pad[kLUp] == Mapping::defaults().pad[kLUp]);
+    CHECK(m.pad[kScreenshot] == Mapping::defaults().pad[kScreenshot]);
+    // one face binding by hand: neither preset
+    m.pad[kX] = kPadLB;
+    CHECK(face_layout(m) == FaceLayout::kCustom);
+    // a preset restores all four; kCustom is a no-op
+    apply_face_layout(m, FaceLayout::kPosition);
+    CHECK(face_layout(m) == FaceLayout::kPosition);
+    apply_face_layout(m, FaceLayout::kCustom);
+    CHECK(face_layout(m) == FaceLayout::kPosition);
+    // the labels are for the UI: present and distinct (the wording is free to change)
+    CHECK(face_layout_label(FaceLayout::kPosition) && *face_layout_label(FaceLayout::kPosition));
+    CHECK(face_layout_label(FaceLayout::kLabels) && *face_layout_label(FaceLayout::kLabels));
+    CHECK(std::string(face_layout_label(FaceLayout::kPosition)) != face_layout_label(FaceLayout::kLabels));
+}
+
 static void test_names() {
     for (int a = 0; a < kActionCount; a++) CHECK(action_from_id(action_id(a)) == a);
     for (int p = 1; p < kPadCount; p++) CHECK(pad_from_id(pad_id(p)) == p);
@@ -222,6 +263,7 @@ static void test_conflict_helpers() {
 int main() {
     test_conflict_helpers();
     test_defaults();
+    test_face_layout();
     test_names();
     test_reserved();
     test_conflicts();
