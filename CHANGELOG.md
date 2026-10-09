@@ -15,9 +15,9 @@ what is on `devel` and not released yet (also in the
   it; the boost also ends by itself when it runs out or when Link stops running or swimming, so
   boosts never queue up behind each other. The factor ramps in instead of jumping, the locomotion
   animation follows it so Link's legs keep up with the ground instead of skating (true 60 included),
-  and both go back to normal the moment he stops. A small bar under the character shows the boost
-  (green running, blue swimming, amber while it recharges). Saved settings and mod profiles carry
-  over: a file from before the split has its single factor applied to both states.
+  and both go back to normal the moment he stops. A ring like the climb mod's, just under it, shows
+  the boost (green running, blue swimming, amber while it recharges). Saved settings and mod profiles
+  carry over: a file from before the split has its single factor applied to both states.
 
 - **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams
   per mod, mixed into the game's audio and following its volume and mute (and fast forward). The

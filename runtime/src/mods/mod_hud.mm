@@ -2,8 +2,8 @@
 // is copied to the scan buffer (so frame dumps show them too):
 //   - the "climb any wall" mod's stamina wheel (climb.cpp): a ring to the upper right of the screen
 //     centre, where the follow camera keeps Link, shown while climbing, refilling or fading out;
-//   - the run/swim speed mod's boost bar (mods.cpp): a slim bar just under it, shown while boosting
-//     or while the bar refills, green running, blue swimming, amber recharging.
+//   - the run/swim speed mod's boost ring (mods.cpp): the same ring just under it, shown while
+//     boosting or while it refills, green running, blue swimming, amber recharging.
 // The Vulkan host draws the same two in gfx/vulkan/present.cpp (draw_mod_overlay).
 #import <Metal/Metal.h>
 
@@ -47,7 +47,7 @@ fragment float4 hud_fs(V in [[stage_in]], constant U& u [[buffer(0)]]) {
     return float4(c, a) * u.alpha;
 }
 )";
-// the run/swim boost's bar (mods.cpp move_hud): uv 0..1 across it, premultiplied; the same shader as
+// the run/swim boost's ring (mods.cpp move_hud), BotW style like the climb wheel; the same shader as
 // gfx/vulkan/present.cpp's moveHudSource
 const char* kMoveShader = R"(
 #include <metal_stdlib>
@@ -62,14 +62,24 @@ vertex MV move_vs(uint vid [[vertex_id]], constant MU& u [[buffer(0)]]) {
     return o;
 }
 fragment float4 move_fs(MV in [[stage_in]], constant MU& u [[buffer(0)]]) {
-    float aa = max(fwidth(in.uv.x), 1e-4);
-    float edge = smoothstep(0.0, aa * 2.0, min(min(in.uv.x, 1.0 - in.uv.x), min(in.uv.y, 1.0 - in.uv.y)));
-    float fill = 1.0 - smoothstep(u.stamina - 0.004, u.stamina + 0.004, in.uv.x);
-    // 0 running, 1 swimming, 2 recharging
-    float3 full = u.state > 1.5 ? float3(0.95, 0.62, 0.18) : u.state > 0.5 ? float3(0.30, 0.62, 0.95) : float3(0.32, 0.88, 0.38);
-    float3 col = mix(float3(0.07, 0.07, 0.08), full, fill);
-    float a = edge * 0.9 * u.alpha;
-    return float4(col * a, a);
+    float2 p = float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    float r = length(p);
+    float aa = max(fwidth(r), 1e-4);
+    float ring = smoothstep(0.58 - aa, 0.58 + aa, r) * (1.0 - smoothstep(0.92 - aa, 0.92 + aa, r));
+    float outline = smoothstep(0.50 - aa, 0.50 + aa, r) * (1.0 - smoothstep(1.0 - 2.0 * aa, 1.0, r));
+    float ang = atan2(p.x, p.y);
+    float frac = (ang < 0.0 ? ang + 2.0 * M_PI_F : ang) / (2.0 * M_PI_F);
+    float filled = 1.0 - smoothstep(u.stamina - 0.004, u.stamina + 0.004, frac);
+    // 0 running (green), 1 swimming (blue), 2 recharging (amber); the colour runs to red when low
+    float3 green = float3(0.32, 0.88, 0.38), blue = float3(0.30, 0.62, 0.95), amber = float3(0.95, 0.62, 0.18);
+    float3 state = u.state > 1.5 ? amber : u.state > 0.5 ? blue : green;
+    float3 full = mix(float3(0.95, 0.20, 0.15), state, min(1.0, u.stamina / 0.3));
+    float3 empty = u.state > 1.5 ? float3(0.38, 0.24, 0.07) : float3(0.10, 0.10, 0.10);
+    float3 col = mix(empty, full, filled);
+    float fa = ring * mix(0.45, 0.95, filled);
+    float oa = outline * 0.45;
+    float a = fa + oa * (1.0 - fa);
+    return float4(col * fa, a) * u.alpha;
 }
 )";
 
@@ -147,9 +157,10 @@ void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex) {
     if (drawBar) {
         id<MTLRenderPipelineState> p = pipeline(cmd.device, tex.pixelFormat, false);
         if (p) {
-            float bw = 0.12f * w, bh = 0.011f * h, cx = 0.60f * w, cy = 0.44f * h;
+            // a ring under the wheel's spot, same shape
+            float cx = 0.60f * w, cy = 0.49f * h, rad = 0.042f * h;
             struct { float rect[4]; float stamina, alpha, state, pad; } u = {
-                {(cx - bw / 2) / w * 2 - 1, 1 - (cy + bh / 2) / h * 2, (cx + bw / 2) / w * 2 - 1, 1 - (cy - bh / 2) / h * 2},
+                {(cx - rad) / w * 2 - 1, 1 - (cy + rad) / h * 2, (cx + rad) / w * 2 - 1, 1 - (cy - rad) / h * 2},
                 bar.stamina, bar.alpha, bar.exhausted ? 2.0f : bar.swimming ? 1.0f : 0.0f, 0};
             [e setRenderPipelineState:p];
             [e setVertexBytes:&u length:sizeof u atIndex:0];

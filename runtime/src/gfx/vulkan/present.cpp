@@ -103,19 +103,30 @@ void main() {
  result=vec4(col*fa,a)*u.alpha;
 }
 )glsl";
-// the run/swim boost's bar (runtime/src/mods/mods.cpp move_hud), premultiplied; uv 0..1 across it
+// the run/swim boost's ring (runtime/src/mods/mods.cpp move_hud), BotW style like the climb wheel,
+// premultiplied
 const char* moveHudSource = R"glsl(#version 450
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform Params { float stamina; float alpha; float state; float pad; } u;
 void main() {
- float aa=max(fwidth(uv.x),1e-4);
- float edge=smoothstep(0.0,aa*2.0,min(min(uv.x,1.0-uv.x),min(uv.y,1.0-uv.y)));
- float fill=1.0-smoothstep(u.stamina-0.004,u.stamina+0.004,uv.x);
- vec3 full=u.state>1.5?vec3(0.95,0.62,0.18):u.state>0.5?vec3(0.30,0.62,0.95):vec3(0.32,0.88,0.38);
- vec3 col=mix(vec3(0.07,0.07,0.08),full,fill);
- float a=edge*0.9*u.alpha;
- result=vec4(col*a,a);
+ vec2 p=vec2(uv.x*2.0-1.0,1.0-uv.y*2.0);
+ float r=length(p);
+ float aa=max(fwidth(r),1e-4);
+ float ring=smoothstep(0.58-aa,0.58+aa,r)*(1.0-smoothstep(0.92-aa,0.92+aa,r));
+ float outline=smoothstep(0.50-aa,0.50+aa,r)*(1.0-smoothstep(1.0-2.0*aa,1.0,r));
+ float ang=atan(p.x,p.y);
+ float frac=(ang<0.0?ang+6.28318530718:ang)/6.28318530718;
+ float filled=1.0-smoothstep(u.stamina-0.004,u.stamina+0.004,frac);
+ // 0 running (green), 1 swimming (blue), 2 recharging (amber); the colour runs to red when low
+ vec3 green=vec3(0.32,0.88,0.38),blue=vec3(0.30,0.62,0.95),amber=vec3(0.95,0.62,0.18);
+ vec3 full=mix(vec3(0.95,0.20,0.15),u.state>1.5?amber:u.state>0.5?blue:green,min(1.0,u.stamina/0.3));
+ vec3 empty=u.state>1.5?vec3(0.38,0.24,0.07):vec3(0.10,0.10,0.10);
+ vec3 col=mix(empty,full,filled);
+ float fa=ring*mix(0.45,0.95,filled);
+ float oa=outline*0.45;
+ float a=fa+oa*(1.0-fa);
+ result=vec4(col*fa,a)*u.alpha;
 }
 )glsl";
 struct PresentRect { float x,y,width,height,scale; };
@@ -527,9 +538,9 @@ void draw_mod_overlay(Surface& scan) {
   vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);vkCmdDraw(cmd,3,1,0,0);
  }
  if(bar) {
-  // a slim bar just under the wheel's spot; 0 running, 1 swimming, 2 recharging
-  const float bw=0.12f*w,bh=0.011f*h,cx=0.60f*w,cy=0.44f*h;
-  VkViewport viewport{cx-bw*0.5f,cy-bh*0.5f,bw,bh,0,1};
+  // a ring under the wheel's spot, same shape; 0 running, 1 swimming, 2 recharging
+  const float cx=0.60f*w,cy=0.49f*h,rad=0.042f*h;
+  VkViewport viewport{cx-rad,cy-rad,2*rad,2*rad,0,1};
   vkCmdSetViewport(cmd,0,1,&viewport);vkCmdSetScissor(cmd,0,1,&scissor);
   vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(scan.fmt.pixel,kMoveHud));
   PresentParams params{};const float u[4]={move.stamina,move.alpha,move.exhausted?2.0f:move.swimming?1.0f:0.0f,0};memcpy(&params,u,16);
