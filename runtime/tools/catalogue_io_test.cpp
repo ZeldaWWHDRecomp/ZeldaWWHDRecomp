@@ -9,6 +9,8 @@ int main() {
     namespace fs=std::filesystem;using namespace mods::catalogue;
     auto root=fs::temp_directory_path()/("wwhd-catalogue-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(root/"packages");
+    assert(mods::hash::sha256_text("abc")=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert(mods::hash::sha256_text("")=="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     try {
         auto file=root/"packages"/"synthetic.zip";
         {std::ofstream out(file,std::ios::binary);out<<"abc";}

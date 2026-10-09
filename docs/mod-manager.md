@@ -62,9 +62,27 @@ package's library for this platform (the file named in `binaries`). It applies
 to every profile. Installing an update whose library differs asks again;
 removing a package forgets its confirmation. Only that one library is
 fingerprinted; anything the library itself loads from its folder is not.
-Built-in mods, settings presets, content mods and Cemu graphics packs never ask:
-they contain no native code, and the manager loads native code only through
-`kind: native` packages.
+Built-in mods and settings presets, content mods and Cemu graphics packs without
+preparation tools need no confirmation. Guest packages confirm their ELF through
+the same dialog before their translated module can load.
+
+Manager 1.3 also recognizes declarative `setup` steps. A package of any kind which
+ships a `run_tool` preparation step uses this same confirmation, and the dialog
+names its package-relative tools. For those packages, the stored SHA-256 covers a
+sorted inventory of every package file, including the manifest and imported
+helpers. Changing any file requires confirmation again. Guest compilation keeps
+its separate ELF fingerprint for address allocation and module-cache validation.
+Settings/content packages without tools still need no native-code confirmation.
+Preparation options must match the manifest's boolean or enum option schema.
+
+Preparation tools run from the mod's `Data/<id>` folder with a declared argument
+vector, without a shell. `{data}`, `{package}` and `{game:gc_usa}` (or another
+supported game-source ID) substitute within one argument without word splitting.
+Game-source paths are saved locally under shared `game_sources` settings and
+validated again when used. The tool's bounded final output is available on
+failure, with saved game-source paths redacted. A successful tool must produce
+all declared data-relative `outputs`; its setup receipt is bound to the package
+fingerprint. Updating a helper invalidates that receipt as well as native trust.
 
 Native code is never loaded without a matching confirmation, also when a
 profile switch, an older `profiles.json` or an updated library would enable it.

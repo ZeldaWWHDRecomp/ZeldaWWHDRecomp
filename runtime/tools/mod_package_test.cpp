@@ -70,6 +70,13 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==5&&std::string(argv[1])=="--setup-tool") {
+        std::ifstream input(argv[2]);std::string script{std::istreambuf_iterator<char>(input),{}};
+        std::cout<<"Source: "<<argv[4]<<"\n";
+        if(script.find("fail")!=std::string::npos){std::cout<<"synthetic final failure\n";return 7;}
+        assert(fs::equivalent(fs::current_path(),argv[3]));
+        std::ofstream("result.bin")<<"synthetic prepared output";return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--guest-pending-check") {
         bool supported=std::string(argv[2])=="on";set_code_mod_support(supported);initialize();
         assert(view("guest-fixture").enabled==supported);return 0;
@@ -308,6 +315,39 @@ int main(int argc, char** argv) {
     assert(install(native.string(),error));assert(!find().native_confirmed);
     assert(remove("fixture",error));assert(enable("climb-preset",false,error));frame(30);assert(remove("climb-preset",error));
     assert(list().empty());
+    // A settings/content package can ship a preparation tool: the same confirmation
+    // covers the whole package, so changed imported helpers also invalidate trust.
+    auto toolpkg=root/"SetupFixture";fs::create_directories(toolpkg/"tools");
+    std::ofstream(toolpkg/"manifest.json")<<R"({"format_version":1,"id":"setup-fixture","name":"Setup fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"wall-climb":true},"setup":[{"id":"prepare","type":"run_tool","title":"Prepare fixture","tool":"tools/prepare.py","arguments":["{data}","{game:gc_usa}"],"outputs":["result.bin"]}]})";
+    std::ofstream(toolpkg/"tools"/"prepare.py")<<"# synthetic preparation tool\n";
+    std::ofstream(toolpkg/"tools"/"helper.py")<<"# synthetic helper\n";
+    assert(install(toolpkg.string(),error));assert(!view("setup-fixture").native_confirmed);
+    assert(view("setup-fixture").setup_tools==std::vector<std::string>{"tools/prepare.py"});
+    auto setup_confirmation=unconfirmed_native("setup-fixture");
+    assert(setup_confirmation.size()==1&&setup_confirmation[0].second.find("tools/prepare.py")!=std::string::npos);
+    assert(!enable("setup-fixture",true,error));assert(confirm_native("setup-fixture",error));
+    assert(view("setup-fixture").native_confirmed);
+    std::string output;assert(!run_setup_tool("setup-fixture","prepare",error,output)); // missing source
+    auto disc=fs::absolute(root/"synthetic.iso");std::array<unsigned char,32> disc_header{};
+    std::copy_n("GZLE01",6,disc_header.begin());disc_header[28]=0xC2;disc_header[29]=0x33;disc_header[30]=0x9F;disc_header[31]=0x3D;
+    {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(disc_header.data()),disc_header.size());}
+    assert(!set_game_source("gc_eur",disc.string(),error)&&set_game_source("gc_usa",disc.string(),error));
+    auto build_config=fs::absolute(root/"setup-tools.json");
+    auto build_json=mods::json::parse(R"({"format_version":1,"python":[],"compiler":["unused"],"builder":"unused","include":"unused"})");
+    build_json["python"].array={mods::json::Value(fs::absolute(argv[0]).string()),mods::json::Value("--setup-tool")};
+    {std::ofstream config(build_config);config<<mods::json::dump(build_json);}
+    env("WWHD_GUEST_BUILD_CONFIG",build_config.string().c_str());
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
+    assert(output.find(disc.string())==std::string::npos&&output.find("[game source]")!=std::string::npos);
+    assert(setup_steps("setup-fixture")[0].satisfied);
+    std::ofstream(toolpkg/"tools"/"helper.py",std::ios::app)<<"# changed helper\n";
+    assert(install(toolpkg.string(),error));assert(!view("setup-fixture").native_confirmed);
+    assert(!setup_steps("setup-fixture")[0].satisfied&&!run_setup_tool("setup-fixture","prepare",error,output));
+    std::ofstream(toolpkg/"tools"/"prepare.py",std::ios::app)<<"# fail\n";
+    assert(install(toolpkg.string(),error)&&confirm_native("setup-fixture",error));
+    assert(!run_setup_tool("setup-fixture","prepare",error,output)&&output.find("synthetic final failure")!=std::string::npos);
+    assert(!setup_steps("setup-fixture")[0].satisfied);env("WWHD_GUEST_BUILD_CONFIG",nullptr);
+    assert(remove("setup-fixture",error));
     if(argc == 4) {
         assert(install(argv[3],error));
         auto id=list().at(0).id;

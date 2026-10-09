@@ -28,6 +28,7 @@ struct Step {
     std::string id,type,title,explanation,game,tool,option;
     bool optional=false;
     std::vector<std::string> arguments,choices,outputs;
+    bool operator==(const Step&)const=default;
 };
 struct Entry {
     std::string id,name,description,version,kind;
