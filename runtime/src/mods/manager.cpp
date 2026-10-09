@@ -28,6 +28,9 @@ const Entry catalogue[] = {
     {"move-speed", "Run/swim speed", "Gameplay",
      "Hold the selected button to run or swim faster. Default: L3 (rebind it in Controls).",
      "WWHD_MOD_MOVE_SPEED", move_speed, set_move_speed},
+    {"fast-forward", "Fast forward cutscenes and dialogue", "Gameplay",
+     "Hold the selected button during events to play faster. Choices still wait for input.",
+     "WWHD_MOD_FAST_FORWARD", fast_forward, set_fast_forward},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
@@ -59,6 +62,23 @@ void load_saved() {
         if (end != value.c_str() && *end == '\0' && std::isfinite(parsed) && parsed >= lo && parsed <= hi)
             apply(parsed);
     };
+    if (!std::getenv("WWHD_MOD_FF_RATE")) {
+        std::string v;
+        if (hostui::get("mod.fast-forward.rate", v) && (v == "2" || v == "3" || v == "4"))
+            set_fast_forward_rate(unsigned(v[0] - '0'));
+    }
+    if (!std::getenv("WWHD_MOD_FF_BUTTON")) {
+        std::string v;
+        if (hostui::get("mod.fast-forward.button", v)) {
+            char* end = nullptr;
+            auto n = std::strtoul(v.c_str(), &end, 10);
+            if (end != v.c_str() && !*end && n <= UINT32_MAX) set_fast_forward_button(uint32_t(n));
+        }
+    }
+    if (!std::getenv("WWHD_MOD_FF_MUTE")) {
+        std::string v;
+        if (hostui::get("mod.fast-forward.mute", v) && (v == "0" || v == "1")) set_fast_forward_mute(v == "1");
+    }
     number("mod.move-speed.factor", "WWHD_MOD_MOVE_FACTOR", 1.25f, 4.f, set_move_speed_factor);
     number("mod.direct-camera.speed", "WWHD_MOD_CAMERA_SPEED", .5f, 2.f, set_camera_speed);
     std::string button;

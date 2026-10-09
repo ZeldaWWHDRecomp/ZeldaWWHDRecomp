@@ -1,3 +1,5 @@
+#include "../game_clock.h"
+#include "../mods/fast_forward.h"
 #include "../platform/host.h"
 #ifdef __APPLE__
 #include <pthread/qos.h>
@@ -580,14 +582,23 @@ static uint64_t g_last_flip_time = 0;  // timebase
 static int64_t g_count_offset = 0;     // guest-visible swap/flip counts minus ours (set by a loaded save state)
 
 static uint64_t vsync_index() {  // in ticks
-    return uint64_t((std::chrono::steady_clock::now() - g_vsync_epoch).count()) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
+    if (!game_clock::shifted())
+        return uint64_t((std::chrono::steady_clock::now() - g_vsync_epoch).count()) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
+    const auto sample = game_clock::sample();
+    const auto epoch = std::chrono::duration_cast<std::chrono::nanoseconds>(g_vsync_epoch.time_since_epoch()).count();
+    return uint64_t(sample.guest - epoch) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
 }
 static uint64_t vsync_granule() {  // ticks per vsync at the current rate: 4 (30/60 fps), 2 (120), 1 (240)
     const int rate = interp::vsync_rate();
     return rate >= 4 ? 1 : rate >= 2 ? 2 : kTicksPerVsync;
 }
 static std::chrono::steady_clock::time_point tick_time(uint64_t tick) {
-    return g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    if (!game_clock::shifted())
+        return g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    const auto sample = game_clock::sample();
+    const auto target = g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() - sample.guest;
+    return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(sample.host + std::max<int64_t>(0, (left + sample.rate - 1) / sample.rate)));
 }
 // the first tick at which this flip may execute: the vsync after its swap, and `swap interval`
 // vsyncs after the previous flip
@@ -624,7 +635,7 @@ static void update_flips() {  // g_flip_mutex held
         at = now / vsync_granule() * vsync_granule();
         g_pending_flips.pop_front();
         g_last_flip_vsync = at;
-        g_last_flip_time = timebase::now();
+        g_last_flip_time = timebase::simulation_now();
         g_flip_count++;
     }
 }

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "interp_pacing.h"
+#include "mods/fast_forward.h"
 #include "guest_addr.h"
 #include "render_prof.h"
 #include "perf_metrics.h"
@@ -101,7 +102,7 @@ static std::atomic<bool> g_on{[] {
     const char* e = getenv("WWHD_INTERP");
     return (e ? atoi(e) != 0 : g_env_fps != 0) && !true60::enabled();
 }()};
-bool interp_on() { return g_on.load(std::memory_order_relaxed); }
+bool interp_on() { return g_on.load(std::memory_order_relaxed) && !mods::fast_forward_active(); }
 // the pass structure below is used by both 60 fps modes and the 120/240 fps interpolation:
 // interpolation (30 Hz logic) and true 60 (true60.cpp: 60 Hz processes also execute on the
 // in-between "hold" passes; always one per step)
@@ -145,7 +146,7 @@ void set_fps(int f) {
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
 }
 // the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
-int mode() { return true60::enabled() ? 2 : interp_on() ? 1 : 0; }
+int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
     g_on = false;
     true60::set_enabled(false);
@@ -713,7 +714,9 @@ constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono:
 // a dropped in-between pass (and at 120/240 fps before every logic pass that comes early)
 static void paced_pass_start() {
     static bool previousRecord = false;
-    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
+    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false;
+        if (mods::fast_forward_active()) { g_wait_step = false; g_last_entry = {}; g_last_logic = {}; }
+        return; }
     if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
     const auto now = pace_clock::now();
@@ -894,6 +897,9 @@ extern "C" void hook_0203593C(Cpu* c) {
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
+    const bool was_fast_forward = mods::fast_forward_active();
+    mods::fast_forward_service();
+    const bool ff_transition = was_fast_forward != mods::fast_forward_active();
     g_passes++;
     // test aid: WWHD_INTERP_AT_STEP=n switches interpolation on after n frames
     static uint64_t passes = 0;
@@ -904,7 +910,17 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (at60 && ++passes60 == at60) set_mode(2);
     paced_pass_start();
     true60::new_pass();
-    true60::pass_begin(!enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    if (ff_transition) {
+        for (auto& p : g_prev) p = Prev{};
+        g_last_step = 0;
+        g_models.clear();
+        g_record_passes += 8;
+        g_hold_next = false;
+        g_phase = 0;
+        g_step_n = 1;
+        fx_ss_reset();
+    }
     if (!enabled() || !g_hold_next) {
         g_logic_steps++;
         true60_test::logic_step(g_logic_steps);

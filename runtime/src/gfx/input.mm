@@ -1,3 +1,4 @@
+#include "../mods/fast_forward.h"
 // Keyboard and GameController input, merged into one GamePad state.
 //
 // Which key or controller input drives which GamePad input is the controls mapping (input_map.h,
@@ -94,6 +95,7 @@ void held_keys(bool* keys) {
 }
 
 void release_keys() {
+    mods::fast_forward_reset();
     std::lock_guard<std::mutex> lk(g_mu);
     memset(g_keys, 0, sizeof(g_keys));
 }

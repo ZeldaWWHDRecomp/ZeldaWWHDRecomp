@@ -6,6 +6,7 @@ struct Cpu;
 
 namespace true60 {
 bool enabled();
+bool selected(); // saved choice, including while fast forward suspends 60 Hz passes
 void set_enabled(bool v);
 float dt();              // step length of the execute in progress: 1 = one original 30 Hz step
 uint32_t exec_proc();    // process whose execute is in progress (0 outside)

@@ -1,3 +1,5 @@
+#include "game_clock.h"
+#include "mods/fast_forward.h"
 // Guest threads run on host pthreads. OS synchronization objects live in guest
 // memory (the game allocates them) and are backed by host objects keyed by
 // their guest address.
@@ -32,6 +34,8 @@
 #include "render_prof.h"
 #include "platform/perf_hint.h"
 
+static void wake_timed_events();
+
 // ---------------------------------------------------------------- time
 namespace timebase {
 static const auto g_boot = std::chrono::steady_clock::now();
@@ -40,10 +44,16 @@ uint64_t now() {
     return (uint64_t)((unsigned __int128)ns * kTicksPerSec / 1000000000ull);
 }
 static std::atomic<int64_t> g_guest_offset{0};
-uint64_t guest_now() { return now() + (uint64_t)g_guest_offset.load(std::memory_order_relaxed); }
+uint64_t simulation_now() {
+    if (!game_clock::shifted()) return now();
+    const auto s = game_clock::sample();
+    const auto boot = std::chrono::duration_cast<std::chrono::nanoseconds>(g_boot.time_since_epoch()).count();
+    return uint64_t((unsigned __int128)(s.guest - boot) * kTicksPerSec / 1000000000ull);
+}
+uint64_t guest_now() { return simulation_now() + (uint64_t)g_guest_offset.load(std::memory_order_relaxed); }
 uint64_t to_guest(uint64_t host_ticks) { return host_ticks + (uint64_t)g_guest_offset.load(std::memory_order_relaxed); }
 uint64_t to_host(uint64_t guest_ticks) { return guest_ticks - (uint64_t)g_guest_offset.load(std::memory_order_relaxed); }
-void set_guest_now(uint64_t guest_ticks) { g_guest_offset = (int64_t)(guest_ticks - now()); }
+void set_guest_now(uint64_t guest_ticks) { g_guest_offset = (int64_t)(guest_ticks - simulation_now()); }
 }  // namespace timebase
 
 extern "C" uint64_t ppc_timebase(void) { return timebase::guest_now(); }
@@ -416,10 +426,12 @@ static void park_gate(HostThread* t) {
 // re-checked after every wakeup (also after a save state was loaded). False on timeout.
 template <class Pred>
 static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable& cv, Pred pred, uint8_t kind, uint32_t obj,
-                      const std::chrono::steady_clock::time_point* deadline = nullptr) {
+                      const std::chrono::steady_clock::time_point* deadline = nullptr, const uint64_t* simulation_deadline = nullptr) {
     HostThread* t = t_self;
     while (!pred()) {
-        if (deadline && std::chrono::steady_clock::now() >= *deadline) return false;
+        const bool virtual_wait = simulation_deadline && (mods::fast_forward() || game_clock::shifted());
+        if (virtual_wait ? timebase::simulation_now() >= *simulation_deadline :
+            deadline && std::chrono::steady_clock::now() >= *deadline) return false;
         if (t) {
             t->wait_kind = kind;
             t->wait_obj = obj;
@@ -430,7 +442,13 @@ static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable&
         lk.lock();
         if (deadline) {
             threads::SchedulerTick::TimedWait timed(g_tick);
-            cv.wait_until(lk, *deadline, pred);
+            if (virtual_wait) {
+                const auto now = timebase::simulation_now();
+                const auto left = now < *simulation_deadline ? ticks_to_ns(*simulation_deadline - now) / game_clock::rate() : std::chrono::nanoseconds(0);
+                cv.wait_for(lk, std::min(left, std::chrono::nanoseconds(1000000)), pred);
+            } else if (simulation_deadline) {
+                cv.wait_until(lk, *deadline, [&] { return pred() || game_clock::shifted(); });
+            } else cv.wait_until(lk, *deadline, pred);
         } else cv.wait(lk, pred);
         lk.unlock();
         if (t) park_gate(t);
@@ -780,7 +798,17 @@ HLE(coreinit, OSYieldThread) {
     std::this_thread::yield();
 }
 HLE(coreinit, OSSleepTicks) {
-    threads::park_sleep_until(std::chrono::steady_clock::now() + ticks_to_ns(arg64(c, 3)));
+    if (!mods::fast_forward()) {
+        threads::park_sleep_until(std::chrono::steady_clock::now() + ticks_to_ns(arg64(c, 3)));
+        return;
+    }
+    const uint64_t end = timebase::simulation_now() + arg64(c, 3);
+    for (;;) {
+        const auto now = timebase::simulation_now();
+        if (now >= end) break;
+        const auto left = ticks_to_ns(end - now) / game_clock::rate();
+        threads::park_sleep_until(std::chrono::steady_clock::now() + std::min(left, std::chrono::nanoseconds(1000000)));
+    }
 }
 HLE(coreinit, OSSetThreadName) { st32(arg(c, 0) + osthread::kName, arg(c, 1)); }
 HLE(coreinit, OSSetThreadAffinity) {
@@ -908,8 +936,15 @@ struct HEvent {
     std::deque<HostThread*> waiters;
 };
 static ObjTable<HEvent> g_events;
+static void wake_timed_events() {
+    std::lock_guard<std::mutex> table(g_events.m);
+    for (auto& [address, event] : g_events.map) {
+        std::lock_guard<std::mutex> lock(event->m);
+        event->cv.notify_all();
+    }
+}
 
-static bool event_wait(uint32_t addr, const std::chrono::steady_clock::time_point* deadline) {
+static bool event_wait(uint32_t addr, const std::chrono::steady_clock::time_point* deadline, const uint64_t* simulation_deadline = nullptr) {
     HEvent* ev = g_events.get(addr);
     HostThread* t = t_self;
     std::unique_lock<std::mutex> lk(ev->m);
@@ -918,13 +953,13 @@ static bool event_wait(uint32_t addr, const std::chrono::steady_clock::time_poin
         return true;
     }
     if (!t) {  // not a guest thread
-        bool ok = park_wait(lk, ev->cv, [&] { return ev->signaled; }, W_EVENT, addr, deadline);
+        bool ok = park_wait(lk, ev->cv, [&] { return ev->signaled; }, W_EVENT, addr, deadline, simulation_deadline);
         if (ok && ev->auto_reset) ev->signaled = false;
         return ok;
     }
     t->woken = false;
     ev->waiters.push_back(t);
-    if (park_wait(lk, ev->cv, [&] { return t->woken; }, W_EVENT, addr, deadline)) return true;
+    if (park_wait(lk, ev->cv, [&] { return t->woken; }, W_EVENT, addr, deadline, simulation_deadline)) return true;
     for (auto it = ev->waiters.begin(); it != ev->waiters.end(); ++it)  // timed out
         if (*it == t) { ev->waiters.erase(it); break; }
     return false;
@@ -970,7 +1005,8 @@ HLE(coreinit, OSWaitEvent) {
 }
 HLE(coreinit, OSWaitEventWithTimeout) {
     auto deadline = std::chrono::steady_clock::now() + ticks_to_ns(arg64(c, 5));
-    ret(c, event_wait(arg(c, 0), &deadline));
+    const auto simulation_deadline = timebase::simulation_now() + arg64(c, 5);
+    ret(c, event_wait(arg(c, 0), &deadline, &simulation_deadline));
 }
 
 // OSMessageQueue: messages are 16 bytes
@@ -1103,6 +1139,19 @@ static std::unordered_map<uint32_t, uint64_t> g_alarm_serial;  // alarm -> activ
 static uint64_t g_next_serial = 1;
 static bool g_alarm_thread_started = false;
 
+void timebase::set_clock_rate(unsigned rate) {
+    if (game_clock::rate() == rate) return;
+    game_clock::set_rate(rate);
+    // Wake existing alarms so their real deadlines follow the new rate.
+    {
+        std::lock_guard<std::mutex> lock(g_alarm_mutex);
+        g_alarm_cv.notify_all();
+    }
+    wake_timed_events();
+    g_tick.notify();
+}
+
+
 static void alarm_thread() {
     Cpu* c = threads::make_service_cpu("alarm", 0x20000);
     host::set_thread_name("alarm");
@@ -1116,10 +1165,10 @@ static void alarm_thread() {
             g_alarm_queue.erase(it);
             continue;
         }
-        uint64_t now = timebase::now();
+        uint64_t now = timebase::simulation_now();
         if (it->first > now) {
             threads::SchedulerTick::TimedWait timed(g_tick);
-            g_alarm_cv.wait_for(lk, ticks_to_ns(it->first - now));
+            g_alarm_cv.wait_for(lk, ticks_to_ns(it->first - now) / game_clock::rate());
             continue;
         }
         // busy from here: the alarm queue changes and the callback runs (a save state waits for it)
@@ -1127,7 +1176,7 @@ static void alarm_thread() {
         threads::service_begin();
         lk.lock();
         it = g_alarm_queue.begin();
-        if (it == g_alarm_queue.end() || it->first > timebase::now()) {  // changed meanwhile (save state loaded)
+        if (it == g_alarm_queue.end() || it->first > timebase::simulation_now()) {  // changed meanwhile (save state loaded)
             threads::service_end();
             continue;
         }
@@ -1173,14 +1222,14 @@ HLE(coreinit, OSSetAlarm) {
     uint32_t alarm = arg(c, 0), cb = c->r[7];
     uint64_t delay = arg64(c, 5);
     st32(alarm + 0x0C, cb);
-    arm_alarm(alarm, timebase::now() + delay, 0, cb);
+    arm_alarm(alarm, timebase::simulation_now() + delay, 0, cb);
     ret(c, 1);
 }
 HLE(coreinit, OSSetPeriodicAlarm) {
     uint32_t alarm = arg(c, 0), cb = c->r[9];
     uint64_t start = timebase::to_host(arg64(c, 5)), period = arg64(c, 7);
     st32(alarm + 0x0C, cb);
-    uint64_t now = timebase::now();
+    uint64_t now = timebase::simulation_now();
     uint64_t when = start;
     if (when < now && period) when += ((now - start) / period + 1) * period;
     arm_alarm(alarm, when, period, cb);

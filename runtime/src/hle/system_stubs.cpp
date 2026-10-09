@@ -108,6 +108,7 @@ HLE(vpad, VPADRead) {
     }
     last_p = p;
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
+    if (!input::pro_controller()) mods::fast_forward_input(p.buttons);
     if (input::pro_controller()) {  // GamePad on the table: screen and touch only
         p.buttons = 0;
         p.lx = p.ly = p.rx = p.ry = 0;

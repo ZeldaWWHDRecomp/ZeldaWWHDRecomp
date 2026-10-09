@@ -82,6 +82,7 @@ HLE(padscore, KPADReadEx) {
     }
     last_p = p;
     mods::move_speed_input(p.buttons);
+    mods::fast_forward_input(p.buttons);
     if (!repeat) motion::right_stick(p.rx, p.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
     uint32_t hold = pro_buttons(p.buttons);
     memset(mem::ptr(st), 0, 0xF0);

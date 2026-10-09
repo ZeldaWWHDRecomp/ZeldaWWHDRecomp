@@ -24,6 +24,16 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
+static bool ff_on = false, ff_mute = true;
+static unsigned ff_rate = 2;
+static uint32_t ff_button = 0x40;
+bool fast_forward() { return ff_on; } void set_fast_forward(bool on) { ff_on = on; }
+unsigned fast_forward_rate() { return ff_rate; }
+void set_fast_forward_rate(unsigned r) { if (r >= 2 && r <= 4) ff_rate = r; }
+uint32_t fast_forward_button() { return ff_button; }
+void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_button = b; }
+bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
+
 static bool move_on = false;
 bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
 float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
@@ -352,11 +362,16 @@ int main(int argc, char** argv) {
     assert(enable("climb-preset",true,error));frame(1);assert(state[3] && list()[0].active);
     assert(!remove("climb-preset",error));
     assert(enable("climb-preset",false,error));frame(2);assert(!state[3]);
+    mods::set_fast_forward_rate(3); mods::set_fast_forward_button(0x20); mods::set_fast_forward_mute(false);
+    remember_option("fast-forward.rate", 3); remember_option("fast-forward.button", 0x20); remember_option("fast-forward.mute", 0);
     assert(create_profile("Adventure",error));
+    mods::set_fast_forward_rate(4); mods::set_fast_forward_button(0x80); mods::set_fast_forward_mute(true);
+    remember_option("fast-forward.rate", 4); remember_option("fast-forward.button", 0x80); remember_option("fast-forward.mute", 1);
     assert(enable("climb-preset",true,error));frame(20);assert(state[3]);
     assert(select_profile("Adventure",error));frame(21);assert(!state[3]);
+    assert(mods::fast_forward_rate()==3 && mods::fast_forward_button()==0x20 && !mods::fast_forward_mute());
     assert(current_profile()=="Adventure");assert(!delete_profile("Adventure",error));
-    assert(select_profile("Default",error));assert(delete_profile("Adventure",error));
+    assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(delete_profile("Adventure",error));
     assert(install(package("missing-dep",",\"dependencies\":[{\"id\":\"absent\"}]"),error));
     assert(!enable("missing-dep",true,error));
     assert(remove("missing-dep",error));

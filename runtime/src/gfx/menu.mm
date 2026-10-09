@@ -1,3 +1,4 @@
+#include "../mods/manager.h"
 // Menu bar: app menu (Quit, which asks first while a game is in progress: quit_prompt.mm), a Window
 // menu (Close Window on the TV window quits the same way) and a Graphics menu to switch fixes and
 // enhancements while playing. Each option also has a single-key shortcut in the game window.
@@ -494,6 +495,8 @@ void install_menu(NSWindow* tv) {
            @"Grab and climb any wall (stamina wheel; B or A lets go)");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
            @"Door events (walk-in, opening, closing) run at 4x speed");
+    toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
+           ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
     [gp addItem:[NSMenuItem separatorItem]];

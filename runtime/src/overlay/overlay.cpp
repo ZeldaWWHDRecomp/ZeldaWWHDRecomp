@@ -1351,6 +1351,25 @@ void tab_mods() {
                 float speed = mods::camera_speed();
                 if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
                     hostui::post([speed] { mods::set_camera_speed(speed); hostui::set("mod.direct-camera.speed", std::to_string(speed)); mods::packages::remember_option("direct-camera.speed", speed); });
+            } else if (selected == "fast-forward") {
+                for (unsigned rate : {2u, 3u, 4u}) {
+                    if (rate != 2) ImGui::SameLine();
+                    if (radio(rate == 2 ? "2x" : rate == 3 ? "3x" : "4x", mods::fast_forward_rate() == rate))
+                        hostui::post([rate] { mods::set_fast_forward_rate(rate); hostui::set("mod.fast-forward.rate", std::to_string(rate)); mods::packages::remember_option("fast-forward.rate", rate); });
+                }
+                const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
+                const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
+                for (int i = 0; i < 6; ++i) {
+                    if (i) ImGui::SameLine();
+                    if (radio(names[i], mods::fast_forward_button() == buttons[i])) {
+                        auto button = buttons[i];
+                        hostui::post([button] { mods::set_fast_forward_button(button); hostui::set("mod.fast-forward.button", std::to_string(button)); mods::packages::remember_option("fast-forward.button", button); });
+                    }
+                }
+                bool mute = mods::fast_forward_mute();
+                if (ImGui::Checkbox("Mute audio while fast forwarding", &mute))
+                    hostui::post([mute] { mods::set_fast_forward_mute(mute); hostui::set("mod.fast-forward.mute", mute ? "1" : "0"); mods::packages::remember_option("fast-forward.mute", mute); });
+                help("Hold during a cutscene or conversation. Prompts still wait for input. Rebind the selected game button in Controls. Unmuted audio plays at a higher pitch.");
             } else if (selected == "move-speed") {
                 float speed = mods::move_speed_factor();
                 if (ImGui::SliderFloat("Run/swim multiplier", &speed, 1.25f, 4.f, "%.2fx"))
@@ -1987,6 +2006,7 @@ void set_open(bool open) {
     input::release_keys();  // keys held now belong to the menu (opening) or are not stuck in the game (closing)
     if (!open) g_wait_release = true;
     if (open) {
+        mods::fast_forward_reset();
         mods::mouse_release();
         U.just_opened = true;
         U.slots_time = -1;

@@ -111,11 +111,13 @@ void thaw();
 namespace timebase {
 constexpr uint64_t kTicksPerSec = 62156250ull;  // Espresso bus clock / 4
 uint64_t now();  // host ticks since boot (monotonic; host-side timing)
-// guest-visible time (OSGetTime, mftb, alarms): host time plus an offset that a loaded save state
-// sets so the guest's clock continues from the moment it was saved
+// Guest-visible time (OSGetTime, mftb, alarms): the accelerated simulation clock plus
+// a save-state offset, so a restored guest continues from its saved time.
 uint64_t guest_now();
-uint64_t to_guest(uint64_t host_ticks);
-uint64_t to_host(uint64_t guest_ticks);
+uint64_t simulation_now(); // host time plus accumulated fast-forward time (before state offset)
+void set_clock_rate(unsigned rate);
+uint64_t to_guest(uint64_t simulation_ticks);
+uint64_t to_host(uint64_t guest_ticks); // simulated host ticks, before the save-state offset
 void set_guest_now(uint64_t guest_ticks);
 }
 

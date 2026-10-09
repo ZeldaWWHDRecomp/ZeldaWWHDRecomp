@@ -35,11 +35,13 @@
 #include "guest_addr.h"
 #include "runtime.h"
 #include "true60.h"
+#include "mods/fast_forward.h"
+#include "game_clock.h"
 #include "savestate.h"
 #include "input.h"
 #include "input_map.h"
 
-namespace interp { uint64_t logic_steps(); bool hold_pass(); }
+namespace interp { uint64_t logic_steps(); uint64_t pass_count(); bool hold_pass(); }
 
 namespace true60_test {
 namespace {
@@ -99,8 +101,9 @@ void timing_checks() {
     auto check = [](const char* name, bool ok) { LOG("[test] timed HLE %s %s", name, ok ? "PASS" : "FAIL"); };
     auto sleep = [&](unsigned ms) { pair(3, delay(ms)); invoke("OSSleepTicks"); };
     auto start = std::chrono::steady_clock::now();
+    const auto sleep_start = timebase::guest_now();
     sleep(2);
-    check("OSSleepTicks", std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(2));
+    check("OSSleepTicks", timebase::guest_now() - sleep_start >= delay(2));
     timing_event = mem::host_alloc(0x60, 0x20);
     call.r[3] = timing_event; call.r[4] = 0; call.r[5] = 0;
     invoke("OSInitEvent");
@@ -109,8 +112,9 @@ void timing_checks() {
         return call.r[3] != 0;
     };
     start = std::chrono::steady_clock::now();
+    const auto event_start = timebase::guest_now();
     bool result = wait_event(2);
-    check("event timeout", !result && std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(2));
+    check("event timeout", !result && timebase::guest_now() - event_start >= delay(2));
     call.r[3] = timing_event; invoke("OSSignalEvent");
     check("event signaled", wait_event(2));
     call.r[3] = timing_event; invoke("OSResetEvent");
@@ -122,10 +126,11 @@ void timing_checks() {
     };
     arm(80); // the earlier replacement must interrupt the alarm thread's old deadline
     start = std::chrono::steady_clock::now();
+    const auto alarm_start = timebase::guest_now();
     arm(3);
     result = wait_event(500);
     auto elapsed = std::chrono::steady_clock::now() - start;
-    check("alarm rearm/event wake", result && timing_callbacks == 1 && elapsed >= std::chrono::milliseconds(3) &&
+    check("alarm rearm/event wake", result && timing_callbacks == 1 && timebase::guest_now() - alarm_start >= delay(3) &&
           elapsed < std::chrono::milliseconds(80));
     call.r[3] = alarm; pair(5, timebase::guest_now() + delay(2)); pair(7, delay(2)); call.r[9] = callback;
     invoke("OSSetPeriodicAlarm");
@@ -169,7 +174,8 @@ void tick(double t, bool ended) {
         }
     }
     static bool timing_done = false;
-    if (!timing_done && getenv("WWHD_TEST_TIMED_WAITS") && threads::current()) {
+    if (!timing_done && getenv("WWHD_TEST_TIMED_WAITS") &&
+        t >= (getenv("WWHD_TEST_TIMED_WAITS_AT") ? atof(getenv("WWHD_TEST_TIMED_WAITS_AT")) : 0) && threads::current()) {
         timing_done = true;
         timing_checks();
     }
@@ -436,6 +442,31 @@ namespace true60_test {
 uint64_t g_origin_step = 0;
 // Called at the actual logic-step boundary, including frames that do not poll input.
 void logic_step(uint64_t step) {
+    // Opt-in event/clock regression aid. Raw state snapshots stay in the private test directory.
+    static const char* event_path = getenv("WWHD_EVENT_TIMELINE");
+    static FILE* events = event_path ? fopen(event_path, "w") : nullptr;
+    static unsigned previous_event = 0, completed = 0;
+    if (events && g_origin_step) {
+        const uint32_t play = GD(0x1046F0B0);
+        const unsigned event = ld8(play + 0x5292);
+        const auto clock = game_clock::sample();
+        const auto link = ld32(play + 0x5B34);
+        fprintf(events, "%llu %u %u %u %lld %lld %u %llu\n", (unsigned long long)(step - g_origin_step), event,
+                mods::fast_forward_active(), clock.rate, (long long)clock.host, (long long)clock.guest,
+                interp::hold_pass(), (unsigned long long)interp::pass_count());
+        fflush(events);
+        if (previous_event && !event) {
+            const auto path = std::string(event_path) + ".end" + std::to_string(++completed);
+            dump_saveinfo(path);
+            if (link >= mem::kMem2Start && link < mem::kMem2End) {
+                if (FILE* f = fopen((path + ".link").c_str(), "wb")) {
+                    fwrite(mem::ptr(link + 0x314), 1, 0x20, f);
+                    fclose(f);
+                }
+            }
+        }
+        previous_event = event;
+    }
     static FILE* timeline = [] {
         const char* path = getenv("WWHD_LOGIC_TIMELINE");
         return path ? fopen(path, "w") : nullptr;

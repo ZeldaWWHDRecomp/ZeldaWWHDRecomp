@@ -1,3 +1,5 @@
+#include "mods/fast_forward.h"
+#include "game_clock.h"
 // CoreAudio output (default output AudioUnit) pulling from a single-producer ring buffer.
 // WWHD_AUDIO_DUMP=file.wav additionally records everything pushed by the game.
 // WWHD_NO_AUDIO=1 skips opening the device (the mix still runs and can be dumped).
@@ -148,6 +150,26 @@ void init() {
 }
 
 void push(const int16_t* stereo, int frames) {
+    // AX still processes every 3 ms guest frame and every callback. The output device
+    // stays at 48 kHz: downsample the accelerated stream (pitch rises with speed).
+    std::vector<int16_t> accelerated;
+    const unsigned rate = game_clock::rate();
+    if (rate > 1) {
+        const int count = frames / rate;
+        accelerated.resize(count * 2);
+        const bool silent = mods::fast_forward_mute();
+        for (int i = 0; i < count; ++i) {
+            int l = 0, r = 0;
+            for (unsigned j = 0; j < rate; ++j) {
+                l += stereo[(i * rate + j) * 2];
+                r += stereo[(i * rate + j) * 2 + 1];
+            }
+            accelerated[i * 2] = silent ? 0 : l / int(rate);
+            accelerated[i * 2 + 1] = silent ? 0 : r / int(rate);
+        }
+        stereo = accelerated.data();
+        frames = count;
+    }
     if (g_dump) {
         fwrite(stereo, 4, frames, g_dump);
         g_dump_frames += frames;
