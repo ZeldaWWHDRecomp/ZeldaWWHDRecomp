@@ -71,14 +71,17 @@ def main():
     parser.add_argument('--mode', choices=('30', 'interp60', 'true60'), default='30')
     parser.add_argument('--max-game-sessions', type=int, choices=range(1, 5), default=4)
     parser.add_argument('--timeout', type=int, default=600)
+    parser.add_argument('--min-free-gib', type=int, default=15, help='Explicit local disk floor; 0 disables the gate when authorized')
     args = parser.parse_args()
+    if args.min_free_gib < 0:
+        parser.error('Disk floor must be nonnegative')
     args.out = args.out.resolve()
     if args.out.is_relative_to(REPO):
         parser.error('Private lifecycle output must be outside the source checkout')
     if not args.game_sources.is_file() or args.game_sources.is_symlink():
         parser.error('Explicit private game-source JSON is required ({} for mods without game_path)')
-    if shutil.disk_usage(args.out.parent).free < 15 * 1024**3:
-        parser.error('Free disk is below 15 GiB')
+    if shutil.disk_usage(args.out.parent).free < args.min_free_gib * 1024**3:
+        parser.error('Free disk is below the configured floor')
     release = args.release.resolve()
     data = (args.data_dir or release / 'data').resolve()
     release_manifest = json.loads((release / 'sdk/manifest.json').read_text())
@@ -148,8 +151,8 @@ def main():
                         raise RuntimeError(name + ' setup diagnostic failed; inspect private runtime log')
                     if time.monotonic() > deadline:
                         raise RuntimeError(name + ' timed out')
-                    if shutil.disk_usage(phase).free < 15 * 1024**3:
-                        raise RuntimeError('Free disk fell below 15 GiB')
+                    if shutil.disk_usage(phase).free < args.min_free_gib * 1024**3:
+                        raise RuntimeError('Free disk fell below the configured floor')
                     if len(gates.other_games(process.pid)) >= args.max_game_sessions or gates.other_benchmarks():
                         raise RuntimeError('Functional game limit reached or benchmark started')
                     time.sleep(1)
@@ -201,7 +204,7 @@ def main():
     removed = run('disabled-remove-after-restart', 1, {'WWHD_TEST_MOD_REMOVE': ident})
     assert not phases['disabled-remove-after-restart']['guest_loaded']
     assert '[mods] removed ' + ident in removed and not (manager / 'Mods' / ident).exists()
-    result = {'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
+    result = {'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
               'setup_receipts_verified': True, 'disabled_until_restart': True,
               'package_sha256': hashlib.sha256(args.package.read_bytes()).hexdigest(),
               'launcher_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
