@@ -14,7 +14,8 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 - **Fixed: Cemu graphics packs for the European version** were refused with "Cemu pack does not
   target WWHD USA" (issue #103). A pack is now accepted when its `titleIds` name the version you
-  installed (USA `0005000010143500` or EU `0005000010143600`).
+  installed (USA `0005000010143500` or EU `0005000010143600`). SDCafiine-style folders named after the
+  title ID follow the same rule.
 
 - **`WWHD_SHADOW_FIX` is gone; use `WWHD_SHADOW_SCALE=1`** for console-sized shadow maps (less GPU
   memory at 2x/3x). Since v0.2.9 both sizes look practically the same (issue #67).
