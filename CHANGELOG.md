@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: with Fast scene changes on, Grandma kept her back to Link when handing over the shield**
+  (issue #116, found and fixed by GreenNaugahyde). The mod no longer creates the new scene's
+  characters ahead of time; fades and scene changes stay almost as fast.
 - **Fixed: crash when entering the Puppet Ganon room** (issue #90, Vulkan). The room uses a colour
   texture for a depth comparison, which the Vulkan renderer didn't support, so it stopped with an error.
   It now handles it. Such internal errors are also no longer lost: they are written to the log and
