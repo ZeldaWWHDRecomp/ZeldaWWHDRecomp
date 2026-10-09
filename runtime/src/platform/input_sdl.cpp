@@ -1,13 +1,16 @@
+#include "../mods/fast_forward.h"
 // SDL3 keyboard/gamepad input. Stable key IDs preserve existing controls.json mappings.
 #include "input_sdl.h"
 #include "keycodes.h"
 #include "mouse_sdl.h"
 #include "../input.h"
+#include "../audio_out.h"
 #include "../input_map.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../true60.h"
 #include "../screenshot.h"
 #include "../gfx/vulkan/settings.h"
 #include "../overlay/hostui.h"
@@ -27,6 +30,7 @@
 #include <vector>
 namespace render { uint64_t frame_count(); }
 namespace gfxvk { bool graphics_hotkey(char key, bool activate); }
+namespace gfx { void display_plus_pressed(); }  // display_modes.cpp: the GamePad screen while paused
 namespace mods { void filter_pad(input::PadState&); }
 namespace input {
 static std::mutex g_mu;
@@ -35,6 +39,7 @@ static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
 static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
+static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
 static SDL_Window* g_prompt_window=nullptr;
 static std::function<void(bool,std::u16string)> g_pending,g_done;
@@ -155,7 +160,7 @@ static int keycode(SDL_Scancode code) {
  }
 }
 void set_touch(bool down,float x,float y){std::lock_guard lk(g_mu);g_touch=down;g_tx=x;g_ty=y;}
-void release_keys(){std::lock_guard lk(g_mu);memset(g_keys,0,sizeof g_keys);g_touch=false;}
+void release_keys(){mods::fast_forward_reset();std::lock_guard lk(g_mu);memset(g_keys,0,sizeof g_keys);g_touch=false;}
 void held_keys(bool* keys){std::lock_guard lk(g_mu);for(int i=0;i<256;i++)keys[i]=g_keys[i]||g_script_keys[i];}
 void controller_values(float* out){std::lock_guard lk(g_mu);std::copy(std::begin(g_values),std::end(g_values),out);}
 void host_controller_values(float* out){controller_values(out);}
@@ -171,8 +176,13 @@ static bool overlay_event(const SDL_Event& event){
  case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:{
   if(event.key.windowID!=tv)return false;
   int code=keycode(event.key.scancode);
+  // paste in an overlay text field: Dear ImGui reads the clipboard text the host passes here
+  if(event.type==SDL_EVENT_KEY_DOWN&&event.key.scancode==SDL_SCANCODE_V&&(event.key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))&&overlay::wants_text()){
+   char* clip=SDL_GetClipboardText();overlay::set_clipboard_text(clip?clip:"");SDL_free(clip);
+  }
   return code>=0&&overlay::key(code,event.type==SDL_EVENT_KEY_DOWN,event.key.repeat,overlay_mods(event.key.mod));
  }
+ case SDL_EVENT_TEXT_INPUT: return overlay::text(event.text.text);  // typed into an overlay text field
  case SDL_EVENT_MOUSE_MOTION:{
   if(event.motion.windowID!=tv)return false;
   int w=1,h=1;SDL_GetWindowSize(g_prompt_window,&w,&h);
@@ -211,6 +221,9 @@ static std::map<SDL_JoystickID,Uint16> g_rumble_sent;  // the level each control
 static std::atomic<bool> g_rumble_quit{false};
 static std::atomic<Uint64> g_rumble_update_ms{0};  // SDL_GetTicks of the latest update
 static void rumble_all_locked(Uint16 level,Uint32 ms){
+ // after SDL_Quit (a host that shuts SDL down, the tests) the gamepads are gone: an atexit or the
+ // watchdog must not touch them (SDL 3.4 frees them; it crashed input_sdl_test at exit on Linux)
+ if(!SDL_WasInit(SDL_INIT_GAMEPAD))return;
  for(auto id:g_rumble_controllers){
   auto i=g_controllers.find(id);
   if(i==g_controllers.end()||!SDL_GamepadConnected(i->second))continue;
@@ -307,13 +320,52 @@ static void sensor_event(const SDL_GamepadSensorEvent& e){
  auto a=g_accel.find(e.which);if(a==g_accel.end())return;
  motion::controller_sample((uint64_t)e.which,e.sensor_timestamp,e.data,a->second.data());
 }
+// What the dominant pad (first connected still present) has printed on its face buttons, in the
+// order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
+static void dominant_labels(input_map::FaceLabel out[4]){
+ using FL=input_map::FaceLabel;
+ for(int i=0;i<4;i++)out[i]=FL::kUnknown;
+ std::lock_guard lk(g_pads_mu);
+ for(SDL_JoystickID id:g_order){
+  if(SDL_IsJoystickVirtual(id))continue;  // #88's on-screen pad is not a pad to follow for labels
+  auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
+  SDL_Gamepad* pad=i->second;
+  auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{
+   switch(SDL_GetGamepadButtonLabel(pad,b)){
+   case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
+   case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
+   case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
+   case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
+   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
+   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
+   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
+   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
+   default:return FL::kUnknown;}};
+  out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+  out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  return;  // one pad decides, the first connected
+ }
+}
+// outside g_pads_mu: input_map may write controls.json
+static void note_dominant_labels(){
+ input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
+}
 static void open_controller(SDL_JoystickID id){
  std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
- if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;
+ if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;g_order.push_back(id);
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
   if(SDL_RumbleGamepad(pad,0,0,0))g_rumble_controllers.insert(id);
   if(g_sensors_on)set_sensors_locked(pad,true);}
+}
+static void close_controller(SDL_JoystickID id){
+ {std::lock_guard lk(g_pads_mu);
+  auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}
+  std::erase(g_order,id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);
+  g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
+ motion::controller_gone(id);
+ note_dominant_labels();  // the dominant pad may have changed
 }
 void init(){
  input_map::load_startup();
@@ -321,6 +373,7 @@ void init(){
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
   int count=0;auto* ids=SDL_GetGamepads(&count);for(int i=0;i<count;i++)open_controller(ids[i]);SDL_free(ids);
+  note_dominant_labels();  // before the first read, so Automatic is settled at startup
   SDL_AddEventWatch(rumble_quit_watch,nullptr);
   atexit(stop_rumble_now);  // std::exit: the game's exit(), its main thread returned
   std::thread(rumble_watchdog).detach();
@@ -418,10 +471,11 @@ static bool text_entry_event(const SDL_Event& event){
  }
 }
 void handle_event(const SDL_Event& event){
+ if((event.type==SDL_EVENT_AUDIO_DEVICE_ADDED||event.type==SDL_EVENT_AUDIO_DEVICE_REMOVED||event.type==SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED)&&!event.adevice.recording)audio::flush();
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
- if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);g_accel.erase(event.gdevice.which);g_sensor_seen.erase(event.gdevice.which);g_sensor_kick.erase(event.gdevice.which);motion::controller_gone(event.gdevice.which);}
+ if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
  if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
  if(event.type==SDL_EVENT_WINDOW_FOCUS_LOST)release_keys();
  if(text_entry_event(event))return;
@@ -488,8 +542,9 @@ void update(){
  if(cancelled)cancelled(false,{});
  // SDL text input in every game window while the overlay's text prompt shows (typed text, input methods;
  // on Android it brings up the system keyboard); the input method's candidates open over the prompt
+ // (also while a text field of the settings overlay has the keyboard)
  static bool entry_text=false;
- if(text_entry::active()!=entry_text&&!g_done){
+ if((text_entry::active()||overlay::wants_text())!=entry_text&&!g_done){
   entry_text=!entry_text;int n=0;
   if(SDL_Window** ws=SDL_GetWindows(&n)){
    for(int i=0;i<n;i++){
@@ -515,7 +570,11 @@ void update(){
   auto stick=[&](SDL_GamepadAxis ax,SDL_GamepadAxis ay,int up,int down,int left,int right){float x=SDL_GetGamepadAxis(pad,ax)/32768.f,y=SDL_GetGamepadAxis(pad,ay)/32768.f;put(right,std::max(x,0.f));put(left,std::max(-x,0.f));put(up,std::max(-y,0.f));put(down,std::max(y,0.f));};
   stick(SDL_GAMEPAD_AXIS_LEFTX,SDL_GAMEPAD_AXIS_LEFTY,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight);stick(SDL_GAMEPAD_AXIS_RIGHTX,SDL_GAMEPAD_AXIS_RIGHTY,kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight);
  }
- auto state=input_map::controller_state(input_map::current(),v);std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
+ auto state=input_map::controller_state(input_map::current(),v);
+ // + went down: the view may switch to the GamePad screen while the game is paused
+ // (not while the settings overlay or the text prompt takes the buttons: Start acts there)
+ {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus&&!overlay::blocks_input())gfx::display_plus_pressed();plus=now;}
+ std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
  if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(v,g_keys);screenshot::poll_controller(v);}
 }
 void prompt_text(const std::u16string& initial,int max_len,std::function<void(bool,std::u16string)> done){std::lock_guard lk(g_mu);g_initial=initial;g_pending_max_len=std::max(0,max_len);if(g_initial.size()>(size_t)g_pending_max_len)g_initial.resize(g_pending_max_len);g_pending=std::move(done);}
@@ -625,14 +684,39 @@ struct Scenario {
 }  // namespace
 }  // namespace input
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
+namespace true60_test { void set_origin_step(uint64_t s); void tick(double t, bool ended); }
 namespace input {
 static void apply_scenario(PadState& s) {
-    static const Scenario sc;
-    if (!sc.origin || render::frame_count() < sc.origin) return;
+    static Scenario sc;
+    // WWHD_TEST_ORIGIN_LOAD=n: the scenario starts n logic steps after the last save-state load (a
+    // load completes asynchronously, so a fixed frame can fall a step apart between two runs)
+    static const char* ol = getenv("WWHD_TEST_ORIGIN_LOAD");
+    uint64_t ol_step = 0;
+    // (the clock is the number of Link's full-pass executes since the load, true60::link_steps: the
+    // pass at which a load lands differs between runs, and the steps after it are the game's)
+    if (ol) {
+        if (!true60::state_loaded()) return;
+        static uint64_t found = 0;
+        if (!found) {
+            int64_t past = (int64_t)true60::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
+            if (past < 0) return;
+            found = interp::logic_steps() - (uint64_t)past;  // the logic step at which the count reached it
+        }
+        ol_step = found;
+        sc.origin = 1;
+    }
+    if (!sc.origin || (!ol && render::frame_count() < sc.origin)) return;
     // scenario time = game time: full logic steps / 30 (frame-time hitches don't shift the input)
-    static const uint64_t s0 = [] {
+    static const uint64_t s0 = [ol_step] {
+        if (ol_step) {
+            LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
+                (unsigned long long)ol_step);
+            true60_test::set_origin_step(ol_step);
+            return ol_step;
+        }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
             (unsigned long long)interp::logic_steps());
+        true60_test::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
     double t = (double)(interp::logic_steps() - s0) / 30.0;
@@ -647,6 +731,7 @@ static void apply_scenario(PadState& s) {
         LOG("[test] t=%.3f s: end", t);
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
+    true60_test::tick(t, sc.end > 0 && t >= sc.end);
     for (auto& p : sc.sticks)
         if (t >= p.from && t < p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : sc.rsticks)

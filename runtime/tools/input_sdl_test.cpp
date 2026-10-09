@@ -10,14 +10,20 @@
 #include "input_map.h"
 #include "rumble.h"
 #include "platform/input_sdl.h"
+static int audioResets=0;
+namespace audio {void flush(){++audioResets;}}
 static int savedSlot=0, loadedSlot=0, saveRequests=0, loadRequests=0;
 namespace ss { void request_save(int slot){savedSlot=slot;++saveRequests;} void request_load(int slot){loadedSlot=slot;++loadRequests;} }
 static int graphicsRequests=0; static char graphicsKey=0;
 namespace render { uint64_t frame_count(){return 0;} }
 namespace gfxvk { bool graphics_hotkey(char key,bool activate){if(activate){++graphicsRequests;graphicsKey=key;}return true;} }
+namespace gfx { int plusPresses=0; void display_plus_pressed(){++plusPresses;} }  // display_modes.cpp: GamePad screen while paused
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return false;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} }
 namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
+namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
+namespace true60_test { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace mods { void fast_forward_reset(){} }  // fast forward (mods/fast_forward.cpp): releases the hold on focus loss
 void log_msg(const char*,...){}
 // settings overlay: closed (keys reach the game and its shortcuts as before); the game's text prompt
 // (overlay/text_entry.h) shows while promptShown: overlay::key takes every key then, as the real one does
@@ -25,7 +31,8 @@ static bool promptShown=false;static int promptKeys=0;static std::string promptT
 static bool overlayOpen=false;
 namespace overlay { bool key(int,bool,bool,int){if(promptShown)++promptKeys;return promptShown;} bool is_open(){return overlayOpen;} bool blocks_input(){return promptShown;}
  bool captures(){return promptShown;}
- bool mouse_move(float,float){return false;} bool mouse_button(int,bool){return false;} bool mouse_wheel(float,float){return false;} }
+ bool mouse_move(float,float){return false;} bool mouse_button(int,bool){return false;} bool mouse_wheel(float,float){return false;}
+ bool text(const char*){return false;} void set_clipboard_text(const char*){} bool wants_text(){return false;} }
 namespace text_entry { bool active(){return promptShown;} void text(const char* s){promptText+=s;} void preedit(const char*){} }
 namespace hostui { void graphics_changed(){} }
 // screenshot.h: the binding as the real one (keys bound to Screenshot take the key)
@@ -43,6 +50,10 @@ static void set_env(const char* name,const char* value){
 int main(){
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
  assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));
+ SDL_Event device{};device.type=SDL_EVENT_AUDIO_DEVICE_REMOVED;device.adevice.recording=false;
+ input::handle_event(device);assert(audioResets==1);
+ device.adevice.recording=true;input::handle_event(device);assert(audioResets==1);
+ device.adevice.recording=false;device.type=SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED;input::handle_event(device);assert(audioResets==2);
  input::init();input_map::set_current(input_map::Mapping::defaults(),false);
  auto key=[](SDL_Scancode code,bool down){SDL_Event e{};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.scancode=code;input::handle_event(e);};
  key(SDL_SCANCODE_K,true);assert(input::read().buttons&input::kA);
@@ -135,6 +146,49 @@ int main(){
   assert(motorLow==0);puts("input_sdl_test: no window has the keyboard here, rumble checked with the motors still only");
  }
  rumble::reset();
+ // Issue #40: real SDL virtual gamepads, through polling and configured bindings.
+ // Dummy video keeps the test headless; enable joystick updates without focus.
+ SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+ input::release_keys();input_map::set_current(input_map::Mapping::defaults(),false);
+ for(const auto layout:{SDL_GAMEPAD_TYPE_XBOXONE,SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO}){
+  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;
+  d.vendor_id=layout==SDL_GAMEPAD_TYPE_XBOXONE?0x045e:0x057e;
+  d.product_id=layout==SDL_GAMEPAD_TYPE_XBOXONE?0x02ea:0x2009;
+  d.name=layout==SDL_GAMEPAD_TYPE_XBOXONE?"Xbox virtual #40":"Switch Pro virtual #40";
+  auto id=SDL_AttachVirtualJoystick(&d);assert(id);
+  for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+  auto* joystick=SDL_OpenJoystick(id);assert(joystick);
+  assert(SDL_GetGamepadType(SDL_GetGamepadFromID(id))==layout);
+  auto poll=[&](){SDL_UpdateJoysticks();for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);input::update();return input::read();};
+  const SDL_GamepadButton dirs[]={SDL_GAMEPAD_BUTTON_DPAD_UP,SDL_GAMEPAD_BUTTON_DPAD_DOWN,SDL_GAMEPAD_BUTTON_DPAD_LEFT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT};
+  const uint32_t bits[]={input::kUp,input::kDown,input::kLeft,input::kRight};
+  for(bool pro:{false,true})for(auto face:{input_map::FaceLayout::kPosition,input_map::FaceLayout::kLabels}){
+   input::set_pro_controller(pro);auto m=input_map::Mapping::defaults();input_map::apply_face_layout(m,face);input_map::set_current(m,false);
+   for(int i=0;i<4;++i){
+    assert(SDL_SetJoystickVirtualButton(joystick,dirs[i],true));auto p=poll();assert(p.buttons==bits[i]);assert(p.lx==0&&p.ly==0);
+    printf("#40 layout=%d pro=%d face=%d dpad=%d buttons=%08X left=%.3f,%.3f\n",int(layout),pro,int(face),i,p.buttons,p.lx,p.ly);
+    assert(SDL_SetJoystickVirtualButton(joystick,dirs[i],false));assert(poll().buttons==0);
+    for(bool right:{false,true}){
+     const auto axis=right?(i<2?SDL_GAMEPAD_AXIS_RIGHTY:SDL_GAMEPAD_AXIS_RIGHTX):(i<2?SDL_GAMEPAD_AXIS_LEFTY:SDL_GAMEPAD_AXIS_LEFTX);
+     assert(SDL_SetJoystickVirtualAxis(joystick,axis,(i==0||i==2)?-32768:32767));p=poll();
+     const float x=i==2?-1.f:i==3?1.f:0.f,y=i==0?1.f:i==1?-1.f:0.f;
+     assert(std::abs((right?p.rx:p.lx)-x)<0.001f&&std::abs((right?p.ry:p.ly)-y)<0.001f&&p.buttons==0);
+     printf("#40 layout=%d pro=%d face=%d stick=%s direction=%d buttons=%08X axes=%.3f,%.3f\n",int(layout),pro,int(face),right?"right":"left",i,p.buttons,right?p.rx:p.lx,right?p.ry:p.ly);
+     assert(SDL_SetJoystickVirtualAxis(joystick,axis,0));p=poll();assert(p.lx==0&&p.ly==0&&p.rx==0&&p.ry==0);
+    }
+   }
+  }
+  // Binding edits must also reach the game: route D-pad down to stick-down.
+  auto rebound=input_map::Mapping::defaults();rebound.pad[input_map::kDDown]=input_map::kPadNone;
+  rebound.pad[input_map::kLDown]=input_map::kPadDDown;input_map::set_current(rebound,false);
+  assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_DPAD_DOWN,true));
+  auto reboundState=poll();assert(reboundState.buttons==0&&reboundState.ly==-1);
+  assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_DPAD_DOWN,false));poll();
+  input_map::set_current(input_map::Mapping::defaults(),false);
+  SDL_CloseJoystick(joystick);assert(SDL_DetachVirtualJoystick(id));poll();
+ }
+ input::set_pro_controller(false);
  SDL_DestroyWindow(controls);SDL_DestroyWindow(game);input::set_prompt_window(nullptr);
  SDL_Quit();puts("input_sdl_test: keyboard mapping, focus, touch, Pro mode, guarded save-state shortcuts, screenshot binding, text prompt routing, rumble passed");
 }

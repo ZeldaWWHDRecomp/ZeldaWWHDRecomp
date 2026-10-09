@@ -28,15 +28,20 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 
 #include "guest_addr.h"
 #include "runtime.h"
 #include "true60.h"
+#include "mods/fast_forward.h"
+#include "game_clock.h"
 #include "savestate.h"
+#include "input.h"
+#include "input_map.h"
 
-namespace interp { uint64_t logic_steps(); bool hold_pass(); }
+namespace interp { uint64_t logic_steps(); uint64_t pass_count(); bool hold_pass(); }
 
 namespace true60_test {
 namespace {
@@ -78,10 +83,146 @@ void dump_saveinfo(const std::string& path) {
         LOG("[test] save info (%08X) written to %s", p, path.c_str());
     }
 }
+// Opt-in integration checks use the actual coreinit HLE on the guest main thread.
+// Only host-created scratch objects and a host callback are used; no game data is logged.
+std::atomic<unsigned> timing_callbacks{0};
+uint32_t timing_event = 0;
+void timing_callback(Cpu* c) {
+    ++timing_callbacks;
+    Cpu call = *c;
+    call.r[3] = timing_event;
+    hle_find("coreinit", "OSSignalEvent")(&call);
+}
+void timing_checks() {
+    Cpu call = *threads::current();
+    auto invoke = [&](const char* name) { hle_find("coreinit", name)(&call); };
+    auto delay = [&](unsigned ms) { return timebase::kTicksPerSec * ms / 1000; };
+    auto pair = [&](int r, uint64_t ticks) { call.r[r] = uint32_t(ticks >> 32); call.r[r + 1] = uint32_t(ticks); };
+    auto check = [](const char* name, bool ok) { LOG("[test] timed HLE %s %s", name, ok ? "PASS" : "FAIL"); };
+    auto sleep = [&](unsigned ms) { pair(3, delay(ms)); invoke("OSSleepTicks"); };
+    auto start = std::chrono::steady_clock::now();
+    const auto sleep_start = timebase::guest_now();
+    sleep(2);
+    check("OSSleepTicks", timebase::guest_now() - sleep_start >= delay(2));
+    timing_event = mem::host_alloc(0x60, 0x20);
+    call.r[3] = timing_event; call.r[4] = 0; call.r[5] = 0;
+    invoke("OSInitEvent");
+    auto wait_event = [&](unsigned ms) {
+        call.r[3] = timing_event; pair(5, delay(ms)); invoke("OSWaitEventWithTimeout");
+        return call.r[3] != 0;
+    };
+    start = std::chrono::steady_clock::now();
+    const auto event_start = timebase::guest_now();
+    bool result = wait_event(2);
+    check("event timeout", !result && timebase::guest_now() - event_start >= delay(2));
+    call.r[3] = timing_event; invoke("OSSignalEvent");
+    check("event signaled", wait_event(2));
+    call.r[3] = timing_event; invoke("OSResetEvent");
+    uint32_t alarm = mem::host_alloc(0x60, 0x20);
+    uint32_t callback = dispatch::register_host(timing_callback, "timed-wait-test");
+    call.r[3] = alarm; invoke("OSCreateAlarm");
+    auto arm = [&](unsigned ms) {
+        call.r[3] = alarm; pair(5, delay(ms)); call.r[7] = callback; invoke("OSSetAlarm");
+    };
+    arm(80); // the earlier replacement must interrupt the alarm thread's old deadline
+    start = std::chrono::steady_clock::now();
+    const auto alarm_start = timebase::guest_now();
+    arm(3);
+    result = wait_event(500);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    check("alarm rearm/event wake", result && timing_callbacks == 1 && timebase::guest_now() - alarm_start >= delay(3) &&
+          elapsed < std::chrono::milliseconds(80));
+    call.r[3] = alarm; pair(5, timebase::guest_now() + delay(2)); pair(7, delay(2)); call.r[9] = callback;
+    invoke("OSSetPeriodicAlarm");
+    sleep(12);
+    check("periodic alarm", timing_callbacks >= 3);
+    call.r[3] = alarm; invoke("OSCancelAlarm");
+    sleep(5); // a callback already dispatched at cancellation may finish
+    auto count = timing_callbacks.load();
+    sleep(5);
+    check("alarm cancellation", timing_callbacks == count);
+}
 }  // namespace
 
 // called with the scenario time on every controller read (input.mm)
 void tick(double t, bool ended) {
+    // Opt-in live preset regression: WWHD_TEST_CONTROLS=t:path loads a private
+    // controls JSON once at scenario time t. Apply through the same live mapping
+    // setter as the Controls window, without writing the user's controls file.
+    struct ControlsReload { double at = 0; std::string path; bool done = false; };
+    static ControlsReload controls = [] {
+        ControlsReload result;
+        if (const char* value = getenv("WWHD_TEST_CONTROLS")) {
+            char* end = nullptr;
+            result.at = strtod(value, &end);
+            if (end != value && std::isfinite(result.at) && result.at >= 0 && *end == ':' && end[1])
+                result.path = end + 1; // retain colons in Windows drive paths
+            else
+                LOG("[test] invalid WWHD_TEST_CONTROLS (expected seconds:path)");
+        }
+        return result;
+    }();
+    if (!controls.done && !controls.path.empty() && t >= controls.at) {
+        controls.done = true;
+        input_map::Mapping mapping;
+        std::string error;
+        if (input_map::load_file(controls.path, mapping, &error)) {
+            input_map::set_current(mapping, false);
+            LOG("[test] controls reload PASS at %.3f generation %u", t, input_map::generation());
+        } else {
+            LOG("[test] controls reload FAIL at %.3f: %s", t, error.c_str());
+        }
+    }
+    static bool timing_done = false;
+    if (!timing_done && getenv("WWHD_TEST_TIMED_WAITS") &&
+        t >= (getenv("WWHD_TEST_TIMED_WAITS_AT") ? atof(getenv("WWHD_TEST_TIMED_WAITS_AT")) : 0) && threads::current()) {
+        timing_done = true;
+        timing_checks();
+    }
+
+    // Host-only controller-mode regression script: t:mode (1 GamePad, 2 Pro).
+    auto parse_modes = [](const char* name) {
+        std::vector<std::pair<double, int>> modes;
+        for (const char* e = getenv(name); e && *e;) {
+            double at; int mode, n;
+            if (sscanf(e, "%lf:%d%n", &at, &mode, &n) != 2 || (mode != 1 && mode != 2)) break;
+            modes.emplace_back(at, mode);
+            e += n;
+            if (*e != ',') break;
+            ++e;
+        }
+        return modes;
+    };
+    static auto controllers = parse_modes("WWHD_TEST_CONTROLLER");
+    static auto checks = parse_modes("WWHD_TEST_CONTROLLER_CHECK");
+    for (auto& [at, mode] : controllers) if (mode && t >= at) {
+        input::set_pro_controller(mode == 2);
+        LOG("[test] controller set %d at %.3f", mode, t);
+        mode = 0;
+    }
+    for (auto& [at, mode] : checks) if (mode && t >= at) {
+        LOG("[test] controller check %s expected %d actual %d at %.3f",
+            input::pro_controller() == (mode == 2) ? "PASS" : "FAIL", mode, input::pro_controller() ? 2 : 1, t);
+        mode = 0;
+    }
+    // WWHD_TEST_SAVE=t:slot,... uses the selected kind (WWHD_FULL_SAVE_STATES=0|1).
+    static std::vector<std::pair<double, int>> saves = [] {
+        std::vector<std::pair<double, int>> v;
+        for (const char* e = getenv("WWHD_TEST_SAVE"); e && *e;) {
+            double at; int slot, n;
+            if (sscanf(e, "%lf:%d%n", &at, &slot, &n) != 2) break;
+            v.emplace_back(at, slot);
+            e += n;
+            if (*e != ',') break;
+            ++e;
+        }
+        return v;
+    }();
+    for (auto& [at, slot] : saves) if (slot > 0 && t >= at) {
+        ss::request_save(slot);
+        LOG("[test] t=%.3f save slot %d", t, slot);
+        slot = 0;
+    }
     // WWHD_TEST_LOAD=t:slot,... loads a save state at scenario time t (once each)
     static std::vector<std::pair<double, int>> loads = [] {
         std::vector<std::pair<double, int>> v;
@@ -299,7 +440,44 @@ void before_execute_link(uint32_t proc) {
 
 namespace true60_test {
 uint64_t g_origin_step = 0;
-void set_origin_step(uint64_t s) { g_origin_step = s; }
+// Called at the actual logic-step boundary, including frames that do not poll input.
+void logic_step(uint64_t step) {
+    // Opt-in event/clock regression aid. Raw state snapshots stay in the private test directory.
+    static const char* event_path = getenv("WWHD_EVENT_TIMELINE");
+    static FILE* events = event_path ? fopen(event_path, "w") : nullptr;
+    static unsigned previous_event = 0, completed = 0;
+    if (events && g_origin_step) {
+        const uint32_t play = GD(0x1046F0B0);
+        const unsigned event = ld8(play + 0x5292);
+        const auto clock = game_clock::sample();
+        const auto link = ld32(play + 0x5B34);
+        fprintf(events, "%llu %u %u %u %lld %lld %u %llu\n", (unsigned long long)(step - g_origin_step), event,
+                mods::fast_forward_active(), clock.rate, (long long)clock.host, (long long)clock.guest,
+                interp::hold_pass(), (unsigned long long)interp::pass_count());
+        fflush(events);
+        if (previous_event && !event) {
+            const auto path = std::string(event_path) + ".end" + std::to_string(++completed);
+            dump_saveinfo(path);
+            if (link >= mem::kMem2Start && link < mem::kMem2End) {
+                if (FILE* f = fopen((path + ".link").c_str(), "wb")) {
+                    fwrite(mem::ptr(link + 0x314), 1, 0x20, f);
+                    fclose(f);
+                }
+            }
+        }
+        previous_event = event;
+    }
+    static FILE* timeline = [] {
+        const char* path = getenv("WWHD_LOGIC_TIMELINE");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    if (!timeline || !g_origin_step) return;
+    // Only step numbers and clocks: no guest memory or save data.
+    fprintf(timeline, "%llu %.9f %.9f\n", (unsigned long long)step, (step - g_origin_step) / 30.0,
+            timebase::now() / double(timebase::kTicksPerSec));
+    fflush(timeline);
+}
+void set_origin_step(uint64_t s) { g_origin_step = s; logic_step(s); }
 uint64_t origin_step() { return g_origin_step; }
 }
 

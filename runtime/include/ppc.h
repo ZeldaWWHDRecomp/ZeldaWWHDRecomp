@@ -32,12 +32,15 @@ typedef struct Cpu {
     uint32_t res_addr, res_val; /* lwarx/stwcx. reservation */
     uint32_t pc;               /* target for indirect dispatch */
     uint32_t core;             /* host-side: which emulated core this thread runs on */
+    uint32_t mod_skip;         /* guest mods: the next entry of this function runs its original code
+                                  (fills former padding: sizeof(Cpu) and save states are unchanged) */
     void* thread;              /* host-side: owning guest thread object */
 } Cpu;
 
 typedef void (*PpcFunc)(Cpu*);
 
 /* runtime entry points */
+void ppc_host_call(Cpu* c, PpcFunc fn);           /* guarded native hook/site entry */
 void ppc_dispatch(Cpu* c);                       /* call/jump to c->pc */
 void ppc_unimplemented(Cpu* c, uint32_t addr, uint32_t insn);
 void ppc_trap(Cpu* c, uint32_t addr);
@@ -56,6 +59,25 @@ void ppc_preempt(Cpu* c);
 #define PPC_ENTER(a) do {                                                     \
         if (__builtin_expect(g_ppc_trace, 0)) ppc_trace_enter(a);             \
         if (__builtin_expect(g_core_preempt[c->core], 0)) ppc_preempt(c);     \
+    } while (0)
+
+/* guest mods (docs/mod-sdk-v2.md; game code generated with recomp.py --mod-hooks): every function body
+   checks its flag byte; a set flag means a mod hooks or replaces it, and ppc_mod_run (c->pc = the
+   function) runs the mods' hooks and the replacement or the original. The mod runtime calls the
+   original code by setting c->mod_skip first. Code without --mod-hooks emits no check or hook metadata. */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((visibility("hidden")))
+#endif
+extern uint8_t* g_mod_hook_flags;
+void ppc_mod_run(Cpu* c);
+/* Do not mark this branch unlikely: Apple clang 17 can outline a cold hook
+   return into an i1-returning helper, invalidating the void musttail call.
+   Keep the entry branch ordinary so musttail stays in its original function. */
+#define PPC_MOD_HOOK(i, a) do {                                               \
+        if (g_mod_hook_flags[i]) {                                           \
+            if (c->mod_skip != (a)) { c->pc = (a); MUSTTAIL return ppc_mod_run(c); } \
+            c->mod_skip = 0;                                                  \
+        }                                                                     \
     } while (0)
 
 /* loop back-edge (every backward branch inside a function): a compiler barrier. Guest memory is

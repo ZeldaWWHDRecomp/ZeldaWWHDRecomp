@@ -11,8 +11,12 @@
 #include <sys/stat.h>
 #endif
 #include <ctime>
+#include <mutex>
+#include <csignal>
 #include <filesystem>
 #include "guest_addr.h"
+#include "mods/guest_mods.h"
+#include "mods/code_mods.h"
 #include "platform/host.h"
 #ifdef _WIN32
 #include <timeapi.h>
@@ -21,8 +25,12 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
+#include <algorithm>
 
 #include "gfx/renderer.h"
+#include "overlay/hostui.h"
 #include "mods/cemu_pack.h"
 #include "mods/content.h"
 #include "gx2/gx2.h"
@@ -127,6 +135,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
     crash_addr::host_backtrace(fd, crash_out, uctx);
     crash_context::note(fd, crash_out);
     crashrec::crash_note(fd, crash_out);
+    exception_report::note(fd, crash_out);
     if (fd >= 0) {
         crash_log_only(fd, "\n--- last log lines ---\n", 24);
         log_ring_write(fd, crash_log_only);
@@ -155,6 +164,7 @@ static void install_crash_handler() {
     sigaction(SIGBUS, &sa, nullptr);
     sigaction(SIGILL, &sa, nullptr);
     sigaction(SIGFPE, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
     crash_addr::prime();
 }
 
@@ -196,12 +206,22 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
     crash_addr::host_backtrace(fd,win_crash_out,ex->ContextRecord);
     crash_context::note(fd,win_crash_out);
     crashrec::crash_note(fd,win_crash_out);
+    exception_report::note(fd,win_crash_out);
     if(fd>=0){win_crash_log_only(fd,"\n--- last log lines ---\n",24); log_ring_write(fd,win_crash_log_only); _close(fd); fprintf(stderr,"[crash] wrote %s\n",path);}
     if(g_ppc_trace) { FILE* f=fopen("trace_dump.txt","w"); if(f){trace_dump(f,3000);fclose(f);} }
     input::stop_rumble_now();  // controllers keep their last motor level after the process (issue #35)
     return EXCEPTION_EXECUTE_HANDLER;
 }
-static void install_crash_handler() { SetUnhandledExceptionFilter(crash_handler); crash_addr::prime(); }
+static void abort_handler(int) {
+    // CRT abort is not an SEH fault; route it through our existing Windows crash writer.
+    RaiseException(0x40000015u /* STATUS_FATAL_APP_EXIT */, EXCEPTION_NONCONTINUABLE, 0, nullptr);
+    _exit(134);
+}
+static void install_crash_handler() {
+    SetUnhandledExceptionFilter(crash_handler);
+    std::signal(SIGABRT, abort_handler);
+    crash_addr::prime();
+}
 #endif
 static void init_data_imports() {
     uint32_t alloc = 0, alloc_ex = 0, free_ = 0;
@@ -254,7 +274,78 @@ static void default_vulkan_cpu_paths() {
     }
 }
 
+// captures/wwhd.log: the whole log of this run (the previous run's is kept as wwhd-previous.log), so
+// players can attach it to an issue; on Windows the console output of the game is otherwise lost.
+// User paths are redacted as in crash logs. WWHD_LOG_FILE=<path> writes elsewhere, =0 turns it off
+// (Android: off unless set; logcat has it). The file stops at 64 MiB.
+static int g_log_fd = -1;
+static size_t g_log_bytes = 0;
+static constexpr size_t kLogFileMax = 64u << 20;
+static void log_file_raw(int fd, const char* s, size_t n) {
+#ifdef _WIN32
+    if (fd >= 0) _write(fd, s, (unsigned)n);
+#else
+    if (fd >= 0 && write(fd, s, n) < 0) {}
+#endif
+}
+static void log_file_line(int fd, const char* s, size_t n) {
+    crash_context::redact(fd, {s, n}, log_file_raw);
+    if (n == 0 || s[n - 1] != '\n') log_file_raw(fd, "\n", 1);
+}
+static void log_file_sink(const char* s, size_t n) {
+    if (g_log_fd < 0 || g_log_bytes > kLogFileMax) return;
+    log_file_line(g_log_fd, s, n);
+    g_log_bytes += n + 1;
+    if (g_log_bytes > kLogFileMax) {
+        static const char note[] = "[log] the log file reached 64 MiB; later lines go to the console only\n";
+        log_file_raw(g_log_fd, note, sizeof note - 1);
+    }
+}
+// Crash backtraces name the game function of an address in game code (crash_addr.h): the compiled
+// functions' host entries, sorted, with their game addresses. Built once; never freed.
+static void index_game_functions() {
+    std::vector<std::pair<uintptr_t, uint32_t>> v;
+    v.reserve(g_recomp_func_count);
+    for (unsigned i = 0; i < g_recomp_func_count; i++)
+        if (g_recomp_funcs[i].fn) v.push_back({(uintptr_t)g_recomp_funcs[i].fn, g_recomp_funcs[i].addr});
+    std::sort(v.begin(), v.end());
+    auto* host = new uintptr_t[v.size()];
+    auto* guest = new uint32_t[v.size()];
+    for (size_t i = 0; i < v.size(); i++) host[i] = v[i].first, guest[i] = v[i].second;
+    crash_addr::set_game_functions(host, guest, v.size());
+}
+
+// Off unless the player turns on Settings > Graphics > "Write a log file" (saved as logFile=1),
+// or WWHD_LOG_FILE is set: 1 = the default file, a path = that file, 0 = off.
+static void start_log_file(bool error = false) {
+    const char* e = getenv("WWHD_LOG_FILE");
+    if (error) e = "1"; // preserve diagnostics even when continuous logging is disabled
+    if (e && !strcmp(e, "0")) return;
+    const bool chosen = e && *e && strcmp(e, "1");  // a path
+    std::string saved;
+    if (!(e && *e) && !(hostui::get("logFile", saved) && saved == "1")) return;
+    std::string path = chosen ? e : "captures/wwhd.log";
+    std::error_code ec;
+    if (!chosen) {
+        std::filesystem::create_directories("captures", ec);
+        std::filesystem::remove("captures/wwhd-previous.log", ec);
+        std::filesystem::rename(path, "captures/wwhd-previous.log", ec);
+    }
+#ifdef _WIN32
+    g_log_fd = _open(path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+    g_log_fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+#endif
+    if (g_log_fd < 0) { LOG("[log] cannot write %s", path.c_str()); return; }
+    log_ring_write(g_log_fd, log_file_line);  // the lines logged before (only the boot so far)
+    log_set_sink(log_file_sink);
+    LOG("[log] writing %s", path.c_str());
+}
+
+extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
+
 int main(int argc, char** argv) {
+    mods::code::startup(argc, argv);
     apply_portable_mode();
     default_vulkan_cpu_paths();
 #ifdef _WIN32
@@ -305,7 +396,23 @@ int main(int argc, char** argv) {
 #endif
     }
     crash_context::initialize();
+    index_game_functions();
     install_crash_handler();
+    start_log_file();
+    exception_report::sink.store(+[](const char* message) noexcept {
+        static std::once_flag error_log;
+        std::call_once(error_log, [] { if (g_log_fd < 0) start_log_file(true); });
+        LOG("[runtime error] %s", message);
+    }, std::memory_order_release);
+    if (const char* mode = getenv("WWHD_TEST_RUNTIME_ERROR")) {
+        if (!strcmp(mode, "fatal")) fatal("synthetic fatal message");
+        synthetic_game_frame(nullptr, +[](Cpu*) {
+            const char* mode = getenv("WWHD_TEST_RUNTIME_ERROR");
+            if (!strcmp(mode, "explicit")) exception_report::raise("synthetic explicit message");
+            if (!strcmp(mode, "library")) throw std::out_of_range("synthetic library message");
+            throw 42;
+        });
+    }
     // which build on which system: also in crash logs (their last log lines)
     LOG("[boot] Wind Waker HD %s (%s), %s", build::version(), build::commit(), reporthdr::os_description().c_str());
     // test aid: WWHD_TEST_HOST_CRASH=1 crashes inside a system library (strlen of a bad pointer), so
@@ -341,6 +448,7 @@ int main(int argc, char** argv) {
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
     mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path
+    mods::packages::set_code_mod_support(guestmods::hooks_built() && mods::code::enabled());
     mods::packages::initialize();
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
@@ -370,6 +478,7 @@ int main(int argc, char** argv) {
         g_guest_build_name, g_guest_build_title_id, m.entry, m.sda_base, m.sda2_base, m.data_end);
 
     dispatch::init();
+    guestmods::init();  // trusted manager packages, before guest threads start
     init_data_imports();
     mem_setup_heaps(m.data_end);
     threads::init(m);

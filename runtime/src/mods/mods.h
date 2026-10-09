@@ -6,6 +6,7 @@
 // Test/start-up switches: WWHD_MOD_<NAME>=1 (see mods.cpp).
 #pragma once
 #include <cstdint>
+#include "fast_forward.h"
 
 struct Cpu;
 namespace input { struct PadState; }

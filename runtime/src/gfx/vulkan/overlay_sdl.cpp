@@ -75,7 +75,7 @@ bool env_set(std::initializer_list<const char*> env) {
 // WWHD_DRC_MODE and the overlay's WWHD_DRC_PIP win and are not saved)
 void save_display_locked() {
     using namespace gfx;
-    if (!env_set({"WWHD_DRC_MODE"})) g_values["drcMode"] = kModeNames[g_mode];
+    if (!env_set({"WWHD_DRC_MODE"})) g_values["drcMode"] = kModeNames[display_saved_mode()];
     if (!env_set({"WWHD_DRC_PIP"})) {
         char v[16];
         g_values["pipCorner"] = kCornerNames[g_corner];

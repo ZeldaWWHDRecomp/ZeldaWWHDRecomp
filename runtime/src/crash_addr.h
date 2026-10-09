@@ -18,6 +18,12 @@ inline int fit(int n, size_t cap) { return n < 0 ? 0 : (size_t)n >= cap ? (int)c
 // `path` (optional): the module's full file name.
 int describe(char* buf, size_t cap, uintptr_t addr, char* path = nullptr, size_t path_cap = 0);
 
+// Game code: the host entry address of every compiled game function (sorted ascending) with its game
+// (guest) address, set once at start (the arrays must stay valid). describe() then adds
+// " [game function 0200EDC8+0x1c]" for an address inside game code, the function with the nearest
+// entry at or below it.
+void set_game_functions(const uintptr_t* host, const uint32_t* guest, size_t n);
+
 // "  host backtrace:" and one line per frame, each with describe(). `context`: the faulting thread's
 // state (Windows: the exception's CONTEXT*, the walk starts at the faulting instruction; elsewhere
 // unused, backtrace() starts in the signal handler and passes through the signal frame).

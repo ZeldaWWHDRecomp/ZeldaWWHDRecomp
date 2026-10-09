@@ -1,3 +1,4 @@
+#include "../game_clock.h"
 // snd_core (AX): voices, the 3 ms audio frame, mixing and output.
 //
 // Every frame (96 samples at 32 kHz) each playing voice is decoded (ADPCM/PCM16/PCM8),
@@ -534,7 +535,7 @@ void frame_thread() {
         // pace frames by the device: run slightly faster/slower to keep ~40 ms queued
         double level = (double)(audio::buffered_frames() - audio::target_frames()) / audio::target_frames();
         double stretch = 1.0 + std::clamp(level * 0.05, -0.05, 0.05);
-        next += std::chrono::microseconds((int64_t)(3000 * stretch));
+        next += std::chrono::microseconds((int64_t)(3000 * stretch / game_clock::rate()));
         threads::service_begin();  // a save state waits until the frame is done (voices, callbacks)
         {
             std::lock_guard<std::mutex> lk(g_ax_mutex);

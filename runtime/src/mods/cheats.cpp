@@ -22,6 +22,7 @@
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
+#include "savestate.h"
 
 namespace mods {
 namespace {
@@ -40,7 +41,7 @@ constexpr uint32_t kStageKeys = 0x778 + 0x20, kStageDungeonItems = 0x778 + 0x21;
 
 uint32_t save_addr() {
     const char* override_addr = getenv("WWHD_CHEAT_SAVE_ADDR");
-    return override_addr ? (uint32_t)strtoul(override_addr, nullptr, 16) : ld32(GD(0x101F84DC));
+    return override_addr ? (uint32_t)strtoul(override_addr, nullptr, 16) : ld32(GD(0x101F84DC)) + 0x20;
 }
 
 const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // current stage, as in savestate.cpp
@@ -99,10 +100,13 @@ void all_items(uint32_t s) {
 }
 
 void best_sword(uint32_t s) {
-    st8(s + kCollect + 0, 0x0F);  // hero's sword .. full-power Master Sword
+    // Sword ownership is story progress: bit 2 removes Medli from Dragon Roost and the
+    // Earth Temple; bit 3 removes Makar from his earlier locations. Equip the upgrades
+    // without claiming those story milestones. The game's equipment refresh restores
+    // the earned equipment on reload, including a portable-state load.
     st8(s + kSelectEquip + 0, 0x3E);
-    st8(s + kCollect + 1, 0x03);  // hero's + mirror shield
     st8(s + kSelectEquip + 1, 0x3C);
+    ss::notice("Master Sword and Mirror Shield equipped until reload");
 }
 
 void max_stats(uint32_t s) {

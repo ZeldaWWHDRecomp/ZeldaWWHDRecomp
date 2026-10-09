@@ -1,3 +1,4 @@
+#include "../../exception_report.h"
 #include "gfx/render_mips.h"
 #include "bc_decode.h"
 #include "mods/cemu_pack.h"
@@ -60,7 +61,7 @@ static CachedGuestLevel& guest_level(const Surface* s, uint32_t level) {
         layout->levels.resize(s->mips);
         s->guestLayout = std::move(layout);
     }
-    if (level >= s->guestLayout->levels.size()) throw std::runtime_error("GX2 mip level exceeds surface");
+    if (level >= s->guestLayout->levels.size()) exception_report::raise("GX2 mip level exceeds surface");
     return s->guestLayout->levels[level];
 }
 static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uint32_t level) {
@@ -74,7 +75,7 @@ static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uin
     return cached.info;
 }
 static void check_vk(VkResult result, const char* what) {
-    if (result != VK_SUCCESS) throw std::runtime_error(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
+    if (result != VK_SUCCESS) exception_report::raise(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
 }
 static uint64_t content_hash(const uint8_t* p, size_t n) {
     // Full-byte coverage, including unaligned guest ranges and the final tail.
@@ -157,19 +158,21 @@ static void target_aspect(const Surface* s, float& kx, float& ky) {
 }
 
 // the factor a render target gets. Shadow maps (depth arrays: the game's cascades) scale with the
-// internal resolution by default (sharper shadows; the user's choice). WWHD_SHADOW_FIX=1 keeps the
-// console's 1024x1024 (issue #67), and WWHD_SHADOW_SCALE=n gives them their own factor (overrides
-// both). The trade-off: the game softens shadow edges by sampling the map with bilinear depth compare at a per-pixel random
-// offset, then blurring the result on screen. At 2048x2048 each compare filters half as wide, so
-// shadow edges came out hard and the random offsets showed as crawling hatching (issue #67: the
-// bridge's shadow on Outset's water, hard and shimmering at 2x). Cemu's graphics packs also keep
-// the shadow maps at the console's size unless asked.
+// internal resolution by default. WWHD_SHADOW_SCALE=n gives them their own factor; =1 keeps the
+// console's 1024x1024, which uses far less GPU memory at 2x/3x. Issue #67: the hard, crawling
+// shadow edges at 2x in v0.2.6-v0.2.8 came mainly from the missing mip chains the game's
+// shadow-mask softening samples (restored in v0.2.9); since then both sizes give practically the
+// same soft edges, the larger maps only a hair crisper.
 static float target_scale(const Surface* s) {
     uint32_t width,height;
     if(!s->fmt.compressed&&s->mips==1&&mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     if (s->fmt.compressed || s->mips > 1) return 1.0f;
-    static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE"))
-                                : getenv("WWHD_SHADOW_FIX") && *getenv("WWHD_SHADOW_FIX") && *getenv("WWHD_SHADOW_FIX") != '0' ? 1.0f : 0.0f;
+    static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE")) : 0.0f;
+    static const bool shadow_logged = [] {  // issue #67: show that the switch was picked up
+        if (shadow) LOG("[gfx] WWHD_SHADOW_SCALE=%g: shadow maps at %gx the console's 1024x1024", shadow, shadow);
+        return true;
+    }();
+    (void)shadow_logged;
     if (shadow && s->isDepth && s->slices > 1) return shadow;
     return res_scale();
 }
@@ -364,6 +367,9 @@ static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d) {
         }
     }
     to_src(mips - 1);
+    // Per-level transitions above order writes, and the generated levels are
+    // also blit sources. Preserve these reads for the next whole-image write.
+    derive_dependency(c->use, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, true);
     c->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;  // every level is now a transfer source
     s->mipChainSeq = key;
     static int logged = 0;
@@ -415,6 +421,19 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     d.tileMode = (uint32_t)tileMode;
     d.swizzle = swizzle;
     d.isDepth = isDepthSampler;
+    // A shadow descriptor can spell the shared memory as RGBA8 although the GPU wrote depth.
+    // Prefer that depth image before creating a converted colour comparison texture.
+    if (isDepthSampler) {
+        Surface* renderedDepth = nullptr;
+        auto aliases = R.surfaces.equal_range(d.addr);
+        for (auto it = aliases.first; it != aliases.second; ++it) {
+            auto* candidate = it->second.get();
+            if (!candidate->isDepth || !candidate->gpuWritten || candidate->width != d.width ||
+                candidate->height != d.height || candidate->slices != d.slices || candidate->dim != d.dim) continue;
+            if (!renderedDepth || candidate->writeSeq > renderedDepth->writeSeq) renderedDepth = candidate;
+        }
+        if (renderedDepth) return renderedDepth;
+    }
     Surface* s = find_or_create_surface(d, false);
     upload_surface(s);
     return s && s->gpuWritten && d.mips > 1 && !d.isDepth ? with_mip_chain(s, d) : s;
@@ -436,7 +455,7 @@ static void decode_level(Surface* s, uint32_t level, uint32_t base, std::vector<
     uint32_t pitch = level == 0 && s->pitch ? s->pitch : info.pitch, height = info.height;
     auto tm = (Latte::E_HWTILEMODE)info.hwTileMode;
     uint32_t bpp = f.bytesPerBlock * 8;
-    bool depthData = s->isDepth || f.convert == Convert::D24_R32F;
+    bool depthData = (s->isDepth && f.convert != Convert::RGBA8_DEPTH) || f.convert == Convert::D24_R32F;
     uint32_t pipeSwizzle = (s->swizzle >> 8) & 1, bankSwizzle = (s->swizzle >> 9) & 3;
     // small mips of macro-tiled surfaces drop the swizzle
     out.assign((size_t)bw * bh * slices * f.hostBytesPerBlock, 0);
@@ -562,13 +581,13 @@ static uint32_t element_offset(const LatteAddrLib::AddrSurfaceInfo_OUT& info, La
 namespace gfxvk {
 void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExtent) {
     if (!s || !s->width || !s->height || !s->slices || !s->mips)
-        throw std::runtime_error("Vulkan surface has empty dimensions");
-    if (s->image) throw std::runtime_error("Vulkan surface image must be retired before replacement");
+        exception_report::raise("Vulkan surface has empty dimensions");
+    if (s->image) exception_report::raise("Vulkan surface image must be retired before replacement");
     if (s->fmt.pixel == VK_FORMAT_UNDEFINED)
-        throw std::runtime_error("Unsupported GX2 surface format " + std::to_string(s->format));
+        exception_report::raise("Unsupported GX2 surface format " + std::to_string(s->format));
     auto dim=static_cast<Latte::E_DIM>(s->dim);
     if (dim==Latte::E_DIM::DIM_2D_MSAA || dim==Latte::E_DIM::DIM_2D_ARRAY_MSAA)
-        throw std::runtime_error("Vulkan GX2 multisample surfaces require an explicit sample count");
+        exception_report::raise("Vulkan GX2 multisample surfaces require an explicit sample count");
     bool oneD=dim==Latte::E_DIM::DIM_1D || dim==Latte::E_DIM::DIM_1D_ARRAY;
     bool threeD=dim==Latte::E_DIM::DIM_3D;
     bool cube=dim==Latte::E_DIM::DIM_CUBEMAP;
@@ -586,16 +605,16 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
            !explicitExtent.height || explicitExtent.depth!=1 ||
            explicitExtent.width>R.properties.limits.maxImageDimension2D ||
            explicitExtent.height>R.properties.limits.maxImageDimension2D)
-            throw std::runtime_error("Invalid explicit private surface extent");
+            exception_report::raise("Invalid explicit private surface extent");
         s->extent=explicitExtent;
     }
     s->sx=float(s->extent.width)/s->width; s->sy=float(s->extent.height)/s->height;
     s->aspect=s->fmt.depth?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT;
     if(s->fmt.stencil)s->aspect|=VK_IMAGE_ASPECT_STENCIL_BIT;
-    if(cube&&(s->extent.width!=s->extent.height||s->slices%6))throw std::runtime_error("Invalid GX2 cube surface dimensions");
+    if(cube&&(s->extent.width!=s->extent.height||s->slices%6))exception_report::raise("Invalid GX2 cube surface dimensions");
     uint32_t maxDim=std::max({s->extent.width,s->extent.height,s->extent.depth});
     uint32_t maxMips=1; while(maxDim>1){maxDim>>=1;++maxMips;}
-    if(s->mips>maxMips)throw std::runtime_error("GX2 surface requests too many mip levels");
+    if(s->mips>maxMips)exception_report::raise("GX2 surface requests too many mip levels");
     if (s->fmt.compressed) s->bcDecoded = bc_decode_required(format_info(s->format,s->isDepth));
     if (s->bcDecoded) {
         const bool sign = (s->format & 0x200) && (s->format & 0x3f) >= 0x34;
@@ -606,7 +625,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
     VkFormatFeatureFlags required=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     auto attachment=s->fmt.depth?VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT:VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     if(forRendering)required|=attachment;
-    if((features&required)!=required)throw std::runtime_error("Vulkan device lacks required features for GX2 format "+std::to_string(s->format));
+    if((features&required)!=required)exception_report::raise("Vulkan device lacks required features for GX2 format "+std::to_string(s->format));
     VkImageUsageFlags usage=VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if(!s->fmt.compressed&&(features&attachment))usage|=s->fmt.depth?VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT:VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -629,7 +648,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
         viewInfo.viewType=s->viewType;viewInfo.format=s->fmt.pixel;
         viewInfo.subresourceRange={VkImageAspectFlags(s->fmt.depth?VK_IMAGE_ASPECT_DEPTH_BIT:VK_IMAGE_ASPECT_COLOR_BIT),0,s->mips,0,s->arrayLayers};
         check_vk(vkCreateImageView(R.device,&viewInfo,nullptr,&s->view),"create sampling image view");
-        s->layout=VK_IMAGE_LAYOUT_UNDEFINED;
+        s->layout=VK_IMAGE_LAYOUT_UNDEFINED;s->use={};
     } catch(...) {
         if(s->view)vkDestroyImageView(R.device,s->view,nullptr);
         if(s->image)vkDestroyImage(R.device,s->image,nullptr);
@@ -645,15 +664,15 @@ void destroy_surface_image(Surface* s) {
     auto views=std::move(s->layerViews);if(s->view)views.push_back(s->view);
     for(auto& [key,view]:s->sampledViews)if(view)views.push_back(view);s->sampledViews.clear();
     defer_surface_image(s->image,s->memory,std::move(views));
-    s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;s->view=VK_NULL_HANDLE;s->layout=VK_IMAGE_LAYOUT_UNDEFINED;
+    s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;s->view=VK_NULL_HANDLE;s->layout=VK_IMAGE_LAYOUT_UNDEFINED;s->use={};
     s->layerViews.clear();
 }
 VkImageView layer_view(Surface* s,uint32_t layer) {
     // a volume's slices are its depth (2D views of a 2D-array-compatible 3D image, one mip)
     bool volume=s&&s->imageType==VK_IMAGE_TYPE_3D;
     uint32_t layers=!s?0:volume?s->extent.depth:s->arrayLayers;
-    if(!s||!s->image||layer>=layers)throw std::runtime_error("Vulkan attachment layer is out of range");
-    if(volume&&!(s->createFlags&VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT))throw std::runtime_error("Rendering into this GX2 volume slice is unsupported");
+    if(!s||!s->image||layer>=layers)exception_report::raise("Vulkan attachment layer is out of range");
+    if(volume&&!(s->createFlags&VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT))exception_report::raise("Rendering into this GX2 volume slice is unsupported");
     if(s->layerViews.size()<layers)s->layerViews.resize(layers,VK_NULL_HANDLE);
     if(!s->layerViews[layer]) {
         VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};info.image=s->image;
@@ -664,7 +683,7 @@ VkImageView layer_view(Surface* s,uint32_t layer) {
     return s->layerViews[layer];
 }
 VkImageView sampled_texture_view(Surface* s,const uint32_t* texWords) {
-    if(!s||!s->image||!texWords)throw std::runtime_error("Vulkan sampled view requires a surface and texture descriptor");
+    if(!s||!s->image||!texWords)exception_report::raise("Vulkan sampled view requires a surface and texture descriptor");
     Latte::LATTE_SQ_TEX_RESOURCE_WORD0_N w0;Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N w4;
     memcpy(&w0,texWords,4);memcpy(&w4,texWords+4,4);
     auto dim=w0.get_DIM();VkImageViewType type;
@@ -675,15 +694,15 @@ VkImageView sampled_texture_view(Surface* s,const uint32_t* texWords) {
     case Latte::E_DIM::DIM_2D_ARRAY:type=VK_IMAGE_VIEW_TYPE_2D_ARRAY;break;
     case Latte::E_DIM::DIM_3D:type=VK_IMAGE_VIEW_TYPE_3D;break;
     case Latte::E_DIM::DIM_CUBEMAP:type=s->arrayLayers>6?VK_IMAGE_VIEW_TYPE_CUBE_ARRAY:VK_IMAGE_VIEW_TYPE_CUBE;break;
-    default:throw std::runtime_error("Unsupported Vulkan sampled texture dimension");
+    default:exception_report::raise("Unsupported Vulkan sampled texture dimension");
     }
     bool oneD=type==VK_IMAGE_VIEW_TYPE_1D||type==VK_IMAGE_VIEW_TYPE_1D_ARRAY;
     bool threeD=type==VK_IMAGE_VIEW_TYPE_3D;
     bool cube=type==VK_IMAGE_VIEW_TYPE_CUBE||type==VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
     if((oneD&&s->imageType!=VK_IMAGE_TYPE_1D)||(threeD!=(s->imageType==VK_IMAGE_TYPE_3D))||(!oneD&&!threeD&&s->imageType!=VK_IMAGE_TYPE_2D))
-        throw std::runtime_error("Vulkan sampled texture dimension does not match the backing image");
+        exception_report::raise("Vulkan sampled texture dimension does not match the backing image");
     if(cube&&(s->viewType!=VK_IMAGE_VIEW_TYPE_CUBE&&s->viewType!=VK_IMAGE_VIEW_TYPE_CUBE_ARRAY))
-        throw std::runtime_error("Vulkan sampled cube requires a cube-compatible backing image");
+        exception_report::raise("Vulkan sampled cube requires a cube-compatible backing image");
     uint32_t selectors[4]={uint32_t(w4.get_DST_SEL_X()),uint32_t(w4.get_DST_SEL_Y()),uint32_t(w4.get_DST_SEL_Z()),uint32_t(w4.get_DST_SEL_W())};
     static const VkComponentSwizzle mapping[8]={VK_COMPONENT_SWIZZLE_R,VK_COMPONENT_SWIZZLE_G,VK_COMPONENT_SWIZZLE_B,VK_COMPONENT_SWIZZLE_A,VK_COMPONENT_SWIZZLE_ZERO,VK_COMPONENT_SWIZZLE_ONE,VK_COMPONENT_SWIZZLE_ZERO,VK_COMPONENT_SWIZZLE_ZERO};
     uint32_t key=uint32_t(type)<<12;for(unsigned i=0;i<4;++i)key|=(s->fmt.depth?i:selectors[i])<<(i*3);
@@ -766,7 +785,7 @@ void main() {
 )glsl";
 VkShaderModule depth_copy_module(const char* source,bool vertex) {
     std::string error;auto words=vk::compile_glsl(source,vertex,&error);
-    if(words.empty()||!error.empty())throw std::runtime_error("Vulkan depth copy shader: "+error);
+    if(words.empty()||!error.empty())exception_report::raise("Vulkan depth copy shader: "+error);
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();
     VkShaderModule module=VK_NULL_HANDLE;check_vk(vkCreateShaderModule(R.device,&ci,nullptr,&module),"create depth copy shader");return module;
 }
@@ -845,14 +864,14 @@ VkImageView depth_copy_source_view(Surface* s,VkImageAspectFlags aspect,uint32_t
 // both surfaces in SHADER_READ_ONLY_OPTIMAL.
 static void draw_depth_copy(Surface* src,uint32_t srcLevel,uint32_t srcLayer,uint32_t srcW,uint32_t srcH,
                             Surface* dst,uint32_t dstLayer,uint32_t dstW,uint32_t dstH,uint32_t layers) {
-    if(src->image==dst->image)throw std::runtime_error("Vulkan depth copy source and destination alias");
+    if(src->image==dst->image)exception_report::raise("Vulkan depth copy source and destination alias");
     if(src->fmt.pixel!=dst->fmt.pixel||!src->fmt.depth||src->imageType!=VK_IMAGE_TYPE_2D||dst->imageType!=VK_IMAGE_TYPE_2D)
-        throw std::runtime_error("Vulkan depth copy requires 2D depth surfaces of one format");
+        exception_report::raise("Vulkan depth copy requires 2D depth surfaces of one format");
     if(!(src->usage&VK_IMAGE_USAGE_SAMPLED_BIT)||!(dst->usage&VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
-        throw std::runtime_error("Vulkan depth copy requires a sampled source and a depth attachment destination");
+        exception_report::raise("Vulkan depth copy requires a sampled source and a depth attachment destination");
     if(srcLevel>=src->mips||srcLayer+layers>src->arrayLayers||dstLayer+layers>dst->arrayLayers||!srcW||!srcH||!dstW||!dstH||
        dstW>dst->extent.width||dstH>dst->extent.height)
-        throw std::runtime_error("Invalid Vulkan depth copy region");
+        exception_report::raise("Invalid Vulkan depth copy region");
     const FormatInfo& fmt=src->fmt;
     VkPipeline depthPass=depth_copy_pipeline(fmt,false),bitPass=fmt.stencil?depth_copy_pipeline(fmt,true):VK_NULL_HANDLE;
     end_encoder();
@@ -922,14 +941,14 @@ static void clear_unscalable(Surface* dst,uint32_t dstW,uint32_t dstH) {
     transition_image(dst,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 void resample(Surface* src,Surface* dst,uint32_t slices,float uMax,float vMax,uint32_t dstW,uint32_t dstH) {
-    if(!src||!dst||!src->image||!dst->image)throw std::runtime_error("Vulkan resample requires allocated surfaces");
-    if(src->image==dst->image)throw std::runtime_error("Vulkan resample source and destination alias");
+    if(!src||!dst||!src->image||!dst->image)exception_report::raise("Vulkan resample requires allocated surfaces");
+    if(src->image==dst->image)exception_report::raise("Vulkan resample source and destination alias");
     if(src->fmt.pixel!=dst->fmt.pixel||src->imageType!=dst->imageType||src->fmt.compressed)
-        throw std::runtime_error("Vulkan resample requires matching uncompressed surface formats and dimensions");
-    if(slices>src->arrayLayers||slices>dst->arrayLayers)throw std::runtime_error("Vulkan resample layer range exceeds surface");
+        exception_report::raise("Vulkan resample requires matching uncompressed surface formats and dimensions");
+    if(slices>src->arrayLayers||slices>dst->arrayLayers)exception_report::raise("Vulkan resample layer range exceeds surface");
     if(!dstW)dstW=dst->extent.width;if(!dstH)dstH=dst->extent.height;
     if(dstW>dst->extent.width||dstH>dst->extent.height||!(uMax>0&&uMax<=1&&vMax>0&&vMax<=1))
-        throw std::runtime_error("Invalid Vulkan resample extent");
+        exception_report::raise("Invalid Vulkan resample extent");
     const uint32_t srcW=std::max(1u,uint32_t(std::lround(src->extent.width*uMax))),srcH=std::max(1u,uint32_t(std::lround(src->extent.height*vMax)));
     const ScaledCopy mode=scaled_copy_mode(src->fmt);
     // volumes keep their guest size (create_surface_image) and are never drawn into here
@@ -975,7 +994,7 @@ static Surface* rescale(Surface* s) {
     if(s->imageType!=VK_IMAGE_TYPE_2D||s->viewType==VK_IMAGE_VIEW_TYPE_CUBE||s->viewType==VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
         // 1D, volume and cube images keep the guest size (create_surface_image): nothing to rescale
         if(s->usage&attachment)return s;
-        throw std::runtime_error("Vulkan GX2 surface cannot be a render target");
+        exception_report::raise("Vulkan GX2 surface cannot be a render target");
     }
     if(s->scale==wanted&&s->ax==ax&&s->ay==ay&&(s->usage&attachment))return s;
     Surface replacement;
@@ -986,7 +1005,7 @@ static Surface* rescale(Surface* s) {
     catch(...) { destroy_surface_image(&replacement);throw; }
     destroy_surface_image(s);
     s->image=replacement.image;s->memory=replacement.memory;s->view=replacement.view;
-    s->extent=replacement.extent;s->layout=replacement.layout;s->usage=replacement.usage;s->createFlags=replacement.createFlags;s->scale=replacement.scale;s->ax=replacement.ax;s->ay=replacement.ay;s->sx=replacement.sx;s->sy=replacement.sy;
+    s->extent=replacement.extent;s->layout=replacement.layout;s->use=replacement.use;s->usage=replacement.usage;s->createFlags=replacement.createFlags;s->scale=replacement.scale;s->ax=replacement.ax;s->ay=replacement.ay;s->sx=replacement.sx;s->sy=replacement.sy;
     forget_texture_views();return s;
 }
 // One guest surface can be rendered and sampled through views of different formats with the same
@@ -1054,7 +1073,8 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     s->addr=d.addr;s->mipAddr=d.mipAddr;s->width=std::max(d.width,1u);s->height=std::max(d.height,1u);
     s->slices=std::max(d.slices,1u);s->pitch=d.pitch;s->mips=forRendering?1:std::max(d.mips,1u);
     s->format=d.format;s->dim=d.dim;s->tileMode=d.tileMode;s->swizzle=d.swizzle;s->isDepth=d.isDepth;
-    s->fmt=format_info(d.format,d.isDepth);create_surface_image(s.get(),forRendering);
+    s->fmt=d.isDepth&&!forRendering?comparison_format_info(d.format):format_info(d.format,d.isDepth);
+    create_surface_image(s.get(),forRendering);
     auto* raw=s.get();R.surfaces.emplace(d.addr,std::move(s));
     // format views of one guest surface (adopt_newer_alias): flag them once, so lookups stay cheap
     if(!raw->isDepth&&!raw->fmt.compressed&&raw->fmt.convert==Convert::NONE) {
@@ -1071,7 +1091,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
 }
 static uint32_t mip_base(Surface* s,uint32_t level) {
     if(!level)return s->addr;
-    if(!s->mipAddr)throw std::runtime_error("GX2 texture mip chain address is missing");
+    if(!s->mipAddr)exception_report::raise("GX2 texture mip chain address is missing");
     if(level==1)return s->mipAddr;
     auto& cached = guest_level(s, level);
     if (cached.addressValid) return cached.address;
@@ -1095,7 +1115,7 @@ void upload_surface(Surface* s) {
     // every 64 frames, which can show a changed texture late.
     uint32_t levels=s->mips;
     std::array<std::pair<uint32_t,uint32_t>,16> ranges{};
-    if(levels>ranges.size())throw std::runtime_error("GX2 texture has too many mip levels");
+    if(levels>ranges.size())exception_report::raise("GX2 texture has too many mip levels");
     for(uint32_t level=0;level<levels;++level) {
         uint32_t base=mip_base(s,level);
         ranges[level]={base,uint32_t(std::min<uint64_t>(guest_info(s,level).surfSize,0x100000000ull-base))};
@@ -1140,7 +1160,7 @@ void upload_surface(Surface* s) {
             VkBufferImageCopy copy{};copy.imageSubresource={s->aspect,level,0,layers};copy.imageExtent={w,h,threeD?slices:1};copies.push_back(copy);
         }
         Buffer staging=create_buffer(packed.size(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if(!staging.mapped){defer_buffer(staging);throw std::runtime_error("Vulkan texture staging allocation is not mapped");}
+        if(!staging.mapped){defer_buffer(staging);exception_report::raise("Vulkan texture staging allocation is not mapped");}
         memcpy(staging.mapped,packed.data(),packed.size());
         rprof::add_upload(rprof::kUpTexture,packed.size());
         vkCmdCopyBufferToImage(command_buffer(),staging.buffer,s->image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(copies.size()),copies.data());
@@ -1151,7 +1171,7 @@ void upload_surface(Surface* s) {
 }
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
     uint32_t first,num;auto* s=surface_from_color_buffer(cb,&first,&num);if(!s)return;
-    if(s->fmt.depth||s->fmt.compressed)throw std::runtime_error("GX2 clear color requires an uncompressed color surface");
+    if(s->fmt.depth||s->fmt.compressed)exception_report::raise("GX2 clear color requires an uncompressed color surface");
     VkClearColorValue value{};
     for(unsigned i=0;i<4;++i) {
         double integerValue = std::isnan(rgba[i]) ? 0.0 : double(rgba[i]);
@@ -1220,9 +1240,8 @@ static std::vector<uint8_t> read_guest_texels(Surface* img,uint32_t layer,uint32
         transition_image(src,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferImageCopy region{};region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,layer,1};region.imageExtent={w,h,1};
         auto cmd=command_buffer();vkCmdCopyImageToBuffer(cmd,src->image,src->layout,b.buffer,1,&region);
-        VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-        barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.buffer=b.buffer;barrier.size=VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&barrier,0,nullptr);
+        derive_dependency(b.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+        transition_buffer(b,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
         transition_image(src,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         flush();  // waits for the GPU
         const auto* raw=static_cast<const uint8_t*>(b.mapped);
@@ -1265,7 +1284,7 @@ void write_back_linear_targets() {
 }
 void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32_t dstAddr,uint32_t dstMip,uint32_t dstSlice) {
     auto* s=reinterpret_cast<GX2Surface*>(mem::ptr(srcAddr));auto* d=reinterpret_cast<GX2Surface*>(mem::ptr(dstAddr));
-    if(srcMip>=uint32_t(s->numLevels)||dstMip>=uint32_t(d->numLevels))throw std::runtime_error("GX2CopySurface mip is out of range");
+    if(srcMip>=uint32_t(s->numLevels)||dstMip>=uint32_t(d->numLevels))exception_report::raise("GX2CopySurface mip is out of range");
     uint32_t sbase=level_address(s,srcMip),dbase=level_address(d,dstMip);
     uint32_t w=std::max<uint32_t>(uint32_t(s->width)>>srcMip,1),h=std::max<uint32_t>(uint32_t(s->height)>>srcMip,1);
     uint32_t dw=std::max<uint32_t>(uint32_t(d->width)>>dstMip,1),dh=std::max<uint32_t>(uint32_t(d->height)>>dstMip,1);
@@ -1283,14 +1302,14 @@ void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32
     }
     if(gpuSrc&&gpuLevel==0)gpuSrc=adopt_newer_alias(gpuSrc);
     if(gpuSrc) {
-        if(gpuSrc->imageType==VK_IMAGE_TYPE_3D)throw std::runtime_error("Vulkan GPU GX2CopySurface volume slices are unsupported");
+        if(gpuSrc->imageType==VK_IMAGE_TYPE_3D)exception_report::raise("Vulkan GPU GX2CopySurface volume slices are unsupported");
         SurfaceDesc dd;dd.addr=dbase;dd.width=dw;dd.height=dh;dd.pitch=d->pitch;dd.format=uint32_t(d->format.value());
         dd.tileMode=uint32_t(d->tileMode.value());dd.swizzle=d->swizzle;dd.isDepth=gpuSrc->isDepth;
         dd.dim=uint32_t(d->dim.value());dd.slices=std::max<uint32_t>(d->depth,1);
         if(dd.dim==uint32_t(Latte::E_DIM::DIM_2D)||dd.dim==uint32_t(Latte::E_DIM::DIM_1D))dd.slices=1;
         auto* dst=find_or_create_surface(dd,true);
-        if(!dst||dst->fmt.pixel!=gpuSrc->fmt.pixel)throw std::runtime_error("Vulkan GPU GX2CopySurface format conversion is unsupported");
-        if(srcSlice>=gpuSrc->arrayLayers||dstSlice>=dst->arrayLayers)throw std::runtime_error("GX2CopySurface array slice is out of range");
+        if(!dst||dst->fmt.pixel!=gpuSrc->fmt.pixel)exception_report::raise("Vulkan GPU GX2CopySurface format conversion is unsupported");
+        if(srcSlice>=gpuSrc->arrayLayers||dstSlice>=dst->arrayLayers)exception_report::raise("GX2CopySurface array slice is out of range");
         if(gpuSrc==dst&&gpuLevel==0&&srcSlice==dstSlice)return;
         bool self=gpuSrc->image==dst->image;
         uint32_t sw=std::min(uint32_t(std::lround(cw*gpuSrc->sx)),std::max(gpuSrc->extent.width>>gpuLevel,1u));
@@ -1332,11 +1351,11 @@ void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32
     auto sf=format_info(uint32_t(s->format.value()),bool(uint32_t(s->format.value())&0x800));
     auto df=format_info(uint32_t(d->format.value()),bool(uint32_t(d->format.value())&0x800));
     if(sf.pixel==VK_FORMAT_UNDEFINED||df.pixel==VK_FORMAT_UNDEFINED||sf.bytesPerBlock!=df.bytesPerBlock||sf.compressed!=df.compressed)
-        throw std::runtime_error("Unsupported CPU GX2CopySurface format layout");
+        exception_report::raise("Unsupported CPU GX2CopySurface format layout");
     LatteAddrLib::AddrSurfaceInfo_OUT si{},di{};
     LatteAddrLib::GX2CalculateSurfaceInfo(s->format,s->width,s->height,s->depth,s->dim,s->tileMode,s->aa,srcMip,&si);
     LatteAddrLib::GX2CalculateSurfaceInfo(d->format,d->width,d->height,d->depth,d->dim,d->tileMode,d->aa,dstMip,&di);
-    if(srcSlice>=si.depth||dstSlice>=di.depth)throw std::runtime_error("CPU GX2CopySurface slice is out of range");
+    if(srcSlice>=si.depth||dstSlice>=di.depth)exception_report::raise("CPU GX2CopySurface slice is out of range");
     auto stm=static_cast<Latte::E_HWTILEMODE>(si.hwTileMode),dtm=static_cast<Latte::E_HWTILEMODE>(di.hwTileMode);
     uint32_t bpp=sf.bytesPerBlock*8,bw=sf.compressed?(cw+3)/4:cw,bh=sf.compressed?(ch+3)/4:ch;
     uint32_t sswz=s->swizzle,dswz=d->swizzle;LatteAddrLib::CachedSurfaceAddrInfo sci{},dci{};

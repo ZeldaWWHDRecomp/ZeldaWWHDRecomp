@@ -16,6 +16,8 @@ struct ComposeQuad {
 };
 // this frame's layout from gfx/display_modes.cpp, set by swap() (null: the picture scaled to fit)
 void set_present_plan(const gfx::PresentPlan* plan);
+// Internal hidden-only bounded diagnostic; never reads back or presents its reused target.
+void compose_headless_diagnostic(Screen& screen);
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter);
 // the composition of a window into an offscreen image, read back as display-encoded RGBA8
 std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t height,bool srgb);

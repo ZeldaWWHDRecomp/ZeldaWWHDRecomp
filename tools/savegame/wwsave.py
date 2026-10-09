@@ -389,3 +389,72 @@ STAGES = ["Sea", "Sea (alt)", "Forsaken Fortress", "Dragon Roost Cavern", "Forbi
           "Tower of the Gods", "Earth Temple", "Wind Temple", "Ganon's Tower", "Hyrule",
           "Ship", "Misc (interiors)", "Sub-dungeons", "Sub-dungeons (new)", "Blue Chu Jelly", "Test"]
 DUNGEON_BITS = ["map", "compass", "boss key", "boss defeated", "heart container", "boss intro"]
+
+
+def repair_medli(raw, file=1):
+    """Undo premature sword ownership in an early Dragon Roost save (#85).
+
+    Return a new file; never change the input. Only the chosen Quest Log's sword
+    ownership, equipped sword, and two checksum words change. All other bytes,
+    including padding and the other Quest Logs, are preserved.
+    """
+    if file not in (1, 2, 3):
+        raise HdError("Quest Log must be 1, 2 or 3")
+    slots, _, _ = read_hd(raw)
+    g = slots[file - 1]
+    field = lambda name: get(g, HD_FIELDS, name)
+    events = field("event.flags")
+    swords = field("collect.collect")[0]
+    # This repair cannot infer earned equipment later in the story. Restrict it
+    # to before the first pearl and before Medli's sage awakening.
+    if (not int.from_bytes(field("info.save_count"), "big") or
+            field("info.clear_count")[0] or field("collect.symbol")[0] or
+            field("collect.triforce")[0] or events[0x2E] & 0x04 or
+            any(field("memory%02d.dungeon_item" % n)[0] & 8 for n in range(3, 10))):
+        raise HdError("repair requires an early first-playthrough save, before the first pearl")
+    if not swords & 0x04 or not swords & 0x01 or swords & 0xF0:
+        raise HdError("save does not have the premature Master Sword flags that hide Medli")
+    if field("status_a.select_equip")[0] not in (0x38, 0x39, 0x3A, 0x3E):
+        raise HdError("equipped sword is not recognized; no repair written")
+    out = bytearray(raw)
+    start = (file - 1) * HD_SLOT
+    out[start + HD_FIELDS["collect.collect"][0]] = 0x01
+    out[start + HD_FIELDS["status_a.select_equip"][0]] = 0x38
+    block = out[start:start + HD_SLOT]
+    struct.pack_into(">II", out, start + HD_SLOT_USED, *hd_slot_checksum(block))
+    read_hd(out)
+    return bytes(out)
+
+
+def main():
+    import argparse
+    from pathlib import Path
+
+    ap = argparse.ArgumentParser(description="Wind Waker HD save repair tools (work on copies).")
+    sub = ap.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("repair-medli", help="repair premature sword flags hiding Medli (#85)")
+    p.add_argument("save", type=Path, help="source cking.sav; never modified")
+    p.add_argument("--file", type=int, choices=(1, 2, 3), default=1, help="Quest Log (default: 1)")
+    p.add_argument("-o", "--output", type=Path, required=True, help="output folder (files must not already exist)")
+    a = ap.parse_args()
+    try:
+        raw = a.save.read_bytes()
+        repaired = repair_medli(raw, a.file)
+        target = a.output / "cking.sav"
+        backup = a.output / "cking.sav.before-medli.bak"
+        if target.resolve() == a.save.resolve() or target.exists() or backup.exists():
+            raise HdError("choose a new output folder; source and existing files cannot be overwritten")
+        a.output.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation also protects against a concurrent repair to this folder.
+        with backup.open("xb") as f:
+            f.write(raw)
+        with target.open("xb") as f:
+            f.write(repaired)
+    except (HdError, OSError) as e:
+        ap.exit(1, "%s\n" % e)
+    print("%s: Quest Log %d restored to Hero's Sword; other progress unchanged" % (target, a.file))
+    print("Original backup: %s (source was not modified)" % backup)
+
+
+if __name__ == "__main__":
+    main()

@@ -136,3 +136,5 @@ has the boat (gametest `ghost`): swim to the boat, climb aboard, set sail, save 
 load, Link is on the boat and the boat at its place and heading; with gametest `helm`: a portable
 save while the King of Red Lions talks is refused and writes nothing, a full save at the same
 moment works, a portable save after the dialogue works. Last, full save states still save and load.
+
+Controller metadata: format 1 accepts optional `controller = 1` (GamePad) or `controller = 2` (Pro Controller). Loading restores that host input mode. Missing metadata or `0` leaves the current mode unchanged. Unknown values are refused; the existing field and total-size guards still apply.

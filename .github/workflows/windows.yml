@@ -5,6 +5,7 @@ name: windows
 
 on:
   push:
+    branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
   pull_request:
 
 jobs:

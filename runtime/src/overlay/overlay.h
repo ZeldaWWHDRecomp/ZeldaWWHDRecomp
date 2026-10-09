@@ -13,7 +13,15 @@
 // Test switches:
 //   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, mods,
 //                                              controls, about) at TV frame <frame> (default 1)
+//   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
+//   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
+//                                              (headless tests only; open the Mods tab separately)
+//   WWHD_TEST_MOD_SETUP=<id>               drive required setup steps with normal APIs/trust
+//   WWHD_TEST_GAME_SOURCES=<absolute JSON>  game-ID -> local path; setup diagnostics require
+//                                              NO_HOST_INPUT and explicit MOD_MANAGER_DIR too
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
+//   WWHD_TEST_PERF_REPORT=<file>                export the clipboard report in a headless test
+//   WWHD_TEST_PERF_REPORT_AT=<frame>            export at this presented frame (default 300)
 #pragma once
 #include <cstdint>
 
@@ -40,6 +48,12 @@ enum Mods : int { kShift = 1, kCtrl = 2, kAlt = 4, kSuper = 8 };
 bool key(int code, bool down, bool repeat, int mods);
 // pointer in the TV window, normalised to its content area (0..1 from the top left); return true while
 // the overlay is open (the event is the overlay's, not the game's or the mouse camera's)
+// typed characters (UTF-8, after the key event that produced them); true while the overlay is open
+bool text(const char* utf8);
+// the system clipboard's text, read by the host just before it passes Ctrl/Cmd+V on (main thread)
+void set_clipboard_text(const char* utf8);
+// a text field of the overlay has the keyboard (hosts turn on text input / the on-screen keyboard)
+bool wants_text();
 bool mouse_move(float nx, float ny);
 bool mouse_button(int button, bool down);  // 0 left, 1 right, 2 middle
 bool mouse_wheel(float dx, float dy);      // in lines, +y = away from the user
@@ -52,6 +66,6 @@ void set_density(float pixels_per_point);  // TV window backing scale (HiDPI)
 ImDrawData* frame(float pw, float ph, void (*renderer_init)());
 // The same draw data for a target with sRGB encoding: vertex colours converted to linear once per
 // frame (the Metal backend draws colours as they are; the Vulkan renderer converts in its shader).
-void linearize_colors(ImDrawData* d);
+void linearize_colors(ImDrawData* d,bool fresh_copy=false);
 
 }  // namespace overlay

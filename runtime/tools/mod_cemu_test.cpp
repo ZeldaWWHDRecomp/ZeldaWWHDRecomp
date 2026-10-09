@@ -18,6 +18,14 @@ int main(int argc,char** argv) {
         if(argc==3){fs::path output=argv[2];fs::create_directories(output);cemu::set_vulkan(true);cemu::activate({{"public-pack",pack,{}}});for(size_t i=0;i<pack.shaders.size();i++){auto& shader=pack.shaders[i];std::ofstream(output/(std::to_string(i)+(shader.vertex?".vert":".frag")))<<cemu::shader_source(shader.base,shader.aux,shader.vertex);}}
         return 0;
     }
+    // titleIds (issue #103): the installed build's title, any case/spacing; USA-only packs don't load on EU
+    const std::string usa="0005000010143500",eu="0005000010143600";
+    assert(cemu::targets_title("0005000010143500",usa)&&!cemu::targets_title("0005000010143500",eu));
+    assert(cemu::targets_title("0005000010143600",eu)&&!cemu::targets_title("0005000010143600",usa));
+    assert(cemu::targets_title("0005000010143400, 0005000010143500 ,0005000010143600",eu));
+    assert(cemu::targets_title("0005000010143400,0005000010143500,0005000010143600",usa));
+    assert(cemu::targets_title(" \"00050000101435AA\",0005000010143600\r",eu)&&!cemu::targets_title("0005000010143400",usa));
+    assert(!cemu::targets_title("",usa)&&!cemu::targets_title("00050000101435",usa));
     assert(cemu::expression("max(2, $width / 2) + floor(1.9)",{{"$width",8}})==5);
     assert(cemu::expression("0x80e",{})==2062);
     rejects([]{cemu::expression("1/0",{});});rejects([]{cemu::expression("$missing",{});});
@@ -30,6 +38,15 @@ int main(int argc,char** argv) {
     assert(cemu::options(pack).array.size()==1);
     json::Value config;config["preset-0"]="Large";
     cemu::validate({{"a",pack,config}});
+    assert(cemu::conflict_reason({"a",pack,config},{"b",pack,{}})=="overlapping graphics rules");
+    auto independent=pack;independent.textures[0].fields["width"]="640";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent.textures[0].fields.erase("width");
+    assert(!cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent=pack;independent.textures[0].fields["formats"]="0x19";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    auto aspect=pack;aspect.textures.clear();aspect.aspect_expression="16/9";
+    assert(cemu::conflict_reason({"a",aspect,config},{"b",aspect,{}})=="both change the aspect ratio");
     rejects([&]{cemu::validate({{"a",pack,config},{"b",pack,{}}});});
     write(definition+"[TextureRedefine]\noverwriteFormat = 0x80e\n");rejects([&]{cemu::parse(root);});
     write(definition+"[Patch]\nmoduleMatches = 0x123\n");rejects([&]{cemu::parse(root);});
@@ -39,6 +56,12 @@ int main(int argc,char** argv) {
     auto shader=root/"0000000000000001_0000000000000002_ps.txt";
     std::ofstream(shader)<<"#version 420\n// $missing preserved in comments\nvoid main(){ float x=$scale; }\n";
     auto shaderPack=cemu::parse(root);
+    auto shaderOnly=shaderPack;shaderOnly.textures.clear();
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",shaderOnly,{}})=="both change the same shader");
+    auto variant=shaderOnly;variant.shaders[0].aux++;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
+    variant=shaderOnly;variant.shaders[0].vertex=true;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
     std::ofstream(root/"texture.dds")<<"synthetic unsupported resource";rejects([&]{cemu::parse(root);});fs::remove(root/"texture.dds");
     cemu::activate({{"shader",shaderPack,config}});uint32_t w=0,h=0;
     cemu::set_vulkan(false);assert(!cemu::texture_extent(1920,1080,0x80e,1,0,w,h));assert(cemu::shader_source(1,2,false).empty());
@@ -56,5 +79,15 @@ int main(int argc,char** argv) {
     std::string error;assert(cemu::compatible_shader_interface(spirv,spirv,error));
     auto changed=spirv;changed.back()=7;assert(!cemu::compatible_shader_interface(spirv,changed,error));
     changed=spirv;changed[18]=16;assert(!cemu::compatible_shader_interface(spirv,changed,error));
-    fs::remove_all(root);std::cout<<"Cemu rules, presets, conflicts, backend guard and shader layouts passed\n";
+    // Pixel inputs without a vertex shader output become the translation's constants.
+    const char* unfed[32]={};unfed[1]="vec4(0.0, 0.0, 0.0, 1.0)";unfed[12]="vec4(1.0, 1.0, 1.0, 1.0)";
+    auto pixel=cemu::const_pixel_inputs("layout(location = 0) in vec4 passParameterSem0;\nlayout(location=1) noperspective in vec4 passParameterSem3;\n"
+        "layout( location = 12 ) flat in vec4 tint;\nlayout(location = 12) out vec4 color;\nlayout(location = 1, component = 0) in vec4 other;\n// layout(location = 1) in vec2 uv;\n",unfed);
+    assert(pixel.find("layout(location = 0) in vec4 passParameterSem0;")!=std::string::npos);
+    assert(pixel.find("const vec4 passParameterSem3 = vec4(0.0, 0.0, 0.0, 1.0);")!=std::string::npos);
+    assert(pixel.find("const vec4 tint = vec4(1.0, 1.0, 1.0, 1.0);")!=std::string::npos);
+    assert(pixel.find("layout(location = 12) out vec4 color;")!=std::string::npos);
+    assert(pixel.find("layout(location = 1, component = 0) in vec4 other;")!=std::string::npos);
+    assert(pixel.find("layout(location = 1) in vec2 uv;")!=std::string::npos);
+    fs::remove_all(root);std::cout<<"Cemu rules, presets, conflicts, backend guard, shader layouts and unfed pixel inputs passed\n";
 }

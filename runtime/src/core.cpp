@@ -37,6 +37,12 @@ static std::mutex g_log_mutex;
 static constexpr int kLogRing = 200, kLogLine = 240;
 static char g_log_ring[kLogRing][kLogLine];
 static std::atomic<uint32_t> g_log_next{0};
+// the log file (main.cpp, captures/wwhd.log): every line in full, under the log lock
+static void (*g_log_sink)(const char*, size_t) = nullptr;
+void log_set_sink(void (*sink)(const char*, size_t)) {
+    std::lock_guard<std::mutex> lk(g_log_mutex);
+    g_log_sink = sink;
+}
 
 void log_msg(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_log_mutex);
@@ -48,6 +54,14 @@ void log_msg(const char* fmt, ...) {
     vsnprintf(line, kLogLine, fmt, ap2);
     va_end(ap2);
     g_log_next++;
+    if (g_log_sink) {
+        char full[4096];
+        va_list ap3;
+        va_copy(ap3, ap);
+        int n = vsnprintf(full, sizeof full, fmt, ap3);
+        va_end(ap3);
+        if (n > 0) g_log_sink(full, std::min((size_t)n, sizeof full - 1));
+    }
 #ifdef __ANDROID__
     __android_log_vprint(ANDROID_LOG_INFO, "wwhd", fmt, ap);  // adb logcat -s wwhd
     va_end(ap);
@@ -69,19 +83,13 @@ void log_ring_write(int fd, void (*out)(int, const char*, size_t)) {
 }
 
 void fatal(const char* fmt, ...) {
-    {
-        std::lock_guard<std::mutex> lk(g_log_mutex);
-        va_list ap;
-        va_start(ap, fmt);
-#ifdef __ANDROID__
-        __android_log_vprint(ANDROID_LOG_FATAL, "wwhd", fmt, ap);
-#else
-        fprintf(stderr, "FATAL: ");
-        vfprintf(stderr, fmt, ap);
-        fputc('\n', stderr);
-#endif
-        va_end(ap);
-    }
+    char message[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof message, fmt, ap);
+    va_end(ap);
+    exception_report::record(message);
+    LOG("FATAL: %s", message); // file and crash ring, not just stderr
     abort();
 }
 
@@ -274,9 +282,18 @@ uint32_t register_host(PpcFunc fn, const char* name) {
 }
 }  // namespace dispatch
 
+extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) {
+    exception_report::boundary<GuestExit>("native game callback", [&] { fn(c); });
+}
+
 extern "C" void ppc_dispatch(Cpu* c) {
     PpcFunc f = dispatch::lookup(c->pc);
     if (!f) fatal("indirect branch to unknown address %08X (lr=%08X ctr=%08X)", c->pc, c->lr, c->ctr);
+    if (c->pc - dispatch::kSlotBase < dispatch::kSlotSize ||
+        c->pc - mem::kHleFuncBase < dispatch::kHostSize) {
+        ppc_host_call(c, f);
+        return;
+    }
     MUSTTAIL return f(c);
 }
 

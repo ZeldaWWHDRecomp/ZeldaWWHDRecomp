@@ -54,6 +54,23 @@ the default on Windows/Linux). Test runs: `WWHD_HIDDEN_WINDOWS=1` keeps the wind
 `WWHD_TEST_RENDERER_SWITCH=frame:metal|vulkan` does what "Restart Now" does, `WWHD_LOG_TITLE=1`
 logs the window title.
 
+For Metal and Vulkan save-state comparisons, use `WWHD_TEST_ORIGIN_LOAD=n` to start
+scenario inputs after n post-load Link steps, and `WWHD_DUMP_LOAD_FRAMES=n,...` to dump TV,
+GamePad and optional presented images at renderer-frame offsets from the completed load
+(`load_frame_<n>.png`, `_drc.png`, `_present.png`). Capture logs include the actual completed-load
+renderer frame, capture frame, and load/current logic steps. Lists use unsigned decimal offsets
+separated by commas; malformed entries stop parsing. A requested load frame can complete a frame
+later in another run; fixed-frame inputs and captures can therefore compare different game states.
+Renderer offsets alone do not align interpolation phase at 60 fps. For a phase-aligned capture,
+`WWHD_TEST_CAPTURE_LOAD_COUNTER=n` selects a full-pass swap at the restored game counter plus n,
+on the guest thread before the render queue. It uses the ordinary `captures/<time>/` TV, GamePad
+and presented capture files. Keep the selected counter and scenario origin identical between
+barrier modes and retain the load/capture logs. Paused menus freeze the game counter; use
+`WWHD_TEST_CAPTURE_LOAD_STEP=n` instead to select a full-pass swap n logic steps after load.
+With `tools/bench/run_bench.py`, use `--origin-load-steps n` to align both inputs and the
+interpolation mode switch to that restored clock; an absolute startup mode switch can change
+random-seed evolution when a load completes one step later.
+
 ## Build
 
 Use Clang/clang++ with CMake, Vulkan 1.3 headers and loader, glslang and zlib (and SDL3 and, on
@@ -158,6 +175,11 @@ output mask (`CB_SHADER_MASK`), the alpha test and the front-face import. The va
 adds, for the texture units the program samples, their dimension and integer format, the
 semantic ids of the parameters a vertex shader exports, and streamout strides when it writes
 streamout; the units and exports are recorded from the program's first translation.
+A pixel shader is translated for the draw's vertex shader: an input that none of the vertex
+shader's exports feeds is declared as a constant with the GPU's default value for it
+(`SPI_PS_INPUT_CNTL` DEFAULT_VAL) instead of an input, so the pixel shader's variant key also has
+the mask of those inputs and their default values (`ps_link`). A declared input that no output
+writes made the Adreno driver refuse the pipeline (PR #30, the boat ride after the sword and shield).
 Render-target formats, samplers, buffer addresses and units the program does not sample
 are not in the key. Keys that still translate to an identical shader (GLSL, resource
 mapping, uniform offsets, descriptor ranks) share one shader and its pipelines.
@@ -309,11 +331,17 @@ a process sample showed a runtime initializer deadlock before `main`.
 
 The guest buffer cache replaces the per-draw copies of guest vertex arrays, index arrays and uniform
 blocks into the upload arena with persistent GPU copies keyed by guest address
-(`runtime/src/gfx/vulkan/buffer_cache_core.h`, glue in `buffer_cache.cpp`). It is **on by default on
-macOS and desktop Linux** (Steam Deck included) and **off on Windows and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
+(`runtime/src/gfx/vulkan/buffer_cache_core.h`, glue in `buffer_cache.cpp`). It is **on by default everywhere**: macOS, desktop Linux (Steam Deck included), Android (issue #56:
+0 verify mismatches, ~13 more presented fps in heavy views on an Adreno 830) and Windows (issue #91:
+13-19% less render-thread time on an RX 6700 XT, no geometry problems); `WWHD_VK_BUFFER_CACHE=1` turns it on and
 `WWHD_VK_BUFFER_CACHE=0` off on any platform.
+Verify mode (`WWHD_VK_BUFFER_CACHE_VERIFY=1`) keeps a CPU copy of every upload and compares guest
+memory against it, so it never reads the mapped GPU memory (uncached on discrete GPUs: it ran at ~1 fps
+on an RX 6700 XT before, issue #91).
 
-**Testers on Windows and Linux (and Android):** it stays opt-in there until it has been checked on
+**Verify mode:** on drivers whose upload memory is not host-cached (e.g. AMD on Windows) the verify
+mode reads it back and becomes unusably slow; it is a diagnostic, not needed for normal play. Earlier
+note: it stayed opt-in until it had been checked on
 those hosts, where the page-fault handling it relies on costs more and Linux limits the number of
 protected regions. Please run a normal play session, or the benchmark scene, once with
 `WWHD_VK_BUFFER_CACHE_VERIFY=1 WWHD_VK_CPU_ONLY_STATS=1` and report:
@@ -642,6 +670,66 @@ CPU paths not set to `1` and lazy DrawDone / async present when turned off. The 
 `tools/bench/run_bench.py` runs fixed scenes from a save state and summarizes these reports (see
 `docs/performance.md`, "How to profile").
 
+## Resource dependencies
+
+Precise barriers are **on by default on Android** and **opt-in on desktop**
+(`WWHD_VK_NARROW_BARRIERS=1`) until they have been checked on native Windows/Linux drivers; on MoltenVK
+they measured neutral (7 interleaved pairs). The precise path records each image's last write scope
+and accumulated reader stages, including attachments, feedback copies, mip chains, composition
+and readbacks. Texture bindings name the shader stage that actually reads them. Barrier elision
+preserves the conservative dynamic-rendering pass boundaries. Source access masks contain writes only; a write waits for all pending readers.
+Same-layout reads skip dependencies once the producer is visible to that stage/access; new readers
+and layout transitions still get dependencies. Layout transitions remain ordered as image writes.
+Image ranges remain whole-resource. Buffer compute/readback dependencies use the same derivation;
+coherent upload/cache slices are immutable until their submission fence retires, so submission
+makes host writes visible without an extra GPU barrier. All resources use one queue family.
+
+`WWHD_VK_NARROW_BARRIERS=0` selects conservative image scopes and `=1` the precise path, on every
+Vulkan platform.
+Scripted synchronization and frame-equivalence checks cover the default path. Stable conservative scenes
+require bit-identical precise frames. For a scene with conservative repeat variation, compare five
+captures per path: candidate differences must stay within the conservative pixels, value ranges and
+maximum difference counts. New regions or larger differences fail. `WWHD_VK_VALIDATION=1`
+now explicitly enables Khronos synchronization validation as well as the usual validation checks.
+Fixed per-mip transfer barriers and fence/host lifetime rules remain in place. CI calibrates the
+layer with `WWHD_VK_SYNC_NEGATIVE_CONTROL=1` and `--renderer-smoke`: two intentional unordered writes
+must report a synchronization hazard. Regular renderer smokes still require zero validation errors.
+CI also enables the layer's shader-access heuristic and attachment LoadOp-after-StoreOp checks.
+
+Known baseline issue: conservative MoltenVK repeats can vary at isolated foliage-edge pixels,
+including depth values. MoltenVK/Metal alpha-edge behavior is suspected; the root cause remains
+unconfirmed. Some broad 60 fps replay differences were traced to enabling interpolation at an
+absolute boot step while state loads completed a step apart. Use `--origin-load-steps` in the
+benchmark tool to align interpolation and input to the restored clock, and select full-pass
+captures by post-load counter (or logic step for paused menus). Track remaining baseline variation
+separately from barrier acceptance, without weakening
+synchronization validation or the bounds above.
+
+The write-only source and previous/next-use approach was inspired by GreenNaugahyde's Android
+renderer (MPL-2.0); this implementation uses upstream resource tracking and copies no fork code.
+See [Android device checks](android-device-checklist.md) for the pending Mali/Adreno capture.
+
+### Desktop barrier measurement
+
+On Apple M3 Max with MoltenVK, seven interleaved conservative/precise pairs used the
+same warmed Outset route, restored-clock inputs and paced 60 fps presentation.
+The first five pairs met the inconclusive-result extension criterion; four additional
+measurements completed before the remaining six were cancelled at the user's request.
+Only quiet runs (load below 12 throughout, no competing game) were accepted.
+
+Values are medians [Q1, Q3] in milliseconds across seven runs per path; each run
+averages retained profiler windows after warmup.
+
+| Metric | Conservative | Precise |
+| --- | --- | --- |
+| Frame time | 16.757 [16.754, 16.761] | 16.752 [16.748, 16.761] |
+| Render-thread CPU | 4.990 [4.920, 5.142] | 5.034 [4.999, 5.211] |
+| GPU submission intervals | 3.373 [3.359, 3.409] | 3.367 [3.329, 3.409] |
+
+All IQRs overlap. No desktop speedup is established; paced presentation also limits
+throughput conclusions. GPU intervals are timestamp interval sums, not GPU busy time.
+Android performance remains pending physical Mali/Adreno measurements.
+
 ## Optional performance diagnostics
 
 These switches require the exact value `1` and remain disabled by default.
@@ -650,7 +738,6 @@ These switches require the exact value `1` and remain disabled by default.
 - `WWHD_VK_UNCAPPED`: bypasses guest wall-clock flip eligibility for throughput diagnostics, while retaining FIFO GPU completion ordering. Frame-driven simulation accelerates; timebase/audio clocks remain real-time. This is not normal gameplay FPS. The same switch is now in the settings overlay (Graphics → "Uncapped (debug: the game runs too fast)", not saved) and `WWHD_UNCAPPED=1` sets it for either renderer; while it is on, the swapchains present with immediate (or mailbox) instead of the chosen mode, and Metal turns the layers' displaySyncEnabled off.
 - `WWHD_VK_READY_FLIP_WAIT`: experimental waiting for an already-eligible pending flip to complete instead of sleeping another full guest tick. It preserves the existing minimum swap interval and GPU completion guards. Literal wait-for-vblank behavior changes for an eligible pending flip; keep opt-in until matched gameplay benchmarks and correctness checks establish suitability.
 - `WWHD_VK_READY_FLIP_PARK`: experimental eligible-flip completion wait after the save-state freeze gate and before guest-core reacquisition. The optional host callback runs while the thread is marked running and its guest core remains released; it keeps the existing flip eligibility and FIFO GPU guards. This avoids a second core release/acquire roundtrip. Default sleep behavior and Metal callers remain unchanged.
-- `WWHD_VK_NARROW_BARRIERS`: experimental layout-specific source dependency scopes. Destination scopes, image ranges, render-pass breaks and same-layout write barriers remain unchanged. Shader-read classification assumes the current vertex/fragment consumers; general and unknown layouts retain conservative scopes.
 - `WWHD_VK_FEEDBACK_STATS`: counts full feedback copies and identical source versions within one draw across both shader stages. It reports physical texels rather than estimated bandwidth and does not skip copies.
 
 The saved uphill 3x scene passed 2400 frames with both experimental switches, guarded checkpoint restore and Vulkan synchronization validation on Apple M3 Max. This establishes a tested path, not a universal synchronization proof or FPS improvement. Duplicate feedback counters were zero for that scene, so duplicate-copy elimination was rejected there. Comparisons must use the same executable, accepted checkpoint, resolution and graphics settings; a rejected state load invalidates the scene benchmark.

@@ -76,11 +76,20 @@ struct J {
     std::vector<J> a;
     std::vector<std::pair<std::string, J>> o;
 
-    const J* get(const char* k) const {
-        for (auto& kv : o)
-            if (kv.first == k) return &kv.second;
-        return nullptr;
-    }
+    // std::pair<std::string, J> has a J member, so it cannot be instantiated while J is incomplete.
+    // libstdc++ takes that literally (and refuses the build); libc++, which the releases build with,
+    // does not. Declaring the special members and get() and defining them below, once J is complete,
+    // keeps the type working with both. std::vector<J> a is fine as it is: vector may hold an
+    // incomplete type until one of its members is used. (Declaring any of these also suppresses the
+    // implicit default constructor, so it is listed too.)
+    J();
+    J(const J&);
+    J(J&&);
+    J& operator=(const J&);
+    J& operator=(J&&);
+    ~J();
+
+    const J* get(const char* k) const;
     std::string str(const char* k, const std::string& def = "") const {
         const J* v = get(k);
         return v && v->t == Str ? v->s : def;
@@ -98,6 +107,19 @@ struct J {
         return !v || v->t == Null;
     }
 };
+
+J::J() = default;
+J::J(const J&) = default;
+J::J(J&&) = default;
+J& J::operator=(const J&) = default;
+J& J::operator=(J&&) = default;
+J::~J() = default;
+
+const J* J::get(const char* k) const {
+    for (auto& kv : o)
+        if (kv.first == k) return &kv.second;
+    return nullptr;
+}
 
 struct JParser {
     const char* p;
@@ -433,7 +455,7 @@ struct App {
     bool portable = false, legacy = false;
     std::string package, game_dir;
     double free_bytes = 0, source_bytes = 0, toolchain_bytes = 0;
-    bool opt_remove_toolchain = true, opt_shortcut = false;
+    bool opt_remove_toolchain = false, opt_shortcut = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
     bool exec_game = false;                                  // start the game when the window has closed
@@ -1372,7 +1394,7 @@ static void screen_done() {
         if (A.toolchain_bytes > 0) {
             checkbox(("Remove the downloaded compiler (" + format_size(A.toolchain_bytes) + ")").c_str(),
                             &A.opt_remove_toolchain);
-            muted("It is only needed to repair the game, and is downloaded again then.");
+            muted("Keep it for guest mod builds and repairs. Run setup again to restore it if removed.");
         }
         checkbox(
 #if defined(__APPLE__)
@@ -1536,7 +1558,7 @@ static void fail_no_package(const PackageSearch& r) {
              "In Finder, drag \"Wind Waker HD.app\" out of the unzipped folder (for example onto the Desktop) and back "
              "into the same folder, then open it again: an app moved with Finder is started where it is. Or, in "
              "Terminal: xattr -dr com.apple.quarantine followed by the path of the unzipped folder. Keep the app in "
-             "that folder: it needs tools/, sdk/ and portable.txt next to it.");
+             "that folder: it needs tools/ and sdk/ next to it.");
         return;
     }
     if (r.err == EPERM || r.err == EACCES) {
@@ -1550,26 +1572,52 @@ static void fail_no_package(const PackageSearch& r) {
         return;
     }
     fail("Wind Waker HD could not find its release files: " + r.checked + " is missing (" + r.error + ").",
-         "Keep \"Wind Waker HD.app\" inside the unzipped release folder, next to tools/, sdk/ and portable.txt. If you "
+         "Keep \"Wind Waker HD.app\" inside the unzipped release folder, next to tools/ and sdk/. If you "
          "moved only the app (for example into Applications), move it back; to keep the game somewhere else, move "
          "the whole folder.",
          folder);
 #else
     fail("Wind Waker HD could not find its release files: " + r.checked + " is missing or unreadable (" + r.error + ").",
-         "Keep this program inside the unzipped release folder, next to tools/, sdk/ and portable.txt. To keep the "
+         "Keep this program inside the unzipped release folder, next to tools/ and sdk/. To keep the "
          "game somewhere else, move the whole folder; if files are missing, unzip the release again.",
          folder);
 #endif
 }
 
-// The game, saves and settings go into the data folder (in the release folder unless --data-dir):
+// The game, saves and settings go into the data folder. In a portable release that is <release>/data
+// (portable.txt in the release folder); otherwise the per-user folder of earlier releases, the same
+// rule as setup.py default_data_dir()/legacy_data_dir() (this program cannot call it, so the platform
+// fallbacks are spelled out again). An AppImage has no portable.txt (its mount is read-only,
+// issue #55), so it lands in the per-user folder. --data-dir overrides both.
 // check it can be written before anything starts, so a read-only place (a disk image, a read-only drive or
 // share, a folder of another user) is reported as such and not as a failure halfway through the setup.
+static bool pkg_is_portable(const std::string& pkg) {
+    SDL_PathInfo info;
+    return !pkg.empty() && SDL_GetPathInfo((pkg + "portable.txt").c_str(), &info);
+}
+
 static std::string data_dir_of(const std::string& pkg, const std::vector<std::string>& passthru) {
-    std::string data = pkg + "data";
-    for (size_t i = 0; i + 1 < passthru.size(); i++)
-        if (passthru[i] == "--data-dir") data = passthru[i + 1];
-    return data;
+    for (size_t i = 0; i < passthru.size(); i++) {
+        const std::string& s = passthru[i];
+        if (s == "--data-dir" && i + 1 < passthru.size() && !passthru[i + 1].empty()) return passthru[i + 1];
+        if (s.rfind("--data-dir=", 0) == 0 && s.size() > strlen("--data-dir=")) return s.substr(strlen("--data-dir="));
+    }
+    if (pkg_is_portable(pkg)) return pkg + "data";
+#if defined(__APPLE__)
+    const char* home = SDL_getenv("HOME");
+    return std::string(home ? home : ".") + "/Library/Application Support/wwhd";
+#elif defined(_WIN32)
+    // setup.py: os.environ.get("LOCALAPPDATA") or expanduser("~\\AppData\\Local"), then "WWHD"
+    const char* root = SDL_getenv("LOCALAPPDATA");
+    if (root && *root) return std::string(root) + "\\WWHD";
+    const char* profile = SDL_getenv("USERPROFILE");  // what expanduser("~") reads here
+    return std::string(profile ? profile : ".") + "\\AppData\\Local\\WWHD";
+#else
+    const char* xdg = SDL_getenv("XDG_DATA_HOME");
+    if (xdg && *xdg) return std::string(xdg) + "/wwhd";
+    const char* home = SDL_getenv("HOME");
+    return std::string(home ? home : ".") + "/.local/share/wwhd";
+#endif
 }
 
 static bool check_writable(const std::string& data) {
@@ -1588,11 +1636,14 @@ static bool check_writable(const std::string& data) {
     }
     if (what.empty()) return true;
     std::string err = SDL_GetError();
-    fail("The release folder cannot be written to: " + what + " failed (" + err + "). Setup keeps the game, saves "
-         "and settings in " + data + ".",
-         "Copy the whole unzipped folder to a place you can write to (for example your home folder or a Games "
-         "folder; not a disk image, a read-only drive or another user's folder) and open Wind Waker HD from there.",
-         A.pkg);
+    const bool portable = pkg_is_portable(A.pkg);
+    fail("The folder for the game, saves and settings cannot be written to: " + what + " failed (" + err + ").",
+         portable ? "Copy the whole unzipped folder to a place you can write to (for example your home folder or a "
+                   "Games folder; not a disk image, a read-only drive or another user's folder) and open Wind Waker HD "
+                   "from there."
+                  : "Setup keeps the game, saves and settings in " + data + ". Check that you can write there, or "
+                   "choose another place (start with --data-dir FOLDER), then open Wind Waker HD again.",
+         portable ? A.pkg : data);
     return false;
 }
 
@@ -1764,14 +1815,12 @@ static void save_shot(SDL_Renderer* r, const std::string& name) {
 // The game in this folder is built for this release and its game files are there: start it directly.
 static bool game_ready(const std::string& pkg, const std::vector<std::string>& passthru) {
     SDL_PathInfo info;
-    if (!SDL_GetPathInfo((pkg + "portable.txt").c_str(), &info)) return false;  // only portable releases
-    std::string data = pkg + "data";
-    for (size_t i = 0; i + 1 < passthru.size(); i++)
-        if (passthru[i] == "--data-dir") data = passthru[i + 1];
+    std::string data = data_dir_of(pkg, passthru);
     J st, man;
     if (!parse_json(read_file(data + "/install.json"), st) || !parse_json(read_file(pkg + "sdk/manifest.json"), man))
         return false;
     if (st.str("version") != man.str("version") || st.boolean("placeholder_code")) return false;
+    if (!st.str("app").empty()) return false;  // macOS non-portable: started with `open <app>` (setup.py launch)
     auto resolve = [&](std::string p) {  // install.json keeps paths inside data/ relative to it
         bool abs = !p.empty() && (p[0] == '/' || p[0] == '\\' || (p.size() > 1 && p[1] == ':'));
         return p.empty() || abs ? p : data + "/" + p;

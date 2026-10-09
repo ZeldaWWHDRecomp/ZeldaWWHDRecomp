@@ -10,6 +10,11 @@
 # checks the same artifacts without publishing (dry run); with dry_run unchecked on a v* tag it
 # publishes too.
 #
+# Development builds: "Run workflow" on devel with devel_build checked publishes the same artifacts
+# as the rolling pre-release "devel-build" (replaced each time, never marked latest, no VirusTotal scan to
+# save the API quota). The nightly schedule runs on the default branch and only starts such a run
+# when devel has moved since the current "devel-build" pre-release (so it works once this file is on main).
+#
 # Toolchains: tools/installer/toolchains.json pins the exact compilers. The Windows and Linux
 # runtimes are built with the same pinned llvm-mingw / zig the installer downloads for players,
 # so the prebuilt runtime links with the player's locally compiled game code.
@@ -18,12 +23,18 @@ name: release
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: "23 2 * * *"   # nightly development build, only when devel changed
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Dry run: build and check the artifacts, do not publish"
         type: boolean
         default: true
+      devel_build:
+        description: "Development build: publish as the rolling pre-release 'devel-build' (run on devel)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,12 +50,42 @@ env:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write   # the nightly schedule starts the development build on devel
     outputs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
+      devel: ${{ steps.v.outputs.devel }}
+      skip: ${{ steps.v.outputs.skip }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - id: v
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+            # nightly: start a development build on devel only when devel moved since the last one
+            head=$(gh api "repos/$GH_REPO/commits/devel" -q .sha)
+            built=$(gh api "repos/$GH_REPO/commits/devel-build" -q .sha 2>/dev/null || true)
+            echo "devel $head, last development build ${built:-none}"
+            if [[ "$head" != "$built" ]]; then
+              gh workflow run release.yml --ref devel -f devel_build=true -f dry_run=true
+              echo "development build started"
+            fi
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "${{ inputs.devel_build }}" == true ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/devel ]]; then
+              echo "::error::development builds run on devel (this run is on $GITHUB_REF)"; exit 1
+            fi
+            echo "version=devel-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "devel=true" >> "$GITHUB_OUTPUT"
+            echo "version: devel-${GITHUB_SHA::8}, development pre-release"
+            exit 0
+          fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
@@ -60,6 +101,7 @@ jobs:
 
   macos:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     # macOS 15 SDK (Xcode 16) needed: the Metal renderer uses MTLMathMode; the app runs on macOS 14+
     runs-on: macos-15
     env:
@@ -69,6 +111,15 @@ jobs:
 
       - name: Install build tools
         run: brew install ninja
+
+      - name: Generated hook entry with Apple clang 17
+        # Keep the oldest supported Apple backend covered even if the runner default changes.
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+        run: |
+          xcrun clang --version
+          xcrun clang -O3 -std=gnu11 -arch arm64 -mmacosx-version-min=14.0 \
+            -I runtime/include -c runtime/tools/guest_hooks_body.c -o "$RUNNER_TEMP/guest-hooks-clang17.o"
 
       - name: Build runtime (Release, Metal) against placeholder guest code
         run: |
@@ -82,6 +133,7 @@ jobs:
         run: |
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
@@ -119,6 +171,7 @@ jobs:
 
   linux:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     # x86-64 and arm64 (aarch64), each built and tested on its own architecture's runner.
     # glibc 2.35: the oldest base the release supports (Ubuntu 22.04, Debian 12, Fedora 36, SteamOS 3,
     # Raspberry Pi OS 12 64-bit)
@@ -147,7 +200,7 @@ jobs:
           # SDL3's documented Linux build dependencies (SDL3 docs/README-linux.md, Ubuntu 22.04+ set), so
           # the shipped SDL3 has every backend (X11, Wayland, PipeWire/PulseAudio/ALSA, input, IME);
           # libvulkan1 is only linked against (players use their own Vulkan loader)
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config xz-utils libvulkan1 \
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config xz-utils libcurl4-openssl-dev libvulkan1 \
             libasound2-dev libpulse-dev libaudio-dev libfribidi-dev libjack-dev libsndio-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
             libxtst-dev libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev \
@@ -206,6 +259,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
@@ -223,6 +277,30 @@ jobs:
 
       - name: Guard (no game code, game files or keys)
         run: python3 tools/release/guard.py dist/*.zip
+
+      - name: AppImage (issue #55)
+        # one file, no unzipping: drops portable.txt, so setup keeps everything in the per-user folders.
+        # The trailing slash in the glob picks the packaged folder, not its .zip.
+        run: |
+          python3 tools/release/appimage.py dist/WindWakerHD-*/ --out dist
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE"/dist/*.AppImage --appimage-extract)
+          python3 tools/release/guard.py "$RUNNER_TEMP"/squashfs-root
+          # the real mount is read-only: make the extracted tree that too, so a write into <image>/data
+          # would fail here instead of silently working on a writable temp dir
+          chmod -R a-w "$RUNNER_TEMP"/squashfs-root
+          APP=$(echo "$GITHUB_WORKSPACE"/dist/*.AppImage)
+          chmod +x "$APP"
+          # an explicit data folder is honoured
+          SDL_VIDEO_DRIVER=offscreen "$APP" --appimage-extract-and-run --self-test --data-dir "$RUNNER_TEMP/data-appi"
+          test -f "$RUNNER_TEMP/data-appi/setup.log"
+          # without one: the per-user folder, never <image>/data, and the image stays untouched (issue #55)
+          XDG_DATA_HOME="$RUNNER_TEMP/xdg-data" XDG_CONFIG_HOME="$RUNNER_TEMP/xdg-conf" \
+            SDL_VIDEO_DRIVER=offscreen "$RUNNER_TEMP/squashfs-root/AppRun" --self-test
+          test -f "$RUNNER_TEMP/xdg-data/wwhd/setup.log"
+          test ! -e "$RUNNER_TEMP/squashfs-root/data"
+          test ! -e "$GITHUB_WORKSPACE/dist/data"
+          test ! -e "$GITHUB_WORKSPACE/dist/portable.txt"
+          chmod -R u+w "$RUNNER_TEMP"/squashfs-root && rm -rf "$RUNNER_TEMP"/squashfs-root
 
       - name: Installer self-test (unzipped release, placeholder code, toolchain download)
         run: |
@@ -251,11 +329,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux-${{ matrix.arch }}
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.AppImage
           if-no-files-found: error
 
   windows:
     needs: version
+    if: needs.version.outputs.skip != 'true'
     runs-on: windows-latest
     defaults:
       run:
@@ -358,13 +439,16 @@ jobs:
             if ($ascii.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Wind Waker HD.exe imports $dll" }
           }
           # the bundled Python is the official one, unmodified: its programs and DLLs keep the PSF signature
-          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python313.dll') {
+          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll') {
             $sig = Get-AuthenticodeSignature (Join-Path $pkg "tools\python\$f")
             "tools\python\$f`: $($sig.Status), $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
               throw "tools\python\$f does not carry a valid PSF signature"
             }
           }
+          # Probe the actual isolated embeddable interpreter, including its compiled Zstd module.
+          & (Join-Path $pkg "tools\python\python.exe") -I -c "import sys; from compression import zstd; assert sys.version_info >= (3, 14); assert zstd.decompress(zstd.compress(b'wwhd')) == b'wwhd'"
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot run local RVZ setup" }
           # version information, a manifest and no debug sections (cmake/WindowsResources.cmake, WWHD_STRIP_RELEASE)
           foreach ($f in 'Wind Waker HD.exe', 'tools\bin\wwhd-extract.exe') {
             $p = Join-Path $pkg $f
@@ -426,6 +510,7 @@ jobs:
   # fails the release; the publish job does not wait for it. Without the VT_API_KEY secret it only says so.
   virustotal:
     needs: [version, macos, linux, windows]
+    if: needs.version.outputs.devel != 'true'   # development builds save the VirusTotal API quota
     runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 45
@@ -444,7 +529,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -n "$VT_API_KEY" ]; then echo "::add-mask::$VT_API_KEY"; fi
-          files=(dist/*.zip)
+          files=(dist/*.zip dist/*.AppImage)
           for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
           python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
 
@@ -464,6 +549,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       PUBLISH: ${{ needs.version.outputs.publish }}
+      DEVEL: ${{ needs.version.outputs.devel }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -479,8 +565,12 @@ jobs:
 
       - name: Checksums and release notes
         run: |
-          cd dist && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
-          python3 tools/release/notes.py README.md "$VERSION" dist/SHA256SUMS.txt > dist/notes.md
+          cd dist && sha256sum *.zip *.AppImage > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
+          if [[ "$DEVEL" == true ]]; then
+            python3 tools/release/notes.py CHANGELOG.md "Next update" dist/SHA256SUMS.txt --devel "$GITHUB_SHA" > dist/notes.md
+          else
+            python3 tools/release/notes.py CHANGELOG.md "$VERSION" dist/SHA256SUMS.txt > dist/notes.md
+          fi
           cat dist/notes.md
           python3 tools/release/guard.py dist
 
@@ -492,8 +582,17 @@ jobs:
       - name: Publish GitHub Release
         if: env.PUBLISH == 'true'
         run: |
-          gh release create "$VERSION" dist/*.zip dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
+          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
             --verify-tag
+
+      # The rolling pre-release "devel-build": the previous one and its tag are replaced; never marked latest.
+      - name: Publish development pre-release
+        if: env.DEVEL == 'true'
+        run: |
+          gh release delete devel-build --cleanup-tag --yes 2>/dev/null || true
+          gh release create devel-build dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --prerelease --latest=false \
+            --target "$GITHUB_SHA" --title "Development build (devel @ ${GITHUB_SHA::7}, $(date -u +%Y-%m-%d))" \
+            --notes-file dist/notes.md
 
   # Published releases: append the VirusTotal links and counts to the release notes and attach vt-report.json.
   # Runs after both publish and the scan; any failure only leaves the release without the section.

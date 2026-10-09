@@ -5,13 +5,14 @@ name: linux
 
 on:
   push:
+    branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
   pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     env:
-      SDL3_VERSION: release-3.2.24
+      SDL3_VERSION: release-3.4.18
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +20,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config zlib1g-dev liblz4-dev \
-            libvulkan-dev glslang-dev glslang-tools mesa-vulkan-drivers vulkan-validationlayers xvfb \
-            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev \
+            libcurl4-openssl-dev libvulkan-dev glslang-dev glslang-tools mesa-vulkan-drivers vulkan-validationlayers xvfb \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
 
       - name: Cache SDL3
@@ -43,7 +44,7 @@ jobs:
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/linux -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3"
+            -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON
 
       - name: Build
         run: cmake --build build/linux
@@ -51,25 +52,55 @@ jobs:
       - name: Unit tests
         run: |
           ctest --test-dir build/linux --output-on-failure
+          python3 tools/installer/test_setup.py
           python3 tools/recomp/test_builds.py
 
-      - name: Renderer smoke test (lavapipe + validation)
+      - name: Configure synchronization validation coverage
+        run: |
+          cat > vk_layer_settings.txt <<'EOF'
+          khronos_validation.syncval_shader_accesses_heuristic = true
+          khronos_validation.syncval_load_op_after_store_op_validation = true
+          EOF
+
+      - name: Default precise barrier smoke test (lavapipe + sync validation)
         env:
           WWHD_VK_VALIDATION: "1"
         run: |
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee smoke.log
-          grep -q "PASS" smoke.log
-          ! grep -q "VUID" smoke.log
+          grep -Fq "[renderer smoke] PASS:" smoke.log
+          ! grep -Eq "VUID|SYNC-HAZARD|validation error" smoke.log
 
-      - name: BC fallback smoke test (lavapipe + validation)
+      - name: Verify synchronization validation is active
         env:
           WWHD_VK_VALIDATION: "1"
+          WWHD_VK_SYNC_NEGATIVE_CONTROL: "1"
+        run: |
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee sync-negative.log
+          grep -Fq "SYNC-HAZARD-WRITE-AFTER-WRITE" sync-negative.log
+          grep -Fq "sync negative control submitted" sync-negative.log
+
+      - name: Conservative barrier smoke test (lavapipe + sync validation)
+        env:
+          WWHD_VK_VALIDATION: "1"
+          WWHD_VK_NARROW_BARRIERS: "0"
+        run: |
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee conservative-smoke.log
+          grep -Fq "[renderer smoke] PASS:" conservative-smoke.log
+          ! grep -Eq "VUID|SYNC-HAZARD|validation error" conservative-smoke.log
+
+      - name: BC fallback smoke test (lavapipe + sync validation)
+        env:
+          WWHD_VK_VALIDATION: "1"
+          WWHD_VK_NARROW_BARRIERS: "1"
           WWHD_VK_FORCE_BC_DECODE: "1"
           WWHD_VK_BC_VERIFY: "1"
         run: |
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee bc-smoke.log
+          grep -Fq "[renderer smoke] PASS:" bc-smoke.log
           grep -q "BC production uploads" bc-smoke.log
           grep -q "synthetic GPU/CPU checks PASS" bc-smoke.log
-          ! grep -q "VUID" bc-smoke.log
+          ! grep -Eq "VUID|SYNC-HAZARD|validation error" bc-smoke.log

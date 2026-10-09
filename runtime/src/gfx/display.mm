@@ -30,6 +30,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include "../exception_report.h"
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -41,6 +42,7 @@
 #include "../aspect.h"
 #include "display.h"
 #include "display_modes.h"
+#include "headless_compose.h"
 #include "gx2/gx2.h"
 #include "input.h"
 #include "metal.h"
@@ -53,6 +55,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_metal.h"
 #include "../overlay/overlay.h"
+#include "../overlay/guest_hud.h"
 #include "../screenshot.h"
 
 namespace mods { bool mouse_captured(); }
@@ -110,7 +113,7 @@ bool host_setting(const char* key, std::string& value) {
 }
 void set_host_setting(const char* key, const std::string& value) { set_setting(@(key), @(value.c_str())); }
 static void save_options() {
-    g_settings[@"drcMode"] = @(kModeNames[g_mode]);
+    g_settings[@"drcMode"] = @(kModeNames[display_saved_mode()]);
     g_settings[@"pipCorner"] = @(kCornerNames[g_corner]);
     g_settings[@"pipSize"] = @(g_pip_size.load());
     g_settings[@"pipOpacity"] = @(g_pip_opacity.load());
@@ -446,14 +449,15 @@ static void create_windows() {
         screen_named(g_settings[@"drcScreen"]) && screen_named(g_settings[@"drcScreen"]) != tv.screen)
         dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(g_drc_window)) [g_drc_window toggleFullScreen:nil]; });
 
-    // full screen: hide the pointer after 2 s without movement (not while the mouse camera holds it)
+    // hide the pointer after 2 s without movement while the game window is active, in a window too
+    // (issue #109); not while the settings overlay is open or the mouse camera holds it
     [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer*) {
         static NSPoint last = {-1, -1};
         static double moved = 0;
         static bool hidden = false;
         NSPoint p = [NSEvent mouseLocation];
         if (!NSEqualPoints(p, last)) { last = p; moved = display_now(); hidden = false; }
-        if (!hidden && is_fullscreen(g_tv_window) && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() &&
+        if (!hidden && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() && !overlay::is_open() &&
             display_now() - moved > 2.0) {
             [NSCursor setHiddenUntilMouseMoves:YES];
             hidden = true;
@@ -738,6 +742,11 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
         float frame[4] = {0, 0, 0, 0.6f * op};
         draw_solid(e, fmt, dw, dh, {L.pip.x - bw, L.pip.y - bw, L.pip.w + 2 * bw, L.pip.h + 2 * bw}, frame);
         draw_image(e, fmt, dw, dh, R.drc.tex, R.drc.srgb, L.pip, op);
+        if(auto* draw=overlay::guesthud::gamepad_region(dw,dh,L.pip.x,L.pip.y,L.pip.w,L.pip.h,op)) {
+            if(is_srgb(fmt))overlay::linearize_colors(draw,true);
+            ImGui_ImplMetal_NewFrame(rp);
+            ImGui_ImplMetal_RenderDrawData(draw,command_buffer(),e);
+        }
     }
     // settings overlay (overlay/overlay.h) on top: Dear ImGui's Metal backend in the same pass
     if (g_overlay_draw) {
@@ -757,6 +766,11 @@ static void compose_drc(id<MTLTexture> target) {
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
     Layout L = layout(target.width, target.height, R.drc.tex.width, R.drc.tex.height, 0, 0, false);
     draw_image(e, target.pixelFormat, target.width, target.height, R.drc.tex, R.drc.srgb, L.tv, 1.0f);
+    if (auto* draw = overlay::guesthud::gamepad_region(target.width,target.height,L.tv.x,L.tv.y,L.tv.w,L.tv.h,1)) {
+        if (is_srgb(target.pixelFormat)) overlay::linearize_colors(draw, true);
+        ImGui_ImplMetal_NewFrame(rp);
+        ImGui_ImplMetal_RenderDrawData(draw, command_buffer(), e);
+    }
     [e endEncoding];
 }
 
@@ -939,7 +953,29 @@ void present_screens() {
     L.scale = P.scale;
     float dw = P.dw, dh = P.dh;
     bool pip = P.pip_wanted, drc_only = P.drc_only;
+    if(overlay::guesthud::active())overlay::guesthud::set_tv_region(P.tv.x,P.tv.y,P.tv.w,P.tv.h,!P.drc_only);
     g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
+    // Hidden test-only composition: one reused GPU target, no drawable/readback/disk.
+    // Like Metal's other resources this target is process-lifetime; replace on device/format change.
+    const auto& diagnostic=headless_compose::policy();
+    if(diagnostic.enabled()&&R.tv.tex) {
+        static id<MTLTexture> target=nil;
+        static headless_compose::Counter counter;
+        counter.require_capacity(diagnostic);
+        if(dw!=headless_compose::width||dh!=headless_compose::height)
+            exception_report::raise("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+        const auto format=R.tv.srgb?MTLPixelFormatRGBA8Unorm_sRGB:MTLPixelFormatRGBA8Unorm;
+        if(!target||target.device!=R.device||target.pixelFormat!=format)
+            target=offscreen(headless_compose::width,headless_compose::height,R.tv.srgb);
+        if(!target)exception_report::raise("headless Metal composition target allocation failed");
+        compose_tv(target,L);
+        unsigned commands=0;
+        if(g_overlay_draw)for(const auto* list:g_overlay_draw->CmdLists)commands+=list->CmdBuffer.Size;
+        const unsigned vertices=g_overlay_draw?g_overlay_draw->TotalVtxCount:0,indices=g_overlay_draw?g_overlay_draw->TotalIdxCount:0;
+        if(counter.encoded(diagnostic,vertices,indices,commands))
+            LOG("[headless-compose] Metal encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu",counter.frames,vertices,indices,commands,
+                (unsigned long long)counter.vertices,(unsigned long long)counter.indices,(unsigned long long)counter.commands);
+    }
     take_screenshot(P);
     if (P.sim) {
         present_to_layer(R.tv, ^(id<MTLTexture> t) {

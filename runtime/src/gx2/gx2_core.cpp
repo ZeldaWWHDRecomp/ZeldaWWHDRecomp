@@ -1,3 +1,5 @@
+#include "../game_clock.h"
+#include "../mods/fast_forward.h"
 #include "../platform/host.h"
 #ifdef __APPLE__
 #include <pthread/qos.h>
@@ -17,12 +19,15 @@
 #include "gx2.h"
 #include "gx2_cmd.h"
 #include "gx2_regs.h"
+#include "register_blocks.h"
 #include "gx2_texture_regs.h"
 #ifdef WWHD_HAS_VULKAN
 #include "shader_key_dirty.h"
 #include "gfx/vulkan/api.h"
 #endif
 #include "runtime.h"
+#include "savestate.h"
+#include "guest_addr.h"
 #include "../aspect.h"
 #include "gfx/renderer.h"
 #include "platform/perf_hint.h"
@@ -37,6 +42,7 @@ static uint32 g_regs[kNumRegs];
 static uint32* g_shadow = nullptr;  // register copy of the active GX2ContextState
 static std::unordered_map<uint32, std::vector<uint32>> g_contexts;
 static std::recursive_mutex g_exec_mutex;
+static RegisterBlocks<kNumRegs> g_register_blocks;
 
 uint32* regs() { return g_regs; }
 
@@ -117,7 +123,8 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
 #endif
 
 static void apply_regs(uint32 first, const uint32* v, uint32 n) {
-    if (first + n > kNumRegs) return;
+    if (first >= kNumRegs || n > kNumRegs - first) return;
+    g_register_blocks.touch(first, n);
 #ifdef WWHD_HAS_VULKAN
     // Vulkan renderer only (the Metal renderer keeps the original bulk path)
     static const bool fusedSmall = [] {
@@ -217,7 +224,7 @@ static void render_thread_main() {
 
 static void enqueue(Op op, const uint32* payload, uint32 n) {
     static std::once_flag once;
-    std::call_once(once, [] { std::thread(render_thread_main).detach(); });
+    std::call_once(once, [] { std::thread([] { exception_report::boundary("GX2 render thread", render_thread_main); }).detach(); });
     std::lock_guard<std::mutex> lk(g_q_mutex);
     g_q_pending.push_back(op | (n << 8));
     g_q_pending.insert(g_q_pending.end(), payload, payload + n);
@@ -355,8 +362,20 @@ static void set_context(uint32 ctx) {
         return;
     }
     g_shadow = it->second.data();
-    memcpy(g_regs, g_shadow, sizeof(g_regs));
-    g_shader_state_gen++;
+    // Draw writes primitive type without updating the context shadow.
+    g_register_blocks.touch(uint32(REGADDR::VGT_PRIMITIVE_TYPE), 1);
+    if (g_register_blocks.restore(g_regs, g_shadow, [](uint32 reg, uint32 old, uint32 value) {
+        if (shader_irrelevant(reg)) return false;
+#ifdef WWHD_HAS_VULKAN
+        static const bool keyDirty = [] {
+            const char* e = getenv("WWHD_VK_SHADER_KEY_DIRTY");
+            return render::vulkan() && e && !strcmp(e, "1");
+        }();
+        uint32 mask;
+        if (keyDirty && vulkan_shader_key_mask(reg, mask)) return ((old ^ value) & mask) != 0;
+#endif
+        return true;
+    })) ++g_shader_state_gen;
     rprof::g_reg_dirty |= 2;  // draw classifier: a context load counts as a full state change
 }
 
@@ -464,6 +483,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
     case OP_SWAP:
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
+        if (n >= 3 && p[2]) render::request_capture();
         render::swap();
         break;
     case OP_SET_PROJ_REGS: {
@@ -478,6 +498,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         apply_regs(p[0], v, std::min<uint32>(n - 1, 16));
         break;
     }
+    case OP_LAYOUT_CONTENT:
+        aspect::set_content_clip(n && p[0]);
+        break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
         aspect::layout_root_target(p[0], render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));
@@ -559,14 +582,23 @@ static uint64_t g_last_flip_time = 0;  // timebase
 static int64_t g_count_offset = 0;     // guest-visible swap/flip counts minus ours (set by a loaded save state)
 
 static uint64_t vsync_index() {  // in ticks
-    return uint64_t((std::chrono::steady_clock::now() - g_vsync_epoch).count()) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
+    if (!game_clock::shifted())
+        return uint64_t((std::chrono::steady_clock::now() - g_vsync_epoch).count()) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
+    const auto sample = game_clock::sample();
+    const auto epoch = std::chrono::duration_cast<std::chrono::nanoseconds>(g_vsync_epoch.time_since_epoch()).count();
+    return uint64_t(sample.guest - epoch) * kTicksPerVsync / uint64_t(kVsyncPeriod.count());
 }
 static uint64_t vsync_granule() {  // ticks per vsync at the current rate: 4 (30/60 fps), 2 (120), 1 (240)
     const int rate = interp::vsync_rate();
     return rate >= 4 ? 1 : rate >= 2 ? 2 : kTicksPerVsync;
 }
 static std::chrono::steady_clock::time_point tick_time(uint64_t tick) {
-    return g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    if (!game_clock::shifted())
+        return g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    const auto sample = game_clock::sample();
+    const auto target = g_vsync_epoch + std::chrono::nanoseconds(tick * uint64_t(kVsyncPeriod.count()) / kTicksPerVsync);
+    const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() - sample.guest;
+    return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(sample.host + std::max<int64_t>(0, (left + sample.rate - 1) / sample.rate)));
 }
 // the first tick at which this flip may execute: the vsync after its swap, and `swap interval`
 // vsyncs after the previous flip
@@ -603,7 +635,7 @@ static void update_flips() {  // g_flip_mutex held
         at = now / vsync_granule() * vsync_granule();
         g_pending_flips.pop_front();
         g_last_flip_vsync = at;
-        g_last_flip_time = timebase::now();
+        g_last_flip_time = timebase::simulation_now();
         g_flip_count++;
     }
 }
@@ -768,7 +800,27 @@ HLE(gx2, GX2SwapScanBuffers) {
     const uint64_t steps = interp::logic_steps();
     const bool hold = steps == lastSteps;
     lastSteps = steps;
-    emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
+    // Opt-in correctness capture: select the guest frame before it enters
+    // the asynchronous render queue. Renderer-frame parity is not a game clock.
+    static const char* captureCounter = getenv("WWHD_TEST_CAPTURE_LOAD_COUNTER");
+    static const char* captureStep = getenv("WWHD_TEST_CAPTURE_LOAD_STEP");
+    bool capture = false;
+    if ((captureCounter || captureStep) && ss::last_load_frame()) {
+        static uint64_t capturedLoad = 0;
+        const auto loaded = ss::last_load_frame();
+        const uint32_t counter = ld32(GD(0x101FF560));
+        const uint64_t offset = captureStep ? steps - ss::last_load_step()
+                                            : uint32_t(counter - ss::last_load_counter());
+        const uint64_t target = strtoull(captureStep ? captureStep : captureCounter, nullptr, 10);
+        if (capturedLoad != loaded && !hold && offset == target) {
+            capturedLoad = loaded;
+            capture = true;
+            LOG("[test] capture at loaded %s +%llu (game counter %08X), full pass",
+                captureStep ? "logic step" : "game counter",(unsigned long long)offset,counter);
+        }
+    }
+    if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
+    else emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
     {
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
@@ -912,7 +964,6 @@ HLE(gx2, GX2SampleTopGPUCycle) { if (arg(c, 0)) st64(arg(c, 0), timebase::guest_
 HLE(gx2, GX2SampleBottomGPUCycle) { if (arg(c, 0)) st64(arg(c, 0), timebase::guest_now()); }
 
 // ---------------------------------------------------------------- save states
-#include "../savestate.h"
 
 // the game is frozen between frames: finish all queued GPU work and let pending flips execute, so no
 // command reads guest memory while it is replaced and the swap/flip counts agree
@@ -962,6 +1013,8 @@ void gx2_ss_load(ss::Reader& r) {
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     r.u32();
     r.bytes(g_regs, sizeof g_regs);
+    g_register_blocks = {};
+    g_register_blocks.include(g_regs);
     g_contexts.clear();
     uint32 n = r.u32();
     for (uint32 i = 0; i < n && r.ok; i++) {
@@ -969,6 +1022,7 @@ void gx2_ss_load(ss::Reader& r) {
         auto& v = g_contexts[k];
         v.resize(words);
         r.bytes(v.data(), (size_t)words * 4);
+        if (words == kNumRegs) g_register_blocks.include(v.data());
     }
     uint32 active = r.u32();
     auto it = g_contexts.find(active);

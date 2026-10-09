@@ -1,3 +1,7 @@
+#include "perf_metrics.h"
+#include "gfx/capture_schedule.h"
+#include "savestate.h"
+#include "interp.h"
 #include "gfx/depth_peek.h"
 // Metal renderer: device, window, presentation, clears and copies.
 #import <AppKit/AppKit.h>
@@ -5,7 +9,6 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <atomic>
-#include <set>
 
 #include "gx2/gx2.h"
 #include "gx2_texture_regs.h"
@@ -98,8 +101,39 @@ id<MTLBuffer> guest_buffer(uint32_t addr, uint32_t* offset) {
 }
 
 // ---------------------------------------------------------------- command buffers
+static uint64_t commandFrame = 0, commandToken = 0;
+struct OverlayGpuTime {
+    id<MTLCommandBuffer> buffer = nil; // ARC retains it until a later frame can read the result.
+    uint64_t frame = 0, token = 0;
+};
+static std::array<OverlayGpuTime, 256> overlayGpuTimes;
+static bool overlayGpuPending = false;
+static void read_overlay_gpu_times() {
+    if (!perf::enabled()) {
+        if (overlayGpuPending) { overlayGpuTimes = {}; overlayGpuPending = false; }
+        return;
+    }
+    static uint64_t lastPoll = UINT64_MAX;
+    if (lastPoll == R.frame) return;
+    lastPoll = R.frame;
+    for (auto& q : overlayGpuTimes) {
+        if (!q.buffer || q.frame >= R.frame) continue;
+        auto status = q.buffer.status;
+        if (status != MTLCommandBufferStatusCompleted && status != MTLCommandBufferStatusError) continue;
+        perf::timestamp_read(R.frame - q.frame);
+        double ns = status == MTLCommandBufferStatusCompleted
+            ? (q.buffer.GPUEndTime - q.buffer.GPUStartTime) * 1e9 : -1;
+        perf::gpu_complete(q.frame, q.token, ns);
+        q = {};
+    }
+}
 id<MTLCommandBuffer> command_buffer() {
-    if (!R.cmd) R.cmd = [R.queue commandBuffer];
+    if (!R.cmd) {
+        read_overlay_gpu_times();
+        R.cmd = [R.queue commandBuffer];
+        commandFrame = R.frame;
+        commandToken = perf::gpu_begin(commandFrame);
+    }
     return R.cmd;
 }
 
@@ -107,6 +141,20 @@ uint32_t g_draws_since_commit = 0;
 std::atomic<uint64_t> g_gpu_ns{0};  // GPU busy time, for the periodic report
 
 static void track_gpu_time(id<MTLCommandBuffer> cb) {
+    const uint64_t frame = commandFrame;
+    const uint64_t token = commandToken;
+    // Keep explicit profiler diagnostics, but add no timing completion handler while hidden.
+    static const bool diagnostic = [] {
+        const char* p = getenv("WWHD_PROFILE"); return p && !strcmp(p, "1");
+    }();
+    if (token) {
+        bool stored = false;
+        for (auto& q : overlayGpuTimes) if (!q.buffer) {
+            q = {cb, frame, token}; overlayGpuPending = true; stored = true; break;
+        }
+        if (!stored) perf::gpu_complete(frame, token, -1); // bounded storage; omit partial frames
+    }
+    if (!diagnostic) return;
     [cb addCompletedHandler:^(id<MTLCommandBuffer> b) {
         double t = b.GPUEndTime - b.GPUStartTime;
         if (t > 0) g_gpu_ns += (uint64_t)(t * 1e9);
@@ -259,15 +307,8 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
 }
 
 // debug: WWHD_DUMP_FRAMES=100,300 writes the TV image of those frames to frame_<n>.png
-static std::set<uint64_t> g_dump_frames = [] {
-    std::set<uint64_t> f;
-    if (const char* e = getenv("WWHD_DUMP_FRAMES"))
-        for (const char* p = e; *p;) {
-            f.insert(strtoull(p, (char**)&p, 10));
-            while (*p == ',') p++;
-        }
-    return f;
-}();
+static const auto g_dump_frames = capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+static const auto g_dump_load_frames = capture_schedule::parse(getenv("WWHD_DUMP_LOAD_FRAMES"));
 
 // async: write the file when the GPU gets there instead of stalling (keeps frame timing intact)
 void set_tv_format(uint32_t gx2Format, bool tv) {
@@ -422,19 +463,12 @@ static void service_tv_dumps() {
         }
 }
 
-static void dump_tv(uint64_t frame) {
-    char name[64];
-    snprintf(name, sizeof name, "frame_%llu.png", (unsigned long long)frame);
-    dump_texture(R.tv.tex, name, true, R.tv.srgb);
-    if (R.drc.tex) {
-        snprintf(name, sizeof name, "frame_%llu_drc.png", (unsigned long long)frame);
-        dump_texture(R.drc.tex, name, true, R.drc.srgb);
-    }
+static void dump_tv(const std::string& stem) {
+    dump_texture(R.tv.tex, (stem + ".png").c_str(), true, R.tv.srgb);
+    if (R.drc.tex)
+        dump_texture(R.drc.tex, (stem + "_drc.png").c_str(), true, R.drc.srgb);
     static const bool present = getenv("WWHD_DUMP_PRESENT") != nullptr;
-    if (present) {
-        snprintf(name, sizeof name, "frame_%llu_present.png", (unsigned long long)frame);
-        request_present_dump(name);
-    }
+    if (present) request_present_dump(stem + "_present.png");
 }
 
 void with_autorelease_pool(void (*fn)()) {
@@ -456,7 +490,16 @@ void swap() {
     if (log_this_frame()) LOG("[frame] end %llu", (unsigned long long)R.frame);
     R.frame++;
     latch_res_scale();
-    if (g_dump_frames.count(R.frame)) dump_tv(R.frame);
+    if (capture_schedule::contains(g_dump_frames, R.frame))
+        dump_tv(capture_schedule::stem(R.frame, false));
+    const uint64_t loaded = g_dump_load_frames.empty() ? 0 : ss::last_load_frame();
+    if (capture_schedule::relative_due(g_dump_load_frames, R.frame, loaded)) {
+        dump_tv(capture_schedule::stem(R.frame - loaded, true));
+        LOG("[gfx] load-relative capture: load frame %llu, frame %llu, offset %llu, load step %llu, step %llu",
+            (unsigned long long)loaded, (unsigned long long)R.frame,
+            (unsigned long long)(R.frame - loaded), (unsigned long long)ss::last_load_step(),
+            (unsigned long long)interp::logic_steps());
+    }
     service_tv_dumps();
     const char* capture_begin_frame();
     static std::string pendingCapture;  // the TV image is dumped once the captured frame has been drawn
@@ -473,6 +516,7 @@ void swap() {
         [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer>) { g_frames_completed++; }];
         flush();
     }
+    perf::gpu_advance(R.frame);
     if (R.frame % 300 == 1) {
         // render thread CPU time (excludes sleeping and GPU waits), for performance comparisons
         timespec ts{};

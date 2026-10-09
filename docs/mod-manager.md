@@ -62,9 +62,53 @@ package's library for this platform (the file named in `binaries`). It applies
 to every profile. Installing an update whose library differs asks again;
 removing a package forgets its confirmation. Only that one library is
 fingerprinted; anything the library itself loads from its folder is not.
-Built-in mods, settings presets, content mods and Cemu graphics packs never ask:
-they contain no native code, and the manager loads native code only through
-`kind: native` packages.
+Built-in mods and settings presets, content mods and Cemu graphics packs without
+preparation tools need no confirmation. Guest packages confirm their ELF through
+the same dialog before their translated module can load.
+
+Manager 1.3 also recognizes declarative `setup` steps. A package of any kind which
+ships a `run_tool` preparation step uses this same confirmation, and the dialog
+names its package-relative tools. For those packages, the stored SHA-256 covers a
+sorted inventory of every package file, including the manifest and imported
+helpers. Changing any file requires confirmation again. Guest compilation keeps
+its separate ELF fingerprint for address allocation and module-cache validation.
+Settings/content packages without tools still need no native-code confirmation.
+Preparation options must match the manifest's boolean or enum option schema.
+
+Preparation tools run from the mod's `Data/<id>` folder with a declared argument
+vector, without a shell. `{data}`, `{package}` and `{game:gc_usa}` (or another
+supported game-source ID) substitute within one argument without word splitting.
+`gc_wind_waker` accepts the supported USA, European or Japanese GameCube disc
+identifiers, for tools that use the same input format across regions. Region-specific
+IDs still require their exact region. Disc headers are checked for both plain ISO
+files, RVZ containers and extracted folders containing `sys/boot.bin`. RVZ selection
+checks its uncompressed embedded disc identifier and GameCube magic; the setup tool
+must separately validate container checksums, compression and resource formats.
+Other compressed disc formats are not accepted.
+Game-source paths are saved locally under shared `game_sources` settings and
+validated again when used. The tool's bounded final output is available on
+failure, with saved game-source paths redacted. A successful tool must produce
+all declared data-relative `outputs`; its setup receipt is bound to the package
+fingerprint and resolved argument list, including selected game-source paths.
+Updating a helper invalidates that receipt as well as native trust. Selecting a
+different source or moving the required source makes the step unsatisfied.
+Starting a rerun clears its earlier receipt before launching the tool, so a
+failed rerun cannot appear ready because old output files remain on disk.
+
+Installed-package details show each declared setup step, including shared game
+source selection, choices, confirmations, tool execution and guest preparation.
+Tools and guest builds run in a background worker. Options and profiles cannot
+change during preparation. Guest preparation uses the same persisted address
+allocator and build bridge as startup, including the installed game's region
+mapping. A failed build retains its allocation for a stable retry. A successful
+build leaves the package inactive; enabling it takes effect after restart.
+Readiness checks the ELF, region, allocation and cached module, then validates
+the full build cache key in one startup batch outside the manager lock. The key
+includes the selected compiler and version, flags, translator, ABI and source
+inputs. Stale or unavailable entries stay unsatisfied; a successful preparation
+marks the package ready immediately. The UI reads this cached readiness without
+running tools each frame. Startup also validates and rebuilds stale modules.
+If code-mod support is off, preparation offers the existing rebuild dialog.
 
 Native code is never loaded without a matching confirmation, also when a
 profile switch, an older `profiles.json` or an updated library would enable it.
@@ -112,7 +156,8 @@ native library once before it loads (see Native code confirmation). Unload callb
 mod is disabled/profile-switched, before its library closes; process termination
 is not a guaranteed cleanup callback.
 
-This ABI supports frame-driven native mods. It does **not** provide arbitrary
+This ABI supports frame-driven native mods. (Function hooks and replacements are the subject
+of the PowerPC guest mod prototype, [mod-sdk-v2.md](mod-sdk-v2.md).) It does **not** provide arbitrary
 translated-function interception, PPC instruction patch execution, texture
 providers, or compatibility with Zelda64Recomp/BlueWake packages.
 
@@ -180,7 +225,8 @@ Select a single local pack with a `content/` directory, or its ZIP. Installation
 starts disabled. Enable it and restart the game. Disable it and restart to restore
 original reads; then it can be updated or removed. Profiles choose the next
 launch's content set. Active content is deliberately immutable for the session.
-Content packages contain no native code and never ask for a native confirmation.
+Content payloads need no native-code confirmation. A content package with a
+preparation tool asks for confirmation before that tool runs.
 
 The importer accepts a simple `MyMod/content/...` tree, a single-pack SDCafiine
 layout, and file-only Cemu packs with Definition metadata. Explicit SDCafiine
@@ -259,8 +305,7 @@ resolver. Missing paths fall through unchanged. Directory enumeration retains
 original names but reports replacement sizes for replaced entries: this adapter
 targets replacement of existing resources, not discovery of new files or
 deletion/hiding. Conflicting enabled packages are rejected, rather than silently
-choosing a load order. Content packages currently cannot declare runtime options
-or dependencies. Native packages can depend on content packages, but wait until
+choosing a load order. Content packages can declare setup options, but cannot declare dependencies. Native packages can depend on content packages, but wait until
 the required startup content is active.
 
 Installed payloads should not be edited externally while the game runs.
@@ -310,9 +355,25 @@ replacement adapter documented above.
 
 Preset expressions support finite arithmetic, parentheses, variables,
 min/max/floor/ceil/round; missing variables and cycles are rejected. Dimension
-limits are 1–16384 and aspect ratios 1–4. Overlapping rules from different
-enabled packs and duplicate shader variants are rejected. Both imported presets
-and changes to an enabled pack are checked before saving the profile.
+limits are 1–16384 and aspect ratios 1–4. Packs that change the same shader
+variant, overlap graphics rules or both set the aspect ratio cannot be enabled
+together. The list shows “Conflicts with …” before enabling. Ticking a conflicting
+pack opens a **Switch / Cancel** dialog; Switch saves the new choice and disables
+its conflicting packs in one change. Cancel leaves the profile alone. The dialog
+supports mouse, keyboard and controller, with Cancel focused initially.
+
+Each pack shows **Active now** and **After restart** separately. A restart-pending
+note and **Restart now** button appear at the top of Mods. Switching packs keeps
+the current pack active until restart, then applies the chosen pack; details
+continue to show applied/rejected shader counts as shaders are encountered.
+
+Old profiles with conflicting packs are repaired and saved before activation:
+the currently active pack wins, otherwise the earliest recorded enable wins.
+Legacy profiles without enable history use package ID as a deterministic tie
+breaker. A one-time, dismissible notice in Mods names each disabled pack. Profile
+switches and preset changes use the same repair rule. Independent packs still
+work together. There is no pack order or partial mixing: **a combined pack is
+needed to get both effects** from conflicting packs.
 
 Primary format reference: [Cemu graphics pack documentation](https://github.com/cemu-project/cemu_graphic_packs/wiki/How-to-create-Graphic-Packs).
 Compatibility was checked against the public [WWHD Resolution pack](https://github.com/cemu-project/cemu_graphic_packs/tree/master/Resolutions/WindWakerHD_Resolution)
@@ -320,3 +381,31 @@ and [WWHD Contrasty pack](https://github.com/cemu-project/cemu_graphic_packs/tre
 their sources are not part of the repository, and the host tests use synthetic
 fixtures only. This covers the tested adapter paths, not universal Cemu
 graphics-pack compatibility or the visual accuracy of every preset.
+
+## Catalogue transport dependencies
+
+Catalogue downloads use the operating system's certificate validation and accept
+HTTPS URLs only, including redirects. Downloads have a byte limit, five-redirect
+limit and a two-minute transfer deadline; failed transfers remove partial files.
+macOS uses Foundation, Windows uses WinHTTP and Android uses
+HttpsURLConnection. Android requires the INTERNET permission for explicit
+catalogue requests. Linux uses the system `libcurl.so.4`, loaded when a download
+is requested. Install the distribution's `libcurl4` package to enable downloads;
+local package installation and offline startup do not load it. Linux developers
+need libcurl headers (`libcurl4-openssl-dev` on Ubuntu). The build does not link
+libcurl into the executable.
+
+The Mods panel's Browse catalogue section loads metadata only when Refresh is
+selected. The URL is saved in local settings; `WWHD_MOD_CATALOGUE` overrides it
+and can name a local index for fixtures. Search matches mod names, IDs and
+descriptions. Details show authors, licences, dependencies and setup steps.
+Incompatible entries cannot be installed. Update is offered only for a newer
+three-part version, and an enabled or active package must be disabled first.
+Install verifies the downloaded size and SHA-256 plus package/index metadata,
+then uses the manager's atomic installer. Packages start disabled and their setup
+details open in Installed packages. Nothing is enabled or downloaded automatically.
+Successful refreshes save validated metadata in the manager’s Catalogue folder.
+Load offline catalogue reads this cache without a network request, including
+after a restart, and labels its versions as potentially out of date. Cache keys
+are bound to the selected URL or fixture path. Failed or invalid refreshes keep
+the previous cache; installed packages remain available without a network connection.

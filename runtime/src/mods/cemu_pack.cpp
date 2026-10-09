@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "cemu_pack.h"
 #include "guest_addr.h"
 #include "mod_archive.h"
@@ -18,7 +19,7 @@
 namespace mods::cemu {
 namespace fs=std::filesystem;
 namespace {
-void require(bool yes,const std::string& why){if(!yes)throw std::runtime_error(why);}
+void require(bool yes,const std::string& why){if(!yes)exception_report::raise(why);}
 std::string trim(std::string s){auto a=s.find_first_not_of(" \t\r\n");if(a==std::string::npos)return {};return s.substr(a,s.find_last_not_of(" \t\r\n")-a+1);}
 std::string lower(std::string s){for(char& c:s)if(c>='A'&&c<='Z')c+='a'-'A';return s;}
 std::string unquote(std::string s){s=trim(s);if(s.size()>=2&&s.front()=='"'&&s.back()=='"')s=s.substr(1,s.size()-2);return s;}
@@ -47,7 +48,7 @@ struct Expr {
         else if(take('(')){value=sum();require(take(')'),"Missing expression parenthesis");}
         else {space();require(pos<text.size(),"Incomplete Cemu expression");
             if(text[pos]=='$'){size_t start=pos++;while(pos<text.size()&&(isalnum(static_cast<unsigned char>(text[pos]))||text[pos]=='_'))++pos;auto id=text.substr(start,pos-start);auto it=vars.find(id);require(it!=vars.end(),"Unknown Cemu variable: "+id);value=it->second;}
-            else if(isalpha(static_cast<unsigned char>(text[pos]))){size_t start=pos++;while(pos<text.size()&&isalpha(static_cast<unsigned char>(text[pos])))++pos;auto fn=text.substr(start,pos-start);require(take('('),"Unsupported Cemu expression name");auto a=sum();if(fn=="min"||fn=="max"){require(take(','),"Missing function argument");auto b=sum();value=fn=="min"?std::min(a,b):std::max(a,b);}else if(fn=="floor")value=std::floor(a);else if(fn=="ceil")value=std::ceil(a);else if(fn=="round")value=std::round(a);else throw std::runtime_error("Unsupported Cemu function: "+fn);require(take(')'),"Missing function parenthesis");}
+            else if(isalpha(static_cast<unsigned char>(text[pos]))){size_t start=pos++;while(pos<text.size()&&isalpha(static_cast<unsigned char>(text[pos])))++pos;auto fn=text.substr(start,pos-start);require(take('('),"Unsupported Cemu expression name");auto a=sum();if(fn=="min"||fn=="max"){require(take(','),"Missing function argument");auto b=sum();value=fn=="min"?std::min(a,b):std::max(a,b);}else if(fn=="floor")value=std::floor(a);else if(fn=="ceil")value=std::ceil(a);else if(fn=="round")value=std::round(a);else exception_report::raise("Unsupported Cemu function: "+fn);require(take(')'),"Missing function parenthesis");}
             else {char* end=nullptr;value=std::strtod(text.c_str()+pos,&end);require(end!=text.c_str()+pos,"Invalid Cemu expression");pos=end-text.c_str();}
         }
         --depth;require(std::isfinite(value),"Nonfinite Cemu expression");return value;
@@ -92,16 +93,16 @@ std::string expand(const std::string& source,const std::map<std::string,double>&
     }
     auto version=result.find("#version");require(version!=std::string::npos,"Cemu shader has no GLSL version");auto end=result.find('\n',version);require(end!=std::string::npos,"Invalid shader version");result.replace(version,end-version,"#version 450\n#ifndef VULKAN\n#define VULKAN 1\n#endif");return result;
 }
-Prepared prepare(const std::vector<Selection>& selections){
+Prepared prepare(const std::vector<Selection>& selections,bool expand_sources=true){
     Prepared out;
     for(const auto& selection:selections){auto vars=variables(selection.pack,selection.config);
         if(!selection.pack.aspect_expression.empty()){require(out.aspect==0,"Multiple Cemu aspect packs conflict");auto ratio=expression(selection.pack.aspect_expression,vars);require(ratio>=1&&ratio<=4,"Cemu aspect ratio outside native 1:1–4:1 range");out.aspect=float(ratio);out.aspect_shaders=!selection.pack.shaders.empty();}
         for(const auto& rule:selection.pack.textures){PreparedRule p;p.owner=selection.id;p.shaders=!selection.pack.shaders.empty();
-            for(const auto& [key,value]:rule.fields){if(key=="width")p.width=number(value,vars);else if(key=="height")p.height=number(value,vars);else if(key=="depth")p.depth=number(value,vars);else if(key=="formats")p.formats=numbers(value,vars);else if(key=="tilemodes")p.tiles=numbers(value,vars);else if(key=="overwritewidth")p.out_width=number(value,vars);else if(key=="overwriteheight")p.out_height=number(value,vars);else throw std::runtime_error("Unsupported Cemu texture rule: "+key);}
+            for(const auto& [key,value]:rule.fields){if(key=="width")p.width=number(value,vars);else if(key=="height")p.height=number(value,vars);else if(key=="depth")p.depth=number(value,vars);else if(key=="formats")p.formats=numbers(value,vars);else if(key=="tilemodes")p.tiles=numbers(value,vars);else if(key=="overwritewidth")p.out_width=number(value,vars);else if(key=="overwriteheight")p.out_height=number(value,vars);else exception_report::raise("Unsupported Cemu texture rule: "+key);}
             require(p.out_width||p.out_height,"Texture rule has no supported overwrite dimensions");
             out.rules.push_back(std::move(p));
         }
-        for(const auto& shader:selection.pack.shaders){auto [it,inserted]=out.shaders.emplace(ShaderKey{shader.base,shader.aux,shader.vertex},PreparedShader{selection.id,expand(shader.source,vars)});require(inserted,"Cemu shader conflict between "+selection.id+" and "+it->second.owner);}
+        for(const auto& shader:selection.pack.shaders){auto [it,inserted]=out.shaders.emplace(ShaderKey{shader.base,shader.aux,shader.vertex},PreparedShader{selection.id,expand_sources?expand(shader.source,vars):std::string{}});require(inserted,"Cemu shader conflict between "+selection.id+" and "+it->second.owner);}
     }
     for(size_t i=0;i<out.rules.size();i++)for(size_t j=i+1;j<out.rules.size();j++){
         const auto& a=out.rules[i];const auto& b=out.rules[j];if(a.owner==b.owner)continue;
@@ -117,7 +118,7 @@ Pack parse(const fs::path& folder){
     Pack pack;auto sections=ini(read(folder/"rules.txt"));bool definition=false;
     for(const auto& section:sections){auto field=[&](const char* key){auto it=section.fields.find(key);return it==section.fields.end()?std::string{}:unquote(it->second);};
         if(section.name=="definition"){
-            require(!definition,"Multiple Cemu definitions");definition=true;bool usa=false;std::istringstream titles(lower(field("titleids")));std::string title;while(std::getline(titles,title,','))usa|=trim(title)=="0005000010143500";require(usa,"Cemu pack does not target WWHD USA");
+            require(!definition,"Multiple Cemu definitions");definition=true;require(targets_title(field("titleids"),g_guest_build_title_id),std::string("Cemu pack does not target this version of the game (")+g_guest_build_name+", title "+g_guest_build_title_id+")");
             auto version=field("version");require(version=="4"||version=="5","Only Cemu graphics pack versions 4 and 5 are supported");
             pack.name=field("name");require(!pack.name.empty(),"Cemu pack has no name");pack.description=field("description");
         }else if(section.name=="default"){
@@ -130,7 +131,7 @@ Pack parse(const fs::path& folder){
             // Default markers move this category's choice to the front without changing other groups.
             if(lower(field("default"))=="1"||lower(field("default"))=="true")pack.presets.insert(pack.presets.begin(),std::move(preset));else pack.presets.push_back(std::move(preset));
         }else if(section.name=="textureredefine")pack.textures.push_back({section.fields});
-        else throw std::runtime_error("Unsupported Cemu section: "+section.name+" (code patches/control rules need another adapter)");
+        else exception_report::raise("Unsupported Cemu section: "+section.name+" (code patches/control rules need another adapter)");
     }
     require(!fs::exists(folder/"content"),"Mixed content and graphics/shader packs need separate packages in this adapter");
     require(definition&&pack.presets.size()<=256&&pack.categories.size()<=32,"Invalid or oversized Cemu preset catalogue");
@@ -185,6 +186,15 @@ void import_legacy(const fs::path& stage,const std::string& source_name){
     auto id=lower(fs::path(source_name).stem().string());for(char& c:id)if(!((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'))c='-';if(id.size()>58)id.resize(58);require(!id.empty(),"Missing Cemu pack name");
     json::Value m;m["format_version"]=1;m["id"]="cemu."+id;m["name"]=pack.name;m["version"]="1.0.0";m["game_id"]="wwhd-usa";m["minimum_manager_version"]="1.2.0";m["kind"]="cemu";auto relative=rules.front().parent_path().lexically_relative(stage).generic_string();m["cemu_dir"]=relative=="."?"":relative;m["description"]=pack.description;m["options"]=options(pack);
     std::ofstream out(stage/"manifest.json");out<<json::dump(m)<<'\n';out.close();require(bool(out),"Cannot write imported Cemu manifest");
+}
+std::string conflict_reason(const Selection& a,const Selection& b){
+    auto x=prepare({a},false),y=prepare({b},false);
+    for(const auto& [key,shader]:x.shaders)if(y.shaders.contains(key))return "both change the same shader";
+    if(x.aspect&&y.aspect)return "both change the aspect ratio";
+    auto overlaps=[](const auto& a,const auto& b){return a.empty()||b.empty()||std::any_of(a.begin(),a.end(),[&](auto n){return std::find(b.begin(),b.end(),n)!=b.end();});};
+    for(const auto& a:x.rules)for(const auto& b:y.rules)
+        if((!a.width||!b.width||a.width==b.width)&&(!a.height||!b.height||a.height==b.height)&&(!a.depth||!b.depth||a.depth==b.depth)&&overlaps(a.formats,b.formats)&&overlaps(a.tiles,b.tiles))return "overlapping graphics rules";
+    return {};
 }
 void validate(const std::vector<Selection>& selections){prepare(selections);}
 void activate(const std::vector<Selection>& selections){require(!present.load(),"Cemu graphics packs already activated");active=prepare(selections);shader_present.store(!active.shaders.empty(),std::memory_order_release);present.store(!active.rules.empty()||!active.shaders.empty(),std::memory_order_release);}

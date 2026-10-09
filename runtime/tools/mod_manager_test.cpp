@@ -22,6 +22,16 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
+static bool ff_on = false, ff_mute = true;
+static unsigned ff_rate = 2;
+static uint32_t ff_button = 0x40;
+bool fast_forward() { return ff_on; } void set_fast_forward(bool on) { ff_on = on; }
+unsigned fast_forward_rate() { return ff_rate; }
+void set_fast_forward_rate(unsigned r) { if (r >= 2 && r <= 4) ff_rate = r; }
+uint32_t fast_forward_button() { return ff_button; }
+void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_button = b; }
+bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
+
 static bool move_on = false;
 bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
 float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
@@ -50,7 +60,7 @@ int main() {
     env("WWHD_NO_HOST_INPUT",nullptr);
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
-    assert(entries().size()==7);
+    assert(entries().size()==8);
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     preferences["mod.wall-climb.enabled"]="1";
     preferences["mod.quick-doors.enabled"]="invalid";
@@ -67,6 +77,20 @@ int main() {
     assert(set_enabled("move-speed",true));assert(mods::move_speed());
     disable_all();for(bool on:state) assert(!on);assert(!mods::move_speed());
     for(const auto& entry:entries()) assert(preferences[std::string("mod.")+entry.id+".enabled"]=="0");
+    preferences["mod.fast-forward.rate"] = "3";
+    preferences["mod.fast-forward.button"] = "32";
+    preferences["mod.fast-forward.mute"] = "0";
+    load_saved();
+    assert(mods::fast_forward_rate() == 3 && mods::fast_forward_button() == 32 && !mods::fast_forward_mute());
+    env("WWHD_MOD_FF_RATE", "4");
+    preferences["mod.fast-forward.rate"] = "2";
+    load_saved(); assert(mods::fast_forward_rate() == 3); // environment owns startup rate
+    env("WWHD_MOD_FF_RATE", nullptr);
+    preferences["mod.fast-forward.button"] = "32768"; // A cannot answer prompts as boost
+    preferences["mod.fast-forward.rate"] = "nan";
+    load_saved(); assert(mods::fast_forward_rate() == 3 && mods::fast_forward_button() == 32);
+    assert(set_enabled("fast-forward", true) && mods::fast_forward());
+    disable_all(); assert(!mods::fast_forward());
     // Test isolation protects player settings even when toggles are exercised.
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);

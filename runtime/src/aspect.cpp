@@ -22,6 +22,7 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "aspect_panes.h"
 #include "mods/cemu_pack.h"
 
 #include <algorithm>
@@ -216,8 +217,8 @@ extern "C" void site_025ADB38(Cpu* c) { adjust_projection_args(c, 1, 2); }
 //     (placed at an actor's projected position) are scaled by kx, ky instead; leaf panes covering the
 //     whole 1280x720 screen (backgrounds, fades) are stretched. The translation/scale is changed only
 //     for the call (dirty bit forced so the matrix is recomputed), so animations and game code keep
-//     their values. Panes the game parks off the 16:9 screen are not drawn (they would show in the
-//     extra space).
+//     their values. Menu draw calls are clipped to the native region; backgrounds and filters
+//     cover the expanded picture, while HUD panes retain their edge anchoring.
 extern "C" {
 void f_02874038_orig(Cpu* c);
 void f_028766CC_orig(Cpu* c);
@@ -291,6 +292,16 @@ bool is_hud_edge_pane(uint32_t pane) {
     return false;
 }
 
+bool has_world_anchor(uint32_t pane, int depth = 0) {
+    if (depth > 32) return false;
+    const char* name = (const char*)mem::ptr(pane + kPaneName);
+    if (panes::projected_root_name(std::string_view(name, strnlen(name, 24)))) return true;
+    uint32_t sentinel = pane + kPaneChildren;
+    for (uint32_t child = ld32(sentinel); child != sentinel; child = ld32(child))
+        if (has_world_anchor(child, depth + 1)) return true;
+    return false;
+}
+
 thread_local uint32_t t_root = 0;   // layout root whose matrices are being computed
 thread_local bool t_anchor = false; // ... and it is a TV layout at another aspect ratio
 }  // namespace
@@ -308,10 +319,10 @@ extern "C" void hook_028766CC(Cpu* c) {
         bool saveAnchor = t_anchor;
         t_root = pane;
         t_anchor = (kx != 1.0f || ky != 1.0f) && root_on_tv(pane);
-        // a root placed by the game (layouts are authored with the root at 0,0): small layouts put at
-        // an actor's projected screen position (cursors, markers) -> scaled out with the 3D view
+        // Only roots identified as world markers use projected placement. Menu selectors and map
+        // layers also translate their roots, but those translations stay in native layout space.
         float tx = (float)ldf32(pane + kPaneTrans), ty = (float)ldf32(pane + kPaneTrans + 4);
-        bool placed = t_anchor && (tx != 0.0f || ty != 0.0f);
+        bool placed = t_anchor && (tx != 0.0f || ty != 0.0f) && has_world_anchor(pane);
         // debug: WWHD_ASPECT_LOG=1 logs each placed root (name, translation) once per name
         static const bool log_roots = getenv("WWHD_ASPECT_LOG") != nullptr;
         if (log_roots && placed) {
@@ -339,26 +350,20 @@ extern "C" void hook_028766CC(Cpu* c) {
     float tx = (float)ldf32(pane + kPaneTrans), ty = (float)ldf32(pane + kPaneTrans + 4);
     float sx = (float)ldf32(pane + kPaneScale), sy = (float)ldf32(pane + kPaneScale + 4);
     float nx = tx, ny = ty, nsx = sx, nsy = sy;
+    panes::Role role = panes::Role::Content;
     if (parent == t_root) {
-        float half = 640.0f * (kx - 1.0f), halfY = 360.0f * (ky - 1.0f);
-        // parts the game moves to an actor's projected position: enemy health, the floating A action
-        if (name_is(pane, "L_EnemyHP_00") || name_is(pane, "L_CommandA_00")) {
-            nx = tx * kx;
-            ny = ty * ky;
-        } else if (is_hud_edge_pane(pane)) {
-            if (tx <= -300.0f) nx = tx - half;
-            if (tx >= 300.0f) nx = tx + half;
-            if (ty <= -200.0f) ny = ty - halfY;
-            if (ty >= 200.0f) ny = ty + halfY;
-        }
+        if (name_is(pane, "L_EnemyHP_00") || name_is(pane, "L_CommandA_00")) role = panes::Role::Projected;
+        else if (is_hud_edge_pane(pane)) role = panes::Role::Hud;
     }
+    auto transformed = panes::transform(role, tx, ty, sx, sy, kx, ky);
+    nx = transformed.x; ny = transformed.y;
     // a leaf covering the whole screen (background, fade): stretch it to the new shape
     uint32_t sentinel = pane + kPaneChildren;
     if (ld32(sentinel) == sentinel && std::fabs(tx) < 8.0f && std::fabs(ty) < 8.0f) {
         float w = (float)ldf32(pane + kPaneSize) * std::fabs(sx), h = (float)ldf32(pane + kPaneSize + 4) * std::fabs(sy);
-        if (w >= 1270.0f && h >= 710.0f) {
-            nsx = sx * kx;
-            nsy = sy * ky;
+        if (panes::fill(std::string_view((const char*)mem::ptr(pane+kPaneName), strnlen((const char*)mem::ptr(pane+kPaneName),24)), true, tx, ty, w, h)) {
+            auto stretched = panes::transform(panes::Role::Fill, tx, ty, sx, sy, kx, ky);
+            nsx = stretched.sx; nsy = stretched.sy;
             static const bool log_st = getenv("WWHD_ASPECT_LOG") != nullptr;
             if (log_st) {
                 static std::mutex mu;
@@ -395,20 +400,33 @@ extern "C" void hook_028766CC(Cpu* c) {
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    static const uint64_t trace_frame = getenv("WWHD_ASPECT_TRACE_FRAME") ? strtoull(getenv("WWHD_ASPECT_TRACE_FRAME"), nullptr, 10) : 0;
+    if (trace_frame && game_frame() == trace_frame) {
+        auto trace = [](auto&& self, uint32_t p, int depth) -> void {
+            if (depth > 32) return;
+            LOG("[pane] %08X parent=%08X name=%.24s flags=%02X base=%02X t=%.3f,%.3f size=%.3f,%.3f global=%.3f,%.3f scale=%.3f,%.3f", p, ld32(p + kPaneParent), (const char*)mem::ptr(p+kPaneName), ld8(p+kPaneFlags), ld8(p+0x47), (float)ldf32(p+kPaneTrans), (float)ldf32(p+kPaneTrans+4), (float)ldf32(p+kPaneSize), (float)ldf32(p+kPaneSize+4), (float)ldf32(p+kPaneGlobal+12), (float)ldf32(p+kPaneGlobal+28), (float)ldf32(p+kPaneGlobal), (float)ldf32(p+kPaneGlobal+20));
+            uint32_t sentinel=p+kPaneChildren;
+            for(uint32_t ch=ld32(sentinel);ch!=sentinel;ch=ld32(ch)) self(self,ch,depth+1);
+        };
+        if (!ld32(pane+kPaneParent)) trace(trace,pane,0);
+    }
     if (original()) { f_02877100_orig(c); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
         gx2::emit(gx2::OP_LAYOUT_ROOT, {pane});
     } else {
-        // the wider (taller) picture shows layout space the game uses to park panes out of sight:
-        // a pane whose centre, without our offsets, is off the 16:9 screen stays hidden
+        // Preserve the existing hiding rule for anchored HUD/world markers. Menu containers
+        // use per-DrawSelf clipping instead: their visible children may cross this boundary.
         uint32_t child = pane, root = parent;
         for (int i = 0; i < 16 && ld32(root + kPaneParent); i++) { child = root; root = ld32(root + kPaneParent); }
-        if (!ld32(root + kPaneParent) && root_on_tv(root)) {
+        bool world = !ld32(root + kPaneParent) &&
+            (ldf32(root + kPaneTrans) != 0 || ldf32(root + kPaneTrans + 4) != 0) && has_world_anchor(root);
+        if (!ld32(root + kPaneParent) && root_on_tv(root) &&
+            (world || is_hud_edge_pane(child) || name_is(child, "L_EnemyHP_00") || name_is(child, "L_CommandA_00"))) {
             auto a = offset_of(child), b = offset_of(root);
-            float gx = (float)ldf32(pane + kPaneGlobal + 0xC) - a.first - b.first;
-            float gy = (float)ldf32(pane + kPaneGlobal + 0x1C) - a.second - b.second;
-            if (std::fabs(gx) > 640.0f + 32.0f || std::fabs(gy) > 360.0f + 32.0f) return;
+            float gx = (float)ldf32(pane + kPaneGlobal + 12) - a.first - b.first;
+            float gy = (float)ldf32(pane + kPaneGlobal + 28) - a.second - b.second;
+            if (panes::parked_hud(gx, gy)) return;
         }
     }
     f_02877100_orig(c);
@@ -441,4 +459,35 @@ extern "C" void hook_028F8250(Cpu* c) { with_tv_projection(c, f_028F8250_orig); 
 void aspect::ss_reset() {
     std::lock_guard<std::mutex> lk(aspect::g_root_mu);
     aspect::g_root_calc.clear();
+}
+
+// Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
+// under the same container, and tabs may have an offscreen origin but visible descendants.
+extern "C" void site_0287714C(Cpu* c) {
+    using namespace aspect;
+    if (original()) return;
+    uint32_t pane = c->r[3];
+    bool content = true;
+    const char* name = (const char*)mem::ptr(pane + kPaneName);
+    uint32_t sentinel = pane + kPaneChildren;
+    if (panes::fill(std::string_view(name, strnlen(name, 24)), ld32(sentinel) == sentinel,
+                    (float)ldf32(pane + kPaneTrans), (float)ldf32(pane + kPaneTrans + 4),
+                    (float)ldf32(pane + kPaneSize) * std::fabs((float)ldf32(pane + kPaneScale)),
+                    (float)ldf32(pane + kPaneSize + 4) * std::fabs((float)ldf32(pane + kPaneScale + 4)))) content = false;
+    for (uint32_t p = pane; p; p = ld32(p + kPaneParent)) {
+        uint32_t parent = ld32(p + kPaneParent);
+        if (parent && !ld32(parent + kPaneParent) &&
+            (is_hud_edge_pane(p) || name_is(p, "L_EnemyHP_00") || name_is(p, "L_CommandA_00"))) content = false;
+        if (!parent && (ldf32(p + kPaneTrans) != 0 || ldf32(p + kPaneTrans + 4) != 0) &&
+            has_world_anchor(p)) content = false;
+    }
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u});
+}
+extern "C" void site_02877150(Cpu*) {
+    if (!aspect::original()) gx2::emit(gx2::OP_LAYOUT_CONTENT, {0});
+}
+namespace aspect {
+thread_local bool g_content_clip = false; // consumed only by the render command thread
+void set_content_clip(bool clip) { g_content_clip = clip; }
+bool content_clip() { return g_content_clip; }
 }

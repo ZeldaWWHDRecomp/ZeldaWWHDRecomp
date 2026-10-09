@@ -1,3 +1,4 @@
+#include "mods/fast_forward.h"
 // Save states: snapshot the whole running game into one of 5 slots and restore it, also in a new
 // process.
 //
@@ -24,6 +25,8 @@
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
 #include "guest_addr.h"
+#include "full_state_header.h"
+#include "input.h"
 
 #ifdef __APPLE__
 #include <compression.h>
@@ -56,6 +59,9 @@
 #include "build_info.h"
 #include "crashrec.h"
 #include "portable_state.h"
+#include "state_memory.h"
+#include "mods/guest_mods.h"
+#include "mods/guest_state_section.h"
 #include "quit_prompt.h"
 #include "rumble.h"
 
@@ -93,18 +99,7 @@ constexpr uint32_t kVersion = 2; // liblz4 raw blocks, not Apple COMPRESSION_LZ4
 constexpr uint32_t kChunk = 0x10000;
 constexpr uint32_t kBlock = 8 << 20;  // compression block (raw bytes)
 
-struct Header {
-    char magic[8];
-    uint32_t version;
-    uint32_t header_size;
-    uint64_t created;       // unix time
-    char area[32];          // stage name
-    uint8_t build[16];      // LC_UUID of the executable that wrote it (informational)
-    uint64_t game_id;       // hash of cking.rpx
-    uint32_t cpu_size;      // sizeof(Cpu)
-    uint32_t blocks;        // compressed blocks that follow
-    uint64_t raw_size;      // payload bytes
-};
+using Header = FullStateHeader;
 
 enum : uint32_t {
     kSecThreads = 'THRD',
@@ -115,9 +110,10 @@ enum : uint32_t {
     kSecAllocs = 'RALC',
     kSecDispatch = 'DSPT',
     kSecMemory = 'MEM ',
+    kSecGuestMods = 'GMOD',
 };
 
-struct Region { uint32_t base, size; };
+using Region=MemoryRegion;
 
 std::vector<Region> regions() {
     uint32_t top = (mem::runtime_top() + kChunk - 1) & ~(kChunk - 1);
@@ -125,7 +121,8 @@ std::vector<Region> regions() {
             {mem::kRuntimeStart, top - mem::kRuntimeStart},
             {mem::kFixedStart, mem::kFixedSize},
             {mem::kFgBucket, mem::kFgBucketSize},
-            {mem::kMem1, mem::kMem1Size}};
+            {mem::kMem1, mem::kMem1Size},
+            {guestmods::kRegionStart,guestmods::kRegionSize}};
 }
 
 // A snapshot in memory: header + payload (sections); memory chunks point into the payload.
@@ -136,6 +133,7 @@ struct Snapshot {
     std::unordered_map<uint32_t, const uint8_t*> chunks;      // chunk address -> data (absent = zero)
     std::vector<Region> regs;
     int slot = 0;
+    std::vector<guestmods::ModIdentity> guest_mods;
 
     Reader section(uint32_t tag) const {
         auto it = sections.find(tag);
@@ -152,19 +150,9 @@ struct Snapshot {
             sections[tag] = {off, (size_t)n};
         }
         if (!r.ok || !sections.count(kSecMemory)) return false;
-        Reader m = section(kSecMemory);
-        uint32_t nr = m.u32();
-        for (uint32_t i = 0; i < nr && m.ok; i++) {
-            Region g{m.u32(), m.u32()};
-            regs.push_back(g);
-            uint32_t present = m.u32();
-            for (uint32_t k = 0; k < present && m.ok; k++) {
-                uint32_t idx = m.u32();
-                chunks[g.base + idx * kChunk] = m.p;
-                if (!m.bytes(nullptr, kChunk)) return false;
-            }
-        }
-        return m.ok;
+        if(!guestmods::read_mod_set(section(kSecGuestMods),guest_mods))return false;
+        Reader m=section(kSecMemory);
+        return read_regions(m,regs,chunks);
     }
 };
 
@@ -191,6 +179,14 @@ void message(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_message = buf;
     g_message_time = std::chrono::steady_clock::now();
+}
+
+void append_mod_warning(bool differs) {
+    if(!differs)return;
+    LOG("[savestate] %s",guestmods::kModWarning);
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_message+="; ";g_message+=guestmods::kModWarning;
+    g_message_time=std::chrono::steady_clock::now();
 }
 
 // the waiting `done` of request_save(slot, done), taken out (empty if it is for another slot)
@@ -282,46 +278,13 @@ std::string stage_name() {
 
 // ---------------------------------------------------------------- memory
 void capture_memory(Writer& w) {
-    auto rs = regions();
-    w.u32((uint32_t)rs.size());
-    for (auto& g : rs) {
-        w.u32(g.base);
-        w.u32(g.size);
-        size_t count_at = w.b.size();
-        w.u32(0);
-        uint32_t present = 0;
-        for (uint32_t off = 0; off < g.size; off += kChunk) {
-            uint8_t* p = mem::ptr(g.base + off);
-            // untouched pages are zero: skip them without reading (reading would commit them)
-            if (!host::memory_touched(p,kChunk)) continue;
-            const uint64_t* q = (const uint64_t*)p;
-            bool zero = true;
-            for (size_t i = 0; i < kChunk / 8 && zero; i++) zero = q[i] == 0;
-            if (zero) continue;
-            w.u32(off / kChunk);
-            w.bytes(p, kChunk);
-            present++;
-        }
-        memcpy(&w.b[count_at], &present, 4);
-    }
+    capture_regions(w,regions(),[](uint32_t a){return mem::ptr(a);},
+                    [](const uint8_t* p,size_t n){return host::memory_touched(const_cast<uint8_t*>(p),n);});
 }
 
 void restore_memory(const Snapshot& s) {
-    for (auto& g : s.regs) {
-        for (uint32_t off = 0; off < g.size; off += kChunk) {
-            uint32_t a = g.base + off;
-            uint8_t* p = mem::ptr(a);
-            auto it = s.chunks.find(a);
-            if (it != s.chunks.end()) {
-                memcpy(p, it->second, kChunk);
-                continue;
-            }
-            if (!host::memory_touched(p,kChunk)) continue;
-            const uint64_t* q = (const uint64_t*)p;
-            for (size_t i = 0; i < kChunk / 8; i++)
-                if (q[i]) { memset(p, 0, kChunk); break; }
-        }
-    }
+    restore_regions(s.regs,s.chunks,[](uint32_t a){return mem::ptr(a);},
+                    [](const uint8_t* p,size_t n){return host::memory_touched(const_cast<uint8_t*>(p),n);});
 }
 
 // ---------------------------------------------------------------- slot files
@@ -371,8 +334,8 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
 }
 
 bool read_header(FILE* f, Header& h, std::string& why) {
-    if (fread(&h, sizeof h, 1, f) != 1 || memcmp(h.magic, kMagic, 8) != 0) { why = "not a save state"; return false; }
-    if (h.version != kVersion || h.header_size != sizeof(Header)) { why = "saved by another version"; return false; }
+    if (!read_full_state_header(f, h, why)) return false;
+    if (h.version != kVersion) { why = "saved by another version"; return false; }
     if (h.cpu_size != sizeof(Cpu)) { why = "saved by an incompatible build"; return false; }
     if (h.game_id != game_id()) { why = "saved with a different game executable"; return false; }
     return true;
@@ -498,6 +461,7 @@ std::string area_label(const char* stage) {
 
 // true when done (saved or failed for good); false to retry on the next frame
 bool do_save(int slot) {
+    mods::fast_forward_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     if (!threads::quiesce(250, busy, 1, 30)) {
@@ -537,6 +501,8 @@ bool do_save(int slot) {
     w = Writer();
     save_dispatch(w);
     put_section(*payload, kSecDispatch, w);
+    w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
+    put_section(*payload,kSecGuestMods,w);
     // memory last, written straight into the payload
     payload->u32(kSecMemory);
     size_t len_at = payload->b.size();
@@ -554,6 +520,7 @@ bool do_save(int slot) {
     build_uuid(h.build);
     h.game_id = game_id();
     h.cpu_size = sizeof(Cpu);
+    h.controller = input::pro_controller() ? 2 : 1;
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG("[savestate] slot %d: captured %.1f MB in %.1f ms (stage %s)", slot, payload->b.size() / 1048576.0, ms, stage.c_str());
@@ -582,6 +549,7 @@ bool do_save(int slot) {
 }
 
 bool do_load(const std::shared_ptr<Snapshot>& s) {
+    mods::fast_forward_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     threads_ss_targets(s->section(kSecThreads));
@@ -610,6 +578,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
         return true;
     }
     restore_memory(*s);
+    if (s->h.controller) input::set_pro_controller(restored_pro_controller(s->h.controller, input::pro_controller()));
     Reader r = s->section(kSecAllocs);
     mem::raise_runtime_top(r.u32());
     r = s->section(kSecHeaps);
@@ -620,6 +589,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     ax_ss_load(r);
     r = s->section(kSecGx2);
     gx2_ss_load(r);
+    guestmods::state_loaded();
     interp::ss_reset();
     aspect::ss_reset();
     rumble::reset();     // an effect running before the load is not the restored game's
@@ -628,7 +598,9 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::string area = s->h.area[0] ? " (" + area_label(s->h.area) + ")" : "";
+    const bool mods_differ=guestmods::different_mods(s->guest_mods,guestmods::enabled_mods());
     message("Loaded %s%s", is_auto(s->slot) ? slot_label(s->slot).c_str() : ("slot " + std::to_string(s->slot)).c_str(), area.c_str());
+    append_mod_warning(mods_differ);
     LOG("[savestate] slot %d: restored in %.1f ms", s->slot, ms);
     return true;
 }
@@ -848,8 +820,10 @@ bool capture_portable(Cpu* c, pstate::State& s, std::string& why) {
     s.title_version = (uint32_t)strtoul(meta_value("title_version").c_str(), nullptr, 10);
     s.game_hash = hex64(game_id());
     s.runtime = std::string(build::version()) + " (" + build::commit() + ")";
+    s.guest_mods=guestmods::enabled_mods();
     s.created = now_text();
     s.file_slot = slot;
+    s.controller = input::pro_controller() ? 2 : 1;
     s.stage = stage;
     s.start_point = (int16_t)ld16(kStartStage + 8);
     s.start_room = (int8_t)ld8(kStartStage + 10);
@@ -925,6 +899,7 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     st8(kNextStage + 10, (uint8_t)s.room);
     st8(kNextStage + 11, (uint8_t)s.layer);
     st8(kNextStage + 13, 0);  // wipe: fade
+    if (s.controller) input::set_pro_controller(restored_pro_controller(s.controller, input::pro_controller()));
     st8(kNextStage + 12, 1);  // enabled
     return true;
 }
@@ -1055,6 +1030,7 @@ void service_portable_load(Cpu* c) {
             message("Loaded %s (%s; progress and position)", p.slot ? ("slot " + std::to_string(p.slot)).c_str() : "portable state",
                     area_label(p.s->stage.c_str()).c_str());
         }
+        append_mod_warning(guestmods::different_mods(p.s->guest_mods,guestmods::enabled_mods()));
         g_arrival = Arrival{p.s->stage, {p.s->pos[0], p.s->pos[1], p.s->pos[2]}, render::frame_count(), ld32(ld32(kLinkPtr) + 4), 0, p.s};
         std::lock_guard<std::mutex> lk(g_mu);
         g_last_portable = p.path;
@@ -1167,11 +1143,12 @@ SlotInfo full_slot_info(int slot) {
     info.path = slot_path(slot);
     FILE* f = fopen(info.path.c_str(), "rb");
     if (!f) return info;
-    Header h;
+    Header h{};
     std::string why;
     info.used = true;
     info.compatible = read_header(f, h, why);
     fclose(f);
+    if (info.compatible) info.controller = controller_label(h.controller);
     if (info.compatible || memcmp(h.magic, kMagic, 8) == 0) {
         time_t t = (time_t)h.created;
         struct tm tmv;
@@ -1213,6 +1190,7 @@ SlotInfo portable_slot_info(int slot) {
             info.when = buf;
         } else info.when = s.created;
         info.area = area_label(s.stage.c_str());
+        info.controller = controller_label(s.controller);
     }
     return info;
 }
@@ -1270,6 +1248,7 @@ void request_load_portable_file(const std::string& path) {
     }
     if (s->runtime != std::string(build::version()) + " (" + build::commit() + ")")
         LOG("[savestate] portable state from %s (this build: %s %s)", s->runtime.c_str(), build::version(), build::commit());
+    if(guestmods::different_mods(s->guest_mods,guestmods::enabled_mods()))message("%s",guestmods::kModWarning);
     int slot = 0;
     for (int i = 1; i <= kSlots; i++)
         if (path == slot_path(i, pstate::kExtension)) slot = i;
@@ -1297,6 +1276,7 @@ void request_load(int slot) {
             g_loading = false;
             return;
         }
+        if(guestmods::different_mods(s->guest_mods,guestmods::enabled_mods()))message("%s",guestmods::kModWarning);
         LOG("[savestate] slot %d: read and decompressed %.1f MB in %.0f ms", slot, s->payload.size() / 1048576.0,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         std::lock_guard<std::mutex> lk(g_mu);

@@ -1,5 +1,6 @@
 #pragma once
 #include "loader.h"
+#include "barrier_state.h"
 #ifdef WWHD_SDL_HOST
 #include <SDL3/SDL.h>
 #endif
@@ -15,11 +16,12 @@
 #include "api.h"
 #include "buffer_cache_core.h"
 namespace gfxvk {
-struct Buffer { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; void* mapped=nullptr; VkDeviceSize size=0;
+struct Buffer { ResourceUse use; VkBuffer buffer=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; void* mapped=nullptr; VkDeviceSize size=0;
                 VkMemoryPropertyFlags properties=0; /* of the memory type create_buffer chose */ };
 struct UploadSlice { VkBuffer buffer=VK_NULL_HANDLE; VkDeviceSize offset=0,size=0; void* mapped=nullptr; };
 struct CachedGuestLayout;
 struct Surface {
+ ResourceUse use;
     std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
     uint64_t mipChainSeq = ~0ull;
  VkImage image=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; VkImageView view=VK_NULL_HANDLE;
@@ -49,6 +51,7 @@ struct Screen {
  VkSurfaceKHR surface=VK_NULL_HANDLE; VkSwapchainKHR swapchain=VK_NULL_HANDLE;
  VkFormat swapFormat=VK_FORMAT_UNDEFINED; VkExtent2D swapExtent{};
  std::vector<VkImage> images; std::vector<VkImageLayout> layouts;
+ std::vector<ResourceUse> imageUses;
  VkSemaphore acquired=VK_NULL_HANDLE,finished=VK_NULL_HANDLE;
  std::unique_ptr<Surface> scan;
  std::atomic<bool> visible{true},srgb{false},resize{false};
@@ -136,6 +139,7 @@ struct Renderer {
   VkQueryPool timestampQueries=VK_NULL_HANDLE;
   bool timestampRecorded=false;
   uint64_t timestampFrame=0;
+  uint32_t perfQuery=UINT32_MAX;
   static constexpr uint32_t maxGpuScopes=256;
   struct GpuScope { GpuScopeMetadata metadata{}; uint64_t draws=0,generation=0; bool ended=false; };
   std::array<GpuScope,maxGpuScopes> gpuScopes{};
@@ -182,6 +186,8 @@ void gpu_begin_render_scope(const std::array<Surface*,8>&,Surface*,const uint32_
 void gpu_count_render_draw();
 GpuScopeToken gpu_begin_feedback_scope(const Surface&);
 void gpu_end_feedback_scope(GpuScopeToken);
+bool narrow_barriers();
+void transition_buffer(Buffer&, VkPipelineStageFlags, VkAccessFlags);
 void transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VkAccessFlags access=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
 void forget_texture_views();
 void service_captures();

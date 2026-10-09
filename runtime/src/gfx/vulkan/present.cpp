@@ -1,9 +1,13 @@
 // Shader presentation matches Metal's source-grid FXAA and scaling filters.
+#include "../../exception_report.h"
 #include "present.h"
+#include "../headless_compose.h"
+#include "imgui.h"
 #include "backend.h"
 #include "shaders.h"
 #include "settings.h"
 #include "mods/climb.h"
+#include "overlay/guest_hud.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -147,6 +151,8 @@ struct PresentResources {
  VkSampler linear=VK_NULL_HANDLE,nearest=VK_NULL_HANDLE;
  std::unordered_map<uint64_t,VkPipeline> pipelines; // (format, kind)
  std::unordered_map<Screen*,ScreenResources> screens;
+ Surface diagnosticTarget{};
+ gfx::headless_compose::Counter diagnosticCounter;
 };
 PresentResources resources;
 bool srgb_format(VkFormat format) {
@@ -155,13 +161,13 @@ bool srgb_format(VkFormat format) {
 }
 VkShaderModule module(const char* source,bool vertex) {
  std::string error;auto words=vk::compile_glsl(source,vertex,&error);
- if(words.empty()||!error.empty())throw std::runtime_error("Vulkan presentation shader: "+error);
+ if(words.empty()||!error.empty())exception_report::raise("Vulkan presentation shader: "+error);
  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();
  VkShaderModule result;vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"presentation shader");return result;
 }
 void ensure_resources() {
  if(resources.device && resources.device!=R.device)
-  throw std::runtime_error("Vulkan presentation resources must be reset before device replacement");
+  exception_report::raise("Vulkan presentation resources must be reset before device replacement");
  resources.device=R.device;
  if(!resources.descriptors) {
   VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
@@ -246,6 +252,7 @@ void reset_present_resources() {
  if(resources.nearest)vkDestroySampler(resources.device,resources.nearest,nullptr);
  if(resources.layout)vkDestroyPipelineLayout(resources.device,resources.layout,nullptr);
  if(resources.descriptors)vkDestroyDescriptorSetLayout(resources.device,resources.descriptors,nullptr);
+ if(resources.diagnosticTarget.image)destroy_surface_image(&resources.diagnosticTarget);
  resources={};
  reset_overlay_resources();
 }
@@ -262,15 +269,27 @@ bool sampleable(const Surface& source) {
 }
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
-             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr) {
+             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr) {
  end_encoder();
+ ImDrawData* gamepadOverlay=nullptr;
+ // The GamePad scan may also be shown inside the TV composition (PIP or Off-TV).
+ if(R.tv.scan&&R.drc.scan&&!quads.empty()&&quads.front().image==R.tv.scan.get())for(const auto& q:quads)
+  if(q.image==R.drc.scan.get()) {
+   gamepadOverlay=overlay::guesthud::gamepad_region(float(extent.width),float(extent.height),q.box.x,q.box.y,q.box.w,q.box.h,q.alpha);
+   break;
+  }
+ if(gamepadOverlay)overlay_prepare(gamepadOverlay);
  if(overlay)overlay_prepare(overlay);
  for(auto& q:quads)
   if(q.image)transition_image(q.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+ ResourceUse initial;
+ if(!use) use=&initial; // acquired swap image: acquire semaphore owns prior presentation
+ auto dependency=derive_dependency(*use,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,layout!=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
  auto cmd=command_buffer();VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};barrier.oldLayout=layout;barrier.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
  barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;barrier.image=image;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
- barrier.srcAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
- vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&barrier);
+ barrier.srcAccessMask=narrow_barriers()?dependency.sourceAccess:VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+ vkCmdPipelineBarrier(cmd,narrow_barriers()?dependency.source:VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&barrier);
  VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};attachment.imageView=view;attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
  attachment.clearValue.color.float32[3]=1;
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
@@ -302,6 +321,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   auto params=present_params(fxaa&&linear,filter,scale,sourceLinear,targetLinear);params.alpha=q.alpha;
   vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);vkCmdDraw(cmd,3,1,0,0);
  }
+ if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear);
  if(overlay)overlay_draw(overlay,cmd,format,extent,targetLinear);  // settings overlay on top
  vkCmdEndRendering(cmd);
  barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=finalLayout;barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
@@ -368,8 +388,8 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
    set_graphics_feature_available(GraphicsFeature::FXAA,false);
    set_graphics_feature_available(GraphicsFeature::ScaleFilter,false);
   }
-  if(fxaa_enabled())throw std::runtime_error("FXAA requires color-attachment presentation support");
-  if(scale_filter()!=0)throw std::runtime_error("Sharp/integer filtering requires shader presentation support");
+  if(fxaa_enabled())exception_report::raise("FXAA requires color-attachment presentation support");
+  if(scale_filter()!=0)exception_report::raise("Sharp/integer filtering requires shader presentation support");
   return false;
  }
  auto& source=*screen.scan;
@@ -378,18 +398,46 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
    set_graphics_feature_available(GraphicsFeature::FXAA,false);
    set_graphics_feature_available(GraphicsFeature::ScaleFilter,false);
   }
-  throw std::runtime_error("Scan-buffer format cannot be sampled for shader presentation");
+  exception_report::raise("Scan-buffer format cannot be sampled for shader presentation");
  }
  const bool linear=linear_filtering(source.fmt.pixel);
  if(&screen==&R.tv) {
   set_graphics_feature_available(GraphicsFeature::FXAA,linear);
   set_graphics_feature_available(GraphicsFeature::ScaleFilter,linear);
  }
- if(fxaa_enabled()&&!linear)throw std::runtime_error("FXAA requires linear scan-buffer filtering");
+ if(fxaa_enabled()&&!linear)exception_report::raise("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
-         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr);
+         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex));
  return true;
+}
+
+// Test-only headless encoding, once per swap. No image readback or additional queue wait.
+void compose_headless_diagnostic(Screen& screen) {
+ const auto& diagnostic=gfx::headless_compose::policy();
+ if(!diagnostic.enabled()||!screen.scan||!screen.scan->image)return;
+ if(!currentPlan||currentPlan->dw!=gfx::headless_compose::width||currentPlan->dh!=gfx::headless_compose::height)
+  exception_report::raise("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+ ensure_resources();
+ auto& target=resources.diagnosticTarget;auto& counter=resources.diagnosticCounter;
+ counter.require_capacity(diagnostic);
+ const uint32_t format=screen.srgb.load()?0x41a:0x1a;
+ if(target.image&&target.format!=format)destroy_surface_image(&target);
+ if(!target.image) {
+  target.width=gfx::headless_compose::width;target.height=gfx::headless_compose::height;
+  target.format=format;target.fmt=format_info(format,false);
+  create_surface_image(&target,true,VkExtent3D{target.width,target.height,1});
+ }
+ const VkExtent2D extent{target.width,target.height};
+ int filter=0;auto quads=screen_quads(screen,extent,filter);
+ compose(target.image,target.view,target.layout,extent,target.fmt.pixel,quads,
+         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),overlayDraw,&target.use);
+ unsigned commands=0;
+ if(overlayDraw)for(const auto* list:overlayDraw->CmdLists)commands+=list->CmdBuffer.Size;
+ const unsigned vertices=overlayDraw?overlayDraw->TotalVtxCount:0,indices=overlayDraw?overlayDraw->TotalIdxCount:0;
+ if(counter.encoded(diagnostic,vertices,indices,commands))
+  fprintf(stderr,"[headless-compose] Vulkan encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu\n",counter.frames,vertices,indices,commands,
+   (unsigned long long)counter.vertices,(unsigned long long)counter.indices,(unsigned long long)counter.commands);
 }
 
 // the composition into an offscreen RGBA8 image, read back (present dumps, captures)
@@ -401,7 +449,7 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
  try {
   int filter=0;auto quads=screen_quads(screen,VkExtent2D{width,height},filter);
   compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,quads,
-          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr);
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(width,height),&target.use);
   rgba=read_surface_rgba(target,false);  // display-encoded already (sRGB target, or encoded values)
  }catch(...){destroy_surface_image(&target);throw;}
  destroy_surface_image(&target);
@@ -423,15 +471,14 @@ bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& h
  try {
   ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.srgb.load();q.box={0,0,float(width),float(height)};
   compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,{q},
-          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr);
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr,&target.use);
   buffer=create_readback_buffer(VkDeviceSize(width)*height*4);
   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
   auto cmd=command_buffer();
   VkBufferImageCopy region{};region.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};region.imageExtent={width,height,1};
   vkCmdCopyImageToBuffer(cmd,target.image,target.layout,buffer.buffer,1,&region);
-  VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-  host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=buffer.buffer;host.size=VK_WHOLE_SIZE;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+  derive_dependency(buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  transition_buffer(buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
  }catch(...){destroy_surface_image(&target);if(buffer.buffer){defer_buffer(buffer);buffer={};}throw;}
  destroy_surface_image(&target);  // deferred: freed when this submission retired
  return true;
@@ -521,9 +568,8 @@ bool record_signature(int slot,Surface& source,bool sourceLinear) {
  level_barrier(cmd,g.signatureImage,0,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,W,Rd);
  VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={gfx::kSignatureW,gfx::kSignatureH,1};
  vkCmdCopyImageToBuffer(cmd,g.signatureImage,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,g.buffer.buffer,1,&copy);
- VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=W;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
- host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=g.buffer.buffer;host.size=VK_WHOLE_SIZE;
- vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+ derive_dependency(g.buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+ transition_buffer(g.buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
  // the blits decode sRGB images to linear values: encode them like the Metal path does
  g.linear=sourceLinear||srgb_format(source.fmt.pixel);g.pending=true;
  return true;
@@ -568,20 +614,20 @@ void record_present_capture(Screen& screen,uint32_t imageIndex) {
  try {
   const size_t width=screen.swapExtent.width,height=screen.swapExtent.height;
   if(!width||!height||width>std::numeric_limits<size_t>::max()/height/4)
-   throw std::runtime_error("invalid swap-image capture dimensions");
+   exception_report::raise("invalid swap-image capture dimensions");
   capture.buffer=create_readback_buffer(width*height*4);
   capture.extent=screen.swapExtent;capture.format=screen.swapFormat;
   auto cmd=command_buffer();VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   image.oldLayout=screen.layouts.at(imageIndex);image.newLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   image.srcQueueFamilyIndex=image.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
   image.image=screen.images.at(imageIndex);image.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-  image.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;image.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&image);
+  auto dependency=derive_dependency(screen.imageUses.at(imageIndex),VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT,true);
+  image.srcAccessMask=narrow_barriers()?dependency.sourceAccess:VK_ACCESS_MEMORY_WRITE_BIT;image.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
+  vkCmdPipelineBarrier(cmd,narrow_barriers()?dependency.source:VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&image);
   VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={uint32_t(width),uint32_t(height),1};
   vkCmdCopyImageToBuffer(cmd,image.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,capture.buffer.buffer,1,&copy);
-  VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};host.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;host.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
-  host.srcQueueFamilyIndex=host.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;host.buffer=capture.buffer.buffer;host.size=VK_WHOLE_SIZE;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&host,0,nullptr);
+  derive_dependency(capture.buffer.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  transition_buffer(capture.buffer,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
   image.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;image.newLayout=VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   image.srcAccessMask=VK_ACCESS_TRANSFER_READ_BIT;image.dstAccessMask=0;
   vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,nullptr,0,nullptr,1,&image);

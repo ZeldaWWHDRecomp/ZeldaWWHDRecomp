@@ -1,4 +1,6 @@
 #include "interp.h"
+#include "countdown.h"
+#include "mods/guest_mods.h"
 #include "mods/packages.h"
 // Frame interpolation (60, 120 or 240 fps output, game logic unchanged at 30 steps per second).
 //
@@ -33,11 +35,15 @@
 #include <vector>
 
 #include "interp_pacing.h"
+#include "mods/fast_forward.h"
 #include "guest_addr.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "runtime.h"
 #include "savestate.h"
 #include "true60.h"
+#include "gx2/gx2.h"
+#include "gfx/renderer.h"
 
 
 extern "C" {
@@ -82,6 +88,8 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 
 }
 
+namespace true60_test { void logic_step(uint64_t step); }
+
 namespace interp {
 
 // Output frame rate with interpolation: 60, 120 or 240 (in-between frames per step: fps/30 - 1).
@@ -94,7 +102,7 @@ static std::atomic<bool> g_on{[] {
     const char* e = getenv("WWHD_INTERP");
     return (e ? atoi(e) != 0 : g_env_fps != 0) && !true60::enabled();
 }()};
-bool interp_on() { return g_on.load(std::memory_order_relaxed); }
+bool interp_on() { return g_on.load(std::memory_order_relaxed) && !mods::fast_forward_active(); }
 // the pass structure below is used by both 60 fps modes and the 120/240 fps interpolation:
 // interpolation (30 Hz logic) and true 60 (true60.cpp: 60 Hz processes also execute on the
 // in-between "hold" passes; always one per step)
@@ -138,7 +146,7 @@ void set_fps(int f) {
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
 }
 // the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
-int mode() { return true60::enabled() ? 2 : interp_on() ? 1 : 0; }
+int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
     g_on = false;
     true60::set_enabled(false);
@@ -523,6 +531,7 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
     }
 }
 }  // namespace
+void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
 // J3DModel::viewCalc(J3DModel*)
@@ -627,6 +636,7 @@ void fx_hold_blend(float t);   // interp_fx.cpp: blended hold pass: logic-time e
 void fx_ss_reset();
 // a save state was loaded: nothing may blend across the jump
 void ss_reset() {
+    countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_last_step = 0;
     g_models.clear();
@@ -705,7 +715,9 @@ constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono:
 // a dropped in-between pass (and at 120/240 fps before every logic pass that comes early)
 static void paced_pass_start() {
     static bool previousRecord = false;
-    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
+    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false;
+        if (mods::fast_forward_active()) { g_wait_step = false; g_last_entry = {}; g_last_logic = {}; }
+        return; }
     if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
     const auto now = pace_clock::now();
@@ -850,9 +862,45 @@ std::string pass_cpu_report() {
 
 extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
+    // Opt-in countdown trace: scalar timing measurements only, no save or asset data.
+    struct CountdownTrace {
+        bool hold;
+        ~CountdownTrace() {
+            static FILE* out = getenv("WWHD_COUNTDOWN_TRACE") ? fopen(getenv("WWHD_COUNTDOWN_TRACE"), "w") : nullptr;
+            if (!out) return;
+            const uint32_t timer = ld32(GD(0x1046F0B0) + 0x5CF0);
+            if (timer < mem::kMem2Start || timer >= mem::kMem2End - 0x136) return;
+            static bool paced = false;
+            if (!paced && getenv("WWHD_COUNTDOWN_REALTIME")) {
+                gx2::set_uncapped(false);
+                paced = true;
+            }
+            const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            fprintf(out, "%llu %llu %d %.6f %u %u %u %u\n", (unsigned long long)g_passes,
+                    (unsigned long long)g_logic_steps, int(hold), wall, ld32(timer + 0x114),
+                    unsigned(ld8(timer + 0x124)), unsigned(ld8(timer + 0x122)), ld32(timer + 0x10C));
+            fflush(out);
+            static bool captured = false;
+            if (!captured && !g_hold_next) {
+                const char* capture = getenv("WWHD_COUNTDOWN_CAPTURE");
+                unsigned frames = 0; int n = 0;
+                if (capture && sscanf(capture, "%u:%n", &frames, &n) == 1 && n && capture[n] &&
+                    ld32(timer + 0x10C) == frames) {
+                    // Tests can align the capture with the painter's delayed draw lists.
+                    const char* ahead = getenv("WWHD_COUNTDOWN_CAPTURE_AHEAD");
+                    render::request_tv_dump(capture + n, ahead ? std::clamp(atoi(ahead), 1, 16) : 1);
+                    captured = true;
+                }
+            }
+        }
+    } countdown_trace{enabled() && g_hold_next};
+    perf::game_frame();
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
+    const bool was_fast_forward = mods::fast_forward_active();
+    mods::fast_forward_service();
+    const bool ff_transition = was_fast_forward != mods::fast_forward_active();
     g_passes++;
     // test aid: WWHD_INTERP_AT_STEP=n switches interpolation on after n frames
     static uint64_t passes = 0;
@@ -863,13 +911,31 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (at60 && ++passes60 == at60) set_mode(2);
     paced_pass_start();
     true60::new_pass();
-    true60::pass_begin(!enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
-    if (!enabled() || !g_hold_next) g_logic_steps++;
+    true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    if (ff_transition) {
+        for (auto& p : g_prev) p = Prev{};
+        g_last_step = 0;
+        g_models.clear();
+        g_record_passes += 8;
+        g_hold_next = false;
+        g_phase = 0;
+        g_step_n = 1;
+        fx_ss_reset();
+    }
+    if (!enabled() || !g_hold_next) {
+        g_logic_steps++;
+        true60_test::logic_step(g_logic_steps);
+    }
     if (!enabled()) {
         g_hold_next = false;
         g_phase = 0;
         g_step_n = 1;
-        f_0203593C_orig(c);
+        {
+            PassTimer timer(0);
+            f_0203593C_orig(c);
+        }
+        static unsigned stats_steps = 0;
+        if (pass_stats() && ++stats_steps % 300 == 0) LOG("[interp]%s", pass_cpu_report().c_str());
         return;
     }
     static uint64_t frames = 0;  // passes drawn with interpolation on (frames per step in the log)
@@ -1054,7 +1120,8 @@ extern "C" void hook_025DE788(Cpu* c) {
     uint32_t execute_fn = c->r[3];
     f_025DE788_orig(c);
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
-    if (!interp::g_hold_frame) mods::packages::frame(interp::g_logic_steps);
+    if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);mods::packages::frame(interp::g_logic_steps);}
+    guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;
 }
 extern "C" void hook_025DE024(Cpu* c) { if (!skip(2)) f_025DE024_orig(c); }
@@ -1073,7 +1140,10 @@ extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // #64, #74; #73, no control after an item-get message, looks like the same). Once per logic step, as
 // at 30 fps (true 60 too: these screens are 30 Hz logic).
 extern "C" void f_02715310_orig(Cpu* c);
-extern "C" void hook_02715310(Cpu* c) { if (!skip(64)) f_02715310_orig(c); }
+extern "C" void hook_02715310(Cpu* c) {
+    if (!skip(64)) f_02715310_orig(c);
+    else countdown::refresh(c);
+}
 
 namespace interp {
 // The pads are read at the end of every frame. JUTGamePad derives "pressed this frame" from

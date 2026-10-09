@@ -18,7 +18,14 @@ A release folder contains `portable.txt`. Then everything stays in `<release>/da
 | `data/user/` | settings, controls, graphics options, save states, shader caches (`host::portable_user_dir()`) |
 | `data/captures/` | crash logs (the game runs in `data/`) |
 | `data/install.json`, `data/setup.log` | what was prepared (paths inside `data/` relative, so the folder can move), and the setup log |
-| `data/toolchain/`, `data/python/` | the downloaded compiler (Windows, Linux; removable at the end) and Python (Linux without Python 3; the Windows release ships its Python in `tools/python`) |
+| `data/toolchain/`, `data/python/` | the downloaded compiler (Windows, Linux; kept by default for guest mods and repair) and Python (Linux without Python 3; the Windows release ships its Python in `tools/python`) |
+
+Guest builds use `data/guest-sdk.json`: setup's compiler argument vector, Python, translator
+and runtime headers. Version 2 stores paths inside the portable release relative to the config
+file, so moving the release folder preserves them; external/system tools remain absolute.
+The Zig global cache also stays in the selected toolchain directory. Version 1 configs remain
+readable. Removing the downloaded compiler is optional, but guest builds then require running
+setup again to restore it. No environment secrets are persisted in this file.
 
 Runtime side: a `portable.txt` next to the game executable makes `host::config_dir()` return
 `<folder>/user` (`runtime/src/platform/host.h`); `main.cpp` points the macOS-only paths (save states,
@@ -26,6 +33,15 @@ display settings, Metal shader cache) there through their existing overrides; `g
 graphics options in `user/graphics.plist` instead of NSUserDefaults; the Controls window does not
 autosave its frame. Without the marker (source builds) nothing changes. Shortcuts (Applications link,
 Start menu, applications menu) are only created when the player asks for one.
+
+Without `portable.txt` (a source build, or a Linux AppImage: its mount is read-only, issue #55) the
+same tree lives in the per-user folders of earlier releases instead: `data/` above becomes
+`~/Library/Application Support/wwhd`, `%LOCALAPPDATA%\WWHD` or `$XDG_DATA_HOME/wwhd`
+(`~/.local/share/wwhd`), and `data/user/` becomes that platform's `host::config_dir()`
+(`~/.config/wwhd` on Linux). `setup.py default_data_dir()` and `gui/setup_gui.cpp data_dir_of()`
+implement the same rule; `tools/release/appimage.py` drops `portable.txt` from the package for exactly
+this reason. `install.json` then keeps `exe` and `game_dir` as absolute paths (`rel_to_data` is a
+no-op without the marker).
 
 ## Pieces
 
@@ -202,3 +218,33 @@ The recompiler reads only `code/cking.rpx` (the runtime checks at start that it 
 code); the other files in `code/` (`app.xml`, `cos.xml`) are metadata and are not checked.
 For Europe it emits mapped hooks and runtime address tables automatically; no USA dump or
 separate language source is needed. See [regional builds](../../docs/builds.md).
+
+
+## Local setup Python capabilities
+
+Guest compilation and Python mod setup use the interpreter recorded in `guest-sdk.json`.
+Setup verifies Python 3.14 or newer and an actual isolated `compression.zstd` round trip,
+rather than assuming that a version number guarantees the optional compiled codec.
+Windows uses only the release's official, hash-checked embeddable Python 3.14.8; the
+installer never downloads a replacement there. An incomplete/older Windows release must
+be replaced with the complete current release.
+
+On macOS (arm64 and x86_64) and Linux (aarch64 and x86_64), a capable setup interpreter is
+reused. Otherwise the trusted installer downloads the architecture-specific standalone
+Python pinned in `toolchains.json`, verifies its SHA-256, and installs it privately under
+`data/setup-python/`. It probes the staged interpreter before selecting it. The system
+Python is unchanged. Downloads remain installer operations; mod setup tools retain their
+reviewed local file capabilities and cannot download or launch programs.
+
+Existing installations can update only this interpreter, preserving the compiler and
+other bridge settings, by passing `--repair-guest-python` to their release's terminal
+setup launcher (plus `--data-dir PATH` for a nondefault installation). This does not rebuild
+game code. A normal setup/repair also refreshes the interpreter configuration. Portable
+format-v2 paths remain relative to the data directory and survive moving the release.
+
+The Windows ZIP pin is published by [Python.org](https://www.python.org/downloads/release/python-3148/).
+Standalone pins use the publisher's SHA-256 asset digests from
+[python-build-standalone 20261003](https://github.com/astral-sh/python-build-standalone/releases/tag/20261003).
+When updating Windows, regenerate every-file hashes in `tools/release/python-windows-files.json`
+and update the release workflow's versioned DLL signature check together with the archive pin.
+Android guest mods remain unsupported; these interpreter paths describe supported desktop setup.

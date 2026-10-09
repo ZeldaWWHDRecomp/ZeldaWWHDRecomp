@@ -163,6 +163,7 @@ inline std::string exe_dir() {
 }
 inline const std::string& portable_user_dir() {
  static const std::string dir=[]{
+  if(const char* override=std::getenv("WWHD_USER_DIR"))return std::string(override);
   std::string e=exe_dir();
   if(e.empty()) return std::string();
   FILE* f=fopen((e+"/portable.txt").c_str(),"rb");

@@ -6,11 +6,169 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import setup  # noqa: E402
 
 KEY_HEX = "0011223344556677" "8899aabbccddeeff"  # made-up test value
+
+
+class GuestBuildConfig(unittest.TestCase):
+    def test_toolchain_argument_vector(self):
+        with tempfile.TemporaryDirectory() as d:
+            tc = setup.Toolchain(["compiler with spaces", "cc", "-target", "x86_64-linux-gnu.2.35"], [], [])
+            with mock.patch.object(setup, "ensure_setup_python", return_value=sys.executable):
+                setup.write_guest_build_config(d, tc)
+            with open(os.path.join(d, "guest-sdk.json"), encoding="utf-8") as f:
+                config = json.load(f)
+            self.assertEqual(config["compiler"], tc.cc)
+            self.assertEqual(config["python"], [sys.executable])
+            self.assertTrue(config["builder"].endswith("build_guest_mod.py"))
+            self.assertFalse(os.path.exists(os.path.join(d, "guest-sdk.json.tmp")))
+
+
+    def test_portable_paths_survive_release_move(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = os.path.join(directory, "release")
+            data = os.path.join(release, "data")
+            paths = {"python": os.path.join(release, "tools", "python", "python.exe"),
+                     "compiler": os.path.join(data, "toolchain", "bin", "zig"),
+                     "builder": os.path.join(release, "tools", "guestmod", "build_guest_mod.py")}
+            for path in paths.values():
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write("")  # fixture paths only
+            os.makedirs(os.path.join(release, "sdk", "include"))
+            cache = os.path.join(data, "toolchain", "zig-cache")
+            tc = setup.Toolchain([paths["compiler"], "cc", "-target", "x86_64-linux-gnu.2.35"], [], [],
+                                 env={"ZIG_GLOBAL_CACHE_DIR": cache, "UNRELATED_ENV": "not-persisted"})
+            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup, "ensure_setup_python", return_value=paths["python"]):
+                setup.write_guest_build_config(data, tc)
+            moved = os.path.join(directory, "moved-release")
+            os.rename(release, moved)
+            moved_data = os.path.join(moved, "data")
+            with open(os.path.join(moved_data, "guest-sdk.json")) as f:
+                config = json.load(f)
+            self.assertEqual(config["format_version"], 2)
+            for key in ("python", "compiler"):
+                self.assertFalse(os.path.isabs(config[key][0]))
+                self.assertTrue(os.path.isfile(os.path.join(moved_data, config[key][0])))
+            self.assertTrue(os.path.isfile(os.path.join(moved_data, config["builder"])))
+            self.assertTrue(os.path.isdir(os.path.join(moved_data, config["include"])))
+            self.assertEqual(os.path.normpath(os.path.join(moved_data, config["zig_cache"])),
+                             os.path.join(moved_data, "toolchain", "zig-cache"))
+            self.assertNotIn("UNRELATED_ENV", config)
+
+
+
+class SetupPython(unittest.TestCase):
+    def test_probe_checks_codec_and_version_in_isolation(self):
+        with mock.patch.object(setup.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(setup.python_setup_capable("python with spaces"))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["python with spaces", "-I", "-c"])
+        self.assertIn("compression import zstd", command[3])
+        self.assertIn("(3, 14)", command[3])
+        for result in (mock.Mock(returncode=1),):
+            with mock.patch.object(setup.subprocess, "run", return_value=result):
+                self.assertFalse(setup.python_setup_capable("python"))
+        with mock.patch.object(setup.subprocess, "run", side_effect=setup.subprocess.TimeoutExpired("python", 15)):
+            self.assertFalse(setup.python_setup_capable("python"))
+
+    def test_windows_bundled_only_even_with_capable_ambient(self):
+        with mock.patch.multiple(setup, IS_WIN=True, PKG="release"), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True) as probe, \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), os.path.join("release", "tools", "python", "python.exe"))
+            probe.assert_called_once_with(os.path.join("release", "tools", "python", "python.exe"))
+            download.assert_not_called()
+        with mock.patch.multiple(setup, IS_WIN=True), \
+             mock.patch.object(setup, "python_setup_capable", return_value=False), \
+             mock.patch.object(setup, "download") as download:
+            with self.assertRaisesRegex(setup.SetupError, "complete Windows release"):
+                setup.ensure_setup_python("data")
+            download.assert_not_called()
+
+    def test_capable_ambient_no_download(self):
+        with mock.patch.multiple(setup, IS_WIN=False), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True), \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), sys.executable)
+            download.assert_not_called()
+
+    def test_old_or_missing_codec_provisions_each_supported_platform(self):
+        for mac, arch, key in ((False, "x86_64", "linux"), (False, "aarch64", "linux-aarch64"),
+                               (True, "aarch64", "macos"), (True, "x86_64", "macos-x86_64")):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as d:
+                def fetch(url, dst, sha, size, label):
+                    self.assertEqual(url, setup.load_toolchains()["python"][key]["url"])
+                    with open(dst, "wb") as f:
+                        f.write(b"authored archive placeholder")
+                def unpack(command, **kwargs):
+                    os.makedirs(os.path.join(command[-1], "python", "bin"))
+                with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=mac, IS_LINUX=not mac), \
+                     mock.patch.object(setup, "host_arch", return_value=arch), \
+                     mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]), \
+                     mock.patch.object(setup, "download", side_effect=fetch), \
+                     mock.patch.object(setup, "run_logged", side_effect=unpack), \
+                     mock.patch.object(setup.shutil, "which", return_value="tar"):
+                    result = setup.ensure_setup_python(d)
+                self.assertTrue(result.endswith(os.path.join("setup-python", "python", "bin", "python3")))
+                with open(os.path.join(d, "setup-python", ".wwhd-python")) as f:
+                    self.assertEqual(f.read().strip(), setup.load_toolchains()["python"][key]["sha256"])
+
+    def test_cached_private_python_rechecked_for_codec(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "setup-python")
+            os.makedirs(root)
+            with open(os.path.join(root, ".wwhd-python"), "w") as f:
+                f.write(setup.load_toolchains()["python"]["linux"]["sha256"])
+            with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=False, IS_LINUX=True), \
+                 mock.patch.object(setup, "host_arch", return_value="x86_64"), \
+                 mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]) as probe, \
+                 mock.patch.object(setup, "download") as download:
+                result = setup.ensure_setup_python(d)
+            self.assertEqual(probe.call_count, 2)
+            download.assert_not_called()
+            self.assertTrue(result.startswith(root))
+
+    def test_failed_provision_does_not_rewrite_bridge(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            original = '{"format_version": 2, "python": ["old-python"]}'
+            with open(path, "w") as f:
+                f.write(original)
+            with mock.patch.object(setup, "ensure_setup_python", side_effect=setup.SetupError("download failed")):
+                with self.assertRaisesRegex(setup.SetupError, "download failed"):
+                    setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(f.read(), original)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_portable_repair_keeps_external_python_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            with open(path, "w") as f:
+                json.dump({"format_version": 2}, f)
+            outside = os.path.abspath(os.path.join(d, "..", "external-python"))
+            with mock.patch.object(setup, "ensure_setup_python", return_value=outside), \
+                 mock.patch.multiple(setup, PORTABLE=True, PKG=d):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(json.load(f)["python"], [outside])
+
+    def test_repair_preserves_compiler_and_config_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            config = {"format_version": 2, "python": ["old-python"], "compiler": ["cc", "-flag"], "include": "sdk"}
+            with open(path, "w") as f:
+                json.dump(config, f)
+            with mock.patch.object(setup, "ensure_setup_python", return_value="new-python"), mock.patch.object(setup, "PORTABLE", False):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                result = json.load(f)
+            self.assertEqual(result, dict(config, python=["new-python"]))
 
 
 class Keys(unittest.TestCase):
@@ -66,6 +224,42 @@ class Paths(unittest.TestCase):
                 f.write('<menu><title_id type="hexBinary" length="8">0005000010143500</title_id></menu>')
             self.assertTrue(setup.valid_game_folder(d))
             self.assertEqual(setup.game_folder_title(d), "0005000010143500")
+
+
+class DataDir(unittest.TestCase):
+    """default_data_dir: portable.txt next to the release means <release>/data; without it (a source
+    build, or an AppImage whose mount is read-only, issue #55) the per-user folder of earlier
+    releases. --data-dir overrides both (setup_gui.cpp data_dir_of mirrors this)."""
+
+    def setUp(self):
+        self._portable = setup.PORTABLE
+
+    def tearDown(self):
+        setup.PORTABLE = self._portable
+
+    def test_portable_uses_the_release_folder(self):
+        setup.PORTABLE = True
+        self.assertEqual(setup.default_data_dir(), os.path.join(setup.PKG, "data"))
+
+    def test_without_the_marker_uses_the_per_user_folder(self):
+        setup.PORTABLE = False
+        self.assertEqual(setup.default_data_dir(), setup.legacy_data_dir())
+
+    @unittest.skipUnless(setup.IS_LINUX, "the XDG rule is the Linux one")
+    def test_legacy_respects_xdg_data_home(self):
+        saved = os.environ.get("XDG_DATA_HOME")
+        os.environ["XDG_DATA_HOME"] = "/tmp/wwhd-xdg"
+        try:
+            self.assertEqual(setup.legacy_data_dir(), os.path.join("/tmp/wwhd-xdg", "wwhd"))
+        finally:
+            if saved is None:
+                os.environ.pop("XDG_DATA_HOME", None)
+            else:
+                os.environ["XDG_DATA_HOME"] = saved
+
+    def test_legacy_folder_name(self):
+        # the same name as host::config_dir on Linux; "WWHD" on Windows (setup_gui.cpp data_dir_of)
+        self.assertEqual(os.path.basename(setup.legacy_data_dir()), "WWHD" if setup.IS_WIN else "wwhd")
 
 
 class Titles(unittest.TestCase):
@@ -497,6 +691,228 @@ class LanguageSources(unittest.TestCase):
         finally:
             setup.run_extract, setup.archive_info = saved
         self.assertEqual(setup.LANGUAGE_SOURCE_FILES, ["content/Common/Pack/permanent_2d_*.pack", "meta/meta.xml"])
+
+
+class CodeModsBuild(unittest.TestCase):
+    def test_option_default_and_override(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(setup.code_mods.hooks_option())
+        with mock.patch.dict(os.environ, {"WWHD_CODE_MODS": "1"}):
+            self.assertTrue(setup.code_mods.hooks_option())
+            self.assertFalse(setup.code_mods.hooks_option("0"))
+        with self.assertRaises(ValueError):
+            setup.code_mods.hooks_option("yes")
+
+    def test_fingerprint_tracks_build_inputs_and_mode(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game/code").mkdir(parents=True)
+            (root / "game/code/cking.rpx").write_bytes(b"synthetic test input")
+            (root / "sdk").mkdir()
+            source = root / "sdk/runtime.o"
+            source.write_bytes(b"runtime fixture")
+            def key(hooks=False, compiler="clang", manifest=None):
+                return setup.code_mods.fingerprint(root, manifest or {"exe": "game"},
+                                                   root / "game", compiler, hooks)
+            first = key()
+            self.assertEqual(first, key())
+            self.assertNotEqual(first, key(True))
+            self.assertNotEqual(first, key(compiler="new clang"))
+            self.assertNotEqual(first, key(manifest={"exe": "other"}))
+            source.write_bytes(b"updated runtime fixture")
+            self.assertNotEqual(first, key())
+
+    def test_cache_modes_corruption_and_failed_link(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game/code").mkdir(parents=True)
+            (root / "game/code/cking.rpx").write_bytes(b"synthetic input")
+            (root / "sdk").mkdir()
+            data = root / "data"
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(root / "game"),
+                                  manifest={"toolchain": {}, "exe": "fixture"},
+                                  args=SimpleNamespace(jobs=4))
+            mode = []
+            def translate(game, gen, hooks=False):
+                Path(gen).mkdir(); mode[:] = [hooks]
+            def compile_code(tc, manifest, gen, obj, jobs, **kwargs):
+                Path(obj).mkdir(); kwargs["cancel"](); kwargs["progress"](1, 1)
+                return []
+            def link(tc, manifest, objs, work, target):
+                Path(target).write_bytes(b"hooks on" if mode[0] else b"hooks off")
+            tc = SimpleNamespace(cc=["fixture compiler"], env={})
+            with mock.patch.multiple(setup, PKG=root, PORTABLE=False), \
+                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                 mock.patch.object(setup, "run_logged", return_value="fixture compiler version"), \
+                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                 mock.patch.object(setup, "recompile", side_effect=translate) as recomp, \
+                 mock.patch.object(setup, "compile_gamecode", side_effect=compile_code), \
+                 mock.patch.object(setup, "link_game", side_effect=link) as linker:
+                data.mkdir()
+                initial = root / "initial.exe"
+                initial.write_bytes(b"hooks off")
+                generated = root / "initial-gen"
+                generated.mkdir()
+                setup.code_mods.remember_installed(setup, ctx, tc, False, initial, generated, [])
+                off = setup.code_mods.rebuild(setup, ctx, False)
+                self.assertTrue(off["cached"])
+                on = setup.code_mods.rebuild(setup, ctx, True)
+                self.assertNotEqual(off["fingerprint"], on["fingerprint"])
+                self.assertTrue(Path(off["exe"]).is_file())
+                again = setup.code_mods.rebuild(setup, ctx, False)
+                self.assertTrue(again["cached"])
+                self.assertEqual(recomp.call_count, 1)
+                # Bad metadata rebuilds rather than trusting an unrelated executable.
+                ready = Path(on["exe"]).parents[1] / "ready.json"
+                ready.write_text("broken json")
+                previous = (data / "code-mods-active.json").read_bytes()
+                linker.side_effect = setup.SetupError("synthetic link failure")
+                with self.assertRaisesRegex(setup.SetupError, "link failure"):
+                    setup.code_mods.rebuild(setup, ctx, True)
+                self.assertEqual((data / "code-mods-active.json").read_bytes(), previous)
+                self.assertTrue(Path(off["exe"]).is_file())
+                self.assertFalse(list(data.glob("*.partial")))
+
+    def test_build_lock_excludes_concurrent_writer_and_reopens(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "code-build.lock"
+            first = setup.code_mods.BuildLock(path, setup.SetupError)
+            try:
+                with self.assertRaisesRegex(setup.SetupError, "Another code-mod rebuild"):
+                    setup.code_mods.BuildLock(path, setup.SetupError)
+            finally:
+                first.close()
+            second = setup.code_mods.BuildLock(path, setup.SetupError)
+            second.close()
+
+    def test_low_space_evicts_only_inactive_owned_cache(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            active, inactive = "a" * 64, "b" * 64
+            for key in (active, inactive):
+                cache = root / "code-builds" / key
+                cache.mkdir(parents=True)
+                (cache / "ready.json").write_text(json.dumps({"fingerprint": key}))
+            unrelated = root / "code-builds" / "unrecognized"
+            unrelated.mkdir()
+            (root / "code-mods-active.json").write_text(json.dumps({"fingerprint": active}))
+            with mock.patch.object(setup, "free_space", side_effect=[0, 3 << 30]):
+                setup.code_mods.make_build_space(setup, root)
+            self.assertTrue((root / "code-builds" / active).is_dir())
+            self.assertFalse((root / "code-builds" / inactive).exists())
+            self.assertTrue(unrelated.is_dir())
+            with mock.patch.object(setup, "free_space", return_value=0):
+                with self.assertRaisesRegex(setup.SetupError, "previous build retained"):
+                    setup.code_mods.make_build_space(setup, root)
+            self.assertTrue((root / "code-builds" / active).is_dir())
+
+    def test_cancel_preserves_selection_and_releases_lock(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            active = root / "code-mods-active.json"
+            active.write_text('{"previous": true}')
+            cancel = root / "cancel"
+            cancel.touch()
+            status = root / "status.json"
+            ctx = SimpleNamespace(data_dir=d)
+            with self.assertRaisesRegex(setup.SetupError, "cancelled"):
+                setup.code_mods.rebuild(setup, ctx, True, status, cancel)
+            self.assertEqual(active.read_text(), '{"previous": true}')
+            with self.assertRaisesRegex(setup.SetupError, "cancelled"):
+                setup.code_mods.rebuild(setup, ctx, True, status, cancel)
+            self.assertEqual(json.loads(status.read_text())["state"], "error")
+
+
+class Download(unittest.TestCase):
+    """setup.download: retries, resume with range requests, the player's own copy (issue #113)."""
+    DATA = bytes(range(256)) * 4096  # 1 MiB of fixture bytes
+    SHA = hashlib.sha256(DATA).hexdigest()
+
+    class Response:
+        def __init__(self, data, status, fail_after=None):
+            self.data, self.status, self.fail_after, self.pos = data, status, fail_after, 0
+            self.headers = {"Content-Length": str(len(data))}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            if self.fail_after is not None and self.pos >= self.fail_after:
+                raise ConnectionResetError("connection reset by peer")
+            end = min(len(self.data), self.pos + n, self.fail_after if self.fail_after is not None else len(self.data))
+            chunk = self.data[self.pos:end]; self.pos = end
+            return chunk
+
+    def serve(self, fail_first):
+        calls = []
+        def urlopen(req, timeout=None):
+            rng = req.get_header("Range")
+            calls.append(rng)
+            start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+            body = self.DATA[start:]
+            fail = 300000 if (fail_first and len(calls) == 1) else None
+            return self.Response(body, 206 if rng else 200, fail)
+        return urlopen, calls
+
+    def test_resumes_after_interruption(self):
+        urlopen, calls = self.serve(fail_first=True)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            dst = os.path.join(d, "out", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), self.DATA)
+            self.assertEqual(calls, [None, "bytes=300000-"])
+
+    def test_gives_up_with_hint(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("timed out")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test",
+                               attempts=2, wait=0)
+            self.assertIn("put tc.zip in the Wind Waker HD folder", str(e.exception))
+
+    def test_certificate_error_names_security_software(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test", wait=0)
+            self.assertIn("antivirus or security program", str(e.exception))
+
+    def test_certificate_error_falls_back_to_windows_curl(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate")
+        def curl_download(curl, url, tmp):
+            with open(tmp, "wb") as f:
+                f.write(self.DATA)
+            return True
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d), \
+                mock.patch.object(setup, "windows_curl", lambda: "curl.exe"), \
+                mock.patch.object(setup, "curl_download", curl_download):
+            dst = os.path.join(d, "tc.zip")
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
+
+    def test_uses_players_own_copy(self):
+        def urlopen(req, timeout=None):
+            raise AssertionError("must not download")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with open(os.path.join(d, "tc.zip"), "wb") as f:
+                f.write(self.DATA)
+            dst = os.path.join(d, "toolchain", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
 
 
 if __name__ == "__main__":

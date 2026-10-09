@@ -24,6 +24,7 @@ static constexpr float scales[]={1,1.5f,2,3};
         if(!info.used)return @"empty";
         NSString* title=[NSString stringWithFormat:@"%s%s%s%s",info.when.c_str(),
             info.area.empty()?"":" · ",info.area.c_str(),info.portable?"":" · full"];
+        if (!info.controller.empty()) title = [title stringByAppendingFormat:@" · %s", info.controller.c_str()];
         return info.compatible?title:[title stringByAppendingString:@" (incompatible)"];
     };
     for(int slot=1;slot<=ss::kSlots;++slot){

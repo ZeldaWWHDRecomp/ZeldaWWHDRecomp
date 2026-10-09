@@ -9,11 +9,13 @@
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #define VK_USE_PLATFORM_METAL_EXT  // VK_EXT_metal_surface: AppKit views' CAMetalLayers
 #endif
+#include "../../exception_report.h"
 #include "backend.h"
 #include "bc_decode.h"
 #include "android_driver.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "report_header.h"
 #include "present.h"
 #include "gfx/display.h"
@@ -23,6 +25,7 @@
 #include "mods/mods.h"
 #include "overlay/hostui.h"
 #include "overlay/overlay.h"
+#include "overlay/guest_hud.h"
 #ifdef WWHD_SDL_HOST
 #include "platform/input_sdl.h"
 #include <SDL3/SDL_vulkan.h>
@@ -34,6 +37,8 @@
 #include "screenshot.h"
 #include "shaders.h"
 #include "settings.h"
+#include "savestate.h"
+#include "gfx/capture_schedule.h"
 #include "sparse_hash_memo.h"
 #include "write_watch.h"
 #include <algorithm>
@@ -95,7 +100,8 @@ bool compatible_pipeline_cache(const std::vector<uint8_t>& bytes) {
          word(8)==R.properties.vendorID && word(12)==R.properties.deviceID &&
          !std::memcmp(bytes.data()+16,R.properties.pipelineCacheUUID,VK_UUID_SIZE);
 }
-constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','1'};
+// strictMul changes translated shaders; discard old driver pipelines before the 64 MB cap.
+constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','2'};
 constexpr size_t pipelineCacheWrapperSize=24;
 uint64_t pipeline_cache_checksum(const uint8_t* bytes,size_t size) {
   uint64_t hash=14695981039346656037ull;
@@ -241,7 +247,7 @@ PipelineCacheWriteResult write_pipeline_cache(std::vector<uint8_t> bytes,
     std::error_code ec;
     auto parent=std::filesystem::path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent,ec);
-    if (ec) throw std::runtime_error(ec.message());
+    if (ec) exception_report::raise(ec.message());
     temporary=path+".tmp-"+std::to_string(start.time_since_epoch().count());
     FILE* file=std::fopen(temporary.c_str(),"wb");
     if (file) {
@@ -316,7 +322,7 @@ void save_pipeline_cache() try {
 }
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS)
-    throw std::runtime_error(std::string(op) + ": Vulkan result " +
+    exception_report::raise(std::string(op) + ": Vulkan result " +
                              std::to_string(r));
 }
 uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) {
@@ -325,7 +331,7 @@ uint32_t memory_type(uint32_t bits, VkMemoryPropertyFlags flags) {
   for (uint32_t i = 0; i < p.memoryTypeCount; i++)
     if ((bits & (1u << i)) && (p.memoryTypes[i].propertyFlags & flags) == flags)
       return i;
-  throw std::runtime_error("No compatible Vulkan memory type");
+  exception_report::raise("No compatible Vulkan memory type");
 }
 Buffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                      VkMemoryPropertyFlags flags, VkMemoryPropertyFlags preferred) {
@@ -481,8 +487,71 @@ static uint64_t timestamp_elapsed_ticks(uint64_t start, uint64_t end, uint32_t b
   const uint64_t mask = bits == 64 ? UINT64_MAX : (uint64_t{1} << bits) - 1;
   return (end - start) & mask;
 }
+// Overlay queries live independently of reusable submission slots: DrawDone can recycle a slot
+// several times in the SAME frame. Keep its query pool until a later frame; never wait for a result.
+struct OverlayGpuQuery {
+  VkQueryPool pool = VK_NULL_HANDLE;
+  uint64_t frame = 0, token = 0;
+  bool pending = false;
+};
+static std::array<OverlayGpuQuery, 256> overlayGpuQueries{};
+static void destroy_overlay_gpu_queries() {
+  // Called only after the existing submission drain at shutdown.
+  for (auto& q : overlayGpuQueries) {
+    if (q.pool) vkDestroyQueryPool(R.device, q.pool, nullptr);
+    q = {};
+  }
+}
+static bool overlay_timestamp_capable() {
+  return timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod);
+}
+static void begin_overlay_gpu_queries(VkCommandBuffer cmd, Renderer::Submission& submission) {
+  submission.perfQuery = UINT32_MAX;
+  if (!perf::enabled() || !overlay_timestamp_capable()) return;
+  static uint64_t lastPoll = UINT64_MAX;
+  if (lastPoll != R.frame) {
+    lastPoll = R.frame;
+    for (auto& q : overlayGpuQueries) {
+      if (!q.pending || q.frame >= R.frame) continue;
+      struct Result { uint64_t ticks, available; } values[2]{};
+      perf::timestamp_read(R.frame - q.frame);
+      VkResult result = vkGetQueryPoolResults(R.device, q.pool, 0, 2, sizeof(values), values,
+          sizeof(Result), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+      if (result == VK_NOT_READY || (result == VK_SUCCESS &&
+          (!values[0].available || !values[1].available))) continue;
+      double ns = result == VK_SUCCESS
+          ? double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks, R.gpuTimestampValidBits)) *
+                double(R.properties.limits.timestampPeriod) : -1;
+      perf::gpu_complete(q.frame, q.token, ns);
+      q.pending = false;
+    }
+  }
+  perf::gpu_advance(R.frame);
+  uint64_t token = perf::gpu_begin(R.frame);
+  if (!token) return;
+  for (uint32_t i = 0; i < overlayGpuQueries.size(); ++i) {
+    auto& q = overlayGpuQueries[i];
+    if (q.pending) continue;
+    if (!q.pool) {
+      VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+      info.queryType = VK_QUERY_TYPE_TIMESTAMP; info.queryCount = 2;
+      if (vkCreateQueryPool(R.device, &info, nullptr, &q.pool) != VK_SUCCESS) {
+        perf::gpu_complete(R.frame, token, -1); return; // optional measurement
+      }
+    }
+    q.frame = R.frame; q.token = token; q.pending = true;
+    submission.perfQuery = i;
+    vkCmdResetQueryPool(cmd, q.pool, 0, 2);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, q.pool, 0);
+    perf::timestamp_write();
+    return;
+  }
+  // Bounded ring saturated: omit the entire frame rather than report a partial GPU interval.
+  perf::gpu_complete(R.frame, token, -1);
+}
 static void destroy_gpu_timestamp_queries() {
   // Caller has already drained submissions; never destroy in-flight queries.
+  destroy_overlay_gpu_queries();
   R.gpuTimestampsEnabled = false;
   R.gpuPassTimestampsEnabled = false;
   for (auto& slot : R.submissions) {
@@ -619,6 +688,7 @@ VkCommandBuffer command_buffer() {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vk_check(vkBeginCommandBuffer(R.cmd, &bi), "begin command buffer");
     R.recording = true;
+    begin_overlay_gpu_queries(R.cmd, R.submissions[R.activeSubmission]);
     if (R.gpuTimestampsEnabled) {
       auto& slot = R.submissions[R.activeSubmission];
       vkCmdResetQueryPool(R.cmd, slot.timestampQueries, 0,
@@ -693,41 +763,53 @@ void end_encoder() {
     }
   }
 }
-struct ImageSourceScope {
-  VkPipelineStageFlags stage;
-  VkAccessFlags access;
-};
-static ImageSourceScope image_source_scope(VkImageLayout layout, bool narrow) {
-  if (layout == VK_IMAGE_LAYOUT_UNDEFINED)
-    return {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
-  if (narrow) {
-    switch (layout) {
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT};
-    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-      return {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
-      return {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
-      return {VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
-    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-      // Current image consumers are VS/PS only. Add any future compute or
-      // input-attachment consumers here before using this opt-in path for them.
-      return {VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-              VK_ACCESS_SHADER_READ_BIT};
-    default: break; // GENERAL/self-copy and unknown layouts remain conservative.
-    }
-  }
-  return {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-          VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+bool narrow_barriers() {
+  static const bool enabled = [] {
+    const char* e = std::getenv("WWHD_VK_NARROW_BARRIERS");
+    // Precise resource dependencies: on by default on Android (tile-based GPUs, where the gain is
+    // expected; device numbers pending), opt-in on desktop until native Windows/Linux drivers have
+    // been checked (neutral on MoltenVK). WWHD_VK_NARROW_BARRIERS=1|0 overrides it everywhere.
+    if (e && *e) return std::strcmp(e, "0") != 0;
+#ifdef __ANDROID__
+    return true;
+#else
+    return false;
+#endif
+  }();
+  return enabled;
+}
+void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags access) {
+  auto d = derive_dependency(buffer.use, stage, access);
+  if (!d.needed) return;
+  end_encoder();
+  VkBufferMemoryBarrier b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  b.srcAccessMask = d.sourceAccess;
+  b.dstAccessMask = access;
+  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.buffer = buffer.buffer;
+  b.size = VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(command_buffer(), d.source, d.destination, 0, 0, nullptr, 1, &b, 0, nullptr);
 }
 void transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
-  // Repeated read-only texture bindings require no barrier or pass break.
-  if (s->layout == layout && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-      access == VK_ACCESS_SHADER_READ_BIT) return;
+  const bool conservativePassBreak = s->layout != layout ||
+      layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
+  if (narrow_barriers() && stage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT &&
+      access == (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT) &&
+      layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    access = VK_ACCESS_SHADER_READ_BIT;
+  }
+  const bool changed = s->layout != layout;
+  const auto dependency = derive_dependency(s->use, stage, access, changed);
+  if (narrow_barriers()) {
+    if (!dependency.needed) {
+      // Barrier elision must not also change dynamic-rendering pass boundaries.
+      if (conservativePassBreak) end_encoder();
+      return;
+    }
+  } else if (!changed && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+             access == VK_ACCESS_SHADER_READ_BIT) return;
   end_encoder();
   VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.oldLayout = s->layout;
@@ -735,15 +817,12 @@ void transition_image(Surface *s, VkImageLayout layout,
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image = s->image;
   b.subresourceRange = {s->aspect, 0, s->mips, 0, s->arrayLayers};
-  static const bool narrow = [] {
-    const char* e = std::getenv("WWHD_VK_NARROW_BARRIERS");
-    return e && !std::strcmp(e, "1");
-  }();
-  const auto source = image_source_scope(s->layout, narrow);
-  b.srcAccessMask = source.access;
+  b.srcAccessMask = narrow_barriers() ? dependency.sourceAccess :
+      (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
   b.dstAccessMask = access;
-  vkCmdPipelineBarrier(command_buffer(), source.stage,
-                       stage, 0, 0, nullptr, 0, nullptr, 1, &b);
+  vkCmdPipelineBarrier(command_buffer(), narrow_barriers() ? dependency.source :
+      (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
+      stage, 0, 0, nullptr, 0, nullptr, 1, &b);
   s->layout = layout;
 }
 static void cleanup_submission(Renderer::Submission& slot) {
@@ -819,6 +898,12 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     return;
   end_encoder();
   auto& recordingSlot = R.submissions[R.activeSubmission];
+  if (recordingSlot.perfQuery != UINT32_MAX) {
+    auto& q = overlayGpuQueries[recordingSlot.perfQuery];
+    vkCmdWriteTimestamp(R.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, q.pool, 1);
+    perf::timestamp_write();
+    recordingSlot.perfQuery = UINT32_MAX;
+  }
   if (recordingSlot.timestampRecorded)
     vkCmdWriteTimestamp(R.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         recordingSlot.timestampQueries, 1);
@@ -893,7 +978,7 @@ static void make_swapchain(Screen &s) {
   vkGetPhysicalDeviceSurfaceFormatsKHR(R.physicalDevice, s.surface, &n,
                                        fs.data());
   if (fs.empty())
-    throw std::runtime_error("No presentation formats");
+    exception_report::raise("No presentation formats");
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
   if (fs.size() == 1 && fs[0].format == VK_FORMAT_UNDEFINED)
@@ -921,7 +1006,7 @@ static void make_swapchain(Screen &s) {
       break;
   }
   if (!found)
-    throw std::runtime_error("No swapchain format supports image blits");
+    exception_report::raise("No swapchain format supports image blits");
   VkExtent2D extent = caps.currentExtent;
   if (extent.width == UINT32_MAX)
     extent = {std::clamp<uint32_t>(std::max(s.width.load(), 1),
@@ -953,7 +1038,7 @@ static void make_swapchain(Screen &s) {
   const VkSurfaceTransformFlagBitsKHR transform = caps.currentTransform;
 #endif
   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
-    throw std::runtime_error("Swapchain cannot receive scan-buffer blits");
+    exception_report::raise("Swapchain cannot receive scan-buffer blits");
   VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
   ci.surface = s.surface;
   ci.minImageCount = std::max(caps.minImageCount, 2u);
@@ -1029,6 +1114,7 @@ static void make_swapchain(Screen &s) {
   s.images.resize(n);
   vkGetSwapchainImagesKHR(R.device, sc, &n, s.images.data());
   s.layouts.assign(n, VK_IMAGE_LAYOUT_UNDEFINED);
+  s.imageUses.assign(n, {});
   prepare_present_screen(s,shaderPresentation,captureTransfer);
   s.resize = false;
 }
@@ -1122,10 +1208,10 @@ static void present(Screen &s) {
   vkGetPhysicalDeviceFormatProperties(R.physicalDevice, s.scan->fmt.pixel,
                                       &sourceFormat);
   if (!(sourceFormat.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT))
-    throw std::runtime_error(
+    exception_report::raise(
         "Scan-buffer format does not support presentation blits");
   if (s.scan->fmt.kind != FormatInfo::FLOAT)
-    throw std::runtime_error("Integer scan buffers cannot be blitted to "
+    exception_report::raise("Integer scan buffers cannot be blitted to "
                              "normalized presentation images");
   VkFilter filter = (sourceFormat.optimalTilingFeatures &
                      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
@@ -1232,6 +1318,8 @@ static void present(Screen &s) {
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
                          nullptr, 1, &b);
     s.layouts[index] = b.newLayout;
+    s.imageUses[index] = {};
+    derive_dependency(s.imageUses[index], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
   }
   record_present_capture(s,index);
   VkSemaphore finishedSemaphore = s.finished;
@@ -1324,20 +1412,26 @@ static void request_present_dump(const std::string& path) { gfx::request_present
 static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
-  static const std::vector<uint64_t> frames = [] {
-    std::vector<uint64_t> f;
-    if (const char *e = getenv("WWHD_DUMP_FRAMES"))
-      for (const char *p = e; *p;) {
-        f.push_back(strtoull(p, (char **)&p, 10));
-        while (*p == ',') p++;
-      }
-    return f;
-  }();
-  if (std::find(frames.begin(), frames.end(), frame) != frames.end()) {
+  static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+  if (gfx::capture_schedule::contains(frames, frame)) {
     dump_scan(R.tv, "frame_" + std::to_string(frame) + ".png");
     dump_scan(R.drc, "frame_" + std::to_string(frame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))
       request_present_dump("frame_" + std::to_string(frame) + "_present.png");
+  }
+  // Test captures relative to the completed full-state load, whose actual
+  // renderer frame can vary even when WWHD_STATE_LOAD_AT is fixed.
+  static const auto loadFrames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_LOAD_FRAMES"));
+  const uint64_t loaded = loadFrames.empty() ? 0 : ss::last_load_frame();
+  if (gfx::capture_schedule::relative_due(loadFrames, frame, loaded)) {
+    const auto stem = gfx::capture_schedule::stem(frame - loaded, true);
+    dump_scan(R.tv, stem + ".png");
+    dump_scan(R.drc, stem + "_drc.png");
+    if (getenv("WWHD_DUMP_PRESENT")) request_present_dump(stem + "_present.png");
+    LOG("[gfx] load-relative capture: load frame %llu, frame %llu, offset %llu, load step %llu, step %llu",
+        (unsigned long long)loaded, (unsigned long long)frame,
+        (unsigned long long)(frame - loaded), (unsigned long long)ss::last_load_step(),
+        (unsigned long long)interp::logic_steps());
   }
   // P / F12 (Graphics menu): the pictures of this frame in captures/<time>/ (WWHD_CAPTURE=<frame>
   // scripts it when WWHD_CAPTURE_PATH is not used); the Metal renderer also writes a draw log
@@ -1462,7 +1556,9 @@ void swap() {
 #endif
   set_present_plan(&plan);
   // settings overlay: built once, drawn into the TV window and its present dumps
+  if(overlay::guesthud::active())overlay::guesthud::set_tv_region(plan.tv.x,plan.tv.y,plan.tv.w,plan.tv.h,!plan.drc_only);
   set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
+  compose_headless_diagnostic(R.tv);
   take_screenshots(plan);
   bool sampled[2] = {};
   if (plan.sample_auto && drcScan) {
@@ -1731,9 +1827,9 @@ void set_tv_format(uint32_t format, bool tv) {
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_message(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
     const VkDebugUtilsMessengerCallbackDataEXT *data, void *) {
-  fprintf(stderr, "[vulkan validation %s] %s\n",
+  LOG("[vulkan validation %s] %s: %s",
           severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "error" : "warning",
-          data->pMessage);
+          data->pMessageIdName ? data->pMessageIdName : "validation", data->pMessage);
   return VK_FALSE;
 }
 // Test aids for the paths of older drivers (docs/vulkan.md): WWHD_VK_FORCE_API=1.2 treats every GPU as
@@ -1884,7 +1980,7 @@ static void init_device(std::vector<const char *> extensions,
   if (vkEnumerateInstanceVersion)
     vkEnumerateInstanceVersion(&loaderVersion);
   if (loaderVersion < VK_API_VERSION_1_1)
-    throw std::runtime_error("The Vulkan runtime on this computer supports only Vulkan " +
+    exception_report::raise("The Vulkan runtime on this computer supports only Vulkan " +
                              version_text(loaderVersion) + "; the game needs Vulkan 1.1 or newer.\n\n" +
                              kUpdateDriver);
   log_instance_layers();
@@ -1893,11 +1989,11 @@ static void init_device(std::vector<const char *> extensions,
   std::vector<VkExtensionProperties> ies(en);
   vkEnumerateInstanceExtensionProperties(nullptr, &en, ies.data());
   if (!has_extension(ies, VK_KHR_SURFACE_EXTENSION_NAME))
-    throw std::runtime_error("No Vulkan driver found (MoltenVK on a Mac: brew install molten-vk; "
+    exception_report::raise("No Vulkan driver found (MoltenVK on a Mac: brew install molten-vk; "
                              "or point VK_DRIVER_FILES at its MoltenVK_icd.json)");
   for (const char *e : extensions)
     if (!has_extension(ies, e))
-      throw std::runtime_error(std::string("the Vulkan driver lacks instance extension ") + e);
+      exception_report::raise(std::string("the Vulkan driver lacks instance extension ") + e);
   VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   if (has_extension(ies, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
     extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -1906,8 +2002,13 @@ static void init_device(std::vector<const char *> extensions,
   VkDebugUtilsMessengerCreateInfoEXT debug{
       VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
   const char *layer = "VK_LAYER_KHRONOS_validation";
+  VkValidationFeatureEnableEXT syncFeature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+  VkValidationFeaturesEXT validation{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
+  validation.enabledValidationFeatureCount = 1;
+  validation.pEnabledValidationFeatures = &syncFeature;
   if (getenv("WWHD_VK_VALIDATION")) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
     ci.enabledLayerCount = 1;
     ci.ppEnabledLayerNames = &layer;
     debug.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
@@ -1916,7 +2017,8 @@ static void init_device(std::vector<const char *> extensions,
                         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     debug.pfnUserCallback = debug_message;
-    ci.pNext = &debug;
+    validation.pNext = &debug;
+    ci.pNext = &validation;
   }
   VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   ai.pApplicationName = "WWHD Vulkan";
@@ -1926,6 +2028,7 @@ static void init_device(std::vector<const char *> extensions,
   ci.ppEnabledExtensionNames = extensions.data();
   vk_check(vkCreateInstance(&ci, nullptr, &R.instance),
            "create Vulkan instance");
+  debug.pNext = nullptr;
   load_instance_functions(R.instance);
   if (getenv("WWHD_VK_VALIDATION")) {
     auto create = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
@@ -1982,7 +2085,7 @@ static void init_device(std::vector<const char *> extensions,
       break;
   }
   if (!R.physicalDevice)
-    throw std::runtime_error(
+    exception_report::raise(
         devices.empty()
             ? std::string("No graphics card with a Vulkan driver was found.\n\n") + kUpdateDriver
             : "The graphics driver does not support the Vulkan features the game needs: Vulkan 1.3, or "
@@ -2189,11 +2292,11 @@ void init() {
   if (hidden_windows())
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))
-    throw std::runtime_error(std::string("Vulkan is not installed on this computer: the Vulkan runtime "
+    exception_report::raise(std::string("Vulkan is not installed on this computer: the Vulkan runtime "
 #ifdef _WIN32
                                          "(vulkan-1.dll) "
 #endif
@@ -2214,7 +2317,7 @@ void init() {
 #endif
   R.tv.window = SDL_CreateWindow("Wind Waker HD — Vulkan", 1280, 720, windowFlags);
   if (!R.tv.window)
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
 #ifdef __ANDROID__
   // one surface: the GamePad picture is drawn into it (display_modes.h: picture-in-picture, GamePad
   // only), never a window of its own
@@ -2224,7 +2327,7 @@ void init() {
     // the other modes draw the GamePad picture into the TV window (gfx/display_modes.h)
     R.drc.window = SDL_CreateWindow("GamePad — Vulkan", 854, 480, windowFlags | SDL_WINDOW_HIDDEN);
     if (!R.drc.window)
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
     R.drc.visible = false;
     gfx::g_has_drc_window = true;
   }
@@ -2235,22 +2338,22 @@ void init() {
   uint32_t n;
   const char *const *se = SDL_Vulkan_GetInstanceExtensions(&n);
   if (!se)
-    throw std::runtime_error(SDL_GetError());
+    exception_report::raise(SDL_GetError());
   for (Screen *s : {&R.tv, &R.drc})
     if (s->window) {
       int width = 0, height = 0;
       if (!SDL_GetWindowSizeInPixels(s->window, &width, &height))
-        throw std::runtime_error(SDL_GetError());
+        exception_report::raise(SDL_GetError());
       s->width = width;
       s->height = height;
     }
   init_device(std::vector<const char *>(se, se + n), [] {
     if (!WWHD_CREATE_WINDOW_SURFACE(R.tv.window, R.instance, nullptr,
                                   &R.tv.surface))
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
     if (R.drc.window && !WWHD_CREATE_WINDOW_SURFACE(R.drc.window, R.instance,
                                                   nullptr, &R.drc.surface))
-      throw std::runtime_error(SDL_GetError());
+      exception_report::raise(SDL_GetError());
   });
   mods::mouse_init(R.tv.window);
   input::set_prompt_window(R.tv.window);
@@ -2528,9 +2631,20 @@ void run_main_loop() {
   // Deterministic shutdown hook for cache durability tests.
   const char* exitAt=getenv("WWHD_EXIT_AT_FRAME");
   const uint64_t exitFrame=exitAt ? std::strtoull(exitAt,nullptr,10) : 0;
+  // Issue #109: the mouse pointer hides after 2 s without mouse use while the game window has focus
+  // (not while the settings overlay is open, which needs it; the mouse camera captures it itself).
+  auto mouseUsed = std::chrono::steady_clock::now();
+  bool pointerHidden = false;
   for (;;) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+      if ((event.type == SDL_EVENT_MOUSE_MOTION && event.motion.which != SDL_TOUCH_MOUSEID) ||
+          ((event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+           event.button.which != SDL_TOUCH_MOUSEID) ||
+          event.type == SDL_EVENT_MOUSE_WHEEL) {
+        mouseUsed = std::chrono::steady_clock::now();
+        if (pointerHidden) { SDL_ShowCursor(); pointerHidden = false; }
+      }
       if (event.type == SDL_EVENT_QUIT) quit_game();
       if (close_request(event)) continue;
       if (fullscreen_key(event)) continue;
@@ -2555,6 +2669,17 @@ void run_main_loop() {
         }
     }
     input::update();
+#ifndef __ANDROID__
+    {
+      const bool focused = R.tv.window && (SDL_GetWindowFlags(R.tv.window) & SDL_WINDOW_INPUT_FOCUS);
+      const bool keep = !focused || overlay::is_open() || mods::mouse_captured();
+      if (pointerHidden && keep) { SDL_ShowCursor(); pointerHidden = false; mouseUsed = std::chrono::steady_clock::now(); }
+      else if (!pointerHidden && !keep && std::chrono::steady_clock::now() - mouseUsed > std::chrono::seconds(2)) {
+        SDL_HideCursor();
+        pointerHidden = true;
+      }
+    }
+#endif
     ::hostui::run_posted();  // option changes from the settings overlay (render thread)
     test_drc_key();
     test_fullscreen_key();
@@ -2602,23 +2727,23 @@ static bool image_loaded(const char *part) {
 }
 void init_appkit(void *tvLayer, void *drcLayer) {
   if (const char *e = getenv("WWHD_VK_FORCE_INIT_FAIL"); e && *e && strcmp(e, "0"))
-    throw std::runtime_error("Vulkan start-up failure forced for testing (WWHD_VK_FORCE_INIT_FAIL)");
+    exception_report::raise("Vulkan start-up failure forced for testing (WWHD_VK_FORCE_INIT_FAIL)");
   // weak imports (CMakeLists.txt): a Mac without them still starts the game with Metal
   if (!image_loaded("/libvulkan"))
-    throw std::runtime_error("The Vulkan loader (libvulkan) is not installed. "
+    exception_report::raise("The Vulkan loader (libvulkan) is not installed. "
                              "Install it with: brew install vulkan-loader molten-vk");
   if (!image_loaded("/libglslang"))
-    throw std::runtime_error("glslang (shader compiler for Vulkan) is not installed. "
+    exception_report::raise("glslang (shader compiler for Vulkan) is not installed. "
                              "Install it with: brew install glslang");
   load_global_functions(reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr")));
   if (!tvLayer)
-    throw std::runtime_error("no TV window layer");
+    exception_report::raise("no TV window layer");
   R.tv.window = tvLayer;
   R.drc.window = drcLayer;
   init_device({VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME}, [&] {
     auto create = (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(R.instance, "vkCreateMetalSurfaceEXT");
     if (!create)
-      throw std::runtime_error("vkCreateMetalSurfaceEXT unavailable");
+      exception_report::raise("vkCreateMetalSurfaceEXT unavailable");
     for (Screen *s : {&R.tv, &R.drc}) {
       if (!s->window)
         continue;

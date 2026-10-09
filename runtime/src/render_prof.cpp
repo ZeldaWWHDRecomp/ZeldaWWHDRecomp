@@ -1,5 +1,6 @@
 // Render-thread profiler (render_prof.h).
 #include "render_prof.h"
+#include "perf_metrics.h"
 
 #include <algorithm>
 #include <array>
@@ -216,6 +217,16 @@ static std::string reg_name(uint32_t r) {
 }
 
 void frame_end(bool hold) {
+    perf::render_frame();
+    static const bool metricDebug = getenv("WWHD_PERF_METRICS_DEBUG") != nullptr;
+    static unsigned metricFrames = 0;
+    if (metricDebug && ++metricFrames % 120 == 0) {
+        auto c = perf::counters();
+        LOG("[perf metrics] active %d, CPU reads %llu, GPU submissions %llu, timestamp writes %llu, query reads %llu, minimum age %llu frames\n%s",
+            perf::enabled(), (unsigned long long)c.cpu_reads, (unsigned long long)c.gpu_submissions,
+            (unsigned long long)c.timestamp_writes, (unsigned long long)c.query_reads,
+            (unsigned long long)c.minimum_query_age, perf::summary().c_str());
+    }
     if (!enabled()) return;
     const uint64_t t = now_ns();
     if (!windowStart) {

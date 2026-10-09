@@ -1,11 +1,25 @@
 #pragma once
 #include "mod_json.h"
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
 namespace mods::cemu {
+// Whether a Cemu rules.txt "titleIds" list (comma-separated, any case, spaces allowed) names `title`,
+// the installed game's title ID (g_guest_build_title_id: USA 0005000010143500, EU 0005000010143600).
+inline bool targets_title(const std::string& titleids,const std::string& title) {
+    std::string want;for(char c:title)want+=(char)std::tolower((unsigned char)c);
+    size_t start=0;
+    while(start<=titleids.size()) {
+        size_t end=titleids.find(',',start);if(end==std::string::npos)end=titleids.size();
+        std::string id;for(size_t i=start;i<end;i++){char c=titleids[i];if(c!=' '&&c!='\t'&&c!='\r'&&c!='"')id+=(char)std::tolower((unsigned char)c);}
+        if(!id.empty()&&id==want)return true;
+        start=end+1;
+    }
+    return false;
+}
 struct Preset {std::string name,category;std::map<std::string,std::string> variables;};
 struct TextureRule {std::map<std::string,std::string> fields;};
 struct ShaderSource {uint64_t base=0,aux=0;bool vertex=false;std::string source;};
@@ -21,6 +35,8 @@ Pack parse(const std::filesystem::path& folder);
 json::Value options(const Pack& pack);
 void import_legacy(const std::filesystem::path& stage,const std::string& source_name);
 struct Selection {std::string id;Pack pack;json::Value config;};
+// Empty for independent packs; throws for invalid graphics rules.
+std::string conflict_reason(const Selection& a,const Selection& b);
 void validate(const std::vector<Selection>& selections);
 void activate(const std::vector<Selection>& selections); // before guest execution only
 void set_vulkan(bool available); // requested at startup, then actual backend after fallback

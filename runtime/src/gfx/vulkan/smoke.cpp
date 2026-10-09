@@ -1,17 +1,21 @@
+#include "../../exception_report.h"
 #include "bc_decode.h"
 #include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
+#include "perf_metrics.h"
 #include "write_watch.h"
 #include "shaders.h"
 #include "gx2/gx2.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
+#include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
 #include <filesystem>
@@ -25,7 +29,7 @@ namespace gfxvk {
 extern uint64_t g_stat_full_checks, g_stat_uploads;
 void request_tv_dump(const std::string&,int);
 namespace {
-void require(bool condition,const char* message) { if(!condition)throw std::runtime_error(message); }
+void require(bool condition,const char* message) { if(!condition)exception_report::raise(message); }
 struct Image {
  Surface s;
  Image(uint32_t w,uint32_t h,uint32_t format,bool depth=false,uint32_t layers=1,uint32_t mips=1) {
@@ -52,6 +56,45 @@ void clear_image(Surface& s,const float rgba[4]) {
  VkClearColorValue value{};std::copy(rgba,rgba+4,value.float32);VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,s.mips,0,s.arrayLayers};
  vkCmdClearColorImage(command_buffer(),s.image,s.layout,&value,1,&range);mark_gpu_written(&s);
 }
+// A colour placeholder used by a comparison instruction must retain colour tiling while
+// providing a Vulkan depth image. A subsequently rendered depth alias takes precedence.
+void colour_comparison_check() {
+ for (uint32_t tile : {1u,2u}) {
+  uint32_t addr=mem::host_alloc(4096,256);
+  memset(mem::ptr(addr),0,4096);
+  auto offset=[&](uint32_t x,uint32_t y) {
+   if(tile==1)return (y*8+x)*4;
+   return LatteAddrLib::ComputeSurfaceAddrFromCoordMicroTiled(x,y,0,32,8,8,
+       Latte::E_HWTILEMODE::TM_1D_TILED_THIN1,false);
+  };
+  for(uint32_t y=0;y<4;++y)for(uint32_t x=0;x<4;++x) {
+   uint8_t rgba[4]={uint8_t((x+y*4)*17),uint8_t(255-x*17),uint8_t(y*31),255};
+   memcpy(mem::ptr(addr)+offset(x,y),rgba,4);
+  }
+  uint32_t words[7]={1u|(tile<<3)|(3u<<19),3u|(0x1au<<26),addr>>8,0,
+                    (1u<<19)|(2u<<22)|(3u<<25),0,0};
+  auto* color=sampled_texture(words,false);
+  require(color&&!color->fmt.depth,"comparison fixture colour upload failed");
+  auto* compared=sampled_texture(words,true);
+  require(compared&&compared!=color&&compared->fmt.pixel==VK_FORMAT_D32_SFLOAT,
+          "RGBA8 comparison texture was not converted to depth");
+  auto data=read_image(*compared,VK_IMAGE_ASPECT_DEPTH_BIT,4);
+  for(uint32_t i=0;i<16;++i) {
+   float value;memcpy(&value,data.data()+i*4,4);
+   require(std::abs(value-float(i)/15.0f)<0.000001f,"colour comparison upload/tiling differs");
+  }
+  SurfaceDesc depth;depth.addr=addr;depth.width=depth.height=4;depth.pitch=8;
+  depth.format=0x11;depth.isDepth=true;depth.tileMode=tile;
+  auto* rendered=find_or_create_surface(depth,true);
+  transition_image(rendered,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  VkClearDepthStencilValue value{0.25f,0};VkImageSubresourceRange range{rendered->aspect,0,1,0,1};
+  vkCmdClearDepthStencilImage(command_buffer(),rendered->image,rendered->layout,&value,1,&range);
+  mark_gpu_written(rendered);
+  require(sampled_texture(words,true)==rendered,"rendered depth alias lost to the colour comparison placeholder");
+ }
+ fprintf(stderr,"[renderer smoke] colour comparison conversion, colour tiling and rendered depth alias passed\n");
+}
+
 void bc_surface_check() {
  for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
   SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
@@ -342,7 +385,7 @@ void triangle(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nvoid main(){vec2 p[3]=vec2[3](vec2(-0.8,-0.8),vec2(0.8,-0.8),vec2(0,0.8));gl_Position=vec4(p[gl_VertexIndex],0,1);}",true,objects.vs);
@@ -382,7 +425,7 @@ void vertex_window_check(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(location=0) in vec3 position;layout(location=1) in vec4 tint;layout(location=0) out vec4 vertexColor;void main(){gl_Position=vec4(position.xy,0,1);vertexColor=gl_VertexIndex==int(position.z)?tint:vec4(0,0,1,1);}",true,objects.vs);
@@ -477,7 +520,7 @@ void dynamic_uniform_check(Surface& s) {
   ~Resources(){for(auto set:sets)if(set)vkDestroyDescriptorSetLayout(R.device,set,nullptr);if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(set=0,binding=7,std140) uniform Transform{vec4 transform;} ;layout(set=0,binding=1,std140) uniform Tint{vec4 tint;};layout(location=0) out vec4 vcolor;void main(){vec2 p[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));gl_Position=vec4(p[gl_VertexIndex]*transform.xy+transform.zw,0,1);vcolor=tint;}",true,objects.vs);
@@ -548,6 +591,18 @@ void dynamic_uniform_check(Surface& s) {
 }
 int renderer_smoke_test() {
  try {
+  // Test-only calibration: CI requires the layer to report this intentional WAW.
+  if(std::getenv("WWHD_VK_SYNC_NEGATIVE_CONTROL")) {
+   Buffer b=create_buffer(16,VK_BUFFER_USAGE_TRANSFER_DST_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+   auto cmd=command_buffer();
+   auto fill=reinterpret_cast<PFN_vkCmdFillBuffer>(vkGetDeviceProcAddr(R.device,"vkCmdFillBuffer"));
+   require(fill!=nullptr,"sync negative control needs vkCmdFillBuffer");
+   fill(cmd,b.buffer,0,16,0);
+   fill(cmd,b.buffer,0,16,1);
+   flush();defer_buffer(b);
+   LOG("[renderer smoke] sync negative control submitted two unordered writes");
+   command_buffer();flush();return 0;
+  }
   mem::init();bc_decode_smoke();bc_surface_check();upload_arena_check();asynchronous_submission_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
@@ -659,6 +714,7 @@ int renderer_smoke_test() {
    for(size_t i=0;i<stencils.size();++i){float value;memcpy(&value,depths.data()+i*4,4);require(value==0.25f&&stencils[i]==0xa5,"depth/stencil clear differs");}
    fprintf(stderr,"[renderer smoke] depth/stencil upload and clear passed\n");
    depth_copy_check();
+   colour_comparison_check();
    {
     auto peek=std::make_unique<Surface>();
     peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);
@@ -682,7 +738,6 @@ int renderer_smoke_test() {
     R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
     fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
    }
-   volume_target_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);
    auto capturePath=std::filesystem::temp_directory_path()/("wwhd-vulkan-smoke-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".png");
@@ -702,12 +757,44 @@ int renderer_smoke_test() {
    std::vector<uint8_t> decoded((64*4+1)*64);uLongf decodedSize=decoded.size();require(header&&uncompress(decoded.data(),&decodedSize,compressed.data(),compressed.size())==Z_OK&&decodedSize==decoded.size(),"PNG capture decompression differs");
    size_t pngCenter=32*(64*4+1)+1+32*4;require(decoded[pngCenter]==255&&decoded[pngCenter+1]==0&&decoded[pngCenter+2]==0,"PNG capture triangle center differs");
    fprintf(stderr,"[renderer smoke] queued GPU PNG capture passed: %s\n",capturePath.string().c_str());
-   require(R.tv.swapchain!=VK_NULL_HANDLE,"smoke presentation did not create a swapchain");fprintf(stderr,"[renderer smoke] scan-buffer swapchain presentation passed\n");
+   require(R.tv.swapchain!=VK_NULL_HANDLE,"smoke presentation did not create a swapchain");LOG("[renderer smoke] scan-buffer swapchain presentation and PNG readback passed");
+   volume_target_check();
   }
   // Ensure deferred objects left by readback and stack-owned images are actually reclaimed.
   command_buffer();flush();require(R.garbageBuffers.empty()&&R.garbageImages.empty()&&R.garbageCacheRegions.empty(),"deferred Vulkan resources were not reclaimed");
+  // Exercise the actual timestamp command sites, not just the demand predicate.
+  if (!getenv("WWHD_VK_GPU_TIMESTAMPS") && !getenv("WWHD_VK_GPU_PASS_TIMESTAMPS")) {
+    perf::set_demand(false, false);
+    auto before = perf::counters();
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "hidden overlay wrote timestamps");
+    // Queue families with zero timestamp bits must silently keep the GPU reading unavailable.
+    auto validBits = R.gpuTimestampValidBits;
+    R.gpuTimestampValidBits = 0;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == before.timestamp_writes, "unsupported queue wrote timestamps");
+    perf::set_demand(false, false);
+    R.gpuTimestampValidBits = validBits;
+    perf::set_demand(true, false);
+    command_buffer(); flush();
+    auto measured = perf::counters();
+    if (R.gpuTimestampValidBits && R.properties.limits.timestampPeriod > 0)
+      require(measured.timestamp_writes == before.timestamp_writes + 2, "visible overlay did not write timestamp pair");
+    require(measured.query_reads == before.query_reads, "overlay read timestamps in the recorded frame");
+    ++R.frame; command_buffer(); flush();
+    measured = perf::counters();
+    if (measured.query_reads > before.query_reads)
+      require(measured.minimum_query_age >= 1, "overlay read timestamps without a frame of delay");
+    perf::set_demand(false, false);
+    command_buffer(); flush();
+    require(perf::counters().timestamp_writes == measured.timestamp_writes, "hiding overlay kept writing timestamps");
+    require(perf::counters().query_reads == measured.query_reads, "hidden overlay polled query results");
+    LOG("[renderer smoke] overlay timestamp writes: hidden 0, on %llu, hidden again 0",
+        (unsigned long long)(measured.timestamp_writes - before.timestamp_writes));
+  }
   save_pipeline_cache();
-  fprintf(stderr,"[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present\n");return 0;
- }catch(const std::exception& e){fprintf(stderr,"[renderer smoke] FAIL: %s\n",e.what());try {command_buffer();flush();}catch(...){}return 1;}
+  LOG("[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present");return 0;
+ }catch(const std::exception& e){LOG("[renderer smoke] FAIL: %s",e.what());try {command_buffer();flush();}catch(...){}return 1;}
 }
 } // namespace gfxvk
