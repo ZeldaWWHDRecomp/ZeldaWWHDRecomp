@@ -36,7 +36,6 @@ Keys are never printed, logged or stored.
 import argparse
 import getpass
 import glob
-import code_mods
 import hashlib
 import json
 import os
@@ -54,6 +53,10 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Windows embeddable Python runs in isolated mode: it does not add the script
+# directory to sys.path. Resolve shipped sibling modules explicitly.
+sys.path.insert(0, HERE)
+import code_mods  # noqa: E402
 PKG = os.path.normpath(os.path.join(HERE, "..", ".."))
 # Portable release (portable.txt in the release folder): everything setup and the game create stays
 # in <release folder>/data. Without the marker: the per-user locations of earlier releases.
