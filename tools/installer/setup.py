@@ -51,6 +51,7 @@ import urllib.request
 import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows embeddable Python runs in isolated mode: it does not add the script
@@ -2011,12 +2012,59 @@ def plan_steps(kind):
             "gen": ["compiler", "compile", "app"]}[kind]
 
 
+CODE_MODS_TEXT = (
+    "For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
+    "content mods do not need this. The game code gets a small check in every function, which can "
+    "cost some performance, and the build takes a bit longer. You can switch this later in "
+    "Settings → Mods; that requires another rebuild.")
+
+
+def setup_code_mods(ctx, ui=None):
+    explicit = getattr(ctx.args, "code_mods", None)
+    if explicit is not None or "WWHD_CODE_MODS" in os.environ:
+        return code_mods.hooks_option(explicit)
+    try:
+        active = json.loads(Path(ctx.data_dir, "code-mods-active.json").read_text())
+        remembered = active["hooks"] if active.get("state") == "ready" else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        remembered = None
+    default = remembered if isinstance(remembered, bool) else bool(ctx.state().get("code_mods", False))
+    if ui and ui.interactive:
+        say(CODE_MODS_TEXT)
+        return ui.yesno("Build with code-mod support?", default)
+    return default
+
+
+def write_code_mods_setting(data_dir, hooks):
+    """Use the same stores and overrides as the AppKit and SDL hosts."""
+    import plistlib
+    portable = Path(data_dir, "user")
+    if IS_MAC:
+        default = portable / "display.plist" if PORTABLE else Path(os.path.expanduser(
+            "~/Library/Application Support/wwhd/display.plist"))
+        path = Path(os.environ.get("WWHD_DISPLAY_SETTINGS", str(default)))
+        values = plistlib.loads(path.read_bytes()) if path.exists() else {}
+        values["code-mods"] = "1" if hooks else "0"
+        payload = plistlib.dumps(values)
+    else:
+        default = (portable if PORTABLE else Path(legacy_config_dirs()[0])) / "settings.ini"
+        path = Path(os.environ.get("WWHD_SETTINGS", str(default)))
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        lines = [line for line in lines if not line.startswith("code-mods=")]
+        payload = ("\n".join(lines + ["code-mods=" + ("1" if hooks else "0")]) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(payload)
+    os.replace(tmp, path)
+
+
 def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     """The whole build for one source: ("image", path) | ("archive", path) | ("folder", path) |
     ("installed", game_dir) | ("gen", generated C). check_keys(image) -> (keys, info) is called for an image without keys.
     Returns the new install state."""
     ui = ui or UI(False)
     args, manifest, data_dir = ctx.args, ctx.manifest, ctx.data_dir
+    args.code_mods = "1" if setup_code_mods(ctx, ui) else "0"
     kind = source[0]
     steps = plan_steps(kind)
     total = len(steps)
@@ -2159,9 +2207,12 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
     if kind != "gen":
         try:
-            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], exe, gen_dir, objs)
+            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], state["exe"], gen_dir, objs)
         except (OSError, SetupError) as e:
             LOG.write("Initial code-mod cache skipped: " + str(e))
+            # Never leave an older variant selected after a successful setup build.
+            Path(data_dir, "code-mods-active.json").unlink(missing_ok=True)
+        write_code_mods_setting(data_dir, state["code_mods"])
     if not args.keep_work:
         shutil.rmtree(work, ignore_errors=True)
     if kind != "gen":
@@ -2200,7 +2251,7 @@ def main():
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
-    ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (default off; WWHD_CODE_MODS override)")
+    ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (new installs default off; skips the question; overrides WWHD_CODE_MODS)")
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
     ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON")
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists")
@@ -2352,6 +2403,7 @@ def run(args, ui):
     state = install(ctx, source, ui=ui, check_keys=lambda image: get_disc_keys(image, ui, args))
     if source[0] != "gen":
         maybe_import_save(ui, data_dir)
+        write_code_mods_setting(data_dir, state["code_mods"])
     if PORTABLE and ui.interactive and source[0] != "gen":
         if not args.shortcuts and ui.yesno("Add a shortcut to %s?" % {"darwin": "your Applications folder", "win32": "the Start menu"}
                                            .get(sys.platform, "your applications menu"), False):
@@ -2445,6 +2497,7 @@ def gui_main(args):
                   "game_dir": ctx.game_dir, "save_exists": have_save(ctx.data_dir),
                   "legacy": bool(legacy_save or legacy_items), "free_bytes": free_space(ctx.data_dir),
                   "language_sources": sources_reply(),
+                  "code_mods": setup_code_mods(ctx),
                   "toolchain": ctx.manifest["toolchain"]})
 
     def reply(req, ok=True, **kw):
@@ -2582,6 +2635,10 @@ def gui_main(args):
 
     def do_install(req):
         kind = req.get("source")
+        if "code_mods" in req:
+            if not isinstance(req["code_mods"], bool):
+                return fail(req, "bad_request", "code_mods must be a boolean")
+            ctx.args.code_mods = "1" if req["code_mods"] else "0"
         if req.get("jobs"):
             ctx.args.jobs = int(req["jobs"])
         if kind == "image":
@@ -2619,6 +2676,9 @@ def gui_main(args):
     def do_import_existing(req):
         try:
             msg = import_existing(ctx.data_dir, req.get("path") or None, bool(req.get("replace")))
+            st = ctx.state()
+            if "code_mods" in st:
+                write_code_mods_setting(ctx.data_dir, st["code_mods"])
         except SetupError as e:
             if have_save(ctx.data_dir) and not req.get("replace") and "already exists" in str(e):
                 return fail(req, "exists", str(e))

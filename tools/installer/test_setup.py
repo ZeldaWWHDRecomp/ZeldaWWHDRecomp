@@ -703,6 +703,127 @@ class CodeModsBuild(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.code_mods.hooks_option("yes")
 
+    def test_setup_choice_question_remembered_and_overrides(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {}, clear=True):
+            ctx = SimpleNamespace(data_dir=d, args=SimpleNamespace(code_mods=None),
+                                  state=lambda: {})
+            ui = mock.Mock(interactive=True)
+            ui.yesno.side_effect = lambda question, default: default
+            self.assertFalse(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_called_with("Build with code-mod support?", False)
+            Path(d, "code-mods-active.json").write_text(json.dumps({"state": "ready", "hooks": True}))
+            self.assertTrue(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_called_with("Build with code-mod support?", True)
+            ui.reset_mock()
+            ctx.args.code_mods = "0"
+            self.assertFalse(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_not_called()
+            ctx.args.code_mods = None
+            with mock.patch.dict(os.environ, {"WWHD_CODE_MODS": "0"}):
+                self.assertFalse(setup.setup_code_mods(ctx, ui))
+                ui.yesno.assert_not_called()
+            Path(d, "code-mods-active.json").write_text("broken")
+            ctx.state = lambda: {"code_mods": True}
+            self.assertTrue(setup.setup_code_mods(ctx, setup.UI(False)))
+
+    def test_setup_writes_both_host_settings_preserving_other_options(self):
+        from pathlib import Path
+        import plistlib
+        with tempfile.TemporaryDirectory() as d:
+            for mac in (False, True):
+                filename = "display.plist" if mac else "settings.ini"
+                path = Path(d, "user", filename)
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(plistlib.dumps({"other": "keep"}) if mac else b"other=keep\ncode-mods=0\n")
+                with mock.patch.multiple(setup, IS_MAC=mac, PORTABLE=True), \
+                     mock.patch.dict(os.environ, {}, clear=True):
+                    for hooks in (True, False):
+                        setup.write_code_mods_setting(d, hooks)
+                        values = plistlib.loads(path.read_bytes()) if mac else dict(
+                            line.split("=", 1) for line in path.read_text().splitlines())
+                        self.assertEqual(values["other"], "keep")
+                        self.assertEqual(values["code-mods"], "1" if hooks else "0")
+
+    def test_setup_host_setting_locations_and_overrides(self):
+        from pathlib import Path
+        import plistlib
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {
+                "HOME": d, "APPDATA": d, "XDG_CONFIG_HOME": d}, clear=True):
+            for mac, win, suffix in ((True, False, "Library/Application Support/wwhd/display.plist"),
+                                     (False, True, "WWHD/settings.ini"),
+                                     (False, False, "wwhd/settings.ini")):
+                with mock.patch.multiple(setup, IS_MAC=mac, IS_WIN=win, PORTABLE=False):
+                    setup.write_code_mods_setting(d, True)
+                    self.assertTrue(Path(d, suffix).is_file())
+                    override = Path(d, "override.plist" if mac else "override.ini")
+                    with mock.patch.dict(os.environ, {
+                            "WWHD_DISPLAY_SETTINGS" if mac else "WWHD_SETTINGS": str(override)}):
+                        setup.write_code_mods_setting(d, False)
+                    values = plistlib.loads(override.read_bytes()) if mac else dict(
+                        line.split("=", 1) for line in override.read_text().splitlines())
+                    self.assertEqual(values["code-mods"], "0")
+
+    def test_setup_install_publishes_choice_settings_and_variant(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        import plistlib
+        package_test = os.environ.get("WWHD_SETUP_MOD_PACKAGE_TEST")
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {}, clear=True):
+            root = Path(d)
+            game = root / "game"
+            (game / "code").mkdir(parents=True)
+            (game / "code/cking.rpx").write_bytes(b"synthetic fingerprint input")
+            (root / "sdk").mkdir()
+            data = root / "data"
+            data.mkdir()
+            tc = SimpleNamespace(cc=["test-compiler"], env={}, desc="fixture")
+            args = SimpleNamespace(code_mods="1", jobs=4, shortcuts=False, keep_work=False)
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(game), args=args,
+                                  manifest={"platform": "fixture", "toolchain": {}, "exe": "fixture"},
+                                  exe=str(data / "bin/fixture"), exe_dir=str(data / "bin"),
+                                  version="test", state=lambda: {})
+            def translate(game, gen, hooks=False):
+                Path(gen).mkdir()
+                Path(gen, "mode.txt").write_text("on" if hooks else "off")
+                return 1
+            def link(tc, manifest, objs, work, target):
+                Path(target).write_bytes(b"synthetic executable")
+            with mock.patch.multiple(setup, PKG=root, PORTABLE=True, IS_MAC=True), \
+                 mock.patch.object(setup, "valid_game_folder", return_value=True), \
+                 mock.patch.object(setup, "game_folder_title", return_value=None), \
+                 mock.patch.object(setup, "check_game_version"), \
+                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                 mock.patch.object(setup, "run_logged", return_value="fixture compiler"), \
+                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                 mock.patch.object(setup, "recompile", side_effect=translate) as recomp, \
+                 mock.patch.object(setup, "compile_gamecode", return_value=[]), \
+                 mock.patch.object(setup, "link_game", side_effect=link), \
+                 mock.patch.object(setup, "write_guest_build_config"):
+                for mode in ("1", "0", "1"):
+                    args.code_mods = mode
+                    state = setup.install(ctx, ("installed", str(game)))
+                    on = mode == "1"
+                    self.assertEqual(state["code_mods"], on)
+                    self.assertEqual(recomp.call_args.kwargs["hooks"], on)
+                    values = plistlib.loads((data / "user/display.plist").read_bytes())
+                    self.assertEqual(values["code-mods"], mode)
+                    active = json.loads((data / "code-mods-active.json").read_text())
+                    ready = json.loads((Path(active["exe"]).parents[1] / "ready.json").read_text())
+                    self.assertEqual(active["hooks"], on)
+                    self.assertEqual(ready["hooks"], on)
+                    self.assertEqual(active["fingerprint"], ready["fingerprint"])
+                    self.assertTrue(Path(active["exe"]).is_file())
+                    self.assertEqual(active["user_dir"], str((data / "user").resolve()))
+                    if package_test:
+                        with mock.patch.object(setup, "IS_MAC", False):
+                            setup.write_code_mods_setting(data, on)
+                        import subprocess
+                        subprocess.run([package_test,
+                                        "--setup-code-mods", str(data)], check=True)
+
+
     def test_fingerprint_tracks_build_inputs_and_mode(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as d:
@@ -757,6 +878,9 @@ class CodeModsBuild(unittest.TestCase):
                 generated = root / "initial-gen"
                 generated.mkdir()
                 setup.code_mods.remember_installed(setup, ctx, tc, False, initial, generated, [])
+                active = json.loads((data / "code-mods-active.json").read_text())
+                self.assertFalse(active["hooks"])
+                self.assertTrue(Path(active["exe"]).is_file())
                 off = setup.code_mods.rebuild(setup, ctx, False)
                 self.assertTrue(off["cached"])
                 on = setup.code_mods.rebuild(setup, ctx, True)

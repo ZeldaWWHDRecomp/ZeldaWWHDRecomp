@@ -824,3 +824,11 @@ else()
 endif()
 add_test(NAME guest_audio_output_gain COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-gain.wav gain)
 add_test(NAME guest_audio_output_mute COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-mute.wav mute)
+
+# Synthetic setup build -> persisted host preference -> guest package enable gate.
+if(Python3_Interpreter_FOUND AND NOT ANDROID)
+  add_test(NAME setup_code_mods COMMAND ${CMAKE_COMMAND} -E env
+    WWHD_NO_AUDIO=1 WWHD_SETUP_MOD_PACKAGE_TEST=$<TARGET_FILE:mod_package_test>
+    "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/installer/test_setup.py"
+    CodeModsBuild.test_setup_install_publishes_choice_settings_and_variant)
+endif()

@@ -79,6 +79,31 @@ int restart_check(const char* storage) {
 }
 }
 int main(int argc, char** argv) {
+    using namespace mods::packages;
+    if(argc==3&&std::string(argv[1])=="--setup-code-mods") {
+        namespace fs=std::filesystem;
+        fs::path data=argv[2];
+        std::ifstream active_file(data/"code-mods-active.json");
+        auto active=mods::json::parse(std::string{std::istreambuf_iterator<char>(active_file),{}});
+        assert(active.get("state").string()=="ready");
+        std::ifstream settings_file(data/"user/settings.ini");std::string line,setting;
+        while(std::getline(settings_file,line))if(line.rfind("code-mods=",0)==0)setting=line.substr(10);
+        const bool supported=active.get("hooks").boolean&&setting=="1";
+        set_code_mod_support(supported);
+        auto root=data/"package-check";fs::remove_all(root);fs::create_directories(root/"source");
+        env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        std::ofstream(root/"source/manifest.json")<<R"({"format_version":1,"id":"setup-guest","name":"Setup guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"}})";
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        initialize();std::string error;
+        assert(install((root/"source").string(),error));assert(confirm_native("setup-guest",error));
+        assert(needs_code_mod_support("setup-guest")==!supported);
+        assert(enable("setup-guest",true,error)==supported);
+        assert(view("setup-guest").enabled==supported);
+        if(supported)assert(error.empty());
+        fs::remove_all(root);return 0;
+    }
+
     namespace fs=std::filesystem;
     using namespace mods::packages;
     if(argc==4&&std::string(argv[1])=="--catalogue-pilots") {
