@@ -12,6 +12,9 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **`WWHD_SHADOW_FIX` is gone; use `WWHD_SHADOW_SCALE=1`** for console-sized shadow maps (less GPU
+  memory at 2x/3x). Since v0.2.9 both sizes look practically the same (issue #67).
+
 - **Fixed: Cemu graphics packs that replace pixel shaders (e.g. Contrasty, NoSSAO, RemoveHUD) partly
   didn't apply on Vulkan since v0.2.10.** Shader inputs that no vertex shader feeds are constants in the
   translation since v0.2.10, and the packs' declarations of them now become the same constants
@@ -893,10 +896,9 @@ title screen and the file select, before a file is loaded, it quits without aski
   override the remembered choices); `WWHD_DISPLAY_HZ=n` replaces the detected display refresh rate
   that 120/240 fps are capped to (0: no cap); `WWHD_UNCAPPED=1` starts with the debug switch
   "Uncapped" on (no frame limit, no vsync; the game runs faster than real time);
-  `WWHD_SHADOW_FIX=1` keeps the shadow maps at the console's 1024x1024 at higher internal resolutions
-  (issue #67: soft, steady shadow edges as on the console; by default the maps scale with the internal
-  resolution, for sharper edges that can shimmer in places); `WWHD_SHADOW_SCALE=n` gives the shadow
-  maps their own resolution factor (overrides both); `WWHD_STATE_DIR=<dir>`
+  `WWHD_SHADOW_SCALE=n` gives the shadow maps their own resolution factor (by default they scale with
+  the internal resolution; since v0.2.9 both look practically the same, issue #67). `=1` keeps the
+  console's 1024x1024 and uses much less GPU memory at 2x/3x, useful on weaker hardware; `WWHD_STATE_DIR=<dir>`
   stores save states elsewhere; `WWHD_FULL_SAVE_STATES=0|1` full or portable save states for this
   start; `WWHD_PORTABLE_LOAD=<file.wwstate>` loads that portable state (e.g. from a bug report) as
   soon as a Quest Log is being played; `WWHD_RUMBLE=0|1` (SDL builds) start value for Controls > Rumble (overrides the remembered

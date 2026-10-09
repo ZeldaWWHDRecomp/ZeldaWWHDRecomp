@@ -102,19 +102,16 @@ static bool screen_shaped(const Surface* s) {
 }
 
 // the factor a render target gets. Shadow maps (depth arrays: the game's cascades) scale with the
-// internal resolution by default (sharper shadows; the user's choice). WWHD_SHADOW_FIX=1 keeps the
-// console's 1024x1024 (issue #67), and WWHD_SHADOW_SCALE=n gives them their own factor (overrides
-// both). The trade-off: the game softens shadow edges by sampling the map with bilinear depth compare at a per-pixel random
-// offset, then blurring the result on screen. At 2048x2048 each compare filters half as wide, so
-// shadow edges came out hard and the random offsets showed as crawling hatching (issue #67: the
-// bridge's shadow on Outset's water, hard and shimmering at 2x). Cemu's graphics packs also keep
-// the shadow maps at the console's size unless asked.
+// internal resolution by default. WWHD_SHADOW_SCALE=n gives them their own factor; =1 keeps the
+// console's 1024x1024, which uses far less GPU memory at 2x/3x. Issue #67: the hard, crawling
+// shadow edges at 2x in v0.2.6-v0.2.8 came mainly from the missing mip chains the game's
+// shadow-mask softening samples (restored in v0.2.9); since then both sizes give practically the
+// same soft edges, the larger maps only a hair crisper.
 static float target_scale(const Surface* s) {
     uint32_t width,height;
     if(!s->fmt.compressed&&s->mips==1&&mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     if (s->fmt.compressed || s->mips > 1) return 1.0f;
-    static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE"))
-                                : getenv("WWHD_SHADOW_FIX") && *getenv("WWHD_SHADOW_FIX") && *getenv("WWHD_SHADOW_FIX") != '0' ? 1.0f : 0.0f;
+    static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE")) : 0.0f;
     if (shadow && s->isDepth && s->slices > 1) return shadow;
     return res_scale();
 }
