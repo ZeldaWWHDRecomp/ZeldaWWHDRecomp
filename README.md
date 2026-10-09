@@ -12,6 +12,12 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Android: smoother in busy views.** The Vulkan buffer cache is now on by default on Android too. It
+  keeps unchanged vertex, index and uniform data on the GPU instead of copying it every frame. On a
+  Galaxy S25 Ultra (Adreno 830) heavy Outset views went from about 34 to 47 frames per second with
+  half the data uploaded per frame; thanks @rhemfur for the measurements (issue #56). If you see broken
+  or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and please report it.
+
 - **Guest mod SDK v2 (phase 1, opt-in):** portable PowerPC ELF packages, restart-only
   mod-manager integration, typed options, per-mod memory and files, and save-state mod
   warnings. Generated public HD headers and examples are described in

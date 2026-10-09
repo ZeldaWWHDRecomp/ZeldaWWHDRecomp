@@ -315,10 +315,11 @@ a process sample showed a runtime initializer deadlock before `main`.
 The guest buffer cache replaces the per-draw copies of guest vertex arrays, index arrays and uniform
 blocks into the upload arena with persistent GPU copies keyed by guest address
 (`runtime/src/gfx/vulkan/buffer_cache_core.h`, glue in `buffer_cache.cpp`). It is **on by default on
-macOS and desktop Linux** (Steam Deck included) and **off on Windows and Android**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
+macOS, desktop Linux** (Steam Deck included) **and Android** (issue #56: 0 verify mismatches, ~13 more
+presented fps in heavy views on an Adreno 830) and **off on Windows**; `WWHD_VK_BUFFER_CACHE=1` turns it on and
 `WWHD_VK_BUFFER_CACHE=0` off on any platform.
 
-**Testers on Windows and Linux (and Android):** it stays opt-in there until it has been checked on
+**Testers on Windows:** it stays opt-in there until it has been checked on
 those hosts, where the page-fault handling it relies on costs more and Linux limits the number of
 protected regions. Please run a normal play session, or the benchmark scene, once with
 `WWHD_VK_BUFFER_CACHE_VERIFY=1 WWHD_VK_CPU_ONLY_STATS=1` and report:

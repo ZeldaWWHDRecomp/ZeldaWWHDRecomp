@@ -122,11 +122,13 @@ bool buffer_cache_verify() {
   return verify;
 }
 
-// On by default on macOS (verified there: 0 mismatches in verify mode over long gameplay runs) and on
+// On by default on macOS (verified there: 0 mismatches in verify mode over long gameplay runs), on
 // desktop Linux (Steam Deck included; an RK3588 report in issue #50 went from a 20 fps lock to full speed
-// with it); off on Windows and Android until the verify run and the write-fault cost have been checked on
-// those hosts. WWHD_VK_BUFFER_CACHE=0|1 overrides the default everywhere.
-#if defined(__APPLE__) || (defined(__linux__) && !defined(__ANDROID__))
+// with it) and on Android (issue #56: Galaxy S25 Ultra, 115.8 M verify checks with 0 mismatches and 0
+// protect failures; heavy Outset views 33.8 -> 47.0 presented fps, render thread 14.2 -> 10.4 ms/frame,
+// uploads 21.7 -> 10.1 MiB/frame). Off on Windows until the verify run and the write-fault cost have
+// been checked there (issue #91). WWHD_VK_BUFFER_CACHE=0|1 overrides the default everywhere.
+#if defined(__APPLE__) || defined(__linux__)
 constexpr bool kBufferCacheDefault = true;
 #else
 constexpr bool kBufferCacheDefault = false;
