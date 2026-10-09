@@ -559,6 +559,15 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         auto packAux=cemu_pack_hash::auxiliary(*shader.dec,regs,vertex);
         auto custom=mods::cemu::shader_source(packBase,packAux,vertex);
         if(!custom.empty()) {
+            if(!vertex&&link.unfed) {
+                // the inputs the translation made constants (ps_link), with the same values
+                static const char* const defaults[4]={"vec4(0.0, 0.0, 0.0, 0.0)","vec4(0.0, 0.0, 0.0, 1.0)",
+                    "vec4(1.0, 1.0, 1.0, 0.0)","vec4(1.0, 1.0, 1.0, 1.0)"};
+                const char* values[32]={};
+                for(uint32_t f=0;f<GPU7_PS_MAX_INPUTS&&f<32;f++)
+                    if(link.unfed&(1u<<f))values[f]=defaults[(regs[mmSPI_PS_INPUT_CNTL_0+f]>>8)&3];
+                custom=mods::cemu::const_pixel_inputs(std::move(custom),values);
+            }
             std::string error;
             auto replacement=compile_glsl(custom,vertex,&error);
             std::string originalError;
