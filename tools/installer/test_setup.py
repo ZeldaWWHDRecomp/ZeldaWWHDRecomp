@@ -750,7 +750,7 @@ class CodeModsBuild(unittest.TestCase):
         from pathlib import Path
         import plistlib
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {
-                "HOME": d, "APPDATA": d, "XDG_CONFIG_HOME": d}, clear=True):
+                "HOME": d, "USERPROFILE": d, "APPDATA": d, "XDG_CONFIG_HOME": d}, clear=True):
             for mac, win, suffix in ((True, False, "Library/Application Support/wwhd/display.plist"),
                                      (False, True, "WWHD/settings.ini"),
                                      (False, False, "wwhd/settings.ini")):
@@ -770,6 +770,8 @@ class CodeModsBuild(unittest.TestCase):
         from types import SimpleNamespace
         import plistlib
         package_test = os.environ.get("WWHD_SETUP_MOD_PACKAGE_TEST")
+        # the test program needs the host's PATH (Windows: its DLLs) although setup runs in a clean environment
+        host_env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR")}
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {}, clear=True):
             root = Path(d)
             game = root / "game"
@@ -821,7 +823,7 @@ class CodeModsBuild(unittest.TestCase):
                             setup.write_code_mods_setting(data, on)
                         import subprocess
                         subprocess.run([package_test,
-                                        "--setup-code-mods", str(data)], check=True)
+                                        "--setup-code-mods", str(data)], check=True, env=host_env)
 
 
     def test_fingerprint_tracks_build_inputs_and_mode(self):

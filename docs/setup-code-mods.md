@@ -3,7 +3,7 @@
 Before it builds the game, setup offers **Build with code-mod support**. It is off for a new
 installation. The terminal setup (Setup in Terminal, `setup-in-terminal.sh`) asks the same question.
 
-> For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and content mods do not need this. The game code gets a small check in every function, which can cost some performance, and the build takes a bit longer. You can switch this later in Settings → Mods; that requires another rebuild.
+> For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and content mods do not need this. The game code gets a small check in every function, which can cost some performance, and the build takes a bit longer. You can switch this later in Settings > Mods; that requires another rebuild.
 
 - **Updates and repairs** start with the choice that is installed now, including a change made later
   in Settings → Mods. You can change it before building.

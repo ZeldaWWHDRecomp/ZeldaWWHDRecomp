@@ -2016,7 +2016,7 @@ CODE_MODS_TEXT = (
     "For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
     "content mods do not need this. The game code gets a small check in every function, which can "
     "cost some performance, and the build takes a bit longer. You can switch this later in "
-    "Settings → Mods; that requires another rebuild.")
+    "Settings > Mods; that requires another rebuild.")
 
 
 def setup_code_mods(ctx, ui=None):
