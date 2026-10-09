@@ -426,6 +426,7 @@ def main():
         add_setup_gui(pkg, a.platform, a.setup_gui, a.version)
 
     copy(os.path.join(ROOT, "README.md"), os.path.join(pkg, "README.md"))
+    copy(os.path.join(ROOT, "CHANGELOG.md"), os.path.join(pkg, "CHANGELOG.md"))
     lic = os.path.join(ROOT, "LICENSE")
     if os.path.isfile(lic):
         copy(lic, os.path.join(pkg, "LICENSE"))

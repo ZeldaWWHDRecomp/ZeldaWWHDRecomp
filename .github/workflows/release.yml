@@ -562,9 +562,9 @@ jobs:
         run: |
           cd dist && sha256sum *.zip *.AppImage > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
           if [[ "$DEVEL" == true ]]; then
-            python3 tools/release/notes.py README.md "Next update" dist/SHA256SUMS.txt --devel "$GITHUB_SHA" > dist/notes.md
+            python3 tools/release/notes.py CHANGELOG.md "Next update" dist/SHA256SUMS.txt --devel "$GITHUB_SHA" > dist/notes.md
           else
-            python3 tools/release/notes.py README.md "$VERSION" dist/SHA256SUMS.txt > dist/notes.md
+            python3 tools/release/notes.py CHANGELOG.md "$VERSION" dist/SHA256SUMS.txt > dist/notes.md
           fi
           cat dist/notes.md
           python3 tools/release/guard.py dist

@@ -1,33 +1,29 @@
 #!/usr/bin/env python3
-"""Release notes from README.md: install instructions + the "What's new" section + checksums.
+"""Release notes from CHANGELOG.md: install instructions + the release's changes + checksums.
 
-usage: notes.py README.md VERSION SHA256SUMS.txt [--devel COMMIT] > notes.md
+usage: notes.py CHANGELOG.md VERSION SHA256SUMS.txt [--devel COMMIT] > notes.md
 
 --devel: notes for the rolling development pre-release; VERSION is then "Next update", the block
 of unreleased changes.
 
-"What's new" has one "### vX.Y.Z" block per release; the notes take the block for VERSION (or the
-whole section when there is none).
+CHANGELOG.md has one "## vX.Y.Z" section per release; the notes take the section for VERSION
+(none found: a pointer to the changelog).
 """
 import re
 import sys
 
 
-def section(text, title_prefix):
-    m = re.search(r"^## %s.*?$\n(.*?)(?=^## )" % re.escape(title_prefix), text, re.S | re.M)
+def section(text, title):
+    m = re.search(r"^## %s\s*$\n(.*?)(?=^## |\Z)" % re.escape(title), text, re.S | re.M)
     return m.group(1).strip() if m else ""
 
 
 def main():
-    readme, version, sums = sys.argv[1:4]
+    changelog, version, sums = sys.argv[1:4]
     devel = sys.argv[5] if len(sys.argv) > 5 and sys.argv[4] == "--devel" else None
-    with open(readme, encoding="utf-8") as f:
+    with open(changelog, encoding="utf-8") as f:
         text = f.read()
-    new = section(text, "What's new")
-    # only this release's own changes: the "### vX.Y.Z" block of "What's new"
-    m = re.search(r"^### %s\s*$\n(.*?)(?=^### |\Z)" % re.escape(version), new, re.S | re.M)
-    if m:
-        new = m.group(1).strip()
+    new = section(text, version)
     with open(sums) as f:
         checksums = f.read().strip()
     if devel:
@@ -66,7 +62,7 @@ See "Install (releases)" in the README for details.
 ```
 %s
 ```
-""" % (version, new or "See the README.", checksums))
+""" % (version, new or "See CHANGELOG.md.", checksums))
 
 
 if __name__ == "__main__":
