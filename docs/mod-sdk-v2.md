@@ -361,7 +361,8 @@ for a mod without a game-source step. Run separately with `--region USA`/`EU` an
 `--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
 
 Before launching, the driver invokes the real installer with
-`--rebuild-code-mods --code-mods 0 --jobs 4` and verifies its completed off cache.
+`--rebuild-code-mods --code-mods 0 --jobs N` and verifies its completed off cache.
+Use the driver’s `--jobs 1..4` to reserve compiler capacity; the default is four.
 It records the original generated-C and game-object hash maps, executable SHA,
 fingerprint, cache hit/fresh build status and elapsed rebuild time. After the UI
 support rebuild it verifies the on selection and cache record, confirms that the
@@ -393,3 +394,30 @@ parsing, hashes, installation and setup, but does not verify remote hosting.
 Published catalogues continue to require absolute HTTPS package URLs. Runtime
 captures need visual review to establish each mod's visible behavior; successful
 loading and receipts alone are not a visual acceptance test.
+
+
+### Hidden HUD composition diagnostic
+
+Ordinary hidden runs do not present the HUD, so they cannot establish its GPU
+composition cost. Internal renderer verification can opt into
+`WWHD_TEST_OFFSCREEN_FRAMES=1..10000` together with `WWHD_HIDDEN_WINDOWS=1`,
+`WWHD_NO_HOST_INPUT=1` and `WWHD_SIM_SCREEN=1280x720`. This encodes the existing TV
+composition path into one reusable offscreen target on Metal or Vulkan. It adds
+no image readback, presentation or extra queue wait. The bounded diagnostic
+refuses an invalid configuration or exhausted frame allowance. With the flag
+absent, it allocates no diagnostic target and encodes no diagnostic composition.
+
+`[headless-compose]` records encoded frames and HUD vertices, indices and command
+counts. The `hud-cost` fixture emits 200 rectangles (800 vertices and 1,200 indices)
+when enabled, and registers no HUD callback with `draw` false. Both variants must
+use the same host, module, compatible full state and warmed cache. Verify actual
+state restoration and visible rectangles before measuring. Save-state toasts are
+additional overlay geometry and last several wall-clock seconds: exclude their
+windows and verify the diagnostic counters throughout the measured interval.
+Uncapped game time alone does not establish that a toast has expired.
+
+Measure render-thread CPU time separately from GPU elapsed time. Keep captures
+and readback out of measured runs, use a quiet exclusive window, interleave the
+variants, and report medians, IQRs and each paired difference. A difference smaller
+than the observed variability is inconclusive. This fixture covers rectangles;
+it does not measure texture-upload or large-text cost.
