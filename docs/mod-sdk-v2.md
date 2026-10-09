@@ -790,3 +790,16 @@ visibility while motion updates at the logic rate. Full save states contain the
 mod's guest memory, but no host lists or decoded textures. Compare
 `wwhd_hud_epoch()` each callback and reload cached image handles when it changes;
 the next logic step rebuilds the list even if the restored step counter repeats.
+
+
+The HUD renderer feeds these lists to the existing Metal/Vulkan overlay composition
+pass. TV drawing is clipped to the fitted game picture rather than the window's
+letterbox bars. GamePad lists are drawn in its window and its TV picture-in-picture
+region, with the region's opacity. The port's settings overlay stays above the HUD.
+Both backends use source-alpha blending; additive commands change the destination
+RGB factor to one and restore alpha blending afterwards. PNG sample colours are
+converted from display encoding when the target is sRGB, matching the vertex tint
+conversion. No new render pass or queue submission is introduced. With no drawing
+mod and no pending texture retirement, the existing closed-overlay early return
+remains in effect. Renderer tests cover geometry and draw-command generation;
+GPU pixel comparisons and measured costs are separate runtime validation.

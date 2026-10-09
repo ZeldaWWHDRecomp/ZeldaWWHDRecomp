@@ -176,10 +176,10 @@ std::string hud_path(const Loaded& mod,uint32_t address) {
 void svc_hud_register(Cpu* c) {
     auto& mod=owner(c);uint32_t callback=c->r[3],screen=c->r[4];c->r[3]=0;
     std::lock_guard lock(g_hud_mutex);
-    if(screen>2)return;
+    if(screen>2){hud::store().note(mod.id,"HUD registration failed: invalid screen");return;}
     if(callback) {
         bool found=false;for(uint32_t i=0;i<mod.m->func_count;++i)found|=mod.m->funcs[i].addr==callback;
-        if(!found)return;
+        if(!found){hud::store().note(mod.id,"HUD registration failed: callback must belong to this mod");return;}
     }
     if(mod.hud_callback!=callback||mod.hud_screen!=screen)mod.hud_called=false;
     mod.hud_callback=callback;mod.hud_screen=screen;
@@ -189,12 +189,13 @@ void svc_hud_register(Cpu* c) {
 }
 void svc_hud_texture(Cpu* c) {
     auto& mod=owner(c);uint32_t source=c->r[3];auto path=hud_path(mod,c->r[4]);c->r[3]=0;
-    if(source>1||path.empty())return;
+    if(source>1||path.empty()){hud::store().note(mod.id,"HUD PNG load failed: invalid source or path");return;}
     // Package textures are deliberately restricted to the two artwork folders.
-    if(source==0&&!path.starts_with("assets/")&&!path.starts_with("textures/"))return;
+    if(source==0&&!path.starts_with("assets/")&&!path.starts_with("textures/")){hud::store().note(mod.id,"HUD PNG load failed: package images must be in assets/ or textures/");return;}
     try {
         auto pixels=hud::load_png(source?mod.data_path:mod.package_path,path);
         c->r[3]=hud::store().create_image(mod.id,pixels.width,pixels.height,pixels.width*4,pixels.rgba.data(),pixels.rgba.size());
+        if(!c->r[3])hud::store().note(mod.id,"HUD PNG load failed: per-mod image quota exceeded");
     }catch(const std::exception&){hud::store().note(mod.id,"HUD PNG load failed: missing, invalid or oversized texture");}
 }
 void svc_hud_release(Cpu* c) {c->r[3]=hud::store().release(owner(c).id,c->r[3]);}

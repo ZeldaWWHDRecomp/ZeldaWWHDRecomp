@@ -3,6 +3,7 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "guest_hud.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -1845,7 +1846,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     // game for a few seconds while the menu is closed (the window title is not visible everywhere)
     const std::string toast = open ? std::string() : ss::last_message();
     U.linearized = false;
-    if (!open && !perf && !text && toast.empty()) {
+    if (!open && !perf && !text && toast.empty() && !guesthud::active()) {
         if (U.init) {  // forget events and pressed keys while nothing is shown
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
@@ -1887,6 +1888,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     apply_capture();
     feed_gamepad(io, open && U.cap_action < 0);  // the text prompt reads the controller itself
     ImGui::NewFrame();
+    guesthud::frame();
     if (open) settings_window();
     if (text) {
         float pad[input_map::kPadCount];
@@ -1916,9 +1918,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     return ImGui::GetDrawData();
 }
 
-void linearize_colors(ImDrawData* d) {
-    if (!d || U.linearized) return;
-    U.linearized = true;
+void linearize_colors(ImDrawData* d,bool fresh_copy) {
+    if (!d || (!fresh_copy && U.linearized)) return;
+    if (!fresh_copy) U.linearized = true;
     static uint8_t table[256];
     static bool made = false;
     if (!made) {

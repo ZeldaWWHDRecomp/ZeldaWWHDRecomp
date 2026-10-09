@@ -1,6 +1,9 @@
 Dear ImGui v1.92.9b (https://github.com/ocornut/imgui, tag v1.92.9b), MIT License (LICENSE.txt).
-Unmodified copies of the core library and backends/imgui_impl_metal (Metal renderer), plus
+Unmodified core library, plus a locally extended backends/imgui_impl_metal (Metal renderer) and
 backends/imgui_impl_sdl3 and backends/imgui_impl_sdlrenderer3 for the graphical installer (tools/installer/gui).
 The Vulkan renderer and the input feeding are the game's own (runtime/src/overlay/), so they can share
 the renderer's command buffers, formats and threads.
+The Metal backend recognizes guest HUD alpha/additive markers, decodes mod PNG samples for sRGB
+targets, and releases registered HUD metadata after device-texture teardown. These extensions
+share the existing overlay pass; the corresponding Vulkan implementation is runtime/src/gfx/vulkan/overlay.cpp.
 imgui_demo.cpp is not included (IMGUI_DISABLE_DEMO_WINDOWS).

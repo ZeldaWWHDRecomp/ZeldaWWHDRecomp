@@ -6,6 +6,7 @@
 #include "present.h"
 #include "shaders.h"
 #include "imgui.h"
+#include "overlay/guest_hud.h"
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
@@ -18,7 +19,7 @@ const char* kVertex = R"glsl(#version 450
 layout(location=0) in vec2 pos;
 layout(location=1) in vec2 uv;
 layout(location=2) in vec4 col;
-layout(push_constant) uniform Params { vec2 scale; vec2 translate; int linear; } p;
+layout(push_constant) uniform Params { vec2 scale; vec2 translate; int linear; int linear_texture; } p;
 layout(location=0) out vec4 color;
 layout(location=1) out vec2 tc;
 void main() {
@@ -34,10 +35,15 @@ layout(set=0,binding=0) uniform sampler2D image;
 layout(location=0) in vec4 color;
 layout(location=1) in vec2 tc;
 layout(location=0) out vec4 result;
-void main() { result=color*texture(image,tc); }
+layout(push_constant) uniform Params { vec2 scale; vec2 translate; int linear; int linear_texture; } p;
+void main() {
+ vec4 sampleColor=texture(image,tc);
+ if(p.linear_texture!=0)sampleColor.rgb=mix(pow((sampleColor.rgb+0.055)/1.055,vec3(2.4)),sampleColor.rgb/12.92,lessThanEqual(sampleColor.rgb,vec3(0.04045)));
+ result=color*sampleColor;
+}
 )glsl";
 
-struct Params { float scale[2], translate[2]; int32_t linear, pad[3]; };
+struct Params { float scale[2], translate[2]; int32_t linear, linear_texture, pad[2]; };
 
 struct Texture {
     ResourceUse use;
@@ -80,7 +86,7 @@ void ensure_resources() {
         vk_check(vkCreateDescriptorSetLayout(R.device, &ci, nullptr, &res.descriptors), "overlay descriptors");
     }
     if (!res.layout) {
-        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Params)};
+        VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Params)};
         VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         ci.setLayoutCount = 1;
         ci.pSetLayouts = &res.descriptors;
@@ -98,9 +104,10 @@ void ensure_resources() {
     }
 }
 
-VkPipeline pipeline(VkFormat format) {
+VkPipeline pipeline(VkFormat format,bool additive=false) {
+    int key=int(format)*2+int(additive);
     ensure_resources();
-    if (auto it = res.pipelines.find(int(format)); it != res.pipelines.end()) return it->second;
+    if (auto it = res.pipelines.find(key); it != res.pipelines.end()) return it->second;
     VkShaderModule vs = module(kVertex, true), fs = VK_NULL_HANDLE;
     VkPipeline result = VK_NULL_HANDLE;
     try {
@@ -137,7 +144,7 @@ VkPipeline pipeline(VkFormat format) {
         blend.blendEnable = VK_TRUE;
         blend.colorBlendOp = blend.alphaBlendOp = VK_BLEND_OP_ADD;
         blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.dstColorBlendFactor = additive?VK_BLEND_FACTOR_ONE:VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         VkPipelineColorBlendStateCreateInfo bs{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -170,7 +177,7 @@ VkPipeline pipeline(VkFormat format) {
     }
     vkDestroyShaderModule(R.device, vs, nullptr);
     vkDestroyShaderModule(R.device, fs, nullptr);
-    res.pipelines.emplace(int(format), result);
+    res.pipelines.emplace(key, result);
     return result;
 }
 
@@ -291,13 +298,17 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
     p.translate[0] = -1.0f - d->DisplayPos.x * p.scale[0];
     p.translate[1] = -1.0f - d->DisplayPos.y * p.scale[1];
     p.linear = linear ? 1 : 0;
-    vkCmdPushConstants(cmd, res.layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof p, &p);
+    vkCmdPushConstants(cmd, res.layout, VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof p, &p);
     std::unordered_map<Texture*, VkDescriptorSet> sets;
     VkDescriptorSet bound = VK_NULL_HANDLE;
     int vtx_base = 0, idx_base = 0;
     for (const ImDrawList* l : d->CmdLists) {
         for (const ImDrawCmd& c : l->CmdBuffer) {
-            if (c.UserCallback) continue;
+            if (c.UserCallback) {
+                if(c.UserCallback==overlay::guesthud::blend_callback)
+                    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,c.UserCallbackData!=nullptr));
+                continue;
+            }
             float x0 = (c.ClipRect.x - d->DisplayPos.x) * sx, y0 = (c.ClipRect.y - d->DisplayPos.y) * sy;
             float x1 = (c.ClipRect.z - d->DisplayPos.x) * sx, y1 = (c.ClipRect.w - d->DisplayPos.y) * sy;
             x0 = std::max(x0, 0.0f);
@@ -307,6 +318,11 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
             if (x1 <= x0 || y1 <= y0) continue;
             Texture* t = (Texture*)(uintptr_t)c.GetTexID();
             if (!t || !t->view) continue;
+            int linear_texture=linear&&overlay::guesthud::image_texture(uint64_t(c.GetTexID()));
+            if(p.linear_texture!=linear_texture) {
+                p.linear_texture=linear_texture;
+                vkCmdPushConstants(cmd,res.layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof p,&p);
+            }
             VkDescriptorSet& set = sets[t];
             if (!set) {
                 VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -336,6 +352,18 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
 }
 
 void reset_overlay_resources() {
+    if(!res.device)return;
+    if(ImGui::GetCurrentContext())for(auto* tex:ImGui::GetPlatformIO().Textures) {
+        auto* t=reinterpret_cast<Texture*>(uintptr_t(tex->GetTexID()));
+        if(t) {
+            if(t->view)vkDestroyImageView(res.device,t->view,nullptr);
+            if(t->image)vkDestroyImage(res.device,t->image,nullptr);
+            if(t->memory)vkFreeMemory(res.device,t->memory,nullptr);
+            delete t;
+        }
+        tex->SetTexID(ImTextureID_Invalid);tex->SetStatus(ImTextureStatus_Destroyed);
+    }
+    overlay::guesthud::backend_destroyed();
     for (auto [f, p] : res.pipelines) vkDestroyPipeline(res.device, p, nullptr);
     if (res.sampler) vkDestroySampler(res.device, res.sampler, nullptr);
     if (res.layout) vkDestroyPipelineLayout(res.device, res.layout, nullptr);

@@ -23,6 +23,7 @@
 #include "mods/mods.h"
 #include "overlay/hostui.h"
 #include "overlay/overlay.h"
+#include "overlay/guest_hud.h"
 #ifdef WWHD_SDL_HOST
 #include "platform/input_sdl.h"
 #include <SDL3/SDL_vulkan.h>
@@ -1502,6 +1503,7 @@ void swap() {
 #endif
   set_present_plan(&plan);
   // settings overlay: built once, drawn into the TV window and its present dumps
+  if(overlay::guesthud::active())overlay::guesthud::set_tv_region(plan.tv.x,plan.tv.y,plan.tv.w,plan.tv.h,!plan.drc_only);
   set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
   take_screenshots(plan);
   bool sampled[2] = {};

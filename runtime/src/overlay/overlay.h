@@ -52,6 +52,6 @@ void set_density(float pixels_per_point);  // TV window backing scale (HiDPI)
 ImDrawData* frame(float pw, float ph, void (*renderer_init)());
 // The same draw data for a target with sRGB encoding: vertex colours converted to linear once per
 // frame (the Metal backend draws colours as they are; the Vulkan renderer converts in its shader).
-void linearize_colors(ImDrawData* d);
+void linearize_colors(ImDrawData* d,bool fresh_copy=false);
 
 }  // namespace overlay

@@ -4,6 +4,7 @@
 #include "shaders.h"
 #include "settings.h"
 #include "mods/climb.h"
+#include "overlay/guest_hud.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -264,6 +265,14 @@ bool sampleable(const Surface& source) {
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
              const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr) {
  end_encoder();
+ ImDrawData* gamepadOverlay=nullptr;
+ // The GamePad scan may also be shown inside the TV composition (PIP or Off-TV).
+ if(R.tv.scan&&R.drc.scan&&!quads.empty()&&quads.front().image==R.tv.scan.get())for(const auto& q:quads)
+  if(q.image==R.drc.scan.get()) {
+   gamepadOverlay=overlay::guesthud::gamepad_region(float(extent.width),float(extent.height),q.box.x,q.box.y,q.box.w,q.box.h,q.alpha);
+   break;
+  }
+ if(gamepadOverlay)overlay_prepare(gamepadOverlay);
  if(overlay)overlay_prepare(overlay);
  for(auto& q:quads)
   if(q.image)transition_image(q.image,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
@@ -306,6 +315,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   auto params=present_params(fxaa&&linear,filter,scale,sourceLinear,targetLinear);params.alpha=q.alpha;
   vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);vkCmdDraw(cmd,3,1,0,0);
  }
+ if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear);
  if(overlay)overlay_draw(overlay,cmd,format,extent,targetLinear);  // settings overlay on top
  vkCmdEndRendering(cmd);
  barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=finalLayout;barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
@@ -392,7 +402,7 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  if(fxaa_enabled()&&!linear)throw std::runtime_error("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
-         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr,&screen.imageUses.at(imageIndex));
+         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex));
  return true;
 }
 
@@ -405,7 +415,7 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
  try {
   int filter=0;auto quads=screen_quads(screen,VkExtent2D{width,height},filter);
   compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,quads,
-          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:nullptr,&target.use);
+          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(width,height),&target.use);
   rgba=read_surface_rgba(target,false);  // display-encoded already (sRGB target, or encoded values)
  }catch(...){destroy_surface_image(&target);throw;}
  destroy_surface_image(&target);

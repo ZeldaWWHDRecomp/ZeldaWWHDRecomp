@@ -53,6 +53,7 @@
 #include "imgui.h"
 #include "backends/imgui_impl_metal.h"
 #include "../overlay/overlay.h"
+#include "../overlay/guest_hud.h"
 #include "../screenshot.h"
 
 namespace mods { bool mouse_captured(); }
@@ -738,6 +739,11 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
         float frame[4] = {0, 0, 0, 0.6f * op};
         draw_solid(e, fmt, dw, dh, {L.pip.x - bw, L.pip.y - bw, L.pip.w + 2 * bw, L.pip.h + 2 * bw}, frame);
         draw_image(e, fmt, dw, dh, R.drc.tex, R.drc.srgb, L.pip, op);
+        if(auto* draw=overlay::guesthud::gamepad_region(dw,dh,L.pip.x,L.pip.y,L.pip.w,L.pip.h,op)) {
+            if(is_srgb(fmt))overlay::linearize_colors(draw,true);
+            ImGui_ImplMetal_NewFrame(rp);
+            ImGui_ImplMetal_RenderDrawData(draw,command_buffer(),e);
+        }
     }
     // settings overlay (overlay/overlay.h) on top: Dear ImGui's Metal backend in the same pass
     if (g_overlay_draw) {
@@ -757,6 +763,11 @@ static void compose_drc(id<MTLTexture> target) {
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
     Layout L = layout(target.width, target.height, R.drc.tex.width, R.drc.tex.height, 0, 0, false);
     draw_image(e, target.pixelFormat, target.width, target.height, R.drc.tex, R.drc.srgb, L.tv, 1.0f);
+    if (auto* draw = overlay::guesthud::gamepad_region(target.width,target.height,L.tv.x,L.tv.y,L.tv.w,L.tv.h,1)) {
+        if (is_srgb(target.pixelFormat)) overlay::linearize_colors(draw, true);
+        ImGui_ImplMetal_NewFrame(rp);
+        ImGui_ImplMetal_RenderDrawData(draw, command_buffer(), e);
+    }
     [e endEncoding];
 }
 
@@ -939,6 +950,7 @@ void present_screens() {
     L.scale = P.scale;
     float dw = P.dw, dh = P.dh;
     bool pip = P.pip_wanted, drc_only = P.drc_only;
+    if(overlay::guesthud::active())overlay::guesthud::set_tv_region(P.tv.x,P.tv.y,P.tv.w,P.tv.h,!P.drc_only);
     g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
     take_screenshot(P);
     if (P.sim) {
