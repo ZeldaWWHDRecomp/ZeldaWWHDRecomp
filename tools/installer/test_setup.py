@@ -116,6 +116,42 @@ class Paths(unittest.TestCase):
             self.assertEqual(setup.game_folder_title(d), "0005000010143500")
 
 
+class DataDir(unittest.TestCase):
+    """default_data_dir: portable.txt next to the release means <release>/data; without it (a source
+    build, or an AppImage whose mount is read-only, issue #55) the per-user folder of earlier
+    releases. --data-dir overrides both (setup_gui.cpp data_dir_of mirrors this)."""
+
+    def setUp(self):
+        self._portable = setup.PORTABLE
+
+    def tearDown(self):
+        setup.PORTABLE = self._portable
+
+    def test_portable_uses_the_release_folder(self):
+        setup.PORTABLE = True
+        self.assertEqual(setup.default_data_dir(), os.path.join(setup.PKG, "data"))
+
+    def test_without_the_marker_uses_the_per_user_folder(self):
+        setup.PORTABLE = False
+        self.assertEqual(setup.default_data_dir(), setup.legacy_data_dir())
+
+    @unittest.skipUnless(setup.IS_LINUX, "the XDG rule is the Linux one")
+    def test_legacy_respects_xdg_data_home(self):
+        saved = os.environ.get("XDG_DATA_HOME")
+        os.environ["XDG_DATA_HOME"] = "/tmp/wwhd-xdg"
+        try:
+            self.assertEqual(setup.legacy_data_dir(), os.path.join("/tmp/wwhd-xdg", "wwhd"))
+        finally:
+            if saved is None:
+                os.environ.pop("XDG_DATA_HOME", None)
+            else:
+                os.environ["XDG_DATA_HOME"] = saved
+
+    def test_legacy_folder_name(self):
+        # the same name as host::config_dir on Linux; "WWHD" on Windows (setup_gui.cpp data_dir_of)
+        self.assertEqual(os.path.basename(setup.legacy_data_dir()), "WWHD" if setup.IS_WIN else "wwhd")
+
+
 class Titles(unittest.TestCase):
     def test_supported_ok(self):
         setup.check_title("0005000010143500")   # USA, the canonical build

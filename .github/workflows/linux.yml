@@ -43,7 +43,7 @@ jobs:
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/linux -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-            -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3"
+            -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON
 
       - name: Build
         run: cmake --build build/linux
@@ -51,6 +51,7 @@ jobs:
       - name: Unit tests
         run: |
           ctest --test-dir build/linux --output-on-failure
+          python3 tools/installer/test_setup.py
           python3 tools/recomp/test_builds.py
 
       - name: Renderer smoke test (lavapipe + validation)
