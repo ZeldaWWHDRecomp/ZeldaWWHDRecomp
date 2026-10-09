@@ -10,6 +10,20 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ## What's new in this update
 
+### v0.2.10
+
+- **Fixed: the cheats in v0.2.9 wrote to the wrong place in the save data** (Give all items, Master
+  Sword + Mirror Shield, 20 hearts / double magic / 5000 rupees) and could damage the save. They write
+  to the right place again.
+- **Fixed: Medli missing on Dragon Roost after using the Master Sword cheat** (issue #85). The cheat
+  gave the full-power Master Sword as *owned*, which the game treats as story progress, so Medli (and
+  later Makar) stayed away and the story couldn't continue. The cheat now only **equips** the Master
+  Sword and Mirror Shield until the next reload. Saves already affected can be repaired with
+  `tools/savegame/wwsave.py repair-medli` (it keeps a backup; see the save tools README).
+- **Vulkan:** pixel shaders are now linked to their vertex shader when they are translated, so
+  drivers that refused some pipelines get correct shaders from the start (PR #54 by @rhemfur, the
+  proper fix for #30).
+
 ### v0.2.9
 
 - **Play the European version directly** (title 00050000-10143600): setup now also accepts the
