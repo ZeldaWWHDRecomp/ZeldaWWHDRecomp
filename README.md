@@ -12,56 +12,76 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
-- **Windows: smoother in busy views.** The Vulkan buffer cache is now on by default on Windows too
-  (it already was on macOS, Linux and Android): unchanged vertex, index and uniform data stay on the
-  GPU instead of being copied every frame. On an RX 6700 XT that cut the render thread's time per
-  frame by 13–19% and halved the data uploaded (issue #91, thanks @darklinkpower for all the
-  measurements). If you see broken or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and
-  please report it.
+### v0.2.11
 
-- **"Keep game speed" explained in the settings:** with it off, the whole game runs in slow motion
-  whenever the frame target isn't reached (e.g. 120/240 fps at 2x). The settings now say so, the
-  option is marked as recommended, and the performance overlay warns when the game drops below
-  30 logic steps a second because of it (issue #91).
+- **Linux: one-file AppImage** (issue #55, PR #101, thanks @mhbxyz), next to the zip. Download it,
+  make it executable, run it. It keeps the game, its compiled code, saves and settings in your user
+  folders (`$XDG_DATA_HOME/wwhd`, usually `~/.local/share/wwhd`); `--data-dir` picks another folder.
+  On distributions without libfuse2 (e.g. Ubuntu 24.04+) start it with `--appimage-extract-and-run`.
+  The zip stays as it is.
+
+- **Face buttons by label (Xbox layout)** (issue #78, PR #97, thanks @mhbxyz): settings overlay →
+  Controls → *Face buttons* (also the macOS Controls window and Input menu). *By position
+  (Nintendo)* stays the default; *by label (Xbox)* makes the button named A act as A, so on an Xbox pad
+  A accepts and B goes back.
+
+- **Ultrawide and tall screens: menus fixed** (issue #76, building on PR #16 by @arcadematicas): at
+  21:9, 32:9, 16:10 and 4:3 the pause menu, inventory grid, cursor, map and the tabs stay centred at 16:9
+  and line up again; backgrounds and the sepia filter still fill the picture.
+
+- **Fixed: black letter card in the Rito mail-sorting game** (issues #28, #69, PR #39, thanks
+  @Sean13128): the GPU's "0 × anything = 0" multiply is emulated now (as in Cemu). The shader caches
+  rebuild once after updating, so expect a brief stutter on the first start.
+
+- **Fixed: Cemu graphics packs**
+  - packs that replace pixel shaders (e.g. Contrasty, NoSSAO, RemoveHUD) partly didn't apply on Vulkan
+    since v0.2.10 (PR #87, thanks @rhemfur);
+  - packs for the **European** version were refused with "Cemu pack does not target WWHD USA"
+    (issue #103). A pack is now accepted when its `titleIds` name the version you installed;
+    SDCafiine-style folders named after the title ID follow the same rule.
+
+- **Smoother in busy views on Windows and Android:** the Vulkan buffer cache is now on by default
+  everywhere. It keeps unchanged vertex, index and uniform data on the GPU instead of copying them
+  every frame: on an RX 6700 XT 13–19% less render-thread time and half the uploads (issue #91, thanks
+  @darklinkpower), on a Galaxy S25 Ultra about 34 → 47 fps in heavy Outset views (issue #56, thanks
+  @rhemfur). If you see broken or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and please
+  report it.
+
+- **Less CPU work:**
+  - native versions of the game's two hottest audio loops (PR #81, thanks @depende3000): the audio
+    thread uses about two thirds less CPU, with bit-identical sound (also on the European version);
+  - the scheduler sleeps while nothing is waiting, and GPU context switches copy only the registers
+    that changed;
+  - the recompiler no longer emits signed overflow for `mulli`/`mullw`/`neg` (PR #82, thanks
+    @depende3000), a latent bug a newer compiler could have turned into wrong behaviour.
+
+- **Android:**
+  - when the system driver is too old for the renderer, Adreno phones offer **Install GPU driver…**
+    right in the error message (PR #92, thanks @rhemfur);
+  - on one-screen views the **GamePad screen appears automatically while the game is paused** (map,
+    menus, save prompt) and the TV picture comes back when you resume (PR #59, thanks @rhemfur);
+  - precise Vulkan synchronization (barriers) is on by default, where tile-based GPUs are expected to
+    gain the most (issue #104). On desktop it's opt-in for testing: `WWHD_VK_NARROW_BARRIERS=1`.
+
+- **Save states remember the controller mode** (Pro Controller or GamePad) and restore it on load.
+
+- **"Keep game speed" explained:** with it off, the whole game runs in slow motion whenever the frame
+  target isn't reached (e.g. 120/240 fps at 2x). The setting says so now, is marked as recommended, and
+  the performance overlay warns when it happens (issue #91).
 
 - **A log file for every run:** `captures/wwhd.log` in the game's data folder (the previous run's is
-  kept as `wwhd-previous.log`), with your user paths removed as in crash logs. Attach it to bug
-  reports; on Windows the game's console output was otherwise lost. `WWHD_LOG_FILE=<path>` writes it
-  elsewhere, `WWHD_LOG_FILE=0` turns it off.
+  kept as `wwhd-previous.log`), with your user paths removed as in crash logs. Please attach it to bug
+  reports. `WWHD_LOG_FILE=<path>` writes it elsewhere, `WWHD_LOG_FILE=0` turns it off.
 
-- **Vulkan: precise GPU synchronization (barriers)**, on by default on Android, where tile-based GPUs
-  are expected to gain the most. On desktop it's opt-in for testing: start with
-  `WWHD_VK_NARROW_BARRIERS=1` and please report flicker or wrong pixels (`=0` forces the old path).
+- **Code mods (Mod SDK v2, off by default):** mods written in C for the console's CPU, translated and
+  built on your machine when you install them, for the USA and the European game. Turn them on in
+  Settings → Mods → *Enable code mods* (this rebuilds the game code once; with it off nothing changes).
+  For modders: [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md).
 
-- **Fixed: Cemu graphics packs for the European version** were refused with "Cemu pack does not
-  target WWHD USA" (issue #103). A pack is now accepted when its `titleIds` name the version you
-  installed (USA `0005000010143500` or EU `0005000010143600`). SDCafiine-style folders named after the
-  title ID follow the same rule.
-
-- **Fixed: black letter card in the Rito mail-sorting game (#28, #69);** the shader caches rebuild
-  once after updating.
-
-- **`WWHD_SHADOW_FIX` is gone; use `WWHD_SHADOW_SCALE=1`** for console-sized shadow maps (less GPU
-  memory at 2x/3x). Since v0.2.9 both sizes look practically the same (issue #67).
-
-- **Fixed: Cemu graphics packs that replace pixel shaders (e.g. Contrasty, NoSSAO, RemoveHUD) partly
-  didn't apply on Vulkan since v0.2.10.** Shader inputs that no vertex shader feeds are constants in the
-  translation since v0.2.10, and the packs' declarations of them now become the same constants
-  (PR #87, thanks @rhemfur).
-
-- **Android: smoother in busy views.** The Vulkan buffer cache is now on by default on Android too. It
-  keeps unchanged vertex, index and uniform data on the GPU instead of copying it every frame. On a
-  Galaxy S25 Ultra (Adreno 830) heavy Outset views went from about 34 to 47 frames per second with
-  half the data uploaded per frame; thanks @rhemfur for the measurements (issue #56). If you see broken
-  or flickering geometry, start with `WWHD_VK_BUFFER_CACHE=0` and please report it.
-
-- **Guest mod SDK v2 (phase 1, opt-in):** portable PowerPC ELF packages, restart-only
-  mod-manager integration, typed options, per-mod memory and files, and save-state mod
-  warnings. Generated public HD headers and examples are described in
-  [the SDK guide](docs/mod-sdk-v2.md), including the historical 15-pair A/B summary;
-  noise exceeds the measured effect. **Enable code mods (PowerPC mods)** in Settings → Mods
-  rebuilds game code with hooks and requires a restart; support starts off, with no hook checks
-  emitted for players who leave it off. Completed builds are cached separately.
+- **Smaller fixes:** `WWHD_SHADOW_FIX` is gone, use `WWHD_SHADOW_SCALE=1` for console-sized shadow maps
+  (issue #67: since v0.2.9 both sizes look practically the same); the buffer cache's verify mode no
+  longer reads GPU memory (it ran at ~1 fps on some Windows drivers); a crash at exit with SDL 3.4 on
+  Linux is fixed.
 
 ### v0.2.10
 
