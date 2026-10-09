@@ -88,6 +88,12 @@ int main() {
     draw=ImGui::GetDrawData();assert(draw->TotalVtxCount==4);
     assert(std::abs(draw->CmdLists[0]->VtxBuffer[0].pos.x-1710)<.01f);
     assert(draw->CmdLists[0]->VtxBuffer[0].pos.y==80);
+    io.DisplaySize=ImVec2(640,360);io.DisplayFramebufferScale=ImVec2(2,2);
+    overlay::guesthud::set_tv_region(0,0,1280,720,true);
+    ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();
+    draw=ImGui::GetDrawData();assert(draw->TotalVtxCount==4);
+    assert(std::abs(draw->CmdLists[0]->VtxBuffer[0].pos.x-630)<.01f);
+    assert(draw->CmdLists[0]->VtxBuffer[0].pos.y==10);
     store.reset();overlay::guesthud::backend_destroyed();
     ImGui::DestroyContext();
 }
