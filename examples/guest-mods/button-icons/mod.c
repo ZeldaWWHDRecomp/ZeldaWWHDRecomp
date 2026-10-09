@@ -30,8 +30,10 @@ static void sync_epoch(void) {
     unsigned long long current=wwhd_hud_epoch();
     if(current==epoch)return;
     epoch=current;
-    for(u32 i=0;i<5;++i){images[i]=0;panes[i]=0;drawn[i].alpha=0;}
-    have_drawn=0;
+    /* Full states restore this mod's guest snapshot too. Preserve it so a
+     * paused captured TV picture can immediately recover its matching icons;
+     * only host texture handles and live-pane discovery become invalid. */
+    for(u32 i=0;i<5;++i){images[i]=0;panes[i]=0;}
 }
 static int pane_name(const u8* p,const char* expected) {
     const char* name=(const char*)(p+0x80);
@@ -62,8 +64,8 @@ static void find_buttons(u8* p,u8** found,u32 depth,u32* budget) {
     if(depth==12 || !*budget || !pane_pointer(p))return;
     --*budget;
     for(u32 i=0;i<5;++i)if(pane_name(p,pane_names[i]))found[i]=p;
-    u8* sentinel=p+0x14;
-    for(u8* child=*(u8**)sentinel; child!=sentinel && *budget && pane_pointer(child);child=*(u8**)child)
+    u8* sentinel=p+0x14;u32 siblings=0;
+    for(u8* child=*(u8**)sentinel; child!=sentinel && siblings++<256 && *budget && pane_pointer(child);child=*(u8**)child)
         find_buttons(child,found,depth+1,budget);
 }
 static int discover_buttons(u8* root) {
