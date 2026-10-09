@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: crash when entering the Puppet Ganon room** (issue #90, Vulkan). The room uses a colour
+  texture for a depth comparison, which the Vulkan renderer didn't support, so it stopped with an error.
+  It now handles it. Such internal errors are also no longer lost: they are written to the log and
+  the crash log with their message before the game stops, also on Windows. After updating, setup
+  compiles the game code once more.
 - **The mouse pointer now hides when you don't use the mouse** (issue #109). After 2 seconds without
   mouse movement it disappears from the game window, in full screen and in a window, on Windows,
   Linux and macOS; moving the mouse shows it again. It stays visible while the settings overlay is open.
