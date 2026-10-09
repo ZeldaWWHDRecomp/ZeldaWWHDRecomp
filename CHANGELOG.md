@@ -15,6 +15,10 @@ what is on `devel` and not released yet (also in the
   mod catalogue if the address was changed. Download errors now also show the server's status code
   (for example "HTTP 404"), so a wrong address is easier to tell apart from a connection problem.
 
+- **Setup can now build with code-mod support right away.** A new "Build with code-mod support"
+  option (off by default) saves the second rebuild when you want code mods. Updates and repairs keep
+  your choice, and Settings → Mods shows it immediately. Details:
+  [docs/setup-code-mods.md](docs/setup-code-mods.md).
 - **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
   catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
   now work on all platforms; on Android the on-screen keyboard opens for these fields.
