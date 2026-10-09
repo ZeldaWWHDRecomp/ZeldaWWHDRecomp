@@ -1411,8 +1411,8 @@ static void request_present_dump(const std::string& path) { gfx::request_present
 static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
-  static const auto frames = capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
-  if (capture_schedule::contains(frames, frame)) {
+  static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+  if (gfx::capture_schedule::contains(frames, frame)) {
     dump_scan(R.tv, "frame_" + std::to_string(frame) + ".png");
     dump_scan(R.drc, "frame_" + std::to_string(frame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))
@@ -1420,10 +1420,10 @@ static void frame_dumps(uint64_t frame) {
   }
   // Test captures relative to the completed full-state load, whose actual
   // renderer frame can vary even when WWHD_STATE_LOAD_AT is fixed.
-  static const auto loadFrames = capture_schedule::parse(getenv("WWHD_DUMP_LOAD_FRAMES"));
+  static const auto loadFrames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_LOAD_FRAMES"));
   const uint64_t loaded = loadFrames.empty() ? 0 : ss::last_load_frame();
-  if (capture_schedule::relative_due(loadFrames, frame, loaded)) {
-    const auto stem = capture_schedule::stem(frame - loaded, true);
+  if (gfx::capture_schedule::relative_due(loadFrames, frame, loaded)) {
+    const auto stem = gfx::capture_schedule::stem(frame - loaded, true);
     dump_scan(R.tv, stem + ".png");
     dump_scan(R.drc, stem + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT")) request_present_dump(stem + "_present.png");
