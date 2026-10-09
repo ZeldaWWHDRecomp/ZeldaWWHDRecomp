@@ -181,7 +181,7 @@ static void draw(u32 list) {
     element.kind=WWHD_HUD_CLIP_POP;wwhd_hud_clip(list,&element);
 }
 WWHD_HOOK(0x02000000, all_services, (void)) {
-    short pcm[2]={-1234,1234};
+    static short pcm[2]={-1234,1234};
     int stream=wwhd_audio_open(48000,2);
     wwhd_audio_submit(stream,pcm,1,2);wwhd_audio_available(stream);
     wwhd_audio_close(stream);wwhd_audio_epoch();
