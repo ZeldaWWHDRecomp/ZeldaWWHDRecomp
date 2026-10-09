@@ -37,3 +37,17 @@ trust, shared source selection, options, actual packaged Python execution,
 output receipts, moved-source invalidation and removal. It uses temporary
 fixtures and no game files. Generated archives and disc headers belong under
 `build/` and must not be committed.
+
+For an installed test release, `tools/guestmod/test_code_mods_e2e.py --catalogue`
+generates a local catalogue with the compiled heart pilot, refreshes and installs
+through the overlay's normal asynchronous catalogue actions, then checks the code
+mods offer, rebuild, restart, active hook, hooks-off byte identity and removal.
+Pass the release, regional game, copied-save source and compatible regional state
+paths as documented by `--help`. Run separately for USA and EU; use `--boot`
+to start from copied normal saves without loading a full state from another mod
+set. Boot runs retain private Browse/setup screenshots. `--max-game-sessions 4`
+allows concurrent functional checks when the operator authorizes them; it does
+not relax benchmark gates. The headless
+`WWHD_TEST_CATALOGUE_INSTALL` aid selects an entry; it retains compatibility, hash,
+manifest, manager trust and restart checks. These are opt-in real-game runs, not
+unit tests, and must be scheduled one at a time.

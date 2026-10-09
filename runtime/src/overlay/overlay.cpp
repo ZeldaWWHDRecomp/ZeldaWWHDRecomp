@@ -988,6 +988,8 @@ void catalogue_controls(std::string& focus) {
         if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
         snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
     }
+    static const char* test_install=g_no_host?getenv("WWHD_TEST_CATALOGUE_INSTALL"):nullptr;
+    static bool test_refreshed=false;
     bool busy,loaded,fresh_install=false;Loaded catalogue;std::string error,message;
     {
         std::lock_guard guard(worker.mutex);busy=worker.running;loaded=worker.loaded;
@@ -1003,7 +1005,9 @@ void catalogue_controls(std::string& focus) {
     note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
     ImGui::BeginDisabled(busy);
     ImGui::InputText("Catalogue URL",source,sizeof source);
-    if(ImGui::Button("Refresh catalogue")) {
+    bool refresh_now=ImGui::Button("Refresh catalogue");
+    if(test_install&&!test_refreshed&&!busy){refresh_now=true;test_refreshed=true;}
+    if(refresh_now) {
         std::string selected=source;
         if(!getenv("WWHD_MOD_CATALOGUE"))hostui::post([selected]{hostui::set("mod.catalogue.url",selected);});
         catalogue_action([selected](CatalogueWorker& worker) {
@@ -1012,6 +1016,7 @@ void catalogue_controls(std::string& focus) {
             std::filesystem::create_directories(root);
             auto result=refresh_cached(selected,host::download_https,root);
             std::lock_guard guard(worker.mutex);worker.catalogue=std::move(result);worker.loaded=true;worker.message="Catalogue refreshed";
+            LOG("[catalogue] refreshed %zu entries",worker.catalogue.index.entries.size());
         });
     }
     ImGui::SameLine();
@@ -1037,6 +1042,7 @@ void catalogue_controls(std::string& focus) {
     for(const auto& entry:catalogue.index.entries) {
         if(!query.empty()&&lower(entry.name+" "+entry.id+" "+entry.description).find(query)==std::string::npos)continue;
         ImGui::PushID(entry.id.c_str());
+        if(test_install&&entry.id==test_install)ImGui::SetNextItemOpen(true);
         if(ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str())) {
             ImGui::TextWrapped("%s",entry.description.c_str());
             for(const auto& author:entry.authors)note("By %s",author.c_str());
@@ -1051,14 +1057,16 @@ void catalogue_controls(std::string& focus) {
             if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
             if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
             ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
-            if(ImGui::Button(present?"Update":"Install")) {
+            bool install_now=ImGui::Button(present?"Update":"Install");
+            if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
+            if(install_now) {
                 auto fixtures=catalogue.fixture_root;
                 catalogue_action([entry,fixtures](CatalogueWorker& worker) {
                     StagedPackage package(entry,catalogue_port_version(),g_guest_build_name,mods::packages::platform_key(),
                         std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
                     std::string error,id;
                     require(mods::packages::install(package.path().string(),error,&id),error);
-                    std::lock_guard guard(worker.mutex);worker.installed=id;worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                    std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
                 });
             }
             ImGui::EndDisabled();
@@ -1080,6 +1088,8 @@ void package_controls() {
     // debug: WWHD_TEST_MOD_ENABLE=<package id> ticks that package's checkbox once in test runs (the
     // confirmation then shows for unconfirmed native code)
     static const char* test_enable = g_no_host ? getenv("WWHD_TEST_MOD_ENABLE") : nullptr;
+    static const char* test_disable = g_no_host ? getenv("WWHD_TEST_MOD_DISABLE") : nullptr;
+    static const char* test_remove = g_no_host ? getenv("WWHD_TEST_MOD_REMOVE") : nullptr;
     static char source[1024] = {}, new_profile[65] = {};
     static std::mutex picker_mutex;
     static std::string picked;
@@ -1142,6 +1152,7 @@ void package_controls() {
         bool on = mod.enabled;
         bool toggled = ImGui::Checkbox("##package_enabled", &on);
         if (test_enable && mod.id == test_enable) { toggled = on = true; test_enable = nullptr; }
+        if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
         if (toggled) {
             auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
             if (native.empty()) {
@@ -1152,6 +1163,7 @@ void package_controls() {
             else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
+        if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
         if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
@@ -1195,7 +1207,9 @@ void package_controls() {
             setup_controls(mod,confirm,error);
             if(mod.restart_required) note("Changes apply on the next game start. Active files stay loaded until exit.");
             ImGui::BeginDisabled(mod.enabled || mod.active);
-            if (ImGui::Button("Remove package")) remove(mod.id, error);
+            bool remove_now=ImGui::Button("Remove package");
+            if(test_remove&&mod.id==test_remove&&!mod.enabled&&!mod.active){remove_now=true;test_remove=nullptr;}
+            if(remove_now&&remove(mod.id,error))LOG("[mods] removed %s",mod.id.c_str());
             ImGui::EndDisabled();
             ImGui::TreePop();
         }

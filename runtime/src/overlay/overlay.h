@@ -13,6 +13,9 @@
 // Test switches:
 //   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, mods,
 //                                              controls, about) at TV frame <frame> (default 1)
+//   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
+//   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
+//                                              (headless tests only; open the Mods tab separately)
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
 #pragma once
 #include <cstdint>
