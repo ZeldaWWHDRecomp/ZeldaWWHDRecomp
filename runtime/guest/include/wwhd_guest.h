@@ -152,3 +152,22 @@ u32 wwhd_hud_texture(u32 source,const char* path);
 u32 wwhd_hud_release(u32 image);
 /* Changes after full state load; old handles are invalid. Reload PNGs on a change. */
 unsigned long long wwhd_hud_epoch(void);
+
+#define WWHD_AUDIO_API_VERSION 1
+#define WWHD_AUDIO_INVALID (-1)
+#define WWHD_AUDIO_BUSY (-2)
+#define WWHD_AUDIO_QUOTA (-3)
+#define WWHD_AUDIO_CAPACITY 8192u
+#define WWHD_AUDIO_MAX_SUBMIT 2048u
+/* PCM stream v1: 48000 Hz, signed 16-bit guest-endian mono/stereo.
+ * Handles are owned by the calling mod. Errors: -1 invalid/stale, -2 busy,
+ * -3 quota. Submit accepts up to 2048 frames and returns accepted frames;
+ * available reports free frames (capacity8192). Four streams/mod,32 total.
+ * Epoch changes invalidate every handle; queues are not in save states.
+ * No-audio mode drains on the AX producer clock. Output gain/mute is shared.
+ */
+s32 wwhd_audio_open(u32 rate,u32 channels);
+s32 wwhd_audio_submit(u32 handle,const short* samples,u32 frames,u32 channels);
+s32 wwhd_audio_available(u32 handle);
+s32 wwhd_audio_close(u32 handle);
+unsigned long long wwhd_audio_epoch(void);

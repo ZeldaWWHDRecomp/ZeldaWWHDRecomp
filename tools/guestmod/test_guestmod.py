@@ -181,6 +181,10 @@ static void draw(u32 list) {
     element.kind=WWHD_HUD_CLIP_POP;wwhd_hud_clip(list,&element);
 }
 WWHD_HOOK(0x02000000, all_services, (void)) {
+    short pcm[2]={-1234,1234};
+    int stream=wwhd_audio_open(48000,2);
+    wwhd_audio_submit(stream,pcm,1,2);wwhd_audio_available(stream);
+    wwhd_audio_close(stream);wwhd_audio_epoch();
     wwhd_hud_register(draw,WWHD_HUD_BOTH);
     u32 image=wwhd_hud_texture(WWHD_HUD_PACKAGE,"assets/original.png");
     wwhd_hud_release(image);
@@ -205,7 +209,7 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
             for address, (kind, name) in t.imports.items():
                 if kind == "svc":
                     self.assertIn("c->pc = 0x%08Xu;" % address, translated, name)
-            for name in ("wwhd_file_write","wwhd_hud_register","wwhd_hud_emit","wwhd_hud_texture",
+            for name in ("wwhd_audio_open","wwhd_audio_submit","wwhd_audio_available","wwhd_audio_close","wwhd_audio_epoch","wwhd_file_write","wwhd_hud_register","wwhd_hud_emit","wwhd_hud_texture",
                          "wwhd_hud_release","wwhd_hud_epoch","wwhd_hud_clip","wwhd_setting_get","wwhd_setting_changed"):
                 self.assertIn(name,t.services)
             Path(d, "manifest.json").write_text(json.dumps({"kind": "guest", "id": "services", "guest": {"api_version": 1}}))

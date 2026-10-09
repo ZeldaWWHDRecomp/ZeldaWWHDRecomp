@@ -4,6 +4,7 @@
 #include "keycodes.h"
 #include "mouse_sdl.h"
 #include "../input.h"
+#include "../audio_out.h"
 #include "../input_map.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
@@ -424,6 +425,7 @@ static bool text_entry_event(const SDL_Event& event){
  }
 }
 void handle_event(const SDL_Event& event){
+ if((event.type==SDL_EVENT_AUDIO_DEVICE_ADDED||event.type==SDL_EVENT_AUDIO_DEVICE_REMOVED||event.type==SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED)&&!event.adevice.recording)audio::flush();
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
  if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);

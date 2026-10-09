@@ -12,6 +12,7 @@
 #include "guest_files.h"
 #include "guest_settings.h"
 #include "guest_hud.h"
+#include "guest_audio.h"
 #include "guest_png.h"
 #include "input.h"
 #include "true60.h"
@@ -164,6 +165,19 @@ void svc_setting_changed(Cpu* c) {
     auto& mod=owner(c);auto value=settings::read(setting_key(mod,c->r[3]));
     uint64_t revision=value?value->revision:0;c->r[3]=uint32_t(revision>>32);c->r[4]=uint32_t(revision);
 }
+// PCM is signed 16-bit big-endian in the guest, copied before returning.
+void svc_audio_epoch(Cpu* c) {auto v=pcm::store().epoch();c->r[3]=uint32_t(v>>32);c->r[4]=uint32_t(v);}
+void svc_audio_open(Cpu* c) {c->r[3]=uint32_t(pcm::store().open(owner(c).id,c->r[3],c->r[4]));}
+void svc_audio_available(Cpu* c) {c->r[3]=uint32_t(pcm::store().available(owner(c).id,c->r[3]));}
+void svc_audio_close(Cpu* c) {c->r[3]=uint32_t(pcm::store().close(owner(c).id,c->r[3]));}
+void svc_audio_submit(Cpu* c) {
+    auto& mod=owner(c);uint32_t h=c->r[3],a=c->r[4],frames=c->r[5],channels=c->r[6];
+    c->r[3]=uint32_t(pcm::kInvalid);
+    if(frames>pcm::kMaxSubmit||(channels!=1&&channels!=2)||!setting_buffer(mod,a,frames*channels*2))return;
+    int16_t samples[pcm::kMaxSubmit*2];
+    for(uint32_t i=0;i<frames*channels;++i)samples[i]=int16_t(ld16(a+i*2));
+    c->r[3]=uint32_t(pcm::store().submit(mod.id,h,samples,frames,channels));
+}
 // HUD services use packed big-endian guest structures, never host struct casts.
 std::string hud_path(const Loaded& mod,uint32_t address) {
     std::string path;
@@ -222,6 +236,8 @@ void svc_hud_record(Cpu* c,bool clip_only) {
 void svc_hud_emit(Cpu* c) {svc_hud_record(c,false);}
 void svc_hud_clip(Cpu* c) {svc_hud_record(c,true);}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_audio_epoch",svc_audio_epoch},{"wwhd_audio_open",svc_audio_open},
+    {"wwhd_audio_available",svc_audio_available},{"wwhd_audio_submit",svc_audio_submit},{"wwhd_audio_close",svc_audio_close},
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
@@ -394,6 +410,7 @@ void draw_frame(Cpu* c,uint64_t step) {
 void state_loaded() {
     std::lock_guard lock(g_hud_mutex);
     hud::store().reset();
+    pcm::store().reset();
     for(auto& mod:g_loaded)mod.hud_called=false;
 }
 

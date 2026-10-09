@@ -4,14 +4,17 @@
 // WWHD_AUDIO_DUMP=file.wav additionally records everything pushed by the game.
 // WWHD_NO_AUDIO=1 skips opening the device (the mix still runs and can be dumped).
 #include "audio_out.h"
+#include "mods/guest_audio.h"
 
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #include <AudioToolbox/AudioToolbox.h>
+#include <CoreAudio/CoreAudio.h>
 #else
 #include <SDL3/SDL.h>
 #endif
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -40,6 +43,7 @@ std::atomic<uint64_t> g_underrun{0}, g_dropped{0};
 
 FILE* g_dump = nullptr;
 uint32_t g_dump_frames = 0;
+float g_gain=1;
 
 void write_wav_header() {
     uint32_t data = g_dump_frames * 4;
@@ -81,6 +85,9 @@ void pull(int16_t* out,uint32_t frames) {
     g_read.store(r + n, std::memory_order_release);
 }
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
+OSStatus output_changed(AudioObjectID,UInt32,const AudioObjectPropertyAddress*,void*) {
+    audio::flush();return noErr;
+}
 OSStatus render(void*,AudioUnitRenderActionFlags*,const AudioTimeStamp*,UInt32,UInt32 frames,AudioBufferList* io) {
     pull((int16_t*)io->mBuffers[0].mData,frames);return noErr;
 }
@@ -105,6 +112,7 @@ void init() {
             fseek(g_dump, 44, SEEK_SET);
         }
     }
+    if(const char* v=getenv("WWHD_AUDIO_VOLUME")){float gain=float(atof(v));g_gain=std::isfinite(gain)?std::clamp(gain,0.0f,1.0f):1.0f;}
     if (getenv("WWHD_NO_AUDIO")) return;
 
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
@@ -131,25 +139,38 @@ void init() {
     AURenderCallbackStruct cb{render, nullptr};
     AudioUnitSetProperty(g_unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb);
     // debug: WWHD_AUDIO_VOLUME=0..1 scales the device volume (e.g. silent tests of the real output path)
-    if (const char* v = getenv("WWHD_AUDIO_VOLUME"))
-        AudioUnitSetParameter(g_unit, kHALOutputParam_Volume, kAudioUnitScope_Global, 0, (AudioUnitParameterValue)atof(v), 0);
+    // Master gain is applied to the common producer mix, including guest PCM.
     if (AudioUnitInitialize(g_unit) != noErr || AudioOutputUnitStart(g_unit) != noErr) {
         LOG("[audio] failed to start output unit");
         return;
     }
+    AudioObjectPropertyAddress changed{kAudioHardwarePropertyDefaultOutputDevice,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};
+    AudioObjectAddPropertyListener(kAudioObjectSystemObject,&changed,output_changed,nullptr);
     LOG("[audio] CoreAudio output started (48 kHz stereo)");
 #else
     if(!SDL_InitSubSystem(SDL_INIT_AUDIO)){LOG("[audio] SDL audio initialization: %s",SDL_GetError());return;}
     SDL_AudioSpec spec{SDL_AUDIO_S16,2,kRate};
     g_unit=SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,&spec,render,nullptr);
     if(!g_unit){LOG("[audio] no output device: %s",SDL_GetError());return;}
-    if(const char* v=getenv("WWHD_AUDIO_VOLUME"))SDL_SetAudioStreamGain(g_unit,(float)atof(v));
+
     if(!SDL_ResumeAudioStreamDevice(g_unit)){LOG("[audio] failed to start: %s",SDL_GetError());SDL_DestroyAudioStream(g_unit);g_unit=nullptr;return;}
     LOG("[audio] SDL output started (48 kHz stereo)");
 #endif
 }
 
 void push(const int16_t* stereo, int frames) {
+    // The game producer supplies a bounded AX frame. Preserve the caller's data.
+    constexpr int chunk=2048;
+    if(frames<=0)return;
+    if(frames>chunk){for(int i=0;i<frames;i+=chunk)push(stereo+i*2,std::min(chunk,frames-i));return;}
+    // Mods' PCM streams are mixed in game time, before fast forward, so they speed up with the game.
+    int16_t mixed[chunk*2];
+    if(guestmods::pcm::store().active()||g_gain!=1) {
+        memcpy(mixed,stereo,size_t(frames)*4);
+        guestmods::pcm::store().mix(mixed,uint32_t(frames),g_gain==0);
+        if(g_gain!=1)for(int i=0;i<frames*2;++i)mixed[i]=int16_t(mixed[i]*g_gain);
+        stereo=mixed;
+    }
     // AX still processes every 3 ms guest frame and every callback. The output device
     // stays at 48 kHz: downsample the accelerated stream (pitch rises with speed).
     std::vector<int16_t> accelerated;
@@ -196,7 +217,7 @@ int buffered_frames() {
 
 int target_frames() { return kTarget; }
 
-void flush() { g_flush = true; }
+void flush() { g_flush = true; guestmods::pcm::store().reset(); }
 
 void stats(uint64_t& underrun, uint64_t& dropped) {
     underrun = g_underrun;

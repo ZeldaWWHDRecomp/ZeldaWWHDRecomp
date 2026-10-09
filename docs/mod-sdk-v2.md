@@ -421,3 +421,42 @@ and readback out of measured runs, use a quiet exclusive window, interleave the
 variants, and report medians, IQRs and each paired difference. A difference smaller
 than the observed variability is inconclusive. This fixture covers rectangles;
 it does not measure texture-upload or large-text cost.
+
+
+## PCM audio streams v1
+
+Guest mods may synthesize original audio with `wwhd_audio_open(48000, channels)`
+(one or two channels), `wwhd_audio_submit(handle, samples, frames, channels)`,
+`wwhd_audio_available(handle)` and `wwhd_audio_close(handle)`. Samples are signed
+16-bit, interleaved and guest-endian. The host copies them before returning;
+it retains no guest pointers. Buffers must fit in the calling mod's region.
+Only 48000 Hz is supported; callers resample other content themselves.
+
+Each stream holds8192 frames, each submission is at most2048 frames, and limits
+are four streams per mod and32 globally (1 MiB fixed host sample storage).
+Open returns a positive opaque handle. Available returns free queue frames;
+submit returns accepted frames, including zero when full. Close returns zero.
+Errors are `WWHD_AUDIO_INVALID` (-1), `WWHD_AUDIO_BUSY` (-2; retry later without
+advancing a synthesis cursor), and `WWHD_AUDIO_QUOTA` (-3). Handles are checked
+against the calling mod and never reused during the process lifetime. Numeric
+handle exhaustion fails explicitly. Submission/query/close use try-locks;
+there are no waits for a device. Open can allocate a bounded owner string.
+
+The AX producer mixes copied samples into the common stereo output before its
+master gain and dump path. Mixing sums streams in32-bit precision and saturates
+once to S16. Mono duplicates to both channels. Underruns contribute silence;
+there is no automatic replay. The device callback performs no mod work. With no
+streams the producer bypasses the mixer. `WWHD_AUDIO_VOLUME` applies equally to
+game and guest PCM; zero mutes while draining. `WWHD_NO_AUDIO=1` opens no device
+but drains on the existing AX producer clock, including optional diagnostic dumps.
+The service is independent of Metal/Vulkan and does not expose callbacks,
+networking or host filesystem access.
+
+Compare `wwhd_audio_epoch()` before using handles. Full-state loading and output
+flush/reset clear all streams and increment this host-only epoch. CoreAudio
+notifies default-output changes; SDL output topology/format events invalidate
+streams too. Queues and handles are not serialized. Recreate streams on a change
+and resume from restored guest musical state; previously played sound is not
+rewound. Disabling takes effect at restart, so no streams survive a changed mod
+set. This service does not add backend device-reconnection facilities beyond
+those of the existing output backend.
