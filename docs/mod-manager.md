@@ -78,6 +78,11 @@ Preparation options must match the manifest's boolean or enum option schema.
 Preparation tools run from the mod's `Data/<id>` folder with a declared argument
 vector, without a shell. `{data}`, `{package}` and `{game:gc_usa}` (or another
 supported game-source ID) substitute within one argument without word splitting.
+`gc_wind_waker` accepts the supported USA, European or Japanese GameCube disc
+identifiers, for tools that use the same input format across regions. Region-specific
+IDs still require their exact region. Disc headers are checked for both plain ISO
+files and extracted folders containing `sys/boot.bin`; compressed disc formats are
+not accepted. Tools must separately validate the resources and formats they consume.
 Game-source paths are saved locally under shared `game_sources` settings and
 validated again when used. The tool's bounded final output is available on
 failure, with saved game-source paths redacted. A successful tool must produce

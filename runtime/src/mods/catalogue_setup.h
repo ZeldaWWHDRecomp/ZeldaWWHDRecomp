@@ -9,12 +9,16 @@ inline bool valid_game_source(const std::string& game,const std::filesystem::pat
     namespace fs=std::filesystem;
     try {
         static const std::map<std::string,std::string> discs{{"gc_usa","GZLE01"},{"gc_eur","GZLP01"},{"gc_jpn","GZLJ01"}};
-        if(auto it=discs.find(game);it!=discs.end()) {
+        auto it=discs.find(game);
+        if(it!=discs.end()||game=="gc_wind_waker") {
             auto file=fs::is_directory(source)?source/"sys"/"boot.bin":source;
             if(fs::is_symlink(file)||!fs::is_regular_file(file))return false;
             std::ifstream input(file,std::ios::binary);std::array<unsigned char,32> header{};
             input.read(reinterpret_cast<char*>(header.data()),header.size());
-            return input.gcount()==32&&std::string(reinterpret_cast<char*>(header.data()),6)==it->second&&
+            const std::string id(reinterpret_cast<char*>(header.data()),6);
+            const bool known=game=="gc_wind_waker" ?
+                std::any_of(discs.begin(),discs.end(),[&](const auto& disc){return disc.second==id;}) : id==it->second;
+            return input.gcount()==32&&known&&
                    header[28]==0xC2&&header[29]==0x33&&header[30]==0x9F&&header[31]==0x3D;
         }
         std::string title;

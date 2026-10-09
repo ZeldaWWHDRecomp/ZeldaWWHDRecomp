@@ -99,7 +99,7 @@ inline std::vector<Step> steps(const json::Value& value) {
         const auto& optional=v.get("optional");require(optional.type==json::Value::Null||optional.type==json::Value::Bool,"Invalid optional flag");
         s.optional=optional.boolean;
         if(s.type=="game_path") {
-            s.game=text(v,"game",32);require(std::set<std::string>{"gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"}.contains(s.game),"Unknown game source");
+            s.game=text(v,"game",32);require(std::set<std::string>{"gc_wind_waker","gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"}.contains(s.game),"Unknown game source");
         }else if(s.type=="run_tool") {
             s.tool=text(v,"tool",512);require(relative_file(s.tool),"Setup tool must be package-relative");
             s.arguments=strings(v.get("arguments"),64,2048,true,false);s.outputs=strings(v.get("outputs"),32,512);

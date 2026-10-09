@@ -12,6 +12,24 @@ int main() {
         header[28]=0xC2;header[29]=0x33;header[30]=0x9F;header[31]=0x3D;
         {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
         assert(valid_game_source("gc_usa",disc)&&!valid_game_source("gc_eur",disc));
+        assert(valid_game_source("gc_wind_waker",disc));
+        auto regional=root/"regional.iso";
+        for(const auto* id:{"GZLP01","GZLJ01","GZLE01","OTHER1"}) {
+            std::copy_n(id,6,header.begin());
+            {std::ofstream out(regional,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+            assert(valid_game_source("gc_wind_waker",regional)==(std::string(id)!="OTHER1"));
+        }
+        fs::create_directories(root/"extracted"/"sys");
+        std::copy_n("GZLP01",6,header.begin());
+        {std::ofstream out(root/"extracted"/"sys"/"boot.bin",std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+        assert(valid_game_source("gc_wind_waker",root/"extracted"));
+        header[28]=0;
+        {std::ofstream out(regional,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+        assert(!valid_game_source("gc_wind_waker",regional));
+        Sources any_region;assert(any_region.set("gc_wind_waker",root/"extracted"));
+        assert(!any_region.get("gc_wind_waker").empty());
+        auto generic_steps=mods::json::parse(R"([{"id":"source","type":"game_path","title":"Choose source","game":"gc_wind_waker"}])");
+        assert(steps(generic_steps).front().game=="gc_wind_waker");
         Sources sources;assert(sources.set("gc_usa",disc));
         Sources reused(sources.local_settings());assert(reused.get("gc_usa")==fs::canonical(disc).string());
         {std::ofstream out(root/"package"/"tools"/"prepare");out<<"synthetic";}
