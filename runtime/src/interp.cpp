@@ -531,6 +531,7 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
     }
 }
 }  // namespace
+void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
 // J3DModel::viewCalc(J3DModel*)

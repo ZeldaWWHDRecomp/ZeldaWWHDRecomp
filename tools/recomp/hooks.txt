@@ -205,6 +205,13 @@
 0256DDF8  # vrkumo_move: sky clouds drawn halfway
 0256A388  # dKyr_star_move: star twinkle drawn halfway
 0251D864  # dCloth_packet_c vertex fill: cloth drawn halfway after a simulation step
+021625DC  # KoRL sail: custom cloth vertices and placement, at upload
+0245F638  # pirate ship sail: custom cloth vertices and placement, at upload
+023D0E68  # pirate ship skull flag: custom cloth vertices and placement, at upload
+021B89B4  # Forsaken Fortress flag: custom cloth vertices and placement, at upload
+0232B624  # buoy flag: custom cloth vertices and placement, at upload
+0232B984  # buoy pole: attachment placement at the same fraction as the flag
+021BBC34  # mantles/capes: custom cloth vertices and placement, at upload
 02574144  # dKyr_drawStar: stars placed around the eye the pass was drawn with (interp.cpp)
 024EC1C8  # dAttDraw_c::draw: in true 60, the attention arrow is built from halfway values and the current camera
 025615B8  # dScnKy_env_light_c::settingTevStruct_plightcol_plus: candle flicker held on frames without logic (interp_fx.cpp)
