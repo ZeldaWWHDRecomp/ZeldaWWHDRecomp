@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "id": "button-icons",
+  "name": "Original Xbox-style button icons",
+  "version": "0.1.0",
+  "game_id": "wwhd-usa",
+  "kind": "guest",
+  "guest": {"api_version": 1, "elf": "mod.elf"}
+}

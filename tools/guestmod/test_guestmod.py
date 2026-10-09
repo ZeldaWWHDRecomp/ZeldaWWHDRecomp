@@ -121,7 +121,7 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
         return os.path.join(d, "mod.elf")
 
     def test_examples_build(self):
-        for mod in ("heart-ticker", "addcalc-replace"):
+        for mod in ("heart-ticker", "addcalc-replace", "hud-demo", "button-icons"):
             with tempfile.TemporaryDirectory() as d:
                 pkg = os.path.join(d, "pkg")
                 os.makedirs(pkg)

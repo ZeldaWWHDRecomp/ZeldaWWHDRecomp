@@ -21,7 +21,17 @@ std::vector<uint8_t> png(uint32_t width=1) {
 }
 void rejects(const std::function<void()>& fn) {bool failed=false;try{fn();}catch(const std::exception&){failed=true;}assert(failed);}
 }
-int main() {
+int main(int argc,char** argv) {
+    if(argc==2) {
+        const std::filesystem::path examples=argv[1];
+        assert(load_png(examples,"hud-demo/assets/tile.png").width==32);
+        for(const char* letter:{"a","b","x","y","r"}) {
+            auto image=load_png(examples,std::string("button-icons/assets/")+letter+".png");
+            unsigned height=std::string(letter)=="r"?40:64;
+            assert(image.width==64&&image.height==height&&image.rgba.size()==64*height*4);
+            assert(image.rgba[3]==0&&image.rgba[(32*64+32)*4+3]==255);
+        }
+    }
     auto bytes=png();auto image=decode_png(bytes);
     assert(image.width==1&&image.height==1&&image.rgba==std::vector<uint8_t>({21,42,63,127}));
     rejects([]{decode_png({});});rejects([]{decode_png(png(2049));});

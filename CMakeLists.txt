@@ -271,7 +271,7 @@ add_executable(guest_png_test runtime/tools/guest_png_test.cpp runtime/src/mods/
 target_include_directories(guest_png_test PRIVATE runtime/src)
 target_compile_options(guest_png_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
-add_test(NAME guest_png COMMAND guest_png_test)
+add_test(NAME guest_png COMMAND guest_png_test "${CMAKE_SOURCE_DIR}/examples/guest-mods")
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
 add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
@@ -649,3 +649,7 @@ target_include_directories(guest_hud_renderer_test PRIVATE runtime/src)
 target_compile_options(guest_hud_renderer_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hud_renderer_test PRIVATE imgui Threads::Threads)
 add_test(NAME guest_hud_renderer COMMAND guest_hud_renderer_test)
+
+if(Python3_Interpreter_FOUND)
+  add_test(NAME guest_original_art COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/examples/guest-mods/generate_art.py" --check)
+endif()

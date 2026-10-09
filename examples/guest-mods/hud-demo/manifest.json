@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "id": "hud-demo",
+  "name": "HUD drawing demo",
+  "version": "0.1.0",
+  "game_id": "wwhd-usa",
+  "kind": "guest",
+  "guest": {"api_version": 1, "elf": "mod.elf"}
+}
