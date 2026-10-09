@@ -611,3 +611,7 @@ target_link_libraries(code_mods_test PRIVATE Threads::Threads)
 if(Python3_Interpreter_FOUND)
   add_test(NAME code_mods_service COMMAND code_mods_test "${Python3_EXECUTABLE}")
 endif()
+
+add_executable(aspect_panes_test runtime/tools/aspect_panes_test.cpp)
+target_include_directories(aspect_panes_test PRIVATE runtime/src)
+add_test(NAME aspect_panes COMMAND aspect_panes_test)

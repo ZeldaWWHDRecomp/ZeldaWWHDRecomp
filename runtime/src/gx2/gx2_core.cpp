@@ -493,6 +493,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         apply_regs(p[0], v, std::min<uint32>(n - 1, 16));
         break;
     }
+    case OP_LAYOUT_CONTENT:
+        aspect::set_content_clip(n && p[0]);
+        break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
         aspect::layout_root_target(p[0], render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));
