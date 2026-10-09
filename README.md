@@ -12,6 +12,16 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
 
 ### Next update
 
+- **Mod SDK v2, phase 2: HUD drawing for code mods.** PowerPC code mods can now draw on screen
+  (text, images, gauges) on both Metal and Vulkan, ship their own original images and content files
+  in one package, and read port settings such as the resolution. See `examples/guest-mods/hud-demo`
+  and `button-icons`. Code mods stay off unless you turn on **Enable code mods**.
+- **Mods panel: Browse catalogue.** Search, install and update mods from a mod catalogue inside the
+  game. It only downloads when you press Refresh, checks every package's size and SHA-256, and
+  installs packages disabled. Setup steps (choosing your game dump, preparing files locally,
+  building a code mod for your game version) run from the panel. The official mod catalogue is not
+  public yet; `WWHD_MOD_CATALOGUE` points the panel at another index.
+
 ### v0.2.11
 
 - **Linux: one-file AppImage** (issue #55, PR #101, thanks @mhbxyz), next to the zip. Download it,
