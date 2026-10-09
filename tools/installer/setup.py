@@ -574,6 +574,110 @@ def download(url, dst, sha256, size_hint, label):
     os.replace(tmp, dst)
 
 
+def python_setup_capable(executable):
+    """Probe the interpreter itself, including optional compiled stdlib codec support."""
+    try:
+        result = subprocess.run([executable, "-I", "-c",
+                                 "import sys; from compression import zstd; "
+                                 "assert sys.version_info >= (3, 14); "
+                                 "assert zstd.decompress(zstd.compress(b'wwhd')) == b'wwhd'"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def ensure_setup_python(data_dir, prefer_system=True):
+    """Select/provision trusted host Python for guest builds and local setup services.
+
+    The installer owns downloads; guest setup scripts receive no additional capabilities.
+    Windows always uses the release's audited embeddable distribution (issue #58).
+    """
+    if IS_WIN:
+        executable = os.path.join(PKG, "tools", "python", "python.exe")
+        if not python_setup_capable(executable):
+            raise SetupError("The bundled Python lacks Python 3.14 compression.zstd support. "
+                             "Download the current complete Windows release; no Python will be downloaded by setup.")
+        return executable
+    if prefer_system and python_setup_capable(sys.executable):
+        return sys.executable
+    arch = host_arch()
+    if IS_MAC:
+        key = {"aarch64": "macos", "x86_64": "macos-x86_64"}.get(arch)
+    elif IS_LINUX:
+        key = {"aarch64": "linux-aarch64", "x86_64": "linux"}.get(arch)
+    else:
+        key = None
+    if key is None:
+        raise SetupError("No private setup Python is available for this platform/architecture")
+    pin = load_toolchains()["python"][key]
+    root = os.path.join(data_dir, "setup-python")
+    executable = os.path.join(root, "python", "bin", "python3")
+    marker = os.path.join(root, ".wwhd-python")
+    try:
+        with open(marker) as f:
+            current = f.read().strip() == pin["sha256"]
+    except OSError:
+        current = False
+    if current and python_setup_capable(executable):
+        return executable
+    os.makedirs(root, exist_ok=True)
+    archive = os.path.join(root, "download.tar.gz")
+    stage = os.path.join(root, "unpack.tmp")
+    say("  Installing private Python 3.14 for local mod setup (system Python is unchanged).")
+    download(pin["url"], archive, pin["sha256"], pin.get("size"), "setup Python")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    try:
+        # Only the SHA-verified, maintainer-pinned standalone archive reaches extraction.
+        if shutil.which("tar"):
+            run_logged(["tar", "-xf", archive, "-C", stage], what="unpacking setup Python")
+        else:
+            raise SetupError("tar is required to unpack the pinned setup Python")
+        staged = os.path.join(stage, "python", "bin", "python3")
+        if not python_setup_capable(staged):
+            raise SetupError("The pinned Python cannot run compression.zstd on this computer")
+        shutil.rmtree(os.path.join(root, "python"), ignore_errors=True)
+        os.replace(os.path.join(stage, "python"), os.path.join(root, "python"))
+        with open(marker + ".tmp", "w") as f:
+            f.write(pin["sha256"] + "\n")
+        os.replace(marker + ".tmp", marker)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        if os.path.exists(archive):
+            os.remove(archive)
+    return executable
+
+
+def repair_guest_python(data_dir):
+    """Upgrade an existing guest bridge without rebuilding game code or changing its compiler."""
+    path = os.path.join(data_dir, "guest-sdk.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SetupError("No valid guest SDK configuration to repair: %s" % e)
+    if not isinstance(config, dict) or config.get("format_version") not in (1, 2):
+        raise SetupError("Unsupported guest SDK configuration version")
+    executable = ensure_setup_python(data_dir)
+    if config["format_version"] == 2 and PORTABLE and os.path.isabs(executable):
+        for root in (PKG, data_dir):
+            try:
+                inside = os.path.commonpath([os.path.abspath(root), executable]) == os.path.abspath(root)
+            except ValueError:  # another Windows drive
+                inside = False
+            if inside:
+                executable = os.path.relpath(executable, data_dir)
+                if not executable.startswith("."):
+                    executable = "." + os.sep + executable
+                break
+    config["python"] = [executable]
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    os.replace(path + ".tmp", path)
+    say("Local mod setup Python is ready (compression.zstd verified).")
+
+
 def ensure_xcode_clt(ui):
     def ok():
         try:
@@ -1402,7 +1506,7 @@ def write_guest_build_config(data_dir, tc):
                     return relative if relative.startswith(".") else "." + os.sep + relative
         return path
 
-    config = {"format_version": 2, "python": [stored_path(sys.executable)],
+    config = {"format_version": 2, "python": [stored_path(ensure_setup_python(data_dir))],
               "compiler": [stored_path(tc.cc[0])] + tc.cc[1:],
               "builder": stored_path(os.path.join(PKG, "tools", "guestmod", "build_guest_mod.py")),
               "include": stored_path(os.path.join(PKG, "sdk", "include")),
@@ -2014,6 +2118,7 @@ def main():
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
     ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON")
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists")
+    ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
     ap.add_argument("--repair", action="store_true", help="rebuild the game code from the installed game files")
     ap.add_argument("--jobs", type=int, help="parallel compiler processes")
     ap.add_argument("--yes", action="store_true", help="non-interactive (also WWHD_SETUP_NONINTERACTIVE=1)")
@@ -2061,6 +2166,9 @@ def main():
 
 def run(args, ui):
     ctx = Ctx(args)
+    if getattr(args, "repair_guest_python", False):
+        repair_guest_python(ctx.data_dir)
+        return 0
     if getattr(args, "rebuild_code_mods", False):
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("No installed game files to rebuild from; run setup first")

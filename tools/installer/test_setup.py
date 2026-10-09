@@ -18,7 +18,8 @@ class GuestBuildConfig(unittest.TestCase):
     def test_toolchain_argument_vector(self):
         with tempfile.TemporaryDirectory() as d:
             tc = setup.Toolchain(["compiler with spaces", "cc", "-target", "x86_64-linux-gnu.2.35"], [], [])
-            setup.write_guest_build_config(d, tc)
+            with mock.patch.object(setup, "ensure_setup_python", return_value=sys.executable):
+                setup.write_guest_build_config(d, tc)
             with open(os.path.join(d, "guest-sdk.json"), encoding="utf-8") as f:
                 config = json.load(f)
             self.assertEqual(config["compiler"], tc.cc)
@@ -42,7 +43,7 @@ class GuestBuildConfig(unittest.TestCase):
             cache = os.path.join(data, "toolchain", "zig-cache")
             tc = setup.Toolchain([paths["compiler"], "cc", "-target", "x86_64-linux-gnu.2.35"], [], [],
                                  env={"ZIG_GLOBAL_CACHE_DIR": cache, "UNRELATED_ENV": "not-persisted"})
-            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup.sys, "executable", paths["python"]):
+            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup, "ensure_setup_python", return_value=paths["python"]):
                 setup.write_guest_build_config(data, tc)
             moved = os.path.join(directory, "moved-release")
             os.rename(release, moved)
@@ -59,6 +60,115 @@ class GuestBuildConfig(unittest.TestCase):
                              os.path.join(moved_data, "toolchain", "zig-cache"))
             self.assertNotIn("UNRELATED_ENV", config)
 
+
+
+class SetupPython(unittest.TestCase):
+    def test_probe_checks_codec_and_version_in_isolation(self):
+        with mock.patch.object(setup.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(setup.python_setup_capable("python with spaces"))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["python with spaces", "-I", "-c"])
+        self.assertIn("compression import zstd", command[3])
+        self.assertIn("(3, 14)", command[3])
+        for result in (mock.Mock(returncode=1),):
+            with mock.patch.object(setup.subprocess, "run", return_value=result):
+                self.assertFalse(setup.python_setup_capable("python"))
+        with mock.patch.object(setup.subprocess, "run", side_effect=setup.subprocess.TimeoutExpired("python", 15)):
+            self.assertFalse(setup.python_setup_capable("python"))
+
+    def test_windows_bundled_only_even_with_capable_ambient(self):
+        with mock.patch.multiple(setup, IS_WIN=True, PKG="release"), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True) as probe, \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), os.path.join("release", "tools", "python", "python.exe"))
+            probe.assert_called_once_with(os.path.join("release", "tools", "python", "python.exe"))
+            download.assert_not_called()
+        with mock.patch.multiple(setup, IS_WIN=True), \
+             mock.patch.object(setup, "python_setup_capable", return_value=False), \
+             mock.patch.object(setup, "download") as download:
+            with self.assertRaisesRegex(setup.SetupError, "complete Windows release"):
+                setup.ensure_setup_python("data")
+            download.assert_not_called()
+
+    def test_capable_ambient_no_download(self):
+        with mock.patch.multiple(setup, IS_WIN=False), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True), \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), sys.executable)
+            download.assert_not_called()
+
+    def test_old_or_missing_codec_provisions_each_supported_platform(self):
+        for mac, arch, key in ((False, "x86_64", "linux"), (False, "aarch64", "linux-aarch64"),
+                               (True, "aarch64", "macos"), (True, "x86_64", "macos-x86_64")):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as d:
+                def fetch(url, dst, sha, size, label):
+                    self.assertEqual(url, setup.load_toolchains()["python"][key]["url"])
+                    with open(dst, "wb") as f:
+                        f.write(b"authored archive placeholder")
+                def unpack(command, **kwargs):
+                    os.makedirs(os.path.join(command[-1], "python", "bin"))
+                with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=mac, IS_LINUX=not mac), \
+                     mock.patch.object(setup, "host_arch", return_value=arch), \
+                     mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]), \
+                     mock.patch.object(setup, "download", side_effect=fetch), \
+                     mock.patch.object(setup, "run_logged", side_effect=unpack), \
+                     mock.patch.object(setup.shutil, "which", return_value="tar"):
+                    result = setup.ensure_setup_python(d)
+                self.assertTrue(result.endswith(os.path.join("setup-python", "python", "bin", "python3")))
+                with open(os.path.join(d, "setup-python", ".wwhd-python")) as f:
+                    self.assertEqual(f.read().strip(), setup.load_toolchains()["python"][key]["sha256"])
+
+    def test_cached_private_python_rechecked_for_codec(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "setup-python")
+            os.makedirs(root)
+            with open(os.path.join(root, ".wwhd-python"), "w") as f:
+                f.write(setup.load_toolchains()["python"]["linux"]["sha256"])
+            with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=False, IS_LINUX=True), \
+                 mock.patch.object(setup, "host_arch", return_value="x86_64"), \
+                 mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]) as probe, \
+                 mock.patch.object(setup, "download") as download:
+                result = setup.ensure_setup_python(d)
+            self.assertEqual(probe.call_count, 2)
+            download.assert_not_called()
+            self.assertTrue(result.startswith(root))
+
+    def test_failed_provision_does_not_rewrite_bridge(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            original = '{"format_version": 2, "python": ["old-python"]}'
+            with open(path, "w") as f:
+                f.write(original)
+            with mock.patch.object(setup, "ensure_setup_python", side_effect=setup.SetupError("download failed")):
+                with self.assertRaisesRegex(setup.SetupError, "download failed"):
+                    setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(f.read(), original)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_portable_repair_keeps_external_python_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            with open(path, "w") as f:
+                json.dump({"format_version": 2}, f)
+            outside = os.path.abspath(os.path.join(d, "..", "external-python"))
+            with mock.patch.object(setup, "ensure_setup_python", return_value=outside), \
+                 mock.patch.multiple(setup, PORTABLE=True, PKG=d):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(json.load(f)["python"], [outside])
+
+    def test_repair_preserves_compiler_and_config_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            config = {"format_version": 2, "python": ["old-python"], "compiler": ["cc", "-flag"], "include": "sdk"}
+            with open(path, "w") as f:
+                json.dump(config, f)
+            with mock.patch.object(setup, "ensure_setup_python", return_value="new-python"), mock.patch.object(setup, "PORTABLE", False):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                result = json.load(f)
+            self.assertEqual(result, dict(config, python=["new-python"]))
 
 
 class Keys(unittest.TestCase):

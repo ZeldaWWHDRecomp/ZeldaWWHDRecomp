@@ -218,3 +218,33 @@ The recompiler reads only `code/cking.rpx` (the runtime checks at start that it 
 code); the other files in `code/` (`app.xml`, `cos.xml`) are metadata and are not checked.
 For Europe it emits mapped hooks and runtime address tables automatically; no USA dump or
 separate language source is needed. See [regional builds](../../docs/builds.md).
+
+
+## Local setup Python capabilities
+
+Guest compilation and Python mod setup use the interpreter recorded in `guest-sdk.json`.
+Setup verifies Python 3.14 or newer and an actual isolated `compression.zstd` round trip,
+rather than assuming that a version number guarantees the optional compiled codec.
+Windows uses only the release's official, hash-checked embeddable Python 3.14.8; the
+installer never downloads a replacement there. An incomplete/older Windows release must
+be replaced with the complete current release.
+
+On macOS (arm64 and x86_64) and Linux (aarch64 and x86_64), a capable setup interpreter is
+reused. Otherwise the trusted installer downloads the architecture-specific standalone
+Python pinned in `toolchains.json`, verifies its SHA-256, and installs it privately under
+`data/setup-python/`. It probes the staged interpreter before selecting it. The system
+Python is unchanged. Downloads remain installer operations; mod setup tools retain their
+reviewed local file capabilities and cannot download or launch programs.
+
+Existing installations can update only this interpreter, preserving the compiler and
+other bridge settings, by passing `--repair-guest-python` to their release's terminal
+setup launcher (plus `--data-dir PATH` for a nondefault installation). This does not rebuild
+game code. A normal setup/repair also refreshes the interpreter configuration. Portable
+format-v2 paths remain relative to the data directory and survive moving the release.
+
+The Windows ZIP pin is published by [Python.org](https://www.python.org/downloads/release/python-3148/).
+Standalone pins use the publisher's SHA-256 asset digests from
+[python-build-standalone 20261003](https://github.com/astral-sh/python-build-standalone/releases/tag/20261003).
+When updating Windows, regenerate every-file hashes in `tools/release/python-windows-files.json`
+and update the release workflow's versioned DLL signature check together with the archive pin.
+Android guest mods remain unsupported; these interpreter paths describe supported desktop setup.

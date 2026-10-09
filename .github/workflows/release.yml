@@ -133,6 +133,7 @@ jobs:
         run: |
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
@@ -258,6 +259,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
@@ -437,13 +439,16 @@ jobs:
             if ($ascii.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Wind Waker HD.exe imports $dll" }
           }
           # the bundled Python is the official one, unmodified: its programs and DLLs keep the PSF signature
-          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python313.dll') {
+          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll') {
             $sig = Get-AuthenticodeSignature (Join-Path $pkg "tools\python\$f")
             "tools\python\$f`: $($sig.Status), $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
               throw "tools\python\$f does not carry a valid PSF signature"
             }
           }
+          # Probe the actual isolated embeddable interpreter, including its compiled Zstd module.
+          & (Join-Path $pkg "tools\python\python.exe") -I -c "import sys; from compression import zstd; assert sys.version_info >= (3, 14); assert zstd.decompress(zstd.compress(b'wwhd')) == b'wwhd'"
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot run local RVZ setup" }
           # version information, a manifest and no debug sections (cmake/WindowsResources.cmake, WWHD_STRIP_RELEASE)
           foreach ($f in 'Wind Waker HD.exe', 'tools\bin\wwhd-extract.exe') {
             $p = Join-Path $pkg $f
