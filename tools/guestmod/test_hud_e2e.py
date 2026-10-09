@@ -214,6 +214,9 @@ def main():
     if args.state and "guest mod set differs from this state" in (root / "runtime.log").read_text(errors="replace"):
         cleanup_inputs(root, keep_frames=args.keep_frames)
         raise RuntimeError("state guest-mod set differs; use --boot or a state saved with this package")
+    if args.state and "[savestate] Loaded slot" not in (root / "runtime.log").read_text(errors="replace"):
+        cleanup_inputs(root, keep_frames=args.keep_frames)
+        raise RuntimeError("full state was not restored; inspect runtime.log or use --boot")
     if args.boot:
         with (root / "states" / "slot1.bin").open("rb") as state_file:
             header = state_file.read(104)
