@@ -812,6 +812,11 @@ plays the recorded input back to reproduce the crash. Automatic states can also 
 
 Game controllers (Xbox, PlayStation, Switch Pro, MFi) work too; by default buttons map by
 position (the bottom face button is the Wii U's B), and they can be remapped in the Controls window.
+**Face buttons** in the settings overlay (F1 → Controls) or the Input menu switches that preset:
+*by position (Nintendo)* is the default; *by label (Xbox)* makes the button named A drive the Wii
+U's A instead — on an Xbox pad that means A accepts/acts and B goes back (issue #78), and the X/Y
+items follow the printed labels too. The choice rewrites the four face bindings only; keyboard keys
+and the other inputs stay as they are, and a hand-edited face binding shows as *custom*.
 The **Input** menu switches whether keyboard and controllers act as the Wii U GamePad (default)
 or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with the Pro
 Controller, the GamePad window keeps its screen and touch input.

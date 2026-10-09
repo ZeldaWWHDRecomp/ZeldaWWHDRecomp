@@ -133,7 +133,7 @@ void pro_body(std::vector<ImVec2>& out, const std::function<ImVec2(float, float)
     out.pop_back();  // closed
 }
 
-Geo layout(bool pro, ImVec2 org, float w, float h) {
+Geo layout(bool pro, FaceLayout fl, ImVec2 org, float w, float h) {
     Geo g;
     g.org = org;
     // the callouts need about 1060 x 520 points; smaller views shrink them, larger ones grow a little
@@ -174,10 +174,20 @@ Geo layout(bool pro, ImVec2 org, float w, float h) {
         p.text = text;
         g.parts.push_back(p);
     };
-    button(kX, {d.face.x, d.face.y - d.faceSpread}, d.faceR, "X");
-    button(kA, {d.face.x + d.faceSpread, d.face.y}, d.faceR, "A");
-    button(kB, {d.face.x, d.face.y + d.faceSpread}, d.faceR, "B");
-    button(kY, {d.face.x - d.faceSpread, d.face.y}, d.faceR, "Y");
+    // face buttons: Wii U positions (X top, A right, B bottom, Y left). With the by-label (Xbox)
+    // preset the letters follow the host pad instead (Y top, B right, A bottom, X left), so each
+    // letter sits where that host button is (issue #78).
+    if (fl == FaceLayout::kLabels) {
+        button(kY, {d.face.x, d.face.y - d.faceSpread}, d.faceR, "Y");
+        button(kB, {d.face.x + d.faceSpread, d.face.y}, d.faceR, "B");
+        button(kA, {d.face.x, d.face.y + d.faceSpread}, d.faceR, "A");
+        button(kX, {d.face.x - d.faceSpread, d.face.y}, d.faceR, "X");
+    } else {
+        button(kX, {d.face.x, d.face.y - d.faceSpread}, d.faceR, "X");
+        button(kA, {d.face.x + d.faceSpread, d.face.y}, d.faceR, "A");
+        button(kB, {d.face.x, d.face.y + d.faceSpread}, d.faceR, "B");
+        button(kY, {d.face.x - d.faceSpread, d.face.y}, d.faceR, "Y");
+    }
     button(kPlus, d.plus, d.smallR, "+");
     button(kMinus, d.minus, d.smallR, "\xE2\x88\x92");  // −
     button(kHome, d.home, d.smallR, "\xE2\x8C\x82");    // ⌂
@@ -354,7 +364,7 @@ std::string binding_summary(const Mapping& m, int a) {
 void draw_controls(ControlsView& v, float w, float h) {
     const Palette P;
     const ImVec2 org = ImGui::GetCursorScreenPos();
-    const Geo g = layout(v.pro, org, w, h);
+    const Geo g = layout(v.pro, face_layout(v.m), org, w, h);
     const float k = g.k, s = g.s;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const Mapping& m = v.m;

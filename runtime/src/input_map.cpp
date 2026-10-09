@@ -174,15 +174,47 @@ Mapping Mapping::defaults() {
     key(kLUp, kVK_ANSI_W); key(kLDown, kVK_ANSI_S); key(kLLeft, kVK_ANSI_A); key(kLRight, kVK_ANSI_D);
     key(kRUp, kVK_UpArrow); key(kRDown, kVK_DownArrow); key(kRLeft, kVK_LeftArrow); key(kRRight, kVK_RightArrow);
     key(kScreenshot, kVK_F10);  // free on every host (F11: SDL full screen, F12/P: debug frame capture)
-    // controllers map by position: the bottom face button (Xbox A) is the Wii U's B
+    // controllers map by position: the bottom face button (Xbox A) is the Wii U's B (face_layout)
     const int pads[kActionCount] = {
-        kPadB, kPadA, kPadY, kPadX, kPadLB, kPadRB, kPadLT, kPadRT, kPadMenu, kPadOptions, kPadHome,
+        kPadNone, kPadNone, kPadNone, kPadNone,  // A B X Y: face-layout preset, filled below
+        kPadLB, kPadRB, kPadLT, kPadRT, kPadMenu, kPadOptions, kPadHome,
         kPadDUp, kPadDDown, kPadDLeft, kPadDRight, kPadL3, kPadR3,
         kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
         kPadNone,  // Screenshot: no controller input by default (every button already plays)
     };
     for (int a = 0; a < kActionCount; a++) m.pad[a] = pads[a];
+    apply_face_layout(m, FaceLayout::kPosition);
     return m;
+}
+
+// ---- face-button presets (issue #78): pad inputs for the actions kA, kB, kX, kY
+
+namespace {
+const int kFaceByPosition[4] = {kPadB, kPadA, kPadY, kPadX};  // by position (default)
+const int kFaceByLabel[4] = {kPadA, kPadB, kPadX, kPadY};     // by label (Xbox)
+}
+
+FaceLayout face_layout(const Mapping& m) {
+    bool pos = true, lab = true;
+    for (int i = 0; i < 4; i++) {
+        pos &= m.pad[kA + i] == kFaceByPosition[i];
+        lab &= m.pad[kA + i] == kFaceByLabel[i];
+    }
+    return pos ? FaceLayout::kPosition : lab ? FaceLayout::kLabels : FaceLayout::kCustom;
+}
+
+void apply_face_layout(Mapping& m, FaceLayout layout) {
+    if (layout == FaceLayout::kCustom) return;
+    const int* src = layout == FaceLayout::kLabels ? kFaceByLabel : kFaceByPosition;
+    for (int i = 0; i < 4; i++) m.pad[kA + i] = src[i];
+}
+
+const char* face_layout_label(FaceLayout l) {
+    switch (l) {
+    case FaceLayout::kPosition: return "by position (Nintendo)";
+    case FaceLayout::kLabels: return "by label (Xbox)";
+    default: return "custom";
+    }
 }
 
 std::vector<int> key_users(const Mapping& m, int code, int except) {

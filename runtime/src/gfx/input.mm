@@ -3,7 +3,8 @@
 // Which key or controller input drives which GamePad input is the controls mapping (input_map.h,
 // edited in Input > Controls…). Defaults: WASD move, arrows camera, K/Space = A, J = B, L = X, I = Y,
 // Q = L, E = R, Left Shift = ZL, C = ZR, Enter = +, Tab = -, H = Home, 1-4 = D-pad up/down/left/right,
-// X = L-stick click, V = R-stick click; controllers use button positions (Xbox "A" = Wii U B).
+// X = L-stick click, V = R-stick click; controllers use button positions (Xbox "A" = Wii U B),
+// switchable to by-label with input_map::FaceLayout (issue #78).
 #import <AppKit/AppKit.h>
 #import <GameController/GameController.h>
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime

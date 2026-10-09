@@ -62,6 +62,18 @@ struct Mapping {
     bool operator==(const Mapping&) const = default;
 };
 
+// Which host face buttons drive the Wii U's A/B/X/Y (issue #78). Not stored: it is the shape of
+// the four face bindings, so a hand-edited mapping simply reads back as kCustom.
+//   kPosition (default): by position — the bottom host button (Xbox A) is the Wii U's B, the right
+//     one (Xbox B) is the Wii U's A, and X/Y are swapped the same way (Nintendo layout).
+//   kLabels: by label — the host button named A is the Wii U's A (Xbox convention: A accepts,
+//     B goes back; the X and Y items follow the printed labels too).
+//   kCustom: the four face bindings match neither preset.
+enum class FaceLayout { kPosition, kLabels, kCustom };
+FaceLayout face_layout(const Mapping& m);
+void apply_face_layout(Mapping& m, FaceLayout layout);  // rewrites pad[kA..kY]; kCustom is a no-op
+const char* face_layout_label(FaceLayout l);            // for the UI
+
 // actions (other than `except`) that use this key / controller input
 std::vector<int> key_users(const Mapping& m, int code, int except = -1);
 std::vector<int> pad_users(const Mapping& m, int pad, int except = -1);
