@@ -21,6 +21,9 @@ How it works and how it differs from running the game in Cemu: [docs/how-it-work
   installed (USA `0005000010143500` or EU `0005000010143600`). SDCafiine-style folders named after the
   title ID follow the same rule.
 
+- **Fixed: black letter card in the Rito mail-sorting game (#28, #69);** the shader caches rebuild
+  once after updating.
+
 - **`WWHD_SHADOW_FIX` is gone; use `WWHD_SHADOW_SCALE=1`** for console-sized shadow maps (less GPU
   memory at 2x/3x). Since v0.2.9 both sizes look practically the same (issue #67).
 
@@ -912,6 +915,8 @@ title screen and the file select, before a file is loaded, it quits without aski
   start; `WWHD_PORTABLE_LOAD=<file.wwstate>` loads that portable state (e.g. from a bug report) as
   soon as a Quest Log is being played; `WWHD_RUMBLE=0|1` (SDL builds) start value for Controls > Rumble (overrides the remembered
   choice); `WWHD_LOG_RUMBLE=1` logs the game's motor requests and what the motors do.
+  `WWHD_STRICT_MUL=0` turns off the GPU's 0×anything=0 multiply rule in shaders (on by default, as in
+  Cemu; off only for performance comparisons, it brings back e.g. the black letter in the Rito mail sorting game).
 - Crashes and game halts write `captures/crash-<time>.log` (crash address, registers, the guest call
   chain, a host backtrace and the last log lines; useful for bug reports, it contains only addresses,
   function names, the file names of the program's modules and log text). A crash address outside the

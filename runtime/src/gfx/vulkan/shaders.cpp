@@ -74,7 +74,7 @@ uint64_t hash_bytes(const void* bytes, size_t size, uint64_t hash = 0x9E3779B97F
 }
 // Disk entries retain exact GLSL to verify hash collisions and translator changes.
 // Bump this compile recipe whenever compilation options/defaults change.
-constexpr char cacheRecipe[] = "WWVKSC02:glsl450:vk1.1:spv1.3:noopt:resources1:"
+constexpr char cacheRecipe[] = "WWVKSC02:glsl450:vk1.1:spv1.3:noopt:resources1:strictmul1:"
     GLSLANG_VERSION_FLAVOR;
 constexpr size_t maxCacheBytes = 128u * 1024u * 1024u;
 constexpr size_t maxSourceBytes = 4u * 1024u * 1024u;
@@ -516,6 +516,10 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         options.linkPSInputsToVS = true;
         options.vsOutputSemantics = link.exports;
     }
+    // the GPU's MUL/MULADD give 0*anything=0 (rsqrt(0)*0 is NaN otherwise: black letter in the Rito
+    // mail sorting game); Cemu's default too. WWHD_STRICT_MUL=0 turns it off for comparisons
+    static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
+    options.strictMul = strictMul;
     uint64_t packBase=0;
     if(mods::cemu::has_shaders()) {
         packBase=cemu_pack_hash::base(ppc_ptr(address),size,regs,vertex,fetch);
