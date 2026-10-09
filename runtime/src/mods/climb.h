@@ -5,7 +5,7 @@ namespace mods {
 bool climb_enabled();
 void set_climb_enabled(bool on);
 
-// stamina wheel state for the HUD overlay (climb_hud.mm); read from the render thread
+// stamina wheel state for the HUD overlay (mod_hud.mm); read from the render thread
 struct ClimbHud {
     float stamina;    // 0..1
     float alpha;      // 0 = hidden

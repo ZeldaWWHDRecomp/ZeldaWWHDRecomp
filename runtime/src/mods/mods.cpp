@@ -60,6 +60,8 @@ bool g_move_armed = false;     // toggle: a press armed a cycle that has not sta
 bool g_move_held_prev = false;
 std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
+std::atomic<float> g_move_hud_alpha{0.f};  // the bar's fade (climb.cpp's pattern)
+float g_move_hud_hold = 0.f;               // seconds the full bar stays visible
 constexpr float kRampTau = 0.15f;  // seconds; the ramp's time constant
 std::atomic<bool> g_scenes{env_on("WWHD_MOD_FAST_SCENES")};
 
@@ -145,6 +147,12 @@ void set_move_speed_button(uint32_t button) {
 }
 void move_speed_input(uint32_t buttons) { g_move_buttons.store(buttons, std::memory_order_relaxed); }
 
+MoveHud move_hud() {
+    return {g_move_stamina.load(std::memory_order_relaxed), g_move_hud_alpha.load(std::memory_order_relaxed),
+            g_move_boosted.load(std::memory_order_relaxed), g_move_swimming.load(std::memory_order_relaxed),
+            g_move_exhausted.load(std::memory_order_relaxed)};
+}
+
 // One logic step of the boost. Called from the 023FD39C site (true60_link.cpp) on every pass; the
 // state advances once per original 30 Hz step (previews only reuse the ramp). Returns the factor
 // the site multiplies the horizontal speed by, which is exactly 1 whenever the mod is off.
@@ -158,6 +166,8 @@ float link_move_factor(uint32_t link) {
         g_move_exhausted = false;
         g_move_boosted = false;
         g_move_swimming = false;
+        g_move_hud_alpha = 0.f;
+        g_move_hud_hold = 0.f;
         apply_anim_ramp();  // ramp is 1: put the authored animation rates back
         return 1.f;
     }
@@ -202,6 +212,15 @@ float link_move_factor(uint32_t link) {
                                          kRampTau, dt)
                           : 1.f;
         apply_anim_ramp();  // the legs follow the ramp, so they do not skate at 2x
+        // HUD: shown while boosting or while the bar refills, held a second, then faded out
+        const bool show = boosting || g_move_stamina.load(std::memory_order_relaxed) < 1.f;
+        if (show) g_move_hud_hold = 1.f;
+        else if (g_move_hud_hold > 0.f) g_move_hud_hold -= dt;
+        const float target = (show || g_move_hud_hold > 0.f) ? 1.f : 0.f;
+        float alpha = g_move_hud_alpha.load(std::memory_order_relaxed);
+        alpha += (target - alpha) * std::min(1.f, dt * 8.f);
+        if (target == 0.f && alpha < 0.01f) alpha = 0.f;
+        g_move_hud_alpha = alpha;
     }
     return g_move_ramp.load(std::memory_order_relaxed);
 }

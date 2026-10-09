@@ -15,7 +15,7 @@
 //   (type 1: a plain wall too tall for the ledge actions; type 9: too tall for a jump-grab) is it
 //   run again with plain walls reported as ivy. Small ledges keep their own actions (climb up,
 //   jump-grab, hang), as do ladders (codes 4/5), push blocks (3), "no grab" walls (2) and real ivy.
-// - Stamina (BotW-style wheel, HUD in climb_hud.mm) drains while Link climbs a converted wall
+// - Stamina (BotW-style wheel, HUD in mod_hud.mm) drains while Link climbs a converted wall
 //   (a quarter as fast while he hangs still) and refills on solid ground. When it runs out, or
 //   while B is held, setMoveBGCorrectClimb sees the wall as plain again, so the game's own code
 //   lets go (procFall_init; A lets go as on ivy). After letting go of a converted wall Link can't
