@@ -50,4 +50,5 @@ allows concurrent functional checks when the operator authorizes them; it does
 not relax benchmark gates. The headless
 `WWHD_TEST_CATALOGUE_INSTALL` aid selects an entry; it retains compatibility, hash,
 manifest, manager trust and restart checks. These are opt-in real-game runs, not
-unit tests, and must be scheduled one at a time.
+unit tests. Keep the default one-session limit unless the operator explicitly
+authorizes concurrent functional checks; performance measurements remain exclusive.
