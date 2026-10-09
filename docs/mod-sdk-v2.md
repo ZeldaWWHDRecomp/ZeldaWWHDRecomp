@@ -792,8 +792,11 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
 
 See `examples/guest-mods/hud-demo` for original PNG artwork, heart-count text and
 texture handle renewal after loading a state. `button-icons` demonstrates typed
-preset reads; its overdraw placement and contextual visibility are still under
-validation. The examples' README describes the opt-in local frame-check driver.
+preset reads and follows the actual HD button panes for placement and visibility.
+Local USA/EUR Metal/Vulkan checks cover 30/60 fps, live preset transitions, Pause
+and full-state restoration; swimming and drowning checks cover contextual hiding
+and fading. Story dialogue/cutscenes and moving-HUD smoothness remain untested.
+The examples' README describes the opt-in local frame-check driver.
 
 Elements use the packed `wwhd_hud_element` declaration in `wwhd_guest.h`. Put the
 element and UTF-8 text in static storage or this mod's heap. Kinds include filled
