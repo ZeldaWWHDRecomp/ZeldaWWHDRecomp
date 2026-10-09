@@ -1046,7 +1046,8 @@ CatalogueWorker& catalogue_work(){static CatalogueWorker worker;return worker;}
 mods::catalogue::Version catalogue_port_version() {
     std::string version=build::version();
     if(version.starts_with("v"))version.erase(0,1);
-    version=version.substr(0,version.find('+'));
+    // "0.2.11+meta" and development builds "0.2.11-devel.<commit>" count as their release
+    version=version.substr(0,version.find_first_of("+-"));
     return mods::catalogue::Version::parse(version);
 }
 void catalogue_action(std::function<void(CatalogueWorker&)> action) {

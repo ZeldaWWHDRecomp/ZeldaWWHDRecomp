@@ -80,10 +80,14 @@ jobs:
             if [[ "$GITHUB_REF" != refs/heads/devel ]]; then
               echo "::error::development builds run on devel (this run is on $GITHUB_REF)"; exit 1
             fi
-            echo "version=devel-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+            # the last release plus the commit: "v0.2.11-devel.1a2b3c4d" (the game and the mod catalogue
+            # compare the release part; a bare "devel-..." made every catalogue mod "unavailable")
+            base=$(gh api "repos/$GH_REPO/releases/latest" -q .tag_name 2>/dev/null || true)
+            [[ "$base" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no latest release tag (got '$base')"; exit 1; }
+            echo "version=$base-devel.${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "devel=true" >> "$GITHUB_OUTPUT"
-            echo "version: devel-${GITHUB_SHA::8}, development pre-release"
+            echo "version: $base-devel.${GITHUB_SHA::8}, development pre-release"
             exit 0
           fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
