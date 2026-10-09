@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 
@@ -60,6 +61,37 @@ def required_setup_receipts(database, ident, setup):
     return missing
 
 
+def selected_build(data, hooks):
+    """Verify the launcher's actual selection and its completed cache provenance."""
+    active = json.loads((data / 'code-mods-active.json').read_text())
+    if active.get('state') != 'ready' or active.get('hooks') is not bool(hooks):
+        raise ValueError('Completed code-mod selection has the wrong hooks mode')
+    if type(active.get('cached')) is not bool or not isinstance(active.get('seconds'), (int, float)):
+        raise ValueError('Selected rebuild lacks cache/timing provenance')
+    fingerprint = active['fingerprint']
+    cache = data / 'code-builds' / fingerprint
+    executable = Path(active['exe']).resolve()
+    if executable.parent != (cache / 'bin').resolve() or not executable.is_file():
+        raise ValueError('Selected executable is outside its completed cache')
+    ready = json.loads((cache / 'ready.json').read_text())
+    if ready.get('fingerprint') != fingerprint or ready.get('hooks') is not bool(hooks):
+        raise ValueError('Selected executable cache record does not match selection')
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    if ready.get('sha256') != digest or not ready.get('generated') or not ready.get('gamecode_objects'):
+        raise ValueError('Selected executable lacks verified code-generation provenance')
+    return {'selection': active, 'ready': ready, 'executable': str(executable),
+            'executable_sha256': digest, 'rebuild_kind': 'cached' if active['cached'] else 'fresh'}
+
+
+def process_executable(pid):
+    proc = Path('/proc') / str(pid) / 'exe'
+    if proc.is_symlink():
+        return proc.resolve()
+    result = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'comm='],
+                            capture_output=True, text=True, check=False)
+    return Path(result.stdout.strip()).resolve() if result.returncode == 0 and result.stdout.strip() else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('release', 'game', 'save', 'package', 'catalogue-source', 'game-sources', 'out'):
@@ -99,6 +131,22 @@ def main():
     gates = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gates)
     phases = {}
+    rebuilds = {}
+
+    # An environment flag cannot turn a hook-enabled executable into an off build.
+    # Materialize and select the real off cache before the first launcher process.
+    if gates.other_benchmarks():
+        raise RuntimeError('A benchmark is active; do not start an installer rebuild')
+    off_status = args.out / 'prepare-off-status.json'
+    with (args.out / 'prepare-off-installer.log').open('w') as log:
+        subprocess.run([sys.executable, str(release / 'tools/installer/setup.py'),
+                        '--yes', '--data-dir', str(data), '--rebuild-code-mods', '--code-mods', '0',
+                        '--jobs', '4', '--code-mods-status', str(off_status)],
+                       stdout=log, stderr=subprocess.STDOUT, check=True)
+    off = selected_build(data, False)
+    status = json.loads(off_status.read_text())
+    assert status == off['selection'] and status['hooks'] is False
+    rebuilds['prepare-off'] = off
 
     def database():
         return json.loads((manager / 'profiles.json').read_text())
@@ -110,6 +158,8 @@ def main():
     def run(name, support, extra=None, overlay=True, done_marker=None, want_enabled=None):
         if len(gates.other_games()) >= args.max_game_sessions or gates.other_benchmarks():
             raise RuntimeError('Functional game limit reached or a benchmark is active')
+        selected = selected_build(data, support)
+        expected_executable = Path(selected['executable'])
         phase = args.out / name
         phase.mkdir()
         shutil.copytree(args.save, phase / 'save')
@@ -136,6 +186,7 @@ def main():
                                        cwd=phase, env=env, stdout=log, stderr=subprocess.STDOUT)
             print(name, 'owned game PID', process.pid, flush=True)
             deadline = time.monotonic() + args.timeout
+            observed_executable = None
             try:
                 def completed():
                     if not (phase / 'test_done').exists():
@@ -146,6 +197,9 @@ def main():
                         return False
                     return True
                 while process.poll() is None and not completed():
+                    observed = process_executable(process.pid)
+                    if observed == expected_executable:
+                        observed_executable = str(observed)
                     current_log = (phase / 'runtime.log').read_text(errors='replace')
                     if '[setup test] failed ' in current_log:
                         raise RuntimeError(name + ' setup diagnostic failed; inspect private runtime log')
@@ -169,7 +223,12 @@ def main():
             raise RuntimeError(name + ' exited before scenario completion')
         if 'Loaded slot' in text:
             raise RuntimeError('Lifecycle checks must boot normal saves without full-state restore')
-        phases[name] = {'test_done': True, 'guest_loaded': '[guestmods] loaded ' in text}
+        if observed_executable != str(expected_executable):
+            raise RuntimeError(name + ' never ran the verified selected executable')
+        phases[name] = {'test_done': True, 'guest_loaded': '[guestmods] loaded ' in text,
+                        'hooks': bool(support), 'selected_fingerprint': selected['selection']['fingerprint'],
+                        'selected_executable_sha256': selected['executable_sha256'],
+                        'observed_executable': observed_executable}
         return text
 
     installed = run('install-support-off', 0, {'WWHD_MOD_CATALOGUE': str(args.out / 'catalogue/index.json'),
@@ -179,6 +238,14 @@ def main():
     assert '[code mods] rebuild ready; restart required' in installed
     assert not profile().get('enabled', {}).get(ident, False)
     assert not phases['install-support-off']['guest_loaded']
+    on = selected_build(data, True)
+    assert on['selection']['fingerprint'] != off['selection']['fingerprint']
+    assert on['selection']['hooks'] is True
+    rebuilds['ui-support-on'] = on
+    # The UI support rebuild must not replace or rewrite the established off cache.
+    off_cache = data / 'code-builds' / off['selection']['fingerprint']
+    assert json.loads((off_cache / 'ready.json').read_text()) == off['ready']
+    assert hashlib.sha256(Path(off['executable']).read_bytes()).hexdigest() == off['executable_sha256']
     setup = run('setup-enable-support-on', 1, {'WWHD_TEST_MOD_SETUP': ident,
                 'WWHD_TEST_GAME_SOURCES': str(sources), 'WWHD_TEST_MOD_ENABLE': ident},
                 done_marker='[setup test] ready ' + ident, want_enabled=True)
@@ -205,7 +272,7 @@ def main():
     assert not phases['disabled-remove-after-restart']['guest_loaded']
     assert '[mods] removed ' + ident in removed and not (manager / 'Mods' / ident).exists()
     result = {'min_free_gib': args.min_free_gib, 'mod': ident, 'region': args.region, 'renderer': args.renderer, 'mode': args.mode, 'phases': phases,
-              'setup_receipts_verified': True, 'disabled_until_restart': True,
+              'setup_receipts_verified': True, 'disabled_until_restart': True, 'rebuild_provenance': rebuilds,
               'package_sha256': hashlib.sha256(args.package.read_bytes()).hexdigest(),
               'launcher_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'limitations': 'Local catalogue fixture transport only; native file-picker UI and trust acceptance are not automated. Existing explicit test trust is used. Captures require visual review for mod behavior.'}

@@ -1,10 +1,11 @@
 """Game-free tests of the real lifecycle driver's metadata/receipt checks."""
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
 import zipfile
-from test_package_lifecycle_e2e import local_catalogue, required_setup_receipts
+from test_package_lifecycle_e2e import local_catalogue, required_setup_receipts, selected_build
 
 
 class LifecycleHelpers(unittest.TestCase):
@@ -22,6 +23,28 @@ class LifecycleHelpers(unittest.TestCase):
             self.assertEqual(actual['downloads']['all']['size'],package.stat().st_size)
             with self.assertRaises(ValueError):
                 local_catalogue({'mods':[]},package,root/'bad')
+
+    def test_selected_build_requires_actual_mode_binary_and_hash_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data=Path(temporary);cache=data/'code-builds'/'synthetic-fingerprint';(cache/'bin').mkdir(parents=True)
+            executable=cache/'bin'/'wwhd';executable.write_bytes(b'authored synthetic executable bytes')
+            ready={'fingerprint':'synthetic-fingerprint','hooks':False,
+                   'sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
+                   'generated':{'table.c':'authored-hash'},'gamecode_objects':{'game.o':'authored-hash'}}
+            active={'state':'ready','fingerprint':'synthetic-fingerprint','hooks':False,
+                    'exe':str(executable),'cached':True,'seconds':0.1}
+            (cache/'ready.json').write_text(json.dumps(ready))
+            (data/'code-mods-active.json').write_text(json.dumps(active))
+            self.assertEqual(selected_build(data,False)['rebuild_kind'],'cached')
+            with self.assertRaises(ValueError):
+                selected_build(data,True) # an environment flag cannot change compiled mode
+            ready['sha256']='wrong';(cache/'ready.json').write_text(json.dumps(ready))
+            with self.assertRaises(ValueError):
+                selected_build(data,False)
+            ready['sha256']=hashlib.sha256(executable.read_bytes()).hexdigest();ready['generated']={}
+            (cache/'ready.json').write_text(json.dumps(ready))
+            with self.assertRaises(ValueError):
+                selected_build(data,False)
 
     def test_every_required_receipt_and_option_is_checked(self):
         setup=[{'id':'source','type':'game_path','game':'gc_wind_waker'},

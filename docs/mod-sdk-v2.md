@@ -360,6 +360,15 @@ IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}
 for a mod without a game-source step. Run separately with `--region USA`/`EU` and
 `--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
 
+Before launching, the driver invokes the real installer with
+`--rebuild-code-mods --code-mods 0 --jobs 4` and verifies its completed off cache.
+It records the original generated-C and game-object hash maps, executable SHA,
+fingerprint, cache hit/fresh build status and elapsed rebuild time. After the UI
+support rebuild it verifies the on selection and cache record, confirms that the
+off baseline remains unchanged, and observes each running process's executable
+path against the verified selection. Setting an environment flag alone is not
+accepted as evidence of compiled hooks being disabled or enabled.
+
 The driver refreshes and installs through the catalogue worker, rebuilds code-mod
 support while the package remains disabled, restarts, selects/validates sources,
 runs preparation and builds the guest module through normal setup workers, then
