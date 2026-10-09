@@ -1576,6 +1576,7 @@ void swap() {
   // settings overlay: built once, drawn into the TV window and its present dumps
   if(overlay::guesthud::active())overlay::guesthud::set_tv_region(plan.tv.x,plan.tv.y,plan.tv.w,plan.tv.h,!plan.drc_only);
   set_overlay_draw(overlay::frame(plan.dw > 0 ? plan.dw : layerW, plan.dh > 0 ? plan.dh : layerH, overlay_renderer_init));
+  compose_headless_diagnostic(R.tv);
   take_screenshots(plan);
   bool sampled[2] = {};
   if (plan.sample_auto && drcScan) {

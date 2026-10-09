@@ -41,6 +41,7 @@
 #include "../aspect.h"
 #include "display.h"
 #include "display_modes.h"
+#include "headless_compose.h"
 #include "gx2/gx2.h"
 #include "input.h"
 #include "metal.h"
@@ -952,6 +953,27 @@ void present_screens() {
     bool pip = P.pip_wanted, drc_only = P.drc_only;
     if(overlay::guesthud::active())overlay::guesthud::set_tv_region(P.tv.x,P.tv.y,P.tv.w,P.tv.h,!P.drc_only);
     g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
+    // Hidden test-only composition: one reused GPU target, no drawable/readback/disk.
+    // Like Metal's other resources this target is process-lifetime; replace on device/format change.
+    const auto& diagnostic=headless_compose::policy();
+    if(diagnostic.enabled()&&R.tv.tex) {
+        static id<MTLTexture> target=nil;
+        static headless_compose::Counter counter;
+        counter.require_capacity(diagnostic);
+        if(dw!=headless_compose::width||dh!=headless_compose::height)
+            throw std::runtime_error("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+        const auto format=R.tv.srgb?MTLPixelFormatRGBA8Unorm_sRGB:MTLPixelFormatRGBA8Unorm;
+        if(!target||target.device!=R.device||target.pixelFormat!=format)
+            target=offscreen(headless_compose::width,headless_compose::height,R.tv.srgb);
+        if(!target)throw std::runtime_error("headless Metal composition target allocation failed");
+        compose_tv(target,L);
+        unsigned commands=0;
+        if(g_overlay_draw)for(int i=0;i<g_overlay_draw->CmdListsCount;++i)commands+=g_overlay_draw->CmdLists[i]->CmdBuffer.Size;
+        const unsigned vertices=g_overlay_draw?g_overlay_draw->TotalVtxCount:0,indices=g_overlay_draw?g_overlay_draw->TotalIdxCount:0;
+        if(counter.encoded(diagnostic,vertices,indices,commands))
+            LOG("[headless-compose] Metal encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu",counter.frames,vertices,indices,commands,
+                (unsigned long long)counter.vertices,(unsigned long long)counter.indices,(unsigned long long)counter.commands);
+    }
     take_screenshot(P);
     if (P.sim) {
         present_to_layer(R.tv, ^(id<MTLTexture> t) {

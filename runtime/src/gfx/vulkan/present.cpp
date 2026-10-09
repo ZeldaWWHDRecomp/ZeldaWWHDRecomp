@@ -1,5 +1,7 @@
 // Shader presentation matches Metal's source-grid FXAA and scaling filters.
 #include "present.h"
+#include "../headless_compose.h"
+#include "imgui.h"
 #include "backend.h"
 #include "shaders.h"
 #include "settings.h"
@@ -148,6 +150,8 @@ struct PresentResources {
  VkSampler linear=VK_NULL_HANDLE,nearest=VK_NULL_HANDLE;
  std::unordered_map<uint64_t,VkPipeline> pipelines; // (format, kind)
  std::unordered_map<Screen*,ScreenResources> screens;
+ Surface diagnosticTarget{};
+ gfx::headless_compose::Counter diagnosticCounter;
 };
 PresentResources resources;
 bool srgb_format(VkFormat format) {
@@ -247,6 +251,7 @@ void reset_present_resources() {
  if(resources.nearest)vkDestroySampler(resources.device,resources.nearest,nullptr);
  if(resources.layout)vkDestroyPipelineLayout(resources.device,resources.layout,nullptr);
  if(resources.descriptors)vkDestroyDescriptorSetLayout(resources.device,resources.descriptors,nullptr);
+ if(resources.diagnosticTarget.image)destroy_surface_image(&resources.diagnosticTarget);
  resources={};
  reset_overlay_resources();
 }
@@ -404,6 +409,34 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
          quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex));
  return true;
+}
+
+// Test-only headless encoding, once per swap. No image readback or additional queue wait.
+void compose_headless_diagnostic(Screen& screen) {
+ const auto& diagnostic=gfx::headless_compose::policy();
+ if(!diagnostic.enabled()||!screen.scan||!screen.scan->image)return;
+ if(!currentPlan||currentPlan->dw!=gfx::headless_compose::width||currentPlan->dh!=gfx::headless_compose::height)
+  throw std::runtime_error("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+ ensure_resources();
+ auto& target=resources.diagnosticTarget;auto& counter=resources.diagnosticCounter;
+ counter.require_capacity(diagnostic);
+ const uint32_t format=screen.srgb.load()?0x41a:0x1a;
+ if(target.image&&target.format!=format)destroy_surface_image(&target);
+ if(!target.image) {
+  target.width=gfx::headless_compose::width;target.height=gfx::headless_compose::height;
+  target.format=format;target.fmt=format_info(format,false);
+  create_surface_image(&target,true,VkExtent3D{target.width,target.height,1});
+ }
+ const VkExtent2D extent{target.width,target.height};
+ int filter=0;auto quads=screen_quads(screen,extent,filter);
+ compose(target.image,target.view,target.layout,extent,target.fmt.pixel,quads,
+         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,filter,fxaa_enabled(),overlayDraw,&target.use);
+ unsigned commands=0;
+ if(overlayDraw)for(int i=0;i<overlayDraw->CmdListsCount;++i)commands+=overlayDraw->CmdLists[i]->CmdBuffer.Size;
+ const unsigned vertices=overlayDraw?overlayDraw->TotalVtxCount:0,indices=overlayDraw?overlayDraw->TotalIdxCount:0;
+ if(counter.encoded(diagnostic,vertices,indices,commands))
+  fprintf(stderr,"[headless-compose] Vulkan encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu\n",counter.frames,vertices,indices,commands,
+   (unsigned long long)counter.vertices,(unsigned long long)counter.indices,(unsigned long long)counter.commands);
 }
 
 // the composition into an offscreen RGBA8 image, read back (present dumps, captures)
