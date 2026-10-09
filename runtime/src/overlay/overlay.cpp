@@ -1049,29 +1049,37 @@ void catalogue_controls(std::string& focus) {
             for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
             for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
             for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
+            note("Package: %s",entry.kind.c_str());
+            if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))
+                note("Contains executable code. Setup or enabling requires confirmation.");
+            const bool android_guest=entry.kind=="guest"&&mods::packages::platform_key().starts_with("android");
             bool compatible=false;
             try{compatible=entry.compatible(catalogue_port_version(),g_guest_build_name,mods::packages::platform_key());}catch(...){}
-            if(!compatible)note("Unavailable for this port version, game build or platform.");
+            if(android_guest)note("Guest mods are not supported on Android yet.");
+            else if(!compatible)note("Unavailable for this port version, game build or platform.");
             auto found=std::find_if(installed.begin(),installed.end(),[&](const auto& mod){return mod.id==entry.id;});
             bool present=found!=installed.end(),update=false;
             if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
             if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
-            ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
-            bool install_now=ImGui::Button(present?"Update":"Install");
-            if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
-            if(install_now) {
-                auto fixtures=catalogue.fixture_root;
-                catalogue_action([entry,fixtures](CatalogueWorker& worker) {
-                    StagedPackage package(entry,catalogue_port_version(),g_guest_build_name,mods::packages::platform_key(),
-                        std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
-                    std::string error,id;
-                    require(mods::packages::install(package.path().string(),error,&id),error);
-                    std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
-                });
+            if(!android_guest) {
+                ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
+                bool install_now=ImGui::Button(present?"Update":"Install");
+                if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
+                if(install_now) {
+                    auto fixtures=catalogue.fixture_root;
+                    catalogue_action([entry,fixtures](CatalogueWorker& worker) {
+                        StagedPackage package(entry,catalogue_port_version(),g_guest_build_name,mods::packages::platform_key(),
+                            std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
+                        std::string error,id;
+                        require(mods::packages::install(package.path().string(),error,&id),error);
+                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                    });
+                }
+                ImGui::EndDisabled();
             }
-            ImGui::EndDisabled();
             if(present) {
-                ImGui::SameLine();ImGui::BeginDisabled(busy||found->enabled||found->active);
+                if(!android_guest)ImGui::SameLine();
+                ImGui::BeginDisabled(busy||found->enabled||found->active);
                 if(ImGui::Button("Remove")){std::string failure;if(!mods::packages::remove(entry.id,failure)){std::lock_guard guard(worker.mutex);worker.error=failure;}}
                 ImGui::EndDisabled();
             }
