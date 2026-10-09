@@ -31,3 +31,13 @@ visibility and fades and replace or suppress the original button pictures, but
 would need a verified pane layout and separate treatment of contextual icons.
 The frame tests determine whether overdraw is sufficient before choosing the
 final route for issue #78.
+
+For a local live-preset check, use `tools/guestmod/test_hud_e2e.py` with
+`--package button-icons --layout labels --switch-layout position --frames 300`,
+plus its required binary, game, copied-save source, regional state and output
+arguments. `--switch-after` selects the reload time in scenario seconds. The
+checker creates a second private controls JSON and applies it through the same
+live mapping setter as the Controls window; it does not overwrite the player's
+controls. A passing check requires both captured endpoint states, exactly one
+transition, and a successful reload. Reverse the layouts to check appearance.
+This checks preset changes, not contextual visibility or fades.

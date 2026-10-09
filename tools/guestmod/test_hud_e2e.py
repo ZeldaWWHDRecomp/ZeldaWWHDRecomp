@@ -6,6 +6,7 @@ This is a functional check, not a timing benchmark. Each invocation runs one cas
 """
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -72,6 +73,10 @@ def main():
     parser.add_argument("--package", choices=("hud-demo", "button-icons"), required=True)
     parser.add_argument("--fps", type=int, choices=(30, 60), default=30)
     parser.add_argument("--layout", choices=("labels", "position", "custom"), default="labels")
+    parser.add_argument("--switch-layout", choices=("labels", "position", "custom"),
+                        help="reload a private controls JSON during the button-icons run")
+    parser.add_argument("--switch-after", type=float, default=4,
+                        help="scenario seconds before reloading controls (default: 4)")
     parser.add_argument("--wide", action="store_true", help="21:9 TV at 2560x1080")
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--timeout", type=float, default=300)
@@ -79,6 +84,11 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.frames <= 300:
         parser.error("frames must be between 1 and 300")
+    if args.switch_layout:
+        if args.package != "button-icons" or (args.layout == "labels") == (args.switch_layout == "labels"):
+            parser.error("switch-layout requires button-icons and a transition into or out of labels")
+        if not math.isfinite(args.switch_after) or args.switch_after <= 0:
+            parser.error("switch-after must be finite and positive")
     repo = Path(__file__).resolve().parents[2]
     args.binary, args.game, args.save, args.out = (
         p.resolve() for p in (args.binary, args.game, args.save, args.out))
@@ -138,6 +148,10 @@ def main():
                 "WWHD_DUMP_PRESENT": "1", "WWHD_SIM_SCREEN": "2560x1080" if args.wide else "1280x720"})
     if args.wide:
         env["WWHD_ASPECT"] = "21:9"
+    if args.switch_layout:
+        switch_file = root / "controls-switch.json"
+        switch_file.write_text(json.dumps({"version": 1, "controller": layouts[args.switch_layout]}))
+        env["WWHD_TEST_CONTROLS"] = "%s:%s" % (args.switch_after, switch_file)
     if args.boot:
         env["WWHD_STATE_SAVE_AT"] = "%d:1" % (first-30)
     else:
@@ -179,11 +193,27 @@ def main():
     expected = args.package == "hud-demo" or args.layout == "labels"
     passed = all(all(n >= 20 for n in row["pixels"]) if expected
                  else all(n < 20 for n in row["pixels"]) for row in observations)
+    switch_verified = None
+    if args.switch_layout:
+        # Every captured frame must contain all five icons or none. Require one
+        # transition in the requested direction, with both endpoints captured;
+        # this does not assume a fixed relation between TV and logic frame counts.
+        states = [True if all(n >= 20 for n in row["pixels"]) else
+                  False if all(n < 20 for n in row["pixels"]) else None
+                  for row in observations]
+        transitions = sum(a != b for a, b in zip(states, states[1:]))
+        reload_log = (root / "runtime.log").read_text(errors="replace")
+        switch_verified = (bool(states) and None not in states and
+                           states[0] == expected and states[-1] != expected and transitions == 1 and
+                           "[test] controls reload PASS" in reload_log and
+                           "[test] controls reload FAIL" not in reload_log)
+        passed = switch_verified
     report = {"package": args.package, "renderer": args.renderer, "fps": args.fps,
               "layout": args.layout, "wide": args.wide, "frames": args.frames, "boot": args.boot,
               "regional_state_created": args.boot,
               "colour_presence_pass": passed, "observations": observations,
-              "limitations": "Colour presence does not prove fades, contextual visibility or live preset changes."}
+              "switch_layout": args.switch_layout, "live_switch_pass": switch_verified,
+              "limitations": "Colour presence does not prove fades or contextual visibility."}
     (root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     if not args.keep_frames:
         for path in root.glob("frame_*.png"):
