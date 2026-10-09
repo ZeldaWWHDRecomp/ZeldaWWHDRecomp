@@ -181,9 +181,10 @@ use object fields that are the same in both versions.
 | `wwhd_logic_dt`, `wwhd_logic_step` | Length of the current logic step in seconds (60 fps modes included) and the step counter |
 | `wwhd_setting_get`, `wwhd_setting_changed` | Read-only port settings, below |
 | `wwhd_hud_*` | Drawing on screen, below |
+| `wwhd_audio_*` | Bounded PCM streams, below |
 | `memcpy`, `memmove`, `memset` | As usual |
 
-Your mod can also call any game function. There is no audio stream service yet.
+Your mod can also call any game function. Original synthesized audio can use the PCM stream service below.
 
 ## Port settings
 
@@ -305,7 +306,7 @@ itself are not part of save states.
 - Changing enabled mods or their options needs a restart.
 - Mods live in a 16 MiB region of game memory (`0x7F000000`–`0x80000000`); each mod gets its
   own 64 KiB-aligned part.
-- No audio streams, no events, no exports between mods yet.
+- No events or exports between mods yet. Audio streams support 48 kHz mono/stereo PCM.
 - Instructions the translator doesn't support are reported when the mod is built.
 
 ## How it works
@@ -432,8 +433,8 @@ Guest mods may synthesize original audio with `wwhd_audio_open(48000, channels)`
 it retains no guest pointers. Buffers must fit in the calling mod's region.
 Only 48000 Hz is supported; callers resample other content themselves.
 
-Each stream holds8192 frames, each submission is at most2048 frames, and limits
-are four streams per mod and32 globally (1 MiB fixed host sample storage).
+Each stream holds 8192 frames, each submission is at most 2048 frames, and limits
+are four streams per mod and 32 globally (1 MiB fixed host sample storage).
 Open returns a positive opaque handle. Available returns free queue frames;
 submit returns accepted frames, including zero when full. Close returns zero.
 Errors are `WWHD_AUDIO_INVALID` (-1), `WWHD_AUDIO_BUSY` (-2; retry later without
@@ -443,7 +444,7 @@ handle exhaustion fails explicitly. Submission/query/close use try-locks;
 there are no waits for a device. Open can allocate a bounded owner string.
 
 The AX producer mixes copied samples into the common stereo output before its
-master gain and dump path. Mixing sums streams in32-bit precision and saturates
+master gain and dump path. Mixing sums streams in 32-bit precision and saturates
 once to S16. Mono duplicates to both channels. Underruns contribute silence;
 there is no automatic replay. The device callback performs no mod work. With no
 streams the producer bypasses the mixer. `WWHD_AUDIO_VOLUME` applies equally to
