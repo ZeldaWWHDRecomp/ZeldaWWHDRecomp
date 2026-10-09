@@ -83,28 +83,14 @@ void controller_values(float* v) {
 
 // ---- the labels printed on a pad's face buttons (issue #78's Automatic preset)
 
-// The letter on one face button, from its SF Symbol name ("xbox.button.a", "ps.button.cross") or
-// its localized name ("A Button"). kUnknown when the host does not say.
+// The letter on one face button, from its SF Symbol name ("a.circle", "xmark.circle") or its
+// localized name ("Button A"). The parsing is input_map's, so input_map_test can cover the names
+// real pads report. kUnknown when the host does not say.
 static input_map::FaceLabel button_letter(GCControllerButtonInput* in) {
-    using FL = input_map::FaceLabel;
-    if (!in) return FL::kUnknown;
+    if (!in) return input_map::FaceLabel::kUnknown;
     NSString* s = nil;
     if (@available(macOS 11.0, *)) s = in.sfSymbolsName.length ? in.sfSymbolsName : in.localizedName;
-    if (!s.length) return FL::kUnknown;
-    NSString* t = s.lowercaseString;
-    if ([t containsString:@"cross"]) return FL::kA;
-    if ([t containsString:@"circle"]) return FL::kB;
-    if ([t containsString:@"square"]) return FL::kX;
-    if ([t containsString:@"triangle"]) return FL::kY;
-    // "xbox.button.a", "A Button", "Button B": the one letter that is a word of its own
-    NSArray<NSString*>* words = [t componentsSeparatedByCharactersInSet:NSCharacterSet.letterCharacterSet.invertedSet];
-    for (NSString* w in words) {
-        if ([w isEqualToString:@"a"]) return FL::kA;
-        if ([w isEqualToString:@"b"]) return FL::kB;
-        if ([w isEqualToString:@"x"]) return FL::kX;
-        if ([w isEqualToString:@"y"]) return FL::kY;
-    }
-    return FL::kUnknown;
+    return input_map::face_label_from_text(s.UTF8String);
 }
 
 // A pad whose buttons do not name themselves (older MFi, some HID): guess the family from what it

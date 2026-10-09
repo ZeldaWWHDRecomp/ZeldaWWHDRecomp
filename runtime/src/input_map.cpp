@@ -231,7 +231,39 @@ int label_letter(FaceLabel l) {
     default: return -1;
     }
 }
+
+FaceLabel word_letter(const std::string& w) {
+    if (w == "a" || w == "xmark" || w == "cross") return FaceLabel::kA;
+    if (w == "b" || w == "circle") return FaceLabel::kB;
+    if (w == "x" || w == "square") return FaceLabel::kX;
+    if (w == "y" || w == "triangle") return FaceLabel::kY;
+    return FaceLabel::kUnknown;
+}
 }  // namespace
+
+FaceLabel face_label_from_text(const char* text) {
+    if (!text || !*text) return FaceLabel::kUnknown;
+    std::string t;
+    for (const char* p = text; *p; p++) t.push_back((char)tolower((unsigned char)*p));
+    // SF Symbols: the name first, the decoration after a dot ("a.circle", "x.square.fill"). The
+    // name alone decides: "square.circle" is Square, not Circle.
+    if (const FaceLabel l = word_letter(t.substr(0, t.find('.'))); l != FaceLabel::kUnknown) return l;
+    // a free-form name ("Button A", "Cross Button", "xbox.button.a"): the one word that is a letter
+    FaceLabel found = FaceLabel::kUnknown;
+    std::string w;
+    auto consider = [&](char c) {
+        if (c >= 'a' && c <= 'z') {
+            w.push_back(c);
+            return;
+        }
+        if (w != "button" && w != "fill" && w != "grid" && w != "the" && found == FaceLabel::kUnknown)
+            found = word_letter(w);
+        w.clear();
+    };
+    for (char c : t) consider(c);
+    consider(' ');  // the last word
+    return found;
+}
 
 bool face_bindings_from_labels(const FaceLabel labels[4], int out[4]) {
     // 0..3 are the face pads in the labels' order: kPadA (south), kPadB (east), kPadX, kPadY

@@ -316,6 +316,7 @@ static void dominant_labels(input_map::FaceLabel out[4]){
  for(int i=0;i<4;i++)out[i]=FL::kUnknown;
  std::lock_guard lk(g_pads_mu);
  for(SDL_JoystickID id:g_order){
+  if(SDL_IsJoystickVirtual(id))continue;  // #88's on-screen pad is not a pad to follow for labels
   auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
   SDL_Gamepad* pad=i->second;
   auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{

@@ -85,6 +85,13 @@ const char* face_layout_label(FaceLayout l);            // for the UI
 // Triangle are the PlayStation names for those same four letters.
 enum class FaceLabel { kUnknown, kA, kB, kX, kY, kCross, kCircle, kSquare, kTriangle };
 
+// The letter one button has printed on it, from the name a host gives it: an SF Symbol name
+// ("a.circle", "xmark.circle", "square.circle.fill", "x.square.fill") or a localized name
+// ("Button A", "Cross Button"). The first dot-separated component is the symbol's own name and
+// what follows is decoration — so "square.circle" is Square (X) and not Circle (B) — and words
+// like "button" are ignored in a free-form name. kUnknown when the name says nothing.
+FaceLabel face_label_from_text(const char* text);
+
 // The face bindings a pad with these labels asks for: each printed letter drives the Wii U button
 // of that letter (Cross is A, Circle is B, and so on). A letter no button carries falls back to the
 // by-position preset. Returns false and leaves `out` alone when no label is known at all (there is

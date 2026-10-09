@@ -219,6 +219,41 @@ static void test_face_auto() {
     std::filesystem::remove_all(dir, ec);
 }
 
+static void test_face_label_text() {
+    using FL = FaceLabel;
+    // the SF Symbol names GameController reports: the name first, the decoration after a dot.
+    // The decoration must not decide: "circle" is B only as a name, never as ".circle".
+    CHECK(face_label_from_text("a.circle") == FL::kA);
+    CHECK(face_label_from_text("b.circle") == FL::kB);
+    CHECK(face_label_from_text("x.circle") == FL::kX);
+    CHECK(face_label_from_text("y.circle") == FL::kY);
+    CHECK(face_label_from_text("a.circle.fill") == FL::kA);
+    CHECK(face_label_from_text("xmark.circle") == FL::kA);       // PlayStation Cross
+    CHECK(face_label_from_text("xmark.circle.fill") == FL::kA);
+    CHECK(face_label_from_text("circle.circle") == FL::kB);      // PlayStation Circle
+    CHECK(face_label_from_text("circle") == FL::kB);
+    CHECK(face_label_from_text("square.circle") == FL::kX);      // PlayStation Square, not Circle
+    CHECK(face_label_from_text("square.circle.fill") == FL::kX);
+    CHECK(face_label_from_text("square.fill") == FL::kX);
+    CHECK(face_label_from_text("triangle.circle") == FL::kY);
+    CHECK(face_label_from_text("triangle") == FL::kY);
+    CHECK(face_label_from_text("x.square.fill") == FL::kX);      // letter in a square, not Square
+    // localized names and vendor-style names: the one word that is a letter
+    CHECK(face_label_from_text("Button A") == FL::kA);
+    CHECK(face_label_from_text("Button B") == FL::kB);
+    CHECK(face_label_from_text("Cross Button") == FL::kA);
+    CHECK(face_label_from_text("Circle Button") == FL::kB);
+    CHECK(face_label_from_text("xbox.button.a") == FL::kA);
+    CHECK(face_label_from_text("xbox.button.y") == FL::kY);
+    CHECK(face_label_from_text("X Button") == FL::kX);
+    // nothing a name can say: unknown
+    CHECK(face_label_from_text(nullptr) == FL::kUnknown);
+    CHECK(face_label_from_text("") == FL::kUnknown);
+    CHECK(face_label_from_text("button") == FL::kUnknown);
+    CHECK(face_label_from_text("fill") == FL::kUnknown);
+    CHECK(face_label_from_text("gamepad") == FL::kUnknown);
+}
+
 static void test_names() {
     for (int a = 0; a < kActionCount; a++) CHECK(action_from_id(action_id(a)) == a);
     for (int p = 1; p < kPadCount; p++) CHECK(pad_from_id(pad_id(p)) == p);
@@ -379,6 +414,7 @@ int main() {
     test_defaults();
     test_face_layout();
     test_face_auto();
+    test_face_label_text();
     test_names();
     test_reserved();
     test_conflicts();
