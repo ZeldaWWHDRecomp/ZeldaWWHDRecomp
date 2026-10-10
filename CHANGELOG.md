@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the game didn't start with a content mod (for example a translation) in the development
+  builds** (issue #109). The mod manager switched the replacement files on twice at startup and stopped
+  with "Content overrides already activated". Content mods and code mods now start together as they should.
+
 - **Bug reports: the log now lists every connected controller** (name, vendor and product ID, type),
   on connect and disconnect. The game combines all controllers Windows/Linux report, so this shows
   when a second device (e.g. Steam Input's virtual controller) is also sending input.
