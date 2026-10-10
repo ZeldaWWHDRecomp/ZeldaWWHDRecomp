@@ -35,7 +35,8 @@
         <!-- lets simpleperf (NDK) profile the release build from adb shell -->
         <profileable android:shell="true" />
 
-        <activity android:name=".SetupActivity" android:exported="true">
+        <activity android:name=".SetupActivity" android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
