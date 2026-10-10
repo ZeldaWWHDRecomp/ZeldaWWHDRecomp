@@ -48,6 +48,13 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated local extraction, translation and compilation of a user-owned game dump, with visible progress and pause controls." />
         </service>
+        <!-- the home-screen game icon, drawn from the player's own game files after setup -->
+        <receiver android:name=".GameWidget" android:exported="false" android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/game_widget_info" />
+        </receiver>
         <receiver android:name=".SetupRecoveryReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
