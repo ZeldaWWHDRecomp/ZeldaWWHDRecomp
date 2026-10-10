@@ -23,6 +23,12 @@ what is on `devel` and not released yet (also in the
   on connect and disconnect. The game combines all controllers Windows/Linux report, so this shows
   when a second device (e.g. Steam Input's virtual controller) is also sending input.
 
+- **Android: set up the game directly on the phone, no PC needed** (PR #98, tested by @rhemfur).
+  Choose your game (an extracted folder, a WUA or a WUD/WUX), and the phone translates and compiles the
+  game code itself (several minutes; up to 4 compiler workers depending on the phone), with a progress
+  display. Setup pauses when the phone gets too warm or the battery is low, and resumes where it
+  stopped. Also new: the GamePad picture on a second screen (foldables, external displays).
+
 - **Mods: one setting for the GameCube version of the game.** Settings → Mods → **GameCube game for
   mods**: choose your GameCube Wind Waker disc image or folder once (it shows the recognised region),
   and every mod that needs it uses it. A mod whose copy is missing can't be enabled and offers a
