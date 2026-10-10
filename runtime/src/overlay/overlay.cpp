@@ -904,7 +904,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
-        if (navigation_pressed(input_map::kPadB)) { answered = true; accept = false; g_pad_b_used = true; }
+        if (navigation_pressed(input_map::face_input(input_map::kB))) { answered = true; accept = false; g_pad_b_used = true; }
     }
     if (accept) {
         bool ok = true;
@@ -1360,7 +1360,7 @@ void package_controls() {
         }
         ImGui::PopID();
     }
-    auto switch_action=graphics_switch_dialog(graphics_choice,navigation_pressed(input_map::kPadB));
+    auto switch_action=graphics_switch_dialog(graphics_choice,navigation_pressed(input_map::face_input(input_map::kB)));
     if(switch_action==GraphicsSwitchAction::Switch)enable(graphics_choice.id,true,error,true);
     if(switch_action==GraphicsSwitchAction::Cancel)g_pad_b_used=true;
     native_confirm_dialog(confirm, error);
@@ -2132,7 +2132,7 @@ void settings_window() {
     ImGui::End();
     // B (not while choosing an input or in a list) or the close button closes the menu
     if (!open) set_open(false);
-    if (U.cap_action < 0 && navigation_pressed(input_map::kPadB) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+    if (U.cap_action < 0 && navigation_pressed(input_map::face_input(input_map::kB)) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
         set_open(false);
     g_pad_b_used = false;
 }
@@ -2345,7 +2345,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
     }
     apply_capture();
-    U.gamepad_navigation.feed(io, U.values, U.prev, open && U.cap_action < 0, mouse_used);  // the text prompt reads the controller itself
+    const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
+                          input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
+    U.gamepad_navigation.feed(io, U.values, U.prev, open && U.cap_action < 0, mouse_used, face);  // the text prompt reads the controller itself
     ImGui::NewFrame();
     g_wants_text = open && io.WantTextInput;
     guesthud::frame();
