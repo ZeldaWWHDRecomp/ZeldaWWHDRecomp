@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <unordered_set>
 #include <vector>
 
 #include "input_map.h"
@@ -23,6 +25,12 @@ void imp_gx2_GX2InitTextureRegs(Cpu* c);
 
 namespace {
 
+// Session gate: until by label has been on once, the hooks must not write game memory at all
+// (no glyph markers, no shoulder texture). Players who never use it then run exactly the stock
+// path. The first activation latches this flag; marking then works as in any by-label session,
+// so later layout changes still reach text cached in either mode.
+std::atomic<bool> labels_used{false};
+
 bool xbox_style() {
     // Per guest thread: layouts can be recorded on multiple cores. Each set_current invalidates
     // the cached choice, including transitions through custom bindings. No SDL/AppKit dependency.
@@ -31,9 +39,25 @@ bool xbox_style() {
     const uint32_t now = input_map::generation();
     if (now != generation) {
         enabled = input_map::face_layout(input_map::current()) == input_map::FaceLayout::kLabels;
+        if (enabled) labels_used.store(true, std::memory_order_relaxed);
         generation = now;
     }
     return enabled;
+}
+
+// By label live now, or it has been on at least once in this session.
+bool marking() { return xbox_style() || labels_used.load(std::memory_order_relaxed); }
+
+// The first activation happens against text cached in stock mode, which carries no markers the
+// hooks could recognise. Each text box is therefore rebuilt once: the game re-runs Print, which
+// marks the new quads. The registry is a one-shot switch (only consulted after activation) and
+// never identifies glyphs; it cannot go stale because it only ever forces a rebuild.
+bool first_rebuild(uint32_t text_box) {
+    if (!labels_used.load(std::memory_order_relaxed)) return false;
+    static std::mutex mutex;
+    static std::unordered_set<uint32_t> rebuilt;
+    std::lock_guard lock(mutex);
+    return rebuilt.insert(text_box).second;
 }
 
 struct SavedWord {
@@ -226,10 +250,18 @@ void button_glyphs::calculate_pane(Cpu* c, PpcFunc calculate) {
 
 void button_glyphs::prepare_text_box(uint32_t text_box, Cpu* cpu) {
     const uint32_t list = ld32(text_box + 0xFC);
-    if (!list || !ld8(list + 6)) return;
+    if (!list) return;
+    if (!ld8(list + 6)) {
+        // The game rebuilds this text anyway; remember the box so it is not forced next frame.
+        first_rebuild(text_box);
+        return;
+    }
     const bool xbox = xbox_style();
+    // The first by-label frame rebuilds each cached text once: it carries no identity bits yet,
+    // so the game has to re-run Print before the draw hooks can style it.
+    if (first_rebuild(text_box)) { st8(list + 6, 0); return; }
     const int hud = shoulder_box(text_box);
-    if (hud >= 0 && ld16(list + 4)) {
+    if (hud >= 0 && ld16(list + 4) && marking()) {
         const uint32_t flag = list + 0xA4 + 0x2F;
         if (marked_shoulder(ld8(flag)) < 0) st8(flag, mark_shoulder(ld8(flag), hud));
     }
@@ -277,15 +309,16 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
 }
 
 // Group-3 tags print U+E000..E003 for A/B/X/Y and U+E083..E086 for L/R/ZL/ZR. The
-// existing RTL PrintGlyph hook still runs inside the original. Mark even in by-position mode:
-// switching the setting must also affect text whose glyph list was built before that switch.
+// existing RTL PrintGlyph hook still runs inside the original. Once by label has been used
+// (or is live), mark even in by-position mode: switching the setting must also affect text
+// built before that switch. Until then the flag byte is left untouched (stock path).
 extern "C" void hook_0286E9F0(Cpu* c) {
     const int face = button_glyphs::face_character(c->r[4]);
     const int shoulder = button_glyphs::shoulder_character(c->r[4]);
     const uint32_t list = face >= 0 || shoulder >= 0 ? ld32(c->r[3] + 0x2C) : 0;
     const uint32_t count = list ? ld16(list + 4) : 0;
     f_0286E9F0_orig(c);
-    if (list && ld16(list + 4) == count + 1) {
+    if (list && ld16(list + 4) == count + 1 && marking()) {
         const uint32_t flags = list + 0xA4 + count * 0x30 + 0x2F;
         st8(flags, face >= 0 ? button_glyphs::mark(ld8(flags), face) : button_glyphs::mark_shoulder(ld8(flags), shoulder));
     }
@@ -297,6 +330,7 @@ extern "C" void hook_0286E9F0(Cpu* c) {
 // unrelated icons are not styled; the optional outline pass uses the game's outline colours.
 extern "C" void hook_028F7C7C(Cpu* c) {
     const bool xbox = xbox_style();
+    const bool mark = marking();
     const uint32_t list = c->r[4];
     std::vector<SavedWord> saved;
     const uint16_t original_count = ld16(list + 4);
@@ -306,7 +340,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
     const bool shoulder_ready = xbox && needs_shoulder && shoulder_atlas(c);
     if (hud_shoulder >= 0 && original_count) {
         const uint32_t quad = list + 0xA4;
-        st8(quad + 0x2F, button_glyphs::mark_shoulder(ld8(quad + 0x2F), hud_shoulder));
+        if (mark) st8(quad + 0x2F, button_glyphs::mark_shoulder(ld8(quad + 0x2F), hud_shoulder));
         if (shoulder_ready) {
             float left = (float)ldf32(quad + 8), right = left + (float)ldf32(quad);
             for (uint32_t i = 1; i < original_count; i++) {
@@ -329,7 +363,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         const int face = button_glyphs::marked_face(ld8(quad + 0x2F));
         const int shoulder = button_glyphs::marked_shoulder(ld8(quad + 0x2F));
         if (face < 0 && shoulder < 0) continue;
-        st8(quad + 0x2F, button_glyphs::rendered(ld8(quad + 0x2F), xbox));
+        if (mark) st8(quad + 0x2F, button_glyphs::rendered(ld8(quad + 0x2F), xbox));
         if (xbox && face >= 0) {
             style(saved, quad + 0x10, face);
             style(saved, quad + 0x14, face);

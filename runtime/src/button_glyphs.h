@@ -40,11 +40,12 @@ constexpr uint32_t tint(uint32_t rgba, int face) {
     return out;
 }
 
-// A cached glyph quad's byte +0x2F uses only bit 0 (colour-font flag). The writer resets that
-// byte on every new quad; record its face identity in unused bits so it follows cached text and
-// save-state restores without a host-side map of guest heap addresses. Prefix D marks face
-// icons; prefix E marks shoulder icons. The list builder writes only bit 0 and the glyph-list
-// batcher inspects only bit 0.
+// A cached glyph quad's byte +0x2F uses only bit 0 (colour-font flag). The generated code
+// resets that byte on every rebuild, and every reader masks out only its own bits (+0x2C 16-bit
+// value, +0x2E page, bit 0 flag — see docs/button-glyphs.md). Record face identity in the spare
+// high bits so it follows cached text and save-state restores without a host-side registry.
+// Prefix D marks face icons; prefix E marks shoulder icons. Nothing is written until by label
+// has been enabled once in the session; that first activation rebuilds each cached text box once.
 constexpr uint8_t mark(uint8_t flags, int face) {
     return face >= 0 && face < 4 && !(flags & 0xFE) ? uint8_t(0xD0 | (face << 1) | flags) : flags;
 }

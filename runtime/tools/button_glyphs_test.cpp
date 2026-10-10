@@ -464,6 +464,55 @@ void font_fallback_test() {
     std::memset(mem::ptr(text_box+0x80),0,24);
 }
 
+// The Automatic preset resolves to a concrete layout. A pad whose labels resolve to by label
+// must get the same in-game treatment as the manual preset, and one resolving to by position
+// must stay stock: xbox_style() follows face_layout(), which reports the resolved shape.
+void automatic_test() {
+    using FL = input_map::FaceLabel;
+    const FL xbox[4] = {FL::kA, FL::kB, FL::kX, FL::kY};
+    const FL nintendo[4] = {FL::kB, FL::kA, FL::kY, FL::kX};  // Switch Pro prints B A Y X
+
+    input_map::note_face_labels(xbox);
+    auto mapping = input_map::Mapping::defaults();
+    input_map::set_face_auto(mapping, true);
+    assert(mapping.face_auto);
+    assert(input_map::face_layout(mapping) == input_map::FaceLayout::kLabels);
+    input_map::set_current(mapping, false);
+    expect_xbox = true;
+    st16(list + 4, 0); st8(list + 6, 0);
+    print(0xE000);
+    assert(button_glyphs::marked_face(ld8(first_quad + 0x2F)) == 0);
+    draw();
+
+    std::memset(mem::ptr(picture), 0, 0xC0);
+    std::strcpy((char*)mem::ptr(picture + 0x80), "P_B_00");
+    picture_face = 1;
+    for (uint32_t i = 0; i < 4; i++) st32(picture + 0xA8 + i * 4, corners[i]);
+    Cpu c{};
+    c.r[3] = picture;
+    hook_02874D54(&c);
+    assert(c.r[3] == 0xC003);
+
+    // A Nintendo pad on Automatic resolves to by position: the prompts keep the stock colours.
+    input_map::note_face_labels(nintendo);
+    auto stock = input_map::Mapping::defaults();
+    input_map::set_face_auto(stock, true);
+    assert(input_map::face_layout(stock) == input_map::FaceLayout::kPosition);
+    input_map::set_current(stock, false);
+    expect_xbox = false;
+    std::strcpy((char*)mem::ptr(picture + 0x80), "P_A_00");
+    picture_face = 0;
+    for (uint32_t i = 0; i < 4; i++) st32(picture + 0xA8 + i * 4, corners[i]);
+    std::array<uint8_t, 0xC0> stock_picture;
+    std::memcpy(stock_picture.data(), mem::ptr(picture), stock_picture.size());
+    Cpu c2{};
+    c2.r[3] = picture;
+    hook_02874D54(&c2);
+    assert(!std::memcmp(stock_picture.data(), mem::ptr(picture), stock_picture.size()));
+
+    layout(input_map::FaceLayout::kPosition);  // leave the manual default for later tests
+}
+
 }  // namespace
 
 extern "C" void f_028766CC_orig(Cpu* c) { matrix(c); }
@@ -626,10 +675,35 @@ int main() {
     print('A');     // ordinary text containing a letter A, including keyboard instructions
     print(0x2665);  // heart picture
     assert(ld16(list + 4) == 7);
+    // By label has never been on in this session: the printers must leave the game's flag
+    // bytes exactly as the game wrote them (the game's own colour-font bit at most).
     for (uint32_t i = 0; i < 7; i++) {
-        const int face = button_glyphs::marked_face(ld8(first_quad + i * 0x30 + 0x2F));
-        assert(face == (i < 4 ? int(i) : -1));
+        const uint8_t flags = ld8(first_quad + i * 0x30 + 0x2F);
+        assert(flags == (i & 1));
+        assert(button_glyphs::marked_face(flags) == -1);
     }
+    // A stock vertex pass writes nothing to the quads either while the gate is closed.
+    std::array<uint8_t, 7 * 0x30> untouched;
+    std::memcpy(untouched.data(), mem::ptr(first_quad), untouched.size());
+    Cpu stock_draw{}; stock_draw.r[4] = list; stock_draw.r[5] = base + 0x1800;
+    st32(stock_draw.r[5], 0x121212A0);
+    hook_028F7C7C(&stock_draw);
+    assert(!std::memcmp(untouched.data(), mem::ptr(first_quad), untouched.size()));
+    assert(ld8(list + 6) == 1);  // the game marks the generated vertices valid
+
+    // Selecting by label for the first time rebuilds each cached text box once: no markers
+    // exist yet, so the game re-runs Print and the rebuilt quads are styled like any later
+    // switch. Simulate that rebuild, then keep the marked stock for the switch checks below.
+    layout(input_map::FaceLayout::kLabels);
+    button_glyphs::prepare_text_box(text_box);
+    assert(ld8(list + 6) == 0);
+    st16(list + 4, 0);
+    for (uint32_t face = 0; face < 4; face++) print(0xE000 + face);
+    print(0xE081);
+    print('A');
+    print(0x2665);
+    for (uint32_t i = 0; i < 4; i++)
+        assert(button_glyphs::marked_face(ld8(first_quad + i * 0x30 + 0x2F)) == int(i));
     std::array<uint8_t, 7 * 0x30> stock;
     std::memcpy(stock.data(), mem::ptr(first_quad), stock.size());
 
@@ -702,6 +776,7 @@ int main() {
     positions_test();
     shoulders_test();
     font_fallback_test();
+    automatic_test();
 
 #ifdef _WIN32
     VirtualFree(memory, 0, MEM_RELEASE);

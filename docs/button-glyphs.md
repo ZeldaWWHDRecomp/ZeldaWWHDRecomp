@@ -38,10 +38,13 @@ renderers without adding texture-reload infrastructure.
 `tools/recomp/hooks_glyphs.txt` hooks three functions:
 
 * `0x0286E9F0`, `CharWriter::Print`: record face identity in unused bits of a newly built
-  glyph quad's byte +0x2F. The game resets that byte on each build and consumes only bit 0
-  (colour-font flag). Marking happens in every layout, so even text cached before a layout
-  change is identifiable; the draw hook can invalidate and rebuild it when needed. The
-  metadata follows guest save states and heap reuse naturally.
+  glyph quad's byte +0x2F. The game resets that byte on each build (the emitter stores zero,
+  then sets bit 0 only for a colour font), and every reader masks out only its own bits (see
+  below). Nothing is written while by label has never been on in the session, so players who
+  never use it run exactly the stock path. The first time it is selected, each cached text box
+  is rebuilt once so its glyphs are marked and the draw hook can restyle it; after that,
+  marking happens in every layout, so even text cached before a layout change is identifiable.
+  The metadata follows guest save states and heap reuse naturally.
 * `0x028F7C7C`: colour those quads while the game builds GPU vertices, then restore the authored
   colours. Bit 3 of each marked quad records the style used for the generated vertices. The
   existing `0x028785C8` TextBox draw hook checks this before the game's cache-validity gate
@@ -55,9 +58,32 @@ renderers without adding texture-reload infrastructure.
   backgrounds without altering their separate letter text.
 
 The live layout is cached per guest thread using `input_map::generation()`. Only
-`kLabels` enables styling. The hooks use the common game/GX2 path, not SDL, AppKit or a
-particular renderer. `input_map.cpp` has no changes. The EU build map maps all three
-function entries and reports their bodies unchanged.
+`kLabels` enables styling, including when *Automatic* resolves a pad to it: `face_layout()`
+reports the shape the preset resolved to, and the generation bumps whenever the bindings are
+rewritten, so the hooks follow the pad that is playing. The hooks use the common game/GX2 path,
+not SDL, AppKit or a particular renderer. `input_map.cpp` has no changes. The EU build map maps
+all three function entries and reports their bodies unchanged.
+
+### The glyph quad's word at +0x2C
+
+Each cached glyph quad is 0x30 bytes. Its last word (`+0x2C`) carries three subfields; in the
+generated `build/gen` code these are the only places that touch it:
+
+* `0x0286E4FC` — the emitter reached from `CharWriter::Print` through `0x0286E8B4` — writes the
+  signed 16-bit value at `+0x2C` (`0x0286E838`), copies the source glyph's page byte to `+0x2E`
+  (`0x0286E840`), stores zero to `+0x2F` (`0x0286E84C`), and sets bit 0 afterwards only when a
+  virtual call reports a colour font (`0x0286E870`, `0x0286E878`). It never inspects or
+  preserves the high bits, so a freshly built quad starts with `+0x2F` at `0x00` or `0x01`.
+* `0x028F7A4C` — batch grouping, called from the vertex builder — loads `+0x2F` and keeps only
+  bit 0 (`0x028F7B00`, mask `& 1` at `0x028F7B04`).
+* `0x028F7C7C` — vertex generation — reads the 16-bit value at `+0x2C` (`0x028F7E54`,
+  `0x028F8080`) and the page byte at `+0x2E` (eight sites from `0x028F7E70`). It never loads
+  `+0x2F`.
+
+No copy or clear function moves the word: the append path rewrites every field, and heap reuse
+is covered because the emitter resets `+0x2F` on each build. The private marker bits (the D/E
+prefix, the two identity bits and the recorded-style bit, bits 1–7) therefore live in a byte
+whose only game reader masks bit 0 and whose only game writer wipes it before writing.
 
 ### HUD positions
 
@@ -113,6 +139,12 @@ the TextBox cache-validity gate. It checks cached icons across position → labe
 transitions; identity of the requested character; exact restoration of authored colours;
 alpha/outline preservation; the full four-face HUD palette; unrelated icons/panes; and a
 full glyph list that cannot append another quad. No game artwork is part of the test.
+The session gate is covered too: before any activation the printers leave the game's flag bytes
+untouched and a stock vertex pass writes nothing to the quads; selecting by label for the first
+time rebuilds the cached dialog once, after which the same quads are marked and styled across all
+four mode switches. The Automatic preset is exercised with an Xbox pad resolving to by label
+(marking, vertex styling, HUD picture colours) and a Nintendo pad resolving to by position
+(stock colours).
 The positional regression reproduces the reported A-at-right error using CommandGuide's
 nested hierarchy, then checks all four Xbox positions, associated item/parry children, live
 mode switches with clean cached matrices, unchanged authored locals, viewport/container
@@ -142,6 +174,14 @@ reports all three new hooked bodies unchanged.
 Before opening the PR, current `devel` was merged and the playable USA code regenerated
 again. The complete Linux build and expanded suite passed: **78/78 CTest tests**, including
 the glyph regression composed with the updated aspect anchoring.
+
+After the review, current `devel` was merged once more and the USA code regenerated with the
+merged recompiler. The complete Linux build and full suite passed: **151/151 CTest tests**
+(`input_map_test`: 709 passed, 0 failed), including the gate and *Automatic* cases below.
+(`mod_oneclick_flow` requires more than 10 GiB free in its temporary directory; it passes with
+`TMPDIR` on the data volume.)
+The generated USA code was also re-inspected for the glyph quad word after regeneration: the
+same three functions and masks are the only accesses at `+0x2C`–`+0x2F` on the text path.
 
 Regenerate and rebuild the real game code with the new hook list before play-testing.
 The requester tested the final Linux/Vulkan playable build and confirmed the corrected
