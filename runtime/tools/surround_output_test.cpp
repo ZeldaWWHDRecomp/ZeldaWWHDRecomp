@@ -13,6 +13,8 @@
 #include <sys/mman.h>
 #endif
 
+// ax.cpp's sound trace reads the host clock; Windows' linker keeps that code (no section GC there)
+namespace timebase { uint64_t now() { return 0; } }
 namespace hostui {
 bool get(const char *, std::string &value) {
     value = "surround";
