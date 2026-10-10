@@ -223,7 +223,11 @@ public class SetupActivity extends Activity {
                     File progress = new File(job, "state.json");
                     if (value.optString("state").equals("running") && progress.isFile()) {
                         JSONObject event = SetupStore.read(progress).optJSONObject("last_event");
-                        if (event != null) text += "\n" + event.optString("stage", "setup") + ": " + event.optString("state");
+                        String compiling = event == null || !event.optString("stage").equals("compile") ? null :
+                            SetupPolicy.compileProgress(event.optString("state"), event.optInt("compiled"), event.optInt("reused"),
+                                event.optInt("total"), event.optLong("eta_seconds", -1));
+                        if (compiling != null) text += "\n" + compiling;
+                        else if (event != null) text += "\n" + event.optString("stage", "setup") + ": " + event.optString("state");
                     }
                 }
                 if (actionMessage != null) text += "\n" + actionMessage;

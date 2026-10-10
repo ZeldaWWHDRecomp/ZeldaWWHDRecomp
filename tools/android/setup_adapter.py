@@ -390,12 +390,33 @@ class Adapter:
         event_lock = threading.Lock()
         stats = {"compiled": 0, "reused": 0}
         started = time.monotonic()
+        # the sources compile_gamecode compiles (same selection), for "30/80" and a time estimate
+        sources = sorted(generated.glob("code_*.c")) + [generated / "table.c", generated / "imports.c"]
+        sizes = {path.name: path.stat().st_size for path in sources if path.is_file()}
+        total = len(sources)
+        bytes_done = {"compiled": 0, "reused": 0}
+
+        def estimate():
+            # compiled bytes per second of wall time (all workers together); big files go first,
+            # so early estimates lean high
+            elapsed = time.monotonic() - started
+            remaining = sum(sizes.values()) - bytes_done["compiled"] - bytes_done["reused"]
+            if stats["compiled"] < 3 or not bytes_done["compiled"] or elapsed <= 0:
+                return None
+            return round(remaining * elapsed / bytes_done["compiled"])
 
         def completed(state, source):
             with event_lock:
                 stats[state] += 1
-                self.emit({"stage": "compile", "state": state,
-                           "source": source.name, **stats})
+                bytes_done[state] += sizes.get(source.name, 0)
+                event = {"stage": "compile", "state": state, "source": source.name,
+                         "total": total, "jobs": jobs, **stats}
+                eta = estimate()
+                if eta is not None:
+                    event["eta_seconds"] = eta
+                self.emit(event)
+
+        self.emit({"stage": "compile", "state": "started", "total": total, "jobs": jobs, **stats})
 
         def run(command, env=None, stdout=None, stderr=None):
             with event_lock:

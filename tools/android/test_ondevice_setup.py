@@ -127,7 +127,7 @@ class SetupJobTests(unittest.TestCase):
         self.value["schema"] = 99
         with self.assertRaisesRegex(ValueError, "job version"): self.execute()
         self.value["schema"] = 1
-        self.value["jobs"] = 3
+        self.value["jobs"] = 5
         with self.assertRaisesRegex(ValueError, "concurrency"): self.execute()
 
     def test_second_worker_cannot_change_state(self):

@@ -162,7 +162,7 @@ public class SetupService extends Service {
                 String kind = configuration.getJSONObject("input").getString("kind");
                 if (!kind.equals("folder")) configuration.put("extractor", AndroidExtractor.prepare(this));
                 String revision = EmbeddedPython.checksum(this, "python-source.zip", () -> checkPause(active));
-                configuration.put("port_revision", revision).put("jobs", 1);
+                configuration.put("port_revision", revision).put("jobs", compileJobs());
                 SetupStore.write(new File(active, "job.json"), configuration);
                 checkPause(active);
                 host("running", null, null);
@@ -205,6 +205,20 @@ public class SetupService extends Service {
         EmbeddedPython.execute(this, module,
                 new JSONArray().put("--job").put(configuration.getPath()).toString(),
                 () -> checkPause(configuration.getParentFile()));
+    }
+
+    /** Parallel compiler processes for this phone (SetupPolicy.compileJobs). */
+    private int compileJobs() {
+        android.app.ActivityManager activities = (android.app.ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        android.app.ActivityManager.MemoryInfo memory = new android.app.ActivityManager.MemoryInfo();
+        boolean lowRam = true;
+        if (activities != null) { activities.getMemoryInfo(memory); lowRam = activities.isLowRamDevice(); }
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        int thermal = power != null && Build.VERSION.SDK_INT >= 29 ? power.getCurrentThermalStatus() : 0;
+        int jobs = SetupPolicy.compileJobs(Runtime.getRuntime().availableProcessors(), memory.availMem, lowRam, thermal);
+        Log.i("wwhd-setup", "compile workers " + jobs + " (cores " + Runtime.getRuntime().availableProcessors() +
+            ", free memory " + (memory.availMem >> 20) + " MB, low-RAM " + lowRam + ", thermal " + thermal + ")");
+        return jobs;
     }
 
     private void checkPause(File active) throws Pause {

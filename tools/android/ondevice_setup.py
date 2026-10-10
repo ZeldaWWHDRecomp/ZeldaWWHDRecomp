@@ -70,8 +70,8 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter):
             if job.get("schema") != 1:
                 raise ValueError("Unsupported setup job version")
             jobs = job.get("jobs", 1)
-            if type(jobs) is not int or not 1 <= jobs <= 2:
-                raise ValueError("Compilation concurrency must be one or two")
+            if type(jobs) is not int or not 1 <= jobs <= 4:
+                raise ValueError("Compilation concurrency must be one to four")
             if not isinstance(job.get("port_revision"), str) or not job["port_revision"]:
                 raise ValueError("A release pipeline identity is required")
             adapter = adapter_factory(package, root / "checkpoints", job["port_revision"], publish, paused)
