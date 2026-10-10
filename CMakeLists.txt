@@ -71,6 +71,17 @@ if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WWHD_BUNDLED_DEPS)
 endif()
 if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  # The MSVC ABI links no compiler runtime, but clang lowers 128-bit division to compiler-rt calls
+  # (__udivti3; on ARM64 nothing in the MSVC libraries provides them): link clang's builtins.
+  set(WWHD_CLANG_TARGET_ARG)
+  if(CMAKE_CXX_COMPILER_TARGET)
+    set(WWHD_CLANG_TARGET_ARG --target=${CMAKE_CXX_COMPILER_TARGET})
+  endif()
+  execute_process(COMMAND ${CMAKE_CXX_COMPILER} ${WWHD_CLANG_TARGET_ARG} -print-libgcc-file-name -rtlib=compiler-rt
+                  OUTPUT_VARIABLE WWHD_CLANG_BUILTINS OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(WWHD_CLANG_BUILTINS AND EXISTS "${WWHD_CLANG_BUILTINS}")
+    link_libraries("${WWHD_CLANG_BUILTINS}")
+  endif()
 endif()
 
 add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports.c)
@@ -933,6 +944,12 @@ add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
 target_include_directories(mod_setup_run_test PRIVATE runtime/src)
 target_compile_options(mod_setup_run_test PRIVATE -UNDEBUG)
 add_test(NAME mod_setup_run COMMAND mod_setup_run_test)
+# Windows treats a program whose name contains "setup" as an installer (installer detection) and
+# asks for administrator rights unless its manifest says otherwise (seen on Windows on ARM64: CTest
+# reported these tests as "permission denied"): they carry the console manifest
+foreach(t catalogue_setup_test setup_test_plan_test mod_setup_run_test)
+  wwhd_windows_resources(${t} "Wind Waker HD test" "${t}.exe" console)
+endforeach()
 
 
 if(NOT ANDROID)

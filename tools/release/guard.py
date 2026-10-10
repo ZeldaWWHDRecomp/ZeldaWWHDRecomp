@@ -50,15 +50,22 @@ GEN_CODE = re.compile(rb"void f_[0-9A-F]{8}\(Cpu\* __restrict c\) \{\n")
 
 
 PYTHON_FILES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "python-windows-files.json")
+PYTHON_FILES_ARM64 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "python-windows-arm64-files.json")
 PYTHON_DIR = re.compile(r"(?:^|/)tools/python/(.+)$")
 
 
-def check_python(name, data, seen, problems):
+def python_files(path):
+    """The file list of the embeddable Python this release must ship: the ARM64 one in a windows-arm64
+    release (its name: WindWakerHD-<version>-windows-arm64[.zip])."""
+    return PYTHON_FILES_ARM64 if "windows-arm64" in os.path.basename(os.path.normpath(path)) else PYTHON_FILES
+
+
+def check_python(name, data, seen, problems, files=PYTHON_FILES):
     """tools/python/...: only the pinned embeddable Python's own files, unmodified. Returns True when it was one."""
     m = PYTHON_DIR.search(name.replace("\\", "/"))
     if not m:
         return False
-    with open(PYTHON_FILES) as f:
+    with open(files) as f:
         expected = json.load(f)["files"]
     rel = m.group(1)
     if rel not in expected:
@@ -92,9 +99,10 @@ ANDROID_TEST_FILES = {
 
 def scan(path, allow_android_test_fixtures=False):
     problems, count, python = [], 0, set()
+    files = python_files(path)
 
     def entry(name, data):
-        check_python(name, data, python, problems)
+        check_python(name, data, python, problems, files)
         check_entry(name, data, problems)
         if name.replace("\\", "/").endswith("python-source.zip"):
             try:
@@ -120,7 +128,7 @@ def scan(path, allow_android_test_fixtures=False):
                 entry(info.filename, z.read(info))
                 count += 1
     if python:
-        with open(PYTHON_FILES) as f:
+        with open(files) as f:
             missing = sorted(set(json.load(f)["files"]) - python)
         if missing:
             problems.append("tools/python/ lacks files of the pinned embeddable Python: " + ", ".join(missing))

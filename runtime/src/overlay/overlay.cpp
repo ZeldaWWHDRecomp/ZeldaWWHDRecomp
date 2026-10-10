@@ -696,7 +696,8 @@ void tab_graphics() {
              "whole game down. The performance overlay shows how many are drawn.\n"
              "Off: every logic step waits for all of its frames, so if the frame target is not reached\n"
              "(e.g. 120/240 fps at a high internal resolution) the whole game runs in slow motion.\n"
-             "Saved separately for 60 fps (off by default) and 120/240 fps (on by default).");
+             "Saved separately for 60 fps (off by default; on by default on Android and Windows on ARM)\n"
+             "and 120/240 fps (on by default).");
         if (!interp::paced_interpolation())
             note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
                  "overlay then shows fewer than 30 logic steps/s). Turn it on to keep the game's speed.", interp::fps());

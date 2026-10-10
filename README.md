@@ -41,8 +41,12 @@ computer (about two minutes); every later start launches the game directly.
    (a games folder, an external drive):
    - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer; Vulkan through MoltenVK, included, can
      be picked in Graphics > Renderer)
-   - **Windows**: x86-64, Windows 10 or 11, a GPU with Vulkan 1.3 drivers (or Vulkan 1.1 / 1.2 drivers
-     with `VK_KHR_dynamic_rendering`)
+   - **Windows**: x86-64 (`windows-x86_64`, Windows 10 or 11) or arm64 (`windows-arm64`, Windows 11 on
+     ARM, e.g. Snapdragon X), a GPU with Vulkan 1.3 drivers (or Vulkan 1.1 / 1.2 drivers with
+     `VK_KHR_dynamic_rendering`). The arm64 zip runs natively, and only on ARM64 (its setup says so
+     on an x86-64 PC). On ARM, 60 fps keeps the game's speed by default (Graphics > "Keep game
+     speed"), as on Android: where two frames per step do not fit, in-between frames are skipped
+     instead of slowing the whole game down
    - **Linux**: x86-64 (`linux-x86_64`) or arm64 (`linux-aarch64`, e.g. Raspberry Pi 5, Asahi Linux
      on Apple Silicon, other ARM boards and laptops), glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+,
      Fedora 36+, Arch, SteamOS 3, Raspberry Pi OS 12), a GPU with Vulkan 1.3 drivers (or 1.1 / 1.2 with
@@ -138,8 +142,8 @@ Source builds (below) and the Linux AppImage are not portable: they keep using t
 
 ## Requirements (building from source)
 
-- **macOS** on Apple Silicon, **Linux** (x86-64 or arm64, Vulkan) or **Windows** (x86-64, Vulkan); the
-  platform-specific build steps are under "Building" below
+- **macOS** on Apple Silicon, **Linux** (x86-64 or arm64, Vulkan) or **Windows** (x86-64 or arm64,
+  Vulkan); the platform-specific build steps are under "Building" below
 - macOS: Xcode command line tools (`xcode-select --install`)
 - zstd for the extractor's `.wua` support: a system one if installed (`brew install zstd`, `apt install
   libzstd-dev`; found through its CMake package or pkg-config), otherwise CMake downloads the pinned
@@ -283,6 +287,20 @@ supported because the recompiled game requires Clang's `musttail` support.
 
 The build fails with a clear message if `build/gen` has not been generated. The runtime checks at
 startup that `game/code/cking.rpx` matches the recompiled code.
+
+#### Windows on ARM64
+
+On an ARM64 PC (e.g. Snapdragon X), the native LLVM method works with the ARM64 LLVM
+(`aarch64-pc-windows-msvc`; the copy in Visual Studio's *C++ Clang tools* component was tested) and
+Visual Studio's ARM64 build tools, from an ARM64 developer prompt (`vcvarsarm64.bat`), plus the
+ARM64 Vulkan SDK. The release is built like the x86-64 one, with the pinned llvm-mingw for ARM64
+hosts (`llvm-mingw-20260922-aarch64` in `tools/installer/toolchains.json`, target
+`aarch64-w64-mingw32`); see the `windows` job of `.github/workflows/release.yml`.
+
+With Visual Studio's bundled clang, add `-DCMAKE_LINKER_TYPE=MSVC`: its `lld-link` is built without
+libxml2 and embeds an application manifest Windows refuses to start ("side-by-side configuration is
+incorrect"); Microsoft's `link.exe` merges it correctly. CMake links clang's compiler-rt builtins on
+the MSVC ABI (128-bit division, `__udivti3`, which no MSVC library provides on ARM64).
 
 ### Android (build it yourself)
 
