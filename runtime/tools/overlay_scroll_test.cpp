@@ -22,6 +22,12 @@ struct VirtualPad {
         id = SDL_AttachVirtualJoystick(&d); assert(id);
         joystick = SDL_OpenJoystick(id); gamepad = SDL_OpenGamepad(id);
         assert(joystick && gamepad && SDL_GetGamepadType(gamepad) == SDL_GAMEPAD_TYPE_XBOXONE);
+        // SDL virtual axes are bipolar; trigger -32768 maps to gamepad value 0.
+        for (auto a : {SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER})
+            assert(SDL_SetJoystickVirtualAxis(joystick, a, -32768));
+        SDL_UpdateJoysticks();
+        assert(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) == 0);
+        assert(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) == 0);
     }
     ~VirtualPad() {
         if (!id) return;
@@ -29,7 +35,8 @@ struct VirtualPad {
         assert(SDL_DetachVirtualJoystick(id));
     }
     void axis(SDL_GamepadAxis a, float v) {
-        assert(SDL_SetJoystickVirtualAxis(joystick, a, Sint16(v * 32767)));
+        const Sint16 raw = a >= SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? Sint16(v * 65535 - 32768) : Sint16(v * 32767);
+        assert(SDL_SetJoystickVirtualAxis(joystick, a, raw));
         SDL_UpdateJoysticks();
     }
     void button(SDL_GamepadButton b, bool down) {
@@ -103,6 +110,34 @@ int main() {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
+    {
+        VirtualPad pad(true);
+        // Closed menu: use the stick once, then release to exactly zero.
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, -1);
+        assert(pad.read()[kPadLSUp] > 0.99f);
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0);
+        for (float v : pad.read()) assert(v == 0);
+        Page page; page.previous = pad.read(); page.settle(pad);
+        const auto position = page.visible_button;
+        ImGui::GetIO().AddMousePosEvent(position.x, position.y); page.frame(pad.read(), true);
+        ImGui::GetIO().AddMouseButtonEvent(0, true); page.frame(pad.read(), true);
+        ImGui::GetIO().AddMouseButtonEvent(0, false); page.frame(pad.read(), true);
+        assert(page.clicks == 1);
+        // A click must hand off all gamepad navigation even with exact-zero axes.
+        // The old feed also scrolled stably at zero in our trace; the ownership
+        // assertion verifies the handoff policy, not reproduction of that report.
+        assert(!page.navigation.controller_active());
+        assert(!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_NavEnableGamepad));
+        float y = page.wheel(pad); assert(y > 0);
+        for (int f = 0; f < 180; ++f) {
+            for (float v : pad.read()) assert(v == 0);
+            assert(page.frame(pad.read()) == y);
+        }
+        pad.button(SDL_GAMEPAD_BUTTON_DPAD_DOWN, true); page.frame(pad.read());
+        assert(page.navigation.controller_active());
+        assert(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_NavEnableGamepad);
+        pad.button(SDL_GAMEPAD_BUTTON_DPAD_DOWN, false); page.settle(pad);
+    }
     auto check_rest = [](int axis, float rest, bool touched) {
         VirtualPad pad(axis != -2);
         if (touched) { pad.axis(SDL_GAMEPAD_AXIS_LEFTY, -1); pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0); }

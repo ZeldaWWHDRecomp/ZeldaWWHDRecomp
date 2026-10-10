@@ -3,8 +3,8 @@
 #include "input_map.h"
 
 namespace overlay {
-// Mouse activity wins over an already-held controller input. Only a new navigation
-// press can hand control back; analog resting values are not new presses.
+// Mouse activity takes ownership of menu navigation, including for a centered
+// controller. Only a new navigation press can hand control back.
 class GamepadNavigation {
     bool mouse_owned_ = false;
 public:
@@ -25,8 +25,9 @@ public:
         if (mouse_used) mouse_owned_ = true;
         else if (pressed) mouse_owned_ = false;
         const bool active = enabled && controller_active();
-        // ImGui 1.92 scrolls directly from LStick AnalogValue, even when Down=false.
-        // Disabling navigation while the mouse owns it also suppresses that path.
+        // Suspend gamepad navigation while the mouse owns the menu, rather than only
+        // clearing its highlight. This also blocks ImGui 1.92's direct LStick analog
+        // scrolling, which does not require Down=true.
         if (active) io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
         auto key = [&](ImGuiKey k, int p) {
