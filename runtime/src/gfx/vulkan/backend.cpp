@@ -1938,6 +1938,15 @@ static void present(Screen &s) {
   if(secondary && async && secondaryPresentWorker) {
     auto draw=std::exchange(secondaryPreparedDraw,{});
     if(draw) {
+      // The worker's drawing waits on the snapshot's readiness semaphore, so its
+      // signal must be submitted first (a binary semaphore wait may not precede
+      // its signal). The TV presentation normally submitted it, but it returns
+      // without a submission while its surface is lost or being recreated, or no
+      // image was acquired; the end-of-frame flush would then come only after the
+      // worker's wait and present. On the emulator's gfxstream host that present
+      // blocked every queue until its 3 s release-fence timeout, after which the
+      // graphics queue never went idle again.
+      if(secondarySnapshotSignal)submit(VK_NULL_HANDLE,VK_NULL_HANDLE,true);
       // Acquire semaphore consumption belongs to the worker's drawing fence,
       // not to the graphics submission that merely copied the snapshot.
       ap.serial[acquireIndex]=0;
