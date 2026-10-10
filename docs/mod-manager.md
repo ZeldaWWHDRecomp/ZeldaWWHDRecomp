@@ -48,7 +48,8 @@ their blend weight and run phase.
 
 The sprint pose leans up to 30 degrees through the torso, with a compensating head tilt and wider
 arm swings. Starting a grounded run boost emits one short fan of three larger, more opaque puffs
-of the game's land dust behind Link's feet. A forward roll keeps the current boost cycle and
+of the game's land dust behind Link's feet. While the run boost remains active on the ground, a
+small dim puff follows every few steps as a dust trail. A forward roll keeps the current boost cycle and
 continues using stamina, but plays at its native speed and
 pose. Running resumes automatically after the roll while the cycle still has stamina; cancelling,
 exhausting the bar or genuinely stopping ends it. Resuming the same cycle after a roll does not

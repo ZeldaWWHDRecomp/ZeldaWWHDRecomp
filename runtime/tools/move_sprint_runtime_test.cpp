@@ -17,6 +17,7 @@ float dt = 1.f;
 bool native_adjust = false;
 unsigned calls = 0;
 unsigned dust_calls = 0;
+unsigned trail_calls = 0;
 void map(uint32_t address) {
 #ifdef _WIN32
     auto p = VirtualAlloc(mem::ptr(address), 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -42,10 +43,12 @@ uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
     assert(fn==0x025A87C0);
     const std::vector<uint32_t> values(args);
     assert(values.size()==7 && values[0]==0x1100A000 && values[4]==link+0x110);
-    assert(values[2]>=mem::fixed_slot(mem::kFixLinkScratch)+0x50 && values[2]<mem::fixed_slot(mem::kFixLinkScratch)+0x80);
+    const uint32_t scratch=mem::fixed_slot(mem::kFixLinkScratch);
+    assert(values[2]>=scratch+0x50 && values[2]<scratch+0x90);
     assert(values[6]&1); // the native helper's dry-land smoke flag
     assert(c->f[1].ps0>1.f);
-    ++dust_calls; c->r[8]=0xDEADBEEF; c->f[1].ps0=0;
+    if(values[2]<scratch+0x80) ++dust_calls; else ++trail_calls;
+    c->r[8]=0xDEADBEEF; c->f[1].ps0=0;
     return 0x11009800;
 }
 extern "C" void f_023DE788_orig(Cpu*) {}
@@ -216,6 +219,23 @@ int main(int argc, char**) {
     st32(link+0x65F0,mods::kProcFrontRoll); mods::move_speed_input(input::kStickL);
     mods::link_move_factor(link);
     assert(mods::move_hud().stamina==1.f && !mods::move_hud().boosted); // only an existing run carries
+    // A small dust trail while running, emitted every few steps.
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kToggle);
+    st32(link+0x65F0,mods::kProcMove); st32(link+0x834,0x20); st32(link+0x69D4,0);
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_speed_input(0); for(int i=0;i<5;++i) mods::link_move_factor(link);
+    const auto trail_before=trail_calls;
+    for(int i=0;i<4;++i) mods::move_trail_effect(&fx,link);
+    assert(trail_calls==trail_before); // four steps are not enough
+    mods::move_trail_effect(&fx,link);
+    assert(trail_calls==trail_before+1); // the fifth step emits one puff
+    for(int i=0;i<5;++i) mods::move_trail_effect(&fx,link);
+    assert(trail_calls==trail_before+2);
+    assert(ld8(0x11009800+0x247)==0x50); // dimmer than the start burst
+    st32(link+0x65F0,mods::kProcFrontRoll);
+    for(int i=0;i<10;++i) mods::move_trail_effect(&fx,link);
+    assert(trail_calls==trail_before+2); // no trail during the roll
     assert(calls>100);
     return 0;
 }

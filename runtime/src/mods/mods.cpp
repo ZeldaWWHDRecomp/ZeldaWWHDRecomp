@@ -70,6 +70,8 @@ bool g_move_held_prev = false;
 bool g_move_cycle_started = false; // a roll suspends movement, but does not start a second cycle
 bool g_move_dust_emitted = false;
 uint32_t g_move_dust_pending = 0;
+unsigned g_move_trail_step = 0;
+bool g_move_trail_side = false;
 std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
 std::atomic<float> g_move_hud_alpha{0.f};  // the bar's fade (climb.cpp's pattern)
@@ -185,6 +187,7 @@ float link_move_factor(uint32_t link) {
         g_move_cycle_started = false;
         g_move_dust_emitted = false;
         g_move_dust_pending = 0;
+        g_move_trail_step = 0;
         g_move_ramp = 1.f;
         g_move_stamina = 1.f;
         g_move_exhausted = false;
@@ -234,6 +237,7 @@ float link_move_factor(uint32_t link) {
             g_move_cycle_started = false;
             g_move_dust_emitted = false;
             g_move_dust_pending = 0;
+            g_move_trail_step = 0;
         }
         if (active && is_move_proc(proc) && move_target(true, proc, move_speed_land_factor(), move_speed_swim_factor()) > 1.f)
             g_move_cycle_started = true;
@@ -307,6 +311,40 @@ void move_start_effect(Cpu* c, uint32_t link) {
     }
     if (!first_emitter) g_move_dust_emitted = false;
     if (trace_on()) trace("sprint-dust link=%08X emitter=%08X puffs=%u", link, first_emitter, puffs);
+}
+
+// Small dim puffs behind the feet while actually boosting on land, leaving a wake. Emitted every
+// few logic steps so it reads as a trail rather than another burst. The game's own foot emitters
+// are left alone; no trail in water, midair, lock-on, demos or during a forward roll.
+void move_trail_effect(Cpu* c, uint32_t link) {
+    if (!c || !link || true60::dt() < 1.f) return;
+    const bool running = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcMove;
+    if (!running || move_speed_land_factor() <= 1.f) { g_move_trail_step = 0; return; }
+    if (++g_move_trail_step < 5) return;
+    g_move_trail_step = 0;
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    if (!manager || !move_speed() || !(ld32(link + 0x834) & 0x20) ||
+        (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) ||
+        ld32(link + 0x69D4) == 0x13 || ld16(link + 0x420) || ld8(play + 0x5292)) return;
+    const Cpu saved = *c;
+    const uint32_t scratch = mem::fixed_slot(mem::kFixLinkScratch), effect_id = scratch + 0x40;
+    st32(effect_id, 0);
+    const float angle = (int16_t)ld16(link + 0x32A) * 0.00009587379924f;
+    const float s = std::sin(angle), co = std::cos(angle);
+    const float x = u32_as_f32(ld32(link + 0x314)), y = u32_as_f32(ld32(link + 0x318)),
+                z = u32_as_f32(ld32(link + 0x31C));
+    g_move_trail_side = !g_move_trail_side;
+    const float side = g_move_trail_side ? 12.f : -12.f;
+    const uint32_t pos = scratch + 0x80;
+    st32(pos, f32_as_u32(x - 12.f * s + side * co));
+    st32(pos + 4, f32_as_u32(y + 1.f));
+    st32(pos + 8, f32_as_u32(z - 12.f * co - side * s));
+    c->f[1].ps0 = 1.2f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 1.f;
+    const uint32_t emitter = guest_call(c, GC(0x025A87C0),
+        {manager, 0, pos, link + 0x328, link + 0x110, effect_id, 0x11});
+    *c = saved;
+    if (emitter) st8(emitter + 0x247, 0x50); // a faint wake, not another burst
+    if (trace_on()) trace("sprint-trail link=%08X emitter=%08X", link, emitter);
 }
 
 // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame): r4 = frameCtrl, f1 = rate.

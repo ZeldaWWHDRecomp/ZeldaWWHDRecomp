@@ -51,6 +51,7 @@ void set_move_speed_button(uint32_t button);
 void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps
 float link_move_factor(uint32_t link);
 void move_start_effect(Cpu* c, uint32_t link); // consume a new grounded sprint's one-shot dust burst
+void move_trail_effect(Cpu* c, uint32_t link); // small puffs behind the feet while running under boost
 
 // The boost's on-screen bar (Vulkan present.cpp, Metal mod_hud.mm), read from the render thread.
 struct MoveHud {
