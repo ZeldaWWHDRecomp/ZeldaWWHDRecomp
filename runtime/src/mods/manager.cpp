@@ -94,7 +94,8 @@ void load_saved() {
                 set_move_speed_swim_factor(f);
             }
         }
-    }    number("mod.move-speed.stamina", "WWHD_MOD_MOVE_STAMINA", 0.f, 60.f, set_move_speed_stamina_seconds);
+    }
+    number("mod.move-speed.stamina", "WWHD_MOD_MOVE_STAMINA", 0.f, 60.f, set_move_speed_stamina_seconds);
     number("mod.move-speed.cooldown", "WWHD_MOD_MOVE_COOLDOWN", 0.f, 60.f, set_move_speed_cooldown_seconds);
     std::string mode;
     if (hostui::get("mod.move-speed.mode", mode) && (mode == "0" || mode == "1"))

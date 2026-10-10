@@ -477,7 +477,8 @@ extern "C" void hook_023D6B30(Cpu* c) {
                    : "sprint-pose link=%08X weight=%.3f lean=%.2f phase=%.3f", link, weight, angle, phase);
 }
 
-uint64_t step() { return interp::logic_steps(); }double game_time() { return (double)interp::logic_steps() / 30.0; }
+uint64_t step() { return interp::logic_steps(); }
+double game_time() { return (double)interp::logic_steps() / 30.0; }
 
 static FILE* g_trace = [] {
     const char* p = getenv("WWHD_MODS_TRACE");
