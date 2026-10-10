@@ -10,6 +10,7 @@
 #include <string>
 
 #include "input_map.h"
+#include "platform/touch_face.h"
 
 using namespace input_map;
 
@@ -111,6 +112,34 @@ static void test_face_layout() {
     CHECK(face_layout_label(FaceLayout::kPosition) && *face_layout_label(FaceLayout::kPosition));
     CHECK(face_layout_label(FaceLayout::kLabels) && *face_layout_label(FaceLayout::kLabels));
     CHECK(std::string(face_layout_label(FaceLayout::kPosition)) != face_layout_label(FaceLayout::kLabels));
+}
+
+// #88: the on-screen A B X Y act as the Wii U button drawn on them with either face preset
+static void test_touch_face() {
+    const uint32_t wiiu[4] = {input::kA, input::kB, input::kX, input::kY};
+    for (FaceLayout layout : {FaceLayout::kPosition, FaceLayout::kLabels}) {
+        Mapping m = Mapping::defaults();
+        apply_face_layout(m, layout);
+        for (int i = 0; i < 4; i++) {
+            const uint32_t sdl = touch_face::buttons(1u << i, m);
+            // the virtual pad's buttons as input_sdl.cpp reads them, then through the mapping
+            float v[kPadCount] = {};
+            for (int p = 0; p < kPadCount; p++)
+                if (touch_face::sdl_button(p) >= 0 && (sdl >> touch_face::sdl_button(p) & 1)) v[p] = 1;
+            CHECK(controller_state(m, v).buttons == wiiu[i]);
+        }
+    }
+    Mapping m = Mapping::defaults();
+    // the drawn A by position is the pad's east button (SDL 1), by label its south button (SDL 0)
+    CHECK(touch_face::buttons(1, m) == 1u << 1);
+    apply_face_layout(m, FaceLayout::kLabels);
+    CHECK(touch_face::buttons(1, m) == 1u << 0);
+    // a Wii U A bound to a trigger (custom) can't be pressed by a button bit; unbound neither
+    set_pad_binding(m, kA, kPadLT);
+    CHECK(touch_face::buttons(1, m) == 0);
+    m.pad[kB] = kPadNone;
+    CHECK(touch_face::buttons(2, m) == 0);
+    CHECK(touch_face::buttons(0, Mapping::defaults()) == 0);
 }
 
 static void test_face_auto() {
@@ -414,6 +443,7 @@ int main() {
     test_defaults();
     test_face_layout();
     test_face_auto();
+    test_touch_face();
     test_face_label_text();
     test_names();
     test_reserved();

@@ -295,9 +295,12 @@ only: don't share it. (CI builds the APK only with placeholder code, to check th
 
 You need:
 - a phone with arm64, Android 13 or newer and Vulkan 1.3;
-- **a game controller** (Bluetooth or USB). It is the GamePad's buttons and sticks; the touch
-  screen is only the GamePad's touch screen (no on-screen buttons). Keyboards only type text
-  (`WWHD_ANDROID_KEYBOARD=1` in `env.txt` makes them a GamePad too);
+- **a game controller** (Bluetooth or USB) is best: it is the GamePad's buttons and sticks.
+  Without one, the 🎮 button under the view button (top left) shows on-screen controls: two
+  sticks, the D-pad, A B X Y, L R ZL ZR and + − (shown or hidden, remembered). They are a second
+  controller, so a physical one keeps working, and touches elsewhere still reach the GamePad's
+  touch screen. Keyboards only type text (`WWHD_ANDROID_KEYBOARD=1` in `env.txt` makes them a
+  GamePad too);
 - on the computer: the Android SDK (platform 36, build tools 35.0.0), NDK 30.0.16248370, JDK 17
   or newer, CMake 3.20+ and Ninja, Python 3, and your own `build/gen` (steps 1 and 2 under
   Building).

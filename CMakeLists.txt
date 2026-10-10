@@ -133,6 +133,7 @@ file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS runtime/src/*.cpp runtime/src/*.c ru
                                             runtime/src/overlay/*.cpp)
 list(APPEND RUNTIME_SOURCES runtime/src/platform/perf_hint.cpp)  # Android performance hints (no-op elsewhere)
 list(APPEND RUNTIME_SOURCES ${WWHD_BUILD_INFO})
+list(APPEND RUNTIME_SOURCES runtime/src/platform/touch_pad.cpp)  # Android on-screen controls (no-op elsewhere)
 if(APPLE)
   list(APPEND RUNTIME_SOURCES runtime/src/platform/https.mm)
   set_source_files_properties(runtime/src/platform/https.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
