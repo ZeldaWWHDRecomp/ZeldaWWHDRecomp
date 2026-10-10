@@ -26,6 +26,9 @@ int main(int argc,char** argv) {
     assert(cemu::targets_title("0005000010143400,0005000010143500,0005000010143600",usa));
     assert(cemu::targets_title(" \"00050000101435AA\",0005000010143600\r",eu)&&!cemu::targets_title("0005000010143400",usa));
     assert(!cemu::targets_title("",usa)&&!cemu::targets_title("00050000101435",usa));
+    // leading zeros left out, as Cemu reads hex numbers (issue #123: "Playstation UI" pack)
+    assert(cemu::targets_title("5000010143400,5000010143500,5000010143600",eu)&&cemu::targets_title("5000010143500",usa));
+    assert(!cemu::targets_title("5000010143500",eu)&&!cemu::targets_title("0",usa)&&!cemu::targets_title("000",usa));
     assert(cemu::expression("max(2, $width / 2) + floor(1.9)",{{"$width",8}})==5);
     assert(cemu::expression("0x80e",{})==2062);
     rejects([]{cemu::expression("1/0",{});});rejects([]{cemu::expression("$missing",{});});

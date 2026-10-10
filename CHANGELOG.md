@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Cemu graphics packs that write their title IDs without leading zeros were refused** (issue
+  #123), e.g. the "Playstation UI" pack (`titleIds = 5000010143600`). The IDs are now compared as
+  numbers, the way Cemu reads them.
+
 - **Run/swim speed: a reworked boost** (PR #133, thanks @mhbxyz). Separate multipliers for running
   (1.5x by default) and swimming (1.25x), hold or toggle, and a stamina bar: a boost lasts 5 s by
   default and refills over a 3 s cooldown (set stamina to 0 for the old unlimited boost). A ring under
