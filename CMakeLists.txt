@@ -903,6 +903,9 @@ else()
 endif()
 add_test(NAME guest_audio_output_gain COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-gain.wav gain)
 add_test(NAME guest_audio_output_mute COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-mute.wav mute)
+add_test(NAME guest_audio_output_volume COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-volume.wav volume)
+add_test(NAME guest_audio_output_saved COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-saved.wav saved)
+add_test(NAME guest_audio_output_invalid_volume COMMAND guest_audio_output_test ${CMAKE_CURRENT_BINARY_DIR}/synthetic-audio-invalid.wav invalid)
 
 # Synthetic setup build -> persisted host preference -> guest package enable gate.
 if(Python3_Interpreter_FOUND AND NOT ANDROID)

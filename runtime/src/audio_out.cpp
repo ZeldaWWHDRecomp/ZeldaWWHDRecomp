@@ -48,7 +48,7 @@ FILE *g_dump = nullptr;
 std::mutex g_dump_mutex;
 bool g_dump_enabled = false;
 uint32_t g_dump_frames = 0;
-float g_gain = 1;
+std::atomic<float> g_gain{1};  // master volume (issue #124), read by the producer mix
 std::atomic<int> g_channels{2};
 std::atomic<bool> g_requested{false}, g_fallback{false}, g_device_changed{false};
 std::atomic<int> g_test{-1};     // sample position; only producer advances, UI starts/stops
@@ -179,9 +179,23 @@ void init() {
                 }
             }
         };
-        if (const char *v = getenv("WWHD_AUDIO_VOLUME")) {
-            float gain = float(atof(v));
-            g_gain = std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 1.0f;
+        // Master volume (issue #124): the saved setting, unless WWHD_AUDIO_VOLUME starts the
+        // session at a fixed value (e.g. silent tests of the real output path).
+        {
+            float gain = 1.0f;
+            std::string saved;
+            if (hostui::get("audioVolume", saved)) {
+                const char *text = saved.c_str();
+                char *end = nullptr;
+                const float percent = std::strtof(text, &end);
+                if (end != text && std::isfinite(percent))
+                    gain = std::clamp(percent, 0.0f, 100.0f) / 100.0f;
+            }
+            if (const char *v = getenv("WWHD_AUDIO_VOLUME")) {
+                const float env = float(atof(v));
+                gain = std::isfinite(env) ? std::clamp(env, 0.0f, 1.0f) : 1.0f;
+            }
+            g_gain = gain;
         }
         if (getenv("WWHD_NO_AUDIO")) {
             open_dump();
@@ -456,6 +470,13 @@ bool requested_surround() {
 void set_requested_surround(bool enabled) {
     g_requested = enabled;
     hostui::set("audioSpeakers", enabled ? "surround" : "stereo");
+}
+float master_volume() {
+    return g_gain.load();
+}
+void set_master_volume(float gain) {
+    g_gain = std::isfinite(gain) ? std::clamp(gain, 0.0f, 1.0f) : 1.0f;
+    hostui::set("audioVolume", std::to_string(int(std::lround(g_gain.load() * 100.0f))));
 }
 bool surround_fallback() {
     return g_fallback;
