@@ -89,7 +89,7 @@ bool enabled(){
     std::string value;return hostui::get("code-mods",value)&&value=="1";
 }
 void request(bool on,const std::string& mod){std::lock_guard guard(mutex);if(state.building)return;state={};state.requested=true;state.target=on;pending_mod=mod;fprintf(stderr,"[code mods] rebuild offer: support %s%s%s\n",on?"on":"off",mod.empty()?"":" for ",mod.c_str());}
-void dismiss(){std::lock_guard guard(mutex);if(!state.building)state.requested=false;}
+void dismiss(){std::lock_guard guard(mutex);state.requested=false;}
 Status status(){
     std::lock_guard guard(mutex);
     if(state.building&&!status_path.empty())try {

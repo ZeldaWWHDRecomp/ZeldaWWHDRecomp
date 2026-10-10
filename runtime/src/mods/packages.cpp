@@ -35,7 +35,7 @@ namespace fs=std::filesystem;
 using json::Value;
 struct Requirement {std::string id,version;};
 struct Manifest {
-    std::string id,name,version,author,description,kind,binary,problem,fingerprint,trust_fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
+    std::string id,name,version,author,description,kind,binary,problem,fingerprint,trust_fingerprint,manifest_fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
     std::vector<Requirement> dependencies;
     std::vector<std::string> conflicts;
     std::vector<Option> options;
@@ -92,9 +92,9 @@ bool valid_option(const Option& o,const Value& v){
     return false;
 }
 Manifest manifest(const fs::path& path){
-    auto v=json::parse(read_text(path/"manifest.json"));require(v.type==Value::Object,"Manifest must be an object");
+    auto manifest_text=read_text(path/"manifest.json");auto v=json::parse(manifest_text);require(v.type==Value::Object,"Manifest must be an object");
     require(v.get("format_version").type==Value::Number&&v.get("format_version").number==1,"Unsupported manifest format");
-    Manifest m;m.id=string_field(v,"id",false,64);require(id_ok(m.id)&&!manager::find(m.id),"Invalid or reserved mod ID");
+    Manifest m;m.manifest_fingerprint=hash::sha256_text(manifest_text);m.id=string_field(v,"id",false,64);require(id_ok(m.id)&&!manager::find(m.id),"Invalid or reserved mod ID");
     m.name=string_field(v,"name",false,128);require(!m.name.empty(),"Mod name is empty");
     m.version=string_field(v,"version",false,64);version(m.version);
     m.author=string_field(v,"author",true,256);m.description=string_field(v,"description",true);
@@ -190,7 +190,7 @@ Manifest manifest(const fs::path& path){
             }
         }
     }
-    if(!m.setup_tools.empty())m.trust_fingerprint=package_fingerprint(path);
+    if(m.kind=="native"||m.kind=="guest"||!m.setup_tools.empty())m.trust_fingerprint=package_fingerprint(path);
     if(m.trust_fingerprint.empty())m.trust_fingerprint=m.fingerprint;
     if(m.kind=="content")require(m.dependencies.empty(),"Content packages do not support dependencies yet");
     return m;
@@ -207,6 +207,16 @@ bool test_trusted(const std::string& id){
 // Settings presets never ask; native code runs only after the player confirmed this exact library.
 const std::string& trust_fingerprint(const Manifest& m){return m.trust_fingerprint.empty()?m.fingerprint:m.trust_fingerprint;}
 bool confirmed(const Record& r){const auto& m=r.manifest;const auto& fingerprint=trust_fingerprint(m);return (m.kind!="native"&&m.kind!="guest"&&m.setup_tools.empty())||test_trusted(m.id)||(!fingerprint.empty()&&database.get("native_trust").get(m.id).string()==fingerprint);}
+std::string setup_identity_unlocked(const std::string& id) {
+    Value snapshot;std::set<std::string> seen;
+    std::function<void(const std::string&)> visit=[&](const auto& current) {
+        if(!seen.insert(current).second)return;
+        auto it=records.find(current);if(it==records.end()){snapshot[current]="missing";return;}
+        const auto& m=it->second.manifest;
+        snapshot[current]["manifest"]=m.manifest_fingerprint;snapshot[current]["version"]=m.version;snapshot[current]["fingerprint"]=trust_fingerprint(m);
+        for(const auto& dep:m.dependencies)if(!dep.id.starts_with("builtin:"))visit(dep.id);
+    };visit(id);return json::dump(snapshot);
+}
 const char* kUnconfirmed="Not loaded: it contains native code you have not confirmed. Enable it again to review.";
 Value config(const Manifest& m){Value out;out.type=Value::Object;for(const auto& o:m.options){const auto& saved=profile().get("config").get(m.id).get(o.id);out[o.id]=valid_option(o,saved)?saved:o.default_value;}return out;}
 void save(){if(!ready)return;fs::create_directories(root);auto tmp=root/"profiles.json.tmp";std::ofstream f(tmp,std::ios::binary|std::ios::trunc);f<<json::dump(database)<<'\n';f.close();require(bool(f)&&host::replace_file(tmp.string(),(root/"profiles.json").string()),"Cannot save mod profiles");}
@@ -465,6 +475,64 @@ std::vector<SetupView> setup_steps(const std::string& id) {
     }
     return out;
 }
+std::string setup_identity(const std::string& id) {
+    std::lock_guard guard(mutex);return ready&&records.contains(id)?setup_identity_unlocked(id):"";
+}
+bool begin_setup_run(const std::string& id,const std::string& identity,
+        const std::map<std::string,std::string>& choices,std::string& error) {
+    return operation(error,[&]{
+        require(records.contains(id),"Mod not found");
+        require(!identity.empty()&&identity==setup_identity_unlocked(id),"Package changed; review setup and confirm again");
+        std::set<std::string> seen;
+        std::function<void(const std::string&)> check=[&](const auto& current) {
+            require(records.contains(current),"Missing dependency: "+current);if(!seen.insert(current).second)return;
+            const auto& r=records.at(current);const auto& m=r.manifest;
+            require(m.problem.empty(),m.problem);require(!r.loading,"Wait for mod preparation to finish");require_source(m);
+            require(sha256_file(r.path/"manifest.json")==m.manifest_fingerprint,"Package changed; refresh it and confirm again");
+            if(m.kind=="native"||m.kind=="guest"||!m.setup_tools.empty())
+                require(package_fingerprint(r.path)==trust_fingerprint(m),"Package changed; refresh it and confirm again");
+            for(const auto& dep:m.dependencies)if(!dep.id.starts_with("builtin:"))check(dep.id);
+        };check(id);
+        auto previous=database;
+        try {
+            auto& m=records.at(id).manifest;auto cfg=config(m);
+            for(const auto& step:m.setup)if(!step.optional&&(step.type=="confirm"||step.type=="choice")) {
+                if(profile().get("config").get(id).get(step.option).type!=Value::Null&&catalogue::option_satisfied(step,cfg.get(step.option)))continue;
+                Value value;
+                if(step.type=="confirm")value=true;
+                else {auto selected=choices.find(step.option);require(selected!=choices.end(),"Choose an option before continuing");value=selected->second;}
+                auto option=std::find_if(m.options.begin(),m.options.end(),[&](const auto& o){return o.id==step.option;});
+                require(option!=m.options.end()&&valid_option(*option,value)&&catalogue::option_satisfied(step,value),"Invalid setup choice");
+                profile()["config"][id][step.option]=value;
+            }
+            for(const auto& current:seen) {
+                const auto& m=records.at(current).manifest;
+                if(!confirmed(records.at(current)))database["native_trust"][current]=trust_fingerprint(m);
+            }
+            profile()["setup_pending"][id]=setup_identity_unlocked(id);save();dirty=true;
+        }catch(...){database=previous;throw;}
+    });
+}
+bool save_setup_run(const std::string& id,bool pending,std::string& error) {
+    return operation(error,[&]{
+        require(records.contains(id),"Mod not found");
+        auto previous=database;
+        if(pending) {
+            require_source(records.at(id).manifest);
+            require(confirmed(records.at(id)),"Package changed; confirm its code again");
+            profile()["setup_pending"][id]=setup_identity_unlocked(id);
+        } else profile()["setup_pending"].object.erase(id);
+        try{save();}catch(...){database=previous;throw;}
+    });
+}
+std::vector<std::string> pending_setup_runs() {
+    std::lock_guard guard(mutex);std::vector<std::string> result;if(!ready)return result;
+    for(const auto& [id,value]:profile().get("setup_pending").object) {
+        auto it=records.find(id);
+        if(it!=records.end()&&value.string()==setup_identity_unlocked(id)&&confirmed(it->second))result.push_back(id);
+    }
+    return result;
+}
 GameSourceView game_source() {
     std::lock_guard guard(mutex);catalogue::Sources sources(database.get("game_sources"));
     GameSourceView view;view.path=sources.stored("gc_wind_waker");
@@ -506,7 +574,7 @@ bool set_game_source(const std::string& game,const std::string& path,std::string
         // A preset or another mod may enable one of these as a dependency.
         bool added=true;while(added){added=false;for(const auto& [id,r]:records)
             for(const auto& dep:r.manifest.dependencies)if(affected.contains(dep.id)&&affected.insert(id).second)added=true;}
-        for(auto& [name,p]:database["profiles"].object)for(const auto& id:affected){p["enabled"][id]=false;p["code_mod_pending"].object.erase(id);}
+        for(auto& [name,p]:database["profiles"].object)for(const auto& id:affected){p["enabled"][id]=false;p["code_mod_pending"].object.erase(id);p["setup_pending"].object.erase(id);}
         try{save();}catch(...){database=previous;throw;}
         dirty=true;notices.push_back("Game source changed. Dependent mods were turned off and need setup again; their files were kept. Restart to unload active mods.");
     });
@@ -578,7 +646,7 @@ bool install(const std::string& source,std::string& error,std::string* installed
     }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);target=root/"Mods"/m.id;auto it=records.find(m.id);require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
     }catch(...){if(moved)fs::remove_all(target);if(backed)fs::rename(backup,target);if(fs::exists(stage))fs::remove_all(stage);throw;}
 });}
-bool remove(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);}database["native_trust"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);records.erase(it);dirty=true;});}
+bool remove(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);records.erase(it);dirty=true;});}
 void set_code_mod_support(bool built){std::lock_guard guard(mutex);code_mod_support=built;}
 bool needs_code_mod_support(const std::string& id){
     std::lock_guard guard(mutex);std::set<std::string> seen;
@@ -616,10 +684,10 @@ std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::st
 bool confirm_native(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");const auto& m=it->second.manifest;require((m.kind=="native"||m.kind=="guest"||!m.setup_tools.empty())&&m.problem.empty()&&!trust_fingerprint(m).empty(),"This package has no loadable native code");auto previous=database;database["native_trust"][id]=trust_fingerprint(m);try{save();}catch(...){database=previous;throw;}});}
 bool configure(const std::string& id,const std::string& option_id,const Value& value,std::string& error){return operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for mod preparation to finish before changing options");auto& opts=records.at(id).manifest.options;auto it=std::find_if(opts.begin(),opts.end(),[&](const Option& o){return o.id==option_id;});require(it!=opts.end()&&valid_option(*it,value),"Invalid configuration value");auto previous=database;profile()["config"][id][option_id]=value;try{if(records.at(id).manifest.graphics)cemu::validate({{id,*records.at(id).manifest.graphics,config(records.at(id).manifest)}});bool was_enabled=wanted(id);auto messages=was_enabled?repair_graphics():std::vector<std::string>{};if(was_enabled){order(enabled_set());validate_conflicts(enabled_set());}save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}dirty=true;});}
 std::vector<std::string> take_notices(){std::lock_guard guard(mutex);auto result=std::move(notices);notices.clear();return result;}
-void disable_all(){std::string ignored;operation(ignored,[&]{auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;try{save();}catch(...){database=previous;throw;}dirty=true;});manager::disable_all();}
+void disable_all(){std::string ignored;operation(ignored,[&]{auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;profile()["setup_pending"].object.clear();try{save();}catch(...){database=previous;throw;}dirty=true;});manager::disable_all();}
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
-bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();save_fast_forward_options(copy["builtin_options"]);for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["move-speed.factor"]=double(move_speed_factor());copy["builtin_options"]["move-speed.button"]=double(move_speed_button());copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
+bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["move-speed.factor"]=double(move_speed_factor());copy["builtin_options"]["move-speed.button"]=double(move_speed_button());copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
 bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool&&v.boolean);}load_fast_forward_options(chosen.get("builtin_options"));auto move=chosen.get("builtin_options").get("move-speed.factor"),button=chosen.get("builtin_options").get("move-speed.button");set_move_speed_factor(move.type==Value::Number?move.number:1.5f);set_move_speed_button(button.type==Value::Number&&button.number>=0&&button.number<=UINT32_MAX&&std::floor(button.number)==button.number?uint32_t(button.number):0x40000u);auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
 bool delete_profile(const std::string& name,std::string& error){return operation(error,[&]{require(name!=database.get("active").string(),"Switch profiles before deleting the active one");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["profiles"].object.erase(name);try{save();}catch(...){database=previous;throw;}});}
 void remember_builtin(const std::string& id,bool on){std::string error;operation(error,[&]{profile()["builtins"][id]=on;save();dirty=true;});}
@@ -658,6 +726,7 @@ bool prepare_guest(const std::string& id,std::string& error) {
             require(code_mod_support,"Enable code mods, rebuild and restart before preparing this mod");
             require(!r.active&&!r.loading,"This guest mod is already active or busy");
             require(confirmed(r),"Confirm this guest mod's native code before building it");
+            require(package_fingerprint(r.path)==trust_fingerprint(r.manifest),"Package changed; refresh it and confirm its code again");
             require(bool(guest_inspect)&&bool(guest_build),"Guest build tools are unavailable");
             pkg={id,r.manifest.version,r.path.string(),(root/"Data"/id).string(),r.manifest.fingerprint,config(r.manifest),r.manifest.heap_size};
             inspect=guest_inspect;build=guest_build;r.loading=true;r.status="Inspecting guest module";marked=true;

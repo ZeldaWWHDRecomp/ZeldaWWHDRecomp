@@ -928,3 +928,45 @@ endif()
 foreach(mode surround default-stereo override-stereo stereo-device start-failure)
   add_test(NAME audio_backend_${mode} COMMAND audio_backend_test ${mode})
 endforeach()
+
+add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
+target_include_directories(mod_setup_run_test PRIVATE runtime/src)
+target_compile_options(mod_setup_run_test PRIVATE -UNDEBUG)
+add_test(NAME mod_setup_run COMMAND mod_setup_run_test)
+
+
+if(NOT ANDROID)
+  find_package(SDL3 CONFIG QUIET)
+  if(SDL3_FOUND)
+    add_executable(mod_setup_ui_test runtime/tools/mod_setup_ui_test.cpp runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp)
+    target_include_directories(mod_setup_ui_test PRIVATE runtime/src)
+    target_compile_options(mod_setup_ui_test PRIVATE -UNDEBUG)
+    target_link_libraries(mod_setup_ui_test PRIVATE imgui SDL3::SDL3)
+    add_test(NAME mod_setup_ui COMMAND mod_setup_ui_test)
+  endif()
+endif()
+
+if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
+  add_executable(mod_oneclick_flow_test runtime/tools/mod_oneclick_flow_test.cpp
+    runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp runtime/src/mods/code_mods.cpp
+    runtime/src/mods/manager.cpp runtime/src/mods/packages.cpp runtime/src/mods/guest_png.cpp
+    runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+  target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
+  target_compile_options(mod_oneclick_flow_test PRIVATE -UNDEBUG)
+  target_link_libraries(mod_oneclick_flow_test PRIVATE imgui SDL3::SDL3 ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+  add_test(NAME mod_oneclick_flow COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/runtime/tools/test_mod_oneclick_flow.py $<TARGET_FILE:mod_oneclick_flow_test>)
+endif()
+
+add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
+
+if(WIN32 AND SDL3_FOUND)
+  get_target_property(MOD_TEST_SDL_TYPE SDL3::SDL3 TYPE)
+  if(MOD_TEST_SDL_TYPE STREQUAL "SHARED_LIBRARY")
+    foreach(MOD_TEST_APP mod_setup_ui_test mod_oneclick_flow_test)
+      if(TARGET ${MOD_TEST_APP})
+        add_custom_command(TARGET ${MOD_TEST_APP} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:${MOD_TEST_APP}> VERBATIM)
+      endif()
+    endforeach()
+  endif()
+endif()

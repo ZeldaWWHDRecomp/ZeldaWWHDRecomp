@@ -56,22 +56,16 @@ enable native dependencies that are not confirmed yet, the one dialog names all
 of them. The dialog works with the mouse, the keyboard (Tab/arrows, Enter or
 Space) and a controller (D-pad, A, B), on the AppKit and the SDL host.
 
-The confirmation is asked once per package and native library: it is stored in
-`profiles.json` as `native_trust`, mapping the package ID to the SHA-256 of the
-package's library for this platform (the file named in `binaries`). It applies
-to every profile. Installing an update whose library differs asks again;
-removing a package forgets its confirmation. Only that one library is
-fingerprinted; anything the library itself loads from its folder is not.
-Built-in mods and settings presets, content mods and Cemu graphics packs without
-preparation tools need no confirmation. Guest packages confirm their ELF through
-the same dialog before their translated module can load.
-
-Manager 1.3 also recognizes declarative `setup` steps. A package of any kind which
-ships a `run_tool` preparation step uses this same confirmation, and the dialog
-names its package-relative tools. For those packages, the stored SHA-256 covers a
+The confirmation is asked once per package version and fingerprint. It is stored
+in `profiles.json` as `native_trust`, mapping the package ID to the SHA-256 of a
 sorted inventory of every package file, including the manifest and imported
-helpers. Changing any file requires confirmation again. Guest compilation keeps
-its separate ELF fingerprint for address allocation and module-cache validation.
+helpers. It applies to every profile. Changing any file asks again; removing a
+package forgets its confirmation. Built-in mods, settings presets, content mods
+and Cemu graphics packs without preparation tools need no confirmation.
+
+Manager 1.3 also recognizes declarative `setup` steps. Packages with a `run_tool`
+preparation step and guest packages use the same trust record. Guest compilation
+keeps its separate ELF fingerprint for address allocation and module-cache validation.
 Settings/content packages without tools still need no native-code confirmation.
 Preparation options must match the manifest's boolean or enum option schema.
 
@@ -95,8 +89,21 @@ different source or moving the required source makes the step unsatisfied.
 Starting a rerun clears its earlier receipt before launching the tool, so a
 failed rerun cannot appear ready because old output files remain on disk.
 
-Installed-package details show each declared setup step, including shared game
-source selection, choices, confirmations, tool execution and guest preparation.
+Tick a mod's checkbox or choose **Set up** in its installed or catalogue entry.
+One confirmation lists the remaining required steps and asks for any choices.
+Preparation tools run with the game's full permissions: continue only for a
+source you trust. This confirmation records trust for the exact package/version;
+a changed package asks again. Missing game sources show their warning and shortcut
+without opening a confirmation.
+
+After Continue, required steps run in order with progress and elapsed time, then
+the mod is enabled. If code-mod support is missing, the same confirmation explains
+the one-time rebuild and automatic restart. Setup resumes after that restart in
+the same profile for the same package fingerprint, before enabling the mod.
+A guest mod may need one final **Restart now** to become active. On failure,
+**Show details** shows the tool output and **Try again** retries the failed step.
+Cancel keeps completed preparation. Individual step controls remain under the
+collapsed **Advanced** section for troubleshooting.
 Tools and guest builds run in a background worker. Options and profiles cannot
 change during preparation. Guest preparation uses the same persisted address
 allocator and build bridge as startup, including the installed game's region
@@ -403,7 +410,8 @@ Incompatible entries cannot be installed. Update is offered only for a newer
 three-part version, and an enabled or active package must be disabled first.
 Install verifies the downloaded size and SHA-256 plus package/index metadata,
 then uses the manager's atomic installer. Packages start disabled and their setup
-details open in Installed packages. Nothing is enabled or downloaded automatically.
+details open in Installed packages. Choose **Set up** to prepare and enable a mod;
+installation alone does not enable it.
 Successful refreshes save validated metadata in the manager’s Catalogue folder.
 Load offline catalogue reads this cache without a network request, including
 after a restart, and labels its versions as potentially out of date. Cache keys

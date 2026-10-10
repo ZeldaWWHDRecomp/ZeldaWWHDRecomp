@@ -6,6 +6,7 @@
 #include "../audio_out.h"
 #include "guest_hud.h"
 #include "setup_test.h"
+#include "setup_flow.h"
 #include "graphics_switch.h"
 #include "game_source_widgets.h"
 #include "gamepad_nav.h"
@@ -928,29 +929,15 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     ImGui::EndPopup();
 }
 
-struct SetupWorker {
-    std::mutex mutex;
-    std::thread thread;
-    bool running=false;
-    std::string id,error,output;
-    ~SetupWorker(){if(thread.joinable())thread.join();}
-};
-SetupWorker& setup_work(){static SetupWorker worker;return worker;}
-void start_setup(const std::string& id,const mods::catalogue::Step& step) {
-    auto& setup_worker=setup_work();
-    std::lock_guard guard(setup_worker.mutex);if(setup_worker.running)return;
-    if(setup_worker.thread.joinable())setup_worker.thread.join();
-    setup_worker.running=true;setup_worker.id=id;setup_worker.error.clear();setup_worker.output.clear();
-    setup_worker.thread=std::thread([id,step] {
-        auto& setup_worker=setup_work();
-        std::string error,output;
-        if(step.type=="build_guest_mod")mods::packages::prepare_guest(id,error);
-        else mods::packages::run_setup_tool(id,step.id,error,output);
-        std::lock_guard guard(setup_worker.mutex);setup_worker.error=std::move(error);
-        setup_worker.output=std::move(output);setup_worker.running=false;
-        if(g_no_host&&getenv("WWHD_TEST_MOD_SETUP"))LOG("[setup test] worker %s %s %s",
-            id.c_str(),step.id.c_str(),setup_worker.error.empty()?"ready":"failed");
-    });
+using setupflow::setup_work;
+using setupflow::start_setup;
+using setupflow::setup_run;
+using setupflow::setup_open;
+using setupflow::request_setup;
+using setupflow::setup_run_tick;
+using setupflow::setup_run_controls;
+void setup_confirmation_dialog(std::string& error) {
+    if(setupflow::setup_confirmation_dialog(error,navigation_pressed(input_map::kPadB)))g_pad_b_used=true;
 }
 diagnostic::SetupPlan& setup_test_plan() {
     static auto plan=diagnostic::read_setup_plan(g_no_host,getenv("WWHD_MOD_MANAGER_DIR"),
@@ -960,35 +947,21 @@ diagnostic::SetupPlan& setup_test_plan() {
 void setup_test_actions(const mods::packages::View& mod,const std::vector<mods::packages::SetupView>& steps,
         NativeConfirm& confirm,std::string& error,bool busy,const std::string& failure) {
     auto& plan=setup_test_plan();if(plan.id!=mod.id)return;
-    static std::set<std::string> attempted;
-    static bool stopped=false,completed=false;
-    if(stopped||completed)return;
-    auto stop=[&](const char* reason){stopped=true;error=reason;LOG("[setup test] failed %s: %s",mod.id.c_str(),reason);};
-    if(!plan.error.empty()){stop(plan.error.c_str());return;}
-    if(busy)return;
-    if(!failure.empty()){stop("Setup worker failed");return;}
-    auto next=diagnostic::next_required_step(steps);
-    if(next==steps.size()){completed=true;LOG("[setup test] ready %s",mod.id.c_str());return;}
-    const auto& step=steps[next].step;
-    if(attempted.contains(step.id))return; // a pending trust/rebuild requires its normal response/restart
-    attempted.insert(step.id);
-    LOG("[setup test] action %s %s %s",mod.id.c_str(),step.id.c_str(),step.type.c_str());
+    static bool attempted=false,completed=false;
+    if(completed)return;
+    if(!plan.error.empty()){error=plan.error;return;}
+    if(mod.enabled){completed=true;LOG("[setup test] ready %s",mod.id.c_str());return;}
+    if(attempted||busy)return;
     using namespace mods::packages;
-    if(step.type=="game_path") {
-        auto source=plan.sources.get(step.game).string();
-        if(source.empty()||!set_game_source(step.game,source,error)){stop("Game source refused");return;}
-        LOG("[setup test] source ready %s %s",mod.id.c_str(),step.id.c_str());
-    }else if(step.type=="choice"||step.type=="confirm") {
-        auto value=step.type=="confirm"?mods::json::Value(true):mods::json::Value(step.choices.front());
-        if(!configure(mod.id,step.option,value,error))stop("Setup option refused");
-    }else {
-        auto proceed=[id=mod.id,step] {
-            if(step.type=="build_guest_mod"&&mods::packages::needs_code_mod_support(id))mods::code::request(true,id);
-            else start_setup(id,step);
-        };
-        auto native=unconfirmed_native(mod.id);
-        if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
+    for(const auto& status:steps)if(status.step.type=="game_path"&&!status.satisfied) {
+        auto source=plan.sources.get(status.step.game).string();
+        if(source.empty()||!set_game_source(status.step.game,source,error))return;
     }
+    attempted=true;
+    auto fresh=mod;fresh.game_source_warning.clear();
+    request_setup(fresh);
+    LOG("[setup test] one click %s",mod.id.c_str());
+    (void)confirm;(void)failure;
 }
 bool game_source_focus=false;
 void game_source_warning_control(const std::string& warning) {
@@ -1022,7 +995,10 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     bool busy;std::string failure,output;
     {std::lock_guard guard(setup_worker.mutex);busy=setup_worker.running;
      if(setup_worker.id==mod.id){failure=setup_worker.error;output=setup_worker.output;}}
+    setup_run_controls(mod);
     setup_test_actions(mod,steps,confirm,error,busy,failure);
+    if(!ImGui::TreeNode("Advanced"))return;
+    busy=busy||!setup_run.id.empty();
     for(const auto& status:steps) {
         const auto& step=status.step;ImGui::PushID(step.id.c_str());
         ImGui::TextWrapped("%s%s%s",status.satisfied?"Ready: ":"",step.title.c_str(),step.optional?" (optional)":"");
@@ -1067,6 +1043,7 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     }
     if(busy)note("Preparing mod files…");
     if(!failure.empty()){ImGui::TextWrapped("%s",failure.c_str());if(!output.empty())ImGui::TextWrapped("%s",output.c_str());}
+    ImGui::TreePop();
 }
 
 struct CatalogueWorker {
@@ -1118,9 +1095,8 @@ void catalogue_controls(std::string& focus) {
             focus=std::move(worker.installed);worker.installed.clear();fresh_install=true;
         }
     }
-    // Match local-folder installs: offer support immediately, while keeping the
-    // newly installed package disabled until its own trust/setup flow completes.
-    if(fresh_install&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
+    // Packages with open steps explain the rebuild in their single setup confirmation.
+    if(fresh_install&&!setup_open(focus)&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
     heading("Browse catalogue");
     note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
     ImGui::BeginDisabled(busy);
@@ -1213,12 +1189,13 @@ void catalogue_controls(std::string& focus) {
                             std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
                         std::string error,id;
                         require(mods::packages::install(package.path().string(),error,&id),error);
-                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed (off). Next: finish its setup under Installed packages (Go to setup), then enable it.";
+                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed (off). Next: Go to setup, then press Set up (or tick the mod): its setup runs by itself.";
                     });
                 }
                 ImGui::EndDisabled();
                 button_before=true;
             }
+            if(present&&!android_guest)setup_run_controls(*found);
             if(present) {
                 if(button_before)ImGui::SameLine();
                 ImGui::BeginDisabled(busy||found->enabled||found->active);
@@ -1252,6 +1229,7 @@ void package_controls() {
     static std::string catalogue_focus;
     catalogue_controls(catalogue_focus);
     heading("Profiles");
+    ImGui::BeginDisabled(!setup_run.id.empty());
     auto current = current_profile();
     if (ImGui::BeginCombo("Active profile", current.c_str())) {
         for (const auto& name : profiles())
@@ -1274,6 +1252,7 @@ void package_controls() {
     if (ImGui::Button("Delete selected")) { if (delete_profile(delete_choice, error)) delete_choice.clear(); }
     ImGui::EndDisabled();
     note("Your active profile is protected from deletion.");
+    ImGui::EndDisabled();
     heading("Installed packages");
     note("Install a local package, a content/ mod folder or ZIP, or a replacement .pack file.");
     if (ImGui::Button("Choose package…")) hostui::choose_mod_source(false, [](std::string path) {
@@ -1290,7 +1269,7 @@ void package_controls() {
     if(test_install){snprintf(source,sizeof source,"%s",test_install);test_install=nullptr;install_now=true;}
     if(install_now) {
         std::string installed_id;
-        if(install(source,error,&installed_id)&&needs_code_mod_support(installed_id))mods::code::request(true);
+        if(install(source,error,&installed_id)&&!setup_open(installed_id)&&needs_code_mod_support(installed_id))mods::code::request(true);
     }
     ImGui::SameLine();
     if (ImGui::Button("Refresh packages")) refresh(error);
@@ -1305,13 +1284,11 @@ void package_controls() {
     for (const auto& mod : installed) {
         ImGui::PushID(mod.id.c_str());
         bool on = mod.enabled;
-        ImGui::BeginDisabled(!on&&!mod.game_source_warning.empty());
-        bool toggled = ImGui::Checkbox("##package_enabled", &on);
-        ImGui::EndDisabled();
+        bool toggled=setupflow::enable_checkbox(mod,on);
         if (test_enable && mod.id == test_enable && (setup_test_plan().id!=mod.id ||
             (setup_test_plan().error.empty()&&diagnostic::setup_ready(setup_steps(mod.id))))) { toggled = on = true; test_enable = nullptr; }
         if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
-        if (toggled) {
+        if (toggled&&!setupflow::handle_setup_enable(mod,on)) {
             if(on&&!mod.graphics_conflicts.empty())graphics_choice={mod.id,mod.name,mod.graphics_conflicts,true};
             else {
                 auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
@@ -1325,7 +1302,7 @@ void package_controls() {
         }
         ImGui::SameLine();
         if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
-        if(setup_test_plan().id==mod.id)ImGui::SetNextItemOpen(true);
+        if(setup_test_plan().id==mod.id||setup_run.id==mod.id)ImGui::SetNextItemOpen(true);
         bool scroll_here=false;
         if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();scroll_here=true;}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
@@ -1390,6 +1367,7 @@ void package_controls() {
     if(switch_action==GraphicsSwitchAction::Switch)enable(graphics_choice.id,true,error,true);
     if(switch_action==GraphicsSwitchAction::Cancel)g_pad_b_used=true;
     native_confirm_dialog(confirm, error);
+    setup_confirmation_dialog(error);
 }
 
 void code_mod_dialog() {
@@ -2130,7 +2108,7 @@ void settings_window() {
             if (navigation_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
             if (navigation_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
         }
-        code_mod_dialog();
+        if(!setup_run.rebuilding)code_mod_dialog();
         if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_FittingPolicyShrink)) {
             for (int i = 0; i < kTabs; i++) {
                 ImGuiTabItemFlags f = U.select_tab == i ? ImGuiTabItemFlags_SetSelected : 0;
@@ -2384,9 +2362,20 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
                           input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
     U.gamepad_navigation.feed(io, U.values, U.prev, open && U.cap_action < 0, mouse_used, face);  // the text prompt reads the controller itself
     ImGui::NewFrame();
+    setup_run_tick();
     g_wants_text = open && io.WantTextInput;
     guesthud::frame();
     if (open) settings_window();
+    else if(!setup_run.id.empty()) {
+        ImGui::SetNextWindowPos(ImVec2(16,16),ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(.9f);
+        if(ImGui::Begin("Mod setup progress",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing)) {
+            ImGui::Text("%s %s",ImGui::GetTime()<setupflow::resume_notice_until?"Continuing setup of":"Setting up",setup_run.name.c_str());
+            ImGui::Text("%s · %.0f seconds",setup_run.step.c_str(),ImGui::GetTime()-setup_run.started);
+            if(!setup_run.error.empty())ImGui::TextWrapped("%s — open Settings → Mods to try again.",setup_run.error.c_str());
+        }
+        ImGui::End();
+    }
     if (text) {
         float pad[input_map::kPadCount];
         std::copy(std::begin(U.values), std::end(U.values), pad);

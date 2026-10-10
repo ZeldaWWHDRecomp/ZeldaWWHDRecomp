@@ -3,6 +3,7 @@
 #include "catalogue_schema.h"
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,11 +43,18 @@ bool enable(const std::string& id,bool on,std::string& error,bool switch_conflic
 // code the player has not confirmed yet, as {id, name}. Empty: enable() needs no confirmation.
 std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::string& id);
 // One-time player acknowledgement that a native package may run: remembered in profiles.json for
-// this package ID and the SHA-256 of its current platform library or guest ELF (changed code asks again).
+// this package ID and the SHA-256 of its full inventory, including its version (changes ask again).
 bool confirm_native(const std::string& id,std::string& error);
 bool configure(const std::string& id,const std::string& option,const json::Value& value,std::string& error);
 struct SetupView {catalogue::Step step;bool satisfied=false;};
 std::vector<SetupView> setup_steps(const std::string& id);
+// Snapshot shown by the setup dialog. Acceptance atomically saves trust, choices and run intent.
+std::string setup_identity(const std::string& id);
+bool begin_setup_run(const std::string& id,const std::string& identity,
+    const std::map<std::string,std::string>& choices,std::string& error);
+// Pending setup is scoped to the current profile and exact package trust fingerprint.
+bool save_setup_run(const std::string& id,bool pending,std::string& error);
+std::vector<std::string> pending_setup_runs();
 struct GameSourceView {std::string path,result;bool valid=false;};
 GameSourceView game_source();
 std::string game_source_warning(const std::vector<catalogue::Step>& steps);

@@ -1,64 +1,5 @@
-// Standalone host-side tests; no game files, player settings or guest code needed.
-#include "mods/manager.h"
-#include "mods/mods.h"
-#include "mods/climb.h"
-#include "overlay/hostui.h"
-#include "platform/process.h"
-#include "mods/catalogue_client.h"
-#include "mods/catalogue_setup.h"
-#include <cassert>
-#include <cstdlib>
-#include <map>
-#include <string>
-
-namespace {
-bool state[6]{};
-float speed = 1, sensitivity = .15f;
-std::map<std::string,std::string> preferences;
-int reads = 0, writes = 0;
-void env(const char* key, const char* value) {
-#ifdef _WIN32
-    _putenv_s(key, value ? value : "");
-#else
-    if (value) setenv(key,value,1); else unsetenv(key);
-#endif
-}
-}
-namespace mods {
-static bool ff_on = false, ff_mute = true;
-static unsigned ff_rate = 2;
-static uint32_t ff_button = 0x40;
-bool fast_forward() { return ff_on; } void set_fast_forward(bool on) { ff_on = on; }
-unsigned fast_forward_rate() { return ff_rate; }
-void set_fast_forward_rate(unsigned r) { if (r >= 2 && r <= 4) ff_rate = r; }
-uint32_t fast_forward_button() { return ff_button; }
-void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_button = b; }
-bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
-
-static bool move_on = false;
-bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
-float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
-uint32_t move_speed_button() { return 0x40000; } void set_move_speed_button(uint32_t) {}
-
-bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
-bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
-bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
-bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
-bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
-bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
-float camera_speed() { return speed; }
-void set_camera_speed(float f) { speed=f; }
-float mouse_sensitivity() { return sensitivity; }
-void set_mouse_sensitivity(float f) { sensitivity=f; }
-}
-namespace hostui {
-bool get(const char* k, std::string& value) {
-    ++reads; auto it=preferences.find(k);
-    if(it==preferences.end()) return false;
-    value=it->second;return true;
-}
-void set(const char* k, const std::string& value) { ++writes;preferences[k]=value; }
-}
+#include "mods/setup_run.h"
+#include "mod_test_host.h"
 #include "mods/packages.h"
 #include "mods/content.h"
 #include "mods/cemu_pack.h"
@@ -71,6 +12,7 @@ mods::packages::View view(const std::string& id) {for(auto v:mods::packages::lis
 // Second process on the same storage: a confirmed native package loads after a restart without asking.
 int restart_check(const char* storage) {
     using namespace mods::packages;
+    namespace fs=std::filesystem;
     env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage);env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
     initialize();std::string error;
     assert(view("fixture").enabled && view("fixture").native_confirmed && unconfirmed_native("fixture").empty());
@@ -81,6 +23,56 @@ int restart_check(const char* storage) {
 }
 int main(int argc, char** argv) {
     using namespace mods::packages;
+    namespace fs=std::filesystem;
+    if(argc==2&&std::string(argv[1])=="--setup-acceptance") {
+        auto root=fs::temp_directory_path()/("wwhd-acceptance-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        set_code_mod_support(true);initialize();std::string error;
+        auto manifest=mods::json::parse(R"({"format_version":1,"id":"acceptance","name":"Acceptance fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"options":[{"id":"consent","name":"Consent","type":"bool","default":false},{"id":"colour","name":"Colour","type":"enum","default":"green","choices":["green","blue"]}],"setup":[{"id":"consent","title":"Prepare the fixture","type":"confirm","option":"consent"},{"id":"colour","title":"Choose a colour","type":"choice","option":"colour","choices":["green","blue"]},{"id":"build","title":"Build fixture","type":"build_guest_mod"}]})");
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        assert(install((root/"source").string(),error));auto identity=setup_identity("acceptance");
+        assert(!begin_setup_run("acceptance",identity,{},error));
+        assert(!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!setup_steps("acceptance")[0].satisfied&&!setup_steps("acceptance")[1].satisfied);
+        assert(!begin_setup_run("acceptance","stale snapshot",{{"colour","blue"}},error));
+        assert(begin_setup_run("acceptance",identity,{{"colour","blue"}},error));
+        assert(view("acceptance").native_confirmed&&setup_steps("acceptance")[0].satisfied&&setup_steps("acceptance")[1].satisfied);
+        auto read_saved=[&]{std::ifstream f(root/"manager/profiles.json");return mods::json::parse(std::string{std::istreambuf_iterator<char>(f),{}});};
+        auto saved=read_saved();auto trust=saved.get("native_trust");
+        assert(trust.get("acceptance").string().size()==64);
+        assert(saved.get("profiles").get("Default").get("config").get("acceptance").get("colour").string()=="blue");
+        assert(begin_setup_run("acceptance",identity,{},error));assert(read_saved().get("native_trust")==trust);
+        // Same version, changed package bytes: stale pending runs and stale dialogs cannot authorize it.
+        std::ofstream(fs::path(directory())/"acceptance/helper.txt")<<"changed package inventory";
+        assert(refresh(error)&&!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!begin_setup_run("acceptance",identity,{},error));
+        auto changed=setup_identity("acceptance");assert(begin_setup_run("acceptance",changed,{},error));
+        assert(read_saved().get("native_trust")!=trust);
+        // A version-only update also requires a new acknowledgement.
+        manifest["version"]="1.0.1";std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        assert(install((root/"source").string(),error)&&!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!begin_setup_run("acceptance",changed,{},error));
+        assert(begin_setup_run("acceptance",setup_identity("acceptance"),{},error));
+        assert(save_setup_run("acceptance",false,error)&&pending_setup_runs().empty());
+        assert(setup_steps("acceptance")[0].satisfied&&setup_steps("acceptance")[1].satisfied);
+        // Declarative packages also bind approval to the exact manifest, even at the same version.
+        manifest["id"]="settings-acceptance";manifest["kind"]="settings";manifest["settings"]["wall-climb"]=true;
+        manifest["setup"].array.pop_back();
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        assert(install((root/"source").string(),error));
+        auto declarative=setup_identity("settings-acceptance");
+        auto installed_manifest=fs::path(directory())/"settings-acceptance/manifest.json";
+        manifest["setup"].array[0]["title"]="Changed preparation";
+        std::ofstream(installed_manifest)<<mods::json::dump(manifest);
+        assert(!begin_setup_run("settings-acceptance",declarative,{{"colour","blue"}},error));
+        assert(refresh(error));
+        assert(setup_identity("settings-acceptance")!=declarative);
+        assert(!begin_setup_run("settings-acceptance",declarative,{{"colour","blue"}},error));
+        assert(!setup_steps("settings-acceptance")[0].satisfied);
+        assert(begin_setup_run("settings-acceptance",setup_identity("settings-acceptance"),{{"colour","blue"}},error));
+        fs::remove_all(root);std::cout<<"Atomic setup trust/choices/cancel, stale snapshot, fingerprint and version checks passed\n";return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--game-source-startup") {
         namespace fs=std::filesystem;
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",argv[2]);set_code_mod_support(true);
