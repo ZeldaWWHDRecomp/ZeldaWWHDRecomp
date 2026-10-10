@@ -2096,6 +2096,15 @@ void perf_window(bool menu_open) {
 }
 
 void tab_audio() {
+    float volume = audio::master_volume() * 100.0f;
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::SliderFloat("Master volume", &volume, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
+        hostui::post([volume] { audio::set_master_volume(volume / 100.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Mute##volume")) hostui::post([] { audio::set_master_volume(0.0f); });
+    ImGui::SameLine();
+    if (ImGui::Button("Default##volume")) hostui::post([] { audio::set_master_volume(1.0f); });
+    help("Master volume for the game's sound and mod audio. Applies immediately and is remembered for the next start.");
     int speakers = audio::requested_surround() ? 1 : 0;
     if (ImGui::Combo("Speakers", &speakers, "Stereo\0Surround 5.1\0"))
         hostui::post([speakers] { audio::set_requested_surround(speakers == 1); });
