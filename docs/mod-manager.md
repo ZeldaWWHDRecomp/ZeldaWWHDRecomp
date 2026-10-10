@@ -40,11 +40,13 @@ Run/swim speed offers three animation choices. **Native** keeps the game's cycle
 cadence. **Dash instead of walk** replaces the low-speed walk portion; the normal full-speed run
 already uses dash. **Sprint pose** adds a forward torso lean, compensating head tilt and stronger
 arm drive to the current run cycle, blended with the boost. It applies during ordinary forward
-running, leaving swimming, lock-on, item actions and special walks to their own poses. The choice
+running, leaving lock-on, item actions and special walks to their own poses. In water the same
+choice redraws the boosted surface swim as a crawl: a flatter torso with a much wider
+phase-locked arm sweep instead of the stock paddle. The choice
 is saved in the active mod profile. Older profiles without an animation key retain the saved
 settings choice at startup. `WWHD_MOD_MOVE_ANIM=native|dash|sprint` overrides saved choices
-at startup. For in-game verification, `WWHD_MODS_TRACE=<path>` records applied sprint poses with
-their blend weight and run phase.
+at startup. For in-game verification, `WWHD_MODS_TRACE=<path>` records applied sprint and swim
+poses with their blend weight and cycle phase, plus `swim-swirl` and `swim-trail` splash lines.
 
 The sprint pose leans up to 30 degrees through the torso, with a compensating head tilt and wider
 arm swings. Starting a grounded run boost emits one short fan of three larger, more opaque puffs
@@ -53,7 +55,9 @@ small dim puff follows every few steps as a dust trail. A forward roll keeps the
 continues using stamina, but plays at its native speed and
 pose. Running resumes automatically after the roll while the cycle still has stamina; cancelling,
 exhausting the bar or genuinely stopping ends it. Resuming the same cycle after a roll does not
-emit a second starting burst.
+emit a second starting burst. While the swim boost is active, each arm pull splashes the game's
+own sea-coloured water element at that side, and a light foam trail follows behind every few
+steps. Both use the game's own water particles, so the native swim wake is untouched.
 
 The Installed packages section accepts a local folder or `.wwhdmod` ZIP. Choose
 it with the file/folder picker, then press Install package. Installed packages

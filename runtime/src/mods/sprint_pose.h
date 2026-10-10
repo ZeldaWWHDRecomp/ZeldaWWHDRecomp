@@ -1,4 +1,5 @@
-// An additive sprint pose, composed with the game's current locomotion quaternion. No clip data.
+// Additive sprint and swim poses, composed with the game's current locomotion quaternion. No clip
+// data.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -27,6 +28,23 @@ inline float angle_degrees(uint32_t joint, float phase) {
     case kRightArm: return -10.f + 24.f * swing;
     case kLeftElbow: return -40.f - 6.f * swing;
     case kRightElbow: return -40.f + 6.f * swing;
+    default: return 0.f;
+    }
+}
+
+// The crawl over the game's own swim cycle: a flatter torso and a much wider, phase-locked arm
+// sweep. The left and right arms alternate over and under the water instead of pulling together,
+// which is what reads as a crawl rather than the stock paddle.
+inline float swim_angle_degrees(uint32_t joint, float phase) {
+    const float swing = std::isfinite(phase) ? std::sin(phase * 6.28318530718f) : 0.f;
+    switch (joint) {
+    case kStomach: return 10.f;   // less lean: the swim body already lies flat
+    case kChest: return 6.f;
+    case kHead: return -16.f;
+    case kLeftArm: return -12.f - 46.f * swing;
+    case kRightArm: return -12.f + 46.f * swing;
+    case kLeftElbow: return -22.f - 16.f * swing;
+    case kRightElbow: return -22.f + 16.f * swing;
     default: return 0.f;
     }
 }

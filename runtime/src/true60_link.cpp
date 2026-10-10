@@ -59,6 +59,7 @@ extern "C" void site_023FD39C(Cpu* c) {
     const float factor = mods::link_move_factor(link);
     mods::move_start_effect(c, link);
     mods::move_trail_effect(c, link);
+    mods::move_swim_effect(c, link);
     if (!half && factor == 1.f) return; // preserve the stock path and all FP bits when off
     const float dt = half ? true60::dt() : 1.f;
     uint32_t sp = c->r[4];  // &speed

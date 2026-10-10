@@ -18,6 +18,8 @@ bool native_adjust = false;
 unsigned calls = 0;
 unsigned dust_calls = 0;
 unsigned trail_calls = 0;
+unsigned swirl_calls = 0;
+unsigned swim_trail_calls = 0;
 void map(uint32_t address) {
 #ifdef _WIN32
     auto p = VirtualAlloc(mem::ptr(address), 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -44,10 +46,18 @@ uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
     const std::vector<uint32_t> values(args);
     assert(values.size()==7 && values[0]==0x1100A000 && values[4]==link+0x110);
     const uint32_t scratch=mem::fixed_slot(mem::kFixLinkScratch);
-    assert(values[2]>=scratch+0x50 && values[2]<scratch+0x90);
-    assert(values[6]&1); // the native helper's dry-land smoke flag
-    assert(c->f[1].ps0>1.f);
-    if(values[2]<scratch+0x80) ++dust_calls; else ++trail_calls;
+    if(values[1]==0x13) { // water element: code 0x13, flag 0x14 (foam), foam scale in f3
+        assert(values[6]==0x14);
+        assert(c->f[3].ps0>0.f && c->f[3].ps0<2.f);
+        assert(values[2]>=scratch+0x90 && values[2]<scratch+0xb0);
+        if(values[2]<scratch+0xa0) ++swirl_calls; else ++swim_trail_calls;
+    } else {
+        assert(values[1]==0);
+        assert(values[6]&1); // the native helper's dry-land smoke flag
+        assert(c->f[1].ps0>1.f);
+        assert(values[2]>=scratch+0x50 && values[2]<scratch+0x90);
+        if(values[2]<scratch+0x80) ++dust_calls; else ++trail_calls;
+    }
     c->r[8]=0xDEADBEEF; c->f[1].ps0=0;
     return 0x11009800;
 }
@@ -236,6 +246,59 @@ int main(int argc, char**) {
     st32(link+0x65F0,mods::kProcFrontRoll);
     for(int i=0;i<10;++i) mods::move_trail_effect(&fx,link);
     assert(trail_calls==trail_before+2); // no trail during the roll
+    // The crawl pose rides the game's swim cycle: only the forward surface stroke, only in water.
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kToggle);
+    mods::set_move_speed_anim(mods::MoveAnim::kSprint);
+    mods::set_move_speed_stamina_seconds(0.f); mods::set_move_speed_swim_factor(1.25f);
+    st32(link+0x65F0,mods::kProcSwimMove); st8(link+0x68D4,0);
+    st32(link+0x6A70,0x40000 /* ModeFlg_SWIM */);
+    st16(table+mods::kAnmSwim*8,0x180); st16(link+0x5848,0x180);
+    st16(link+0x5888,0xFFFF);
+    st16(link+0x5898+8,0); st16(link+0x5898+10,24); st16(link+0x5898+12,0);
+    st32(link+0x5898+4,f32_as_u32(6.f));
+    mods::move_speed_input(input::kStickL);
+    for(int i=0;i<30;++i) mods::link_move_factor(link);
+    identity(); before(6); assert(!is_identity()); after(6); assert(is_identity());
+    // The crawl's wide arm sweep drives the left and right arms and exchanges them at half stride.
+    before(6); const auto swim_left=ld32(quat+8); after(6);
+    before(10); const auto swim_right=ld32(quat+8); after(10);
+    assert(swim_left!=swim_right);
+    st32(link+0x5898+4,f32_as_u32(18.f));
+    before(6); assert(ld32(quat+8)==swim_right); after(6);
+    before(10); assert(ld32(quat+8)==swim_left); after(10);
+    // No crawl on another swim clip, out of water, or during an upper-body action.
+    st16(link+0x5848,0x999); before(3); assert(is_identity()); st16(link+0x5848,0x180);
+    st32(link+0x6A70,0); before(3); assert(is_identity()); st32(link+0x6A70,0x40000);
+    st16(link+0x5888,0x35); before(3); assert(is_identity()); st16(link+0x5888,0xFFFF);
+    // The land pose does not leak into the swim and the swim pose does not leak into the run.
+    st32(link+0x65F0,mods::kProcMove); before(3); assert(is_identity());
+    st32(link+0x65F0,mods::kProcSwimMove);
+    // Water swirls at each arm pull and a light foam trail while boosting.
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kToggle);
+    st32(link+0x65F0,mods::kProcSwimMove); st32(link+0x6A70,0x40000);
+    st32(link+0x6A28,f32_as_u32(50.f));
+    st32(link+0x5898+4,f32_as_u32(6.f));
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_speed_input(0); for(int i=0;i<5;++i) mods::link_move_factor(link);
+    const auto swirl_before=swirl_calls, foam_before=swim_trail_calls;
+    mods::move_swim_effect(&fx,link);
+    assert(swirl_calls==swirl_before+1); // first sight of the stroke side splashes
+    assert(swim_trail_calls==foam_before);
+    mods::move_swim_effect(&fx,link);
+    assert(swirl_calls==swirl_before+1); // the same half of the stroke does not splash again
+    st32(link+0x5898+4,f32_as_u32(18.f));
+    mods::move_swim_effect(&fx,link);
+    assert(swirl_calls==swirl_before+2); // the hands trade
+    assert(ld8(0x11009800+0x247)==0xB0);
+    for(int i=0;i<4;++i) mods::move_swim_effect(&fx,link);
+    assert(swim_trail_calls==foam_before+1); // every fifth step leaves one foam puff
+    assert(ld8(0x11009800+0x247)==0x60);
+    // Ending the boost silences both effects at once.
+    mods::set_move_speed(false); mods::link_move_factor(link);
+    mods::move_swim_effect(&fx,link);
+    assert(swirl_calls==swirl_before+2 && swim_trail_calls==foam_before+1);
     assert(calls>100);
     return 0;
 }

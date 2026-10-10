@@ -26,7 +26,9 @@ what is on `devel` and not released yet (also in the
   leaves a small dim trail behind the feet while active. Forward rolls keep the same boost cycle and continue draining stamina at their native speed;
   running resumes afterwards while
   stamina remains, without another starting burst. The pose blends with the speed boost and leaves
-  swimming, lock-on, item actions and special walks to their own poses. No new game assets are
+  lock-on, item actions and special walks to their own poses. A boosted surface swim is redrawn as
+  a crawl: a flatter torso with a much wider phase-locked arm sweep, one splash per arm pull in the
+  game's own sea-coloured water element, and a light foam trail behind. No new game assets are
   needed. Saved settings and mod profiles carry over: a file from before the
   split has its single factor applied to both states.
 

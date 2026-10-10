@@ -72,6 +72,8 @@ bool g_move_dust_emitted = false;
 uint32_t g_move_dust_pending = 0;
 unsigned g_move_trail_step = 0;
 bool g_move_trail_side = false;
+int g_move_swirl_sign = 0;         // which half of the swim stroke the last splash came from
+unsigned g_move_swim_trail_step = 0;
 std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
 std::atomic<float> g_move_hud_alpha{0.f};  // the bar's fade (climb.cpp's pattern)
@@ -238,6 +240,8 @@ float link_move_factor(uint32_t link) {
             g_move_dust_emitted = false;
             g_move_dust_pending = 0;
             g_move_trail_step = 0;
+            g_move_swirl_sign = 0;
+            g_move_swim_trail_step = 0;
         }
         if (active && is_move_proc(proc) && move_target(true, proc, move_speed_land_factor(), move_speed_swim_factor()) > 1.f)
             g_move_cycle_started = true;
@@ -347,6 +351,58 @@ void move_trail_effect(Cpu* c, uint32_t link) {
     if (trace_on()) trace("sprint-trail link=%08X emitter=%08X", link, emitter);
 }
 
+// While boosting in water: a splash at each alternating side (the swirls his strokes churn up) and
+// a light foam trail behind. Uses the native water element (sea-coloured, same one-shot helper the
+// dust uses), so the game's own wake emitters are left alone. No effects in demos or out of water.
+void move_swim_effect(Cpu* c, uint32_t link) {
+    if (!c || !link || true60::dt() < 1.f) return;
+    const bool swimming = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcSwimMove;
+    if (!swimming || move_speed_swim_factor() <= 1.f) { g_move_swirl_sign = 0; g_move_swim_trail_step = 0; return; }
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    if (!manager || !move_speed() || !(ld32(link + 0x6A70) & 0x40000u) ||
+        ld16(link + 0x420) || ld8(play + 0x5292)) return;
+    const Cpu saved = *c;
+    const uint32_t scratch = mem::fixed_slot(mem::kFixLinkScratch), effect_id = scratch + 0x40;
+    st32(effect_id, 0);
+    const float angle = (int16_t)ld16(link + 0x32A) * 0.00009587379924f;
+    const float s = std::sin(angle), co = std::cos(angle);
+    const float x = u32_as_f32(ld32(link + 0x314)), z = u32_as_f32(ld32(link + 0x31C));
+    const float water = u32_as_f32(ld32(link + 0x6A28)) + 2.f;  // mWaterY, like the swim tail
+    // A splash at each arm pull: the swim cycle's swing changes sign as the hands trade, which is
+    // where the churned water should appear. A cooldown keeps a fast cycle from spamming.
+    const uint32_t ctrl = link + 0x5898;  // mFrameCtrlUnder[0], the swim cycle
+    const int start = (int16_t)ld16(ctrl + 8), end = (int16_t)ld16(ctrl + 10);
+    const float phase = end > start ? (u32_as_f32(ld32(ctrl + 4)) - start) / (end - start) : 0.f;
+    const int sign = std::sin(phase * 6.28318530718f) >= 0.f ? 1 : -1;
+    if (sign != g_move_swirl_sign) {
+        g_move_swirl_sign = sign;
+        const float side = sign > 0 ? 26.f : -26.f;
+        const uint32_t pos = scratch + 0x90;
+        st32(pos, f32_as_u32(x + 8.f * s + side * co));
+        st32(pos + 4, f32_as_u32(water));
+        st32(pos + 8, f32_as_u32(z + 8.f * co - side * s));
+        c->f[1].ps0 = 1.f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 1.1f;
+        const uint32_t emitter = guest_call(c, GC(0x025A87C0),
+            {manager, 0x13, pos, link + 0x328, link + 0x110, effect_id, 0x14});
+        *c = saved;
+        if (emitter) st8(emitter + 0x247, 0xB0);
+        if (trace_on()) trace("swim-swirl link=%08X side=%d emitter=%08X", link, sign, emitter);
+    }
+    // A light foam trail behind, every few steps.
+    if (++g_move_swim_trail_step < 5) return;
+    g_move_swim_trail_step = 0;
+    const uint32_t pos = scratch + 0xA0;
+    st32(pos, f32_as_u32(x - 16.f * s));
+    st32(pos + 4, f32_as_u32(water));
+    st32(pos + 8, f32_as_u32(z - 16.f * co));
+    c->f[1].ps0 = 1.f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 0.8f;
+    const uint32_t emitter = guest_call(c, GC(0x025A87C0),
+        {manager, 0x13, pos, link + 0x328, link + 0x110, effect_id, 0x14});
+    *c = saved;
+    if (emitter) st8(emitter + 0x247, 0x60);
+    if (trace_on()) trace("swim-trail link=%08X emitter=%08X", link, emitter);
+}
+
 // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame): r4 = frameCtrl, f1 = rate.
 // While a boost runs on Link in a movement procedure the rate follows the ramp, so the legs keep up
 // with the ground instead of skating. Scaling the argument also covers the next animation the
@@ -377,19 +433,31 @@ extern "C" void hook_023D6B30(Cpu* c) {
     // Ordinary forward locomotion only: leave upper-body actions, lock-on, demos and special walks
     // to their own animation. The resource index (not ANM id) is what the live heap stores.
     // Free running retains DIR_NONE (4). DIR_FORWARD (0) is the explicit directional case.
+    const uint32_t proc = ld32(link + 0x65F0);
     const uint8_t direction = ld8(link + 0x68D4);
-    if (ld32(link + 0x65F0) != kProcMove || (direction != 0 && direction != 4) ||
-        (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) || ld16(link + 0x420) != 0 ||
+    const bool swim = proc == kProcSwimMove;
+    if ((direction != 0 && direction != 4) || ld16(link + 0x420) != 0 ||
         ld8(GD(0x1046F0B0) + 0x5292) || ld16(link + 0x5888) != 0xFFFF) return;
     const uint32_t table = GD(0x100366A0);
-    const uint16_t clip = ld16(link + 0x5858);
-    if (clip != ld16(table + kAnmWalk * 8) && clip != ld16(table + kAnmDash * 8)) return;
-    const float weight = sprint::weight(g_move_ramp.load(std::memory_order_relaxed), move_speed_land_factor(),
+    if (swim) {
+        // The surface stroke only: ModeFlg_SWIM and the forward swim cycle. The strafe variants
+        // (ANM_ATNDLS and friends) and the swim-out procs keep their own pose.
+        if (!(ld32(link + 0x6A70) & 0x40000u)) return;
+        if (ld16(link + 0x5848) != ld16(table + kAnmSwim * 8)) return;
+    } else {
+        if (proc != kProcMove || (ld32(link + 0x6A70) & (1u | 2u | 0x40000u))) return;
+        const uint16_t clip = ld16(link + 0x5858);
+        if (clip != ld16(table + kAnmWalk * 8) && clip != ld16(table + kAnmDash * 8)) return;
+    }
+    const float weight = sprint::weight(g_move_ramp.load(std::memory_order_relaxed),
+                                         swim ? move_speed_swim_factor() : move_speed_land_factor(),
                                          u32_as_f32(ld32(link + 0x6A14)), u32_as_f32(ld32(link + 0x3C4)));
-    const uint32_t ctrl = link + 0x58A8;  // mFrameCtrlUnder[1], the native walk/run cycle
+    // The walk cycle lives in mFrameCtrlUnder[1] (setBlendMoveAnime); the swim cycle in [0].
+    const uint32_t ctrl = link + (swim ? 0x5898 : 0x58A8);
     const int start = (int16_t)ld16(ctrl + 8), end = (int16_t)ld16(ctrl + 10);
     const float phase = end > start ? (u32_as_f32(ld32(ctrl + 4)) - start) / (end - start) : 0.f;
-    const float angle = weight * sprint::angle_degrees(joint, phase);
+    const float angle = weight * (swim ? sprint::swim_angle_degrees(joint, phase)
+                                       : sprint::angle_degrees(joint, phase));
     if (angle == 0.f) return;
     const sprint::Quaternion q{u32_as_f32(ld32(quaternion)), u32_as_f32(ld32(quaternion + 4)),
                                 u32_as_f32(ld32(quaternion + 8)), u32_as_f32(ld32(quaternion + 12))};
@@ -405,7 +473,8 @@ extern "C" void hook_023D6B30(Cpu* c) {
     st32(quaternion, f32_as_u32(posed.x)); st32(quaternion + 4, f32_as_u32(posed.y));
     st32(quaternion + 8, f32_as_u32(posed.z)); st32(quaternion + 12, f32_as_u32(posed.w));
     if (joint == sprint::kStomach && trace_on())
-        trace("sprint-pose link=%08X weight=%.3f lean=%.2f phase=%.3f", link, weight, angle, phase);
+        trace(swim ? "swim-pose link=%08X weight=%.3f lean=%.2f phase=%.3f"
+                   : "sprint-pose link=%08X weight=%.3f lean=%.2f phase=%.3f", link, weight, angle, phase);
 }
 
 uint64_t step() { return interp::logic_steps(); }double game_time() { return (double)interp::logic_steps() / 30.0; }

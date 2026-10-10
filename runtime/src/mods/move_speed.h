@@ -15,6 +15,7 @@ enum class MoveMode { kHold, kToggle };
 // used at full speed). Sprint adds a lean and arm drive to the native cycle, without replacing art.
 enum class MoveAnim { kNative, kDash, kSprint };
 constexpr uint32_t kAnmWalk = 1, kAnmDash = 2;  // daAlink_ANM ids, d_a_player_main_02.cpp:3555-3600
+constexpr uint32_t kAnmSwim = 0x83;            // ANM_SWIMING, the forward surface swim cycle
 inline uint32_t boost_anim(uint32_t anm, MoveAnim mode, bool boosting) {
     return boosting && mode == MoveAnim::kDash && anm == kAnmWalk ? kAnmDash : anm;
 }
