@@ -459,6 +459,7 @@ struct App {
     bool code_mods = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
+    std::string leaving;  // Done screen: Play or Quit was pressed (its options are queued and no longer shown)
     bool exec_game = false;                                  // start the game when the window has closed
 
     // save import
@@ -1403,7 +1404,12 @@ static void screen_done() {
         muted("Game files and saves: " + A.data_dir);
     }
     if (!A.save_msg.empty()) muted(A.save_msg);
-    if (A.portable) {
+    if (!A.leaving.empty()) {
+        // the chosen options run now, then the window closes: showing them again (reset, so they look
+        // like a new question) would ask after the answer was given
+        ImGui::Spacing();
+        muted(A.leaving == "play" ? "Starting the game..." : "Finishing...");
+    } else if (A.portable) {
         ImGui::Spacing();
         if (A.toolchain_bytes > 0) {
             checkbox(("Remove the downloaded compiler (" + format_size(A.toolchain_bytes) + ")").c_str(),
@@ -1421,15 +1427,15 @@ static void screen_done() {
             &A.opt_shortcut);
         muted("Off by default: then nothing is written outside this folder.");
     }
-    int b = footer({"Quit", "Open folder", "Play"}, 2, busy() || !A.after.empty() ? 7 : 0);
+    int b = footer({"Quit", "Open folder", "Play"}, 2, busy() || !A.after.empty() || !A.leaving.empty() ? 7 : 0);
     auto queue_options = [] {
         if (A.portable && A.toolchain_bytes > 0 && A.opt_remove_toolchain) A.queue.push_back({"remove_toolchain", ""});
         if (A.portable && A.opt_shortcut) A.queue.push_back({"shortcut", ""});
         A.toolchain_bytes = 0, A.opt_shortcut = false;  // once
     };
-    if (b == 0) queue_options(), A.after = "quit";
+    if (b == 0) queue_options(), A.after = A.leaving = "quit";
     if (b == 1) open_folder(home_folder());
-    if (b == 2) queue_options(), A.after = "play";
+    if (b == 2) queue_options(), A.after = A.leaving = "play";
 }
 
 static void screen_fatal() {

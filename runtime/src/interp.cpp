@@ -651,15 +651,15 @@ void ss_reset() {
     fx_ss_reset();
     true60::ss_reset();
 }
-// Paced interpolation (WWHD_INTERP_PACED=1, the default on Android and at 120/240 fps): an
-// in-between pass is drawn only when it fits before the next logic step is due (33.3 ms after the
-// last one, measured with the passes' recent durations); otherwise the rest of the step's
+// Paced interpolation (WWHD_INTERP_PACED=1, the default on Android, Windows on ARM64 and at 120/240
+// fps): an in-between pass is drawn only when it fits before the next logic step is due (33.3 ms
+// after the last one, measured with the passes' recent durations); otherwise the rest of the step's
 // in-between passes are dropped and the next step waits for its time. The game then always advances
 // 30 steps a second, and the picture gets 60/120/240 frames a second where the device draws (and
 // the display shows) them fast enough and fewer where it does not. Without pacing, every logic step
 // is followed by all its in-between passes, and a device that draws fewer frames a second runs the
-// whole game slower than real time (at 120/240 fps on a 60 Hz display with vsync: half or a
-// quarter of the speed), which is why pacing is on by default there.
+// whole game slower than real time (at 120/240 fps on a 60 Hz display with vsync: half or a quarter
+// of the speed), which is why pacing is on by default there.
 // At 120/240 fps the logic pass also plans how many in-between frames the step gets (as many as
 // fit at the recent pass duration, at least one) and spaces them evenly over the step
 // (t = k/(n+1)): a 60 Hz display then gets clean 60 fps blending instead of uneven frames and a
@@ -668,8 +668,11 @@ void ss_reset() {
 // for 60 fps and one for 120/240 fps); the variable sets both at start and wins over the saved
 // values.
 static const char* const g_env_paced = getenv("WWHD_INTERP_PACED");
+// Windows on ARM64 (Snapdragon X) draws 60 fps only where the Adreno driver's per-draw CPU cost
+// allows: unpaced, the Outset save-state benchmark ran 16 logic steps a second (half speed, and the
+// audio, which follows the game's speed, crackled)
 static std::atomic<bool> g_paced{[] {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || (defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)))
     return !g_env_paced || atoi(g_env_paced) != 0;
 #else
     return g_env_paced && atoi(g_env_paced) != 0;

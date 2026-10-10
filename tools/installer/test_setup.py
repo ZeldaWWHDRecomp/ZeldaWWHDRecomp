@@ -482,6 +482,22 @@ class Arch(unittest.TestCase):
         self.assertIn("aarch64", tcs["toolchains"]["zig-0.16.0-aarch64"]["url"])
         self.assertIn("aarch64", tcs["python"]["linux-aarch64"]["url"])
 
+    def test_windows_arm64_pins(self):
+        tcs = setup.load_toolchains()
+        tc = tcs["toolchains"]["llvm-mingw-20260922-aarch64"]
+        self.assertEqual(tc["kind"], "llvm-mingw")
+        self.assertEqual(tc["triple"], "aarch64-w64-mingw32")
+        self.assertIn("ucrt-aarch64", tc["url"])
+        self.assertNotIn("triple", tcs["toolchains"]["llvm-mingw-20260922"])  # x86-64: the default triple
+        self.assertIn("embed-arm64", tcs["python"]["windows-arm64"]["url"])
+        files = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "release", "python-windows-arm64-files.json")
+        with open(files) as f:
+            expected = json.load(f)
+        self.assertEqual(expected["sha256"], tcs["python"]["windows-arm64"]["sha256"])
+        self.assertEqual(expected["url"], tcs["python"]["windows-arm64"]["url"])
+        for name in ("python.exe", "pythonw.exe", "python3.dll", "LICENSE.txt"):
+            self.assertIn(name, expected["files"])
+
 
 class NoScriptHost(unittest.TestCase):
     """Antivirus heuristics read "unsigned program starts PowerShell" as a dropper (issue #58): the Windows setup
@@ -524,6 +540,11 @@ class BundledPython(unittest.TestCase):
         self.assertEqual(self.expected["url"], pin["url"])
         for name in ("python.exe", "pythonw.exe", "python3.dll", "LICENSE.txt"):
             self.assertIn(name, self.expected["files"])
+
+    def test_guard_picks_the_release_python(self):
+        self.assertEqual(self.guard.python_files("dist/WindWakerHD-v1-windows-arm64.zip"), self.guard.PYTHON_FILES_ARM64)
+        self.assertEqual(self.guard.python_files(os.path.join("x", "WindWakerHD-v1-windows-arm64", "")), self.guard.PYTHON_FILES_ARM64)
+        self.assertEqual(self.guard.python_files("dist/WindWakerHD-v1-windows-x86_64.zip"), self.guard.PYTHON_FILES)
 
     def test_guard_rejects_other_files(self):
         with tempfile.TemporaryDirectory() as d:

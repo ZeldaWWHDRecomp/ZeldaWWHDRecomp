@@ -5,7 +5,10 @@ layout(local_size_x=64) in;
 layout(set=0,binding=0,std430) readonly buffer Input { uint src[]; };
 layout(set=0,binding=1,std430) writeonly buffer Output { uint dst[]; };
 layout(push_constant) uniform Params { uint width; uint height; uint slices; uint mode; } p;
-uint byte_at(uint n) { return (src[n/4] >> ((n%4)*8)) & 255u; }
+// The block's words are loaded once and bytes picked from them: reading src[n/4] per byte was
+// miscompiled by Adreno X1's Windows driver (some reads returned the block's first word instead).
+uint first; uvec4 words;
+uint byte_at(uint n) { n-=first; uint w=n<4u?words.x:n<8u?words.y:n<12u?words.z:words.w; return (w >> ((n%4u)*8u)) & 255u; }
 uint short_at(uint n) { return byte_at(n) | byte_at(n+1)*256u; }
 int endpoint(uint n, bool sign) { int v=int(byte_at(n)); return sign ? max(-127,v>=128?v-256:v) : v; }
 int alpha(uint base,uint pixel,bool sign) {
@@ -27,7 +30,10 @@ void main() {
     if(n>=p.width*p.height*p.slices)return;
     uint x=n%p.width,y=(n/p.width)%p.height,z=n/(p.width*p.height);
     uint type=p.mode&255u;bool sign=(p.mode&256u)!=0;
-    uint block=((z*((p.height+3)/4)+y/4)*((p.width+3)/4)+x/4)*(type==1||type==4?8u:16u);
+    uint size=type==1||type==4?8u:16u;
+    uint block=((z*((p.height+3)/4)+y/4)*((p.width+3)/4)+x/4)*size;
+    first=block;words=uvec4(src[block/4],src[block/4+1],0u,0u);
+    if(size==16u){words.z=src[block/4+2];words.w=src[block/4+3];}
     uint pixel=(y%4)*4+x%4;
     uvec4 c=uvec4(0,0,0,sign?127:255);
     if(type>=4) {

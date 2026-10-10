@@ -275,19 +275,21 @@ def build_link_recipe(build, pkg, linkonly):
     return args[0], recipe, objs, libs
 
 
-def add_windows_python(pkg, zip_path):
+def add_windows_python(pkg, zip_path, platform="windows-x86_64"):
     """The official embeddable Python, unpacked unmodified into tools/python (its exe and DLLs keep the PSF
-    signature). Checked against the pin in toolchains.json and every file against python-windows-files.json,
-    which tools/release/guard.py uses too."""
+    signature). Checked against the pin in toolchains.json and every file against python-windows-files.json
+    (python-windows-arm64-files.json and the python.windows-arm64 pin for windows-arm64), which
+    tools/release/guard.py uses too."""
+    arm64 = platform == "windows-arm64"
     with open(os.path.join(ROOT, "tools", "installer", "toolchains.json")) as f:
-        pin = json.load(f)["python"]["windows"]
-    with open(os.path.join(ROOT, "tools", "release", "python-windows-files.json")) as f:
+        pin = json.load(f)["python"]["windows-arm64" if arm64 else "windows"]
+    with open(os.path.join(ROOT, "tools", "release", "python-windows-arm64-files.json" if arm64 else "python-windows-files.json")) as f:
         expected = json.load(f)
     with open(zip_path, "rb") as f:
         data = f.read()
     if hashlib.sha256(data).hexdigest() != pin["sha256"] or expected["sha256"] != pin["sha256"]:
-        sys.exit("%s is not the pinned embeddable Python (SHA-256 mismatch with toolchains.json / "
-                 "python-windows-files.json)" % zip_path)
+        sys.exit("%s is not the pinned embeddable Python for %s (SHA-256 mismatch with toolchains.json / "
+                 "python-windows*-files.json)" % (zip_path, platform))
     dest = os.path.join(pkg, "tools", "python")
     names = set()
     with zipfile.ZipFile(zip_path) as z:
@@ -337,7 +339,7 @@ def copy_sdk_headers(pkg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", required=True)
-    ap.add_argument("--platform", required=True, help="macos-arm64, linux-x86_64, linux-aarch64 or windows-x86_64")
+    ap.add_argument("--platform", required=True, help="macos-arm64, linux-x86_64, linux-aarch64, windows-x86_64 or windows-arm64")
     ap.add_argument("--version", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--toolchain", required=True, help="toolchain id from tools/installer/toolchains.json")
@@ -345,7 +347,7 @@ def main():
     ap.add_argument("--runtime-file", action="append", default=[], help="file to install next to the executable")
     ap.add_argument("--linkonly-lib", action="append", default=[], help="system library to ship for linking only")
     ap.add_argument("--setup-gui", help="the built graphical installer (wwhd-setup) to include")
-    ap.add_argument("--windows-python", help="windows: the pinned embeddable Python zip (toolchains.json python.windows), "
+    ap.add_argument("--windows-python", help="windows: the pinned embeddable Python zip (toolchains.json python.windows, or python.windows-arm64), "
                     "shipped unmodified as tools/python")
     ap.add_argument("--no-zip", action="store_true")
     a = ap.parse_args()
@@ -414,7 +416,7 @@ def main():
             sys.exit("windows: --setup-gui is required (tools/Setup in a console window.bat runs Wind Waker HD.exe)")
         if not a.windows_python:
             sys.exit("windows: --windows-python is required (the setup runs with the bundled Python)")
-        add_windows_python(pkg, a.windows_python)
+        add_windows_python(pkg, a.windows_python, a.platform)
         copy(os.path.join(inst, "install-windows.bat"), os.path.join(pkg, "tools", "Setup in a console window.bat"))
     else:
         copy(os.path.join(inst, "install-linux.sh"), os.path.join(pkg, "tools", "setup-in-terminal.sh"))

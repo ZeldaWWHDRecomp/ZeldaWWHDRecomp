@@ -16,6 +16,14 @@ what is on `devel` and not released yet (also in the
   surface swim becomes a crawl with splashes and foam, all with the game's own effects. Saved settings
   carry over.
 
+- **Fixed: setup's last screen briefly asked about the shortcut again after Play** (PR #130, thanks
+  @rhemfur). Once Play or Quit is pressed, the screen shows "Starting the game..." instead of the
+  options; what you had chosen is still done.
+
+- **Windows on ARM: a native `windows-arm64` release** (PR #131, thanks @rhemfur), for Snapdragon X
+  laptops and other ARM PCs. 60 fps keeps the game at full speed there by default ("Keep game speed",
+  as on Android). The x86-64 release still runs on these PCs too, emulated.
+
 ## v0.2.12
 
 - **Android: the app is now part of every release and development build.** Download

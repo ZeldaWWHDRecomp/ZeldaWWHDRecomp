@@ -12,6 +12,14 @@
       "size": 190725905,
       "dir": "llvm-mingw-20260922-ucrt-x86_64"
     },
+    "llvm-mingw-20260922-aarch64": {
+      "kind": "llvm-mingw",
+      "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-aarch64.zip",
+      "sha256": "a317514a7a63badd692032c0c2b8e165f630bbaebbe7a3254348051f43a64949",
+      "size": 185627547,
+      "dir": "llvm-mingw-20260922-ucrt-aarch64",
+      "triple": "aarch64-w64-mingw32"
+    },
     "zig-0.16.0": {
       "kind": "zig",
       "url": "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
@@ -35,6 +43,12 @@
       "sha256": "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310",
       "size": 12601679,
       "dir": "python-3.14.8-embed-amd64"
+    },
+    "windows-arm64": {
+      "url": "https://www.python.org/ftp/python/3.14.8/python-3.14.8-embed-arm64.zip",
+      "sha256": "155be84ccb57c6331cf0e39001c78a1dfac3be62f403f3ff5f2e29b80dda7ebe",
+      "size": 11923092,
+      "dir": "python-3.14.8-embed-arm64"
     },
     "linux": {
       "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/cpython-3.14.8%2B20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
