@@ -123,6 +123,69 @@ int main(int argc, char** argv) {
         for(int i=0;i<10000;i++) page.frame(pad.read());
         return 0;
     }
+    if (argc > 1 && !std::strcmp(argv[1], "--trace-session")) {
+        assert(wwhd_trace::enabled() && wwhd_trace::handoff());
+        VirtualPad pad(true);
+        overlay_trace_sdl::begin(false);
+        // The reporter uses the stick once before opening Settings.
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, -1);
+        pad.read();
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0);
+        pad.read();
+        assert(captured_trace.empty());
+        Page page;
+        overlay_trace_sdl::begin(true);
+        page.settle(pad);
+        const size_t unchanged = captured_trace.size();
+        pad.read();
+        assert(captured_trace.size() == unchanged); // no repeated raw snapshot
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, -0.8f);
+        page.frame(pad.read());
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0);
+        page.settle(pad);
+        const auto position = page.visible_button;
+        overlay_trace::mouse_pos(ImGui::GetIO(), position.x, position.y);
+        page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, true);
+        page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, false);
+        page.frame(pad.read(), true);
+        assert(page.clicks == 1);
+        assert(page.wheel(pad) > 0);
+        for (const char* required : {"open fixture", "lefty=-26213/", "gamepad key=GamepadLStickUp down=1",
+                                   "mouse button=0 down=1", "mouse button=0 down=0", "wheel x=0.000 y=-5.000",
+                                   "path=wheel", "nav id=", "source=", "hovered=", "focused="})
+            assert(captured_trace.find(required) != std::string::npos);
+        // A snapshot includes every SDL button, including buttons the menu ignores.
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            pad.button((SDL_GamepadButton)b, true);
+        const size_t buttons_begin = captured_trace.size();
+        pad.read();
+        const auto buttons_snapshot = captured_trace.substr(buttons_begin);
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            assert(buttons_snapshot.find(SDL_GetGamepadStringForButton((SDL_GamepadButton)b)) != std::string::npos);
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            pad.button((SDL_GamepadButton)b, false);
+        pad.axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, 0.5f);
+        const size_t trigger_begin = captured_trace.size();
+        pad.read();
+        assert(captured_trace.substr(trigger_begin).find("lefttrigger=0/0.000000") == std::string::npos);
+        overlay_trace_sdl::begin(false);
+        const size_t closed = captured_trace.size();
+        pad.read();
+        assert(captured_trace.size() == closed);
+        overlay_trace_sdl::begin(true);
+        page.navigation.reset_trace();
+        const size_t reopened = captured_trace.size();
+        page.frame(pad.read());
+        const auto reopened_snapshot = captured_trace.substr(reopened);
+        for (const char* required : {"axes(raw/normalized)", "leftx=", "lefty=", "rightx=", "righty=",
+                                    "lefttrigger=", "righttrigger=", "buttons(raw=normalized=1): none",
+                                    "gamepad key=GamepadFaceDown down=0", "gamepad key=GamepadR2 down=0"})
+            assert(reopened_snapshot.find(required) != std::string::npos);
+        puts("overlay trace session passed");
+        return 0;
+    }
     if (argc>1 && !std::strcmp(argv[1],"--trace-paths")) {
         assert(wwhd_trace::enabled());
         static std::string trace;
