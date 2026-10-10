@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: setup's last screen briefly asked about the shortcut again after Play** (PR #130, thanks
+  @rhemfur). Once Play or Quit is pressed, the screen shows "Starting the game..." instead of the
+  options; what you had chosen is still done.
+
 ## v0.2.12
 
 - **Android: the app is now part of every release and development build.** Download
