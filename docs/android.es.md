@@ -34,18 +34,27 @@ personalizado en Adreno), y unos pocos GB libres.
 
 ## Cómo jugar
 
-### Próximamente: la app de instalación (sin PC)
+### La app de instalación (sin PC)
 
-La app de instalación se está añadiendo al proyecto ([#98](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/98)).
-No lleva código del juego: prepara el juego en tu teléfono a partir de tu propia copia.
+La app de instalación ya está en el proyecto ([#98](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/98))
+y todavía se está probando antes de una versión oficial. No lleva código del juego: prepara el juego
+en tu teléfono a partir de tu propia copia. Hasta que salga en una versión, quien quiera probarla
+puede descargar el APK de prueba (arm64) de las [compilaciones de Android](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/workflows/android-toolchain.yml): abre
+la ejecución correcta más reciente y descarga el artefacto `android-hosted-clang-arm64-v8a` (hace
+falta iniciar sesión en GitHub). El APK está en
+`build/tester-apk/wwhd-ondevice-debug-arm64-v8a.apk` dentro del zip.
 
-1. Instala la app.
-2. Elige tu juego: una carpeta del juego ya extraída, un archivo `.wua` de Cemu, o una imagen de disco `.wud`/`.wux` con sus claves.
-3. Espera mientras el teléfono prepara el juego. Solo pasa una vez y tarda unos minutos; la
-   pantalla muestra cuántas partes van listas y cuánto falta, aproximadamente.
-4. Juega.
+1. Instala el APK. Si ya tienes una versión preparada en tu PC, exporta antes tu partida (mantén
+   pulsado el icono de la app) y desinstala esa versión: las dos están firmadas de forma distinta.
+2. Abre la app y elige tu juego: **Choose extracted game folder** (carpeta extraída), **Choose WUA
+   archive** (archivo `.wua`) o **Choose WUD / WUX disc image** (imagen de disco; después también
+   **Choose disc key file** y **Choose common key file**, las claves).
+3. Pulsa **Start / resume / retry setup**. El teléfono extrae y compila el juego una sola vez; la
+   pantalla muestra el progreso, por ejemplo "Compiling: 30/80 · about 12 min left". Puedes salir
+   de la app mientras tanto, y **Pause setup** lo detiene de forma segura.
+4. Cuando indique que la instalación terminó, pulsa **Play current build**.
 
-### Hoy: prepáralo en tu PC
+### O bien: prepáralo en tu PC
 
 1. Instala el SDK y el NDK de Android, JDK 17 o posterior, CMake, Ninja y Python 3.
 2. Extrae tu juego y genera su código (pasos 1 y 2 de *Building* en el [README](../README.md)).
@@ -71,10 +80,10 @@ botones táctiles mientras está conectado.
 La versión de Wii U de The Wind Waker HD, de EE. UU. o de Europa. Las partidas de una Wii U real
 también funcionan.
 
-**¿Por qué todavía no hay un APK para descargar?**
-Un APK preparado hoy en un PC contiene el juego recompilado, que no se puede compartir. La app de
-instalación prepara el juego en tu teléfono, así que la propia app sí se puede compartir. Se está
-probando ahora.
+**¿Por qué todavía no hay un APK en las versiones oficiales?**
+Un APK preparado en un PC contiene el juego recompilado, que no se puede compartir. La app de
+instalación prepara el juego en tu teléfono, así que la propia app sí se puede compartir. Ya está
+en el proyecto y entrará en una versión cuando terminen las pruebas que faltan en teléfonos.
 
 **Mi teléfono se calienta. ¿Es normal?**
 El juego es exigente. Cuando el teléfono se calienta, el juego baja solo de 60 a 30 fps estables
