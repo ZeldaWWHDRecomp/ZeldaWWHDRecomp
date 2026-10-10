@@ -8,6 +8,8 @@ import pickle
 import re
 
 FUNC_RE = re.compile(r"^void (f_[0-9A-F]{8}(?:_orig)?)\(Cpu\* __restrict c\) \{$")
+# a function that keeps guest registers in C locals (tools/recomp/leaflocal.py): its prologue loads them
+LOCALS_RE = re.compile(r"^    (?:uint32_t r\d+|uint8_t cr\d+|double f\d+_0) = c->")
 CALL_RE = re.compile(r"\bf_([0-9A-F]{8})(_orig)?\(c\)")
 INT_ARGS = tuple(range(3, 11))
 FLT_ARGS = tuple(range(1, 9))
@@ -24,6 +26,7 @@ class GenIndex:
             self.loc = pickle.load(open(cache, "rb"))
         else:
             self.loc = {}
+            locals_form = False
             for fn in sorted(os.listdir(gen_dir)):
                 if not re.match(r"code_\d+\.c$", fn):
                     continue
@@ -36,6 +39,8 @@ class GenIndex:
                         m = FUNC_RE.match(line.rstrip("\n"))
                         if m:
                             start, name = off, m.group(1)
+                        elif start is not None and not locals_form and LOCALS_RE.match(line):
+                            locals_form = True
                         elif line == "}\n" and start is not None:
                             addr = int(name[2:10], 16)
                             orig = name.endswith("_orig")
@@ -44,6 +49,11 @@ class GenIndex:
                                 self.loc[addr] = (fn, start, off + len(line), orig)
                             start = None
                         off += len(line)
+            if locals_form:
+                # the register dataflow below reads c->r[N] / c->f[N] accesses
+                raise SystemExit("%s keeps guest registers in C locals (the recompiler's default passes): the "
+                                 "verification tools read the plain form, regenerate it with WWHD_RECOMP_PLAIN=1 "
+                                 "python3 tools/recomp/recomp.py game/code/cking.rpx build/gen" % gen_dir)
             os.makedirs(os.path.dirname(cache), exist_ok=True)
             pickle.dump(self.loc, open(cache, "wb"))
         self.addrs = sorted(self.loc)

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:name=".SetupSmokeApplication">
+        <service android:name=".SyntheticSetupService" android:process=":setup" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Game-free synthetic foreground setup acceptance test." />
+        </service>
+        <receiver android:name=".PickerSmokeReceiver" android:exported="true" />
+        <activity android:name=".SetupImportSmokeActivity" android:exported="true" />
+        <provider android:name=".ImportDocuments" android:authorities="org.wwhdrecomp.wwhd.import-fixture"
+            android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER" /></intent-filter>
+        </provider>
+        <activity android:name=".SetupServiceSmokeActivity" android:exported="true" />
+        <activity android:name=".ActiveRuntimeSmokeActivity" android:process=":setup" android:exported="true" />
+        <activity android:name=".PythonSmokeActivity"
+            android:process=":setup"
+            android:exported="true" />
+        <activity android:name=".DisplaySmokeActivity"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation|density|colorMode"
+            android:exported="true" />
+    </application>
+</manifest>

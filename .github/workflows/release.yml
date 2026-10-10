@@ -1,5 +1,6 @@
 # Release build: packages the runtime, tools and installer for macOS (arm64), Linux (x86-64) and
-# Windows (x86-64) and publishes them as a GitHub Release.
+# Windows (x86-64), plus the Android setup app (signed APK, arm64 and x86_64), and publishes them as a
+# GitHub Release.
 #
 # Legal: CI never has the game. Every build here uses placeholder guest code
 # (tools/recomp/stubgen.py) only to compile and test the runtime; the real game code is generated
@@ -80,10 +81,14 @@ jobs:
             if [[ "$GITHUB_REF" != refs/heads/devel ]]; then
               echo "::error::development builds run on devel (this run is on $GITHUB_REF)"; exit 1
             fi
-            echo "version=devel-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+            # the last release plus the commit: "v0.2.11-devel.1a2b3c4d" (the game and the mod catalogue
+            # compare the release part; a bare "devel-..." made every catalogue mod "unavailable")
+            base=$(gh api "repos/$GH_REPO/releases/latest" -q .tag_name 2>/dev/null || true)
+            [[ "$base" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no latest release tag (got '$base')"; exit 1; }
+            echo "version=$base-devel.${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "devel=true" >> "$GITHUB_OUTPUT"
-            echo "version: devel-${GITHUB_SHA::8}, development pre-release"
+            echo "version: $base-devel.${GITHUB_SHA::8}, development pre-release"
             exit 0
           fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -107,7 +112,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: brew install ninja
@@ -121,24 +126,44 @@ jobs:
           xcrun clang -O3 -std=gnu11 -arch arm64 -mmacosx-version-min=14.0 \
             -I runtime/include -c runtime/tools/guest_hooks_body.c -o "$RUNNER_TEMP/guest-hooks-clang17.o"
 
-      - name: Build runtime (Release, Metal) against placeholder guest code
+      - name: Vulkan loader and MoltenVK (pinned Khronos sources and release, shipped next to the game)
+        # tools/release/macos_vulkan.py: Vulkan-Headers and Vulkan-Loader built from their tags, MoltenVK's
+        # prebuilt macOS release (SHA-256 pinned), thinned to arm64 and ad-hoc signed
+        run: python3 tools/release/macos_vulkan.py --work "$RUNNER_TEMP/vk"
+
+      - name: Build runtime (Release, Metal + Vulkan) against placeholder guest code
+        # BOTH: Metal stays the default; Graphics > Renderer can pick Vulkan (MoltenVK). glslang, zlib and
+        # zstd are built statically from pinned sources (WWHD_BUNDLED_DEPS); the loader is a weak import.
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
-          cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=METAL \
+          cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" -DWWHD_SETUP_GUI=ON \
-            -DWWHD_BUNDLED_ZSTD=ON
+            -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
+            -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
+            -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib"
           cmake --build build/rel
 
       - name: Unit tests
         run: |
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
         run: |
+          VK="$RUNNER_TEMP/vk"
           python3 tools/release/package.py --build build/rel --platform macos-arm64 --version "$VERSION" \
-            --out dist --toolchain xcode-clt --setup-gui build/rel/wwhd-setup
+            --out dist --toolchain xcode-clt --setup-gui build/rel/wwhd-setup \
+            --runtime-file "$VK/runtime/libvulkan.1.dylib" \
+            --runtime-file "$VK/runtime/libMoltenVK.dylib" \
+            --runtime-file "$VK/runtime/MoltenVK_icd.json" \
+            --license "Vulkan-Loader (Apache-2.0)=$VK/licenses/Vulkan-Loader.txt" \
+            --license "MoltenVK (Apache-2.0)=$VK/licenses/MoltenVK.txt" \
+            --license "Vulkan-Headers (Apache-2.0)=$VK/licenses/Vulkan-Headers.txt" \
+            --license "glslang (BSD-3-Clause and others)=$PWD/build/rel/_deps/glslang-src/LICENSE.txt" \
+            --license "zlib (zlib)=$PWD/build/rel/_deps/zlib-src/LICENSE" \
+            --license "SDL3 (zlib)=$PWD/build/rel/_deps/sdl3-src/LICENSE.txt"
 
       - name: Guard (no game code, game files or keys)
         run: python3 tools/release/guard.py dist/*.zip
@@ -152,17 +177,47 @@ jobs:
           "$RUNNER_TEMP/data/bin/wwhd" --game "$RUNNER_TEMP/nogame" > run.log 2>&1 || true
           cat run.log
           grep -q "cannot load" run.log
+          # Vulkan (MoltenVK): the game loads the loader installed next to it, nothing from Homebrew or
+          # from this build machine
+          B="$RUNNER_TEMP/data/bin"
+          ls -l "$B"
+          for f in libvulkan.1.dylib libMoltenVK.dylib MoltenVK_icd.json; do test -f "$B/$f"; done
+          otool -L "$B/wwhd" | tail -n +2 | tee libs.txt
+          grep -q "@rpath/libvulkan.1.dylib" libs.txt
+          otool -l "$B/wwhd" | grep -A2 LC_RPATH | tee rpaths.txt
+          grep -q "path @executable_path " rpaths.txt
+          for f in "$B/wwhd" "$B/libvulkan.1.dylib" "$B/libMoltenVK.dylib"; do
+            otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -v -E '^(/usr/lib/|/System/Library/|@rpath/lib(vulkan\.1|MoltenVK)\.dylib$)' \
+              && { echo "::error::$f links a library from outside the release or the system"; exit 1; }
+            codesign --verify "$f"
+          done
+          if otool -l "$B/wwhd" | grep -A2 LC_RPATH | grep -E "path /"; then
+            echo "::error::build-machine rpath in the game"; exit 1
+          fi
+          # the bundled loader + MoltenVK start on this runner's (virtual) GPU, without the game
+          VK_LOADER_DEBUG=driver "$B/wwhd" --renderer-smoke > vk.log 2>&1 && smoke=ok || smoke=failed
+          cat vk.log | head -c 20000
+          grep -q "\[vulkan\] loader: $B/libvulkan.1.dylib" vk.log
+          grep -q "\[vulkan\] driver: bundled MoltenVK ($B/MoltenVK_icd.json)" vk.log
+          test "$smoke" = ok
+          # without the loader the game still starts (weak import) and Vulkan says why it cannot start, the
+          # reason the game shows when it falls back to Metal (that fallback needs the game: not testable here)
+          mv "$B/libvulkan.1.dylib" "$RUNNER_TEMP/"
+          "$B/wwhd" --renderer-smoke > nolib.log 2>&1 || true
+          cat nolib.log
+          grep -q "Vulkan loader (libvulkan) is missing" nolib.log
+          mv "$RUNNER_TEMP/libvulkan.1.dylib" "$B/"
           # the graphical installer: starts setup.py through the launcher and renders its first screen
           SDL_VIDEO_DRIVER=offscreen "./Wind Waker HD.app/Contents/MacOS/wind-waker-hd" --self-test \
             --screenshots "$RUNNER_TEMP" --data-dir "$RUNNER_TEMP/data"
           mkdir -p "$GITHUB_WORKSPACE/gui-shots" && cp "$RUNNER_TEMP"/selftest-*.png "$GITHUB_WORKSPACE/gui-shots/"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: setup-gui-macos-arm64
           path: gui-shots
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-macos-arm64
           path: dist/*.zip
@@ -191,7 +246,7 @@ jobs:
       ARCH: ${{ matrix.arch }}
       TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -258,6 +313,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
           ctest --test-dir build/rel --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
 
       - name: Package
@@ -324,7 +380,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1080x24" "$RUNNER_TEMP/data/bin/wwhd" --renderer-smoke 2>&1 | tee smoke.log
           grep -q "PASS" smoke.log
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-linux-${{ matrix.arch }}
           path: |
@@ -335,19 +391,41 @@ jobs:
   windows:
     needs: version
     if: needs.version.outputs.skip != 'true'
-    runs-on: windows-latest
+    # x86-64 and arm64 (Windows on ARM, e.g. Snapdragon X), each built and tested on its own
+    # architecture's runner with the llvm-mingw for that host and target
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            toolchain: llvm-mingw-20260922
+            triple: x86_64-w64-mingw32
+            dlltool_machine: i386:x86-64
+            python: windows
+          - arch: arm64
+            runner: windows-11-arm
+            toolchain: llvm-mingw-20260922-aarch64
+            triple: aarch64-w64-mingw32
+            dlltool_machine: arm64
+            python: windows-arm64
+    name: windows-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: bash
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      TOOLCHAIN: ${{ matrix.toolchain }}
+      TRIPLE: ${{ matrix.triple }}
+      PY_PIN: ${{ matrix.python }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Pinned llvm-mingw toolchain (tools/installer/toolchains.json)
         run: |
           read -r URL SUM DIR < <(python -c "
-          import json; t=json.load(open('tools/installer/toolchains.json'))['toolchains']['llvm-mingw-20260922']
+          import json, os; t=json.load(open('tools/installer/toolchains.json'))['toolchains'][os.environ['TOOLCHAIN']]
           print(t['url'], t['sha256'], t['dir'])" | tr -d '\r')  # Windows Python ends lines with CR LF
           T="$(cygpath -m "$RUNNER_TEMP")"
           curl -fsSL -o "$T/llvm-mingw.zip" "$URL"
@@ -355,7 +433,7 @@ jobs:
           unzip -q "$T/llvm-mingw.zip" -d "$T"
           echo "LLVM_MINGW=$T/$DIR" >> "$GITHUB_ENV"
           echo "$T/$DIR/bin" >> "$GITHUB_PATH"
-          "$T/$DIR/bin/x86_64-w64-mingw32-clang.exe" --version
+          "$T/$DIR/bin/$TRIPLE-clang.exe" --version
           pip install ninja
           ninja --version
 
@@ -367,16 +445,16 @@ jobs:
           mkdir -p "$T/vulkan" && tar -xzf vh.tar.gz -C "$T/vulkan" --strip-components=1
           curl -fsSL -o vulkan-1.def "$VULKAN_DEF_URL"
           echo "$VULKAN_DEF_SHA256  vulkan-1.def" | sha256sum -c -
-          "$LLVM_MINGW/bin/llvm-dlltool.exe" -m i386:x86-64 -d vulkan-1.def -l "$T/vulkan/libvulkan-1.a"
+          "$LLVM_MINGW/bin/llvm-dlltool.exe" -m ${{ matrix.dlltool_machine }} -d vulkan-1.def -l "$T/vulkan/libvulkan-1.a"
           echo "VULKAN_DIR=$T/vulkan" >> "$GITHUB_ENV"
 
       - name: Build runtime (Release, Vulkan + SDL3) with llvm-mingw against placeholder guest code
         run: |
           python tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DGEN_DIR="$(cygpath -m "$PWD/build/gen-stub")" \
-            -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang.exe" \
-            -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang++.exe" \
-            -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-windres.exe" \
+            -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang.exe" \
+            -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang++.exe" \
+            -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/$TRIPLE-windres.exe" \
             -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON -DWWHD_SETUP_GUI=ON \
             -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a"
           ninja -C build/rel -d keeprsp
@@ -390,7 +468,7 @@ jobs:
         # the setup runs with it (tools/python); the release itself downloads no Python (issue #58)
         run: |
           read -r URL SUM < <(python -c "
-          import json; p=json.load(open('tools/installer/toolchains.json'))['python']['windows']
+          import json, os; p=json.load(open('tools/installer/toolchains.json'))['python'][os.environ['PY_PIN']]
           print(p['url'], p['sha256'])" | tr -d '\r')
           T="$(cygpath -m "$RUNNER_TEMP")"
           curl -fsSL -o "$T/python-embed.zip" "$URL"
@@ -400,8 +478,8 @@ jobs:
       - name: Package
         run: |
           W="$(cygpath -m "$PWD")"  # native Windows Python cannot open /d/a/... paths
-          python tools/release/package.py --build build/rel --platform windows-x86_64 --version "$VERSION" \
-            --out dist --toolchain llvm-mingw-20260922 --setup-gui build/rel/wwhd-setup.exe \
+          python tools/release/package.py --build build/rel --platform windows-${{ matrix.arch }} --version "$VERSION" \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
@@ -437,13 +515,16 @@ jobs:
             if ($ascii.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Wind Waker HD.exe imports $dll" }
           }
           # the bundled Python is the official one, unmodified: its programs and DLLs keep the PSF signature
-          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python313.dll') {
+          foreach ($f in 'python.exe', 'pythonw.exe', 'python3.dll', 'python314.dll') {
             $sig = Get-AuthenticodeSignature (Join-Path $pkg "tools\python\$f")
             "tools\python\$f`: $($sig.Status), $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
               throw "tools\python\$f does not carry a valid PSF signature"
             }
           }
+          # Probe the actual isolated embeddable interpreter, including its compiled Zstd module.
+          & (Join-Path $pkg "tools\python\python.exe") -I -c "import sys; from compression import zstd; assert sys.version_info >= (3, 14); assert zstd.decompress(zstd.compress(b'wwhd')) == b'wwhd'"
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Python cannot run local RVZ setup" }
           # version information, a manifest and no debug sections (cmake/WindowsResources.cmake, WWHD_STRIP_RELEASE)
           foreach ($f in 'Wind Waker HD.exe', 'tools\bin\wwhd-extract.exe') {
             $p = Join-Path $pkg $f
@@ -494,17 +575,162 @@ jobs:
           if ($g.ExitCode -ne 0) { throw "setup program self-test on a fresh data folder failed ($($g.ExitCode))" }
           if (Test-Path (Join-Path $env:WWHD_DATA_DIR 'python')) { throw "the window downloaded a Python" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
-          name: release-windows-x86_64
+          name: release-windows-${{ matrix.arch }}
           path: dist/*.zip
           if-no-files-found: error
+
+  # The Android app (the setup app: it carries no game code and builds the game on the phone from the
+  # player's own dump): a release APK per ABI, without libmain.so and without the debug test fixtures,
+  # signed with the project's key. arm64 for phones, x86_64 for emulators and Chromebooks. The
+  # compiler inside it comes from the cache (.github/actions/android-compiler) or is built (~1 h).
+  android:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            name: arm64
+          - abi: x86_64
+            name: x86_64
+    name: android-${{ matrix.name }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ABI: ${{ matrix.abi }}
+      NDK_VERSION: 30.0.16248370
+      # the release certificate (public): apksigner must report exactly this SHA-256
+      CERT_SHA256: 7ff6d35e4e45115ee49365ef5b40c0eb83eaf76cc11ce967f2645c504f58b213
+      APK: dist/WindWakerHD-${{ needs.version.outputs.version }}-android-${{ matrix.name }}.apk
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Install the NDK and SDK packages
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Compiler that runs on Android (cached)
+        uses: ./.github/actions/android-compiler
+        with:
+          abi: ${{ matrix.abi }}
+
+      - name: Compiler files for the APK
+        run: python3 tools/android/package_toolchain.py --compiler build/compiler/package --out build/compiler/apk-package
+
+      - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
+        run: |
+          python3 tools/recomp/stubgen.py build/gen-stub
+          GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          cmake --build android/build/game --target wwhd-extract --parallel 4
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk
+          # the APK carries no game library: setup links the player's own one on the phone
+          rm "android/app/libs/$ABI/libmain.so"
+          ls -la "android/app/libs/$ABI"
+
+      - name: Cache the official CPython Android build (checksum-pinned in prepare_python.py)
+        uses: actions/cache@v5
+        with:
+          path: build/embedded-python/python.tar.gz
+          key: android-cpython-${{ matrix.abi }}-${{ hashFiles('tools/android/prepare_python.py') }}
+
+      - name: Embedded Python and setup (no test fixtures)
+        run: |
+          python3 tools/android/prepare_python.py --abi "$ABI" --ndk "$ANDROID_HOME/ndk/$NDK_VERSION" \
+            --out build/embedded-python --runtime-sdk build/runtime-sdk
+
+      - name: Release APK, signed with the project's key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          WWHD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          WWHD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PUBLISHING: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.devel == 'true' }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            export WWHD_KEYSTORE="$RUNNER_TEMP/wwhd-release.p12"
+            trap 'rm -f "$WWHD_KEYSTORE"' EXIT
+            (umask 077 && printf '%s' "$KEYSTORE_B64" | base64 -d > "$WWHD_KEYSTORE")
+          elif [ "$PUBLISHING" = true ]; then
+            echo "::error::the signing secrets are missing: a published APK must carry the release key"; exit 1
+          else
+            echo "::warning::no signing secrets (fork?): the APK is signed with a throwaway debug key"
+          fi
+          code=${{ github.run_number }}
+          android/gradlew -p android --no-daemon -PwwhdAbi="$ABI" -PwwhdVersionName="${VERSION#v}" -PwwhdVersionCode="$code" \
+            -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" \
+            -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleRelease
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          ls -la dist
+
+      - name: Guard (no game code, game files, keys or test fixtures) and signature
+        env:
+          SIGNED: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
+        run: |
+          python3 tools/release/guard.py "$APK"
+          if unzip -l "$APK" | grep -E ' lib/[^/]+/libmain\.so$'; then echo "::error::libmain.so in the APK"; exit 1; fi
+          unzip -p "$APK" 'classes*.dex' > "$RUNNER_TEMP/classes.dex"
+          if grep -a -q -E 'SmokeActivity|SyntheticSetupService' "$RUNNER_TEMP/classes.dex"; then
+            echo "::error::debug test activities in the APK"; exit 1
+          fi
+          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json python-source.zip; do
+            unzip -l "$APK" "assets/$f" > /dev/null || { echo "::error::assets/$f missing"; exit 1; }
+          done
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apksigner.txt
+          if [ "$SIGNED" = true ]; then
+            grep -q "^Signer #1 certificate SHA-256 digest: $CERT_SHA256\$" apksigner.txt \
+              || { echo "::error::the APK is not signed with the release certificate"; exit 1; }
+            if grep -q '^Signer #2' apksigner.txt; then echo "::error::more than one signer"; exit 1; fi
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | sed -n 1p
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: release-android-${{ matrix.name }}
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
+
+  # The nightly run on the default branch (main) keeps the Android compiler cache there, the one release
+  # tags can restore (a tag sees only its own and main's caches). Builds only when the key changed.
+  android-compiler-cache:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: ./.github/actions/android-compiler
+        with:
+          abi: ${{ matrix.abi }}
+          lookup-only: "true"
 
   # Uploads every release zip and the Windows "Wind Waker HD.exe" to VirusTotal and writes the results to the
   # job summary and vt-report.json; on a published release the vt-notes job adds them to the release. It never
   # fails the release; the publish job does not wait for it. Without the VT_API_KEY secret it only says so.
   virustotal:
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, android]
     if: needs.version.outputs.devel != 'true'   # development builds save the VirusTotal API quota
     runs-on: ubuntu-24.04
     continue-on-error: true
@@ -512,9 +738,9 @@ jobs:
     env:
       VT_API_KEY: ${{ secrets.VT_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: release-*
           path: dist
@@ -524,11 +750,11 @@ jobs:
         continue-on-error: true
         run: |
           if [ -n "$VT_API_KEY" ]; then echo "::add-mask::$VT_API_KEY"; fi
-          files=(dist/*.zip dist/*.AppImage)
+          files=(dist/*.zip dist/*.AppImage dist/*.apk)
           for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
           python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         continue-on-error: true
         with:
@@ -537,7 +763,7 @@ jobs:
           if-no-files-found: ignore
 
   publish:
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -547,20 +773,20 @@ jobs:
       DEVEL: ${{ needs.version.outputs.devel }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
 
       - name: Guard all artifacts again
-        run: python3 tools/release/guard.py dist/*.zip
+        run: python3 tools/release/guard.py dist/*.zip dist/*.apk
 
       - name: Checksums and release notes
         run: |
-          cd dist && sha256sum *.zip *.AppImage > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
+          cd dist && sha256sum *.zip *.AppImage *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
           if [[ "$DEVEL" == true ]]; then
             python3 tools/release/notes.py CHANGELOG.md "Next update" dist/SHA256SUMS.txt --devel "$GITHUB_SHA" > dist/notes.md
           else
@@ -569,7 +795,7 @@ jobs:
           cat dist/notes.md
           python3 tools/release/guard.py dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-all
           path: dist/*
@@ -577,7 +803,7 @@ jobs:
       - name: Publish GitHub Release
         if: env.PUBLISH == 'true'
         run: |
-          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
+          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/*.apk dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
             --verify-tag
 
       # The rolling pre-release "devel-build": the previous one and its tag are replaced; never marked latest.
@@ -585,7 +811,7 @@ jobs:
         if: env.DEVEL == 'true'
         run: |
           gh release delete devel-build --cleanup-tag --yes 2>/dev/null || true
-          gh release create devel-build dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --prerelease --latest=false \
+          gh release create devel-build dist/*.zip dist/*.AppImage dist/*.apk dist/SHA256SUMS.txt --prerelease --latest=false \
             --target "$GITHUB_SHA" --title "Development build (devel @ ${GITHUB_SHA::7}, $(date -u +%Y-%m-%d))" \
             --notes-file dist/notes.md
 
@@ -602,9 +828,9 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: vt-report
           path: vt

@@ -1,7 +1,9 @@
+#include "../../exception_report.h"
 #include "bc_decode.h"
 #include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
+#include "android_shared_image.h"
 #include "buffer_cache.h"
 #include "render_prof.h"
 #include "perf_metrics.h"
@@ -10,6 +12,14 @@
 #include "gx2/gx2.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
+#include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
+#include "input.h"
+#include "gfx/display_modes.h"
+#include "platform/dual_display.h"
+#include "overlay/hostui.h"
+#ifdef __ANDROID__
+#include <SDL3/SDL.h>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -27,7 +37,7 @@ namespace gfxvk {
 extern uint64_t g_stat_full_checks, g_stat_uploads;
 void request_tv_dump(const std::string&,int);
 namespace {
-void require(bool condition,const char* message) { if(!condition)throw std::runtime_error(message); }
+void require(bool condition,const char* message) { if(!condition)exception_report::raise(message); }
 struct Image {
  Surface s;
  Image(uint32_t w,uint32_t h,uint32_t format,bool depth=false,uint32_t layers=1,uint32_t mips=1) {
@@ -54,6 +64,45 @@ void clear_image(Surface& s,const float rgba[4]) {
  VkClearColorValue value{};std::copy(rgba,rgba+4,value.float32);VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,s.mips,0,s.arrayLayers};
  vkCmdClearColorImage(command_buffer(),s.image,s.layout,&value,1,&range);mark_gpu_written(&s);
 }
+// A colour placeholder used by a comparison instruction must retain colour tiling while
+// providing a Vulkan depth image. A subsequently rendered depth alias takes precedence.
+void colour_comparison_check() {
+ for (uint32_t tile : {1u,2u}) {
+  uint32_t addr=mem::host_alloc(4096,256);
+  memset(mem::ptr(addr),0,4096);
+  auto offset=[&](uint32_t x,uint32_t y) {
+   if(tile==1)return (y*8+x)*4;
+   return LatteAddrLib::ComputeSurfaceAddrFromCoordMicroTiled(x,y,0,32,8,8,
+       Latte::E_HWTILEMODE::TM_1D_TILED_THIN1,false);
+  };
+  for(uint32_t y=0;y<4;++y)for(uint32_t x=0;x<4;++x) {
+   uint8_t rgba[4]={uint8_t((x+y*4)*17),uint8_t(255-x*17),uint8_t(y*31),255};
+   memcpy(mem::ptr(addr)+offset(x,y),rgba,4);
+  }
+  uint32_t words[7]={1u|(tile<<3)|(3u<<19),3u|(0x1au<<26),addr>>8,0,
+                    (1u<<19)|(2u<<22)|(3u<<25),0,0};
+  auto* color=sampled_texture(words,false);
+  require(color&&!color->fmt.depth,"comparison fixture colour upload failed");
+  auto* compared=sampled_texture(words,true);
+  require(compared&&compared!=color&&compared->fmt.pixel==VK_FORMAT_D32_SFLOAT,
+          "RGBA8 comparison texture was not converted to depth");
+  auto data=read_image(*compared,VK_IMAGE_ASPECT_DEPTH_BIT,4);
+  for(uint32_t i=0;i<16;++i) {
+   float value;memcpy(&value,data.data()+i*4,4);
+   require(std::abs(value-float(i)/15.0f)<0.000001f,"colour comparison upload/tiling differs");
+  }
+  SurfaceDesc depth;depth.addr=addr;depth.width=depth.height=4;depth.pitch=8;
+  depth.format=0x11;depth.isDepth=true;depth.tileMode=tile;
+  auto* rendered=find_or_create_surface(depth,true);
+  transition_image(rendered,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+  VkClearDepthStencilValue value{0.25f,0};VkImageSubresourceRange range{rendered->aspect,0,1,0,1};
+  vkCmdClearDepthStencilImage(command_buffer(),rendered->image,rendered->layout,&value,1,&range);
+  mark_gpu_written(rendered);
+  require(sampled_texture(words,true)==rendered,"rendered depth alias lost to the colour comparison placeholder");
+ }
+ fprintf(stderr,"[renderer smoke] colour comparison conversion, colour tiling and rendered depth alias passed\n");
+}
+
 void bc_surface_check() {
  for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
   SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
@@ -344,7 +393,7 @@ void triangle(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nvoid main(){vec2 p[3]=vec2[3](vec2(-0.8,-0.8),vec2(0.8,-0.8),vec2(0,0.8));gl_Position=vec4(p[gl_VertexIndex],0,1);}",true,objects.vs);
@@ -384,7 +433,7 @@ void vertex_window_check(Surface& s) {
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(location=0) in vec3 position;layout(location=1) in vec4 tint;layout(location=0) out vec4 vertexColor;void main(){gl_Position=vec4(position.xy,0,1);vertexColor=gl_VertexIndex==int(position.z)?tint:vec4(0,0,1,1);}",true,objects.vs);
@@ -479,7 +528,7 @@ void dynamic_uniform_check(Surface& s) {
   ~Resources(){for(auto set:sets)if(set)vkDestroyDescriptorSetLayout(R.device,set,nullptr);if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
  } objects;
  auto module=[&](const char* glsl,bool vertex,VkShaderModule& result) {
-  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())throw std::runtime_error("smoke GLSL compilation: "+error);
+  std::string error;auto words=vk::compile_glsl(glsl,vertex,&error);if(words.empty())exception_report::raise("smoke GLSL compilation: "+error);
   VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"smoke shader module");
  };
  module("#version 450\nlayout(set=0,binding=7,std140) uniform Transform{vec4 transform;} ;layout(set=0,binding=1,std140) uniform Tint{vec4 tint;};layout(location=0) out vec4 vcolor;void main(){vec2 p[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));gl_Position=vec4(p[gl_VertexIndex]*transform.xy+transform.zw,0,1);vcolor=tint;}",true,objects.vs);
@@ -548,6 +597,201 @@ void dynamic_uniform_check(Surface& s) {
  fprintf(stderr,"[renderer smoke] dynamic UBO immutable draws, VS/PS binding order and fresh sets after pool reset passed\n");
 }
 }
+#ifdef __ANDROID__
+bool android_display_touch_event(const SDL_Event&);
+int android_display_smoke_test() {
+ try {
+  mem::init();
+  for (Screen* screen : {&R.tv, &R.drc}) {
+   screen->scan = std::make_unique<Surface>();
+   Surface& image = *screen->scan;
+   image.width = 64; image.height = 36; image.format = 0x1a;
+   image.fmt = format_info(image.format, false);
+   create_surface_image(&image, false);
+  }
+  auto start = std::chrono::steady_clock::now();
+  auto report = start;
+  uint64_t touchEventsSeen = 0, touchEventsHandled = 0;
+  SDL_SetHint("WWHD_DISPLAY_SMOKE_INPUT_TRACE", "1");
+  std::chrono::steady_clock::time_point lastPrimary;
+  uint64_t lastPrimaryCount=R.tv.presented.load(),timingEpoch=0;
+  auto timingStarted=start;
+  std::vector<double> primaryIntervals,swapCosts;
+  auto summary=[](std::vector<double> values) {
+    std::array<double,4> result{};
+    if(values.empty())return result;
+    std::sort(values.begin(),values.end());
+    for(size_t i=0;i<3;++i) {
+      const double quantiles[]={.50,.95,.99};
+      result[i]=values[size_t(std::ceil(quantiles[i]*values.size()))-1];
+    }
+    result[3]=values.back();return result;
+  };
+  const char* internal = SDL_GetAndroidInternalStoragePath();
+  require(internal != nullptr, "internal app storage is unavailable");
+  std::filesystem::path metrics = std::filesystem::path(internal) / "display-smoke.json";
+  const std::string temporary = metrics.string() + ".tmp";
+  // Full lifecycle/fold probes can exceed two minutes on a freshly booted
+  // emulator. The runner still enforces per-transition and frame-time gates.
+  while (std::chrono::steady_clock::now() - start < std::chrono::seconds(240)) {
+   SDL_Event event;
+   while (SDL_PollEvent(&event)) {
+    if (event.type == SDL_EVENT_QUIT) return 0;
+    const bool touchHandled = android_display_touch_event(event);
+    if (event.type == SDL_EVENT_FINGER_DOWN || event.type == SDL_EVENT_FINGER_MOTION ||
+        event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+     ++touchEventsSeen;
+     if (touchHandled) ++touchEventsHandled;
+     LOG("[display smoke input] type=%u finger=%lld window=%u primary=%u x=%f y=%f handled=%d dual=%d swapped=%d",
+         unsigned(event.type), (long long)event.tfinger.fingerID, event.tfinger.windowID,
+         SDL_GetWindowID(R.tv.window), event.tfinger.x, event.tfinger.y, int(touchHandled),
+         int(gfx::g_has_drc_window), int(dual_display::active_swap.load()));
+    }
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED || event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+     LOG("[display smoke input] focus type=%u window=%u", unsigned(event.type), event.window.windowID);
+    if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED &&
+        event.window.windowID == SDL_GetWindowID(R.tv.window)) {
+     R.tv.width = event.window.data1; R.tv.height = event.window.data2;
+     R.tv.resize = true;
+    }
+    if (event.type == SDL_EVENT_WINDOW_RESTORED || event.type == SDL_EVENT_WINDOW_SHOWN)
+     R.tv.visible = true;
+    if (event.type == SDL_EVENT_WINDOW_MINIMIZED) R.tv.visible = false;
+   }
+   const auto commandPath = std::filesystem::path(internal) / "display-smoke-command";
+   if (std::ifstream command{commandPath}; command) {
+    std::string value;
+    command >> value;
+    if (value == "swap1") hostui::set_displays_swapped(true);
+    if (value == "swap0") hostui::set_displays_swapped(false);
+    if (value == "filter0") hostui::set_scale_filter(0);
+    if (value == "filter1") hostui::set_scale_filter(1);
+    if (value == "filter2") hostui::set_scale_filter(2);
+    if (value == "retirement1") R.secondaryRetirementHeld=true;
+    if (value == "retirement0") R.secondaryRetirementHeld=false;
+    if (value == "worker1") R.secondaryPresentHeld=true;
+    if (value == "worker0") R.secondaryPresentHeld=false;
+    if (value == "lose_acquire") R.secondaryInjectAcquireLoss=true;
+    if (value == "lose_present") R.secondaryInjectPresentLoss=true;
+    if (value == "external_memory_capabilities") {
+      try { android_external_memory_capabilities(); LOG("[vulkan] external memory capability probe passed"); }
+      catch(const std::exception& error) { LOG("[vulkan] external memory capability probe failed: %s",error.what()); }
+    }
+    if (value == "shared_image_general_probe") {
+      try { android_shared_image_smoke(true); LOG("[vulkan] two-device shared image general shader probe passed"); }
+      catch(const std::exception& error) { LOG("[vulkan] two-device shared image general shader probe failed: %s",error.what()); }
+    }
+    if (value == "shared_image_probe") {
+      try { android_shared_image_smoke(); LOG("[vulkan] two-device shared image shader probe passed"); }
+      catch(const std::exception& error) { LOG("[vulkan] two-device shared image shader probe failed: %s",error.what()); }
+    }
+    if (value == "lose_query") { R.secondaryInjectQueryLoss=true;R.drc.resize=true; }
+    if (value == "lose_primary_query") { R.primaryInjectQueryLoss=true; R.tv.resize=true; }
+    if (value == "acquire1") R.secondaryAcquireHeld=true;
+    if (value == "acquire0") R.secondaryAcquireHeld=false;
+    if (value == "timestamps0") R.gpuTimestampsEnabled=false;
+    if (value == "resize_primary") R.tv.resize=true;
+    if (value.size()==5 && value.starts_with("mode") && value[4]>='0' && value[4]<'0'+gfx::kDrcModeCount)
+      hostui::set_drc_mode(value[4]-'0');
+    if (value == "secondary_profile1") R.secondaryProfile=true;
+    if (value == "secondary_profile0") R.secondaryProfile=false;
+    if (value == "timing_reset") {
+      primaryIntervals.clear();swapCosts.clear();lastPrimary={};
+      lastPrimaryCount=R.tv.presented.load();++timingEpoch;timingStarted=std::chrono::steady_clock::now();
+    }
+    std::filesystem::remove(commandPath);
+    if(value=="exit_smoke")break;
+   }
+   // Authored moving color patterns: red TV, blue GamePad. No guest assets.
+   float pulse = .5f + float(R.frame % 60) / 120.0f;
+   const float tv[4] = {pulse, 0, 0, 1}, drc[4] = {0, 0, pulse, 1};
+   clear_image(*R.tv.scan, tv); clear_image(*R.drc.scan, drc);
+   const auto swapStarted=std::chrono::steady_clock::now();
+   swap();
+   auto now = std::chrono::steady_clock::now();
+   if(R.tv.presented.load()!=lastPrimaryCount) {
+    if(lastPrimary!=std::chrono::steady_clock::time_point{})
+      primaryIntervals.push_back(std::chrono::duration<double,std::milli>(now-lastPrimary).count());
+    swapCosts.push_back(std::chrono::duration<double,std::milli>(now-swapStarted).count());
+    lastPrimary=now;lastPrimaryCount=R.tv.presented.load();
+   }
+   if (now - report >= std::chrono::milliseconds(100)) {
+    input::PadState pad = input::read();
+    const auto intervals=summary(primaryIntervals),costs=summary(swapCosts);
+    const SDL_DisplayMode* mode=SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(R.tv.window));
+    std::ofstream out(temporary, std::ios::trunc);
+    out << "{\"secondary_stage_cpu\":[";
+    for(size_t i=0;i<R.secondaryStageNs.size();++i) {
+      if(i)out << ',';
+      out << "{\"stage\":\"" << secondaryStageNames[i] << "\",\"ns\":" << R.secondaryStageNs[i].load() << ",\"calls\":" << R.secondaryStageCalls[i].load() << '}';
+    }
+    out << "]";
+    out << ",\"primary_presented\":" << R.tv.presented.load()
+        << ",\"primary_surface_losses\":" << R.primarySurfaceLosses.load()
+        << ",\"primary_swapchains\":" << R.tv.swapchainGeneration
+        << ",\"secondary_presented\":" << R.drc.presented.load()
+        << ",\"timing_epoch\":" << timingEpoch
+        << ",\"timing_duration_ms\":" << std::chrono::duration<double,std::milli>(now-timingStarted).count()
+        << ",\"primary_interval_samples\":" << primaryIntervals.size()
+        << ",\"primary_intervals_ms\":{\"p50\":" << intervals[0] << ",\"p95\":" << intervals[1]
+        << ",\"p99\":" << intervals[2] << ",\"max\":" << intervals[3] << "}"
+        << ",\"swap_cpu_ms\":{\"p50\":" << costs[0] << ",\"p95\":" << costs[1]
+        << ",\"p99\":" << costs[2] << ",\"max\":" << costs[3] << "}"
+        << ",\"gpu_timestamps_enabled\":" << (R.gpuTimestampsEnabled ? "true" : "false")
+        << ",\"gpu_submission_intervals_ns\":" << R.gpuTimestampLifetimeStats.intervalNs
+        << ",\"gpu_submission_samples\":" << R.gpuTimestampLifetimeStats.submissions
+        << ",\"drc_mode\":" << gfx::g_mode
+        << ",\"primary_present_mode\":" << R.tv.presentMode
+        << ",\"secondary_present_mode\":" << R.drc.presentMode
+        << ",\"primary_refresh_hz\":" << (mode ? mode->refresh_rate : 0)
+        << ",\"secondary_width\":" << R.drc.width.load() << ",\"secondary_height\":" << R.drc.height.load()
+        << ",\"secondary_fence_retirement\":" << (R.secondaryPresentFences ? "true" : "false")
+        << ",\"primary_requested_queues\":" << R.primaryRequestedQueues
+        << ",\"secondary_device_swapchains\":" << R.secondaryDeviceSwapchains.load()
+        << ",\"secondary_shared_snapshots\":" << R.secondarySharedSnapshots.load()
+        << ",\"secondary_local_queue_waits\":" << R.secondaryLocalQueueWaits.load()
+        << ",\"secondary_shared_general\":" << (R.secondaryIsolated && getenv("WWHD_VK_SHARED_GENERAL") && !strcmp(getenv("WWHD_VK_SHARED_GENERAL"),"1") ? "true" : "false")
+        << ",\"secondary_isolated_device\":" << (R.secondaryIsolated ? "true" : "false")
+        << ",\"secondary_present_worker\":" << (R.secondaryQueue ? "true" : "false")
+        << ",\"primary_queue_family\":" << R.queueFamily
+        << ",\"secondary_queue_family\":" << R.secondaryQueueFamily
+        << ",\"secondary_present_held\":" << (R.secondaryPresentHeld.load() ? "true" : "false")
+        << ",\"secondary_present_pending\":" << (R.secondaryPresentPending ? "true" : "false")
+        << ",\"secondary_acquire_waiting\":" << (R.secondaryAcquireWaiting.load() ? "true" : "false")
+        << ",\"secondary_acquire_held\":" << (R.secondaryAcquireHeld.load() ? "true" : "false")
+        << ",\"secondary_acquire_pending\":" << (R.secondaryAcquirePending ? "true" : "false")
+        << ",\"secondary_surface_losses\":" << R.secondarySurfaceLosses.load()
+        << ",\"secondary_present_skipped\":" << R.secondaryPresentSkipped.load()
+        << ",\"secondary_retirement_held\":" << (R.secondaryRetirementHeld ? "true" : "false")
+        << ",\"secondary_idle_waits\":" << R.secondaryIdleWaits.load()
+        << ",\"secondary_retired\":" << R.secondaryRetired.load()
+        << ",\"secondary_retirement_pending\":" << R.secondaryRetirementPending.load()
+        << ",\"dual\":" << (gfx::g_has_drc_window ? "true" : "false")
+        << ",\"swap_requested\":" << (dual_display::requested_swap ? "true" : "false")
+        << ",\"swap_active\":" << (dual_display::active_swap ? "true" : "false")
+        << ",\"scale_filter\":" << hostui::scale_filter()
+        << ",\"primary_width\":" << R.tv.width.load() << ",\"primary_height\":" << R.tv.height.load()
+        << ",\"touch_events_seen\":" << touchEventsSeen
+        << ",\"touch_events_handled\":" << touchEventsHandled
+        << ",\"touch\":" << (pad.touch ? "true" : "false")
+        << ",\"tx\":" << pad.tx << ",\"ty\":" << pad.ty << "}\n";
+    out.close();
+    require(bool(out), "cannot write display smoke metrics");
+    std::filesystem::rename(temporary, metrics);
+    report = now;
+   }
+   SDL_Delay(16);
+  }
+  wait_idle();
+  LOG("[display smoke] completed synthetic display session");
+  return 0;
+ } catch (const std::exception& error) {
+  LOG("[display smoke] FAIL: %s", error.what());
+  return 1;
+ }
+}
+#endif
+
 int renderer_smoke_test() {
  try {
   // Test-only calibration: CI requires the layer to report this intentional WAW.
@@ -673,6 +917,7 @@ int renderer_smoke_test() {
    for(size_t i=0;i<stencils.size();++i){float value;memcpy(&value,depths.data()+i*4,4);require(value==0.25f&&stencils[i]==0xa5,"depth/stencil clear differs");}
    fprintf(stderr,"[renderer smoke] depth/stencil upload and clear passed\n");
    depth_copy_check();
+   colour_comparison_check();
    {
     auto peek=std::make_unique<Surface>();
     peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);

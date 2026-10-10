@@ -1,10 +1,11 @@
+#include "../game_clock.h"
 // snd_core (AX): voices, the 3 ms audio frame, mixing and output.
 //
 // Every frame (96 samples at 32 kHz) each playing voice is decoded (ADPCM/PCM16/PCM8),
 // resampled, run through its volume envelope and filters and mixed into the buses (main + 3 aux)
 // of two devices: the TV and the (first) GamePad, each with its own device mix per voice. The
 // game's aux effects (reverb...) and final-mix callbacks run on each device's result, which is
-// upsampled to 48 kHz and sent to the host as stereo: the TV, or in Off-TV Play (the game moves
+// upsampled to 48 kHz and sent to the host as stereo or discrete 5.1: the TV, or in Off-TV Play (the game moves
 // its sound to the GamePad) TV + GamePad (audio_output_mode.h).
 // Behaviour follows Cemu's snd_core (ax_mix.cpp, ax_ist.cpp, ax_aux.cpp).
 #include "../platform/host.h"
@@ -21,6 +22,7 @@
 #include "../audio_output_mode.h"
 #include "guest_addr.h"
 #include "../audio_out.h"
+#include "../audio_channels.h"
 #include "../runtime.h"
 
 namespace interp { const char* phase_name(); }
@@ -313,7 +315,7 @@ float g_up_hist[kTvChannels] = {};
 uint32_t g_drc_aux[2][kAuxBuses] = {};
 int g_drc_aux_idle[kAuxBuses] = {};  // frames without GamePad aux input (the effect is skipped)
 float g_drc_up_hist[kDrcChannels] = {};
-float g_post_hist[2][2] = {};  // upsampling after the final mix: [device][L/R]
+float g_post_hist[2][kTvChannels] = {};  // upsampling after the final mix: [device][AX channel]
 
 void init_buffers() {
     for (auto& f : G.aux)
@@ -486,9 +488,9 @@ int final_mix_input(const int32_t (*in)[kSamples], int channels, uint32_t data, 
     return n;
 }
 
-// a device's front left/right after its final mix, at 48 kHz
-void final_mix_lr(uint32_t data, int n, float* hist, int32_t lr[2][kSamples48]) {
-    for (int ch = 0; ch < 2; ch++) {
+// A device's requested channels after its final mix, at 48 kHz.
+void final_mix_lr(uint32_t data, int n, float* hist, int32_t lr[][kSamples48], int channels = 2) {
+    for (int ch = 0; ch < channels; ch++) {
         if (n == kSamples48) {
             for (int i = 0; i < kSamples48; i++) lr[ch][i] = (int32_t)ld32(data + 4 * (ch * n + i));
         } else {
@@ -511,16 +513,26 @@ void output_frame(Cpu* c) {
     memset(mem::ptr(G.drc48 + 4 * kDrcChannels * n_drc), 0, 4 * kDrcChannels * n_drc);
     call_final_mix(c, 1, G.drc_param, G.drc_ptrs, G.drc48, kDrcChannels, 2, n_drc);
 
-    // stereo out at 48 kHz (both devices are in stereo mode: front left/right): the TV, plus the
-    // GamePad in Off-TV Play (audio_output_mode.h)
-    int32_t tv_lr[2][kSamples48], drc_lr[2][kSamples48], lr[2][kSamples48];
-    final_mix_lr(G.tv48, n_tv, g_post_hist[0], tv_lr);
+    const int channels = audio::channels();
+    int32_t tv_lr[kTvChannels][kSamples48], drc_lr[2][kSamples48], lr[2][kSamples48];
+    final_mix_lr(G.tv48, n_tv, g_post_hist[0], tv_lr, channels);
     final_mix_lr(G.drc48, n_drc, g_post_hist[1], drc_lr);
-    g_output.mix(tv_lr[0], tv_lr[1], drc_lr[0], drc_lr[1], kSamples48, lr[0], lr[1]);
-    int16_t pcm[kSamples48 * 2];
-    for (int i = 0; i < kSamples48; i++) {
-        pcm[i * 2] = (int16_t)std::clamp(lr[0][i], -32768, 32767);
-        pcm[i * 2 + 1] = (int16_t)std::clamp(lr[1][i], -32768, 32767);
+    int16_t pcm[kSamples48 * kTvChannels];
+    if (channels == 2) {
+        // Preserve the original stereo path, including its rounding and fader rules.
+        g_output.mix(tv_lr[0], tv_lr[1], drc_lr[0], drc_lr[1], kSamples48, lr[0], lr[1]);
+        for (int i = 0; i < kSamples48; ++i)
+            for (int ch = 0; ch < 2; ++ch)
+                pcm[i * 2 + ch] = int16_t(std::clamp(lr[ch][i], -32768, 32767));
+    } else {
+        for (int i = 0; i < kSamples48; ++i) {
+            int32_t ax[kTvChannels];
+            for (int ch = 0; ch < kTvChannels; ++ch)
+                ax[ch] = tv_lr[ch][i];
+            for (int ch = 0; ch < kTvChannels; ++ch)
+                pcm[i * kTvChannels + ch] =
+                    audio::tv_sample(ax, ch, g_output.play_tv, ch < 2 ? drc_lr[ch][i] : 0, g_output.play_drc);
+        }
     }
     audio::push(pcm, kSamples48);
 }
@@ -534,7 +546,7 @@ void frame_thread() {
         // pace frames by the device: run slightly faster/slower to keep ~40 ms queued
         double level = (double)(audio::buffered_frames() - audio::target_frames()) / audio::target_frames();
         double stretch = 1.0 + std::clamp(level * 0.05, -0.05, 0.05);
-        next += std::chrono::microseconds((int64_t)(3000 * stretch));
+        next += std::chrono::microseconds((int64_t)(3000 * stretch / game_clock::rate()));
         threads::service_begin();  // a save state waits until the frame is done (voices, callbacks)
         {
             std::lock_guard<std::mutex> lk(g_ax_mutex);
@@ -586,13 +598,34 @@ void ax_ss_save(ss::Writer& w) {
     w.pod(G);
     w.u32((uint32_t)g_aux_frame);
     w.pod(g_drc);  // added later: states without it load with a silent GamePad mix
+    w.u8(audio::channels()); // cached guest mixer modes must match the host session
 }
 bool ax_ss_check(ss::Reader r, std::string& why) {
     bool running = r.u8();
     uint32_t base = r.u32();
     if (running && !g_running) { why = "audio is not initialized yet"; return false; }
     if (running && base != g_vpb_base) { why = "audio voices live elsewhere in this session"; return false; }
-    return r.ok;
+    uint32_t voices = r.u32();
+    if (voices > kMaxVoices) {
+        why = "invalid audio voice count";
+        return false;
+    }
+    r.bytes(nullptr, voices * sizeof(Voice) + sizeof(g_app_frame_cb) + sizeof(g_final_mix_cb) + sizeof(g_aux_cb) +
+                         sizeof(g_aux_user) + sizeof(g_aux_return) + sizeof(g_upsample_stage) + sizeof(G) +
+                         sizeof(uint32_t));
+    if (!r.at_end())
+        r.bytes(nullptr, sizeof(DrcState));
+    int saved_channels = r.at_end() ? 2 : r.u8(); // legacy full states were always stereo
+    if (!r.ok || !r.at_end() || (saved_channels != 2 && saved_channels != 6)) {
+        why = "invalid audio state";
+        return false;
+    }
+    if (saved_channels != audio::channels()) {
+        why = std::string("Full save state uses ") + (saved_channels == 6 ? "Surround 5.1" : "Stereo") +
+              " speakers. Restart with that setting, or load a normal save / portable state.";
+        return false;
+    }
+    return true;
 }
 void ax_ss_load(ss::Reader& r) {
     std::lock_guard<std::mutex> lk(g_ax_mutex);
@@ -612,6 +645,7 @@ void ax_ss_load(ss::Reader& r) {
     g_aux_frame = (int)r.u32() & 1;
     g_drc = DrcState{{}, {}, {}, {0x8000, 0x8000, 0x8000}};
     if (!r.at_end()) g_drc = r.pod<DrcState>();
+    if (!r.at_end()) r.u8(); // mode was validated before restoring guest memory
     memset(g_up_hist, 0, sizeof g_up_hist);
     memset(g_drc_up_hist, 0, sizeof g_drc_up_hist);
     memset(g_post_hist, 0, sizeof g_post_hist);
@@ -686,7 +720,15 @@ HLE(snd_core, AXSetAuxReturnVolume) {
     }
     ret(c, 0);
 }
-HLE(snd_core, AXGetDeviceMode) { if (arg(c, 1)) st32(arg(c, 1), 0); ret(c, 0); }  // stereo
+HLE(snd_core, AXGetDeviceMode) {
+    audio::init(); // capability negotiation must precede the game's mode queries
+    const uint32_t mode = arg(c, 0) == 0 && audio::channels() == 6 ? 3 : 0; // AX_MODE_6CH / STEREO
+    if (arg(c, 1))
+        st32(arg(c, 1), mode);
+    if (getenv("WWHD_AUDIO_MODE_TRACE"))
+        LOG("[ax] device %u mode %u caller %08x", arg(c, 0), mode, c->lr);
+    ret(c, 0);
+}
 HLE(snd_core, AXSetDeviceUpsampleStage) {
     if (arg(c, 0) < 3) g_upsample_stage[arg(c, 0)] = arg(c, 1);
     ret(c, 0);

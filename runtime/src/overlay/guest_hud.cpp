@@ -34,6 +34,8 @@ void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* outp
         auto a=point(command.x,command.y),b=point(command.x+command.w,command.y+command.h);
         auto rgba=color(command.rgba);
         switch(command.kind) {
+        case Command::ClipPush:output->PushClipRect(a,b,true);break;
+        case Command::ClipPop:output->PopClipRect();break;
         case Command::Rect:output->AddRectFilled(a,b,rgba);break;
         case Command::RectOutline:output->AddRect(a,b,rgba,0,command.thickness*scale,0);break;
         case Command::Circle:output->AddCircleFilled(a,command.size*scale,rgba,32);break;

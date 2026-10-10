@@ -2,6 +2,7 @@
 // code (menu.mm, display.mm), so the overlay and the menus change the same state; and the overlay's
 // mouse input from the TV window.
 #import <AppKit/AppKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include "../input.h"
 #include "../overlay/hostui.h"
@@ -39,6 +40,21 @@ void choose_mod_source(bool folder, std::function<void(std::string)> chosen) {
     post([folder, chosen] {
         NSOpenPanel* panel = [NSOpenPanel openPanel];
         panel.title = folder ? @"Choose mod folder" : @"Choose mod package";
+        panel.canChooseDirectories = folder;
+        panel.canChooseFiles = !folder;
+        panel.allowsMultipleSelection = NO;
+        [panel beginWithCompletionHandler:^(NSModalResponse result) {
+            if (result == NSModalResponseOK) chosen(std::string(panel.URL.path.UTF8String));
+        }];
+    });
+}
+void choose_game_source(bool folder, std::function<void(std::string)> chosen) {
+    post([folder, chosen] {
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.title = folder ? @"Choose extracted GameCube game folder" : @"Choose GameCube disc image";
+        if (!folder) panel.allowedContentTypes = @[[UTType typeWithFilenameExtension:@"iso"],
+                                                  [UTType typeWithFilenameExtension:@"gcm"],
+                                                  [UTType typeWithFilenameExtension:@"rvz"]];
         panel.canChooseDirectories = folder;
         panel.canChooseFiles = !folder;
         panel.allowsMultipleSelection = NO;

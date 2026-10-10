@@ -491,7 +491,10 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
                          uint64_t frame) {
     test_touch(frame);
     if (have_drc) g_drc_aspect = pw / ph;
-    bool pip = (g_mode == kDrcPip || g_mode == kDrcAuto) && pip_shown_now() && have_drc;
+    // Preserve a requested separate-window mode across display removal. Until
+    // that window returns, keep the GamePad accessible in the primary picture.
+    bool window_fallback = g_mode == kDrcWindow && !g_has_drc_window && g_shown;
+    bool pip = ((g_mode == kDrcPip || g_mode == kDrcAuto) && pip_shown_now() || window_fallback) && have_drc;
     bool drc_only = g_mode == kDrcGamePad && have_drc;
     float dw = 0, dh = 0;
     bool sim = sim_screen(&dw, &dh);

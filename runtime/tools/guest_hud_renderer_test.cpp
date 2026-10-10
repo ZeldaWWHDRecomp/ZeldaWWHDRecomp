@@ -100,5 +100,41 @@ int main() {
     assert(std::abs(draw->CmdLists[0]->VtxBuffer[0].pos.x-630)<.01f);
     assert(draw->CmdLists[0]->VtxBuffer[0].pos.y==10);
     store.reset();overlay::guesthud::backend_destroyed();
+    // Nested clipping changes scissor rectangles, never image geometry/UVs.
+    io.DisplaySize=ImVec2(1280,720);io.DisplayFramebufferScale=ImVec2(1,1);
+    overlay::guesthud::set_tv_region(0,0,1280,720,true);
+    image=store.create_image("clip-a",1,1,4,pixel,4);list=store.begin("clip-a",0);
+    rect={};rect.kind=guestmods::hud::Command::ClipPush;rect.x=10;rect.y=20;rect.w=100;rect.h=80;
+    assert(store.append("clip-a",list,rect));
+    rect.x=20;rect.y=30;rect.w=120;rect.h=90;assert(store.append("clip-a",list,rect));
+    rect={};rect.x=10;rect.y=20;rect.w=40;rect.h=20;rect.rotation=3.14159265359f/2;
+    assert(store.picture("clip-a",list,image,rect));
+    rect={};rect.kind=guestmods::hud::Command::ClipPop;assert(store.append("clip-a",list,rect));
+    assert(store.append("clip-a",list,rect));assert(store.commit("clip-a",list));
+    auto following=store.begin("clip-b",0);rect={};rect.x=0;rect.y=0;rect.w=5;rect.h=5;
+    assert(store.append("clip-b",following,rect)&&store.commit("clip-b",following));
+    ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();draw=ImGui::GetDrawData();
+    bool nested=false,restored=false;
+    for(auto* commands:draw->CmdLists)for(const auto& cmd:commands->CmdBuffer)if(cmd.ElemCount) {
+        if(cmd.ClipRect.x==20&&cmd.ClipRect.y==30&&cmd.ClipRect.z==110&&cmd.ClipRect.w==100)nested=true;
+        if(cmd.ClipRect.x==0&&cmd.ClipRect.y==0&&cmd.ClipRect.z==1280&&cmd.ClipRect.w==720)restored=true;
+    }
+    assert(nested&&restored); // second owner's list cannot inherit the first clip
+    const auto& unchanged=draw->CmdLists[0]->VtxBuffer[0];
+    assert(std::abs(unchanged.pos.x-40)<.001f&&std::abs(unchanged.pos.y-10)<.001f);
+    assert(unchanged.uv.x==0&&unchanged.uv.y==0);
+    store.reset();overlay::guesthud::backend_destroyed();
+    // DRC region copies scale clip rectangles along with their vertices.
+    list=store.begin("clip-drc",1);rect={};rect.kind=guestmods::hud::Command::ClipPush;
+    rect.x=10;rect.y=20;rect.w=100;rect.h=80;assert(store.append("clip-drc",list,rect));
+    rect={};rect.w=200;rect.h=200;assert(store.append("clip-drc",list,rect));
+    rect.kind=guestmods::hud::Command::ClipPop;assert(store.append("clip-drc",list,rect));
+    assert(store.commit("clip-drc",list));
+    ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();
+    drc=overlay::guesthud::gamepad_region(1920,1080,100,200,427,240,1);assert(drc);
+    bool scaled_clip=false;
+    for(const auto& cmd:drc->CmdLists[0]->CmdBuffer)if(cmd.ElemCount)
+        scaled_clip|=cmd.ClipRect.x==105&&cmd.ClipRect.y==210&&cmd.ClipRect.z==155&&cmd.ClipRect.w==250;
+    assert(scaled_clip);store.reset();overlay::guesthud::backend_destroyed();
     ImGui::DestroyContext();
 }

@@ -7,6 +7,177 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Faster game code: about a quarter less CPU time in the game's own code** (PR #83, thanks
+  @depende3000). The recompiler now keeps the game's registers in local variables, stores only the
+  condition bits that are read later, and uses cheaper float compares. Measured per game step: −28 % on
+  an Apple Silicon Mac, −14.5 % on a Galaxy S25 Ultra. Setup takes about 20 seconds longer to
+  generate the game code. With code mods switched on, the game code stays as before for now.
+
+- **Fixed: Cemu graphics packs that write their title IDs without leading zeros were refused** (issue
+  #123), e.g. the "Playstation UI" pack (`titleIds = 5000010143600`). The IDs are now compared as
+  numbers, the way Cemu reads them.
+
+- **Run/swim speed: a reworked boost** (PR #133, thanks @mhbxyz). Separate multipliers for running
+  (1.5x by default) and swimming (1.25x), hold or toggle, and a stamina bar: a boost lasts 5 s by
+  default and refills over a 3 s cooldown (set stamina to 0 for the old unlimited boost). A ring under
+  the climb wheel shows it. The boost ramps in, and Link's legs keep up with the ground instead of
+  skating (true 60 included). Options in Mods > Run/swim speed: use the dash clip instead of walking,
+  or a sprint pose with a forward lean and wider arm swing. Boosted runs kick up dust, and a boosted
+  surface swim becomes a crawl with splashes and foam, all with the game's own effects. Saved settings
+  carry over.
+
+- **Fixed: setup's last screen briefly asked about the shortcut again after Play** (PR #130, thanks
+  @rhemfur). Once Play or Quit is pressed, the screen shows "Starting the game..." instead of the
+  options; what you had chosen is still done.
+
+- **Windows on ARM: a native `windows-arm64` release** (PR #131, thanks @rhemfur), for Snapdragon X
+  laptops and other ARM PCs. 60 fps keeps the game at full speed there by default ("Keep game speed",
+  as on Android). The x86-64 release still runs on these PCs too, emulated.
+
+## v0.2.12
+
+- **Android: the app is now part of every release and development build.** Download
+  `WindWakerHD-<version>-android-arm64.apk` (x86_64 for emulators and Chromebooks), install it, choose
+  your game, and setup builds the game on the phone. The APK contains no game code. It is signed with the
+  project's key (certificate SHA-256 `7F:F6:D3:5E:…:B2:13`, full value in the release notes), so later
+  versions install as updates.
+
+- **Mods: one-click setup.** Tick a mod (or press **Set up**), confirm once, and its setup runs by
+  itself: for example the GameCube sea minimap prepares its island maps and builds itself, then turns
+  on. If the game code first needs code-mod support, the game rebuilds and restarts and the setup
+  continues afterwards. If a step fails: **Show details** and **Try again**. Changed packages ask for
+  confirmation again.
+
+- **Menu and on-screen keyboard: confirm and cancel like in the game** (PR #118, thanks @rhemfur). With
+  the default face-button preset (by position) the right button confirms and the bottom one goes back,
+  as in the game; the on-screen keyboard types with the game's A and deletes with B. "By label" and
+  "Automatic" are followed too.
+- **Android player guide** in English, Portuguese and Spanish (PR #122, thanks @rhemfur):
+  [docs/android.md](docs/android.md).
+
+- **Diagnostics for menu input problems** (issue #111): `WWHD_OVERLAY_TRACE=1` logs what the settings
+  menu receives from the controller and every scroll change; `WWHD_OVERLAY_MOUSE_HANDOFF=0` turns the
+  mouse takeover off for such a test. Steps in [docs/overlay-controls.md](docs/overlay-controls.md).
+
+- **Mods tab: installed catalogue mods show where their setup stands.** Each step reads "Done" or
+  "To do" (for example the GameCube game step is done once you set it), with a **Go to setup** button
+  that jumps to the mod's setup; "Up to date" replaces the greyed-out Update button.
+
+- **Fixed: the game didn't start with a content mod (for example a translation) in the development
+  builds** (issue #109). The mod manager switched the replacement files on twice at startup and stopped
+  with "Content overrides already activated". Content mods and code mods now start together as they should.
+
+- **Bug reports: the log now lists every connected controller** (name, vendor and product ID, type),
+  on connect and disconnect. The game combines all controllers Windows/Linux report, so this shows
+  when a second device (e.g. Steam Input's virtual controller) is also sending input.
+
+- **Android: set up the game directly on the phone, no PC needed** (PR #98, tested by @rhemfur).
+  Choose your game (an extracted folder, a WUA or a WUD/WUX), and the phone translates and compiles the
+  game code itself (several minutes; up to 4 compiler workers depending on the phone), with a progress
+  display. Setup pauses when the phone gets too warm or the battery is low, and resumes where it
+  stopped. Also new: the GamePad picture on a second screen (foldables, external displays).
+
+- **Mods: one setting for the GameCube version of the game.** Settings → Mods → **GameCube game for
+  mods**: choose your GameCube Wind Waker disc image or folder once (it shows the recognised region),
+  and every mod that needs it uses it. A mod whose copy is missing can't be enabled and offers a
+  button to that setting. Changing the copy marks the affected mods for setup again (prepared files
+  are kept).
+
+- **Android: on-screen controls** (PR #88, thanks @rhemfur). Phones without a controller can now
+  play: the 🎮 button under the view button (top left) shows or hides two sticks, the D-pad,
+  A B X Y, L R, ZL ZR and + − (remembered). They act like a controller, so the button mapping and a
+  physical controller keep working; with a controller connected they hide until you touch the screen.
+
+- **Controls: an Automatic face-button preset** (PR #102, thanks @mhbxyz). It reads the labels
+  printed on the pad that was plugged in first and follows them, so an Xbox or PlayStation pad plays
+  by label and a Nintendo pad by position, without touching the setting.
+
+- **Mods tab: a "Reset to default" button for the catalogue address.** It puts back the official
+  mod catalogue if the address was changed. Download errors now also show the server's status code
+  (for example "HTTP 404"), so a wrong address is easier to tell apart from a connection problem.
+
+- **Setup can now build with code-mod support right away.** A new "Build with code-mod support"
+  option (off by default) saves the second rebuild when you want code mods. Updates and repairs keep
+  your choice, and Settings → Mods shows it immediately. Details:
+  [docs/setup-code-mods.md](docs/setup-code-mods.md).
+
+- **Fixed: the settings menu scrolled back up after the left stick had been used** (issue #111).
+  A left stick that rests slightly off-centre kept scrolling the menu, even while you scrolled with
+  the mouse. Now the mouse takes over as soon as you move, click, scroll or drag the scroll bar; the
+  controller takes over again with its next new input. Controls:
+  [docs/overlay-controls.md](docs/overlay-controls.md).
+
+- **Fixed: in development builds every catalogue mod showed "Unavailable for this port version"**.
+  Development builds now carry the last release's version plus the commit (for example
+  `v0.2.11-devel.1a2b3c4d`), so the catalogue can check compatibility.
+
+- **macOS: the game has its icon again.** Setup now gives the installed app the game's own icon,
+  made from your game files (the release can't ship it), and the game shows it in the Dock while it
+  runs. Existing installations get it with the next update or repair.
+- **macOS: Vulkan is now included in the release.** Pick it in Graphics > Renderer; nothing to
+  install. The Vulkan loader and MoltenVK come with the game and are always the ones it uses (never a
+  Homebrew copy). Metal stays the default, and if Vulkan can't start, the game falls back to Metal
+  and says why. This also makes Cemu graphics packs with GLSL shaders usable on the Mac.
+
+
+- **5.1 surround sound** (issue #115). Settings → Audio → Speakers: **Surround 5.1** (restart after
+  changing it) sends the game's six separate surround channels, as the Wii U does with its Surround
+  TV setting. **Test speakers** plays a tone on each speaker in turn and names it, so the wiring is
+  easy to check. Stereo stays the default; if the output can't do 5.1, the game stays in stereo and
+  says so. Details: [docs/surround-audio.md](docs/surround-audio.md).
+- **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
+  catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
+  now work on all platforms; on Android the on-screen keyboard opens for these fields.
+- **Cemu graphics packs that conflict can no longer both be switched on** (issue #68). The Mods tab
+  shows "Conflicts with …" before you enable a pack; enabling it asks whether to switch (the other
+  pack is turned off). Each pack shows what is active now and what changes after a restart, with a
+  **Restart now** button. Profiles that had two conflicting packs on are repaired once, with a note.
+- **Fixed: with Fast scene changes on, Grandma kept her back to Link when handing over the shield**
+  (issue #116, found and fixed by GreenNaugahyde). The mod no longer creates the new scene's
+  characters ahead of time; fades and scene changes stay almost as fast.
+- **Fixed: crash when entering the Puppet Ganon room** (issue #90, Vulkan). The room uses a colour
+  texture for a depth comparison, which the Vulkan renderer didn't support, so it stopped with an error.
+  It now handles it. Such internal errors are also no longer lost: they are written to the log and
+  the crash log with their message before the game stops, also on Windows. After updating, setup
+  compiles the game code once more.
+- **The mouse pointer now hides when you don't use the mouse** (issue #109). After 2 seconds without
+  mouse movement it disappears from the game window, in full screen and in a window, on Windows,
+  Linux and macOS; moving the mouse shows it again. It stays visible while the settings overlay is open.
+- **Fixed: the aspect ratio wasn't remembered** (issue #108). The choice in Settings → Graphics →
+  Aspect ratio (or the macOS menu) now stays after a restart, like the other graphics options.
+  `WWHD_ASPECT` still overrides it.
+- **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams
+  per mod, mixed into the game's audio and following its volume and mute (and fast forward). The
+  dragon example mod uses it for its melody. Mods without audio don't change anything.
+
+- **Fixed: the settings overlay scrolled by itself, and B closed it while assigning a button** (issue
+  #111). A drifting controller stick no longer scrolls the menu: the right stick no longer scrolls
+  it at all (the D-pad, left stick and mouse wheel do), and the left stick has a dead zone there.
+  Assigning B to a control no longer also closes the overlay.
+- **Mod SDK v2: more for code mods.** New public declarations (actor profiles, save inventory,
+  animation, matrix emitters, flight position and lighting, song handling) and HUD clipping, used by
+  the two example mods in the mod repository: a GameCube-style minimap and the Valoo dragon ride.
+- **Setup now uses Python 3.14** (bundled on Windows, downloaded on Linux and macOS as before). Mod
+  setup steps can now read GameCube disc images in RVZ format, not only ISO.
+
+- **Setup: more reliable compiler download** (issue #113). If the download of the compiler (about
+  190 MB on Windows) is interrupted, setup now retries and resumes where it stopped instead of failing.
+  If it still can't download it, you can download the file in your browser and put it in the Wind Waker
+  HD folder: setup checks it and uses it. On Windows, when the secure connection can't be verified
+  ("unable to get local issuer certificate", usually a root certificate Windows hasn't fetched yet),
+  setup now downloads with Windows' own curl instead.
+- **Fixed: the boat's sail fluttered too fast at 60, 120 and 240 fps** (issue #68). The sail cloth was
+  drawn with its exact pose against the in-between camera, which added an extra jump on every
+  in-between frame. Its drawing is now interpolated, and so are the other cloth pieces drawn the same
+  way: pirate sails and skull flags, fortress flags, buoy flags and their poles, and capes such as
+  Phantom Ganon's. 30 fps is unchanged.
+- **New Gameplay mod: fast forward cutscenes and dialogue** (off by default; Settings → Gameplay).
+  Hold ZR during a cutscene or a conversation and the game runs 2×, 3× or 4× faster (your choice; the
+  button can be changed). Nothing is skipped: the game plays every frame, only faster, so the story
+  and events end exactly as without it. Questions still wait for your answer, holding the button in
+  normal play does nothing, and letting go returns to your frame rate setting. Sound is muted while
+  fast-forwarding (it would play sped up); that can be turned off. Idea and clock from
+  GreenNaugahyde's Android fork.
 - **Performance overlay: GPU, driver and per-thread timing.** Settings → Graphics → Performance
   overlay now also shows the GPU and its driver, the CPU time of the game and render threads and the
   GPU time per frame (each with its average), so you can see at a glance whether the CPU or the GPU

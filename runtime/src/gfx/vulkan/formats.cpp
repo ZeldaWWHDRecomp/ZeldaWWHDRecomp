@@ -82,6 +82,16 @@ FormatInfo format_info(uint32_t fmt, bool isDepth) {
     return f;
 }
 
+FormatInfo comparison_format_info(uint32_t fmt) {
+    auto f = format_info(fmt, true);
+    if (f.pixel != VK_FORMAT_UNDEFINED) return f;
+    if (fmt == 0x1A) { // RGBA8 UNORM; comparison reads the normalized red component
+        f = make(VK_FORMAT_D32_SFLOAT, 4, FormatInfo::FLOAT, Convert::RGBA8_DEPTH);
+        f.depth = true;
+    }
+    return f;
+}
+
 static inline uint8_t ex5(uint32_t v) { return (uint8_t)((v << 3) | (v >> 2)); }
 static inline uint8_t ex6(uint32_t v) { return (uint8_t)((v << 2) | (v >> 4)); }
 static inline uint8_t ex4(uint32_t v) { return (uint8_t)((v << 4) | v); }
@@ -89,6 +99,12 @@ static inline uint8_t ex4(uint32_t v) { return (uint8_t)((v << 4) | v); }
 void convert_row(Convert c, const uint8_t* src, uint8_t* dst, uint32_t n) {
     switch (c) {
     case Convert::NONE: break;
+    case Convert::RGBA8_DEPTH:
+        for (uint32_t i = 0; i < n; ++i) {
+            float depth = float(src[4 * i]) / 255.0f;
+            memcpy(dst + 4 * i, &depth, sizeof depth);
+        }
+        break;
     case Convert::RGB565:
         for (uint32_t i = 0; i < n; i++) {
             uint16_t v; memcpy(&v, src + 2 * i, sizeof(v));

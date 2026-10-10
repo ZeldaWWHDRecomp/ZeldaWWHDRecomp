@@ -156,5 +156,27 @@ class Hooks(unittest.TestCase):
                                      % (where, canon, build.name))
 
 
+class NativeBoundaries(unittest.TestCase):
+    def test_hooks_and_sites_use_guarded_calls_in_each_symbol_map(self):
+        from types import SimpleNamespace
+        from recomp import Recompiler
+        for address in (0x1000, 0x2000):
+            compiler = Recompiler.__new__(Recompiler)
+            compiler.p = SimpleNamespace(text_hi=address + 4, word=lambda _: 0x60000000)  # nop
+            compiler.func_end = lambda _: address + 4
+            compiler.hooks = {address}
+            compiler.sites = {address}
+            compiler.mod_hooks = False
+            compiler.imm_override = {}
+            compiler.canon_of = {address: 0x1000}
+            compiler.build = SimpleNamespace(canon_code=lambda a: a)
+            emitted, count = compiler.emit_function(address)
+            self.assertEqual(count, 1)
+            self.assertIn("ppc_host_call(c, hook_00001000)", emitted)
+            self.assertIn("ppc_host_call(c, site_00001000)", emitted)
+            self.assertNotIn("hook_00001000(c)", emitted)
+            self.assertNotIn("site_00001000(c)", emitted)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

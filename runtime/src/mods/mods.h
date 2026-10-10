@@ -7,6 +7,9 @@
 #pragma once
 #include <cstdint>
 
+#include "move_speed.h"  // MoveMode (the run/swim speed mod's public vocabulary)
+#include "fast_forward.h"
+
 struct Cpu;
 namespace input { struct PadState; }
 
@@ -30,12 +33,36 @@ void set_fast_scenes(bool on);
 
 bool move_speed();
 void set_move_speed(bool on);
-float move_speed_factor();
-void set_move_speed_factor(float factor);
+MoveMode move_speed_mode();                      // hold the button, or press it once
+void set_move_speed_mode(MoveMode mode);
+MoveAnim move_speed_anim();                      // native cadence, early dash, or additive sprint pose
+void set_move_speed_anim(MoveAnim anim);
+uint32_t move_boost_anim(uint32_t anm);          // the locomotion clip to use right now (getAnmData)
+float move_speed_land_factor();                  // running (PROC_MOVE)
+void set_move_speed_land_factor(float factor);
+float move_speed_swim_factor();                   // swimming (PROC_SWIM_MOVE)
+void set_move_speed_swim_factor(float factor);
+float move_speed_stamina_seconds();              // seconds of boosting on a full bar; 0 = unlimited
+void set_move_speed_stamina_seconds(float seconds);
+float move_speed_cooldown_seconds();             // wait after the bar empties; 0 = none
+void set_move_speed_cooldown_seconds(float seconds);
 uint32_t move_speed_button();
 void set_move_speed_button(uint32_t button);
 void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps
 float link_move_factor(uint32_t link);
+void move_start_effect(Cpu* c, uint32_t link); // consume a new grounded sprint's one-shot dust burst
+void move_trail_effect(Cpu* c, uint32_t link); // small puffs behind the feet while running under boost
+void move_swim_effect(Cpu* c, uint32_t link);  // splash per arm pull and a foam trail while swimming under boost
+
+// The boost's on-screen bar (Vulkan present.cpp, Metal mod_hud.mm), read from the render thread.
+struct MoveHud {
+    float stamina;    // 0..1
+    float alpha;      // 0 = hidden
+    bool boosted;     // a boost cycle is running (including a forward roll within that cycle)
+    bool swimming;    // ... while swimming: the bar takes its colour
+    bool exhausted;   // out of stamina: the bar is refilling over the cooldown
+};
+MoveHud move_hud();
 
 // ---- input (input.mm) ----
 // called at the end of input::read(): synthetic stick and buttons (mouse camera, R3 pulses)

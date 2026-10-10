@@ -51,6 +51,7 @@ import urllib.request
 import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows embeddable Python runs in isolated mode: it does not add the script
@@ -545,33 +546,223 @@ def load_toolchains():
         return json.load(f)
 
 
-def download(url, dst, sha256, size_hint, label):
-    """Downloads url to dst with a progress bar and checks the SHA-256 before keeping it."""
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def local_copy(name, sha256):
+    """A copy of a download the player saved themselves (issue #113: when setup cannot download it):
+    the file name from the URL, in the release folder or the setup folder, with the expected SHA-256."""
+    for folder in (PKG, HERE):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            if file_sha256(path) == sha256:
+                return path
+            say("  Ignoring %s: it is not the expected file (SHA-256 differs)." % path)
+    return None
+
+
+def download_error(url, e):
+    text = str(e)
+    if "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text:
+        why = ("the secure connection's certificate could not be checked. Either Windows lacks a root certificate "
+               "that it normally fetches on demand, or an antivirus or security program or a proxy intercepts "
+               "HTTPS connections")
+    else:
+        why = "%s." % text.rstrip(".")
+    name = os.path.basename(url.split("?")[0])
+    return SetupError("download failed: %s\nRun setup again (it resumes where it stopped). If it keeps failing, "
+                      "download %s in your browser, put %s in the Wind Waker HD folder and run setup again."
+                      % (why, url, name))
+
+
+DOWNLOAD_ATTEMPTS = 6
+
+
+def windows_curl():
+    """Windows' own curl.exe (Windows 10 1803 and later). It verifies certificates through Windows,
+    which fetches missing root certificates on demand; Python's ssl module only reads the store as it
+    is, so a fresh Windows can fail there with "unable to get local issuer certificate" (issue #113)."""
+    if os.name != "nt":
+        return None
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")
+    return path if os.path.isfile(path) else None
+
+
+def curl_download(curl, url, tmp):
+    """Downloads url to tmp with curl.exe (resuming tmp); True when curl reports success."""
+    say("  Python could not verify the certificate; downloading with Windows' curl instead.")
+    cmd = [curl, "--location", "--fail", "--silent", "--show-error", "--retry", "5", "--continue-at", "-",
+           "--output", tmp, url]
+    return subprocess.run(cmd).returncode == 0
+
+
+def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wait=2.0):
+    """Downloads url to dst with a progress bar and checks the SHA-256 before keeping it. Interrupted
+    downloads are retried and resume where they stopped (HTTP range requests); a copy the player
+    downloaded themselves is used instead when present (local_copy)."""
+    name = os.path.basename(url.split("?")[0])
+    own = local_copy(name, sha256)
+    if own:
+        say("  Using %s" % own)
+        shutil.copyfile(own, dst + ".part")
+        os.replace(dst + ".part", dst)
+        return
     tmp = dst + ".part"
     say("  Downloading %s" % url)
-    h = hashlib.sha256()
-    req = urllib.request.Request(url, headers={"User-Agent": "wwhd-setup"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
-            total = int(r.headers.get("Content-Length") or size_hint or 0)
-            pr = Progress(label)
-            done = 0
-            while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
+    pr = Progress(label)
+    last = None
+    for attempt in range(attempts):
+        have = os.path.getsize(tmp) if os.path.isfile(tmp) else 0
+        headers = {"User-Agent": "wwhd-setup"}
+        if have:
+            headers["Range"] = "bytes=%d-" % have
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                resumed = have and getattr(r, "status", 200) == 206
+                mode = "ab" if resumed else "wb"
+                done = have if resumed else 0
+                length = int(r.headers.get("Content-Length") or 0)
+                total = (done + length) if length else int(size_hint or 0)
+                with open(tmp, mode) as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        pr.update(done, total or done, human(done))
+                if total and done < total:
+                    raise OSError("the connection closed after %s of %s" % (human(done), human(total)))
+            break
+        except OSError as e:  # urllib's errors, timeouts and resets are all OSErrors
+            last = e
+            if getattr(e, "code", None) == 416 and os.path.isfile(tmp):  # a stale or oversized partial file
+                os.remove(tmp)
+            if "CERTIFICATE_VERIFY_FAILED" in str(e):
+                curl = windows_curl()
+                if curl and curl_download(curl, url, tmp):
                     break
-                f.write(chunk)
-                h.update(chunk)
-                done += len(chunk)
-                pr.update(done, total or done, human(done))
-            pr.done(human(done))
-    except OSError as e:
-        raise SetupError("download failed: %s\nCheck your internet connection and run setup again." % e)
-    if h.hexdigest() != sha256:
+                raise download_error(url, e)
+            if attempt == attempts - 1:
+                raise download_error(url, e)
+            say("  Download interrupted (%s); retrying..." % e)
+            time.sleep(wait * (2 ** attempt))
+    pr.done(human(os.path.getsize(tmp)))
+    if file_sha256(tmp) != sha256:
         os.remove(tmp)
         raise SetupError("the download of %s is corrupt or was changed (SHA-256 mismatch); nothing was installed. "
                          "Run setup again; if this repeats, report it." % url)
     os.replace(tmp, dst)
+
+
+def python_setup_capable(executable):
+    """Probe the interpreter itself, including optional compiled stdlib codec support."""
+    try:
+        result = subprocess.run([executable, "-I", "-c",
+                                 "import sys; from compression import zstd; "
+                                 "assert sys.version_info >= (3, 14); "
+                                 "assert zstd.decompress(zstd.compress(b'wwhd')) == b'wwhd'"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def ensure_setup_python(data_dir, prefer_system=True):
+    """Select/provision trusted host Python for guest builds and local setup services.
+
+    The installer owns downloads; guest setup scripts receive no additional capabilities.
+    Windows always uses the release's audited embeddable distribution (issue #58).
+    """
+    if IS_WIN:
+        executable = os.path.join(PKG, "tools", "python", "python.exe")
+        if not python_setup_capable(executable):
+            raise SetupError("The bundled Python lacks Python 3.14 compression.zstd support. "
+                             "Download the current complete Windows release; no Python will be downloaded by setup.")
+        return executable
+    if prefer_system and python_setup_capable(sys.executable):
+        return sys.executable
+    arch = host_arch()
+    if IS_MAC:
+        key = {"aarch64": "macos", "x86_64": "macos-x86_64"}.get(arch)
+    elif IS_LINUX:
+        key = {"aarch64": "linux-aarch64", "x86_64": "linux"}.get(arch)
+    else:
+        key = None
+    if key is None:
+        raise SetupError("No private setup Python is available for this platform/architecture")
+    pin = load_toolchains()["python"][key]
+    root = os.path.join(data_dir, "setup-python")
+    executable = os.path.join(root, "python", "bin", "python3")
+    marker = os.path.join(root, ".wwhd-python")
+    try:
+        with open(marker) as f:
+            current = f.read().strip() == pin["sha256"]
+    except OSError:
+        current = False
+    if current and python_setup_capable(executable):
+        return executable
+    os.makedirs(root, exist_ok=True)
+    archive = os.path.join(root, "download.tar.gz")
+    stage = os.path.join(root, "unpack.tmp")
+    say("  Installing private Python 3.14 for local mod setup (system Python is unchanged).")
+    download(pin["url"], archive, pin["sha256"], pin.get("size"), "setup Python")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    try:
+        # Only the SHA-verified, maintainer-pinned standalone archive reaches extraction.
+        if shutil.which("tar"):
+            run_logged(["tar", "-xf", archive, "-C", stage], what="unpacking setup Python")
+        else:
+            raise SetupError("tar is required to unpack the pinned setup Python")
+        staged = os.path.join(stage, "python", "bin", "python3")
+        if not python_setup_capable(staged):
+            raise SetupError("The pinned Python cannot run compression.zstd on this computer")
+        shutil.rmtree(os.path.join(root, "python"), ignore_errors=True)
+        os.replace(os.path.join(stage, "python"), os.path.join(root, "python"))
+        with open(marker + ".tmp", "w") as f:
+            f.write(pin["sha256"] + "\n")
+        os.replace(marker + ".tmp", marker)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        if os.path.exists(archive):
+            os.remove(archive)
+    return executable
+
+
+def repair_guest_python(data_dir):
+    """Upgrade an existing guest bridge without rebuilding game code or changing its compiler."""
+    path = os.path.join(data_dir, "guest-sdk.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SetupError("No valid guest SDK configuration to repair: %s" % e)
+    if not isinstance(config, dict) or config.get("format_version") not in (1, 2):
+        raise SetupError("Unsupported guest SDK configuration version")
+    executable = ensure_setup_python(data_dir)
+    if config["format_version"] == 2 and PORTABLE and os.path.isabs(executable):
+        for root in (PKG, data_dir):
+            try:
+                inside = os.path.commonpath([os.path.abspath(root), executable]) == os.path.abspath(root)
+            except ValueError:  # another Windows drive
+                inside = False
+            if inside:
+                executable = os.path.relpath(executable, data_dir)
+                if not executable.startswith("."):
+                    executable = "." + os.sep + executable
+                break
+    config["python"] = [executable]
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    os.replace(path + ".tmp", path)
+    say("Local mod setup Python is ready (compression.zstd verified).")
 
 
 def ensure_xcode_clt(ui):
@@ -643,7 +834,8 @@ def get_toolchain(name, data_dir, ui):
             f.write(tc["sha256"] + "\n")
     if kind == "llvm-mingw":
         b = os.path.join(tdir, "bin")
-        return Toolchain([os.path.join(b, "x86_64-w64-mingw32-clang.exe")], [os.path.join(b, "x86_64-w64-mingw32-clang++.exe")],
+        triple = tc.get("triple", "x86_64-w64-mingw32")  # aarch64-w64-mingw32: the Windows on ARM64 release
+        return Toolchain([os.path.join(b, triple + "-clang.exe")], [os.path.join(b, triple + "-clang++.exe")],
                          [os.path.join(b, "llvm-ar.exe")], rsp=True, desc="llvm-mingw " + tc["dir"])
     if kind == "zig":
         z = os.path.join(tdir, "zig")
@@ -1338,6 +1530,10 @@ def link_game(tc, manifest, objs, work, out_exe):
     args = [sub(a, m) for a in manifest["link"]]
     if IS_LINUX:
         args += ["-Wl,-rpath,$ORIGIN"]
+    elif IS_MAC:
+        # the runtime libraries the release installs next to the game (manifest runtime_files: the Vulkan
+        # loader and MoltenVK) are found there, never in Homebrew or elsewhere on the Mac
+        args += ["-Wl,-rpath,@executable_path"]
     if tc.rsp:
         rsp = os.path.join(work, "link.rsp")
         with open(rsp, "w") as f:
@@ -1354,13 +1550,22 @@ def link_game(tc, manifest, objs, work, out_exe):
 # launchers
 
 
-def mac_app(app_path, exe_src, data_dir, version):
-    """~/Applications/Wind Waker HD.app: the game binary plus a launcher that points it at the data folder."""
+def mac_icns(png):
+    """An .icns holding one PNG image (128x128 'ic07'; macOS scales it for larger sizes)."""
+    entry = b"ic07" + struct.pack(">I", 8 + len(png)) + png
+    return b"icns" + struct.pack(">I", 8 + len(entry)) + entry
+
+
+def mac_app(app_path, exe_src, data_dir, version, runtime_files=()):
+    """~/Applications/Wind Waker HD.app: the game binary plus a launcher that points it at the data folder.
+    runtime_files (next to exe_src) go next to the binary as well: its rpath is @executable_path."""
     tmp = app_path + ".tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     macos = os.path.join(tmp, "Contents", "MacOS")
     os.makedirs(macos)
     shutil.copy2(exe_src, os.path.join(macos, "wwhd"))
+    for rf in runtime_files:
+        shutil.copy2(os.path.join(os.path.dirname(exe_src), rf), os.path.join(macos, rf))
     launcher = os.path.join(macos, "launch")
     with open(launcher, "w") as f:
         f.write('#!/bin/sh\n# written by the Wind Waker HD setup\ncd "%s" || exit 1\nexec "$(dirname "$0")/wwhd" '
@@ -1378,9 +1583,19 @@ def mac_app(app_path, exe_src, data_dir, version):
   <key>CFBundleVersion</key><string>%s</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>%s
 </dict></plist>
-""" % (APP_NAME, APP_NAME, version.lstrip("v"), version.lstrip("v"))
+"""
+    # the game's own icon (made here from the player's game files; the release ships none)
+    png = game_icon_png(data_dir)
+    icon_key = ""
+    if png:
+        resources = os.path.join(tmp, "Contents", "Resources")
+        os.makedirs(resources)
+        with open(os.path.join(resources, "AppIcon.icns"), "wb") as f:
+            f.write(mac_icns(png))
+        icon_key = "\n  <key>CFBundleIconFile</key><string>AppIcon</string>"
+    plist = plist % (APP_NAME, APP_NAME, version.lstrip("v"), version.lstrip("v"), icon_key)
     with open(os.path.join(tmp, "Contents", "Info.plist"), "w") as f:
         f.write(plist)
     subprocess.run(["codesign", "--force", "--deep", "-s", "-", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1402,7 +1617,7 @@ def write_guest_build_config(data_dir, tc):
                     return relative if relative.startswith(".") else "." + os.sep + relative
         return path
 
-    config = {"format_version": 2, "python": [stored_path(sys.executable)],
+    config = {"format_version": 2, "python": [stored_path(ensure_setup_python(data_dir))],
               "compiler": [stored_path(tc.cc[0])] + tc.cc[1:],
               "builder": stored_path(os.path.join(PKG, "tools", "guestmod", "build_guest_mod.py")),
               "include": stored_path(os.path.join(PKG, "sdk", "include")),
@@ -1720,6 +1935,10 @@ def load_manifest():
     if IS_LINUX and arch and normalize_arch(arch) != host_arch():
         raise SetupError("this release is for %s, but this computer is %s: download the %s release instead"
                          % (m["platform"], host_arch(), "linux-" + host_arch()))
+    # Windows: the x86-64 release also runs on ARM64 (emulated); the ARM64 one runs only there
+    if plat == "windows" and arch and normalize_arch(arch) == "aarch64" and host_arch() != "aarch64":
+        raise SetupError("this release is for Windows on ARM64, but this computer is %s: download the "
+                         "windows-x86_64 release instead" % host_arch())
     return m
 
 
@@ -1821,12 +2040,59 @@ def plan_steps(kind):
             "gen": ["compiler", "compile", "app"]}[kind]
 
 
+CODE_MODS_TEXT = (
+    "For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
+    "content mods do not need this. The game code gets a small check in every function, which can "
+    "cost some performance, and the build takes a bit longer. You can switch this later in "
+    "Settings > Mods; that requires another rebuild.")
+
+
+def setup_code_mods(ctx, ui=None):
+    explicit = getattr(ctx.args, "code_mods", None)
+    if explicit is not None or "WWHD_CODE_MODS" in os.environ:
+        return code_mods.hooks_option(explicit)
+    try:
+        active = json.loads(Path(ctx.data_dir, "code-mods-active.json").read_text())
+        remembered = active["hooks"] if active.get("state") == "ready" else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        remembered = None
+    default = remembered if isinstance(remembered, bool) else bool(ctx.state().get("code_mods", False))
+    if ui and ui.interactive:
+        say(CODE_MODS_TEXT)
+        return ui.yesno("Build with code-mod support?", default)
+    return default
+
+
+def write_code_mods_setting(data_dir, hooks):
+    """Use the same stores and overrides as the AppKit and SDL hosts."""
+    import plistlib
+    portable = Path(data_dir, "user")
+    if IS_MAC:
+        default = portable / "display.plist" if PORTABLE else Path(os.path.expanduser(
+            "~/Library/Application Support/wwhd/display.plist"))
+        path = Path(os.environ.get("WWHD_DISPLAY_SETTINGS", str(default)))
+        values = plistlib.loads(path.read_bytes()) if path.exists() else {}
+        values["code-mods"] = "1" if hooks else "0"
+        payload = plistlib.dumps(values)
+    else:
+        default = (portable if PORTABLE else Path(legacy_config_dirs()[0])) / "settings.ini"
+        path = Path(os.environ.get("WWHD_SETTINGS", str(default)))
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        lines = [line for line in lines if not line.startswith("code-mods=")]
+        payload = ("\n".join(lines + ["code-mods=" + ("1" if hooks else "0")]) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(payload)
+    os.replace(tmp, path)
+
+
 def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     """The whole build for one source: ("image", path) | ("archive", path) | ("folder", path) |
     ("installed", game_dir) | ("gen", generated C). check_keys(image) -> (keys, info) is called for an image without keys.
     Returns the new install state."""
     ui = ui or UI(False)
     args, manifest, data_dir = ctx.args, ctx.manifest, ctx.data_dir
+    args.code_mods = "1" if setup_code_mods(ctx, ui) else "0"
     kind = source[0]
     steps = plan_steps(kind)
     total = len(steps)
@@ -1954,8 +2220,10 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     elif not args.no_shortcuts and kind != "gen":
         if IS_MAC:
             app = os.path.join(ctx.app_dir, APP_NAME + ".app")
-            mac_app(app, exe, data_dir, ctx.version)
-            os.remove(exe)  # the app holds the game binary
+            mac_app(app, exe, data_dir, ctx.version, manifest.get("runtime_files", []))
+            os.remove(exe)  # the app holds the game binary (and its runtime files)
+            for rf in manifest.get("runtime_files", []):
+                os.remove(os.path.join(exe_dir, rf))
             if not os.listdir(exe_dir):
                 os.rmdir(exe_dir)
             state["app"] = app
@@ -1969,9 +2237,12 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
     if kind != "gen":
         try:
-            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], exe, gen_dir, objs)
+            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], state["exe"], gen_dir, objs)
         except (OSError, SetupError) as e:
             LOG.write("Initial code-mod cache skipped: " + str(e))
+            # Never leave an older variant selected after a successful setup build.
+            Path(data_dir, "code-mods-active.json").unlink(missing_ok=True)
+        write_code_mods_setting(data_dir, state["code_mods"])
     if not args.keep_work:
         shutil.rmtree(work, ignore_errors=True)
     if kind != "gen":
@@ -2010,10 +2281,11 @@ def main():
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
-    ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (default off; WWHD_CODE_MODS override)")
+    ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (new installs default off; skips the question; overrides WWHD_CODE_MODS)")
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
     ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON")
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists")
+    ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
     ap.add_argument("--repair", action="store_true", help="rebuild the game code from the installed game files")
     ap.add_argument("--jobs", type=int, help="parallel compiler processes")
     ap.add_argument("--yes", action="store_true", help="non-interactive (also WWHD_SETUP_NONINTERACTIVE=1)")
@@ -2061,6 +2333,9 @@ def main():
 
 def run(args, ui):
     ctx = Ctx(args)
+    if getattr(args, "repair_guest_python", False):
+        repair_guest_python(ctx.data_dir)
+        return 0
     if getattr(args, "rebuild_code_mods", False):
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("No installed game files to rebuild from; run setup first")
@@ -2158,6 +2433,7 @@ def run(args, ui):
     state = install(ctx, source, ui=ui, check_keys=lambda image: get_disc_keys(image, ui, args))
     if source[0] != "gen":
         maybe_import_save(ui, data_dir)
+        write_code_mods_setting(data_dir, state["code_mods"])
     if PORTABLE and ui.interactive and source[0] != "gen":
         if not args.shortcuts and ui.yesno("Add a shortcut to %s?" % {"darwin": "your Applications folder", "win32": "the Start menu"}
                                            .get(sys.platform, "your applications menu"), False):
@@ -2251,6 +2527,7 @@ def gui_main(args):
                   "game_dir": ctx.game_dir, "save_exists": have_save(ctx.data_dir),
                   "legacy": bool(legacy_save or legacy_items), "free_bytes": free_space(ctx.data_dir),
                   "language_sources": sources_reply(),
+                  "code_mods": setup_code_mods(ctx),
                   "toolchain": ctx.manifest["toolchain"]})
 
     def reply(req, ok=True, **kw):
@@ -2388,6 +2665,10 @@ def gui_main(args):
 
     def do_install(req):
         kind = req.get("source")
+        if "code_mods" in req:
+            if not isinstance(req["code_mods"], bool):
+                return fail(req, "bad_request", "code_mods must be a boolean")
+            ctx.args.code_mods = "1" if req["code_mods"] else "0"
         if req.get("jobs"):
             ctx.args.jobs = int(req["jobs"])
         if kind == "image":
@@ -2425,6 +2706,9 @@ def gui_main(args):
     def do_import_existing(req):
         try:
             msg = import_existing(ctx.data_dir, req.get("path") or None, bool(req.get("replace")))
+            st = ctx.state()
+            if "code_mods" in st:
+                write_code_mods_setting(ctx.data_dir, st["code_mods"])
         except SetupError as e:
             if have_save(ctx.data_dir) and not req.get("replace") and "already exists" in str(e):
                 return fail(req, "exists", str(e))

@@ -1,3 +1,4 @@
+#include "../mods/manager.h"
 // Menu bar: app menu (Quit, which asks first while a game is in progress: quit_prompt.mm), a Window
 // menu (Close Window on the TV window quits the same way) and a Graphics menu to switch fixes and
 // enhancements while playing. Each option also has a single-key shortcut in the game window.
@@ -268,7 +269,8 @@ static WWStateMenu* g_state_menu;
 - (void)setFaceLayout:(NSMenuItem*)item {
     // issue #78: which host face buttons drive the Wii U's A/B/X/Y (the same as the Controls window)
     input_map::Mapping m = input_map::current();
-    input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+    if (item.tag == 2) input_map::set_face_auto(m, true);
+    else input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
     input_map::set_current(m);
 }
 - (void)toggleInterp:(NSMenuItem*)item { interp::set_mode(interp::mode() == item.tag ? 0 : (int)item.tag); update_title(); }
@@ -277,7 +279,11 @@ static WWStateMenu* g_state_menu;
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
 - (void)toggleHires:(NSMenuItem*)item { render::set_ao_hires(!render::ao_hires()); update_title(); }
 - (void)setRes:(NSMenuItem*)item { set_res(kResScales[item.tag]); update_title(); }
-- (void)setAspect:(NSMenuItem*)item { aspect::set_mode((int)item.tag); update_title(); }
+- (void)setAspect:(NSMenuItem*)item {
+    aspect::set_mode((int)item.tag);
+    gfx::set_host_setting("aspectMode", std::to_string((int)item.tag));  // as the settings overlay saves it
+    update_title();
+}
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
     if (item.action == @selector(setRes:))
         item.state = fabsf(kResScales[item.tag] - current_res_scale()) < 0.01f ? NSControlStateValueOn : NSControlStateValueOff;
@@ -404,7 +410,7 @@ void install_menu(NSWindow* tv) {
         add(g, @"    Metal", @selector(setRenderer:), @"", (NSInteger)render::Api::Metal).toolTip =
             @"Apple's Metal: the original renderer, all features";
         add(g, @"    Vulkan (MoltenVK)", @selector(setRenderer:), @"", (NSInteger)render::Api::Vulkan).toolTip =
-            [@"Vulkan through MoltenVK (needs: brew install vulkan-loader molten-vk glslang). Falls back to Metal if it cannot start." stringByAppendingString:why];
+            [@"Vulkan through MoltenVK (included in the release; source builds: brew install vulkan-loader molten-vk glslang). Falls back to Metal if it cannot start." stringByAppendingString:why];
         [g addItem:[NSMenuItem separatorItem]];
     }
     [g addItemWithTitle:@"Internal resolution (R cycles)" action:nil keyEquivalent:@""].enabled = NO;
@@ -465,6 +471,9 @@ void install_menu(NSWindow* tv) {
     add(in, @"    By label (Xbox)", @selector(setFaceLayout:), @"", 1).toolTip =
         @"The button named A is A: on an Xbox pad A accepts/acts and B goes back (issue #78). "
         @"Rewrites the A/B/X/Y controller bindings only";
+    add(in, @"    Automatic", @selector(setFaceLayout:), @"", 2).toolTip =
+        @"Follows the labels printed on the pad that was plugged in first: by label on an Xbox pad, "
+        @"by position on a Nintendo one";
     [in addItem:[NSMenuItem separatorItem]];
     add(in, @"Show GamePad screen (\u2318G)", @selector(toggleDrcWindow:), @"");
     [in addItem:gfx::controls_menu_item()];
@@ -494,6 +503,8 @@ void install_menu(NSWindow* tv) {
            @"Grab and climb any wall (stamina wheel; B or A lets go)");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
            @"Door events (walk-in, opening, closing) run at 4x speed");
+    toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
+           ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
     [gp addItem:[NSMenuItem separatorItem]];

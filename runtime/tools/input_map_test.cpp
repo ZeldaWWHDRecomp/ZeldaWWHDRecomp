@@ -10,6 +10,7 @@
 #include <string>
 
 #include "input_map.h"
+#include "platform/touch_face.h"
 
 using namespace input_map;
 
@@ -113,6 +114,175 @@ static void test_face_layout() {
     CHECK(std::string(face_layout_label(FaceLayout::kPosition)) != face_layout_label(FaceLayout::kLabels));
 }
 
+// #88: the on-screen A B X Y act as the Wii U button drawn on them with either face preset
+static void test_touch_face() {
+    const uint32_t wiiu[4] = {input::kA, input::kB, input::kX, input::kY};
+    for (FaceLayout layout : {FaceLayout::kPosition, FaceLayout::kLabels}) {
+        Mapping m = Mapping::defaults();
+        apply_face_layout(m, layout);
+        for (int i = 0; i < 4; i++) {
+            const uint32_t sdl = touch_face::buttons(1u << i, m);
+            // the virtual pad's buttons as input_sdl.cpp reads them, then through the mapping
+            float v[kPadCount] = {};
+            for (int p = 0; p < kPadCount; p++)
+                if (touch_face::sdl_button(p) >= 0 && (sdl >> touch_face::sdl_button(p) & 1)) v[p] = 1;
+            CHECK(controller_state(m, v).buttons == wiiu[i]);
+        }
+    }
+    Mapping m = Mapping::defaults();
+    // the drawn A by position is the pad's east button (SDL 1), by label its south button (SDL 0)
+    CHECK(touch_face::buttons(1, m) == 1u << 1);
+    apply_face_layout(m, FaceLayout::kLabels);
+    CHECK(touch_face::buttons(1, m) == 1u << 0);
+    // a Wii U A bound to a trigger (custom) can't be pressed by a button bit; unbound neither
+    set_pad_binding(m, kA, kPadLT);
+    CHECK(touch_face::buttons(1, m) == 0);
+    m.pad[kB] = kPadNone;
+    CHECK(touch_face::buttons(2, m) == 0);
+    CHECK(touch_face::buttons(0, Mapping::defaults()) == 0);
+}
+
+static void test_face_auto() {
+    using FL = FaceLabel;
+    // the four labels of a pad, south (kPadA), east (kPadB), west (kPadX), north (kPadY)
+    const FL xbox[4] = {FL::kA, FL::kB, FL::kX, FL::kY};
+    const FL ps[4] = {FL::kCross, FL::kCircle, FL::kSquare, FL::kTriangle};
+    const FL nintendo[4] = {FL::kB, FL::kA, FL::kY, FL::kX};  // Switch Pro prints B A Y X
+    const FL gc[4] = {FL::kA, FL::kX, FL::kB, FL::kY};        // GameCube prints A X B Y
+    const FL none[4] = {FL::kUnknown, FL::kUnknown, FL::kUnknown, FL::kUnknown};
+    int out[4] = {};
+
+    // an Xbox pad (and a PlayStation one, whose Cross sits under the Xbox A): the by-label preset
+    CHECK(face_bindings_from_labels(xbox, out));
+    CHECK(out[0] == kPadA && out[1] == kPadB && out[2] == kPadX && out[3] == kPadY);
+    CHECK(face_bindings_from_labels(ps, out));
+    CHECK(out[0] == kPadA && out[1] == kPadB && out[2] == kPadX && out[3] == kPadY);
+    // a Nintendo pad: the by-position preset, where the labels and the positions agree
+    CHECK(face_bindings_from_labels(nintendo, out));
+    CHECK(out[0] == kPadB && out[1] == kPadA && out[2] == kPadY && out[3] == kPadX);
+    // a GameCube pad: a third shape, which reads back as custom
+    CHECK(face_bindings_from_labels(gc, out));
+    CHECK(out[0] == kPadA && out[1] == kPadX && out[2] == kPadB && out[3] == kPadY);
+    // nothing printed: there is nothing to follow
+    out[0] = out[1] = out[2] = out[3] = kPadNone;
+    CHECK(!face_bindings_from_labels(none, out));
+    CHECK(out[0] == kPadNone && out[3] == kPadNone);
+    // one label only: the printed letter wins and the rest go to free buttons
+    const FL one[4] = {FL::kA, FL::kUnknown, FL::kUnknown, FL::kUnknown};
+    CHECK(face_bindings_from_labels(one, out));
+    CHECK(out[0] == kPadA && out[1] != kPadA && out[2] != kPadA && out[3] != kPadA);
+    CHECK(out[1] != out[2] && out[2] != out[3] && out[1] != out[3]);
+    // every mapping stays free of double binds
+    const FL* pads[] = {xbox, ps, nintendo, gc, one};
+    for (const FL* labels : pads) {
+        CHECK(face_bindings_from_labels(labels, out));
+        for (int i = 0; i < 4; i++)
+            for (int j = i + 1; j < 4; j++) CHECK(out[i] != out[j]);
+    }
+
+    // the Automatic preset follows the noted labels
+    Mapping m = Mapping::defaults();
+    CHECK(!m.face_auto && face_layout(m) == FaceLayout::kPosition);
+    note_face_labels(nintendo);
+    set_face_auto(m, true);
+    CHECK(m.face_auto && face_layout(m) == FaceLayout::kPosition);
+    note_face_labels(xbox);
+    set_face_auto(m, true);
+    CHECK(m.face_auto && face_layout(m) == FaceLayout::kLabels);
+    note_face_labels(gc);
+    set_face_auto(m, true);
+    CHECK(m.face_auto && face_layout(m) == FaceLayout::kCustom);
+    // keyboard keys and the non-face controller bindings are left alone
+    CHECK(m.keys[kA] == Mapping::defaults().keys[kA]);
+    CHECK(m.keys[kY] == Mapping::defaults().keys[kY]);
+    CHECK(m.pad[kL] == Mapping::defaults().pad[kL]);
+    CHECK(m.pad[kZL] == Mapping::defaults().pad[kZL]);
+    CHECK(m.pad[kPlus] == Mapping::defaults().pad[kPlus]);
+    CHECK(m.pad[kLUp] == Mapping::defaults().pad[kLUp]);
+    CHECK(m.pad[kScreenshot] == Mapping::defaults().pad[kScreenshot]);
+    // turning it off leaves the bindings as they resolved
+    set_face_auto(m, false);
+    CHECK(!m.face_auto && face_layout(m) == FaceLayout::kCustom);
+    // a hand-edited face binding drops the preset; a hand-edited one elsewhere does not
+    note_face_labels(xbox);
+    set_face_auto(m, true);
+    CHECK(m.face_auto);
+    set_pad_binding(m, kZL, kPadRT);
+    CHECK(m.face_auto && m.pad[kZL] == kPadRT);
+    set_pad_binding(m, kX, kPadLB);
+    CHECK(!m.face_auto && face_layout(m) == FaceLayout::kCustom);
+    // a preset is a choice of its own
+    note_face_labels(xbox);
+    set_face_auto(m, true);
+    CHECK(m.face_auto);
+    apply_face_layout(m, FaceLayout::kPosition);
+    CHECK(!m.face_auto && face_layout(m) == FaceLayout::kPosition);
+
+    // the live mapping follows the dominant pad's labels while Automatic is on
+    std::string dir = (std::filesystem::temp_directory_path() /
+                       ("input_map_auto." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                          .string();
+    std::error_code ec;
+    CHECK(std::filesystem::create_directory(dir, ec));
+    std::string path = dir + "/controls.json";
+#ifdef _WIN32
+    _putenv_s("WWHD_CONTROLS", path.c_str());
+#else
+    setenv("WWHD_CONTROLS", path.c_str(), 1);
+#endif
+    Mapping live = Mapping::defaults();
+    note_face_labels(xbox);
+    set_face_auto(live, true);
+    set_current(live);
+    CHECK(face_layout(current()) == FaceLayout::kLabels);
+    note_face_labels(nintendo);  // the pad changed: the bindings follow
+    CHECK(face_layout(current()) == FaceLayout::kPosition);
+    uint32_t g = generation();
+    note_face_labels(nintendo);  // the same pad again: nothing to do
+    CHECK(generation() == g);
+    note_face_labels(none);  // unplugged: the choice stands
+    CHECK(face_layout(current()) == FaceLayout::kPosition && generation() == g);
+    // and it comes back from the file with the preset
+    Mapping r;
+    CHECK(load_file(path, r) && r.face_auto && face_layout(r) == FaceLayout::kPosition);
+    std::filesystem::remove_all(dir, ec);
+}
+
+static void test_face_label_text() {
+    using FL = FaceLabel;
+    // the SF Symbol names GameController reports: the name first, the decoration after a dot.
+    // The decoration must not decide: "circle" is B only as a name, never as ".circle".
+    CHECK(face_label_from_text("a.circle") == FL::kA);
+    CHECK(face_label_from_text("b.circle") == FL::kB);
+    CHECK(face_label_from_text("x.circle") == FL::kX);
+    CHECK(face_label_from_text("y.circle") == FL::kY);
+    CHECK(face_label_from_text("a.circle.fill") == FL::kA);
+    CHECK(face_label_from_text("xmark.circle") == FL::kA);       // PlayStation Cross
+    CHECK(face_label_from_text("xmark.circle.fill") == FL::kA);
+    CHECK(face_label_from_text("circle.circle") == FL::kB);      // PlayStation Circle
+    CHECK(face_label_from_text("circle") == FL::kB);
+    CHECK(face_label_from_text("square.circle") == FL::kX);      // PlayStation Square, not Circle
+    CHECK(face_label_from_text("square.circle.fill") == FL::kX);
+    CHECK(face_label_from_text("square.fill") == FL::kX);
+    CHECK(face_label_from_text("triangle.circle") == FL::kY);
+    CHECK(face_label_from_text("triangle") == FL::kY);
+    CHECK(face_label_from_text("x.square.fill") == FL::kX);      // letter in a square, not Square
+    // localized names and vendor-style names: the one word that is a letter
+    CHECK(face_label_from_text("Button A") == FL::kA);
+    CHECK(face_label_from_text("Button B") == FL::kB);
+    CHECK(face_label_from_text("Cross Button") == FL::kA);
+    CHECK(face_label_from_text("Circle Button") == FL::kB);
+    CHECK(face_label_from_text("xbox.button.a") == FL::kA);
+    CHECK(face_label_from_text("xbox.button.y") == FL::kY);
+    CHECK(face_label_from_text("X Button") == FL::kX);
+    // nothing a name can say: unknown
+    CHECK(face_label_from_text(nullptr) == FL::kUnknown);
+    CHECK(face_label_from_text("") == FL::kUnknown);
+    CHECK(face_label_from_text("button") == FL::kUnknown);
+    CHECK(face_label_from_text("fill") == FL::kUnknown);
+    CHECK(face_label_from_text("gamepad") == FL::kUnknown);
+}
+
 static void test_names() {
     for (int a = 0; a < kActionCount; a++) CHECK(action_from_id(action_id(a)) == a);
     for (int p = 1; p < kPadCount; p++) CHECK(pad_from_id(pad_id(p)) == p);
@@ -168,6 +338,14 @@ static void test_json_roundtrip() {
     CHECK(press(r, {kVK_ANSI_H}).buttons == 0);
     CHECK(press(r, {kVK_UpArrow}).ry == -1);  // inverted camera
     CHECK(press(r, {kVK_ANSI_W}).ly == 1);    // move stick not inverted
+    // the Automatic preset is the one face state that is stored
+    CHECK(to_json(Mapping::defaults()).find("face_layout") == std::string::npos);
+    m.face_auto = true;
+    j = to_json(m);
+    CHECK(j.find("\"face_layout\": \"auto\"") != std::string::npos);
+    CHECK(from_json(j, r, &err) && err.empty() && r == m);
+    CHECK(from_json(R"({"options": {"face_layout": "manual"}})", r, &err) && !r.face_auto);
+    CHECK(from_json(R"({"options": {"face_layout": "auto"}})", r, &err) && r.face_auto);
 }
 
 static void test_json_partial_and_bad() {
@@ -237,6 +415,17 @@ static void test_files() {
     set_current(Mapping::defaults());
     CHECK(generation() != g);
     CHECK(load_file(path, r, &err) && r == Mapping::defaults());  // saved
+    // the overlay's menus and on-screen keyboard confirm/cancel with the Wii U's A/B of the live
+    // mapping: by position (the default) the right button is A and the bottom one is B
+    CHECK(face_input(kA) == kPadB && face_input(kB) == kPadA && face_input(kX) == kPadY && face_input(kY) == kPadX);
+    Mapping labels = Mapping::defaults();
+    apply_face_layout(labels, FaceLayout::kLabels);
+    set_current(labels, false);
+    CHECK(face_input(kA) == kPadA && face_input(kB) == kPadB && face_input(kX) == kPadX && face_input(kY) == kPadY);
+    labels.pad[kA] = kPadNone;  // unbound: the by-position button
+    set_current(labels, false);
+    CHECK(face_input(kA) == kPadB && face_input(kB) == kPadB);
+    set_current(Mapping::defaults(), false);
     std::filesystem::remove_all(dir,ec);
 }
 
@@ -264,6 +453,9 @@ int main() {
     test_conflict_helpers();
     test_defaults();
     test_face_layout();
+    test_face_auto();
+    test_touch_face();
+    test_face_label_text();
     test_names();
     test_reserved();
     test_conflicts();

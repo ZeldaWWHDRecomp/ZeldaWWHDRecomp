@@ -42,9 +42,28 @@ you built before is quick. Keep the complete release folder and the compiler set
 downloaded: building code mods uses those local tools. If they are missing, the Mods tab asks
 you to run setup again.
 
-You can install a code mod while support is off; the Mods tab offers to turn support on.
-Enabling a code mod asks you once to confirm that you trust it (see [Trust](#trust)).
+You can install a code mod while support is off. For a mod with setup steps,
+tick its checkbox or choose **Set up** in the installed or catalogue entry.
+One confirmation explains the open steps, asks for choices, and records your trust
+in this package version (see [Trust](#trust)). After Continue, setup runs on its
+own and enables the mod. If needed, it rebuilds code-mod support and restarts,
+then continues setup automatically. A changed package asks for trust again.
+Errors stop at the failed step: choose **Show details** or **Try again**.
+Individual step buttons are available under **Advanced**.
 Enabling, disabling and changing options of code mods take effect after a restart.
+
+### GameCube files used by mods
+
+In **Settings → Mods → GameCube game for mods**, choose your GameCube Wind Waker disc
+image (`.iso` / `.gcm`) or extracted game folder once. The setting shows the recognised
+region; some mods require a specific region. These files stay on your computer.
+
+Mods use this shared copy automatically. A mod with a missing or incompatible copy shows
+a warning and a **Go to GameCube game for mods** button, and cannot be enabled until the
+copy passes validation. Then choose **Set up** to complete its remaining preparation.
+Changing or clearing the copy turns dependent mods off in every profile and marks their
+preparation for rerunning. Prepared files are kept; restart to unload any active mod,
+then rerun its setup before enabling it again.
 
 ## Writing a mod
 
@@ -181,9 +200,10 @@ use object fields that are the same in both versions.
 | `wwhd_logic_dt`, `wwhd_logic_step` | Length of the current logic step in seconds (60 fps modes included) and the step counter |
 | `wwhd_setting_get`, `wwhd_setting_changed` | Read-only port settings, below |
 | `wwhd_hud_*` | Drawing on screen, below |
+| `wwhd_audio_*` | Bounded PCM streams, below |
 | `memcpy`, `memmove`, `memset` | As usual |
 
-Your mod can also call any game function. There is no audio stream service yet.
+Your mod can also call any game function. Original synthesized audio can use the PCM stream service below.
 
 ## Port settings
 
@@ -211,7 +231,7 @@ if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING, layout, sizeof la
 }
 ```
 
-## Drawing on screen (HUD API v1)
+## Drawing on screen (HUD API v2)
 
 Register one draw callback with `wwhd_hud_register(draw, screen)` from a game hook (a null
 callback unregisters it). The port calls `draw(list)` after each logic step; record elements
@@ -252,6 +272,22 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
   decoded pixels. An invalid element (bad UTF-8, bad handle, non-finite numbers, over the
   limits) drops the whole list, with a message in the Mods tab.
 
+HUD v2 adds bounded clip rectangles without changing the 72-byte element layout.
+Record `WWHD_HUD_CLIP_PUSH` and `WWHD_HUD_CLIP_POP` with
+`wwhd_hud_clip(list, &element)`, using the normal element initialization above.
+Push uses `x/y/w/h` and `anchor`; its screen-aligned rectangle intersects the
+current parent clip and screen. Geometry, image rotation and UVs remain unchanged.
+Pop restores the parent. Up to 16 nested clips are allowed; underflow, overflow or
+an unbalanced callback drops the entire list. Clips belong to one recording list
+and cannot affect another mod. Send ordinary drawing elements through
+`wwhd_hud_emit`; that service rejects clip commands.
+
+`WWHD_HUD_API_VERSION` is 2; the guest module ABI and manifest `guest.api_version`
+remain 1. Importing `wwhd_hud_clip` is the runtime capability check: older hosts
+lack that service and refuse the module during loading. Existing HUD v1 mods
+continue to load without it. Do not emulate clipping by moving or shrinking the
+image, since that changes registration at a map boundary.
+
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated
 between logic steps.
@@ -272,9 +308,9 @@ installation fail.
 A code mod becomes native code inside the game process. Its memory accesses stay inside the
 game's memory, and it reaches the system only through the services above and the game's own
 functions, but that is not a sandbox: it can crash the game or damage saves. So enabling a
-code mod asks once, like native mods. The confirmation covers the exact ELF (and, for
-packages with content or images, every file); a changed package asks again. Rebuilding the
-same ELF after a port update doesn't ask.
+code mod asks once, like native mods. The confirmation covers the package version and a
+fingerprint of every package file; a changed package asks again. Rebuilding the same package after a port update
+does not ask for trust again.
 
 ## Save states
 
@@ -289,7 +325,7 @@ itself are not part of save states.
 - Changing enabled mods or their options needs a restart.
 - Mods live in a 16 MiB region of game memory (`0x7F000000`–`0x80000000`); each mod gets its
   own 64 KiB-aligned part.
-- No audio streams, no events, no exports between mods yet.
+- No events or exports between mods yet. Audio streams support 48 kHz mono/stereo PCM.
 - Instructions the translator doesn't support are reported when the mod is built.
 
 ## How it works
@@ -333,3 +369,117 @@ been made with the matching option), and setup accepts `--code-mods 0|1`.
 **Tests:** `tools/guestmod/test_guestmod.py` (set `WWHD_PPC_CLANG` and `WWHD_PPC_LLD`), the
 `guestmods` CI workflow (examples compiled with each platform's host compiler), and the
 opt-in real-game driver `tools/guestmod/test_code_mods_e2e.py`.
+
+### Opt-in catalogue and setup lifecycle checks
+
+`tools/guestmod/test_package_lifecycle_e2e.py` exercises a reviewed guest ZIP and
+its real catalogue metadata. Supply an installed release/data directory, regional
+normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
+private game-source JSON and a private output folder. The JSON maps declared game
+IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
+for a mod without a game-source step. Run separately with `--region USA`/`EU` and
+`--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
+
+Before launching, the driver invokes the real installer with
+`--rebuild-code-mods --code-mods 0 --jobs N` and verifies its completed off cache.
+Use the driver’s `--jobs 1..4` to reserve compiler capacity; the default is four.
+It records the original generated-C and game-object hash maps, executable SHA,
+fingerprint, cache hit/fresh build status and elapsed rebuild time. After the UI
+support rebuild it verifies the on selection and cache record, confirms that the
+off baseline remains unchanged, and observes each running process's executable
+path against the verified selection. Setting an environment flag alone is not
+accepted as evidence of compiled hooks being disabled or enabled.
+
+The driver refreshes and installs through the catalogue worker, rebuilds code-mod
+support while the package remains disabled, restarts, selects/validates sources,
+runs preparation and builds the guest module through normal setup workers, then
+enables it for the following restart. It checks setup receipts, declared output
+files, regional build allocation and module existence, activation after restart,
+disable-until-restart and removal. Normal saves are copied for each process; full
+states are never transferred between versions. Only owned game processes are
+stopped. The default functional session limit is four and disk floor is 15 GiB;
+these checks do not measure performance.
+
+The setup diagnostics require all of `WWHD_NO_HOST_INPUT`, an explicit
+`WWHD_MOD_MANAGER_DIR`, `WWHD_TEST_MOD_SETUP` and an absolute private
+`WWHD_TEST_GAME_SOURCES` JSON path. They call the same source validators and setup
+APIs as the UI, and do not accept native-code trust automatically. The driver uses
+the existing explicit isolated-test trust switch; native file-picker interaction
+and the trust dialog still require separate UI review. Ordinary runs never select
+setup actions from these inputs.
+
+Local verification copies the supplied ZIP beside a private catalogue index and
+uses the existing relative-file fixture exception. This verifies catalogue
+parsing, hashes, installation and setup, but does not verify remote hosting.
+Published catalogues continue to require absolute HTTPS package URLs. Runtime
+captures need visual review to establish each mod's visible behavior; successful
+loading and receipts alone are not a visual acceptance test.
+
+
+### Hidden HUD composition diagnostic
+
+Ordinary hidden runs do not present the HUD, so they cannot establish its GPU
+composition cost. Internal renderer verification can opt into
+`WWHD_TEST_OFFSCREEN_FRAMES=1..10000` together with `WWHD_HIDDEN_WINDOWS=1`,
+`WWHD_NO_HOST_INPUT=1` and `WWHD_SIM_SCREEN=1280x720`. This encodes the existing TV
+composition path into one reusable offscreen target on Metal or Vulkan. It adds
+no image readback, presentation or extra queue wait. The bounded diagnostic
+refuses an invalid configuration or exhausted frame allowance. With the flag
+absent, it allocates no diagnostic target and encodes no diagnostic composition.
+
+`[headless-compose]` records encoded frames and HUD vertices, indices and command
+counts. The `hud-cost` fixture emits 200 rectangles (800 vertices and 1,200 indices)
+when enabled, and registers no HUD callback with `draw` false. Both variants must
+use the same host, module, compatible full state and warmed cache. Verify actual
+state restoration and visible rectangles before measuring. Save-state toasts are
+additional overlay geometry and last several wall-clock seconds: exclude their
+windows and verify the diagnostic counters throughout the measured interval.
+Uncapped game time alone does not establish that a toast has expired.
+
+Measure render-thread CPU time separately from GPU elapsed time. Keep captures
+and readback out of measured runs, use a quiet exclusive window, interleave the
+variants, and report medians, IQRs and each paired difference. A difference smaller
+than the observed variability is inconclusive. This fixture covers rectangles;
+it does not measure texture-upload or large-text cost.
+
+
+## PCM audio streams v1
+
+Guest mods may synthesize original audio with `wwhd_audio_open(48000, channels)`
+(one or two channels), `wwhd_audio_submit(handle, samples, frames, channels)`,
+`wwhd_audio_available(handle)` and `wwhd_audio_close(handle)`. Samples are signed
+16-bit, interleaved and guest-endian. The host copies them before returning;
+it retains no guest pointers. Buffers must fit in the calling mod's region.
+Only 48000 Hz is supported; callers resample other content themselves.
+
+Each stream holds 8192 frames, each submission is at most 2048 frames, and limits
+are four streams per mod and 32 globally (1 MiB fixed host sample storage).
+Open returns a positive opaque handle. Available returns free queue frames;
+submit returns accepted frames, including zero when full. Close returns zero.
+Errors are `WWHD_AUDIO_INVALID` (-1), `WWHD_AUDIO_BUSY` (-2; retry later without
+advancing a synthesis cursor), and `WWHD_AUDIO_QUOTA` (-3). Handles are checked
+against the calling mod and never reused during the process lifetime. Numeric
+handle exhaustion fails explicitly. Submission/query/close use try-locks;
+there are no waits for a device. Open can allocate a bounded owner string.
+
+The AX producer mixes copied samples into the common stereo output before its
+master gain and dump path. Mixing sums streams in 32-bit precision and saturates
+once to S16. Mono duplicates to both channels. Underruns contribute silence;
+there is no automatic replay. The device callback performs no mod work. With no
+streams the producer bypasses the mixer. `WWHD_AUDIO_VOLUME` applies equally to
+game and guest PCM; zero mutes while draining. `WWHD_NO_AUDIO=1` opens no device
+but drains on the existing AX producer clock, including optional diagnostic dumps.
+The service is independent of Metal/Vulkan and does not expose callbacks,
+networking or host filesystem access.
+
+Compare `wwhd_audio_epoch()` before using handles. Full-state loading and output
+flush/reset clear all streams and increment this host-only epoch. CoreAudio
+notifies default-output changes; SDL output topology/format events invalidate
+streams too. Queues and handles are not serialized. Recreate streams on a change
+and resume from restored guest musical state; previously played sound is not
+rewound. Disabling takes effect at restart, so no streams survive a changed mod
+set. This service does not add backend device-reconnection facilities beyond
+those of the existing output backend.
+
+For bounded service-call diagnostics, `WWHD_AUDIO_STREAM_TRACE=1` logs open/submit/close
+results and epochs, never sample payloads. Leave it unset for normal operation.

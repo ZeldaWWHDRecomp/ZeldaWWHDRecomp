@@ -83,19 +83,13 @@ void log_ring_write(int fd, void (*out)(int, const char*, size_t)) {
 }
 
 void fatal(const char* fmt, ...) {
-    {
-        std::lock_guard<std::mutex> lk(g_log_mutex);
-        va_list ap;
-        va_start(ap, fmt);
-#ifdef __ANDROID__
-        __android_log_vprint(ANDROID_LOG_FATAL, "wwhd", fmt, ap);
-#else
-        fprintf(stderr, "FATAL: ");
-        vfprintf(stderr, fmt, ap);
-        fputc('\n', stderr);
-#endif
-        va_end(ap);
-    }
+    char message[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(message, sizeof message, fmt, ap);
+    va_end(ap);
+    exception_report::record(message);
+    LOG("FATAL: %s", message); // file and crash ring, not just stderr
     abort();
 }
 
@@ -288,10 +282,25 @@ uint32_t register_host(PpcFunc fn, const char* name) {
 }
 }  // namespace dispatch
 
+extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) {
+    exception_report::boundary<GuestExit>("native game callback", [&] { fn(c); });
+}
+
 extern "C" void ppc_dispatch(Cpu* c) {
     PpcFunc f = dispatch::lookup(c->pc);
     if (!f) fatal("indirect branch to unknown address %08X (lr=%08X ctr=%08X)", c->pc, c->lr, c->ctr);
+    if (c->pc - dispatch::kSlotBase < dispatch::kSlotSize ||
+        c->pc - mem::kHleFuncBase < dispatch::kHostSize) {
+        ppc_host_call(c, f);
+        return;
+    }
     MUSTTAIL return f(c);
+}
+
+// checking builds of the recompiler (tools/recomp/recomp.py): WWHD_RECOMP_CR_CHECK=1 poisons the CR
+// bits the liveness pass drops, and reading one stops here
+extern "C" void ppc_cr_poisoned(Cpu* c, int bit, uint32_t addr) {
+    fatal("CR liveness: bit %d read at %08X without a live store (lr=%08X)", bit, addr, c->lr);
 }
 
 uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {

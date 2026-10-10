@@ -1,3 +1,4 @@
+#include "../exception_report.h"
 #include "code_mods.h"
 #include "guest_build.h"
 #include "packages.h"
@@ -22,7 +23,7 @@ struct Worker {
     ~Worker(){if(thread.joinable()){if(!cancel_path.empty())std::ofstream(cancel_path)<<"cancel";thread.join();}}
 } worker;
 json::Value read(const fs::path& path) {
-    if(!fs::is_regular_file(path)||fs::file_size(path)>1024*1024)throw std::runtime_error("Code-mod build configuration is unavailable; run setup again from a complete release folder");
+    if(!fs::is_regular_file(path)||fs::file_size(path)>1024*1024)exception_report::raise("Code-mod build configuration is unavailable; run setup again from a complete release folder");
     std::ifstream f(path);return json::parse(std::string{std::istreambuf_iterator<char>(f),{}});
 }
 }
@@ -88,7 +89,7 @@ bool enabled(){
     std::string value;return hostui::get("code-mods",value)&&value=="1";
 }
 void request(bool on,const std::string& mod){std::lock_guard guard(mutex);if(state.building)return;state={};state.requested=true;state.target=on;pending_mod=mod;fprintf(stderr,"[code mods] rebuild offer: support %s%s%s\n",on?"on":"off",mod.empty()?"":" for ",mod.c_str());}
-void dismiss(){std::lock_guard guard(mutex);if(!state.building)state.requested=false;}
+void dismiss(){std::lock_guard guard(mutex);state.requested=false;}
 Status status(){
     std::lock_guard guard(mutex);
     if(state.building&&!status_path.empty())try {
@@ -105,7 +106,7 @@ void begin(){
         const char* override=std::getenv("WWHD_GUEST_BUILD_CONFIG");
         fs::path config=override?fs::path(override):fs::path("guest-sdk.json");
         auto cfg=read(config);auto base=fs::absolute(config).parent_path();
-        auto resolve=[&](const std::string& name){fs::path p(cfg.get(name.c_str()).string());if(p.empty())throw std::runtime_error("Code-mod setup tools are missing; run setup again");return p.is_absolute()?p:base/p;};
+        auto resolve=[&](const std::string& name){fs::path p(cfg.get(name.c_str()).string());if(p.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");return p.is_absolute()?p:base/p;};
         auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
         fs::path executable(python.front());if(executable.is_relative()&&executable.has_parent_path())python.front()=(base/executable).lexically_normal().string();
         auto data=resolve("data_dir");auto setup=resolve("setup");
@@ -120,12 +121,12 @@ void begin(){
             try {
                 auto report=read(status_path);
                 if(result.code||!result.error.empty()||report.get("state").string()!="ready")
-                    throw std::runtime_error(report.get("message").string(result.error.empty()?"Code-mod rebuild failed; see setup.log. Previous build retained.":result.error));
+                    exception_report::raise(report.get("message").string(result.error.empty()?"Code-mod rebuild failed; see setup.log. Previous build retained.":result.error));
                 state.ready=true;state.exe=report.get("exe").string();
                 fprintf(stderr,"[code mods] rebuild ready; restart required\n");
                 if(!mod.empty()) {
                     std::string error;
-                    if(!packages::enable_after_code_rebuild(mod,error))throw std::runtime_error("Game code rebuilt, but the mod could not be queued: "+error);
+                    if(!packages::enable_after_code_rebuild(mod,error))exception_report::raise("Game code rebuilt, but the mod could not be queued: "+error);
                 }
                 hostui::post([target]{hostui::set("code-mods",target?"1":"0");});
             }catch(const std::exception& e){state.error=e.what();}

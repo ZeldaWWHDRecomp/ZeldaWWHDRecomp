@@ -24,6 +24,14 @@ the window title says "Metal (Vulkan unavailable)"): no Vulkan loader or glslang
 weak imports, so the app still starts without them), no driver (MoltenVK), no device with dynamic
 rendering. `WWHD_VK_FORCE_INIT_FAIL=1` forces this path for testing.
 
+The macOS release includes everything Vulkan needs, nothing has to be installed: the setup puts the
+Vulkan loader (`libvulkan.1.dylib`, built from Khronos' Vulkan-Loader) and MoltenVK
+(`libMoltenVK.dylib` with its `MoltenVK_icd.json`, Khronos' MoltenVK release) next to the game, and
+glslang is compiled into it (pins: `tools/release/macos_vulkan.py`). The game loads that loader
+(its rpath is its own folder, never Homebrew) and points it at that MoltenVK unless `VK_DRIVER_FILES`
+or `VK_ICD_FILENAMES` is set; the log says which (`[vulkan] loader:`, `[vulkan] driver:`).
+Source builds use Homebrew's loader, MoltenVK and glslang as below.
+
 Both renderers use the same AppKit host (`gfx/display.mm`, `menu.mm`, `input.mm`,
 `controls_ui.mm`, `mods/mouse.mm`): TV and GamePad windows, full screen, GamePad screen modes
 (separate window, picture-in-picture, automatic), scaling filters, aspect ratio, the Controls window,
@@ -54,10 +62,12 @@ the default on Windows/Linux). Test runs: `WWHD_HIDDEN_WINDOWS=1` keeps the wind
 `WWHD_TEST_RENDERER_SWITCH=frame:metal|vulkan` does what "Restart Now" does, `WWHD_LOG_TITLE=1`
 logs the window title.
 
-For macOS Vulkan save-state comparisons, use `WWHD_TEST_ORIGIN_LOAD=n` to start
+For Metal and Vulkan save-state comparisons, use `WWHD_TEST_ORIGIN_LOAD=n` to start
 scenario inputs after n post-load Link steps, and `WWHD_DUMP_LOAD_FRAMES=n,...` to dump TV,
 GamePad and optional presented images at renderer-frame offsets from the completed load
-(`load_frame_<n>.png`, `_drc.png`, `_present.png`). A requested load frame can complete a frame
+(`load_frame_<n>.png`, `_drc.png`, `_present.png`). Capture logs include the actual completed-load
+renderer frame, capture frame, and load/current logic steps. Lists use unsigned decimal offsets
+separated by commas; malformed entries stop parsing. A requested load frame can complete a frame
 later in another run; fixed-frame inputs and captures can therefore compare different game states.
 Renderer offsets alone do not align interpolation phase at 60 fps. For a phase-aligned capture,
 `WWHD_TEST_CAPTURE_LOAD_COUNTER=n` selects a full-pass swap at the restored game counter plus n,
@@ -77,7 +87,7 @@ or Vulkan 1.1 / 1.2 with `VK_KHR_dynamic_rendering`. Dependencies must match the
 
 The executable imports no Vulkan functions (`VK_NO_PROTOTYPES`): `gfx/vulkan/loader.h` loads them
 at run time through the loader's `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr` (SDL host:
-`SDL_Vulkan_LoadLibrary`; macOS app: the weakly linked Homebrew loader). On Windows and Linux the
+`SDL_Vulkan_LoadLibrary`; macOS app: the weakly linked loader, Homebrew's or the release's own). On Windows and Linux the
 Vulkan loader is not linked at all, so a missing loader or an older one (Vulkan 1.2 drivers on
 Windows lack `vkCmdBeginRendering`) no longer stops the program before it starts. Without a usable
 GPU, the SDL host shows a message box naming the GPU, its Vulkan and driver versions and what is

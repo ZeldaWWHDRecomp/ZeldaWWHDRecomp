@@ -355,13 +355,16 @@ void controller(const float* pad) {
     if (dir(kPadDDown, kPadLSDown)) move(0, 1);
     if (dir(kPadDLeft, kPadLSLeft)) move(-1, 0);
     if (dir(kPadDRight, kPadLSRight)) move(1, 0);
-    if (pressed(pad, kPadA, false)) {
+    // the face buttons follow the player's preset (Controls > Face buttons): the button that is the
+    // Wii U's A in the game types here too (by position, the default: the right one, not the bottom)
+    const int typeKey = face_input(kA), deleteKey = face_input(kB), spaceKey = face_input(kX), shiftKey = face_input(kY);
+    if (pressed(pad, typeKey, false)) {
         int i = cell_at(U.row, U.col);
         if (i >= 0) press(U.grid[U.row][i]);
     }
-    if (pressed(pad, kPadB, true)) backspace();
-    if (pressed(pad, kPadX, false) && U.req.mode != 1) insert(' ');
-    if (pressed(pad, kPadY, false) && U.req.mode != 1) U.shift = (U.shift + 1) % 3;  // as the Shift key
+    if (pressed(pad, deleteKey, true)) backspace();
+    if (pressed(pad, spaceKey, false) && U.req.mode != 1) insert(' ');
+    if (pressed(pad, shiftKey, false) && U.req.mode != 1) U.shift = (U.shift + 1) % 3;  // as the Shift key
     if (pressed(pad, kPadLB, false) && U.pages.size() > 1) U.page = (U.page + (int)U.pages.size() - 1) % (int)U.pages.size(), build_grid();
     if (pressed(pad, kPadRB, false) && U.pages.size() > 1) next_page();
     if (pressed(pad, kPadLT, true)) caret_left();

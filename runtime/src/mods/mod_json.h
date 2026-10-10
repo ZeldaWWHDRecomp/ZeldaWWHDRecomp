@@ -1,5 +1,6 @@
 // Small bounded JSON reader/writer for manifests and player profiles.
 #pragma once
+#include "../exception_report.h"
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
@@ -43,7 +44,7 @@ inline std::string dump(const Value& v) {
     switch(v.type) {
     case Value::Null:return "null";
     case Value::Bool:return v.boolean?"true":"false";
-    case Value::Number:{ if(!std::isfinite(v.number))throw std::runtime_error("Nonfinite JSON number");std::ostringstream s;s<<std::setprecision(17)<<v.number;return s.str(); }
+    case Value::Number:{ if(!std::isfinite(v.number))exception_report::raise("Nonfinite JSON number");std::ostringstream s;s<<std::setprecision(17)<<v.number;return s.str(); }
     case Value::String:return quote(v.text);
     case Value::Array:{ std::string s="[";for(const auto& a:v.array){if(s.size()>1)s+=',';s+=dump(a);}return s+']'; }
     case Value::Object:{std::string s="{";for(const auto& [k,a]:v.object){if(s.size()>1)s+=',';s+=quote(k)+':'+dump(a);}return s+'}';}
@@ -52,7 +53,7 @@ inline std::string dump(const Value& v) {
 }
 class Reader {
     const std::string& s;size_t p=0;
-    [[noreturn]] void fail(const char* message) const {throw std::runtime_error(std::string(message)+" at byte "+std::to_string(p));}
+    [[noreturn]] void fail(const char* message) const {exception_report::raise(std::string(message)+" at byte "+std::to_string(p));}
     void ws(){while(p<s.size() && (s[p]==' '||s[p]=='\n'||s[p]=='\r'||s[p]=='\t'))++p;}
     bool take(char c){ws();if(p<s.size()&&s[p]==c){++p;return true;}return false;}
     unsigned hex4(){unsigned n=0;for(int i=0;i<4;i++){if(p>=s.size())fail("Short Unicode escape");char c=s[p++];int d=c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;if(d<0)fail("Invalid Unicode escape");n=n*16+d;}return n;}

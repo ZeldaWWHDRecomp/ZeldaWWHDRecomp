@@ -18,7 +18,8 @@ class GuestBuildConfig(unittest.TestCase):
     def test_toolchain_argument_vector(self):
         with tempfile.TemporaryDirectory() as d:
             tc = setup.Toolchain(["compiler with spaces", "cc", "-target", "x86_64-linux-gnu.2.35"], [], [])
-            setup.write_guest_build_config(d, tc)
+            with mock.patch.object(setup, "ensure_setup_python", return_value=sys.executable):
+                setup.write_guest_build_config(d, tc)
             with open(os.path.join(d, "guest-sdk.json"), encoding="utf-8") as f:
                 config = json.load(f)
             self.assertEqual(config["compiler"], tc.cc)
@@ -42,7 +43,7 @@ class GuestBuildConfig(unittest.TestCase):
             cache = os.path.join(data, "toolchain", "zig-cache")
             tc = setup.Toolchain([paths["compiler"], "cc", "-target", "x86_64-linux-gnu.2.35"], [], [],
                                  env={"ZIG_GLOBAL_CACHE_DIR": cache, "UNRELATED_ENV": "not-persisted"})
-            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup.sys, "executable", paths["python"]):
+            with mock.patch.multiple(setup, PKG=release, PORTABLE=True), mock.patch.object(setup, "ensure_setup_python", return_value=paths["python"]):
                 setup.write_guest_build_config(data, tc)
             moved = os.path.join(directory, "moved-release")
             os.rename(release, moved)
@@ -59,6 +60,115 @@ class GuestBuildConfig(unittest.TestCase):
                              os.path.join(moved_data, "toolchain", "zig-cache"))
             self.assertNotIn("UNRELATED_ENV", config)
 
+
+
+class SetupPython(unittest.TestCase):
+    def test_probe_checks_codec_and_version_in_isolation(self):
+        with mock.patch.object(setup.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(setup.python_setup_capable("python with spaces"))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["python with spaces", "-I", "-c"])
+        self.assertIn("compression import zstd", command[3])
+        self.assertIn("(3, 14)", command[3])
+        for result in (mock.Mock(returncode=1),):
+            with mock.patch.object(setup.subprocess, "run", return_value=result):
+                self.assertFalse(setup.python_setup_capable("python"))
+        with mock.patch.object(setup.subprocess, "run", side_effect=setup.subprocess.TimeoutExpired("python", 15)):
+            self.assertFalse(setup.python_setup_capable("python"))
+
+    def test_windows_bundled_only_even_with_capable_ambient(self):
+        with mock.patch.multiple(setup, IS_WIN=True, PKG="release"), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True) as probe, \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), os.path.join("release", "tools", "python", "python.exe"))
+            probe.assert_called_once_with(os.path.join("release", "tools", "python", "python.exe"))
+            download.assert_not_called()
+        with mock.patch.multiple(setup, IS_WIN=True), \
+             mock.patch.object(setup, "python_setup_capable", return_value=False), \
+             mock.patch.object(setup, "download") as download:
+            with self.assertRaisesRegex(setup.SetupError, "complete Windows release"):
+                setup.ensure_setup_python("data")
+            download.assert_not_called()
+
+    def test_capable_ambient_no_download(self):
+        with mock.patch.multiple(setup, IS_WIN=False), \
+             mock.patch.object(setup, "python_setup_capable", return_value=True), \
+             mock.patch.object(setup, "download") as download:
+            self.assertEqual(setup.ensure_setup_python("data"), sys.executable)
+            download.assert_not_called()
+
+    def test_old_or_missing_codec_provisions_each_supported_platform(self):
+        for mac, arch, key in ((False, "x86_64", "linux"), (False, "aarch64", "linux-aarch64"),
+                               (True, "aarch64", "macos"), (True, "x86_64", "macos-x86_64")):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as d:
+                def fetch(url, dst, sha, size, label):
+                    self.assertEqual(url, setup.load_toolchains()["python"][key]["url"])
+                    with open(dst, "wb") as f:
+                        f.write(b"authored archive placeholder")
+                def unpack(command, **kwargs):
+                    os.makedirs(os.path.join(command[-1], "python", "bin"))
+                with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=mac, IS_LINUX=not mac), \
+                     mock.patch.object(setup, "host_arch", return_value=arch), \
+                     mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]), \
+                     mock.patch.object(setup, "download", side_effect=fetch), \
+                     mock.patch.object(setup, "run_logged", side_effect=unpack), \
+                     mock.patch.object(setup.shutil, "which", return_value="tar"):
+                    result = setup.ensure_setup_python(d)
+                self.assertTrue(result.endswith(os.path.join("setup-python", "python", "bin", "python3")))
+                with open(os.path.join(d, "setup-python", ".wwhd-python")) as f:
+                    self.assertEqual(f.read().strip(), setup.load_toolchains()["python"][key]["sha256"])
+
+    def test_cached_private_python_rechecked_for_codec(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "setup-python")
+            os.makedirs(root)
+            with open(os.path.join(root, ".wwhd-python"), "w") as f:
+                f.write(setup.load_toolchains()["python"]["linux"]["sha256"])
+            with mock.patch.multiple(setup, IS_WIN=False, IS_MAC=False, IS_LINUX=True), \
+                 mock.patch.object(setup, "host_arch", return_value="x86_64"), \
+                 mock.patch.object(setup, "python_setup_capable", side_effect=[False, True]) as probe, \
+                 mock.patch.object(setup, "download") as download:
+                result = setup.ensure_setup_python(d)
+            self.assertEqual(probe.call_count, 2)
+            download.assert_not_called()
+            self.assertTrue(result.startswith(root))
+
+    def test_failed_provision_does_not_rewrite_bridge(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            original = '{"format_version": 2, "python": ["old-python"]}'
+            with open(path, "w") as f:
+                f.write(original)
+            with mock.patch.object(setup, "ensure_setup_python", side_effect=setup.SetupError("download failed")):
+                with self.assertRaisesRegex(setup.SetupError, "download failed"):
+                    setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(f.read(), original)
+            self.assertFalse(os.path.exists(path + ".tmp"))
+
+    def test_portable_repair_keeps_external_python_absolute(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            with open(path, "w") as f:
+                json.dump({"format_version": 2}, f)
+            outside = os.path.abspath(os.path.join(d, "..", "external-python"))
+            with mock.patch.object(setup, "ensure_setup_python", return_value=outside), \
+                 mock.patch.multiple(setup, PORTABLE=True, PKG=d):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                self.assertEqual(json.load(f)["python"], [outside])
+
+    def test_repair_preserves_compiler_and_config_fields(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "guest-sdk.json")
+            config = {"format_version": 2, "python": ["old-python"], "compiler": ["cc", "-flag"], "include": "sdk"}
+            with open(path, "w") as f:
+                json.dump(config, f)
+            with mock.patch.object(setup, "ensure_setup_python", return_value="new-python"), mock.patch.object(setup, "PORTABLE", False):
+                setup.repair_guest_python(d)
+            with open(path) as f:
+                result = json.load(f)
+            self.assertEqual(result, dict(config, python=["new-python"]))
 
 
 class Keys(unittest.TestCase):
@@ -372,6 +482,22 @@ class Arch(unittest.TestCase):
         self.assertIn("aarch64", tcs["toolchains"]["zig-0.16.0-aarch64"]["url"])
         self.assertIn("aarch64", tcs["python"]["linux-aarch64"]["url"])
 
+    def test_windows_arm64_pins(self):
+        tcs = setup.load_toolchains()
+        tc = tcs["toolchains"]["llvm-mingw-20260922-aarch64"]
+        self.assertEqual(tc["kind"], "llvm-mingw")
+        self.assertEqual(tc["triple"], "aarch64-w64-mingw32")
+        self.assertIn("ucrt-aarch64", tc["url"])
+        self.assertNotIn("triple", tcs["toolchains"]["llvm-mingw-20260922"])  # x86-64: the default triple
+        self.assertIn("embed-arm64", tcs["python"]["windows-arm64"]["url"])
+        files = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "release", "python-windows-arm64-files.json")
+        with open(files) as f:
+            expected = json.load(f)
+        self.assertEqual(expected["sha256"], tcs["python"]["windows-arm64"]["sha256"])
+        self.assertEqual(expected["url"], tcs["python"]["windows-arm64"]["url"])
+        for name in ("python.exe", "pythonw.exe", "python3.dll", "LICENSE.txt"):
+            self.assertIn(name, expected["files"])
+
 
 class NoScriptHost(unittest.TestCase):
     """Antivirus heuristics read "unsigned program starts PowerShell" as a dropper (issue #58): the Windows setup
@@ -414,6 +540,11 @@ class BundledPython(unittest.TestCase):
         self.assertEqual(self.expected["url"], pin["url"])
         for name in ("python.exe", "pythonw.exe", "python3.dll", "LICENSE.txt"):
             self.assertIn(name, self.expected["files"])
+
+    def test_guard_picks_the_release_python(self):
+        self.assertEqual(self.guard.python_files("dist/WindWakerHD-v1-windows-arm64.zip"), self.guard.PYTHON_FILES_ARM64)
+        self.assertEqual(self.guard.python_files(os.path.join("x", "WindWakerHD-v1-windows-arm64", "")), self.guard.PYTHON_FILES_ARM64)
+        self.assertEqual(self.guard.python_files("dist/WindWakerHD-v1-windows-x86_64.zip"), self.guard.PYTHON_FILES)
 
     def test_guard_rejects_other_files(self):
         with tempfile.TemporaryDirectory() as d:
@@ -593,6 +724,129 @@ class CodeModsBuild(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.code_mods.hooks_option("yes")
 
+    def test_setup_choice_question_remembered_and_overrides(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {}, clear=True):
+            ctx = SimpleNamespace(data_dir=d, args=SimpleNamespace(code_mods=None),
+                                  state=lambda: {})
+            ui = mock.Mock(interactive=True)
+            ui.yesno.side_effect = lambda question, default: default
+            self.assertFalse(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_called_with("Build with code-mod support?", False)
+            Path(d, "code-mods-active.json").write_text(json.dumps({"state": "ready", "hooks": True}))
+            self.assertTrue(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_called_with("Build with code-mod support?", True)
+            ui.reset_mock()
+            ctx.args.code_mods = "0"
+            self.assertFalse(setup.setup_code_mods(ctx, ui))
+            ui.yesno.assert_not_called()
+            ctx.args.code_mods = None
+            with mock.patch.dict(os.environ, {"WWHD_CODE_MODS": "0"}):
+                self.assertFalse(setup.setup_code_mods(ctx, ui))
+                ui.yesno.assert_not_called()
+            Path(d, "code-mods-active.json").write_text("broken")
+            ctx.state = lambda: {"code_mods": True}
+            self.assertTrue(setup.setup_code_mods(ctx, setup.UI(False)))
+
+    def test_setup_writes_both_host_settings_preserving_other_options(self):
+        from pathlib import Path
+        import plistlib
+        with tempfile.TemporaryDirectory() as d:
+            for mac in (False, True):
+                filename = "display.plist" if mac else "settings.ini"
+                path = Path(d, "user", filename)
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(plistlib.dumps({"other": "keep"}) if mac else b"other=keep\ncode-mods=0\n")
+                with mock.patch.multiple(setup, IS_MAC=mac, PORTABLE=True), \
+                     mock.patch.dict(os.environ, {}, clear=True):
+                    for hooks in (True, False):
+                        setup.write_code_mods_setting(d, hooks)
+                        values = plistlib.loads(path.read_bytes()) if mac else dict(
+                            line.split("=", 1) for line in path.read_text().splitlines())
+                        self.assertEqual(values["other"], "keep")
+                        self.assertEqual(values["code-mods"], "1" if hooks else "0")
+
+    def test_setup_host_setting_locations_and_overrides(self):
+        from pathlib import Path
+        import plistlib
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {
+                "HOME": d, "USERPROFILE": d, "APPDATA": d, "XDG_CONFIG_HOME": d}, clear=True):
+            for mac, win, suffix in ((True, False, "Library/Application Support/wwhd/display.plist"),
+                                     (False, True, "WWHD/settings.ini"),
+                                     (False, False, "wwhd/settings.ini")):
+                with mock.patch.multiple(setup, IS_MAC=mac, IS_WIN=win, PORTABLE=False):
+                    setup.write_code_mods_setting(d, True)
+                    self.assertTrue(Path(d, suffix).is_file())
+                    override = Path(d, "override.plist" if mac else "override.ini")
+                    with mock.patch.dict(os.environ, {
+                            "WWHD_DISPLAY_SETTINGS" if mac else "WWHD_SETTINGS": str(override)}):
+                        setup.write_code_mods_setting(d, False)
+                    values = plistlib.loads(override.read_bytes()) if mac else dict(
+                        line.split("=", 1) for line in override.read_text().splitlines())
+                    self.assertEqual(values["code-mods"], "0")
+
+    def test_setup_install_publishes_choice_settings_and_variant(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        import plistlib
+        package_test = os.environ.get("WWHD_SETUP_MOD_PACKAGE_TEST")
+        # the test program needs the host's PATH (Windows: its DLLs) although setup runs in a clean environment
+        host_env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "SYSTEMROOT", "WINDIR")}
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {}, clear=True):
+            root = Path(d)
+            game = root / "game"
+            (game / "code").mkdir(parents=True)
+            (game / "code/cking.rpx").write_bytes(b"synthetic fingerprint input")
+            (root / "sdk").mkdir()
+            data = root / "data"
+            data.mkdir()
+            tc = SimpleNamespace(cc=["test-compiler"], env={}, desc="fixture")
+            args = SimpleNamespace(code_mods="1", jobs=4, shortcuts=False, keep_work=False)
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(game), args=args,
+                                  manifest={"platform": "fixture", "toolchain": {}, "exe": "fixture"},
+                                  exe=str(data / "bin/fixture"), exe_dir=str(data / "bin"),
+                                  version="test", state=lambda: {})
+            def translate(game, gen, hooks=False):
+                Path(gen).mkdir()
+                Path(gen, "mode.txt").write_text("on" if hooks else "off")
+                return 1
+            def link(tc, manifest, objs, work, target):
+                Path(target).write_bytes(b"synthetic executable")
+            with mock.patch.multiple(setup, PKG=root, PORTABLE=True, IS_MAC=True), \
+                 mock.patch.object(setup, "valid_game_folder", return_value=True), \
+                 mock.patch.object(setup, "game_folder_title", return_value=None), \
+                 mock.patch.object(setup, "check_game_version"), \
+                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                 mock.patch.object(setup, "run_logged", return_value="fixture compiler"), \
+                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                 mock.patch.object(setup, "recompile", side_effect=translate) as recomp, \
+                 mock.patch.object(setup, "compile_gamecode", return_value=[]), \
+                 mock.patch.object(setup, "link_game", side_effect=link), \
+                 mock.patch.object(setup, "write_guest_build_config"):
+                for mode in ("1", "0", "1"):
+                    args.code_mods = mode
+                    state = setup.install(ctx, ("installed", str(game)))
+                    on = mode == "1"
+                    self.assertEqual(state["code_mods"], on)
+                    self.assertEqual(recomp.call_args.kwargs["hooks"], on)
+                    values = plistlib.loads((data / "user/display.plist").read_bytes())
+                    self.assertEqual(values["code-mods"], mode)
+                    active = json.loads((data / "code-mods-active.json").read_text())
+                    ready = json.loads((Path(active["exe"]).parents[1] / "ready.json").read_text())
+                    self.assertEqual(active["hooks"], on)
+                    self.assertEqual(ready["hooks"], on)
+                    self.assertEqual(active["fingerprint"], ready["fingerprint"])
+                    self.assertTrue(Path(active["exe"]).is_file())
+                    self.assertEqual(active["user_dir"], str((data / "user").resolve()))
+                    if package_test:
+                        with mock.patch.object(setup, "IS_MAC", False):
+                            setup.write_code_mods_setting(data, on)
+                        import subprocess
+                        subprocess.run([package_test,
+                                        "--setup-code-mods", str(data)], check=True, env=host_env)
+
+
     def test_fingerprint_tracks_build_inputs_and_mode(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as d:
@@ -647,6 +901,9 @@ class CodeModsBuild(unittest.TestCase):
                 generated = root / "initial-gen"
                 generated.mkdir()
                 setup.code_mods.remember_installed(setup, ctx, tc, False, initial, generated, [])
+                active = json.loads((data / "code-mods-active.json").read_text())
+                self.assertFalse(active["hooks"])
+                self.assertTrue(Path(active["exe"]).is_file())
                 off = setup.code_mods.rebuild(setup, ctx, False)
                 self.assertTrue(off["cached"])
                 on = setup.code_mods.rebuild(setup, ctx, True)
@@ -718,6 +975,134 @@ class CodeModsBuild(unittest.TestCase):
             with self.assertRaisesRegex(setup.SetupError, "cancelled"):
                 setup.code_mods.rebuild(setup, ctx, True, status, cancel)
             self.assertEqual(json.loads(status.read_text())["state"], "error")
+
+
+class MacAppIcon(unittest.TestCase):
+    """The installed macOS app gets the game's own icon, made from the player's game files."""
+
+    def _game(self, d):
+        import struct
+        meta = os.path.join(d, "game", "meta")
+        os.makedirs(meta)
+        w = h = 4
+        header = bytes([0, 0, 2]) + bytes(9) + struct.pack("<HH", w, h) + bytes([32, 8])
+        with open(os.path.join(meta, "iconTex.tga"), "wb") as f:
+            f.write(header + bytes([10, 20, 30, 255]) * (w * h))
+
+    def test_icns_holds_the_png(self):
+        import struct
+        with tempfile.TemporaryDirectory() as d:
+            self._game(d)
+            png = setup.game_icon_png(d)
+            icns = setup.mac_icns(png)
+            self.assertEqual(icns[:4], b"icns")
+            self.assertEqual(struct.unpack(">I", icns[4:8])[0], len(icns))
+            self.assertEqual(icns[8:12], b"ic07")
+            self.assertEqual(icns[16:], png)
+
+    @unittest.skipUnless(sys.platform == "darwin", "codesign")
+    def test_mac_app_icon_only_with_game_icon(self):
+        import plistlib
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "exe")
+            with open(exe, "w") as f:
+                f.write("#!/bin/sh\n")
+            for with_icon in (False, True):
+                data = os.path.join(d, "data%d" % with_icon)
+                os.makedirs(data)
+                if with_icon:
+                    self._game(data)
+                app = os.path.join(d, "Apps%d" % with_icon, "Wind Waker HD.app")
+                setup.mac_app(app, exe, data, "v0.2.11")
+                with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+                    info = plistlib.load(f)
+                self.assertEqual(info.get("CFBundleIconFile"), "AppIcon" if with_icon else None)
+                self.assertEqual(os.path.isfile(os.path.join(app, "Contents", "Resources", "AppIcon.icns")), with_icon)
+
+
+class Download(unittest.TestCase):
+    """setup.download: retries, resume with range requests, the player's own copy (issue #113)."""
+    DATA = bytes(range(256)) * 4096  # 1 MiB of fixture bytes
+    SHA = hashlib.sha256(DATA).hexdigest()
+
+    class Response:
+        def __init__(self, data, status, fail_after=None):
+            self.data, self.status, self.fail_after, self.pos = data, status, fail_after, 0
+            self.headers = {"Content-Length": str(len(data))}
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n):
+            if self.fail_after is not None and self.pos >= self.fail_after:
+                raise ConnectionResetError("connection reset by peer")
+            end = min(len(self.data), self.pos + n, self.fail_after if self.fail_after is not None else len(self.data))
+            chunk = self.data[self.pos:end]; self.pos = end
+            return chunk
+
+    def serve(self, fail_first):
+        calls = []
+        def urlopen(req, timeout=None):
+            rng = req.get_header("Range")
+            calls.append(rng)
+            start = int(rng.split("=")[1].rstrip("-")) if rng else 0
+            body = self.DATA[start:]
+            fail = 300000 if (fail_first and len(calls) == 1) else None
+            return self.Response(body, 206 if rng else 200, fail)
+        return urlopen, calls
+
+    def test_resumes_after_interruption(self):
+        urlopen, calls = self.serve(fail_first=True)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            dst = os.path.join(d, "out", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), self.DATA)
+            self.assertEqual(calls, [None, "bytes=300000-"])
+
+    def test_gives_up_with_hint(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("timed out")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test",
+                               attempts=2, wait=0)
+            self.assertIn("put tc.zip in the Wind Waker HD folder", str(e.exception))
+
+    def test_certificate_error_names_security_software(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.download("https://example.invalid/tc.zip", os.path.join(d, "tc.zip"), self.SHA, 1, "test", wait=0)
+            self.assertIn("antivirus or security program", str(e.exception))
+
+    def test_certificate_error_falls_back_to_windows_curl(self):
+        def urlopen(req, timeout=None):
+            raise setup.urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate")
+        def curl_download(curl, url, tmp):
+            with open(tmp, "wb") as f:
+                f.write(self.DATA)
+            return True
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d), \
+                mock.patch.object(setup, "windows_curl", lambda: "curl.exe"), \
+                mock.patch.object(setup, "curl_download", curl_download):
+            dst = os.path.join(d, "tc.zip")
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
+
+    def test_uses_players_own_copy(self):
+        def urlopen(req, timeout=None):
+            raise AssertionError("must not download")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen), \
+                mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+            with open(os.path.join(d, "tc.zip"), "wb") as f:
+                f.write(self.DATA)
+            dst = os.path.join(d, "toolchain", "tc.zip"); os.makedirs(os.path.dirname(dst))
+            setup.download("https://example.invalid/tc.zip", dst, self.SHA, len(self.DATA), "test", wait=0)
+            self.assertEqual(setup.file_sha256(dst), self.SHA)
 
 
 if __name__ == "__main__":

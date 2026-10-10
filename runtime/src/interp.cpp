@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "interp_pacing.h"
+#include "mods/fast_forward.h"
 #include "guest_addr.h"
 #include "render_prof.h"
 #include "perf_metrics.h"
@@ -101,7 +102,7 @@ static std::atomic<bool> g_on{[] {
     const char* e = getenv("WWHD_INTERP");
     return (e ? atoi(e) != 0 : g_env_fps != 0) && !true60::enabled();
 }()};
-bool interp_on() { return g_on.load(std::memory_order_relaxed); }
+bool interp_on() { return g_on.load(std::memory_order_relaxed) && !mods::fast_forward_active(); }
 // the pass structure below is used by both 60 fps modes and the 120/240 fps interpolation:
 // interpolation (30 Hz logic) and true 60 (true60.cpp: 60 Hz processes also execute on the
 // in-between "hold" passes; always one per step)
@@ -145,7 +146,7 @@ void set_fps(int f) {
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
 }
 // the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
-int mode() { return true60::enabled() ? 2 : interp_on() ? 1 : 0; }
+int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
     g_on = false;
     true60::set_enabled(false);
@@ -530,6 +531,7 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
     }
 }
 }  // namespace
+void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
 // J3DModel::viewCalc(J3DModel*)
@@ -649,15 +651,15 @@ void ss_reset() {
     fx_ss_reset();
     true60::ss_reset();
 }
-// Paced interpolation (WWHD_INTERP_PACED=1, the default on Android and at 120/240 fps): an
-// in-between pass is drawn only when it fits before the next logic step is due (33.3 ms after the
-// last one, measured with the passes' recent durations); otherwise the rest of the step's
+// Paced interpolation (WWHD_INTERP_PACED=1, the default on Android, Windows on ARM64 and at 120/240
+// fps): an in-between pass is drawn only when it fits before the next logic step is due (33.3 ms
+// after the last one, measured with the passes' recent durations); otherwise the rest of the step's
 // in-between passes are dropped and the next step waits for its time. The game then always advances
 // 30 steps a second, and the picture gets 60/120/240 frames a second where the device draws (and
 // the display shows) them fast enough and fewer where it does not. Without pacing, every logic step
 // is followed by all its in-between passes, and a device that draws fewer frames a second runs the
-// whole game slower than real time (at 120/240 fps on a 60 Hz display with vsync: half or a
-// quarter of the speed), which is why pacing is on by default there.
+// whole game slower than real time (at 120/240 fps on a 60 Hz display with vsync: half or a quarter
+// of the speed), which is why pacing is on by default there.
 // At 120/240 fps the logic pass also plans how many in-between frames the step gets (as many as
 // fit at the recent pass duration, at least one) and spaces them evenly over the step
 // (t = k/(n+1)): a 60 Hz display then gets clean 60 fps blending instead of uneven frames and a
@@ -666,8 +668,11 @@ void ss_reset() {
 // for 60 fps and one for 120/240 fps); the variable sets both at start and wins over the saved
 // values.
 static const char* const g_env_paced = getenv("WWHD_INTERP_PACED");
+// Windows on ARM64 (Snapdragon X) draws 60 fps only where the Adreno driver's per-draw CPU cost
+// allows: unpaced, the Outset save-state benchmark ran 16 logic steps a second (half speed, and the
+// audio, which follows the game's speed, crackled)
 static std::atomic<bool> g_paced{[] {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || (defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__)))
     return !g_env_paced || atoi(g_env_paced) != 0;
 #else
     return g_env_paced && atoi(g_env_paced) != 0;
@@ -713,7 +718,9 @@ constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono:
 // a dropped in-between pass (and at 120/240 fps before every logic pass that comes early)
 static void paced_pass_start() {
     static bool previousRecord = false;
-    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
+    if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false;
+        if (mods::fast_forward_active()) { g_wait_step = false; g_last_entry = {}; g_last_logic = {}; }
+        return; }
     if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
     const auto now = pace_clock::now();
@@ -894,6 +901,9 @@ extern "C" void hook_0203593C(Cpu* c) {
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
+    const bool was_fast_forward = mods::fast_forward_active();
+    mods::fast_forward_service();
+    const bool ff_transition = was_fast_forward != mods::fast_forward_active();
     g_passes++;
     // test aid: WWHD_INTERP_AT_STEP=n switches interpolation on after n frames
     static uint64_t passes = 0;
@@ -904,7 +914,17 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (at60 && ++passes60 == at60) set_mode(2);
     paced_pass_start();
     true60::new_pass();
-    true60::pass_begin(!enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    if (ff_transition) {
+        for (auto& p : g_prev) p = Prev{};
+        g_last_step = 0;
+        g_models.clear();
+        g_record_passes += 8;
+        g_hold_next = false;
+        g_phase = 0;
+        g_step_n = 1;
+        fx_ss_reset();
+    }
     if (!enabled() || !g_hold_next) {
         g_logic_steps++;
         true60_test::logic_step(g_logic_steps);

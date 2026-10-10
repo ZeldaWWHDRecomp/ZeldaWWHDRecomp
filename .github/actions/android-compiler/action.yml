@@ -1,0 +1,73 @@
+# The compiler that runs on Android (tools/android/build_toolchain.py, about an hour per ABI), cached.
+# Leaves the validated build in build/compiler/package; tools/android/package_toolchain.py (cheap, run by
+# the caller) turns it into the APK's compiler files. The cache key is the ABI, the pinned LLVM revision
+# and NDK, and build_toolchain.py itself, so the compiler is rebuilt only when one of those changes.
+#
+# Cache scope (GitHub): a run restores caches saved on its own branch or tag and on the default branch
+# (main), and a pull request also those of its base branch. Builds on devel and pull requests to it share
+# devel's cache; release tags see main's, which release.yml's nightly run on main keeps warm. Without a
+# hit the compiler is built here (and saved for this ref).
+#
+# Needs: the Android SDK ($ANDROID_HOME, as on GitHub's Ubuntu runners), Ninja, Python 3.
+name: Android-hosted compiler
+description: Restore or build the Android-hosted clang/lld (build/compiler/package)
+inputs:
+  abi:
+    description: arm64-v8a or x86_64
+    required: true
+  lookup-only:
+    description: "true: only make sure the cache exists (build and save it when it does not), restore nothing"
+    default: "false"
+outputs:
+  cache-hit:
+    description: "true when the compiler came from the cache"
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      run: |
+        read -r LLVM NDK < <(python3 -c "
+        import sys; sys.path.insert(0, 'tools/android'); import build_toolchain as b
+        print(b.LLVM_REVISION, b.NDK_REVISION)")
+        echo "llvm=$LLVM" >> "$GITHUB_OUTPUT"
+        echo "ndk=$NDK" >> "$GITHUB_OUTPUT"
+        echo "key=android-clang-v1-${{ inputs.abi }}-$ImageOS-llvm-$LLVM-ndk-$NDK-${{ hashFiles('tools/android/build_toolchain.py') }}" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      uses: actions/cache/restore@v5
+      with:
+        path: build/compiler/package
+        key: ${{ steps.pins.outputs.key }}
+        lookup-only: ${{ inputs.lookup-only }}
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/checkout@v5
+      with:
+        repository: llvm/llvm-project
+        ref: ${{ steps.pins.outputs.llvm }}
+        path: build/llvm-source
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      name: Build compiler that runs on Android (no cache for this key)
+      shell: bash
+      run: |
+        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${{ steps.pins.outputs.ndk }}" > /dev/null
+        start=$SECONDS
+        python3 tools/android/build_toolchain.py --source build/llvm-source \
+          --ndk "$ANDROID_HOME/ndk/${{ steps.pins.outputs.ndk }}" --abi "${{ inputs.abi }}" \
+          --out build/compiler --jobs 4
+        echo "compiler built in $(( (SECONDS - start) / 60 )) min"
+        rm -rf build/compiler/native build/compiler/target build/llvm-source
+        df -h .
+
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: build/compiler/package
+        key: ${{ steps.pins.outputs.key }}
+
+    - if: steps.restore.outputs.cache-hit == 'true' && inputs.lookup-only != 'true'
+      shell: bash
+      run: echo "compiler restored from cache ${{ steps.pins.outputs.key }}"

@@ -6,6 +6,10 @@ has its own offset assertion; no host wrapper implementation is copied.
 import re
 
 CURATED = {
+    'animation': ('include/m_Do/m_Do_ext.h', ['J3DFrameCtrl', 'mDoExt_McaMorf']),
+    'ptmf': ('include/d/actor/d_a_npc_ba1.h', ['ProcFunc_l']),
+    'valoo': ('d/actor/d_a_dr.cpp', ['dr_class']),
+    'medli': ('include/d/actor/d_a_npc_md.h', ['daNpc_Md_c']),
     'messages': ('include/d/actor/d_a_tag_msg.h', ['daTag_Msg_c']),
     'actor': ('include/f_op/f_op_actor.h', ['actor_place', 'dKy_tevstr_c', 'fopAc_ac_c']),
     'link': ('include/d/actor/d_a_player_main.h', ['daPy_actorKeep_l', 'daPy_lk_c']),
@@ -13,6 +17,7 @@ CURATED = {
     'items': ('include/d/actor/d_a_itembase.h', ['daItemBase_c']),
 }
 FIELD = re.compile(r'/\*\s*(0x[0-9A-Fa-f]+)\s*\*/\s*(be<\w+>|gptr<[^>]+>|\w+)\s+(\w+)(\[[0-9xXa-fA-F+*/ ()-]+\])?\s*;')
+AGGREGATES = {'cXyz': 12, 'csXyz': 6, 'actor_place': 20, 'ProcFunc_l': 8, 'J3DFrameCtrl': 16, 'daPy_mtxFollowEcallBack_c': 12, 'dKy_tevstr_c': 0x1C8}
 PRIMITIVES = {'u8', 's8', 'u16', 's16', 'u32', 's32', 'f32', 'f64', 'char'}
 
 
@@ -30,7 +35,7 @@ def body_of(text, name):
     raise ValueError('unclosed public layout: ' + name)
 
 
-def layout(text, name):
+def layout(text, name, selected=None):
     size = re.search(r'WWHD_SIZE\(\s*' + re.escape(name) + r'\s*,\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*\)', text)
     if not size:
         raise ValueError('missing public size: ' + name)
@@ -44,7 +49,7 @@ def layout(text, name):
         if kind.startswith('gptr<'):
             kind = 'u32'  # guest address, never a host pointer
         kind = re.sub(r'be<(\w+)>', r'\1', kind)
-        if kind not in PRIMITIVES:
+        if kind not in PRIMITIVES and kind not in AGGREGATES:
             continue
         fields.append((int(offset, 16), kind, field, array or ''))
     known = {f[2] for f in fields}
@@ -57,7 +62,21 @@ def layout(text, name):
             kind = re.sub(r'be<(\w+)>', r'\1', declaration[1])
             if kind in PRIMITIVES:
                 fields.append((int(offset[2], 16), kind, field, ''))
+    if selected is not None:
+        fields = [field for field in fields if field[2] in selected]
+        if {field[2] for field in fields} != set(selected):
+            raise ValueError("public selected fields changed: " + name)
     fields.sort()
+    for offset, kind, field, array in fields:
+        if kind in AGGREGATES:
+            count = 1
+            if array:
+                match = re.fullmatch(r'\[(0x[0-9A-Fa-f]+|[0-9]+)\]', array)
+                if not match:
+                    raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
+                count = int(match[1], 0)
+            if count < 1 or offset + AGGREGATES[kind] * count > int(size[1], 0):
+                raise ValueError('unsupported public aggregate extent: ' + name + '.' + field)
     lines = [f'typedef union {name} {{', f'    u8 bytes[{size[1]}];']
     for offset, kind, field, array in fields:
         pad = f'u8 _pad_{field}[0x{offset:X}]; ' if offset else ''
@@ -68,19 +87,50 @@ def layout(text, name):
     return '\n'.join(lines) + '\n'
 
 
+def vectors(text):
+    """Only the public xyz component declarations, never methods or wrappers."""
+    lines = ['#pragma once', '#include "../wwhd_guest.h"']
+    for name, primitive, extent in [('cXyz', 'f32', 12), ('csXyz', 's16', 6)]:
+        body, _ = body_of(text, name)
+        declarations = re.findall(r'be<([^>]+)>\s+([^;{}]+);', body)
+        if declarations != [(primitive, 'x, y, z')]:
+            raise ValueError('public vector declaration changed: ' + name)
+        size = re.findall(r'WWHD_SIZE\(\s*' + name + r'\s*,\s*(0x[0-9A-Fa-f]+|[0-9]+)\s*\)', text)
+        if len(size) != 1 or int(size[0], 0) != extent:
+            raise ValueError('public vector size changed: ' + name)
+        lines += [f'typedef struct {name} {{ {primitive} x, y, z; }} {name};']
+        # Assertions work in both C and C++ without exporting a helper macro.
+        for expression in [f'sizeof({name}) == {extent}'] + [
+                f'__builtin_offsetof({name}, {field}) == {i * (extent // 3)}'
+                for i, field in enumerate(('x', 'y', 'z'))]:
+            lines += ['#ifdef __cplusplus', f'static_assert({expression}, "{name} layout");',
+                      '#else', f'_Static_assert({expression}, "{name} layout");', '#endif']
+    return '\n'.join(lines) + '\n'
+
+
 def generate(root, output, revision):
     output.mkdir(parents=True, exist_ok=True)
+    vector_source = 'include/SSystem/SComponent/c_xyz.h'
+    vector_header = (f'/* Generated public declarations from ZeldaWWHDDecomp/wwhd {revision}.\n'
+                     f' * Source: wwhd_src/{vector_source}; CC0-1.0. */\n')
+    (output / 'vectors.h').write_text(vector_header + vectors((root / 'wwhd_src' / vector_source).read_text()))
     for subsystem, (source, names) in CURATED.items():
         text = (root / 'wwhd_src' / source).read_text()
         lines = [f'/* Generated from public ZeldaWWHDDecomp/wwhd {revision}.',
                  f' * Source: wwhd_src/{source}; CC0-1.0 (public-wwhd-LICENSE).',
-                 ' * Partial views: named scalar fields only; unknown fields remain bytes.',
+                 ' * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.',
                  ' * Source offset qualifications still apply; see the public source. */',
-                 '#pragma once', '#include "../wwhd_guest.h"',
+                 '#pragma once', '#include "../wwhd_guest.h"', '#include "vectors.h"',
                  '#ifndef WWHD_SDK_ASSERT', '#ifdef __cplusplus',
                  '#define WWHD_SDK_ASSERT(x, message) static_assert(x, message)', '#else',
                  '#define WWHD_SDK_ASSERT(x, message) _Static_assert(x, message)', '#endif', '#endif',
                  'WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");', '']
+        if subsystem != 'ptmf':
+            lines.append('#include "ptmf.h"')
+        if subsystem in ('link',):
+            lines.append('#include "animation.h"')
+            lines.append('#include "objects.h"')
         for name in names:
-            lines.append(layout(text, name))
+            selected = {'mDoExt_McaMorf': {'mpModel', 'mFrameCtrl'}, 'daNpc_Md_c': {'mpMorf'}, 'dr_class': {'mpMorf', 'mMode', 'mCurrBckIdx'}}.get(name)
+            lines.append(layout(text, name, selected))
         (output / (subsystem + '.h')).write_text('\n'.join(lines))

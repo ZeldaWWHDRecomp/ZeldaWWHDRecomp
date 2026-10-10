@@ -44,6 +44,24 @@ int main() {
         assert(store.append("shapes",primitives,command));
     }
     assert(store.commit("shapes",primitives));store.drop("shapes");
+    // Clips are transactional, owner-scoped and balanced within one list.
+    auto clipped=store.begin("clip",0);command=Command{};command.kind=Command::ClipPush;command.w=20;command.h=30;
+    assert(!store.append("other",clipped,command));
+    for(unsigned i=0;i<kMaxClipDepth;++i)assert(store.append("clip",clipped,command));
+    assert(!store.append("clip",clipped,command)&&!store.commit("clip",clipped));
+    assert(store.snapshot(0).empty());
+    clipped=store.begin("clip",0);assert(store.append("clip",clipped,command));
+    assert(!store.commit("clip",clipped)); // no clip may escape its callback
+    clipped=store.begin("clip",0);command.kind=Command::ClipPop;
+    assert(!store.append("clip",clipped,command)&&!store.commit("clip",clipped));
+    clipped=store.begin("clip",0);command.kind=Command::ClipPush;
+    for(unsigned i=0;i<kMaxClipDepth;++i)assert(store.append("clip",clipped,command));
+    command.kind=Command::ClipPop;
+    assert(!store.append("other",clipped,command));
+    for(unsigned i=0;i<kMaxClipDepth;++i)assert(store.append("clip",clipped,command));
+    assert(store.commit("clip",clipped));store.drop("clip");
+    clipped=store.begin("clip",0);command.kind=Command::ClipPush;command.w=-1;
+    assert(!store.append("clip",clipped,command)&&!store.commit("clip",clipped));
     // Released textures remain charged while old renderer snapshots retain them.
     Store quota;uint8_t pixel[4]{};std::vector<Handle> handles;
     for(unsigned i=0;i<kMaxImages;++i){auto h=quota.create_image("q",1,1,4,pixel,4);assert(h);handles.push_back(h);}

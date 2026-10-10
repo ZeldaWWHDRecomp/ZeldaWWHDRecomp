@@ -14,7 +14,7 @@
 
 namespace guestmods::hud {
 using Handle = uint32_t;
-inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768;
+inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768, kMaxClipDepth=16;
 inline constexpr size_t kMaxPixels=16*1024*1024, kMaxText=64*1024;
 struct Image { uint32_t width,height; std::vector<uint8_t> rgba; };
 enum class Anchor : uint32_t { Center,TopLeft,Top,TopRight,Left,Right,BottomLeft,Bottom,BottomRight };
@@ -30,7 +30,7 @@ inline Point anchored(float x,float y,Anchor anchor,float width,float height,flo
     return {(extra+x+shift)*scale,y*scale};
 }
 struct Command {
-    enum Kind { Rect,Text,Picture,RectOutline,Circle,CircleOutline,Line } kind=Rect;
+    enum Kind { Rect,Text,Picture,RectOutline,Circle,CircleOutline,Line,ClipPush,ClipPop } kind=Rect;
     float x=0,y=0,w=0,h=0,size=0;
     float thickness=1,rotation=0,u0=0,v0=0,u1=1,v1=1;
     Anchor anchor=Anchor::Center;
@@ -43,6 +43,7 @@ struct List {
     std::string owner;
     uint32_t screen=0;
     size_t text_bytes=0,vertices=0;
+    uint32_t clip_depth=0;
     bool invalid=false;
     std::vector<Command> commands;
 };
@@ -88,13 +89,20 @@ class Store {
         auto it=pending.find(handle);
         if(it==pending.end()||it->second.owner!=owner)return false;
         auto& list=it->second;
-        size_t vertices=command.kind==Command::Text?std::min(command.text.size(),kMaxText+1)*4:
+        bool clip=command.kind==Command::ClipPush||command.kind==Command::ClipPop;
+        if((command.kind==Command::ClipPush&&list.clip_depth>=kMaxClipDepth)||
+           (command.kind==Command::ClipPop&&!list.clip_depth)) {
+            list.invalid=true;errors[owner]="HUD draw list dropped: invalid clip nesting";return false;
+        }
+        size_t vertices=clip?0:command.kind==Command::Text?std::min(command.text.size(),kMaxText+1)*4:
                         (command.kind==Command::Circle||command.kind==Command::CircleOutline)?256:32;
         if(list.invalid||!geometry(command)||(command.kind==Command::Text&&!utf8(command.text))||list.commands.size()>=kMaxCommands||
            command.text.size()>kMaxText-list.text_bytes||vertices>kMaxVertices-list.vertices) {
             list.invalid=true;errors[owner]="HUD draw list dropped: invalid geometry or element/vertex/text limit";
             return false;
         }
+        if(command.kind==Command::ClipPush)++list.clip_depth;
+        if(command.kind==Command::ClipPop)--list.clip_depth;
         list.text_bytes+=command.text.size();list.vertices+=vertices;
         list.commands.push_back(std::move(command));return true;
     }
@@ -113,7 +121,7 @@ public:
     }
     bool append(const std::string& owner,Handle h,Command command) {
         // Image references can only come from the ownership-checked picture() method.
-        if(command.kind==Command::Picture||command.image||command.kind<Command::Rect||command.kind>Command::Line)
+        if(command.kind==Command::Picture||command.image||command.kind<Command::Rect||command.kind>Command::ClipPop)
             return fail(owner,h,"HUD draw list dropped: invalid primitive");
         std::lock_guard lock(mutex);return append_locked(owner,h,std::move(command));
     }
@@ -154,6 +162,7 @@ public:
         std::lock_guard lock(mutex);auto it=pending.find(h);
         if(it==pending.end()||it->second.owner!=owner)return false;
         auto key=std::make_pair(owner,it->second.screen);
+        if(it->second.clip_depth){it->second.invalid=true;errors[owner]="HUD draw list dropped: unbalanced clip stack";}
         bool valid=!it->second.invalid;
         if(!valid||it->second.commands.empty())published.erase(key);
         else published[key]=std::make_shared<const List>(std::move(it->second));

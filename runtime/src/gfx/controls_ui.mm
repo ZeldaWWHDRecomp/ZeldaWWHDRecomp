@@ -1013,13 +1013,14 @@ static NSTextField* label(NSString* s) {
     which.toolTip = @"Which Wii U controller the keyboard and your controllers act as (same as the Input menu). "
                     @"Both use the same mapping.";
     self.which = which;
-    NSSegmentedControl* fl = [NSSegmentedControl segmentedControlWithLabels:@[@"Face by position", @"Face by label (Xbox)"]
+    NSSegmentedControl* fl = [NSSegmentedControl segmentedControlWithLabels:@[@"Face by position", @"Face by label (Xbox)", @"Face automatic"]
                                                                 trackingMode:NSSegmentSwitchTrackingSelectOne
                                                                       target:self
                                                                       action:@selector(faceLayoutChanged:)];
     fl.toolTip = @"Which host face buttons drive the Wii U's A/B/X/Y (issue #78). By position: the bottom "
                  @"button is B (Nintendo layout). By label: the button named A is A — on an Xbox pad that "
-                 @"makes A accept/act and B go back. Only these four bindings are rewritten.";
+                 @"makes A accept/act and B go back. Automatic reads the labels printed on the pad that was "
+                 @"plugged in first. Only these four bindings are rewritten.";
     self.faceLayout = fl;
     NSTextField* pi = label(@"");
     pi.textColor = NSColor.secondaryLabelColor;
@@ -1093,9 +1094,13 @@ static NSTextField* label(NSString* s) {
     self.deadzone.doubleValue = _st.m.deadzone;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
-    // kCustom: no segment chosen (as the overlay's "(custom)"); either segment then applies its preset
-    FaceLayout fl = face_layout(_st.m);
-    self.faceLayout.selectedSegment = fl == FaceLayout::kCustom ? -1 : fl == FaceLayout::kLabels ? 1 : 0;
+    // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
+    // Automatic is segment 2 whatever the bindings resolved to (as the overlay's "(-> ...)").
+    if (_st.m.face_auto) self.faceLayout.selectedSegment = 2;
+    else {
+        FaceLayout fl = face_layout(_st.m);
+        self.faceLayout.selectedSegment = fl == FaceLayout::kCustom ? -1 : fl == FaceLayout::kLabels ? 1 : 0;
+    }
 }
 
 - (void)syncWhich {
@@ -1343,7 +1348,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 
 - (void)assignPad:(int)p {
     int a = _st.capAction;
-    _st.m.pad[a] = p;
+    set_pad_binding(_st.m, a, p);  // a hand-edited face binding drops the Automatic preset
     _st.capAction = -1;
     [self commit];
     auto others = pad_users(_st.m, p, a);
@@ -1360,7 +1365,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 
 - (void)clearAction:(int)a slot:(int)slot {
     if (_st.capAction == a) _st.capAction = -1;
-    if (slot == kSlotPad) _st.m.pad[a] = kPadNone;
+    if (slot == kSlotPad) set_pad_binding(_st.m, a, kPadNone);
     else _st.m.keys[a][slot] = kNoKey;
     [self commit];
     [self setStatus:[NSString stringWithFormat:@"Cleared %@ (%s).", ns(action_label(a)),
@@ -1374,9 +1379,9 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
     switch (what) {
     case 0: [self beginCapture:a mode:kCapAny]; return;
     case 1: _st.m.keys[a].fill(kNoKey); break;
-    case 2: _st.m.pad[a] = kPadNone; break;
-    case 3: _st.m.keys[a].fill(kNoKey); _st.m.pad[a] = kPadNone; break;
-    case 4: _st.m.keys[a] = d.keys[a]; _st.m.pad[a] = d.pad[a]; break;
+    case 2: set_pad_binding(_st.m, a, kPadNone); break;
+    case 3: _st.m.keys[a].fill(kNoKey); set_pad_binding(_st.m, a, kPadNone); break;
+    case 4: _st.m.keys[a] = d.keys[a]; set_pad_binding(_st.m, a, d.pad[a]); break;
     }
     if (_st.capAction == a) _st.capAction = -1;
     [self commit];
@@ -1443,10 +1448,14 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 
 - (void)faceLayoutChanged:(NSSegmentedControl*)c {
     // the same as Input > Face buttons; rewrites the four face bindings only
-    apply_face_layout(_st.m, c.selectedSegment == 1 ? FaceLayout::kLabels : FaceLayout::kPosition);
+    if (c.selectedSegment == 2) set_face_auto(_st.m, true);
+    else apply_face_layout(_st.m, c.selectedSegment == 1 ? FaceLayout::kLabels : FaceLayout::kPosition);
     [self commit];
     [self.padView invalidateGeo];
-    [self setStatus:[NSString stringWithFormat:@"Face buttons: %s.", face_layout_label(face_layout(_st.m))] level:0];
+    [self setStatus:_st.m.face_auto
+                     ? [NSString stringWithFormat:@"Face buttons: automatic (%s).", face_layout_label(face_layout(_st.m))]
+                     : [NSString stringWithFormat:@"Face buttons: %s.", face_layout_label(face_layout(_st.m))]
+               level:0];
 }
 
 // ---- window

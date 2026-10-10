@@ -1,9 +1,10 @@
 /* Generated from public ZeldaWWHDDecomp/wwhd 47e1dbc3886cfd8233859dffd73efc41a04a9130.
  * Source: wwhd_src/include/f_op/f_op_actor.h; CC0-1.0 (public-wwhd-LICENSE).
- * Partial views: named scalar fields only; unknown fields remain bytes.
+ * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.
  * Source offset qualifications still apply; see the public source. */
 #pragma once
 #include "../wwhd_guest.h"
+#include "vectors.h"
 #ifndef WWHD_SDK_ASSERT
 #ifdef __cplusplus
 #define WWHD_SDK_ASSERT(x, message) static_assert(x, message)
@@ -13,12 +14,17 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
 typedef union actor_place {
     u8 bytes[0x14];
+    struct __attribute__((packed)) { cXyz pos; };
+    struct __attribute__((packed)) { u8 _pad_angle[0xC]; csXyz angle; };
     struct __attribute__((packed)) { u8 _pad_roomNo[0x12]; s8 roomNo; };
     struct __attribute__((packed)) { u8 _pad_field_0x13[0x13]; u8 field_0x13; };
 } actor_place;
 WWHD_SDK_ASSERT(sizeof(actor_place) == 0x14, "actor_place size");
+WWHD_SDK_ASSERT(__builtin_offsetof(actor_place, pos) == 0x0, "actor_place.pos");
+WWHD_SDK_ASSERT(__builtin_offsetof(actor_place, angle) == 0xC, "actor_place.angle");
 WWHD_SDK_ASSERT(__builtin_offsetof(actor_place, roomNo) == 0x12, "actor_place.roomNo");
 WWHD_SDK_ASSERT(__builtin_offsetof(actor_place, field_0x13) == 0x13, "actor_place.field_0x13");
 
@@ -41,6 +47,7 @@ typedef union fopAc_ac_c {
     struct __attribute__((packed)) { u8 _pad__0B8[0xB8]; u8 _0B8[0xF4 - 0xB8]; };
     struct __attribute__((packed)) { u8 _pad_heap[0xF4]; u32 heap; };
     struct __attribute__((packed)) { u8 _pad__0F8[0xF8]; u8 _0F8[0x110 - 0xF8]; };
+    struct __attribute__((packed)) { u8 _pad_tevStr[0x110]; dKy_tevstr_c tevStr; };
     struct __attribute__((packed)) { u8 _pad_setID[0x2D8]; u16 setID; };
     struct __attribute__((packed)) { u8 _pad_group[0x2DA]; u8 group; };
     struct __attribute__((packed)) { u8 _pad_cullType[0x2DB]; u8 cullType; };
@@ -51,7 +58,13 @@ typedef union fopAc_ac_c {
     struct __attribute__((packed)) { u8 _pad_actor_status[0x2E0]; u32 actor_status; };
     struct __attribute__((packed)) { u8 _pad_actor_condition[0x2E4]; u32 actor_condition; };
     struct __attribute__((packed)) { u8 _pad_parentActorID[0x2E8]; u32 parentActorID; };
+    struct __attribute__((packed)) { u8 _pad_home[0x2EC]; actor_place home; };
+    struct __attribute__((packed)) { u8 _pad_old[0x300]; actor_place old; };
+    struct __attribute__((packed)) { u8 _pad_current[0x314]; actor_place current; };
+    struct __attribute__((packed)) { u8 _pad_shape_angle[0x328]; csXyz shape_angle; };
     struct __attribute__((packed)) { u8 _pad__32E[0x32E]; u8 _32E[2]; };
+    struct __attribute__((packed)) { u8 _pad_scale[0x330]; cXyz scale; };
+    struct __attribute__((packed)) { u8 _pad_speed[0x33C]; cXyz speed; };
     struct __attribute__((packed)) { u8 _pad_cullMtx[0x348]; u32 cullMtx; };
     struct __attribute__((packed)) { u8 _pad_cull[0x34C]; u8 cull[0x18]; };
     struct __attribute__((packed)) { u8 _pad_cullSizeFar[0x364]; f32 cullSizeFar; };
@@ -60,6 +73,7 @@ typedef union fopAc_ac_c {
     struct __attribute__((packed)) { u8 _pad_speedF[0x370]; f32 speedF; };
     struct __attribute__((packed)) { u8 _pad_gravity[0x374]; f32 gravity; };
     struct __attribute__((packed)) { u8 _pad_maxFallSpeed[0x378]; f32 maxFallSpeed; };
+    struct __attribute__((packed)) { u8 _pad_eyePos[0x37C]; cXyz eyePos; };
     struct __attribute__((packed)) { u8 _pad_attention_info[0x388]; u8 attention_info[0x18]; };
     struct __attribute__((packed)) { u8 _pad_max_health[0x3A0]; s8 max_health; };
     struct __attribute__((packed)) { u8 _pad_health[0x3A1]; s8 health; };
@@ -76,6 +90,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, __vtbl) == 0xB4, "fopAc_ac_c.__vt
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _0B8) == 0xB8, "fopAc_ac_c._0B8");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, heap) == 0xF4, "fopAc_ac_c.heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _0F8) == 0xF8, "fopAc_ac_c._0F8");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, tevStr) == 0x110, "fopAc_ac_c.tevStr");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, setID) == 0x2D8, "fopAc_ac_c.setID");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, group) == 0x2DA, "fopAc_ac_c.group");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, cullType) == 0x2DB, "fopAc_ac_c.cullType");
@@ -86,7 +101,13 @@ WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _2DF) == 0x2DF, "fopAc_ac_c._2DF"
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, actor_status) == 0x2E0, "fopAc_ac_c.actor_status");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, actor_condition) == 0x2E4, "fopAc_ac_c.actor_condition");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, parentActorID) == 0x2E8, "fopAc_ac_c.parentActorID");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, home) == 0x2EC, "fopAc_ac_c.home");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, old) == 0x300, "fopAc_ac_c.old");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current) == 0x314, "fopAc_ac_c.current");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, shape_angle) == 0x328, "fopAc_ac_c.shape_angle");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, _32E) == 0x32E, "fopAc_ac_c._32E");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, scale) == 0x330, "fopAc_ac_c.scale");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, speed) == 0x33C, "fopAc_ac_c.speed");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, cullMtx) == 0x348, "fopAc_ac_c.cullMtx");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, cull) == 0x34C, "fopAc_ac_c.cull");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, cullSizeFar) == 0x364, "fopAc_ac_c.cullSizeFar");
@@ -95,6 +116,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, jntHit) == 0x36C, "fopAc_ac_c.jnt
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, speedF) == 0x370, "fopAc_ac_c.speedF");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, gravity) == 0x374, "fopAc_ac_c.gravity");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, maxFallSpeed) == 0x378, "fopAc_ac_c.maxFallSpeed");
+WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, eyePos) == 0x37C, "fopAc_ac_c.eyePos");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, attention_info) == 0x388, "fopAc_ac_c.attention_info");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, max_health) == 0x3A0, "fopAc_ac_c.max_health");
 WWHD_SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, health) == 0x3A1, "fopAc_ac_c.health");

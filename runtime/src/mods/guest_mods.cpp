@@ -4,6 +4,7 @@
 // start of every game function body (PPC_MOD_HOOK in ppc.h).
 //
 // The mod manager builds and loads its frozen, trusted guest set before guest code runs.
+#include "../exception_report.h"
 #include "guest_mods.h"
 #include "guest_validation.h"
 #include "guest_build.h"
@@ -12,6 +13,7 @@
 #include "guest_files.h"
 #include "guest_settings.h"
 #include "guest_hud.h"
+#include "guest_audio.h"
 #include "guest_png.h"
 #include "input.h"
 #include "true60.h"
@@ -164,6 +166,26 @@ void svc_setting_changed(Cpu* c) {
     auto& mod=owner(c);auto value=settings::read(setting_key(mod,c->r[3]));
     uint64_t revision=value?value->revision:0;c->r[3]=uint32_t(revision>>32);c->r[4]=uint32_t(revision);
 }
+// PCM is signed 16-bit big-endian in the guest, copied before returning.
+void svc_audio_epoch(Cpu* c) {auto v=pcm::store().epoch();c->r[3]=uint32_t(v>>32);c->r[4]=uint32_t(v);}
+void svc_audio_open(Cpu* c) {
+    auto& mod=owner(c);c->r[3]=uint32_t(pcm::store().open(mod.id,c->r[3],c->r[4]));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] open %d epoch %llu",mod.id.c_str(),int32_t(c->r[3]),(unsigned long long)pcm::store().epoch());
+}
+void svc_audio_available(Cpu* c) {c->r[3]=uint32_t(pcm::store().available(owner(c).id,c->r[3]));}
+void svc_audio_close(Cpu* c) {
+    auto& mod=owner(c);uint32_t handle=c->r[3];c->r[3]=uint32_t(pcm::store().close(mod.id,handle));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] close %u result %d",mod.id.c_str(),handle,int32_t(c->r[3]));
+}
+void svc_audio_submit(Cpu* c) {
+    auto& mod=owner(c);uint32_t h=c->r[3],a=c->r[4],frames=c->r[5],channels=c->r[6];
+    c->r[3]=uint32_t(pcm::kInvalid);
+    if(frames>pcm::kMaxSubmit||(channels!=1&&channels!=2)||!setting_buffer(mod,a,frames*channels*2))return;
+    int16_t samples[pcm::kMaxSubmit*2];
+    for(uint32_t i=0;i<frames*channels;++i)samples[i]=int16_t(ld16(a+i*2));
+    c->r[3]=uint32_t(pcm::store().submit(mod.id,h,samples,frames,channels));
+    if(getenv("WWHD_AUDIO_STREAM_TRACE"))LOG("[guestpcm:%s] submit %u requested %u accepted %d",mod.id.c_str(),h,frames,int32_t(c->r[3]));
+}
 // HUD services use packed big-endian guest structures, never host struct casts.
 std::string hud_path(const Loaded& mod,uint32_t address) {
     std::string path;
@@ -200,11 +222,14 @@ void svc_hud_texture(Cpu* c) {
 }
 void svc_hud_release(Cpu* c) {c->r[3]=hud::store().release(owner(c).id,c->r[3]);}
 void svc_hud_epoch(Cpu* c) {auto epoch=hud::store().state_generation();c->r[3]=uint32_t(epoch>>32);c->r[4]=uint32_t(epoch);}
-void svc_hud_emit(Cpu* c) {
+void svc_hud_record(Cpu* c,bool clip_only) {
     auto& mod=owner(c);uint32_t list=c->r[3],a=c->r[4];c->r[3]=0;
     if(!setting_buffer(mod,a,72)){hud::store().fail(mod.id,list,"HUD draw list dropped: invalid element buffer");return;}
     hud::Command command;
-    command.kind=hud::Command::Kind(ld32(a));command.anchor=hud::Anchor(ld32(a+4));command.blend=hud::Blend(ld32(a+8));
+    command.kind=hud::Command::Kind(ld32(a));
+    bool clip=command.kind==hud::Command::ClipPush||command.kind==hud::Command::ClipPop;
+    if(clip!=clip_only){hud::store().fail(mod.id,list,"HUD draw list dropped: wrong recording service");return;}
+    command.anchor=hud::Anchor(ld32(a+4));command.blend=hud::Blend(ld32(a+8));
     command.x=ldf32(a+12);command.y=ldf32(a+16);command.w=ldf32(a+20);command.h=ldf32(a+24);
     command.size=ldf32(a+28);command.thickness=ldf32(a+32);command.rotation=ldf32(a+36);
     command.u0=ldf32(a+40);command.v0=ldf32(a+44);command.u1=ldf32(a+48);command.v1=ldf32(a+52);
@@ -216,14 +241,18 @@ void svc_hud_emit(Cpu* c) {
     c->r[3]=command.kind==hud::Command::Picture?hud::store().picture(mod.id,list,image,std::move(command)):
               hud::store().append(mod.id,list,std::move(command));
 }
+void svc_hud_emit(Cpu* c) {svc_hud_record(c,false);}
+void svc_hud_clip(Cpu* c) {svc_hud_record(c,true);}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_audio_epoch",svc_audio_epoch},{"wwhd_audio_open",svc_audio_open},
+    {"wwhd_audio_available",svc_audio_available},{"wwhd_audio_submit",svc_audio_submit},{"wwhd_audio_close",svc_audio_close},
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
     {"wwhd_hud_register",svc_hud_register},{"wwhd_hud_texture",svc_hud_texture},
-    {"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
+    {"wwhd_hud_clip",svc_hud_clip},{"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
     {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
     {"wwhd_logic_dt",svc_logic_dt},{"wwhd_logic_step",svc_logic_step},
     {"memcpy", svc_memcpy},      {"memmove", svc_memcpy},       {"memset", svc_memset},
@@ -324,32 +353,32 @@ void init() {
     // directory before entering those callbacks to avoid recursively locking it.
     const auto cache=(std::filesystem::path(packages::directory()).parent_path()/"GuestBuild").string();
     auto inspect=[cache](const packages::GuestPackage& pkg) {
-        if(!g_mod_hook_count)throw std::runtime_error("Guest mods require code-mod support; rebuild and restart first");
+        if(!g_mod_hook_count)exception_report::raise("Guest mods require code-mod support; rebuild and restart first");
         auto result=BuildBridge::installed(cache).run(pkg.path,0x7F000000,true,g_guest_build_name);
-        if(result.get("elf_sha256").string()!=pkg.fingerprint)throw std::runtime_error("Guest ELF changed; review its trust confirmation again");
+        if(result.get("elf_sha256").string()!=pkg.fingerprint)exception_report::raise("Guest ELF changed; review its trust confirmation again");
         const auto& size=result.get("allocation_size");
         if(size.type!=mods::json::Value::Number||size.number<=0||size.number>0x1000000||std::floor(size.number)!=size.number)
-            throw std::runtime_error("Invalid guest module memory requirement");
+            exception_report::raise("Invalid guest module memory requirement");
         uint32_t module_bytes=uint32_t(size.number);
-        if(pkg.heap_size>0x1000000-module_bytes)throw std::runtime_error("Guest module and heap exceed the mod region");
+        if(pkg.heap_size>0x1000000-module_bytes)exception_report::raise("Guest module and heap exceed the mod region");
         return (module_bytes+pkg.heap_size+0xFFFF)&~0xFFFFu;
     };
     auto build=[cache](const packages::GuestPackage& pkg,uint32_t base) {
-        if(!g_mod_hook_count)throw std::runtime_error("Guest mods require code-mod support; rebuild and restart first");
+        if(!g_mod_hook_count)exception_report::raise("Guest mods require code-mod support; rebuild and restart first");
         auto result=BuildBridge::installed(cache).run(pkg.path,base,false,g_guest_build_name);
-        if(result.get("elf_sha256").string()!=pkg.fingerprint)throw std::runtime_error("Guest ELF changed; review its trust confirmation again");
+        if(result.get("elf_sha256").string()!=pkg.fingerprint)exception_report::raise("Guest ELF changed; review its trust confirmation again");
         const auto& memory=result.get("allocation_size");
         if(memory.type!=mods::json::Value::Number||memory.number<=0||memory.number>0x1000000||std::floor(memory.number)!=memory.number||pkg.heap_size>0x1000000-uint32_t(memory.number))
-            throw std::runtime_error("Invalid guest module allocation size");
+            exception_report::raise("Invalid guest module allocation size");
         uint32_t reserved=(uint32_t(memory.number)+pkg.heap_size+0xFFFF)&~0xFFFFu;
         return packages::GuestBuilt{result.get("module").string(),reserved};
     };
     packages::set_guest_builder(inspect,build,[cache](const mods::json::Value& requests) {
         auto result=BuildBridge::installed(cache).check_cached(requests,g_guest_build_name);
         const auto& valid=result.get("valid");
-        if(valid.type!=mods::json::Value::Array)throw std::runtime_error("Invalid guest cache check result");
+        if(valid.type!=mods::json::Value::Array)exception_report::raise("Invalid guest cache check result");
         std::vector<std::string> ids;for(const auto& id:valid.array) {
-            if(id.type!=mods::json::Value::String)throw std::runtime_error("Invalid guest cache check ID");
+            if(id.type!=mods::json::Value::String)exception_report::raise("Invalid guest cache check ID");
             ids.push_back(id.text);
         }
         return ids;
@@ -357,7 +386,7 @@ void init() {
     packages::start_guests(inspect,[build](const packages::GuestPackage& pkg,uint32_t base) {
         auto result=build(pkg,base);std::string error;
         if(result.module.empty()||!load_one(result.module,error,pkg,base,result.allocation_size))
-            throw std::runtime_error(error.empty()?"Guest builder returned no module":error);
+            exception_report::raise(error.empty()?"Guest builder returned no module":error);
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
 }
@@ -389,6 +418,7 @@ void draw_frame(Cpu* c,uint64_t step) {
 void state_loaded() {
     std::lock_guard lock(g_hud_mutex);
     hud::store().reset();
+    pcm::store().reset();
     for(auto& mod:g_loaded)mod.hud_called=false;
 }
 

@@ -26,6 +26,9 @@ int main(int argc,char** argv) {
     assert(cemu::targets_title("0005000010143400,0005000010143500,0005000010143600",usa));
     assert(cemu::targets_title(" \"00050000101435AA\",0005000010143600\r",eu)&&!cemu::targets_title("0005000010143400",usa));
     assert(!cemu::targets_title("",usa)&&!cemu::targets_title("00050000101435",usa));
+    // leading zeros left out, as Cemu reads hex numbers (issue #123: "Playstation UI" pack)
+    assert(cemu::targets_title("5000010143400,5000010143500,5000010143600",eu)&&cemu::targets_title("5000010143500",usa));
+    assert(!cemu::targets_title("5000010143500",eu)&&!cemu::targets_title("0",usa)&&!cemu::targets_title("000",usa));
     assert(cemu::expression("max(2, $width / 2) + floor(1.9)",{{"$width",8}})==5);
     assert(cemu::expression("0x80e",{})==2062);
     rejects([]{cemu::expression("1/0",{});});rejects([]{cemu::expression("$missing",{});});
@@ -38,6 +41,15 @@ int main(int argc,char** argv) {
     assert(cemu::options(pack).array.size()==1);
     json::Value config;config["preset-0"]="Large";
     cemu::validate({{"a",pack,config}});
+    assert(cemu::conflict_reason({"a",pack,config},{"b",pack,{}})=="overlapping graphics rules");
+    auto independent=pack;independent.textures[0].fields["width"]="640";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent.textures[0].fields.erase("width");
+    assert(!cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent=pack;independent.textures[0].fields["formats"]="0x19";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    auto aspect=pack;aspect.textures.clear();aspect.aspect_expression="16/9";
+    assert(cemu::conflict_reason({"a",aspect,config},{"b",aspect,{}})=="both change the aspect ratio");
     rejects([&]{cemu::validate({{"a",pack,config},{"b",pack,{}}});});
     write(definition+"[TextureRedefine]\noverwriteFormat = 0x80e\n");rejects([&]{cemu::parse(root);});
     write(definition+"[Patch]\nmoduleMatches = 0x123\n");rejects([&]{cemu::parse(root);});
@@ -47,6 +59,12 @@ int main(int argc,char** argv) {
     auto shader=root/"0000000000000001_0000000000000002_ps.txt";
     std::ofstream(shader)<<"#version 420\n// $missing preserved in comments\nvoid main(){ float x=$scale; }\n";
     auto shaderPack=cemu::parse(root);
+    auto shaderOnly=shaderPack;shaderOnly.textures.clear();
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",shaderOnly,{}})=="both change the same shader");
+    auto variant=shaderOnly;variant.shaders[0].aux++;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
+    variant=shaderOnly;variant.shaders[0].vertex=true;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
     std::ofstream(root/"texture.dds")<<"synthetic unsupported resource";rejects([&]{cemu::parse(root);});fs::remove(root/"texture.dds");
     cemu::activate({{"shader",shaderPack,config}});uint32_t w=0,h=0;
     cemu::set_vulkan(false);assert(!cemu::texture_extent(1920,1080,0x80e,1,0,w,h));assert(cemu::shader_source(1,2,false).empty());

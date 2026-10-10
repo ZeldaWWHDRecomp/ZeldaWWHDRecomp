@@ -5,17 +5,21 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <algorithm>
 #include <vector>
 namespace mods::cemu {
 // Whether a Cemu rules.txt "titleIds" list (comma-separated, any case, spaces allowed) names `title`,
 // the installed game's title ID (g_guest_build_title_id: USA 0005000010143500, EU 0005000010143600).
+// Cemu reads the IDs as hex numbers, so leading zeros don't matter: packs often write
+// 5000010143600 for 0005000010143600 (issue #123).
 inline bool targets_title(const std::string& titleids,const std::string& title) {
-    std::string want;for(char c:title)want+=(char)std::tolower((unsigned char)c);
+    auto number=[](std::string id){id.erase(0,std::min(id.find_first_not_of('0'),id.size()));return id;};
+    std::string want;for(char c:title)want+=(char)std::tolower((unsigned char)c);want=number(want);
     size_t start=0;
     while(start<=titleids.size()) {
         size_t end=titleids.find(',',start);if(end==std::string::npos)end=titleids.size();
         std::string id;for(size_t i=start;i<end;i++){char c=titleids[i];if(c!=' '&&c!='\t'&&c!='\r'&&c!='"')id+=(char)std::tolower((unsigned char)c);}
-        if(!id.empty()&&id==want)return true;
+        if(!id.empty()&&number(id)==want)return true;
         start=end+1;
     }
     return false;
@@ -35,6 +39,8 @@ Pack parse(const std::filesystem::path& folder);
 json::Value options(const Pack& pack);
 void import_legacy(const std::filesystem::path& stage,const std::string& source_name);
 struct Selection {std::string id;Pack pack;json::Value config;};
+// Empty for independent packs; throws for invalid graphics rules.
+std::string conflict_reason(const Selection& a,const Selection& b);
 void validate(const std::vector<Selection>& selections);
 void activate(const std::vector<Selection>& selections); // before guest execution only
 void set_vulkan(bool available); // requested at startup, then actual backend after fallback

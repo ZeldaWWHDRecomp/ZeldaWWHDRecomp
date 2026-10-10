@@ -8,6 +8,7 @@
 
 namespace hostui {
 
+void choose_game_source(bool folder, std::function<void(std::string)> chosen);
 void choose_mod_source(bool folder, std::function<void(std::string)> chosen);
 void post(std::function<void()> fn);  // run on the main thread (soon, in order)
 
@@ -23,6 +24,10 @@ void graphics_changed();           // an option changed: the AppKit host saves i
 int scale_filter();                // 0 smooth, 1 sharp, 2 integer
 void set_scale_filter(int f);
 bool scale_filter_available();
+#ifdef __ANDROID__
+bool displays_swapped();
+void set_displays_swapped(bool swapped);
+#endif
 
 // display
 bool fullscreen();

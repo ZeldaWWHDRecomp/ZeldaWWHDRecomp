@@ -1,5 +1,6 @@
 // Declarative setup validation. Paths stay in local settings, never in diagnostic text.
 #pragma once
+#include "../exception_report.h"
 #include "catalogue_io.h"
 #include <array>
 #include <cctype>
@@ -9,12 +10,28 @@ inline bool valid_game_source(const std::string& game,const std::filesystem::pat
     namespace fs=std::filesystem;
     try {
         static const std::map<std::string,std::string> discs{{"gc_usa","GZLE01"},{"gc_eur","GZLP01"},{"gc_jpn","GZLJ01"}};
-        if(auto it=discs.find(game);it!=discs.end()) {
+        auto it=discs.find(game);
+        if(it!=discs.end()||game=="gc_wind_waker") {
             auto file=fs::is_directory(source)?source/"sys"/"boot.bin":source;
             if(fs::is_symlink(file)||!fs::is_regular_file(file))return false;
             std::ifstream input(file,std::ios::binary);std::array<unsigned char,32> header{};
             input.read(reinterpret_cast<char*>(header.data()),header.size());
-            return input.gcount()==32&&std::string(reinterpret_cast<char*>(header.data()),6)==it->second&&
+            if(input.gcount()==32&&std::equal(header.begin(),header.begin()+4,"RVZ\1")) {
+                // RVZ stores the original disc header uncompressed in its disc
+                // descriptor. Resource decoding remains the setup tool's job.
+                // Format: Dolphin docs/WiaAndRvz.md (file head 0x48, dhead +0x10).
+                auto word=[&](size_t p){return (uint32_t(header[p])<<24)|(uint32_t(header[p+1])<<16)|
+                    (uint32_t(header[p+2])<<8)|header[p+3];};
+                if(word(8)>0x01000000||word(12)<0xDC||word(12)>4096)return false;
+                input.seekg(0x48);std::array<unsigned char,4> type{};
+                input.read(reinterpret_cast<char*>(type.data()),type.size());
+                if(input.gcount()!=4||type!=std::array<unsigned char,4>{0,0,0,1})return false;
+                input.seekg(0x58);input.read(reinterpret_cast<char*>(header.data()),header.size());
+            }
+            const std::string id(reinterpret_cast<char*>(header.data()),6);
+            const bool known=game=="gc_wind_waker" ?
+                std::any_of(discs.begin(),discs.end(),[&](const auto& disc){return disc.second==id;}) : id==it->second;
+            return input.gcount()==32&&known&&
                    header[28]==0xC2&&header[29]==0x33&&header[30]==0x9F&&header[31]==0x3D;
         }
         std::string title;
@@ -39,17 +56,40 @@ inline bool valid_game_source(const std::string& game,const std::filesystem::pat
         return found;
     }catch(const std::exception&){return false;}
 }
+inline bool uses_game_source(const Step& step,const std::string& game) {
+    auto matches=[&](const std::string& id){return id==game||(game=="gc_wind_waker"&&id.starts_with("gc_"));};
+    if(step.type=="game_path")return matches(step.game);
+    if(step.type=="run_tool")for(const auto& arg:step.arguments) {
+        for(const auto* id:{"gc_wind_waker","gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"})
+            if(matches(id)&&arg.find("{game:"+std::string(id)+"}")!=std::string::npos)return true;
+    }
+    return false;
+}
 class Sources {
     json::Value settings;
 public:
     Sources()=default;
     explicit Sources(json::Value local_settings):settings(std::move(local_settings)){}
+    std::string stored(const std::string& game) const {
+        if(game.starts_with("gc_")) {
+            // Migrate the old per-region preferences lazily; all GC mods use one copy.
+            for(const auto* key:{"gc_wind_waker","gc_usa","gc_eur","gc_jpn"}) {
+                auto path=settings.get(key).string();if(!path.empty())return path;
+            }
+            return {};
+        }
+        return settings.get(game).string();
+    }
     bool set(const std::string& game,const std::filesystem::path& path) {
-        if(!valid_game_source(game,path))return false;
-        settings[game]=std::filesystem::canonical(path).string();return true;
+        if(!std::set<std::string>{"gc_wind_waker","gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"}.contains(game))return false;
+        if(!path.empty()&&!valid_game_source(game,path))return false;
+        auto key=game.starts_with("gc_")?std::string("gc_wind_waker"):game;
+        if(game.starts_with("gc_"))for(const auto* old:{"gc_usa","gc_eur","gc_jpn"})settings.object.erase(old);
+        if(path.empty())settings.object.erase(key);
+        else settings[key]=std::filesystem::canonical(path).string();return true;
     }
     std::string get(const std::string& game) const {
-        auto path=settings.get(game).string();
+        auto path=stored(game);
         return !path.empty()&&valid_game_source(game,path)?path:std::string();
     }
     const json::Value& local_settings()const{return settings;}
@@ -78,7 +118,7 @@ inline std::vector<std::string> tool_arguments(const Step& step,const Sources& s
             else if(key=="package")replacement=std::filesystem::absolute(package).string();
             else if(key.starts_with("game:")) {
                 replacement=sources.get(key.substr(5));require(!replacement.empty(),"Required game source is missing or moved");
-            }else throw std::runtime_error("Unknown setup argument reference");
+            }else exception_report::raise("Unknown setup argument reference");
             arg.replace(from,end-from+1,replacement);from+=replacement.size();
         }
         result.push_back(std::move(arg));

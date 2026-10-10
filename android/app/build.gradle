@@ -13,17 +13,55 @@ android {
         applicationId "org.wwhdrecomp.wwhd"
         minSdk 33
         targetSdk 36
-        versionCode 1
-        versionName "0.1"
-        ndk { abiFilters 'arm64-v8a' }
+        // release.yml passes the release version and a growing build number; local builds keep these
+        versionCode providers.gradleProperty('wwhdVersionCode').map { it as int }.getOrElse(1)
+        versionName providers.gradleProperty('wwhdVersionName').getOrElse('0.1')
+        ndk { abiFilters providers.gradleProperty('wwhdAbi').getOrElse('arm64-v8a') }
+    }
+    // Release signing (release.yml: the project's key, decoded to a temporary file for the build).
+    // Environment WWHD_KEYSTORE, WWHD_KEYSTORE_PASSWORD, WWHD_KEY_ALIAS and optional WWHD_KEY_PASSWORD
+    // (default: the store password), or -PwwhdKeystore=... etc. Without them (forks, your own build)
+    // the release APK is signed with the local debug key, as before.
+    def signing = { String env, String property ->  // empty counts as unset (a missing CI secret)
+        [providers.environmentVariable(env).orNull, providers.gradleProperty(property).orNull].find { it }
+    }
+    def releaseKeystore = signing('WWHD_KEYSTORE', 'wwhdKeystore')
+    signingConfigs {
+        if (releaseKeystore != null) {
+            release {
+                def storePass = signing('WWHD_KEYSTORE_PASSWORD', 'wwhdKeystorePassword')
+                def alias = signing('WWHD_KEY_ALIAS', 'wwhdKeyAlias')
+                if (storePass == null || alias == null)
+                    throw new GradleException('Release signing needs the keystore password and key alias too')
+                storeFile file(releaseKeystore)
+                storePassword storePass
+                keyAlias alias
+                keyPassword signing('WWHD_KEY_PASSWORD', 'wwhdKeyPassword') ?: storePass
+            }
+        }
     }
     buildTypes {
         release {
-            minifyEnabled false
-            signingConfig signingConfigs.debug  // personal sideloaded build
+            minifyEnabled false  // no R8: SDL and the JNI bridges look classes and methods up by name
+            signingConfig releaseKeystore != null ? signingConfigs.release : signingConfigs.debug
         }
     }
     sourceSets.main.jniLibs.srcDirs = ['libs']
+    def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
+    if (pythonPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(pythonPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(pythonPackage + '/assets')]
+    }
+    def toolchainPackage = providers.gradleProperty('wwhdToolchainDir').orNull
+    if (toolchainPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(toolchainPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(toolchainPackage + '/assets')]
+    }
+    def extractorPackage = providers.gradleProperty('wwhdExtractorDir').orNull
+    if (extractorPackage != null) {
+        sourceSets.main.jniLibs.srcDirs += [file(extractorPackage + '/jniLibs')]
+        sourceSets.main.assets.srcDirs += [file(extractorPackage + '/assets')]
+    }
     // the game's own icon (android/make_icon.py, from your game files; git-ignored), else SDL's
     def gameIcon = file('local-res').exists()
     if (gameIcon) sourceSets.main.res.srcDirs += ['local-res']
@@ -32,6 +70,7 @@ android {
         jniLibs {
             useLegacyPackaging = true  // libadrenotools needs extracted hooks in nativeLibraryDir
             keepDebugSymbols += ['**/libmain.so']  // stripped by build_native.sh already
+            if (toolchainPackage != null || extractorPackage != null) keepDebugSymbols += ['**/libwwhd-*.so']  // preserve pinned tool bytes
         }
     }
     lint { abortOnError = false }
@@ -39,4 +78,22 @@ android {
 
 dependencies {
     implementation 'androidx.core:core:1.15.0'
+    implementation 'androidx.window:window:1.5.1'
+    implementation 'androidx.window:window-java:1.5.1'
 }
+
+tasks.register('verifyReleasePython') {
+    doLast {
+        def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
+        if (pythonPackage != null) {
+            def archive = new java.util.zip.ZipFile(file(pythonPackage + '/assets/python-source.zip'))
+            try {
+                if (['tools/android/service_fixture.py', 'tools/android/debug_fixture_build.py',
+                     'tools/android/embedding_smoke.py', 'tools/recomp/android_fixture.py',
+                     'tools/android/extraction-fixture.bin', 'tools/android/runtime_fixture.c'].any { archive.getEntry(it) != null })
+                    throw new GradleException('Synthetic service resources are debug-only; repackage Python without --service-fixture')
+            } finally { archive.close() }
+        }
+    }
+}
+tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'verifyReleasePython' }

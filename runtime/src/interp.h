@@ -4,6 +4,7 @@
 #include <cstdint>
 
 namespace interp {
+uint64_t logic_steps();      // saved/restored 30 Hz scenario clock
 void record_executed_step(); // game thread; includes built-in turbo passes
 uint64_t executed_steps();    // actual actor logic passes, including true60 half steps
 int mode();                 // 0 off (30 fps), 1 frame interpolation (at fps()), 2 true 60

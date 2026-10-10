@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ppc.h"
+#include "exception_report.h"
 
 // ---- guest memory layout ----
 namespace mem {
@@ -111,11 +112,13 @@ void thaw();
 namespace timebase {
 constexpr uint64_t kTicksPerSec = 62156250ull;  // Espresso bus clock / 4
 uint64_t now();  // host ticks since boot (monotonic; host-side timing)
-// guest-visible time (OSGetTime, mftb, alarms): host time plus an offset that a loaded save state
-// sets so the guest's clock continues from the moment it was saved
+// Guest-visible time (OSGetTime, mftb, alarms): the accelerated simulation clock plus
+// a save-state offset, so a restored guest continues from its saved time.
 uint64_t guest_now();
-uint64_t to_guest(uint64_t host_ticks);
-uint64_t to_host(uint64_t guest_ticks);
+uint64_t simulation_now(); // host time plus accumulated fast-forward time (before state offset)
+void set_clock_rate(unsigned rate);
+uint64_t to_guest(uint64_t simulation_ticks);
+uint64_t to_host(uint64_t guest_ticks); // simulated host ticks, before the save-state offset
 void set_guest_now(uint64_t guest_ticks);
 }
 
@@ -129,10 +132,16 @@ struct HleReg {
 PpcFunc hle_find(const char* lib, const char* name);  // null if not implemented
 PpcFunc hle_find_any(const char* name);
 
+struct GuestExit { uint32_t value; };
 #define HLE(lib, name)                                                        \
-    extern "C" void imp_##lib##_##name(Cpu* c);                                \
-    static HleReg hle_reg_##lib##_##name(#lib, #name, imp_##lib##_##name);   \
-    extern "C" void imp_##lib##_##name(Cpu* c)
+    static void hle_impl_##lib##_##name(Cpu* c);                               \
+    extern "C" void imp_##lib##_##name(Cpu* c) {                               \
+        exception_report::boundary<GuestExit>("HLE " #lib "." #name, [&] {      \
+            hle_impl_##lib##_##name(c);                                       \
+        });                                                                  \
+    }                                                                        \
+    static HleReg hle_reg_##lib##_##name(#lib, #name, imp_##lib##_##name);       \
+    static void hle_impl_##lib##_##name(Cpu* c)
 
 // argument helpers (PPC SysV ABI)
 inline uint32_t arg(Cpu* c, int i) { return c->r[3 + i]; }

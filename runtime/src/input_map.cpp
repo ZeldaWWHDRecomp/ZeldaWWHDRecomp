@@ -205,8 +205,14 @@ FaceLayout face_layout(const Mapping& m) {
 
 void apply_face_layout(Mapping& m, FaceLayout layout) {
     if (layout == FaceLayout::kCustom) return;
+    m.face_auto = false;  // a preset is a choice, not a pad's to make
     const int* src = layout == FaceLayout::kLabels ? kFaceByLabel : kFaceByPosition;
     for (int i = 0; i < 4; i++) m.pad[kA + i] = src[i];
+}
+
+int face_input(int action) {
+    const int p = current().pad[action];
+    return p != kPadNone ? p : kFaceByPosition[action - kA];
 }
 
 const char* face_layout_label(FaceLayout l) {
@@ -215,6 +221,86 @@ const char* face_layout_label(FaceLayout l) {
     case FaceLayout::kLabels: return "by label (Xbox)";
     default: return "custom";
     }
+}
+
+// ---- the Automatic preset: follow the labels printed on the dominant pad (issue #78)
+
+namespace {
+// Cross/Circle/Square/Triangle are the PlayStation names for the A/B/X/Y letters
+int label_letter(FaceLabel l) {
+    switch (l) {
+    case FaceLabel::kA: case FaceLabel::kCross: return 0;
+    case FaceLabel::kB: case FaceLabel::kCircle: return 1;
+    case FaceLabel::kX: case FaceLabel::kSquare: return 2;
+    case FaceLabel::kY: case FaceLabel::kTriangle: return 3;
+    default: return -1;
+    }
+}
+
+FaceLabel word_letter(const std::string& w) {
+    if (w == "a" || w == "xmark" || w == "cross") return FaceLabel::kA;
+    if (w == "b" || w == "circle") return FaceLabel::kB;
+    if (w == "x" || w == "square") return FaceLabel::kX;
+    if (w == "y" || w == "triangle") return FaceLabel::kY;
+    return FaceLabel::kUnknown;
+}
+}  // namespace
+
+FaceLabel face_label_from_text(const char* text) {
+    if (!text || !*text) return FaceLabel::kUnknown;
+    std::string t;
+    for (const char* p = text; *p; p++) t.push_back((char)tolower((unsigned char)*p));
+    // SF Symbols: the name first, the decoration after a dot ("a.circle", "x.square.fill"). The
+    // name alone decides: "square.circle" is Square, not Circle.
+    if (const FaceLabel l = word_letter(t.substr(0, t.find('.'))); l != FaceLabel::kUnknown) return l;
+    // a free-form name ("Button A", "Cross Button", "xbox.button.a"): the one word that is a letter
+    FaceLabel found = FaceLabel::kUnknown;
+    std::string w;
+    auto consider = [&](char c) {
+        if (c >= 'a' && c <= 'z') {
+            w.push_back(c);
+            return;
+        }
+        if (w != "button" && w != "fill" && w != "grid" && w != "the" && found == FaceLabel::kUnknown)
+            found = word_letter(w);
+        w.clear();
+    };
+    for (char c : t) consider(c);
+    consider(' ');  // the last word
+    return found;
+}
+
+bool face_bindings_from_labels(const FaceLabel labels[4], int out[4]) {
+    // 0..3 are the face pads in the labels' order: kPadA (south), kPadB (east), kPadX, kPadY
+    int bind[4] = {-1, -1, -1, -1};  // bind[Wii U letter] = the host face button driving it
+    bool taken[4] = {false, false, false, false};
+    int found = 0;
+    for (int h = 0; h < 4; h++) {  // a printed letter drives the Wii U button of that letter
+        const int letter = label_letter(labels[h]);
+        if (letter < 0) continue;
+        bind[letter] = h;
+        taken[h] = true;
+        found++;
+    }
+    if (!found) return false;
+    for (int i = 0; i < 4; i++) {  // no printed letter: the by-position button, or the first free one
+        if (bind[i] >= 0) continue;
+        int h = kFaceByPosition[i] - kPadA;
+        if (taken[h]) {
+            for (h = 0; h < 4 && taken[h]; h++) {}
+            if (h == 4) return false;  // unreachable: four letters, four buttons
+        }
+        bind[i] = h;
+        taken[h] = true;
+    }
+    for (int i = 0; i < 4; i++) out[i] = kPadA + bind[i];
+    return true;
+}
+
+void set_pad_binding(Mapping& m, int action, int pad) {
+    if (action < 0 || action >= kActionCount) return;
+    m.pad[action] = pad;
+    if (action <= kY) m.face_auto = false;  // a hand-edited face binding is nobody's preset
 }
 
 std::vector<int> key_users(const Mapping& m, int code, int except) {
@@ -477,9 +563,11 @@ std::string to_json(const Mapping& m) {
         o += "    " + quote(action_id(a)) + ": " + (m.pad[a] == kPadNone ? std::string("null") : quote(pad_id(m.pad[a])));
         o += a + 1 < kActionCount ? ",\n" : "\n";
     }
-    char opt[160];
-    snprintf(opt, sizeof opt, "  },\n  \"options\": {\n    \"stick_deadzone\": %.3g,\n    \"invert_camera_y\": %s\n  }\n}\n",
-             m.deadzone, m.invert_camera_y ? "true" : "false");
+    char opt[192];
+    snprintf(opt, sizeof opt,
+             "  },\n  \"options\": {\n    \"stick_deadzone\": %.3g,\n    \"invert_camera_y\": %s%s\n  }\n}\n",
+             m.deadzone, m.invert_camera_y ? "true" : "false",
+             m.face_auto ? ",\n    \"face_layout\": \"auto\"" : "");
     return o + opt;
 }
 
@@ -526,6 +614,8 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* d = op->get("stick_deadzone"); d && d->type == Json::Num)
             m.deadzone = std::clamp((float)d->n, 0.0f, 0.9f);
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
+        // only "automatic" is stored: the two manual presets are the shape of the face bindings
+        if (const Json* f = op->get("face_layout"); f && f->type == Json::Str) m.face_auto = f->s == "auto";
     }
     out = m;
     if (error) *error = warn;
@@ -575,6 +665,41 @@ std::string default_path() {
 static std::mutex g_mu;
 static Mapping g_map = Mapping::defaults();
 static std::atomic<uint32_t> g_gen{1};
+
+// the dominant pad's labels as note_face_labels last reported them (its own lock: set_current
+// takes g_mu)
+static std::mutex g_labels_mu;
+static FaceLabel g_labels[4] = {FaceLabel::kUnknown, FaceLabel::kUnknown, FaceLabel::kUnknown,
+                                FaceLabel::kUnknown};
+
+void note_face_labels(const FaceLabel labels[4]) {
+    Mapping m = current();
+    {
+        std::lock_guard<std::mutex> lk(g_labels_mu);
+        for (int i = 0; i < 4; i++) g_labels[i] = labels[i];
+    }
+    if (!m.face_auto) return;
+    int out[4];
+    if (!face_bindings_from_labels(labels, out)) return;
+    bool changed = false;
+    for (int i = 0; i < 4; i++) changed |= m.pad[kA + i] != out[i];
+    if (!changed) return;
+    for (int i = 0; i < 4; i++) m.pad[kA + i] = out[i];
+    set_current(m);
+}
+
+void set_face_auto(Mapping& m, bool on) {
+    m.face_auto = on;
+    if (!on) return;
+    int out[4];
+    FaceLabel labels[4];
+    {
+        std::lock_guard<std::mutex> lk(g_labels_mu);
+        for (int i = 0; i < 4; i++) labels[i] = g_labels[i];
+    }
+    if (face_bindings_from_labels(labels, out))  // none noted: the bindings wait for a pad
+        for (int i = 0; i < 4; i++) m.pad[kA + i] = out[i];
+}
 
 void load_startup() {
     std::string path = default_path(), err;

@@ -6,6 +6,8 @@ Ctx callbacks: `branch(target)` returns C for a jump, `call(target)` for a call.
 
 Semantics follow Cemu's interpreter (src/Cafe/HW/Espresso/Interpreter).
 """
+import os
+import sys
 
 
 def sext16(v):
@@ -35,6 +37,14 @@ class Unhandled(Exception):
 R = lambda n: "c->r[%d]" % n
 F0 = lambda n: "c->f[%d].ps0" % n
 F1 = lambda n: "c->f[%d].ps1" % n
+
+
+def pass_on(var):
+    """The switch of a code-quality pass (recomp.py's usage text): on unless var=0. With
+    WWHD_RECOMP_PLAIN=1 every pass is off unless its own variable is 1."""
+    return os.environ.get(var, "0" if os.environ.get("WWHD_RECOMP_PLAIN") == "1" else "1") != "0"
+
+
 
 
 def ra0(a):
@@ -502,6 +512,7 @@ def translate63(w, d, a, b, cc):
     if xo == 136:
         return "%s = -fabs(%s);%s" % (F0(d), fb, fp_rc(w))
     if xo == 583:  # mffs
+        _fpcc_reader("mffs", w)
         return "%s = u64_as_f64(0xFFF8000000000000ull | c->fpscr);" % F0(d)
     if xo == 711:  # mtfsf
         fm = (w >> 17) & 0xFF
@@ -520,11 +531,22 @@ def translate63(w, d, a, b, cc):
     if xo == 70:  # mtfsb0
         return "c->fpscr &= ~0x%08Xu;" % (0x80000000 >> d)
     if xo == 64:  # mcrfs
+        _fpcc_reader("mcrfs", w)
         fd, fs = d >> 2, a >> 2
         sh = 28 - 4 * fs
         return "{ uint32_t v = (c->fpscr >> %d) & 0xF; c->cr[%d] = v >> 3; c->cr[%d] = (v >> 2) & 1; c->cr[%d] = (v >> 1) & 1; c->cr[%d] = v & 1; }" % (
             sh, 4 * fd, 4 * fd + 1, 4 * fd + 2, 4 * fd + 3)
     raise Unhandled("op63 xo=%d" % xo)
+
+
+_fpcc_warned = set()
+
+
+def _fpcc_reader(name, w):
+    """fcmpu/fcmpo do not keep FPSCR's FPCC field (ppc.h cr_set_f): a game that reads it needs that back"""
+    if w not in _fpcc_warned:
+        _fpcc_warned.add(w)
+        sys.stderr.write("warning: %s (%08X) reads FPSCR, whose FPCC field the FP compares do not update (ppc.h cr_set_f)\n" % (name, w))
 
 
 def translate4(w, d, a, b, cc):

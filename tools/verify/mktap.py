@@ -30,8 +30,9 @@ OUT = os.path.join(GEN, "code_tap.c")
 
 
 def recomp():
+    # the plain form (no registers in C locals): what funcdb.py analyses and the taps copy
     subprocess.run([sys.executable, "tools/recomp/recomp.py", "game/code/cking.rpx", "build/gen"], cwd=ROOT, check=True,
-                   stdout=subprocess.DEVNULL)
+                   stdout=subprocess.DEVNULL, env=dict(os.environ, WWHD_RECOMP_PLAIN="1"))
 
 
 def tap_body(text, addr, imports):

@@ -115,14 +115,14 @@ u32 wwhd_setting_get(const char* key,u32 type,void* buffer,u32 capacity);
 /* Per-key observed revision, initially 1; 0 means absent. Compare for inequality. */
 unsigned long long wwhd_setting_changed(const char* key);
 
-/* HUD v1. Register from a game hook; callback receives a recording-list handle once
+/* HUD v2. Register from a game hook; callback receives a recording-list handle once
  * per logic step. Its immutable output is held for every presentation until the next
  * step. TV=0 (1280x720), DRC=1 (854x480), both=2 (TV coordinates scaled to each screen).
  * Element/text/path buffers must be static or allocated in this mod's heap. */
-#define WWHD_HUD_API_VERSION 1
+#define WWHD_HUD_API_VERSION 2
 enum { WWHD_HUD_TV=0,WWHD_HUD_DRC=1,WWHD_HUD_BOTH=2 };
 enum { WWHD_HUD_RECT=0,WWHD_HUD_TEXT=1,WWHD_HUD_IMAGE=2,WWHD_HUD_RECT_OUTLINE=3,
-       WWHD_HUD_CIRCLE=4,WWHD_HUD_CIRCLE_OUTLINE=5,WWHD_HUD_LINE=6 };
+       WWHD_HUD_CIRCLE=4,WWHD_HUD_CIRCLE_OUTLINE=5,WWHD_HUD_LINE=6,WWHD_HUD_CLIP_PUSH=7,WWHD_HUD_CLIP_POP=8 };
 enum { WWHD_HUD_CENTER=0,WWHD_HUD_TOP_LEFT=1,WWHD_HUD_TOP=2,WWHD_HUD_TOP_RIGHT=3,
        WWHD_HUD_LEFT=4,WWHD_HUD_RIGHT=5,WWHD_HUD_BOTTOM_LEFT=6,WWHD_HUD_BOTTOM=7,WWHD_HUD_BOTTOM_RIGHT=8 };
 enum { WWHD_HUD_ALPHA=0,WWHD_HUD_ADDITIVE=1 };
@@ -140,9 +140,34 @@ typedef struct {
  * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0. */
 u32 wwhd_hud_register(void (*callback)(u32 list),u32 screen);
 u32 wwhd_hud_emit(u32 list,const wwhd_hud_element* element);
+/* v2: record CLIP_PUSH/CLIP_POP only through this service. PUSH uses x/y/w/h
+ * and anchor, intersecting the screen and parent clip. Max depth 16; every push
+ * must be popped in the same callback. Invalid nesting drops the whole list.
+ * The element ABI remains 72 bytes. Importing this service makes an older host
+ * refuse the module at load, rather than silently drawing without clipping. */
+u32 wwhd_hud_clip(u32 list,const wwhd_hud_element* element);
 /* PNG path relative to this package's assets/ or textures/, or this mod's Data folder.
  * Returns an owned handle, zero on failure. Reuse handles between logic steps. */
 u32 wwhd_hud_texture(u32 source,const char* path);
 u32 wwhd_hud_release(u32 image);
 /* Changes after full state load; old handles are invalid. Reload PNGs on a change. */
 unsigned long long wwhd_hud_epoch(void);
+
+#define WWHD_AUDIO_API_VERSION 1
+#define WWHD_AUDIO_INVALID (-1)
+#define WWHD_AUDIO_BUSY (-2)
+#define WWHD_AUDIO_QUOTA (-3)
+#define WWHD_AUDIO_CAPACITY 8192u
+#define WWHD_AUDIO_MAX_SUBMIT 2048u
+/* PCM stream v1: 48000 Hz, signed 16-bit guest-endian mono/stereo.
+ * Handles are owned by the calling mod. Errors: -1 invalid/stale, -2 busy,
+ * -3 quota. Submit accepts up to 2048 frames and returns accepted frames;
+ * available reports free frames (capacity8192). Four streams/mod,32 total.
+ * Epoch changes invalidate every handle; queues are not in save states.
+ * No-audio mode drains on the AX producer clock. Output gain/mute is shared.
+ */
+s32 wwhd_audio_open(u32 rate,u32 channels);
+s32 wwhd_audio_submit(u32 handle,const short* samples,u32 frames,u32 channels);
+s32 wwhd_audio_available(u32 handle);
+s32 wwhd_audio_close(u32 handle);
+unsigned long long wwhd_audio_epoch(void);

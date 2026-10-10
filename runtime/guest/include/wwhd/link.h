@@ -1,9 +1,10 @@
 /* Generated from public ZeldaWWHDDecomp/wwhd 47e1dbc3886cfd8233859dffd73efc41a04a9130.
  * Source: wwhd_src/include/d/actor/d_a_player_main.h; CC0-1.0 (public-wwhd-LICENSE).
- * Partial views: named scalar fields only; unknown fields remain bytes.
+ * Partial views: named scalar and curated aggregate fields; unknown fields remain bytes.
  * Source offset qualifications still apply; see the public source. */
 #pragma once
 #include "../wwhd_guest.h"
+#include "vectors.h"
 #ifndef WWHD_SDK_ASSERT
 #ifdef __cplusplus
 #define WWHD_SDK_ASSERT(x, message) static_assert(x, message)
@@ -13,6 +14,9 @@
 #endif
 WWHD_SDK_ASSERT(sizeof(void*) == 4, "SDK layouts require a 32-bit guest target");
 
+#include "ptmf.h"
+#include "animation.h"
+#include "objects.h"
 typedef union daPy_actorKeep_l {
     u8 bytes[8];
     struct __attribute__((packed)) { u32 mID; };
@@ -62,6 +66,8 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_mAnmRatioUpper[0x5818]; u8 mAnmRatioUpper[0x30]; };
     struct __attribute__((packed)) { u8 _pad_m_anm_heap_under[0x5848]; u8 m_anm_heap_under[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m_anm_heap_upper[0x5868]; u8 m_anm_heap_upper[0x30]; };
+    struct __attribute__((packed)) { u8 _pad_mFrameCtrlUnder[0x5898]; J3DFrameCtrl mFrameCtrlUnder[2]; };
+    struct __attribute__((packed)) { u8 _pad_mFrameCtrlUpper[0x58B8]; J3DFrameCtrl mFrameCtrlUpper[3]; };
     struct __attribute__((packed)) { u8 _pad_mSightPacket[0x58E8]; u8 mSightPacket[0xC08]; };
     struct __attribute__((packed)) { u8 _pad_mJAIZelAnime[0x64F0]; u8 mJAIZelAnime[0x98]; };
     struct __attribute__((packed)) { u8 _pad_m_sanm_buffer[0x6588]; u32 m_sanm_buffer; };
@@ -77,9 +83,12 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m_tex_anm_heap[0x65D0]; u8 m_tex_anm_heap[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m_tex_scroll_heap[0x65E0]; u8 m_tex_scroll_heap[0x10]; };
     struct __attribute__((packed)) { u8 _pad_mCurProc[0x65F0]; s32 mCurProc; };
+    struct __attribute__((packed)) { u8 _pad_mCurProcFunc[0x65F4]; ProcFunc_l mCurProcFunc; };
     struct __attribute__((packed)) { u8 _pad_mFootEffect[0x65FC]; u8 mFootEffect[0x98]; };
     struct __attribute__((packed)) { u8 _pad_m3280[0x6694]; u8 m3280[0x14]; };
     struct __attribute__((packed)) { u8 _pad_mSwimTailEcallBack[0x66A8]; u8 mSwimTailEcallBack[0x50]; };
+    struct __attribute__((packed)) { u8 _pad_m32E4[0x66F8]; daPy_mtxFollowEcallBack_c m32E4; };
+    struct __attribute__((packed)) { u8 _pad_m32F0[0x6704]; daPy_mtxFollowEcallBack_c m32F0; };
     struct __attribute__((packed)) { u8 _pad_mSmokeEcallBack[0x6710]; u8 mSmokeEcallBack[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m331C[0x6730]; u8 m331C[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m332C[0x6740]; u8 m332C[0x10]; };
@@ -89,10 +98,13 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m338C[0x67A0]; u8 m338C[0x1C]; };
     struct __attribute__((packed)) { u8 _pad_m33A8[0x67BC]; u8 m33A8[0x10]; };
     struct __attribute__((packed)) { u8 _pad_mDmEcallBack[0x67CC]; u8 mDmEcallBack[0x30]; };
+    struct __attribute__((packed)) { u8 _pad_m33E8[0x67FC]; daPy_mtxFollowEcallBack_c m33E8; };
     struct __attribute__((packed)) { u8 _pad_mFanSwingCb[0x6808]; u8 mFanSwingCb[0xC]; };
     struct __attribute__((packed)) { u8 _pad_m3400[0x6814]; u8 m3400[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m3410[0x6824]; u8 m3410[0x1C]; };
+    struct __attribute__((packed)) { u8 _pad_m342C[0x6840]; daPy_mtxFollowEcallBack_c m342C; };
     struct __attribute__((packed)) { u8 _pad_m3438[0x684C]; u8 m3438[0x1C]; };
+    struct __attribute__((packed)) { u8 _pad_m3454[0x6868]; daPy_mtxFollowEcallBack_c m3454; };
     struct __attribute__((packed)) { u8 _pad_m3460[0x6874]; u8 m3460[0x20]; };
     struct __attribute__((packed)) { u8 _pad_mpAttention[0x6894]; u32 mpAttention; };
     struct __attribute__((packed)) { u8 _pad_mpAttnEntryA[0x6898]; u32 mpAttnEntryA; };
@@ -204,6 +216,7 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m355E[0x69AE]; s16 m355E; };
     struct __attribute__((packed)) { u8 _pad_mEquipItem[0x69B0]; u16 mEquipItem; };
     struct __attribute__((packed)) { u8 _pad_m3562[0x69B2]; u16 m3562; };
+    struct __attribute__((packed)) { u8 _pad_m3564[0x69B4]; csXyz m3564; };
     struct __attribute__((packed)) { u8 _pad__69BA[0x69BA]; u8 _69BA[2]; };
     struct __attribute__((packed)) { u8 _pad_mCameraInfoIdx[0x69BC]; s32 mCameraInfoIdx; };
     struct __attribute__((packed)) { u8 _pad_mProcVar6[0x69C0]; s32 mProcVar6; };
@@ -266,6 +279,23 @@ typedef union daPy_lk_c {
     struct __attribute__((packed)) { u8 _pad_m3658[0x6AB0]; u8 m3658[0x10]; };
     struct __attribute__((packed)) { u8 _pad_m3668[0x6AC0]; u8 m3668[0x20]; };
     struct __attribute__((packed)) { u8 _pad_m6AE0[0x6AE0]; u8 m6AE0[0x7B0]; };
+    struct __attribute__((packed)) { u8 _pad_m3688[0x7290]; cXyz m3688; };
+    struct __attribute__((packed)) { u8 _pad_mOldSpeed[0x729C]; cXyz mOldSpeed; };
+    struct __attribute__((packed)) { u8 _pad_m36A0[0x72A8]; cXyz m36A0; };
+    struct __attribute__((packed)) { u8 _pad_m36AC[0x72B4]; cXyz m36AC; };
+    struct __attribute__((packed)) { u8 _pad_m36B8[0x72C0]; cXyz m36B8; };
+    struct __attribute__((packed)) { u8 _pad_m36C4[0x72CC]; cXyz m36C4; };
+    struct __attribute__((packed)) { u8 _pad_m36D0[0x72D8]; cXyz m36D0; };
+    struct __attribute__((packed)) { u8 _pad_m36DC[0x72E4]; cXyz m36DC; };
+    struct __attribute__((packed)) { u8 _pad_mHookshotRootPos[0x72F0]; cXyz mHookshotRootPos; };
+    struct __attribute__((packed)) { u8 _pad_mBoomerangCatchPos[0x72FC]; cXyz mBoomerangCatchPos; };
+    struct __attribute__((packed)) { u8 _pad_m3700[0x7308]; cXyz m3700; };
+    struct __attribute__((packed)) { u8 _pad_m370C[0x7314]; cXyz m370C; };
+    struct __attribute__((packed)) { u8 _pad_m3718[0x7320]; cXyz m3718; };
+    struct __attribute__((packed)) { u8 _pad_m3724[0x732C]; cXyz m3724; };
+    struct __attribute__((packed)) { u8 _pad_m3730[0x7338]; cXyz m3730; };
+    struct __attribute__((packed)) { u8 _pad_m373C[0x7344]; cXyz m373C; };
+    struct __attribute__((packed)) { u8 _pad_m3748[0x7350]; cXyz m3748; };
     struct __attribute__((packed)) { u8 _pad_m3754[0x735C]; u8 m3754[0x60]; };
     struct __attribute__((packed)) { u8 _pad_mpSwBlur[0x73EC]; u32 mpSwBlur; };
     struct __attribute__((packed)) { u8 _pad_mFootData[0x73F0]; u8 mFootData[0x230]; };
@@ -310,6 +340,8 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mAnmRatioUnder) == 0x57F8, "daPy_l
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mAnmRatioUpper) == 0x5818, "daPy_lk_c.mAnmRatioUpper");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_anm_heap_under) == 0x5848, "daPy_lk_c.m_anm_heap_under");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_anm_heap_upper) == 0x5868, "daPy_lk_c.m_anm_heap_upper");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFrameCtrlUnder) == 0x5898, "daPy_lk_c.mFrameCtrlUnder");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFrameCtrlUpper) == 0x58B8, "daPy_lk_c.mFrameCtrlUpper");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSightPacket) == 0x58E8, "daPy_lk_c.mSightPacket");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mJAIZelAnime) == 0x64F0, "daPy_lk_c.mJAIZelAnime");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_sanm_buffer) == 0x6588, "daPy_lk_c.m_sanm_buffer");
@@ -325,9 +357,12 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_old_fdata) == 0x65CC, "daPy_lk_c
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_tex_anm_heap) == 0x65D0, "daPy_lk_c.m_tex_anm_heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m_tex_scroll_heap) == 0x65E0, "daPy_lk_c.m_tex_scroll_heap");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProc) == 0x65F0, "daPy_lk_c.mCurProc");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProcFunc) == 0x65F4, "daPy_lk_c.mCurProcFunc");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFootEffect) == 0x65FC, "daPy_lk_c.mFootEffect");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3280) == 0x6694, "daPy_lk_c.m3280");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSwimTailEcallBack) == 0x66A8, "daPy_lk_c.mSwimTailEcallBack");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m32E4) == 0x66F8, "daPy_lk_c.m32E4");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m32F0) == 0x6704, "daPy_lk_c.m32F0");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mSmokeEcallBack) == 0x6710, "daPy_lk_c.mSmokeEcallBack");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m331C) == 0x6730, "daPy_lk_c.m331C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m332C) == 0x6740, "daPy_lk_c.m332C");
@@ -337,10 +372,13 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m336C) == 0x6780, "daPy_lk_c.m336C
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m338C) == 0x67A0, "daPy_lk_c.m338C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33A8) == 0x67BC, "daPy_lk_c.m33A8");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mDmEcallBack) == 0x67CC, "daPy_lk_c.mDmEcallBack");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33E8) == 0x67FC, "daPy_lk_c.m33E8");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFanSwingCb) == 0x6808, "daPy_lk_c.mFanSwingCb");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3400) == 0x6814, "daPy_lk_c.m3400");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3410) == 0x6824, "daPy_lk_c.m3410");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m342C) == 0x6840, "daPy_lk_c.m342C");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3438) == 0x684C, "daPy_lk_c.m3438");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3454) == 0x6868, "daPy_lk_c.m3454");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3460) == 0x6874, "daPy_lk_c.m3460");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpAttention) == 0x6894, "daPy_lk_c.mpAttention");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpAttnEntryA) == 0x6898, "daPy_lk_c.mpAttnEntryA");
@@ -452,6 +490,7 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m355C) == 0x69AC, "daPy_lk_c.m355C
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m355E) == 0x69AE, "daPy_lk_c.m355E");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mEquipItem) == 0x69B0, "daPy_lk_c.mEquipItem");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3562) == 0x69B2, "daPy_lk_c.m3562");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3564) == 0x69B4, "daPy_lk_c.m3564");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, _69BA) == 0x69BA, "daPy_lk_c._69BA");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCameraInfoIdx) == 0x69BC, "daPy_lk_c.mCameraInfoIdx");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mProcVar6) == 0x69C0, "daPy_lk_c.mProcVar6");
@@ -514,6 +553,23 @@ WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3648) == 0x6AA0, "daPy_lk_c.m3648
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3658) == 0x6AB0, "daPy_lk_c.m3658");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3668) == 0x6AC0, "daPy_lk_c.m3668");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m6AE0) == 0x6AE0, "daPy_lk_c.m6AE0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3688) == 0x7290, "daPy_lk_c.m3688");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mOldSpeed) == 0x729C, "daPy_lk_c.mOldSpeed");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36A0) == 0x72A8, "daPy_lk_c.m36A0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36AC) == 0x72B4, "daPy_lk_c.m36AC");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36B8) == 0x72C0, "daPy_lk_c.m36B8");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36C4) == 0x72CC, "daPy_lk_c.m36C4");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36D0) == 0x72D8, "daPy_lk_c.m36D0");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m36DC) == 0x72E4, "daPy_lk_c.m36DC");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mHookshotRootPos) == 0x72F0, "daPy_lk_c.mHookshotRootPos");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mBoomerangCatchPos) == 0x72FC, "daPy_lk_c.mBoomerangCatchPos");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3700) == 0x7308, "daPy_lk_c.m3700");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m370C) == 0x7314, "daPy_lk_c.m370C");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3718) == 0x7320, "daPy_lk_c.m3718");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3724) == 0x732C, "daPy_lk_c.m3724");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3730) == 0x7338, "daPy_lk_c.m3730");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m373C) == 0x7344, "daPy_lk_c.m373C");
+WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3748) == 0x7350, "daPy_lk_c.m3748");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m3754) == 0x735C, "daPy_lk_c.m3754");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mpSwBlur) == 0x73EC, "daPy_lk_c.mpSwBlur");
 WWHD_SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFootData) == 0x73F0, "daPy_lk_c.mFootData");

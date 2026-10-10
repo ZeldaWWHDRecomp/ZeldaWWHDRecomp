@@ -1,3 +1,4 @@
+#include "mods/fast_forward.h"
 // Save states: snapshot the whole running game into one of 5 slots and restore it, also in a new
 // process.
 //
@@ -460,6 +461,7 @@ std::string area_label(const char* stage) {
 
 // true when done (saved or failed for good); false to retry on the next frame
 bool do_save(int slot) {
+    mods::fast_forward_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     if (!threads::quiesce(250, busy, 1, 30)) {
@@ -547,6 +549,7 @@ bool do_save(int slot) {
 }
 
 bool do_load(const std::shared_ptr<Snapshot>& s) {
+    mods::fast_forward_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     threads_ss_targets(s->section(kSecThreads));

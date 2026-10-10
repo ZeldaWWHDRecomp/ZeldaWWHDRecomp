@@ -1,3 +1,4 @@
+#include "mods/fast_forward.h"
 // True 60 fps: game logic at 60 steps per second (not interpolation).
 //
 // Pass structure (shared with interp.cpp): the per-frame function runs every vsync. Passes alternate:
@@ -76,7 +77,8 @@ uint64_t logic_steps();    // full logic steps so far
 namespace true60 {
 
 static std::atomic<bool> g_on{[] { const char* e = getenv("WWHD_TRUE60"); return e && atoi(e) != 0; }()};
-bool enabled() { return g_on.load(std::memory_order_relaxed); }
+bool selected() { return g_on.load(std::memory_order_relaxed); }
+bool enabled() { return selected() && !mods::fast_forward_active(); }
 void set_enabled(bool v) {
     g_on = v;
     LOG("[true60] game logic at 60 steps/s %s", v ? "on" : "off");

@@ -47,12 +47,52 @@ def main():
     subprocess.run([sys.executable, str(REPO / "tools/installer/test_setup.py"), "GuestBuildConfig", "CodeModsBuild"], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/guestmod/test_public_sdk_index.py")], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/bench/test_run_bench.py")], check=True)
-    headers = ["bindings", "actor", "link", "camera", "items", "messages", "save", "data"]
-    command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
-               "-ffreestanding", "-fsyntax-only", "-x", "c", "-"]
-    for header in headers:
-        command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
-    subprocess.run(command, input="", text=True, check=True)
+    headers = ["bindings", "vectors", "ptmf", "animation", "objects", "valoo", "medli", "audio", "actor", "link", "camera", "items", "messages", "save", "data"]
+    # Both supported source languages exercise nested public aggregate layout.
+    assertions = """
+#ifdef __cplusplus
+#define SDK_ASSERT(expression) static_assert(expression, "SDK layout")
+#else
+#define SDK_ASSERT(expression) _Static_assert(expression, "SDK layout")
+#endif
+SDK_ASSERT(sizeof(ProcFunc_l) == 8);
+SDK_ASSERT(sizeof(daPy_mtxFollowEcallBack_c) == 0xC);
+SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33E8.mpEmitter) == 0x6800);
+SDK_ASSERT(WWHD_OFFSET_actor_attention_flags == 0x39C);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, tevStr) == 0x110);
+SDK_ASSERT(WWHD_OFFSET_Link_left_hand_position == 0x3F0);
+SDK_ASSERT(WWHD_OFFSET_Link_ground_height == 0x8A0);
+SDK_ASSERT(WWHD_OFFSET_actor_process_id == 4);
+SDK_ASSERT(sizeof(wwhd_line_check_storage) == 0x6C);
+SDK_ASSERT(sizeof(wwhd_safe_string) == 8);
+SDK_ASSERT(__builtin_offsetof(wwhd_safe_string, __vtbl) == 4);
+SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mFrameCtrlUnder[0].mFrame) == 0x589C);
+SDK_ASSERT(__builtin_offsetof(mDoExt_McaMorf, mpModel) == 0x90);
+SDK_ASSERT(__builtin_offsetof(mDoExt_McaMorf, mFrameCtrl.mRate) == 0x98);
+SDK_ASSERT(__builtin_offsetof(mDoExt_McaMorf, mFrameCtrl.mFrame) == 0x9C);
+SDK_ASSERT(WWHD_OFFSET_J3DModel_base_matrix == 0xC8);
+SDK_ASSERT(WWHD_OFFSET_line_mat0_points_table == 0x144);
+SDK_ASSERT(WWHD_OFFSET_line_check_group == 0x68);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, d) == 0);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, i) == 2);
+SDK_ASSERT(__builtin_offsetof(ProcFunc_l, f) == 4);
+SDK_ASSERT(__builtin_offsetof(daPy_lk_c, mCurProcFunc) == 0x65F4);
+SDK_ASSERT(__builtin_offsetof(dr_class, mpMorf) == 0x3D0);
+SDK_ASSERT(__builtin_offsetof(daNpc_Md_c, mpMorf) == 0x618);
+SDK_ASSERT(WWHD_OFFSET_daObjGong_Act_c_mpMorf == 0x3B4);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.x) == 0x314);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, current.pos.z) == 0x31C);
+SDK_ASSERT(__builtin_offsetof(fopAc_ac_c, shape_angle.y) == 0x32A);
+SDK_ASSERT(WWHD_PLAY_START_STAGE_NAME_OFFSET == 0x5134);
+SDK_ASSERT(WWHD_PLAY_EVENT_RUNNING_OFFSET == 0x5292);
+SDK_ASSERT(WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET == 0x514C);
+"""
+    for language in ("c", "c++"):
+        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
+                   "-ffreestanding", "-fsyntax-only", "-x", language, "-"]
+        for header in headers:
+            command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
+        subprocess.run(command, input=assertions, text=True, check=True)
     print("Host module compiler:", tc.desc, flush=True)
     subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "test_guestmod.py"), "-v"], check=True)
 

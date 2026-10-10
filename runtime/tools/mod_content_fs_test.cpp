@@ -52,6 +52,8 @@ int main(int argc,char** argv){
  std::ofstream(original)<<"original";std::ofstream(replacement)<<"replacement bytes";
  std::ofstream(original.parent_path()/"other.bin")<<"fallback";std::ofstream(root/"game"/"code"/"model.bin")<<"code";std::ofstream(root/"game"/"meta"/"model.bin")<<"meta";std::ofstream(root/"save"/"user"/"model.bin")<<"save";
  if(on)mods::content::activate(mods::content::index(root/"mod"));
+ // guest module startup activates the combined set a second time (issue #109: that used to abort the start)
+ if(on)mods::content::activate(mods::content::index(root/"mod"));
  auto expected=on?"replacement bytes":"original";
  auto h=open("/vol/content/common/MODEL.bin");assert(read(h,64)==expected);close(h);
  h=open("Common/model.bin");assert(read(h,64)==expected);close(h);

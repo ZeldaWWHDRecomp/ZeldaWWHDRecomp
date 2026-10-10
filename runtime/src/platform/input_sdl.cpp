@@ -1,8 +1,11 @@
+#include "../mods/fast_forward.h"
 // SDL3 keyboard/gamepad input. Stable key IDs preserve existing controls.json mappings.
 #include "input_sdl.h"
+#include "overlay_trace_sdl.h"
 #include "keycodes.h"
 #include "mouse_sdl.h"
 #include "../input.h"
+#include "../audio_out.h"
 #include "../input_map.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
@@ -37,6 +40,7 @@ static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
 static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
+static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
 static SDL_Window* g_prompt_window=nullptr;
 static std::function<void(bool,std::u16string)> g_pending,g_done;
@@ -157,7 +161,7 @@ static int keycode(SDL_Scancode code) {
  }
 }
 void set_touch(bool down,float x,float y){std::lock_guard lk(g_mu);g_touch=down;g_tx=x;g_ty=y;}
-void release_keys(){std::lock_guard lk(g_mu);memset(g_keys,0,sizeof g_keys);g_touch=false;}
+void release_keys(){mods::fast_forward_reset();std::lock_guard lk(g_mu);memset(g_keys,0,sizeof g_keys);g_touch=false;}
 void held_keys(bool* keys){std::lock_guard lk(g_mu);for(int i=0;i<256;i++)keys[i]=g_keys[i]||g_script_keys[i];}
 void controller_values(float* out){std::lock_guard lk(g_mu);std::copy(std::begin(g_values),std::end(g_values),out);}
 void host_controller_values(float* out){controller_values(out);}
@@ -173,8 +177,13 @@ static bool overlay_event(const SDL_Event& event){
  case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:{
   if(event.key.windowID!=tv)return false;
   int code=keycode(event.key.scancode);
+  // paste in an overlay text field: Dear ImGui reads the clipboard text the host passes here
+  if(event.type==SDL_EVENT_KEY_DOWN&&event.key.scancode==SDL_SCANCODE_V&&(event.key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))&&overlay::wants_text()){
+   char* clip=SDL_GetClipboardText();overlay::set_clipboard_text(clip?clip:"");SDL_free(clip);
+  }
   return code>=0&&overlay::key(code,event.type==SDL_EVENT_KEY_DOWN,event.key.repeat,overlay_mods(event.key.mod));
  }
+ case SDL_EVENT_TEXT_INPUT: return overlay::text(event.text.text);  // typed into an overlay text field
  case SDL_EVENT_MOUSE_MOTION:{
   if(event.motion.windowID!=tv)return false;
   int w=1,h=1;SDL_GetWindowSize(g_prompt_window,&w,&h);
@@ -312,20 +321,67 @@ static void sensor_event(const SDL_GamepadSensorEvent& e){
  auto a=g_accel.find(e.which);if(a==g_accel.end())return;
  motion::controller_sample((uint64_t)e.which,e.sensor_timestamp,e.data,a->second.data());
 }
+// What the dominant pad (first connected still present) has printed on its face buttons, in the
+// order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
+static void dominant_labels(input_map::FaceLabel out[4]){
+ using FL=input_map::FaceLabel;
+ for(int i=0;i<4;i++)out[i]=FL::kUnknown;
+ std::lock_guard lk(g_pads_mu);
+ for(SDL_JoystickID id:g_order){
+  if(SDL_IsJoystickVirtual(id))continue;  // #88's on-screen pad is not a pad to follow for labels
+  auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
+  SDL_Gamepad* pad=i->second;
+  auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{
+   switch(SDL_GetGamepadButtonLabel(pad,b)){
+   case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
+   case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
+   case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
+   case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
+   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
+   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
+   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
+   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
+   default:return FL::kUnknown;}};
+  out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+  out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  return;  // one pad decides, the first connected
+ }
+}
+// outside g_pads_mu: input_map may write controls.json
+static void note_dominant_labels(){
+ input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
+}
 static void open_controller(SDL_JoystickID id){
  std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
- if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;
+ if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;g_order.push_back(id);
+  // every connected device is listed: the host combines all of them (strongest input wins), so a
+  // second device (e.g. Steam Input's virtual pad next to the physical one) shows up in bug reports
+  const char* name=SDL_GetGamepadName(pad);
+  LOG("[input] controller connected: %s (id %u, vendor %04X, product %04X, type %d)",name?name:"?",(unsigned)id,
+      SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad),(int)SDL_GetGamepadType(pad));
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
   if(SDL_RumbleGamepad(pad,0,0,0))g_rumble_controllers.insert(id);
   if(g_sensors_on)set_sensors_locked(pad,true);}
 }
+static void close_controller(SDL_JoystickID id){
+ {std::lock_guard lk(g_pads_mu);
+  auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
+  std::erase(g_order,id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);
+  g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
+ motion::controller_gone(id);
+ note_dominant_labels();  // the dominant pad may have changed
+}
 void init(){
+ wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
+ if(!wwhd_trace::handoff()) LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
  input_map::load_startup();
  // WWHD_NO_GAMEPAD only hides the GamePad screen window; WWHD_NO_CONTROLLERS turns off host controllers
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
   int count=0;auto* ids=SDL_GetGamepads(&count);for(int i=0;i<count;i++)open_controller(ids[i]);SDL_free(ids);
+  note_dominant_labels();  // before the first read, so Automatic is settled at startup
   SDL_AddEventWatch(rumble_quit_watch,nullptr);
   atexit(stop_rumble_now);  // std::exit: the game's exit(), its main thread returned
   std::thread(rumble_watchdog).detach();
@@ -423,10 +479,11 @@ static bool text_entry_event(const SDL_Event& event){
  }
 }
 void handle_event(const SDL_Event& event){
+ if((event.type==SDL_EVENT_AUDIO_DEVICE_ADDED||event.type==SDL_EVENT_AUDIO_DEVICE_REMOVED||event.type==SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED)&&!event.adevice.recording)audio::flush();
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
- if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS"))open_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED){std::lock_guard lk(g_pads_mu);auto i=g_controllers.find(event.gdevice.which);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}g_rumble_controllers.erase(event.gdevice.which);g_rumble_sent.erase(event.gdevice.which);g_accel.erase(event.gdevice.which);g_sensor_seen.erase(event.gdevice.which);g_sensor_kick.erase(event.gdevice.which);motion::controller_gone(event.gdevice.which);}
+ if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
  if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
  if(event.type==SDL_EVENT_WINDOW_FOCUS_LOST)release_keys();
  if(text_entry_event(event))return;
@@ -485,6 +542,10 @@ void handle_event(const SDL_Event& event){
  if(event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP){int code=keycode(event.key.scancode);if(code>=0){std::lock_guard lk(g_mu);g_keys[code]=event.type==SDL_EVENT_KEY_DOWN&&(g_keys[code]||!event.key.repeat);}}
 }
 void update(){
+ if(wwhd_trace::enabled()) {
+  overlay_trace_sdl::begin(overlay::is_open());
+  for(auto [id,pad]:g_controllers) overlay_trace_sdl::pad(id,pad);
+ }
  mods::update_mouse();
  apply_rumble();
  update_sensors();
@@ -493,8 +554,9 @@ void update(){
  if(cancelled)cancelled(false,{});
  // SDL text input in every game window while the overlay's text prompt shows (typed text, input methods;
  // on Android it brings up the system keyboard); the input method's candidates open over the prompt
+ // (also while a text field of the settings overlay has the keyboard)
  static bool entry_text=false;
- if(text_entry::active()!=entry_text&&!g_done){
+ if((text_entry::active()||overlay::wants_text())!=entry_text&&!g_done){
   entry_text=!entry_text;int n=0;
   if(SDL_Window** ws=SDL_GetWindows(&n)){
    for(int i=0;i<n;i++){

@@ -37,6 +37,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -56,6 +57,7 @@ float pass_t();         // blend fraction of this pass (1 = exact)
 bool in_execute();      // inside fpcEx_Handler (actor Execute)
 uint64_t hold_pass_count();  // record passes so far (step stamp of the histories)
 uint64_t pass_count();       // every pass
+void blend_world_matrix(const float* a, const float* b, float* out, float t);
 uint64_t logic_steps();   // logic steps run so far
 }  // namespace interp
 
@@ -772,6 +774,136 @@ extern "C" void hook_0251D864(Cpu* c) {
     for (auto& [addr, w] : saved) memcpy(ppc_ptr(addr), w.data(), 4 * w.size());
 }
 
+// Custom cloth packets bypass both J3DModel and dCloth_packet_c. Their upload functions
+// consume a local mesh AND its placement matrix. Blend both from the last exact draw before
+// the upload, then restore the simulation inputs. The generated vertex/uniform buffers retain
+// this pass's pose for the painter. In particular, daGrid_c is the King of Red Lions' sail;
+// dCloth_packet_c is not its simulation. Never advance or scale a cloth simulation here.
+struct PacketField { uint32_t addr, words; bool matrix = false; };
+struct PacketPose { uint64_t record; std::vector<uint32_t> words; };
+enum ClothPacketKind { kGridSail, kPirateSail, kFortressFlag, kBuoyFlag, kBuoyPole, kMantle, kPirateFlag };
+constexpr const char* kClothPacketNames[] = {"KoRL sail", "pirate sail", "fortress flag", "buoy flag", "buoy pole", "mantle", "pirate flag"};
+std::unordered_map<uint64_t, PacketPose> g_packet_poses;
+void cloth_packet(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), std::initializer_list<PacketField> fields) {
+    if (!on(16) || interp::in_execute()) { original(c); return; }
+    const uint64_t key = (uint64_t(kind) << 32) | c->r[3];
+    const uint64_t record = interp::hold_pass_count();
+    std::vector<uint32_t> exact;
+    for (const auto& f : fields) {
+        const auto* w = reinterpret_cast<const uint32_t*>(ppc_ptr(f.addr));
+        exact.insert(exact.end(), w, w + f.words);
+    }
+    if (interp::record_pass()) {
+        g_packet_poses[key] = {record, std::move(exact)};
+        original(c);
+        return;
+    }
+    auto it = g_packet_poses.find(key);
+    if (!halfway() || it == g_packet_poses.end() || it->second.record + 1 < record ||
+        it->second.words.size() != exact.size()) { original(c); return; }
+    const auto& before = it->second.words;
+    // As with J3D models, do not smear a teleport or a non-finite placement matrix.
+    uint32_t offset = 0;
+    for (const auto& f : fields) {
+        if (f.matrix) {
+            for (uint32_t j = 0; j < f.words; j++) {
+                if (!std::isfinite(wf(before[offset+j])) || !std::isfinite(wf(exact[offset+j]))) {
+                    original(c);
+                    return;
+                }
+            }
+            float distance2 = 0;
+            for (uint32_t j : {3u, 7u, 11u}) {
+                float d = wf(before[offset + j]) - wf(exact[offset + j]);
+                distance2 += d * d;
+            }
+            if (!(distance2 <= 400.f * 400.f)) { original(c); return; }
+        }
+        offset += f.words;
+    }
+    const float t = interp::pass_t();
+    offset = 0;
+    for (const auto& f : fields) {
+        auto* w = reinterpret_cast<uint32_t*>(ppc_ptr(f.addr));
+        if (f.matrix) {
+            float a[12], b[12], out[12];
+            for (uint32_t j = 0; j < 12; j++) { a[j] = wf(before[offset+j]); b[j] = wf(exact[offset+j]); }
+            interp::blend_world_matrix(a, b, out, t);
+            for (uint32_t j = 0; j < 12; j++) w[j] = fw(out[j]);
+        } else {
+            for (uint32_t j = 0; j < f.words; j++) w[j] = fw(lerp_f(wf(before[offset+j]), wf(exact[offset+j]), t));
+        }
+        offset += f.words;
+    }
+    static const int trace = getenv("WWHD_INTERP_FX_TRACE") ? atoi(getenv("WWHD_INTERP_FX_TRACE")) : 0;
+    static int traces[] = {trace, trace, trace, trace, trace, trace, trace};
+    if (traces[kind] > 0) {
+        offset = 0;
+        for (const auto& f : fields) {
+            bool logged = false;
+            const auto* drawn = reinterpret_cast<const uint32_t*>(ppc_ptr(f.addr));
+            for (uint32_t j = 0; j < f.words; j++) {
+                if (std::fabs(wf(exact[offset+j]) - wf(before[offset+j])) < .01f) continue;
+                LOG("[interp-fx] custom cloth %s packet %08X t %.3f: %.4f -> %.4f, drawn %.4f",
+                    kClothPacketNames[kind], c->r[3], t, wf(before[offset+j]), wf(exact[offset+j]), wf(drawn[j]));
+                traces[kind]--;
+                logged = true;
+                break;
+            }
+            if (logged) break;
+            offset += f.words;
+        }
+    }
+    original(c);
+    offset = 0;
+    for (const auto& f : fields) {
+        memcpy(ppc_ptr(f.addr), exact.data() + offset, f.words * sizeof(uint32_t));
+        offset += f.words;
+    }
+}
+extern "C" void f_021625DC_orig(Cpu*); // daHo_packet_c upload (KoRL sail)
+extern "C" void hook_021625DC(Cpu* c) {
+    const uint32_t p = c->r[3];
+    cloth_packet(c, kGridSail, f_021625DC_orig, {{p+0xAC, 12, true}, {p+0xE0, 85*3*3}});
+}
+extern "C" void f_0245F638_orig(Cpu*); // pirate ship sail upload
+extern "C" void hook_0245F638(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld8(p+0x2EBE);
+    if (i > 1 || !on(16)) { f_0245F638_orig(c); return; }
+    cloth_packet(c, kPirateSail, f_0245F638_orig, {{p+0x1294, 12, true},
+        {p+0x1328+i*0x3F0, 84*3}, {p+0x1EF8+i*0x3F0, 84*3}, {p+0x26D8+i*0x3F0, 84*3}});
+}
+extern "C" void f_021B89B4_orig(Cpu*); // Forsaken Fortress flag upload
+extern "C" void hook_021B89B4(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld8(p+0x1A2E);
+    if (i > 1 || !on(16)) { f_021B89B4_orig(c); return; }
+    cloth_packet(c, kFortressFlag, f_021B89B4_orig, {{p+0x1290, 12, true},
+        {p+0x1344+i*0xFC, 21*3}, {p+0x153C+i*0xFC, 21*3}, {p+0x1734+i*0xFC, 21*3}});
+}
+extern "C" void f_0232B624_orig(Cpu*); // buoy flag upload
+extern "C" void hook_0232B624(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld32(p+0xC18);
+    if (i > 1 || !on(16)) { f_0232B624_orig(c); return; }
+    cloth_packet(c, kBuoyFlag, f_0232B624_orig, {{p+0xC4C, 12, true}, {p+0x9C+i*0x4EC, 35*3*3}});
+}
+extern "C" void f_0232B984_orig(Cpu*); // buoy pole: keep the flag's attachment at the same fraction
+extern "C" void hook_0232B984(Cpu* c) {
+    cloth_packet(c, kBuoyPole, f_0232B984_orig, {{c->r[3]+0xC1C, 12, true}});
+}
+extern "C" void f_023D0E68_orig(Cpu*); // pirate ship skull flag upload
+extern "C" void hook_023D0E68(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld8(p+0x906);
+    if (i > 1 || !on(16)) { f_023D0E68_orig(c); return; }
+    cloth_packet(c, kPirateFlag, f_023D0E68_orig, {{p+0x98, 12, true},
+        {p+0xCC+i*0x12C, 25*3}, {p+0x324+i*0x12C, 25*3}, {p+0x57C+i*0x12C, 25*3}});
+}
+extern "C" void f_021BBC34_orig(Cpu*); // mantle/cape vertex fill and uniforms
+extern "C" void hook_021BBC34(Cpu* c) {
+    const uint32_t p = c->r[3];
+    cloth_packet(c, kMantle, f_021BBC34_orig,
+        {{p+0x98, 12, true}, {p+0xC8, 12, true}, {p+0xFC, 81*3*2}});
+}
+
 namespace { void fx_step_stats(); }
 // start of every pass (interp.cpp, per-frame function): the blended values only live until the
 // pass has been painted (the painter runs after the per-frame function, before the next one). What
@@ -1289,6 +1421,7 @@ void fx_ss_reset() {
     g_wave_keep = 0;
     g_wave_pkt = 0;
     g_cloth_cur.clear();
+    g_packet_poses.clear();
     g_att.clear();
     for (auto& s : g_sway) s = SwayRec{};
     g_wood = WoodRec{};
