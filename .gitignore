@@ -41,5 +41,3 @@ headstart.bin
 /wwhd_src/
 # local coordination board
 /task.md
-# generated local developer knowledge graph (including worktree metadata and caches)
-/.graphify/
