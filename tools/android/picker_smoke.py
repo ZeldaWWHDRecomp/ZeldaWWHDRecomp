@@ -57,6 +57,16 @@ def main():
                 raise AssertionError("Cannot obtain fresh UI hierarchy: " + detail)
             time.sleep(.2)
 
+    KINDS = {"folder": "Extracted game folder", "archive": "Cemu archive (.wua)",
+             "image": "Disc image (.wud / .wux) with keys"}
+    CHOOSE = ("Choose your game", "Choose a different game")
+    RESTORE = "Allow access to the chosen game again"
+    DISC, COMMON = "Choose the disc key file", "Choose the common key file"
+
+    def start_control():
+        nodes = ui()
+        return next((node for node in nodes if node.get("text") in ("Start", "Continue")), {"enabled": "false"})
+
     def find(label, attribute="text", nodes=None, resource=None):
         return next((node for node in (ui() if nodes is None else nodes)
                      if node.get(attribute) == label and (resource is None or node.get("resource-id") == resource)), None)
@@ -107,6 +117,16 @@ def main():
         raise AssertionError("Setup screen did not resume")
 
     def open_picker(button):
+        if button in KINDS.values():
+            # the kind menu: the choose button, then the kind
+            nodes = ui()
+            chooser = next(label for label in CHOOSE if find(label, nodes=nodes) is not None)
+            tap(chooser)
+            tap(button)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if find("Show roots", "content-desc") is not None: return
+            raise AssertionError("Picker did not open")
         tap(button)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -177,7 +197,9 @@ def main():
     def wait_text(fragment):
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            if any(fragment in node.get("text", "") for node in ui()): return
+            nodes = ui()
+            if any(fragment in node.get("text", "") for node in nodes): return
+            if find("Details", nodes=nodes) is not None: tap("Details")  # the technical record
         raise AssertionError("Missing feedback: " + fragment + "; visible text: " + repr([node.get("text", "") for node in ui() if node.get("text")]))
 
     def preservation(identity):
@@ -206,7 +228,7 @@ def main():
         shell("run-as", package, "rm", "-f", pointer)
         home()
         if not args.key_correction_only:
-            choose("Choose extracted game folder", "game", folder=True)
+            choose(KINDS["folder"], "game", folder=True)
             identity, source = selected()
             if source["kind"] != "folder": raise AssertionError("Wrong folder kind")
             observations.append(probe("verify"))
@@ -217,24 +239,24 @@ def main():
             probe("revoke_dump")
             preserved = preservation(identity)
             wait_text("Dump access is missing")
-            choose("Restore access to selected dump", "game", folder=True)
+            choose(RESTORE, "game", folder=True)
             wait_text("Access restored.")
             if selected()[0] != identity or preservation(identity) != preserved: raise AssertionError("Folder access repair discarded private state")
             observations.append({"folder_access_repaired": probe("verify")})
             home()
-            choose("Choose WUA archive", "dump.wua")
+            choose(KINDS["archive"], "dump.wua")
             selected(kind="archive")
             observations.append(probe("verify"))
             home()
-        choose("Choose WUD / WUX disc image", "dump.wux")
+        choose(KINDS["image"], "dump.wux")
         identity, source = selected(kind="image")
         if source["kind"] != "image": raise AssertionError("Wrong image kind")
-        if find("Start / resume / retry setup").get("enabled") != "false": raise AssertionError("Missing keys did not block start")
-        choose("Choose disc key file", "disc.key")
+        if start_control().get("enabled") != "false": raise AssertionError("Missing keys did not block start")
+        choose(DISC, "disc.key")
         selected(key="disc_uri")
-        choose("Choose common key file", "common.key")
+        choose(COMMON, "common.key")
         selected(key="common_uri")
-        if find("Start / resume / retry setup").get("enabled") != "true": raise AssertionError("Complete input cannot start")
+        if start_control().get("enabled") != "true": raise AssertionError("Complete input cannot start")
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.with_suffix(".png").write_bytes(adb("exec-out", "screencap", "-p").stdout)
         observations.append(probe("verify"))
@@ -242,18 +264,18 @@ def main():
             probe("revoke_dump")
             preserved = preservation(identity)
             wait_text("Dump access is missing")
-            choose("Restore access to selected dump", "dump.wua")
+            choose(RESTORE, "dump.wua")
             wait_text("Choose the same previously selected")
             if selected()[0] != identity or preservation(identity) != preserved: raise AssertionError("Wrong-document repair changed private state")
-            choose("Restore access to selected dump", "dump.wux")
+            choose(RESTORE, "dump.wux")
             wait_text("Access restored.")
             if selected()[0] != identity or preservation(identity) != preserved: raise AssertionError("Image access repair discarded private state")
             observations.append({"image_access_repaired": probe("verify"), "wrong_document_rejected": True, "private_state_preserved": True})
             probe("revoke_common")
-            wait_text("Common key needs access")
-            if find("Start / resume / retry setup").get("enabled") != "false": raise AssertionError("Lost key access did not block start")
-            choose("Common key needs access — choose again", "common.key")
-            wait_text("Common key selected — change")
+            wait_text("Common key: choose it again")
+            if start_control().get("enabled") != "false": raise AssertionError("Lost key access did not block start")
+            choose("Common key: choose it again", "common.key")
+            wait_text("Common key chosen (change)")
             if selected()[0] != identity: raise AssertionError("Key access repair replaced the job")
             observations.append({"key_access_repaired": probe("verify")})
             shell("am", "force-stop", package)
@@ -299,7 +321,7 @@ def main():
         old_disc = private(job_root + "/input/disc.key")
         if any(value is None for value in before_key_retry.values()) or old_disc != b"*" * 16:
             raise AssertionError("Private image/key correction fixture is incomplete")
-        choose("Disc key selected — change", "replacement.key")
+        choose("Disc key chosen (change)", "replacement.key")
         wait_text("Replacement key selected")
         pending = private(job_root + "/replace-disc-key.json")
         if not pending or "replacement.key" not in json.loads(pending)["uri"]:
@@ -319,10 +341,11 @@ def main():
         observations.append({"imported_key_corrected_same_job": True,
                              "dump_manifest_and_other_key_unchanged": True})
         home()
-        open_picker("Choose WUA archive")
+        open_picker(KINDS["archive"])
         for attempt in range(6):
             shell("input", "keyevent", "4")
-            if find("Choose extracted game folder") is not None: break
+            nodes = ui()
+            if any(find(label, nodes=nodes) is not None for label in CHOOSE): break
         else: raise AssertionError("Back did not cancel the picker")
         if selected()[0] != identity: raise AssertionError("Picker cancellation changed selection")
         observations.append({"cancellation_preserved_selection": True})
