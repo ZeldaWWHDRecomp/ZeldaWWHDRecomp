@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: on-screen controls** (PR #88, thanks @rhemfur). Phones without a controller can now
+  play: the 🎮 button under the view button (top left) shows or hides two sticks, the D-pad,
+  A B X Y, L R, ZL ZR and + − (remembered). They act like a controller, so the button mapping and a
+  physical controller keep working; with a controller connected they hide until you touch the screen.
+
 - **Controls: an Automatic face-button preset** (PR #102, thanks @mhbxyz). It reads the labels
   printed on the pad that was plugged in first and follows them, so an Xbox or PlayStation pad plays
   by label and a Nintendo pad by position, without touching the setting.
