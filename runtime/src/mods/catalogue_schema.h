@@ -1,5 +1,6 @@
 // Versioned catalogue metadata. Parsing never downloads or executes package content.
 #pragma once
+#include "../exception_report.h"
 #include "mod_json.h"
 #include <array>
 #include <algorithm>
@@ -16,9 +17,9 @@ struct Version {
         Version v;size_t start=0;
         for(size_t i=0;i<3;++i) {
             size_t end=text.find('.',start);if(i==2)end=text.size();
-            if(end==std::string::npos||end==start||end-start>9)throw std::runtime_error("Expected three-part version");
+            if(end==std::string::npos||end==start||end-start>9)exception_report::raise("Expected three-part version");
             auto [p,ec]=std::from_chars(text.data()+start,text.data()+end,v.parts[i]);
-            if(ec!=std::errc{}||p!=text.data()+end||(end-start>1&&text[start]=='0'))throw std::runtime_error("Invalid version");
+            if(ec!=std::errc{}||p!=text.data()+end||(end-start>1&&text[start]=='0'))exception_report::raise("Invalid version");
             start=end+1;
         }
         return v;
@@ -45,7 +46,7 @@ struct Entry {
     }
 };
 struct Index { std::vector<Entry> entries; };
-inline void require(bool valid,const std::string& why) {if(!valid)throw std::runtime_error(why);}
+inline void require(bool valid,const std::string& why) {if(!valid)exception_report::raise(why);}
 inline bool identifier(const std::string& id) {
     return !id.empty()&&id.size()<=64&&id.front()!='.'&&id.front()!='-'&&std::all_of(id.begin(),id.end(),[](unsigned char c){
         return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.';})&&id!="."&&id!="..";

@@ -212,7 +212,7 @@ already when the window probes it), a disc image or Cemu archive right after ext
 `game.partial`, which is then removed, so an earlier `game/` stays), a repair or update with the
 installed files. On a mismatch the message says what was found (another title, "an update merged in"
 when `code/app.xml` or `meta/meta.xml` give a version above 0 or the update's title id, otherwise
-"not the expected file" with the start of its SHA-256), what is needed and how to get it. Tests:
+"not a file the port knows" with the start of its SHA-256), what is needed and how to get it. Tests:
 `GameVersion` in `test_setup.py` (synthetic files; `WWHD_GAME_DIR=game` also checks your own copy).
 The recompiler reads only `code/cking.rpx` (the runtime checks at start that it matches the translated
 code); the other files in `code/` (`app.xml`, `cos.xml`) are metadata and are not checked.

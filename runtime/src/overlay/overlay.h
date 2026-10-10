@@ -3,7 +3,7 @@
 // F1 opens and closes it (Esc closes); on macOS also Cmd+, (app menu > Settings...; most Mac keyboards
 // send F1 only with Fn unless the top row is set to standard function keys); on a controller, hold Select/Minus for half a second or press
 // Home. While it is open the game sees no buttons (it keeps running) and the overlay takes keyboard,
-// mouse and controller. Tabs: Saves, Graphics, Display, Mods, Controls, Language / About. Every option
+// mouse and controller. Tabs: Saves, Graphics, Display, Audio, Mods, Controls, Language / About. Every option
 // calls the same functions as the macOS menu bar (which stays in sync) or the SDL host's shortcuts.
 // When the game asks for text, the overlay shows its text prompt (text_entry.h) with the same input rules.
 //
@@ -11,7 +11,7 @@
 // thread once per TV present (frame()); option changes go back to the main thread (hostui::post).
 //
 // Test switches:
-//   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, mods,
+//   WWHD_TEST_OVERLAY=open[:<tab>][@<frame>]   open the overlay (tab: saves, graphics, display, audio, mods,
 //                                              controls, about) at TV frame <frame> (default 1)
 //   WWHD_TEST_MOD_DISABLE/WWHD_TEST_MOD_REMOVE=<id>  normal package actions in headless runs
 //   WWHD_TEST_CATALOGUE_INSTALL=<id>         refresh and install through the normal catalogue UI worker
@@ -48,6 +48,12 @@ enum Mods : int { kShift = 1, kCtrl = 2, kAlt = 4, kSuper = 8 };
 bool key(int code, bool down, bool repeat, int mods);
 // pointer in the TV window, normalised to its content area (0..1 from the top left); return true while
 // the overlay is open (the event is the overlay's, not the game's or the mouse camera's)
+// typed characters (UTF-8, after the key event that produced them); true while the overlay is open
+bool text(const char* utf8);
+// the system clipboard's text, read by the host just before it passes Ctrl/Cmd+V on (main thread)
+void set_clipboard_text(const char* utf8);
+// a text field of the overlay has the keyboard (hosts turn on text input / the on-screen keyboard)
+bool wants_text();
 bool mouse_move(float nx, float ny);
 bool mouse_button(int button, bool down);  // 0 left, 1 right, 2 middle
 bool mouse_wheel(float dx, float dy);      // in lines, +y = away from the user

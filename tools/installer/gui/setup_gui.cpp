@@ -456,6 +456,7 @@ struct App {
     std::string package, game_dir;
     double free_bytes = 0, source_bytes = 0, toolchain_bytes = 0;
     bool opt_remove_toolchain = false, opt_shortcut = false;
+    bool code_mods = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
     bool exec_game = false;                                  // start the game when the window has closed
@@ -803,6 +804,7 @@ static void start_install(const std::string& source) {
     A.steps.clear();
     A.current = -1;
     std::string f = "\"source\":" + jstr(source);
+    f += std::string(",\"code_mods\":") + (A.code_mods ? "true" : "false");
     if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     request("install", f);
     go(Screen::Installing);
@@ -902,6 +904,7 @@ static void handle_event(const J& ev) {
         A.app_dir = ev.str("app_dir");
         A.log_path = ev.str("log");
         A.platform = ev.str("platform");
+        A.code_mods = ev.boolean("code_mods");
         A.game_files = ev.boolean("game_files");
         A.save_exists = ev.boolean("save_exists");
         A.portable = ev.boolean("portable");
@@ -1110,11 +1113,21 @@ static void screen_welcome() {
     if (b == 1) go(Screen::Source);
 }
 
+static void code_mods_choice() {
+    checkbox("Build with code-mod support", &A.code_mods);
+    muted("For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
+          "content mods do not need this. The game code gets a small check in every function, which can "
+          "cost some performance, and the build takes a bit longer. You can switch this later in "
+          "Settings > Mods; that requires another rebuild.");
+    ImGui::Spacing();
+}
+
 static void screen_menu() {
     bool update = A.installed_version != A.version;
     page_header(A.portable ? "Wind Waker HD" : "Wind Waker HD is installed",
                 update ? "Prepared with " + A.installed_version + ". This release: " + A.version + "."
                        : "Version " + A.version + ", in " + home_folder());
+    code_mods_choice();
     float w = 520;
     if (update) {
         if (button("Update to this release", ImVec2(w, 0), true)) start_install("installed");
@@ -1149,6 +1162,7 @@ static void screen_source() {
         muted(A.source_path);
         ImGui::EndChild();
     }
+    code_mods_choice();
     int b = footer({"Back", "Next"}, 1, (A.probe_ok && !busy()) ? 0 : 2);
     if (b == 0) go(A.installed ? Screen::Menu : Screen::Welcome);
     if (b == 1) {
@@ -1744,7 +1758,7 @@ static void start_child() {
 // automation (tests): a JSON array of steps, each run when its screen is showing:
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
-// "set" fields: source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
+// "set" fields: code_mods (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
 // (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
@@ -1780,6 +1794,7 @@ static void automation_frame() {
             else if (k == "save_kind")
                 set_save_kind(v == "hd" ? 1 : v == "gc" ? 2 : v == "legacy" ? 3 : v == "other" ? 4 : 0);
             else if (k == "save_path") set_save_path(v);
+            else if (k == "code_mods") A.code_mods = kv.second.t == J::Bool && kv.second.b;
             else if (k == "open_details") details_open = true;
         }
     }

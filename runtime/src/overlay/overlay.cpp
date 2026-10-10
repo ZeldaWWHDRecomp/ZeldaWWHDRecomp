@@ -3,8 +3,13 @@
 // resulting ImDrawData (gfx/overlay_metal.mm, gfx/vulkan/overlay.cpp); the hosts feed input and apply
 // changes on their main thread (hostui.h).
 #include "overlay.h"
+#include "../audio_out.h"
 #include "guest_hud.h"
 #include "setup_test.h"
+#include "setup_flow.h"
+#include "graphics_switch.h"
+#include "game_source_widgets.h"
+#include "gamepad_nav.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
@@ -27,6 +32,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "trace.h"
 #include "hostui.h"
 #include "../mods/code_mods.h"
 #include "controls_view.h"
@@ -85,14 +91,19 @@ bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also 
 
 // input events from the host's main thread, replayed into ImGui on the render thread
 struct Event {
-    enum Kind { Key, MousePos, MouseButton, Wheel, Focus } kind;
+    enum Kind { Key, MousePos, MouseButton, Wheel, Focus, Text } kind;
     int code = 0;
     bool down = false;
     float x = 0, y = 0;
     int mods = 0;
+    std::string text = {};  // Text: typed characters (UTF-8)
 };
 std::mutex g_mu;
 std::vector<Event> g_events;
+// the system clipboard as the host last read it (main thread, before it passes the paste shortcut on);
+// Dear ImGui reads it on the render thread when Ctrl/Cmd+V reaches a text field
+std::string g_clipboard;
+std::atomic<bool> g_wants_text{false};  // a text field of the overlay has the keyboard
 std::atomic<int> g_capture_key{-2};  // remap: key pressed while capturing (-2 none, -1 cancel, -3 clear)
 std::atomic<bool> g_capturing_keys{false};
 // keys held while the overlay is open (the Controls tab lights them; the game never sees them)
@@ -137,9 +148,9 @@ ImGuiKey imgui_key(int code) {
 }
 
 // ---------------------------------------------------------------- UI state (render thread)
-enum Tab { kSaves, kGraphics, kDisplay, kMods, kControls, kAbout, kTabs };
-const char* const kTabNames[kTabs] = {"Saves", "Graphics", "Display", "Mods", "Controls", "Language / About"};
-const char* const kTabIds[kTabs] = {"saves", "graphics", "display", "mods", "controls", "about"};
+enum Tab { kSaves, kGraphics, kDisplay, kAudio, kMods, kControls, kAbout, kTabs };
+const char* const kTabNames[kTabs] = {"Saves", "Graphics", "Display", "Audio", "Mods", "Controls", "Language / About"};
+const char* const kTabIds[kTabs] = {"saves", "graphics", "display", "audio", "mods", "controls", "about"};
 
 struct Ui {
     bool init = false;
@@ -148,6 +159,8 @@ struct Ui {
     // controller
     float values[input_map::kPadCount] = {};
     float prev[input_map::kPadCount] = {};
+    GamepadNavigation gamepad_navigation;
+    ImVec2 mouse_position = {-FLT_MAX, -FLT_MAX};
     double options_since = -1;
     bool options_latched = false;
     // remap capture: action, column (0, 1 keys; 2 controller)
@@ -179,6 +192,7 @@ Ui U;
 
 bool controller_down(int p) { return U.values[p] > 0.5f; }
 bool controller_pressed(int p) { return U.values[p] > 0.5f && U.prev[p] <= 0.5f; }
+bool navigation_pressed(int p) { return U.gamepad_navigation.pressed(U.values, U.prev, p); }
 
 void post_changed(std::function<void()> fn) {
     hostui::post([fn] {
@@ -274,6 +288,18 @@ void init_context() {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.BackendPlatformName = "wwhd";
     io.ConfigNavCaptureKeyboard = true;
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    pio.Platform_GetClipboardTextFn = [](ImGuiContext*) -> const char* {
+        static std::string copy;
+        std::lock_guard<std::mutex> lk(g_mu);
+        copy = g_clipboard;
+        return copy.c_str();
+    };
+    pio.Platform_SetClipboardTextFn = [](ImGuiContext*, const char* text) {
+        std::string copy = text ? text : "";
+        { std::lock_guard<std::mutex> lk(g_mu); g_clipboard = copy; }
+        hostui::post([copy] { hostui::set_clipboard(copy); });
+    };
     setup_style();
     setup_fonts();
     ImGui::GetStyle().FontSizeBase = 17.0f;
@@ -375,32 +401,6 @@ void read_controller() {
         for (int p = 1; p < kPadCount; p++) any |= U.values[p] > 0.3f;
         if (!any) g_wait_release = false;
     }
-}
-
-void feed_gamepad(ImGuiIO& io, bool enabled) {
-    using namespace input_map;
-    // Dead zone (issue #111): a slightly drifting stick fed as an analog value scrolls ImGui windows by itself.
-    auto key = [&](ImGuiKey k, int p) {
-        const float v = enabled && U.values[p] >= 0.25f ? U.values[p] : 0.0f;
-        io.AddKeyAnalogEvent(k, v > 0.5f, v);
-    };
-    key(ImGuiKey_GamepadFaceDown, kPadA);
-    key(ImGuiKey_GamepadFaceRight, kPadB);
-    key(ImGuiKey_GamepadFaceLeft, kPadX);
-    key(ImGuiKey_GamepadFaceUp, kPadY);
-    key(ImGuiKey_GamepadDpadUp, kPadDUp);
-    key(ImGuiKey_GamepadDpadDown, kPadDDown);
-    key(ImGuiKey_GamepadDpadLeft, kPadDLeft);
-    key(ImGuiKey_GamepadDpadRight, kPadDRight);
-    key(ImGuiKey_GamepadLStickUp, kPadLSUp);
-    key(ImGuiKey_GamepadLStickDown, kPadLSDown);
-    key(ImGuiKey_GamepadLStickLeft, kPadLSLeft);
-    key(ImGuiKey_GamepadLStickRight, kPadLSRight);
-    key(ImGuiKey_GamepadRStickUp, kPadRSUp);
-    key(ImGuiKey_GamepadRStickDown, kPadRSDown);
-    key(ImGuiKey_GamepadL2, kPadLT);
-    key(ImGuiKey_GamepadR2, kPadRT);
-    key(ImGuiKey_GamepadStart, kPadMenu);
 }
 
 // ---------------------------------------------------------------- widgets
@@ -723,7 +723,8 @@ void tab_graphics() {
     int am = aspect::mode();
     for (int i = aspect::kOriginal; i <= aspect::k32x9; i++) {
         if (i) ImGui::SameLine();
-        if (radio(aspect::mode_name(i), am == i)) post_changed([i] { aspect::set_mode(i); });
+        if (radio(aspect::mode_name(i), am == i))
+            post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
     }
 
     heading("Effects");
@@ -826,6 +827,10 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok)) hostui::post([i] { hostui::set_scale_filter(i); });
     }
     heading("GamePad screen");
+#ifdef __ANDROID__
+    if (check("Swap TV and GamePad displays", hostui::displays_swapped(), &v))
+        hostui::post([v] { hostui::set_displays_swapped(v); });
+#endif
     // the modes of display_modes.h; a host offers those it can show (no "Separate window" without one,
     // as on Android)
     const int mode = hostui::drc_mode();
@@ -905,7 +910,7 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
         ImGui::SameLine();
         answered = ImGui::Button("Cancel", ImVec2(120, 0)) || accept;
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
-        if (controller_pressed(input_map::kPadB)) { answered = true; accept = false; g_pad_b_used = true; }
+        if (navigation_pressed(input_map::face_input(input_map::kB))) { answered = true; accept = false; g_pad_b_used = true; }
     }
     if (accept) {
         bool ok = true;
@@ -924,29 +929,15 @@ void native_confirm_dialog(NativeConfirm& c, std::string& error) {
     ImGui::EndPopup();
 }
 
-struct SetupWorker {
-    std::mutex mutex;
-    std::thread thread;
-    bool running=false;
-    std::string id,error,output;
-    ~SetupWorker(){if(thread.joinable())thread.join();}
-};
-SetupWorker& setup_work(){static SetupWorker worker;return worker;}
-void start_setup(const std::string& id,const mods::catalogue::Step& step) {
-    auto& setup_worker=setup_work();
-    std::lock_guard guard(setup_worker.mutex);if(setup_worker.running)return;
-    if(setup_worker.thread.joinable())setup_worker.thread.join();
-    setup_worker.running=true;setup_worker.id=id;setup_worker.error.clear();setup_worker.output.clear();
-    setup_worker.thread=std::thread([id,step] {
-        auto& setup_worker=setup_work();
-        std::string error,output;
-        if(step.type=="build_guest_mod")mods::packages::prepare_guest(id,error);
-        else mods::packages::run_setup_tool(id,step.id,error,output);
-        std::lock_guard guard(setup_worker.mutex);setup_worker.error=std::move(error);
-        setup_worker.output=std::move(output);setup_worker.running=false;
-        if(g_no_host&&getenv("WWHD_TEST_MOD_SETUP"))LOG("[setup test] worker %s %s %s",
-            id.c_str(),step.id.c_str(),setup_worker.error.empty()?"ready":"failed");
-    });
+using setupflow::setup_work;
+using setupflow::start_setup;
+using setupflow::setup_run;
+using setupflow::setup_open;
+using setupflow::request_setup;
+using setupflow::setup_run_tick;
+using setupflow::setup_run_controls;
+void setup_confirmation_dialog(std::string& error) {
+    if(setupflow::setup_confirmation_dialog(error,navigation_pressed(input_map::kPadB)))g_pad_b_used=true;
 }
 diagnostic::SetupPlan& setup_test_plan() {
     static auto plan=diagnostic::read_setup_plan(g_no_host,getenv("WWHD_MOD_MANAGER_DIR"),
@@ -956,35 +947,45 @@ diagnostic::SetupPlan& setup_test_plan() {
 void setup_test_actions(const mods::packages::View& mod,const std::vector<mods::packages::SetupView>& steps,
         NativeConfirm& confirm,std::string& error,bool busy,const std::string& failure) {
     auto& plan=setup_test_plan();if(plan.id!=mod.id)return;
-    static std::set<std::string> attempted;
-    static bool stopped=false,completed=false;
-    if(stopped||completed)return;
-    auto stop=[&](const char* reason){stopped=true;error=reason;LOG("[setup test] failed %s: %s",mod.id.c_str(),reason);};
-    if(!plan.error.empty()){stop(plan.error.c_str());return;}
-    if(busy)return;
-    if(!failure.empty()){stop("Setup worker failed");return;}
-    auto next=diagnostic::next_required_step(steps);
-    if(next==steps.size()){completed=true;LOG("[setup test] ready %s",mod.id.c_str());return;}
-    const auto& step=steps[next].step;
-    if(attempted.contains(step.id))return; // a pending trust/rebuild requires its normal response/restart
-    attempted.insert(step.id);
-    LOG("[setup test] action %s %s %s",mod.id.c_str(),step.id.c_str(),step.type.c_str());
+    static bool attempted=false,completed=false;
+    if(completed)return;
+    if(!plan.error.empty()){error=plan.error;return;}
+    if(mod.enabled){completed=true;LOG("[setup test] ready %s",mod.id.c_str());return;}
+    if(attempted||busy)return;
     using namespace mods::packages;
-    if(step.type=="game_path") {
-        auto source=plan.sources.get(step.game).string();
-        if(source.empty()||!set_game_source(step.game,source,error)){stop("Game source refused");return;}
-        LOG("[setup test] source ready %s %s",mod.id.c_str(),step.id.c_str());
-    }else if(step.type=="choice"||step.type=="confirm") {
-        auto value=step.type=="confirm"?mods::json::Value(true):mods::json::Value(step.choices.front());
-        if(!configure(mod.id,step.option,value,error))stop("Setup option refused");
-    }else {
-        auto proceed=[id=mod.id,step] {
-            if(step.type=="build_guest_mod"&&mods::packages::needs_code_mod_support(id))mods::code::request(true,id);
-            else start_setup(id,step);
-        };
-        auto native=unconfirmed_native(mod.id);
-        if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
+    for(const auto& status:steps)if(status.step.type=="game_path"&&!status.satisfied) {
+        auto source=plan.sources.get(status.step.game).string();
+        if(source.empty()||!set_game_source(status.step.game,source,error))return;
     }
+    attempted=true;
+    auto fresh=mod;fresh.game_source_warning.clear();
+    request_setup(fresh);
+    LOG("[setup test] one click %s",mod.id.c_str());
+    (void)confirm;(void)failure;
+}
+bool game_source_focus=false;
+void game_source_warning_control(const std::string& warning) {
+    if(warning.empty())return;
+    ImGui::TextWrapped("%s",warning.c_str());
+    if(ImGui::Button("Go to GameCube game for mods"))game_source_focus=true;
+}
+void game_source_controls() {
+    using namespace mods::packages;
+    bool focus=game_source_focus;game_source_focus=false;
+    heading("GameCube game for mods");
+    if(focus)ImGui::SetScrollHereY(0);
+    static std::mutex result_mutex;static std::string failure;
+    auto choose=[](bool folder) {
+        hostui::choose_game_source(folder,[](std::string path) {
+            if(path.empty())return;std::string error;set_game_source("gc_wind_waker",path,error);
+            std::lock_guard guard(result_mutex);failure=std::move(error);
+        });
+    };
+    auto action=game_source_widgets(game_source(),focus);
+    if(action==GameSourceAction::Disc)choose(false);
+    if(action==GameSourceAction::Folder)choose(true);
+    if(action==GameSourceAction::Clear){std::string error;set_game_source("gc_wind_waker","",error);std::lock_guard guard(result_mutex);failure=std::move(error);}
+    std::lock_guard guard(result_mutex);if(!failure.empty())ImGui::TextWrapped("%s",failure.c_str());
 }
 void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
     using namespace mods::packages;
@@ -994,23 +995,30 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     bool busy;std::string failure,output;
     {std::lock_guard guard(setup_worker.mutex);busy=setup_worker.running;
      if(setup_worker.id==mod.id){failure=setup_worker.error;output=setup_worker.output;}}
+    setup_run_controls(mod);
     setup_test_actions(mod,steps,confirm,error,busy,failure);
+    if(!ImGui::TreeNode("Advanced"))return;
+    busy=busy||!setup_run.id.empty();
     for(const auto& status:steps) {
         const auto& step=status.step;ImGui::PushID(step.id.c_str());
         ImGui::TextWrapped("%s%s%s",status.satisfied?"Ready: ":"",step.title.c_str(),step.optional?" (optional)":"");
         if(!step.explanation.empty())ImGui::TextWrapped("%s",step.explanation.c_str());
         ImGui::BeginDisabled(busy);
         if(step.type=="game_path") {
-            auto choose=[game=step.game,id=mod.id](bool folder) {
-                hostui::choose_mod_source(folder,[game,id](std::string path) {
-                    if(path.empty())return;std::string error;set_game_source(game,path,error);
-                    auto& setup_worker=setup_work();
-                    std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
-                });
-            };
-            if(step.game.starts_with("gc_")&&ImGui::Button("Choose disc image…"))choose(false);
-            if(step.game.starts_with("gc_"))ImGui::SameLine();
-            if(ImGui::Button("Choose extracted game folder…"))choose(true);
+            if(step.game.starts_with("gc_")) {
+                if(status.satisfied)ImGui::TextWrapped("Uses your GameCube game: %s",game_source().path.c_str());
+                // The installed entry already shows the warning and setting shortcut.
+                else if(mod.game_source_warning.empty())game_source_warning_control("Needs a compatible GameCube game. Set it in Settings → Mods → GameCube game for mods.");
+            }else {
+                auto choose=[game=step.game,id=mod.id](bool folder) {
+                    hostui::choose_mod_source(folder,[game,id](std::string path) {
+                        if(path.empty())return;std::string error;set_game_source(game,path,error);
+                        auto& setup_worker=setup_work();
+                        std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
+                    });
+                };
+                if(ImGui::Button("Choose extracted game folder…"))choose(true);
+            }
         }else if(step.type=="choice"||step.type=="confirm") {
             auto option=std::find_if(mod.options.begin(),mod.options.end(),[&](const auto& o){return o.id==step.option;});
             if(step.type=="confirm") {
@@ -1020,7 +1028,7 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
                 ImGui::EndCombo();
             }
         }else {
-            ImGui::BeginDisabled(mod.active||(step.type=="run_tool"&&mod.enabled));
+            ImGui::BeginDisabled(!mod.game_source_warning.empty()||mod.active||(step.type=="run_tool"&&mod.enabled));
             if(ImGui::Button(step.type=="build_guest_mod"?"Build guest module":"Run preparation tool")) {
                 auto proceed=[id=mod.id,step] {
                     if(step.type=="build_guest_mod"&&needs_code_mod_support(id))mods::code::request(true,id);
@@ -1035,6 +1043,7 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
     }
     if(busy)note("Preparing mod files…");
     if(!failure.empty()){ImGui::TextWrapped("%s",failure.c_str());if(!output.empty())ImGui::TextWrapped("%s",output.c_str());}
+    ImGui::TreePop();
 }
 
 struct CatalogueWorker {
@@ -1049,7 +1058,8 @@ CatalogueWorker& catalogue_work(){static CatalogueWorker worker;return worker;}
 mods::catalogue::Version catalogue_port_version() {
     std::string version=build::version();
     if(version.starts_with("v"))version.erase(0,1);
-    version=version.substr(0,version.find('+'));
+    // "0.2.11+meta" and development builds "0.2.11-devel.<commit>" count as their release
+    version=version.substr(0,version.find_first_of("+-"));
     return mods::catalogue::Version::parse(version);
 }
 void catalogue_action(std::function<void(CatalogueWorker&)> action) {
@@ -1063,13 +1073,14 @@ void catalogue_action(std::function<void(CatalogueWorker&)> action) {
         std::lock_guard guard(worker.mutex);worker.running=false;
     });
 }
+constexpr const char* kDefaultCatalogue="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
 void catalogue_controls(std::string& focus) {
     using namespace mods::catalogue;
     auto& worker=catalogue_work();
     static char source[2049]={},search[256]={};
     static bool initialized=false;
     if(!initialized) {
-        std::string saved="https://raw.githubusercontent.com/ZeldaWWHDRecomp/ZeldaWWHDMods/main/index.json";
+        std::string saved=kDefaultCatalogue;
         hostui::get("mod.catalogue.url",saved);
         if(const char* override=getenv("WWHD_MOD_CATALOGUE"))saved=override;
         snprintf(source,sizeof source,"%s",saved.c_str());initialized=true;
@@ -1084,9 +1095,8 @@ void catalogue_controls(std::string& focus) {
             focus=std::move(worker.installed);worker.installed.clear();fresh_install=true;
         }
     }
-    // Match local-folder installs: offer support immediately, while keeping the
-    // newly installed package disabled until its own trust/setup flow completes.
-    if(fresh_install&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
+    // Packages with open steps explain the rebuild in their single setup confirmation.
+    if(fresh_install&&!setup_open(focus)&&mods::packages::needs_code_mod_support(focus))mods::code::request(true);
     heading("Browse catalogue");
     note("Refresh to check available mods. Downloads happen only when you choose Install or Update.");
     ImGui::BeginDisabled(busy);
@@ -1114,6 +1124,11 @@ void catalogue_controls(std::string& focus) {
             worker.message="Showing cached catalogue; versions may be out of date";
         });
     }
+    ImGui::SameLine();
+    if(ImGui::Button("Reset to default")) {
+        snprintf(source,sizeof source,"%s",kDefaultCatalogue);
+        if(!getenv("WWHD_MOD_CATALOGUE"))hostui::post([]{hostui::set("mod.catalogue.url",std::string(kDefaultCatalogue));});
+    }
     ImGui::EndDisabled();
     if(busy)note("Catalogue operation in progress…");
     if(!error.empty())ImGui::TextWrapped("%s",error.c_str());
@@ -1129,12 +1144,13 @@ void catalogue_controls(std::string& focus) {
         if(!query.empty()&&lower(entry.name+" "+entry.id+" "+entry.description).find(query)==std::string::npos)continue;
         ImGui::PushID(entry.id.c_str());
         if(test_install&&entry.id==test_install)ImGui::SetNextItemOpen(true);
-        if(ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str())) {
+        bool expanded=ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str());
+        game_source_warning_control(mods::packages::game_source_warning(entry,catalogue.index));
+        if(expanded) {
             ImGui::TextWrapped("%s",entry.description.c_str());
             for(const auto& author:entry.authors)note("By %s",author.c_str());
             for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
             for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
-            for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
             note("Package: %s",entry.kind.c_str());
             if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))
                 note("Contains executable code. Setup or enabling requires confirmation.");
@@ -1147,8 +1163,23 @@ void catalogue_controls(std::string& focus) {
             bool present=found!=installed.end(),update=false;
             if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
             if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
-            if(!android_guest) {
-                ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
+            // setup steps: the package's list before installing; for an installed mod, what is done and what is next
+            bool setup_open=false;
+            if(present) {
+                for(const auto& view:mods::packages::setup_steps(entry.id)) {
+                    note("%s: %s%s",view.satisfied?"Done":"To do",view.step.title.c_str(),view.step.optional?" (optional)":"");
+                    setup_open|=!view.satisfied&&!view.step.optional;
+                }
+            } else for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
+            bool button_before=false;
+            if(present&&!update)note("Up to date");
+            if(present&&(setup_open||!found->enabled)) {
+                if(ImGui::Button(setup_open?"Go to setup":"Go to mod"))focus=entry.id;
+                button_before=true;
+            }
+            if(!android_guest&&(!present||update)) {
+                if(button_before)ImGui::SameLine();
+                ImGui::BeginDisabled(busy||!compatible||(present&&(found->enabled||found->active)));
                 bool install_now=ImGui::Button(present?"Update":"Install");
                 if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
                 if(install_now) {
@@ -1158,13 +1189,15 @@ void catalogue_controls(std::string& focus) {
                             std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
                         std::string error,id;
                         require(mods::packages::install(package.path().string(),error,&id),error);
-                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed (off). Next: Go to setup, then press Set up (or tick the mod): its setup runs by itself.";
                     });
                 }
                 ImGui::EndDisabled();
+                button_before=true;
             }
+            if(present&&!android_guest)setup_run_controls(*found);
             if(present) {
-                if(!android_guest)ImGui::SameLine();
+                if(button_before)ImGui::SameLine();
                 ImGui::BeginDisabled(busy||found->enabled||found->active);
                 if(ImGui::Button("Remove")){std::string failure;if(!mods::packages::remove(entry.id,failure)){std::lock_guard guard(worker.mutex);worker.error=failure;}}
                 ImGui::EndDisabled();
@@ -1179,6 +1212,7 @@ void package_controls() {
     using namespace mods::packages;
     static std::string error;
     static NativeConfirm confirm;
+    static GraphicsSwitch graphics_choice;
     // debug: WWHD_TEST_MOD_ENABLE=<package id> ticks that package's checkbox once in test runs (the
     // confirmation then shows for unconfirmed native code)
     static const char* test_enable = g_no_host ? getenv("WWHD_TEST_MOD_ENABLE") : nullptr;
@@ -1191,9 +1225,11 @@ void package_controls() {
         std::lock_guard guard(picker_mutex);
         if (!picked.empty()) { snprintf(source, sizeof source, "%s", picked.c_str()); picked.clear(); }
     }
+    game_source_controls();
     static std::string catalogue_focus;
     catalogue_controls(catalogue_focus);
     heading("Profiles");
+    ImGui::BeginDisabled(!setup_run.id.empty());
     auto current = current_profile();
     if (ImGui::BeginCombo("Active profile", current.c_str())) {
         for (const auto& name : profiles())
@@ -1216,6 +1252,7 @@ void package_controls() {
     if (ImGui::Button("Delete selected")) { if (delete_profile(delete_choice, error)) delete_choice.clear(); }
     ImGui::EndDisabled();
     note("Your active profile is protected from deletion.");
+    ImGui::EndDisabled();
     heading("Installed packages");
     note("Install a local package, a content/ mod folder or ZIP, or a replacement .pack file.");
     if (ImGui::Button("Choose package…")) hostui::choose_mod_source(false, [](std::string path) {
@@ -1232,37 +1269,51 @@ void package_controls() {
     if(test_install){snprintf(source,sizeof source,"%s",test_install);test_install=nullptr;install_now=true;}
     if(install_now) {
         std::string installed_id;
-        if(install(source,error,&installed_id)&&needs_code_mod_support(installed_id))mods::code::request(true);
+        if(install(source,error,&installed_id)&&!setup_open(installed_id)&&needs_code_mod_support(installed_id))mods::code::request(true);
     }
     ImGui::SameLine();
     if (ImGui::Button("Refresh packages")) refresh(error);
     auto path = directory();
     if (!path.empty()) note("Mods folder: %s", path.c_str());
-    if (!error.empty()) ImGui::TextWrapped("%s", error.c_str());
     auto installed = list();
+    // Enable/setup errors can repeat the source warning already shown on the entry.
+    bool source_error = !error.empty() && std::any_of(installed.begin(), installed.end(),
+        [&](const auto& mod) { return error == mod.game_source_warning; });
+    if (!error.empty() && !source_error) ImGui::TextWrapped("%s", error.c_str());
     if (installed.empty()) note("No external packages installed.");
     for (const auto& mod : installed) {
         ImGui::PushID(mod.id.c_str());
         bool on = mod.enabled;
-        bool toggled = ImGui::Checkbox("##package_enabled", &on);
+        bool toggled=setupflow::enable_checkbox(mod,on);
         if (test_enable && mod.id == test_enable && (setup_test_plan().id!=mod.id ||
             (setup_test_plan().error.empty()&&diagnostic::setup_ready(setup_steps(mod.id))))) { toggled = on = true; test_enable = nullptr; }
         if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
-        if (toggled) {
-            auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
-            if (native.empty()) {
-                if(on&&needs_code_mod_support(mod.id)) {
-                    mods::code::request(true,mod.id);
-                } else enable(mod.id, on, error);
+        if (toggled&&!setupflow::handle_setup_enable(mod,on)) {
+            if(on&&!mod.graphics_conflicts.empty())graphics_choice={mod.id,mod.name,mod.graphics_conflicts,true};
+            else {
+                auto native = on ? unconfirmed_native(mod.id) : decltype(unconfirmed_native(mod.id)){};
+                if (native.empty()) {
+                    if(on&&needs_code_mod_support(mod.id)) {
+                        mods::code::request(true,mod.id);
+                    } else enable(mod.id, on, error);
+                }
+                else confirm = {mod.id, mod.name, std::move(native), true};
             }
-            else confirm = {mod.id, mod.name, std::move(native), true};
         }
         ImGui::SameLine();
         if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
-        if(setup_test_plan().id==mod.id)ImGui::SetNextItemOpen(true);
-        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
+        if(setup_test_plan().id==mod.id||setup_run.id==mod.id)ImGui::SetNextItemOpen(true);
+        bool scroll_here=false;
+        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();scroll_here=true;}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
+        if(scroll_here)ImGui::SetScrollHereY(0.1f);  // "Go to setup" in the catalogue jumps here
+        game_source_warning_control(mod.game_source_warning);
+        if(mod.kind=="cemu"){
+            note("Active now: %s · After restart: %s",mod.active?"On":"Off",mod.enabled?"On":"Off");
+            if(mod.pending_restart)note(mod.enabled?"Active after restart":"Turned off after restart");
+            for(const auto& conflict:mod.graphics_conflicts)note("Conflicts with %s (%s)",conflict.name.c_str(),conflict.reason.c_str());
+        }
         if (expanded) {
             note("%s · %s", mod.kind == "native" ? "Native mod" : mod.kind == "guest" ? "Guest mod" : mod.kind == "cemu" ? "Cemu graphics / shader pack" : mod.kind == "content" ? "Model / texture / UI replacement" : "Built-in settings preset",
                  mod.pending_restart ? "Restart required" : mod.active ? "Active" : mod.enabled ? "Waiting for game update" : "Disabled");
@@ -1271,7 +1322,7 @@ void package_controls() {
                                           : "Runs native code with the game's permissions. Enabling it asks you to confirm first.");
             if (!mod.author.empty()) note("By %s", mod.author.c_str());
             ImGui::TextWrapped("%s", mod.description.c_str());
-            if (!mod.reason.empty()) ImGui::TextWrapped("%s", mod.reason.c_str());
+            if (!mod.reason.empty() && mod.reason != mod.game_source_warning) ImGui::TextWrapped("%s", mod.reason.c_str());
             if (!mod.status.empty()) ImGui::TextWrapped("%s", mod.status.c_str());
             for(const auto& [path,hash]:mod.content_hashes)note("Content SHA-256 %s: %s",path.c_str(),hash.c_str());
             for (const auto& dependency : mod.dependencies) note("Requires %s", dependency.c_str());
@@ -1312,7 +1363,11 @@ void package_controls() {
         }
         ImGui::PopID();
     }
+    auto switch_action=graphics_switch_dialog(graphics_choice,navigation_pressed(input_map::face_input(input_map::kB)));
+    if(switch_action==GraphicsSwitchAction::Switch)enable(graphics_choice.id,true,error,true);
+    if(switch_action==GraphicsSwitchAction::Cancel)g_pad_b_used=true;
     native_confirm_dialog(confirm, error);
+    setup_confirmation_dialog(error);
 }
 
 void code_mod_dialog() {
@@ -1349,11 +1404,20 @@ void code_mod_dialog() {
 }
 
 void tab_mods() {
+    auto packages=mods::packages::list();
+    if(std::any_of(packages.begin(),packages.end(),[](const auto& pack){return pack.pending_restart;})){
+        note("Restart pending: saved pack choices will apply after restart. Active packs stay loaded until then.");
+        if(ImGui::Button("Restart now"))hostui::post([]{render::restart();});
+    }
     bool code_mods=mods::code::enabled();
     if(ImGui::Checkbox("Enable code mods (PowerPC mods)",&code_mods))mods::code::request(code_mods);
     note("Changing code-mod support rebuilds the game code and requires a restart.");
     bool v;
     heading("Mod manager");
+    static std::vector<std::string> migration_notes;
+    for(auto& message:mods::packages::take_notices())migration_notes.push_back(std::move(message));
+    for(const auto& message:migration_notes)note("%s",message.c_str());
+    if(!migration_notes.empty()&&ImGui::Button("Dismiss pack notices"))migration_notes.clear();
     note("Built-in mods are part of this recomp build. Your choices are saved; all start off by default.");
     static ImGuiTextFilter search;
     search.Draw("Search mods", 260);
@@ -1505,7 +1569,7 @@ void start_capture(int a, int col) {
 
 void clear_binding(int a, int col) {
     input_map::Mapping m = input_map::current();
-    if (col == kColPad) m.pad[a] = input_map::kPadNone;
+    if (col == kColPad) input_map::set_pad_binding(m, a, input_map::kPadNone);
     else m.keys[a][col] = input_map::kNoKey;
     input_map::set_current(m);
 }
@@ -1519,7 +1583,7 @@ void apply_capture() {
     bool done = false;
     if (code == -1) done = true;  // Esc: cancel
     else if (code == -3) {         // Backspace / Delete: clear
-        if (colm == kColPad) m.pad[a] = kPadNone;
+        if (colm == kColPad) set_pad_binding(m, a, kPadNone);
         else m.keys[a][colm == kColAny ? 0 : colm] = kNoKey;
         input_map::set_current(m);
         done = true;
@@ -1543,7 +1607,7 @@ void apply_capture() {
         if (!U.cap_pad_released) U.cap_pad_released = !any;
         else if (pressed > 0) {
             if (colm == kColPad || colm == kColAny) {
-                m.pad[a] = pressed;
+                set_pad_binding(m, a, pressed);
                 input_map::set_current(m);
             }
             done = true;  // (key slots: any controller input cancels)
@@ -1742,20 +1806,31 @@ void tab_controls() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Face buttons");
     ImGui::SameLine();
-    if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition), fl == input_map::FaceLayout::kPosition)) {
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition),
+              !m.face_auto && fl == input_map::FaceLayout::kPosition)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
         input_map::set_current(m);
     }
     ImGui::SameLine();
-    if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels), fl == input_map::FaceLayout::kLabels)) {
+    if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels),
+              !m.face_auto && fl == input_map::FaceLayout::kLabels)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
+        input_map::set_current(m);
+    }
+    ImGui::SameLine();
+    if (radio("automatic", m.face_auto)) {
+        input_map::set_face_auto(m, true);
         input_map::set_current(m);
     }
     help("How the controller's face buttons drive the Wii U's A/B/X/Y. By position: the bottom "
          "button is B (Nintendo layout). By label: the button named A is A — on an Xbox pad that "
-         "makes A accept/act and B go back (issue #78). Only these four bindings are rewritten; "
+         "makes A accept/act and B go back (issue #78). Automatic reads the labels printed on the "
+         "pad that was plugged in first and follows them. Only these four bindings are rewritten; "
          "keyboard keys and the other inputs stay as they are.");
-    if (fl == input_map::FaceLayout::kCustom) {
+    if (m.face_auto) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(-> %s)", input_map::face_layout_label(fl));
+    } else if (fl == input_map::FaceLayout::kCustom) {
         ImGui::SameLine();
         ImGui::TextDisabled("(custom)");
     }
@@ -2019,6 +2094,25 @@ void perf_window(bool menu_open) {
     (void)menu_open;
 }
 
+void tab_audio() {
+    int speakers = audio::requested_surround() ? 1 : 0;
+    if (ImGui::Combo("Speakers", &speakers, "Stereo\0Surround 5.1\0"))
+        hostui::post([speakers] { audio::set_requested_surround(speakers == 1); });
+    note("Restart the game after changing Speakers.");
+    if (audio::surround_fallback())
+        note("Surround 5.1 unavailable on this output. Using stereo; restart after connecting a 5.1 device.");
+    if (audio::output_device_changed())
+        note("Output device changed. Audio is muted; restart the game to use the current device.");
+    note("Current output: %s", audio::channels() == 6 ? "Surround 5.1" : "Stereo");
+    if (const char *ch = audio::speaker_test_channel()) {
+        note("Speaker test: %s", ch);
+        if (ImGui::Button("Stop speaker test"))
+            audio::stop_speaker_test();
+    } else if (ImGui::Button("Test speakers"))
+        audio::start_speaker_test();
+    note("Plays each active channel in turn at a low level. Subwoofer uses an 80 Hz tone.");
+}
+
 void settings_window() {
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 ds = io.DisplaySize;
@@ -2037,10 +2131,10 @@ void settings_window() {
     if (ImGui::Begin("Wind Waker HD  -  Settings", &open, fl)) {
         // L / R on a controller switch tabs
         if (U.cap_action < 0 && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
-            if (controller_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
-            if (controller_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
+            if (navigation_pressed(input_map::kPadLB)) U.select_tab = (U.tab + kTabs - 1) % kTabs;
+            if (navigation_pressed(input_map::kPadRB)) U.select_tab = (U.tab + 1) % kTabs;
         }
-        code_mod_dialog();
+        if(!setup_run.rebuilding)code_mod_dialog();
         if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_FittingPolicyShrink)) {
             for (int i = 0; i < kTabs; i++) {
                 ImGuiTabItemFlags f = U.select_tab == i ? ImGuiTabItemFlags_SetSelected : 0;
@@ -2052,6 +2146,7 @@ void settings_window() {
                     case kSaves: tab_saves(); break;
                     case kGraphics: tab_graphics(); break;
                     case kDisplay: tab_display(); break;
+                    case kAudio: tab_audio(); break;
                     case kMods: tab_mods(); break;
                     case kControls: tab_controls(); break;
                     default: tab_about(); break;
@@ -2067,7 +2162,7 @@ void settings_window() {
     ImGui::End();
     // B (not while choosing an input or in a list) or the close button closes the menu
     if (!open) set_open(false);
-    if (U.cap_action < 0 && controller_pressed(input_map::kPadB) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+    if (U.cap_action < 0 && navigation_pressed(input_map::face_input(input_map::kB)) && !g_pad_b_used && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
         set_open(false);
     g_pad_b_used = false;
 }
@@ -2134,6 +2229,18 @@ bool key(int code, bool down, bool repeat, int mods) {
     push({Event::Key, code, down, 0, 0, mods});
     return true;
 }
+bool text(const char* utf8) {
+    if (!is_open() || g_no_host_keys || !utf8 || !*utf8) return false;
+    Event e{Event::Text};
+    e.text = utf8;
+    push(e);
+    return true;
+}
+void set_clipboard_text(const char* utf8) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_clipboard = utf8 ? utf8 : "";
+}
+bool wants_text() { return is_open() && g_wants_text.load(); }
 bool mouse_move(float nx, float ny) {
     if (!captures() || g_no_host) return false;
     push({Event::MousePos, 0, false, nx, ny, 0});
@@ -2163,6 +2270,11 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
+        // the saved aspect ratio (WWHD_ASPECT wins; issue #108: it was not remembered)
+        if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {
+            const int m = atoi(v.c_str());
+            if (m >= aspect::kOriginal && m <= aspect::k32x9) aspect::set_mode(m);
+        }
         // the saved gyro settings (WWHD_GYRO overrides the source)
         hostui::post([] { load_gyro(); });
     }
@@ -2200,6 +2312,13 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    if (wwhd_trace::enabled()) {
+        wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
+        wwhd_trace::open = open;
+        static bool was_open = false;
+        if (open && !was_open) { U.gamepad_navigation.reset_trace(); wwhd_trace::emit("open frame=%d", U.init ? ImGui::GetFrameCount() : 0); }
+        was_open = open;
+    }
     perf::set_demand(perf, open && U.tab == kGraphics);
     // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
     static const char* testReport = getenv("WWHD_TEST_PERF_REPORT");
@@ -2241,7 +2360,10 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         std::lock_guard<std::mutex> lk(g_mu);
         events.swap(g_events);
     }
+    bool mouse_used = false;
     for (const Event& e : events) {
+        if (wwhd_trace::enabled() && open && e.kind == Event::Key)
+            wwhd_trace::emit("event kind=%d code=%d down=%d x=%.6f y=%.6f mods=%d", int(e.kind), e.code, e.down, e.x, e.y, e.mods);
         switch (e.kind) {
         case Event::Key:
             io.AddKeyEvent(ImGuiMod_Shift, e.mods & kShift);
@@ -2250,17 +2372,36 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             io.AddKeyEvent(ImGuiMod_Super, e.mods & kSuper);
             if (ImGuiKey k = imgui_key(e.code); k != ImGuiKey_None) io.AddKeyEvent(k, e.down);
             break;
-        case Event::MousePos: io.AddMousePosEvent(e.x * io.DisplaySize.x, e.y * io.DisplaySize.y); break;
-        case Event::MouseButton: io.AddMouseButtonEvent(e.code, e.down); break;
-        case Event::Wheel: io.AddMouseWheelEvent(e.x, e.y); break;
+        case Event::MousePos:
+            mouse_used |= e.x != U.mouse_position.x || e.y != U.mouse_position.y;
+            U.mouse_position = ImVec2(e.x, e.y);
+            overlay_trace::mouse_pos(io, e.x * io.DisplaySize.x, e.y * io.DisplaySize.y);
+            break;
+        case Event::MouseButton: mouse_used = true; overlay_trace::mouse_button(io, e.code, e.down); break;
+        case Event::Wheel: mouse_used |= e.x != 0 || e.y != 0; overlay_trace::wheel(io, e.x, e.y); break;
+        case Event::Text: io.AddInputCharactersUTF8(e.text.c_str()); break;
         default: break;
         }
     }
     apply_capture();
-    feed_gamepad(io, open && U.cap_action < 0);  // the text prompt reads the controller itself
+    const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
+                          input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
+    U.gamepad_navigation.feed(io, U.values, U.prev, open && U.cap_action < 0, mouse_used, face);  // the text prompt reads the controller itself
     ImGui::NewFrame();
+    setup_run_tick();
+    g_wants_text = open && io.WantTextInput;
     guesthud::frame();
     if (open) settings_window();
+    else if(!setup_run.id.empty()) {
+        ImGui::SetNextWindowPos(ImVec2(16,16),ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(.9f);
+        if(ImGui::Begin("Mod setup progress",nullptr,ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoFocusOnAppearing)) {
+            ImGui::Text("%s %s",ImGui::GetTime()<setupflow::resume_notice_until?"Continuing setup of":"Setting up",setup_run.name.c_str());
+            ImGui::Text("%s · %.0f seconds",setup_run.step.c_str(),ImGui::GetTime()-setup_run.started);
+            if(!setup_run.error.empty())ImGui::TextWrapped("%s — open Settings → Mods to try again.",setup_run.error.c_str());
+        }
+        ImGui::End();
+    }
     if (text) {
         float pad[input_map::kPadCount];
         std::copy(std::begin(U.values), std::end(U.values), pad);
@@ -2286,6 +2427,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         ImGui::End();
     }
     ImGui::Render();
+    overlay_trace::state();
     return ImGui::GetDrawData();
 }
 

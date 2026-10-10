@@ -29,9 +29,9 @@ jobs:
       SDK_PLATFORM: platforms;android-36
       SDK_BUILD_TOOLS: build-tools;35.0.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -52,6 +52,43 @@ jobs:
           python3 tools/recomp/stubgen.py build/gen-stub
           GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
 
+      - name: Synthetic translation baseline (no game data)
+        run: |
+          python3 -m unittest discover -s tools/android -p 'test_*.py'
+          javac -d build/setup-policy-test android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPolicy.java tools/android/SetupPolicyTest.java
+          java -cp build/setup-policy-test SetupPolicyTest
+          javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java
+          java -cp build/resource-verifier-test org.wwhdrecomp.wwhd.ResourceVerifierTest
+          javac -d build/resource-cleanup-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceCacheCleanup.java tools/android/ResourceCacheCleanupTest.java
+          java -cp build/resource-cleanup-test org.wwhdrecomp.wwhd.ResourceCacheCleanupTest
+          javac -d build/setup-recovery-test android/app/src/main/java/org/wwhdrecomp/wwhd/SetupRecoveryPolicy.java tools/android/SetupRecoveryPolicyTest.java
+          java -cp build/setup-recovery-test SetupRecoveryPolicyTest
+          javac -d build/fold-layout-test android/app/src/main/java/org/wwhdrecomp/wwhd/FoldLayout.java tools/android/FoldLayoutTest.java
+          java -cp build/fold-layout-test FoldLayoutTest
+          clang++ -std=c++20 -I runtime/src runtime/tools/gamepad_touch_test.cpp -o build/gamepad-touch-test
+          build/gamepad-touch-test
+          clang++ -std=c++20 -pthread -I runtime/src runtime/tools/present_worker_test.cpp -o build/present-worker-test
+          build/present-worker-test
+          clang++ -std=c++20 -I runtime/src runtime/tools/presentation_queue_test.cpp -o build/presentation-queue-test
+          build/presentation-queue-test
+          clang++ -std=c++20 -I runtime/src -I runtime/include \
+            runtime/tools/display_fallback_test.cpp runtime/src/gfx/display_modes.cpp -o build/display-fallback-test
+          build/display-fallback-test
+          PYTHONHASHSEED=1 python3 tools/recomp/android_fixture.py --output build/android-fixture-desktop
+          PYTHONHASHSEED=917 python3 tools/recomp/android_fixture.py --output build/android-fixture-repeat --reference build/android-fixture-desktop
+          clang -std=c11 -I runtime/include -I build/android-fixture-desktop/gen \
+            build/android-fixture-desktop/gen/code_000.c \
+            build/android-fixture-desktop/gen/harness.c -o build/android-fixture-desktop/run
+          build/android-fixture-desktop/run
+
+      - name: Keep synthetic baseline and translation metrics
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-translation-baseline-${{ github.sha }}
+          path: build/android-fixture-desktop/
+          retention-days: 7
+          if-no-files-found: error
+
       - name: APK
         working-directory: android
         run: ./gradlew --no-daemon assembleRelease
@@ -62,7 +99,7 @@ jobs:
           python3 tools/release/guard.py android/app/build/outputs/apk/release/*.apk
 
       - name: Keep the APK for a few days (placeholder code, not a release)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: wwhd-android-placeholder-${{ github.sha }}
           path: android/app/build/outputs/apk/release/*.apk

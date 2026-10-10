@@ -8,11 +8,11 @@ jobs:
   public-headers:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ZeldaWWHDDecomp/wwhd
           ref: 47e1dbc3886cfd8233859dffd73efc41a04a9130
@@ -26,8 +26,8 @@ jobs:
         os: [macos-14, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: PowerPC clang and lld (Linux)

@@ -39,7 +39,8 @@ computer (about two minutes); every later start launches the game directly.
 1. Download the zip for your system from the
    [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page and unzip it anywhere
    (a games folder, an external drive):
-   - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer)
+   - **macOS**: Apple Silicon, macOS 14 or newer (Metal renderer; Vulkan through MoltenVK, included, can
+     be picked in Graphics > Renderer)
    - **Windows**: x86-64, Windows 10 or 11, a GPU with Vulkan 1.3 drivers (or Vulkan 1.1 / 1.2 drivers
      with `VK_KHR_dynamic_rendering`)
    - **Linux**: x86-64 (`linux-x86_64`) or arm64 (`linux-aarch64`, e.g. Raspberry Pi 5, Asahi Linux
@@ -287,16 +288,25 @@ startup that `game/code/cking.rpx` matches the recompiled code.
 
 The Android port is by [rhemfur](https://github.com/rhemfur) (issue #23): the Vulkan renderer on
 an arm64 phone through SDL3's Android activity, measured at 30–32 fps in the heaviest scenes on a
-Galaxy S25 Ultra (Snapdragon 8 Elite). There is no download: **releases never contain an APK,
-`libmain.so` or anything derived from the game files**, and they never will. You build the APK
-yourself from your own dump, and since it contains your recompiled game, it is for your own phone
-only: don't share it. (CI builds the APK only with placeholder code, to check that it compiles.)
+Galaxy S25 Ultra (Snapdragon 8 Elite). **Releases never contain `libmain.so` or anything derived
+from the game files**, and they never will. An APK you build yourself from your own dump contains
+your recompiled game, so it is for your own phone only: don't share it. (CI builds that APK only with
+placeholder code, to check that it compiles.)
+
+**Development builds and releases include the setup app** (`…-android-arm64.apk`, no game code in it):
+install it, choose your game, and setup builds the game on the phone.
+
+For players: [docs/android.md](docs/android.md) explains what the Android version does, the tested
+phones and how to play ([Português](docs/android.pt.md), [Español](docs/android.es.md)).
 
 You need:
 - a phone with arm64, Android 13 or newer and Vulkan 1.3;
-- **a game controller** (Bluetooth or USB). It is the GamePad's buttons and sticks; the touch
-  screen is only the GamePad's touch screen (no on-screen buttons). Keyboards only type text
-  (`WWHD_ANDROID_KEYBOARD=1` in `env.txt` makes them a GamePad too);
+- **a game controller** (Bluetooth or USB) is best: it is the GamePad's buttons and sticks.
+  Without one, the 🎮 button under the view button (top left) shows on-screen controls: two
+  sticks, the D-pad, A B X Y, L R ZL ZR and + − (shown or hidden, remembered). They are a second
+  controller, so a physical one keeps working, and touches elsewhere still reach the GamePad's
+  touch screen. Keyboards only type text (`WWHD_ANDROID_KEYBOARD=1` in `env.txt` makes them a
+  GamePad too);
 - on the computer: the Android SDK (platform 36, build tools 35.0.0), NDK 30.0.16248370, JDK 17
   or newer, CMake 3.20+ and Ninja, Python 3, and your own `build/gen` (steps 1 and 2 under
   Building).
@@ -457,8 +467,11 @@ position (the bottom face button is the Wii U's B), and they can be remapped in 
 **Face buttons** in the settings overlay (F1 → Controls) or the Input menu switches that preset:
 *by position (Nintendo)* is the default; *by label (Xbox)* makes the button named A drive the Wii
 U's A instead — on an Xbox pad that means A accepts/acts and B goes back (issue #78), and the X/Y
-items follow the printed labels too. The choice rewrites the four face bindings only; keyboard keys
-and the other inputs stay as they are, and a hand-edited face binding shows as *custom*.
+items follow the printed labels too. *Automatic* reads the labels printed on the pad that was
+plugged in first and follows them, so an Xbox pad plays by label and a Nintendo pad by position
+without touching the setting. The choice rewrites the four face bindings only; keyboard keys
+and the other inputs stay as they are, and a hand-edited face binding shows as *custom* (which also
+leaves Automatic).
 The **Input** menu switches whether keyboard and controllers act as the Wii U GamePad (default)
 or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with the Pro
 Controller, the GamePad window keeps its screen and touch input.

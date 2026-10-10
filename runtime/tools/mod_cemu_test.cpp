@@ -38,6 +38,15 @@ int main(int argc,char** argv) {
     assert(cemu::options(pack).array.size()==1);
     json::Value config;config["preset-0"]="Large";
     cemu::validate({{"a",pack,config}});
+    assert(cemu::conflict_reason({"a",pack,config},{"b",pack,{}})=="overlapping graphics rules");
+    auto independent=pack;independent.textures[0].fields["width"]="640";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent.textures[0].fields.erase("width");
+    assert(!cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    independent=pack;independent.textures[0].fields["formats"]="0x19";
+    assert(cemu::conflict_reason({"a",pack,config},{"b",independent,{}}).empty());
+    auto aspect=pack;aspect.textures.clear();aspect.aspect_expression="16/9";
+    assert(cemu::conflict_reason({"a",aspect,config},{"b",aspect,{}})=="both change the aspect ratio");
     rejects([&]{cemu::validate({{"a",pack,config},{"b",pack,{}}});});
     write(definition+"[TextureRedefine]\noverwriteFormat = 0x80e\n");rejects([&]{cemu::parse(root);});
     write(definition+"[Patch]\nmoduleMatches = 0x123\n");rejects([&]{cemu::parse(root);});
@@ -47,6 +56,12 @@ int main(int argc,char** argv) {
     auto shader=root/"0000000000000001_0000000000000002_ps.txt";
     std::ofstream(shader)<<"#version 420\n// $missing preserved in comments\nvoid main(){ float x=$scale; }\n";
     auto shaderPack=cemu::parse(root);
+    auto shaderOnly=shaderPack;shaderOnly.textures.clear();
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",shaderOnly,{}})=="both change the same shader");
+    auto variant=shaderOnly;variant.shaders[0].aux++;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
+    variant=shaderOnly;variant.shaders[0].vertex=true;
+    assert(cemu::conflict_reason({"a",shaderOnly,config},{"b",variant,{}}).empty());
     std::ofstream(root/"texture.dds")<<"synthetic unsupported resource";rejects([&]{cemu::parse(root);});fs::remove(root/"texture.dds");
     cemu::activate({{"shader",shaderPack,config}});uint32_t w=0,h=0;
     cemu::set_vulkan(false);assert(!cemu::texture_extent(1920,1080,0x80e,1,0,w,h));assert(cemu::shader_source(1,2,false).empty());

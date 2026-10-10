@@ -1,4 +1,5 @@
 // Shader presentation matches Metal's source-grid FXAA and scaling filters.
+#include "../../exception_report.h"
 #include "present.h"
 #include "../headless_compose.h"
 #include "imgui.h"
@@ -8,6 +9,8 @@
 #include "mods/climb.h"
 #include "mods/mods.h"  // MoveHud: the run/swim boost's bar (draw_mod_overlay)
 #include "overlay/guest_hud.h"
+#include "gfx/display_modes.h"
+#include "platform/dual_display.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -130,7 +133,7 @@ void main() {
 }
 )glsl";
 struct PresentRect { float x,y,width,height,scale; };
-struct PresentParams { int32_t aa,conv; float sharp,foot; float alpha=1,pad[3]{}; };
+using PresentParams=PresentImageParams;
 static_assert(sizeof(PresentParams)==32);
 PresentRect present_rect(VkExtent3D source,VkExtent2D target,int filter) {
  float scale=std::min(float(target.width)/source.width,float(target.height)/source.height);
@@ -170,7 +173,33 @@ PresentCapture& present_capture() {
  }();
  return capture;
 }
+// Each logical device owns its dispatch table. Loading a second presentation
+// device must never replace the renderer's global device entry points.
+struct PresentApi {
+#define PRESENT_FUNCTIONS(X) X(vkCreateShaderModule) X(vkDestroyShaderModule) \
+ X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
+ X(vkCreateSampler) X(vkDestroySampler) X(vkCreateGraphicsPipelines) X(vkDestroyPipeline) \
+ X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdPipelineBarrier) \
+ X(vkCmdSetScissor) X(vkCmdSetViewport) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) \
+ X(vkCmdPushConstants) X(vkCmdDraw)
+#define FIELD(name) PFN_##name name=nullptr;
+ PRESENT_FUNCTIONS(FIELD)
+#undef FIELD
+ PFN_vkCmdBeginRendering vkCmdBeginRendering=nullptr;
+ PFN_vkCmdEndRendering vkCmdEndRendering=nullptr;
+ void init(VkDevice device,bool khr) {
+#define LOAD(name) name=reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device,#name)); \
+  if(!name)throw std::runtime_error("Missing presentation function " #name);
+  PRESENT_FUNCTIONS(LOAD)
+#undef LOAD
+  vkCmdBeginRendering=reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device,khr?"vkCmdBeginRenderingKHR":"vkCmdBeginRendering"));
+  vkCmdEndRendering=reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device,khr?"vkCmdEndRenderingKHR":"vkCmdEndRendering"));
+  if(!vkCmdBeginRendering || !vkCmdEndRendering)throw std::runtime_error("Missing presentation dynamic rendering functions");
+ }
+#undef PRESENT_FUNCTIONS
+};
 struct PresentResources {
+ PresentApi api;
  VkDevice device=VK_NULL_HANDLE;
  VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
  VkPipelineLayout layout=VK_NULL_HANDLE;
@@ -185,40 +214,40 @@ bool srgb_format(VkFormat format) {
  return format==VK_FORMAT_R8G8B8A8_SRGB || format==VK_FORMAT_B8G8R8A8_SRGB ||
         format==VK_FORMAT_A8B8G8R8_SRGB_PACK32;
 }
-VkShaderModule module(const char* source,bool vertex) {
+VkShaderModule module(PresentResources& resources,const char* source,bool vertex) {
  std::string error;auto words=vk::compile_glsl(source,vertex,&error);
- if(words.empty()||!error.empty())throw std::runtime_error("Vulkan presentation shader: "+error);
+ if(words.empty()||!error.empty())exception_report::raise("Vulkan presentation shader: "+error);
  VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};ci.codeSize=words.size()*4;ci.pCode=words.data();
- VkShaderModule result;vk_check(vkCreateShaderModule(R.device,&ci,nullptr,&result),"presentation shader");return result;
+ VkShaderModule result;vk_check(resources.api.vkCreateShaderModule(resources.device,&ci,nullptr,&result),"presentation shader");return result;
 }
-void ensure_resources() {
- if(resources.device && resources.device!=R.device)
-  throw std::runtime_error("Vulkan presentation resources must be reset before device replacement");
- resources.device=R.device;
+void ensure_resources(PresentResources& resources,VkDevice device,bool khr) {
+ if(resources.device && resources.device!=device)
+  exception_report::raise("Vulkan presentation resources must be reset before device replacement");
+ if(!resources.device) { resources.api.init(device,khr);resources.device=device; }
  if(!resources.descriptors) {
   VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};ci.bindingCount=1;ci.pBindings=&binding;
-  vk_check(vkCreateDescriptorSetLayout(R.device,&ci,nullptr,&resources.descriptors),"presentation descriptors");
+  vk_check(resources.api.vkCreateDescriptorSetLayout(resources.device,&ci,nullptr,&resources.descriptors),"presentation descriptors");
  }
  if(!resources.layout) {
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(PresentParams)};
   VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};ci.setLayoutCount=1;ci.pSetLayouts=&resources.descriptors;ci.pushConstantRangeCount=1;ci.pPushConstantRanges=&push;
-  vk_check(vkCreatePipelineLayout(R.device,&ci,nullptr,&resources.layout),"presentation layout");
+  vk_check(resources.api.vkCreatePipelineLayout(resources.device,&ci,nullptr,&resources.layout),"presentation layout");
  }
  for(auto filter:{VK_FILTER_LINEAR,VK_FILTER_NEAREST}) {
   auto& sampler=filter==VK_FILTER_LINEAR?resources.linear:resources.nearest;
   if(sampler)continue;
   VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};ci.minFilter=ci.magFilter=filter;ci.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
   ci.addressModeU=ci.addressModeV=ci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;ci.maxLod=0;
-  vk_check(vkCreateSampler(R.device,&ci,nullptr,&sampler),"presentation sampler");
+  vk_check(resources.api.vkCreateSampler(resources.device,&ci,nullptr,&sampler),"presentation sampler");
  }
 }
-VkPipeline pipeline(VkFormat format,Kind kind=kImage) {
- ensure_resources();const uint64_t key=uint64_t(format)<<8|kind;
+VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage) {
+ const uint64_t key=uint64_t(format)<<8|kind;
  if(auto it=resources.pipelines.find(key);it!=resources.pipelines.end())return it->second;
  VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
  try {
-  vs=module(vertexSource,true);fs=module(kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:fragmentSource,false);
+  vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:fragmentSource,false);
   VkPipelineShaderStageCreateInfo stages[2]{};
   for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -243,17 +272,33 @@ VkPipeline pipeline(VkFormat format,Kind kind=kImage) {
   VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};rendering.colorAttachmentCount=1;rendering.pColorAttachmentFormats=&format;
   VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.pNext=&rendering;ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=resources.layout;
   const auto started=std::chrono::steady_clock::now();
-  vk_check(vkCreateGraphicsPipelines(R.device,R.pipelineCache,1,&ci,nullptr,&result),"presentation pipeline");
-  R.pipelineCreateNs+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-started).count();
-  resources.pipelines.emplace(key,result);++R.pipelineCreates;R.pipelineCacheDirty=true;R.pipelineCacheChangedFrame=R.frame;
- }catch(...){if(result)vkDestroyPipeline(R.device,result,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(fs)vkDestroyShaderModule(R.device,fs,nullptr);throw;}
- vkDestroyShaderModule(R.device,vs,nullptr);vkDestroyShaderModule(R.device,fs,nullptr);return result;
+  vk_check(resources.api.vkCreateGraphicsPipelines(resources.device,resources.device==R.device?R.pipelineCache:VK_NULL_HANDLE,1,&ci,nullptr,&result),"presentation pipeline");
+  if(resources.device==R.device) R.pipelineCreateNs+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-started).count();
+  resources.pipelines.emplace(key,result);
+  if(resources.device==R.device) { ++R.pipelineCreates;R.pipelineCacheDirty=true;R.pipelineCacheChangedFrame=R.frame; }
+ }catch(...){if(result)resources.api.vkDestroyPipeline(resources.device,result,nullptr);if(vs)resources.api.vkDestroyShaderModule(resources.device,vs,nullptr);if(fs)resources.api.vkDestroyShaderModule(resources.device,fs,nullptr);throw;}
+ resources.api.vkDestroyShaderModule(resources.device,vs,nullptr);resources.api.vkDestroyShaderModule(resources.device,fs,nullptr);return result;
 }
+void ensure_resources() { ensure_resources(resources,R.device,R.dynamicRenderingKHR); }
+VkPipeline pipeline(VkFormat format,Kind kind=kImage) {
+ ensure_resources();return pipeline(resources,format,kind);
+}
+void destroy_resources(PresentResources& resources) {
+ for(auto [key,p]:resources.pipelines)resources.api.vkDestroyPipeline(resources.device,p,nullptr);
+ if(resources.linear)resources.api.vkDestroySampler(resources.device,resources.linear,nullptr);
+ if(resources.nearest)resources.api.vkDestroySampler(resources.device,resources.nearest,nullptr);
+ if(resources.layout)resources.api.vkDestroyPipelineLayout(resources.device,resources.layout,nullptr);
+ if(resources.descriptors)resources.api.vkDestroyDescriptorSetLayout(resources.device,resources.descriptors,nullptr);
+ resources={};
+}
+
+}
+std::vector<VkImageView> take_present_screen_views(Screen& screen) {
+ auto found=resources.screens.find(&screen);if(found==resources.screens.end())return {};
+ auto views=std::move(found->second.views);resources.screens.erase(found);return views;
 }
 void reset_present_screen(Screen& screen) {
- auto found=resources.screens.find(&screen);if(found==resources.screens.end())return;
- for(auto view:found->second.views)vkDestroyImageView(resources.device,view,nullptr);
- resources.screens.erase(found);
+ for(auto view:take_present_screen_views(screen))vkDestroyImageView(resources.device,view,nullptr);
 }
 void prepare_present_screen(Screen& screen,bool colorAttachmentSupported,bool captureTransferSupported) {
  ensure_resources();reset_present_screen(screen);auto& state=resources.screens[&screen];state.drawable=colorAttachmentSupported;state.captureTransfer=captureTransferSupported;
@@ -273,24 +318,19 @@ void reset_present_resources() {
  // Caller has drained the device; command/descriptor pools must not execute
  // references to these process-lifetime presentation objects afterwards.
  for(auto& [screen,state]:resources.screens)for(auto view:state.views)vkDestroyImageView(resources.device,view,nullptr);
- for(auto [key,p]:resources.pipelines)vkDestroyPipeline(resources.device,p,nullptr);
- if(resources.linear)vkDestroySampler(resources.device,resources.linear,nullptr);
- if(resources.nearest)vkDestroySampler(resources.device,resources.nearest,nullptr);
- if(resources.layout)vkDestroyPipelineLayout(resources.device,resources.layout,nullptr);
- if(resources.descriptors)vkDestroyDescriptorSetLayout(resources.device,resources.descriptors,nullptr);
  if(resources.diagnosticTarget.image)destroy_surface_image(&resources.diagnosticTarget);
- resources={};
+ destroy_resources(resources);
  reset_overlay_resources();
 }
 // ---------------------------------------------------------------- composition
 namespace {
 const gfx::PresentPlan* currentPlan=nullptr;
 bool linear_filtering(VkFormat format) {
- VkFormatProperties properties;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,format,&properties);
+ const auto& properties=format_properties(format);
  return properties.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 }
 bool sampleable(const Surface& source) {
- VkFormatProperties properties;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,source.fmt.pixel,&properties);
+ const auto& properties=format_properties(source.fmt.pixel);
  return (properties.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && (source.usage&VK_IMAGE_USAGE_SAMPLED_BIT);
 }
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
@@ -360,10 +400,28 @@ void set_present_plan(const gfx::PresentPlan* plan) { currentPlan=plan; }
 namespace { ImDrawData* overlayDraw=nullptr; }
 void set_overlay_draw(ImDrawData* draw) { overlayDraw=draw; }
 
+Screen& presentation_source_screen(Screen& physical) {
+#ifdef __ANDROID__
+ int index=dual_display::source_index(&physical==&R.drc ? 1 : 0,
+                                     gfx::g_has_drc_window,dual_display::active_swap);
+ return index==1 ? R.drc : R.tv;
+#else
+ return physical;
+#endif
+}
+
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter) {
  std::vector<ComposeQuad> quads;
  filter=scale_filter();
- if(!screen.scan||!screen.scan->image)return quads;
+ Screen& source=presentation_source_screen(screen);
+ if(!source.scan||!source.scan->image)return quads;
+#ifdef __ANDROID__
+ if(gfx::g_has_drc_window) {
+  ComposeQuad q;q.image=source.scan.get();q.sourceLinear=source.srgb.load();
+  q.box=gfx::display_layout(float(target.width),float(target.height),float(q.image->extent.width),float(q.image->extent.height));
+  quads.push_back(q);return quads;
+ }
+#endif
  if(currentPlan) {
   // both window hosts (gfx/display_modes.cpp): the same layout as the Metal renderer
   filter=currentPlan->filter;
@@ -414,24 +472,24 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
    set_graphics_feature_available(GraphicsFeature::FXAA,false);
    set_graphics_feature_available(GraphicsFeature::ScaleFilter,false);
   }
-  if(fxaa_enabled())throw std::runtime_error("FXAA requires color-attachment presentation support");
-  if(scale_filter()!=0)throw std::runtime_error("Sharp/integer filtering requires shader presentation support");
+  if(fxaa_enabled())exception_report::raise("FXAA requires color-attachment presentation support");
+  if(scale_filter()!=0)exception_report::raise("Sharp/integer filtering requires shader presentation support");
   return false;
  }
- auto& source=*screen.scan;
+ auto& source=*presentation_source_screen(screen).scan;
  if(!sampleable(source)) {
   if(&screen==&R.tv) {
    set_graphics_feature_available(GraphicsFeature::FXAA,false);
    set_graphics_feature_available(GraphicsFeature::ScaleFilter,false);
   }
-  throw std::runtime_error("Scan-buffer format cannot be sampled for shader presentation");
+  exception_report::raise("Scan-buffer format cannot be sampled for shader presentation");
  }
  const bool linear=linear_filtering(source.fmt.pixel);
  if(&screen==&R.tv) {
   set_graphics_feature_available(GraphicsFeature::FXAA,linear);
   set_graphics_feature_available(GraphicsFeature::ScaleFilter,linear);
  }
- if(fxaa_enabled()&&!linear)throw std::runtime_error("FXAA requires linear scan-buffer filtering");
+ if(fxaa_enabled()&&!linear)exception_report::raise("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
          quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),&screen==&R.tv?overlayDraw:overlay::guesthud::gamepad_frame(screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex));
@@ -443,7 +501,7 @@ void compose_headless_diagnostic(Screen& screen) {
  const auto& diagnostic=gfx::headless_compose::policy();
  if(!diagnostic.enabled()||!screen.scan||!screen.scan->image)return;
  if(!currentPlan||currentPlan->dw!=gfx::headless_compose::width||currentPlan->dh!=gfx::headless_compose::height)
-  throw std::runtime_error("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+  exception_report::raise("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
  ensure_resources();
  auto& target=resources.diagnosticTarget;auto& counter=resources.diagnosticCounter;
  counter.require_capacity(diagnostic);
@@ -464,6 +522,103 @@ void compose_headless_diagnostic(Screen& screen) {
  if(counter.encoded(diagnostic,vertices,indices,commands))
   fprintf(stderr,"[headless-compose] Vulkan encoded_frames=%u last_vertices=%u last_indices=%u last_commands=%u total_vertices=%llu total_indices=%llu total_commands=%llu\n",counter.frames,vertices,indices,commands,
    (unsigned long long)counter.vertices,(unsigned long long)counter.indices,(unsigned long long)counter.commands);
+}
+
+std::optional<PresentImageDraw> prepare_present_image(Screen& screen,uint32_t imageIndex,
+    const Surface& snapshot,bool sourceLinear,int filter,bool fxaa) {
+ auto found=resources.screens.find(&screen);
+ if(found==resources.screens.end() || !found->second.drawable)return {};
+ if(!snapshot.view || !sampleable(snapshot))
+  throw std::runtime_error("Secondary snapshot cannot be sampled for presentation");
+ const bool linear=linear_filtering(snapshot.fmt.pixel);
+ if(fxaa&&!linear)throw std::runtime_error("FXAA requires linear snapshot filtering");
+ PresentImageDraw draw;
+ draw.device=R.device;draw.pipeline=pipeline(screen.swapFormat);
+ draw.layout=resources.layout;draw.descriptors=resources.descriptors;
+ draw.sampler=linear?resources.linear:resources.nearest;draw.source=snapshot.view;
+ draw.target=screen.images.at(imageIndex);draw.targetView=found->second.views.at(imageIndex);
+ draw.oldLayout=screen.layouts.at(imageIndex);draw.extent=screen.swapExtent;
+ const auto box=gfx::display_layout(float(draw.extent.width),float(draw.extent.height),
+     float(snapshot.extent.width),float(snapshot.extent.height));
+ draw.viewport={box.x,box.y,box.w,box.h,0,1};
+ const float scale=std::min(box.w/snapshot.extent.width,box.h/snapshot.extent.height);
+ draw.params=present_params(fxaa&&linear,filter,scale,
+     sourceLinear||srgb_format(snapshot.fmt.pixel),srgb_format(screen.swapFormat));
+ return draw;
+}
+
+static void record_present_image(const PresentApi& api,const PresentImageDraw& draw,VkCommandBuffer cmd,VkDescriptorPool pool) {
+ VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+ barrier.oldLayout=draw.oldLayout;barrier.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+ barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+ barrier.image=draw.target;barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+ barrier.srcAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
+ barrier.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+ api.vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+     0,0,nullptr,0,nullptr,1,&barrier);
+ VkDescriptorSet set;
+ VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+ allocation.descriptorPool=pool;allocation.descriptorSetCount=1;allocation.pSetLayouts=&draw.descriptors;
+ vk_check(api.vkAllocateDescriptorSets(draw.device,&allocation,&set),"secondary presentation descriptors");
+ VkDescriptorImageInfo image{draw.sampler,draw.source,draw.sourceLayout};
+ VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+ write.dstSet=set;write.dstBinding=0;write.descriptorCount=1;
+ write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;write.pImageInfo=&image;
+ api.vkUpdateDescriptorSets(draw.device,1,&write,0,nullptr);
+ VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+ attachment.imageView=draw.targetView;attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+ attachment.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
+ attachment.clearValue.color.float32[3]=1;
+ VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+ rendering.renderArea.extent=draw.extent;rendering.layerCount=1;
+ rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
+ api.vkCmdBeginRendering(cmd,&rendering);
+ VkRect2D scissor{{0,0},draw.extent};api.vkCmdSetScissor(cmd,0,1,&scissor);
+ api.vkCmdSetViewport(cmd,0,1,&draw.viewport);
+ api.vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,draw.pipeline);
+ api.vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,draw.layout,0,1,&set,0,nullptr);
+ api.vkCmdPushConstants(cmd,draw.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(draw.params),&draw.params);
+ api.vkCmdDraw(cmd,3,1,0,0);
+ api.vkCmdEndRendering(cmd);
+ barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=draw.finalLayout;
+ barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
+ api.vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+     0,0,nullptr,0,nullptr,1,&barrier);
+}
+
+void record_present_image(const PresentImageDraw& draw,VkCommandBuffer cmd,VkDescriptorPool pool) {
+ record_present_image(resources.api,draw,cmd,pool);
+}
+struct IndependentPresenter::Impl {
+ PresentResources resources;
+ ~Impl() { destroy_resources(resources); }
+};
+IndependentPresenter::IndependentPresenter(VkDevice device,bool dynamicRenderingKHR):impl(std::make_unique<Impl>()) {
+ ensure_resources(impl->resources,device,dynamicRenderingKHR);
+}
+IndependentPresenter::~IndependentPresenter()=default;
+PresentImageDraw IndependentPresenter::prepare(VkImageView source,VkExtent2D sourceExtent,bool sourceLinear,
+    VkImage target,VkImageView targetView,VkFormat targetFormat,VkExtent2D targetExtent,
+    VkImageLayout oldLayout,int filter,bool fxaa,VkImageLayout finalLayout) {
+ if(!source || !target || !targetView || !sourceExtent.width || !sourceExtent.height ||
+    !targetExtent.width || !targetExtent.height)throw std::runtime_error("Invalid independent presentation image");
+ auto& resources=impl->resources;
+ PresentImageDraw draw;
+ draw.device=resources.device;draw.pipeline=pipeline(resources,targetFormat);
+ draw.layout=resources.layout;draw.descriptors=resources.descriptors;
+ draw.sampler=resources.linear;draw.source=source;
+ draw.target=target;draw.targetView=targetView;draw.oldLayout=oldLayout;
+ draw.finalLayout=finalLayout;draw.extent=targetExtent;
+ const auto box=gfx::display_layout(float(targetExtent.width),float(targetExtent.height),
+     float(sourceExtent.width),float(sourceExtent.height));
+ draw.viewport={box.x,box.y,box.w,box.h,0,1};
+ const float scale=std::min(box.w/sourceExtent.width,box.h/sourceExtent.height);
+ draw.params=present_params(fxaa,filter,scale,sourceLinear,srgb_format(targetFormat));
+ return draw;
+}
+void IndependentPresenter::record(const PresentImageDraw& draw,VkCommandBuffer cmd,VkDescriptorPool pool) const {
+ if(draw.device!=impl->resources.device)throw std::runtime_error("Independent presentation device mismatch");
+ record_present_image(impl->resources.api,draw,cmd,pool);
 }
 
 // the composition into an offscreen RGBA8 image, read back (present dumps, captures)
@@ -656,7 +811,7 @@ void record_present_capture(Screen& screen,uint32_t imageIndex) {
  try {
   const size_t width=screen.swapExtent.width,height=screen.swapExtent.height;
   if(!width||!height||width>std::numeric_limits<size_t>::max()/height/4)
-   throw std::runtime_error("invalid swap-image capture dimensions");
+   exception_report::raise("invalid swap-image capture dimensions");
   capture.buffer=create_readback_buffer(width*height*4);
   capture.extent=screen.swapExtent;capture.format=screen.swapFormat;
   auto cmd=command_buffer();VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};

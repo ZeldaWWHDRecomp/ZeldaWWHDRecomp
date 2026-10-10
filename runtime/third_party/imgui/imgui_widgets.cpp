@@ -41,6 +41,7 @@ Index of this file:
 #endif
 
 #include "imgui.h"
+#include "wwhd_trace.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_internal.h"
 
@@ -1010,6 +1011,7 @@ void ImGui::Scrollbar(ImGuiAxis axis)
     float size_contents = window->ContentSize[axis] + window->WindowPadding[axis] * 2.0f;
     ImS64 scroll = (ImS64)window->Scroll[axis];
     ScrollbarEx(bb, id, axis, &scroll, (ImS64)size_visible, (ImS64)size_contents, rounding_corners);
+    if (wwhd_trace::enabled() && axis == ImGuiAxis_Y) wwhd_trace::scroll(window->Name, window->Scroll.y, (float)scroll, "scrollbar");
     window->Scroll[axis] = (float)scroll;
 }
 

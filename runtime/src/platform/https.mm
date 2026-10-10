@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#include "../exception_report.h"
 #include "https.h"
 #include "download_file.h"
 #include "../mods/catalogue_schema.h"
@@ -24,7 +25,8 @@
         didReceiveResponse:(NSURLResponse*)response
         completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
     if(![response isKindOfClass:[NSHTTPURLResponse class]] || ((NSHTTPURLResponse*)response).statusCode!=200) {
-        failure="HTTPS server did not return a successful response";
+        long status=[response isKindOfClass:[NSHTTPURLResponse class]]?(long)((NSHTTPURLResponse*)response).statusCode:0;
+        failure="HTTPS server did not return a successful response (HTTP "+std::to_string(status)+")";
         handler(NSURLSessionResponseCancel);return;
     }
     handler(NSURLSessionResponseAllow);
@@ -44,7 +46,7 @@
 @end
 namespace host {
 void download_https(const std::string& url,const std::filesystem::path& destination,uint64_t limit) {
-    if(!mods::catalogue::https_url(url))throw std::runtime_error("Download URL must use HTTPS");
+    if(!mods::catalogue::https_url(url))exception_report::raise("Download URL must use HTTPS");
     @autoreleasepool {
         auto delegate=[WWHDDownload new];
         delegate->sink=std::make_unique<DownloadFile>(destination,limit);
@@ -56,14 +58,14 @@ void download_https(const std::string& url,const std::filesystem::path& destinat
         auto queue=[NSOperationQueue new];queue.maxConcurrentOperationCount=1;
         auto session=[NSURLSession sessionWithConfiguration:configuration delegate:delegate delegateQueue:queue];
         auto address=[NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
-        if(!address){[session invalidateAndCancel];throw std::runtime_error("Invalid HTTPS download URL");}
+        if(!address){[session invalidateAndCancel];exception_report::raise("Invalid HTTPS download URL");}
         [[session dataTaskWithURL:address] resume];
         dispatch_semaphore_wait(delegate->completed,DISPATCH_TIME_FOREVER);
         auto failure=delegate->failure;
         [session finishTasksAndInvalidate];
         // Destroy the writer now so a failed transfer leaves no file when this call returns.
         delegate->sink.reset();
-        if(!failure.empty())throw std::runtime_error(failure);
+        if(!failure.empty())exception_report::raise(failure);
     }
 }
 } // namespace host

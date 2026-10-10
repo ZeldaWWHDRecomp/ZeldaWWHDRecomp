@@ -227,6 +227,7 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
     """Keep the initial variant too, so the first round trip can use its cache."""
     data = Path(ctx.data_dir)
     if setup.free_space(str(data)) < (2 << 30):
+        (data / 'code-mods-active.json').unlink(missing_ok=True)
         return
     lock = BuildLock(data / 'code-build.lock', setup.SetupError)
     stage = None
@@ -234,8 +235,6 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
         version = setup.run_logged(tc.cc + ['--version'], env=tc.env, what='checking the compiler')
         key = fingerprint(setup.PKG, ctx.manifest, ctx.game_dir, [tc.cc, version], hooks)
         cache = data / 'code-builds' / key
-        if cache.exists():
-            return
         stage = data / ('code-build-' + key + '.initial')
         shutil.rmtree(stage, ignore_errors=True)
         (stage / 'bin').mkdir(parents=True)
@@ -252,8 +251,14 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
             'gamecode_objects': file_hashes(objs),
             'generated': file_hashes(sorted(p for p in Path(gen).rglob('*') if p.is_file()), Path(gen))})
         cache.parent.mkdir(parents=True, exist_ok=True)
+        if cache.exists():
+            shutil.rmtree(cache)
         os.replace(stage, cache)
         stage = None
+        atomic_json(data / 'code-mods-active.json', {
+            'state': 'ready', 'hooks': bool(hooks), 'fingerprint': key,
+            'exe': str((cache / 'bin' / ctx.manifest['exe']).resolve()),
+            'user_dir': str((data / 'user').resolve()) if setup.PORTABLE else ''})
     finally:
         if stage:
             shutil.rmtree(stage, ignore_errors=True)

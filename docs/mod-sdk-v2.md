@@ -42,9 +42,28 @@ you built before is quick. Keep the complete release folder and the compiler set
 downloaded: building code mods uses those local tools. If they are missing, the Mods tab asks
 you to run setup again.
 
-You can install a code mod while support is off; the Mods tab offers to turn support on.
-Enabling a code mod asks you once to confirm that you trust it (see [Trust](#trust)).
+You can install a code mod while support is off. For a mod with setup steps,
+tick its checkbox or choose **Set up** in the installed or catalogue entry.
+One confirmation explains the open steps, asks for choices, and records your trust
+in this package version (see [Trust](#trust)). After Continue, setup runs on its
+own and enables the mod. If needed, it rebuilds code-mod support and restarts,
+then continues setup automatically. A changed package asks for trust again.
+Errors stop at the failed step: choose **Show details** or **Try again**.
+Individual step buttons are available under **Advanced**.
 Enabling, disabling and changing options of code mods take effect after a restart.
+
+### GameCube files used by mods
+
+In **Settings → Mods → GameCube game for mods**, choose your GameCube Wind Waker disc
+image (`.iso` / `.gcm`) or extracted game folder once. The setting shows the recognised
+region; some mods require a specific region. These files stay on your computer.
+
+Mods use this shared copy automatically. A mod with a missing or incompatible copy shows
+a warning and a **Go to GameCube game for mods** button, and cannot be enabled until the
+copy passes validation. Then choose **Set up** to complete its remaining preparation.
+Changing or clearing the copy turns dependent mods off in every profile and marks their
+preparation for rerunning. Prepared files are kept; restart to unload any active mod,
+then rerun its setup before enabling it again.
 
 ## Writing a mod
 
@@ -289,9 +308,9 @@ installation fail.
 A code mod becomes native code inside the game process. Its memory accesses stay inside the
 game's memory, and it reaches the system only through the services above and the game's own
 functions, but that is not a sandbox: it can crash the game or damage saves. So enabling a
-code mod asks once, like native mods. The confirmation covers the exact ELF (and, for
-packages with content or images, every file); a changed package asks again. Rebuilding the
-same ELF after a port update doesn't ask.
+code mod asks once, like native mods. The confirmation covers the package version and a
+fingerprint of every package file; a changed package asks again. Rebuilding the same package after a port update
+does not ask for trust again.
 
 ## Save states
 

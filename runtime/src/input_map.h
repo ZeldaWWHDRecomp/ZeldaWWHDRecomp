@@ -58,6 +58,7 @@ struct Mapping {
     std::array<int, kActionCount> pad;                                // kPadNone = unbound
     float deadzone = 0.0f;          // radial dead zone for controller sticks, 0..0.9
     bool invert_camera_y = false;   // right stick Y, keyboard and controller
+    bool face_auto = false;         // Automatic face preset: follow the dominant pad's labels
     static Mapping defaults();
     bool operator==(const Mapping&) const = default;
 };
@@ -73,6 +74,46 @@ enum class FaceLayout { kPosition, kLabels, kCustom };
 FaceLayout face_layout(const Mapping& m);
 void apply_face_layout(Mapping& m, FaceLayout layout);  // rewrites pad[kA..kY]; kCustom is a no-op
 const char* face_layout_label(FaceLayout l);            // for the UI
+// the controller input that is the Wii U's A, B, X or Y (action kA..kY) in the current mapping, for
+// the overlay's own menus and on-screen keyboard (confirm/back as in the game); unbound: by position
+int face_input(int action);
+
+// The Automatic preset (the follow-up to #97): the four face bindings follow whatever is printed
+// on the dominant controller's buttons, so an Xbox pad plays by label and a Nintendo pad by
+// position (where the two agree). face_auto is the one preset state that is stored — the two
+// manual presets stay the shape of the four bindings — and the shape it resolved to is what
+// face_layout() reports, so the drawings and the manual presets keep working unchanged.
+// The labels of one pad's four face buttons, in the order the Pad enum names them (by Xbox
+// position): [0] south (A), [1] east (B), [2] west (X), [3] north (Y). Cross/Circle/Square/
+// Triangle are the PlayStation names for those same four letters.
+enum class FaceLabel { kUnknown, kA, kB, kX, kY, kCross, kCircle, kSquare, kTriangle };
+
+// The letter one button has printed on it, from the name a host gives it: an SF Symbol name
+// ("a.circle", "xmark.circle", "square.circle.fill", "x.square.fill") or a localized name
+// ("Button A", "Cross Button"). The first dot-separated component is the symbol's own name and
+// what follows is decoration — so "square.circle" is Square (X) and not Circle (B) — and words
+// like "button" are ignored in a free-form name. kUnknown when the name says nothing.
+FaceLabel face_label_from_text(const char* text);
+
+// The face bindings a pad with these labels asks for: each printed letter drives the Wii U button
+// of that letter (Cross is A, Circle is B, and so on). A letter no button carries falls back to the
+// by-position preset. Returns false and leaves `out` alone when no label is known at all (there is
+// nothing to follow).
+bool face_bindings_from_labels(const FaceLabel labels[4], int out[4]);
+
+// The platform hosts call this whenever the dominant controller's labels may have changed
+// (connect, disconnect, startup). With face_auto on it rewrites pad[kA..kY] and saves; otherwise
+// it only remembers the labels for the next set_face_auto. An all-unknown report changes nothing.
+void note_face_labels(const FaceLabel labels[4]);
+
+// Turn the Automatic preset on or off on `m`. On rewrites pad[kA..kY] from the labels
+// note_face_labels last reported (a mapping is ready before the next pad connects); with none
+// reported the bindings stay as they are. apply_face_layout turns it off: a preset is a choice.
+void set_face_auto(Mapping& m, bool on);
+
+// Rewrite one controller binding. A hand-edited face binding (kA..kY) drops the Automatic preset,
+// so a custom binding is not overwritten when the next pad connects.
+void set_pad_binding(Mapping& m, int action, int pad);
 
 // actions (other than `except`) that use this key / controller input
 std::vector<int> key_users(const Mapping& m, int code, int except = -1);

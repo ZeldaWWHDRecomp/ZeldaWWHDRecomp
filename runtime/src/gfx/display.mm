@@ -30,6 +30,7 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include "../exception_report.h"
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -56,6 +57,32 @@
 #include "../overlay/overlay.h"
 #include "../overlay/guest_hud.h"
 #include "../screenshot.h"
+
+// The game's own icon in the Dock: meta/iconTex.tga of the game folder (uncompressed 32-bit TGA,
+// 128x128 in Wind Waker HD), as the SDL host does for its windows. Nothing happens without it.
+static void set_dock_icon() {
+    NSData* data = [NSData dataWithContentsOfFile:@((config::game_dir + "/meta/iconTex.tga").c_str())];
+    const uint8_t* d = (const uint8_t*)data.bytes;
+    if (data.length < 18 || d[1] != 0 || d[2] != 2 || d[16] != 32) return;  // no colour map, true colour, 32 bpp
+    const NSInteger w = d[12] | d[13] << 8, h = d[14] | d[15] << 8, start = 18 + d[0];
+    if (!w || !h || w > 1024 || h > 1024 || (NSInteger)data.length < start + w * h * 4) return;
+    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:nullptr pixelsWide:w pixelsHigh:h
+        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+        bitmapFormat:NSBitmapFormatAlphaNonpremultiplied bytesPerRow:w * 4 bitsPerPixel:32];
+    if (!rep) return;
+    const bool topDown = d[17] & 0x20;  // otherwise the first row is the bottom one
+    for (NSInteger y = 0; y < h; y++) {
+        const uint8_t* src = d + start + (topDown ? y : h - 1 - y) * w * 4;
+        uint8_t* dst = rep.bitmapData + y * rep.bytesPerRow;
+        for (NSInteger x = 0; x < w; x++) {  // BGRA -> RGBA
+            dst[x * 4] = src[x * 4 + 2]; dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4]; dst[x * 4 + 3] = src[x * 4 + 3];
+        }
+    }
+    NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+    [image addRepresentation:rep];
+    NSApp.applicationIconImage = image;
+}
 
 namespace mods { bool mouse_captured(); }
 
@@ -395,6 +422,7 @@ static void create_windows() {
     // keyboard focus from the user's game
     bool test = getenv("WWHD_NO_HOST_INPUT") != nullptr;
     [NSApp setActivationPolicy:test ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
+    if (!test) set_dock_icon();
     load_settings();
     load_options();
     NSWindow* tv = make_window(0, @"The Legend of Zelda: The Wind Waker HD (recompiled)",
@@ -448,14 +476,15 @@ static void create_windows() {
         screen_named(g_settings[@"drcScreen"]) && screen_named(g_settings[@"drcScreen"]) != tv.screen)
         dispatch_async(dispatch_get_main_queue(), ^{ if (!is_fullscreen(g_drc_window)) [g_drc_window toggleFullScreen:nil]; });
 
-    // full screen: hide the pointer after 2 s without movement (not while the mouse camera holds it)
+    // hide the pointer after 2 s without movement while the game window is active, in a window too
+    // (issue #109); not while the settings overlay is open or the mouse camera holds it
     [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer*) {
         static NSPoint last = {-1, -1};
         static double moved = 0;
         static bool hidden = false;
         NSPoint p = [NSEvent mouseLocation];
         if (!NSEqualPoints(p, last)) { last = p; moved = display_now(); hidden = false; }
-        if (!hidden && is_fullscreen(g_tv_window) && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() &&
+        if (!hidden && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() && !overlay::is_open() &&
             display_now() - moved > 2.0) {
             [NSCursor setHiddenUntilMouseMoves:YES];
             hidden = true;
@@ -961,11 +990,11 @@ void present_screens() {
         static headless_compose::Counter counter;
         counter.require_capacity(diagnostic);
         if(dw!=headless_compose::width||dh!=headless_compose::height)
-            throw std::runtime_error("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
+            exception_report::raise("headless composition diagnostic requires WWHD_SIM_SCREEN=1280x720");
         const auto format=R.tv.srgb?MTLPixelFormatRGBA8Unorm_sRGB:MTLPixelFormatRGBA8Unorm;
         if(!target||target.device!=R.device||target.pixelFormat!=format)
             target=offscreen(headless_compose::width,headless_compose::height,R.tv.srgb);
-        if(!target)throw std::runtime_error("headless Metal composition target allocation failed");
+        if(!target)exception_report::raise("headless Metal composition target allocation failed");
         compose_tv(target,L);
         unsigned commands=0;
         if(g_overlay_draw)for(const auto* list:g_overlay_draw->CmdLists)commands+=list->CmdBuffer.Size;

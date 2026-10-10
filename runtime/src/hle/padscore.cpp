@@ -8,7 +8,7 @@
 #include "../motion/motion.h"
 #include "../rumble.h"
 
-namespace interp { bool repeat_input(); bool fresh_sticks(); }
+namespace interp { bool repeat_input(); bool fresh_sticks(); uint64_t logic_steps(); }
 
 namespace {
 constexpr int32_t kWpadErrNone = 0, kWpadErrNoController = -1;
@@ -97,6 +97,15 @@ HLE(padscore, KPADReadEx) {
     stf32(st + 0x74, p.rx); stf32(st + 0x78, p.ry);  // rstick
     st32(st + 0x7C, 1);                   // charge
     st32(st + 0x80, 1);                   // cable
+    // Optional read-by-read diagnostics, including the data actually written to guest memory.
+    static FILE* trace = getenv("WWHD_KPAD_TRACE") ? fopen(getenv("WWHD_KPAD_TRACE"), "w") : nullptr;
+    if (trace) {
+        fprintf(trace, "%llu %d %08X %08X %08X %.6f %.6f %.6f %.6f\n",
+                (unsigned long long)interp::logic_steps(), (int)repeat, hold,
+                ld32(st + 0x64), ld32(st + 0x68), ldf32(st + 0x6C), ldf32(st + 0x70),
+                ldf32(st + 0x74), ldf32(st + 0x78));
+        fflush(trace);
+    }
     if (err) st32(err, kKpadErrNone);
     ret(c, 1);
 }

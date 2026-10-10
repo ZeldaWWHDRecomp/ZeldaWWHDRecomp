@@ -402,9 +402,6 @@ static HostThread* host_thread(uint32_t t) {
     return it == g_threads.end() ? nullptr : it->second;
 }
 
-struct GuestExit {
-    uint32_t value;
-};
 
 // ---------------------------------------------------------------- save-state freeze
 // A save state is taken (or restored) while every guest thread is parked: blocked in an HLE wait

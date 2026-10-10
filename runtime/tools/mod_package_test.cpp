@@ -1,72 +1,5 @@
-// Standalone host-side tests; no game files, player settings or guest code needed.
-#include "mods/manager.h"
-#include "mods/mods.h"
-#include "mods/climb.h"
-#include "overlay/hostui.h"
-#include "platform/process.h"
-#include "mods/catalogue_client.h"
-#include <cassert>
-#include <cstdlib>
-#include <map>
-#include <string>
-
-namespace {
-bool state[6]{};
-float speed = 1, sensitivity = .15f;
-std::map<std::string,std::string> preferences;
-int reads = 0, writes = 0;
-void env(const char* key, const char* value) {
-#ifdef _WIN32
-    _putenv_s(key, value ? value : "");
-#else
-    if (value) setenv(key,value,1); else unsetenv(key);
-#endif
-}
-}
-namespace mods {
-static bool ff_on = false, ff_mute = true;
-static unsigned ff_rate = 2;
-static uint32_t ff_button = 0x40;
-bool fast_forward() { return ff_on; } void set_fast_forward(bool on) { ff_on = on; }
-unsigned fast_forward_rate() { return ff_rate; }
-void set_fast_forward_rate(unsigned r) { if (r >= 2 && r <= 4) ff_rate = r; }
-uint32_t fast_forward_button() { return ff_button; }
-void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_button = b; }
-bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
-
-static bool move_on = false;
-static float move_land = 1.5f, move_swim = 1.25f, move_seconds = 5.f, move_cooldown = 3.f;
-static int move_mode = (int)MoveMode::kHold;
-static int move_anim = (int)MoveAnim::kNative;
-static uint32_t move_button = 0x40000;
-bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
-float move_speed_land_factor() { return move_land; } void set_move_speed_land_factor(float f) { if (f >= 1 && f <= 4) move_land = f; }
-float move_speed_swim_factor() { return move_swim; } void set_move_speed_swim_factor(float f) { if (f >= 1 && f <= 4) move_swim = f; }
-float move_speed_stamina_seconds() { return move_seconds; } void set_move_speed_stamina_seconds(float s) { if (s >= 0 && s <= 60) move_seconds = s; }
-float move_speed_cooldown_seconds() { return move_cooldown; } void set_move_speed_cooldown_seconds(float s) { if (s >= 0 && s <= 60) move_cooldown = s; }
-MoveMode move_speed_mode() { return (MoveMode)move_mode; } void set_move_speed_mode(MoveMode m) { move_mode = (int)m; }
-MoveAnim move_speed_anim() { return (MoveAnim)move_anim; } void set_move_speed_anim(MoveAnim a) { move_anim = (int)a; }
-uint32_t move_speed_button() { return move_button; } void set_move_speed_button(uint32_t b) { if (b && !(b & (b - 1))) move_button = b; }
-
-bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
-bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
-bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
-bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
-bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
-bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
-float camera_speed() { return speed; }
-void set_camera_speed(float f) { speed=f; }
-float mouse_sensitivity() { return sensitivity; }
-void set_mouse_sensitivity(float f) { sensitivity=f; }
-}
-namespace hostui {
-bool get(const char* k, std::string& value) {
-    ++reads; auto it=preferences.find(k);
-    if(it==preferences.end()) return false;
-    value=it->second;return true;
-}
-void set(const char* k, const std::string& value) { ++writes;preferences[k]=value; }
-}
+#include "mods/setup_run.h"
+#include "mod_test_host.h"
 #include "mods/packages.h"
 #include "mods/content.h"
 #include "mods/cemu_pack.h"
@@ -79,6 +12,7 @@ mods::packages::View view(const std::string& id) {for(auto v:mods::packages::lis
 // Second process on the same storage: a confirmed native package loads after a restart without asking.
 int restart_check(const char* storage) {
     using namespace mods::packages;
+    namespace fs=std::filesystem;
     env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage);env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
     initialize();std::string error;
     assert(view("fixture").enabled && view("fixture").native_confirmed && unconfirmed_native("fixture").empty());
@@ -88,6 +22,168 @@ int restart_check(const char* storage) {
 }
 }
 int main(int argc, char** argv) {
+    using namespace mods::packages;
+    namespace fs=std::filesystem;
+    if(argc==2&&std::string(argv[1])=="--setup-acceptance") {
+        auto root=fs::temp_directory_path()/("wwhd-acceptance-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        set_code_mod_support(true);initialize();std::string error;
+        auto manifest=mods::json::parse(R"({"format_version":1,"id":"acceptance","name":"Acceptance fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"options":[{"id":"consent","name":"Consent","type":"bool","default":false},{"id":"colour","name":"Colour","type":"enum","default":"green","choices":["green","blue"]}],"setup":[{"id":"consent","title":"Prepare the fixture","type":"confirm","option":"consent"},{"id":"colour","title":"Choose a colour","type":"choice","option":"colour","choices":["green","blue"]},{"id":"build","title":"Build fixture","type":"build_guest_mod"}]})");
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        assert(install((root/"source").string(),error));auto identity=setup_identity("acceptance");
+        assert(!begin_setup_run("acceptance",identity,{},error));
+        assert(!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!setup_steps("acceptance")[0].satisfied&&!setup_steps("acceptance")[1].satisfied);
+        assert(!begin_setup_run("acceptance","stale snapshot",{{"colour","blue"}},error));
+        assert(begin_setup_run("acceptance",identity,{{"colour","blue"}},error));
+        assert(view("acceptance").native_confirmed&&setup_steps("acceptance")[0].satisfied&&setup_steps("acceptance")[1].satisfied);
+        auto read_saved=[&]{std::ifstream f(root/"manager/profiles.json");return mods::json::parse(std::string{std::istreambuf_iterator<char>(f),{}});};
+        auto saved=read_saved();auto trust=saved.get("native_trust");
+        assert(trust.get("acceptance").string().size()==64);
+        assert(saved.get("profiles").get("Default").get("config").get("acceptance").get("colour").string()=="blue");
+        assert(begin_setup_run("acceptance",identity,{},error));assert(read_saved().get("native_trust")==trust);
+        // Same version, changed package bytes: stale pending runs and stale dialogs cannot authorize it.
+        std::ofstream(fs::path(directory())/"acceptance/helper.txt")<<"changed package inventory";
+        assert(refresh(error)&&!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!begin_setup_run("acceptance",identity,{},error));
+        auto changed=setup_identity("acceptance");assert(begin_setup_run("acceptance",changed,{},error));
+        assert(read_saved().get("native_trust")!=trust);
+        // A version-only update also requires a new acknowledgement.
+        manifest["version"]="1.0.1";std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        assert(install((root/"source").string(),error)&&!view("acceptance").native_confirmed&&pending_setup_runs().empty());
+        assert(!begin_setup_run("acceptance",changed,{},error));
+        assert(begin_setup_run("acceptance",setup_identity("acceptance"),{},error));
+        assert(save_setup_run("acceptance",false,error)&&pending_setup_runs().empty());
+        assert(setup_steps("acceptance")[0].satisfied&&setup_steps("acceptance")[1].satisfied);
+        // Declarative packages also bind approval to the exact manifest, even at the same version.
+        manifest["id"]="settings-acceptance";manifest["kind"]="settings";manifest["settings"]["wall-climb"]=true;
+        manifest["setup"].array.pop_back();
+        std::ofstream(root/"source/manifest.json")<<mods::json::dump(manifest);
+        assert(install((root/"source").string(),error));
+        auto declarative=setup_identity("settings-acceptance");
+        auto installed_manifest=fs::path(directory())/"settings-acceptance/manifest.json";
+        manifest["setup"].array[0]["title"]="Changed preparation";
+        std::ofstream(installed_manifest)<<mods::json::dump(manifest);
+        assert(!begin_setup_run("settings-acceptance",declarative,{{"colour","blue"}},error));
+        assert(refresh(error));
+        assert(setup_identity("settings-acceptance")!=declarative);
+        assert(!begin_setup_run("settings-acceptance",declarative,{{"colour","blue"}},error));
+        assert(!setup_steps("settings-acceptance")[0].satisfied);
+        assert(begin_setup_run("settings-acceptance",setup_identity("settings-acceptance"),{{"colour","blue"}},error));
+        fs::remove_all(root);std::cout<<"Atomic setup trust/choices/cancel, stale snapshot, fingerprint and version checks passed\n";return 0;
+    }
+    if(argc==3&&std::string(argv[1])=="--game-source-startup") {
+        namespace fs=std::filesystem;
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",argv[2]);set_code_mod_support(true);
+        initialize();auto source=game_source().path;assert(!source.empty());
+        auto moved=source+".moved";fs::rename(source,moved);
+        bool inspected=false,loaded=false;
+        start_guests([&](const GuestPackage&){inspected=true;return uint32_t(65536);},
+                     [&](const GuestPackage&,uint32_t){loaded=true;});
+        fs::rename(moved,source);
+        assert(!inspected&&!loaded&&!view("gc-guest").active);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--game-source") {
+        namespace fs=std::filesystem;
+        auto root=fs::temp_directory_path()/("wwhd-gc-source-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        initialize();std::string error;
+        std::ofstream(root/"source/manifest.json")<<R"({"format_version":1,"id":"gc-fixture","name":"GC fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"wall-climb":true},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"}]})";
+        assert(install((root/"source").string(),error));
+        assert(game_source().path.empty()&&!game_source().valid);
+        assert(!setup_steps("gc-fixture")[0].satisfied);
+        assert(!view("gc-fixture").game_source_warning.empty());
+        mods::catalogue::Entry source_entry;source_entry.id="gc-fixture";source_entry.setup={setup_steps("gc-fixture")[0].step};
+        mods::catalogue::Entry dependent_entry;dependent_entry.id="catalogue-dependent";dependent_entry.dependencies={"gc-fixture"};
+        mods::catalogue::Index index;index.entries={source_entry,dependent_entry};
+        assert(!game_source_warning(dependent_entry,index).empty());
+        assert(!enable("gc-fixture",true,error)&&error.find("GameCube")!=std::string::npos);
+        assert(!enable_after_code_rebuild("gc-fixture",error));
+        assert(!set_game_source("gc_wind_waker",(root/"missing.iso").string(),error));
+        auto disc=root/"synthetic.iso";std::array<unsigned char,32> header{};
+        std::copy_n("GZLE01",6,header.begin());header[28]=0xC2;header[29]=0x33;header[30]=0x9F;header[31]=0x3D;
+        {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+        assert(set_game_source("gc_wind_waker",disc.string(),error));
+        {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+         assert(saved.get("game_sources").get("gc_wind_waker").string()==fs::canonical(disc).string());}
+        assert(game_source().valid&&game_source().result.find("USA")!=std::string::npos);
+        assert(game_source_warning(dependent_entry,index).empty());
+        assert(setup_steps("gc-fixture")[0].satisfied&&view("gc-fixture").game_source_warning.empty());
+        assert(enable("gc-fixture",true,error)&&create_profile("Copy",error));
+        auto other=root/"other.iso";fs::copy_file(disc,other);
+        assert(set_game_source("gc_wind_waker",other.string(),error));
+        assert(!view("gc-fixture").enabled&&select_profile("Copy",error)&&!view("gc-fixture").enabled);
+        assert(enable("gc-fixture",true,error));
+        fs::create_directories(root/"second");
+        std::ofstream(root/"second/manifest.json")<<R"({"format_version":1,"id":"gc-second","name":"GC second","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"direct-camera":true},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"}]})";
+        assert(install((root/"second").string(),error)&&enable("gc-second",true,error));
+        fs::create_directories(root/"dependent");
+        std::ofstream(root/"dependent/manifest.json")<<R"({"format_version":1,"id":"gc-dependent","name":"GC dependent","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"quick-doors":true},"dependencies":[{"id":"gc-fixture"}]})";
+        assert(install((root/"dependent").string(),error)&&enable("gc-dependent",true,error));
+        assert(view("gc-dependent").game_source_warning.empty());
+        fs::remove(other);assert(!game_source().valid&&!view("gc-fixture").game_source_warning.empty());
+        assert(!select_profile("Copy",error)&&error.find("GameCube")!=std::string::npos);
+        assert(!enable("gc-fixture",true,error));
+        assert(!view("gc-dependent").game_source_warning.empty());
+        assert(!enable("gc-dependent",true,error));
+        assert(enable("gc-dependent",false,error));
+        // Losing a shared copy must not trap multiple enabled mods in their on state.
+        assert(enable("gc-fixture",false,error));
+        assert(!view("gc-fixture").enabled&&view("gc-second").enabled);
+        assert(enable("gc-second",false,error)&&!view("gc-second").enabled);
+        assert(set_game_source("gc_wind_waker","",error)&&game_source().path.empty());
+        assert(!setup_steps("gc-fixture")[0].satisfied&&!view("gc-fixture").enabled);
+        {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+         assert(saved.get("game_sources").get("gc_wind_waker").string().empty());}
+        // Guest preparation also refuses missing sources and loses readiness on change.
+        fs::create_directories(root/"guest");
+        std::ofstream(root/"guest/manifest.json")<<R"({"format_version":1,"id":"gc-guest","name":"GC guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"},{"id":"build","type":"build_guest_mod","title":"Build"}]})";
+        {std::ofstream elf(root/"guest/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        set_code_mod_support(true);assert(install((root/"guest").string(),error)&&confirm_native("gc-guest",error));
+        assert(!prepare_guest("gc-guest",error)&&error.find("GameCube")!=std::string::npos);
+        set_guest_builder([](const GuestPackage&){return uint32_t(65536);},[&](const GuestPackage&,uint32_t){auto module=root/"synthetic-module";std::ofstream(module)<<"authored cache fixture";return GuestBuilt{module.string(),65536};});
+        assert(set_game_source("gc_wind_waker",disc.string(),error)&&prepare_guest("gc-guest",error));
+        assert(setup_steps("gc-guest")[1].satisfied);
+        assert(enable("gc-dependent",true,error)&&create_profile("Dependent copy",error));
+        assert(enable("gc-guest",true,error));
+        auto startup=host::run_process({argv[0],"--game-source-startup",(root/"manager").string()});
+        if(startup.code!=0)std::cerr<<startup.output;
+        assert(startup.code==0);
+        assert(set_game_source("gc_wind_waker","",error)&&!setup_steps("gc-guest")[1].satisfied);
+        assert(fs::is_regular_file(root/"synthetic-module"));
+        assert(!view("gc-dependent").enabled&&select_profile("Dependent copy",error)&&!view("gc-dependent").enabled);
+        // Legacy per-region selections feed the shared copy and respect region requirements.
+        mods::json::Value saved;saved["gc_usa"]=disc.string();mods::catalogue::Sources sources(saved);
+        assert(sources.get("gc_wind_waker")==disc.string()&&sources.get("gc_eur").empty());
+        assert(sources.set("gc_wind_waker","")&&sources.get("gc_usa").empty());
+        fs::remove_all(root);std::cout<<"Shared GameCube source checks passed\n";return 0;
+    }
+    if(argc==3&&std::string(argv[1])=="--setup-code-mods") {
+        namespace fs=std::filesystem;
+        fs::path data=argv[2];
+        std::ifstream active_file(data/"code-mods-active.json");
+        auto active=mods::json::parse(std::string{std::istreambuf_iterator<char>(active_file),{}});
+        assert(active.get("state").string()=="ready");
+        std::ifstream settings_file(data/"user/settings.ini");std::string line,setting;
+        while(std::getline(settings_file,line))if(line.rfind("code-mods=",0)==0)setting=line.substr(10);
+        const bool supported=active.get("hooks").boolean&&setting=="1";
+        set_code_mod_support(supported);
+        auto root=data/"package-check";fs::remove_all(root);fs::create_directories(root/"source");
+        env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        std::ofstream(root/"source/manifest.json")<<R"({"format_version":1,"id":"setup-guest","name":"Setup guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"}})";
+        {std::ofstream elf(root/"source/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        initialize();std::string error;
+        assert(install((root/"source").string(),error));assert(confirm_native("setup-guest",error));
+        assert(needs_code_mod_support("setup-guest")==!supported);
+        assert(enable("setup-guest",true,error)==supported);
+        assert(view("setup-guest").enabled==supported);
+        if(supported)assert(error.empty());
+        fs::remove_all(root);return 0;
+    }
+
     namespace fs=std::filesystem;
     using namespace mods::packages;
     if(argc==4&&std::string(argv[1])=="--move-anim-startup") {
@@ -321,6 +417,66 @@ int main(int argc, char** argv) {
         fs::remove_all(root);std::cout << "guest package metadata/trust passed\n";return 0;
     }
     if(argc == 3 && std::string(argv[1]) == "--restart") return restart_check(argv[2]);
+    if(argc==3&&(std::string(argv[1])=="--cemu-conflicts-restart"||std::string(argv[1])=="--cemu-conflicts-legacy")){
+        env("WWHD_MOD_MANAGER_DIR",argv[2]);mods::cemu::set_vulkan(true);initialize();
+        assert(view("a").enabled&&view("a").active&&!view("a").pending_restart);
+        assert(!view("b").enabled&&!view("b").active);
+        assert(take_notices().size()==(std::string(argv[1])=="--cemu-conflicts-legacy"?1:0));
+        mods::cemu::report_shader(1,2,false,true,{});
+        assert(view("a").status.find("1 applied")!=std::string::npos);
+        return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--cemu-conflicts"){
+        auto root=fs::temp_directory_path()/("wwhd-cemu-conflicts-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto storage=root/"storage";
+        auto make=[&](const std::string& id,const std::string& rules,int shader){
+            auto folder=storage/"Mods"/id;fs::create_directories(folder);
+            std::ofstream(folder/"manifest.json")<<"{\"format_version\":1,\"id\":\""<<id<<"\",\"name\":\""<<id<<"\",\"version\":\"1.0.0\",\"game_id\":\"wwhd-usa\",\"kind\":\"cemu\",\"cemu_dir\":\"\"}";
+            std::ofstream(folder/"rules.txt")<<"[Definition]\nname=Test\ntitleIds=0005000010143500\nversion=4\n"<<rules;
+            if(shader)std::ofstream(folder/(shader==1?"0000000000000001_0000000000000002_ps.txt":"0000000000000003_0000000000000004_ps.txt"))<<"#version 420\nvoid main(){}\n";
+        };
+        make("a","",1);make("b","",1);make("c","",2);make("d","",1);
+        std::ofstream(storage/"Mods/d/0000000000000003_0000000000000004_ps.txt")<<"#version 420\nvoid main(){}\n";
+        make("r1","[TextureRedefine]\nwidth=640\noverwriteWidth=1280\n",0);
+        make("r2","[Preset]\nname=Separate\n$width=320\n[Preset]\nname=Overlap\n$width=640\n[TextureRedefine]\nwidth=$width\noverwriteWidth=1280\n",0);
+        auto legacy=mods::json::parse(R"({"enabled":{"a":true,"b":true,"c":true},"enabled_since":{"a":2,"b":1},"enable_serial":2})");
+        mods::json::Value db;db["format_version"]=1;db["active"]="Default";db["profiles"]["Default"]=legacy;
+        db["profiles"]["Legacy"]=legacy;db["profiles"]["Legacy"]["enabled_since"]["a"]=0;
+        std::ofstream(storage/"profiles.json")<<mods::json::dump(db);
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());mods::cemu::set_vulkan(true);initialize();
+        assert(!view("a").enabled&&view("b").enabled&&view("b").active&&view("c").active);
+        auto messages=take_notices();assert(messages.size()==1&&messages[0]=="a was turned off: it conflicts with b");assert(take_notices().empty());
+        assert(view("a").graphics_conflicts.size()==1&&view("a").graphics_conflicts[0].id=="b");
+        std::string error;
+        assert(!enable("a",true,error)); // Cancel / ordinary enable cannot mutate the profile.
+        assert(view("b").enabled&&!view("a").enabled);
+        assert(view("d").graphics_conflicts.size()==2);
+        assert(enable("d",true,error,true));assert(view("d").enabled&&!view("b").enabled&&!view("c").enabled);
+        assert(enable("b",true,error,true)&&enable("c",true,error));assert(!view("d").enabled);
+        fs::create_directory(storage/"profiles.json.tmp"); // Failed save must leave both choices untouched.
+        assert(!enable("a",true,error,true));assert(view("b").enabled&&!view("a").enabled);
+        fs::remove(storage/"profiles.json.tmp");
+        assert(enable("a",true,error,true));
+        assert(view("a").enabled&&!view("b").enabled&&view("c").enabled);
+        assert(!view("a").active&&view("a").pending_restart&&view("b").active&&view("b").pending_restart);
+        assert(select_profile("Legacy",error)); // Actual active pack wins over this profile's history.
+        assert(!view("a").enabled&&view("b").enabled&&take_notices().size()==1);
+        assert(select_profile("Default",error));assert(view("a").enabled&&!view("b").enabled);
+        assert(enable("r1",true,error)&&enable("r2",true,error)); // Independent rules coexist.
+        assert(configure("r2","preset-0","Overlap",error)); // Imported / selected overlapping preset is repaired.
+        assert(view("r1").enabled&&!view("r2").enabled&&take_notices().size()==1);
+        assert(view("r2").graphics_conflicts.size()==1);
+        assert(enable("r2",true,error,true));assert(!view("r1").enabled&&view("r2").enabled);
+        std::ifstream saved(storage/"profiles.json");auto persisted=mods::json::parse(std::string(std::istreambuf_iterator<char>(saved),{}));
+        saved.close();  // Windows: an open read handle makes the rewrite below fail silently
+        assert(!persisted.get("profiles").get("Default").get("enabled").get("b").boolean);
+        assert(host::run_process({argv[0],"--cemu-conflicts-restart",storage.string()}).code==0);
+        persisted["profiles"]["Default"]["enabled"]["b"]=true;
+        persisted["profiles"]["Default"].object.erase("enabled_since");
+        {std::ofstream output(storage/"profiles.json");output<<mods::json::dump(persisted);}
+        assert(host::run_process({argv[0],"--cemu-conflicts-legacy",storage.string()}).code==0);
+        fs::remove_all(root);std::cout<<"Synthetic Cemu conflict previews, atomic switch, migration, profiles, presets and restart passed\n";return 0;
+    }
     if(argc==2&&(std::string(argv[1])=="--cemu-startup"||std::string(argv[1])=="--cemu-backend")){
         bool backend=std::string(argv[1])=="--cemu-backend";
         auto root=fs::temp_directory_path()/("wwhd-cemu-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -513,6 +669,12 @@ int main(int argc, char** argv) {
     assert(run_setup_tool("setup-fixture","prepare",error,output));
     assert(output.find(disc.string())==std::string::npos&&output.find("[game source]")!=std::string::npos);
     assert(setup_steps("setup-fixture")[0].satisfied);
+    assert(set_game_source("gc_wind_waker","",error));
+    assert(fs::is_regular_file(fs::path(directory()).parent_path()/"Data/setup-fixture/result.bin"));
+    assert(!setup_steps("setup-fixture")[0].satisfied);
+    assert(set_game_source("gc_wind_waker",disc.string(),error));
+    assert(!setup_steps("setup-fixture")[0].satisfied); // returning to the old copy cannot revive a receipt
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
     auto other_disc=disc.parent_path()/"other-synthetic.iso";fs::copy_file(disc,other_disc);
     assert(set_game_source("gc_usa",other_disc.string(),error));
     assert(!setup_steps("setup-fixture")[0].satisfied); // changed source selection

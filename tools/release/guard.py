@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Release guard: fails if a release artifact contains anything derived from the game or any key.
 
-usage: guard.py ARTIFACT.zip|DIR [...]
+usage: guard.py [--allow-android-test-fixtures] ARTIFACT.zip|DIR [...]
 
 Release packages may contain only this project's runtime, tools and installer (plus third-party
 licenses). This check rejects, by name and by content:
@@ -14,8 +14,11 @@ licenses). This check rejects, by name and by content:
     and git hashes 40, which do not match).
 The Windows release's tools/python/ (the official embeddable Python) must hold exactly the files listed
 in tools/release/python-windows-files.json, each with its listed SHA-256.
+Android Python source archives must not contain debug fixture registration or smoke
+entry points. Only debug CI artifacts may opt in with --allow-android-test-fixtures.
 Exit status 1 lists every problem.
 """
+import io
 import hashlib
 import json
 import os
@@ -80,12 +83,27 @@ def check_entry(name, data, problems):
         problems.append("%s: contains recompiled game functions" % name)
 
 
-def scan(path):
+ANDROID_TEST_FILES = {
+    "tools/android/debug_fixture_build.py", "tools/android/service_fixture.py",
+    "tools/android/embedding_smoke.py", "tools/recomp/android_fixture.py",
+    "tools/android/extraction-fixture.bin", "tools/android/runtime_fixture.c",
+}
+
+
+def scan(path, allow_android_test_fixtures=False):
     problems, count, python = [], 0, set()
 
     def entry(name, data):
         check_python(name, data, python, problems)
         check_entry(name, data, problems)
+        if name.replace("\\", "/").endswith("python-source.zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as source:
+                    forbidden = ANDROID_TEST_FILES.intersection(source.namelist())
+                    if forbidden and not allow_android_test_fixtures:
+                        problems.append("%s: debug-only Android resources: %s" % (name, ", ".join(sorted(forbidden))))
+            except zipfile.BadZipFile:
+                problems.append("%s: invalid Android Python source archive" % name)
 
     if os.path.isdir(path):
         for dp, _, fns in os.walk(path):
@@ -110,11 +128,14 @@ def scan(path):
 
 
 def main():
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    allow_tests = "--allow-android-test-fixtures" in args
+    if allow_tests: args.remove("--allow-android-test-fixtures")
+    if not args:
         sys.exit(__doc__)
     bad = False
-    for p in sys.argv[1:]:
-        problems, count = scan(p)
+    for p in args:
+        problems, count = scan(p, allow_android_test_fixtures=allow_tests)
         if problems:
             bad = True
             print("REJECTED %s (%d files):" % (p, count))
