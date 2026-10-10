@@ -33,6 +33,10 @@ what is on `devel` and not released yet (also in the
 - **macOS: the game has its icon again.** Setup now gives the installed app the game's own icon,
   made from your game files (the release can't ship it), and the game shows it in the Dock while it
   runs. Existing installations get it with the next update or repair.
+- **macOS: Vulkan is now included in the release.** Pick it in Graphics > Renderer; nothing to
+  install. The Vulkan loader and MoltenVK come with the game and are always the ones it uses (never a
+  Homebrew copy). Metal stays the default, and if Vulkan can't start, the game falls back to Metal
+  and says why. This also makes Cemu graphics packs with GLSL shaders usable on the Mac.
 - **Fixed: text fields in the settings overlay didn't accept typing or pasting** (for example the
   catalogue address and the mod search; only deleting worked). Typed text, Ctrl+V / Cmd+V and copy
   now work on all platforms; on Android the on-screen keyboard opens for these fields.
