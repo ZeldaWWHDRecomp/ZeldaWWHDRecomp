@@ -984,6 +984,36 @@ void setup_test_actions(const mods::packages::View& mod,const std::vector<mods::
         if(native.empty())proceed();else confirm={mod.id,mod.name,std::move(native),true,std::move(proceed)};
     }
 }
+bool game_source_focus=false;
+void game_source_warning_control(const std::string& warning) {
+    if(warning.empty())return;
+    ImGui::TextWrapped("%s",warning.c_str());
+    if(ImGui::Button("Go to GameCube game for mods"))game_source_focus=true;
+}
+void game_source_controls() {
+    using namespace mods::packages;
+    bool focus=game_source_focus;game_source_focus=false;
+    heading("GameCube game for mods");
+    if(focus)ImGui::SetScrollHereY(0);
+    note("Some mods use files from the GameCube version of the game. They stay on your computer.");
+    auto source=game_source();
+    ImGui::TextWrapped("%s",source.path.empty()?"No path selected":source.path.c_str());
+    ImGui::TextWrapped("%s",source.result.c_str());
+    static std::mutex result_mutex;static std::string failure;
+    auto choose=[](bool folder) {
+        hostui::choose_game_source(folder,[](std::string path) {
+            if(path.empty())return;std::string error;set_game_source("gc_wind_waker",path,error);
+            std::lock_guard guard(result_mutex);failure=std::move(error);
+        });
+    };
+    if(focus){ImGui::SetKeyboardFocusHere();ImGui::SetNavCursorVisible(true);}
+    if(ImGui::Button("Choose disc image…"))choose(false);
+    ImGui::SameLine();if(ImGui::Button("Choose folder…"))choose(true);
+    ImGui::SameLine();ImGui::BeginDisabled(source.path.empty());
+    if(ImGui::Button("Clear")){std::string error;set_game_source("gc_wind_waker","",error);std::lock_guard guard(result_mutex);failure=std::move(error);}
+    ImGui::EndDisabled();
+    std::lock_guard guard(result_mutex);if(!failure.empty())ImGui::TextWrapped("%s",failure.c_str());
+}
 void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
     using namespace mods::packages;
     auto steps=setup_steps(mod.id);if(steps.empty())return;
@@ -999,16 +1029,19 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
         if(!step.explanation.empty())ImGui::TextWrapped("%s",step.explanation.c_str());
         ImGui::BeginDisabled(busy);
         if(step.type=="game_path") {
-            auto choose=[game=step.game,id=mod.id](bool folder) {
-                hostui::choose_mod_source(folder,[game,id](std::string path) {
-                    if(path.empty())return;std::string error;set_game_source(game,path,error);
-                    auto& setup_worker=setup_work();
-                    std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
-                });
-            };
-            if(step.game.starts_with("gc_")&&ImGui::Button("Choose disc image…"))choose(false);
-            if(step.game.starts_with("gc_"))ImGui::SameLine();
-            if(ImGui::Button("Choose extracted game folder…"))choose(true);
+            if(step.game.starts_with("gc_")) {
+                if(status.satisfied)ImGui::TextWrapped("Uses your GameCube game: %s",game_source().path.c_str());
+                else game_source_warning_control("Needs a compatible GameCube game. Set it in Settings → Mods → GameCube game for mods.");
+            }else {
+                auto choose=[game=step.game,id=mod.id](bool folder) {
+                    hostui::choose_mod_source(folder,[game,id](std::string path) {
+                        if(path.empty())return;std::string error;set_game_source(game,path,error);
+                        auto& setup_worker=setup_work();
+                        std::lock_guard guard(setup_worker.mutex);setup_worker.id=id;setup_worker.error=std::move(error);
+                    });
+                };
+                if(ImGui::Button("Choose extracted game folder…"))choose(true);
+            }
         }else if(step.type=="choice"||step.type=="confirm") {
             auto option=std::find_if(mod.options.begin(),mod.options.end(),[&](const auto& o){return o.id==step.option;});
             if(step.type=="confirm") {
@@ -1018,7 +1051,7 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
                 ImGui::EndCombo();
             }
         }else {
-            ImGui::BeginDisabled(mod.active||(step.type=="run_tool"&&mod.enabled));
+            ImGui::BeginDisabled(!mod.game_source_warning.empty()||mod.active||(step.type=="run_tool"&&mod.enabled));
             if(ImGui::Button(step.type=="build_guest_mod"?"Build guest module":"Run preparation tool")) {
                 auto proceed=[id=mod.id,step] {
                     if(step.type=="build_guest_mod"&&needs_code_mod_support(id))mods::code::request(true,id);
@@ -1139,6 +1172,7 @@ void catalogue_controls(std::string& focus) {
             for(const auto& author:entry.authors)note("By %s",author.c_str());
             for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
             for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
+            game_source_warning_control(mods::packages::game_source_warning(entry.setup));
             for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
             note("Package: %s",entry.kind.c_str());
             if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))
@@ -1197,6 +1231,7 @@ void package_controls() {
         std::lock_guard guard(picker_mutex);
         if (!picked.empty()) { snprintf(source, sizeof source, "%s", picked.c_str()); picked.clear(); }
     }
+    game_source_controls();
     static std::string catalogue_focus;
     catalogue_controls(catalogue_focus);
     heading("Profiles");
@@ -1250,7 +1285,9 @@ void package_controls() {
     for (const auto& mod : installed) {
         ImGui::PushID(mod.id.c_str());
         bool on = mod.enabled;
+        ImGui::BeginDisabled(!on&&!mod.game_source_warning.empty());
         bool toggled = ImGui::Checkbox("##package_enabled", &on);
+        ImGui::EndDisabled();
         if (test_enable && mod.id == test_enable && (setup_test_plan().id!=mod.id ||
             (setup_test_plan().error.empty()&&diagnostic::setup_ready(setup_steps(mod.id))))) { toggled = on = true; test_enable = nullptr; }
         if(test_disable&&mod.id==test_disable){toggled=true;on=false;test_disable=nullptr;}
@@ -1272,6 +1309,7 @@ void package_controls() {
         if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
+        game_source_warning_control(mod.game_source_warning);
         if(mod.kind=="cemu"){
             note("Active now: %s · After restart: %s",mod.active?"On":"Off",mod.enabled?"On":"Off");
             if(mod.pending_restart)note(mod.enabled?"Active after restart":"Turned off after restart");

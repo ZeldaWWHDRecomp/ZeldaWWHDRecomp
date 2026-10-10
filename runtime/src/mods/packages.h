@@ -19,6 +19,7 @@ struct Conflict {std::string id,name,reason;};
 struct View {
     std::string id,name,version,author,description,kind,reason,status;
     bool enabled=false,active=false,compatible=false,restart_required=false,pending_restart=false;
+    std::string game_source_warning;
     bool native_confirmed=true; // false: code the player has not confirmed (native library or guest ELF)
     std::vector<Conflict> graphics_conflicts; // currently enabled packs, before enabling
     std::vector<Option> options;
@@ -46,6 +47,9 @@ bool confirm_native(const std::string& id,std::string& error);
 bool configure(const std::string& id,const std::string& option,const json::Value& value,std::string& error);
 struct SetupView {catalogue::Step step;bool satisfied=false;};
 std::vector<SetupView> setup_steps(const std::string& id);
+struct GameSourceView {std::string path,result;bool valid=false;};
+GameSourceView game_source();
+std::string game_source_warning(const std::vector<catalogue::Step>& steps);
 bool set_game_source(const std::string& game,const std::string& path,std::string& error);
 // Run on a worker thread after native confirmation; never holds the manager lock while running.
 bool run_setup_tool(const std::string& id,const std::string& step,std::string& error,std::string& last_output);

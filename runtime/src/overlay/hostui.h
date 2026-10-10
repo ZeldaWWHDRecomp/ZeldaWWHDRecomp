@@ -8,6 +8,7 @@
 
 namespace hostui {
 
+void choose_game_source(bool folder, std::function<void(std::string)> chosen);
 void choose_mod_source(bool folder, std::function<void(std::string)> chosen);
 void post(std::function<void()> fn);  // run on the main thread (soon, in order)
 

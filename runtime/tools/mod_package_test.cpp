@@ -5,6 +5,7 @@
 #include "overlay/hostui.h"
 #include "platform/process.h"
 #include "mods/catalogue_client.h"
+#include "mods/catalogue_setup.h"
 #include <cassert>
 #include <cstdlib>
 #include <map>
@@ -80,6 +81,57 @@ int restart_check(const char* storage) {
 }
 int main(int argc, char** argv) {
     using namespace mods::packages;
+    if(argc==2&&std::string(argv[1])=="--game-source") {
+        namespace fs=std::filesystem;
+        auto root=fs::temp_directory_path()/("wwhd-gc-source-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root/"source");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        initialize();std::string error;
+        std::ofstream(root/"source/manifest.json")<<R"({"format_version":1,"id":"gc-fixture","name":"GC fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"wall-climb":true},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"}]})";
+        assert(install((root/"source").string(),error));
+        assert(game_source().path.empty()&&!game_source().valid);
+        assert(!setup_steps("gc-fixture")[0].satisfied);
+        assert(!view("gc-fixture").game_source_warning.empty());
+        assert(!enable("gc-fixture",true,error)&&error.find("GameCube")!=std::string::npos);
+        assert(!enable_after_code_rebuild("gc-fixture",error));
+        assert(!set_game_source("gc_wind_waker",(root/"missing.iso").string(),error));
+        auto disc=root/"synthetic.iso";std::array<unsigned char,32> header{};
+        std::copy_n("GZLE01",6,header.begin());header[28]=0xC2;header[29]=0x33;header[30]=0x9F;header[31]=0x3D;
+        {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+        assert(set_game_source("gc_wind_waker",disc.string(),error));
+        {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+         assert(saved.get("game_sources").get("gc_wind_waker").string()==fs::canonical(disc).string());}
+        assert(game_source().valid&&game_source().result.find("USA")!=std::string::npos);
+        assert(setup_steps("gc-fixture")[0].satisfied&&view("gc-fixture").game_source_warning.empty());
+        assert(enable("gc-fixture",true,error)&&create_profile("Copy",error));
+        auto other=root/"other.iso";fs::copy_file(disc,other);
+        assert(set_game_source("gc_wind_waker",other.string(),error));
+        assert(!view("gc-fixture").enabled&&select_profile("Copy",error)&&!view("gc-fixture").enabled);
+        assert(enable("gc-fixture",true,error));
+        fs::remove(other);assert(!game_source().valid&&!view("gc-fixture").game_source_warning.empty());
+        assert(!select_profile("Copy",error)&&error.find("GameCube")!=std::string::npos);
+        assert(!enable("gc-fixture",true,error));
+        assert(set_game_source("gc_wind_waker","",error)&&game_source().path.empty());
+        assert(!setup_steps("gc-fixture")[0].satisfied&&!view("gc-fixture").enabled);
+        {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+         assert(saved.get("game_sources").get("gc_wind_waker").string().empty());}
+        // Guest preparation also refuses missing sources and loses readiness on change.
+        fs::create_directories(root/"guest");
+        std::ofstream(root/"guest/manifest.json")<<R"({"format_version":1,"id":"gc-guest","name":"GC guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"},{"id":"build","type":"build_guest_mod","title":"Build"}]})";
+        {std::ofstream elf(root/"guest/mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        set_code_mod_support(true);assert(install((root/"guest").string(),error)&&confirm_native("gc-guest",error));
+        assert(!prepare_guest("gc-guest",error)&&error.find("GameCube")!=std::string::npos);
+        set_guest_builder([](const GuestPackage&){return uint32_t(65536);},[&](const GuestPackage&,uint32_t){auto module=root/"synthetic-module";std::ofstream(module)<<"authored cache fixture";return GuestBuilt{module.string(),65536};});
+        assert(set_game_source("gc_wind_waker",disc.string(),error)&&prepare_guest("gc-guest",error));
+        assert(setup_steps("gc-guest")[1].satisfied);
+        assert(set_game_source("gc_wind_waker","",error)&&!setup_steps("gc-guest")[1].satisfied);
+        assert(fs::is_regular_file(root/"synthetic-module"));
+        // Legacy per-region selections feed the shared copy and respect region requirements.
+        mods::json::Value saved;saved["gc_usa"]=disc.string();mods::catalogue::Sources sources(saved);
+        assert(sources.get("gc_wind_waker")==disc.string()&&sources.get("gc_eur").empty());
+        assert(sources.set("gc_wind_waker","")&&sources.get("gc_usa").empty());
+        fs::remove_all(root);std::cout<<"Shared GameCube source checks passed\n";return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--setup-code-mods") {
         namespace fs=std::filesystem;
         fs::path data=argv[2];
@@ -553,6 +605,12 @@ int main(int argc, char** argv) {
     assert(run_setup_tool("setup-fixture","prepare",error,output));
     assert(output.find(disc.string())==std::string::npos&&output.find("[game source]")!=std::string::npos);
     assert(setup_steps("setup-fixture")[0].satisfied);
+    assert(set_game_source("gc_wind_waker","",error));
+    assert(fs::is_regular_file(fs::path(directory()).parent_path()/"Data/setup-fixture/result.bin"));
+    assert(!setup_steps("setup-fixture")[0].satisfied);
+    assert(set_game_source("gc_wind_waker",disc.string(),error));
+    assert(!setup_steps("setup-fixture")[0].satisfied); // returning to the old copy cannot revive a receipt
+    assert(run_setup_tool("setup-fixture","prepare",error,output));
     auto other_disc=disc.parent_path()/"other-synthetic.iso";fs::copy_file(disc,other_disc);
     assert(set_game_source("gc_usa",other_disc.string(),error));
     assert(!setup_steps("setup-fixture")[0].satisfied); // changed source selection

@@ -46,6 +46,19 @@ You can install a code mod while support is off; the Mods tab offers to turn sup
 Enabling a code mod asks you once to confirm that you trust it (see [Trust](#trust)).
 Enabling, disabling and changing options of code mods take effect after a restart.
 
+### GameCube files used by mods
+
+In **Settings → Mods → GameCube game for mods**, choose your GameCube Wind Waker disc
+image (`.iso` / `.gcm`) or extracted game folder once. The setting shows the recognised
+region; some mods require a specific region. These files stay on your computer.
+
+Mods use this shared copy automatically. A mod with a missing or incompatible copy shows
+a warning and a **Go to GameCube game for mods** button, and cannot be enabled until the
+copy passes validation. Complete any remaining preparation steps under the mod's Setup.
+Changing or clearing the copy turns dependent mods off in every profile and marks their
+preparation for rerunning. Prepared files are kept; restart to unload any active mod,
+then rerun its setup before enabling it again.
+
 ## Writing a mod
 
 ### Toolchain

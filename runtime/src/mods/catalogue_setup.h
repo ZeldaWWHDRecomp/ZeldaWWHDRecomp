@@ -56,17 +56,40 @@ inline bool valid_game_source(const std::string& game,const std::filesystem::pat
         return found;
     }catch(const std::exception&){return false;}
 }
+inline bool uses_game_source(const Step& step,const std::string& game) {
+    auto matches=[&](const std::string& id){return id==game||(game=="gc_wind_waker"&&id.starts_with("gc_"));};
+    if(step.type=="game_path")return matches(step.game);
+    if(step.type=="run_tool")for(const auto& arg:step.arguments) {
+        for(const auto* id:{"gc_wind_waker","gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"})
+            if(matches(id)&&arg.find("{game:"+std::string(id)+"}")!=std::string::npos)return true;
+    }
+    return false;
+}
 class Sources {
     json::Value settings;
 public:
     Sources()=default;
     explicit Sources(json::Value local_settings):settings(std::move(local_settings)){}
+    std::string stored(const std::string& game) const {
+        if(game.starts_with("gc_")) {
+            // Migrate the old per-region preferences lazily; all GC mods use one copy.
+            for(const auto* key:{"gc_wind_waker","gc_usa","gc_eur","gc_jpn"}) {
+                auto path=settings.get(key).string();if(!path.empty())return path;
+            }
+            return {};
+        }
+        return settings.get(game).string();
+    }
     bool set(const std::string& game,const std::filesystem::path& path) {
-        if(!valid_game_source(game,path))return false;
-        settings[game]=std::filesystem::canonical(path).string();return true;
+        if(!std::set<std::string>{"gc_wind_waker","gc_usa","gc_eur","gc_jpn","wiiu_eur","wiiu_jpn"}.contains(game))return false;
+        if(!path.empty()&&!valid_game_source(game,path))return false;
+        auto key=game.starts_with("gc_")?std::string("gc_wind_waker"):game;
+        if(game.starts_with("gc_"))for(const auto* old:{"gc_usa","gc_eur","gc_jpn"})settings.object.erase(old);
+        if(path.empty())settings.object.erase(key);
+        else settings[key]=std::filesystem::canonical(path).string();return true;
     }
     std::string get(const std::string& game) const {
-        auto path=settings.get(game).string();
+        auto path=stored(game);
         return !path.empty()&&valid_game_source(game,path)?path:std::string();
     }
     const json::Value& local_settings()const{return settings;}
