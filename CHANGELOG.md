@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: the app is now part of every release and development build.** Download
+  `WindWakerHD-<version>-android-arm64.apk` (x86_64 for emulators and Chromebooks), install it, choose
+  your game, and setup builds the game on the phone. The APK contains no game code. It is signed with the
+  project's key (certificate SHA-256 `7F:F6:D3:5E:…:B2:13`, full value in the release notes), so later
+  versions install as updates.
+
 - **Mods: one-click setup.** Tick a mod (or press **Set up**), confirm once, and its setup runs by
   itself: for example the GameCube sea minimap prepares its island maps and builds itself, then turns
   on. If the game code first needs code-mod support, the game rebuilds and restarts and the setup
