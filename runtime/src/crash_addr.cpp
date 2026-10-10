@@ -113,30 +113,46 @@ static void frame_line(int fd, Out out, int i, uintptr_t pc) {
 #ifdef _WIN32
 void host_backtrace(int fd, Out out, const void* context) {
     out(fd, "  host backtrace:\n", 18);
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64) || defined(__x86_64__) || defined(_M_ARM64) || defined(__aarch64__)
+#if defined(_M_ARM64) || defined(__aarch64__)
+#define CRASH_PC Pc
+#define CRASH_SP Sp
+#else
+#define CRASH_PC Rip
+#define CRASH_SP Rsp
+#endif
     if (context) {
         CONTEXT c = *(const CONTEXT*)context;
         const NT_TIB* tib = (const NT_TIB*)NtCurrentTeb();  // the handler runs on the faulting thread
         const DWORD64 lo = (DWORD64)tib->StackLimit, hi = (DWORD64)tib->StackBase;
-        for (int i = 0; i < 48 && c.Rip; i++) {
-            frame_line(fd, out, i, (uintptr_t)c.Rip);
-            const DWORD64 sp = c.Rsp;
+        for (int i = 0; i < 48 && c.CRASH_PC; i++) {
+            frame_line(fd, out, i, (uintptr_t)c.CRASH_PC);
+            const DWORD64 sp = c.CRASH_SP;
             DWORD64 image = 0;
-            PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+            PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.CRASH_PC, &image, nullptr);
             if (f) {
                 PVOID handler_data = nullptr;
                 DWORD64 frame = 0;
-                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &handler_data, &frame, nullptr);
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.CRASH_PC, f, &c, &handler_data, &frame, nullptr);
             } else {
+#if defined(_M_ARM64) || defined(__aarch64__)
+                // a leaf function, or code without unwind tables: the return address is in the link
+                // register (only trustworthy in the faulting frame)
+                if (i > 0 || c.Lr == c.Pc) break;
+                c.Pc = c.Lr;
+#else
                 // a leaf function, or code without unwind tables: the return address is on top
                 if (c.Rsp < lo || c.Rsp + 8 > hi) break;
                 c.Rip = *(const DWORD64*)c.Rsp;
                 c.Rsp += 8;
+#endif
             }
-            if (c.Rsp < lo || c.Rsp > hi || c.Rsp < sp) break;
+            if (c.CRASH_SP < lo || c.CRASH_SP > hi || c.CRASH_SP < sp) break;
         }
         return;
     }
+#undef CRASH_PC
+#undef CRASH_SP
 #endif
     // elsewhere: from here (the first frames are the handler and the exception dispatcher)
     void* frames[48];

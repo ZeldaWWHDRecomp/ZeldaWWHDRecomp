@@ -71,6 +71,17 @@ if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WWHD_BUNDLED_DEPS)
 endif()
 if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  # The MSVC ABI links no compiler runtime, but clang lowers 128-bit division to compiler-rt calls
+  # (__udivti3; on ARM64 nothing in the MSVC libraries provides them): link clang's builtins.
+  set(WWHD_CLANG_TARGET_ARG)
+  if(CMAKE_CXX_COMPILER_TARGET)
+    set(WWHD_CLANG_TARGET_ARG --target=${CMAKE_CXX_COMPILER_TARGET})
+  endif()
+  execute_process(COMMAND ${CMAKE_CXX_COMPILER} ${WWHD_CLANG_TARGET_ARG} -print-libgcc-file-name -rtlib=compiler-rt
+                  OUTPUT_VARIABLE WWHD_CLANG_BUILTINS OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(WWHD_CLANG_BUILTINS AND EXISTS "${WWHD_CLANG_BUILTINS}")
+    link_libraries("${WWHD_CLANG_BUILTINS}")
+  endif()
 endif()
 
 add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports.c)
