@@ -1,4 +1,5 @@
 <resources>
+    <string name="game_setup">Configurar o jogo</string>
     <string name="save_export">Exportar save</string>
     <string name="save_import">Importar save</string>
     <string name="save_share">Enviar o save para…</string>

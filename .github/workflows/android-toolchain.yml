@@ -14,6 +14,7 @@ on:
       - tools/android/setup_import_smoke.py
       - tools/android/picker_smoke.py
       - tools/android/SetupPolicyTest.java
+      - tools/android/TgaImageTest.java
       - tools/android/ResourceVerifierTest.java
       - tools/android/ResourceCacheCleanupTest.java
       - tools/wudextract/**
@@ -82,6 +83,8 @@ jobs:
           python3 -m unittest discover -s tools/android -p 'test_*.py'
           javac -d build/setup-policy-test android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPolicy.java tools/android/SetupPolicyTest.java
           java -cp build/setup-policy-test SetupPolicyTest
+          javac -d build/tga-image-test android/app/src/main/java/org/wwhdrecomp/wwhd/TgaImage.java tools/android/TgaImageTest.java
+          java -cp build/tga-image-test TgaImageTest
           javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java
           java -cp build/resource-verifier-test org.wwhdrecomp.wwhd.ResourceVerifierTest
           javac -d build/resource-cleanup-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceCacheCleanup.java tools/android/ResourceCacheCleanupTest.java

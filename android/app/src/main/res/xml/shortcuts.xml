@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- long-press the app icon: export the save as a zip / import one (from another phone or the PC
-     version's save/ folder) -->
+     version's save/ folder), or open the setup screen (the icon starts the game once it is set up) -->
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut android:shortcutId="export_save"
         android:enabled="true"
@@ -8,6 +8,15 @@
         <intent android:action="android.intent.action.VIEW"
             android:targetPackage="org.wwhdrecomp.wwhd"
             android:targetClass="org.wwhdrecomp.wwhd.ExportSaveActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="game_setup"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/game_setup">
+        <intent android:action="android.intent.action.MAIN"
+            android:targetPackage="org.wwhdrecomp.wwhd"
+            android:targetClass="org.wwhdrecomp.wwhd.SetupActivity">
+            <extra android:name="org.wwhdrecomp.wwhd.SHOW_SETUP" android:value="true" />
+        </intent>
     </shortcut>
     <shortcut android:shortcutId="import_save"
         android:enabled="true"

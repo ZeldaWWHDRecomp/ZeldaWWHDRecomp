@@ -40,6 +40,8 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- the launcher shows shortcuts of the activity its icon starts -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
         <service android:name=".SetupService" android:process=":setup" android:exported="false"
             android:foregroundServiceType="specialUse">
@@ -64,7 +66,6 @@
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
-            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- save export/import (launcher shortcuts); own process, so they can stop the game's -->
