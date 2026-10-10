@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mods: one-click setup.** Tick a mod (or press **Set up**), confirm once, and its setup runs by
+  itself: for example the GameCube sea minimap prepares its island maps and builds itself, then turns
+  on. If the game code first needs code-mod support, the game rebuilds and restarts and the setup
+  continues afterwards. If a step fails: **Show details** and **Try again**. Changed packages ask for
+  confirmation again.
+
 - **Menu and on-screen keyboard: confirm and cancel like in the game** (PR #118, thanks @rhemfur). With
   the default face-button preset (by position) the right button confirms and the bottom one goes back,
   as in the game; the on-screen keyboard types with the game's A and deletes with B. "By label" and
