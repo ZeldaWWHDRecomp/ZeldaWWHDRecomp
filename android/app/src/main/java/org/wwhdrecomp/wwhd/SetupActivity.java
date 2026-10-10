@@ -57,10 +57,19 @@ public class SetupActivity extends Activity {
 
     private boolean shortcutChecked;
 
-    /** Once per completed build: the home-screen shortcut with the game's own icon. */
+    /** Once per completed build: the home-screen game icon with the game's own picture. */
     private void offerShortcut() {
         if (shortcutChecked) return;
         shortcutChecked = true;
+        if (!phoneSetup) {  // the PC route: its game folder, once
+            File external = getExternalFilesDir(null);
+            File game = external == null ? null : new File(external, "game");
+            android.content.SharedPreferences prefs = getSharedPreferences("setup", MODE_PRIVATE);
+            if (game == null || !new File(game, "meta/iconTex.tga").isFile() || prefs.getBoolean("pc_icon_offered", false)) return;
+            prefs.edit().putBoolean("pc_icon_offered", true).apply();
+            GameShortcut.offer(this, game);
+            return;
+        }
         new Thread(() -> {
             AndroidGame.Selection selection = AndroidGame.selected(this);  // (hashes the build: off the UI thread)
             if (selection == null || selection.game == null) return;
@@ -363,7 +372,10 @@ public class SetupActivity extends Activity {
                 setTextIfChanged(resume, getString(hostName.equals("selected") ? R.string.setup_start : R.string.setup_continue));
                 plainPhase(job, hostState, hostName, needsKeys, resume.isEnabled());
                 String text;
-                if (!phoneSetup) text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                if (!phoneSetup) {
+                    text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                    if (play.isEnabled()) offerShortcut();
+                }
                 else if (job == null) text = "Choose your game dump to set up on this phone.";
                 else {
                     File host = new File(job, "host.json");

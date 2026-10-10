@@ -13,10 +13,11 @@ import java.io.IOException;
 import java.io.InputStream;
 
 /**
- * The home-screen shortcut that starts the game. Its icon is the game's own icon from the
- * player's files (meta/iconTex.tga), made on the phone after setup: the APK carries no game
- * artwork, and an app can't change its own launcher icon, so the picture comes as a pinned
- * shortcut (the launcher asks the player once).
+ * The home-screen game icon. Its picture is the game's own icon from the player's files
+ * (meta/iconTex.tga), made on the phone after setup: the APK carries no game artwork, and an app
+ * can't change its own launcher icon. The launcher is asked once to place GameWidget (drawn as is);
+ * where widgets can't be pinned, a pinned shortcut instead (which launchers badge with the app's
+ * packaged icon).
  */
 public final class GameShortcut {
     private GameShortcut() {}
@@ -25,6 +26,14 @@ public final class GameShortcut {
 
     /** Asks the launcher to pin the shortcut, unless it is pinned already or pinning is unsupported. */
     public static void offer(Context context, File game) {
+        try {
+            android.appwidget.AppWidgetManager widgets = android.appwidget.AppWidgetManager.getInstance(context);
+            android.content.ComponentName provider = new android.content.ComponentName(context, GameWidget.class);
+            if (widgets.getAppWidgetIds(provider).length > 0) { GameWidget.refresh(context); return; }
+            if (widgets.isRequestPinAppWidgetSupported()) { widgets.requestPinAppWidget(provider, null, null); return; }
+        } catch (Exception failure) {
+            Log.w("wwhd-setup", "Game widget not offered: " + failure.getMessage());
+        }
         try {
             ShortcutManager shortcuts = context.getSystemService(ShortcutManager.class);
             if (shortcuts == null || !shortcuts.isRequestPinShortcutSupported()) return;
@@ -60,6 +69,19 @@ public final class GameShortcut {
             android.graphics.Path.Direction.CW);
         canvas.clipPath(round);
         canvas.drawBitmap(art, null, new android.graphics.Rect(offset, offset, offset + inner, offset + inner), paint);
+        return out;
+    }
+
+    /** The picture as a launcher draws an app icon: rounded corners, for the widget. */
+    static Bitmap rounded(Bitmap art) {
+        final int size = 192;
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(out);
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG | android.graphics.Paint.FILTER_BITMAP_FLAG);
+        android.graphics.Path round = new android.graphics.Path();
+        round.addRoundRect(0, 0, size, size, size * 0.3f, size * 0.3f, android.graphics.Path.Direction.CW);
+        canvas.clipPath(round);
+        canvas.drawBitmap(art, null, new android.graphics.Rect(0, 0, size, size), paint);
         return out;
     }
 
