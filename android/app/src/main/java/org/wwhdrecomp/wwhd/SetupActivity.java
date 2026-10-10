@@ -20,7 +20,12 @@ import org.json.JSONObject;
 /** Progress and controls for a durable phone setup job. */
 public class SetupActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private TextView status;
+    private TextView status;      // the technical record, under "Details"
+    private TextView stage;       // what is happening, in plain words
+    private TextView detail;
+    private android.widget.ProgressBar bar;
+    private Button choose;
+    private Button details;
     private Button resume;
     private Button pause;
     private Button play;
@@ -32,6 +37,49 @@ public class SetupActivity extends Activity {
     private String actionMessage;
     private String pickerJob;
     private static final int FOLDER = 10, ARCHIVE = 11, IMAGE = 12, DISC = 13, COMMON = 14, RESTORE = 15;
+    static final String EXTRA_SHOW_SETUP = "org.wwhdrecomp.wwhd.SHOW_SETUP";
+
+    /** A game is ready: an active phone build that needs no rebuild and no setup in progress, or the
+     *  PC route's game folder. */
+    private boolean readyToPlay() {
+        try {
+            if (!phoneSetup) {
+                File external = getExternalFilesDir(null);
+                return external != null && new File(external, "game/code/cking.rpx").isFile();
+            }
+            if (!new File(AndroidGame.storage(this), "active.json").isFile() || AndroidGame.needsRebuild(this))
+                return false;
+            File job = SetupStore.current(this);
+            File host = job == null ? null : new File(job, "host.json");
+            return host == null || !host.isFile() || SetupStore.read(host).optString("state").equals("complete");
+        } catch (Exception unreadable) { return false; }
+    }
+
+    private boolean shortcutChecked;
+
+    /** Once per completed build: the home-screen game icon with the game's own picture. */
+    private void offerShortcut() {
+        if (shortcutChecked) return;
+        shortcutChecked = true;
+        if (!phoneSetup) {  // the PC route: its game folder, once
+            File external = getExternalFilesDir(null);
+            File game = external == null ? null : new File(external, "game");
+            android.content.SharedPreferences prefs = getSharedPreferences("setup", MODE_PRIVATE);
+            if (game == null || !new File(game, "meta/iconTex.tga").isFile() || prefs.getBoolean("pc_icon_offered", false)) return;
+            prefs.edit().putBoolean("pc_icon_offered", true).apply();
+            GameShortcut.offer(this, game);
+            return;
+        }
+        new Thread(() -> {
+            AndroidGame.Selection selection = AndroidGame.selected(this);  // (hashes the build: off the UI thread)
+            if (selection == null || selection.game == null) return;
+            android.content.SharedPreferences prefs = getSharedPreferences("setup", MODE_PRIVATE);
+            String generation = selection.library.getName();
+            if (generation.equals(prefs.getString("shortcut_offered", ""))) return;
+            prefs.edit().putString("shortcut_offered", generation).apply();
+            runOnUiThread(() -> GameShortcut.offer(this, selection.game));
+        }, "wwhd-game-shortcut").start();
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -40,28 +88,88 @@ public class SetupActivity extends Activity {
              java.io.InputStream compiler = getAssets().open("toolchain-apk.json");
              java.io.InputStream sdk = getAssets().open("runtime-sdk.json")) { phoneSetup = true; }
         catch (Exception unavailable) { phoneSetup = false; }
+        // the app icon starts the game once there is one to play; the launcher's "Game setup"
+        // shortcut (and an update that needs a rebuild, or a setup still running) opens this screen
+        if (state == null && Intent.ACTION_MAIN.equals(getIntent().getAction()) &&
+                !getIntent().getBooleanExtra(EXTRA_SHOW_SETUP, false) && readyToPlay()) {
+            startActivity(new Intent(this, WwhdActivity.class));
+            finish();
+            return;
+        }
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int padding = (int)(24 * metrics.density), gap = (int)(12 * metrics.density);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        int padding = (int)(24 * getResources().getDisplayMetrics().density);
         layout.setPadding(padding, padding, padding, padding);
+        TextView title = new TextView(this);
+        title.setText(R.string.app_name);
+        title.setTextSize(28);
+        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        title.setTextColor(0xFFFFFFFF);
+        layout.addView(title);
+        stage = new TextView(this);
+        stage.setTextSize(20);
+        stage.setTextColor(0xFFE8EEF2);
+        stage.setPadding(0, gap, 0, 0);
+        layout.addView(stage);
+        bar = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(1000);
+        bar.setPadding(0, gap, 0, 0);
+        layout.addView(bar);
+        detail = new TextView(this);
+        detail.setTextSize(16);
+        detail.setPadding(0, gap / 2, 0, gap);
+        layout.addView(detail);
+        // one button for the three kinds of dump; the activity results are the same as before
+        choose = button(layout, getString(R.string.setup_choose), this::chooseKind);
+        pickers.add(choose);
+        restore = button(layout, getString(R.string.setup_restore), () -> pick(RESTORE));
+        disc = button(layout, getString(R.string.setup_disc_key), () -> pick(DISC));
+        common = button(layout, getString(R.string.setup_common_key), () -> pick(COMMON));
+        resume = button(layout, getString(R.string.setup_start), () -> control(SetupService.RESUME));
+        pause = button(layout, getString(R.string.setup_pause), () -> control(SetupService.PAUSE));
+        play = button(layout, getString(R.string.setup_play), () -> startActivity(new Intent(this, WwhdActivity.class)));
+        play.setTextSize(20);
+        play.setTextColor(0xFFFFFFFF);
+        play.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF0D5C8A));
+        details = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        details.setText(R.string.setup_details_show);
+        layout.addView(details);
+        details.setOnClickListener(view -> {
+            boolean show = status.getVisibility() != android.view.View.VISIBLE;
+            status.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+            details.setText(show ? R.string.setup_details_hide : R.string.setup_details_show);
+        });
         status = new TextView(this);
-        status.setTextSize(18);
+        status.setTextSize(14);
+        status.setVisibility(android.view.View.GONE);
         layout.addView(status);
-        pickers.add(button(layout, "Choose extracted game folder", () -> pick(FOLDER)));
-        pickers.add(button(layout, "Choose WUA archive", () -> pick(ARCHIVE)));
-        pickers.add(button(layout, "Choose WUD / WUX disc image", () -> pick(IMAGE)));
-        restore = button(layout, "Restore access to selected dump", () -> pick(RESTORE));
-        disc = button(layout, "Choose disc key file", () -> pick(DISC));
-        common = button(layout, "Choose common key file", () -> pick(COMMON));
-        resume = button(layout, "Start / resume / retry setup", () -> control(SetupService.RESUME));
-        pause = button(layout, "Pause setup", () -> control(SetupService.PAUSE));
-        play = button(layout, "Play current build (phone or PC)", () -> startActivity(new Intent(this, WwhdActivity.class)));
-        TextView checkpoints = new TextView(this);
-        checkpoints.setText("Setup keeps a private copy of your input. Leave room for that copy, extracted files, compiled output and at least 1 GiB working reserve. Full-game space and time still need phone measurements. Keys are selected as files and kept private.\n\nYou can close this screen while setup runs. Import resumes from verified complete files; an interrupted file copy or extraction restarts. Python and compiler resource preparation pause during unpacking and restart the incomplete stage. Checksum validation and translation respond to pause requests; an interrupted translation restarts. Compilation and linking also respond to pause requests. An interrupted command restarts; verified objects are kept. Saves stay in their current folder.\n\nThe optional PC route still uses the game folder copied over USB.");
-        layout.addView(checkpoints);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
         setContentView(scroll);
+    }
+
+    /** "Choose your game": a folder, a Cemu .wua archive or a .wud/.wux disc image. */
+    private void chooseKind() {
+        new android.app.AlertDialog.Builder(this).setTitle(R.string.setup_choose)
+            .setItems(new CharSequence[] {getString(R.string.setup_kind_folder), getString(R.string.setup_kind_wua),
+                getString(R.string.setup_kind_image)}, (dialog, which) -> pick(which == 0 ? FOLDER : which == 1 ? ARCHIVE : IMAGE))
+            .setNegativeButton(android.R.string.cancel, null).show();
+    }
+
+    private static void show(android.view.View view, boolean visible) {
+        int value = visible ? android.view.View.VISIBLE : android.view.View.GONE;
+        if (view.getVisibility() != value) view.setVisibility(value);
+    }
+
+    /** The plain-words line, the detail line and the bar (0..1000, -1 moving, -2 hidden). */
+    private void phase(String stageText, String detailText, int progress) {
+        setTextIfChanged(stage, stageText);
+        setTextIfChanged(detail, detailText == null ? "" : detailText);
+        show(detail, detailText != null);
+        show(bar, progress > -2);
+        if (progress == -1) bar.setIndeterminate(true);
+        else if (progress >= 0) { bar.setIndeterminate(false); bar.setProgress(progress); }
     }
 
     private boolean replaceable(File job) throws Exception {
@@ -169,6 +277,61 @@ public class SetupActivity extends Activity {
         return grants.contains(source.optString(key + "_uri"));
     }
 
+    private static final String CHECKPOINTS = "Setup keeps a private copy of your input. Leave room for that copy, extracted files, compiled output and at least 1 GiB working reserve. Keys are selected as files and kept private.\n\nYou can close this screen while setup runs. Import resumes from verified complete files; an interrupted file copy or extraction restarts. Python and compiler resource preparation pause during unpacking and restart the incomplete stage. Checksum validation and translation respond to pause requests; an interrupted translation restarts. Compilation and linking also respond to pause requests. An interrupted command restarts; verified objects are kept. Saves stay in their current folder.\n\nThe optional PC route still uses the game folder copied over USB.";
+
+    /** The top of the screen: one plain sentence, a detail line and the bar. */
+    private void plainPhase(File job, JSONObject host, String state, boolean needsKeys, boolean canStart) throws Exception {
+        if (!phoneSetup) { phase(getString(play.isEnabled() ? R.string.setup_ready : R.string.setup_pc_route), null, -2); return; }
+        if (job == null) {
+            phase(getString(play.isEnabled() ? R.string.setup_ready : R.string.setup_welcome), getString(R.string.setup_welcome_detail), -2);
+            return;
+        }
+        switch (state) {
+            case "selected":
+                if (needsKeys && !canStart) phase(getString(R.string.setup_keys), getString(R.string.setup_keys_detail), -2);
+                else phase(getString(R.string.setup_selected), getString(R.string.setup_selected_detail), -2);
+                return;
+            case "importing": {
+                File imported = new File(job, "import-progress.json");
+                if (imported.isFile()) {
+                    JSONObject progress = SetupStore.read(imported);
+                    int files = Math.max(1, progress.getInt("files"));
+                    phase(getString(R.string.setup_copying), getString(R.string.setup_copying_detail,
+                        progress.getInt("complete"), progress.getInt("files")), (int)(1000L * progress.getInt("complete") / files));
+                } else phase(getString(R.string.setup_copying), null, -1);
+                return;
+            }
+            case "preparing": phase(getString(R.string.setup_preparing), getString(R.string.setup_leave_detail), -1); return;
+            case "running": {
+                File record = new File(job, "state.json");
+                JSONObject event = record.isFile() ? SetupStore.read(record).optJSONObject("last_event") : null;
+                String step = event == null ? "" : event.optString("stage");
+                if (step.equals("compile") && event.optInt("total") > 0) {
+                    int total = event.optInt("total"), done = Math.min(total, event.optInt("compiled") + event.optInt("reused"));
+                    long eta = event.optLong("eta_seconds", -1);
+                    String left = eta < 0 ? "" : eta < 90 ? getString(R.string.setup_minute_left) :
+                        getString(R.string.setup_minutes_left, (eta + 59) / 60);
+                    phase(getString(R.string.setup_compiling), getString(R.string.setup_compiling_detail, done, total) + left,
+                        (int)(1000L * done / total));
+                } else if (step.equals("translate")) phase(getString(R.string.setup_translating), getString(R.string.setup_leave_detail), -1);
+                else if (step.equals("link") || step.equals("activate")) phase(getString(R.string.setup_finishing), null, -1);
+                else phase(getString(R.string.setup_extracting), getString(R.string.setup_leave_detail), -1);
+                return;
+            }
+            case "paused": {
+                String reason = host == null ? "" : host.optString("reason");
+                int text = reason.equals("heat") ? R.string.setup_paused_heat :
+                    reason.equals("battery") || reason.equals("battery_unknown") ? R.string.setup_paused_battery : R.string.setup_paused;
+                phase(getString(text), getString(reason.equals("manual") || reason.isEmpty() ?
+                    R.string.setup_paused_detail : R.string.setup_paused_auto_detail), -2);
+                return;
+            }
+            case "failed": phase(getString(R.string.setup_failed), getString(R.string.setup_failed_detail), -2); return;
+            case "complete": phase(getString(R.string.setup_ready), getString(R.string.setup_ready_detail), 1000); return;
+            default: phase(getString(R.string.setup_working), null, -1);
+        }
+    }
+
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             try {
@@ -189,8 +352,8 @@ public class SetupActivity extends Activity {
                 restore.setEnabled(importing && replaceable(job));
                 disc.setVisibility(needsKeys ? android.view.View.VISIBLE : android.view.View.GONE);
                 common.setVisibility(needsKeys ? android.view.View.VISIBLE : android.view.View.GONE);
-                setTextIfChanged(disc, discReady ? "Disc key selected — change" : source != null && source.has("disc_uri") ? "Disc key needs access — choose again" : "Choose disc key file");
-                setTextIfChanged(common, commonReady ? "Common key selected — change" : source != null && source.has("common_uri") ? "Common key needs access — choose again" : "Choose common key file");
+                setTextIfChanged(disc, getString(discReady ? R.string.setup_disc_key_ready : source != null && source.has("disc_uri") ? R.string.setup_disc_key_again : R.string.setup_disc_key));
+                setTextIfChanged(common, getString(commonReady ? R.string.setup_common_key_ready : source != null && source.has("common_uri") ? R.string.setup_common_key_again : R.string.setup_common_key));
                 disc.setEnabled(needsKeys && replaceable(job));
                 common.setEnabled(needsKeys && replaceable(job));
                 resume.setEnabled(phoneSetup && job != null && (!needsKeys || (discReady && commonReady)));
@@ -199,13 +362,26 @@ public class SetupActivity extends Activity {
                 File external = getExternalFilesDir(null);
                 play.setEnabled(new File(AndroidGame.storage(SetupActivity.this), "active.json").isFile() ||
                     (external != null && new File(external, "game/code/cking.rpx").isFile()));
+                String hostName = hostState == null ? (job == null ? "" : "selected") : hostState.optString("state");
+                boolean working = hostName.equals("importing") || hostName.equals("preparing") || hostName.equals("running");
+                show(play, play.isEnabled() && !working);
+                show(choose, phoneSetup && !working);
+                setTextIfChanged(choose, getString(job == null ? R.string.setup_choose : R.string.setup_choose_other));
+                show(pause, phoneSetup && working);
+                show(resume, phoneSetup && job != null && !working && !hostName.equals("complete"));
+                setTextIfChanged(resume, getString(hostName.equals("selected") ? R.string.setup_start : R.string.setup_continue));
+                plainPhase(job, hostState, hostName, needsKeys, resume.isEnabled());
                 String text;
-                if (!phoneSetup) text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                if (!phoneSetup) {
+                    text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                    if (play.isEnabled()) offerShortcut();
+                }
                 else if (job == null) text = "Choose your game dump to set up on this phone.";
                 else {
                     File host = new File(job, "host.json");
                     JSONObject value = host.isFile() ? SetupStore.read(host) : new JSONObject().put("state", "ready to start");
                     text = "Setup: " + value.getString("state");
+                    if (value.optString("state").equals("complete")) offerShortcut();
                     if (value.has("reason")) text += "\n" + SetupPolicy.description(value.getString("reason"));
                     if (value.has("error")) text += "\n" + value.getString("error");
                     if (importing && !grants.contains(source.optString("uri")))
@@ -231,7 +407,7 @@ public class SetupActivity extends Activity {
                     }
                 }
                 if (actionMessage != null) text += "\n" + actionMessage;
-                setTextIfChanged(status, text);
+                setTextIfChanged(status, text + "\n\n" + CHECKPOINTS);
             } catch (Exception failure) { setTextIfChanged(status, "Cannot read setup progress: " + failure.getMessage()); }
             handler.postDelayed(this, 500);
         }
