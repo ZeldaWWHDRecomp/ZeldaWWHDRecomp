@@ -293,6 +293,9 @@ Galaxy S25 Ultra (Snapdragon 8 Elite). There is no download: **releases never co
 yourself from your own dump, and since it contains your recompiled game, it is for your own phone
 only: don't share it. (CI builds the APK only with placeholder code, to check that it compiles.)
 
+For players: [docs/android.md](docs/android.md) explains what the Android version does, the tested
+phones and how to play ([Português](docs/android.pt.md), [Español](docs/android.es.md)).
+
 You need:
 - a phone with arm64, Android 13 or newer and Vulkan 1.3;
 - **a game controller** (Bluetooth or USB) is best: it is the GamePad's buttons and sticks.
