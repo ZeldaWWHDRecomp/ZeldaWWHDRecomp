@@ -170,7 +170,15 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 final float x = event.getX(index), y = event.getY(index);
                 Control c = hit(x, y);
                 owner.put(id, c);
-                if (c == null) {
+                if (c == null && action == MotionEvent.ACTION_DOWN) {
+                    // The first finger on no control: decline the gesture so the view under it takes it
+                    // (SDLSurface, or on a fold the primary pane, which is smaller than this view and
+                    // maps the touch to its own size; forward() can only use this view's size).
+                    owner.remove(id);
+                    update();
+                    invalidate();
+                    return false;
+                } else if (c == null) {
                     forward(event, index, action);
                 } else if (c == toggle) {
                     c.pressed = true;
