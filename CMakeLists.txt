@@ -944,6 +944,12 @@ add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
 target_include_directories(mod_setup_run_test PRIVATE runtime/src)
 target_compile_options(mod_setup_run_test PRIVATE -UNDEBUG)
 add_test(NAME mod_setup_run COMMAND mod_setup_run_test)
+# Windows treats a program whose name contains "setup" as an installer (installer detection) and
+# asks for administrator rights unless its manifest says otherwise (seen on Windows on ARM64: CTest
+# reported these tests as "permission denied"): they carry the console manifest
+foreach(t catalogue_setup_test setup_test_plan_test mod_setup_run_test)
+  wwhd_windows_resources(${t} "Wind Waker HD test" "${t}.exe" console)
+endforeach()
 
 
 if(NOT ANDROID)
