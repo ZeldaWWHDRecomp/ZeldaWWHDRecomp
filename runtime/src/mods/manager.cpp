@@ -26,7 +26,8 @@ const Entry catalogue[] = {
      "Run door-opening and closing events at four times their normal speed.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
     {"move-speed", "Run/swim speed", "Gameplay",
-     "Hold the selected button to run or swim faster. Default: L3 (rebind it in Controls).",
+     "Boost Link's running and swimming speed, separate multipliers, held or toggled, with a stamina "
+     "bar and a cooldown. Default: hold L3 (rebind it in Controls).",
      "WWHD_MOD_MOVE_SPEED", move_speed, set_move_speed},
     {"fast-forward", "Fast forward cutscenes and dialogue", "Gameplay",
      "Hold the selected button during events to play faster. Choices still wait for input.",
@@ -79,7 +80,28 @@ void load_saved() {
         std::string v;
         if (hostui::get("mod.fast-forward.mute", v) && (v == "0" || v == "1")) set_fast_forward_mute(v == "1");
     }
-    number("mod.move-speed.factor", "WWHD_MOD_MOVE_FACTOR", 1.25f, 4.f, set_move_speed_factor);
+    number("mod.move-speed.land", "WWHD_MOD_MOVE_FACTOR", 1.f, 4.f, set_move_speed_land_factor);
+    number("mod.move-speed.swim", "WWHD_MOD_MOVE_SWIM", 1.f, 4.f, set_move_speed_swim_factor);
+    // A settings file from before the split stored one factor, which applied to both states.
+    if (!std::getenv("WWHD_MOD_MOVE_FACTOR") && !std::getenv("WWHD_MOD_MOVE_SWIM")) {
+        std::string land_v, swim_v, legacy_v;
+        if (hostui::get("mod.move-speed.factor", legacy_v) && !hostui::get("mod.move-speed.land", land_v) &&
+            !hostui::get("mod.move-speed.swim", swim_v)) {
+            char* end = nullptr;
+            const float f = std::strtof(legacy_v.c_str(), &end);
+            if (end != legacy_v.c_str() && *end == '\0' && std::isfinite(f) && f >= 1.f && f <= 4.f) {
+                set_move_speed_land_factor(f);
+                set_move_speed_swim_factor(f);
+            }
+        }
+    }    number("mod.move-speed.stamina", "WWHD_MOD_MOVE_STAMINA", 0.f, 60.f, set_move_speed_stamina_seconds);
+    number("mod.move-speed.cooldown", "WWHD_MOD_MOVE_COOLDOWN", 0.f, 60.f, set_move_speed_cooldown_seconds);
+    std::string mode;
+    if (hostui::get("mod.move-speed.mode", mode) && (mode == "0" || mode == "1"))
+        set_move_speed_mode(mode == "1" ? MoveMode::kToggle : MoveMode::kHold);
+    std::string anim;
+    if (!std::getenv("WWHD_MOD_MOVE_ANIM") && hostui::get("mod.move-speed.anim", anim) && valid_move_anim_id(anim))
+        set_move_speed_anim(move_anim_from_id(anim));
     number("mod.direct-camera.speed", "WWHD_MOD_CAMERA_SPEED", .5f, 2.f, set_camera_speed);
     std::string button;
     if (hostui::get("mod.move-speed.button", button)) {

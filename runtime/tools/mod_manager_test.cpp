@@ -33,9 +33,18 @@ void set_fast_forward_button(uint32_t b) { if (valid_fast_forward_button(b)) ff_
 bool fast_forward_mute() { return ff_mute; } void set_fast_forward_mute(bool on) { ff_mute = on; }
 
 static bool move_on = false;
+static float move_land = 1.5f, move_swim = 1.25f, move_seconds = 5.f, move_cooldown = 3.f;
+static int move_mode = (int)MoveMode::kHold;
+static int move_anim = (int)MoveAnim::kNative;
+static uint32_t move_button = 0x40000;
 bool move_speed() { return move_on; } void set_move_speed(bool on) { move_on = on; }
-float move_speed_factor() { return 1.5f; } void set_move_speed_factor(float) {}
-uint32_t move_speed_button() { return 0x40000; } void set_move_speed_button(uint32_t) {}
+float move_speed_land_factor() { return move_land; } void set_move_speed_land_factor(float f) { if (f >= 1 && f <= 4) move_land = f; }
+float move_speed_swim_factor() { return move_swim; } void set_move_speed_swim_factor(float f) { if (f >= 1 && f <= 4) move_swim = f; }
+float move_speed_stamina_seconds() { return move_seconds; } void set_move_speed_stamina_seconds(float s) { if (s >= 0 && s <= 60) move_seconds = s; }
+float move_speed_cooldown_seconds() { return move_cooldown; } void set_move_speed_cooldown_seconds(float s) { if (s >= 0 && s <= 60) move_cooldown = s; }
+MoveMode move_speed_mode() { return (MoveMode)move_mode; } void set_move_speed_mode(MoveMode m) { move_mode = (int)m; }
+MoveAnim move_speed_anim() { return (MoveAnim)move_anim; } void set_move_speed_anim(MoveAnim a) { move_anim = (int)a; }
+uint32_t move_speed_button() { return move_button; } void set_move_speed_button(uint32_t b) { if (b && !(b & (b - 1))) move_button = b; }
 
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
@@ -60,6 +69,7 @@ int main() {
     env("WWHD_NO_HOST_INPUT",nullptr);
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
+    env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
     assert(entries().size()==8);
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     preferences["mod.wall-climb.enabled"]="1";
@@ -91,6 +101,25 @@ int main() {
     load_saved(); assert(mods::fast_forward_rate() == 3 && mods::fast_forward_button() == 32);
     assert(set_enabled("fast-forward", true) && mods::fast_forward());
     disable_all(); assert(!mods::fast_forward());
+    // The run/swim options round-trip, and a pre-split setting's single factor feeds both states.
+    preferences["mod.move-speed.land"] = "2.5";
+    preferences["mod.move-speed.swim"] = "1";
+    preferences["mod.move-speed.stamina"] = "8";
+    preferences["mod.move-speed.cooldown"] = "5";
+    preferences["mod.move-speed.mode"] = "1";
+    preferences["mod.move-speed.anim"] = "dash";
+    preferences["mod.move-speed.button"] = "65536";
+    load_saved();
+    assert(mods::move_speed_land_factor() == 2.5f && mods::move_speed_swim_factor() == 1.f);
+    assert(mods::move_speed_stamina_seconds() == 8.f && mods::move_speed_mode() == mods::MoveMode::kToggle);
+    assert(mods::move_speed_cooldown_seconds() == 5.f);
+    assert(mods::move_speed_anim() == mods::MoveAnim::kDash);
+    assert(mods::move_speed_button() == 65536);
+    preferences.erase("mod.move-speed.land");
+    preferences.erase("mod.move-speed.swim");
+    preferences["mod.move-speed.factor"] = "3";
+    load_saved();
+    assert(mods::move_speed_land_factor() == 3.f && mods::move_speed_swim_factor() == 3.f);
     // Test isolation protects player settings even when toggles are exercised.
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);

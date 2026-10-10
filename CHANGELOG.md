@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Run/swim speed: a reworked boost** (PR #133, thanks @mhbxyz). Separate multipliers for running
+  (1.5x by default) and swimming (1.25x), hold or toggle, and a stamina bar: a boost lasts 5 s by
+  default and refills over a 3 s cooldown (set stamina to 0 for the old unlimited boost). A ring under
+  the climb wheel shows it. The boost ramps in, and Link's legs keep up with the ground instead of
+  skating (true 60 included). Options in Mods > Run/swim speed: use the dash clip instead of walking,
+  or a sprint pose with a forward lean and wider arm swing. Boosted runs kick up dust, and a boosted
+  surface swim becomes a crawl with splashes and foam, all with the game's own effects. Saved settings
+  carry over.
+
 ## v0.2.12
 
 - **Android: the app is now part of every release and development build.** Download

@@ -12,3 +12,6 @@
 0252A684  # dDoor_info_c::getDemoAction: a door event cut is running
 021C0078  # daMbdoor_c::getDemoAction
 025DC86C  # fopScnM_ChangeReq: scene change trigger (traces)
+023DE788  # daPy_lk_c::setFrameCtrl: the run/swim boost scales the animation rate (mods.cpp)
+023E048C  # daPy_lk_c::getAnmData: the boost can swap ANM_WALK for ANM_DASH (mods.cpp)
+023D6B30  # daPy_lk_c::jointBeforeCB: additive sprint pose, restored by the native jointAfterCB
