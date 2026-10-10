@@ -4,20 +4,27 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 namespace mods {
 
 // How the boost is engaged. Toggle is what the README already promised ("hold L3 (or toggle)").
 enum class MoveMode { kHold, kToggle };
 
-// Which locomotion clip the boost uses: the native one, played faster, or the game's own dash motion
-// (ANM_DASH, the clip setBlendMoveAnime picks for fast moves while turning). Both are the game's art.
-enum class MoveAnim { kNative, kDash };
+// Native keeps the game's clip; dash replaces its walk portion at low speeds (ANM_DASH is already
+// used at full speed). Sprint adds a lean and arm drive to the native cycle, without replacing art.
+enum class MoveAnim { kNative, kDash, kSprint };
 constexpr uint32_t kAnmWalk = 1, kAnmDash = 2;  // daAlink_ANM ids, d_a_player_main_02.cpp:3555-3600
 inline uint32_t boost_anim(uint32_t anm, MoveAnim mode, bool boosting) {
     return boosting && mode == MoveAnim::kDash && anm == kAnmWalk ? kAnmDash : anm;
 }
-inline const char* move_anim_label(MoveAnim a) { return a == MoveAnim::kDash ? "dash" : "native"; }
+inline const char* move_anim_label(MoveAnim a) {
+    return a == MoveAnim::kSprint ? "sprint" : a == MoveAnim::kDash ? "dash" : "native";
+}
+inline bool valid_move_anim_id(std::string_view id) { return id == "native" || id == "dash" || id == "sprint"; }
+inline MoveAnim move_anim_from_id(std::string_view id) {
+    return id == "sprint" ? MoveAnim::kSprint : id == "dash" ? MoveAnim::kDash : MoveAnim::kNative;
+}
 
 constexpr uint32_t kProcMove = 0x06;      // daPy_PROC PROC_MOVE
 constexpr uint32_t kProcSwimMove = 0x37;  // daPy_PROC PROC_SWIM_MOVE

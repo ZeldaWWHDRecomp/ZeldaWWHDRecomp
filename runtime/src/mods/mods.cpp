@@ -10,6 +10,8 @@
 //                              Link's control), one line per event with the logic step
 #include "mods.h"
 #include "move_speed.h"
+#include "sprint_pose.h"
+#include "guest_addr.h"
 #include "../input.h"
 #include "../true60.h"  // dt(): the per-step tick must advance once per original 30 Hz step
 
@@ -22,6 +24,7 @@
 
 extern "C" void f_023DE788_orig(Cpu* c);  // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame)
 extern "C" void f_023E048C_orig(Cpu* c);  // daPy_lk_c::getAnmData(anmId) -> resource index
+extern "C" void f_023D6B30_orig(Cpu* c);  // daPy_lk_c::jointBeforeCB(joint, transform, quaternion)
 
 namespace interp { uint64_t logic_steps(); }
 
@@ -43,10 +46,10 @@ std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
 std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
 std::atomic<int> g_move_mode{(int)MoveMode::kHold};
-// WWHD_MOD_MOVE_ANIM=dash (any leading 'd') is the test aid for the dash clip
+// WWHD_MOD_MOVE_ANIM=native|dash|sprint is the animation test aid.
 std::atomic<int> g_move_anim{[]{
     const char* e = getenv("WWHD_MOD_MOVE_ANIM");
-    return e && *e && (e[0] == 'd' || e[0] == 'D') ? (int)MoveAnim::kDash : (int)MoveAnim::kNative;
+    return (int)move_anim_from_id(e ? e : "native");
 }()};
 std::atomic<float> g_move_land{clamp_factor(env_f("WWHD_MOD_MOVE_FACTOR", kDefaultLandFactor))};
 // before the split there was one factor: WWHD_MOD_MOVE_FACTOR still feeds swimming when the
@@ -261,6 +264,42 @@ extern "C" void hook_023DE788(Cpu* c) {
 extern "C" void hook_023E048C(Cpu* c) {
     c->r[4] = move_boost_anim(c->r[4]);
     f_023E048C_orig(c);
+}
+
+extern "C" void hook_023D6B30(Cpu* c) {
+    const uint32_t link = c->r[3], joint = c->r[4], quaternion = c->r[6];
+    f_023D6B30_orig(c);
+    if (!link || !quaternion || !move_speed() || move_speed_anim() != MoveAnim::kSprint) return;
+    // Ordinary forward locomotion only: leave upper-body actions, lock-on, demos and special walks
+    // to their own animation. The resource index (not ANM id) is what the live heap stores.
+    if (ld32(link + 0x65F0) != kProcMove || ld8(link + 0x68D4) != 0 ||
+        (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) || ld16(link + 0x420) != 0 ||
+        ld8(GD(0x1046F0B0) + 0x5292) || ld16(link + 0x5888) != 0xFFFF) return;
+    const uint32_t table = GD(0x100366A0);
+    const uint16_t clip = ld16(link + 0x5858);
+    if (clip != ld16(table + kAnmWalk * 8) && clip != ld16(table + kAnmDash * 8)) return;
+    const float weight = sprint::weight(g_move_ramp.load(std::memory_order_relaxed), move_speed_land_factor(),
+                                         u32_as_f32(ld32(link + 0x6A14)), u32_as_f32(ld32(link + 0x3C4)));
+    const uint32_t ctrl = link + 0x58A8;  // mFrameCtrlUnder[1], the native walk/run cycle
+    const int start = (int16_t)ld16(ctrl + 8), end = (int16_t)ld16(ctrl + 10);
+    const float phase = end > start ? (u32_as_f32(ld32(ctrl + 4)) - start) / (end - start) : 0.f;
+    const float angle = weight * sprint::angle_degrees(joint, phase);
+    if (angle == 0.f) return;
+    const sprint::Quaternion q{u32_as_f32(ld32(quaternion)), u32_as_f32(ld32(quaternion + 4)),
+                                u32_as_f32(ld32(quaternion + 8)), u32_as_f32(ld32(quaternion + 12))};
+    if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w)) return;
+    // jointAfterCB restores the quaternion via Link's per-joint flag/backup. If the game already
+    // saved it, preserve that original; otherwise ask the same native path to restore our edit.
+    const uint32_t flags = link + 0x68E2 + joint, backup = link + 0x6AB0 + joint * 16;
+    if (!(ld8(flags) & 1)) {
+        for (unsigned i = 0; i < 4; ++i) st32(backup + i * 4, ld32(quaternion + i * 4));
+        st8(flags, ld8(flags) | 1);
+    }
+    const auto posed = sprint::rotate_local_z(q, angle);
+    st32(quaternion, f32_as_u32(posed.x)); st32(quaternion + 4, f32_as_u32(posed.y));
+    st32(quaternion + 8, f32_as_u32(posed.z)); st32(quaternion + 12, f32_as_u32(posed.w));
+    if (joint == sprint::kStomach && trace_on())
+        trace("sprint-pose link=%08X weight=%.3f lean=%.2f phase=%.3f", link, weight, angle, phase);
 }
 
 uint64_t step() { return interp::logic_steps(); }double game_time() { return (double)interp::logic_steps() / 30.0; }

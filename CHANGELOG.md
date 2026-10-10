@@ -17,8 +17,13 @@ what is on `devel` and not released yet (also in the
   animation follows it so Link's legs keep up with the ground instead of skating (true 60 included),
   and both go back to normal the moment he stops. A ring like the climb mod's, just under it, shows
   the boost (green running, blue swimming, amber while it recharges). The boost can also use the
-  game's own dash clip instead of playing the run faster (Mods > Run/swim speed > Dash animation),
-  which reads more like a sprint. Saved settings and mod profiles carry over: a file from before the
+  game's own dash clip in place of walking at lower speeds (Mods > Run/swim speed > Dash instead of
+  walk while boosting). Full-speed running already uses dash, so this does not add a new sprint
+  motion. The animation choice persists in mod profiles, and `WWHD_MOD_MOVE_ANIM` takes precedence
+  over saved settings. An optional Sprint pose adds a forward torso lean, a compensating head tilt
+  and phase-locked arm drive to the native running cycle. It blends with the speed boost and leaves
+  swimming, lock-on, item actions and special walks to their own poses. No new game assets are
+  needed. Saved settings and mod profiles carry over: a file from before the
   split has its single factor applied to both states.
 
 - **Mod SDK v2: audio streams.** Code mods can now play their own sound: up to four 48 kHz streams

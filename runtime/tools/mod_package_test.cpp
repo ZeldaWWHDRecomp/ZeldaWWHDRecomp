@@ -90,6 +90,42 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==4&&std::string(argv[1])=="--move-anim-startup") {
+        auto root=fs::temp_directory_path()/("wwhd-move-anim-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);
+        env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        const std::string override=argv[2],saved=argv[3];
+        const bool legacy=saved=="legacy-dash";
+        env("WWHD_MOD_MOVE_ANIM",override=="unset"?nullptr:override.c_str());
+        mods::set_move_speed_anim(mods::move_anim_from_id(override));
+        auto database=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtin_options":{}}}})");
+        if(saved!="missing") {
+            preferences["mod.move-speed.anim"]=legacy?"dash":saved;
+            if(!legacy) database["profiles"]["Default"]["builtin_options"]["move-speed.anim"]=saved;
+        }
+        std::ofstream(root/"profiles.json")<<mods::json::dump(database);
+        const auto expected=mods::move_anim_from_id(override=="unset"?(legacy?"dash":saved):override);
+        mods::manager::load_saved();
+        assert(mods::move_speed_anim()==expected);
+        initialize();
+        assert(mods::move_speed_anim()==expected);
+        // The UI's string-valued option must update the active profile, not only settings.ini.
+        remember_option("move-speed.anim",std::string("sprint"));
+        std::ifstream saved_file(root/"profiles.json");
+        const std::string text{std::istreambuf_iterator<char>(saved_file),{}};
+        saved_file.close();
+        assert(mods::json::parse(text).get("profiles").get("Default").get("builtin_options").get("move-speed.anim").string()=="sprint");
+        if(override=="unset") {
+            mods::set_move_speed_anim(mods::MoveAnim::kNative);
+            std::string error;
+            assert(select_profile("Default",error));
+            assert(mods::move_speed_anim()==mods::MoveAnim::kSprint);
+        }
+        fs::remove_all(root);
+        std::cout<<"Animation startup override "<<override<<" survives saved mode "<<saved<<"\n";
+        return 0;
+    }
     if(argc==4&&std::string(argv[1])=="--catalogue-pilots") {
         auto fixtures=fs::absolute(argv[2]),storage=fixtures/"manager";
         env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);

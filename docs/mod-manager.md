@@ -36,6 +36,16 @@ shortcut, wall climbing, run/swim speed, quick doors, fast forward and fast
 scene changes. Descriptions and options appear beside the selected entry. All
 defaults are off.
 
+Run/swim speed offers three animation choices. **Native** keeps the game's cycle with the boosted
+cadence. **Dash instead of walk** replaces the low-speed walk portion; the normal full-speed run
+already uses dash. **Sprint pose** adds a forward torso lean, compensating head tilt and stronger
+arm drive to the current run cycle, blended with the boost. It applies during ordinary forward
+running, leaving swimming, lock-on, item actions and special walks to their own poses. The choice
+is saved in the active mod profile. Older profiles without an animation key retain the saved
+settings choice at startup. `WWHD_MOD_MOVE_ANIM=native|dash|sprint` overrides saved choices
+at startup. For in-game verification, `WWHD_MODS_TRACE=<path>` records applied sprint poses with
+their blend weight and run phase.
+
 The Installed packages section accepts a local folder or `.wwhdmod` ZIP. Choose
 it with the file/folder picker, then press Install package. Installed packages
 start disabled; nothing from a package is loaded until you enable it. Enabling
