@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Faster game code: about a quarter less CPU time in the game's own code** (PR #83, thanks
+  @depende3000). The recompiler now keeps the game's registers in local variables, stores only the
+  condition bits that are read later, and uses cheaper float compares. Measured per game step: −28 % on
+  an Apple Silicon Mac, −14.5 % on a Galaxy S25 Ultra. Setup takes about 20 seconds longer to
+  generate the game code. With code mods switched on, the game code stays as before for now.
+
 - **Fixed: Cemu graphics packs that write their title IDs without leading zeros were refused** (issue
   #123), e.g. the "Playstation UI" pack (`titleIds = 5000010143600`). The IDs are now compared as
   numbers, the way Cemu reads them.
