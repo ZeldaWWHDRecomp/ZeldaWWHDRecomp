@@ -391,19 +391,41 @@ jobs:
   windows:
     needs: version
     if: needs.version.outputs.skip != 'true'
-    runs-on: windows-latest
+    # x86-64 and arm64 (Windows on ARM, e.g. Snapdragon X), each built and tested on its own
+    # architecture's runner with the llvm-mingw for that host and target
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+            toolchain: llvm-mingw-20260922
+            triple: x86_64-w64-mingw32
+            dlltool_machine: i386:x86-64
+            python: windows
+          - arch: arm64
+            runner: windows-11-arm
+            toolchain: llvm-mingw-20260922-aarch64
+            triple: aarch64-w64-mingw32
+            dlltool_machine: arm64
+            python: windows-arm64
+    name: windows-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: bash
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      TOOLCHAIN: ${{ matrix.toolchain }}
+      TRIPLE: ${{ matrix.triple }}
+      PY_PIN: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Pinned llvm-mingw toolchain (tools/installer/toolchains.json)
         run: |
           read -r URL SUM DIR < <(python -c "
-          import json; t=json.load(open('tools/installer/toolchains.json'))['toolchains']['llvm-mingw-20260922']
+          import json, os; t=json.load(open('tools/installer/toolchains.json'))['toolchains'][os.environ['TOOLCHAIN']]
           print(t['url'], t['sha256'], t['dir'])" | tr -d '\r')  # Windows Python ends lines with CR LF
           T="$(cygpath -m "$RUNNER_TEMP")"
           curl -fsSL -o "$T/llvm-mingw.zip" "$URL"
@@ -411,7 +433,7 @@ jobs:
           unzip -q "$T/llvm-mingw.zip" -d "$T"
           echo "LLVM_MINGW=$T/$DIR" >> "$GITHUB_ENV"
           echo "$T/$DIR/bin" >> "$GITHUB_PATH"
-          "$T/$DIR/bin/x86_64-w64-mingw32-clang.exe" --version
+          "$T/$DIR/bin/$TRIPLE-clang.exe" --version
           pip install ninja
           ninja --version
 
@@ -423,16 +445,16 @@ jobs:
           mkdir -p "$T/vulkan" && tar -xzf vh.tar.gz -C "$T/vulkan" --strip-components=1
           curl -fsSL -o vulkan-1.def "$VULKAN_DEF_URL"
           echo "$VULKAN_DEF_SHA256  vulkan-1.def" | sha256sum -c -
-          "$LLVM_MINGW/bin/llvm-dlltool.exe" -m i386:x86-64 -d vulkan-1.def -l "$T/vulkan/libvulkan-1.a"
+          "$LLVM_MINGW/bin/llvm-dlltool.exe" -m ${{ matrix.dlltool_machine }} -d vulkan-1.def -l "$T/vulkan/libvulkan-1.a"
           echo "VULKAN_DIR=$T/vulkan" >> "$GITHUB_ENV"
 
       - name: Build runtime (Release, Vulkan + SDL3) with llvm-mingw against placeholder guest code
         run: |
           python tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DGEN_DIR="$(cygpath -m "$PWD/build/gen-stub")" \
-            -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang.exe" \
-            -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-clang++.exe" \
-            -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/x86_64-w64-mingw32-windres.exe" \
+            -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang.exe" \
+            -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang++.exe" \
+            -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/$TRIPLE-windres.exe" \
             -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON -DWWHD_SETUP_GUI=ON \
             -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a"
           ninja -C build/rel -d keeprsp
@@ -446,7 +468,7 @@ jobs:
         # the setup runs with it (tools/python); the release itself downloads no Python (issue #58)
         run: |
           read -r URL SUM < <(python -c "
-          import json; p=json.load(open('tools/installer/toolchains.json'))['python']['windows']
+          import json, os; p=json.load(open('tools/installer/toolchains.json'))['python'][os.environ['PY_PIN']]
           print(p['url'], p['sha256'])" | tr -d '\r')
           T="$(cygpath -m "$RUNNER_TEMP")"
           curl -fsSL -o "$T/python-embed.zip" "$URL"
@@ -456,8 +478,8 @@ jobs:
       - name: Package
         run: |
           W="$(cygpath -m "$PWD")"  # native Windows Python cannot open /d/a/... paths
-          python tools/release/package.py --build build/rel --platform windows-x86_64 --version "$VERSION" \
-            --out dist --toolchain llvm-mingw-20260922 --setup-gui build/rel/wwhd-setup.exe \
+          python tools/release/package.py --build build/rel --platform windows-${{ matrix.arch }} --version "$VERSION" \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
@@ -555,7 +577,7 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: release-windows-x86_64
+          name: release-windows-${{ matrix.arch }}
           path: dist/*.zip
           if-no-files-found: error
 

@@ -834,7 +834,8 @@ def get_toolchain(name, data_dir, ui):
             f.write(tc["sha256"] + "\n")
     if kind == "llvm-mingw":
         b = os.path.join(tdir, "bin")
-        return Toolchain([os.path.join(b, "x86_64-w64-mingw32-clang.exe")], [os.path.join(b, "x86_64-w64-mingw32-clang++.exe")],
+        triple = tc.get("triple", "x86_64-w64-mingw32")  # aarch64-w64-mingw32: the Windows on ARM64 release
+        return Toolchain([os.path.join(b, triple + "-clang.exe")], [os.path.join(b, triple + "-clang++.exe")],
                          [os.path.join(b, "llvm-ar.exe")], rsp=True, desc="llvm-mingw " + tc["dir"])
     if kind == "zig":
         z = os.path.join(tdir, "zig")
@@ -1934,6 +1935,10 @@ def load_manifest():
     if IS_LINUX and arch and normalize_arch(arch) != host_arch():
         raise SetupError("this release is for %s, but this computer is %s: download the %s release instead"
                          % (m["platform"], host_arch(), "linux-" + host_arch()))
+    # Windows: the x86-64 release also runs on ARM64 (emulated); the ARM64 one runs only there
+    if plat == "windows" and arch and normalize_arch(arch) == "aarch64" and host_arch() != "aarch64":
+        raise SetupError("this release is for Windows on ARM64, but this computer is %s: download the "
+                         "windows-x86_64 release instead" % host_arch())
     return m
 
 
