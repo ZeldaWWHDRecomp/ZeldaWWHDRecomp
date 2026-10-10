@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+## v0.2.12
+
 - **Android: the app is now part of every release and development build.** Download
   `WindWakerHD-<version>-android-arm64.apk` (x86_64 for emulators and Chromebooks), install it, choose
   your game, and setup builds the game on the phone. The APK contains no game code. It is signed with the
