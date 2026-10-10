@@ -1170,7 +1170,6 @@ void catalogue_controls(std::string& focus) {
             for(const auto& author:entry.authors)note("By %s",author.c_str());
             for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
             for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
-            for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
             note("Package: %s",entry.kind.c_str());
             if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))
                 note("Contains executable code. Setup or enabling requires confirmation.");
@@ -1183,8 +1182,23 @@ void catalogue_controls(std::string& focus) {
             bool present=found!=installed.end(),update=false;
             if(present)try{update=Version::parse(entry.version)>Version::parse(found->version);}catch(...){}
             if(present)note("Installed: %s%s",found->version.c_str(),found->enabled||found->active?"; disable and restart before updating":"");
-            if(!android_guest) {
-                ImGui::BeginDisabled(busy||!compatible||(present&&(!update||found->enabled||found->active)));
+            // setup steps: the package's list before installing; for an installed mod, what is done and what is next
+            bool setup_open=false;
+            if(present) {
+                for(const auto& view:mods::packages::setup_steps(entry.id)) {
+                    note("%s: %s%s",view.satisfied?"Done":"To do",view.step.title.c_str(),view.step.optional?" (optional)":"");
+                    setup_open|=!view.satisfied&&!view.step.optional;
+                }
+            } else for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
+            bool button_before=false;
+            if(present&&!update)note("Up to date");
+            if(present&&(setup_open||!found->enabled)) {
+                if(ImGui::Button(setup_open?"Go to setup":"Go to mod"))focus=entry.id;
+                button_before=true;
+            }
+            if(!android_guest&&(!present||update)) {
+                if(button_before)ImGui::SameLine();
+                ImGui::BeginDisabled(busy||!compatible||(present&&(found->enabled||found->active)));
                 bool install_now=ImGui::Button(present?"Update":"Install");
                 if(test_install&&entry.id==test_install&&!busy&&compatible&&!present){install_now=true;test_install=nullptr;}
                 if(install_now) {
@@ -1194,13 +1208,14 @@ void catalogue_controls(std::string& focus) {
                             std::filesystem::path(mods::packages::directory())/"Catalogue",fixtures,host::download_https);
                         std::string error,id;
                         require(mods::packages::install(package.path().string(),error,&id),error);
-                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed disabled. Review setup in Installed packages before enabling.";
+                        std::lock_guard guard(worker.mutex);worker.installed=id;LOG("[catalogue] installed %s disabled",id.c_str());worker.message="Installed (off). Next: finish its setup under Installed packages (Go to setup), then enable it.";
                     });
                 }
                 ImGui::EndDisabled();
+                button_before=true;
             }
             if(present) {
-                if(!android_guest)ImGui::SameLine();
+                if(button_before)ImGui::SameLine();
                 ImGui::BeginDisabled(busy||found->enabled||found->active);
                 if(ImGui::Button("Remove")){std::string failure;if(!mods::packages::remove(entry.id,failure)){std::lock_guard guard(worker.mutex);worker.error=failure;}}
                 ImGui::EndDisabled();
@@ -1306,9 +1321,11 @@ void package_controls() {
         ImGui::SameLine();
         if(test_remove&&mod.id==test_remove)ImGui::SetNextItemOpen(true);
         if(setup_test_plan().id==mod.id)ImGui::SetNextItemOpen(true);
-        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();}
+        bool scroll_here=false;
+        if(mod.id==catalogue_focus){ImGui::SetNextItemOpen(true);catalogue_focus.clear();scroll_here=true;}
         else if (installed.size() == 1) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
         bool expanded = ImGui::TreeNode("details", "%s · %s", mod.name.c_str(), mod.version.c_str());
+        if(scroll_here)ImGui::SetScrollHereY(0.1f);  // "Go to setup" in the catalogue jumps here
         game_source_warning_control(mod.game_source_warning);
         if(mod.kind=="cemu"){
             note("Active now: %s · After restart: %s",mod.active?"On":"Off",mod.enabled?"On":"Off");

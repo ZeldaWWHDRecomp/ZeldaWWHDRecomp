@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mods tab: installed catalogue mods show where their setup stands.** Each step reads "Done" or
+  "To do" (for example the GameCube game step is done once you set it), with a **Go to setup** button
+  that jumps to the mod's setup; "Up to date" replaces the greyed-out Update button.
+
 - **Fixed: the game didn't start with a content mod (for example a translation) in the development
   builds** (issue #109). The mod manager switched the replacement files on twice at startup and stopped
   with "Content overrides already activated". Content mods and code mods now start together as they should.
