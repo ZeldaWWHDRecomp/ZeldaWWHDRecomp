@@ -304,6 +304,8 @@ static void update_motion_sensors() API_AVAILABLE(macos(11.0)) {
 }
 
 void init() {
+    if (const char* v = getenv("WWHD_OVERLAY_MOUSE_HANDOFF"); v && !strcmp(v,"0"))
+        LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
     input_map::load_startup();
     start_test_keys();
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;

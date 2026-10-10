@@ -1250,6 +1250,7 @@ IMPLEMENTING SUPPORT for ImGuiBackendFlags_RendererHasTextures:
 #endif
 
 #include "imgui.h"
+#include "wwhd_trace.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_internal.h"
 
@@ -1372,6 +1373,9 @@ static const ImVec2 TOOLTIP_DEFAULT_PIVOT_TOUCH = ImVec2(0.5f, 1.0f);   // Multi
 
 static void             SetCurrentWindow(ImGuiWindow* window);
 static ImGuiWindow*     CreateNewWindow(const char* name, ImGuiWindowFlags flags);
+// WWHD diagnostic-only scroll provenance (thread local; nested ScrollToRect is safe).
+static thread_local const char* wwhd_scroll_path = "own-code/SetScroll";
+struct WWHDScrollScope { const char* old; WWHDScrollScope(const char* p):old(nullptr){if(wwhd_trace::enabled()){old=wwhd_scroll_path; wwhd_scroll_path=p;}} ~WWHDScrollScope(){if(old)wwhd_scroll_path=old;} };
 static ImVec2           CalcNextScrollFromScrollTargetAndClamp(ImGuiWindow* window);
 
 static void             AddWindowToSortBuffer(ImVector<ImGuiWindow*>* out_sorted_windows, ImGuiWindow* window);
@@ -4661,6 +4665,7 @@ void ImGui::CallContextHooks(ImGuiContext* ctx, ImGuiContextHookType hook_type)
 ImGuiWindow::ImGuiWindow(ImGuiContext* ctx, const char* name) : DrawListInst(NULL)
 {
     memset((void*)this, 0, sizeof(*this));
+    WWHDScrollPath = "layout/clamp"; // WWHD diagnostic extension
     Ctx = ctx;
     Name = ImStrdup(name);
     NameBufLen = (int)ImStrlen(name) + 1;
@@ -8065,7 +8070,10 @@ bool ImGui::Begin(const char* name, bool* p_open, ImGuiWindowFlags flags)
         window->ScrollMax.y = ImMax(0.0f, window->ContentSize.y + window->WindowPadding.y * 2.0f - window->InnerRect.GetHeight());
 
         // Apply scrolling
+        const float wwhd_old_scroll = window->Scroll.y;
         window->Scroll = CalcNextScrollFromScrollTargetAndClamp(window);
+        if (wwhd_trace::enabled()) wwhd_trace::scroll(window->Name, wwhd_old_scroll, window->Scroll.y, window->WWHDScrollPath);
+        if (wwhd_trace::enabled()) window->WWHDScrollPath = "layout/clamp";
         window->ScrollTarget = ImVec2(FLT_MAX, FLT_MAX);
         window->DecoInnerSizeX1 = window->DecoInnerSizeY1 = 0.0f;
 
@@ -10511,6 +10519,7 @@ static ImGuiWindow* FindBestWheelingWindow(const ImVec2& wheel)
 // Called by NewFrame()
 void ImGui::UpdateMouseWheel()
 {
+    WWHDScrollScope wwhd_scope("wheel");
     // Reset the locked window if we move the mouse or after the timer elapses.
     // FIXME: Ideally we could refactor to have one timer for "changing window w/ same axis" and a shorter timer for "changing window or axis w/ other axis" (#3795)
     ImGuiContext& g = *GImGui;
@@ -12042,6 +12051,7 @@ void ImGui::ScrollToRect(ImGuiWindow* window, const ImRect& item_rect, ImGuiScro
 // Scroll to keep newly navigated item fully into view
 ImVec2 ImGui::ScrollToRectEx(ImGuiWindow* window, const ImRect& item_rect, ImGuiScrollFlags flags)
 {
+    WWHDScrollScope wwhd_scope("ScrollToRect/scroll-into-view");
     ImGuiContext& g = *GImGui;
     ImRect scroll_rect(window->InnerRect.Min - ImVec2(1, 1), window->InnerRect.Max + ImVec2(1, 1));
     scroll_rect.Min.x = ImMin(scroll_rect.Min.x + window->DecoInnerSizeX1, scroll_rect.Max.x);
@@ -12145,6 +12155,7 @@ void ImGui::SetScrollX(ImGuiWindow* window, float scroll_x)
 
 void ImGui::SetScrollY(ImGuiWindow* window, float scroll_y)
 {
+    if (wwhd_trace::enabled()) window->WWHDScrollPath = wwhd_scroll_path;
     window->ScrollTarget.y = scroll_y;
     window->ScrollTargetCenterRatio.y = 0.0f;
     window->ScrollTargetEdgeSnapDist.y = 0.0f;
@@ -12182,6 +12193,7 @@ void ImGui::SetScrollFromPosX(ImGuiWindow* window, float local_x, float center_x
 
 void ImGui::SetScrollFromPosY(ImGuiWindow* window, float local_y, float center_y_ratio)
 {
+    if (wwhd_trace::enabled()) window->WWHDScrollPath = wwhd_scroll_path;
     IM_ASSERT(center_y_ratio >= 0.0f && center_y_ratio <= 1.0f);
     window->ScrollTarget.y = IM_TRUNC(local_y - window->DecoOuterSizeY1 - window->DecoInnerSizeY1 + window->Scroll.y); // Convert local position to scroll offset
     window->ScrollTargetCenterRatio.y = center_y_ratio;
@@ -13956,6 +13968,7 @@ float ImGui::GetNavTweakPressedAmount(ImGuiAxis axis)
 
 static void ImGui::NavUpdate()
 {
+    WWHDScrollScope wwhd_scope("NavUpdate/manual-stick-or-key");
     ImGuiContext& g = *GImGui;
     ImGuiIO& io = g.IO;
 
@@ -14104,7 +14117,7 @@ static void ImGui::NavUpdate()
             if (scroll_dir.x != 0.0f && window->ScrollbarX)
                 SetScrollX(window, ImTrunc(window->Scroll.x + scroll_dir.x * scroll_speed * tweak_factor));
             if (scroll_dir.y != 0.0f)
-                SetScrollY(window, ImTrunc(window->Scroll.y + scroll_dir.y * scroll_speed * tweak_factor));
+                { WWHDScrollScope wwhd_stick("NavUpdate/manual-stick"); SetScrollY(window, ImTrunc(window->Scroll.y + scroll_dir.y * scroll_speed * tweak_factor)); }
         }
     }
 

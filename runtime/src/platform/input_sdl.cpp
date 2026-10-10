@@ -1,6 +1,7 @@
 #include "../mods/fast_forward.h"
 // SDL3 keyboard/gamepad input. Stable key IDs preserve existing controls.json mappings.
 #include "input_sdl.h"
+#include "overlay_trace_sdl.h"
 #include "keycodes.h"
 #include "mouse_sdl.h"
 #include "../input.h"
@@ -373,6 +374,8 @@ static void close_controller(SDL_JoystickID id){
  note_dominant_labels();  // the dominant pad may have changed
 }
 void init(){
+ wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
+ if(!wwhd_trace::handoff()) LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
  input_map::load_startup();
  // WWHD_NO_GAMEPAD only hides the GamePad screen window; WWHD_NO_CONTROLLERS turns off host controllers
  if(!getenv("WWHD_NO_CONTROLLERS")) {
@@ -539,6 +542,10 @@ void handle_event(const SDL_Event& event){
  if(event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP){int code=keycode(event.key.scancode);if(code>=0){std::lock_guard lk(g_mu);g_keys[code]=event.type==SDL_EVENT_KEY_DOWN&&(g_keys[code]||!event.key.repeat);}}
 }
 void update(){
+ if(wwhd_trace::enabled()) {
+  overlay_trace_sdl::begin(overlay::is_open());
+  for(auto [id,pad]:g_controllers) overlay_trace_sdl::pad(id,pad);
+ }
  mods::update_mouse();
  apply_rumble();
  update_sensors();

@@ -1,5 +1,7 @@
 // Real ImGui frames and SDL virtual gamepads; synthetic long pages, no game or renderer.
 #include "overlay/gamepad_nav.h"
+#include "overlay/trace.h"
+#include "platform/overlay_trace_sdl.h"
 #include "imgui_internal.h"
 #include <SDL3/SDL.h>
 #include <array>
@@ -8,6 +10,7 @@
 #include <cstdio>
 using namespace input_map;
 using Values = std::array<float, kPadCount>;
+static std::string captured_trace;
 
 struct VirtualPad {
     SDL_JoystickID id = 0;
@@ -44,6 +47,7 @@ struct VirtualPad {
     }
     Values read() const {
         Values v{}; if (!gamepad) return v;
+        if(wwhd_trace::enabled()) overlay_trace_sdl::pad(id,gamepad);
         auto stick = [&](SDL_GamepadAxis a, int negative, int positive) {
             float x = SDL_GetGamepadAxis(gamepad, a) / 32768.f;
             v[negative] = std::max(-x, 0.f); v[positive] = std::max(x, 0.f);
@@ -70,6 +74,8 @@ struct Page {
     ImVec2 visible_button;
     bool enabled = true;
     explicit Page() {
+        wwhd_trace::open=true;
+        if(wwhd_trace::enabled()) wwhd_trace::emit("open fixture");
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); auto& io = ImGui::GetIO();
         io.IniFilename = nullptr; io.LogFilename = nullptr;
         io.DisplaySize = {1000, 700}; io.DeltaTime = 1.f / 60;
@@ -96,20 +102,58 @@ struct Page {
             }
         }
         float y = ImGui::GetScrollY();
-        ImGui::EndChild(); ImGui::End(); ImGui::Render(); ++frames; return y;
+        ImGui::EndChild(); ImGui::End(); ImGui::Render(); overlay_trace::state(); ++frames; return y;
     }
     void settle(const VirtualPad& pad, int n = 5) { for (int i = 0; i < n; ++i) frame(pad.read()); }
     float wheel(const VirtualPad& pad) {
-        ImGui::GetIO().AddMousePosEvent(450, 350); frame(pad.read(), true);
-        ImGui::GetIO().AddMouseWheelEvent(0, -5); frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), 450, 350); frame(pad.read(), true);
+        overlay_trace::wheel(ImGui::GetIO(), 0, -5); frame(pad.read(), true);
         return frame(pad.read());
     }
 };
 
-int main() {
+int main(int argc, char** argv) {
+    wwhd_trace::sink=[](const char* s){ captured_trace+=s; captured_trace+='\n'; std::printf("[overlay-trace] %s\n",s); };
+
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD));
+    if (argc>1 && !std::strcmp(argv[1],"--bench")) {
+        VirtualPad pad(true); Page page;
+        for(int i=0;i<10000;i++) page.frame(pad.read());
+        return 0;
+    }
+    if (argc>1 && !std::strcmp(argv[1],"--trace-paths")) {
+        assert(wwhd_trace::enabled());
+        static std::string trace;
+        wwhd_trace::sink=[](const char* line){ trace+=line; trace+='\n'; std::printf("[overlay-trace] %s\n",line); };
+        VirtualPad pad(true); Page page; page.settle(pad);
+        auto* child=ImGui::GetCurrentContext()->NavWindow;
+        assert(child && (child->Flags&ImGuiWindowFlags_ChildWindow));
+        ImGui::SetScrollY(child,100); page.frame(pad.read());
+        ImGui::ScrollToRectEx(child,ImRect(ImVec2(child->Pos.x,child->Pos.y+1800),ImVec2(child->Pos.x+30,child->Pos.y+1830)),ImGuiScrollFlags_AlwaysCenterY);
+        page.frame(pad.read());
+        auto bar=ImGui::GetWindowScrollbarRect(child,ImGuiAxis_Y);
+        overlay_trace::mouse_pos(ImGui::GetIO(),bar.GetCenter().x,bar.Min.y+20); page.frame(pad.read(),true);
+        overlay_trace::mouse_button(ImGui::GetIO(),0,true); page.frame(pad.read(),true);
+        overlay_trace::mouse_pos(ImGui::GetIO(),bar.GetCenter().x,bar.Max.y-10); page.frame(pad.read(),true);
+        overlay_trace::mouse_button(ImGui::GetIO(),0,false); page.frame(pad.read(),true);
+        assert(trace.find("path=own-code/SetScroll")!=std::string::npos);
+        assert(trace.find("path=ScrollToRect/scroll-into-view")!=std::string::npos);
+        assert(trace.find("path=scrollbar")!=std::string::npos);
+        puts("overlay trace paths passed"); return 0;
+    }
+    if (!wwhd_trace::handoff()) {
+        VirtualPad pad(true); Page page; page.settle(pad);
+        pad.axis(SDL_GAMEPAD_AXIS_LEFTY,-0.4f); page.settle(pad);
+        float y=page.wheel(pad); assert(y>0);
+        float after=page.frame(pad.read());
+        for(int i=0;i<10;i++) after=page.frame(pad.read());
+        assert(after<y);
+        if(wwhd_trace::enabled()) assert(captured_trace.find("path=NavUpdate/manual-stick")!=std::string::npos);
+        // positive control: residual analog causes NavUpdate scroll
+        puts("overlay_scroll_test positive control passed"); return 0;
+    }
     {
         VirtualPad pad(true);
         // Closed menu: use the stick once, then release to exactly zero.
@@ -119,9 +163,9 @@ int main() {
         for (float v : pad.read()) assert(v == 0);
         Page page; page.previous = pad.read(); page.settle(pad);
         const auto position = page.visible_button;
-        ImGui::GetIO().AddMousePosEvent(position.x, position.y); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMouseButtonEvent(0, true); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMouseButtonEvent(0, false); page.frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), position.x, position.y); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, true); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, false); page.frame(pad.read(), true);
         assert(page.clicks == 1);
         // A click must hand off all gamepad navigation even with exact-zero axes.
         // The old feed also scrolled stably at zero in our trace; the ownership
@@ -171,14 +215,14 @@ int main() {
         pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0.8f); page.settle(pad, 30);
         assert(page.navigation.controller_active() && page.frame(pad.read()) > y);
         pad.axis(SDL_GAMEPAD_AXIS_LEFTY, 0); page.settle(pad);
-        ImGui::GetIO().AddMousePosEvent(451, 350); page.frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), 451, 350); page.frame(pad.read(), true);
         assert(!page.navigation.controller_active());
         pad.button(SDL_GAMEPAD_BUTTON_DPAD_UP, true); page.frame(pad.read());
         assert(page.navigation.controller_active());
         pad.button(SDL_GAMEPAD_BUTTON_DPAD_UP, false); page.settle(pad);
-        ImGui::GetIO().AddMouseButtonEvent(0, true); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, true); page.frame(pad.read(), true);
         assert(!page.navigation.controller_active());
-        ImGui::GetIO().AddMouseButtonEvent(0, false); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, false); page.frame(pad.read(), true);
         for (auto button : {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
                             SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_SOUTH}) {
             pad.button(button, true); page.frame(pad.read()); assert(page.navigation.controller_active());
@@ -193,10 +237,10 @@ int main() {
             if (w->Flags & ImGuiWindowFlags_ChildWindow) child = w;
         assert(child && child->ScrollbarY);
         auto bar = ImGui::GetWindowScrollbarRect(child, ImGuiAxis_Y);
-        ImGui::GetIO().AddMousePosEvent(bar.GetCenter().x, bar.Max.y-20); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMouseButtonEvent(0, true); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMousePosEvent(bar.GetCenter().x, bar.Max.y-5); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMouseButtonEvent(0, false); page.frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), bar.GetCenter().x, bar.Max.y-20); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, true); page.frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), bar.GetCenter().x, bar.Max.y-5); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, false); page.frame(pad.read(), true);
         y = page.frame(pad.read()); assert(y > 0);
         for (int f = 0; f < 30; ++f) assert(page.frame(pad.read()) == y);
     }
@@ -222,11 +266,12 @@ int main() {
         assert(ImGui::GetCurrentContext()->NavId != before);
         assert(!page.navigation.controller_active());
         // A mouse click still activates a visible item after controller use.
-        ImGui::GetIO().AddMousePosEvent(page.visible_button.x, page.visible_button.y); page.frame(pad.read(), true);
+        overlay_trace::mouse_pos(ImGui::GetIO(), page.visible_button.x, page.visible_button.y); page.frame(pad.read(), true);
         int clicks = page.clicks;
-        ImGui::GetIO().AddMouseButtonEvent(0, true); page.frame(pad.read(), true);
-        ImGui::GetIO().AddMouseButtonEvent(0, false); page.settle(pad);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, true); page.frame(pad.read(), true);
+        overlay_trace::mouse_button(ImGui::GetIO(), 0, false); page.settle(pad);
         assert(page.clicks == clicks + 1);
     }
+    if(!wwhd_trace::enabled()) assert(captured_trace.empty());
     SDL_Quit(); puts("overlay_scroll_test passed");
 }

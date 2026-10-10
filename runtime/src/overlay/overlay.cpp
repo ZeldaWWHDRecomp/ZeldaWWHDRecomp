@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "imgui.h"
+#include "trace.h"
 #include "hostui.h"
 #include "../mods/code_mods.h"
 #include "controls_view.h"
@@ -2303,6 +2304,13 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    if (wwhd_trace::enabled()) {
+        wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
+        wwhd_trace::open = open;
+        static bool was_open = false;
+        if (open && !was_open) { U.gamepad_navigation.reset_trace(); wwhd_trace::emit("open frame=%d", U.init ? ImGui::GetFrameCount() : 0); }
+        was_open = open;
+    }
     perf::set_demand(perf, open && U.tab == kGraphics);
     // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
     static const char* testReport = getenv("WWHD_TEST_PERF_REPORT");
@@ -2346,6 +2354,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     bool mouse_used = false;
     for (const Event& e : events) {
+        if (wwhd_trace::enabled() && open && e.kind == Event::Key)
+            wwhd_trace::emit("event kind=%d code=%d down=%d x=%.6f y=%.6f mods=%d", int(e.kind), e.code, e.down, e.x, e.y, e.mods);
         switch (e.kind) {
         case Event::Key:
             io.AddKeyEvent(ImGuiMod_Shift, e.mods & kShift);
@@ -2357,10 +2367,10 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         case Event::MousePos:
             mouse_used |= e.x != U.mouse_position.x || e.y != U.mouse_position.y;
             U.mouse_position = ImVec2(e.x, e.y);
-            io.AddMousePosEvent(e.x * io.DisplaySize.x, e.y * io.DisplaySize.y);
+            overlay_trace::mouse_pos(io, e.x * io.DisplaySize.x, e.y * io.DisplaySize.y);
             break;
-        case Event::MouseButton: mouse_used = true; io.AddMouseButtonEvent(e.code, e.down); break;
-        case Event::Wheel: mouse_used |= e.x != 0 || e.y != 0; io.AddMouseWheelEvent(e.x, e.y); break;
+        case Event::MouseButton: mouse_used = true; overlay_trace::mouse_button(io, e.code, e.down); break;
+        case Event::Wheel: mouse_used |= e.x != 0 || e.y != 0; overlay_trace::wheel(io, e.x, e.y); break;
         case Event::Text: io.AddInputCharactersUTF8(e.text.c_str()); break;
         default: break;
         }
@@ -2396,6 +2406,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         ImGui::End();
     }
     ImGui::Render();
+    overlay_trace::state();
     return ImGui::GetDrawData();
 }
 

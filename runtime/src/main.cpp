@@ -323,7 +323,9 @@ static void start_log_file(bool error = false) {
     if (e && !strcmp(e, "0")) return;
     const bool chosen = e && *e && strcmp(e, "1");  // a path
     std::string saved;
-    if (!(e && *e) && !(hostui::get("logFile", saved) && saved == "1")) return;
+    const char* overlay_trace = getenv("WWHD_OVERLAY_TRACE");
+    const bool tracing_overlay = overlay_trace && !strcmp(overlay_trace,"1");
+    if (!(e && *e) && !tracing_overlay && !(hostui::get("logFile", saved) && saved == "1")) return;
     std::string path = chosen ? e : "captures/wwhd.log";
     std::error_code ec;
     if (!chosen) {
