@@ -22,6 +22,7 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "button_glyphs.h"
 #include "aspect_panes.h"
 #include "mods/cemu_pack.h"
 
@@ -308,7 +309,7 @@ thread_local bool t_anchor = false; // ... and it is a TV layout at another aspe
 }  // namespace aspect
 
 // Pane::CalculateMtx(this, DrawInfo&, bool parentDirty)
-extern "C" void hook_028766CC(Cpu* c) {
+static void calculate_aspect_pane(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
     uint32_t parent = ld32(pane + kPaneParent);
@@ -392,6 +393,10 @@ extern "C" void hook_028766CC(Cpu* c) {
     f_028766CC_orig(c);
     if (moved) { stf32(pane + kPaneTrans, tx); stf32(pane + kPaneTrans + 4, ty); }
     if (scaled) { stf32(pane + kPaneScale, sx); stf32(pane + kPaneScale + 4, sy); }
+}
+
+extern "C" void hook_028766CC(Cpu* c) {
+    button_glyphs::calculate_pane(c, calculate_aspect_pane);
 }
 
 // Pane::Draw(this, DrawInfo&): the render thread reports where each layout root is drawn. The

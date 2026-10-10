@@ -490,6 +490,11 @@ plugged in first and follows them, so an Xbox pad plays by label and a Nintendo 
 without touching the setting. The choice rewrites the four face bindings only; keyboard keys
 and the other inputs stay as they are, and a hand-edited face binding shows as *custom* (which also
 leaves Automatic).
+In *by label* (including when *Automatic* resolves to it), in-game dialog icons and HUD face-button
+backgrounds use Xbox-style colours (green A, red B, blue X, yellow Y); changing the setting updates
+cached prompts without a restart. The HUD button cluster also follows the Xbox positions: A bottom,
+B right, X left, Y top. In-game shoulder prompts use R1/R2 for R/ZR and L1/L2 for L/ZL in this mode.
+*By position* and *custom* keep the game's colours and positions. See [in-game glyphs](docs/button-glyphs.md).
 The **Input** menu switches whether keyboard and controllers act as the Wii U GamePad (default)
 or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with the Pro
 Controller, the GamePad window keeps its screen and touch input.
