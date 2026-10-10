@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mods: one setting for the GameCube version of the game.** Settings → Mods → **GameCube game for
+  mods**: choose your GameCube Wind Waker disc image or folder once (it shows the recognised region),
+  and every mod that needs it uses it. A mod whose copy is missing can't be enabled and offers a
+  button to that setting. Changing the copy marks the affected mods for setup again (prepared files
+  are kept).
+
 - **Android: on-screen controls** (PR #88, thanks @rhemfur). Phones without a controller can now
   play: the 🎮 button under the view button (top left) shows or hides two sticks, the D-pad,
   A B X Y, L R, ZL ZR and + − (remembered). They act like a controller, so the button mapping and a
