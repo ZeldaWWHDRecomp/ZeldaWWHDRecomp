@@ -46,6 +46,13 @@ settings choice at startup. `WWHD_MOD_MOVE_ANIM=native|dash|sprint` overrides sa
 at startup. For in-game verification, `WWHD_MODS_TRACE=<path>` records applied sprint poses with
 their blend weight and run phase.
 
+The sprint pose leans up to 30 degrees through the torso, with a compensating head tilt and wider
+arm swings. Starting a grounded run boost emits one short burst of the game's land dust. A forward
+roll keeps the current boost cycle and continues using stamina, but plays at its native speed and
+pose. Running resumes automatically after the roll while the cycle still has stamina; cancelling,
+exhausting the bar or genuinely stopping ends it. Resuming the same cycle after a roll does not
+emit a second starting burst.
+
 The Installed packages section accepts a local folder or `.wwhdmod` ZIP. Choose
 it with the file/folder picker, then press Install package. Installed packages
 start disabled; nothing from a package is loaded until you enable it. Enabling

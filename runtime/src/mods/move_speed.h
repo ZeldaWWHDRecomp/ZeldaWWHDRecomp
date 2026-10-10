@@ -28,6 +28,7 @@ inline MoveAnim move_anim_from_id(std::string_view id) {
 
 constexpr uint32_t kProcMove = 0x06;      // daPy_PROC PROC_MOVE
 constexpr uint32_t kProcSwimMove = 0x37;  // daPy_PROC PROC_SWIM_MOVE
+constexpr uint32_t kProcFrontRoll = 0x1E; // daPy_PROC PROC_FRONT_ROLL
 inline bool is_move_proc(uint32_t proc) { return proc == kProcMove || proc == kProcSwimMove; }
 
 // The defaults a fresh settings file gets when the mod is switched on.

@@ -16,6 +16,7 @@ constexpr uint32_t link = 0x11000000, quat = 0x11009000, table = 0x100366A0;
 float dt = 1.f;
 bool native_adjust = false;
 unsigned calls = 0;
+unsigned dust_calls = 0;
 void map(uint32_t address) {
 #ifdef _WIN32
     auto p = VirtualAlloc(mem::ptr(address), 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -37,6 +38,15 @@ namespace interp { uint64_t logic_steps() { return 0; } }
 namespace true60 { float dt() { return ::dt; } }
 namespace mods { void mouse_release() {} }
 void log_msg(const char*, ...) {}
+uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
+    assert(fn==0x025A87C0);
+    const std::vector<uint32_t> values(args);
+    assert(values.size()==7 && values[0]==0x1100A000 && values[2]==link+0x314 && values[4]==link+0x110);
+    assert(values[6]&1); // the native helper's dry-land smoke flag
+    assert(c->f[1].ps0>1.f);
+    ++dust_calls; c->r[8]=0xDEADBEEF; c->f[1].ps0=0;
+    return 0x11009800;
+}
 extern "C" void f_023DE788_orig(Cpu*) {}
 extern "C" void f_023E048C_orig(Cpu*) {}
 extern "C" void f_023D6B30_orig(Cpu* c) {
@@ -58,7 +68,7 @@ void before(unsigned joint) {
 }
 int main(int argc, char**) {
     if(argc==2) { assert(mods::move_speed_anim()==mods::MoveAnim::kSprint); return 0; }
-    map(link); map(0x10030000); map(0x10470000);
+    map(link); map(0x10030000); map(0x10470000); map(mem::kFixedStart);
     st32(link+0x65F0,mods::kProcMove);
     // Captured during ordinary running: free movement uses DIR_NONE (4), not DIR_FORWARD (0).
     st8(link+0x68D4,4); st32(link+0x6A70,0x211C4);
@@ -126,6 +136,84 @@ int main(int argc, char**) {
     mods::move_speed_input(input::kStickL);
     for(int i=0;i<30;++i) mods::link_move_factor(link);
     mods::set_move_speed(false); before(3); assert(is_identity());
+    // A toggled sprint survives an ordinary forward roll, without boosting the roll itself.
+    mods::link_move_factor(link);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kToggle);
+    mods::set_move_speed_stamina_seconds(5.f);
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_speed_input(0); for(int i=0;i<15;++i) mods::link_move_factor(link);
+    const float stamina_before_roll=mods::move_hud().stamina;
+    st32(link+0x65F0,0x1E); // native procFrontRoll
+    for(int i=0;i<15;++i) assert(mods::link_move_factor(link)==1.f);
+    assert(mods::move_hud().stamina<stamina_before_roll);
+    st32(link+0x65F0,mods::kProcMove);
+    assert(mods::link_move_factor(link)>1.f);
+    // One dust burst when a new grounded sprint starts, with the caller's CPU state preserved.
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kToggle);
+    st32(link+0x834,0x20); st32(0x1046F0B0+0x5AB0,0x1100A000);
+    Cpu fx{}; fx.r[8]=123; fx.f[1].ps0=456; const Cpu saved_fx=fx;
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_start_effect(&fx,link);
+    assert(dust_calls==1 && !memcmp(&fx,&saved_fx,sizeof fx));
+    mods::move_speed_input(0);
+    for(int i=0;i<5;++i) { mods::link_move_factor(link); mods::move_start_effect(&fx,link); }
+    st32(link+0x65F0,mods::kProcFrontRoll);
+    for(int i=0;i<10;++i) {
+        assert(mods::link_move_factor(link)==1.f); mods::move_start_effect(&fx,link);
+        assert(mods::move_hud().boosted);
+        before(3); assert(is_identity()); // the sprint pose does not deform the roll animation
+    }
+    st32(link+0x65F0,mods::kProcMove);
+    assert(mods::link_move_factor(link)>1.f); mods::move_start_effect(&fx,link);
+    assert(dust_calls==1); // same cycle after the roll, no second burst
+    // A real stop cancels toggle, and only a new press starts another dusty sprint.
+    st32(link+0x65F0,4); mods::link_move_factor(link);
+    st32(link+0x65F0,mods::kProcMove); assert(mods::link_move_factor(link)==1.f);
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link); mods::move_start_effect(&fx,link);
+    assert(dust_calls==2);
+    // Cancellation during a roll must not silently resume at its end.
+    mods::move_speed_input(0); mods::link_move_factor(link);
+    st32(link+0x65F0,mods::kProcFrontRoll); mods::link_move_factor(link);
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_speed_input(0); st32(link+0x65F0,mods::kProcMove);
+    assert(mods::link_move_factor(link)==1.f);
+    // Exhausting the bar during the roll ends the cycle, even if it starts refilling before exit.
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::set_move_speed(true);
+    mods::set_move_speed_stamina_seconds(.2f);
+    mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+    mods::move_speed_input(0); st32(link+0x65F0,mods::kProcFrontRoll);
+    for(int i=0;i<10;++i) mods::link_move_factor(link);
+    assert(mods::move_hud().exhausted);
+    st32(link+0x65F0,mods::kProcMove); assert(mods::link_move_factor(link)==1.f);
+    // Start effects are never emitted from preview passes, water or off the ground.
+    for(unsigned condition:{0u,1u,2u}) {
+        mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+        mods::set_move_speed(true); mods::set_move_speed_stamina_seconds(5.f);
+        st32(link+0x834,condition==1?0:0x20); st32(link+0x69D4,condition==2?0x13:0);
+        mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
+        const auto count=dust_calls;
+        if(condition==0) {
+            dt=.5f; mods::move_start_effect(&fx,link); assert(dust_calls==count); dt=1.f;
+        }
+        mods::move_start_effect(&fx,link);
+        assert(dust_calls==count+(condition==0?1:0));
+        if(condition!=0) {
+            st32(link+0x834,0x20); st32(link+0x69D4,0);
+            if(condition==1) {
+                mods::set_move_speed_land_factor(1.f); mods::link_move_factor(link); mods::move_start_effect(&fx,link);
+                assert(dust_calls==count); // disabling the running multiplier also cancels pending dust
+                mods::set_move_speed_land_factor(1.5f);
+            }
+            mods::link_move_factor(link); mods::move_start_effect(&fx,link);
+            assert(dust_calls==count+1); // the first eligible grounded frame still gets its burst
+        }
+    }
+    mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);
+    mods::set_move_speed(true); mods::set_move_speed_mode(mods::MoveMode::kHold);
+    st32(link+0x65F0,mods::kProcFrontRoll); mods::move_speed_input(input::kStickL);
+    mods::link_move_factor(link);
+    assert(mods::move_hud().stamina==1.f && !mods::move_hud().boosted); // only an existing run carries
     assert(calls>100);
     return 0;
 }

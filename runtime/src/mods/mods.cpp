@@ -67,6 +67,9 @@ std::atomic<bool> g_move_exhausted{false};
 bool g_move_engaged = false;   // hold: mirrors the button; toggle: the cycle is running
 bool g_move_armed = false;     // toggle: a press armed a cycle that has not started moving yet
 bool g_move_held_prev = false;
+bool g_move_cycle_started = false; // a roll suspends movement, but does not start a second cycle
+bool g_move_dust_emitted = false;
+uint32_t g_move_dust_pending = 0;
 std::atomic<bool> g_move_boosted{false};
 std::atomic<bool> g_move_swimming{false};
 std::atomic<float> g_move_hud_alpha{0.f};  // the bar's fade (climb.cpp's pattern)
@@ -179,6 +182,9 @@ float link_move_factor(uint32_t link) {
         g_move_engaged = false;
         g_move_armed = false;
         g_move_held_prev = false;
+        g_move_cycle_started = false;
+        g_move_dust_emitted = false;
+        g_move_dust_pending = 0;
         g_move_ramp = 1.f;
         g_move_stamina = 1.f;
         g_move_exhausted = false;
@@ -198,19 +204,21 @@ float link_move_factor(uint32_t link) {
         g_move_held_prev = held != 0;
         if (move_speed_mode() == MoveMode::kToggle) {
             // One press starts one cycle and another press stops it. The cycle also ends by itself the
-            // moment he stops running or swimming, or when the bar runs out, so cycles never queue up
+            // moment he stops running or swimming (a forward roll only suspends the boost), or when
+            // the bar runs out, so cycles never queue up
             // behind each other: boosting again always takes a new press.
             if (held && !was_held) {
                 if (g_move_armed || g_move_engaged) g_move_armed = g_move_engaged = false;
                 else g_move_armed = true;
             }
             if (g_move_armed && is_move_proc(proc)) g_move_engaged = true;
-            if (g_move_exhausted || (g_move_engaged && !is_move_proc(proc))) g_move_armed = g_move_engaged = false;
+            if (g_move_exhausted || (g_move_engaged && !is_move_proc(proc) && proc != kProcFrontRoll))
+                g_move_armed = g_move_engaged = false;
         } else {
-            g_move_engaged = held != 0;
+            g_move_engaged = held != 0 && (proc != kProcFrontRoll || g_move_cycle_started);
         }
-        // the bar only runs while actually moving under the boost, so standing still is free
-        const bool boosting = g_move_engaged && !g_move_exhausted && is_move_proc(proc);
+        // A roll keeps consuming the same cycle's bar, without speeding up its native movement.
+        const bool boosting = g_move_engaged && !g_move_exhausted && (is_move_proc(proc) || proc == kProcFrontRoll);
         if (boosting) {
             g_move_stamina = drain_stamina(g_move_stamina, seconds, dt);
             if (g_move_stamina.load(std::memory_order_relaxed) <= 0.f) g_move_exhausted = true;
@@ -220,8 +228,18 @@ float link_move_factor(uint32_t link) {
             if (g_move_stamina.load(std::memory_order_relaxed) >= 1.f) g_move_exhausted = false;
         }
         const bool active = g_move_engaged && !g_move_exhausted;
-        g_move_boosted = active && is_move_proc(proc);
+        g_move_boosted = active && (is_move_proc(proc) || proc == kProcFrontRoll);
         g_move_swimming = active && proc == kProcSwimMove;
+        if (!g_move_boosted) {
+            g_move_cycle_started = false;
+            g_move_dust_emitted = false;
+            g_move_dust_pending = 0;
+        }
+        if (active && is_move_proc(proc) && move_target(true, proc, move_speed_land_factor(), move_speed_swim_factor()) > 1.f)
+            g_move_cycle_started = true;
+        if (active && proc == kProcMove && move_speed_land_factor() > 1.f && !g_move_dust_emitted) {
+            g_move_dust_pending = link;
+        }
         // The loop is over the moment he stops running or swimming: the factor and the animation go
         // back to normal at once instead of easing out, so nothing stays boosted while he stands.
         g_move_ramp = is_move_proc(proc)
@@ -239,8 +257,38 @@ float link_move_factor(uint32_t link) {
         alpha += (target - alpha) * std::min(1.f, dt * 8.f);
         if (target == 0.f && alpha < 0.01f) alpha = 0.f;
         g_move_hud_alpha = alpha;
+        if (trace_on()) {
+            static uint32_t previous_proc = UINT32_MAX;
+            if (proc != previous_proc) {
+                trace("move-speed proc=%X cycle=%d stamina=%.3f factor=%.3f", proc,
+                      g_move_boosted.load() ? 1 : 0, g_move_stamina.load(), g_move_ramp.load());
+                previous_proc = proc;
+            }
+        }
     }
     return g_move_ramp.load(std::memory_order_relaxed);
+}
+
+void move_start_effect(Cpu* c, uint32_t link) {
+    if (!c || !link || g_move_dust_pending != link || true60::dt() < 1.f) return;
+    if (move_speed_land_factor() <= 1.f) { g_move_dust_pending = 0; return; }
+    // Reuse the native one-shot land-smoke helper, which stops emission after one particle step.
+    // Keep the ordinary foot emitters untouched. No dust in water, midair, lock-on or a demo.
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    if (!manager || !move_speed() || ld32(link + 0x65F0) != kProcMove ||
+        !(ld32(link + 0x834) & 0x20) || (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) ||
+        ld32(link + 0x69D4) == 0x13 || ld16(link + 0x420) || ld8(play + 0x5292)) return;
+    g_move_dust_pending = 0;
+    g_move_dust_emitted = true;
+    const Cpu saved = *c;
+    const uint32_t effect_id = mem::fixed_slot(mem::kFixLinkScratch) + 0x40;
+    st32(effect_id, 0);
+    c->f[1].ps0 = 1.65f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 1.f;
+    const uint32_t emitter = guest_call(c, GC(0x025A87C0),
+        {manager, 0, link + 0x314, link + 0x328, link + 0x110, effect_id, 0x11});
+    *c = saved;
+    if (!emitter) g_move_dust_emitted = false; // retain the first burst until the native effect is ready
+    if (trace_on()) trace("sprint-dust link=%08X emitter=%08X", link, emitter);
 }
 
 // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame): r4 = frameCtrl, f1 = rate.

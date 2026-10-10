@@ -50,12 +50,13 @@ uint32_t move_speed_button();
 void set_move_speed_button(uint32_t button);
 void move_speed_input(uint32_t buttons); // actual active-controller sample, including replay/held half steps
 float link_move_factor(uint32_t link);
+void move_start_effect(Cpu* c, uint32_t link); // consume a new grounded sprint's one-shot dust burst
 
 // The boost's on-screen bar (Vulkan present.cpp, Metal mod_hud.mm), read from the render thread.
 struct MoveHud {
     float stamina;    // 0..1
     float alpha;      // 0 = hidden
-    bool boosted;     // the boost is running (running, or swimming)
+    bool boosted;     // a boost cycle is running (including a forward roll within that cycle)
     bool swimming;    // ... while swimming: the bar takes its colour
     bool exhausted;   // out of stamina: the bar is refilling over the cooldown
 };

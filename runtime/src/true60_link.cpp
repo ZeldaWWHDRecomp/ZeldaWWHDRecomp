@@ -55,7 +55,9 @@ extern "C" void site_023FD35C(Cpu* c) {
 extern "C" void site_023FD39C(Cpu* c) {
     const bool half = link60();
     // The vector argument is &Link->speed in every mode (r28 is Link at this site).
-    const float factor = mods::link_move_factor(c->r[4] - kSpeed);
+    const uint32_t link = c->r[4] - kSpeed;
+    const float factor = mods::link_move_factor(link);
+    mods::move_start_effect(c, link);
     if (!half && factor == 1.f) return; // preserve the stock path and all FP bits when off
     const float dt = half ? true60::dt() : 1.f;
     uint32_t sp = c->r[4];  // &speed

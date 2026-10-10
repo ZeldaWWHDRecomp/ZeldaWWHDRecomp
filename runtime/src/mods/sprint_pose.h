@@ -20,13 +20,13 @@ inline float weight(float ramp, float factor, float speed, float max_speed) {
 inline float angle_degrees(uint32_t joint, float phase) {
     const float swing = std::isfinite(phase) ? std::sin(phase * 6.28318530718f) : 0.f;
     switch (joint) {
-    case kStomach: return 14.f;
-    case kChest: return 4.f;
-    case kHead: return -12.f;  // keep looking ahead rather than down at the ground
-    case kLeftArm: return -6.f - 12.f * swing;
-    case kRightArm: return -6.f + 12.f * swing;
-    case kLeftElbow: return -28.f - 4.f * swing;
-    case kRightElbow: return -28.f + 4.f * swing;
+    case kStomach: return 22.f;
+    case kChest: return 8.f;
+    case kHead: return -20.f;  // keep looking ahead rather than down at the ground
+    case kLeftArm: return -10.f - 24.f * swing;
+    case kRightArm: return -10.f + 24.f * swing;
+    case kLeftElbow: return -40.f - 6.f * swing;
+    case kRightElbow: return -40.f + 6.f * swing;
     default: return 0.f;
     }
 }
