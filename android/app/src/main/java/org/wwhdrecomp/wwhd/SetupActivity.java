@@ -32,6 +32,49 @@ public class SetupActivity extends Activity {
     private String actionMessage;
     private String pickerJob;
     private static final int FOLDER = 10, ARCHIVE = 11, IMAGE = 12, DISC = 13, COMMON = 14, RESTORE = 15;
+    static final String EXTRA_SHOW_SETUP = "org.wwhdrecomp.wwhd.SHOW_SETUP";
+
+    /** A game is ready: an active phone build that needs no rebuild and no setup in progress, or the
+     *  PC route's game folder. */
+    private boolean readyToPlay() {
+        try {
+            if (!phoneSetup) {
+                File external = getExternalFilesDir(null);
+                return external != null && new File(external, "game/code/cking.rpx").isFile();
+            }
+            if (!new File(AndroidGame.storage(this), "active.json").isFile() || AndroidGame.needsRebuild(this))
+                return false;
+            File job = SetupStore.current(this);
+            File host = job == null ? null : new File(job, "host.json");
+            return host == null || !host.isFile() || SetupStore.read(host).optString("state").equals("complete");
+        } catch (Exception unreadable) { return false; }
+    }
+
+    private boolean shortcutChecked;
+
+    /** Once per completed build: the home-screen game icon with the game's own picture. */
+    private void offerShortcut() {
+        if (shortcutChecked) return;
+        shortcutChecked = true;
+        if (!phoneSetup) {  // the PC route: its game folder, once
+            File external = getExternalFilesDir(null);
+            File game = external == null ? null : new File(external, "game");
+            android.content.SharedPreferences prefs = getSharedPreferences("setup", MODE_PRIVATE);
+            if (game == null || !new File(game, "meta/iconTex.tga").isFile() || prefs.getBoolean("pc_icon_offered", false)) return;
+            prefs.edit().putBoolean("pc_icon_offered", true).apply();
+            GameShortcut.offer(this, game);
+            return;
+        }
+        new Thread(() -> {
+            AndroidGame.Selection selection = AndroidGame.selected(this);  // (hashes the build: off the UI thread)
+            if (selection == null || selection.game == null) return;
+            android.content.SharedPreferences prefs = getSharedPreferences("setup", MODE_PRIVATE);
+            String generation = selection.library.getName();
+            if (generation.equals(prefs.getString("shortcut_offered", ""))) return;
+            prefs.edit().putString("shortcut_offered", generation).apply();
+            runOnUiThread(() -> GameShortcut.offer(this, selection.game));
+        }, "wwhd-game-shortcut").start();
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -40,6 +83,14 @@ public class SetupActivity extends Activity {
              java.io.InputStream compiler = getAssets().open("toolchain-apk.json");
              java.io.InputStream sdk = getAssets().open("runtime-sdk.json")) { phoneSetup = true; }
         catch (Exception unavailable) { phoneSetup = false; }
+        // the app icon starts the game once there is one to play; the launcher's "Game setup"
+        // shortcut (and an update that needs a rebuild, or a setup still running) opens this screen
+        if (state == null && Intent.ACTION_MAIN.equals(getIntent().getAction()) &&
+                !getIntent().getBooleanExtra(EXTRA_SHOW_SETUP, false) && readyToPlay()) {
+            startActivity(new Intent(this, WwhdActivity.class));
+            finish();
+            return;
+        }
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(24 * getResources().getDisplayMetrics().density);
@@ -200,12 +251,16 @@ public class SetupActivity extends Activity {
                 play.setEnabled(new File(AndroidGame.storage(SetupActivity.this), "active.json").isFile() ||
                     (external != null && new File(external, "game/code/cking.rpx").isFile()));
                 String text;
-                if (!phoneSetup) text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                if (!phoneSetup) {
+                    text = "This APK supports the PC build route. Phone setup needs an APK containing Python and the compiler.";
+                    if (play.isEnabled()) offerShortcut();
+                }
                 else if (job == null) text = "Choose your game dump to set up on this phone.";
                 else {
                     File host = new File(job, "host.json");
                     JSONObject value = host.isFile() ? SetupStore.read(host) : new JSONObject().put("state", "ready to start");
                     text = "Setup: " + value.getString("state");
+                    if (value.optString("state").equals("complete")) offerShortcut();
                     if (value.has("reason")) text += "\n" + SetupPolicy.description(value.getString("reason"));
                     if (value.has("error")) text += "\n" + value.getString("error");
                     if (importing && !grants.contains(source.optString("uri")))
