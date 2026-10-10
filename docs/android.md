@@ -27,6 +27,7 @@ frame). *Game speed* is the game's logic steps per second: 30 is full speed.
 | Galaxy Z Fold 8 | SM8850, Adreno 840 | 60 fps, 30 when hot | 26–30 / 30 | great, on both screens |
 | Lenovo Legion Tab | Snapdragon 8 Gen 3, Adreno 750 | steady 30 fps | 28.7–30 / 30 | good |
 | OnePlus 8 Pro | Snapdragon 865, Adreno 650 (Mesa Turnip) | 30 fps | 26–30 / 30 | runs; one GPU crash still being looked at |
+| Galaxy Tab S6 Lite | Snapdragon 720G, Adreno 618 (Mesa Turnip), 4 GB | 15–24 fps | 15–24 / 30 | runs slowly: about half speed in Outset |
 
 You need a 64-bit phone with Android 13 or newer and Vulkan 1.3 (or a custom driver on Adreno),
 and a few GB of free storage.

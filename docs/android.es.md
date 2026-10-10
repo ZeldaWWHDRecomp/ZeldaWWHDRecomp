@@ -28,6 +28,7 @@ segundo: 30 es la velocidad completa.
 | Galaxy Z Fold 8 | SM8850, Adreno 840 | 60 fps, 30 cuando se calienta | 26–30 / 30 | excelente, en las dos pantallas |
 | Lenovo Legion Tab | Snapdragon 8 Gen 3, Adreno 750 | 30 fps estables | 28,7–30 / 30 | bueno |
 | OnePlus 8 Pro | Snapdragon 865, Adreno 650 (Mesa Turnip) | 30 fps | 26–30 / 30 | funciona; un cierre de la GPU todavía en estudio |
+| Galaxy Tab S6 Lite | Snapdragon 720G, Adreno 618 (Mesa Turnip), 4 GB | 15–24 fps | 15–24 / 30 | funciona lento: más o menos a media velocidad en Outset |
 
 Necesitas un teléfono de 64 bits con Android 13 o posterior y Vulkan 1.3 (o un driver
 personalizado en Adreno), y unos pocos GB libres.
