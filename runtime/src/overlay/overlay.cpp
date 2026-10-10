@@ -1026,7 +1026,8 @@ void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::
         if(step.type=="game_path") {
             if(step.game.starts_with("gc_")) {
                 if(status.satisfied)ImGui::TextWrapped("Uses your GameCube game: %s",game_source().path.c_str());
-                else game_source_warning_control("Needs a compatible GameCube game. Set it in Settings → Mods → GameCube game for mods.");
+                // The installed entry already shows the warning and setting shortcut.
+                else if(mod.game_source_warning.empty())game_source_warning_control("Needs a compatible GameCube game. Set it in Settings → Mods → GameCube game for mods.");
             }else {
                 auto choose=[game=step.game,id=mod.id](bool folder) {
                     hostui::choose_mod_source(folder,[game,id](std::string path) {
@@ -1275,8 +1276,11 @@ void package_controls() {
     if (ImGui::Button("Refresh packages")) refresh(error);
     auto path = directory();
     if (!path.empty()) note("Mods folder: %s", path.c_str());
-    if (!error.empty()) ImGui::TextWrapped("%s", error.c_str());
     auto installed = list();
+    // Enable/setup errors can repeat the source warning already shown on the entry.
+    bool source_error = !error.empty() && std::any_of(installed.begin(), installed.end(),
+        [&](const auto& mod) { return error == mod.game_source_warning; });
+    if (!error.empty() && !source_error) ImGui::TextWrapped("%s", error.c_str());
     if (installed.empty()) note("No external packages installed.");
     for (const auto& mod : installed) {
         ImGui::PushID(mod.id.c_str());
@@ -1319,7 +1323,7 @@ void package_controls() {
                                           : "Runs native code with the game's permissions. Enabling it asks you to confirm first.");
             if (!mod.author.empty()) note("By %s", mod.author.c_str());
             ImGui::TextWrapped("%s", mod.description.c_str());
-            if (!mod.reason.empty()) ImGui::TextWrapped("%s", mod.reason.c_str());
+            if (!mod.reason.empty() && mod.reason != mod.game_source_warning) ImGui::TextWrapped("%s", mod.reason.c_str());
             if (!mod.status.empty()) ImGui::TextWrapped("%s", mod.status.c_str());
             for(const auto& [path,hash]:mod.content_hashes)note("Content SHA-256 %s: %s",path.c_str(),hash.c_str());
             for (const auto& dependency : mod.dependencies) note("Requires %s", dependency.c_str());
