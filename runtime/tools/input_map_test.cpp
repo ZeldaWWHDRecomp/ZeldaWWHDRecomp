@@ -415,6 +415,17 @@ static void test_files() {
     set_current(Mapping::defaults());
     CHECK(generation() != g);
     CHECK(load_file(path, r, &err) && r == Mapping::defaults());  // saved
+    // the overlay's menus and on-screen keyboard confirm/cancel with the Wii U's A/B of the live
+    // mapping: by position (the default) the right button is A and the bottom one is B
+    CHECK(face_input(kA) == kPadB && face_input(kB) == kPadA && face_input(kX) == kPadY && face_input(kY) == kPadX);
+    Mapping labels = Mapping::defaults();
+    apply_face_layout(labels, FaceLayout::kLabels);
+    set_current(labels, false);
+    CHECK(face_input(kA) == kPadA && face_input(kB) == kPadB && face_input(kX) == kPadX && face_input(kY) == kPadY);
+    labels.pad[kA] = kPadNone;  // unbound: the by-position button
+    set_current(labels, false);
+    CHECK(face_input(kA) == kPadB && face_input(kB) == kPadB);
+    set_current(Mapping::defaults(), false);
     std::filesystem::remove_all(dir,ec);
 }
 

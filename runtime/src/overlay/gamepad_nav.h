@@ -17,8 +17,13 @@ public:
     bool pressed(const float* values, const float* previous, int input) const {
         return controller_active() && values[input] > 0.5f && previous[input] <= 0.5f;
     }
-    void feed(ImGuiIO& io, const float* values, const float* previous, bool enabled, bool mouse_used) {
+    // face: the inputs that are the Wii U's A, B, X and Y (input_map::face_input): ImGui activates
+    // with FaceDown and goes back with FaceRight, so the menus confirm and cancel as the game does
+    void feed(ImGuiIO& io, const float* values, const float* previous, bool enabled, bool mouse_used,
+              const int* face = nullptr) {
         using namespace input_map;
+        static constexpr int kByLabel[4] = {kPadA, kPadB, kPadX, kPadY};
+        if (!face) face = kByLabel;
         constexpr int navigation[] = {kPadA, kPadB, kPadX, kPadY,
             kPadDUp, kPadDDown, kPadDLeft, kPadDRight,
             kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight,
@@ -47,10 +52,10 @@ public:
             } else if (wwhd_trace::enabled()) trace_valid_ = {};
             io.AddKeyAnalogEvent(k, v > 0.5f, v);
         };
-        key(ImGuiKey_GamepadFaceDown, kPadA);
-        key(ImGuiKey_GamepadFaceRight, kPadB);
-        key(ImGuiKey_GamepadFaceLeft, kPadX);
-        key(ImGuiKey_GamepadFaceUp, kPadY);
+        key(ImGuiKey_GamepadFaceDown, face[0]);
+        key(ImGuiKey_GamepadFaceRight, face[1]);
+        key(ImGuiKey_GamepadFaceLeft, face[2]);
+        key(ImGuiKey_GamepadFaceUp, face[3]);
         key(ImGuiKey_GamepadDpadUp, kPadDUp);
         key(ImGuiKey_GamepadDpadDown, kPadDDown);
         key(ImGuiKey_GamepadDpadLeft, kPadDLeft);

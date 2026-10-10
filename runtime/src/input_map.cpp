@@ -210,6 +210,11 @@ void apply_face_layout(Mapping& m, FaceLayout layout) {
     for (int i = 0; i < 4; i++) m.pad[kA + i] = src[i];
 }
 
+int face_input(int action) {
+    const int p = current().pad[action];
+    return p != kPadNone ? p : kFaceByPosition[action - kA];
+}
+
 const char* face_layout_label(FaceLayout l) {
     switch (l) {
     case FaceLayout::kPosition: return "by position (Nintendo)";
