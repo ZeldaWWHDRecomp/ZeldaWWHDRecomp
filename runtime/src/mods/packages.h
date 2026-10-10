@@ -50,6 +50,7 @@ std::vector<SetupView> setup_steps(const std::string& id);
 struct GameSourceView {std::string path,result;bool valid=false;};
 GameSourceView game_source();
 std::string game_source_warning(const std::vector<catalogue::Step>& steps);
+std::string game_source_warning(const catalogue::Entry& entry,const catalogue::Index& index);
 bool set_game_source(const std::string& game,const std::string& path,std::string& error);
 // Run on a worker thread after native confirmation; never holds the manager lock while running.
 bool run_setup_tool(const std::string& id,const std::string& step,std::string& error,std::string& last_output);

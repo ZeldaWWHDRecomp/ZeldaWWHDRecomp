@@ -81,6 +81,17 @@ int restart_check(const char* storage) {
 }
 int main(int argc, char** argv) {
     using namespace mods::packages;
+    if(argc==3&&std::string(argv[1])=="--game-source-startup") {
+        namespace fs=std::filesystem;
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",argv[2]);set_code_mod_support(true);
+        initialize();auto source=game_source().path;assert(!source.empty());
+        auto moved=source+".moved";fs::rename(source,moved);
+        bool inspected=false,loaded=false;
+        start_guests([&](const GuestPackage&){inspected=true;return uint32_t(65536);},
+                     [&](const GuestPackage&,uint32_t){loaded=true;});
+        fs::rename(moved,source);
+        assert(!inspected&&!loaded&&!view("gc-guest").active);return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--game-source") {
         namespace fs=std::filesystem;
         auto root=fs::temp_directory_path()/("wwhd-gc-source-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -92,6 +103,10 @@ int main(int argc, char** argv) {
         assert(game_source().path.empty()&&!game_source().valid);
         assert(!setup_steps("gc-fixture")[0].satisfied);
         assert(!view("gc-fixture").game_source_warning.empty());
+        mods::catalogue::Entry source_entry;source_entry.id="gc-fixture";source_entry.setup={setup_steps("gc-fixture")[0].step};
+        mods::catalogue::Entry dependent_entry;dependent_entry.id="catalogue-dependent";dependent_entry.dependencies={"gc-fixture"};
+        mods::catalogue::Index index;index.entries={source_entry,dependent_entry};
+        assert(!game_source_warning(dependent_entry,index).empty());
         assert(!enable("gc-fixture",true,error)&&error.find("GameCube")!=std::string::npos);
         assert(!enable_after_code_rebuild("gc-fixture",error));
         assert(!set_game_source("gc_wind_waker",(root/"missing.iso").string(),error));
@@ -102,15 +117,30 @@ int main(int argc, char** argv) {
         {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
          assert(saved.get("game_sources").get("gc_wind_waker").string()==fs::canonical(disc).string());}
         assert(game_source().valid&&game_source().result.find("USA")!=std::string::npos);
+        assert(game_source_warning(dependent_entry,index).empty());
         assert(setup_steps("gc-fixture")[0].satisfied&&view("gc-fixture").game_source_warning.empty());
         assert(enable("gc-fixture",true,error)&&create_profile("Copy",error));
         auto other=root/"other.iso";fs::copy_file(disc,other);
         assert(set_game_source("gc_wind_waker",other.string(),error));
         assert(!view("gc-fixture").enabled&&select_profile("Copy",error)&&!view("gc-fixture").enabled);
         assert(enable("gc-fixture",true,error));
+        fs::create_directories(root/"second");
+        std::ofstream(root/"second/manifest.json")<<R"({"format_version":1,"id":"gc-second","name":"GC second","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"direct-camera":true},"setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"}]})";
+        assert(install((root/"second").string(),error)&&enable("gc-second",true,error));
+        fs::create_directories(root/"dependent");
+        std::ofstream(root/"dependent/manifest.json")<<R"({"format_version":1,"id":"gc-dependent","name":"GC dependent","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"quick-doors":true},"dependencies":[{"id":"gc-fixture"}]})";
+        assert(install((root/"dependent").string(),error)&&enable("gc-dependent",true,error));
+        assert(view("gc-dependent").game_source_warning.empty());
         fs::remove(other);assert(!game_source().valid&&!view("gc-fixture").game_source_warning.empty());
         assert(!select_profile("Copy",error)&&error.find("GameCube")!=std::string::npos);
         assert(!enable("gc-fixture",true,error));
+        assert(!view("gc-dependent").game_source_warning.empty());
+        assert(!enable("gc-dependent",true,error));
+        assert(enable("gc-dependent",false,error));
+        // Losing a shared copy must not trap multiple enabled mods in their on state.
+        assert(enable("gc-fixture",false,error));
+        assert(!view("gc-fixture").enabled&&view("gc-second").enabled);
+        assert(enable("gc-second",false,error)&&!view("gc-second").enabled);
         assert(set_game_source("gc_wind_waker","",error)&&game_source().path.empty());
         assert(!setup_steps("gc-fixture")[0].satisfied&&!view("gc-fixture").enabled);
         {std::ifstream in(root/"manager/profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
@@ -124,8 +154,14 @@ int main(int argc, char** argv) {
         set_guest_builder([](const GuestPackage&){return uint32_t(65536);},[&](const GuestPackage&,uint32_t){auto module=root/"synthetic-module";std::ofstream(module)<<"authored cache fixture";return GuestBuilt{module.string(),65536};});
         assert(set_game_source("gc_wind_waker",disc.string(),error)&&prepare_guest("gc-guest",error));
         assert(setup_steps("gc-guest")[1].satisfied);
+        assert(enable("gc-dependent",true,error)&&create_profile("Dependent copy",error));
+        assert(enable("gc-guest",true,error));
+        auto startup=host::run_process({argv[0],"--game-source-startup",(root/"manager").string()});
+        if(startup.code!=0)std::cerr<<startup.output;
+        assert(startup.code==0);
         assert(set_game_source("gc_wind_waker","",error)&&!setup_steps("gc-guest")[1].satisfied);
         assert(fs::is_regular_file(root/"synthetic-module"));
+        assert(!view("gc-dependent").enabled&&select_profile("Dependent copy",error)&&!view("gc-dependent").enabled);
         // Legacy per-region selections feed the shared copy and respect region requirements.
         mods::json::Value saved;saved["gc_usa"]=disc.string();mods::catalogue::Sources sources(saved);
         assert(sources.get("gc_wind_waker")==disc.string()&&sources.get("gc_eur").empty());

@@ -7,6 +7,7 @@
 #include "guest_hud.h"
 #include "setup_test.h"
 #include "graphics_switch.h"
+#include "game_source_widgets.h"
 #include "gamepad_nav.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
@@ -995,10 +996,6 @@ void game_source_controls() {
     bool focus=game_source_focus;game_source_focus=false;
     heading("GameCube game for mods");
     if(focus)ImGui::SetScrollHereY(0);
-    note("Some mods use files from the GameCube version of the game. They stay on your computer.");
-    auto source=game_source();
-    ImGui::TextWrapped("%s",source.path.empty()?"No path selected":source.path.c_str());
-    ImGui::TextWrapped("%s",source.result.c_str());
     static std::mutex result_mutex;static std::string failure;
     auto choose=[](bool folder) {
         hostui::choose_game_source(folder,[](std::string path) {
@@ -1006,12 +1003,10 @@ void game_source_controls() {
             std::lock_guard guard(result_mutex);failure=std::move(error);
         });
     };
-    if(focus){ImGui::SetKeyboardFocusHere();ImGui::SetNavCursorVisible(true);}
-    if(ImGui::Button("Choose disc image…"))choose(false);
-    ImGui::SameLine();if(ImGui::Button("Choose folder…"))choose(true);
-    ImGui::SameLine();ImGui::BeginDisabled(source.path.empty());
-    if(ImGui::Button("Clear")){std::string error;set_game_source("gc_wind_waker","",error);std::lock_guard guard(result_mutex);failure=std::move(error);}
-    ImGui::EndDisabled();
+    auto action=game_source_widgets(game_source(),focus);
+    if(action==GameSourceAction::Disc)choose(false);
+    if(action==GameSourceAction::Folder)choose(true);
+    if(action==GameSourceAction::Clear){std::string error;set_game_source("gc_wind_waker","",error);std::lock_guard guard(result_mutex);failure=std::move(error);}
     std::lock_guard guard(result_mutex);if(!failure.empty())ImGui::TextWrapped("%s",failure.c_str());
 }
 void setup_controls(const mods::packages::View& mod,NativeConfirm& confirm,std::string& error) {
@@ -1167,12 +1162,13 @@ void catalogue_controls(std::string& focus) {
         if(!query.empty()&&lower(entry.name+" "+entry.id+" "+entry.description).find(query)==std::string::npos)continue;
         ImGui::PushID(entry.id.c_str());
         if(test_install&&entry.id==test_install)ImGui::SetNextItemOpen(true);
-        if(ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str())) {
+        bool expanded=ImGui::TreeNode("entry","%s · %s",entry.name.c_str(),entry.version.c_str());
+        game_source_warning_control(mods::packages::game_source_warning(entry,catalogue.index));
+        if(expanded) {
             ImGui::TextWrapped("%s",entry.description.c_str());
             for(const auto& author:entry.authors)note("By %s",author.c_str());
             for(const auto& licence:entry.licences)note("Licence: %s",licence.c_str());
             for(const auto& dep:entry.dependencies)note("Requires %s",dep.c_str());
-            game_source_warning_control(mods::packages::game_source_warning(entry.setup));
             for(const auto& step:entry.setup)note("Setup: %s%s",step.title.c_str(),step.optional?" (optional)":"");
             note("Package: %s",entry.kind.c_str());
             if(entry.kind=="native"||entry.kind=="guest"||std::any_of(entry.setup.begin(),entry.setup.end(),[](const auto& step){return step.type=="run_tool";}))

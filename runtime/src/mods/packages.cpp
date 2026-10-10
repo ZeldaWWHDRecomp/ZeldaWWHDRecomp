@@ -241,10 +241,20 @@ std::string source_warning(const std::vector<catalogue::Step>& steps) {
     }
     return {};
 }
-void require_source(const Manifest& m){auto warning=source_warning(m.setup);require(warning.empty(),warning);}
-std::vector<std::string> order(const std::set<std::string>& enabled){
+std::string source_warning(const Manifest& manifest,std::set<std::string>& seen) {
+    if(!seen.insert(manifest.id).second)return {};
+    auto warning=source_warning(manifest.setup);if(!warning.empty())return warning;
+    for(const auto& dep:manifest.dependencies) {
+        auto found=records.find(dep.id);if(found==records.end())continue;
+        warning=source_warning(found->second.manifest,seen);if(!warning.empty())return warning;
+    }
+    return {};
+}
+std::string source_warning(const Manifest& manifest){std::set<std::string> seen;return source_warning(manifest,seen);}
+void require_source(const Manifest& m){auto warning=source_warning(m);require(warning.empty(),warning);}
+std::vector<std::string> order(const std::set<std::string>& enabled,bool check_sources=true){
     std::map<std::string,int> mark;std::vector<std::string> result;
-    std::function<void(const std::string&)> visit=[&](const std::string& id){require(mark[id]!=1,"Dependency cycle at "+id);if(mark[id]==2)return;mark[id]=1;auto it=records.find(id);require(it!=records.end(),"Missing dependency: "+id);const auto& m=it->second.manifest;require(m.problem.empty(),m.name+": "+m.problem);require_source(m);for(const auto& dep:m.dependencies){if(dep.id.starts_with("builtin:")){auto* e=manager::find(dep.id.substr(8));require(e&&version("1.0.0")>=version(dep.version),"Built-in dependency version is unavailable");continue;}auto d=records.find(dep.id);require(d!=records.end(),"Missing dependency: "+dep.id);require(version(d->second.manifest.version)>=version(dep.version),"Dependency "+dep.id+" needs version "+dep.version);require(enabled.contains(dep.id),"Dependency is disabled: "+dep.id);visit(dep.id);}mark[id]=2;result.push_back(id);};
+    std::function<void(const std::string&)> visit=[&](const std::string& id){require(mark[id]!=1,"Dependency cycle at "+id);if(mark[id]==2)return;mark[id]=1;auto it=records.find(id);require(it!=records.end(),"Missing dependency: "+id);const auto& m=it->second.manifest;require(m.problem.empty(),m.name+": "+m.problem);if(check_sources)require_source(m);for(const auto& dep:m.dependencies){if(dep.id.starts_with("builtin:")){auto* e=manager::find(dep.id.substr(8));require(e&&version("1.0.0")>=version(dep.version),"Built-in dependency version is unavailable");continue;}auto d=records.find(dep.id);require(d!=records.end(),"Missing dependency: "+dep.id);require(version(d->second.manifest.version)>=version(dep.version),"Dependency "+dep.id+" needs version "+dep.version);require(enabled.contains(dep.id),"Dependency is disabled: "+dep.id);visit(dep.id);}mark[id]=2;result.push_back(id);};
     for(const auto& id:enabled)visit(id);return result;
 }
 std::set<std::string> enabled_set(){std::set<std::string> result;for(const auto& [id,r]:records)if(wanted(id))result.insert(id);return result;}
@@ -466,6 +476,21 @@ GameSourceView game_source() {
 std::string game_source_warning(const std::vector<catalogue::Step>& steps) {
     std::lock_guard guard(mutex);return source_warning(steps);
 }
+std::string game_source_warning(const catalogue::Entry& entry,const catalogue::Index& index) {
+    std::lock_guard guard(mutex);std::set<std::string> seen;
+    std::function<std::string(const catalogue::Entry&)> visit=[&](const auto& current) {
+        if(!seen.insert(current.id).second)return std::string();
+        auto warning=source_warning(current.setup);if(!warning.empty())return warning;
+        for(const auto& dep:current.dependencies) {
+            auto found=std::find_if(index.entries.begin(),index.entries.end(),[&](const auto& candidate){return candidate.id==dep;});
+            if(found!=index.entries.end())warning=visit(*found);
+            else if(auto installed=records.find(dep);installed!=records.end())warning=source_warning(installed->second.manifest);
+            if(!warning.empty())return warning;
+        }
+        return std::string();
+    };
+    return visit(entry);
+}
 bool set_game_source(const std::string& game,const std::string& path,std::string& error) {
     return operation(error,[&]{catalogue::Sources sources(database.get("game_sources"));
         require(sources.set(game,path),"This source is not the requested game/region, or its metadata is unavailable");
@@ -533,7 +558,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
         return false;
     }
 }
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;v.game_source_warning=source_warning(m.setup);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 bool install(const std::string& source,std::string& error,std::string* installed_id_out){return operation(error,[&]{
     auto nonce=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());auto stage=root/(".stage-"+nonce),backup=root/(".backup-"+nonce);fs::path target;bool backed=false,moved=false;
@@ -578,7 +603,7 @@ bool enable(const std::string& id,bool on,std::string& error,bool switch_conflic
     std::set<std::string> visiting;
     std::function<void(const std::string&)> add=[&](const std::string& current){require(!visiting.contains(current),"Dependency cycle at "+current);require(records.contains(current),"Missing dependency: "+current);require(!records.at(current).loading,"Wait for mod preparation to finish: "+current);require(records.at(current).manifest.kind!="guest"||code_mod_support,"This mod needs code-mod support. Enable code mods in Settings > Mods, rebuild and restart first");const auto& graphics=records.at(current).manifest.graphics;if(graphics&&!graphics->shaders.empty())require(cemu::vulkan(),"GLSL shader packs require Vulkan; choose it in Graphics and restart");if(enabled.contains(current))return;visiting.insert(current);for(const auto& d:records.at(current).manifest.dependencies){if(d.id.starts_with("builtin:"))builtin_dependencies.push_back(d.id.substr(8));else add(d.id);}visiting.erase(current);require(confirmed(records.at(current)),records.at(current).manifest.name+" contains native code that has not been confirmed");enabled.insert(current);};add(id);
     if(switch_conflicts)for(auto it=enabled.begin();it!=enabled.end();){if(*it!=id&&!graphics_conflict(id,*it).empty())it=enabled.erase(it);else ++it;}
-    }else enabled.erase(id);order(enabled);auto planned=profile().get("builtins");for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;validate_conflicts(enabled,&planned);auto previous=database;profile()["builtins"]=planned;
+    }else enabled.erase(id);order(enabled,on);auto planned=profile().get("builtins");for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;validate_conflicts(enabled,&planned);auto previous=database;profile()["builtins"]=planned;
     double serial=profile().get("enable_serial").number;
     for(const auto& [key,r]:records){if(enabled.contains(key)&&!wanted(key))profile()["enabled_since"][key]=++serial;profile()["enabled"][key]=enabled.contains(key);}profile()["enable_serial"]=serial;try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();dirty=true;});if(ok)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);return ok;}
 std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::string& id){
@@ -666,6 +691,7 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
         auto it=records.find(id);if(it==records.end())continue;
         auto& r=it->second;
         try {
+            require_source(r.manifest);
             require(code_mod_support,"Guest mods are disabled: enable code mods, rebuild and restart first");
             require(confirmed(r),kUnconfirmed);
             if(r.manifest.trust_fingerprint!=r.manifest.fingerprint)require(package_fingerprint(r.path)==r.manifest.trust_fingerprint,"Package changed; reinstall and confirm it again");
