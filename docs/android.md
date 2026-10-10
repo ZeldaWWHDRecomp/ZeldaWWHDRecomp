@@ -27,24 +27,32 @@ frame). *Game speed* is the game's logic steps per second: 30 is full speed.
 | Galaxy Z Fold 8 | SM8850, Adreno 840 | 60 fps, 30 when hot | 26–30 / 30 | great, on both screens |
 | Lenovo Legion Tab | Snapdragon 8 Gen 3, Adreno 750 | steady 30 fps | 28.7–30 / 30 | good |
 | OnePlus 8 Pro | Snapdragon 865, Adreno 650 (Mesa Turnip) | 30 fps | 26–30 / 30 | runs; one GPU crash still being looked at |
+| Galaxy Tab S6 Lite | Snapdragon 720G, Adreno 618 (Mesa Turnip), 4 GB | 15–24 fps | 15–24 / 30 | runs slowly: about half speed in Outset |
 
 You need a 64-bit phone with Android 13 or newer and Vulkan 1.3 (or a custom driver on Adreno),
 and a few GB of free storage.
 
 ## How to play
 
-### Coming soon: the setup app (no PC)
+### The setup app (no PC needed)
 
-The setup app is being added to the project ([#98](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/98)).
-It carries no game code: it builds the game on your phone from your own copy.
+The setup app is in the project now ([#98](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/pull/98)) and is
+still being tested before a release. It carries no game code: it builds the game on your phone from
+your own copy. Until a release has it, testers can take the arm64 test APK from the
+[Android toolchain builds](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/actions/workflows/android-toolchain.yml) (open the latest successful run and download the
+`android-hosted-clang-arm64-v8a` artifact; this needs a GitHub login). The APK is
+`build/tester-apk/wwhd-ondevice-debug-arm64-v8a.apk` inside the zip.
 
-1. Install the app.
-2. Choose your game: an extracted game folder, a Cemu `.wua` archive, or a `.wud`/`.wux` disc image with its keys.
-3. Wait while the phone prepares the game. This happens once and takes a few minutes; the screen
-   shows how many parts are done and about how long is left.
-4. Play.
+1. Install the APK. If you already have a version you built on your PC, export your save first
+   (long-press the app icon), then uninstall it: the two are signed differently.
+2. Open the app and choose your game: **Choose extracted game folder**, **Choose WUA archive**, or
+   **Choose WUD / WUX disc image** (then also **Choose disc key file** and **Choose common key file**).
+3. Tap **Start / resume / retry setup**. The phone extracts and compiles the game once; the screen
+   shows the progress, for example "Compiling: 30/80 · about 12 min left". You can leave the app
+   meanwhile, and **Pause setup** stops it safely.
+4. When it says the setup is complete, tap **Play current build**.
 
-### Today: build it on your PC
+### Or: build it on your PC
 
 1. Install the Android SDK and NDK, JDK 17 or newer, CMake, Ninja and Python 3.
 2. Extract your game and generate its code (steps 1 and 2 under *Building* in the [README](../README.md)).
@@ -69,9 +77,10 @@ buttons while it is connected.
 **Which version of the game?**
 The Wii U release of The Wind Waker HD, USA or Europe. Saves from a real Wii U work too.
 
-**Why is there no APK to download yet?**
-An APK built on a PC today contains the recompiled game, which can't be shared. The setup app
-builds the game on your phone instead, so the app itself can be shared. It's being tested now.
+**Why is there no APK in the releases yet?**
+An APK built on a PC contains the recompiled game, which can't be shared. The setup app builds
+the game on your phone instead, so the app itself can be shared. It's in the project now and goes
+into a release once the remaining phone tests are done.
 
 **My phone gets hot. Is that normal?**
 The game is demanding. When the phone gets warm, the game drops from 60 to a steady 30 fps on its
