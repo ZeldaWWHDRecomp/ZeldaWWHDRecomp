@@ -50,6 +50,10 @@ Everything stays in that folder.
   from anywhere (Steam Deck included); its game, code, saves and settings go to `~/.local/share/wwhd`
   and `~/.config/wwhd` instead of beside it (Ubuntu 24.04+: `libfuse2t64`, or
   `--appimage-extract-and-run`)
+- Android (arm64, Android 13+, Vulkan 1.3): install the `android-arm64.apk` (`android-x86_64` is for
+  emulators and Chromebooks), choose your game in the app, and it builds the game on the phone (once,
+  a few minutes). Signing certificate SHA-256:
+  `7F:F6:D3:5E:4E:45:11:5E:E4:93:65:EF:5B:40:C0:EB:83:EA:F7:6C:C1:1C:E9:67:F2:64:5C:50:4F:58:B2:13`
 
 See "Install (releases)" in the README for details.
 

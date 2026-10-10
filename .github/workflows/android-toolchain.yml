@@ -44,6 +44,7 @@ on:
       - tools/release/guard.py
       - android/**
       - .github/workflows/android-toolchain.yml
+      - .github/actions/android-compiler/**
 
 permissions:
   contents: read
@@ -58,11 +59,6 @@ jobs:
         abi: [arm64-v8a, x86_64]
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: llvm/llvm-project
-          ref: 87f0227cb60147a26a1eeb4fb06e3b505e9c7261
-          path: build/llvm-source
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -72,11 +68,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libzstd-dev
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;30.0.16248370" "platforms;android-36" "build-tools;35.0.0"
-      - name: Build compiler that runs on Android
-        run: |
-          python3 tools/android/build_toolchain.py --source build/llvm-source \
-            --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" \
-            --out build/compiler --jobs 4
+      - name: Compiler that runs on Android (cached; built when tools/android/build_toolchain.py or its pins change)
+        uses: ./.github/actions/android-compiler
+        with:
+          abi: ${{ matrix.abi }}
       - name: Validate and prepare APK executable delivery
         run: |
           python3 -m unittest discover -s tools/android -p 'test_*.py'
@@ -98,7 +93,7 @@ jobs:
           python3 - <<'PY'
           import shutil
           for path in ("build/compiler/native", "build/compiler/target", "build/llvm-source"):
-              shutil.rmtree(path)
+              shutil.rmtree(path, ignore_errors=True)  # already gone after a fresh build or a cache hit
           PY
           df -h .
       - name: Build compiler-enabled synthetic APK

@@ -288,10 +288,13 @@ startup that `game/code/cking.rpx` matches the recompiled code.
 
 The Android port is by [rhemfur](https://github.com/rhemfur) (issue #23): the Vulkan renderer on
 an arm64 phone through SDL3's Android activity, measured at 30–32 fps in the heaviest scenes on a
-Galaxy S25 Ultra (Snapdragon 8 Elite). There is no download: **releases never contain an APK,
-`libmain.so` or anything derived from the game files**, and they never will. You build the APK
-yourself from your own dump, and since it contains your recompiled game, it is for your own phone
-only: don't share it. (CI builds the APK only with placeholder code, to check that it compiles.)
+Galaxy S25 Ultra (Snapdragon 8 Elite). **Releases never contain `libmain.so` or anything derived
+from the game files**, and they never will. An APK you build yourself from your own dump contains
+your recompiled game, so it is for your own phone only: don't share it. (CI builds that APK only with
+placeholder code, to check that it compiles.)
+
+**Development builds and releases include the setup app** (`…-android-arm64.apk`, no game code in it):
+install it, choose your game, and setup builds the game on the phone.
 
 For players: [docs/android.md](docs/android.md) explains what the Android version does, the tested
 phones and how to play ([Português](docs/android.pt.md), [Español](docs/android.es.md)).

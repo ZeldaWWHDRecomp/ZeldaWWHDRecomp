@@ -1,5 +1,6 @@
 # Release build: packages the runtime, tools and installer for macOS (arm64), Linux (x86-64) and
-# Windows (x86-64) and publishes them as a GitHub Release.
+# Windows (x86-64), plus the Android setup app (signed APK, arm64 and x86_64), and publishes them as a
+# GitHub Release.
 #
 # Legal: CI never has the game. Every build here uses placeholder guest code
 # (tools/recomp/stubgen.py) only to compile and test the runtime; the real game code is generated
@@ -558,11 +559,156 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+  # The Android app (the setup app: it carries no game code and builds the game on the phone from the
+  # player's own dump): a release APK per ABI, without libmain.so and without the debug test fixtures,
+  # signed with the project's key. arm64 for phones, x86_64 for emulators and Chromebooks. The
+  # compiler inside it comes from the cache (.github/actions/android-compiler) or is built (~1 h).
+  android:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            name: arm64
+          - abi: x86_64
+            name: x86_64
+    name: android-${{ matrix.name }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ABI: ${{ matrix.abi }}
+      NDK_VERSION: 30.0.16248370
+      # the release certificate (public): apksigner must report exactly this SHA-256
+      CERT_SHA256: 7ff6d35e4e45115ee49365ef5b40c0eb83eaf76cc11ce967f2645c504f58b213
+      APK: dist/WindWakerHD-${{ needs.version.outputs.version }}-android-${{ matrix.name }}.apk
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Install the NDK and SDK packages
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" "platforms;android-36" "build-tools;35.0.0"
+
+      - name: Compiler that runs on Android (cached)
+        uses: ./.github/actions/android-compiler
+        with:
+          abi: ${{ matrix.abi }}
+
+      - name: Compiler files for the APK
+        run: python3 tools/android/package_toolchain.py --compiler build/compiler/package --out build/compiler/apk-package
+
+      - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
+        run: |
+          python3 tools/recomp/stubgen.py build/gen-stub
+          GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          cmake --build android/build/game --target wwhd-extract --parallel 4
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk
+          # the APK carries no game library: setup links the player's own one on the phone
+          rm "android/app/libs/$ABI/libmain.so"
+          ls -la "android/app/libs/$ABI"
+
+      - name: Cache the official CPython Android build (checksum-pinned in prepare_python.py)
+        uses: actions/cache@v5
+        with:
+          path: build/embedded-python/python.tar.gz
+          key: android-cpython-${{ matrix.abi }}-${{ hashFiles('tools/android/prepare_python.py') }}
+
+      - name: Embedded Python and setup (no test fixtures)
+        run: |
+          python3 tools/android/prepare_python.py --abi "$ABI" --ndk "$ANDROID_HOME/ndk/$NDK_VERSION" \
+            --out build/embedded-python --runtime-sdk build/runtime-sdk
+
+      - name: Release APK, signed with the project's key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          WWHD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          WWHD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PUBLISHING: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.devel == 'true' }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            export WWHD_KEYSTORE="$RUNNER_TEMP/wwhd-release.p12"
+            trap 'rm -f "$WWHD_KEYSTORE"' EXIT
+            (umask 077 && printf '%s' "$KEYSTORE_B64" | base64 -d > "$WWHD_KEYSTORE")
+          elif [ "$PUBLISHING" = true ]; then
+            echo "::error::the signing secrets are missing: a published APK must carry the release key"; exit 1
+          else
+            echo "::warning::no signing secrets (fork?): the APK is signed with a throwaway debug key"
+          fi
+          code=${{ github.run_number }}
+          android/gradlew -p android --no-daemon -PwwhdAbi="$ABI" -PwwhdVersionName="${VERSION#v}" -PwwhdVersionCode="$code" \
+            -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" \
+            -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleRelease
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          ls -la dist
+
+      - name: Guard (no game code, game files, keys or test fixtures) and signature
+        env:
+          SIGNED: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
+        run: |
+          python3 tools/release/guard.py "$APK"
+          if unzip -l "$APK" | grep -E ' lib/[^/]+/libmain\.so$'; then echo "::error::libmain.so in the APK"; exit 1; fi
+          unzip -p "$APK" 'classes*.dex' > "$RUNNER_TEMP/classes.dex"
+          if grep -a -q -E 'SmokeActivity|SyntheticSetupService' "$RUNNER_TEMP/classes.dex"; then
+            echo "::error::debug test activities in the APK"; exit 1
+          fi
+          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json python-source.zip; do
+            unzip -l "$APK" "assets/$f" > /dev/null || { echo "::error::assets/$f missing"; exit 1; }
+          done
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apksigner.txt
+          if [ "$SIGNED" = true ]; then
+            grep -q "^Signer #1 certificate SHA-256 digest: $CERT_SHA256\$" apksigner.txt \
+              || { echo "::error::the APK is not signed with the release certificate"; exit 1; }
+            if grep -q '^Signer #2' apksigner.txt; then echo "::error::more than one signer"; exit 1; fi
+          fi
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | sed -n 1p
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: release-android-${{ matrix.name }}
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
+
+  # The nightly run on the default branch (main) keeps the Android compiler cache there, the one release
+  # tags can restore (a tag sees only its own and main's caches). Builds only when the key changed.
+  android-compiler-cache:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: ./.github/actions/android-compiler
+        with:
+          abi: ${{ matrix.abi }}
+          lookup-only: "true"
+
   # Uploads every release zip and the Windows "Wind Waker HD.exe" to VirusTotal and writes the results to the
   # job summary and vt-report.json; on a published release the vt-notes job adds them to the release. It never
   # fails the release; the publish job does not wait for it. Without the VT_API_KEY secret it only says so.
   virustotal:
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, android]
     if: needs.version.outputs.devel != 'true'   # development builds save the VirusTotal API quota
     runs-on: ubuntu-24.04
     continue-on-error: true
@@ -582,7 +728,7 @@ jobs:
         continue-on-error: true
         run: |
           if [ -n "$VT_API_KEY" ]; then echo "::add-mask::$VT_API_KEY"; fi
-          files=(dist/*.zip dist/*.AppImage)
+          files=(dist/*.zip dist/*.AppImage dist/*.apk)
           for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
           python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
 
@@ -595,7 +741,7 @@ jobs:
           if-no-files-found: ignore
 
   publish:
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, windows, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -614,11 +760,11 @@ jobs:
           merge-multiple: true
 
       - name: Guard all artifacts again
-        run: python3 tools/release/guard.py dist/*.zip
+        run: python3 tools/release/guard.py dist/*.zip dist/*.apk
 
       - name: Checksums and release notes
         run: |
-          cd dist && sha256sum *.zip *.AppImage > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
+          cd dist && sha256sum *.zip *.AppImage *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
           if [[ "$DEVEL" == true ]]; then
             python3 tools/release/notes.py CHANGELOG.md "Next update" dist/SHA256SUMS.txt --devel "$GITHUB_SHA" > dist/notes.md
           else
@@ -635,7 +781,7 @@ jobs:
       - name: Publish GitHub Release
         if: env.PUBLISH == 'true'
         run: |
-          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
+          gh release create "$VERSION" dist/*.zip dist/*.AppImage dist/*.apk dist/SHA256SUMS.txt --title "$VERSION" --notes-file dist/notes.md \
             --verify-tag
 
       # The rolling pre-release "devel-build": the previous one and its tag are replaced; never marked latest.
@@ -643,7 +789,7 @@ jobs:
         if: env.DEVEL == 'true'
         run: |
           gh release delete devel-build --cleanup-tag --yes 2>/dev/null || true
-          gh release create devel-build dist/*.zip dist/*.AppImage dist/SHA256SUMS.txt --prerelease --latest=false \
+          gh release create devel-build dist/*.zip dist/*.AppImage dist/*.apk dist/SHA256SUMS.txt --prerelease --latest=false \
             --target "$GITHUB_SHA" --title "Development build (devel @ ${GITHUB_SHA::7}, $(date -u +%Y-%m-%d))" \
             --notes-file dist/notes.md
 
