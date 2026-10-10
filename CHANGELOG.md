@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Bug reports: the log now lists every connected controller** (name, vendor and product ID, type),
+  on connect and disconnect. The game combines all controllers Windows/Linux report, so this shows
+  when a second device (e.g. Steam Input's virtual controller) is also sending input.
+
 - **Mods: one setting for the GameCube version of the game.** Settings → Mods → **GameCube game for
   mods**: choose your GameCube Wind Waker disc image or folder once (it shows the recognised region),
   and every mod that needs it uses it. A mod whose copy is missing can't be enabled and offers a

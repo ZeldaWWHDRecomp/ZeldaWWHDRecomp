@@ -354,13 +354,18 @@ static void open_controller(SDL_JoystickID id){
  std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
  if(auto* pad=SDL_OpenGamepad(id)){g_controllers[id]=pad;g_order.push_back(id);
+  // every connected device is listed: the host combines all of them (strongest input wins), so a
+  // second device (e.g. Steam Input's virtual pad next to the physical one) shows up in bug reports
+  const char* name=SDL_GetGamepadName(pad);
+  LOG("[input] controller connected: %s (id %u, vendor %04X, product %04X, type %d)",name?name:"?",(unsigned)id,
+      SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad),(int)SDL_GetGamepadType(pad));
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
   if(SDL_RumbleGamepad(pad,0,0,0))g_rumble_controllers.insert(id);
   if(g_sensors_on)set_sensors_locked(pad,true);}
 }
 static void close_controller(SDL_JoystickID id){
  {std::lock_guard lk(g_pads_mu);
-  auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);}
+  auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
   std::erase(g_order,id);
   g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);
   g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
