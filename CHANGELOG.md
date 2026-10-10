@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Diagnostics for menu input problems** (issue #111): `WWHD_OVERLAY_TRACE=1` logs what the settings
+  menu receives from the controller and every scroll change; `WWHD_OVERLAY_MOUSE_HANDOFF=0` turns the
+  mouse takeover off for such a test. Steps in [docs/overlay-controls.md](docs/overlay-controls.md).
+
 - **Mods tab: installed catalogue mods show where their setup stands.** Each step reads "Done" or
   "To do" (for example the GameCube game step is done once you set it), with a **Go to setup** button
   that jumps to the mod's setup; "Up to date" replaces the greyed-out Update button.

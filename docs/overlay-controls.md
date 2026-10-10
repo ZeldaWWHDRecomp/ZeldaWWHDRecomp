@@ -23,20 +23,19 @@ trace output stops after about 512 KiB. Restart to capture another session.
 navigation, so the original scrolling behavior can be tested. Normally leave it
 unset: mouse handoff stays enabled by default.
 
-On Windows, put a file named `menu-diagnostics.bat` beside `wwhd.exe`, containing:
+On Windows, put a file named `menu-diagnostics.bat` beside `Wind Waker HD.exe` (the program you
+normally start), containing:
 
 ```bat
 @echo off
-setlocal
 cd /d "%~dp0"
 set "WWHD_OVERLAY_TRACE=1"
 set "WWHD_OVERLAY_MOUSE_HANDOFF=0"
-wwhd.exe
-endlocal
+"Wind Waker HD.exe"
 ```
 
-Double-click it to launch. Use the stick once and release it, open Settings with
-F1, click an option, then scroll down with the mouse wheel. Wait a few seconds,
-quit, and attach `captures/wwhd.log` to the issue. Keep the session around two
-minutes or less. The variables apply only to this launch; launching `wwhd.exe`
-normally restores the defaults.
+Double-click it to launch the game. Use the stick once and release it, open Settings with F1, click
+an option, then scroll down with the mouse wheel. Wait a few seconds, quit, and attach
+`captures\wwhd.log` from the game's data folder to the issue. Keep the session around two minutes or
+less. The variables apply only to this launch; starting `Wind Waker HD.exe` normally restores the
+defaults.
