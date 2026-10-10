@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Menu and on-screen keyboard: confirm and cancel like in the game** (PR #118, thanks @rhemfur). With
+  the default face-button preset (by position) the right button confirms and the bottom one goes back,
+  as in the game; the on-screen keyboard types with the game's A and deletes with B. "By label" and
+  "Automatic" are followed too.
+- **Android player guide** in English, Portuguese and Spanish (PR #122, thanks @rhemfur):
+  [docs/android.md](docs/android.md).
+
 - **Diagnostics for menu input problems** (issue #111): `WWHD_OVERLAY_TRACE=1` logs what the settings
   menu receives from the controller and every scroll change; `WWHD_OVERLAY_MOUSE_HANDOFF=0` turns the
   mouse takeover off for such a test. Steps in [docs/overlay-controls.md](docs/overlay-controls.md).

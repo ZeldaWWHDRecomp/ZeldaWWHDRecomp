@@ -29,9 +29,9 @@ jobs:
       SDK_PLATFORM: platforms;android-36
       SDK_BUILD_TOOLS: build-tools;35.0.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -82,7 +82,7 @@ jobs:
           build/android-fixture-desktop/run
 
       - name: Keep synthetic baseline and translation metrics
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: android-translation-baseline-${{ github.sha }}
           path: build/android-fixture-desktop/
@@ -99,7 +99,7 @@ jobs:
           python3 tools/release/guard.py android/app/build/outputs/apk/release/*.apk
 
       - name: Keep the APK for a few days (placeholder code, not a release)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: wwhd-android-placeholder-${{ github.sha }}
           path: android/app/build/outputs/apk/release/*.apk

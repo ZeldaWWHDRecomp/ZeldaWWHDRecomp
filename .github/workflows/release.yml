@@ -111,7 +111,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build tools
         run: brew install ninja
@@ -211,12 +211,12 @@ jobs:
             --screenshots "$RUNNER_TEMP" --data-dir "$RUNNER_TEMP/data"
           mkdir -p "$GITHUB_WORKSPACE/gui-shots" && cp "$RUNNER_TEMP"/selftest-*.png "$GITHUB_WORKSPACE/gui-shots/"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: setup-gui-macos-arm64
           path: gui-shots
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-macos-arm64
           path: dist/*.zip
@@ -245,7 +245,7 @@ jobs:
       ARCH: ${{ matrix.arch }}
       TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -379,7 +379,7 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1080x24" "$RUNNER_TEMP/data/bin/wwhd" --renderer-smoke 2>&1 | tee smoke.log
           grep -q "PASS" smoke.log
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-linux-${{ matrix.arch }}
           path: |
@@ -397,7 +397,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Pinned llvm-mingw toolchain (tools/installer/toolchains.json)
         run: |
@@ -552,7 +552,7 @@ jobs:
           if ($g.ExitCode -ne 0) { throw "setup program self-test on a fresh data folder failed ($($g.ExitCode))" }
           if (Test-Path (Join-Path $env:WWHD_DATA_DIR 'python')) { throw "the window downloaded a Python" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-windows-x86_64
           path: dist/*.zip
@@ -570,9 +570,9 @@ jobs:
     env:
       VT_API_KEY: ${{ secrets.VT_API_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: release-*
           path: dist
@@ -586,7 +586,7 @@ jobs:
           for z in dist/*windows*.zip; do [ -f "$z" ] && files+=("$z:Wind Waker HD.exe"); done
           python3 tools/release/virustotal.py --out vt-report.json --summary "$GITHUB_STEP_SUMMARY" --timeout 600 "${files[@]}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         continue-on-error: true
         with:
@@ -605,9 +605,9 @@ jobs:
       DEVEL: ${{ needs.version.outputs.devel }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           pattern: release-*
           path: dist
@@ -627,7 +627,7 @@ jobs:
           cat dist/notes.md
           python3 tools/release/guard.py dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: release-all
           path: dist/*
@@ -660,9 +660,9 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: vt-report
           path: vt

@@ -74,7 +74,12 @@ def main():
               "-DLLVM_ENABLE_ZSTD=OFF", "-DLLVM_ENABLE_LIBXML2=OFF",
               "-DLLVM_ENABLE_LIBEDIT=OFF", "-DLLVM_ENABLE_TERMINFO=OFF",
               "-DLLVM_ENABLE_BINDINGS=OFF", "-DLLVM_ENABLE_PROJECTS=clang;lld",
-              "-DLLVM_TARGETS_TO_BUILD=" + backend]
+              "-DLLVM_TARGETS_TO_BUILD=" + backend,
+              # LLVM's own headers trip newer compilers' warnings thousands of times (e.g. the
+              # LangOptions bit-fields); they don't affect the result and drown our build log
+              "-DCMAKE_C_FLAGS=-Wno-unknown-warning-option",
+              "-DCMAKE_CXX_FLAGS=-Wno-unknown-warning-option -Wno-preferred-type-bitfield-enum-conversion "
+              "-Wno-dangling-reference"]
     start = time.monotonic()
     run("cmake", "-S", source / "llvm", "-B", native, *common)
     run("cmake", "--build", native, "--parallel", args.jobs,

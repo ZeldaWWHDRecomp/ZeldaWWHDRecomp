@@ -57,13 +57,13 @@ jobs:
       matrix:
         abi: [arm64-v8a, x86_64]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: llvm/llvm-project
           ref: 87f0227cb60147a26a1eeb4fb06e3b505e9c7261
           path: build/llvm-source
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -207,7 +207,7 @@ jobs:
             python3 tools/android/setup_import_smoke.py --serial emulator-5554 --output build/setup-import-result.json &&
             python3 tools/android/picker_smoke.py --serial emulator-5554 --reboot --output build/picker-result.json &&
             python3 tools/android/setup_rebuild_smoke.py --serial emulator-5554 --initial-apk build/update-fixtures/v1.apk --updated-apk build/update-fixtures/v2.apk --failed-apk build/update-fixtures/v3.apk --output build/setup-rebuild-result.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: android-hosted-clang-${{ matrix.abi }}-${{ github.sha }}
