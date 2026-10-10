@@ -36,12 +36,31 @@ public final class GameShortcut {
             ShortcutInfo.Builder info = new ShortcutInfo.Builder(context, ID)
                 .setShortLabel(context.getString(R.string.app_name))
                 .setIntent(play);
-            // adaptive icon: the picture is the 108 dp layer, as android/make_icon.py does for the PC route
-            if (art != null) info.setIcon(Icon.createWithAdaptiveBitmap(Bitmap.createScaledBitmap(art, 432, 432, true)));
+            if (art != null) info.setIcon(Icon.createWithAdaptiveBitmap(adaptive(art)));
             shortcuts.requestPinShortcut(info.build(), null);
         } catch (Exception failure) {
             Log.w("wwhd-setup", "Game shortcut not offered: " + failure.getMessage());
         }
+    }
+
+    /**
+     * An adaptive icon is a 108 dp layer of which launchers show about the middle 72 dp (their
+     * mask), so the whole picture goes into that middle part, with rounded corners, over a dimmed
+     * and enlarged copy of itself that fills the edges.
+     */
+    static Bitmap adaptive(Bitmap art) {
+        final int size = 432, inner = 264, offset = (size - inner) / 2;
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas canvas = new android.graphics.Canvas(out);
+        android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+        canvas.drawBitmap(art, null, new android.graphics.Rect(-size / 4, -size / 4, size + size / 4, size + size / 4), paint);
+        canvas.drawColor(0x99000000);
+        android.graphics.Path round = new android.graphics.Path();
+        round.addRoundRect(offset, offset, offset + inner, offset + inner, inner / 6f, inner / 6f,
+            android.graphics.Path.Direction.CW);
+        canvas.clipPath(round);
+        canvas.drawBitmap(art, null, new android.graphics.Rect(offset, offset, offset + inner, offset + inner), paint);
+        return out;
     }
 
     /** The game's 128x128 icon (TgaImage), or null when it can't be read. */
