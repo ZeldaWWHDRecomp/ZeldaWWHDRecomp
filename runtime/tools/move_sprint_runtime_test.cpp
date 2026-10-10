@@ -60,6 +60,8 @@ int main(int argc, char**) {
     if(argc==2) { assert(mods::move_speed_anim()==mods::MoveAnim::kSprint); return 0; }
     map(link); map(0x10030000); map(0x10470000);
     st32(link+0x65F0,mods::kProcMove);
+    // Captured during ordinary running: free movement uses DIR_NONE (4), not DIR_FORWARD (0).
+    st8(link+0x68D4,4); st32(link+0x6A70,0x211C4);
     st32(link+0x6A14,f32_as_u32(8.f)); st32(link+0x3C4,f32_as_u32(8.f));
     st16(table+8,0x120); st16(table+16,0x121);
     st16(link+0x5858,0x121); // currently playing the native run resource
@@ -103,8 +105,10 @@ int main(int argc, char**) {
     st32(link+0x65F0,mods::kProcSwimMove); before(3); assert(is_identity());
     st32(link+0x65F0,0); before(3); assert(is_identity());
     st32(link+0x65F0,mods::kProcMove);
-    st8(link+0x68D4,1); before(3); assert(is_identity()); st8(link+0x68D4,0);
-    st32(link+0x6A70,1); before(3); assert(is_identity()); st32(link+0x6A70,0);
+    for(unsigned direction:{1u,2u,3u}) { st8(link+0x68D4,direction); before(3); assert(is_identity()); }
+    st8(link+0x68D4,0); before(3); assert(!is_identity()); after(3);
+    st8(link+0x68D4,4); before(3); assert(!is_identity()); after(3);
+    st32(link+0x6A70,1); before(3); assert(is_identity()); st32(link+0x6A70,0x211C4);
     st16(link+0x5888,0x35); before(3); assert(is_identity()); st16(link+0x5888,0xFFFF);
     st16(link+0x5858,0x999); before(3); assert(is_identity()); st16(link+0x5858,0x121);
     st8(0x1046F0B0+0x5292,1); before(3); assert(is_identity()); st8(0x1046F0B0+0x5292,0);

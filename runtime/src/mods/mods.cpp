@@ -272,7 +272,9 @@ extern "C" void hook_023D6B30(Cpu* c) {
     if (!link || !quaternion || !move_speed() || move_speed_anim() != MoveAnim::kSprint) return;
     // Ordinary forward locomotion only: leave upper-body actions, lock-on, demos and special walks
     // to their own animation. The resource index (not ANM id) is what the live heap stores.
-    if (ld32(link + 0x65F0) != kProcMove || ld8(link + 0x68D4) != 0 ||
+    // Free running retains DIR_NONE (4). DIR_FORWARD (0) is the explicit directional case.
+    const uint8_t direction = ld8(link + 0x68D4);
+    if (ld32(link + 0x65F0) != kProcMove || (direction != 0 && direction != 4) ||
         (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) || ld16(link + 0x420) != 0 ||
         ld8(GD(0x1046F0B0) + 0x5292) || ld16(link + 0x5888) != 0xFFFF) return;
     const uint32_t table = GD(0x100366A0);
