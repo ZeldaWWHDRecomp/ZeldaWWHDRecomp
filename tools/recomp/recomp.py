@@ -252,15 +252,24 @@ class Recompiler:
                 self.unhandled[str(e)] += 1
                 s = "ppc_unimplemented(c, 0x%08Xu, 0x%08Xu);" % (a, w)
             body.append((a, w, s))
-        if CRLIVE:
+        hooked = start in self.hooks
+        # the passes (crlive.py, leaflocal.py) only where no outside code can look at this function's
+        # registers mid-way: not in hooked functions (hook_X runs around f_X_orig), not in functions
+        # with instruction hooks (ppc_host_call(c, site_X) reads and changes the Cpu struct) and not in
+        # builds with guest mod hooks (a mod may hook or replace any function): those keep the plain code
+        plain = hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
+        if CRLIVE and not plain:
             live_after, fields = crlive.analyze(body, self.cur_start, self.cur_end, self.p.jump_tables, branch_target,
                                                 self.sites)
             body = [(a, w, crlive.rewrite(s, fields[i], live_after[i], CR_CHECK, a)) for i, (a, w, s) in enumerate(body)]
             self.cr_stats[0] += sum(1 for f in fields if f is not None)
             self.cr_stats[1] += sum(1 for i, f in enumerate(fields) if f is not None and (live_after[i] >> (4 * f)) & 0xF == 0)
+        elif CRLIVE and CR_CHECK and not self.mod_hooks:
+            # checking build: plain functions store every CR bit, but they still check what they read
+            # (a bit another function dropped)
+            body = [(a, w, crlive.rewrite(s, None, 0, True, a)) for a, w, s in body]
         # restrict: guest memory never aliases the register file, so the compiler may keep
         # registers in host registers across guest loads/stores
-        hooked = start in self.hooks
         name = self.sym(start)
         fname = "f_%08X_orig" % name if hooked else "f_%08X" % name
         out = []
@@ -273,11 +282,6 @@ class Recompiler:
             # port's own hooks (interpolation, true 60) stay outermost and mods hook the game's code
             out.append("    PPC_MOD_HOOK(%d, 0x%08Xu);" % (self.ordinal[start], start))
         tail_wb = ""
-        # registers in locals (leaflocal.py) only where no outside code can look at this function's
-        # registers mid-way: not in hooked functions, not in functions with instruction hooks
-        # (ppc_host_call(c, site_X) reads and changes the Cpu struct) and not in builds with guest mod
-        # hooks (a mod may hook or replace any function)
-        plain = hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
         stmts = [s for _, _, s in body]
         if LEAF and not plain and leaflocal.eligible(stmts):
             prologue, stmts, tail_wb = leaflocal.transform(stmts)
@@ -352,7 +356,9 @@ class Recompiler:
         with open(os.path.join(outdir, "funcs.h"), "w") as f:
             # GQRs no instruction of the game writes keep their initial value (0: plain floats), so paired-
             # single loads and stores through them need no check of the GQR (ppc.h psq_load_l)
-            gqr = "#define PPC_GQR_STATIC_FLOAT 0x%02X\n" % self.static_float_gqrs() if GQR_STATIC else ""
+            # (not with guest mod hooks: a mod's code may write any GQR)
+            gqr = ("#define PPC_GQR_STATIC_FLOAT 0x%02X\n" % self.static_float_gqrs()
+                   if GQR_STATIC and not self.mod_hooks else "")
             f.write('#pragma once\n%s%s#include "ppc.h"\n\n' % ("#define PPC_CR_CHECK 1\n" if CR_CHECK else "", gqr))
             for e in self.sorted_entries:
                 f.write("void f_%08X(Cpu* __restrict c);\n" % self.sym(e))
@@ -430,10 +436,14 @@ class Recompiler:
                     canon, addr, where))
             f.write("functions: %d\nfiles: %d\nfixpoint rounds: %d\n" % (len(self.sorted_entries), nfiles, self.fixpoint_rounds))
             f.write("imports used: %d of %d\n" % (len(self.used_imports), len(self.imports)))
-            f.write("CR writers: %d, %d with no live bit (liveness %s%s)\n" % (
-                self.cr_stats[0], self.cr_stats[1], "on" if CRLIVE else "off", ", check build" if CR_CHECK else ""))
-            f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
-            f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
+            # only with the passes on: with them off (WWHD_RECOMP_PLAIN=1) every output file is the same
+            # as without them
+            if CRLIVE and not self.mod_hooks:
+                f.write("CR writers: %d, %d with no live bit (liveness on%s)\n" % (
+                    self.cr_stats[0], self.cr_stats[1], ", check build" if CR_CHECK else ""))
+            if (LEAF or NONLEAF) and not self.mod_hooks:
+                f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
+                f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
             f.write("unhandled instruction kinds:\n")
             for k, v in self.unhandled.most_common():
                 f.write("  %6d  %s\n" % (v, k))
