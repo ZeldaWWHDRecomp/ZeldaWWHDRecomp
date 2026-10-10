@@ -41,7 +41,8 @@ void log_msg(const char*, ...) {}
 uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
     assert(fn==0x025A87C0);
     const std::vector<uint32_t> values(args);
-    assert(values.size()==7 && values[0]==0x1100A000 && values[2]==link+0x314 && values[4]==link+0x110);
+    assert(values.size()==7 && values[0]==0x1100A000 && values[4]==link+0x110);
+    assert(values[2]>=mem::fixed_slot(mem::kFixLinkScratch)+0x50 && values[2]<mem::fixed_slot(mem::kFixLinkScratch)+0x80);
     assert(values[6]&1); // the native helper's dry-land smoke flag
     assert(c->f[1].ps0>1.f);
     ++dust_calls; c->r[8]=0xDEADBEEF; c->f[1].ps0=0;
@@ -155,7 +156,8 @@ int main(int argc, char**) {
     Cpu fx{}; fx.r[8]=123; fx.f[1].ps0=456; const Cpu saved_fx=fx;
     mods::move_speed_input(input::kStickL); mods::link_move_factor(link);
     mods::move_start_effect(&fx,link);
-    assert(dust_calls==1 && !memcmp(&fx,&saved_fx,sizeof fx));
+    assert(dust_calls==3 && !memcmp(&fx,&saved_fx,sizeof fx));
+    assert(ld8(0x11009800+0x247)==0xC0);
     mods::move_speed_input(0);
     for(int i=0;i<5;++i) { mods::link_move_factor(link); mods::move_start_effect(&fx,link); }
     st32(link+0x65F0,mods::kProcFrontRoll);
@@ -166,12 +168,12 @@ int main(int argc, char**) {
     }
     st32(link+0x65F0,mods::kProcMove);
     assert(mods::link_move_factor(link)>1.f); mods::move_start_effect(&fx,link);
-    assert(dust_calls==1); // same cycle after the roll, no second burst
+    assert(dust_calls==3); // same cycle after the roll, no second burst
     // A real stop cancels toggle, and only a new press starts another dusty sprint.
     st32(link+0x65F0,4); mods::link_move_factor(link);
     st32(link+0x65F0,mods::kProcMove); assert(mods::link_move_factor(link)==1.f);
     mods::move_speed_input(input::kStickL); mods::link_move_factor(link); mods::move_start_effect(&fx,link);
-    assert(dust_calls==2);
+    assert(dust_calls==6);
     // Cancellation during a roll must not silently resume at its end.
     mods::move_speed_input(0); mods::link_move_factor(link);
     st32(link+0x65F0,mods::kProcFrontRoll); mods::link_move_factor(link);
@@ -197,7 +199,7 @@ int main(int argc, char**) {
             dt=.5f; mods::move_start_effect(&fx,link); assert(dust_calls==count); dt=1.f;
         }
         mods::move_start_effect(&fx,link);
-        assert(dust_calls==count+(condition==0?1:0));
+        assert(dust_calls==count+(condition==0?3:0));
         if(condition!=0) {
             st32(link+0x834,0x20); st32(link+0x69D4,0);
             if(condition==1) {
@@ -206,7 +208,7 @@ int main(int argc, char**) {
                 mods::set_move_speed_land_factor(1.5f);
             }
             mods::link_move_factor(link); mods::move_start_effect(&fx,link);
-            assert(dust_calls==count+1); // the first eligible grounded frame still gets its burst
+            assert(dust_calls==count+3); // the first eligible grounded frame still gets its burst
         }
     }
     mods::set_move_speed(false); mods::link_move_factor(link); mods::move_speed_input(0);

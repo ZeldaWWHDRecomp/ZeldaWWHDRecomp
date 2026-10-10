@@ -22,8 +22,9 @@ what is on `devel` and not released yet (also in the
   motion. The animation choice persists in mod profiles, and `WWHD_MOD_MOVE_ANIM` takes precedence
   over saved settings. An optional Sprint pose adds a forward torso lean, a compensating head tilt
   and wider phase-locked arm drive to the native running cycle, with up to 30 degrees of torso lean.
-  A grounded run boost starts with a one-shot burst of land dust. Forward rolls keep the same boost
-  cycle and continue draining stamina at their native speed; running resumes afterwards while
+  A grounded run boost starts with a one-shot fan of three larger, more opaque land-dust puffs.
+  Forward rolls keep the same boost cycle and continue draining stamina at their native speed;
+  running resumes afterwards while
   stamina remains, without another starting burst. The pose blends with the speed boost and leaves
   swimming, lock-on, item actions and special walks to their own poses. No new game assets are
   needed. Saved settings and mod profiles carry over: a file from before the

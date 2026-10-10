@@ -281,14 +281,32 @@ void move_start_effect(Cpu* c, uint32_t link) {
     g_move_dust_pending = 0;
     g_move_dust_emitted = true;
     const Cpu saved = *c;
-    const uint32_t effect_id = mem::fixed_slot(mem::kFixLinkScratch) + 0x40;
+    const uint32_t scratch = mem::fixed_slot(mem::kFixLinkScratch), effect_id = scratch + 0x40;
     st32(effect_id, 0);
-    c->f[1].ps0 = 1.65f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 1.f;
-    const uint32_t emitter = guest_call(c, GC(0x025A87C0),
-        {manager, 0, link + 0x314, link + 0x328, link + 0x110, effect_id, 0x11});
-    *c = saved;
-    if (!emitter) g_move_dust_emitted = false; // retain the first burst until the native effect is ready
-    if (trace_on()) trace("sprint-dust link=%08X emitter=%08X", link, emitter);
+    const float angle = (int16_t)ld16(link + 0x32A) * 0.00009587379924f;
+    const float s = std::sin(angle), co = std::cos(angle);
+    const float x = u32_as_f32(ld32(link + 0x314)), y = u32_as_f32(ld32(link + 0x318)),
+                z = u32_as_f32(ld32(link + 0x31C));
+    uint32_t first_emitter = 0, puffs = 0;
+    // One brief fan behind the feet reads as a burst rather than an ordinary single footstep.
+    for (unsigned i = 0; i < 3; ++i) {
+        const float side = ((int)i - 1) * 18.f;
+        const uint32_t pos = scratch + 0x50 + i * 0x10;
+        st32(pos, f32_as_u32(x - 18.f * s + side * co));
+        st32(pos + 4, f32_as_u32(y + 2.f));
+        st32(pos + 8, f32_as_u32(z - 18.f * co - side * s));
+        c->f[1].ps0 = 2.4f; c->f[2].ps0 = 1.f; c->f[3].ps0 = 1.f;
+        const uint32_t emitter = guest_call(c, GC(0x025A87C0),
+            {manager, 0, pos, link + 0x328, link + 0x110, effect_id, 0x11});
+        *c = saved;
+        if (emitter) {
+            st8(emitter + 0x247, 0xC0); // emitter alpha; the native default is only half opaque
+            if (!first_emitter) first_emitter = emitter;
+            ++puffs;
+        }
+    }
+    if (!first_emitter) g_move_dust_emitted = false;
+    if (trace_on()) trace("sprint-dust link=%08X emitter=%08X puffs=%u", link, first_emitter, puffs);
 }
 
 // daPy_lk_c::setFrameCtrl(frameCtrl, attribute, start, end, rate, frame): r4 = frameCtrl, f1 = rate.
