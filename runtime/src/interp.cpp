@@ -627,6 +627,39 @@ extern "C" void hook_027F5018(Cpu* c) {
     f_027F5018_orig(c);
 }
 
+// Actor draws (fopAc_Draw, 025D4654: the draw method of every actor). Status bit 0x01000000 of an
+// actor (+0x2E0, fopAcStts_NODRAW) asks for one draw to be left out: fopAc_Draw skips the draw and
+// clears the bit. The conversation camera (02508A60) sets it on every step for the actor whose point
+// of view a shot is taken from, as the camera sits in or right behind that actor's head. With a
+// 60 fps mode a step is drawn more than once: the logic pass's draw used the request up and the
+// in-between passes drew the actor (talking to the auctioneer in Windfall's auction house, the back
+// of Link's head filled every other frame). An actor left out on the logic pass is left out on the
+// step's in-between passes too, as at 30 fps.
+namespace interp {
+namespace {
+constexpr uint32_t kActorStatus = 0x2E0, kStatusNoDraw = 0x01000000;
+std::vector<uint32_t> g_nodraw;  // actors whose draw was left out on the logic pass of step g_nodraw_step
+uint64_t g_nodraw_step = ~0ull;
+}  // namespace
+}  // namespace interp
+extern "C" void f_025D4654_orig(Cpu* c);
+extern "C" void hook_025D4654(Cpu* c) {
+    using namespace interp;
+    const uint32_t actor = c->r[3];
+    if (enabled()) {
+        if (!g_hold) {
+            if (g_nodraw_step != g_logic_steps) {
+                g_nodraw.clear();
+                g_nodraw_step = g_logic_steps;
+            }
+            if (ld32(actor + kActorStatus) & kStatusNoDraw) g_nodraw.push_back(actor);
+        } else if (g_nodraw_step == g_logic_steps && std::find(g_nodraw.begin(), g_nodraw.end(), actor) != g_nodraw.end()) {
+            st32(actor + kActorStatus, ld32(actor + kActorStatus) | kStatusNoDraw);
+        }
+    }
+    f_025D4654_orig(c);
+}
+
 // Per-frame function (0203593C): WWHD's own per-frame systems (HD menus, system UI, lighting setup)
 // around the loop body. On hold passes the whole frame is held back and only redrawn, so these
 // systems stay in step with the game logic at 30 steps per second.

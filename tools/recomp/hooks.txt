@@ -44,6 +44,7 @@
 027F55FC  # J3DModel::viewCalc: model matrices blended on logic passes
 027F5018  # J3DModel UBO update (update_ubo thread): halfway matrices on logic passes
 020315CC  # audio frame callback (calls JAIZelBasic::gframeProcess): once per logic step while interpolating
+025D4654  # fopAc_Draw: an actor hidden for one draw (fopAcStts_NODRAW) stays hidden on the step's in-between passes
 # True 60 fps (runtime/src/true60.cpp): per-process gate, step length dt, primitives scaled by dt
 025DF940  # fpcM_Execute: per-process gate (60 Hz processes every pass, others on full passes)
 025DF904  # fpcM_Draw: which process is drawing (no interpolation for 60 Hz processes)
