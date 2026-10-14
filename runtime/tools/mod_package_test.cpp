@@ -27,6 +27,92 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     using namespace mods::packages;
     namespace fs=std::filesystem;
+    if(argc==4&&std::string(argv[1])=="--quick-use-speed-startup") {
+        // Numeric built-in profile options are separate from manifest option schemas.
+        const std::string override=argv[2],saved=argv[3];
+        auto root=fs::temp_directory_path()/("wwhd-quick-speed-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        env("WWHD_MOD_QUICK_USE_SPEED",override=="unset"?nullptr:override.c_str());
+        // Simulate runtime startup parsing; invalid overrides retain vanilla but still own precedence.
+        mods::set_quick_use_speed(1.f);
+        if(override=="1.25")mods::set_quick_use_speed(1.25f);
+        if(override=="1.5")mods::set_quick_use_speed(1.5f);
+        auto database=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtin_options":{}}}})");
+        auto& options=database["profiles"]["Default"]["builtin_options"];
+        if(saved!="missing") {
+            preferences["mod.quick-use.speed"]=saved=="legacy"?"1.25":saved;
+            if(saved=="string")options["quick-use.speed"]=std::string("1.5");
+            else if(saved!="legacy")options["quick-use.speed"]=saved=="invalid"?1.2:std::stod(saved);
+        }
+        database["profiles"]["Legacy"]["builtin_options"].type=mods::json::Value::Object;
+        database["profiles"]["Invalid"]["builtin_options"]["quick-use.speed"]=1.25000001;
+        std::ofstream(root/"profiles.json")<<mods::json::dump(database);
+        const float expected=override!="unset"?(override=="1.25"?1.25f:override=="1.5"?1.5f:1.f):
+            saved=="1.25"||saved=="legacy"?1.25f:saved=="1.5"?1.5f:1.f;
+        mods::manager::load_saved();assert(mods::quick_use_speed()==expected);
+        initialize();assert(mods::quick_use_speed()==expected);
+        assert(!mods::quick_use()); // A speed choice never enables the mod.
+        mods::set_quick_use_speed(1.5f);
+        hostui::set("mod.quick-use.speed","1.500000");remember_option("quick-use.speed",1.5);
+        std::ifstream file(root/"profiles.json");
+        const std::string text{std::istreambuf_iterator<char>(file),{}};file.close();
+        assert(mods::json::parse(text).get("profiles").get("Default").get("builtin_options").get("quick-use.speed").number==1.5);
+        std::string error;
+        assert(create_profile("Quick",error)); // Snapshot the getter, not just a remembered value.
+        mods::set_quick_use_speed(1.25f);remember_option("quick-use.speed",1.25);
+        if(override=="unset") {
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.5f);
+            assert(select_profile("Default",error)&&mods::quick_use_speed()==1.25f);
+            // Legacy/malformed profile switches use vanilla rather than leaking the previous speed.
+            assert(select_profile("Legacy",error)&&mods::quick_use_speed()==1.f);
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.5f);
+            assert(select_profile("Invalid",error)&&mods::quick_use_speed()==1.f);
+        } else {
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.25f);
+        }
+        fs::remove_all(root);
+        std::cout<<"Quick-use speed startup override "<<override<<" survives saved choice "<<saved<<"\n";
+        return 0;
+    }
+    if(argc==4&&std::string(argv[1])=="--quick-use-startup") {
+        // Synthetic settings/profile fixtures: no game, native library or lock-on mod.
+        const std::string override=argv[2],saved=argv[3];
+        auto root=fs::temp_directory_path()/("wwhd-quick-use-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        env("WWHD_MOD_QUICK_USE",override=="unset"?nullptr:override.c_str());
+        // Test host simulates the runtime module's environment-owned startup state.
+        mods::set_quick_use(override=="1");
+        auto database=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtins":{}}}})");
+        if(saved!="missing") {
+            preferences["mod.quick-use.enabled"]=saved;
+            database["profiles"]["Default"]["builtins"]["quick-use"]=saved=="1";
+        }
+        std::ofstream(root/"profiles.json")<<mods::json::dump(database);
+        const bool expected=override=="unset"?saved=="1":override=="1";
+        mods::manager::load_saved();assert(mods::quick_use()==expected);
+        initialize();assert(mods::quick_use()==expected);
+        std::string error;
+        assert(mods::manager::set_enabled("quick-use",true));
+        std::ifstream file(root/"profiles.json");
+        const std::string text{std::istreambuf_iterator<char>(file),{}};file.close();
+        assert(mods::json::parse(text).get("profiles").get("Default").get("builtins").get("quick-use").boolean);
+        assert(create_profile("Quick",error));
+        assert(mods::manager::set_enabled("quick-use",false));
+        assert(select_profile("Quick",error)&&mods::quick_use());
+        assert(select_profile("Default",error)&&!mods::quick_use());
+        // Generic settings packages can enable this built-in without another module.
+        auto preset=root/"preset";fs::create_directories(preset);
+        std::ofstream(preset/"manifest.json")<<R"({"format_version":1,"id":"quick-preset","name":"Quick preset","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"quick-use":true}})";
+        assert(install(preset.string(),error));
+        assert(enable("quick-preset",true,error));frame(1);assert(mods::quick_use()&&view("quick-preset").active);
+        assert(enable("quick-preset",false,error));frame(2);assert(!mods::quick_use());
+        assert(remove("quick-preset",error));
+        fs::remove_all(root);
+        std::cout<<"Quick-use startup override "<<override<<" survives saved toggle "<<saved<<"\n";
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--setup-acceptance") {
         auto root=fs::temp_directory_path()/("wwhd-acceptance-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(root/"source");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);

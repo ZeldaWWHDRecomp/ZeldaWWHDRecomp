@@ -1,5 +1,6 @@
 #include "mods/fast_forward.h"
 #include "mods/story_store.h"
+#include "mods/mods.h"
 // Save states: snapshot the whole running game into one of 5 slots and restore it, also in a new
 // process.
 //
@@ -465,6 +466,7 @@ std::string area_label(const char* stage) {
 // true when done (saved or failed for good); false to retry on the next frame
 bool do_save(int slot) {
     mods::fast_forward_reset();
+    mods::quick_use_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     if (!threads::quiesce(250, busy, 1, 30)) {
@@ -555,6 +557,7 @@ bool do_save(int slot) {
 
 bool do_load(const std::shared_ptr<Snapshot>& s) {
     mods::fast_forward_reset();
+    mods::quick_use_reset();
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     threads_ss_targets(s->section(kSecThreads));
@@ -789,6 +792,7 @@ float be_f32(const uint8_t* p) { return u32_as_f32((uint32_t)p[0] << 24 | (uint3
 
 // the current game as a portable state (main thread, frame boundary)
 bool capture_portable(Cpu* c, pstate::State& s, std::string& why) {
+    mods::quick_use_reset();
     bool retry;
     if (!gameplay_ready(why, retry)) return false;
     CallScope scope(c);
@@ -867,6 +871,7 @@ void apply_hd_sections(Cpu* c, const pstate::State& s) {
 
 // puts a portable state into the running game; false + retry when the game is not ready yet
 bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retry) {
+    mods::quick_use_reset();
     if (!gameplay_ready(why, retry)) return false;
     CallScope scope(c);
     const uint32_t sv = ld32(kSaveInfoPtr), info = sv + kInfo, buf = scratch();

@@ -96,6 +96,18 @@ now** (on Android: close and reopen the app). There is one restart offer at a ti
 the end of an install and the page of a mod that is off but still loaded offer
 their own instead, and switching mods does not open a popup.
 
+### Quick-use locked items
+
+In **Mods → Built-in**, switch on **Quick-use locked items** (off by default).
+While locked onto an enemy, one item-button press equips and uses a bow (including
+fire/ice/light arrows), boomerang, hookshot or grappling rope; inventory bombs
+are readied and thrown, and equipping the hammer completes one native strike.
+Already-equipped hammer attacks remain native. Without an enemy lock, aiming
+and item use are unchanged; native item restrictions and resource costs still apply.
+Choose **Quick-use animation speed**: **1x (vanilla)**, **1.25x** or **1.5x**.
+It speeds up supported equip animations and boomerang wind-up, not projectile
+flight or grapple countdowns. Choosing a speed alone does not enable quick use.
+
 Run/swim speed offers three animation choices. **Native** keeps the game's cycle with the boosted
 cadence. **Dash instead of walk** replaces the low-speed walk portion; the normal full-speed run
 already uses dash. **Sprint pose** adds a forward torso lean, compensating head tilt and stronger

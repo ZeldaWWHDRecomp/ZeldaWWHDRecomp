@@ -13,7 +13,7 @@
 #include <string>
 
 namespace {
-bool state[6]{};
+bool state[7]{};
 float speed = 1, sensitivity = .15f;
 std::map<std::string,std::string> preferences;
 int reads = 0, writes = 0;
@@ -56,6 +56,10 @@ bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool 
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
+bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
+static float quick_speed = 1.f;
+float quick_use_speed() { return quick_speed; }
+void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) quick_speed = f; }
 float camera_speed() { return speed; }
 void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }
