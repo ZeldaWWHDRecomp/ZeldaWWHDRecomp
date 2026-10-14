@@ -22,6 +22,11 @@ const Entry catalogue[] = {
     {"wall-climb", "Climb any wall", "Gameplay",
      "Grab and climb walls using a stamina wheel. A or B lets go.",
      "WWHD_CLIMB", climb_enabled, set_climb_enabled},
+    {"quick-use", "Quick-use locked items", "Gameplay",
+     "One press completes item preparation and use against a locked enemy. Items that already use "
+     "one press keep their native action; menus and contextual interactions stay native. "
+     "Outside enemy lock, native aiming is unchanged.",
+     "WWHD_MOD_QUICK_USE", quick_use, set_quick_use},
     {"quick-doors", "Quick doors", "Gameplay",
      "Run door-opening and closing events at four times their normal speed.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
@@ -113,6 +118,16 @@ void load_saved() {
     if (!std::getenv("WWHD_MOD_FF_MUTE")) {
         std::string v;
         if (hostui::get("mod.fast-forward.mute", v) && (v == "0" || v == "1")) set_fast_forward_mute(v == "1");
+    }
+    if (!std::getenv("WWHD_MOD_QUICK_USE_SPEED")) {
+        std::string value;
+        if (hostui::get("mod.quick-use.speed", value) && !value.empty()) {
+            char* end = nullptr;
+            const double parsed = std::strtod(value.c_str(), &end);
+            if (end != value.c_str() && *end == '\0' &&
+                (parsed == 1.0 || parsed == 1.25 || parsed == 1.5))
+                set_quick_use_speed(float(parsed));
+        }
     }
     number("mod.move-speed.land", "WWHD_MOD_MOVE_FACTOR", 1.f, 4.f, set_move_speed_land_factor);
     number("mod.move-speed.swim", "WWHD_MOD_MOVE_SWIM", 1.f, 4.f, set_move_speed_swim_factor);

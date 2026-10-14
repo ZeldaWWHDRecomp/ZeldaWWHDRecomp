@@ -1176,6 +1176,19 @@ void builtin_options(const std::string& id) {
         float speed = mods::camera_speed();
         if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
             hostui::post([speed] { mods::set_camera_speed(speed); hostui::set("mod.direct-camera.speed", std::to_string(speed)); mods::packages::remember_option("direct-camera.speed", speed); });
+    } else if (id == "quick-use") {
+        ImGui::TextUnformatted("Quick-use animation speed");
+        for (float speed : {1.f, 1.25f, 1.5f}) {
+            if (speed != 1.f) ImGui::SameLine();
+            if (radio(speed == 1.f ? "1x (vanilla)" : speed == 1.25f ? "1.25x" : "1.5x",
+                      mods::quick_use_speed() == speed))
+                hostui::post([speed] { mods::set_quick_use_speed(speed); hostui::set("mod.quick-use.speed", std::to_string(speed)); mods::packages::remember_option("quick-use.speed", speed); });
+        }
+        help("Only accelerates supported upper-body equip and boomerang wind-up for enemy-locked quick use. "
+             "Does not bypass native readiness or ammo, or change projectile speed or flight/return. "
+             "Default: vanilla 1x, with quick use off.");
+        if (const char* override = std::getenv("WWHD_MOD_QUICK_USE_SPEED"))
+            note("WWHD_MOD_QUICK_USE_SPEED=%s overrides the saved speed at startup.", override);
     } else if (id == "fast-forward") {
         for (unsigned rate : {2u, 3u, 4u}) {
             if (rate != 2) ImGui::SameLine();
@@ -2056,6 +2069,7 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
     input::release_keys();  // keys held now belong to the menu (opening) or are not stuck in the game (closing)
     if (open) {
         mods::fast_forward_reset();
+        mods::quick_use_reset();
         mods::mouse_release();
         U.just_opened = true;
         U.slots_time = -1;

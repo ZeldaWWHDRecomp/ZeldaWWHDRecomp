@@ -5,6 +5,7 @@
 #include "gfx/display_modes.h"
 #include "android_controller.h"
 #include "../mods/fast_forward.h"
+#include "../mods/mods.h"
 #ifdef WWHD_HAS_VULKAN
 #include "gfx/vulkan/stutter_trace.h"
 #include "gfx/vulkan/headstart.h"
@@ -207,7 +208,7 @@ static int keycode(SDL_Scancode code) {
  }
 }
 void set_touch(bool down,float x,float y){std::lock_guard lk(g_mu);g_touch=down;g_tx=x;g_ty=y;}
-void release_keys(){mods::fast_forward_reset();std::lock_guard lk(g_mu);g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);g_touch=false;}
+void release_keys(){mods::fast_forward_reset();mods::quick_use_reset();std::lock_guard lk(g_mu);g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);g_touch=false;}
 void held_keys(bool* keys){std::lock_guard lk(g_mu);for(int i=0;i<256;i++)keys[i]=g_keys[i]||g_script_keys[i];}
 void controller_values(float* out){std::lock_guard lk(g_mu);std::copy(std::begin(g_values),std::end(g_values),out);}
 void host_controller_values(float* out){controller_values(out);}
@@ -968,7 +969,12 @@ PadState read() {
         last_buttons = s.buttons;
     }
     mods::filter_pad(s);  // gameplay mods: mouse camera, wheel -> R3
-    if (overlay::blocks_input()) s = PadState{};  // the settings overlay has the input
+    if (overlay::blocks_input()) {
+        mods::quick_use_reset();  // no pending item press survives menu/text capture
+        s = PadState{};
+    } else {
+        mods::quick_use_filter_pad(s);  // final merged/polled pad, never overlay-owned input
+    }
     return s;
 }
 
