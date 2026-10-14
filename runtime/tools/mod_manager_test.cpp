@@ -46,6 +46,8 @@ MoveMode move_speed_mode() { return (MoveMode)move_mode; } void set_move_speed_m
 MoveAnim move_speed_anim() { return (MoveAnim)move_anim; } void set_move_speed_anim(MoveAnim a) { move_anim = (int)a; }
 uint32_t move_speed_button() { return move_button; } void set_move_speed_button(uint32_t b) { if (b && !(b & (b - 1))) move_button = b; }
 
+static bool camera_items = false;
+bool camera_directed_items() { return camera_items; } void set_camera_directed_items(bool b) { camera_items=b; }
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
@@ -75,8 +77,17 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==13);
+    assert(entries().size()==14);
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
+    assert(find("camera-directed-items") && !mods::camera_directed_items());
+    preferences["mod.camera-directed-items.enabled"]="1";
+    load_saved(); assert(mods::camera_directed_items());
+    mods::set_camera_directed_items(false); env("WWHD_MOD_CAMERA_DIRECTED_ITEMS","0");
+    load_saved(); assert(!mods::camera_directed_items());
+    env("WWHD_MOD_CAMERA_DIRECTED_ITEMS",nullptr);
+    preferences.erase("mod.camera-directed-items.enabled");
+    assert(set_enabled("camera-directed-items",true)); assert(mods::camera_directed_items());
+    disable_all(); assert(!mods::camera_directed_items());
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     assert(!mods::ladder_speed() && !mods::sidle_speed() && !mods::sail_speed() && !mods::auto_wind());
     preferences["mod.wall-climb.enabled"]="1";

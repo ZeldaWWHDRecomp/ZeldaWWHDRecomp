@@ -672,14 +672,18 @@ int main(int argc, char** argv) {
     assert(enable("climb-preset",false,error));frame(2);assert(!state[3]);
     mods::set_fast_forward_rate(3); mods::set_fast_forward_button(0x20); mods::set_fast_forward_mute(false);
     remember_option("fast-forward.rate", 3); remember_option("fast-forward.button", 0x20); remember_option("fast-forward.mute", 0);
+    assert(mods::manager::set_enabled("camera-directed-items",true));
     assert(create_profile("Adventure",error));
+    assert(mods::manager::set_enabled("camera-directed-items",false));
     mods::set_fast_forward_rate(4); mods::set_fast_forward_button(0x80); mods::set_fast_forward_mute(true);
     remember_option("fast-forward.rate", 4); remember_option("fast-forward.button", 0x80); remember_option("fast-forward.mute", 1);
     assert(enable("climb-preset",true,error));frame(20);assert(state[3]);
     assert(select_profile("Adventure",error));frame(21);assert(!state[3]);
     assert(mods::fast_forward_rate()==3 && mods::fast_forward_button()==0x20 && !mods::fast_forward_mute());
+    assert(mods::camera_directed_items());
     assert(current_profile()=="Adventure");assert(!delete_profile("Adventure",error));
     assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(delete_profile("Adventure",error));
+    assert(!mods::camera_directed_items()); // Default profile kept its independent off value.
     assert(install(package("missing-dep",",\"dependencies\":[{\"id\":\"absent\"}]"),error));
     assert(!enable("missing-dep",true,error));
     assert(remove("missing-dep",error));
