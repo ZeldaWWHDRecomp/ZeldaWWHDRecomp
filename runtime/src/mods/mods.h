@@ -16,6 +16,9 @@ namespace input { struct PadState; }
 namespace mods {
 
 // ---- switches (menu + env) ----
+// Experimental partial coverage: Leaf gust yaw/pitch plus supported initial item facing.
+bool camera_directed_items();
+void set_camera_directed_items(bool on);
 bool direct_camera();
 void set_direct_camera(bool on);
 float camera_speed();  // direct camera: multiplier of the game's own top turning speed

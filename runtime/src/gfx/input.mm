@@ -51,6 +51,8 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256];
+static std::atomic<bool> g_gameplay_focus{false};
+bool gameplay_focused() { return g_gameplay_focus.load(std::memory_order_relaxed); }
 static PadState g_pad;  // controller part, refreshed on the main thread
 static bool g_touch;
 static float g_tx, g_ty;
@@ -116,6 +118,8 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values() {
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
 void controller_values(float* v) {
+    g_gameplay_focus.store(NSApp.isActive && NSApp.keyWindow && !NSApp.modalWindow &&
+                          !NSApp.keyWindow.sheetParent, std::memory_order_relaxed);
     using namespace input_map;
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     for (const auto& [id, d] : devices_values())

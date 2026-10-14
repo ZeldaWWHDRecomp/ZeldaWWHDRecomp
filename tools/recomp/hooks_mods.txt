@@ -14,6 +14,21 @@
 @02506C80 # dCamera_c::CalcSubjectAngle: the same on the game's inverted-aiming branch
 @02171B1C # new_himo2_move: after CPad_GET_SUBSTICK_POS_Y (rope-swing event camera)
 0240EBB0  # daPy_Execute: Link (left click while aiming, traces)
+# Camera-directed items (Leaf prototype, default off; accepted-use yaw only, no continuous/camera/input override)
+@023E7A70 # procFanSwing_init: accepted grounded use faces camera once, before fan-model setup
+@023E7CF4 # bow Subject accepted aim entry (initial yaw only; native FP/pitch afterward)
+@023E88F4 # bow Move accepted aim entry, before native strafing yaw offset
+@023E8D34 # boomerang Subject accepted aim entry
+@023E8E40 # boomerang Move accepted aim entry, before native strafing yaw offset
+@023E8A58 # hookshot Subject accepted aim entry
+@023E8B20 # hookshot Move accepted aim entry, before native strafing yaw offset
+@023E902C # grappling Subject accepted aim entry (not hang/swing/anchor)
+@023E9130 # grappling Move accepted aim entry, before native strafing yaw offset
+@023E9E98 # normal owned inventory-bomb throw, before native carry geometry
+@023EDFC4 # hammer accepted side strike, before native heading load
+@0243C830 # hammer accepted front strike (not ready/recovery), before native heading load
+@023EDE00 # empty bottle accepted grounded swing, before native heading load
+024076CC  # daPy_lk_c::setCollision: scope gust direction before native BG ray/capsule/effects
 # Quick doors / fast scene changes (mods/turbo.cpp; extra logic steps from interp.cpp's fpcEx_Handler hook)
 0252A684  # dDoor_info_c::getDemoAction: a door event cut is running
 021C0078  # daMbdoor_c::getDemoAction

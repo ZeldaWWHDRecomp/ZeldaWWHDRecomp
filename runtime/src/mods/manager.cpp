@@ -13,6 +13,10 @@ const Entry catalogue[] = {
     {"direct-camera", "Direct right-stick camera", "Camera",
      "Turn the camera immediately with the right stick, without the original easing.",
      "WWHD_MOD_DIRECT_CAMERA", direct_camera, set_direct_camera},
+    {"camera-directed-items", "Camera-directed items (prototype)", "Gameplay",
+     "Experimental initial horizontal facing for supported grounded item actions; Leaf gust also follows camera pitch. "
+     "Lock-on, ongoing first-person aim and other projectile pitch stay native. New item coverage needs gameplay validation.",
+     "WWHD_MOD_CAMERA_DIRECTED_ITEMS", camera_directed_items, set_camera_directed_items},
     {"mouse-camera", "Mouse camera", "Camera",
      "Click the game picture to capture the mouse. Move it to look around; Esc releases it.",
      "WWHD_MOD_MOUSE_CAMERA", mouse_camera, set_mouse_camera},

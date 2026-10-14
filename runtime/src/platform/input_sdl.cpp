@@ -62,6 +62,8 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256]={},g_script_keys[256]={};
+static std::atomic<bool> g_gameplay_focus{false};
+bool gameplay_focused(){return g_gameplay_focus.load(std::memory_order_relaxed);}
 static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
@@ -687,6 +689,7 @@ void handle_event(const SDL_Event& event){
 }
 void update(){
  update_overlay_window(SDL_GetKeyboardFocus());
+ g_gameplay_focus.store(SDL_GetKeyboardFocus()!=nullptr&&!text_prompt_active(),std::memory_order_relaxed);
  if(wwhd_trace::enabled()) {
   overlay_trace_sdl::begin(overlay::is_open());
   for(auto [id,pad]:g_controllers) overlay_trace_sdl::pad(id,pad);
