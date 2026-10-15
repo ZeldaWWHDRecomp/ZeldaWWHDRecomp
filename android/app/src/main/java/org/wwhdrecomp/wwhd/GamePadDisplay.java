@@ -101,6 +101,11 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
         close();
     }
 
+    // the GamePad screen on a second display (AYN Thor) follows the Full screen setting too
+    void syncSystemBars() {
+        if (presentation != null) WwhdActivity.syncSystemBars(presentation.getWindow());
+    }
+
     private void close() {
         invalidRetryPending = false;
         if (dismissalRecovery != null) {
@@ -164,6 +169,7 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON |
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
                 setContentView(createView(getContext(), token));
+                WwhdActivity.syncSystemBars(getWindow());  // as on the main display (Full screen setting)
             }
         };
         // Android can dismiss a Presentation independently of display removal. Invalidate its
