@@ -190,6 +190,14 @@ if(WWHD_SDL_HOST)
   target_link_libraries(mouse_sdl_test PRIVATE SDL3::Headers)
 endif()
 
+if(WWHD_HAS_VULKAN AND NOT WWHD_HAS_METAL)
+  # renders the volumetric clouds (runtime/src/gfx/clouds.h) to a PNG, no game or window needed
+  add_executable(cloud_preview runtime/tools/cloud_preview.cpp)
+  target_include_directories(cloud_preview PRIVATE runtime/src)
+  target_link_libraries(cloud_preview PRIVATE Vulkan::Vulkan glslang::glslang glslang::SPIRV
+                                              glslang::glslang-default-resource-limits ZLIB::ZLIB)
+endif()
+
 enable_testing()
 add_test(NAME input_mapping COMMAND input_map_test)
 if(WWHD_SDL_HOST)

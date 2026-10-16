@@ -59,3 +59,14 @@ jobs:
           xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee smoke.log
           grep -q "PASS" smoke.log
           ! grep -q "VUID" smoke.log
+
+      - name: Cloud previews (lavapipe)
+        run: |
+          mkdir -p cloud-previews
+          for p in noon morning sunset storm; do ./build/linux/cloud_preview cloud-previews/$p.png --preset $p --pitch 6; done
+          ./build/linux/cloud_preview cloud-previews/noon-realistic.png --cel 0 --pitch 6
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloud-previews
+          path: cloud-previews/
