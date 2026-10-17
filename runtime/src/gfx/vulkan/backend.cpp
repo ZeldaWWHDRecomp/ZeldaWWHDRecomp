@@ -3,6 +3,7 @@
 #include "atomic_temporary.h"
 #include "validation_diagnostics.h"
 #include "../../audio_out.h"
+#include "../../mods/save_folder_writes.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -4260,6 +4261,7 @@ static bool android_end_task() {
 static void quit_game() {
   audio::finish_dump();  // _Exit bypasses atexit handlers
   screenshot::finish();  // the screenshots taken are written first
+  save_folder::release_lock();  // a chosen save folder's lock: this computer stops playing
   gx2::shutdown_vulkan_caches();
 #ifdef __ANDROID__
   if (::hostui::quit_from_menu() && android_end_task()) {
