@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Settings dialogs and phone text size.** Every dialog in Settings now has a close button in its title bar and also
+  closes with a tap outside it, Esc, B or Back; long dialogs such as Gyro aiming keep Close on screen. On phones,
+  Settings uses smaller text so more fits at once, while buttons stay at least 7 mm tall to tap. Tablets, handhelds
+  and PCs look as before, and the UI size setting still wins.
 - **Android: code mods** (such as the story quests). Turn on **Code mods** in the setup app (or Settings → Mods): your
   device builds the game again with mod support, and builds each code mod itself the first time it's used. Uses the
   compiler and Python the setup already has; the download grows by only a few KB.
