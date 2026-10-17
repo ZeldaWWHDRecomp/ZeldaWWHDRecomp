@@ -47,6 +47,7 @@
 #include "trace.h"
 #include "hostui.h"
 #include "../mods/code_mods.h"
+#include "../mods/save_folder.h"
 #include "controls_view.h"
 #include "binding_widget.h"
 #include "extensions.h"
@@ -526,6 +527,7 @@ void refresh_slots(bool force) {
 
 void tab_saves_screenshots();
 void tab_saves_crash_recovery();
+void tab_saves_folder();
 void tab_saves() {
     refresh_slots(false);
     std::string msg = ss::last_message();
@@ -619,8 +621,31 @@ void tab_saves() {
                                       : "Saves the whole running game instead (about 300 MB per slot), exactly as it is. "
                                         "These files contain game code and data: never attach them to a bug report.");
     }
+#ifndef __ANDROID__
+    tab_saves_folder();
+#endif
     if (features.screenshots) tab_saves_screenshots();
     if (features.full_states) tab_saves_crash_recovery();  // its automatic states are full states
+}
+
+// Settings > Saves > Save folder (mods/save_folder.h): for example a cloud folder, from the next start.
+void tab_saves_folder() {
+    heading("Save folder");
+    const save_folder::View v = save_folder::view();
+    if (!v.notice.empty()) note("%s", v.notice.c_str());
+    note("In use: %s%s", v.folder.c_str(), v.custom ? "" : " (the default folder)");
+    if (v.pending)
+        note("From the next start: %s. Your save is copied there then (never moved).",
+             v.chosen.empty() ? "the default folder" : v.chosen.c_str());
+    if (ImGui::Button("Choose save folder...")) hostui::choose_save_folder([](std::string path) { save_folder::choose(path); });
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!v.custom && v.chosen.empty());
+    if (ImGui::Button("Back to default")) save_folder::choose("");
+    ImGui::EndDisabled();
+    help("Keeps your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive, so the "
+         "cloud app keeps it the same on your computers. Only the save goes there: save states and settings stay on this "
+         "computer. The change takes effect the next time you start the game. Close the game on one computer before "
+         "playing on another.");
 }
 
 void tab_saves_screenshots() {

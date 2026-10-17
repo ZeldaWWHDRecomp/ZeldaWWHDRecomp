@@ -255,7 +255,8 @@ not ask.
 
 **Mods > More > Save backups** lists every backup with its date, reason and size.
 **Back up now** makes a manual backup. Backups live in `save-backups` next to the
-save folder (on Android in the app's files folder, next to `save`), one folder
+save folder (on Android in the app's files folder, next to `save`; with a save folder chosen in
+the Saves tab, for example a cloud folder, they stay in the usual local `save-backups`), one folder
 per backup named after its date and reason (for example
 `2026-10-11_14-03-12-mod-dragon` before a mod, with its id cut to 7 characters,
 `…-restore` or `…-manual`), with the copied files under `save/` and

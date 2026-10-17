@@ -4,6 +4,7 @@
 #include "renderer_ext.h"
 #include "../screenshot.h"
 #include "../audio_out.h"
+#include "../mods/save_folder.h"
 
 #include <atomic>
 #include <algorithm>
@@ -293,6 +294,7 @@ void shutdown() {
     if (g_shut.exchange(true) || !g_backend || !g_backend->shutdown) return;
     audio::finish_dump();  // hosts exit with _Exit, which bypasses atexit handlers
     screenshot::finish();  // the screenshots taken are written first (the render thread keeps going)
+    save_folder::release();  // a chosen save folder's lock: this computer stops playing
     g_backend->shutdown();
 }
 

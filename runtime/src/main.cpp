@@ -53,7 +53,11 @@
 #include "platform/https.h"
 #include "mods/packages.h"
 #include "mods/save_backup.h"
+#include "mods/save_folder.h"
 #include "runtime.h"
+#if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
+#include <SDL3/SDL_messagebox.h>
+#endif
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
@@ -253,6 +257,24 @@ static void init_data_imports() {
 
 // Portable mode (portable.txt next to the executable, see host::portable_user_dir): the macOS paths
 // that do not go through host::config_dir() get their existing overrides pointed into the folder.
+// save_folder.h asks the player at start-up (two saves, another computer playing): a message box
+// on the SDL host; elsewhere, and in test runs, each question takes its safe answer.
+static int ask_player(const std::string& title, const std::string& text, const std::vector<std::string>& buttons) {
+#if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
+    const char* hidden = getenv("WWHD_HIDDEN_WINDOWS");
+    if (hidden && *hidden && strcmp(hidden, "0") != 0) return -1;
+    std::vector<SDL_MessageBoxButtonData> data;
+    for (size_t i = 0; i < buttons.size(); i++)
+        data.push_back({i == 0 ? (Uint32)SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT : 0u, int(i), buttons[i].c_str()});
+    const SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING, nullptr, title.c_str(), text.c_str(), int(data.size()), data.data(), nullptr};
+    int choice = -1;
+    return SDL_ShowMessageBox(&box, &choice) ? choice : -1;
+#else
+    (void)title; (void)text; (void)buttons;
+    return -1;
+#endif
+}
+
 static void apply_portable_mode() {
     if (!host::portable()) return;
     const std::string u = host::portable_user_dir();
@@ -421,6 +443,7 @@ int main(int argc, char** argv) {
     }
 #endif
     bool warm_shaders = false;
+    bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
     bool install_story_notebook = false;
 #ifdef WWHD_HAS_VULKAN
     bool renderer_smoke = false;
@@ -430,7 +453,7 @@ int main(int argc, char** argv) {
 #endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) config::game_dir = argv[++i];
-        else if (!strcmp(argv[i], "--save") && i + 1 < argc) config::save_dir = argv[++i];
+        else if (!strcmp(argv[i], "--save") && i + 1 < argc) config::save_dir = argv[++i], save_arg = true;
         else if (!strcmp(argv[i], "--trace")) g_trace_hle = true;
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
@@ -516,7 +539,21 @@ int main(int argc, char** argv) {
 #endif
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
     // A shader warm-up run (setup, Android's preparation activity) never touches saves.
-    mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders);
+#ifndef __ANDROID__
+    // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
+    // a change made there is applied now, and the folder is checked before the game reads its save.
+    if (!save_arg && !warm_shaders) {
+        const auto chosen = save_folder::startup(config::save_dir, host::config_dir(), ask_player,
+                                                 [](const std::string& line) { LOG("%s", line.c_str()); });
+        if (chosen.quit) {
+            fflush(stderr);
+            _Exit(0);
+        }
+        config::save_dir = chosen.save_dir.string();
+    }
+#endif
+    mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders,
+                         save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path());
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
     mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path

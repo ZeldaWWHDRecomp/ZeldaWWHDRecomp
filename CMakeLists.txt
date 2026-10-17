@@ -1465,6 +1465,13 @@ target_compile_options(mods_model_test PRIVATE -UNDEBUG)
 target_link_libraries(mods_model_test PRIVATE ZLIB::ZLIB Threads::Threads)
 add_test(NAME mods_model COMMAND mods_model_test)
 
+# a save folder chosen in the Saves tab, e.g. a cloud folder (mods/save_folder.h, issue #190)
+add_executable(save_folder_test runtime/tools/save_folder_test.cpp)
+target_include_directories(save_folder_test PRIVATE runtime/src)
+target_compile_options(save_folder_test PRIVATE -UNDEBUG)
+target_link_libraries(save_folder_test PRIVATE Threads::Threads)
+add_test(NAME save_folder COMMAND save_folder_test)
+
 add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
 target_include_directories(mod_setup_run_test PRIVATE runtime/src)
 target_compile_options(mod_setup_run_test PRIVATE -UNDEBUG)

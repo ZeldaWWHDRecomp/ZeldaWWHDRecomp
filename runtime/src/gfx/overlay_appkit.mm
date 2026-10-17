@@ -50,6 +50,19 @@ void choose_mod_source(bool folder, std::function<void(std::string)> chosen) {
         }];
     });
 }
+void choose_save_folder(std::function<void(std::string)> chosen) {
+    post([chosen] {
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.title = @"Choose save folder";
+        panel.canChooseDirectories = YES;
+        panel.canChooseFiles = NO;
+        panel.canCreateDirectories = YES;
+        panel.allowsMultipleSelection = NO;
+        [panel beginWithCompletionHandler:^(NSModalResponse result) {
+            if (result == NSModalResponseOK) chosen(std::string(panel.URL.path.UTF8String));
+        }];
+    });
+}
 void choose_game_source(bool folder, std::function<void(std::string)> chosen) {
     post([folder, chosen] {
         NSOpenPanel* panel = [NSOpenPanel openPanel];
