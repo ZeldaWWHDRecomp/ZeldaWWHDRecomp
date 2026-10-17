@@ -490,6 +490,12 @@ int main(int argc,char** argv){
   assert(!mods::mouse_captured()&&!overlay::is_open());
   assert(overlay::key(kVK_Escape,false,false,0));
   assert(overlay::key(kVK_Escape,true,false,0)&&overlay::is_open());overlay::key(kVK_Escape,false,false,0);
+  // a dialog in Settings (popup.h): Esc goes to it (Dear ImGui closes it there) and the menu stays open
+  overlay::g_dialog_open=true;assert(overlay::dialog_open());
+  {std::lock_guard<std::mutex> lk(overlay::g_mu);overlay::g_events.clear();}
+  assert(overlay::key(kVK_Escape,true,false,0)&&overlay::is_open());assert(overlay::key(kVK_Escape,false,false,0)&&overlay::is_open());
+  {std::lock_guard<std::mutex> lk(overlay::g_mu);assert(overlay::g_events.size()==2&&overlay::g_events[0].code==kVK_Escape);overlay::g_events.clear();}
+  overlay::g_dialog_open=false;
   overlay::set_open(false);
   // the game's text prompt keeps Esc (cancel), also when Esc is the Settings key
   reset();const int keysBefore=promptKeys;prompt=true;esc(true);esc(false);

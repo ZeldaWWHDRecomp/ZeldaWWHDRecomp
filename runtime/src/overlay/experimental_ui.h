@@ -7,6 +7,7 @@
 #include "../mods/packages.h"
 #include "../mods/save_backup.h"
 #include "imgui.h"
+#include "popup.h"
 #include <functional>
 #include <string>
 #include <utility>
@@ -108,13 +109,12 @@ inline bool backups_section(bool back) {
         ImGui::EndTable();
     }
     // restore confirmation
-    const char* title = "Restore save backup##restore_confirm";
-    if (backups.open_restore) { ImGui::OpenPopup(title); backups.open_restore = false; }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    const bool open_restore = backups.open_restore;
+    backups.open_restore = false;
+    if (popup::begin("Restore save backup##restore_confirm", open_restore)) {
         std::string what = backups.restore_choice;
         for (const auto& info : list) if (info.name == backups.restore_choice) what = info.when() + " (" + info.description() + ")";
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30);
+        ImGui::PushTextWrapPos(popup::wrap_pos(30));
         ImGui::TextWrapped("Restore your saves from the backup of %s?", what.c_str());
         ImGui::TextWrapped("The game has its save files open while it runs, so the restore happens at the next start, "
                            "before the game loads any save. Anything you save until then is replaced.");
@@ -125,7 +125,7 @@ inline bool backups_section(bool back) {
         ImGui::SameLine();
         bool cancel = ImGui::Button("Cancel", ImVec2(120, 0));
         ImGui::SetItemDefaultFocus();
-        if (back || ImGui::IsKeyPressed(ImGuiKey_Escape)) { cancel = true; accept = false; b_used = back; }
+        if (popup::dismissed(back)) { cancel = true; accept = false; b_used = back; }  // the X, a tap outside, Esc or B
         if (accept) {
             std::string error;
             backups.message = s.restore(backups.restore_choice, error)
@@ -133,16 +133,15 @@ inline bool backups_section(bool back) {
                                   : error;
         }
         if (accept || cancel) { backups.restore_choice.clear(); ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
+        popup::end();
     }
     // delete confirmation
-    const char* delete_title = "Delete save backup##delete_confirm";
-    if (backups.open_delete) { ImGui::OpenPopup(delete_title); backups.open_delete = false; }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal(delete_title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    const bool open_delete = backups.open_delete;
+    backups.open_delete = false;
+    if (popup::begin("Delete save backup##delete_confirm", open_delete)) {
         std::string what = backups.delete_choice;
         for (const auto& info : s.list()) if (info.name == backups.delete_choice) what = info.when() + " (" + info.description() + ")";
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30);
+        ImGui::PushTextWrapPos(popup::wrap_pos(30));
         ImGui::TextWrapped("Backup of %s", what.c_str());
         ImGui::TextWrapped("Delete this backup? This can't be undone.");
         ImGui::PopTextWrapPos();
@@ -151,13 +150,13 @@ inline bool backups_section(bool back) {
         ImGui::SameLine();
         bool cancel = ImGui::Button("Cancel", ImVec2(120, 0));
         ImGui::SetItemDefaultFocus();  // keyboard and controller start on Cancel
-        if (back || ImGui::IsKeyPressed(ImGuiKey_Escape)) { cancel = true; accept = false; b_used = b_used || back; }
+        if (popup::dismissed(back)) { cancel = true; accept = false; b_used = b_used || back; }  // the X, a tap outside, Esc or B
         if (accept) {
             std::string error;
             backups.message = s.remove(backups.delete_choice, error) ? "Backup deleted." : error;
         }
         if (accept || cancel) { backups.delete_choice.clear(); ImGui::CloseCurrentPopup(); }
-        ImGui::EndPopup();
+        popup::end();
     }
     return b_used;
 }

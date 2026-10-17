@@ -363,7 +363,9 @@ int main(int argc,char** argv) {
                 } else if(mode=="checkbox") {
                     if(s.page.empty())clicker.click("open_"+id);else if(s.rects.count("##on_page")){clicker.click("##on_page");switched=true;}
                 } else if(s.rects.count(switch_label)){clicker.click(switch_label);switched=true;}
-            } else if(has_review&&!accepted&&frame>8) {
+            } else if(has_review&&!accepted&&frame>8&&frame-review_since>=2) {
+                // (a player taps once the review is in place: on its first frame it is not placed yet, and a tap
+                // there would land outside it and close it, popup.h)
                 auto& r=s.review;
                 bool need_source=!r.source_game.empty()&&!ui::source_ready(r);
                 // missing: first the controller's A on the review's default button, which is Cancel

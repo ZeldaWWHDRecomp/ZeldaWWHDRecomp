@@ -21,6 +21,9 @@
 #include "graphics_switch.h"
 #include "restart_dialog.h"
 #include "quit_dialog.h"
+#include "gyro_popup.h"
+#include "popup.h"
+#include "widgets.h"
 #include "gamepad_nav.h"
 #include "perf_average.h"
 #ifdef __ANDROID__
@@ -123,6 +126,8 @@ const bool g_no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;  // test runs ig
 // has the user's keyboard)
 const bool g_no_host_keys = g_no_host && !getenv("WWHD_TEST_POST_KEYS");
 bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also close the menu
+// a dialog (or a list) is open in Settings: Esc and Android's Back close it, not the menu (popup.h)
+std::atomic<bool> g_dialog_open{false};
 
 // input events from the host's main thread, replayed into ImGui on the render thread
 struct Event {
@@ -264,10 +269,7 @@ void setup_style() {
     s.WindowPadding = ImVec2(16, 14);
     s.FramePadding = ImVec2(9, 5);
 #ifdef __ANDROID__
-    s.FramePadding = ImVec2(10, 16);
-    s.ItemInnerSpacing = ImVec2(10, 8);
-    s.ScrollbarSize = 49;
-    s.GrabMinSize = 49;
+    mobile_ui::apply_touch_style(s, mobile_ui::Layout{});  // touch-sized controls; each frame sizes them for the screen
 #endif
     s.ItemSpacing = ImVec2(10, 7);
     s.WindowBorderSize = 1;
@@ -454,23 +456,16 @@ void read_controller() {
 }
 
 // ---------------------------------------------------------------- widgets
-void help(const char* text) {
-    if (overlay::tooltip_hovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", text);
-}
+using widgets::help;
+using widgets::note;
+using widgets::radio;
+using widgets::check;
+using widgets::selectable;
 void heading(const char* text) {
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.95f, 0.85f, 1.0f));
     ImGui::SeparatorText(text);
     ImGui::PopStyleColor();
-}
-void note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
-void note(const char* fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.70f, 0.78f, 0.84f, 1.0f));
-    ImGui::TextWrappedV(fmt, ap);
-    ImGui::PopStyleColor();
-    va_end(ap);
 }
 void warn(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void warn(const char* fmt, ...) {
@@ -480,28 +475,6 @@ void warn(const char* fmt, ...) {
     ImGui::TextWrappedV(fmt, ap);
     ImGui::PopStyleColor();
     va_end(ap);
-}
-// a radio button that runs `set` on the main thread when chosen
-bool radio(const char* label, bool active, bool enabled = true) {
-    ImGui::BeginDisabled(!enabled);
-    bool clicked = ImGui::RadioButton(label, active) && !active;
-    ImGui::EndDisabled();
-    return clicked;
-}
-bool check(const char* label, bool value, bool* out, bool enabled = true) {
-    ImGui::BeginDisabled(!enabled);
-    bool v = value;
-    bool changed = ImGui::Checkbox(label, &v);
-    ImGui::EndDisabled();
-    *out = v;
-    return changed;
-}
-
-bool selectable(const char* label, bool selected = false, ImGuiSelectableFlags flags = 0, ImVec2 size = ImVec2(0, 0)) {
-#ifdef __ANDROID__
-    size.y = std::max(size.y, ImGui::GetFrameHeight());
-#endif
-    return ImGui::Selectable(label, selected, flags, size);
 }
 
 bool combo(const char* label, int* current, const char* items) {
@@ -1365,8 +1338,8 @@ void tab_display() {
             g_ui_size = uiSize;
             hostui::set("uiSize", std::to_string(uiSize));
         });
-    help("Automatic adapts Settings to your Android device's screen. Choose "
-         "Small, Medium or Large to adjust the controls.");
+    help("Automatic sizes Settings for your screen: more compact on a phone, larger on a tablet or handheld, "
+         "with every button at least 7 mm tall. Small, Medium and Large set the size yourself.");
     heading("Touch controls");
     int touchMode = gfx::g_touch_buttons;
     if (combo("Touch buttons", &touchMode, "Automatic\0Always show\0Hide\0"))
@@ -1410,20 +1383,29 @@ void code_mod_dialog() {
     if(g_no_host&&getenv("WWHD_TEST_CODE_MOD_REBUILD")&&!test_accepted&&!status.building&&!status.ready) {
         test_accepted=true;mods::code::begin();
     }
-    ImGui::OpenPopup("Rebuild code-mod support");
-    if(ImGui::BeginPopupModal("Rebuild code-mod support",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
+#ifdef __ANDROID__
+    const bool closable=true;  // building: Hide
+#else
+    const bool closable=!status.building;  // building: Cancel rebuild, or wait for it
+#endif
+    if(popup::begin("Rebuild code-mod support",true,0,closable)) {
+        // the X, a tap outside, Esc or B: Later, Hide or Cancel (never cancels a rebuild on desktop)
+        const bool back=navigation_pressed(input_map::face_input(input_map::kB));
+        const bool dismissed=popup::dismissed(back);
+        if(dismissed&&back)g_pad_b_used=true;
+        ImGui::PushTextWrapPos(popup::wrap_pos(30));
         if(status.ready) {
             ImGui::TextWrapped("Game code is ready. Restart the game to apply the change.");
             if(!status.error.empty())ImGui::TextWrapped("%s",status.error.c_str());
             if(ImGui::Button("Restart now"))hostui::post([] {std::string error;if(!mods::code::restart(error))fprintf(stderr,"[code mods] %s\n",error.c_str());});
             ImGui::SameLine();
-            if(ImGui::Button("Later")){mods::code::dismiss();ImGui::CloseCurrentPopup();}
+            if(ImGui::Button("Later")||dismissed){mods::code::dismiss();ImGui::CloseCurrentPopup();}
         } else if(status.building) {
             ImGui::TextUnformatted(status.stage.c_str());
             if(status.total)ImGui::ProgressBar(float(status.done)/status.total,ImVec2(360,0));
 #ifdef __ANDROID__
             ImGui::TextWrapped("The setup builds it in the background; you can keep playing. Its notification and screen can pause it.");
-            if(ImGui::Button("Hide")){mods::code::cancel();mods::code::dismiss();ImGui::CloseCurrentPopup();}
+            if(ImGui::Button("Hide")||dismissed){mods::code::cancel();mods::code::dismiss();ImGui::CloseCurrentPopup();}
 #else
             if(ImGui::Button("Cancel rebuild"))mods::code::cancel();
 #endif
@@ -1433,9 +1415,10 @@ void code_mod_dialog() {
             if(!status.error.empty())ImGui::TextWrapped("%s",status.error.c_str());
             if(ImGui::Button("Rebuild now"))mods::code::begin();
             ImGui::SameLine();
-            if(ImGui::Button("Cancel")){mods::code::dismiss();ImGui::CloseCurrentPopup();}
+            if(ImGui::Button("Cancel")||dismissed){mods::code::dismiss();ImGui::CloseCurrentPopup();}
         }
-        ImGui::EndPopup();
+        ImGui::PopTextWrapPos();
+        popup::end();
     }
 }
 
@@ -1874,106 +1857,13 @@ void load_gyro() {
         if (hostui::get(k, v)) saved.emplace_back(k, v);
     motion::set_settings(motion::from_saved(saved));
 }
-// the Gyro window (Controls tab > Gyro...): source, axis, sensitivity, invert, recalibrate, Cemuhook server
+// the Gyro dialog (Controls tab > Gyro..., gyro_popup.h): what it changes is saved at once
 void gyro_window(bool& open) {
-    const char* title = "Gyro aiming##gyro";
-    if (open) { ImGui::OpenPopup(title); open = false; }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
     motion::Settings g = motion::settings(), before = g;
-    bool v;
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 34);
-    note("On the Wii U you aim in first person (bow, hookshot, boomerang, telescope, Picto Box, grappling hook) by "
-         "moving the GamePad. This works with the GamePad and the Pro Controller choice alike. The game's own "
-         "Options > Gyro switch still decides whether it uses the motion, and it ignores the motion while the right "
-         "stick is pushed.");
-    for (int i = 0; i < motion::kSourceCount; i++)
-        if (radio(motion::source_label(i), g.source == i)) {
-            // an untouched sensitivity follows the new source's default (the device's own sensors: 1.0)
-            const float was = motion::default_sensitivity(g.source), now = motion::default_sensitivity(i);
-            if (g.tuning.sensitivity_x == was) g.tuning.sensitivity_x = now;
-            if (g.tuning.sensitivity_y == was) g.tuning.sensitivity_y = now;
-            g.source = i;
-        }
-    if (motion::env_override()) note("WWHD_GYRO=%s overrides the saved source.", getenv("WWHD_GYRO"));
-    if (g.source == motion::kOff && motion::gyro_controllers() > 0) note("A controller with a gyro is connected: choose Controller gyro to use it.");
-    if (g.source == motion::kController || g.source == motion::kCemuhook || g.source == motion::kDevice) {
-        ImGui::TextUnformatted("Turn left/right by");
-        for (int a = 0; a < motion::kAxisModeCount; a++) {
-            flow::next(flow::check(motion::axis_label(a)));
-            if (radio(motion::axis_label(a), g.tuning.axis == a)) g.tuning.axis = a;
-        }
-        help("Player space: turning the controller left or right about the real vertical, however you hold it "
-             "(recommended). Yaw: turning it about its own vertical axis (as if it lay flat). Roll: tilting it to "
-             "the side like a steering wheel. Tilting its top up or down always looks up or down.");
-    }
-    const float lo = motion::Tuning::kMinSensitivity, hi = motion::Tuning::kMaxSensitivity;
-    ImGui::SetNextItemWidth(220);
-    ImGui::SliderFloat("Sensitivity left/right", &g.tuning.sensitivity_x, lo, hi, "%.2fx", ImGuiSliderFlags_Logarithmic);
-    ImGui::SameLine(0, 16);
-    if (check("Invert##x", g.tuning.invert_x, &v)) g.tuning.invert_x = v;
-    ImGui::SetNextItemWidth(220);
-    ImGui::SliderFloat("Sensitivity up/down", &g.tuning.sensitivity_y, lo, hi, "%.2fx", ImGuiSliderFlags_Logarithmic);
-    ImGui::SameLine(0, 16);
-    if (check("Invert##y", g.tuning.invert_y, &v)) g.tuning.invert_y = v;
-    if (ImGui::Button("Default sensitivity"))
-        g.tuning.sensitivity_x = g.tuning.sensitivity_y = motion::default_sensitivity(g.source);
-    help("1.0 turns the view as far as moving a real Wii U GamePad by the same angle would (about twice the "
-         "controller's turn). The default for a controller, 0.5, lets the view follow it about one to one; "
-         "with the device gyro the screen you hold is the GamePad, so its default is 1.0.");
-    if (g.source == motion::kMouse) {
-        ImGui::SetNextItemWidth(220);
-        ImGui::SliderFloat("Mouse: degrees per point", &g.mouse_degrees, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-        help("How far one point of mouse movement turns the GamePad (before the sensitivity above). With Steam "
-             "Input's gyro to mouse, tune this and Steam's own sensitivity together.");
-        note("While the game aims, the pointer is captured and the mouse turns the GamePad (the mouse camera mod "
-             "leaves it alone then).");
-    }
-    if (g.source == motion::kCemuhook) {
-        static char host[256] = "";
-        static int port = 0;
-        static bool init = false;
-        if (!init || ImGui::IsWindowAppearing()) { snprintf(host, sizeof host, "%s", g.dsu_host.c_str()); port = g.dsu_port; init = true; }
-        ImGui::SetNextItemWidth(220);
-        if (text_entry::field("Server", host, sizeof host, ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
-            g.dsu_host = host[0] ? host : "127.0.0.1";
-        ImGui::SetNextItemWidth(120);
-        if (ImGui::InputInt("Port", &port, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::IsItemDeactivatedAfterEdit())
-            g.dsu_port = std::clamp(port, 1, 65535);
-        ImGui::SetNextItemWidth(120);
-        int slot = g.dsu_slot + 1;
-        if (ImGui::SliderInt("Controller slot", &slot, 1, 4)) g.dsu_slot = slot - 1;
-        note("A Cemuhook (DSU) server: DS4Windows, BetterJoy, SteamDeckGyroDSU or a phone app; default 127.0.0.1, port 26760.");
-    }
-    // recalibrate: a controller input and/or a key
-    const char* pad_name = g.recenter_pad > 0 ? input_map::pad_label(g.recenter_pad) : "None";
-    ImGui::SetNextItemWidth(220);
-    if (ImGui::BeginCombo("Recalibrate: controller", pad_name)) {
-        for (int p = 0; p < input_map::kPadCount; p++)
-            if (selectable(p ? input_map::pad_label(p) : "None", g.recenter_pad == p)) g.recenter_pad = p;
-        ImGui::EndCombo();
-    }
-    std::string key_name = g.recenter_key >= 0 ? input_map::key_label(g.recenter_key) : "None";
-    ImGui::SetNextItemWidth(220);
-    if (ImGui::BeginCombo("Recalibrate: key", key_name.c_str())) {
-        if (selectable("None", g.recenter_key < 0)) g.recenter_key = -1;
-        for (int k = 0; k < 256; k++) {
-            std::string id = input_map::key_id(k);
-            if (id.rfind("Key", 0) == 0) continue;  // unnamed codes
-            if (selectable(input_map::key_label(k).c_str(), g.recenter_key == k)) g.recenter_key = k;
-        }
-        ImGui::EndCombo();
-    }
-    help("If the view drifts while the controller rests, recalibrate and put the controller down for a second: "
-         "the gyro's offset is learnt anew. The button or key also reaches the game if the controls use it; pick "
-         "a free one.");
-    if (ImGui::Button("Recalibrate now")) motion::recalibrate();
-    ImGui::SameLine();
-    ImGui::TextUnformatted(motion::status().c_str());
-    ImGui::PopTextWrapPos();
+    const bool back = navigation_pressed(input_map::face_input(input_map::kB));
+    if (gyro::dialog(open, g, back)) g_pad_b_used = true;  // B closed the dialog: the menu stays open
+    open = false;
     if (!(g == before)) save_gyro(g);
-    if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
 }
 
 void tab_controls() {
@@ -2648,6 +2538,7 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
     if (open && window_target::selected.load() == window_target::Window::None) return;
 #endif
     if (g_open.exchange(open) == open) return;
+    if (!open) g_dialog_open = false;
     for (auto& k : g_held_keys) k = false;
     input::release_keys();  // keys held now belong to the menu (opening) or are not stuck in the game (closing)
     if (open) {
@@ -2676,6 +2567,7 @@ bool layer_takes_pointer() {
 }
 bool pointer_layer_active() { return layer_mode() != 0; }
 bool captures() { return is_open() || text_entry::active(); }
+bool dialog_open() { return is_open() && g_dialog_open.load(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
 bool perf_shown() { return g_perf.load(std::memory_order_relaxed); }
 void set_perf_shown(bool on) {
@@ -2747,6 +2639,11 @@ bool key(int code, bool down, bool repeat, int mods, KeyOrigin origin) {
         if (down && !repeat) {
             g_capture_mods = mods; g_capture_key = code;
         }
+        return true;
+    }
+    // a dialog or a list in Settings: Esc closes that (popup.h), the menu stays
+    if (code == kVK_Escape && g_dialog_open.load()) {
+        push({Event::Key, code, down, 0, 0, mods});
         return true;
     }
     if (code == kVK_Escape && down && !repeat) {
@@ -2951,9 +2848,12 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         return true;
     }();
     (void)loadedUiSize;
-    const float scale = mobile_ui::scale(g_android_dpi, g_density, g_ui_size);
+    // phones get a more compact layout than tablets and handhelds (mobile_ui.h); a UI size the player chose decides
+    const mobile_ui::Layout ui = mobile_ui::layout(g_android_dpi, g_density, g_ui_size, float(pw), float(ph));
+    mobile_ui::apply_touch_style(ImGui::GetStyle(), ui);
+    const float scale = ui.scale;
 #else
-    const float scale = std::max({1.0f, g_density.load(), ph / 820.0f});
+    const float scale = mobile_ui::desktop_scale(g_density.load(), float(ph));
 #endif
     io.DisplaySize = ImVec2(pw / scale, ph / scale);
     io.DisplayFramebufferScale = ImVec2(scale, scale);
@@ -3010,6 +2910,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     gfx::g_pip_preview=false;
     if (open) settings_window();
     else modsui::background(mods_host());
+    g_dialog_open = open && ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     pip_live_drag();
     if (text) {
         float pad[input_map::kPadCount];

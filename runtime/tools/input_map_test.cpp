@@ -1042,6 +1042,60 @@ static void test_shortcuts() {
     CHECK(shortcut_conflict(m, kPhoto) && shortcut_conflict(m, kMute));
 }
 
+// Settings sizes by screen (mobile_ui.h): phones a compact layout, tablets and handhelds as before, desktop as before
+static void test_screen_layouts() {
+    struct Screen { const char* name; float w, h, dpi; bool phone; };
+    const Screen screens[] = {
+        {"OnePlus 8 Pro 6.78\" at 1080p", 2400, 1080, 388, true},
+        {"OnePlus 8 Pro portrait", 1080, 2400, 388, true},
+        {"OnePlus 8 Pro at 1440p", 3168, 1440, 513, true},
+        {"Galaxy S25 6.2\"", 2340, 1080, 416, true},
+        {"Galaxy S25 portrait", 1080, 2340, 416, true},
+        {"Pixel 2 XL 18:9 6\"", 2880, 1440, 538, true},
+        {"Retroid Pocket 5 5.5\" 16:9", 1920, 1080, 401, false},
+        {"AYN Thor / Odin 2 6\" 16:9", 1920, 1080, 367, false},
+        {"Odin 2 Portal 7\" 16:9", 1920, 1080, 315, false},
+        {"Retroid Pocket Mini 3.9\" 4:3-ish", 1240, 1080, 420, false},
+        {"tablet 11\" 16:10", 2560, 1600, 274, false},
+        {"foldable inner 7.6\"", 2208, 1768, 373, false},
+        {"a long tablet 10\" 21:9 (too large for a phone)", 2560, 1080, 278, false},
+    };
+    for (const Screen& s : screens) {
+        const mobile_ui::Layout a = mobile_ui::layout(s.dpi, s.dpi / 160, mobile_ui::kAutomatic, s.w, s.h);
+        CHECK(a.phone == s.phone);
+        const float classic = mobile_ui::scale(s.dpi, s.dpi / 160, 0);  // today's size
+        if (s.phone) {
+            // smaller text than before (2.2 mm instead of 2.8), controls still 48 dp = 7.6 mm to tap
+            CHECK(std::fabs(a.control_mm(s.dpi) - 7.62f) < 0.01f);
+            CHECK(std::fabs(a.text_mm(s.dpi) - 2.20f) < 0.02f);
+            CHECK(a.scale < classic * 0.81f);
+            // the player's choice decides: Small < Automatic < Medium < Large, every control at least 7 mm
+            const float mm[] = {0, 7, 8, 9};
+            float last = 0;
+            for (int p : {1, 0, 2, 3}) {
+                const mobile_ui::Layout l = mobile_ui::layout(s.dpi, s.dpi / 160, p, s.w, s.h);
+                CHECK(l.phone && l.scale > last && l.control_mm(s.dpi) >= 7.0f - 0.01f);
+                if (p) CHECK(std::fabs(l.control_mm(s.dpi) - mm[p]) < 0.01f);
+                last = l.scale;
+            }
+        } else {
+            // tablets and handhelds: today's size and padding, 8 mm controls, for every UI size
+            for (int p = 0; p < 4; ++p) {
+                const mobile_ui::Layout l = mobile_ui::layout(s.dpi, s.dpi / 160, p, s.w, s.h);
+                CHECK(!l.phone && l.pad_y == 16 && l.scale == mobile_ui::scale(s.dpi, s.dpi / 160, p));
+            }
+            CHECK(std::fabs(a.control_mm(s.dpi) - 8.0f) < 0.01f);
+        }
+        std::printf("  %-48s %s: scale %.2f (was %.2f), control %.1f mm, text %.1f mm, %4.0fx%-4.0f layout px\n", s.name,
+                    a.phone ? "phone   " : "handheld", a.scale, classic, a.control_mm(s.dpi), a.text_mm(s.dpi), s.w / a.scale, s.h / a.scale);
+    }
+    // an unknown screen shape keeps the tablet layout
+    CHECK(!mobile_ui::layout(400, 2.5f, 0).phone);
+    // desktop: unchanged (backing scale, larger on tall windows)
+    CHECK(mobile_ui::desktop_scale(1, 752) == 1.0f && mobile_ui::desktop_scale(2, 1504) == 2.0f);
+    CHECK(std::fabs(mobile_ui::desktop_scale(1, 2160) - 2160 / 820.0f) < 1e-5f);
+}
+
 int main() {
     test_shortcuts();
     for (int mode : {touch_buttons::Automatic, touch_buttons::AlwaysShow, touch_buttons::Hide})
@@ -1058,6 +1112,7 @@ int main() {
         CHECK(mobile_ui::scale(dpi, 1, 3) > automatic);
     }
     CHECK(std::isfinite(mobile_ui::scale(NAN, NAN, 0)));
+    test_screen_layouts();
     test_settings_shortcut();
     test_android_odin_mapping();
     test_binding_capture_faces();

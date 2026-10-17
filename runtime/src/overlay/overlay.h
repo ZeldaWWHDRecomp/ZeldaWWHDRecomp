@@ -53,6 +53,7 @@ bool blocks_input();
 // the overlay has keyboard, mouse and controller: the menu is open or the game's text prompt shows
 // (text_entry.h); hosts route the pointer by this
 bool captures();
+bool dialog_open();  // any thread: a dialog or a list is open in Settings (Esc and Android's Back close it)
 // the world editor's overlays (extensions.h InputLayer): a layer is active while the menu is closed, and
 // takes the pointer now (its mode, or the pointer over one of its windows)
 bool pointer_layer_active();

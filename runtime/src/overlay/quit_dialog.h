@@ -7,6 +7,7 @@
 #pragma once
 #include "../quit_prompt.h"
 #include "imgui.h"
+#include "popup.h"
 
 namespace overlay::quit {
 enum class Answer { None, Quit, Cancel };
@@ -33,12 +34,8 @@ inline bool bottom_row(bool with_close, bool* close) {
 // says that unsaved progress is lost). controller_back: B this frame (answers Cancel, as Esc does).
 // forced: a test run's answer (WWHD_TEST_QUIT_ANSWER), given once the dialog is up.
 inline Answer dialog(bool open, bool in_game, bool controller_back, Answer forced = Answer::None) {
-    const char* title = quitprompt::kTitle;
-    if (open) ImGui::OpenPopup(title);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(.5f, .5f));
-    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
-        return Answer::None;
-    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26);
+    if (!popup::begin(quitprompt::kTitle, open)) return Answer::None;
+    ImGui::PushTextWrapPos(popup::wrap_pos(26));
     if (in_game) ImGui::TextWrapped("%s", quitprompt::kProgressLost);
     else ImGui::TextWrapped("The game closes.");
     ImGui::PopTextWrapPos();
@@ -51,10 +48,10 @@ inline Answer dialog(bool open, bool in_game, bool controller_back, Answer force
     ImGui::SetItemDefaultFocus();
     ImGui::SameLine();
     if (ImGui::Button(kQuit, size)) answer = Answer::Quit;
-    if (controller_back || ImGui::IsKeyPressed(ImGuiKey_Escape)) answer = Answer::Cancel;
+    if (popup::dismissed(controller_back)) answer = Answer::Cancel;  // the X, a tap outside, Esc or B
     if (answer == Answer::None) answer = forced;
     if (answer != Answer::None) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    popup::end();
     return answer;
 }
 }  // namespace overlay::quit
