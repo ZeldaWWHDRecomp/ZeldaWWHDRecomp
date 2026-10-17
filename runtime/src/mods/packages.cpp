@@ -381,6 +381,7 @@ void save_move_speed_options(Value& options) {
     options["move-speed.mode"] = double((int)move_speed_mode());
     options["move-speed.anim"] = std::string(move_anim_label(move_speed_anim()));
     options["move-speed.button"] = double(move_speed_button());
+    options["move-speed.bar"] = move_speed_bar();
 }
 void load_move_speed_options(const Value& options, bool startup = false) {
     auto number = [&](const char* key, const char* env, double lo, double hi, float fallback, void (*apply)(float)) {
@@ -403,8 +404,19 @@ void load_move_speed_options(const Value& options, bool startup = false) {
     if (!std::getenv("WWHD_MOD_MOVE_ANIM") && !(startup && anim.type == Value::Null))
         set_move_speed_anim(move_anim_from_id(anim.string("native")));
     const auto& button = options.get("move-speed.button");
-    if (button.type == Value::Number && button.number >= 0 && button.number <= UINT32_MAX && std::floor(button.number) == button.number)
+    if (!std::getenv("WWHD_MOD_MOVE_BUTTON") && button.type == Value::Number && button.number >= 0 &&
+        button.number <= UINT32_MAX && std::floor(button.number) == button.number)
         set_move_speed_button(uint32_t(button.number));
+    // "Show boost bar". Older profiles have no key: at startup they keep the loaded setting,
+    // profile switches show the bar (the default).
+    const auto& bar = options.get("move-speed.bar");
+    if (!std::getenv("WWHD_MOD_MOVE_BAR") && !(startup && bar.type == Value::Null)) {
+        bool on = true;
+        if (bar.type == Value::Bool) on = bar.boolean;
+        // remember_option stores checkbox values as numeric 0/1.
+        else if (bar.type == Value::Number && (bar.number == 0 || bar.number == 1)) on = bar.number == 1;
+        set_move_speed_bar(on);
+    }
 }
 void save_traversal_options(Value& options) {
     for (const auto& option : manager::traversal_options()) options[option.profile_key] = double(option.value());

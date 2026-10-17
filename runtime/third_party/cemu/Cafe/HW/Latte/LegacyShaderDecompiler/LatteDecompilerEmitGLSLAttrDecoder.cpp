@@ -1,3 +1,4 @@
+#include "gfx/vulkan/vertex_cpu_policy.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Core/LatteShaderAssembly.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
@@ -12,6 +13,7 @@
 
 // WWHD: WWHD_VK_CPU_VERTICES diagnostic, set once before the first translation (LatteDecompiler.h)
 bool g_latteCpuVertexDecode = false;
+uint32_t g_latteCpuVertexClasses = 0;
 
 void _readLittleEndianAttributeU32x4(LatteDecompilerShader* shaderContext, StringBuf* src, uint32 attributeInputIndex)
 {
@@ -105,7 +107,7 @@ void LatteDecompiler_emitAttributeDecodeGLSL(LatteDecompilerShader* shaderContex
 	}
 
 	uint32 attributeInputIndex = attrib->semanticId;
-	if (g_latteCpuVertexDecode)
+	if (gfxvk::vk::cpu_vertex_selected(*attrib, g_latteCpuVertexClasses))
 	{
 		// WWHD diagnostic (issue #207): the CPU already did the swap and conversion
 		// (gfx/vulkan/vertex_cpu_decode.h); float results arrive as vec4, integers as uvec4

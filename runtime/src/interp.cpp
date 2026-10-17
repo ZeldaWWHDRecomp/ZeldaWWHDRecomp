@@ -1075,6 +1075,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
+    mods::hud_service();  // the boost bar and climb wheel fade out over the game's menus, events, messages
     const bool was_fast_forward = mods::fast_forward_active();
     mods::fast_forward_service();
     const bool ff_transition = was_fast_forward != mods::fast_forward_active();

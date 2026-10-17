@@ -121,7 +121,7 @@ if(NOT WWHD_HAS_METAL)
   list(FILTER CEMU_SOURCES EXCLUDE REGEX "LatteDecompilerEmitMSL[^/]*\\.cpp$")
 endif()
 add_library(cemu_latte STATIC ${CEMU_SOURCES})
-target_include_directories(cemu_latte PUBLIC ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/metal-cpp
+target_include_directories(cemu_latte PUBLIC ${CMAKE_SOURCE_DIR}/runtime/src ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/metal-cpp
                                              ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
 target_compile_options(cemu_latte PRIVATE "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 if(WWHD_HAS_METAL)
@@ -1022,6 +1022,7 @@ target_include_directories(move_sprint_runtime_test PRIVATE runtime/src runtime/
 target_compile_options(move_sprint_runtime_test PRIVATE -UNDEBUG)
 add_test(NAME move_sprint_runtime COMMAND move_sprint_runtime_test)
 add_test(NAME move_sprint_startup COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_MOVE_ANIM=sprint $<TARGET_FILE:move_sprint_runtime_test> --startup)
+add_test(NAME move_button_startup COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_MOVE_BUTTON=roll-a $<TARGET_FILE:move_sprint_runtime_test> --button)
 add_executable(crash_addr_test runtime/tools/crash_addr_test.cpp runtime/src/crash_addr.cpp)
 target_include_directories(crash_addr_test PRIVATE runtime/src)
 target_compile_options(crash_addr_test PRIVATE -UNDEBUG)
@@ -1665,6 +1666,12 @@ if(WWHD_HAS_VULKAN)
     $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(vertex_diagnostics_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
   add_test(NAME vertex_diagnostics COMMAND vertex_diagnostics_test)
+  add_executable(vertex_cpu_classes_test runtime/tools/vertex_cpu_classes_test.cpp)
+  target_include_directories(vertex_cpu_classes_test PRIVATE runtime/src ${CEMU_DIR}
+    runtime/third_party/metal-cpp runtime/third_party/fmt/include
+    $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_compile_options(vertex_cpu_classes_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
+  add_test(NAME vertex_cpu_classes COMMAND vertex_cpu_classes_test)
 endif()
 
 # Validation capture must keep forwarding after its bounded copy is full.

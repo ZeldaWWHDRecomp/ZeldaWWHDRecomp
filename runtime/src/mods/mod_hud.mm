@@ -131,8 +131,12 @@ id<MTLRenderPipelineState> pipeline(id<MTLDevice> dev, MTLPixelFormat fmt, bool 
 namespace mods {
 // called by the renderer after the TV image was copied to the scan texture
 void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex) {
-    const ClimbHud wheel = climb_hud();
-    const MoveHud bar = move_hud();
+    // both step aside (fade out) while a game menu, an event or a message is up (hud_gate.cpp)
+    const float shown = game_ui_hud_alpha();
+    ClimbHud wheel = climb_hud();
+    MoveHud bar = move_hud();
+    wheel.alpha *= shown;
+    bar.alpha *= shown;
     const bool drawWheel = climb_enabled() && wheel.alpha > 0.0f, drawBar = bar.alpha > 0.0f;
     if ((!drawWheel && !drawBar) || !tex || !(tex.usage & MTLTextureUsageRenderTarget)) return;
     float w = tex.width, h = tex.height;

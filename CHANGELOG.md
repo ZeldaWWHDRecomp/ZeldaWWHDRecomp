@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **PowerVR phones (e.g. Pixel 10): no more stretched spikes** (#207). On PowerVR GPUs the game now converts vertex
+  data on the CPU automatically, because their drivers decode some of it wrongly in the shader. It can cost some speed;
+  **Graphics → Advanced → Convert vertices on the CPU** switches it off (Automatic restores it).
 - **Shortcuts: remapping works, Esc opens Settings** (#220). Remapped shortcuts take effect again (the Controls tab was
   catching the input first). Every binding clears the same way in Controls and Shortcuts (right-click, or Delete /
   Backspace / X on a focused binding); extra controller buttons (Capture/Share, rear paddles, touchpad click) can be
@@ -24,6 +27,11 @@ what is on `devel` and not released yet (also in the
 - **Option to turn off the letterbox bars while targeting** (#114). Settings → Mods → Built-in → Camera →
   **Letterbox while targeting** (on by default). Switched off, normal Z-targeting no longer shows the black bars;
   cutscenes, scripted cameras, minigames and item aiming keep theirs.
+
+- **Run/swim speed: boost bar options and "Roll, then hold A"** (#233). New **Show boost bar** switch; with Boost time
+  set to no limit the bar no longer appears; the boost bar and the climbing stamina wheel now hide while menus, cutscenes
+  and conversations are on screen. New boost button **Roll, then hold A**: roll while running and keep A held to boost
+  until you let go (on land).
 - **True 60: no more crash at Orca's sword training** (#223). Talking to Orca and choosing "yes" stopped the game in True 60
   mode; event commands now only run on full game steps.
 

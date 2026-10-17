@@ -1,3 +1,4 @@
+#include "vertex_cpu_policy.h"
 #include "../stereo_projection.h"
 #include "../stereo.h"
 #include "atomic_temporary.h"
@@ -665,7 +666,10 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         auto packAux=cemu_pack_hash::auxiliary(*shader.dec,regs,vertex);
         auto custom=mods::cemu::shader_source(packBase,packAux,vertex);
         // graphics-pack vertex shaders decode raw guest attributes themselves: not with CPU-converted ones
-        if(vertex&&!custom.empty()&&R.vertexDiagnostics.cpuVertices) {
+        bool convertedInputs = false;
+        if (vertex) for (const auto& group : fetch->bufferGroups)
+            convertedInputs |= cpu_vertex_count(group, R.vertexDiagnostics.cpuClasses) != 0;
+        if(vertex&&!custom.empty()&&convertedInputs) {
             fprintf(stderr,"[cemu-pack] %016llx_%016llx_vs skipped: Convert vertices on the CPU is on\n",
                 (unsigned long long)packBase,(unsigned long long)packAux);
             custom.clear();
@@ -701,7 +705,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
         for (const auto& group : fetch->bufferGroups) {
             for (int i = 0; i < group.attribCount; ++i) {
                 const auto& attribute = group.attrib[i];
-                if (!R.vertexFormats.fallback(vertex_format(attribute.format))) continue;
+                if (cpu_vertex_selected(attribute, R.vertexDiagnostics.cpuClasses) || !R.vertexFormats.fallback(vertex_format(attribute.format))) continue;
                 const auto location = shader.mapping.attributeMapping[attribute.semanticId];
                 if (location < 0) continue;
                 const auto name = "attrDataSem" + std::to_string(attribute.semanticId);

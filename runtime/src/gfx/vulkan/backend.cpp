@@ -1,3 +1,4 @@
+#include "vertex_cpu_policy.h"
 #include "platform/keycodes.h"
 #include "input_map.h"
 #include "atomic_temporary.h"
@@ -98,6 +99,7 @@
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); void shutdown_vulkan_caches(); }
 #include "../../interp.h"
 
+extern uint32_t g_latteCpuVertexClasses;
 extern bool g_latteCpuVertexDecode;  // Cemu GLSL attribute decoder (LatteDecompiler.h), issue #207 diagnostic
 namespace gfxvk {
 Renderer R;
@@ -284,7 +286,7 @@ void init_pipeline_cache() try {
     put(44, (R.portabilitySubset ? 1u : 0u) | (R.separateStencilMaskRef ? 2u : 0u) |
         (R.constantAlphaColorBlendFactors ? 4u : 0u) | (R.vertexAttributeAccessBeyondStride ? 8u : 0u) |
         (R.vertexFormats.fallbackMask << 4) | (R.vertexDiagnostics.cpuVertices ? 0x100u : 0u) |
-        (R.vertexDiagnostics.fullPrecision ? 0x200u : 0u));
+        (R.vertexDiagnostics.fullPrecision ? 0x200u : 0u) | (R.vertexDiagnostics.cpuClasses << 10));
     const char* warmup = std::getenv("WWHD_VK_PIPELINE_WARMUP");
     if (!warmup || std::strcmp(warmup, "0")) try {
       const auto headstart=path_environment_utf8("WWHD_HEADSTART");
@@ -3693,15 +3695,25 @@ static void init_device(std::vector<const char *> extensions,
     std::string value;
     return hostui::get(key, value) && value == "1";
   };
-  R.vertexDiagnostics.cpuVertices = diagnostic("WWHD_VK_CPU_VERTICES", "vkCpuVertices");
+  std::string cpuOption, cpuClasses;
+  const bool hasCpuOption = hostui::get("vkCpuVertices", cpuOption);
+  hostui::get("vkCpuVertexClasses", cpuClasses);
+  const char* classesEnv = std::getenv("WWHD_VK_CPU_VERTEX_CLASSES");
+  const auto cpuChoice = vk::choose_cpu_vertices(R.properties.vendorID,
+      hasCpuOption ? cpuOption.c_str() : nullptr, std::getenv("WWHD_VK_CPU_VERTICES"),
+      classesEnv ? classesEnv : (cpuClasses.empty() ? nullptr : cpuClasses.c_str()));
+  R.vertexDiagnostics.cpuClasses = cpuChoice.mask;
+  R.vertexDiagnostics.cpuVertices = cpuChoice.mask != 0;
+  LOG("[vulkan] %s; CPU vertex classes=%s", cpuChoice.reason, vk::cpu_vertex_class_names(cpuChoice.mask).c_str());
   R.vertexDiagnostics.fullPrecision = diagnostic("WWHD_VK_FULL_PRECISION", "vkFullPrecision");
   R.vertexDiagnostics.noVertexReuse = diagnostic("WWHD_VK_NO_VERTEX_REUSE", "vkNoVertexReuse");
   g_latteCpuVertexDecode = R.vertexDiagnostics.cpuVertices;
+  g_latteCpuVertexClasses = R.vertexDiagnostics.cpuClasses;
   vk::set_full_precision(R.vertexDiagnostics.fullPrecision);
   LOG("[vulkan diagnostics] convert vertices on the CPU=%u, full precision in shaders=%u, no vertex reuse=%u",
       R.vertexDiagnostics.cpuVertices, R.vertexDiagnostics.fullPrecision, R.vertexDiagnostics.noVertexReuse);
   // CPU-converted vertices are fetched as 4x32-bit float/uint only: the RGB split does not apply
-  R.vertexFormats = R.vertexDiagnostics.cpuVertices ? vk::VertexFormatPolicy{} : vk::vertex_format_policy([](VkFormat format) {
+  R.vertexFormats = R.vertexDiagnostics.cpuClasses == vk::CpuAll ? vk::VertexFormatPolicy{} : vk::vertex_format_policy([](VkFormat format) {
     return bool(format_properties(format).bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
   }, forceFallback);
   LOG("[vulkan diagnostics] RGB fallback forced=%u active=%u mask=%u (8-bit=1 16-bit=2 32-bit=4)",

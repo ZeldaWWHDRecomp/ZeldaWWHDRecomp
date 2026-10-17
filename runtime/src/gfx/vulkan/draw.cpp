@@ -1,3 +1,4 @@
+#include "vertex_cpu_policy.h"
 #include <set>
 #include <tuple>
 #include "pass.h"
@@ -232,15 +233,16 @@ UploadSlice cpu_vertex_stream(const LatteParsedFetchShaderBufferGroup& g, uint32
                               uint32_t stride, uint64_t limit) {
   uint64_t elements = stride ? (uint64_t(size) + stride - 1) / stride : 1;
   if (limit && limit < elements) elements = limit;
-  const uint32_t attributes = uint32_t(std::max<int>(g.attribCount, 0));
+  const uint32_t attributes = vk::cpu_vertex_count(g, R.vertexDiagnostics.cpuClasses);
   const uint64_t bytes = elements * attributes * 16;
   if (bytes > 0x10000000u) exception_report::raise("CPU vertex conversion exceeds 256 MiB");
   auto slice = allocate_upload(std::max<size_t>(size_t(bytes), 16), 16);
   auto* out = static_cast<uint32_t*>(slice.mapped);
   if (bytes < slice.size) std::memset(static_cast<uint8_t*>(slice.mapped) + bytes, 0, slice.size - bytes);
   const auto* guest = static_cast<const uint8_t*>(mem::ptr(addr));
-  for (uint32_t j = 0; j < attributes; ++j) {
+  for (int j = 0; j < g.attribCount; ++j) {
     const auto& a = g.attrib[j];
+    if (!vk::cpu_vertex_selected(a, R.vertexDiagnostics.cpuClasses)) continue;
     uint32_t probe[4];
     static std::set<std::tuple<unsigned, unsigned, unsigned, unsigned>> unsupported;
     uint8_t zero[16]{};
@@ -249,15 +251,18 @@ UploadSlice cpu_vertex_stream(const LatteParsedFetchShaderBufferGroup& g, uint32
       LOG("[vulkan cpu vertices] no decoder for format 0x%02x nfa %u signed %u endian %u (reads as zero, like the shader)",
           unsigned(a.format), unsigned(a.nfa), unsigned(a.isSigned), unsigned(a.endianSwap));
   }
-  for (uint64_t e = 0; e < elements; ++e)
-    for (uint32_t j = 0; j < attributes; ++j) {
+  for (uint64_t e = 0; e < elements; ++e) {
+    uint32_t slot = 0;
+    for (int j = 0; j < g.attribCount; ++j) {
       const auto& a = g.attrib[j];
+      if (!vk::cpu_vertex_selected(a, R.vertexDiagnostics.cpuClasses)) continue;
       const uint64_t at = e * stride + a.offset;
       uint32_t value[4] = {0, 0, 0, 0};
       if (at + vertex_format_bytes(vk::vertex_format(a.format)) <= size)
         vk::cpu_decode_attribute(a, guest + at, value);
-      std::memcpy(out + (e * attributes + j) * 4, value, 16);
+      std::memcpy(out + (e * attributes + slot++) * 4, value, 16);
     }
+  }
   rprof::add_upload(rprof::kUpVertex, bytes);
   return slice;
 }
@@ -863,20 +868,27 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   p.bindingTrims.reserve(fs->bufferGroups.size());
   uint32_t tailLocation = vk::vertex_tail_location(vs->mapping.attributeMapping);
   for (auto &g : fs->bufferGroups) {
+    const uint32_t cpuCount = vk::cpu_vertex_count(g, R.vertexDiagnostics.cpuClasses);
+    const uint32_t cpuBinding = cpuCount ? vk::cpu_vertex_binding(*fs, g, R.vertexDiagnostics.cpuClasses,
+        R.properties.limits.maxVertexInputBindings) : g.attributeBufferIndex;
+    if (cpuCount && cpuBinding >= R.properties.limits.maxVertexInputBindings)
+      exception_report::raise("CPU vertex classes exceed device vertex binding limit");
     bool instance = false;
     BindingTrimMetadata trim;
     std::optional<LatteConst::VertexFetchType2> fetchRate;
     for (int j = 0; j < g.attribCount; j++) {
       auto &a = g.attrib[j];
+      const bool cpu = vk::cpu_vertex_selected(a, R.vertexDiagnostics.cpuClasses);
+      const uint32_t cpuOffset = vk::cpu_vertex_offset(g, j, R.vertexDiagnostics.cpuClasses);
       int loc = vs->mapping.attributeMapping[a.semanticId];
       if (loc < 0)
         continue;
       auto fmt = R.vertexFormats.fetch(vk::vertex_format(a.format));
       if (fmt == VK_FORMAT_UNDEFINED)
         exception_report::raise("unsupported vertex format");
-      if (R.vertexDiagnostics.cpuVertices)
+      if (cpu)
         // CPU-converted stream: 16 bytes per attribute of the group (cpu_vertex_stream)
-        attributes.push_back({uint32_t(loc), g.attributeBufferIndex, vk::cpu_vertex_format(a), uint32_t(16 * j)});
+        attributes.push_back({uint32_t(loc), cpuBinding, vk::cpu_vertex_format(a), cpuOffset});
       else
       attributes.push_back(
           {uint32_t(loc), g.attributeBufferIndex, fmt, a.offset});
@@ -891,7 +903,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
             unsigned(a.format), vk::vertex_format_name(nativeFormat), vk::vertex_format_name(fmt), unsigned(a.endianSwap),
             unsigned(a.nfa), unsigned(a.isSigned), a.offset, a.offset % 4, a.offset <= R.properties.limits.maxVertexInputAttributeOffset, R.vertexFormats.fallback(nativeFormat));
 #endif
-      if (R.vertexFormats.fallback(nativeFormat)) {
+      if (!cpu && R.vertexFormats.fallback(nativeFormat)) {
         if (tailLocation >= R.properties.limits.maxVertexInputAttributes ||
             attributes.size() >= R.properties.limits.maxVertexInputAttributes)
           exception_report::raise("RGB fallback exceeds device vertex attribute limit");
@@ -933,10 +945,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
       LOG("[vulkan stride observed] stride=%u mod4=%u withinLimit=%u", stride, stride % 4,
           stride <= R.properties.limits.maxVertexInputBindingStride);
 #endif
-    bindings.push_back({g.attributeBufferIndex,
-                        R.vertexDiagnostics.cpuVertices && stride ? uint32_t(16 * g.attribCount) : stride,
-                        instance ? VK_VERTEX_INPUT_RATE_INSTANCE
-                                 : VK_VERTEX_INPUT_RATE_VERTEX});
+    const auto rate = instance ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+    if (cpuCount < uint32_t(g.attribCount)) bindings.push_back({g.attributeBufferIndex, stride, rate});
+    if (cpuCount) bindings.push_back({cpuBinding, stride ? 16 * cpuCount : 0, rate});
     trim.stride = stride;
     p.bindingTrims.push_back(trim);
   }
@@ -3031,10 +3042,21 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         attributeEnd && stride && extent.valid && vertexExtent.valid &&
         windowEnd<=copied && windowBegin<windowEnd && windowBegin!=0;
     UploadSlice b;
-    if (R.vertexDiagnostics.cpuVertices)
-      b = cpu_vertex_stream(g, addr, size, stride,
+    const uint32_t cpuCount = vk::cpu_vertex_count(g, R.vertexDiagnostics.cpuClasses);
+    if (cpuCount) {
+      const auto converted = cpu_vertex_stream(g, addr, size, stride,
           supported && attributeEnd && extent.valid && vertexExtent.valid ? uint64_t(extent.maximum) + 1 : 0);
-    else if (R.vertexDiagnostics.noVertexReuse)
+      const uint32_t binding = vk::cpu_vertex_binding(*fs, g, R.vertexDiagnostics.cpuClasses,
+          R.properties.limits.maxVertexInputBindings);
+      if (binding >= R.properties.limits.maxVertexInputBindings)
+        exception_report::raise("CPU vertex classes exceed device vertex binding limit");
+      record::vkCmdBindVertexBuffers(cmd, binding, 1, &converted.buffer, &converted.offset);
+      // The extra bind bypasses the normal bind cache.
+      state.vertexBinds = {};
+      if (preparation_stats_enabled()) ++R.vertexBindCalls;
+      if (cpuCount == uint32_t(g.attribCount)) continue;
+    }
+    if (R.vertexDiagnostics.noVertexReuse)
       b = snapshot(mem::ptr(addr), size, 4);  // the whole declared buffer, fresh every draw
     else if (!buffer_cache_enabled() || !cached_guest_range(addr, copied, rprof::kUpVertex, b))
       b = copyWindow

@@ -121,3 +121,13 @@ update records the CI results. All authors use Lukas S <lukasschaupp@gmail.com>.
 All local generated code, test executables, archives, dependency builds and Android build products
 were removed after verification. Only excluded derived validation records remain. No main/devel
 pushes, merges or GitHub posts were made.
+
+## PowerVR graphics
+
+PowerVR devices automatically convert vertices on the CPU to prevent stretched spikes and
+broken geometry. This can reduce performance. In **Graphics → Advanced**, set
+**Convert vertices on the CPU** to **Off** to disable the workaround, or **Automatic**
+to restore it. **On (all)** enables it on any device. Restart the game after changing it.
+
+For command-line testing, `WWHD_VK_CPU_VERTICES=0` disables the workaround and
+`WWHD_VK_CPU_VERTICES=1` enables full conversion. This takes priority over the saved setting.

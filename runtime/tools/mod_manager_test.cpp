@@ -58,6 +58,8 @@ float move_speed_cooldown_seconds() { return move_cooldown; } void set_move_spee
 MoveMode move_speed_mode() { return (MoveMode)move_mode; } void set_move_speed_mode(MoveMode m) { move_mode = (int)m; }
 MoveAnim move_speed_anim() { return (MoveAnim)move_anim; } void set_move_speed_anim(MoveAnim a) { move_anim = (int)a; }
 uint32_t move_speed_button() { return move_button; } void set_move_speed_button(uint32_t b) { if (b && !(b & (b - 1))) move_button = b; }
+static bool move_bar = true;
+bool move_speed_bar() { return move_bar; } void set_move_speed_bar(bool on) { move_bar = on; }
 
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
@@ -143,6 +145,15 @@ int main() {
     preferences["mod.move-speed.cooldown"] = "5";
     preferences["mod.move-speed.mode"] = "1";
     preferences["mod.move-speed.anim"] = "dash";
+    preferences["mod.move-speed.button"] = "65536";
+    preferences["mod.move-speed.bar"] = "0";
+    load_saved();
+    assert(!mods::move_speed_bar());
+    preferences["mod.move-speed.bar"] = "maybe";  // not a saved checkbox value: keeps the setting
+    mods::set_move_speed_bar(true); load_saved(); assert(mods::move_speed_bar());
+    preferences["mod.move-speed.bar"] = "1";
+    preferences["mod.move-speed.button"] = "2147483648";  // "Roll, then hold A"
+    load_saved(); assert(mods::move_speed_button() == mods::kMoveButtonRollA);
     preferences["mod.move-speed.button"] = "65536";
     load_saved();
     assert(mods::move_speed_land_factor() == 2.5f && mods::move_speed_swim_factor() == 1.f);

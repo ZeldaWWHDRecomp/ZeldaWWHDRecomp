@@ -1052,7 +1052,32 @@ void tab_graphics() {
         diagnosticRead = true;
         for (int i = 0; i < 3; ++i) { std::string value; diagnosticOn[i] = hostui::get(diagnostics[i].key, value) && value == "1"; }
     }
-    for (int i = 0; i < 3; ++i) {
+    static int cpuMode = [] { std::string value; hostui::get("vkCpuVertices", value);
+        return value == "1" ? 1 : value == "0" ? 2 : 0; }();
+    ImGui::BeginDisabled(getenv("WWHD_VK_CPU_VERTICES") != nullptr);
+    if (ImGui::Combo("Convert vertices on the CPU", &cpuMode, "Automatic\0On (all)\0Off\0")) {
+        const std::string value = cpuMode == 1 ? "1" : cpuMode == 2 ? "0" : "auto";
+        hostui::post([value] { hostui::set("vkCpuVertices", value); });
+    }
+    ImGui::EndDisabled();
+    help("Applies after restarting. Automatic enables the PowerVR workaround. On converts every attribute; Off disables it.");
+    if (ImGui::TreeNode("Vertex conversion diagnostics")) {
+        static int cpuClass = [] { std::string value; hostui::get("vkCpuVertexClasses", value);
+            const char* names[] = {"", "none", "swap16", "swap32", "snorm", "scaled", "3comp", "unaligned", "integer", "unorm", "all"};
+            for (int i = 0; i < 11; ++i) if (value == names[i]) return i;
+            return 0; }();
+        ImGui::BeginDisabled(cpuMode != 0 || getenv("WWHD_VK_CPU_VERTICES") || getenv("WWHD_VK_CPU_VERTEX_CLASSES"));
+        if (ImGui::Combo("CPU conversion class", &cpuClass,
+            "Driver default\0None\0Swap16\0Swap32\0SNORM\0Scaled integers\0Three components\0Unaligned offset\0Integer\0UNORM\0All\0")) {
+            const char* names[] = {"", "none", "swap16", "swap32", "snorm", "scaled", "3comp", "unaligned", "integer", "unorm", "all"};
+            const std::string value = names[cpuClass];
+            hostui::post([value] { hostui::set("vkCpuVertexClasses", value); });
+        }
+        ImGui::EndDisabled();
+        help("For driver testing. Use Automatic above, select one class, then restart. The log records the active classes.");
+        ImGui::TreePop();
+    }
+    for (int i = 1; i < 3; ++i) {
         if (check(diagnostics[i].label, diagnosticOn[i], &v, !getenv(diagnostics[i].env))) {
             diagnosticOn[i] = v;
             const char* key = diagnostics[i].key;
@@ -1461,6 +1486,9 @@ void builtin_options(const std::string& id) {
         float cooldown = mods::move_speed_cooldown_seconds();
         if (ImGui::SliderFloat("Cooldown", &cooldown, 0.f, 20.f, cooldown <= 0.f ? "none" : "%.1f s"))
             hostui::post([cooldown] { mods::set_move_speed_cooldown_seconds(cooldown); hostui::set("mod.move-speed.cooldown", std::to_string(cooldown)); mods::packages::remember_option("move-speed.cooldown", cooldown); });
+        bool bar = mods::move_speed_bar();
+        if (ImGui::Checkbox("Show boost bar", &bar))
+            hostui::post([bar] { mods::set_move_speed_bar(bar); hostui::set("mod.move-speed.bar", bar ? "1" : "0"); mods::packages::remember_option("move-speed.bar", bar); });
         const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
         const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
         for (int i = 0; i < 6; ++i) {
@@ -1470,12 +1498,21 @@ void builtin_options(const std::string& id) {
                 hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
             }
         }
+        modsui::same_line_if_fits("Roll, then hold A");
+        if (radio("Roll, then hold A", mods::move_speed_button() == mods::kMoveButtonRollA))
+            hostui::post([] { mods::set_move_speed_button(mods::kMoveButtonRollA); hostui::set("mod.move-speed.button", std::to_string(mods::kMoveButtonRollA)); mods::packages::remember_option("move-speed.button", mods::kMoveButtonRollA); });
+        if (const char* override = std::getenv("WWHD_MOD_MOVE_BUTTON"))
+            note("WWHD_MOD_MOVE_BUTTON=%s overrides the saved button at startup.", override);
         help("A multiplier of 1 leaves that state alone. Boost time is how long a full bar lasts; "
              "0 has no limit, and the bar refills whenever you are not boosting. Cooldown is the "
-             "bar's refill time (0 for immediate refill). The dash option replaces the walk clip "
+             "bar's refill time (0 for immediate refill). With no limit, or with Show boost bar off, "
+             "no bar is shown; the boost works the same. The bar also hides while a menu, "
+             "a cutscene or a conversation is on screen. The dash option replaces the walk clip "
              "while boosting; full-speed running already uses dash. Sprint pose adds a forward "
              "lean and arm drive while running freely, blended with the boost. Rebind the "
-             "chosen game button in Controls.");
+             "chosen game button in Controls. Roll, then hold A: roll while running and keep A "
+             "held as you come out of the roll to boost until you let go. It is always held "
+             "(Press to toggle does not apply) and works on land only.");
     } else if (id == "ladder-speed" || id == "sidle-speed") {
         const bool ladder = id == "ladder-speed";
         const char* key = ladder ? "ladder-speed.factor" : "sidle-speed.factor";

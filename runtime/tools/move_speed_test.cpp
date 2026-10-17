@@ -2,6 +2,7 @@
 // the live state (button, mode, stamina, ramp) is mods.cpp and needs no game either.
 //   make -C build/cmake move_speed_test && ./build/cmake/move_speed_test
 #include "mods/move_speed.h"
+#include "mods/hud_visibility.h"
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -133,6 +134,127 @@ static void test_cooldown() {
     assert(refill_stamina_over(1.f, 3.f, dt) == 1.f);
 }
 
+// The boost's bar and the game's own screens (issue #233).
+static void test_bar_visibility() {
+    // a normal limited boost shows the bar, and so does the refill after it
+    assert(move_bar_wanted(true, 5.f, true, 1.f));
+    assert(move_bar_wanted(true, 5.f, true, .4f));
+    assert(move_bar_wanted(true, 5.f, false, .4f));
+    assert(!move_bar_wanted(true, 5.f, false, 1.f));
+    // no limit: nothing to run out, so no bar at all, boosting or not, whatever is left of a refill
+    for (float stamina : {0.f, .5f, 1.f})
+        for (bool boosting : {false, true}) {
+            assert(!move_bar_wanted(true, 0.f, boosting, stamina));
+            assert(!move_bar_wanted(true, -1.f, boosting, stamina));
+            assert(!move_bar_wanted(true, std::numeric_limits<float>::quiet_NaN(), boosting, stamina));
+            // "Show boost bar" off: never shown
+            assert(!move_bar_wanted(false, 5.f, boosting, stamina));
+        }
+}
+
+static void test_game_ui() {
+    assert(!game_ui_hides_hud(GameUi{}));
+    assert(game_ui_hides_hud(GameUi{true, false, false}));   // a cutscene or event
+    assert(game_ui_hides_hud(GameUi{false, true, false}));   // a message or dialogue
+    assert(game_ui_hides_hud(GameUi{false, false, true}));   // the pause menu, items, map, ...
+    // the fade: gone in about a quarter of a second at any frame rate, back as quickly
+    for (int rate : {30, 60, 144}) {
+        const float dt = 1.f / rate;
+        float alpha = 1.f;
+        int frames = 0;
+        while (alpha > 0.f) { alpha = game_ui_fade(alpha, true, dt); ++frames; assert(frames < rate); }
+        assert(frames * dt <= .35f && alpha == 0.f);
+        for (int i = 0; i < rate / 2; ++i) alpha = game_ui_fade(alpha, false, dt);
+        assert(alpha == 1.f);
+    }
+    // monotonic, bounded, and a stalled clock or a missing frame time changes nothing
+    float alpha = 1.f, previous = 1.f;
+    for (int i = 0; i < 30; ++i) { alpha = game_ui_fade(alpha, true, 1.f / 60); assert(alpha <= previous && alpha >= 0.f); previous = alpha; }
+    assert(game_ui_fade(.5f, true, 0.f) == .5f && game_ui_fade(.5f, false, -1.f) == .5f);
+    assert(game_ui_fade(.5f, true, 10.f) == 0.f && game_ui_fade(.5f, false, 10.f) == 1.f);
+    // the HUD is drawn with its own alpha times this: a menu over a visible bar leaves nothing
+    const float bar = 1.f;
+    float shown = 1.f;
+    for (int i = 0; i < 30; ++i) shown = game_ui_fade(shown, game_ui_hides_hud(GameUi{false, false, true}), 1.f / 30);
+    assert(bar * shown == 0.f);
+}
+
+// "Roll, then hold A" (issue #233): the state machine, one call per logic step.
+static void test_roll_hold_a() {
+    constexpr uint32_t kWait = 0x00, kTalk = 0x5A;  // standing; any other procedure (a talk, a pick-up)
+    auto run = [](RollHoldA& r, bool a, uint32_t proc, int steps) {
+        bool out = false;
+        for (int i = 0; i < steps; ++i) out = r.step(a, proc);
+        return out;
+    };
+    {   // running, A pressed: the game rolls; A still held as the roll ends in running: boost
+        RollHoldA r;
+        assert(!run(r, false, kProcMove, 10));
+        assert(!r.step(true, kProcMove));           // the press, the game has not rolled yet
+        assert(!run(r, true, kProcFrontRoll, 15));  // no boost during the roll itself
+        assert(r.rolling);
+        assert(r.step(true, kProcMove));            // out of the roll, A held: the boost runs
+        assert(run(r, true, kProcMove, 60));        // ... as long as A stays held
+        assert(!r.step(false, kProcMove));          // releasing A ends it
+        assert(!run(r, true, kProcMove, 5));        // holding A again does not restart it
+    }
+    {   // the press shows in the same step as the roll (the game reacts to the press at once)
+        RollHoldA r;
+        run(r, false, kProcMove, 3);
+        assert(!run(r, true, kProcFrontRoll, 12));
+        assert(r.step(true, kProcMove));
+    }
+    {   // roll, A released before the roll ends: no boost
+        RollHoldA r;
+        run(r, false, kProcMove, 3);
+        run(r, true, kProcFrontRoll, 5);
+        run(r, false, kProcFrontRoll, 5);
+        assert(!r.step(false, kProcMove) && !run(r, true, kProcMove, 10));
+        RollHoldA q;  // a tap that is let go and pressed again late in the roll does not count either
+        run(q, false, kProcMove, 3); run(q, true, kProcFrontRoll, 3); run(q, false, kProcFrontRoll, 3);
+        run(q, true, kProcFrontRoll, 3);
+        assert(!q.step(true, kProcMove));
+    }
+    {   // A held from a talk (or any other use) before running: a roll can't come from it, no boost
+        RollHoldA r;
+        run(r, true, kTalk, 30);
+        assert(!run(r, true, kProcMove, 30));
+        assert(!run(r, true, kProcFrontRoll, 10));  // even if a roll began, the press is not fresh
+        assert(!r.step(true, kProcMove));
+    }
+    {   // a roll from standing does not count
+        RollHoldA r;
+        run(r, false, kWait, 5);
+        r.step(true, kWait);
+        run(r, true, kProcFrontRoll, 10);
+        assert(!r.step(true, kProcMove));
+    }
+    {   // the roll ends in something other than running (a wall bump, standing): no boost
+        RollHoldA r;
+        run(r, false, kProcMove, 3); run(r, true, kProcFrontRoll, 10);
+        assert(!r.step(true, kWait) && !run(r, true, kProcMove, 5));
+    }
+    {   // stopping ends the boost; swimming never boosts with this choice
+        RollHoldA r;
+        run(r, false, kProcMove, 3); run(r, true, kProcFrontRoll, 10);
+        assert(r.step(true, kProcMove));
+        assert(!r.step(true, kWait) && !run(r, true, kProcMove, 5));
+        RollHoldA s;
+        run(s, false, kProcSwimMove, 3);
+        assert(!run(s, true, kProcSwimMove, 30));
+    }
+    {   // a second roll while boosting needs a fresh press: A is held, so it starts a new cycle only after a release
+        RollHoldA r;
+        run(r, false, kProcMove, 3); run(r, true, kProcFrontRoll, 10); assert(r.step(true, kProcMove));
+        run(r, false, kProcMove, 2); run(r, true, kProcFrontRoll, 10);
+        assert(r.step(true, kProcMove));
+    }
+    // the choice by name (the test override) and its saved value
+    assert(move_button_from_id("roll-a") == kMoveButtonRollA && move_button_from_id("L3") == 0x40000u);
+    assert(move_button_from_id("ZR") == 0x40u && move_button_from_id("A") == 0 && move_button_from_id("") == 0);
+    assert(kMoveButtonRollA && !(kMoveButtonRollA & (kMoveButtonRollA - 1)) && !(kMoveButtonRollA & 0x000FFFFFu));
+}
+
 int main() {
     test_distance();
     test_target();
@@ -141,5 +263,8 @@ int main() {
     test_animation();
     test_stamina();
     test_cooldown();
+    test_bar_visibility();
+    test_game_ui();
+    test_roll_hold_a();
     return 0;
 }

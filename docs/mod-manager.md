@@ -131,6 +131,28 @@ emit a second starting burst. While the swim boost is active, each arm pull spla
 own sea-coloured water element at that side, and a light foam trail follows behind every few
 steps. Both use the game's own water particles, so the native swim wake is untouched.
 
+The boost bar is the ring that shows how much boost is left. It appears while you boost and
+while it refills, then fades out. Set **Boost time** to "no limit" and there is nothing to run
+out, so no bar appears at all. To keep a limit but hide the bar, turn off **Show boost bar**
+(on by default): the boost, its time limit and its cooldown work exactly as before, you just
+don't see the ring. The option is saved with your other run/swim settings and in your mod
+profiles; `WWHD_MOD_MOVE_BAR=0` or `1` overrides it at startup. The boost bar and the
+stamina wheel of "Climb any wall" both fade out while the pause menu, an item or collection
+screen, the map, a cutscene or a conversation is on screen, and come back when you return
+to play.
+
+The boost button can be L3, R3, L, R, ZL or ZR, or **Roll, then hold A**. With that choice,
+press A while running: Link rolls exactly as usual. Keep A held as he comes out of the roll and
+the boost starts; it lasts as long as you hold A and ends when you let go or stop running.
+Boost time, cooldown and the boost bar work as with the other buttons. Only a roll you start
+while running counts: rolling from a standstill, letting go of A during the roll, or holding A
+from before (after talking to someone or picking something up) doesn't start a boost, so A
+keeps all its usual jobs. This choice is always held, even with **Press to toggle** selected,
+and it works on land only: you can't roll in water, so swimming isn't boosted with it (pick
+one of the other buttons if you want a swimming boost). The choice is saved like the other
+buttons and in your mod profiles; `WWHD_MOD_MOVE_BUTTON=L3`, `R3`, `L`, `R`, `ZL`, `ZR` or
+`roll-a` overrides it at startup.
+
 Faster ladders and faster sidling each have one speed slider on their mod page (1x to 3x,
 1.5x when first switched on). Both speed up the game's own animation, so hands and feet stay in step with the
 movement: a ladder clip moves Link by its own motion, and sidling scales the animation and the

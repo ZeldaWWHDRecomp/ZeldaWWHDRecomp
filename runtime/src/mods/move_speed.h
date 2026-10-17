@@ -86,4 +86,62 @@ inline float refill_stamina_over(float s, float cooldown_seconds, float dt) {
     return cooldown_seconds > 0.f ? refill_stamina(s, cooldown_seconds, dt) : 1.f;
 }
 
+// "Roll, then hold A": a boost button choice next to L3/R3/L/R/ZL/ZR. Not a controller button: a
+// value no VPAD button uses, so it saves and restores like the others (mod.move-speed.button).
+constexpr uint32_t kMoveButtonRollA = 0x80000000u;
+constexpr uint32_t kButtonA = 0x8000u;  // VPAD A (input::kA)
+// A fresh A press: held this many logic steps at most when the roll begins (the game rolls on the
+// press, a step or two later), so A held from before (a talk, a pick-up) never counts.
+constexpr unsigned kRollPressSteps = 4;
+
+// The A choice's state machine, one call per logic step with A and Link's procedure. A while
+// running rolls exactly as the game does; if A is still held when that roll ends in running again,
+// the boost runs until A is let go (or he stops running). Only a roll started from running by a
+// fresh press counts: no roll from standing, A held from before, or a roll in which A was let go.
+// Land only: there is no roll in water, so swimming never boosts with this choice.
+struct RollHoldA {
+    uint32_t prev_proc = 0xFFFFFFFFu;
+    unsigned a_steps = 0;   // steps A has been held without a break
+    bool rolling = false;   // a qualifying roll is under way with A still held
+    bool active = false;    // the boost is held
+    bool step(bool a, uint32_t proc) {
+        a_steps = a ? std::min(a_steps + 1, 1000u) : 0;
+        if (proc == kProcFrontRoll) {
+            if (prev_proc != kProcFrontRoll)  // the roll begins: from a run, on a fresh press
+                rolling = prev_proc == kProcMove && a && a_steps <= kRollPressSteps;
+            if (!a) rolling = false;
+            active = false;
+        } else {
+            if (rolling && proc == kProcMove && a) active = true;  // the roll ended in running, A held
+            rolling = false;
+            if (!a || proc != kProcMove) active = false;
+        }
+        prev_proc = proc;
+        return active;
+    }
+    void reset() { *this = RollHoldA{}; }
+};
+
+// The boost button choices by name (WWHD_MOD_MOVE_BUTTON, the test override): L3, R3, L, R, ZL,
+// ZR or roll-a; 0 for anything else.
+inline uint32_t move_button_from_id(std::string_view id) {
+    if (id == "L3") return 0x00040000u;
+    if (id == "R3") return 0x00020000u;
+    if (id == "L") return 0x0020u;
+    if (id == "R") return 0x0010u;
+    if (id == "ZL") return 0x0080u;
+    if (id == "ZR") return 0x0040u;
+    if (id == "roll-a") return kMoveButtonRollA;
+    return 0;
+}
+
+// Whether the boost's bar wants to be on screen this step (before its one-second hold and fade, and
+// before the game's menus, events and messages hide it: hud_visibility.h). Only a limited boost has
+// a bar to show: with no limit (0 s) there is nothing to run out, and "Show boost bar" off hides it
+// for good. The boost itself does not depend on the bar.
+inline bool move_bar_wanted(bool bar_setting, float limit_seconds, bool boosting, float stamina) {
+    if (!bar_setting || !(limit_seconds > 0.f)) return false;
+    return boosting || stamina < 1.f;
+}
+
 }  // namespace mods

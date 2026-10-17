@@ -765,11 +765,13 @@ int main(int argc, char** argv) {
     assert(mods::manager::set_enabled("lock-on",true));
     assert(mods::manager::set_enabled("target-letterbox",false));
     remember_option("lock-on.range",2.5);remember_option("lock-on.cycling",0);
+    mods::set_move_speed_bar(false);remember_option("move-speed.bar",0);  // "Show boost bar" off
     assert(create_profile("Adventure",error));
     assert(mods::manager::set_enabled("target-letterbox",true));
     mods::set_lock_on_range(1.f);mods::set_lock_on_cycling(true);
     assert(mods::manager::set_enabled("lock-on",false));
     remember_option("lock-on.range",1);remember_option("lock-on.cycling",1);
+    mods::set_move_speed_bar(true);remember_option("move-speed.bar",1);
     mods::set_fast_forward_rate(4); mods::set_fast_forward_button(0x80); mods::set_fast_forward_mute(true);
     remember_option("fast-forward.rate", 4); remember_option("fast-forward.button", 0x80); remember_option("fast-forward.mute", 1);
     assert(enable("climb-preset",true,error));frame(20);assert(state[3]);
@@ -777,13 +779,15 @@ int main(int argc, char** argv) {
     assert(!mods::letterbox_while_targeting());
     assert(mods::fast_forward_rate()==3 && mods::fast_forward_button()==0x20 && !mods::fast_forward_mute());
     assert(mods::extended_lock_on() && mods::lock_on_range()==2.5f && !mods::lock_on_cycling());
+    assert(!mods::move_speed_bar());
     {std::ifstream saved_file(root/"storage/profiles.json");
      auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(saved_file),{}});
      const auto& options=saved.get("profiles").get("Adventure").get("builtin_options");
      assert(options.get("lock-on.range").number==2.5);
-     assert(options.get("lock-on.cycling").type==mods::json::Value::Bool && !options.get("lock-on.cycling").boolean);}
+     assert(options.get("lock-on.cycling").type==mods::json::Value::Bool && !options.get("lock-on.cycling").boolean);
+     assert(options.get("move-speed.bar").type==mods::json::Value::Bool && !options.get("move-speed.bar").boolean);}
     assert(current_profile()=="Adventure");assert(!delete_profile("Adventure",error));
-    assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(delete_profile("Adventure",error));
+    assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(mods::move_speed_bar());assert(delete_profile("Adventure",error));
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());
     assert(mods::letterbox_while_targeting());
     assert(install(package("missing-dep",",\"dependencies\":[{\"id\":\"absent\"}]"),error));
