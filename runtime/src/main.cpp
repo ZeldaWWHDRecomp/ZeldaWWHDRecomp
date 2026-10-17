@@ -46,6 +46,7 @@
 #endif
 #include "crashrec.h"
 #include "crash_context.h"
+#include "crash_memory.h"
 #include "input.h"
 #include "mods/manager.h"
 #include "mods/required.h"
@@ -132,6 +133,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
         crash_out(fd, line, n);
     }
     Cpu* c = threads::current();
+    crash_memory::note(fd, crash_out, c ? c->r : nullptr);
     if (c) {
         n = snprintf(buf, sizeof buf, "  guest lr=%08X ctr=%08X cr=%08X\n", c->lr, c->ctr, ppc_mfcr(c));
         crash_out(fd, buf, n);
@@ -223,6 +225,8 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ex) {
         line[n++]='\n'; win_crash_out(fd,line,n);
     }
     if(Cpu* c=threads::current()){n=snprintf(buf,sizeof buf,"guest lr=%08X ctr=%08X\n",c->lr,c->ctr); win_crash_out(fd,buf,n);}
+    Cpu* diagnostic_cpu=threads::current();
+    crash_memory::note(fd,win_crash_out,diagnostic_cpu ? diagnostic_cpu->r : nullptr);
     crash_addr::host_backtrace(fd,win_crash_out,ex->ContextRecord);
     crash_context::note(fd,win_crash_out);
     crashrec::crash_note(fd,win_crash_out);

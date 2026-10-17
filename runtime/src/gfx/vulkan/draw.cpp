@@ -705,8 +705,12 @@ void capture_pipeline_failure(VkResult result, vk::Shader* vs, vk::Shader* ps,
       char name[96];
       snprintf(name,sizeof name,"captures/pipeline-failed-%s-%016llX",
           shaders[i]->vertex ? "vs" : "ps",(unsigned long long)shaders[i]->key);
-      if(FILE* f=fopen((std::string(name)+".glsl").c_str(),"wb")) {
-        fwrite(shaders[i]->glsl.data(),1,shaders[i]->glsl.size(),f); fclose(f);
+      // GLSL text is kept only with WWHD_VK_SHADER_SOURCE_VERIFY=1 (or key verify).
+      const auto& glsl=shaders[i]->source_text();
+      if(glsl.empty())
+        LOG("[vulkan] %s GLSL not kept; set WWHD_VK_SHADER_SOURCE_VERIFY=1 to capture it",name);
+      else if(FILE* f=fopen((std::string(name)+".glsl").c_str(),"wb")) {
+        fwrite(glsl.data(),1,glsl.size(),f); fclose(f);
       }
       if(FILE* f=fopen((std::string(name)+".spv").c_str(),"wb")) {
         fwrite(words[i]->data(),4,words[i]->size(),f); fclose(f);
@@ -826,7 +830,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   std::vector<uint8_t> recipeKey(keyBytes, keyBytes + sizeof key);
   // Own prerequisite identities independently of the mutable shader cache.
   const std::array<std::shared_ptr<vk::ShaderBinary>, 2> shaderBinaries{vs->binary, ps->binary};
-  std::array<std::vector<uint32_t>, 2> recipeSpirv{vs->spirv, ps->spirv};
+  std::array<std::vector<uint32_t>, 2> recipeSpirv{vs->spirv(), ps->spirv()};
   for(size_t i=0;i<shaderBinaries.size();++i)
     if(recipeSpirv[i].empty() && shaderBinaries[i]) {
       if(!async_pipeline_enabled()) recipeSpirv[i]=vk::shader_binary_words_exact(shaderBinaries[i],R.frame);
@@ -2377,6 +2381,21 @@ ContinuedReason continued_reason(uint32_t prim) {
   return kContinued;
 }
 } // namespace
+VkDescriptorSet texture_stage_smoke_bind(const uint32_t* registers,
+    VkDescriptorSetLayout layout, uint32_t textureCount) {
+  if (textureCount > LATTE_NUM_MAX_TEX_UNITS)
+    exception_report::raise("invalid smoke texture count");
+  LatteDecompilerShader decoded(LatteConst::ShaderType::Pixel);
+  vk::Shader shader;
+  shader.dec = &decoded;
+  decoded.textureUnitListCount = uint8_t(textureCount);
+  for (uint32_t i = 0; i < textureCount; ++i) {
+    decoded.textureUnitList[i] = uint8_t(i);
+    decoded.textureUnitSamplerAssignment[i] = uint16_t(i);
+    shader.mapping.textureUnitToBindingPoint[i] = int8_t(i);
+  }
+  return bind_stage(registers, &shader, layout, false, 1, 1, {}, nullptr, nullptr).set;
+}
 void reset_feedback_images() { reset_feedback_scratch(); }
 UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
     uint32_t reservation,uint32_t windowOffset,uint32_t windowLength,

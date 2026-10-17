@@ -26,8 +26,8 @@ public final class SetupImportSmokeActivity extends Activity {
         SetupStore.write(new File(job, "source.json"), new JSONObject().put("schema", 1).put("kind", kind).put("uri", uri.toString()));
         return job;
     }
-    private Uri tree(String id) { return DocumentsContract.buildTreeDocumentUri(ImportDocuments.AUTHORITY, id); }
-    private Uri document(String id) { return DocumentsContract.buildDocumentUri(ImportDocuments.AUTHORITY, id); }
+    private Uri tree(String id) { return DocumentsContract.buildTreeDocumentUri(ImportDocuments.authority(this), id); }
+    private Uri document(String id) { return DocumentsContract.buildDocumentUri(ImportDocuments.authority(this), id); }
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         TextView view = new TextView(this);
@@ -68,6 +68,16 @@ public final class SetupImportSmokeActivity extends Activity {
                 File unsafe = create("unsafe", "folder", tree("unsafe"));
                 try { SetupImport.prepare(this, unsafe, control); throw new IOException("Accepted unsafe name"); }
                 catch (IOException expected) { require(expected.getMessage().contains("unsafe"), "Wrong traversal error"); }
+                // a parent folder chosen by mistake imports the game folder inside it
+                File parent = create("parent", "folder", tree("parent"));
+                SetupImport.prepare(this, parent, control);
+                require(new File(parent, "input/game/code/cking.rpx").length() == 2 * 1024 * 1024 &&
+                    new File(parent, "input/game/meta/meta.xml").isFile(), "Parent folder did not import its game folder");
+                // a folder inside the game is refused before anything is copied
+                File inside = create("inside", "folder", tree("root/content"));
+                try { SetupImport.prepare(this, inside, control); throw new IOException("Imported a folder inside the game"); }
+                catch (IOException expected) { require(expected.getMessage().contains("one level up"), "Wrong inside-game error: " + expected.getMessage()); }
+                require(!new File(inside, "import-inventory.json").exists() && !new File(inside, "input").exists(), "A wrong folder was copied");
                 File image = create("image", "image", document("dump"));
                 JSONObject source = SetupStore.read(new File(image, "source.json"));
                 source.put("disc_uri", document("key").toString()).put("common_uri", document("key").toString());

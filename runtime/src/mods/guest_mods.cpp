@@ -725,7 +725,11 @@ void init() {
     namespace packages=mods::packages;
     // start_guests invokes callbacks under the package-manager mutex. Resolve its
     // directory before entering those callbacks to avoid recursively locking it.
+#ifdef __ANDROID__
+    const auto cache=host::android::guest_module_cache();
+#else
     const auto cache=(std::filesystem::path(packages::directory()).parent_path()/"GuestBuild").string();
+#endif
     auto inspect=[cache](const packages::GuestPackage& pkg) {
         if(!g_mod_hook_count)exception_report::raise("Guest mods require code-mod support; rebuild and restart first");
         auto result=BuildBridge::installed(cache).run(pkg.path,0x7F000000,true,g_guest_build_name);

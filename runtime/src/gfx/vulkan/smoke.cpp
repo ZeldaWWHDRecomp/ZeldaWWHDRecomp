@@ -481,7 +481,8 @@ void volume_target_check() {
 }
 float triangle(Surface& s, float eyeOffset=0, float clipW=1,
                VkFormat rgbFormat=VK_FORMAT_UNDEFINED, bool fallback=false,
-               std::vector<uint8_t>* image=nullptr) {
+               std::vector<uint8_t>* image=nullptr,
+               VkDescriptorSetLayout textureLayout=VK_NULL_HANDLE, VkDescriptorSet textures=VK_NULL_HANDLE) {
  struct Resources {
   VkShaderModule vs=VK_NULL_HANDLE,ps=VK_NULL_HANDLE;VkPipelineLayout layout=VK_NULL_HANDLE;VkPipeline pipeline=VK_NULL_HANDLE;
   ~Resources(){if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(ps)vkDestroyShaderModule(R.device,ps,nullptr);}
@@ -508,11 +509,13 @@ float triangle(Surface& s, float eyeOffset=0, float clipW=1,
    std::memcpy(static_cast<uint8_t*>(rgb.mapped)+(v*3+lane)*componentBytes,&values[lane],componentBytes);
  }
  module(vertexSource.c_str(),true,objects.vs);
- module(rgbFormat==VK_FORMAT_UNDEFINED?
-  "#version 450\nlayout(location=0) out vec4 color;void main(){color=vec4(1,0,0,1);}":
-  "#version 450\nlayout(location=0) flat in uint valid;layout(location=0) out vec4 color;void main(){color=valid==1u?vec4(1,0,0,1):vec4(0,1,0,1);}",false,objects.ps);
+ module(textureLayout
+     ? "#version 450\nlayout(set=0,binding=0) uniform sampler2D a;layout(set=0,binding=1) uniform sampler2D b;layout(location=0) out vec4 color;void main(){color=(textureLod(a,vec2(.5),0)+textureLod(b,vec2(.5),1))*.5;}"
+     : rgbFormat==VK_FORMAT_UNDEFINED
+     ? "#version 450\nlayout(location=0) out vec4 color;void main(){color=vec4(1,0,0,1);}"
+     : "#version 450\nlayout(location=0) flat in uint valid;layout(location=0) out vec4 color;void main(){color=valid==1u?vec4(1,0,0,1):vec4(0,1,0,1);}",false,objects.ps);
  VkPushConstantRange stereoRange{VK_SHADER_STAGE_VERTEX_BIT,0,16};
- VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};layout.pushConstantRangeCount=1;layout.pPushConstantRanges=&stereoRange;vk_check(vkCreatePipelineLayout(R.device,&layout,nullptr,&objects.layout),"smoke pipeline layout");
+ VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};if(textureLayout){layout.setLayoutCount=1;layout.pSetLayouts=&textureLayout;}layout.pushConstantRangeCount=1;layout.pPushConstantRanges=&stereoRange;vk_check(vkCreatePipelineLayout(R.device,&layout,nullptr,&objects.layout),"smoke pipeline layout");
  VkPipelineShaderStageCreateInfo stages[2]{};
  for(auto& stage:stages){stage.sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stage.pName="main";}
  stages[0].stage=VK_SHADER_STAGE_VERTEX_BIT;stages[0].module=objects.vs;stages[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT;stages[1].module=objects.ps;
@@ -541,7 +544,7 @@ float triangle(Surface& s, float eyeOffset=0, float clipW=1,
  transition_image(&s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
  VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(&s,0);target.imageLayout=s.layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[3]=1;
  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea=scissor;ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
- auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });R.rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);record::vkCmdPushConstants(cmd,objects.layout,VK_SHADER_STAGE_VERTEX_BIT,0,16,projection);if(rgbFormat!=VK_FORMAT_UNDEFINED)record::vkCmdBindVertexBuffers(cmd,0,1,&rgb.buffer,&rgb.offset);
+ auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });R.rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);record::vkCmdPushConstants(cmd,objects.layout,VK_SHADER_STAGE_VERTEX_BIT,0,16,projection);if(textures)record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.layout,0,1,&textures,0,nullptr);if(rgbFormat!=VK_FORMAT_UNDEFINED)record::vkCmdBindVertexBuffers(cmd,0,1,&rgb.buffer,&rgb.offset);
  record::vkCmdDraw(cmd,3,1,0,0);end_encoder();mark_gpu_written(&s);flush();
  auto pixels=read_image(s,VK_IMAGE_ASPECT_COLOR_BIT,4);
  if(image)*image=pixels;
@@ -653,6 +656,41 @@ void stereo_geometry_check() {
  stereo::frame=oldFrame;stereo::requestedMode=oldMode;
  flush();
  fprintf(stderr,"[renderer smoke] stereo geometry, convergence, HUD, eye isolation and toggle cleanup PASS\n");
+}
+// Bind a rendered base first, then a mip-chain assembled from that same base.
+// The second resolution must not invalidate the first descriptor's read layout.
+void sampled_mip_order_check(bool bindRenderedLevel = false) {
+ SurfaceDesc base;
+ base.addr=mem::host_alloc(4096,256);base.mipAddr=mem::host_alloc(4096,256);
+ base.width=base.height=base.pitch=16;base.format=0x1a;base.tileMode=1;
+ auto* target=find_or_create_surface(base,true);
+ SurfaceDesc level=base;level.addr=base.mipAddr;level.mipAddr=0;
+ level.width=level.height=level.pitch=8;
+ auto* mip=find_or_create_surface(level,true);
+ const float red[4]={1,0,0,1};clear_image(*target,red);clear_image(*mip,red);
+ std::vector<uint32_t> registers(0x10000);
+ uint32_t words[7]={1u|(1u<<3)|(1u<<8)|(15u<<19),15u|(0x1au<<26),
+     base.addr>>8,base.mipAddr>>8,(1u<<19)|(2u<<22)|(3u<<25),0,0};
+ words[5]=1;
+ std::copy(words,words+7,registers.begin()+Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS+7);
+ words[5]=0;
+ if(bindRenderedLevel){words[0]=1u|(1u<<3)|(7u<<19);words[1]=7u|(0x1au<<26);words[2]=base.mipAddr>>8;words[3]=0;}
+ std::copy(words,words+7,registers.begin()+Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS);
+ struct Layout {
+   VkDescriptorSetLayout value=VK_NULL_HANDLE;
+   ~Layout(){if(value)vkDestroyDescriptorSetLayout(R.device,value,nullptr);}
+ } textureLayout;
+ VkDescriptorSetLayoutBinding bindings[2]{};
+ for(uint32_t i=0;i<2;++i){bindings[i].binding=i;bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;bindings[i].descriptorCount=1;bindings[i].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;}
+ VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+ info.bindingCount=2;info.pBindings=bindings;
+ vk_check(vkCreateDescriptorSetLayout(R.device,&info,nullptr,&textureLayout.value),"mip-order texture layout");
+ auto descriptors=texture_stage_smoke_bind(registers.data(),textureLayout.value,2);
+ require(target->mipChain && target->mipChain->mips==2,"mip-order fixture did not exercise generated rendered mips");
+ Image output(64,64,0x1a);
+ triangle(output.s,0,1,VK_FORMAT_UNDEFINED,false,nullptr,textureLayout.value,descriptors);
+ require(target->layout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && mip->layout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,"later mip resolution invalidated an earlier sampled source layout");
+ fprintf(stderr,"[renderer smoke] production multi-texture rendered-mip ordering passed\n");
 }
 void vertex_window_check(Surface& s) {
  struct Resources {
@@ -1064,6 +1102,10 @@ int renderer_smoke_test() {
    command_buffer();flush();return 0;
   }
   mem::init();
+  if(std::getenv("WWHD_VK_MIP_ORDER_SMOKE")) {
+   set_res_scale(1);latch_res_scale();sampled_mip_order_check();sampled_mip_order_check(true);
+   LOG("[renderer smoke] PASS: production rendered-mip texture ordering");return 0;
+  }
   {
    Image target(32,32,0x1a);
    for(auto format:{VK_FORMAT_R8G8B8_UINT,VK_FORMAT_R16G16B16_UINT,VK_FORMAT_R32G32B32_UINT}) {

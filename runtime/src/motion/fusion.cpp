@@ -35,6 +35,16 @@ Vec3 Quat::rotate(Vec3 v) const {
 }
 Vec3 Quat::unrotate(Vec3 v) const { return conj().rotate(v); }
 
+// A phone’s natural-screen axes, rotated with the shown display, then held as a flat controller.
+Vec3 device_to_sdl(Vec3 v, int quarter_turns) {
+    float x = v.x, y = v.y;
+    switch (quarter_turns & 3) {
+    case 1: x = -v.y; y = v.x; break;
+    case 2: x = -v.x; y = -v.y; break;
+    case 3: x = v.y; y = -v.x; break;
+    }
+    return {x, v.z, -y};
+}
 // SDL: x right, y up, z towards the player; H = SDL turned 180 degrees about x. Accelerometers measure
 // the specific force (up at rest); acc_H is the gravity direction, so the sign flips once more.
 void from_sdl(const float g[3], const float a[3], Vec3& gyro_h, Vec3& acc_h) {

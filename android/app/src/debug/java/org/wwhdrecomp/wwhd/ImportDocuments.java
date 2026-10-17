@@ -15,7 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Authored streaming documents, compiled only into debug APKs. */
 public final class ImportDocuments extends DocumentsProvider {
-    public static final String AUTHORITY = "org.wwhdrecomp.wwhd.import-fixture";
+    /** Per install (the manifest's ${applicationId}.import-fixture), so debug builds with another
+     *  applicationId suffix can be installed side by side. */
+    public static String authority(android.content.Context context) { return context.getPackageName() + ".import-fixture"; }
     public static final ConcurrentHashMap<String, AtomicInteger> OPENS = new ConcurrentHashMap<>();
     private static final String[] DOC = {Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME,
         Document.COLUMN_MIME_TYPE, Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED};
@@ -27,10 +29,15 @@ public final class ImportDocuments extends DocumentsProvider {
             .add(Root.COLUMN_TITLE, "WWHD synthetic fixture").add(Root.COLUMN_FLAGS, Root.FLAG_SUPPORTS_IS_CHILD);
         return result;
     }
+    /** Game folders: "root" itself, and one a level down in "parent" (a parent folder chosen by mistake). */
+    private static final String[] GAMES = {"root", "parent/WindWakerHD"};
     private static boolean directory(String id) {
-        return id.equals("root") || id.equals("unsafe") || id.equals("root/code") || id.equals("root/content") || id.equals("root/meta");
+        if (id.equals("unsafe") || id.equals("parent")) return true;
+        for (String game : GAMES)
+            if (id.equals(game) || id.equals(game + "/code") || id.equals(game + "/content") || id.equals(game + "/meta")) return true;
+        return false;
     }
-    private static int size(String id) { return id.equals("root/code/cking.rpx") ? 2 * 1024 * 1024 : id.equals("key") || id.equals("replacementkey") ? 16 : id.equals("bigkey") ? 4097 : 127; }
+    private static int size(String id) { return id.endsWith("/code/cking.rpx") ? 2 * 1024 * 1024 : id.equals("key") || id.equals("replacementkey") ? 16 : id.equals("bigkey") ? 4097 : 127; }
     private static void row(MatrixCursor result, String id) {
         String name = id.equals("unsafe/escape") ? "../escape" : id.substring(id.lastIndexOf('/') + 1);
         Object[] values = new Object[result.getColumnCount()];
@@ -52,10 +59,13 @@ public final class ImportDocuments extends DocumentsProvider {
     }
     @Override public Cursor queryChildDocuments(String id, String[] projection, String sort) {
         MatrixCursor result = new MatrixCursor(projection == null ? DOC : projection);
-        if (id.equals("root")) { row(result, "root/code"); row(result, "root/content"); row(result, "root/meta"); }
-        if (id.equals("root/code")) row(result, "root/code/cking.rpx");
-        if (id.equals("root/content")) { row(result, "root/content/asset.importing"); row(result, "root/content/asset"); }
-        if (id.equals("root/meta")) row(result, "root/meta/meta.xml");
+        for (String game : GAMES) {
+            if (id.equals(game)) { row(result, game + "/code"); row(result, game + "/content"); row(result, game + "/meta"); }
+            if (id.equals(game + "/code")) row(result, game + "/code/cking.rpx");
+            if (id.equals(game + "/content")) { row(result, game + "/content/asset.importing"); row(result, game + "/content/asset"); }
+            if (id.equals(game + "/meta")) row(result, game + "/meta/meta.xml");
+        }
+        if (id.equals("parent")) row(result, "parent/WindWakerHD");
         if (id.equals("unsafe")) row(result, "unsafe/escape");
         return result;
     }

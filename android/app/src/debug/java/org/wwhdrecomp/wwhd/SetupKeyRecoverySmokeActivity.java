@@ -16,7 +16,7 @@ public final class SetupKeyRecoverySmokeActivity extends Activity {
         @Override public void checkpoint() { }
         @Override public void progress(long copied, long total, int complete, int files) { }
     };
-    private Uri document(String id) { return DocumentsContract.buildDocumentUri(ImportDocuments.AUTHORITY, id); }
+    private Uri document(String id) { return DocumentsContract.buildDocumentUri(ImportDocuments.authority(this), id); }
     private static void require(boolean value, String message) throws IOException {
         if (!value) throw new IOException(message);
     }

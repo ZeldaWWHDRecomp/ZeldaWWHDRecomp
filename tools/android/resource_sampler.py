@@ -75,18 +75,25 @@ class ResourceSampler:
             except Exception: pass  # Not present during initial resource preparation.
             selected = process_tree(self._read("ps", "-A", "-o", "PID,PPID,NAME"), self.package)
             missing = []
+            reasons = {}
             for pid, role in selected.items():
                 if self.done.is_set() or time.monotonic() - started > 10:
                     missing.append(pid)
                     continue
+                output = ""
                 try:
-                    totals = memory_totals(self._read("dumpsys", "meminfo", "-s", str(pid)))
+                    output = self._read("dumpsys", "meminfo", "-s", str(pid))
+                    totals = memory_totals(output)
                     sample["processes"].append({"pid": pid, "role": role, **totals})
-                except Exception:
-                    # The child may exit before meminfo; it must not count as zero.
+                except Exception as failure:
+                    # The child may exit before meminfo; it must not count as zero. Keep why the
+                    # read failed, so a capture without any measured child can be diagnosed.
                     missing.append(pid)
+                    reasons[str(pid)] = {"role": role, "error_type": type(failure).__name__,
+                                         "output": " ".join(output.split())[:200]}
             after = process_tree(self._read("ps", "-A", "-o", "PID,PPID,NAME"), self.package)
             sample["missing_pids"] = missing
+            if reasons: sample["missing_reasons"] = reasons
             sample["process_set_changed"] = set(after) != set(selected)
             sample["memory_complete"] = bool(selected) and not missing and not sample["process_set_changed"]
             sample["sum_pss_bytes"] = sum(p["pss_bytes"] for p in sample["processes"])

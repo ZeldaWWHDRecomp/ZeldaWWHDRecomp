@@ -77,13 +77,22 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                 raise ValueError("Compilation concurrency must be one to four")
             if not isinstance(job.get("port_revision"), str) or not job["port_revision"]:
                 raise ValueError("A release pipeline identity is required")
+            # the player's code-mod choice in setup: game code with mod support (the desktop "code mods")
+            code_mods = job.get("code_mods", False)
+            if type(code_mods) is not bool:
+                raise ValueError("The code-mod choice must be true or false")
             adapter = adapter_factory(package, root / "checkpoints", job["port_revision"], publish, paused)
             adapter.boundary()
             source = job["input"]
             path = private_input(root, source["path"])
             if source["kind"] == "folder":
                 if not adapter.setup.valid_game_folder(str(path)):
-                    raise ValueError("Imported game folder is incomplete")
+                    missing = [name for name, present in (
+                        ("code/cking.rpx", (path / "code" / "cking.rpx").is_file()),
+                        ("content", (path / "content").is_dir()),
+                        ("meta/meta.xml", (path / "meta" / "meta.xml").is_file())) if not present]
+                    raise ValueError("Imported game folder is incomplete (missing " + ", ".join(missing) +
+                                     "). Choose the folder that contains code, content and meta.")
                 game = path
             elif source["kind"] in ("archive", "image"):
                 extractor = job["extractor"]
@@ -124,7 +133,7 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                         key_files.clear()
             else:
                 raise ValueError("Unsupported imported input kind")
-            generated = adapter.translate(game)
+            generated = adapter.translate(game, hooks=code_mods)
             compiler = job["compiler"]
             toolchain = SimpleNamespace(cc=compiler["cc"], cxx=compiler["cxx"], ar=compiler["ar"],
                                         env=compiler.get("env"), rsp=compiler.get("rsp", True))
@@ -136,7 +145,8 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             library = adapter.link(toolchain, manifest, objects, compiler["identity"], native_run)
             adapter.boundary()
             result = {"schema": 1, "library": str(library), "game": str(game),
-                      "port_revision": job["port_revision"], "compiler_identity": compiler["identity"]}
+                      "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
+                      "code_mods": code_mods}
             # Android cannot execute the guest shared library as a subprocess.
             # Assemble privately here; renderer startup owns native GPU warming.
             import importlib.util

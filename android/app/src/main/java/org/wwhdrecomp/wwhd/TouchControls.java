@@ -15,6 +15,12 @@ import org.libsdl.app.SDLControllerManager;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.RelativeLayout;
+import android.view.ViewGroup;
 
 // On-screen controls over the game: two sticks, A B X Y, L R ZL ZR, + -, a D-pad, and a small button
 // under the view button (top left) that shows or hides them (remembered). They are a virtual SDL gamepad
@@ -53,6 +59,14 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     private final List<Control> controls = new ArrayList<>();
     private final Control toggle;
+    private final TouchLayout layout;
+    private final TouchLayout.EditSession editor = new TouchLayout.EditSession();
+    private LinearLayout editorBar;
+    private Control selected;
+    private int dragPointer = -1;
+    private float dragOffsetX, dragOffsetY;
+    private boolean longPressConsumed;
+    private final Runnable editLongPress;
     private final SparseArray<Control> owner = new SparseArray<>();  // pointer -> control (null: the game's)
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), edge = new Paint(Paint.ANTI_ALIAS_FLAG),
             text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -99,6 +113,17 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         controls.add(new Control(KIND_BUTTON, BACK, "−", 0.42f, 0.92f, 0.04f));
         controls.add(new Control(KIND_BUTTON, START, "+", 0.58f, 0.92f, 0.04f));
         toggle = new Control(KIND_TOGGLE, 0, "🎮", 0f, 0f, 0.04f);  // placed in onSizeChanged
+        editLongPress = () -> {
+            if (toggle.pressed && owner.size()==1 && !settingsOpen) {
+                longPressConsumed=true;
+                beginEditing();
+            }
+        };
+        HashSet<String> keys=new HashSet<>();
+        for (Control c : controls) keys.add(key(c));
+        layout=new TouchLayout(keys);
+        layout.decode(prefs.getString("touch_layout_v1", ""));
+        setContentDescription(context.getString(R.string.touch_layout_access));
         refresh = new Runnable() {
             @Override public void run() {
                 syncTouchState();
@@ -114,6 +139,9 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     @Override protected void onDetachedFromWindow() {
+        endEditing();
+        releaseInputs();
+        removeCallbacks(editLongPress);
         removeCallbacks(refresh);
         if (inputs != null) inputs.unregisterInputDeviceListener(this);
         try { nativeDetachPad(); } catch (UnsatisfiedLinkError ignored) {}
@@ -129,6 +157,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        releaseInputs();
+        dragPointer=-1;
         final float s = Math.min(w, h);
         for (Control c : controls) place(c, w, h, s);
         // under the game's view button (screen_layout.cpp: a square of 9% of the short side, 1.5% from
@@ -139,18 +169,30 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         edge.setStrokeWidth(Math.max(2f, s * 0.004f));
     }
 
-    private static void place(Control c, int w, int h, float s) {
-        c.cx = c.fx * w; c.cy = c.fy * h; c.r = c.fr * s;
+    private static String key(Control c) { return c.kind+":"+c.code; }
+    private void place(Control c, int w, int h, float s) {
+        TouchLayout.Placement p=layout.get(key(c));
+        if (p==null && !editor.editing()) {
+            c.cx=c.fx*w; c.cy=c.fy*h; c.r=c.fr*s; // unchanged default path
+        } else {
+            if (p==null) p=new TouchLayout.Placement(c.fx,c.fy,c.fr);
+            p=TouchLayout.fit(p,w,h,editor.editing() && editorBar!=null ? editorBar.getBottom():0);
+            c.cx=p.x*w; c.cy=p.y*h; c.r=p.radius*s;
+        }
+    }
+    private void placeControls() {
+        for (Control c:controls) place(c,getWidth(),getHeight(),Math.min(getWidth(),getHeight()));
+        invalidate();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (active()) for (Control c : controls) drawControl(canvas, c);
-        if (buttonsVisible && !settingsOpen) drawControl(canvas, toggle);
+        if (editor.editing() || active()) for (Control c : controls) drawControl(canvas, c);
+        if (!editor.editing() && buttonsVisible && !settingsOpen) drawControl(canvas, toggle);
     }
 
     private void drawControl(Canvas canvas, Control c) {
-        final boolean on = c.pressed || (c.kind == KIND_TOGGLE && active());
+        final boolean on = (editor.editing() && c==selected) || c.pressed || (c.kind == KIND_TOGGLE && active());
         fill.setColor(on ? 0x90FFFFFF : 0x38FFFFFF);
         edge.setColor(0x80FFFFFF);
         canvas.drawCircle(c.cx, c.cy, c.r, fill);
@@ -193,10 +235,20 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     public boolean onTouchEvent(MotionEvent event) {
         final int action = event.getActionMasked();
         lastTouchDevice = event.getDeviceId();
-        if (action == MotionEvent.ACTION_DOWN && event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER)
-            return false;  // mouse and stylus: SDLSurface underneath as before
+        if (editor.editing()) return editTouch(event);
+        if (editor.discarding()) {
+            editor.pointers(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL ? 0:
+                    event.getPointerCount()-(action==MotionEvent.ACTION_POINTER_UP ? 1:0));
+            return true;
+        }
+        editor.pointers(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL ? 0:
+                    event.getPointerCount()-(action==MotionEvent.ACTION_POINTER_UP ? 1:0));
+        if (action == MotionEvent.ACTION_DOWN && event.getToolType(0) != MotionEvent.TOOL_TYPE_FINGER) {
+            editor.pointers(0);
+            return false;
+        }  // mouse and stylus: SDLSurface underneath as before
         syncTouchState();
-        if (settingsOpen) return false;
+        if (settingsOpen) { editor.pointers(0);return false; }
         if (revealGesture) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) revealGesture = false;
             return true;
@@ -214,6 +266,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         switch (action) {
             case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_POINTER_DOWN: {
+                if (action==MotionEvent.ACTION_POINTER_DOWN) removeCallbacks(editLongPress);
                 final int id = event.getPointerId(index);
                 final float x = event.getX(index), y = event.getY(index);
                 Control c = hit(x, y);
@@ -223,6 +276,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     // (SDLSurface, or on a fold the primary pane, which is smaller than this view and
                     // maps the touch to its own size; forward() can only use this view's size).
                     owner.remove(id);
+                    editor.pointers(0);
                     update();
                     invalidate();
                     return false;
@@ -230,6 +284,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     forward(event, index, action);
                 } else if (c == toggle) {
                     c.pressed = true;
+                    longPressConsumed=false;
+                    postDelayed(editLongPress, android.view.ViewConfiguration.getLongPressTimeout());
                     toggleTo = !wasActive;  // hidden for a controller: the button brings them back
                 } else {
                     c.pressed = true;
@@ -244,6 +300,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     Control c = owner.get(id);
                     if (c == null) forward(event, i, MotionEvent.ACTION_MOVE);
                     else if (c.kind == KIND_STICK) moveStick(c, event.getX(i), event.getY(i));
+                    else if (c == toggle && !near(c,event.getX(i),event.getY(i),1.3f)) removeCallbacks(editLongPress);
                 }
                 break;
             case MotionEvent.ACTION_UP:
@@ -259,7 +316,10 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     if (c == null) { forward(event, i, all ? MotionEvent.ACTION_CANCEL : action); continue; }
                     c.pressed = false;
                     if (c.kind == KIND_STICK) { c.sx = 0; c.sy = 0; }
-                    if (c == toggle && !all) setShown(toggleTo);
+                    if (c == toggle) {
+                        removeCallbacks(editLongPress);
+                        if (!all && !longPressConsumed) setShown(toggleTo);
+                    }
                 }
                 break;
             }
@@ -269,6 +329,90 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         update();
         invalidate();
         return true;
+    }
+
+    private void releaseInputs() {
+        removeCallbacks(editLongPress);
+        for (Control c:controls) { c.pressed=false; c.sx=c.sy=0; }
+        toggle.pressed=false;
+        for (int i=0;i<owner.size();++i) if (owner.valueAt(i)==null)
+            try { SDLActivity.onNativeTouch(lastTouchDevice,owner.keyAt(i),MotionEvent.ACTION_CANCEL,0,0,0); }
+            catch (UnsatisfiedLinkError ignored) {}
+        owner.clear();
+        try { nativeDetachPad(); } catch (UnsatisfiedLinkError ignored) {}
+        lastButtons=-1;
+    }
+
+    private void beginEditing() {
+        if (!(getParent() instanceof RelativeLayout) || settingsOpen) return;
+        editor.setEditing(true,this::releaseInputs);
+        selected=null;dragPointer=-1;
+        editorBar=new LinearLayout(getContext());
+        editorBar.setOrientation(LinearLayout.VERTICAL);
+        editorBar.setBackgroundColor(0xEE123340);
+        editorBar.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
+            if (bottom!=oldBottom || right!=oldRight) placeControls();
+        });
+        TextView hint=new TextView(getContext());hint.setText(R.string.touch_layout_hint);
+        hint.setTextColor(0xFFFFFFFF);hint.setGravity(android.view.Gravity.CENTER);
+        editorBar.addView(hint);
+        LinearLayout actions=new LinearLayout(getContext());
+        editorButton(actions,R.string.touch_layout_smaller,()->resizeSelected(.9f));
+        editorButton(actions,R.string.touch_layout_larger,()->resizeSelected(1.1f));
+        editorButton(actions,R.string.touch_layout_reset,()->{ layout.reset();selected=null;saveLayout();placeControls(); });
+        editorButton(actions,R.string.touch_layout_done,this::endEditing);
+        editorBar.addView(actions);
+        RelativeLayout.LayoutParams lp=new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.addRule(RelativeLayout.ALIGN_PARENT_TOP);
+        ((RelativeLayout)getParent()).addView(editorBar,lp);
+        editorBar.post(this::placeControls);
+        placeControls();announceForAccessibility(getContext().getString(R.string.touch_layout_hint));
+    }
+    private void editorButton(LinearLayout bar,int label,Runnable action) {
+        Button b=new Button(getContext());b.setText(label);b.setOnClickListener(v->action.run());
+        b.setMinHeight((int)(48*getResources().getDisplayMetrics().density));
+        bar.addView(b,new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1));
+    }
+    private void endEditing() {
+        if (!editor.editing()) return;
+        saveLayout();editor.setEditing(false,this::releaseInputs);selected=null;dragPointer=-1;
+        if (editorBar!=null && editorBar.getParent() instanceof ViewGroup)
+            ((ViewGroup)editorBar.getParent()).removeView(editorBar);
+        editorBar=null;placeControls();
+    }
+    private void saveLayout() { prefs.edit().putString("touch_layout_v1",layout.encode()).apply(); }
+    private void moveSelected(float x,float y,float radius) {
+        int w=getWidth(),h=getHeight();if (selected==null || w<=0 || h<=0) return;
+        TouchLayout.Placement p=TouchLayout.fit(new TouchLayout.Placement(x/w,y/h,radius/Math.min(w,h)),
+                w,h,editorBar!=null ? editorBar.getBottom():0);
+        if (layout.put(key(selected),p.x,p.y,p.radius)) placeControls();
+    }
+    private void resizeSelected(float scale) {
+        if (selected!=null) { moveSelected(selected.cx,selected.cy,selected.r*scale);saveLayout(); }
+    }
+    private boolean editTouch(MotionEvent e) {
+        int action=e.getActionMasked();
+        editor.pointers(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL ? 0:
+                e.getPointerCount()-(action==MotionEvent.ACTION_POINTER_UP ? 1:0));
+        if (action==MotionEvent.ACTION_DOWN) {
+            selected=null;float best=Float.MAX_VALUE;
+            for (Control c:controls) {
+                float dx=e.getX()-c.cx,dy=e.getY()-c.cy,d=(dx*dx+dy*dy)/(c.r*c.r);
+                if (d<=1.69f && d<best) { best=d;selected=c; }
+            }
+            if (selected!=null) { dragPointer=e.getPointerId(0);dragOffsetX=e.getX()-selected.cx;dragOffsetY=e.getY()-selected.cy; }
+        } else if (action==MotionEvent.ACTION_MOVE && selected!=null && dragPointer>=0) {
+            int i=e.findPointerIndex(dragPointer);
+            if (i>=0) moveSelected(e.getX(i)-dragOffsetX,e.getY(i)-dragOffsetY,selected.r);
+        } else if (action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL ||
+                (action==MotionEvent.ACTION_POINTER_UP && e.getPointerId(e.getActionIndex())==dragPointer)) {
+            dragPointer=-1;saveLayout();
+        }
+        invalidate();return true;
+    }
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) { endEditing();releaseInputs();editor.pointers(0); }
     }
 
     // a touch for the game: the same call SDLSurface makes (coordinates 0..1 of the view)
@@ -290,7 +434,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     // shown, and not hidden for a connected controller
-    private boolean active() { return shown && buttonsVisible && !settingsOpen; }
+    private boolean active() { return !editor.editing() && shown && buttonsVisible && !settingsOpen; }
 
     private void syncTouchState() {
         try {
@@ -303,6 +447,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             final boolean visible = (state & 1) != 0, controlsShown = (state & 2) != 0, open = (state & 4) != 0;
             if (buttonsVisible == visible && shown == controlsShown && settingsOpen == open) return;
             buttonsVisible = visible; shown = controlsShown; settingsOpen = open;
+            if (open && editor.editing()) endEditing();
             for (Control c : controls) { c.pressed = false; c.sx = 0; c.sy = 0; }
             for (int i = owner.size() - 1; i >= 0; --i) {
                 if (owner.valueAt(i) != null) owner.removeAt(i);

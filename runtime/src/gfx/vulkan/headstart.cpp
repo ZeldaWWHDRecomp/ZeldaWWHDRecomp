@@ -283,7 +283,7 @@ int warm_headstart_shaders() {
         }
         if (!compatible) ++descriptorMismatch;
         if (compatible) {
-          recipe->spirv[stage] = shaders[stage]->binary ? vk::shader_binary_words(shaders[stage]->binary) : shaders[stage]->spirv;
+          recipe->spirv[stage] = shaders[stage]->binary ? vk::shader_binary_words(shaders[stage]->binary) : shaders[stage]->spirv();
           compatible = !recipe->spirv[stage].empty();
           missingWords += !compatible;
         }

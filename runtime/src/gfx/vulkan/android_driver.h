@@ -1,9 +1,15 @@
 #pragma once
 #ifdef __ANDROID__
 #include "loader.h"
+#include "result_observer.h"
 #include "driver_store.h"
 #include <SDL3/SDL.h>
 namespace gfxvk::drivers {
+// Called before Vulkan startup, using the existing driver selection/install APIs.
+void offer_after_device_loss();
+void set_vulkan_identity(const std::string&);
+void note_device_lost() noexcept;
+template<typename Function> using ObservedFunction=detail::ResultFunction<Function,VkResult,VK_ERROR_DEVICE_LOST,note_device_lost>;
 PFN_vkGetInstanceProcAddr open_custom();
 bool create_surface(SDL_Window*,VkInstance,const VkAllocationCallbacks*,VkSurfaceKHR*);
 void frame_done();

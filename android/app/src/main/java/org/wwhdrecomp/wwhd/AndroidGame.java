@@ -21,9 +21,29 @@ public final class AndroidGame {
     public static final class Selection {
         public final File library;
         public final File game;
-        private Selection(File library, File game) {
+        public final boolean codeMods;  // built with code-mod support (the setup's choice at that time)
+        private Selection(File library, File game, boolean codeMods) {
             this.library = library;
             this.game = game;
+            this.codeMods = codeMods;
+        }
+    }
+
+    // ---- the code-mod choice (setup's Code mods switch, or Settings > Mods in the game): the next
+    // build translates the game code with mod support. A build records what it was built with
+    // ("code_mods" in active.json); a different choice makes the current build need a rebuild.
+    private static AtomicFile choice(Context context) {
+        return new AtomicFile(new File(storage(context), "code-mods.json"));
+    }
+
+    public static synchronized boolean codeModsChosen(Context context) {
+        try { return read(choice(context)).optBoolean("enabled", false); }
+        catch (Exception missing) { return false; }
+    }
+
+    public static synchronized void chooseCodeMods(Context context, boolean enabled) throws Exception {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            write(choice(context), new JSONObject().put("schema", 1).put("enabled", enabled));
         }
     }
 
@@ -153,7 +173,7 @@ public final class AndroidGame {
             JSONObject value = read(record(context, "active"));
             File library = library(context, value, false);
             File game = value.has("game") ? new File(storage(context), value.getString("game")).getCanonicalFile() : null;
-            return new Selection(library, game);
+            return new Selection(library, game, value.optBoolean("code_mods", false));
         } catch (java.io.FileNotFoundException missing) {
             return null;
         } catch (Exception failure) {
@@ -164,9 +184,11 @@ public final class AndroidGame {
 
     /** A compatible previous runtime can still launch while its replacement builds. */
     public static synchronized boolean needsRebuild(Context context) {
+        boolean chosen = codeModsChosen(context);
         try (SelectionLock ignored = new SelectionLock(context)) {
-            library(context, read(record(context, "active")), true);
-            return false;
+            JSONObject active = read(record(context, "active"));
+            library(context, active, true);
+            return active.optBoolean("code_mods", false) != chosen;
         } catch (Exception failure) { return true; }
     }
 
@@ -177,13 +199,19 @@ public final class AndroidGame {
 
     /** Publish the linked library and its validated extracted assets together. */
     public static synchronized void activate(Context context, File candidate, File game) throws Exception {
+        activate(context, candidate, game, false);
+    }
+
+    /** codeMods: the candidate was built with code-mod support. */
+    public static synchronized void activate(Context context, File candidate, File game, boolean codeMods) throws Exception {
         try (SelectionLock ignored = new SelectionLock(context)) {
-            activateLocked(context, candidate, game);
+            activateLocked(context, candidate, game, codeMods);
         }
     }
 
-    private static void activateLocked(Context context, File candidate, File game) throws Exception {
+    private static void activateLocked(Context context, File candidate, File game, boolean codeMods) throws Exception {
         JSONObject value = expected(context);
+        if (codeMods) value.put("code_mods", true);
         File root = storage(context).getCanonicalFile();
         candidate = candidate.getCanonicalFile();
         if (!candidate.getPath().startsWith(root.getPath() + File.separator) ||

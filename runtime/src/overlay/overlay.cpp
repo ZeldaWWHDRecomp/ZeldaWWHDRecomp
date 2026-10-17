@@ -1,4 +1,5 @@
 #include "tooltip.h"
+#include "controls_options.h"
 #include "gfx/display_modes.h"
 #include <mutex>
 // In-game settings overlay: the Dear ImGui user interface (see overlay.h). The renderers draw the
@@ -79,9 +80,13 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
+#ifdef __ANDROID__
+#include "../platform/phone_rumble.h"
+#endif
 #include "../interp.h"
 #include "../runtime.h"
 #include "../savestate.h"
+#include "../save_convenience.h"
 #include "../screenshot.h"
 #ifndef __ANDROID__
 #include "template_export.h"
@@ -209,6 +214,7 @@ struct Ui {
     // save state slots, refreshed twice a second while the Saves tab is shown
     ss::SlotInfo slots[ss::kSlots + 1];
     crashrec::AutoInfo autos[crashrec::kAutoSlots + 1];
+    ss::SlotInfo last_session, auto_saves[ss::convenience::kAutoSaves + 1];
     double slots_time = -1;
     // performance
     double fps_t0 = 0, fps = 0;
@@ -229,6 +235,7 @@ struct Ui {
     bool list_view = false;
 #endif  // Controls: the table instead of the drawing
     int hover_action = -1;   // Controls: input under the cursor (status line)
+    float options_height = 0;  // Controls: the options under the drawing, last frame (they wrap when narrow)
 };
 Ui U;
 
@@ -524,11 +531,14 @@ void refresh_slots(bool force) {
     U.slots_time = t;
     for (int i = 1; i <= ss::kSlots; i++) U.slots[i] = ss::slot_info(i);
     for (int i = 1; i <= crashrec::kAutoSlots; i++) U.autos[i] = crashrec::auto_info(i);
+    U.last_session = ss::slot_info(ss::convenience::kLastSessionSlot);
+    for (int i = 1; i <= ss::convenience::kAutoSaves; i++) U.auto_saves[i] = ss::slot_info(ss::convenience::kAutoSaveBase + i);
 }
 
 void tab_saves_screenshots();
 void tab_saves_crash_recovery();
 void tab_saves_folder();
+void tab_saves_convenience();
 void tab_saves() {
     refresh_slots(false);
     std::string msg = ss::last_message();
@@ -586,6 +596,7 @@ void tab_saves() {
         }
         ImGui::EndTable();
     }
+    tab_saves_convenience();
     // bug reports: the portable state and the save file, never a full state
     const ext::Features& features = ext::features();
     if (features.clipboard) {
@@ -621,6 +632,12 @@ void tab_saves() {
         help(ss::full_states_forced() ? "Set by WWHD_FULL_SAVE_STATES or a test variable for this start."
                                       : "Saves the whole running game instead (about 300 MB per slot), exactly as it is. "
                                         "These files contain game code and data: never attach them to a bug report.");
+        int savePath=int(ss::save_path());
+        if (ImGui::Combo("Full-state save path", &savePath, "Auto\0Streaming (less memory)\0Fast (background compression)\0"))
+            ss::set_save_path(ss::SavePath(savePath));
+        help("Auto uses less-memory streaming on Android and fast background compression on desktop. "
+             "Applies to manual full states and Crash Recovery; loading works with either path.");
+
     }
 #ifndef __ANDROID__
     tab_saves_folder();
@@ -675,6 +692,52 @@ void tab_saves_screenshots() {
     }
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("%s", screenshot::dir().c_str());
+}
+
+// Last session, Auto save and At start (save_convenience.h): portable states in their own slots
+void tab_saves_convenience() {
+    namespace conv = ss::convenience;
+    heading("Last session and auto saves");
+    auto row = [](int id, const char* name, const ss::SlotInfo& s) {
+        ImGui::PushID(id);
+        ImGui::BeginDisabled(!s.used || !s.compatible);
+        if (ImGui::Button("Load")) {
+            ss::request_load(id);
+            set_open(false, OpenReason::LoadSlot);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        if (s.used && s.compatible) ImGui::Text("%s:  %s%s%s", name, s.when.c_str(), s.area.empty() ? "" : "  -  ", s.area.c_str());
+        else ImGui::TextDisabled("%s:  %s", name, s.used ? "incompatible" : "empty");
+        ImGui::PopID();
+    };
+    row(conv::kLastSessionSlot, "Last session", U.last_session);
+    help("Taken when you quit the game (on Android also when the app goes to the background), unless a cutscene or "
+         "dialogue is running then. A small portable state: your progress and where Link stands.");
+    for (int i = 1; i <= conv::kAutoSaves; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "Auto save %d", i);
+        row(conv::kAutoSaveBase + i, name, U.auto_saves[i]);
+    }
+    const int minutes = ss::auto_save_minutes();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Auto save every");
+    for (int m : conv::kAutoSaveMinutes) {
+        ImGui::SameLine();
+        char label[16];
+        if (m) snprintf(label, sizeof label, "%d min", m);
+        else snprintf(label, sizeof label, "Off");
+        if (radio(label, minutes == m)) ss::set_auto_save_minutes(m);
+    }
+    help("Saves a small portable state in the background into Auto save 1 to 3, the oldest first. If the game is in a "
+         "cutscene or dialogue, it tries again a little later. Separate from Crash Recovery.");
+    const conv::StartChoice start = conv::parse_start(ss::at_start());
+    int current = start.what == conv::Start::kLastSession ? 1 : start.what == conv::Start::kSlot ? 1 + start.slot : 0;
+    if (combo("At start", &current, "Intro as usual\0Continue last session\0Slot 1\0Slot 2\0Slot 3\0Slot 4\0Slot 5\0\0"))
+        ss::set_at_start(current == 0 ? "intro" : current == 1 ? "last" : "slot" + std::to_string(current - 1));
+    help("Loads that state when the game starts, as soon as you continue a Quest Log on the title screen. An empty "
+         "slot starts the game as usual.");
 }
 
 void tab_saves_crash_recovery() {
@@ -878,7 +941,7 @@ void tab_graphics() {
     heading("Aspect ratio");
     int am = aspect::mode();
     for (int i = aspect::kOriginal; i <= aspect::k32x9; i++) {
-        if (i) ImGui::SameLine();
+        if (i) flow::next(flow::check(aspect::mode_name(i)));
         if (radio(aspect::mode_name(i), am == i))
             post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
     }
@@ -934,23 +997,23 @@ void tab_graphics() {
     ImGui::SetNextItemWidth(260);
     if (ImGui::SliderFloat("Bloom strength", &bloom, 0.0f, 200.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp))
         post_changed([bloom] { render::set_bloom_strength(bloom / 100.0f); });
-    ImGui::SameLine();
+    flow::next(flow::button("Off##bloom"));
     if (ImGui::Button("Off##bloom")) post_changed([] { render::set_bloom_strength(0.0f); });
-    ImGui::SameLine();
+    flow::next(flow::button("Default##bloom"));
     if (ImGui::Button("Default##bloom")) post_changed([] { render::set_bloom_strength(1.0f); });
     help("Glow around bright areas. 100% matches the original game; 0% turns bloom off. Applies immediately.");
     const bool ao_ok = render::feature_available(render::kFeatureAO);
     static const char* const ao[] = {"AO: original", "AO: centre fix", "AO: centre + noise fix"};
     for (int i = 0; i < 3; i++) {
-        if (i) ImGui::SameLine();
+        if (i) flow::next(flow::check(ao[i]));
         if (radio(ao[i], render::ao_mode() == i, ao_ok)) post_changed([i] { render::set_ao_mode(i); });
     }
     if (check("Full-size occlusion depth", render::ao_hires(), &v, render::feature_available(render::kFeatureAOHires)))
         post_changed([v] { render::set_ao_hires(v); });
-    ImGui::SameLine(0, 30);
+    flow::next(flow::check("16x anisotropic filtering"), 30);
     if (check("16x anisotropic filtering", render::aniso(), &v, render::feature_available(render::kFeatureAniso)))
         post_changed([v] { render::set_aniso(v); });
-    ImGui::SameLine(0, 30);
+    flow::next(flow::check("Edge smoothing (FXAA)"), 30);
     if (check("Edge smoothing (FXAA)", render::fxaa(), &v, render::feature_available(render::kFeatureFXAA)))
         post_changed([v] { render::set_fxaa(v); });
 #if defined(WWHD_HAS_VULKAN) && !defined(__ANDROID__)
@@ -1348,7 +1411,7 @@ void tab_display() {
     const bool fok = hostui::scale_filter_available();
     for (int i = 0; i < 3; i++) {
         if (i)
-            ImGui::SameLine();
+            flow::next(flow::check(f[i]));
         if (radio(f[i], hostui::scale_filter() == i, fok))
             hostui::post([i] { hostui::set_scale_filter(i); });
     }
@@ -1382,10 +1445,15 @@ void code_mod_dialog() {
         } else if(status.building) {
             ImGui::TextUnformatted(status.stage.c_str());
             if(status.total)ImGui::ProgressBar(float(status.done)/status.total,ImVec2(360,0));
+#ifdef __ANDROID__
+            ImGui::TextWrapped("The setup builds it in the background; you can keep playing. Its notification and screen can pause it.");
+            if(ImGui::Button("Hide")){mods::code::cancel();mods::code::dismiss();ImGui::CloseCurrentPopup();}
+#else
             if(ImGui::Button("Cancel rebuild"))mods::code::cancel();
+#endif
         } else {
             if(status.target)ImGui::TextWrapped("This mod needs code-mod support. Enable it now?");
-            ImGui::TextWrapped("Code mods need the game code to be rebuilt %s mod support, about 5 minutes. Rebuild now?",status.target?"with":"without");
+            ImGui::TextWrapped("Code mods need the game code to be rebuilt %s mod support, %s. Rebuild now?",status.target?"with":"without",mods::code::rebuild_duration());
             if(!status.error.empty())ImGui::TextWrapped("%s",status.error.c_str());
             if(ImGui::Button("Rebuild now"))mods::code::begin();
             ImGui::SameLine();
@@ -1457,16 +1525,33 @@ void builtin_options(const std::string& id) {
         for (const char* env : {"WWHD_MOD_LOCK_ON_RANGE", "WWHD_MOD_LOCK_ON_CYCLING"})
             if (const char* override = std::getenv(env))
                 note("%s=%s overrides the saved option at startup.", env, override);
+    } else if (id == "jump-anywhere") {
+        const char* names[] = {"L", "R", "ZL", "ZR", "L3", "R3"};
+        const uint32_t buttons[] = {input::kL, input::kR, input::kZL, input::kZR, input::kStickL, input::kStickR};
+        for (int i = 0; i < 6; ++i) {
+            if (i) flow::next(flow::check(names[i]));
+            if (radio(names[i], mods::jump_button() == buttons[i])) {
+                auto button = buttons[i];
+                hostui::post([button] { mods::set_jump_button(button); hostui::set("mod.jump-anywhere.button", std::to_string(button)); mods::packages::remember_option("jump-anywhere.button", button); });
+            }
+        }
+        bool dj = mods::double_jump();
+        if (ImGui::Checkbox("Double jump (once more in the air)", &dj))
+            hostui::post([dj] { mods::set_double_jump(dj); hostui::set("mod.jump-anywhere.double", dj ? "1" : "0"); mods::packages::remember_option("jump-anywhere.double", dj); });
+        bool no_auto = mods::no_auto_jump();
+        if (ImGui::Checkbox("No automatic jumps off ledges", &no_auto))
+            hostui::post([no_auto] { mods::set_no_auto_jump(no_auto); hostui::set("mod.jump-anywhere.no-auto", no_auto ? "1" : "0"); mods::packages::remember_option("jump-anywhere.no-auto", no_auto); });
+        help("The button also keeps its normal use. Link drops off ledges instead of jumping when automatic ledge jumps are off; press the button just after leaving the edge to jump. The moon jump cheat takes L while it is on.");
     } else if (id == "fast-forward") {
         for (unsigned rate : {2u, 3u, 4u}) {
-            if (rate != 2) ImGui::SameLine();
+            if (rate != 2) flow::next(flow::check(rate == 2 ? "2x" : rate == 3 ? "3x" : "4x"));
             if (radio(rate == 2 ? "2x" : rate == 3 ? "3x" : "4x", mods::fast_forward_rate() == rate))
                 hostui::post([rate] { mods::set_fast_forward_rate(rate); hostui::set("mod.fast-forward.rate", std::to_string(rate)); mods::packages::remember_option("fast-forward.rate", rate); });
         }
         const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
         const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
         for (int i = 0; i < 6; ++i) {
-            if (i) ImGui::SameLine();
+            if (i) flow::next(flow::check(names[i]));
             if (radio(names[i], mods::fast_forward_button() == buttons[i])) {
                 auto button = buttons[i];
                 hostui::post([button] { mods::set_fast_forward_button(button); hostui::set("mod.fast-forward.button", std::to_string(button)); mods::packages::remember_option("fast-forward.button", button); });
@@ -1479,7 +1564,7 @@ void builtin_options(const std::string& id) {
     } else if (id == "move-speed") {
         if (radio("Hold the button", mods::move_speed_mode() == mods::MoveMode::kHold))
             hostui::post([] { mods::set_move_speed_mode(mods::MoveMode::kHold); hostui::set("mod.move-speed.mode", "0"); mods::packages::remember_option("move-speed.mode", 0); });
-        ImGui::SameLine();
+        flow::next(flow::check("Press to toggle"));
         if (radio("Press to toggle", mods::move_speed_mode() == mods::MoveMode::kToggle))
             hostui::post([] { mods::set_move_speed_mode(mods::MoveMode::kToggle); hostui::set("mod.move-speed.mode", "1"); mods::packages::remember_option("move-speed.mode", 1); });
         if (radio("Native animation, played faster", mods::move_speed_anim() == mods::MoveAnim::kNative))
@@ -1507,7 +1592,7 @@ void builtin_options(const std::string& id) {
         const char* names[] = {"L3", "R3", "L", "R", "ZL", "ZR"};
         const uint32_t buttons[] = {input::kStickL, input::kStickR, input::kL, input::kR, input::kZL, input::kZR};
         for (int i = 0; i < 6; ++i) {
-            if (i) ImGui::SameLine();
+            if (i) flow::next(flow::check(names[i]));
             if (radio(names[i], mods::move_speed_button() == buttons[i])) {
                 auto button = buttons[i];
                 hostui::post([button] { mods::set_move_speed_button(button); hostui::set("mod.move-speed.button", std::to_string(button)); mods::packages::remember_option("move-speed.button", button); });
@@ -1528,10 +1613,11 @@ void builtin_options(const std::string& id) {
              "chosen game button in Controls. Roll, then hold A: roll while running and keep A "
              "held as you come out of the roll to boost until you let go. It is always held "
              "(Press to toggle does not apply) and works on land only.");
-    } else if (id == "ladder-speed" || id == "sidle-speed") {
-        const bool ladder = id == "ladder-speed";
-        const char* key = ladder ? "ladder-speed.factor" : "sidle-speed.factor";
-        float factor = ladder ? mods::ladder_speed_factor() : mods::sidle_speed_factor();
+    } else if (id == "ladder-speed" || id == "sidle-speed" || id == "ivy-speed" || id == "hang-speed") {
+        const char* key = id == "ladder-speed" ? "ladder-speed.factor" : id == "sidle-speed" ? "sidle-speed.factor"
+                        : id == "ivy-speed" ? "ivy-speed.factor" : "hang-speed.factor";
+        float factor = id == "ladder-speed" ? mods::ladder_speed_factor() : id == "sidle-speed" ? mods::sidle_speed_factor()
+                     : id == "ivy-speed" ? mods::ivy_speed_factor() : mods::hang_speed_factor();
         if (ImGui::SliderFloat("Speed", &factor, 1.f, 3.f, "%.2fx"))
             hostui::post([key, factor] { mods::manager::set_traversal_option(key, factor); });
     } else if (id == "sail-speed") {
@@ -1560,13 +1646,17 @@ void cheats() {
     cheat("Give all items", mods::kCheatItems);
     cheat("Equip Master Sword + Mirror Shield (until reload)", mods::kCheatSword);
     cheat("20 hearts, double magic, 5000 rupees", mods::kCheatStats);
+    cheat("Fill the bags (spoils and bait)", mods::kCheatBags);
     static const std::pair<const char*, int> inf[] = {{"Infinite health", mods::kInfHealth}, {"Infinite magic", mods::kInfMagic},
                                                       {"Infinite arrows and bombs", mods::kInfAmmo},
+                                                      {"Infinite rupees", mods::kInfRupees},
+                                                      {"Infinite bait and spoils", mods::kInfBags},
+                                                      {"Infinite swimming", mods::kInfBreath},
                                                       {"Moon jump (hold L; left stick steers)", mods::kMoonJump},
                                                       {"No fall damage after moon jump", mods::kMoonNoFall}};
-    for (int i = 0; i < 5; i++) {
-        int bit = inf[i].second;
-        if (check(inf[i].first, mods::infinite(bit), &v)) hostui::post([bit, v] { mods::set_infinite(bit, v); });
+    for (const auto& [label, which] : inf) {
+        int bit = which;
+        if (check(label, mods::infinite(bit), &v)) hostui::post([bit, v] { mods::set_infinite(bit, v); });
     }
     heading("Story cheats (can break story events; use a spare save file)");
     auto story = [first = true](const char* label, int which) mutable {
@@ -1802,17 +1892,11 @@ void save_gyro(const motion::Settings& g) {
     });
 }
 void load_gyro() {
-    motion::Settings g;
+    std::vector<std::pair<std::string, std::string>> saved;
     std::string v;
-    bool saved = false, axis = false;
     for (const char* k : motion::kKeys)
-        if (hostui::get(k, v)) {
-            motion::from_kv(g, k, v);
-            saved = true;
-            axis |= !strcmp(k, "gyro.axis");
-        }
-    if (saved && !axis) motion::upgrade_from_first_release(g);
-    motion::set_settings(g);
+        if (hostui::get(k, v)) saved.emplace_back(k, v);
+    motion::set_settings(motion::from_saved(saved));
 }
 // the Gyro window (Controls tab > Gyro...): source, axis, sensitivity, invert, recalibrate, Cemuhook server
 void gyro_window(bool& open) {
@@ -1828,13 +1912,19 @@ void gyro_window(bool& open) {
          "Options > Gyro switch still decides whether it uses the motion, and it ignores the motion while the right "
          "stick is pushed.");
     for (int i = 0; i < motion::kSourceCount; i++)
-        if (radio(motion::source_label(i), g.source == i)) g.source = i;
+        if (radio(motion::source_label(i), g.source == i)) {
+            // an untouched sensitivity follows the new source's default (the device's own sensors: 1.0)
+            const float was = motion::default_sensitivity(g.source), now = motion::default_sensitivity(i);
+            if (g.tuning.sensitivity_x == was) g.tuning.sensitivity_x = now;
+            if (g.tuning.sensitivity_y == was) g.tuning.sensitivity_y = now;
+            g.source = i;
+        }
     if (motion::env_override()) note("WWHD_GYRO=%s overrides the saved source.", getenv("WWHD_GYRO"));
     if (g.source == motion::kOff && motion::gyro_controllers() > 0) note("A controller with a gyro is connected: choose Controller gyro to use it.");
-    if (g.source == motion::kController || g.source == motion::kCemuhook) {
+    if (g.source == motion::kController || g.source == motion::kCemuhook || g.source == motion::kDevice) {
         ImGui::TextUnformatted("Turn left/right by");
         for (int a = 0; a < motion::kAxisModeCount; a++) {
-            ImGui::SameLine();
+            flow::next(flow::check(motion::axis_label(a)));
             if (radio(motion::axis_label(a), g.tuning.axis == a)) g.tuning.axis = a;
         }
         help("Player space: turning the controller left or right about the real vertical, however you hold it "
@@ -1851,9 +1941,10 @@ void gyro_window(bool& open) {
     ImGui::SameLine(0, 16);
     if (check("Invert##y", g.tuning.invert_y, &v)) g.tuning.invert_y = v;
     if (ImGui::Button("Default sensitivity"))
-        g.tuning.sensitivity_x = g.tuning.sensitivity_y = motion::Tuning::kDefaultSensitivity;
+        g.tuning.sensitivity_x = g.tuning.sensitivity_y = motion::default_sensitivity(g.source);
     help("1.0 turns the view as far as moving a real Wii U GamePad by the same angle would (about twice the "
-         "controller's turn); the default 0.5 lets the view follow the controller about one to one.");
+         "controller's turn). The default for a controller, 0.5, lets the view follow it about one to one; "
+         "with the device gyro the screen you hold is the GamePad, so its default is 1.0.");
     if (g.source == motion::kMouse) {
         ImGui::SetNextItemWidth(220);
         ImGui::SliderFloat("Mouse: degrees per point", &g.mouse_degrees, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -1911,20 +2002,26 @@ void gyro_window(bool& open) {
 
 void tab_controls() {
     bool v;
+    // a grey note after a row's choices: on the same line when it fits (flow_layout.h)
+    auto disabled_after = [](const std::string& text) {
+        flow::next(flow::text(text.c_str()));
+        ImGui::TextDisabled("%s", text.c_str());
+    };
     input_map::Mapping m = input_map::current();
     // top: which controller the keyboard and controllers act as (the drawing follows), view switch
     const bool pro = input::pro_controller();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Keyboard and controllers act as");
-    ImGui::SameLine();
+    flow::next(flow::check("Wii U GamePad"));
     // the choice is saved (issue #26: every start went back to the GamePad and showed its screen)
     if (radio("Wii U GamePad", !pro))
         hostui::post([] { hostui::set_pro_controller(false); hostui::set("proController", "0"); });
-    ImGui::SameLine();
+    flow::next(flow::check("Wii U Pro Controller"));
     if (radio("Wii U Pro Controller", pro))
         hostui::post([] { hostui::set_pro_controller(true); hostui::set("proController", "1"); });
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - ImGui::CalcTextSize("List view").x -
-                    ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+    // List view at the right edge, or on the next line when the row leaves no room (phones)
+    flow::next(flow::check("List view"));
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - flow::check("List view")));
     ImGui::Checkbox("List view", &U.list_view);
     help("A plain table of all inputs instead of the controller drawing");
     if (check("Skip controller selection", m.skip_controller_selection, &v)) {
@@ -1936,19 +2033,19 @@ void tab_controls() {
     const input_map::FaceLayout fl = input_map::face_layout(m);
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Face buttons");
-    ImGui::SameLine();
+    flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kPosition)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition),
               !m.face_auto && fl == input_map::FaceLayout::kPosition)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
         input_map::set_current(m);
     }
-    ImGui::SameLine();
+    flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kLabels)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels),
               !m.face_auto && fl == input_map::FaceLayout::kLabels)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
         input_map::set_current(m);
     }
-    ImGui::SameLine();
+    flow::next(flow::check("automatic"));
     if (radio("automatic", m.face_auto)) {
         input_map::set_face_auto(m, true);
         input_map::set_current(m);
@@ -1958,11 +2055,9 @@ void tab_controls() {
          "reads the connected pad's labels. Button prompts below chooses how those buttons "
          "look in the game. Only the four face bindings change.");
     if (m.face_auto) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(-> %s)", input_map::face_layout_label(fl));
+        disabled_after(std::string("(-> ") + input_map::face_layout_label(fl) + ")");
     } else if (fl == input_map::FaceLayout::kCustom) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(custom)");
+        disabled_after("(custom)");
     }
     // in-game button prompts (#110, #143): what the game's own button icons look like
     {
@@ -1973,7 +2068,7 @@ void tab_controls() {
         ImGui::TextUnformatted("Button prompts");
         ImGui::PushID("prompts");  // "automatic" is also a face-buttons choice
         for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation}) {
-            ImGui::SameLine();
+            flow::next(flow::check(input_map::prompts_label(p)));
             if (radio(input_map::prompts_label(p), m.prompts == p)) {
                 m.prompts = p;
                 input_map::set_current(m);
@@ -1986,15 +2081,14 @@ void tab_controls() {
              "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
              "Original keeps the game's look. Custom bindings need four distinct face buttons; "
              "otherwise the original icons are used.");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(-> %s)", look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
+        disabled_after(std::string("(-> ") + (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
                                        : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
-                                                                                       : "original");
+                                                                                       : "original") + ")");
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Shoulder names");
         ImGui::PushID("shoulders");
         for (N n : {N::kAuto, N::kNintendo, N::kNumbered, N::kXbox}) {
-            ImGui::SameLine();
+            flow::next(flow::check(input_map::shoulder_names_label(n)));
             if (radio(input_map::shoulder_names_label(n), m.shoulder_names == n)) {
                 m.shoulder_names = n;
                 input_map::set_current(m);
@@ -2005,10 +2099,9 @@ void tab_controls() {
              "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
              "shapes, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
              "buttons setting.");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(-> %s)", look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
+        disabled_after(std::string("(-> ") + (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
                                        : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
-                                                                                               : "L / R / ZL / ZR");
+                                                                                               : "L / R / ZL / ZR") + ")");
         bool colours = m.prompt_colours;
         if (ImGui::Checkbox("Coloured face buttons", &colours)) {
             m.prompt_colours = colours;
@@ -2038,7 +2131,8 @@ void tab_controls() {
     } else {
         status = "Select a button on the controller or a chip to rebind it. Changes are saved to controls.json.";
     }
-    const float bottom = ImGui::GetFrameHeightWithSpacing() * 3 + 4;  // status, options, stick range
+    // status line and the options below (as tall as they came out last frame: more lines when they wrap)
+    const float bottom = ImGui::GetTextLineHeightWithSpacing() + std::max(U.options_height, ImGui::GetFrameHeightWithSpacing() * 2) + 4;
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float h = std::max(160.0f, avail.y - bottom);
     U.hover_action = -1;
@@ -2081,56 +2175,49 @@ void tab_controls() {
     ImGui::PushStyleColor(ImGuiCol_Text, sc);
     ImGui::TextUnformatted(status.c_str());
     ImGui::PopStyleColor();
-    float dz = m.deadzone * 100.0f;
-    ImGui::SetNextItemWidth(200);
-    if (ImGui::SliderFloat("Stick dead zone", &dz, 0.0f, 90.0f, "%.0f%%")) {
-        m.deadzone = std::clamp(dz / 100.0f, 0.0f, 0.9f);
-        input_map::set_current(m);
-    }
-    if (overlay::tooltip_hovered())
-        ImGui::SetTooltip("Default: 15%%. Filters resting-stick drift on both sticks.");
-    ImGui::SameLine(0, 24);
-    if (check("Invert camera up/down", m.invert_camera_y, &v)) {
-        m.invert_camera_y = v;
-        input_map::set_current(m);
-    }
-    if (overlay::tooltip_hovered())
-        ImGui::SetTooltip("Camera only, including first-person views and item aiming (bow, hookshot, telescope, Picto Box) and the mouse camera. The Wind Waker baton and other right-stick controls are not inverted.");
-    ImGui::SameLine(0, 24);
-    // issue #35: a way to keep the controller motors still (saved; WWHD_RUMBLE=0 starts with it off)
-    if (check("Rumble", rumble::enabled(), &v, input::has_rumble())) {
-        rumble::set_enabled(v);
-        hostui::post([v] { hostui::set("rumble", v ? "1" : "0"); });
-    }
-    help(input::has_rumble() ? "Controller vibration when the game asks for it. Off keeps the motors still."
-                             : "Controller vibration: this host does not drive controller motors yet.");
-    ImGui::SameLine(0, 24);
+    // the options below (controls_options.h): they wrap in a narrow window (phones)
+    const float optionsTop = ImGui::GetCursorPosY();
+    controls_options::Values o;
+    o.deadzone = m.deadzone;
+    o.invert_camera_y = m.invert_camera_y;
+    o.rumble = rumble::enabled();
+    o.rumble_available = input::has_rumble();
+#ifdef __ANDROID__
+    o.phone_vibration = phone_rumble::choice.load();
+#endif
     static bool gyro_open = false;
-    {
-        const motion::Settings g = motion::settings();
-        std::string label = std::string("Gyro: ") + (g.source == motion::kOff ? "off" : motion::source_label(g.source)) + "...";
-        if (ImGui::Button(label.c_str())) gyro_open = true;
-        help("Aim in first person by moving a controller with a gyro, a Cemuhook (DSU) source or the mouse (Steam Input)");
+    const motion::Settings gs = motion::settings();
+    const std::string gyro_label = std::string("Gyro: ") + (gs.source == motion::kOff ? "off" : motion::source_label(gs.source)) + "...";
+    o.gyro_label = gyro_label.c_str();
+    o.range[0] = m.left_range;
+    o.range[1] = m.right_range;
+    o.range_min = input_map::kMinStickRange;
+    o.range_max = input_map::kMaxStickRange;
+    const unsigned changed = controls_options::draw(o);
+    U.options_height = ImGui::GetCursorPosY() - optionsTop;
+    if (changed & (controls_options::kDeadzone | controls_options::kInvert | controls_options::kRangeLeft |
+                   controls_options::kRangeRight)) {
+        m.deadzone = o.deadzone;
+        m.invert_camera_y = o.invert_camera_y;
+        m.left_range = o.range[0];
+        m.right_range = o.range[1];
+        input_map::set_current(m);
     }
+    if (changed & controls_options::kRumble) {
+        const bool on = o.rumble;
+        rumble::set_enabled(on);
+        hostui::post([on] { hostui::set("rumble", on ? "1" : "0"); });
+    }
+#ifdef __ANDROID__
+    if (changed & controls_options::kPhone) {
+        const int phone = o.phone_vibration;
+        phone_rumble::choice = static_cast<phone_rumble::Mode>(phone);
+        hostui::post([phone] { hostui::set("phoneRumble", std::to_string(phone)); });
+    }
+#endif
+    if (changed & controls_options::kGyro) gyro_open = true;
     gyro_window(gyro_open);
-    ImGui::SameLine(0, 24);
-    if (ImGui::Button("Reset to defaults")) input_map::set_current(input_map::Mapping::defaults());
-    // issue #40: per-stick range, applied after the dead zone (live, saved with the controls)
-    float* ranges[2] = {&m.left_range, &m.right_range};
-    const char* const labels[2] = {"Left stick range", "Right stick range"};
-    for (int k = 0; k < 2; k++) {
-        if (k) ImGui::SameLine(0, 24);
-        float r = *ranges[k] * 100.0f;
-        ImGui::SetNextItemWidth(200);
-        if (ImGui::SliderFloat(labels[k], &r, input_map::kMinStickRange * 100.0f, input_map::kMaxStickRange * 100.0f, "%.0f%%")) {
-            *ranges[k] = std::clamp(std::round(r) / 100.0f, input_map::kMinStickRange, input_map::kMaxStickRange);
-            input_map::set_current(m);
-        }
-        help("Default: 100% (no change). Scales the stick after the dead zone so a short stick reaches full deflection.");
-    }
-    ImGui::SameLine(0, 24);
-    ImGui::AlignTextToFramePadding();
-    note("Raise if your stick can't reach full deflection, e.g. the Wind Waker baton's directions don't register.");
+    if (changed & controls_options::kReset) input_map::set_current(input_map::Mapping::defaults());
 }
 
 int saved_language() {
@@ -2198,7 +2285,7 @@ void tab_about() {
              "languages need a disc that carries them.", game_lang::region().c_str(), language_list(avail).c_str());
     ImGui::BeginDisabled(env_set);
     for (int i : {1, 2, 5, 3, 4, 8, 9, 10, 7, 0, 6, 11}) {
-        if (i != 1 && i != 3 && i != 9 && i != 0) ImGui::SameLine();  // rows of three
+        if (i != 1 && i != 3 && i != 9 && i != 0) flow::next(flow::check(game_lang::name(i)));  // rows of three
         if (radio(game_lang::name(i), U.language == i && U.language_region == game_lang::kNoRegion,
                   game_lang::is_available(i)))
             choose_language(i, game_lang::kNoRegion);
@@ -2729,6 +2816,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
+#ifdef __ANDROID__
+        if (!phone_rumble::env_override() && hostui::get("phoneRumble", v)) phone_rumble::choice = phone_rumble::parse(v.c_str());
+#endif
         // the saved aspect ratio (WWHD_ASPECT wins; issue #108: it was not remembered)
         if(hostui::get("gameplayFovScale",v))aspect::set_fov_scale(strtof(v.c_str(),nullptr));
         if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {

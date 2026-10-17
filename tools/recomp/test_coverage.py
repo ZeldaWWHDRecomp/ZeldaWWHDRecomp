@@ -16,6 +16,7 @@ NON_ADDRESS = {
     ("runtime.h", 0x02800000): "foreground bucket size",
     ("runtime.h", 0x02000000): "MEM1 size",
     ("core.cpp", 0x02000000): "executable memory lower bound",
+    ("crash_memory.cpp", 0x02000000): "executable memory lower bound; no guest function address",
     ("gfx/metal_main.mm", 0x02000000): "executable memory lower bound",
     ("hle/system_stubs.cpp", 0x02000000): "executable memory lower bound",
     ("mods/mod_archive.cpp", 0x02014B50): "ZIP central directory signature",

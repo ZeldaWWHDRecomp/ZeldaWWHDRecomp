@@ -741,6 +741,7 @@ void reticle_reset();
 // a save state was loaded: nothing may blend across the jump
 void ss_reset() {
     mods::moon_jump_reset();
+    mods::jump_reset();
     countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_last_step = 0;

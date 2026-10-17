@@ -141,7 +141,11 @@ def main():
             sampler = None
             samples = report["resource_samples"]
             if not samples["complete_native_child_samples"]:
-                raise AssertionError("Resource capture missed all complete memory samples containing native children")
+                reasons = sorted({json.dumps(reason, sort_keys=True) for sample in samples["samples"]
+                                  for reason in sample.get("missing_reasons", {}).values()
+                                  if reason["role"] == "native_child"})
+                raise AssertionError("Resource capture missed all complete memory samples containing native children"
+                                     + ("; unreadable native children: " + ", ".join(reasons[:5]) if reasons else ""))
         report["worker_metrics"] = json.loads(shell("run-as", PACKAGE, "cat", job + "/state.json"))
         resources = report["worker_metrics"]["resources_latest"]
         if min(resources["worker_peak_rss_bytes"], resources["largest_reaped_child_peak_rss_bytes"]) <= 0:

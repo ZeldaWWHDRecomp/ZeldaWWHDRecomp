@@ -22,6 +22,37 @@ void capture_regions(Writer& w,const std::vector<MemoryRegion>& regions,Pointer 
         memcpy(w.b.data()+count_at,&present,sizeof present);
     }
 }
+// Only page indices are retained; bytes are read while the guest stays frozen.
+struct MemoryCapturePlan {
+    std::vector<MemoryRegion> regions;
+    std::vector<std::vector<uint32_t>> pages;
+    uint64_t size=sizeof(uint32_t);
+};
+template<class Pointer,class Touched>
+MemoryCapturePlan plan_regions(const std::vector<MemoryRegion>& regions,Pointer ptr,Touched touched) {
+    MemoryCapturePlan plan;plan.regions=regions;
+    for(const auto& region:regions) {
+        auto& pages=plan.pages.emplace_back();plan.size+=12;
+        for(uint32_t offset=0;offset<region.size;offset+=kMemoryChunk) {
+            const auto* page=ptr(region.base+offset);
+            if(touched(page,kMemoryChunk) && !memory_chunk_zero(page))pages.push_back(offset/kMemoryChunk);
+        }
+        plan.size+=uint64_t(pages.size())*(sizeof(uint32_t)+kMemoryChunk);
+    }
+    return plan;
+}
+template<class Sink,class Pointer>
+bool stream_regions(Sink& out,const MemoryCapturePlan& plan,Pointer ptr) {
+    auto word=[&](uint32_t n){return out.bytes(&n,sizeof n);};
+    if(!word(uint32_t(plan.regions.size())))return false;
+    for(size_t i=0;i<plan.regions.size();++i) {
+        const auto& region=plan.regions[i];
+        if(!word(region.base)||!word(region.size)||!word(uint32_t(plan.pages[i].size())))return false;
+        for(uint32_t page:plan.pages[i])
+            if(!word(page)||!out.bytes(ptr(region.base+page*kMemoryChunk),kMemoryChunk))return false;
+    }
+    return true;
+}
 inline bool read_regions(Reader& r,std::vector<MemoryRegion>& regions,MemoryChunks& chunks) {
     uint32_t count=r.u32();if(count>64)return false;
     for(uint32_t i=0;i<count;++i){

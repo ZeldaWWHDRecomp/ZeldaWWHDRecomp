@@ -1,0 +1,5 @@
+# HD ResMgr: a request taken "from the packs" finishes before the load task goes on
+# (runtime/src/resmgr_sync.cpp, docs/decomp-notes.md "ResMgr pack requests finish before the load task continues")
+02613394  # ResMgrThread message handler: clears "from pack" once its load returns
+0260C67C  # ResLoadTask::waitLoad: not done while ResMgrThread still has a "from pack" request
+0275F808  # sead archive resource read, test only: WWHD_TEST_RESMGR_MID_DELAY_MS pauses a "from pack" load after it

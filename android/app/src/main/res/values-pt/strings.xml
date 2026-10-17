@@ -18,6 +18,17 @@
     <string name="setup_kind_folder">Pasta do jogo extraída</string>
     <string name="setup_kind_wua">Arquivo do Cemu (.wua)</string>
     <string name="setup_kind_image">Imagem de disco (.wud / .wux) com as chaves</string>
+    <string name="setup_folder_hint">Coloque o jogo numa pasta só para ele (por exemplo Download/WindWakerHD) e escolha essa pasta. O Android não permite escolher a própria pasta Download. Um arquivo .wua ou uma imagem de disco .wud/.wux é um arquivo só e pode ser escolhido de qualquer pasta.</string>
+    <string name="setup_folder_checking">Verificando a pasta escolhida…</string>
+    <string name="setup_folder_wrong">Escolha outra pasta</string>
+    <string name="setup_folder_again">Escolher uma pasta</string>
+    <string name="setup_folder_subfolder">Usando a pasta do jogo “%1$s” que está dentro da pasta escolhida.</string>
+    <string name="setup_folder_inside">Esta é a pasta %1$s do jogo. Escolha a pasta um nível acima: a que contém code, content e meta.</string>
+    <string name="setup_folder_not_game">A pasta “%1$s” tem code, content e meta, mas não os arquivos de The Wind Waker HD (code/cking.rpx e meta/meta.xml). Verifique se a sua cópia do jogo está completa.</string>
+    <string name="setup_folder_not_game_here">Esta pasta tem code, content e meta, mas não os arquivos de The Wind Waker HD (code/cking.rpx e meta/meta.xml). Verifique se a sua cópia do jogo está completa.</string>
+    <string name="setup_folder_several">Esta pasta contém mais de uma pasta de jogo (%1$s). Escolha a que você quer.</string>
+    <string name="setup_folder_none">Esta pasta não contém o jogo. Escolha a pasta que contém code, content e meta.</string>
+    <string name="setup_folder_unreadable">Não é possível ler a pasta escolhida: %1$s</string>
     <string name="setup_restore">Permitir de novo o acesso ao jogo escolhido</string>
     <string name="setup_disc_key">Escolher o arquivo da chave do disco</string>
     <string name="setup_disc_key_ready">Chave do disco escolhida (trocar)</string>
@@ -66,4 +77,12 @@
     <string name="game_icon_none">Instale o jogo primeiro</string>
     <string name="controller_settings_hint">Segure Select/− para abrir Configurações</string>
     <string name="controller_settings_hint_home">Segure Select/− ou pressione Home para abrir Configurações</string>
+    <string name="touch_layout_access">Controles na tela. Segure o botão do controle para editar o layout.</string>
+    <string name="touch_layout_hint">Arraste um controle para movê-lo. Selecione-o e altere seu tamanho.</string>
+    <string name="touch_layout_smaller">Tamanho −</string>
+    <string name="touch_layout_larger">Tamanho +</string>
+    <string name="touch_layout_reset">Redefinir</string>
+    <string name="touch_layout_done">Concluir</string>
+    <string name="setup_code_mods">Mods de código</string>
+    <string name="setup_code_mods_detail">Permite ativar mods de código (por exemplo as missões de história) em Configurações › Mods. O código do jogo é compilado de novo com suporte a mods, o que leva mais ou menos o mesmo tempo que a primeira instalação, e o jogo fica um pouco mais lento. Enquanto isso, você pode continuar jogando a versão atual.</string>
 </resources>

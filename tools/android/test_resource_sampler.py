@@ -74,5 +74,11 @@ class ResourceSamplerTest(unittest.TestCase):
             self.assertIsNone(result["max_sampled_sum_pss_bytes"])
             self.assertEqual(result["complete_native_child_samples"], 0)
 
+    def test_unreadable_child_keeps_the_reason(self):
+        sample = self.sample(missing="12")["samples"][0]
+        self.assertEqual(sample["missing_pids"], [12])
+        self.assertEqual(sample["missing_reasons"], {"12": {"role": "native_child", "error_type": "ValueError",
+                                                             "output": "No process found"}})
+
 
 if __name__ == "__main__": unittest.main()

@@ -18,6 +18,7 @@ import urllib.request
 import zipfile
 
 VERSION = "3.14.8"
+PYTHON_PROGRAM = "libwwhd-python-driver.so"  # AndroidGuestTools.java names it too
 BUILDS = {
     "arm64-v8a": ("aarch64-linux-android", "11324313957da3736f44e90257304d288864321a4dd376ed0cc35a54eacf9a33"),
     "x86_64": ("x86_64-linux-android", "58eb3b2d76ef57e076985a0a6b093cf08906d65ea4ab78cccc6d894d4250c972"),
@@ -81,6 +82,7 @@ def source_files(root, test_fixtures=False):
     source_paths += [path for path in (root / "tools/recomp").rglob("*")
                      if path.is_file() and (path.suffix in (".py", ".txt") or (path.parent.name == "builds" and path.suffix == ".json"))
                      and path.name != "android_fixture.py" and "__pycache__" not in path.parts]
+    source_paths += guest_tool_files(root)
     if test_fixtures:
         source_paths += [root / "tools/android/debug_fixture_build.py",
                          root / "tools/android/embedding_smoke.py", root / "tools/recomp/android_fixture.py"]
@@ -88,6 +90,17 @@ def source_files(root, test_fixtures=False):
     if template.is_file():
         source_paths.append(template)
     return source_paths
+
+
+def guest_tool_files(root):
+    """Code mods on the phone: the guest mod builder (tools/guestmod) and the story mods' preparation
+    tools, which the runtime finds next to it (tools/story_mods). Their tests stay out."""
+    files = []
+    for directory in ("tools/guestmod", "tools/story_mods"):
+        files += [path for path in (root / directory).rglob("*")
+                  if path.is_file() and path.suffix in (".py", ".json") and not path.name.startswith("test_")
+                  and not {"__pycache__", "tests"} & set(path.relative_to(root).parts)]
+    return files
 
 
 def runtime_fixture_source(directory):
@@ -139,6 +152,12 @@ def main():
                     "-I" + str(prefix / "include/python3.14"), str(root / "android/python/bridge.c"),
                     str(root / "android/python/process.c"),
                     "-L" + str(prefix / "lib"), "-lpython3.14", "-ldl", "-o", str(native / "libwwhdpython.so")], check=True)
+    # Python as a program for code mods (android/python/launcher.c): Android starts programs only from
+    # the native library folder, so it is installed there under a lib*.so name, next to libpython3.14.so
+    subprocess.run([str(compilers[0]), f"--target={host}33", "-fPIE", "-pie",
+                    "-Wl,-z,max-page-size=16384", "-Wl,-rpath,$ORIGIN", "-Wall", "-Wextra", "-Werror",
+                    "-I" + str(prefix / "include/python3.14"), str(root / "android/python/launcher.c"),
+                    "-L" + str(prefix / "lib"), "-lpython3.14", "-o", str(native / PYTHON_PROGRAM)], check=True)
     with zipfile.ZipFile(assets / "python-home.zip", "w", zipfile.ZIP_DEFLATED) as bundle:
         for path in sorted((prefix / "lib/python3.14").rglob("*")):
             if path.is_file() and "__pycache__" not in path.parts:

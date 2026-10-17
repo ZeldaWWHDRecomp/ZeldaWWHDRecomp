@@ -115,6 +115,7 @@ HLE(vpad, VPADRead) {
     story_bag::pad(p, c);       // then the Delivery Bag's extra pages (mod items), while open
     if (!input::pro_controller()) mods::moon_jump_input(p);
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
+    if (!input::pro_controller()) mods::jump_input(p.buttons);
     if (!input::pro_controller()) mods::fast_forward_input(p.buttons);
     if (input::pro_controller()) {  // GamePad on the table: screen and touch only
         p.buttons = 0;

@@ -87,6 +87,16 @@ jobs:
           grep -Fq "SYNC-HAZARD-WRITE-AFTER-WRITE" sync-negative.log
           grep -Fq "sync negative control submitted" sync-negative.log
 
+      - name: Rendered mip source binding order (lavapipe + sync validation)
+        env:
+          WWHD_VK_VALIDATION: "1"
+          WWHD_VK_MIP_ORDER_SMOKE: "1"
+        run: |
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib"
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./build/linux/wwhd --renderer-smoke 2>&1 | tee mip-order-smoke.log
+          grep -Fq "PASS: production rendered-mip texture ordering" mip-order-smoke.log
+          ! grep -Eq "VUID|SYNC-HAZARD|validation error" mip-order-smoke.log
+
       - name: Conservative barrier smoke test (lavapipe + sync validation)
         env:
           WWHD_VK_VALIDATION: "1"

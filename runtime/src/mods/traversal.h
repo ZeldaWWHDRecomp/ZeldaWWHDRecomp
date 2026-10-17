@@ -1,4 +1,4 @@
-// Traversal mods (issues #95, #96): faster ladders, faster sidling, sailing speed per sail and
+// Traversal mods (issues #95, #96): faster ladders, ivy, ledge hanging, faster sidling, sailing speed per sail and
 // automatic wind with the normal sail. The pure maths, so traversal_test can check it without the
 // game; traversal.cpp owns the hooks, traversal_settings.cpp the live switches and factors.
 #pragma once
@@ -19,6 +19,25 @@ constexpr uint32_t kProcWHideMove = 0x15;       // PROC_WHIDE_MOVE: sidling alon
 constexpr uint32_t kProcLadderUpStart = 0x38;   // LADDER_UP_START, UP_END, DOWN_START, DOWN_END
 constexpr uint32_t kProcLadderMove = 0x3C;      // LADDER_MOVE: one rung up or down
 inline bool is_ladder_proc(uint32_t p) { return p >= kProcLadderUpStart && p <= kProcLadderMove; }
+constexpr uint32_t kProcClimbUpStart = 0x3D;    // CLIMB_UP_START, DOWN_START, MOVE_UP_DOWN, MOVE_SIDE: ivy
+constexpr uint32_t kProcClimbMoveSide = 0x40;
+inline bool is_ivy_proc(uint32_t p) { return p >= kProcClimbUpStart && p <= kProcClimbMoveSide; }
+
+// Ivy and ledge hanging (idea from GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0): their procedures
+// take the clip rate from daPy_lk_c::getLadderMoveAnmSpeed (ivy up / down; ladders too),
+// getClimbMoveAnmSpeed (ivy sideways) and getHangMoveAnmSpeed (along a ledge while hanging), both in
+// their _init and on every step, and the clips move Link. The hooks scale what the getter returns.
+// Ladders keep their own path (setFrameCtrl and procLadderMove above), so the shared ladder getter
+// scales only in the ivy procedures and never compounds with it.
+enum class AnmGetter { kLadder, kClimb, kHang };
+inline float anm_getter_factor(AnmGetter g, uint32_t proc, float ivy, float hang) {
+    switch (g) {
+        case AnmGetter::kLadder: return is_ivy_proc(proc) ? ivy : 1.f;
+        case AnmGetter::kClimb: return ivy;
+        case AnmGetter::kHang: return hang;
+    }
+    return 1.f;
+}
 
 // How fast daPy_lk_c::setFrameCtrl should play an animation Link starts in procedure `proc`.
 // Ladders move Link by the animation's root motion (posMove, m34C2 = 5), so a faster clip climbs

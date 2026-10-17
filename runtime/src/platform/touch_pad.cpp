@@ -7,6 +7,7 @@
 #include <mutex>
 #include "../runtime.h"
 #include "touch_face.h"
+#include "phone_rumble.h"
 #include "../gfx/display_modes.h"
 #include "../overlay/hostui.h"
 #include "../overlay/overlay.h"
@@ -41,6 +42,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeS
     JNIEnv*, jclass, jint buttons, jint face, jfloat lx, jfloat ly, jfloat rx, jfloat ry, jfloat lt, jfloat rt) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!attach()) return;
+    if (buttons || face || lx || ly || rx || ry || lt || rt) phone_rumble::last_input_touch = true;
     auto axis = [](float v) { return (Sint16)SDL_clamp(v * 32767.0f, -32768.0f, 32767.0f); };
     SDL_SetJoystickVirtualAxis(g_pad, SDL_GAMEPAD_AXIS_LEFTX, axis(lx));
     SDL_SetJoystickVirtualAxis(g_pad, SDL_GAMEPAD_AXIS_LEFTY, axis(ly));
@@ -56,6 +58,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeS
 // the controls were hidden: the gamepad goes away (a physical controller is the only one again)
 extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeDetachPad(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lk(g_mu);
+    phone_rumble::last_input_touch = false;
     if (!g_pad) return;
     SDL_CloseJoystick(g_pad);
     SDL_DetachVirtualJoystick(g_id);

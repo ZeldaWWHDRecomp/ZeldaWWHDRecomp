@@ -959,7 +959,10 @@ itself are not part of save states.
 
 ## Limits
 
-- Desktop only (macOS, Windows, Linux). Android doesn't support code mods yet.
+- macOS, Windows, Linux and Android. On Android the setup app builds the game code with code-mod
+  support (its **Code mods** switch, see [setup-code-mods.md](setup-code-mods.md)), and each mod is built
+  on the device with the app's own compiler. Mod preparation tools written in Python run there too;
+  other programs in a mod package don't run on Android.
 - Changing enabled mods or their options needs a restart.
 - Mods live in a 16 MiB region of game memory (`0x7F000000`–`0x80000000`); each mod gets its
   own 64 KiB-aligned part.

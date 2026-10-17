@@ -7,6 +7,7 @@
 //               macOS AppKit host)
 //   cemuhook    a Cemuhook (DSU) server over UDP, default 127.0.0.1:26760 (dsu.h): DS4Windows,
 //               BetterJoy, SteamDeckGyroDSU, phone apps
+//   device      this phone/tablet’s own gyro and accelerometer (SDL3 host, screen rotation applied)
 //   mouse       mouse movement turns the GamePad while the game aims (bow, telescope, ...): for Steam
 //               Input's "gyro to mouse" and plain mice
 // The game decides itself when it uses the gyro (its own Options "Gyro" switch, aiming, the right stick
@@ -29,13 +30,15 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "fusion.h"
 
 namespace motion {
 
-enum Source : int { kOff, kController, kCemuhook, kMouse, kSourceCount };
-const char* source_id(int s);     // "off", "controller", "cemuhook", "mouse"
+enum Source : int { kOff, kController, kCemuhook, kMouse, kDevice, kSourceCount };
+const char* source_id(int s);     // "off", "controller", "cemuhook", "mouse", "device"
 const char* source_label(int s);
 int source_from_id(const std::string& id);  // -1 if unknown
 
@@ -51,21 +54,31 @@ struct Settings {
     int recenter_key = -1;         // keyboard key (macOS virtual key code) that recalibrates (-1 = none)
     bool operator==(const Settings&) const = default;
 };
+// The default sensitivity of a source: 1.0 for the device's own sensors (the phone or tablet is the
+// GamePad: the view turns with it one to one, as with a real GamePad), Tuning::kDefaultSensitivity (0.5)
+// for the others (a controller in the hands: the view follows it about one to one at 0.5, fusion.h).
+float default_sensitivity(int source);
 // key=value lines, the form hostui keeps settings in (also used by the tests)
 std::string to_ini(const Settings& s);
 void from_kv(Settings& s, const std::string& key, const std::string& value);  // unknown keys ignored
+// "gyro.format" marks settings saved since the per-source defaults (value kFormat): never migrated
+constexpr int kFormat = 2;
 const char* const kKeys[] = {"gyro.source", "gyro.axis", "gyro.sensitivityX", "gyro.sensitivityY", "gyro.invertX",
                              "gyro.invertY", "gyro.mouseDegrees", "gyro.dsuHost", "gyro.dsuPort", "gyro.dsuSlot",
-                             "gyro.recenterPad", "gyro.recenterKey"};
+                             "gyro.recenterPad", "gyro.recenterKey", "gyro.format"};
 std::string value_of(const Settings& s, const std::string& key);
 // settings saved by v0.2.5 (the first release with gyro; it had no "gyro.axis"): its default sensitivity
 // 1.0 was too high (issue #45), so an untouched 1.0 becomes the new default
 void upgrade_from_first_release(Settings& s);
+// The saved gyro.* keys (key, value; only those present) as the settings to use: missing sensitivities
+// take the source's default, and only settings of the first release are migrated: no "gyro.format",
+// no "gyro.axis" and not the device source (which came later). A 1.0 chosen since then stays.
+Settings from_saved(const std::vector<std::pair<std::string, std::string>>& saved);
 
 Settings settings();
 // applies at once (starts or stops the Cemuhook client, controller sensors follow on the next host update)
 void set_settings(const Settings& s);
-// WWHD_GYRO=off|controller|cemuhook|mouse overrides the saved source at startup
+// WWHD_GYRO=off|controller|cemuhook|mouse|device overrides the saved source at startup
 bool env_override();
 
 // ---- sources ----
@@ -73,6 +86,11 @@ bool env_override();
 // `timestamp_ns` is the sensor's time (0: the time it arrived)
 void controller_sample(uint64_t device, uint64_t timestamp_ns, const float gyro[3], const float accel[3]);
 void controller_gone(uint64_t device);
+// Device samples are already in SDL controller axes (screen rotation and flat-table pose applied).
+void device_sample(uint64_t timestamp_ns, const float gyro[3], const float accel[3]);
+void device_reset();  // discard pending motion/bias on rotation, background or source shutdown
+bool wants_device_sensors();
+void set_device_sensors_available(bool available);
 bool wants_controller_sensors();  // the hosts enable the sensors only for the controller source
 void set_gyro_controllers(int n); // hosts: connected controllers that have a gyro and an accelerometer
 int gyro_controllers();

@@ -413,6 +413,41 @@ static void test_settings_and_sources() {
     from_kv(old, "gyro.sensitivityY", "0.4");
     upgrade_from_first_release(old);
     assert(old.tuning.sensitivity_x == Tuning::kDefaultSensitivity && old.tuning.sensitivity_y == 0.4f);
+    // per-source defaults: 1.0 for the device's own sensors (1:1 like a real GamePad), 0.5 for the others
+    assert(motion::default_sensitivity(motion::kDevice) == 1.0f);
+    for (int src : {kOff, kController, kCemuhook, kMouse})
+        assert(motion::default_sensitivity(src) == Tuning::kDefaultSensitivity);
+    using Saved = std::vector<std::pair<std::string, std::string>>;
+    Settings fresh = motion::from_saved({});
+    assert(fresh == Settings{});
+    Settings dev = motion::from_saved(Saved{{"gyro.source", "device"}});  // no sensitivity saved yet
+    assert(dev.tuning.sensitivity_x == 1.0f && dev.tuning.sensitivity_y == 1.0f);
+    Settings ctl = motion::from_saved(Saved{{"gyro.source", "controller"}});
+    assert(ctl.tuning.sensitivity_x == 0.5f && ctl.tuning.sensitivity_y == 0.5f);
+    // a deliberately saved 1.0 stays: saved with the format marker (every save since), whatever the source
+    for (const char* src : {"device", "controller", "cemuhook", "mouse"}) {
+        Settings chosen;
+        chosen.source = motion::source_from_id(src);
+        chosen.tuning.sensitivity_x = chosen.tuning.sensitivity_y = 1.0f;
+        Saved all;
+        for (const char* k : motion::kKeys) all.emplace_back(k, motion::value_of(chosen, k));
+        assert(to_ini(chosen).find("gyro.format=2\n") != std::string::npos);
+        assert(motion::from_saved(all) == chosen);
+        // even a hand-written file with only a few keys, as long as it has the marker
+        Settings few = motion::from_saved(Saved{{"gyro.source", src}, {"gyro.sensitivityX", "1"},
+                                                {"gyro.sensitivityY", "1.0"}, {"gyro.format", "2"}});
+        assert(few.tuning.sensitivity_x == 1.0f && few.tuning.sensitivity_y == 1.0f);
+    }
+    // the device source came after the first release: its 1.0 is never migrated (a hand-edited settings.ini)
+    Settings hand = motion::from_saved(Saved{{"gyro.source", "device"}, {"gyro.sensitivityX", "1"}, {"gyro.sensitivityY", "1"}});
+    assert(hand.tuning.sensitivity_x == 1.0f && hand.tuning.sensitivity_y == 1.0f);
+    // settings of v0.2.6 and later (with gyro.axis, no marker) keep their 1.0, as before
+    Settings later = motion::from_saved(Saved{{"gyro.source", "controller"}, {"gyro.axis", "yaw"}, {"gyro.sensitivityX", "1"}});
+    assert(later.tuning.sensitivity_x == 1.0f && later.tuning.sensitivity_y == 0.5f && later.tuning.axis == kYawAxis);
+    // the legacy migration still works: v0.2.5 settings (no marker, no axis) lose their untouched 1.0
+    Settings first = motion::from_saved(Saved{{"gyro.source", "controller"}, {"gyro.sensitivityX", "1"},
+                                              {"gyro.sensitivityY", "0.4"}, {"gyro.invertY", "1"}});
+    assert(first.tuning.sensitivity_x == Tuning::kDefaultSensitivity && first.tuning.sensitivity_y == 0.4f && first.tuning.invert_y);
 
     // the mouse source: movement counts only while the game aims; 100 points x 0.1 degrees x sensitivity 1
     Settings m;
@@ -543,6 +578,54 @@ static void test_settings_and_sources() {
     recalibrate();
 }
 
+static void test_device_source() {
+    using namespace motion;
+    // All display rotations preserve the shown screen's right/top and its normal.
+    const Vec3 natural_right[] = {{1,0,0},{0,-1,0},{-1,0,0},{0,1,0}};
+    const Vec3 natural_top[] = {{0,1,0},{1,0,0},{0,-1,0},{-1,0,0}};
+    for(int r=0;r<4;r++) {
+        assert(close_to(device_to_sdl(natural_right[r],r),{1,0,0},1e-6f));
+        assert(close_to(device_to_sdl(natural_top[r],r),{0,0,-1},1e-6f));
+        assert(close_to(device_to_sdl({0,0,1},r),{0,1,0},1e-6f));
+    }
+    Settings s;
+    from_kv(s,"gyro.source","device");
+    assert(s.source==kDevice && value_of(s,"gyro.source")=="device");
+    set_settings(s);
+    assert(wants_device_sensors() && !wants_controller_sensors() && drives_gamepad());
+    set_device_sensors_available(false);
+    assert(status().find("No device gyro")!=std::string::npos);
+    set_device_sensors_available(true);
+    assert(status().find("Device gyro ready")!=std::string::npos);
+    float still[3]={},acc[3]={0,9.80665f,0},right[3]={0,-kPi/2,0};
+    uint64_t t=1000000000;
+    Game camera;
+    camera.frame(vpad(false));
+    const float initial=camera.yaw;
+    // A controller cannot feed the device source, even with a conflicting id.
+    for(int i=0;i<100;i++)controller_sample(42,t+=4000000,right,acc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,initial,1e-4f));
+    for(int i=0;i<100;i++)device_sample(t+=4000000,right,acc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw-initial,game_units_one_frame(17.82f),0.02f));
+    // Background/rotation discards unread movement and old sensor time, without
+    // moving the virtual GamePad or producing a large turn on resume.
+    device_sample(t+=4000000,right,acc);
+    device_reset();
+    const float before=camera.yaw;
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+    device_sample(t+=9000000000ull,still,acc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+    set_settings(Settings{});
+    assert(!wants_device_sensors());
+    for(int i=0;i<100;i++)device_sample(t+=4000000,right,acc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+}
+
 int main() {
     test_aim_conventions();
     test_game_reading();
@@ -550,6 +633,7 @@ int main() {
     test_dsu_packets();
     test_dsu_loopback();
     test_settings_and_sources();
+    test_device_source();
     puts("motion_test: aim conventions (player space, yaw, roll; SDL and Cemuhook), game reading, bias, sensitivity/invert, "
-         "mouse, device switching, timestamps, DSU packets and loopback, settings passed");
+         "mouse, device switching, phone sensor rotation/reset, timestamps, DSU packets and loopback, settings passed");
 }

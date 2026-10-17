@@ -2,6 +2,7 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include "android_isolated_presenter.h"
 #include "android_shared_image.h"
+#include "android_driver.h"
 #include "present.h"
 #include "present_worker.h"
 #include "backend.h"
@@ -22,7 +23,7 @@ struct Failure : std::runtime_error {
  VkResult result;
  Failure(VkResult value,const char* operation):std::runtime_error(operation),result(value) {}
 };
-void check(VkResult value,const char* operation) { if(value!=VK_SUCCESS)throw Failure(value,operation); }
+void check(VkResult value,const char* operation) { if(value==VK_ERROR_DEVICE_LOST)drivers::note_device_lost();if(value!=VK_SUCCESS)throw Failure(value,operation); }
 struct StageTimer {
  size_t stage;bool enabled;std::chrono::steady_clock::time_point started;
  explicit StageTimer(size_t index):stage(index),enabled(R.secondaryProfile.load(std::memory_order_relaxed)) {
@@ -50,7 +51,7 @@ struct AndroidIsolatedPresenter::Impl {
  X(vkAllocateCommandBuffers) X(vkResetCommandPool) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
  X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkResetDescriptorPool) \
  X(vkCreateFence) X(vkDestroyFence) X(vkResetFences) X(vkWaitForFences) X(vkQueueSubmit) X(vkCmdPipelineBarrier)
-#define FIELD(name) PFN_##name name=nullptr;
+#define FIELD(name) drivers::ObservedFunction<PFN_##name> name;
  FUNCTIONS(FIELD)
 #undef FIELD
  std::unique_ptr<IndependentPresenter> presenter;
@@ -163,7 +164,8 @@ struct AndroidIsolatedPresenter::Impl {
   auto create=reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(gfxvk::vkGetInstanceProcAddr(instance,"vkCreateAndroidSurfaceKHR"));
   if(!create)throw std::runtime_error("Missing Android surface creation");
   VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};info.window=window->value;
-  check(create(instance,&info,nullptr,&surface),"secondary-device surface");
+  auto created=create(instance,&info,nullptr,&surface);if(created==VK_ERROR_DEVICE_LOST)drivers::note_device_lost();
+  check(created,"secondary-device surface");
   VkBool32 supported=VK_FALSE;
   check(gfxvk::vkGetPhysicalDeviceSurfaceSupportKHR(physical,family,surface,&supported),"secondary-device present support");
   if(!supported)throw Failure(VK_ERROR_INITIALIZATION_FAILED,"Secondary queue cannot present to surface");

@@ -25,7 +25,7 @@ struct NumberOption {
     float (*value)();
     void (*apply)(float);
 };
-// the traversal mods' factors (1x..3x): ladder, sidle, normal sail, Swift Sail
+// the traversal mods' factors (1x..3x): ladder, sidle, ivy, ledge hang, normal sail, Swift Sail
 std::span<const NumberOption> traversal_options();
 // main thread: apply, save and remember one of them (profile_key, e.g. "sail-speed.swift")
 void set_traversal_option(std::string_view profile_key, float value);

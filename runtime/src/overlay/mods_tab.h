@@ -987,7 +987,6 @@ inline bool begin_list(const char* id) {
 }
 // Why a catalogue mod can't be switched on here ("" when it can).
 inline std::string unavailable_reason(const Host& h, const mods::catalogue::Entry& e) {
-    if (e.kind == "guest" && h.android) return "Code mods don't work on Android yet.";
     if (e.kind == "guest" && !h.code_mods) return "Code mods don't work on this platform.";
     bool compatible = false;
     try { compatible = e.compatible(h.port_version, h.build_name, mods::packages::platform_key()); } catch (...) {}
@@ -1483,8 +1482,8 @@ inline void more(Host& h) {
         bool code = mods::code::enabled();
         // not the section's own label: two items with one ID
         if (ImGui::Checkbox("Use code mods##code_mods_switch", &code)) mods::code::request(code);
-        muted("Code mods need the game code rebuilt with mod support (about 5 minutes) and a restart. Installing a "
-              "code mod turns this on by itself.");
+        muted((std::string("Code mods need the game code rebuilt with mod support (") + mods::code::rebuild_duration() +
+               ") and a restart. Installing a code mod turns this on by itself.").c_str());
         ImGui::Unindent();
     }
     if (section("Save backups")) {

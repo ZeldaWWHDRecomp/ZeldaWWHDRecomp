@@ -34,6 +34,7 @@
 #endif
 #include "runtime.h"
 #include "savestate.h"
+#include "state_metadata_validation.h"
 #include "guest_addr.h"
 #include "../aspect.h"
 #include "gfx/stereo.h"
@@ -1216,7 +1217,13 @@ void gx2_ss_save(ss::Writer& w) {
     w.u64(g_swap_count + g_count_offset);
 }
 
+bool gx2_ss_validate(ss::Reader r, std::string& why) {
+    if (!ss::metadata::gx2(r,kNumRegs)) { why = "corrupt gx2 section"; return false; }
+    return true;
+}
+
 bool gx2_ss_check(ss::Reader r, std::string& why) {
+    if (!gx2_ss_validate(r,why)) return false;
     if (r.u32() != kNumRegs) { why = "GX2 register file size differs"; return false; }
     return r.ok;
 }

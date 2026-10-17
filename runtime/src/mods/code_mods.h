@@ -8,6 +8,7 @@ struct Status {
     std::string mod; // package queued to be enabled after the rebuild ("" for none)
 };
 bool enabled();
+const char* rebuild_duration();  // "about 5 minutes" (the phone: as long as its first setup)
 // fixed_build: this executable is never replaced by a cached code-mod build (the decomp version)
 void startup(int argc, char** argv, bool fixed_build = false);
 bool restart(std::string& error);

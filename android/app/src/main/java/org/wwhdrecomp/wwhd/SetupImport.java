@@ -135,8 +135,13 @@ public final class SetupImport {
             JSONArray directories = new JSONArray();
             Uri uri = Uri.parse(source.getString("uri"));
             if (kind.equals("folder")) {
+                // never copy a wrong folder: check for code, content and meta first (an older selection,
+                // or a folder changed since it was chosen, is checked here too)
+                String start = source.optString("document", DocumentsContract.getTreeDocumentId(uri));
+                SetupFolderCheck.Result found = checkFolder(context, uri, start);
+                if (!found.usable()) throw new IOException(found.message());
                 directories.put("input/game");
-                walk(context, uri, DocumentsContract.getTreeDocumentId(uri), "input/game", files,
+                walk(context, uri, found.document, "input/game", files,
                     directories, new HashSet<>(), control, 0);
             } else files.put(document(context, uri, "input/dump"));
             inventory = new JSONObject().put("schema", 1).put("files", files).put("directories", directories);
@@ -184,6 +189,41 @@ public final class SetupImport {
         return result;
     }
 
+    /** Checks a chosen folder (document {@code start} of the granted {@code tree}) for the game. */
+    public static SetupFolderCheck.Result checkFolder(Context context, Uri tree, String start) throws Exception {
+        String name = null;
+        try (Cursor cursor = context.getContentResolver().query(DocumentsContract.buildDocumentUriUsingTree(tree, start),
+                new String[] {DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0);
+        }
+        // the chosen folder's own names must be safe to copy; folders searched below it may hold anything
+        return SetupFolderCheck.check(id -> list(context, tree, id, id.equals(start)), start, name);
+    }
+
+    private static java.util.List<SetupFolderCheck.Entry> list(Context context, Uri tree, String id, boolean strict) throws IOException {
+        java.util.ArrayList<SetupFolderCheck.Entry> entries = new java.util.ArrayList<>();
+        try (Cursor cursor = context.getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id),
+                COLUMNS, null, null, null)) {
+            if (cursor == null) throw new IOException("Cannot list the chosen folder; choose it again");
+            HashSet<String> names = new HashSet<>();
+            while (cursor.moveToNext()) {
+                String name = cursor.getString(1), child = cursor.getString(0);
+                if (!safeName(name) || !names.add(name)) {
+                    if (strict) throw new IOException("Selected folder contains an unsafe or duplicate filename");
+                    continue;
+                }
+                if (child == null) continue;
+                entries.add(new SetupFolderCheck.Entry(name, child, DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2))));
+            }
+        }
+        return entries;
+    }
+
+    private static boolean safeName(String name) {
+        return name != null && !name.isEmpty() && !name.equals(".") && !name.equals("..") &&
+            name.indexOf('/') < 0 && name.indexOf('\\') < 0 && name.indexOf('\0') < 0;
+    }
+
     private static void walk(Context context, Uri tree, String id, String parent, JSONArray files,
                              JSONArray directories, HashSet<String> seen, Control control, int depth) throws Exception {
         control.checkpoint();
@@ -195,8 +235,7 @@ public final class SetupImport {
             while (cursor.moveToNext()) {
                 control.checkpoint();
                 String name = cursor.getString(1);
-                if (name == null || name.isEmpty() || name.equals(".") || name.equals("..") ||
-                    name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf('\0') >= 0 || !names.add(name))
+                if (!safeName(name) || !names.add(name))
                     throw new IOException("Selected folder contains an unsafe or duplicate filename");
                 String child = cursor.getString(0);
                 String path = parent + "/" + name;

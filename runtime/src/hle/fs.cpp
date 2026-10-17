@@ -15,7 +15,9 @@
 #ifndef _WIN32
 #include <strings.h>
 #endif
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_map>
 
@@ -306,6 +308,10 @@ HLE(coreinit, FSReadFile) {
         // (EFAULT) instead of faulting into the write tracker (write_watch.h)
         wwatch::HostWrite w(dst, (uint32_t)std::min<uint64_t>((uint64_t)size * count, 0x100000000ull - dst));
         n = fread(mem::ptr(dst), 1, (size_t)size * count, f);
+        // test only: WWHD_TEST_FS_MBPS=x reads at x MB/s (slow or cold storage, e.g. a phone's first
+        // start; used for the ResMgr boot race, runtime/src/resmgr_sync.cpp)
+        static const double mbps = getenv("WWHD_TEST_FS_MBPS") ? atof(getenv("WWHD_TEST_FS_MBPS")) : 0;
+        if (mbps > 0) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)(n / mbps)));
     }
     ret(c, (uint32_t)(n / size));
 }
@@ -408,6 +414,7 @@ HLE(nn_save, SAVEOpenDir) {
 #include <vector>
 
 #include "../savestate.h"
+#include "../state_file_section.h"
 void fs_ss_save(ss::Writer& w) {
     std::lock_guard<std::mutex> lk(g_fs_mutex);
     w.u32(g_next_handle);
@@ -432,6 +439,8 @@ void fs_ss_save(ss::Writer& w) {
         w.u32(g_dirs[h].read);
     }
 }
+
+bool fs_ss_check(ss::Reader r,std::string& why) {return ss::check_file_section(r,why);}
 
 void fs_ss_load(ss::Reader& r) {
     std::lock_guard<std::mutex> lk(g_fs_mutex);

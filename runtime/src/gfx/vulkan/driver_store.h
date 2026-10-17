@@ -1,8 +1,10 @@
 #pragma once
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 namespace gfxvk::drivers {
+struct DeviceLoss { std::string driver; bool custom = false; };
 struct Driver {
     std::string id, name, version, library;
     int min_api = 0;
@@ -24,8 +26,12 @@ public:
     // Called once at process start, BEFORE touching the custom driver.
     // Returns true if an incomplete probe forced system fallback.
     bool start();
+    bool recover_incomplete_probe(); // startup recovery before an explicit driver choice
     void rendered_frame();
     void failed();
+    // Private bounded metadata only; no guest memory, save data, or package paths.
+    void note_device_lost(const std::string& actual_driver, bool custom);
+    std::optional<DeviceLoss> take_device_loss();
     std::string selected() const { return selected_; }
     std::filesystem::path cache(const std::string& id) const;
 };

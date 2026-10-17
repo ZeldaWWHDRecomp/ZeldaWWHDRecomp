@@ -15,4 +15,18 @@ installation. The terminal setup (Setup in Terminal, `setup-in-terminal.sh`) ask
   (the command-line option wins). Without a terminal, setup keeps the current choice, or uses off
   for a new installation.
 
-Android: the choice isn't available there yet.
+## Android
+
+The setup app has a **Code mods** switch under the setup buttons. It is off for a new installation.
+
+- Turned on before the first setup, the game is built with code-mod support right away.
+- Turned on (or off) after setup, the app builds the game code again on your Android device. That takes
+  about as long as the first setup; you can keep playing the current build meanwhile, and the new one is
+  used the next time you open the game.
+- **Settings → Mods → Use code mods** in the game does the same: setup builds in the background, then
+  close and reopen the app.
+- Both builds stay on your device, so switching back later is quick.
+
+The first time a code mod is switched on, the app prepares its compiler for mods (a few seconds, once
+per app version). Each code mod is then built on your device when the game starts, like on a computer.
+A game built on a computer and installed over USB uses the choice made when it was built there.

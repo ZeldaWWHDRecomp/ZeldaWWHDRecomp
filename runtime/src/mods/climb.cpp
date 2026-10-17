@@ -250,7 +250,9 @@ extern "C" void hook_02429408(Cpu* c) {
 extern "C" void hook_0240CDD0(Cpu* c) {
     uint32_t self = c->r[3];
     mods::moon_jump_step(c, self, true);
+    mods::jump_step(c, self, true);
     f_0240CDD0_orig(c);
+    mods::jump_step(c, self, false);
     mods::moon_jump_step(c, self, false);
     if (!g_on) {
         g_stamina = 1.0f;

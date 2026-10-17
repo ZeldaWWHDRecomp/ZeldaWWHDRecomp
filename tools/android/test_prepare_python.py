@@ -46,6 +46,16 @@ class ResourceIdentityTests(unittest.TestCase):
             template.write_bytes(b'synthetic asset selection only')
             self.assertIn(template, source_files(root))
 
+    def test_guest_mod_builder_and_story_tools_are_bundled_without_tests(self):
+        root = Path(__file__).resolve().parents[2]
+        bundled = {path.relative_to(root).as_posix() for path in source_files(root)}
+        for name in ("tools/guestmod/build_guest_mod.py", "tools/guestmod/guestmod.py",
+                     "tools/story_mods/npc_catalogue.py", "tools/story_mods/notebook_model.py",
+                     "tools/story_mods/lyt/__init__.py"):
+            self.assertIn(name, bundled)
+        self.assertFalse([name for name in bundled if name.startswith(("tools/guestmod/", "tools/story_mods/")) and
+                          (Path(name).name.startswith("test_") or "/tests/" in name)])
+
     def test_installer_sibling_is_bundled_when_present(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

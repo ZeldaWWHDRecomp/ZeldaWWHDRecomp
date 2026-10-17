@@ -9,6 +9,7 @@
 #error "the Vulkan renderer is built with VK_NO_PROTOTYPES (CMakeLists.txt)"
 #endif
 #include <vulkan/vulkan.h>
+#include <mutex>
 
 // before an instance exists (vkGetInstanceProcAddr(nullptr, name))
 #define WWHD_VK_GLOBAL_FUNCTIONS(X) \
@@ -67,4 +68,11 @@ void load_instance_functions(VkInstance instance);
 // khrDynamicRendering: VK_KHR_dynamic_rendering is enabled (the device is older than Vulkan 1.3)
 // renderPasses: do not request dynamic-rendering entry points from the device.
 void load_device_functions(VkDevice device, bool khrDynamicRendering, bool renderPasses=false);
+// Call after loading device functions, before starting any renderer workers.
+// Unaffected devices keep the driver's entry points directly (no per-call check).
+void serialize_pipeline_creation(bool enabled);
+// Holds the serial pipeline lock while enabled (otherwise an empty lock): for
+// several calls that must see one cache state, and for pipelines created with
+// entry points loaded outside this loader (a separate presentation device).
+std::unique_lock<std::recursive_mutex> pipeline_serial_lock();
 }  // namespace gfxvk

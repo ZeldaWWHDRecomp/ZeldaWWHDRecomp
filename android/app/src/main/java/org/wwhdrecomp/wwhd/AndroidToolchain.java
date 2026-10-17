@@ -61,19 +61,23 @@ public final class AndroidToolchain {
             throw new IOException("Compiler data checksum mismatch");
         File parent = new File(context.getNoBackupFilesDir(), "toolchains");
         File data = new File(parent, identity);
-        if (!ResourceVerifier.complete(data) ||
-                !EmbeddedPython.resourcesMatch(context, "toolchain-data.zip", data, true, control)) {
-            if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Cannot create compiler storage");
-            File pending = new File(parent, identity + ".pending");
-            EmbeddedPython.remove(pending);
-            try {
-                EmbeddedPython.extract(context, "toolchain-data.zip", pending, control);
-                EmbeddedPython.publishResources(pending, data, control);
-            } finally {
+        // the setup process and the game (code mods) both prepare the compiler data
+        try (EmbeddedPython.ProcessLock ignored = new EmbeddedPython.ProcessLock(
+                new File(context.getNoBackupFilesDir(), "toolchains.lock"))) {
+            if (!ResourceVerifier.complete(data) ||
+                    !EmbeddedPython.resourcesMatch(context, "toolchain-data.zip", data, true, control)) {
+                if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Cannot create compiler storage");
+                File pending = new File(parent, identity + ".pending");
                 EmbeddedPython.remove(pending);
+                try {
+                    EmbeddedPython.extract(context, "toolchain-data.zip", pending, control);
+                    EmbeddedPython.publishResources(pending, data, control);
+                } finally {
+                    EmbeddedPython.remove(pending);
+                }
             }
+            if (ResourceCacheCleanup.prune(parent, data, control::checkpoint)) EmbeddedPython.syncDirectory(parent);
         }
-        if (ResourceCacheCleanup.prune(parent, data, control::checkpoint)) EmbeddedPython.syncDirectory(parent);
         control.checkpoint();
         // Explicit paths are needed because APK executable names differ from
         // conventional bin/clang and bin/ld.lld. lld's installed name contains
@@ -86,6 +90,7 @@ public final class AndroidToolchain {
             .put("-fuse-ld=lld").put("--ld-path=" + executables[1].getAbsolutePath());
         return new JSONObject().put("cc", cc).put("cxx", cxx)
             .put("ar", new JSONArray().put(executables[2].getAbsolutePath()))
+            .put("ld", executables[1].getAbsolutePath())
             .put("identity", identity).put("data", data.getAbsolutePath()).put("abi", abi);
     }
 }

@@ -9,7 +9,7 @@
         <receiver android:name=".PickerSmokeReceiver" android:exported="true" />
         <activity android:name=".SetupKeyRecoverySmokeActivity" android:exported="true" />
         <activity android:name=".SetupImportSmokeActivity" android:exported="true" />
-        <provider android:name=".ImportDocuments" android:authorities="org.wwhdrecomp.wwhd.import-fixture"
+        <provider android:name=".ImportDocuments" android:authorities="${applicationId}.import-fixture"
             android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS">
             <intent-filter><action android:name="android.content.action.DOCUMENTS_PROVIDER" /></intent-filter>
         </provider>

@@ -157,6 +157,26 @@ class SetupJobTests(unittest.TestCase):
         self.assertNotEqual(first["library"], second["library"])
         self.assertEqual(ctypes.CDLL(second["library"]).synthetic_check(), 0)
 
+    def test_code_mod_choice_reaches_translation_and_result(self):
+        seen = []
+        def adapter(*args):
+            value = self.adapter(*args)
+            translate = value.translate
+            def recorded(game, hooks=False):
+                seen.append(hooks)
+                return translate(game)  # the synthetic harness has no mod-hook runtime to link against
+            value.translate = recorded
+            return value
+        self.configuration.write_text(json.dumps({**self.value, "code_mods": True}))
+        result = run(self.configuration, self.package, self.native, adapter)
+        self.assertEqual(seen, [True])
+        self.assertIs(result["code_mods"], True)
+        self.assertIs(json.loads((self.job / "ready.json").read_text())["code_mods"], True)
+        self.assertIs(self.execute()["code_mods"], False)  # no choice in the job: without code mods
+        self.configuration.write_text(json.dumps({**self.value, "code_mods": "yes"}))
+        with self.assertRaisesRegex(ValueError, "true or false"):
+            run(self.configuration, self.package, self.native, adapter)
+
     def test_rejects_outside_input_and_unsupported_manifest(self):
         self.value["input"]["path"] = "../outside"
         with self.assertRaisesRegex(ValueError, "inside the setup job"): self.execute()

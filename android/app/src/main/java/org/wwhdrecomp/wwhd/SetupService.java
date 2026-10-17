@@ -42,6 +42,8 @@ public class SetupService extends Service {
     private PowerManager power;
     private PowerManager.WakeLock wake;
     private File job;
+    /** This service's lock on {@link #job}: old-job cleanup leaves a held job alone. */
+    private SetupJobCleanup.Hold hold;
     private boolean running;
     private boolean updating;
     private volatile boolean destroyed;
@@ -103,6 +105,11 @@ public class SetupService extends Service {
             if (selected == null) throw new IOException("Choose a game dump before starting setup");
             if (running && !selected.equals(job)) throw new IOException("Another setup job is still running");
             job = selected;
+            if (hold == null || !hold.job.equals(job)) {
+                if (hold != null) { hold.close(); hold = null; }
+                hold = SetupJobCleanup.hold(job);
+                if (hold == null) throw new IOException("The chosen setup job is in use");
+            }
             File previousHost = new File(job, "host.json");
             if (!running) updating = false;
             if (!running && previousHost.isFile()) {
@@ -197,6 +204,9 @@ public class SetupService extends Service {
                 // the APK's native Yaz0 decoder for shader preparation (shaderprep.py; android/build_native.sh)
                 File yaz0 = new File(getApplicationInfo().nativeLibraryDir, "libyaz0.so");
                 if (yaz0.isFile()) configuration.put("yaz0", yaz0.getAbsolutePath());
+                // the setup's Code mods switch: game code with mod support (read at every start, so a
+                // changed choice rebuilds)
+                configuration.put("code_mods", AndroidGame.codeModsChosen(this));
                 configuration.put("port_revision", revision).put("jobs", compileJobs())
                     .put("shader_cache_root", AndroidUserDirectories.shaderPrebuild(getExternalFilesDir(null)).getAbsolutePath());
                 SetupStore.write(new File(active, "job.json"), configuration);
@@ -209,12 +219,14 @@ public class SetupService extends Service {
                 if (!status.getString("state").equals("ready_to_activate")) throw new IOException("Setup did not finish building");
                 JSONObject ready = SetupStore.read(new File(active, "ready.json"));
                 if (ready.getInt("schema") != 1 || !ready.getString("port_revision").equals(revision) ||
-                    !ready.getString("compiler_identity").equals(configuration.getJSONObject("compiler").getString("identity")))
+                    !ready.getString("compiler_identity").equals(configuration.getJSONObject("compiler").getString("identity")) ||
+                    ready.optBoolean("code_mods", false) != configuration.getBoolean("code_mods"))
                     throw new IOException("Completed build belongs to different setup inputs");
                 if (!active.equals(SetupStore.current(this))) throw new IOException("The selected setup job changed");
                 host("activating", null, null);
                 checkPause(active);
-                AndroidGame.activate(this, new File(ready.getString("library")), new File(ready.getString("game")));
+                AndroidGame.activate(this, new File(ready.getString("library")), new File(ready.getString("game")),
+                    configuration.getBoolean("code_mods"));
                 JSONObject shaders = ready.optJSONObject("shader_prebuild");
                 if (shaders != null && shaders.optString("status").equals("warm_pending")) {
                     File result = new File(active, "shader-warm-result.json");
@@ -382,6 +394,11 @@ public class SetupService extends Service {
         }
         if (wake.isHeld()) wake.release();
         worker.shutdown();
+        if (hold != null && !running) {
+            try { hold.close(); }
+            catch (IOException failure) { Log.w("wwhd-setup", "Cannot release the setup job", failure); }
+            hold = null;
+        }
         super.onDestroy();
     }
 }

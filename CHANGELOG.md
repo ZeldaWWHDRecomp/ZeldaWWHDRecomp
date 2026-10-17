@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: code mods** (such as the story quests). Turn on **Code mods** in the setup app (or Settings → Mods): your
+  device builds the game again with mod support, and builds each code mod itself the first time it's used. Uses the
+  compiler and Python the setup already has; the download grows by only a few KB.
 - **Record graphics on a second thread** (Graphics → Advanced; **on by default on Android**, off elsewhere). The
   render thread hands recording and submitting the Vulkan commands to a second CPU thread. On a Xiaomi 14 Ultra that
   gave 4–7% more fps with 15–23% less render-thread time and identical pictures; it uses a little more CPU and battery.
@@ -50,6 +53,38 @@ what is on `devel` and not released yet (also in the
   set to no limit the bar no longer appears; the boost bar and the climbing stamina wheel now hide while menus, cutscenes
   and conversations are on screen. New boost button **Roll, then hold A**: roll while running and keep A held to boost
   until you let go (on land).
+- **Android: big update for phones and handhelds** (most ideas from GreenNaugahyde's Android fork):
+  - **Fewer stutters after Android closes the game:** the shader cache is now also saved every few minutes and when the
+    app goes to the background, so the next start doesn't rebuild what you already had (desktop benefits after a crash
+    too).
+  - **Display refresh rate:** the game asks Android for the rate it draws (60, or 120 with 120 fps interpolation). Some
+    phones (for example Xiaomi with HyperOS) still limit games to 60 Hz on their own.
+  - **If the graphics driver crashes,** the game offers another driver on the next start; **crash reports** now also
+    cover times Android closed the game itself, and include more detail.
+  - **Older Qualcomm (Adreno) drivers:** shader pipelines are built one at a time there, which avoids crashes on those
+    drivers.
+  - **Less memory:** shaders keep less data after compiling, and save states are written and read in small pieces
+    instead of all at once (all platforms).
+  - **Gyro with the phone's own sensors:** Controls → Gyro… → Source: **Device gyro**.
+  - **Phone vibration** follows the game's rumble while you use touch controls (Settings → Controls → **Phone
+    vibration**: Off, Touch only, or also when no rumble controller is connected).
+  - **Touch layout editor:** hold the on-screen controller button to move and resize the touch controls.
+- **Save states: Last session and auto saves** (all platforms). A **Last session** state is kept when you quit (on
+  Android also when the app goes to the background); **At start → Continue last session** in the Saves tab picks up
+  right where you left off. **Auto save** every 2, 5 or 10 minutes (off by default) into three rotating slots. These are
+  save states, separate from the game's own save file (#234).
+- **New built-in mods** (Settings → Mods → Built-in, off by default): **Faster ivy climbing**, **Faster ledge hanging**,
+  and **Jump anywhere** (L by default, optional double jump). **Cheats** gain infinite rupees, infinite bait and spoils,
+  infinite swimming and "Fill the bags".
+
+  **Please help test these:** we've checked the basics on our own phone, but these need real players and other
+  devices. If something doesn't work, open an issue with your device and the log (Settings → Graphics → Bug reports →
+  **Share log** on Android):
+  - auto saves and **Continue last session** after quitting or switching apps;
+  - **Device gyro** aiming and **Phone vibration**;
+  - the **touch layout editor**;
+  - **Jump anywhere**, faster climbing/ledge hanging and the new cheats;
+  - phones with **older Adreno** or other GPUs, and whether 120 fps reaches your display.
 - **True 60: no more crash at Orca's sword training** (#223). Talking to Orca and choosing "yes" stopped the game in True 60
   mode; event commands now only run on full game steps.
 

@@ -2,6 +2,7 @@
 #include "platform/present_observer.h"
 #ifdef __ANDROID__
 #include <jni.h>
+#include "phone_rumble.h"
 #include "overlay/hostui.h"
 #endif
 #include "gfx/display_modes.h"
@@ -296,12 +297,42 @@ static void rumble_all_locked(Uint16 level,Uint32 ms){
   sent=level;
  }
 }
+#ifdef __ANDROID__
+static void phone_rumble_level(Uint16 level) {
+ static phone_rumble::Refresh refresh;
+ if(!refresh.send(level,SDL_GetTicks()))return;
+ auto* env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+ if(!env)return;
+ jobject activity=static_cast<jobject>(SDL_GetAndroidActivity());
+ if(!activity)return;
+ jclass cls=env->GetObjectClass(activity);
+ if(cls){
+  if(jmethodID method=env->GetStaticMethodID(cls,"phoneRumble","(I)V"))env->CallStaticVoidMethod(cls,method,(jint)level);
+  env->DeleteLocalRef(cls);
+ }
+ if(env->ExceptionCheck())env->ExceptionClear();
+ env->DeleteLocalRef(activity);
+}
+#endif
 static void apply_rumble(){
  g_rumble_update_ms=SDL_GetTicks();
+#ifdef __ANDROID__
+ const auto mode=phone_rumble::choice.load();
+ // Avoid the touch-visibility clock query for phone-off/controller-only play.
+ const bool touch=phone_rumble::touch_selected(mode!=phone_rumble::kOff && gfx::g_touch_controls,
+                  phone_rumble::last_input_touch.load()) && gfx::touch_buttons_visible();
+ const bool phone=phone_rumble::allowed(mode,touch,!g_rumble_controllers.empty());
+ if(!phone)phone_rumble_level(0);
+ if((g_rumble_controllers.empty()&&!phone)||g_rumble_quit)return;
+#else
  if(g_rumble_controllers.empty()||g_rumble_quit)return;  // no controller with a motor: nothing to do
+#endif
  // the share of "on" over the next host frame (the motor spins up and down slower than that)
  float level=rumble::host_level(1000000/60);
  if(overlay::is_open()||!SDL_GetKeyboardFocus())level=0;  // the game cannot stop it from here
+#ifdef __ANDROID__
+ if(phone)phone_rumble_level((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu));
+#endif
  std::lock_guard lk(g_pads_mu);
  rumble_all_locked((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu),kRumbleRefreshMs);
 }
@@ -383,6 +414,82 @@ static void sensor_event(const SDL_GamepadSensorEvent& e){
  auto a=g_accel.find(e.which);if(a==g_accel.end())return;
  motion::controller_sample((uint64_t)e.which,e.sensor_timestamp,e.data,a->second.data());
 }
+#ifdef __ANDROID__
+// The device sensors are independent of gamepads. SDL reports natural-screen axes;
+// remap them to the shown screen, then to the existing flat-controller fusion frame.
+// No sensor subsystem/handles are opened on the default Off path.
+static SDL_Sensor* g_device_gyro=nullptr;
+static SDL_Sensor* g_device_accel=nullptr;
+static bool g_device_attempted=false,g_device_subsystem=false,g_device_foreground=true,g_device_accel_seen=false;
+static std::array<float,3> g_device_acceleration{};
+static int g_device_rotation=-1;
+static int orientation_quarters(SDL_DisplayOrientation orientation){
+ switch(orientation){
+ case SDL_ORIENTATION_PORTRAIT:return 0;
+ case SDL_ORIENTATION_LANDSCAPE:return 1;
+ case SDL_ORIENTATION_PORTRAIT_FLIPPED:return 2;
+ case SDL_ORIENTATION_LANDSCAPE_FLIPPED:return 3;
+ default:return -1;
+ }
+}
+static void close_device_sensors(){
+ if(g_device_gyro)SDL_CloseSensor(g_device_gyro);
+ if(g_device_accel)SDL_CloseSensor(g_device_accel);
+ g_device_gyro=g_device_accel=nullptr;
+ if(g_device_subsystem)SDL_QuitSubSystem(SDL_INIT_SENSOR);
+ g_device_subsystem=false;g_device_accel_seen=false;g_device_rotation=-1;
+ motion::device_reset();
+}
+static void update_device_sensors(){
+ SDL_Window* focused=motion::wants_device_sensors()?SDL_GetKeyboardFocus():nullptr;
+ const bool want=focused&&g_device_foreground&&
+                 !getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input();
+ if(!want){
+  if(g_device_attempted){close_device_sensors();g_device_attempted=false;}
+  return;
+ }
+ if(!g_device_attempted){
+  g_device_attempted=true;
+  g_device_subsystem=SDL_InitSubSystem(SDL_INIT_SENSOR);
+  if(g_device_subsystem){
+   int count=0;auto* ids=SDL_GetSensors(&count);
+   for(int i=0;i<count;i++){
+    const auto type=SDL_GetSensorTypeForID(ids[i]);
+    if(type==SDL_SENSOR_GYRO&&!g_device_gyro)g_device_gyro=SDL_OpenSensor(ids[i]);
+    if(type==SDL_SENSOR_ACCEL&&!g_device_accel)g_device_accel=SDL_OpenSensor(ids[i]);
+   }
+   SDL_free(ids);
+  }
+  const bool available=g_device_gyro&&g_device_accel;
+  motion::set_device_sensors_available(available);
+  if(!available){LOG("[gyro] this device has no usable gyro/accelerometer pair: %s",SDL_GetError());close_device_sensors();return;}
+  LOG("[gyro] this device's motion sensors on");
+ }
+ if(!g_device_gyro||!g_device_accel)return;
+ auto display=SDL_GetDisplayForWindow(focused);
+ if(!display)display=SDL_GetPrimaryDisplay();
+ const int natural=orientation_quarters(SDL_GetNaturalDisplayOrientation(display));
+ const int current=orientation_quarters(SDL_GetCurrentDisplayOrientation(display));
+ const int rotation=natural<0||current<0?-1:(current-natural+4)%4;
+ if(rotation!=g_device_rotation){
+  // A bias/gravity estimate in the old axes cannot be carried into the new ones.
+  // Leave the virtual GamePad pose alone, discard pending turns and await fresh acceleration.
+  motion::device_reset();g_device_accel_seen=false;g_device_rotation=rotation;
+ }
+}
+static void device_sensor_event(const SDL_SensorEvent& e){
+ if(!g_device_gyro||!g_device_accel||g_device_rotation<0||!g_device_foreground||
+    !SDL_GetKeyboardFocus()||overlay::blocks_input()||getenv("WWHD_NO_HOST_INPUT")||!motion::wants_device_sensors())return;
+ if(e.which==SDL_GetSensorID(g_device_accel)){
+  std::copy_n(e.data,3,g_device_acceleration.begin());g_device_accel_seen=true;return;
+ }
+ if(e.which!=SDL_GetSensorID(g_device_gyro)||!g_device_accel_seen)return;
+ const auto g=motion::device_to_sdl({e.data[0],e.data[1],e.data[2]},g_device_rotation);
+ const auto a=motion::device_to_sdl({g_device_acceleration[0],g_device_acceleration[1],g_device_acceleration[2]},g_device_rotation);
+ const float gyro[3]={g.x,g.y,g.z},accel[3]={a.x,a.y,a.z};
+ motion::device_sample(e.sensor_timestamp,gyro,accel);
+}
+#endif
 // What the dominant pad (first connected still present) has printed on its face buttons, in the
 // order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
 static void dominant_labels(input_map::FaceLabel out[4]){
@@ -420,6 +527,9 @@ static void note_dominant_labels(){
  input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
 }
 static void open_controller(SDL_JoystickID id){
+#ifdef __ANDROID__
+ if(!SDL_IsJoystickVirtual(id))phone_rumble::last_input_touch=false;
+#endif
  std::lock_guard lk(g_pads_mu);
  if(g_controllers.contains(id))return;
 #ifdef __ANDROID__
@@ -620,7 +730,23 @@ void handle_event(const SDL_Event& event){
  else if(event.type==SDL_EVENT_WINDOW_HIDDEN || event.type==SDL_EVENT_WINDOW_MINIMIZED ||
            event.type==SDL_EVENT_WINDOW_SHOWN || event.type==SDL_EVENT_WINDOW_RESTORED)
   update_overlay_window(SDL_GetKeyboardFocus());
+#ifdef __ANDROID__
+ if(event.type==SDL_EVENT_WILL_ENTER_BACKGROUND||event.type==SDL_EVENT_TERMINATING){
+  g_device_foreground=false;close_device_sensors();g_device_attempted=false;
+ }
+ if(event.type==SDL_EVENT_DID_ENTER_FOREGROUND)g_device_foreground=true;
+ if(event.type==SDL_EVENT_DISPLAY_ORIENTATION)update_device_sensors();
+ if(event.type==SDL_EVENT_SENSOR_UPDATE){device_sensor_event(event.sensor);return;}
+#endif
  if((event.type==SDL_EVENT_AUDIO_DEVICE_ADDED||event.type==SDL_EVENT_AUDIO_DEVICE_REMOVED||event.type==SDL_EVENT_AUDIO_DEVICE_FORMAT_CHANGED)&&!event.adevice.recording)audio::flush();
+#ifdef __ANDROID__
+ // Showing touch buttons alone does not select phone feedback. Actual touch-pad input
+ // selects it; physical-controller or keyboard input deselects the phone again.
+ if(event.type==SDL_EVENT_KEY_DOWN ||
+    (event.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN && !SDL_IsJoystickVirtual(event.gbutton.which)) ||
+    (event.type==SDL_EVENT_GAMEPAD_AXIS_MOTION && std::abs(int(event.gaxis.value))>8192 && !SDL_IsJoystickVirtual(event.gaxis.which)))
+  phone_rumble::last_input_touch=false;
+#endif
  if (event.type==SDL_EVENT_MOUSE_REMOVED) {
   std::lock_guard lk(g_mu);g_mouse_bindings.remove_device(event.mdevice.which);
  }
@@ -705,6 +831,9 @@ void update(){
  mods::update_mouse();
  apply_rumble();
  update_sensors();
+#ifdef __ANDROID__
+ update_device_sensors();
+#endif
  std::function<void(bool,std::u16string)> cancelled;
  {std::lock_guard lk(g_mu);if(g_pending&&!g_done){g_done=std::exchange(g_pending,nullptr);g_text=std::move(g_initial);g_max_len=g_pending_max_len;g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);if(!g_prompt_window)g_prompt_window=SDL_GetKeyboardFocus();if(g_prompt_window){g_previous_title=SDL_GetWindowTitle(g_prompt_window);if(SDL_StartTextInput(g_prompt_window)){other_windows_text_input(true);show_prompt();LOG("[input] the game asks for text: type it in a game window (shown in the window title), Enter confirms, Escape cancels; WWHD_SWKBD_TEXT=<text> answers automatically");}else{LOG("[input] text input unavailable (%s); set WWHD_SWKBD_TEXT=<text>",SDL_GetError());cancelled=std::exchange(g_done,nullptr);}}else{LOG("[input] text input: no window to type in; set WWHD_SWKBD_TEXT=<text>");cancelled=std::exchange(g_done,nullptr);}}}
  if(cancelled)cancelled(false,{});

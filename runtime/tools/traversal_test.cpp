@@ -39,6 +39,19 @@ static void test_procedures() {
     assert(is_ladder_proc(kProcLadderMove) && !is_ladder_proc(0x3D));  // CLIMB_UP_START is ivy, not a ladder
 }
 
+static void test_ivy_hang() {
+    for (uint32_t proc = 0; proc < 256; ++proc) {
+        // off (both 1): every getter returns the stock rate
+        for (auto g : {AnmGetter::kLadder, AnmGetter::kClimb, AnmGetter::kHang}) assert(anm_getter_factor(g, proc, 1.f, 1.f) == 1.f);
+        // the ladder getter scales only in the ivy procedures: ladders keep their own path
+        const float f = anm_getter_factor(AnmGetter::kLadder, proc, 2.f, 3.f);
+        assert(f == (proc >= 0x3D && proc <= 0x40 ? 2.f : 1.f));
+        assert(anm_getter_factor(AnmGetter::kClimb, proc, 2.f, 3.f) == 2.f);
+        assert(anm_getter_factor(AnmGetter::kHang, proc, 2.f, 3.f) == 3.f);
+        if (is_ladder_proc(proc)) assert(!is_ivy_proc(proc));
+    }
+}
+
 static void test_ladder_rewrite() {
     // the rung clip runs and Link stays on the ladder: the procedure stored the stock rate (scale it)
     assert(ladder_rate_rewritten(1.5f, kProcLadderMove, kProcLadderMove));
@@ -117,6 +130,7 @@ int main() {
     test_clamp();
     test_off_is_stock();
     test_procedures();
+    test_ivy_hang();
     test_ladder_rewrite();
     test_ladder_rest();
     test_ladder_timing();

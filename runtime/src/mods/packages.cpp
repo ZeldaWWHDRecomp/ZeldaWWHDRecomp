@@ -202,9 +202,6 @@ Manifest manifest(const fs::path& path){
         require(elf.gcount()==sizeof header&&std::string(header,6)==std::string("\x7f" "ELF\x01\x02",6),
                 "Guest mod must contain a 32-bit big-endian ELF");
         if(m.problem.empty())m.fingerprint=sha256_file(checked);
-#ifdef __ANDROID__
-        m.problem="Guest mods are not supported on Android yet";
-#endif
     } else if(m.kind=="cemu") {
         auto folder=string_field(v,"cemu_dir",false,512);
         require(folder.empty()||archive::relative_path(folder),"Invalid Cemu directory");
@@ -420,12 +417,27 @@ void load_move_speed_options(const Value& options, bool startup = false) {
 }
 void save_traversal_options(Value& options) {
     for (const auto& option : manager::traversal_options()) options[option.profile_key] = double(option.value());
+    options["jump-anywhere.double"] = double_jump();
+    options["jump-anywhere.no-auto"] = no_auto_jump();
+    options["jump-anywhere.button"] = double(jump_button());
 }
 void load_traversal_options(const Value& options) {
     for (const auto& option : manager::traversal_options()) {
         if (std::getenv(option.startup_env)) continue;
         const auto& v = options.get(option.profile_key);
         option.apply(v.type == Value::Number && v.number >= 1.0 && v.number <= 3.0 ? float(v.number) : traversal::kDefaultFactor);
+    }
+    auto flag = [&](const char* key, const char* env, void (*apply)(bool)) {
+        if (std::getenv(env)) return;
+        const auto& v = options.get(key);
+        apply(v.type == Value::Bool ? v.boolean : v.type == Value::Number && v.number != 0);
+    };
+    flag("jump-anywhere.double", "WWHD_MOD_JUMP_DOUBLE", set_double_jump);
+    flag("jump-anywhere.no-auto", "WWHD_MOD_JUMP_NO_AUTO", set_no_auto_jump);
+    if (!std::getenv("WWHD_MOD_JUMP_BUTTON")) {
+        const auto& b = options.get("jump-anywhere.button");
+        set_jump_button(b.type == Value::Number && b.number >= 0 && b.number <= UINT32_MAX && std::floor(b.number) == b.number &&
+                                valid_jump_button(uint32_t(b.number)) ? uint32_t(b.number) : 0x20);
     }
 }
 void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
@@ -781,7 +793,7 @@ bool set_game_source(const std::string& game,const std::string& path,std::string
     });
 }
 bool run_setup_tool(const std::string& id,const std::string& step_id,std::string& error,std::string& last_output) {
-    std::vector<std::string> command,private_paths;fs::path data;std::string fingerprint;catalogue::Step step;bool marked=false;
+    std::vector<std::string> command,private_paths;fs::path data;std::string fingerprint,directory;catalogue::Step step;bool marked=false;
     last_output.clear();
     try {
         {
@@ -796,12 +808,12 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
             require(!fs::is_symlink(data)&&!fs::is_symlink(data.parent_path()),"Mod data folder is a symlink");
             fs::create_directories(data);
             require(!fs::is_symlink(data)&&!fs::is_symlink(data.parent_path()),"Mod data folder is a symlink");
+            directory=data.string();
             catalogue::Sources sources(database.get("game_sources"));command=catalogue::tool_arguments(step,sources,r.path,data);
             fingerprint=catalogue::tool_receipt(step,sources,r.path,data,trust_fingerprint(r.manifest));
             for(const auto& [game,path]:sources.local_settings().object)if(path.type==Value::String&&!path.text.empty())private_paths.push_back(path.text);
             if(fs::path(command[0]).extension()==".py") {
-                const char* config=std::getenv("WWHD_GUEST_BUILD_CONFIG");
-                auto bridge=guestmods::BuildBridge::read(config?config:"guest-sdk.json",(root/"GuestBuild").string());
+                auto bridge=guestmods::BuildBridge::read(guestmods::BuildBridge::config_path(),(root/"GuestBuild").string());
                 command.insert(command.begin(),bridge.python.begin(),bridge.python.end());
                 // -B: Python must not write __pycache__ into the package; it is fingerprinted, and new
                 // .pyc files made every later step report "Package changed" (gc-minimap's prepare tool
@@ -809,16 +821,21 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
                 command.insert(command.begin()+std::ptrdiff_t(bridge.python.size()),"-B");
                 // The Windows embeddable Python doesn't put the script's folder on sys.path, so a tool
                 // importing its own modules failed there (issue #224): run it through a bootstrap that adds it
-                command.insert(command.begin()+std::ptrdiff_t(bridge.python.size())+1,{"-c",
-                    "import os,runpy,sys;s=sys.argv[1];sys.path.insert(0,os.path.dirname(os.path.abspath(s)));"
-                    "sys.argv=sys.argv[1:];runpy.run_path(s,run_name='__main__')"});
+#ifdef __ANDROID__
+                // Android 13's process spawning has no working-directory option (host::run_process): the
+                // bootstrap enters the mod's data folder itself
+                command.insert(command.begin()+std::ptrdiff_t(bridge.python.size())+1,{"-c",guestmods::tool_bootstrap_in_folder,data.string()});
+                directory.clear();
+#else
+                command.insert(command.begin()+std::ptrdiff_t(bridge.python.size())+1,{"-c",guestmods::tool_bootstrap});
+#endif
             }
             // A failed rerun must not reuse an earlier success and leftover outputs.
             auto previous=database;database["setup_receipts"][id].object.erase(step_id);
             try{save();}catch(...){database=previous;throw;}
             r.loading=true;r.status="Preparing local mod files";marked=true;
         }
-        auto result=host::run_process(command,data.string());
+        auto result=host::run_process(command,directory);
         last_output=result.output.substr(result.output.size()>16384?result.output.size()-16384:0);
         std::sort(private_paths.begin(),private_paths.end(),[](const auto& a,const auto& b){return a.size()>b.size();});
         for(const auto& path:private_paths)for(size_t from=0;(from=last_output.find(path,from))!=std::string::npos;from+=13)last_output.replace(from,path.size(),"[game source]");

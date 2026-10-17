@@ -87,6 +87,13 @@ extern "C" void f_0242A218_orig(Cpu* c) {
     setf(c->r[3] + 0x6A14, 3.f);  // the blend writes some of Link's fields
     c->f[1].ps0 = 0;
 }
+// the clip rate getters: return a fixed rate in f1, clobber r3 as a real call may
+extern "C" void f_02417FF4_orig(Cpu* c) { c->f[1].ps0 = c->f[1].ps1 = 0.8; c->r[3] = 0x77; }
+extern "C" void f_024291E0_orig(Cpu* c) { c->f[1].ps0 = c->f[1].ps1 = 0.6; c->r[3] = 0x77; }
+extern "C" void f_02427D8C_orig(Cpu* c) { c->f[1].ps0 = c->f[1].ps1 = 1.2; c->r[3] = 0x77; }
+extern "C" void hook_02417FF4(Cpu*);
+extern "C" void hook_024291E0(Cpu*);
+extern "C" void hook_02427D8C(Cpu*);
 extern "C" void hook_02427CA8(Cpu*);
 extern "C" void hook_0242A218(Cpu*);
 extern "C" void site_0247D4E8(Cpu*);
@@ -99,6 +106,32 @@ static void all_off() {
     mods::set_sidle_speed(false);
     mods::set_sail_speed(false);
     mods::set_auto_wind(false);
+    mods::set_ivy_speed(false);
+    mods::set_hang_speed(false);
+}
+
+static void test_ivy_hang() {
+    auto call = [](void (*hook)(Cpu*), uint32_t proc) {
+        st32(kLink + kProc, proc);
+        const auto before = snapshot(kLink, 0x7000);
+        Cpu c{}; c.r[3] = kLink;
+        hook(&c);
+        assert(snapshot(kLink, 0x7000) == before);  // the getters only change the returned rate
+        return (float)c.f[1].ps0;
+    };
+    all_off();
+    mods::set_ivy_speed_factor(3.f); mods::set_hang_speed_factor(3.f);  // dials alone change nothing
+    assert(call(hook_02417FF4, 0x3F) == 0.8f && call(hook_024291E0, 0x40) == 0.6f && call(hook_02427D8C, 0x50) == 1.2f);
+    mods::set_ivy_speed(true);
+    mods::set_ivy_speed_factor(2.f);
+    assert(call(hook_02417FF4, 0x3F) == 1.6f);   // ivy up / down
+    assert(call(hook_02417FF4, 0x3C) == 0.8f);   // a ladder rung: its own path
+    assert(call(hook_024291E0, 0x40) == 1.2f);   // ivy sideways
+    assert(call(hook_02427D8C, 0x50) == 1.2f);   // hanging: its own switch
+    mods::set_hang_speed(true);
+    mods::set_hang_speed_factor(1.5f);
+    assert(std::fabs(call(hook_02427D8C, 0x50) - 1.8f) < 1e-6f);
+    all_off();
 }
 
 // with the mod off, hook == original alone (memory and registers), and no guest calls
@@ -382,6 +415,7 @@ int main() {
     test_sidle();
     test_ship();
     test_ship_turning();
+    test_ivy_hang();
     test_off_identical();  // switching off again goes back to the stock path
     return 0;
 }

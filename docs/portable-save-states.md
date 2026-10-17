@@ -50,6 +50,24 @@ names the reason (`[savestate] slot N: portable state refused: ...`). This cover
 and Shift+F1–F5. Full save states and Crash Recovery's automatic states can be made at any time.
 Loading is not affected.
 
+## Last session, auto saves and At start
+
+The Saves tab's **Last session and auto saves** section holds portable states in their own slots;
+slots 1–5 and Crash Recovery's automatic states are not touched.
+
+- **Last session** is taken when you quit the game, and on Android also when the app goes to the
+  background. If a cutscene or dialogue is running at that moment, the previous last session stays.
+  It is stored as `last_session.wwstate` in the states folder.
+- **Auto save every** Off (default), 2, 5 or 10 minutes writes Auto save 1 to 3 in turn
+  (`autosave/autosave1.wwstate` ...), the oldest first. During a cutscene or dialogue it tries
+  again a few seconds later. Auto saves are quiet: no message on screen.
+- **At start**: *Intro as usual* (default), *Continue last session* or a slot. The state is loaded
+  as soon as you continue a Quest Log on the title screen, like any portable state. An empty slot
+  starts the game as usual.
+
+Test switches: `WWHD_LAST_SESSION=0|1` (scripted runs with `WWHD_NO_HOST_INPUT` take no last
+session unless it is 1), `WWHD_AT_START=intro|last|slotN` for one start.
+
 ## Bug reports
 
 The Saves tab's **Copy save for bug report** copies the paths of the newest portable state and of

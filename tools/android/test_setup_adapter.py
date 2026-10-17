@@ -135,6 +135,24 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(inventory(previous), expected)
         self.assertNotEqual(inventory(updated), expected)
 
+    def test_code_mod_choice_translates_with_mod_hooks_beside_plain_generation(self):
+        plain = self.adapter().translate(self.game)
+        expected = inventory(plain)
+        self.assertNotIn("PPC_MOD_HOOK", "".join(path.read_text() for path in plain.glob("code_*.c")))
+        hooked = self.adapter().translate(self.game, hooks=True)
+        self.assertNotEqual(plain, hooked)
+        self.assertEqual(self.events[-1]["state"], "complete")
+        self.assertIn("PPC_MOD_HOOK", "".join(path.read_text() for path in hooked.glob("code_*.c")))
+        self.assertIn("ppc_mod_register", (hooked / "table.c").read_text())
+        # both choices keep their verified generation: switching back reuses it
+        self.assertEqual(inventory(plain), expected)
+        again = self.adapter()
+        again.setup.recompile = lambda *args, **kwargs: self.fail("completed C must be reused")
+        self.assertEqual(plain, again.translate(self.game, hooks=False))
+        self.assertEqual(hooked, again.translate(self.game, hooks=True))
+        with self.assertRaisesRegex(ValueError, "true or false"):
+            self.adapter().translate(self.game, hooks=1)
+
     def test_low_space_blocks_new_translation_but_allows_verified_reuse(self):
         adapter = self.adapter()
         with patch("setup_adapter.shutil.disk_usage", return_value=SimpleNamespace(free=0)):

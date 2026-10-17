@@ -75,6 +75,7 @@ void block_end();     // take it back (waits for a turn)
 bool ensure_core();   // service threads entering guest code; true if the core was taken
 void release_core();
 void set_service_core(uint32_t core);
+uint32_t diagnostic_count(); // normal-thread numeric summary, no names/CPU contents
 void report_sched();  // log per-thread core usage
 }  // namespace threads
 struct BlockingScope {

@@ -2,6 +2,7 @@
 #include "motion.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -27,8 +28,15 @@ constexpr float kMoving = 0.35f;
 
 std::mutex g_mu;
 Settings g_settings;
+std::atomic<bool> g_wants_device_sensors{false};
 bool g_aiming = false;
 int g_gyro_controllers = 0;
+bool g_device_sensors_available = false;
+#ifdef __ANDROID__
+bool g_device_sensors_checked = false;
+#else
+bool g_device_sensors_checked = true;
+#endif
 float g_mouse_dx = 0, g_mouse_dy = 0;
 const bool g_log = getenv("WWHD_GYRO_LOG") != nullptr;  // raw samples and the aim, twice a second
 
@@ -43,8 +51,8 @@ struct Device {
     Aim logged_aim;             // aim since the last log line
     Vec3 last_gyro, last_acc;
 };
-constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull;
-std::map<uint64_t, Device> g_devices;   // controllers (key: host device id) and the DSU slot (key kDsuDevice)
+constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull, kPhoneDevice = ~2ull;
+std::map<uint64_t, Device> g_devices;   // controllers, DSU slot and this device (distinct reserved ids)
 uint64_t g_active = kNone;              // the device that turns the virtual GamePad
 Aim g_pending;                          // the active device's aim not yet read by the game
 VirtualPad g_pad;                       // the one virtual GamePad all sources turn
@@ -61,7 +69,7 @@ Clock::time_point g_stick_since{};
 
 double secs(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 std::string device_name(uint64_t id) {
-    return id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
+    return id == kPhoneDevice ? "this device" : id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
 }
 
 // a sample from `id` (g_mu held). The device the player moves turns the virtual GamePad: the active one
@@ -166,11 +174,11 @@ const std::vector<TestTurn>& test_turns() {
 }  // namespace
 
 const char* source_id(int s) {
-    static const char* ids[] = {"off", "controller", "cemuhook", "mouse"};
+    static const char* ids[] = {"off", "controller", "cemuhook", "mouse", "device"};
     return s >= 0 && s < kSourceCount ? ids[s] : "off";
 }
 const char* source_label(int s) {
-    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)"};
+    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "Device gyro (phone/tablet)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
 int source_from_id(const std::string& id) {
@@ -193,6 +201,7 @@ std::string value_of(const Settings& s, const std::string& k) {
     if (k == "gyro.dsuSlot") return std::to_string(s.dsu_slot);
     if (k == "gyro.recenterPad") return std::to_string(s.recenter_pad);
     if (k == "gyro.recenterKey") return std::to_string(s.recenter_key);
+    if (k == "gyro.format") return std::to_string(kFormat);
     return {};
 }
 std::string to_ini(const Settings& s) {
@@ -224,6 +233,22 @@ void upgrade_from_first_release(Settings& s) {
     if (s.tuning.sensitivity_x == 1.0f) s.tuning.sensitivity_x = Tuning::kDefaultSensitivity;
     if (s.tuning.sensitivity_y == 1.0f) s.tuning.sensitivity_y = Tuning::kDefaultSensitivity;
 }
+float default_sensitivity(int source) { return source == kDevice ? 1.0f : Tuning::kDefaultSensitivity; }
+Settings from_saved(const std::vector<std::pair<std::string, std::string>>& saved) {
+    Settings s;
+    bool format = false, axis = false, x = false, y = false;
+    for (const auto& [k, v] : saved) {
+        from_kv(s, k, v);
+        format |= k == "gyro.format";
+        axis |= k == "gyro.axis";
+        x |= k == "gyro.sensitivityX";
+        y |= k == "gyro.sensitivityY";
+    }
+    if (!x) s.tuning.sensitivity_x = default_sensitivity(s.source);
+    if (!y) s.tuning.sensitivity_y = default_sensitivity(s.source);
+    if (!saved.empty() && !format && !axis && s.source != kDevice) upgrade_from_first_release(s);
+    return s;
+}
 
 Settings settings() {
     std::lock_guard lk(g_mu);
@@ -248,6 +273,7 @@ void set_settings(const Settings& in) {
         const bool dsu_changed = s.dsu_host != g_settings.dsu_host || s.dsu_port != g_settings.dsu_port || s.dsu_slot != g_settings.dsu_slot;
         if (s.tuning.axis != g_settings.tuning.axis) log_msg("[gyro] left/right: %s", axis_label(s.tuning.axis));
         g_settings = s;
+        g_wants_device_sensors.store(s.source == kDevice, std::memory_order_relaxed);
         if (source_changed) {
             log_msg("[gyro] source: %s", source_label(s.source));
             // the virtual GamePad stays where it is (the game would see a jump otherwise)
@@ -271,6 +297,25 @@ void controller_sample(uint64_t device, uint64_t t_ns, const float gyro[3], cons
     if (!t_ns) t_ns = (uint64_t)Clock::now().time_since_epoch().count();
     std::lock_guard lk(g_mu);
     if (g_settings.source == kController) feed(device, t_ns, g, a);
+}
+void device_sample(uint64_t t_ns, const float gyro[3], const float accel[3]) {
+    Vec3 g, a;
+    from_sdl(gyro, accel, g, a);
+    std::lock_guard lk(g_mu);
+    if (g_settings.source == kDevice) feed(kPhoneDevice, t_ns, g, a);
+}
+void device_reset() {
+    std::lock_guard lk(g_mu);
+    g_devices.erase(kPhoneDevice);
+    if (g_active == kPhoneDevice) { g_active = kNone; g_pending = {}; }
+}
+bool wants_device_sensors() {
+    return g_wants_device_sensors.load(std::memory_order_relaxed);
+}
+void set_device_sensors_available(bool available) {
+    std::lock_guard lk(g_mu);
+    g_device_sensors_available = available;
+    g_device_sensors_checked = true;
 }
 void controller_gone(uint64_t device) {
     std::lock_guard lk(g_mu);
@@ -384,7 +429,7 @@ VpadMotion vpad(bool repeat) {
         const float k = g_settings.mouse_degrees / kRadToDeg;
         aim = g_settings.tuning.apply({g_mouse_dx * k, -g_mouse_dy * k});
         g_mouse_dx = g_mouse_dy = 0;
-    } else if (g_settings.source == kController || g_settings.source == kCemuhook) {
+    } else if (g_settings.source == kController || g_settings.source == kCemuhook || g_settings.source == kDevice) {
         aim = g_settings.tuning.apply(g_pending);
         g_pending = {};
         auto it = g_devices.find(g_active);
@@ -420,10 +465,18 @@ std::string status() {
     }
     std::lock_guard lk(g_mu);
     switch (g_settings.source) {
+    case kDevice:
     case kController: {
         auto it = g_devices.find(g_active);
         if (it != g_devices.end() && secs(Clock::now() - it->second.seen) < 1.0)
-            return (it->second.fusion.calibrated() ? "Receiving motion." : "Receiving motion; calibrating (rest the controller for a second).") + stick;
+            return (it->second.fusion.calibrated() ? "Receiving motion." :
+                    g_settings.source == kDevice ? "Receiving motion; calibrating (rest the device for a second)."
+                                                 : "Receiving motion; calibrating (rest the controller for a second).") + stick;
+        if (g_settings.source == kDevice && !g_device_sensors_checked)
+            return "Close settings to start this device’s motion sensors.";
+        if (g_settings.source == kDevice)
+            return g_device_sensors_available ? "Device gyro ready; no motion yet (or app is in the background)."
+                                              : "No device gyro and accelerometer available on this host.";
         return g_gyro_controllers ? "A controller with a gyro is connected, no motion yet."
                                   : "No connected controller has a gyro (or this host cannot read it).";
     }

@@ -98,3 +98,27 @@ tasks.register('verifyReleasePython') {
     }
 }
 tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'verifyReleasePython' }
+
+// Debug-only side-by-side install (-PwwhdDebugSuffix=.labtest): the debug APK gets its own
+// applicationId so it never replaces an installed player build; its static launcher shortcuts point
+// at itself. Release builds ignore it.
+def debugSuffix = providers.gradleProperty('wwhdDebugSuffix').getOrElse('')
+if (!debugSuffix.isEmpty()) {
+    if (!(debugSuffix ==~ /\.[a-z][a-z0-9_]*/)) throw new GradleException('wwhdDebugSuffix must look like .labtest')
+    android.buildTypes.debug.applicationIdSuffix = debugSuffix
+    def suffixDir = layout.buildDirectory.dir('generated/debug-suffix').get().asFile
+    android.sourceSets.debug.res.srcDir(new File(suffixDir, 'res'))
+    def generateSuffix = tasks.register('generateDebugSuffixResources') {
+        inputs.property('suffix', debugSuffix)
+        inputs.file('src/main/res/xml/shortcuts.xml')
+        outputs.dir(suffixDir)
+        doLast {
+            new File(suffixDir, 'res/xml').mkdirs()
+            new File(suffixDir, 'res/xml/shortcuts.xml').text = file('src/main/res/xml/shortcuts.xml').text
+                .replace('android:targetPackage="org.wwhdrecomp.wwhd"',
+                         'android:targetPackage="org.wwhdrecomp.wwhd' + debugSuffix + '"')
+        }
+    }
+    tasks.matching { it.name in ['preDebugBuild', 'mergeDebugResources', 'generateDebugResources'] }
+        .configureEach { dependsOn generateSuffix }
+}

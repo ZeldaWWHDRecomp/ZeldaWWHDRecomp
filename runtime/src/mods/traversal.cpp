@@ -13,6 +13,9 @@
 //   rests one step between rungs (the footstep, then the next rung on the next step); with the mod
 //   on the next rung starts in the footstep's step (the game's own changeLadderMoveProc, called
 //   right after the procedure), so the climb speeds up by about the factor (traversal.h).
+// Ivy and ledge hanging: their procedures ask getLadderMoveAnmSpeed (ivy up / down),
+//   getClimbMoveAnmSpeed (ivy sideways) and getHangMoveAnmSpeed (hanging) for the clip rate on every
+//   step and in their _init; the clips move Link, so the hooks scale the returned rate (traversal.h).
 // Sidling: speed = mNormalSpeed * (1 - m3598) + foot motion * m3598 (posMoveFromFootPos). Both
 //   parts grow by the factor: the walk clip plays faster (setFrameCtrl in PROC_WHIDE_MOVE) and the
 //   speed target is scaled by raising mMaxNormalSpeed for the length of setNormalSpeedF and
@@ -42,6 +45,9 @@
 #include "runtime.h"
 
 extern "C" {
+void f_02417FF4_orig(Cpu* c);  // daPy_lk_c::getLadderMoveAnmSpeed (ladders, ivy up / down)
+void f_024291E0_orig(Cpu* c);  // daPy_lk_c::getClimbMoveAnmSpeed (ivy sideways)
+void f_02427D8C_orig(Cpu* c);  // daPy_lk_c::getHangMoveAnmSpeed (along a ledge while hanging)
 void f_02427CA8_orig(Cpu* c);  // daPy_lk_c::procLadderMove
 void f_0242A218_orig(Cpu* c);  // daPy_lk_c::setBlendWHideMoveAnime(f32)
 }
@@ -165,4 +171,28 @@ extern "C" void site_0247ED24(Cpu* c) {
     if (!g_sail_scaled) return;
     g_sail_scaled = false;
     if (f32_as_u32((float)c->f[29].ps0) == g_sail_written) c->f[29].ps0 = c->f[29].ps1 = u32_as_f32(g_sail_stock);
+}
+
+// ---- ivy and ledge hanging: the clip rate getters (f1 = rate; r3 = Link on entry) ----
+namespace {
+void scale_getter(Cpu* c, uint32_t link, AnmGetter g) {
+    const float k = mods::traversal_getter_factor(int(g), ld32(link + kCurProc));
+    if (k == 1.f) return;
+    c->f[1].ps0 = c->f[1].ps1 = (float)c->f[1].ps0 * k;
+}
+}  // namespace
+extern "C" void hook_02417FF4(Cpu* c) {
+    const uint32_t link = c->r[3];
+    f_02417FF4_orig(c);
+    if (mods::ivy_speed()) scale_getter(c, link, AnmGetter::kLadder);
+}
+extern "C" void hook_024291E0(Cpu* c) {
+    const uint32_t link = c->r[3];
+    f_024291E0_orig(c);
+    if (mods::ivy_speed()) scale_getter(c, link, AnmGetter::kClimb);
+}
+extern "C" void hook_02427D8C(Cpu* c) {
+    const uint32_t link = c->r[3];
+    f_02427D8C_orig(c);
+    if (mods::hang_speed()) scale_getter(c, link, AnmGetter::kHang);
 }

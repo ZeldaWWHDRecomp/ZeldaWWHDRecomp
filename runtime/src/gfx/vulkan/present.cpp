@@ -1,3 +1,6 @@
+#ifdef __ANDROID__
+#include "android_driver.h"
+#endif
 #include "pass.h"
 #include "overlay/window_target.h"
 #include "deferred_dispatch.h"
@@ -201,7 +204,11 @@ struct PresentApi {
  X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdPipelineBarrier) \
  X(vkCmdSetScissor) X(vkCmdSetViewport) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) \
  X(vkCmdPushConstants) X(vkCmdDraw)
+#ifdef __ANDROID__
+#define FIELD(name) drivers::ObservedFunction<PFN_##name> name;
+#else
 #define FIELD(name) PFN_##name name=nullptr;
+#endif
  PRESENT_FUNCTIONS(FIELD)
 #undef FIELD
  PassApi passes;
@@ -317,9 +324,14 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
   if(resources.passes) { ci.pNext=nullptr;ci.renderPass=resources.passes->render_pass(pass_formats(rendering),VK_ATTACHMENT_LOAD_OP_LOAD); }
   ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=resources.layout;
   const auto started=std::chrono::steady_clock::now();
-  const VkResult compiled=resources.device==R.device ?
-      stutter::create_graphics(R.frame,"present_pipeline",resources.device,R.pipelineCache,1,&ci,nullptr,&result) :
-      resources.api.vkCreateGraphicsPipelines(resources.device,VK_NULL_HANDLE,1,&ci,nullptr,&result);
+  VkResult compiled;
+  if(resources.device==R.device)
+    compiled=stutter::create_graphics(R.frame,"present_pipeline",resources.device,R.pipelineCache,1,&ci,nullptr,&result);
+  else {
+    // A separate presentation device loads its own entry points: same driver, same serial rule.
+    const auto serial=pipeline_serial_lock();
+    compiled=resources.api.vkCreateGraphicsPipelines(resources.device,VK_NULL_HANDLE,1,&ci,nullptr,&result);
+  }
   vk_check(compiled,"presentation pipeline");
   if(resources.device==R.device) R.pipelineCreateNs+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-started).count();
   resources.pipelines.emplace(key,result);

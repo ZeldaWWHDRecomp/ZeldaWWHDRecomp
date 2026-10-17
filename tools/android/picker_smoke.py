@@ -73,6 +73,34 @@ def main():
         return next((node for node in (ui() if nodes is None else nodes)
                      if node.get(attribute) == label and (resource is None or node.get("resource-id") == resource)), None)
 
+    def swipe(nodes, forward=True):
+        """Scroll the largest scrollable view one step; False if there is none."""
+        containers = []
+        for candidate in nodes:
+            if candidate.get("scrollable") != "true": continue
+            x1, y1, x2, y2 = map(int, re.findall(r"\d+", candidate.get("bounds")))
+            if y2 - y1 > 300 and x2 - x1 > 150:
+                containers.append((x1, y1, x2, y2))
+        if not containers: return False
+        x1, y1, x2, y2 = max(containers, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        x = str((x1 + x2) // 2)
+        low, high = str(y2 - (y2-y1)//8), str(y1 + (y2-y1)//4)
+        shell("input", "swipe", x, *((low, x, high) if forward else (high, x, low)), "250")
+        return True
+
+    def screen(nodes):
+        return [(node.get("text"), node.get("bounds")) for node in nodes]
+
+    def to_top():
+        """The setup screen scrolled back to its start, where the smoke's controls are."""
+        nodes = ui()
+        for _ in range(8):
+            if not swipe(nodes, forward=False): return
+            after = ui()
+            if screen(after) == screen(nodes): return
+            nodes = after
+        raise AssertionError("Setup screen did not scroll back to its start")
+
     def tap(label, attribute="text", resource=None, scroll=False):
         deadline = time.monotonic() + 20
         nodes = []
@@ -85,18 +113,8 @@ def main():
                 x1, y1, x2, y2 = map(int, re.findall(r"\d+", node.get("bounds")))
                 shell("input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2))
                 return
-            if scroll and swipes < 4:
-                containers = []
-                for candidate in nodes:
-                    if candidate.get("scrollable") != "true": continue
-                    x1, y1, x2, y2 = map(int, re.findall(r"\d+", candidate.get("bounds")))
-                    if y2 - y1 > 300 and x2 - x1 > 150:
-                        containers.append((x1, y1, x2, y2))
-                if containers:
-                    x1, y1, x2, y2 = max(containers, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
-                    x = str((x1 + x2) // 2)
-                    shell("input", "swipe", x, str(y2 - (y2-y1)//8), x, str(y1 + (y2-y1)//4), "250")
-                    swipes += 1
+            if scroll and swipes < 4 and swipe(nodes):
+                swipes += 1
         raise AssertionError("Missing control: " + label + "; visible controls: " + repr([
             (n.get("text"), n.get("resource-id")) for n in nodes if n.get("text")]))
 
@@ -201,12 +219,22 @@ def main():
         raise AssertionError("Picker grant observation timed out")
 
     def wait_text(fragment):
+        # The setup screen scrolls: the technical record (behind Details) is its last part and is
+        # below the visible area once the screen shows more choices. Page through it, then return
+        # to the start, where the following steps find their controls.
         deadline = time.monotonic() + 15
+        seen = []
         while time.monotonic() < deadline:
             nodes = ui()
-            if any(fragment in node.get("text", "") for node in nodes): return
-            if find("Details", nodes=nodes) is not None: tap("Details")  # the technical record
-        raise AssertionError("Missing feedback: " + fragment + "; visible text: " + repr([node.get("text", "") for node in ui() if node.get("text")]))
+            seen = [node.get("text", "") for node in nodes if node.get("text")]
+            if any(fragment in text for text in seen):
+                to_top()
+                return
+            if find("Details", nodes=nodes) is not None:
+                tap("Details")  # the technical record
+                continue
+            if not swipe(nodes) or screen(ui()) == screen(nodes): to_top()  # at the end: look again from the start
+        raise AssertionError("Missing feedback: " + fragment + "; text on the last screen: " + repr(seen))
 
     def preservation(identity):
         root = "no_backup/ondevice/jobs/" + identity

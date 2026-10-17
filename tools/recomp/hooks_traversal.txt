@@ -6,3 +6,6 @@
 @0247E988 # daShip_c::procSteerMove: normal-sail branch after the HD Swift Sail check: automatic wind
 @0247EB88 # procSteerMove: f29 = target speed (windPower): times the factor of the sail in use
 @0247ED24 # procSteerMove: before the jump code: the stock target again (jump height stays stock)
+02417FF4  # daPy_lk_c::getLadderMoveAnmSpeed: ivy up / down (ladders keep their own path): times the ivy factor
+024291E0  # daPy_lk_c::getClimbMoveAnmSpeed: ivy sideways: times the ivy factor
+02427D8C  # daPy_lk_c::getHangMoveAnmSpeed: along a ledge while hanging: times the hang factor

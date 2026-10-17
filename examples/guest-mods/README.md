@@ -31,8 +31,8 @@ Install each folder through **Mods → Installed packages → Choose folder → 
 enable it, accept its code/package trust confirmation, and restart. Packages with artwork
 include the entire folder in one trust decision; they apply only with code mods on. Set heart-ticker's `every` option
 in the Mods tab. The manager builds and caches the translated modules on startup.
-Game code must have been translated with `--mod-hooks`. Android guest modules are
-currently unsupported.
+Game code must have been translated with `--mod-hooks` (on Android: the setup app's **Code mods**
+switch); on Android the modules are built on the device.
 
 ## Local HUD frame checks
 

@@ -1,3 +1,5 @@
+#include "crash_memory.h"
+#include "runtime.h"
 #include "crash_context.h"
 #include "crash_redact.h"
 #include "gfx/renderer.h"
@@ -63,6 +65,7 @@ void initialize() {
     publish(out.str());
 }
 void refresh() {
+    if (crash_memory::enabled()) crash_memory::refresh(threads::diagnostic_count(), mem::runtime_top());
     std::ostringstream out;
     out << "\n--- crash context (latest game-thread snapshot) ---\n";
     out << "renderer=" << render::api_name(render::active()) << "\nresolution=" << (render::g_backend ? render::res_scale() : 1.f)

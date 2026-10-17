@@ -222,6 +222,9 @@ void init() {
     const Backend* b = backend_for(g_requested);
     select_decompiler_api(b->api);
     g_backend = b;
+#ifdef __ANDROID__
+    if(b->api==Api::Vulkan)gfxvk::drivers::offer_after_device_loss();
+#endif
     try {
         b->init();
         LOG("[gfx] %s renderer started", api_name(b->api));

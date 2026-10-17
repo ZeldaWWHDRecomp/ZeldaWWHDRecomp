@@ -110,6 +110,9 @@ final class SaveFiles {
         ActivityManager am = (ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
         if (am == null || am.getRunningAppProcesses() == null) return;
         for (ActivityManager.RunningAppProcessInfo p : am.getRunningAppProcesses())
-            if (p.processName.equals(c.getPackageName()) && p.pid != Process.myPid()) Process.killProcess(p.pid);
+            if (p.processName.equals(c.getPackageName()) && p.pid != Process.myPid()) {
+                SystemExitReports.expectStop(c, p.pid);
+                Process.killProcess(p.pid);
+            }
     }
 }

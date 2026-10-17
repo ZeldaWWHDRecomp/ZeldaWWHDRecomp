@@ -27,29 +27,56 @@ public final class EmbeddedPython {
     static synchronized void execute(Context context, String module, String arguments, Control control) throws Exception {
         control.checkpoint();
         System.loadLibrary("wwhdpython");
-        String revision = checksum(context, "python-home.zip", control) + checksum(context, "python-source.zip", control);
-        File parent = new File(context.getNoBackupFilesDir(), "embedded-python");
-        File installed = new File(parent, revision);
-        if (!ResourceVerifier.complete(installed) ||
-                !resourcesMatch(context, "python-home.zip", new File(installed, "home"), false, control) ||
-                !resourcesMatch(context, "python-source.zip", new File(installed, "source"), false, control)) {
-            File pending = new File(parent, revision + ".pending");
-            remove(pending);
-            try {
-                if (!pending.mkdirs()) throw new IOException("Cannot prepare Python storage");
-                extract(context, "python-home.zip", new File(pending, "home"), control);
-                extract(context, "python-source.zip", new File(pending, "source"), control);
-                publishResources(pending, installed, control);
-            } finally {
-                remove(pending);
-            }
-        }
-        // APK resources are fixed for this setup process; execute() serializes
-        // Python tasks. Old preparation trees are not dependencies of active games.
-        if (ResourceCacheCleanup.prune(parent, installed, control::checkpoint)) syncDirectory(parent);
+        File installed = prepare(context, control);
         control.checkpoint();
         run(new File(installed, "home").getAbsolutePath(),
             new File(installed, "source").getAbsolutePath(), module, arguments);
+    }
+
+    /** The extracted, verified Python standard library (home/) and setup sources (source/). The setup
+     *  process and the game (code mods, AndroidGuestTools) both prepare it: a lock file keeps the two
+     *  processes from extracting or pruning at the same time. */
+    static synchronized File prepare(Context context, Control control) throws Exception {
+        String revision = checksum(context, "python-home.zip", control) + checksum(context, "python-source.zip", control);
+        File parent = new File(context.getNoBackupFilesDir(), "embedded-python");
+        File installed = new File(parent, revision);
+        try (ProcessLock ignored = new ProcessLock(new File(context.getNoBackupFilesDir(), "embedded-python.lock"))) {
+            if (!ResourceVerifier.complete(installed) ||
+                    !resourcesMatch(context, "python-home.zip", new File(installed, "home"), false, control) ||
+                    !resourcesMatch(context, "python-source.zip", new File(installed, "source"), false, control)) {
+                File pending = new File(parent, revision + ".pending");
+                remove(pending);
+                try {
+                    if (!pending.mkdirs()) throw new IOException("Cannot prepare Python storage");
+                    extract(context, "python-home.zip", new File(pending, "home"), control);
+                    extract(context, "python-source.zip", new File(pending, "source"), control);
+                    publishResources(pending, installed, control);
+                } finally {
+                    remove(pending);
+                }
+            }
+            // APK resources are fixed for this process; execute() serializes Python tasks. Old
+            // preparation trees are not dependencies of active games.
+            if (ResourceCacheCleanup.prune(parent, installed, control::checkpoint)) syncDirectory(parent);
+        }
+        return installed;
+    }
+
+    /** An exclusive lock between the app's processes (one holder per process: callers synchronize). */
+    static final class ProcessLock implements AutoCloseable {
+        private final java.io.RandomAccessFile file;
+        private final java.nio.channels.FileLock lock;
+        ProcessLock(File path) throws IOException {
+            File parent = path.getParentFile();
+            if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Cannot create " + parent);
+            file = new java.io.RandomAccessFile(path, "rw");
+            try { lock = file.getChannel().lock(); }
+            catch (IOException | RuntimeException failure) { file.close(); throw failure; }
+        }
+        @Override public void close() throws IOException {
+            try { lock.release(); }
+            finally { file.close(); }
+        }
     }
 
     static String checksum(Context context, String asset) throws Exception {

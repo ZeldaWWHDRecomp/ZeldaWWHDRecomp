@@ -28,6 +28,8 @@
 #include "rendering_path.h"
 #include "stereo.h"
 #include "../hdr.h"
+#include "serial_pipelines.h"
+#include "bc_decoder_choice.h"
 #include "attachment_view_usage.h"
 #include "background_cache_readiness.h"
 #include "../../build_info.h"
@@ -93,6 +95,7 @@
 #ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
+#include <mach/mach.h>
 #endif
 #include <stdexcept>
 #include <string>
@@ -101,7 +104,44 @@
 #ifndef _WIN32
 #include <time.h>
 #endif
+#if defined(__linux__)
+#include <unistd.h>
+#endif
+#include <unordered_set>
 #include <vulkan/vulkan_beta.h>
+
+// Opt-in only: no process queries or cache traversal on the normal frame path.
+// The regular LOG ring includes these aggregate diagnostics in crash reports.
+namespace {
+uint64_t memory_log_interval() {
+  static const uint64_t interval=[] {
+    const char* value=std::getenv("WWHD_VK_MEMORY_LOG_FRAMES");
+    if (!value || !*value || *value=='-') return uint64_t{0};
+    char* end=nullptr;
+    const auto parsed=std::strtoull(value,&end,10);
+    return end!=value && !*end ? uint64_t(parsed) : uint64_t{0};
+  }();
+  return interval;
+}
+uint64_t resident_bytes() {
+#if defined(__APPLE__)
+  mach_task_basic_info_data_t info{};
+  mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(),MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info),&count)==KERN_SUCCESS)
+    return info.resident_size;
+#elif defined(__linux__)
+  if (FILE* file=std::fopen("/proc/self/statm","r")) {
+    unsigned long long total=0,resident=0;
+    const bool ok=std::fscanf(file,"%llu %llu",&total,&resident)==2;
+    std::fclose(file);
+    const long page=sysconf(_SC_PAGESIZE);
+    if (ok && page>0) return resident*uint64_t(page);
+  }
+#endif
+  return 0; // unavailable, not a peak-RSS measurement
+}
+}
 
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); void shutdown_vulkan_caches(); void request_background_vulkan_cache_checkpoint(); }
 #include "../../interp.h"
@@ -494,6 +534,9 @@ void start_pipeline_cache_write() {
       !R.pipelineCacheDirty || pipelineCachePath.empty()) return;
   // This is the only Vulkan cache read, serialized with pipeline creation on
   // the render thread. Worker serialization/checksum never holds that thread.
+  // With serial pipeline creation, workers cannot change the cache between the
+  // size query and the copy.
+  const auto serial=pipeline_serial_lock();
   size_t size=0;
   if (vkGetPipelineCacheData(R.device,R.pipelineCache,&size,nullptr)!=VK_SUCCESS ||
       size<16+VK_UUID_SIZE || size>maxPipelineCacheBytes) return;
@@ -546,6 +589,9 @@ public:
 };
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS) {
+#ifdef __ANDROID__
+    if(r==VK_ERROR_DEVICE_LOST)drivers::note_device_lost();
+#endif
     log_vulkan_result(r, op);
     VulkanFailure failure(r, op);
     exception_report::record(failure.what());  // logged like every runtime error (exception_report.h)
@@ -1638,6 +1684,7 @@ static void recreate_surface(Screen &s) {
     return;
   }
   surfaceLost = false;
+  display_rate::surface_changed();
   s.resize = true;
   LOG("[vulkan] presentation surface recreated");
 }
@@ -1647,6 +1694,9 @@ static bool SDLCALL lifecycle_watch(void *, SDL_Event *event) {
   if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND) {
     try { gx2::request_background_vulkan_cache_checkpoint(); }
     catch (const std::exception& error) { LOG("[vulkan cache] background request skipped: %s", error.what()); }
+    // the "Last session" state while the game still runs and presents (Android may end a background
+    // app without notice); this thread is the app's UI thread, so the wait is kept short
+    ss::save_last_session(1000);
   }
   if (event->type == SDL_EVENT_WILL_ENTER_BACKGROUND || event->type == SDL_EVENT_DID_ENTER_BACKGROUND) {
     if (!surfaceLost.exchange(true))
@@ -2118,6 +2168,7 @@ static void update_secondary_surface() {
   VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
   info.window = next;
   VkResult result = create(R.instance, &info, nullptr, &s.surface);
+  if(result==VK_ERROR_DEVICE_LOST)drivers::note_device_lost();
   if (result != VK_SUCCESS) {
     LOG("[vulkan] secondary surface unavailable (%d)", int(result));
     return;
@@ -3138,6 +3189,43 @@ void swap() {
   perf_hint::frame_done();
   checkpoint_pipeline_cache();
   vk::checkpoint_shader_cache(R.frame);
+  const uint64_t memoryInterval=memory_log_interval();
+  if (memoryInterval && R.frame%memoryInterval==0) {
+    const auto memory=vk::shader_memory_stats();
+    uint64_t imageBytes=0,images=0,uploadBytes=0;
+    std::unordered_set<VkImage> seenImages;
+    auto countImage=[&](const Surface* surface) {
+      for (;surface;surface=surface->mipChain.get())
+        if (surface->image && seenImages.insert(surface->image).second) {
+          ++images; imageBytes+=surface->allocationBytes;
+        }
+    };
+    for (const auto& [address,surface]:R.surfaces) countImage(surface.get());
+    std::unordered_set<VkBuffer> seenUploads;
+    auto countUploads=[&](const auto& blocks) {
+      for (const auto& block:blocks)
+        if (seenUploads.insert(block.buffer.buffer).second) uploadBytes+=block.buffer.size;
+    };
+    countUploads(R.uploadBlocks);
+    for (const auto& submission:R.submissions) countUploads(submission.uploadBlocks);
+    constexpr double mib=1024.0*1024.0;
+    LOG("[gfx] memory frame %llu RSS %.2f MiB (0=unavailable)",
+        (unsigned long long)R.frame,resident_bytes()/mib);
+    LOG("[gfx] memory cached surfaces %llu images %llu allocated %.2f MiB",
+        (unsigned long long)R.surfaces.size(),(unsigned long long)images,imageBytes/mib);
+    LOG("[gfx] memory upload blocks %llu %.2f MiB",
+        (unsigned long long)seenUploads.size(),uploadBytes/mib);
+    LOG("[gfx] memory shader payload: %llu shaders decompiler-text %.2f MiB GLSL-capacity %.2f MiB verify-capacity %.2f MiB SPIRV-capacity %.2f MiB",
+        (unsigned long long)memory.shaders,memory.decompilerText/mib,memory.glslCapacity/mib,
+        memory.verifyCapacity/mib,memory.spirvCapacity/mib);
+    LOG("[gfx] memory disk %llu unshared-SPIRV-capacity %.2f MiB pending-compiles %llu retained-source-capacity %.2f MiB",
+        (unsigned long long)memory.diskEntries,memory.diskSpirvCapacity/mib,
+        (unsigned long long)memory.pendingCompiles,memory.retainedSourceCapacity/mib);
+    LOG("[gfx] memory scope: payload/capacity excludes compiler results, disk snapshots, metadata and allocator overhead");
+    LOG("[gfx] memory scope: cached image allocations exclude retired, non-cache and driver images");
+    // Excludes map/metadata/allocator overhead, compiler tickets/results,
+    // async disk snapshots, non-cache/retired images and driver allocations.
+  }
   latch_res_scale();
   if(perf_enabled()) {
     ++swapPhaseTiming[4].count;
@@ -3737,6 +3825,9 @@ static void init_device(std::vector<const char *> extensions,
             : "The graphics driver does not support the Vulkan features the game needs: Vulkan 1.1 or newer.\n" + unsuitable +
                   "\n\n" + kUpdateDriver);
   vkGetPhysicalDeviceProperties(R.physicalDevice, &R.properties);
+#ifdef __ANDROID__
+  drivers::set_vulkan_identity(std::string(R.properties.deviceName)+"; Vulkan driver "+driver_version_text(R.properties));
+#endif
   const uint32_t deviceApi = device_api_version(R.properties);
   LOG("[vulkan] device: %s (Vulkan %s, driver %s%s)", R.properties.deviceName,
       version_text(R.properties.apiVersion).c_str(), driver_version_text(R.properties).c_str(),
@@ -3763,6 +3854,9 @@ static void init_device(std::vector<const char *> extensions,
     LOG("[vulkan diagnostics] driverName=%s driverInfo=%s driverID=%u conformance=%u.%u.%u.%u",
         driver.driverName, driver.driverInfo, unsigned(driver.driverID), driver.conformanceVersion.major,
         driver.conformanceVersion.minor, driver.conformanceVersion.subminor, driver.conformanceVersion.patch);
+#ifdef __ANDROID__
+    drivers::set_vulkan_identity(std::string(driver.driverName,strnlen(driver.driverName,sizeof driver.driverName))+"; "+R.properties.deviceName+"; version "+driver_version_text(R.properties));
+#endif
   } else LOG("[vulkan diagnostics] driver properties unavailable");
   const auto& vertexLimits = R.properties.limits;
   LOG("[vulkan diagnostics] maxVertexInputAttributeOffset=%u maxVertexInputBindingStride=%u maxVertexInputAttributes=%u maxVertexInputBindings=%u maxDrawIndexedIndexValue=%u",
@@ -3878,7 +3972,6 @@ static void init_device(std::vector<const char *> extensions,
   // The game's BC1-BC5 textures need this core feature enabled, not just supported (Vulkan spec);
   // devices without it (many Mali/PowerVR GPUs) decode BC uploads with a compute shader (bc_decode).
   enabled.textureCompressionBC = available.textureCompressionBC;
-  if (!available.textureCompressionBC) LOG("[vulkan] device has no BC texture support; compute upload decoder enabled");
   enabled.samplerAnisotropy = available.samplerAnisotropy;
   enabled.independentBlend = available.independentBlend;
   enabled.depthClamp = available.depthClamp;
@@ -4036,6 +4129,28 @@ static void init_device(std::vector<const char *> extensions,
   vk_check(vkCreateDevice(R.physicalDevice, &di, nullptr, &R.device),
            "create Vulkan device");
   load_device_functions(R.device, R.dynamicRenderingKHR, R.renderPasses);
+  VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+  if (deviceApi >= VK_API_VERSION_1_2 || has_extension(des, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
+    VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    props.pNext = &driver;
+    vkGetPhysicalDeviceProperties2(R.physicalDevice, &props);
+  }
+  const bool serialPipelines = serial_pipelines_wanted(driver.driverID, R.properties.driverVersion,
+                                                     getenv("WWHD_SERIAL_PIPELINES"));
+  serialize_pipeline_creation(serialPipelines);
+  if (driver.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY || serialPipelines)
+    LOG("[vulkan] serial pipeline creation %s (driver id %d, Qualcomm release v%u; WWHD_SERIAL_PIPELINES=0/1 overrides)",
+        serialPipelines ? "on" : "off", int(driver.driverID), qualcomm_driver_release(R.properties.driverVersion));
+  {
+    const BcDecoderChoice bc = choose_bc_decoder(driver.driverID, R.properties.vendorID, R.properties.driverVersion,
+                                                 getenv("WWHD_VK_BC_CPU"));
+    R.bcCpuDecode = bc.decoder == BcDecoder::Cpu;
+    const char* forced = getenv("WWHD_VK_FORCE_BC_DECODE");
+    if (!R.enabledFeatures.textureCompressionBC || (forced && strcmp(forced, "0")))
+      LOG("[vulkan] %s; %s upload decoder enabled (%s; WWHD_VK_BC_CPU=0/1 overrides)",
+          R.enabledFeatures.textureCompressionBC ? "WWHD_VK_FORCE_BC_DECODE" : "device has no BC texture support",
+          R.bcCpuDecode ? "CPU" : "compute", bc.reason);
+  }
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
@@ -4624,6 +4739,7 @@ static bool android_end_task() {
 // window only hides it (WWHD_NO_GAMEPAD=1 starts without it).
 // Settings > Quit Game ends the game the same way (hostui::quit: SDL_EVENT_QUIT).
 static void quit_game() {
+  ss::save_last_session(1500);  // the "Last session" state (a few KB; skipped outside gameplay)
   audio::finish_dump();  // _Exit bypasses atexit handlers
   screenshot::finish();  // the screenshots taken are written first
   save_folder::release_lock();  // a chosen save folder's lock: this computer stops playing

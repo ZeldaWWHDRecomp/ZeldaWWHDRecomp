@@ -15,12 +15,14 @@
 #include <memory>
 #include <algorithm>
 #include <mutex>
+#include <atomic>
 
 namespace gfxvk::drivers {
 namespace {
 std::mutex mutex;
 std::unique_ptr<Store> store;
-std::string active_id, active_label="System driver", status;
+std::string active_id, active_label="System driver", status, vulkan_identity;
+std::atomic<bool> loss_noted{false};
 void* driver_handle=nullptr; // process lifetime: do not unload while driver/SDL objects may exist
 std::string jstring_text(JNIEnv* env,jstring value) {
     if(!value)return {};
@@ -43,6 +45,46 @@ Store& storage() {
     }
     return *store;
 }
+}
+void set_vulkan_identity(const std::string& identity) {std::lock_guard guard(mutex);vulkan_identity=identity;}
+void note_device_lost() noexcept {
+    if(loss_noted.exchange(true))return;
+    try {
+        std::lock_guard guard(mutex);
+        storage().note_device_lost(active_label+(vulkan_identity.empty()?"":"; "+vulkan_identity),!active_id.empty());
+        LOG("[vulkan driver] device lost; driver choice will be offered at next startup");
+    }catch(...){LOG("[vulkan driver] could not persist device-loss recovery note");}
+}
+void offer_after_device_loss() {
+    const char* hidden=getenv("WWHD_HIDDEN_WINDOWS");
+    if(hidden&&*hidden&&strcmp(hidden,"0"))return;
+    std::optional<DeviceLoss> loss;
+    std::vector<Driver> choices;
+    try {std::lock_guard guard(mutex);loss=storage().take_device_loss();if(loss){storage().recover_incomplete_probe();choices=storage().list();}}
+    catch(const std::exception&){LOG("[vulkan driver] invalid/unavailable device-loss recovery note");return;}
+    if(!loss)return;
+    const std::string text="The GPU device was lost during the last run.\n\nDriver: "+loss->driver+
+        "\n\nKeep the current selection, choose the system driver, or choose another installed Adreno driver. A driver ZIP can also be installed.";
+    std::vector<std::string> labels{"Continue with current selection","System driver"};
+    for(const auto& driver:choices)labels.push_back(driver.name+" "+driver.version);
+    labels.push_back("Install GPU driver...");
+    std::vector<SDL_MessageBoxButtonData> buttons;
+    for(size_t i=0;i<labels.size();++i)buttons.push_back({i==0?SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT:0,int(i),labels[i].c_str()});
+    SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING,nullptr,"GPU driver recovery",text.c_str(),int(buttons.size()),buttons.data(),nullptr};
+    int selected=0;
+    if(!SDL_ShowMessageBox(&box,&selected))return;
+    try {
+        if(selected==1)select("");
+        else if(selected>=2&&size_t(selected)<choices.size()+2)select(choices[size_t(selected)-2].id);
+        else if(selected==int(labels.size()-1)) {
+            request_install(true);
+            for(;;)SDL_Delay(1000); // Existing picker selects the driver and ends the process.
+        }
+        if(selected>=1&&size_t(selected)<choices.size()+2){std::lock_guard guard(mutex);status="Driver chosen for this start.";}
+    }catch(const std::exception&) {
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING,"GPU driver recovery",
+            "The driver choice could not be saved. Continuing with the current selection.",nullptr);
+    }
 }
 PFN_vkGetInstanceProcAddr open_custom() {
     std::lock_guard guard(mutex);
@@ -71,7 +113,9 @@ bool create_surface(SDL_Window* window,VkInstance instance,const VkAllocationCal
     auto native=static_cast<ANativeWindow*>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,nullptr));
     if(!create||!native)return SDL_SetError("Custom driver Android surface entry point/window unavailable");
     VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};info.window=native;
-    return create(instance,&info,allocator,surface)==VK_SUCCESS || SDL_SetError("Custom driver Android surface creation failed");
+    auto result=create(instance,&info,allocator,surface);
+    if(result==VK_ERROR_DEVICE_LOST)note_device_lost();
+    return result==VK_SUCCESS || SDL_SetError("Custom driver Android surface creation failed");
 }
 void frame_done(){std::lock_guard guard(mutex);if(store&&!active_id.empty())try{store->rendered_frame();}catch(const std::exception& e){status=e.what();}}
 std::vector<Driver> installed(){std::lock_guard guard(mutex);return storage().list();}

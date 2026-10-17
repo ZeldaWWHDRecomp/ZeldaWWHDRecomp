@@ -78,6 +78,14 @@ bool sidle_speed();                       // faster sidling along walls
 void set_sidle_speed(bool on);
 float sidle_speed_factor();
 void set_sidle_speed_factor(float factor);
+bool ivy_speed();                         // faster ivy climbing (the clips play faster)
+void set_ivy_speed(bool on);
+float ivy_speed_factor();
+void set_ivy_speed_factor(float factor);
+bool hang_speed();                        // faster moving along a ledge while hanging
+void set_hang_speed(bool on);
+float hang_speed_factor();
+void set_hang_speed_factor(float factor);
 bool sail_speed();                        // sailing speed, one factor per sail
 void set_sail_speed(bool on);
 float sail_speed_normal_factor();         // the normal sail
@@ -85,6 +93,22 @@ void set_sail_speed_normal_factor(float factor);
 float sail_speed_swift_factor();          // the HD Swift Sail
 void set_sail_speed_swift_factor(float factor);
 bool auto_wind();                         // the wind follows the boat with the normal sail too
+// ---- jump anywhere (jump.cpp; settings in traversal_settings.cpp) ----
+bool jump_anywhere();                     // the jump button jumps from standing or running
+void set_jump_anywhere(bool on);
+bool double_jump();                       // once more in the air
+void set_double_jump(bool on);
+bool no_auto_jump();                      // the game's own jump off ledges becomes a plain fall
+void set_no_auto_jump(bool on);
+uint32_t jump_button();                   // one of L3, R3, L, R, ZL, ZR (default L)
+void set_jump_button(uint32_t button);
+inline bool valid_jump_button(uint32_t b) {
+    constexpr uint32_t allowed = 0x40000 | 0x20000 | 0x20 | 0x10 | 0x80 | 0x40;
+    return b && !(b & (b - 1)) && (b & allowed);
+}
+void jump_input(uint32_t buttons);                  // the active controller's buttons (VPAD/KPAD read)
+void jump_step(Cpu* c, uint32_t link, bool before); // around daPy_lk_c::execute (climb.cpp)
+void jump_reset();                                  // game thread after a state load
 bool story_system();                      // letters, quests, the story notebook, mod charts (mods/required.h)
 void set_story_system(bool on);
 void set_auto_wind(bool on);
@@ -92,6 +116,7 @@ void set_auto_wind(bool on);
 // hooks' helpers (traversal_settings.cpp, traversal.cpp)
 bool traversal_anim();                          // a mod that scales Link's clips is on (ladders, sidling)
 float traversal_anim_factor(uint32_t proc);    // setFrameCtrl: rate factor in Link's procedure `proc` (1 = stock)
+float traversal_getter_factor(int getter, uint32_t proc);  // traversal::AnmGetter's rate factor (1 = stock)
 // mMaxNormalSpeed x the sidle factor for the length of one call (setNormalSpeedF with its steps,
 // setBlendWHideMoveAnime), while Link sidles with the mod on; a no-op otherwise
 struct SidleScope { uint32_t link = 0, stock = 0, scaled = 0; };
@@ -138,9 +163,13 @@ enum Cheat {
     kCheatItems = 1, kCheatSword = 2, kCheatStats = 4,
     // story progress (can change or break story events)
     kCheatSongs = 8, kCheatTriforce = 16, kCheatDungeon = 32, kCheatKey = 64,
+    kCheatBags = 128,  // spoils and bait bag filled (not story progress)
 };
 void request_cheat(int which);  // any thread
-enum Infinite { kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4, kMoonJump = 8, kMoonNoFall = 16 };
+enum Infinite {
+    kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4, kMoonJump = 8, kMoonNoFall = 16,
+    kInfRupees = 32, kInfBags = 64, kInfBreath = 128,
+};
 bool infinite(int which);
 void set_infinite(int which, bool on);
 void moon_jump_input(const input::PadState& pad);

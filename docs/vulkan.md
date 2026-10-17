@@ -320,6 +320,13 @@ an isolated directory; `WWHD_VK_SHADER_CACHE=0` disables disk storage. An explic
 directory overrides `WWHD_SHADER_CACHE=0`. Canonical GLSL and stage deduplication
 remains active in memory when disk storage is disabled. Fresh decompiler metadata
 is kept for every guest variant; identical final shader programs share compilation.
+The file (format `WWVKSC03`) stores SPIR-V with a hash and the length of the GLSL it was
+compiled from, not the GLSL text; files from older versions (`WWVKSC02`) still load and are
+rewritten in the new format. In memory, shaders likewise keep the SPIR-V (shared with the
+cache) and the GLSL hash; the text is released once its compilation has started.
+`WWHD_VK_SHADER_SOURCE_VERIFY=1` keeps it, confirms every hash match between translated
+shaders byte for byte and lets failed-pipeline captures include the GLSL. Key verification
+(`WWHD_VK_SHADER_KEY_VERIFY`) keeps it too.
 
 Shader keys have two levels, like Cemu's base and auxiliary shader hashes but exact
 about what the GLSL translation reads (`gfx/vulkan/shaders.cpp`, `gather_linkage` and
@@ -954,6 +961,20 @@ The PARK experiment separately passed the native build, four CTest regressions, 
 The strict opt-in `WWHD_VK_VERTEX_COPY_WINDOW=1` instead fuses minimum and maximum index reduction, retains the original physical allocation and draw addressing, and copies/compares only the proven fetch window. Unsupported bounds/rates/layouts keep the original full-prefix path. A separate cache includes reservation, window offset/length, device and submission generation; fresh guest data is always compared. Device smoke tests passed full/window pixel equivalence with poisoned leading bytes, signed base vertex, restart, vertex-index checks, mutations and submission-ring retirement. Actual saved-scene validation and matched FPS acceptance are still required before adoption.
 
 Small register updates (at most 16 words) use the fused Vulkan path by default. Set `WWHD_VK_FUSE_SMALL_REGS=0` to disable it. Matched scene tests suggest roughly 2% less renderer CPU time; FPS benefit remains modest and subject to run drift.
+
+`WWHD_VK_MEMORY_LOG_FRAMES=N` (a positive integer, for example `300`) adds aggregate
+`[gfx] memory` reports every N renderer frames. Unset, zero or invalid values disable
+process queries and cache traversal. Reports include current process RSS (zero means
+unavailable), cached surfaces and their image allocations, unique upload blocks, and
+retained shader text and SPIR-V capacity counters (SPIR-V shared by a shader and its disk
+cache entry is counted once). The regular log and crash log ring retain these short
+lines; they contain no shader source, guest memory or save data.
+
+These counters are not a heap total or peak RSS. Shader counters exclude compiler
+results, asynchronous disk snapshots, metadata and allocator overhead; image counters
+exclude retired, non-cache and driver allocations. Use an aggregate heap summary with
+a repeatable scene when investigating retention, and disable diagnostics for performance
+comparisons.
 
 ## Choosing the GPU
 

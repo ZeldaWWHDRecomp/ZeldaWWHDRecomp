@@ -3,6 +3,9 @@
 #include "../exception_report.h"
 #include "mod_json.h"
 #include "../platform/process.h"
+#ifdef __ANDROID__
+#include "../platform/android_code_mods.h"
+#endif
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +46,17 @@ inline std::string resolve_path(const std::string& value,const std::filesystem::
     std::error_code error;
     return fs::exists(moved,error)?moved.string():value;
 }
+// A package's Python preparation tool runs through a bootstrap that puts the tool's folder on sys.path
+// (the Windows embeddable Python doesn't, issue #224): `python -B -c tool_bootstrap TOOL ARGS...`.
+// tool_bootstrap_in_folder also enters a folder first (`-c ... FOLDER TOOL ARGS...`), for Android, where
+// the game cannot start a program in another working directory. tools/android/test_tool_bootstrap.py
+// runs both.
+inline constexpr const char* tool_bootstrap=
+    "import os,runpy,sys;s=sys.argv[1];sys.path.insert(0,os.path.dirname(os.path.abspath(s)));"
+    "sys.argv=sys.argv[1:];runpy.run_path(s,run_name='__main__')";
+inline constexpr const char* tool_bootstrap_in_folder=
+    "import os,runpy,sys;s=os.path.abspath(sys.argv[2]);os.chdir(sys.argv[1]);sys.path.insert(0,os.path.dirname(s));"
+    "sys.argv=sys.argv[2:];runpy.run_path(s,run_name='__main__')";
 struct BuildBridge {
     std::vector<std::string> python, compiler;
     std::string builder, include, cache, zig_cache;
@@ -71,9 +85,19 @@ struct BuildBridge {
         if(b.builder.empty()||b.include.empty())exception_report::raise("Incomplete guest build configuration; run setup again");
         return b;
     }
-    static BuildBridge installed(const std::string& cache) {
+    // guest-sdk.json: WWHD_GUEST_BUILD_CONFIG (set at startup next to the release, or by a test), else
+    // the working directory's. On Android the app writes the file for its installation the first time
+    // a code mod needs it (AndroidGuestTools.java: the APK's Python and compiler, which run from the
+    // native library folder); later users in the session read the same path.
+    static std::string config_path() {
+#ifdef __ANDROID__
+        if(!std::getenv("WWHD_GUEST_BUILD_CONFIG"))setenv("WWHD_GUEST_BUILD_CONFIG",host::android::guest_build_tools().c_str(),1);
+#endif
         const char* path=std::getenv("WWHD_GUEST_BUILD_CONFIG");
-        auto b=read(path?path:"guest-sdk.json",cache);
+        return path?path:"guest-sdk.json";
+    }
+    static BuildBridge installed(const std::string& cache) {
+        auto b=read(config_path(),cache);
         if(!std::filesystem::is_regular_file(b.builder)||!std::filesystem::is_directory(b.include)) {
             if(b.builder.rfind(release_marker,0)==0||b.include.rfind(release_marker,0)==0)
                 exception_report::raise("Guest mod build tools come with the AppImage; start the game from the AppImage");

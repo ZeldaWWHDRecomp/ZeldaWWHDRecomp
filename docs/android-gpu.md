@@ -20,11 +20,29 @@ interpolates unsigned colour/alpha with integer division (floor). Signed alpha c
 BC2/3 always use four colours. CPU and GLSL implementations are independent implementations
 of these same rules. Native hardware interpolation may differ by a quantization unit.
 
+### Older Snapdragon phones
+
+Phones on Qualcomm's own graphics driver older than release 700 (for example the stock driver of
+the Snapdragon 855, 865 and 870, such as 512.502 on an Adreno 650) have no BC textures either. On
+such a driver the compute decoder's textures came out as stripes and checkerboards (the sky and
+clouds, text boxes, the title screen, faces), so the game decodes these textures on the processor
+instead. They then look the same as on any other phone. It costs a little time when textures load
+(new areas, the title screen), not while you play. The log says which decoder is in use:
+`device has no BC texture support; CPU upload decoder enabled (driver rule: Qualcomm proprietary < v700 …)`.
+Phones on Mesa Turnip and newer Qualcomm drivers are not affected.
+
+The compute decoder decodes one 4×4 block per invocation. It loads each block word once, selects
+fields with fixed or bounded shifts, and avoids module-scope mutable state, 64-bit and small integer
+types, `bitfieldExtract` and signed division. On MoltenVK its output matches the CPU decoder byte for
+byte (1,400+ game textures from the title screen to Outset Island).
+
 Debug switches:
 
 - `WWHD_VK_FORCE_BC_DECODE=1`: force fallback even on BC-capable desktop GPUs.
-- `WWHD_VK_BC_VERIFY=1`: drain each decoded upload and compare every output byte with the CPU
-  reference, logging the first mismatch and failing the upload. Deliberately expensive.
+- `WWHD_VK_BC_CPU=1` / `0`: use the CPU decoder / the compute decoder whatever the driver rule says.
+- `WWHD_VK_BC_VERIFY=1`: compare every byte the compute decoder wrote with the CPU decoder once the
+  frame has finished on the GPU. The log counts the checked textures every 200 and names the first
+  20 that differ (`[vulkan BC] mismatch …`). Costs a copy per texture; for diagnosis only.
 - `WWHD_VK_BC_TIMING=1`: log CPU recording/upload duration; when verification is enabled this
   includes GPU completion and CPU comparison. These are not GPU timestamp measurements.
 

@@ -281,12 +281,17 @@ class Adapter:
         self.boundary()
         return game
 
-    def translate(self, game):
+    def translate(self, game, hooks=False):
         """Validate the supported dump, resume verified C, or run setup.recompile.
 
         A paused or killed translation restarts its incomplete generation;
         completed translation is reused only after hashing every output file.
+        hooks: translate with code-mod support (recomp.py --mod-hooks), the
+        desktop setup's "code mods" choice; it is part of the identity, so both
+        variants keep their own verified generation.
         """
+        if type(hooks) is not bool:
+            raise ValueError("The code-mod choice must be true or false")
         self.boundary()
         game = Path(game).resolve()
         self.setup.check_game_version(str(game))
@@ -297,7 +302,8 @@ class Adapter:
                   "rpx": self.hash_file(game / "code/cking.rpx"),
                   "installer": self.hash_file(self.package / "tools/installer/setup.py"),
                   "rpx_reader": self.hash_file(self.package / "tools/rpx.py"),
-                  "translator": self.hash_tree(self.package / "tools/recomp")}
+                  "translator": self.hash_tree(self.package / "tools/recomp"),
+                  "mod_hooks": hooks}
         # Bytecode/cache files are not part of the shipped translator identity.
         inputs["translator"] = {name: value for name, value in inputs["translator"].items()
                                 if Path(name).suffix in (".py", ".txt", ".json")}
@@ -326,7 +332,8 @@ class Adapter:
 
         def embedded(command, cwd=None, env=None, what="command"):
             expected = self.package / "tools/recomp/recomp.py"
-            if len(command) != 4 or Path(command[1]).resolve() != expected:
+            if (len(command) != 4 + hooks or Path(command[1]).resolve() != expected or
+                    (hooks and command[4] != "--mod-hooks")):
                 raise RuntimeError("unexpected subprocess requested by translation")
             argv, search = sys.argv, list(sys.path)
             try:
@@ -343,7 +350,7 @@ class Adapter:
         try:
             with (stage / "translation.log").open("w", encoding="utf-8") as log:
                 with redirect_stdout(log), redirect_stderr(log):
-                    count = self.setup.recompile(str(game), str(pending))
+                    count = self.setup.recompile(str(game), str(pending), **({"hooks": True} if hooks else {}))
             outputs = self.hash_tree(pending)
             if not outputs or not count:
                 raise RuntimeError("translation produced no source files")

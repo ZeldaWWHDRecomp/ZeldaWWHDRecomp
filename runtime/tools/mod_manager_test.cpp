@@ -90,7 +90,7 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==15);
+    assert(entries().size()==18);
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);
     assert(find("target-letterbox") && find("target-letterbox")->default_enabled);
@@ -190,6 +190,21 @@ int main() {
     env("WWHD_MOD_LADDER_FACTOR","1");preferences["mod.ladder-speed.factor"]="3";
     load_saved(); assert(mods::ladder_speed_factor()==2.5f);  // the environment owns startup values
     env("WWHD_MOD_LADDER_FACTOR",nullptr);
+    // Jump anywhere: off by default; its options round-trip; invalid buttons are ignored.
+    assert(!mods::jump_anywhere() && !mods::double_jump() && !mods::no_auto_jump() && mods::jump_button()==0x20);
+    assert(set_enabled("jump-anywhere",true) && mods::jump_anywhere() && preferences["mod.jump-anywhere.enabled"]=="1");
+    preferences["mod.jump-anywhere.double"]="1";preferences["mod.jump-anywhere.no-auto"]="1";
+    preferences["mod.jump-anywhere.button"]="64";
+    load_saved();assert(mods::double_jump() && mods::no_auto_jump() && mods::jump_button()==0x40);
+    preferences["mod.jump-anywhere.button"]="1";  // A: not allowed
+    preferences["mod.jump-anywhere.double"]="x";
+    load_saved();assert(mods::jump_button()==0x40 && mods::double_jump());
+    env("WWHD_MOD_JUMP_NO_AUTO","0");preferences["mod.jump-anywhere.no-auto"]="0";
+    load_saved();assert(mods::no_auto_jump());  // the environment owns startup values
+    env("WWHD_MOD_JUMP_NO_AUTO",nullptr);
+    mods::set_double_jump(false);mods::set_no_auto_jump(false);mods::set_jump_button(0x20);
+    disable_all();assert(!mods::jump_anywhere());
+    preferences.erase("mod.jump-anywhere.double");preferences.erase("mod.jump-anywhere.no-auto");preferences.erase("mod.jump-anywhere.button");
     preferences["mod.lock-on.enabled"]="1";
     preferences["mod.lock-on.range"]="2.5";
     preferences["mod.lock-on.cycling"]="0";

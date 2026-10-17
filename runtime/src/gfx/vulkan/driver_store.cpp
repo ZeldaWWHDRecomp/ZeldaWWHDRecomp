@@ -68,11 +68,33 @@ void Store::remove(const std::string& id) {
 }
 bool Store::start() {
     require(probing_.empty(),"Driver probe already started");
-    if(fs::exists(root_/"probing")) {select("");fs::remove(root_/"probing");return true;}
+    if(recover_incomplete_probe())return true;
     if(selected_.empty())return false;
     read(root_/selected_);write(root_/"probing",selected_);probing_=selected_;frames_=0;return false;
 }
+bool Store::recover_incomplete_probe() {
+    require(probing_.empty(),"Driver probe already started");
+    if(!fs::exists(root_/"probing"))return false;
+    select("");fs::remove(root_/"probing");return true;
+}
 void Store::rendered_frame() {if(!probing_.empty()&&frames_<120&&++frames_==120)fs::remove(root_/"probing");}
 void Store::failed() {select("");fs::remove(root_/"probing");probing_.clear();frames_=0;}
+void Store::note_device_lost(const std::string& actual_driver,bool custom) {
+    std::string safe;
+    for(unsigned char c:actual_driver)if(c>=32&&c<127&&safe.size()<512)safe+=char(c);
+    if(safe.empty())safe="Unknown Vulkan driver";
+    mods::json::Value note;note["schema"]=1;note["driver"]=safe;note["custom"]=custom;
+    write(root_/"device-lost.json",mods::json::dump(note));
+}
+std::optional<DeviceLoss> Store::take_device_loss() {
+    auto file=root_/"device-lost.json";
+    if(!fs::exists(file))return {};
+    auto note=mods::json::parse(text(file,2048));
+    require(note.get("schema").type==mods::json::Value::Number&&note.get("schema").number==1&&
+            note.get("driver").type==mods::json::Value::String&&note.get("custom").type==mods::json::Value::Bool,"Invalid device-loss note");
+    const auto label=note.get("driver").string();
+    require(!label.empty()&&label.size()<=512&&label.find_first_of("\r\n\0",0,3)==label.npos,"Invalid device-loss driver label");
+    fs::remove(file);return DeviceLoss{label,note.get("custom").boolean};
+}
 fs::path Store::cache(const std::string& id) const {require(id.empty()||id_ok(id),"Invalid cache driver ID");return root_/"caches"/(id.empty()?"system":id);}
 }

@@ -378,6 +378,13 @@ static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d) {
     // also blit sources. Preserve these reads for the next whole-image write.
     derive_dependency(c->use, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, true);
     c->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;  // every level is now a transfer source
+    // Another unit (or the vertex stage) may already have bound a source for
+    // sampling in this draw. Chain assembly must preserve those read layouts.
+    constexpr auto shaderStages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, shaderStages, VK_ACCESS_SHADER_READ_BIT);
+    for (uint32_t l = 1; l < mips && l < 16; ++l)
+        if (levels[l]) transition_image(levels[l], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        shaderStages, VK_ACCESS_SHADER_READ_BIT);
     s->mipChainSeq = key;
     static int logged = 0;
     if (logged++ < 8) LOG("[gfx] mip chain for %08X %ux%u: %u levels, %u of them the game's own", s->addr, w, h, mips, fromGame);
@@ -657,6 +664,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
         VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocation.allocationSize=needs.size;
         allocation.memoryTypeIndex=memory_type(needs.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         check_vk(vkAllocateMemory(R.device,&allocation,nullptr,&s->memory),"allocate image memory");
+        s->allocationBytes=needs.size;
         check_vk(vkBindImageMemory(R.device,s->image,s->memory,0),"bind image memory");
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};viewInfo.image=s->image;
         viewInfo.viewType=s->viewType;viewInfo.format=s->fmt.pixel;
@@ -667,7 +675,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
         if(s->view)vkDestroyImageView(R.device,s->view,nullptr);
         if(s->image)vkDestroyImage(R.device,s->image,nullptr);
         if(s->memory)vkFreeMemory(R.device,s->memory,nullptr);
-        s->view=VK_NULL_HANDLE;s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;
+        s->view=VK_NULL_HANDLE;s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;s->allocationBytes=0;
         throw;
     }
 }
@@ -679,7 +687,7 @@ void destroy_surface_image(Surface* s) {
     auto views=std::move(s->layerViews);if(s->view)views.push_back(s->view);
     for(auto& [key,view]:s->sampledViews)if(view)views.push_back(view);s->sampledViews.clear();
     defer_surface_image(s->image,s->memory,std::move(views));
-    s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;s->view=VK_NULL_HANDLE;s->layout=VK_IMAGE_LAYOUT_UNDEFINED;s->use={};
+    s->image=VK_NULL_HANDLE;s->memory=VK_NULL_HANDLE;s->view=VK_NULL_HANDLE;s->allocationBytes=0;s->layout=VK_IMAGE_LAYOUT_UNDEFINED;s->use={};
     s->layerViews.clear();
 }
 VkImageView layer_view(Surface* s,uint32_t layer) {

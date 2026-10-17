@@ -71,6 +71,9 @@ struct VpadMotion {
 // ---- host sources -> frame H ----
 // SDL: gyro rad/s and acceleration m/s^2 in SDL's frame (x right, y up, z towards the player)
 void from_sdl(const float gyro[3], const float accel[3], Vec3& gyro_h, Vec3& acc_h);
+// Natural phone axes -> SDL controller axes. quarter_turns is display rotation from natural
+// orientation, counter-clockwise (Android Surface ROTATION_90 = 1). Screen-up is controller-up.
+Vec3 device_to_sdl(Vec3 value, int quarter_turns);
 // Cemuhook (DSU): gyro deg/s (pitch, yaw, roll) and acceleration in g, as DS4Windows and the others send
 void from_dsu(const float gyro_deg[3], const float accel_g[3], Vec3& gyro_h, Vec3& acc_h);
 

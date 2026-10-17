@@ -2,6 +2,7 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <android/hardware_buffer.h>
 #include "android_shared_image.h"
+#include "android_driver.h"
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -10,6 +11,7 @@
 namespace gfxvk {
 namespace {
 void check(VkResult result,const char* operation) {
+  if(result==VK_ERROR_DEVICE_LOST)drivers::note_device_lost();
   if(result!=VK_SUCCESS)throw std::runtime_error(std::string(operation)+": Vulkan result "+std::to_string(result));
 }
 template<class Function> Function load(VkDevice device,const char* name) {
@@ -24,7 +26,7 @@ struct Device {
 #define FUNCTIONS(X) X(vkCreateImage) X(vkDestroyImage) X(vkAllocateMemory) X(vkFreeMemory) X(vkBindImageMemory) \
   X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkGetAndroidHardwareBufferPropertiesANDROID) \
   X(vkGetSemaphoreFdKHR) X(vkImportSemaphoreFdKHR)
-#define FIELD(name) PFN_##name name=nullptr;
+#define FIELD(name) drivers::ObservedFunction<PFN_##name> name;
   FUNCTIONS(FIELD)
 #undef FIELD
   void init(VkDevice device) {

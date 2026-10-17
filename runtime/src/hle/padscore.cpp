@@ -94,6 +94,7 @@ HLE(padscore, KPADReadEx) {
     story_bag::mute(p);       // so do the Delivery Bag's extra pages
     mods::moon_jump_input(p);
     mods::move_speed_input(p.buttons);
+    mods::jump_input(p.buttons);
     mods::fast_forward_input(p.buttons);
     if (!repeat) motion::right_stick(p.rx, p.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
     uint32_t hold = pro_buttons(p.buttons);

@@ -539,6 +539,10 @@ void install_menu(NSWindow* tv) {
             @"The climbing animation plays faster, so hands and feet stay in step", "ladder-speed.factor", mods::ladder_speed_factor);
     factors(@"Faster sidling", "sidle-speed", ^BOOL { return mods::sidle_speed(); },
             @"Sidling along walls is faster; the animation speeds up with the movement", "sidle-speed.factor", mods::sidle_speed_factor);
+    factors(@"Faster ivy climbing", "ivy-speed", ^BOOL { return mods::ivy_speed(); },
+            @"Climbing ivy and vines is faster, up, down and sideways", "ivy-speed.factor", mods::ivy_speed_factor);
+    factors(@"Faster ledge hanging", "hang-speed", ^BOOL { return mods::hang_speed(); },
+            @"Moving along a ledge while hanging from it is faster", "hang-speed.factor", mods::hang_speed_factor);
     toggle(gp, @"Sailing speed", ^BOOL { return mods::sail_speed(); }, ^(BOOL on) { mods::manager::set_enabled("sail-speed", on); },
            @"Multiplies the speed the wind gives the boat; the jump keeps its normal height");
     for (auto [title, key, value] : {std::tuple{@"    Normal sail", "sail-speed.normal", mods::sail_speed_normal_factor},
@@ -555,6 +559,9 @@ void install_menu(NSWindow* tv) {
            @"Makes the normal sail behave like the Swift Sail: the wind always blows the way the boat is heading");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
            @"Door events (walk-in, opening, closing) run at 4x speed");
+    toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
+           ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
+           @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");
     toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
@@ -566,8 +573,11 @@ void install_menu(NSWindow* tv) {
     toggle(gp, @"    Equip Master Sword and Mirror Shield (until reload)", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatSword); });
     toggle(gp, @"    20 hearts, double magic, 5000 rupees", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatStats); },
            @"Also refills hearts and magic");
+    toggle(gp, @"    Fill the bags (spoils and bait)", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatBags); },
+           @"Spoils bag and bait bag (if missing), every kind of spoils x99, empty bait slots filled");
     for (auto [title, which] : {std::pair{@"    Infinite health", mods::kInfHealth}, {@"    Infinite magic", mods::kInfMagic},
-                                {@"    Infinite arrows and bombs", mods::kInfAmmo}}) {
+                                {@"    Infinite arrows and bombs", mods::kInfAmmo}, {@"    Infinite rupees", mods::kInfRupees},
+                                {@"    Infinite bait and spoils", mods::kInfBags}, {@"    Infinite swimming", mods::kInfBreath}}) {
         int bit = which;  // (blocks cannot capture structured bindings)
         toggle(gp, title, ^BOOL { return mods::infinite(bit); }, ^(BOOL on) { mods::set_infinite(bit, on); });
     }

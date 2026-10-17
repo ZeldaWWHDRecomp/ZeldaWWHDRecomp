@@ -53,6 +53,64 @@ int main() {
         mods::cheats_service();
         assert(!std::memcmp(expected.data(), mem::ptr(base), expected.size()));
     }
+    // Fill the bags, infinite rupees / bait and spoils / swimming.
+    {
+        std::memset(mem::ptr(base), 0xFF, 0x2000);
+        st16(player, 14); st16(player + 2, 14); st16(player + 4, 150);
+        st8(player + 0x12, 1);  // 1000 wallet
+        st8(player + 0x13, 0); st8(player + 0x14, 0);
+        std::memcpy(mem::ptr(player + 0x30), "sea\0\0\0\0\0", 8);
+        st8(player + 0x76, 0x47); st8(player + 0x76 + 3, 0x1F);  // two spoils already in the bag
+        st8(player + 0x9C + 2, 5);
+        st8(player + 0x94, 0); st8(player + 0x95, 0);
+        mods::request_cheat(mods::kCheatBags);
+        mods::cheats_service();
+        assert(ld8(player + 0x3C + 4) == 0x24 && ld8(player + 0x3C + 11) == 0x2C);  // both bags given
+        int spoils = 0;
+        for (int k = 0; k < 8; k++) {
+            const int item = ld8(player + 0x76 + k);
+            spoils |= item == 0x1F ? 0x80 : item >= 0x45 && item <= 0x4B ? 1 << (item - 0x45) : 0x100;
+        }
+        assert(spoils == 0xFF);  // every kind of spoils once (Joy Pendant 0x1F counted as bit 7)
+        assert(ld8(player + 0x76) == 0x47 && ld8(player + 0x79) == 0x1F);  // existing slots kept
+        for (int k = 0; k < 8; k++) assert(ld8(player + 0x9C + k) == 99);
+        for (int k = 0; k < 8; k++) assert(ld8(player + 0x7E + k) == (k < 4 ? 0x82 : 0x83) && ld8(player + 0xA4 + k) == 3);
+        assert(ld8(player + 0x94) == 0xFF && ld8(player + 0x95) == 3);
+
+        constexpr uint32_t rupee_change = 0x1046F0B0 + 0x5B48, air = 0x1046F0B0 + 0x5B4C, play_select = 0x1046F0B0 + 0x5BBB;
+        st32(rupee_change, 0); st32(air, 0); st32(air + 4, 900);
+        mods::set_infinite(mods::kInfRupees, true);
+        mods::cheats_service();
+        assert(ld32(rupee_change) == 850);  // counts up to the full 1000 wallet through the HUD
+        st16(player + 4, 1000); st32(rupee_change, uint32_t(-200));  // a shop charge not taken yet
+        mods::cheats_service();
+        assert(ld32(rupee_change) == 0 && ld16(player + 4) == 1000);
+        mods::set_infinite(mods::kInfRupees, false);
+        st32(rupee_change, uint32_t(-20));
+        mods::cheats_service();
+        assert(ld32(rupee_change) == uint32_t(-20));  // off: untouched
+
+        mods::set_infinite(mods::kInfBreath, true);
+        mods::cheats_service();
+        assert(ld32(air) == 0);  // not swimming: the meter stays hidden
+        st32(air, 300);
+        mods::cheats_service();
+        assert(ld32(air) == 900);
+        mods::set_infinite(mods::kInfBreath, false);
+
+        st8(player + 0x09 + 1, 36 + 5);  // Y holds the Hyoi Pear in bait slot 5
+        mods::set_infinite(mods::kInfBags, true);
+        mods::cheats_service();  // remembers the bags
+        st8(player + 0x9C + 1, 3); st8(player + 0xA4 + 0, 2);  // a seed and one bait used
+        st8(player + 0x7E + 5, 0xFF); st8(player + 0xA4 + 5, 0); st8(player + 0x09 + 1, 0xFF);  // the pear used up
+        mods::cheats_service();
+        assert(ld8(player + 0x9C + 1) == 99 && ld8(player + 0xA4) == 3);
+        assert(ld8(player + 0x7E + 5) == 0x83 && ld8(player + 0x09 + 1) == 36 + 5 && ld8(play_select + 1) == 0x83);
+        mods::set_infinite(mods::kInfBags, false);
+        st8(player + 0xA4, 1);
+        mods::cheats_service();
+        assert(ld8(player + 0xA4) == 1);  // off: untouched
+    }
     constexpr uint32_t link = 0x16000000, camera = 0x17000000;
     map(link, 0x10000); map(camera, 0x10000);
     Cpu cpu{}; cpu.r[3] = link;

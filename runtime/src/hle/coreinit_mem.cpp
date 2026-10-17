@@ -269,6 +269,7 @@ HLE(coreinit, OSIsAddressRangeDCValid) { ret(c, 1); }
 #include <vector>
 
 #include "../savestate.h"
+#include "state_metadata_validation.h"
 void mem_ss_save(ss::Writer& w) {
     std::lock_guard<std::mutex> lk(g_mem_mutex);
     w.u32(g_default_heap);
@@ -300,7 +301,14 @@ void mem_ss_save(ss::Writer& w) {
     }
 }
 
+bool mem_ss_validate(ss::Reader r, std::string& why) {
+    static_assert(sizeof(FrmHeap)==4*sizeof(uint32_t),"update full-state heap preflight for a new frame-heap schema");
+    if (!ss::metadata::heaps(r)) { why = "corrupt mem section"; return false; }
+    return true;
+}
+
 bool mem_ss_check(ss::Reader r, std::string& why) {
+    if (!mem_ss_validate(r,why)) return false;
     std::lock_guard<std::mutex> lk(g_mem_mutex);
     uint32_t d = r.u32(), m1 = r.u32(), fg = r.u32();
     if (d != g_default_heap || m1 != g_mem1_heap || fg != g_fg_heap) { why = "the base heaps differ (different game build?)"; return false; }
