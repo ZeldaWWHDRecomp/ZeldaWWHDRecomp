@@ -379,13 +379,13 @@ target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
 add_test(NAME guest_png COMMAND guest_png_test "${CMAKE_SOURCE_DIR}/examples/guest-mods")
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
-add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_content_fs_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_content_fs_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_content_fs_test PRIVATE ZLIB::ZLIB Threads::Threads)
 
 # language sources: synthetic European/Japanese packs read through the guest file system (game_languages.h)
-add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(language_source_test PRIVATE runtime/src runtime/include)
 target_compile_options(language_source_test PRIVATE -UNDEBUG)
 target_link_libraries(language_source_test PRIVATE ZLIB::ZLIB Threads::Threads)
@@ -983,7 +983,7 @@ target_link_libraries(overlay_extensions_test PRIVATE imgui)
 add_test(NAME overlay_extensions COMMAND overlay_extensions_test)
 # issue #185: a platform port's own renderer (gfx/renderer_ext.h) and the GX2 decisions it can take over
 # (gx2/backend_hooks.h); renderer.cpp built as on macOS (Metal and Vulkan) with stub backend tables
-add_executable(renderer_ext_test runtime/tools/renderer_ext_test.cpp runtime/src/gfx/renderer.cpp)
+add_executable(renderer_ext_test runtime/tools/renderer_ext_test.cpp runtime/src/gfx/renderer.cpp runtime/src/mods/save_folder.cpp)
 target_include_directories(renderer_ext_test PRIVATE runtime/include runtime/src runtime/src/gx2 ${CEMU_DIR}
   runtime/third_party/metal-cpp runtime/third_party/fmt/include)
 target_compile_definitions(renderer_ext_test PRIVATE WWHD_HAS_METAL WWHD_HAS_VULKAN)
@@ -1743,6 +1743,13 @@ target_include_directories(mods_model_test PRIVATE runtime/src)
 target_compile_options(mods_model_test PRIVATE -UNDEBUG)
 target_link_libraries(mods_model_test PRIVATE ZLIB::ZLIB Threads::Threads)
 add_test(NAME mods_model COMMAND mods_model_test)
+
+# a save folder chosen in the Saves tab, e.g. a cloud folder (mods/save_folder.h, issue #190)
+add_executable(save_folder_test runtime/tools/save_folder_test.cpp)
+target_include_directories(save_folder_test PRIVATE runtime/src)
+target_compile_options(save_folder_test PRIVATE -UNDEBUG)
+target_link_libraries(save_folder_test PRIVATE Threads::Threads)
+add_test(NAME save_folder COMMAND save_folder_test)
 
 add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
 target_include_directories(mod_setup_run_test PRIVATE runtime/src)

@@ -161,6 +161,17 @@ void choose_mod_source(bool folder, std::function<void(std::string)> chosen) {
         else SDL_ShowOpenFileDialog(done, callback, nullptr, nullptr, 0, nullptr, false);
     });
 }
+void choose_save_folder(std::function<void(std::string)> chosen) {
+    post([chosen] {
+        auto callback = new std::function<void(std::string)>(chosen);
+        auto done = [](void* context, const char* const* files, int) {
+            auto fn = static_cast<std::function<void(std::string)>*>(context);
+            if (files && files[0]) (*fn)(files[0]);
+            delete fn;
+        };
+        SDL_ShowOpenFolderDialog(done, callback, nullptr, nullptr, false);
+    });
+}
 void choose_game_source(bool folder, std::function<void(std::string)> chosen) {
     post([folder, chosen] {
         auto callback = new std::function<void(std::string)>(chosen);

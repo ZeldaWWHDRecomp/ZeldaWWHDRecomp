@@ -8,6 +8,7 @@
 #include "../mods/item_icons.h"
 #include "../mods/story_lyt_screen.h"
 #include "../mods/story_store.h"
+#include "../mods/save_folder_writes.h"
 #include "../platform/filesystem.h"
 
 #include <cstdio>
@@ -61,6 +62,7 @@ struct OpenFile {
     uint64_t limit = UINT64_MAX;  // the game's part of a save file with the story block (story_store.h)
     bool story = false;           // a save file that carries the story block
     std::string host;
+    std::string final_host;       // written through `host`, a temporary file renamed over this one when closed
 };
 struct OpenDir {
     DIR* d;
@@ -187,6 +189,15 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     if (mode.find_first_of("wa") != std::string::npos) make_parent_dirs(hp);
     std::string m = mode;
     if (m.find('b') == std::string::npos) m += "b";
+    // a chosen save folder (save_folder.h, often a cloud folder): the game writes a temporary file,
+    // renamed over the save when it is closed, so a cloud app never uploads half a save
+    std::string final_host;
+    if (save_folder::writes_through_temporary() && mode.find_first_of("wa+") != std::string::npos && gpath.rfind("/vol/save/", 0) == 0) {
+        final_host = hp;
+        hp += ".wwhd-part";
+        std::error_code ec;
+        if (mode[0] != 'w') std::filesystem::copy_file(final_host, hp, std::filesystem::copy_options::overwrite_existing, ec);  // updates keep the contents
+    }
     FILE* f = fopen(hp.c_str(), m.c_str());
     TRACE("[fs] open %s (%s) -> %s", gpath.c_str(), mode.c_str(), f ? "ok" : "not found");
     if (!f) return FS_NOT_FOUND;
@@ -201,7 +212,7 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     }
     std::lock_guard<std::mutex> lk(g_fs_mutex);
     uint32_t h = g_next_handle++;
-    g_files[h] = {f, gpath, m, limit, story, hp};
+    g_files[h] = {f, gpath, m, limit, story, hp, final_host};
     st32(out_handle, h);
     return FS_OK;
 }
@@ -257,6 +268,10 @@ HLE(coreinit, FSCloseFile) {
         auto it = g_files.find(arg(c, 2));
         if (it != g_files.end()) {
             fclose(it->second.f);
+            if (!it->second.final_host.empty()) {
+                if (save_folder::replace_written(it->second.host, it->second.final_host)) it->second.host = it->second.final_host;
+                else LOG("[save-folder] %s could not replace %s", it->second.host.c_str(), it->second.final_host.c_str());
+            }
             if (it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos)
                 written_guest = it->second.path, written_host = it->second.host;
             g_files.erase(it);
