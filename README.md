@@ -814,7 +814,7 @@ Switch issues on its tracker.
 ## License
 
 The code of this project is licensed under the Mozilla Public License 2.0 (see `LICENSE`).
-Vendored third-party code keeps its own license: Cemu (MPL-2.0), metal-cpp (Apache-2.0), {fmt} (MIT) and Dear ImGui (MIT); see Credits. The extractor links zstd (BSD-3-Clause); releases build it from its pinned release source. The game itself is Nintendo's property and is not included.
+Vendored third-party code keeps its own license: Cemu (MPL-2.0), metal-cpp (Apache-2.0), {fmt} (MIT), Dear ImGui (MIT) and ImGuizmo (MIT); see Credits. The extractor links zstd (BSD-3-Clause); releases build it from its pinned release source. The game itself is Nintendo's property and is not included.
 
 ## Credits
 
@@ -838,7 +838,9 @@ follow Cemu as noted in those files (in the Vulkan renderer: the vertex-format t
 shader parser glue). Also vendored: [metal-cpp](https://developer.apple.com/metal/cpp/)
 (Apache-2.0, `runtime/third_party/metal-cpp/LICENSE.txt`), [{fmt}](https://github.com/fmtlib/fmt)
 (MIT, `runtime/third_party/fmt/LICENSE`) and [Dear ImGui](https://github.com/ocornut/imgui) v1.92.9b by
-Omar Cornut and contributors, for the settings overlay (MIT, `runtime/third_party/imgui/LICENSE.txt`).
+Omar Cornut and contributors, for the settings overlay (MIT, `runtime/third_party/imgui/LICENSE.txt`), and
+[ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) by Cedric Guillemet, for the world editor's move and turn
+handles (MIT, `runtime/third_party/imguizmo/LICENSE`).
 The Cemu archive (`.wua`) reader in `tools/wudextract/zarchive.cpp` is written from the format of
 [ZArchive](https://github.com/Exzap/ZArchive) by Exzap (MIT No Attribution; nothing of it is
 vendored); [zstd](https://github.com/facebook/zstd) by Meta Platforms (BSD-3-Clause) decompresses

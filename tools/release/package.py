@@ -135,6 +135,7 @@ VENDORED_LICENSES = {
     "Cemu (MPL-2.0)": "runtime/third_party/cemu/LICENSE.txt",
     "Dear ImGui (MIT)": "runtime/third_party/imgui/LICENSE.txt",
     "fmt (MIT)": "runtime/third_party/fmt/LICENSE",
+    "ImGuizmo (MIT)": "runtime/third_party/imguizmo/LICENSE",
     "metal-cpp (Apache-2.0)": "runtime/third_party/metal-cpp/LICENSE.txt",
     "xxHash (BSD-2-Clause)": "runtime/third_party/xxhash/LICENSE",
 }

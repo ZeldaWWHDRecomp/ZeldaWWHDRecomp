@@ -1,27 +1,29 @@
-// The world editor's Editor tab (editor_panel.h). It only reads the session and calls commands.
+// The world editor's panels (editor_panel.h). They only read the session's snapshot and run commands.
 #include "editor_panel.h"
 
-#include <cfloat>
+#include <array>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-#include <array>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "../editor/editor_game.h"
+#include "editor_shell.h"
 #include "extensions.h"
+#include "hostui.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "text_entry.h"
 
 namespace editor_ui {
 namespace {
-using editor::Value;
-
 const ImVec4 kMuted(0.62f, 0.66f, 0.72f, 1), kGood(0.45f, 0.82f, 0.52f, 1), kBad(0.95f, 0.55f, 0.45f, 1), kHead(0.95f, 0.85f, 0.55f, 1);
 
 struct UiState {
@@ -31,33 +33,39 @@ struct UiState {
     std::string message;  // the last command's outcome
     bool message_ok = true;
     char filter[64] = {};
-    std::string json_scene;   // edited scene steps
-    std::string json_for;     // the scene the buffer belongs to
+    std::string json_scene;  // edited scene steps
+    std::string json_for;    // the scene the buffer belongs to
+    Value problems;          // the last check_package
+    std::string field;       // the field a clicked problem names (marked, scrolled to once)
+    bool field_shown = false;
+    char import_path[512] = {};
+    char export_path[512] = {};
+    Value import_info;       // check_model's result for import_path
+    std::string import_checked;
 } U;
 
-void muted(const std::string& s) { ImGui::TextColored(kMuted, "%s", s.c_str()); }
+Snapshot g_snap;
+// finished commands, for the render thread
+struct Done {
+    std::string command;
+    Value result;
+    std::function<void(const Value&)> then;
+};
+std::mutex g_done_mu;
+std::deque<Done> g_done;
+std::mutex g_pick_mu;
+std::string g_picked;  // a path a file chooser returned (any thread)
+int g_picked_for = 0;  // 1 import, 2 export
+
+void muted(const std::string& s) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+    ImGui::TextWrapped("%s", s.c_str());
+    ImGui::PopStyleColor();
+}
 void wrapped(const ImVec4& colour, const std::string& s) {
     ImGui::PushStyleColor(ImGuiCol_Text, colour);
     ImGui::TextWrapped("%s", s.c_str());
     ImGui::PopStyleColor();
-}
-
-// runs a command and keeps its outcome for the status line
-Value command(const std::string& name, const Value& params = Value()) {
-    Value r = editor::run(name, params);
-    U.message_ok = r.get("ok").boolean;
-    if (!U.message_ok) U.message = r.get("error").string();
-    else if (r.get("result").get("note").type == Value::String) U.message = r.get("result").get("note").text;
-    else U.message = name + ": done";
-    return r;
-}
-
-Value manifest_copy() {
-    Value m;
-    editor::with_session([&](editor::Session& s) {
-        if (auto* p = s.manifest(s.open_mod())) m = *p;
-    });
-    return m;
 }
 const Value* by_id(const Value& list, const std::string& id) {
     for (const auto& v : list.array)
@@ -72,19 +80,21 @@ Value point(const float p[3]) {
     v["z"] = double(p[2]);
     return v;
 }
+Value list() {
+    Value v;
+    v.type = Value::Array;
+    return v;
+}
 
 // An edit field that shows the manifest's value unless it is being edited; true once an edit is done
 // (one command, one undo step).
 template <class Draw> bool edited(const char* label, Draw draw) {
-    const ImGuiID id = ImGui::GetID(label);
-    const bool active = ImGui::GetActiveID() == id;
-    draw(active);
+    draw(ImGui::GetActiveID() == ImGui::GetID(label));
     return ImGui::IsItemDeactivatedAfterEdit();
 }
 bool edit_point(const char* label, const Value& current, float fallback, float out[3]) {
     static std::map<ImGuiID, std::array<float, 3>> buffers;
-    const ImGuiID id = ImGui::GetID(label);
-    auto& b = buffers[id];
+    auto& b = buffers[ImGui::GetID(label)];
     return edited(label, [&](bool active) {
         if (!active) b = {num(current, "x", fallback), num(current, "y", fallback), num(current, "z", fallback)};
         ImGui::SetNextItemWidth(-FLT_MIN);
@@ -94,8 +104,7 @@ bool edit_point(const char* label, const Value& current, float fallback, float o
 }
 bool edit_text(const char* label, const std::string& current, std::string& out, size_t max = 240) {
     static std::map<ImGuiID, std::vector<char>> buffers;
-    const ImGuiID id = ImGui::GetID(label);
-    auto& b = buffers[id];
+    auto& b = buffers[ImGui::GetID(label)];
     b.resize(max + 1);
     const bool done = edited(label, [&](bool active) {
         if (!active) std::snprintf(b.data(), b.size(), "%s", current.c_str());
@@ -105,19 +114,17 @@ bool edit_text(const char* label, const std::string& current, std::string& out, 
     out = b.data();
     return done;
 }
-bool edit_number(const char* label, double current, double& out) {
+bool edit_number(const char* label, double current, double& out, float width = 160) {
     static std::map<ImGuiID, float> buffers;
-    const ImGuiID id = ImGui::GetID(label);
-    auto& b = buffers[id];
+    auto& b = buffers[ImGui::GetID(label)];
     const bool done = edited(label, [&](bool active) {
         if (!active) b = float(current);
-        ImGui::SetNextItemWidth(160);
+        ImGui::SetNextItemWidth(width);
         ImGui::InputFloat(label, &b, 0, 0, "%.1f");
     });
     out = b;
     return done;
 }
-
 std::vector<std::string> lines_of(const Value& v) {
     std::vector<std::string> out;
     if (v.type == Value::String) {
@@ -131,6 +138,17 @@ std::vector<std::string> lines_of(const Value& v) {
     } else
         for (const auto& l : v.array) out.push_back(l.string());
     return out;
+}
+// a field a clicked problem names: shown in the problem colour once
+void mark(const char* field) {
+    if (U.field == field) {
+        ImGui::SameLine();
+        ImGui::TextColored(kBad, "<- the problem");
+        if (!U.field_shown) {
+            ImGui::SetScrollHereY(0.1f);
+            U.field_shown = true;
+        }
+    }
 }
 
 // What an actor is, for the list and the inspector.
@@ -148,7 +166,6 @@ std::string kind_label(const Value& a) {
     if (is_prop(actor)) return actor + " (prop)";
     return actor;
 }
-// kinds whose changes are applied after a restart (their game state is declared at start-up)
 bool restart_only(const Value& a) {
     const std::string actor = a.get("actor").string();
     return is_enemy(actor) || is_prop(actor) || actor == "switch" || actor == "door" ||
@@ -158,6 +175,7 @@ bool restart_only(const Value& a) {
 void edit_property(const Value& p, const Value& a, const char* label, const char* property, size_t max = 32) {
     std::string t;
     ImGui::TextUnformatted(label);
+    mark(property);
     if (edit_text((std::string("##") + property).c_str(), a.get(property).string(), t, max)) {
         Value s = p;
         s["property"] = property;
@@ -165,26 +183,260 @@ void edit_property(const Value& p, const Value& a, const char* label, const char
         command("set_actor", s);
     }
 }
+bool confirm_popup(const char* id, const std::string& question, const char* yes) {
+    bool chosen = false;
+    if (ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(question.c_str());
+        if (ImGui::Button(yes)) {
+            chosen = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    return chosen;
+}
+
+// ---------------------------------------------------------------- the "then" actions form
+struct ActionRow {
+    int kind = 0;  // give, take, quest_step, flag, scene
+    char id[64] = {};
+    int value = 1;  // count, step, flag value (1 set, 0 clear)
+};
+const char* const kActionKinds[] = {"give an item", "take an item", "set a quest step", "set a flag", "start a scene"};
+const char* const kActionNames[] = {"give", "take", "quest_step", "flag", "scene"};
+std::vector<ActionRow> rows_of(const Value& then) {
+    std::vector<ActionRow> rows;
+    for (const auto& a : then.array) {
+        ActionRow r;
+        const std::string k = a.get("action").string();
+        for (int i = 0; i < 5; i++)
+            if (k == kActionNames[i]) r.kind = i;
+        std::snprintf(r.id, sizeof r.id, "%s", a.get("id").string().c_str());
+        if (r.kind <= 1) r.value = int(num(a, "count", 1));
+        else if (r.kind == 2) r.value = int(num(a, "step", 1));
+        else if (r.kind == 3) r.value = a.get("value").type == Value::Bool ? a.get("value").boolean : 1;
+        rows.push_back(r);
+    }
+    return rows;
+}
+Value then_of(const std::vector<ActionRow>& rows) {
+    Value out = list();
+    for (const auto& r : rows) {
+        Value a;
+        a["action"] = kActionNames[r.kind];
+        a["id"] = std::string(r.id);
+        if (r.kind <= 1 && r.value != 1) a["count"] = r.value;
+        if (r.kind == 2) a["step"] = r.value;
+        if (r.kind == 3 && !r.value) a["value"] = false;
+        out.array.push_back(a);
+    }
+    return out;
+}
+// the ids an action may name: the mod's items, quests, scenes; flags are free text
+std::vector<std::string> choices(const Value& m, int kind) {
+    std::vector<std::string> out;
+    if (kind <= 1)
+        for (const auto& i : m.get("items").array) out.push_back("item:" + i.get("id").string());
+    else if (kind == 2)
+        for (const auto& q : m.get("quests").array) out.push_back(q.get("id").string());
+    else if (kind == 4)
+        for (const auto& s : m.get("scenes").array) out.push_back(s.get("id").string());
+    return out;
+}
+void then_form(const Value& m, const Value& a, const Value& p) {
+    static std::string form_for, form_json;
+    static std::vector<ActionRow> rows;
+    const std::string json = mods::json::dump(a.get("then"));
+    if (form_for != U.actor || form_json != json) {  // another actor, or the package changed (undo)
+        rows = rows_of(a.get("then"));
+        form_for = U.actor;
+        form_json = json;
+    }
+    ImGui::TextColored(kHead, "After the dialogue");
+    mark("then");
+    int remove = -1;
+    for (size_t i = 0; i < rows.size(); i++) {
+        auto& r = rows[i];
+        ImGui::PushID(int(i));
+        const float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(avail * 0.42f);
+        ImGui::Combo("##kind", &r.kind, kActionKinds, 5);
+        ImGui::SameLine();
+        const auto ids = choices(m, r.kind);
+        ImGui::SetNextItemWidth(avail * (r.kind == 4 ? 0.48f : 0.32f));
+        if (ids.empty()) text_entry::field("##id", r.id, sizeof r.id, 0, r.kind == 3 ? "flag id" : "id");
+        else if (ImGui::BeginCombo("##id", r.id)) {
+            for (const auto& id : ids)
+                if (ImGui::Selectable(id.c_str(), id == r.id)) std::snprintf(r.id, sizeof r.id, "%s", id.c_str());
+            ImGui::EndCombo();
+        }
+        if (r.kind <= 2) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(avail * 0.12f);
+            ImGui::InputInt("##value", &r.value, 0, 0);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(r.kind == 2 ? "the quest step" : "how many");
+            r.value = std::clamp(r.value, 1, 254);
+        } else if (r.kind == 3) {
+            ImGui::SameLine();
+            bool on = r.value != 0;
+            ImGui::Checkbox("##set", &on);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("on: set the flag; off: clear it");
+            r.value = on;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = int(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) rows.erase(rows.begin() + remove);
+    if (rows.size() < 8 && ImGui::SmallButton("+ action")) rows.push_back({});
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Apply actions")) {
+        Value q = p;
+        q["actions"] = then_of(rows);
+        command("set_then", q);
+    }
+    if (a.get("lines").type == Value::Null && !rows.empty()) muted("Actions run after dialogue: give the actor lines first.");
+}
+// drops of props and enemies
+void drops_form(const Value& m, const Value& a, const Value& p) {
+    static std::string form_for, form_json;
+    struct Row {
+        char item[64] = {};
+        int quantity = 1;
+    };
+    static std::vector<Row> rows;
+    const std::string json = mods::json::dump(a.get("drops"));
+    if (form_for != U.actor || form_json != json) {
+        rows.clear();
+        for (const auto& d : a.get("drops").array) {
+            Row r;
+            std::snprintf(r.item, sizeof r.item, "%s", d.get("item").string().c_str());
+            r.quantity = int(num(d, "quantity", 1));
+            rows.push_back(r);
+        }
+        form_for = U.actor;
+        form_json = json;
+    }
+    ImGui::TextColored(kHead, "Drops");
+    mark("drops");
+    const auto items = choices(m, 0);
+    if (items.empty()) muted("The mod declares no items to drop.");
+    int remove = -1;
+    for (size_t i = 0; i < rows.size(); i++) {
+        ImGui::PushID(int(i) + 100);
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::BeginCombo("##item", rows[i].item)) {
+            for (const auto& id : items)
+                if (ImGui::Selectable(id.c_str(), id == rows[i].item)) std::snprintf(rows[i].item, sizeof rows[i].item, "%s", id.c_str());
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(80);
+        ImGui::InputInt("##quantity", &rows[i].quantity);
+        rows[i].quantity = std::clamp(rows[i].quantity, 1, 254);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = int(i);
+        ImGui::PopID();
+    }
+    if (remove >= 0) rows.erase(rows.begin() + remove);
+    if (!items.empty() && rows.size() < 8 && ImGui::SmallButton("+ drop")) rows.push_back({});
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Apply drops")) {
+        Value q = p, d = list();
+        for (const auto& r : rows) {
+            Value v;
+            v["item"] = std::string(r.item);
+            v["quantity"] = r.quantity;
+            d.array.push_back(v);
+        }
+        q["drops"] = d;
+        command("set_drops", q);
+    }
+}
+}  // namespace
+
+// ---------------------------------------------------------------- snapshot and commands
+void refresh() {
+    static int frame = -1;
+    if (frame == ImGui::GetFrameCount()) return;
+    frame = ImGui::GetFrameCount();
+    static int locations_at = -100;
+    const bool want_locations = frame - locations_at >= 60;
+    editor::try_with_session([&](editor::Session& s) {
+        g_snap.valid = true;
+        g_snap.mods = s.mods();
+        g_snap.open = s.open_mod();
+        g_snap.dirty = s.dirty(g_snap.open);
+        g_snap.undo = s.undo_label();
+        g_snap.redo = s.redo_label();
+        const Value* m = s.manifest(g_snap.open);
+        g_snap.manifest = m ? *m : Value();
+        g_snap.state = s.run("read_state", Value(), false).get("result");
+        if (want_locations) {
+            g_snap.locations = s.run("list_locations", Value(), false).get("result");
+            locations_at = frame;
+        }
+        g_snap.log.assign(s.log().begin(), s.log().end());
+    });
+    std::deque<Done> done;
+    {
+        std::lock_guard<std::mutex> lk(g_done_mu);
+        done.swap(g_done);
+    }
+    for (auto& d : done) {
+        U.message_ok = d.result.get("ok").boolean;
+        if (!U.message_ok) U.message = d.result.get("error").string();
+        else if (d.result.get("result").get("note").type == Value::String) U.message = d.result.get("result").get("note").text;
+        else U.message = d.command + ": done";
+        if (d.then) d.then(d.result);
+    }
+    std::lock_guard<std::mutex> lk(g_pick_mu);
+    if (!g_picked.empty()) {
+        std::snprintf(g_picked_for == 1 ? U.import_path : U.export_path, sizeof U.import_path, "%s", g_picked.c_str());
+        g_picked.clear();
+    }
+}
+const Snapshot& snapshot() { return g_snap; }
+void command(const std::string& name, const Value& params, std::function<void(const Value&)> then) {
+    editor::run_async(name, params, [name, then](const Value& r) {
+        std::lock_guard<std::mutex> lk(g_done_mu);
+        g_done.push_back({name, r, then});
+    });
+}
+bool busy() { return editor::commands_pending(); }
+const std::string& message(bool& ok) {
+    ok = U.message_ok;
+    return U.message;
+}
+std::string& selected() { return U.actor; }
+Value& problems() { return U.problems; }
+std::string& focus_field() { return U.field; }
 
 // ---------------------------------------------------------------- areas
-void actors_area(const Value& m) {
-    const float list_w = std::min(260.0f, ImGui::GetContentRegionAvail().x * 0.35f);
-    ImGui::BeginChild("actor_list", ImVec2(list_w, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+void actor_list(const Value& m) {
     for (const auto& a : m.get("actors").array) {
         const std::string id = a.get("id").string();
-        const std::string kind = kind_label(a);
-        if (ImGui::Selectable((id + "##actor").c_str(), U.actor == id)) U.actor = id;
+        if (ImGui::Selectable((id + "##actor").c_str(), U.actor == id)) {
+            U.actor = id;
+            U.field.clear();
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+            Value p;
+            p["id"] = id;
+            command("focus", p);
+        }
         ImGui::SameLine();
-        ImGui::TextColored(kMuted, "%s", kind.c_str());
+        ImGui::TextColored(kMuted, "%s", kind_label(a).c_str());
     }
-    if (m.get("actors").array.empty()) muted("This mod places no actors.");
-    ImGui::EndChild();
-    ImGui::SameLine();
-    ImGui::BeginChild("actor_props", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+    if (m.get("actors").array.empty()) muted("This mod places no actors yet: Add places one.");
+}
+
+void actor_inspector(const Value& m) {
     const Value* a = by_id(m.get("actors"), U.actor);
     if (!a) {
-        muted("Select an actor to see and change its properties.");
-        ImGui::EndChild();
+        muted("Select an actor (in the list or by clicking it in the picture) to see and change it.");
         return;
     }
     Value p;
@@ -196,36 +448,62 @@ void actors_area(const Value& m) {
     const std::string actor = a->get("actor").string();
     const bool is_mod = a->get("kind").string() == "mod", combat = is_mod && a->get("combat").type != Value::Null,
                carry = is_mod && a->get("carry").type != Value::Null;
-    if (restart_only(*a)) wrapped(kMuted, "Changes to this actor are saved in the package and take effect after a restart.");
+    if (restart_only(*a)) wrapped(kMuted, "Changes to this kind of actor are saved in the package and take effect after a restart.");
+    // place
+    if (ImGui::SmallButton("Focus")) command("focus", p);
+    ImGui::SameLine();
+    auto place = [&](const char* at) {
+        Value q = p;
+        q["at"] = at;
+        command("place_actor", q);
+    };
+    if (ImGui::SmallButton("To Link")) place("link");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("To camera")) place("camera");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Snap to ground")) place("ground");
+    if (ImGui::SmallButton("Warp here")) {
+        Value w;
+        w["location"] = "actor:" + snapshot().open + ":" + U.actor;
+        command("warp_to", w);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Duplicate"))
+        command("duplicate_actor", p, [](const Value& r) {
+            if (r.get("ok").boolean) U.actor = r.get("result").get("id").string();
+        });
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Remove...")) ImGui::OpenPopup("Remove actor?");
+    if (confirm_popup("Remove actor?", "Remove " + U.actor + " from the package? (Undo brings it back.)", "Remove")) {
+        Value q = p;
+        q["confirm"] = true;
+        command("remove_actor", q);
+    }
     float v[3];
     ImGui::TextUnformatted("Position");
+    mark("position");
     if (edit_point("##position", a->get("position"), 0, v)) {
         p["position"] = point(v);
         command("move_actor", p);
     }
     ImGui::TextUnformatted("Rotation (degrees)");
+    mark("rotation");
     if (edit_point("##rotation", a->get("rotation"), 0, v)) {
-        p["rotation"] = point(v);
-        command("rotate_actor", p);
+        Value q = p;
+        q["rotation"] = point(v);
+        command("rotate_actor", q);
     }
     ImGui::TextUnformatted("Scale");
+    mark("scale");
     if (edit_point("##scale", a->get("scale"), 1, v)) {
-        p["scale"] = point(v);
-        command("scale_actor", p);
+        Value q = p;
+        q["scale"] = point(v);
+        command("scale_actor", q);
     }
-    const auto place = editor::query("read_state").get("result").get("link");
-    if (ImGui::Button("Move to Link") && place.get("valid").boolean) {
-        p["position"] = place.get("position");
-        command("move_actor", p);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Warp here")) {
-        Value w;
-        w["location"] = "actor:" + editor::query("read_state").get("result").get("open_mod").string() + ":" + U.actor;
-        command("warp_to", w);
-    }
-    if (a->get("kind").string() == "mod") {
+    p.object.erase("position");
+    if (is_mod) {
         ImGui::TextUnformatted("Model");
+        mark("model");
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::BeginCombo("##model", a->get("model").string().c_str())) {
             for (const auto& md : m.get("models").array)
@@ -240,9 +518,10 @@ void actors_area(const Value& m) {
         double radius = 0, height = 0;
         const auto& col = a->get("collision");
         ImGui::TextUnformatted("Collision radius / height");
-        const bool r = edit_number("##radius", num(col, "radius", 30), radius);
+        mark("collision");
+        const bool r = edit_number("##radius", num(col, "radius", 30), radius, 120);
         ImGui::SameLine();
-        const bool h = edit_number("##height", num(col, "height", 100), height);
+        const bool h = edit_number("##height", num(col, "height", 100), height, 120);
         if (r || h) {
             Value c = col;
             if (r) c["radius"] = radius;
@@ -254,6 +533,7 @@ void actors_area(const Value& m) {
         }
         std::string anim;
         ImGui::TextUnformatted("Animation (skinned models)");
+        mark("animation");
         if (edit_text("##animation", a->get("animation").string(), anim, 32)) {
             Value s = p;
             s["property"] = "animation";
@@ -261,24 +541,17 @@ void actors_area(const Value& m) {
             command("set_actor", s);
         }
     }
-    // the phase-specific flags and links (drops, combat and carry settings stay in the manifest text)
     if (is_enemy(actor) || combat) edit_property(p, *a, "Defeated flag (set when it is beaten)", "defeated_flag");
     if (is_prop(actor) || (carry && a->get("carry").get("break_on_impact").boolean)) edit_property(p, *a, "Broken flag (set when it breaks)", "broken_flag");
     if (is_prop(actor)) edit_property(p, *a, "Texture (a PNG in textures/ or assets/, empty: the game's)", "texture", 120);
     if (actor == "switch") edit_property(p, *a, "Switch flag (set when pressed)", "switch_flag");
     if (actor == "door") edit_property(p, *a, "Switch (the id of the switch that opens it)", "switch");
-    if (a->get("drops").type == Value::Array) {
-        std::string d;
-        for (const auto& drop : a->get("drops").array) d += (d.empty() ? "" : ", ") + drop.get("item").string() + " x" + std::to_string(int(num(drop, "quantity", 1)));
-        muted("Drops: " + (d.empty() ? std::string("none") : d));
-    }
-    // dialogue and the generic flag: only kinds that talk or are opened
+    if (is_enemy(actor) || is_prop(actor) || combat || (carry && a->get("carry").get("break_on_impact").boolean)) drops_form(m, *a, p);
     const bool talks = actor == "sign" || actor == "chest" || actor == "resident" || (is_mod && !combat && !carry);
-    if (!talks) {
-        ImGui::EndChild();
-        return;
-    }
-    ImGui::TextUnformatted("Dialogue (up to three lines)");
+    if (!talks) return;
+    ImGui::Separator();
+    ImGui::TextColored(kHead, "Dialogue (up to three lines)");
+    mark("lines");
     auto lines = lines_of(a->get("lines"));
     lines.resize(3);
     for (int i = 0; i < 3; i++) {
@@ -287,42 +560,78 @@ void actors_area(const Value& m) {
         std::snprintf(label, sizeof label, "##line%d", i);
         if (edit_text(label, lines[size_t(i)], t)) {
             lines[size_t(i)] = t;
-            Value l;
-            l.type = Value::Array;
+            Value l = list();
             for (const auto& s : lines)
                 if (!s.empty()) l.array.push_back(Value(s));
-            p["lines"] = l;
-            command("set_dialogue", p);
+            Value q = p;
+            q["lines"] = l;
+            command("set_dialogue", q);
         }
     }
-    std::string flag;
-    ImGui::TextUnformatted("Flag (set when talked to or opened)");
-    if (edit_text("##flag", a->get("flag").string(), flag, 32)) {
-        Value s = p;
-        s["property"] = "flag";
-        s["value"] = flag.empty() ? Value() : Value(flag);
-        command("set_actor", s);
+    if (ImGui::SmallButton("Preview in the game")) command("preview_dialogue", p);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Close preview")) {
+        Value q;
+        q["close"] = true;
+        command("preview_dialogue", q);
     }
-    ImGui::EndChild();
+    edit_property(p, *a, "Flag (set when talked to or opened)", "flag");
+    then_form(m, *a, p);
 }
 
 void models_area(const Value& m) {
-    const Value r = editor::query("list_models").get("result");
-    if (r.array.empty()) muted("This mod has no models of its own.");
-    for (const auto& md : r.array) {
+    for (const auto& md : m.get("models").array) {
         ImGui::TextColored(kHead, "%s", md.get("id").string().c_str());
         ImGui::SameLine();
         muted(md.get("kind").string("static") + ", " + md.get("source").string());
         std::string users;
-        for (const auto& u : md.get("used_by").array) users += (users.empty() ? "" : ", ") + u.string();
+        for (const auto& a : m.get("actors").array)
+            if (a.get("model") == md.get("id")) users += (users.empty() ? "" : ", ") + a.get("id").string();
         ImGui::Indent();
-        muted(users.empty() ? "not used by an actor (prepared when an actor uses it and the game starts)" : "used by " + users);
+        muted(users.empty() ? "not used by an actor yet" : "used by " + users);
         ImGui::Unindent();
     }
-    (void)m;
+    if (m.get("models").array.empty()) muted("This mod has no models of its own yet.");
     ImGui::Spacing();
-    muted("Models are prepared when the game starts: a model added to the package shows after a restart. "
-          "Choosing another prepared model for an actor shows at once.");
+    import_area();
+}
+
+void import_area() {
+    ImGui::TextColored(kHead, "Import a model (.glb)");
+    ImGui::SetNextItemWidth(-90);
+    text_entry::field("##import_path", U.import_path, sizeof U.import_path, 0, "a .glb file");
+    ImGui::SameLine();
+    if (ImGui::Button("Choose...##import"))
+        hostui::choose_file("Choose a model (.glb)", "glb", false, [](std::string path) {
+            std::lock_guard<std::mutex> lk(g_pick_mu);
+            g_picked = path;
+            g_picked_for = 1;
+        });
+    if (U.import_path[0] && U.import_checked != U.import_path) {
+        U.import_checked = U.import_path;
+        Value p;
+        p["file"] = std::string(U.import_path);
+        command("check_model", p, [](const Value& r) { U.import_info = r; });
+    }
+    const Value& r = U.import_info;
+    if (U.import_path[0] && r.type == Value::Object) {
+        if (!r.get("ok").boolean) wrapped(kBad, r.get("error").string());
+        else {
+            const Value& i = r.get("result");
+            std::string clips;
+            for (const auto& c : i.get("clips").array) clips += (clips.empty() ? "" : ", ") + c.string();
+            ImGui::TextColored(kGood, "%s model: %.0f KB, %d vertices, %d triangles, texture %s, %d bones", i.get("kind").string().c_str(),
+                               num(i, "size") / 1024, int(num(i, "vertices")), int(num(i, "triangles")), i.get("texture").string().c_str(),
+                               int(num(i, "bones")));
+            if (!clips.empty()) muted("clips: " + clips);
+            if (ImGui::Button("Import into the package")) {
+                Value p;
+                p["file"] = std::string(U.import_path);
+                command("import_model", p);
+            }
+            muted("The file is copied into the mod's models folder; the model is prepared for the game while you work.");
+        }
+    }
 }
 
 void scenes_area(const Value& m) {
@@ -344,8 +653,7 @@ void scenes_area(const Value& m) {
     static std::vector<char> buf;
     buf.assign(U.json_scene.begin(), U.json_scene.end());
     buf.resize(U.json_scene.size() + 4096, 0);
-    if (ImGui::InputTextMultiline("##steps", buf.data(), buf.size(), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 12)))
-        U.json_scene = buf.data();
+    if (ImGui::InputTextMultiline("##steps", buf.data(), buf.size(), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 12))) U.json_scene = buf.data();
     if (ImGui::Button("Apply steps")) {
         try {
             Value p;
@@ -413,11 +721,11 @@ void quests_area(const Value& m) {
 }
 
 void warp_area() {
-    const Value state = editor::query("read_state").get("result");
+    const Value& state = snapshot().state;
     const auto& link = state.get("link");
     if (link.get("valid").boolean)
-        ImGui::Text("Link: %s room %d at %.0f %.0f %.0f", link.get("stage").string().c_str(), int(num(link, "room")),
-                    num(link.get("position"), "x"), num(link.get("position"), "y"), num(link.get("position"), "z"));
+        ImGui::Text("Link: %s room %d at %.0f %.0f %.0f", link.get("stage").string().c_str(), int(num(link, "room")), num(link.get("position"), "x"),
+                    num(link.get("position"), "y"), num(link.get("position"), "z"));
     if (state.get("busy").type == Value::String) wrapped(kBad, "No warps now: " + state.get("busy").text + ".");
     ImGui::BeginDisabled(!state.get("last_place").get("valid").boolean);
     if (ImGui::Button("Back to last position")) command("warp_back");
@@ -425,12 +733,11 @@ void warp_area() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
     text_entry::field("##warp_filter", U.filter, sizeof U.filter, 0, "Filter");
-    const Value list = editor::query("list_locations").get("result");
     std::string filter = U.filter;
     for (auto& ch : filter) ch = char(std::tolower((unsigned char)ch));
     for (const char* group : {"Quest", "Islands", "Rooms"}) {
         if (!ImGui::CollapsingHeader(group, std::strcmp(group, "Quest") == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) continue;
-        for (const auto& l : list.array) {
+        for (const auto& l : snapshot().locations.array) {
             if (l.get("group").string() != group) continue;
             std::string label = l.get("label").string();
             std::string low = label;
@@ -446,33 +753,19 @@ void warp_area() {
 }
 
 void camera_test_area() {
-    const Value state = editor::query("read_state").get("result");
+    const Value& state = snapshot().state;
     const auto& fly = state.get("fly");
-    ImGui::TextColored(kHead, "Fly camera");
-    if (!fly.get("on").boolean) {
-        if (ImGui::Button("Start fly camera")) {
-            Value p;
-            p["on"] = true;
-            command("fly_camera", p);
-        }
-        muted("Link stays where he is and gets no input. Fly with W A S D (left stick), E / Q (R / L) up and down, "
-              "the arrow keys or the right stick to look, the mouse when the mouse camera holds it, Shift (ZL) faster, "
-              "C (ZR) slower, the wheel for the speed. B (J) ends it, A (K or Space) ends it with Link at the camera.");
-    } else {
-        ImGui::Text("Camera at %.0f %.0f %.0f, speed %.0f", num(fly.get("position"), "x"), num(fly.get("position"), "y"),
-                    num(fly.get("position"), "z"), num(fly, "speed"));
-        Value p;
-        p["on"] = false;
-        if (ImGui::Button("Stop")) command("fly_camera", p);
-        ImGui::SameLine();
-        p["place_link"] = true;
-        if (ImGui::Button("Stop and place Link here")) command("fly_camera", p);
-    }
+    ImGui::TextColored(kHead, "Editor camera");
+    if (fly.get("on").boolean)
+        ImGui::Text("at %.0f %.0f %.0f, speed %.0f", num(fly.get("position"), "x"), num(fly.get("position"), "y"), num(fly.get("position"), "z"),
+                    num(fly, "speed"));
+    muted("Fly with W A S D (left stick), E / Q (R / L) up and down, the right mouse button held or the arrow keys "
+          "(right stick) to look, Shift (ZL) faster, C (ZR) slower, the wheel for the speed. Tab, or the View button, "
+          "plays as Link and back.");
     ImGui::Spacing();
     ImGui::TextColored(kHead, "Room");
     if (ImGui::Button("Reload room")) command("reload_room");
-    muted("Leaves the room and enters it again where Link stands: every actor is created again. Needed when an actor "
-          "could not be created (for example a model over the room's memory budget).");
+    muted("Leaves the room and enters it again where Link stands: every actor is created again.");
     ImGui::Spacing();
     ImGui::TextColored(kHead, "Test mode");
     const bool test = state.get("test_mode").boolean;
@@ -483,7 +776,7 @@ void camera_test_area() {
         command("test_mode", p);
     }
     muted("While it is on, saving in the game writes a separate test save, never your own. Turning it off goes back to "
-          "your progress and place from before the test.");
+          "your progress and place from before the test. Play turns it on.");
     ImGui::BeginDisabled(!test);
     if (ImGui::Button("Reset this mod's quest...")) ImGui::OpenPopup("Reset quest?");
     for (int slot = 1; slot <= editor::kTestSlots; slot++) {
@@ -497,158 +790,188 @@ void camera_test_area() {
         if (ImGui::Button(label)) command("load_state", p);
     }
     ImGui::EndDisabled();
-    if (ImGui::BeginPopupModal("Reset quest?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("Erase this mod's quest progress and flags from the loaded Quest Log?");
-        muted("Only the open mod's own records change; other mods and the game's own progress stay as they are.");
-        if (ImGui::Button("Reset")) {
-            Value p;
-            p["confirm"] = true;
-            command("reset_quest", p);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+    if (confirm_popup("Reset quest?", "Erase this mod's quest progress and flags from the loaded Quest Log?\n"
+                                      "Only the open mod's own records change.",
+                      "Reset")) {
+        Value p;
+        p["confirm"] = true;
+        command("reset_quest", p);
     }
 }
 
 void log_area() {
-    editor::with_session([](editor::Session& s) {
-        const auto& log = s.log();
-        for (size_t i = log.size(); i-- > 0;) {
-            const auto& e = log[i];
-            const bool ok = e.result.get("ok").boolean;
-            ImGui::PushID(int(e.seq));
-            if (ImGui::TreeNode("entry", "%llu  %s  %s", (unsigned long long)e.seq, e.command.c_str(), ok ? "ok" : e.result.get("error").string().c_str())) {
-                ImGui::TextWrapped("params: %s", mods::json::dump(e.params).c_str());
-                ImGui::TextWrapped("result: %s", mods::json::dump(e.result).substr(0, 4000).c_str());
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
+    const auto& log = snapshot().log;
+    for (size_t i = log.size(); i-- > 0;) {
+        const auto& e = log[i];
+        const bool ok = e.result.get("ok").boolean;
+        ImGui::PushID(int(e.seq));
+        if (ImGui::TreeNode("entry", "%llu  %s  %s", (unsigned long long)e.seq, e.command.c_str(), ok ? "ok" : e.result.get("error").string().c_str())) {
+            ImGui::TextWrapped("params: %s", mods::json::dump(e.params).c_str());
+            ImGui::TextWrapped("result: %s", mods::json::dump(e.result).substr(0, 4000).c_str());
+            ImGui::TreePop();
         }
-    });
+        ImGui::PopID();
+    }
 }
 
-bool fly_wanted(std::string&) { return editor::fly_view().on; }
-bool fly_hud(float w, float h) {
-    const auto v = editor::fly_view();
-    ImGui::SetNextWindowPos(ImVec2(12, h - 12), ImGuiCond_Always, ImVec2(0, 1));
-    ImGui::SetNextWindowBgAlpha(0.55f);
-    ImGui::Begin("##fly_hud", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::Text("Fly camera  %s  (Link in room %d)", v.stage.c_str(), v.room);
-    ImGui::Text("%.0f  %.0f  %.0f   speed %.0f", v.eye[0], v.eye[1], v.eye[2], v.speed);
-    ImGui::TextColored(kMuted, "WASD move  E/Q up/down  arrows/mouse look  Shift faster  J (B) back  K (A) Link here");
-    ImGui::End();
-    (void)w;
-    return false;
-}
-}  // namespace
-
-void register_tab() {
-    overlay::ext::Tab tab{"editor", "Editor", [] { draw(); }, nullptr};
-    tab.shown = [] { return editor::enabled(); };
-    overlay::ext::add_tab(std::move(tab), "about");
-    overlay::ext::add_frame_layer({fly_wanted, fly_hud});
-}
-
-void draw() {
-    // test aids: WWHD_TEST_EDITOR_AREA=<0..6> and WWHD_TEST_EDITOR_ACTOR=<id> preselect (screenshots)
-    static bool test_aids = [] {
-        if (const char* a = std::getenv("WWHD_TEST_EDITOR_AREA")) U.select_area = std::atoi(a);
-        if (const char* a = std::getenv("WWHD_TEST_EDITOR_ACTOR")) U.actor = a;
-        return true;
-    }();
-    (void)test_aids;
-    if (!editor::enabled()) return;  // the tab exists only in the editor launch mode
-    // the open mod, undo / redo, validate, save
-    std::vector<std::string> mods;
-    std::string open;
-    bool dirty = false;
-    std::string undo, redo;
-    editor::with_session([&](editor::Session& s) {
-        mods = s.mods();
-        open = s.open_mod();
-        dirty = s.dirty(open);
-        undo = s.undo_label();
-        redo = s.redo_label();
-    });
-    if (mods.empty()) {
-        wrapped(kMuted, "None of the active mods places actors, has models, scenes or quests. Turn on a mod that does "
-                        "(for example the SDK v3 examples) and start the game again.");
+void problems_area() {
+    if (ImGui::Button("Check the package"))
+        command("check_package", Value(), [](const Value& r) {
+            if (!r.get("ok").boolean) return;
+            U.problems = r.get("result").get("problems");
+            U.message_ok = U.problems.array.empty();
+            U.message = U.message_ok ? "No problems: the package is valid." : std::to_string(U.problems.array.size()) + " problem(s)";
+        });
+    if (U.problems.type != Value::Array) {
+        muted("Checks every actor, model, scene and quest as the mod manager does.");
         return;
     }
-    ImGui::SetNextItemWidth(220);
-    if (ImGui::BeginCombo("##mod", open.c_str())) {
-        for (const auto& m : mods)
-            if (ImGui::Selectable(m.c_str(), m == open)) {
+    if (U.problems.array.empty()) ImGui::TextColored(kGood, "No problems.");
+    for (size_t i = 0; i < U.problems.array.size(); i++) {
+        const auto& pr = U.problems.array[i];
+        const std::string what = pr.get("kind").string() + (pr.get("id").type == Value::String ? " " + pr.get("id").text : std::string());
+        ImGui::PushID(int(i));
+        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        if (ImGui::Selectable((what + ": " + pr.get("message").string()).c_str())) {
+            // jump: select the actor and look at it, and mark the field
+            if (pr.get("kind").string() == "actor") {
+                U.actor = pr.get("id").string();
+                U.field = pr.get("field").string();
+                U.field_shown = false;
+                U.select_area = 0;
+                Value p;
+                p["id"] = U.actor;
+                command("focus", p);
+                editor_shell::show_inspector();
+            } else if (pr.get("kind").string() == "scene") {
+                U.scene = pr.get("id").string();
+                U.select_area = 2;
+            } else if (pr.get("kind").string() == "quest") {
+                U.quest = pr.get("id").string();
+                U.select_area = 3;
+            } else if (pr.get("kind").string() == "model")
+                U.select_area = 1;
+        }
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+    }
+}
+
+void export_area() {
+    ImGui::TextColored(kHead, "Export the package");
+    muted("Checks the mod, then writes its manifest and its own files (models, textures, assets) into a new or "
+          "empty folder. Game files are never included.");
+    ImGui::SetNextItemWidth(-90);
+    text_entry::field("##export_path", U.export_path, sizeof U.export_path, 0, "a new folder");
+    ImGui::SameLine();
+    if (ImGui::Button("Choose...##export"))
+        hostui::choose_file("Choose a folder for the package", "", true, [](std::string path) {
+            std::lock_guard<std::mutex> lk(g_pick_mu);
+            g_picked = path + "/" + g_snap.open;
+            g_picked_for = 2;
+        });
+    ImGui::BeginDisabled(!U.export_path[0]);
+    if (ImGui::Button("Export...")) ImGui::OpenPopup("Export package?");
+    ImGui::EndDisabled();
+    if (confirm_popup("Export package?", std::string("Write the package into ") + U.export_path + "?", "Export")) {
+        Value p;
+        p["path"] = std::string(U.export_path);
+        p["confirm"] = true;
+        command("export_package", p, [](const Value& r) {
+            if (r.get("ok").boolean) U.message = "Exported " + std::to_string(r.get("result").get("files").array.size()) + " file(s) to " + U.export_path;
+            else  // the problems, listed
+                command("check_package", Value(), [](const Value& c) {
+                    if (c.get("ok").boolean) U.problems = c.get("result").get("problems");
+                });
+        });
+    }
+}
+
+void mod_bar() {
+    const Snapshot& s = snapshot();
+    ImGui::SetNextItemWidth(200);
+    if (ImGui::BeginCombo("##mod", s.open.empty() ? "(no mod)" : s.open.c_str())) {
+        for (const auto& m : s.mods)
+            if (ImGui::Selectable(m.c_str(), m == s.open)) {
                 Value p;
                 p["mod"] = m;
                 command("open_mod", p);
                 U.actor.clear(), U.scene.clear(), U.quest.clear();
+                U.problems = Value();
             }
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(undo.empty());
+    ImGui::BeginDisabled(s.undo.empty());
     if (ImGui::Button("Undo")) command("undo");
-    if (!undo.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Undo: %s", undo.c_str());
+    if (!s.undo.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Undo: %s", s.undo.c_str());
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(redo.empty());
+    ImGui::BeginDisabled(s.redo.empty());
     if (ImGui::Button("Redo")) command("redo");
-    if (!redo.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Redo: %s", redo.c_str());
+    if (!s.redo.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Redo: %s", s.redo.c_str());
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Check")) {
-        const Value r = command("validate");
-        if (r.get("ok").boolean) {
-            U.message_ok = r.get("result").get("valid").boolean;
-            U.message = U.message_ok ? "The package is valid." : r.get("result").get("problem").string();
-        }
-    }
+    if (ImGui::Button("Check"))
+        command("check_package", Value(), [](const Value& r) {
+            if (!r.get("ok").boolean) return;
+            U.problems = r.get("result").get("problems");
+            U.message_ok = U.problems.array.empty();
+            U.message = U.message_ok ? "No problems: the package is valid." : std::to_string(U.problems.array.size()) + " problem(s): see Problems";
+            if (!U.message_ok) editor_shell::show_problems();
+        });
     ImGui::SameLine();
-    ImGui::BeginDisabled(!dirty);
-    if (ImGui::Button("Save package...")) ImGui::OpenPopup("Save package?");
+    ImGui::BeginDisabled(!s.dirty);
+    if (ImGui::Button("Save...")) ImGui::OpenPopup("Save package?");
     ImGui::SameLine();
     if (ImGui::Button("Revert...")) ImGui::OpenPopup("Revert changes?");
     ImGui::EndDisabled();
-    if (ImGui::BeginPopupModal("Save package?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Replace manifest.json of %s with the edited version?", open.c_str());
-        muted("Only that file changes. The fields are written in alphabetical order.");
-        if (ImGui::Button("Save")) {
-            Value p;
-            p["confirm"] = true;
-            command("save_package", p);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+    if (confirm_popup("Save package?", "Replace manifest.json of " + s.open + " with the edited version?\nOnly that file changes.", "Save")) {
+        Value p;
+        p["confirm"] = true;
+        command("save_package", p);
     }
-    if (ImGui::BeginPopupModal("Revert changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Forget the unsaved changes to %s?", open.c_str());
-        muted("Undo brings them back.");
-        if (ImGui::Button("Revert")) {
-            Value p;
-            p["confirm"] = true;
-            command("revert_package", p);
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+    if (confirm_popup("Revert changes?", "Forget the unsaved changes to " + s.open + "? Undo brings them back.", "Revert")) {
+        Value p;
+        p["confirm"] = true;
+        command("revert_package", p);
     }
-    if (dirty) {
+    if (s.dirty) {
         ImGui::SameLine();
         ImGui::TextColored(kHead, "unsaved");
     }
+}
+
+// ---------------------------------------------------------------- the Editor tab
+void register_tab() {
+    overlay::ext::Tab tab{"editor", "Editor", [] { draw(); }, nullptr};
+    tab.shown = [] { return editor::enabled(); };
+    overlay::ext::add_tab(std::move(tab), "about");
+    editor_shell::register_layers();
+}
+
+void draw() {
+    // test aids: WWHD_TEST_EDITOR_AREA=<0..8> and WWHD_TEST_EDITOR_ACTOR=<id> preselect (screenshots)
+    static bool test_aids = [] {
+        if (const char* a = std::getenv("WWHD_TEST_EDITOR_AREA")) U.select_area = std::atoi(a);
+        if (const char* a = std::getenv("WWHD_TEST_EDITOR_ACTOR")) U.actor = a;
+        if (const char* a = std::getenv("WWHD_TEST_EDITOR_FIELD")) U.field = a;
+        return true;
+    }();
+    (void)test_aids;
+    if (!editor::enabled()) return;  // the tab exists only in the editor launch mode
+    refresh();
+    const Snapshot& s = snapshot();
+    if (s.valid && s.mods.empty()) {
+        wrapped(kMuted, "None of the active mods places actors, has models, scenes or quests. Turn on a mod that does "
+                        "(for example the SDK v3 examples) and start the game again.");
+        return;
+    }
+    mod_bar();
     const std::string status = editor::status();
     if (!U.message.empty()) wrapped(U.message_ok ? kGood : kBad, U.message);
     if (!status.empty()) wrapped(kMuted, status);
-
-    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Warp", "Camera & test", "Log"};
+    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Warp", "Camera & test", "Problems", "Export", "Log"};
     if (ImGui::BeginTabBar("editor_areas", ImGuiTabBarFlags_FittingPolicyShrink)) {
         for (int i = 0; i < int(sizeof kAreas / sizeof kAreas[0]); i++) {
             const ImGuiTabItemFlags f = U.select_area == i ? ImGuiTabItemFlags_SetSelected : 0;
@@ -660,15 +983,27 @@ void draw() {
         U.select_area = -1;
         ImGui::EndTabBar();
     }
-    const Value m = manifest_copy();
+    const Value& m = s.manifest;
     ImGui::BeginChild("editor_area", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
     switch (U.area) {
-    case 0: actors_area(m); break;
+    case 0: {
+        const float list_w = std::min(260.0f, ImGui::GetContentRegionAvail().x * 0.35f);
+        ImGui::BeginChild("actor_list", ImVec2(list_w, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
+        actor_list(m);
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("actor_props", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+        actor_inspector(m);
+        ImGui::EndChild();
+        break;
+    }
     case 1: models_area(m); break;
     case 2: scenes_area(m); break;
     case 3: quests_area(m); break;
     case 4: warp_area(); break;
     case 5: camera_test_area(); break;
+    case 6: problems_area(); break;
+    case 7: export_area(); break;
     default: log_area(); break;
     }
     ImGui::EndChild();

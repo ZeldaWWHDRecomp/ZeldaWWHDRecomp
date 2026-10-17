@@ -502,7 +502,7 @@ static void create_windows() {
         static bool hidden = false;
         NSPoint p = [NSEvent mouseLocation];
         if (!NSEqualPoints(p, last)) { last = p; moved = display_now(); hidden = false; }
-        if (!hidden && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() && !overlay::is_open() &&
+        if (!hidden && NSApp.active && g_tv_window.keyWindow && !mods::mouse_captured() && !overlay::is_open() && !overlay::pointer_layer_active() &&
             display_now() - moved > 2.0) {
             [NSCursor setHiddenUntilMouseMoves:YES];
             hidden = true;

@@ -108,6 +108,19 @@ struct FrameLayer {
 };
 void add_frame_layer(FrameLayer layer);
 
+// Overlays drawn by a frame layer that people work with by mouse and keyboard while the settings menu is
+// closed (the world editor's). Both callbacks are optional and cheap; null mode: no such layer.
+struct InputLayer {
+    // any thread: 0 off; 1 the overlays own the mouse (every click, the wheel and the keys go to Dear
+    // ImGui; keys still reach the game unless a text field has them); 2 only where an overlay window is
+    // under the pointer (a small button over the running game)
+    std::function<int()> mode;
+    // input thread, before the game sees a key (and before Dear ImGui): true takes it. `typing`: a text
+    // field of the overlays has the keyboard.
+    std::function<bool(int code, bool down, bool repeat, bool typing)> key;
+};
+void set_input_layer(InputLayer layer);
+
 // ---------------------------------------------------------------- read by the overlay (and the tests)
 // Each call seals the registry (see the top of this file).
 struct ShownTab {
@@ -134,6 +147,7 @@ const std::vector<Shortcut>& shortcuts();
 bool poll_shortcuts(PadValues& pad, bool menu_open);
 const TextInput& text_input();
 const std::vector<FrameLayer>& frame_layers();
+const InputLayer& input_layer();
 void seal();
 bool sealed();
 

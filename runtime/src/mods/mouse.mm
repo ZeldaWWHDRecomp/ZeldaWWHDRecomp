@@ -92,7 +92,7 @@ void mouse_init(void* tv_window) {
                        NSEventMaskOtherMouseDragged | NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp |
                        NSEventMaskRightMouseDown | NSEventMaskRightMouseUp | NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
-        const bool eligible = in_tv(e) && mouse_captured() && !overlay::captures() &&
+        const bool eligible = in_tv(e) && mouse_captured() && !overlay::captures() && !overlay::layer_takes_pointer() &&
             !gfx::drc_overlay_hit((__bridge void*)g_tv, e.locationInWindow.x, e.locationInWindow.y);
         if (e.type == NSEventTypeLeftMouseDown || e.type == NSEventTypeRightMouseDown || e.type == NSEventTypeOtherMouseDown ||
             e.type == NSEventTypeLeftMouseUp || e.type == NSEventTypeRightMouseUp || e.type == NSEventTypeOtherMouseUp) {
@@ -103,7 +103,7 @@ void mouse_init(void* tv_window) {
             float dy = (float)e.scrollingDeltaY; if (e.hasPreciseScrollingDeltas) dy /= 10.f;
             input::mouse_binding_wheel(dy, eligible && !first_person_wheel());
         }
-        if (overlay::captures()) return e;  // the settings overlay (or the text prompt) has the mouse (gfx/overlay_appkit.mm)
+        if (overlay::captures() || overlay::layer_takes_pointer()) return e;  // the settings overlay, the text prompt or the editor's overlays have the mouse (gfx/overlay_appkit.mm)
         if (e.type == NSEventTypeScrollWheel) {
             if (first_person_wheel() && (in_tv(e) || mouse_captured())) {
                 // a wheel notch is about 1 line; trackpads send many small precise deltas

@@ -38,6 +38,25 @@ namespace hostui {
 void post(std::function<void()> fn) {
     dispatch_async(dispatch_get_main_queue(), ^{ fn(); });
 }
+void choose_file(const char* title, const char* extension, bool folder, std::function<void(std::string)> chosen) {
+    NSString* t = [NSString stringWithUTF8String:title ? title : ""];
+    NSString* ext = extension && *extension ? [NSString stringWithUTF8String:extension] : nil;
+    post([t, ext, folder, chosen] {
+        NSOpenPanel* panel = [NSOpenPanel openPanel];
+        panel.title = t;
+        if (ext && !folder) {
+            UTType* type = [UTType typeWithFilenameExtension:ext];
+            if (type) panel.allowedContentTypes = @[type];
+        }
+        panel.canChooseDirectories = folder;
+        panel.canCreateDirectories = folder;
+        panel.canChooseFiles = !folder;
+        panel.allowsMultipleSelection = NO;
+        [panel beginWithCompletionHandler:^(NSModalResponse result) {
+            if (result == NSModalResponseOK) chosen(std::string(panel.URL.path.UTF8String));
+        }];
+    });
+}
 void choose_mod_source(bool folder, std::function<void(std::string)> chosen) {
     post([folder, chosen] {
         NSOpenPanel* panel = [NSOpenPanel openPanel];
@@ -140,7 +159,15 @@ void install_overlay_input() {
                        NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         if (e.window != tv) return e;
-        if (!overlay::captures()) {
+        if (!overlay::captures() && overlay::pointer_layer_active() && !overlay::layer_takes_pointer()) {
+            // the editor's small overlays over the running game: they follow the pointer, the game keeps the click
+            NSView* v = tv.contentView;
+            NSPoint p = [v convertPoint:e.locationInWindow fromView:nil];
+            NSSize sz = v.bounds.size;
+            if (sz.width > 0 && sz.height > 0 && p.y <= sz.height)
+                overlay::mouse_move((float)(p.x / sz.width), (float)(v.isFlipped ? p.y / sz.height : 1.0 - p.y / sz.height));
+        }
+        if (!overlay::captures() && !overlay::layer_takes_pointer()) {
             const bool down = e.type==NSEventTypeLeftMouseDown || e.type==NSEventTypeRightMouseDown || e.type==NSEventTypeOtherMouseDown;
             const bool up = e.type==NSEventTypeLeftMouseUp || e.type==NSEventTypeRightMouseUp || e.type==NSEventTypeOtherMouseUp;
             if ((down || up) && e.buttonNumber < 5 && overlay::pointer_shortcut(input_map::kMouse1+(int)e.buttonNumber,down)) return nil;

@@ -63,6 +63,42 @@ const std::vector<CommandInfo> kCommands = {
     {"save_state", "Test mode: saves a test state (the game's progress, Link's place and the open mod's flags).", {{"slot", "integer", "1..3", true}}},
     {"load_state", "Test mode: loads a test state.", {{"slot", "integer", "1..3", true}}},
     {"command_log", "The last commands with their parameters and results.", {{"count", "integer", "how many (default 20)"}}},
+    // building new content
+    {"list_actor_types", "The kinds of actor add_actor places, and which appear without a restart.", {}},
+    {"add_actor", "Places a new actor of the open mod at Link, at the fly camera or at a position (snapped to the ground).",
+     {{"type", "string", "a list_actor_types type: sign, resident, chest, pot, barrel, crate, switch, door, chuchu, bokoblin, moblin, keese, model, model_enemy, model_carry", true},
+      {"id", "string", "the new id (default: from the type)"}, {"at", "string", "link (default), camera or position"},
+      {"position", "point", "with at = position"}, {"stage", "string", "with at = position (default: Link's)"}, {"room", "integer", "with at = position (default: Link's or the sea square's)"},
+      {"angle", "number", "heading in degrees (default: facing like Link or the camera)"}, {"snap", "boolean", "onto the ground below (default true)"},
+      {"model", "string", "the model for model types"}, {"options", "object", "resident (uo2, um1, ym1), switch (a door's switch id), lines"}, {"mod", "string", ""}},
+     true},
+    {"remove_actor", "Removes a placed actor (an undo step).", {{"id", "string", "", true}, {"confirm", "boolean", "must be true", true}, {"mod", "string", ""}}, true, true},
+    {"duplicate_actor", "Copies a placed actor next to it under a new id, with flags of its own.",
+     {{"id", "string", "", true}, {"new_id", "string", "default: from the id"}, {"offset", "point", "default {x: 100, y: 0, z: 0}"}, {"mod", "string", ""}}, true},
+    {"place_actor", "Moves a placed actor to Link, the fly camera, the ground below it or a position, snapped to the ground.",
+     {{"id", "string", "", true}, {"at", "string", "link, camera, ground or position", true}, {"position", "point", "with at = position"},
+      {"snap", "boolean", "onto the ground (default true)"}, {"mod", "string", ""}},
+     true},
+    {"pick", "The first ground a ray meets (the game's collision), for placing by clicking into the picture.",
+     {{"origin", "point", "where the ray starts", true}, {"direction", "point", "its direction", true}, {"range", "number", "default 20000"}}},
+    {"ground", "The ground height below a point (the game's collision).", {{"position", "point", "", true}}},
+    {"set_then", "Sets what happens after an actor's dialogue: give / take an item, a quest step, a flag, a scene.",
+     {{"id", "string", "", true}, {"actions", "array", "[{action: give|take, id: item:<id>, count}, {action: quest_step, id, step}, {action: flag, id, value}, {action: scene, id}]", true}, {"mod", "string", ""}},
+     true},
+    {"set_drops", "Sets what an enemy or prop drops: up to eight of the mod's items.", {{"id", "string", "", true}, {"drops", "array", "[{item: item:<id>, quantity}]", true}, {"mod", "string", ""}}, true},
+    {"preview_dialogue", "Shows an actor's dialogue (or given lines) in the game's own message box; close hides it.",
+     {{"id", "string", "the actor"}, {"lines", "any", "lines instead of the actor's"}, {"close", "boolean", "hide the box"}, {"mod", "string", ""}}},
+    {"check_model", "Checks a .glb file for the game: size, triangles, texture, bones, clips and material.", {{"file", "string", "the .glb file", true}}},
+    {"import_model", "Copies a .glb file into the open mod's models folder, adds it to the package and prepares it for the game.",
+     {{"file", "string", "the .glb file", true}, {"id", "string", "the model's id (default: the file name)"}, {"confirm", "boolean", "replace a different file of the same name"}, {"mod", "string", ""}},
+     true},
+    {"check_package", "Every problem of the open mod's package, each with the actor, model, scene or quest it is about.", {{"mod", "string", ""}}},
+    {"export_package", "Checks the open mod and writes its package (manifest and its own files) into a new or empty folder.",
+     {{"path", "string", "the folder", true}, {"confirm", "boolean", "must be true", true}, {"mod", "string", ""}}, false, true},
+    {"focus", "Points the fly camera at a placed actor.", {{"id", "string", "", true}, {"mod", "string", ""}}},
+    {"play", "Play: the editor hides and Link plays (test mode on: saves go to the test save) from the camera's place or his own.",
+     {{"from", "string", "camera (default) or link"}, {"restore", "boolean", "Stop returns to the world as it was before Play (default true)"}}},
+    {"stop", "Stop: back to the editor's camera view (restoring the world from before Play when asked).", {}},
 };
 
 // ---------------------------------------------------------------- JSON helpers
@@ -927,6 +963,9 @@ Value Session::dispatch(const std::string& command, const Value& p, std::string&
         ok = true;
         return r;
     }
+    bool handled = false;
+    r = dispatch_build(command, p, why, ok, handled);
+    if (handled) return r;
     why = "command \"" + command + "\" is not implemented";
     return r;
 }

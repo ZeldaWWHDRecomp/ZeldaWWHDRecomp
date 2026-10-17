@@ -398,8 +398,15 @@ static void cam_trace(uint32_t cam, const char* what) {
         interp::pass_t(), what, s.eye[0], s.eye[1], s.eye[2], s.center[0], s.center[1], s.center[2]);
 }
 
+namespace editor { void camera_drawn(uint32_t camera); }  // editor/editor_game.cpp: the editor's overlays project with it
+static void camera_draw(Cpu* c);
 // camera_draw(camera_process_class*)
 extern "C" void hook_024FFC40(Cpu* c) {
+    const uint32_t cam = c->r[3];
+    camera_draw(c);
+    editor::camera_drawn(cam);
+}
+static void camera_draw(Cpu* c) {
     using namespace interp;
     uint32_t cam = c->r[3];
     mods::moon_jump_camera(cam);

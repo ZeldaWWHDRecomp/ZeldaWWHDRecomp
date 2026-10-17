@@ -7,6 +7,7 @@
 #include "story_enemy_projectiles.h"
 #include "native_actor_carry.h"
 #include "story_actor_identity.h"
+#include "actor_model_cache.h"
 #include "mod_actor_shadow_proof.h"
 #include "story_items.h"
 #include "story_notebook.h"
@@ -21,14 +22,16 @@
 #include <cstring>
 #include <cstdlib>
 #include <map>
+#include <set>
 
 namespace story_actors {
 static_assert(kPropsScratchOffset>=kModScratchOffset+mod_actor::kScratchBytes);
 static_assert(kIdentityScratchOffset>=kPropsScratchOffset+0x100);
 static_assert(kScratchBytes>=kIdentityScratchOffset+128*identity::kRecordBytes);
+std::function<void()> mod_talked(const std::string& mod,const std::string& id);
 namespace {
 using story_notebook::ManifestActor;
-struct Actor {std::string mod; ManifestActor spec; uint32_t process=0xFFFFFFFFu; bool deleting=false; uint32_t mod_token=0; bool restore_talk=false;uint32_t prop_token=0,switch_token=0,switch_source=0,enemy_token=0;story_items::EnemyMarkerHandle combat_marker{};story_items::PropMarkerHandle carry_marker=0;identity::Fingerprint fingerprint{};bool restore_quarantined=false;bool respawn=false;};
+struct Actor {std::string mod; ManifestActor spec; uint32_t process=0xFFFFFFFFu; bool deleting=false; uint32_t mod_token=0; bool restore_talk=false;uint32_t prop_token=0,switch_token=0,switch_source=0,enemy_token=0;story_items::EnemyMarkerHandle combat_marker{};story_items::PropMarkerHandle carry_marker=0;identity::Fingerprint fingerprint{};bool restore_quarantined=false;bool respawn=false;bool removed=false;};
 std::vector<Actor> g_actors;
 struct ModelResource {std::string archive;int index;story_notebook::WorldPoint minimum,maximum;bool skinned=false;std::vector<std::string> clips;mod_actor::ModelRig rig;};
 std::map<std::pair<std::string,std::string>,ModelResource> g_models;
@@ -36,7 +39,7 @@ std::map<uint16_t,std::pair<std::string,std::string>> g_flag_names;
 
 void(*g_original)(Cpu*,uint32_t)=nullptr;
 uint32_t(*g_call)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
-uint32_t g_scratch=0; bool g_installed=false;
+uint32_t g_scratch=0; bool g_installed=false,g_resident_hooks=false,g_ym1_hooks=false;
 std::function<bool(const std::string&,const std::string&)> g_scene;
 const uint32_t kRoom=GC(0x025C2E8C),kCreate=GC(0x025D5834),kSearch=GC(0x025D54C4),kSearchName=GC(0x025C109C);
 const uint32_t kPlay=GC(0x025200D4),kDelete=GC(0x025D57E0);
@@ -103,6 +106,7 @@ void bind_talk(Actor* a,uint32_t npc,bool terminal=false){
     else story_mail::say(kCarrier,&g_talk.text);talk_latch(a,terminal?2:1);
 }
 bool eligible(const Actor& a) {
+    if(a.removed)return false;  // removed by the world editor (deleted from the game, kept for undo)
     if(a.spec.combat_enabled&&story_items::enemy_defeated(a.combat_marker))return false;
     if(a.spec.carry_break_on_impact&&story_items::prop_broken(a.carry_marker))return false;
     if(!a.spec.quest.empty()&&story_notebook::state(a.mod,a.spec.quest)!=int32_t(a.spec.quest_step))return false;
@@ -318,10 +322,19 @@ bool check_specs(const std::string& mod,const std::vector<ManifestActor>& actors
     return true;
 }
 }
+// a mod actor's talk ended: its flag, then actions and talk scenes
+std::function<void()> mod_talked(const std::string& mod,const std::string& id){
+    return [mod,id](){
+        auto found=std::find_if(g_actors.begin(),g_actors.end(),[&](const Actor& a){return a.mod==mod&&a.spec.id==id;});if(found==g_actors.end())return;
+        if(!found->spec.flag.empty())set_flag(story_store::book(),mod,found->spec.flag);
+        actions(mod,found->spec.then);story_scenes::trigger("talk",mod,id);
+    };
+}
 bool load(const std::string& mod,const std::vector<ManifestActor>& actors,std::string& why) {return load(mod,actors,why,{});}
 bool load(const std::string& mod,const std::vector<ManifestActor>& actors,std::string& why,const std::vector<std::string>& scene_flags) {
     if(g_installed)return why="world actors require startup declaration",false;
     if(!check_specs(mod,actors,false,why))return false;
+    if(g_actors.capacity()<128)g_actors.reserve(128);  // the world editor adds actors later: their addresses stay put
     std::vector<std::string> flags=scene_flags;
     for(const auto& a:actors){if(!a.flag.empty())flags.push_back(a.flag);if(!a.switch_flag.empty())flags.push_back(a.switch_flag);for(const auto& action:a.then)if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);}
     std::vector<Actor> staged;staged.reserve(actors.size());g_actors.reserve(g_actors.size()+actors.size());
@@ -359,6 +372,17 @@ bool register_model(const std::string& mod,const std::string& model,const std::s
     const auto key=std::make_pair(mod,model);if(g_models.contains(key))return why="duplicate prepared actor model",false;
     for(const auto& entry:g_models)if(entry.second.archive==archive)return why="actor model archive identity collision",false;
     g_models.emplace(key,ModelResource{archive,index,minimum,maximum,skinned,std::move(clips),std::move(rig)});return true;
+}
+bool editor_register_model(const std::string& mod,const std::string& model,const std::string& archive,bool skinned,std::string& why){
+    if(g_models.contains({mod,model}))return true;
+    story_notebook::WorldPoint minimum,maximum;
+    if(!actor_model_cache::bounds_for(archive,minimum,maximum))return why="the prepared model has no bounds",false;
+    for(const auto& entry:g_models)if(entry.second.archive==archive)return why="actor model archive identity collision",false;
+    auto clips=actor_model_cache::clips_for(archive);auto rig=actor_model_cache::rig_for(archive);
+    if(rig.joint_names.size()!=rig.joint_parents.size()||rig.joint_names.size()>32||clips.size()>8||(!skinned&&(!clips.empty()||!rig.joint_names.empty())))return why="invalid prepared model rig or clips",false;
+    g_models.emplace(std::make_pair(mod,model),ModelResource{archive,1,minimum,maximum,skinned,std::move(clips),std::move(rig)});
+    LOG("[actors] %s:%s model prepared for the editor (%s)",mod.c_str(),model.c_str(),archive.c_str());
+    return true;
 }
 void set_game_calls(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){g_original=original;g_call=call;}
 void set_scratch_memory(uint32_t guest){g_scratch=guest;story_mail::set_say_restore_record(guest?guest+0x320:0,128);for(size_t i=0;i<g_actors.size();++i)st32(g_scratch+128+uint32_t(i)*4,0xFFFFFFFFu);std::memset(mem::ptr(g_scratch+0x300),0,28);std::memset(mem::ptr(g_scratch+0x400),0,256);std::memset(mem::ptr(g_scratch+kIdentityScratchOffset),0,128*identity::kRecordBytes);std::memset(mem::ptr(g_scratch+kEnemyProfilesScratchOffset),0,kScratchBytes-kEnemyProfilesScratchOffset);for(size_t i=0;i<g_actors.size();++i)if(g_actors[i].enemy_token)st32(g_scratch+kEnemyEpochScratchOffset+uint32_t(i)*4,1);}
@@ -517,7 +541,7 @@ uint32_t actor_address(Cpu* c,const std::string& mod,const std::string& id) {
 namespace {
 // Actors whose game-side state is declared once at start-up (native props, switches, doors and enemies,
 // mod enemies and carried props): their markers, reward/break sinks and saved identities follow the
-// declaration, so a changed spec takes effect after a restart.
+// declaration, so a new or changed one takes effect after a restart.
 const char* restart_kind(const ManifestActor& a){
     story_enemies::Kind enemy;
     if(enemy_kind(a,enemy))return "an enemy";
@@ -527,40 +551,83 @@ const char* restart_kind(const ManifestActor& a){
     if(a.kind=="mod"&&a.carry_enabled)return "a carried prop";
     return nullptr;
 }
+// Whether `a` can be created while the game runs: the hooks its kind needs are installed and a mod
+// model is prepared. `why` says what waits for a restart otherwise.
+bool live_capable(const std::string& mod,const ManifestActor& a,std::string& why){
+    if(const char* kind=restart_kind(a))return why=std::string(kind)+" appears after a restart",false;
+    if(!g_installed)return why="the game had no mod actors at start-up: new actors appear after a restart",false;
+    if(a.actor=="resident"&&!(a.resident==kYm1?g_ym1_hooks:g_resident_hooks))return why="the first resident of this kind appears after a restart",false;
+    if(a.kind=="mod"){
+        if(!mod_actor::live_ready())return why="the first mod model actor appears after a restart",false;
+        if(!g_models.contains({mod,a.model}))return why="model "+a.model+" is not prepared yet: it appears after a reload or restart",false;
+    }
+    return true;
+}
+bool same_spec(const std::string& mod,const ManifestActor& a,const ManifestActor& b){return identity::fingerprint(mod,a)==identity::fingerprint(mod,b);}
 }
 bool editor_restart_only(const ManifestActor& a){return restart_kind(a)!=nullptr;}
-bool editor_update(const std::string& mod,const std::vector<ManifestActor>& actors,const std::vector<std::string>& changed,std::string& why){
-    std::vector<Actor*> own;for(auto& a:g_actors)if(a.mod==mod)own.push_back(&a);
-    if(own.size()!=actors.size())return why="adding or removing actors takes effect when the game starts again (save the package, then restart)",false;
-    std::vector<Actor*> target;
+bool editor_live_capable(const std::string& mod,const ManifestActor& a,std::string& why){return live_capable(mod,a,why);}
+bool editor_update(const std::string& mod,const std::vector<ManifestActor>& actors,const std::vector<std::string>& changed,std::string& why,std::vector<std::string>* pending){
+    std::map<std::string,Actor*> own;for(auto& a:g_actors)if(a.mod==mod)own[a.spec.id]=&a;
+    struct Step {const ManifestActor* spec=nullptr;Actor* actor=nullptr;bool create=false,update=false;};
+    std::vector<Step> plan;std::vector<std::string> later;std::vector<Actor*> remove;
+    std::vector<ManifestActor> effective;  // what the game will have: checked like a start-up list
+    std::set<std::string> listed;
+    const auto is_changed=[&](const std::string& id){return std::find(changed.begin(),changed.end(),id)!=changed.end();};
     for(const auto& spec:actors){
-        auto it=std::find_if(own.begin(),own.end(),[&](Actor* a){return a->spec.id==spec.id;});
-        if(it==own.end())return why="actor "+spec.id+" is new: it appears when the game starts again",false;
-        if(((*it)->spec.kind=="mod")!=(spec.kind=="mod"))return why="actor "+spec.id+": changing between a game actor and a mod model takes effect when the game starts again",false;
-        if(std::find(changed.begin(),changed.end(),spec.id)!=changed.end()){
-            const char* kind=restart_kind((*it)->spec);if(!kind)kind=restart_kind(spec);
-            if(kind)return why="actor "+spec.id+" is "+kind+": the change takes effect after a restart (save the package, then restart)",false;
+        listed.insert(spec.id);
+        const auto it=own.find(spec.id);
+        std::string reason;
+        if(it==own.end()){
+            if(!live_capable(mod,spec,reason)){later.push_back(spec.id+": "+reason);continue;}
+            plan.push_back({&spec,nullptr,true,false});effective.push_back(spec);continue;
         }
-        target.push_back(*it);
+        Actor* a=it->second;
+        if(!a->removed&&!is_changed(spec.id)){effective.push_back(a->spec);continue;}
+        if(a->removed&&same_spec(mod,a->spec,spec)){plan.push_back({&spec,a,false,false});effective.push_back(spec);continue;}  // a removal undone
+        const char* kind=restart_kind(a->spec);if(!kind)kind=restart_kind(spec);
+        if(kind||(a->spec.kind=="mod")!=(spec.kind=="mod")||(spec.kind=="mod"&&!g_models.contains({mod,spec.model}))||
+           (spec.actor=="resident"&&!live_capable(mod,spec,reason))){
+            later.push_back(spec.id+": "+(kind?std::string(kind)+" takes changes after a restart":reason.empty()?std::string("takes this change after a restart"):reason));
+            if(!a->removed)effective.push_back(a->spec);
+            continue;
+        }
+        plan.push_back({&spec,a,false,true});effective.push_back(spec);
     }
-    // mod models: only prepared ones (a new model is prepared when the game starts)
-    for(const auto& spec:actors)if(spec.kind=="mod"&&!g_models.contains({mod,spec.model}))
-        return why="model "+spec.model+" is prepared when the game starts: save the package and restart to see it",false;
-    if(!check_specs(mod,actors,true,why))return false;
-    std::vector<std::string> flags;for(const auto& a:actors){if(!a.flag.empty())flags.push_back(a.flag);if(!a.switch_flag.empty())flags.push_back(a.switch_flag);for(const auto& action:a.then)if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);}
+    for(auto& [id,a]:own)if(!a->removed&&!listed.contains(id))remove.push_back(a);
+    size_t creates=0;for(const auto& step:plan)creates+=step.create;
+    if(g_actors.size()+creates>128)return why="more than 128 world actors in all",false;
+    if(!check_specs(mod,effective,true,why))return false;
+    std::vector<std::string> flags;for(const auto& a:effective){if(!a.flag.empty())flags.push_back(a.flag);if(!a.switch_flag.empty())flags.push_back(a.switch_flag);for(const auto& action:a.then)if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);}
     auto saved_flags=g_flag_names;if(!register_flags(mod,flags,why))return false;
     // check every changed mod model first, then apply: a refusal leaves all declarations unchanged
-    for(const bool apply:{false,true})for(size_t i=0;i<actors.size();++i){const auto& spec=actors[i];if(spec.kind!="mod")continue;
-        if(std::find(changed.begin(),changed.end(),spec.id)==changed.end())continue;
-        const auto& r=g_models.at({mod,spec.model});
-        if(!target[i]->mod_token||!mod_actor::redeclare(target[i]->mod_token,spec,r.archive,r.index,r.minimum,r.maximum,r.skinned,r.clips,r.rig,apply)){
-            g_flag_names=saved_flags;return why="actor "+spec.id+": the model can't serve this spec (animation, look_at, rotation or scale)",false;}
+    for(const bool apply:{false,true})for(const auto& step:plan){if(!step.update||step.spec->kind!="mod")continue;
+        const auto& r=g_models.at({mod,step.spec->model});
+        if(!step.actor->mod_token||!mod_actor::redeclare(step.actor->mod_token,*step.spec,r.archive,r.index,r.minimum,r.maximum,r.skinned,r.clips,r.rig,apply)){
+            g_flag_names=saved_flags;return why="actor "+step.spec->id+": the model can't serve this spec (animation, look_at, rotation or scale)",false;}
     }
-    for(size_t i=0;i<actors.size();++i){
-        if(std::find(changed.begin(),changed.end(),actors[i].id)==changed.end())continue;
-        target[i]->spec=actors[i];target[i]->respawn=true;
-        LOG("[actors] %s:%s changed by the editor",mod.c_str(),actors[i].id.c_str());
+    for(const auto& step:plan){
+        if(step.create){
+            Actor added{mod,*step.spec};
+            if(step.spec->kind=="mod"){
+                const auto& r=g_models.at({mod,step.spec->model});
+                added.mod_token=mod_actor::declare(mod,added.spec,r.archive,r.index,mod_talked(mod,added.spec.id),r.minimum,r.maximum,r.skinned,r.clips,r.rig);
+                if(!added.mod_token){LOG("[actors] %s:%s: the model can't serve this spec; it appears after a restart",mod.c_str(),added.spec.id.c_str());later.push_back(added.spec.id+": the model can't serve this spec");continue;}
+            }
+            g_actors.push_back(std::move(added));
+            const uint32_t i=uint32_t(g_actors.size()-1);
+            if(g_scratch){st32(g_scratch+128+i*4,0xFFFFFFFFu);st8(g_scratch+kTalkLatchOffset+i,0);std::memset(mem::ptr(g_scratch+kIdentityScratchOffset+i*identity::kRecordBytes),0,identity::kRecordBytes);}
+            LOG("[actors] %s:%s added by the editor",mod.c_str(),g_actors.back().spec.id.c_str());
+            continue;
+        }
+        Actor* a=step.actor;
+        const bool was_removed=a->removed;
+        a->removed=false;
+        if(step.update){a->spec=*step.spec;a->respawn=true;}
+        LOG("[actors] %s:%s %s by the editor",mod.c_str(),a->spec.id.c_str(),was_removed?"restored":"changed");
     }
+    for(Actor* a:remove){a->removed=true;a->respawn=false;LOG("[actors] %s:%s removed by the editor",mod.c_str(),a->spec.id.c_str());}
+    if(pending)*pending=std::move(later);
     return true;
 }
 unsigned editor_pending(){unsigned n=0;for(const auto& a:g_actors)n+=a.respawn;return n;}
@@ -651,10 +718,12 @@ void install(const std::function<std::string(uint32_t)>& replaced_by,const std::
             {kPhotoActor,photo_actor},{kPhotoPosition,photo_position},{kPhotoSnapshot,photo_snapshot},
             {kNamedCandidate,named_candidate},{kStaffCandidate,staff_candidate},{kExtraOn,extra_on},{kExtraOff,extra_off},{kStaffId,staff_id}};
         hooks.insert(hooks.end(),std::begin(resident_hooks),std::end(resident_hooks));
+        g_resident_hooks=true;
     }
     if(std::any_of(g_actors.begin(),g_actors.end(),[](const Actor& a){return a.spec.actor=="resident"&&a.spec.resident==kYm1;})){
         const std::pair<uint32_t,void(*)(Cpu*)> seated_hooks[]={{kYm1Init,ym1_init},{kYm1Msg,ym1_message},{kYm1Next,ym1_next},{kYm1Talk,ym1_talk},{kYm1Execute,ym1_execute},{kYm1Delete,ym1_delete},{kYm1Demo,ym1_demo},{kYm1Staff,ym1_staff},{kYm1CheckTalk,ym1_check_talk}};
         hooks.insert(hooks.end(),std::begin(seated_hooks),std::end(seated_hooks));
+        g_ym1_hooks=true;
     }
     if(!story_treasure::installed())hooks.push_back({kRoom,room_hook});
     if(replaced_by(kPeopleMsg).empty()) {hooks.push_back({kPeopleMsg,people_msg_hook});hooks.push_back({kPeopleNext,people_next_hook});hooks.push_back({kPeopleExecute,people_execute_hook});}
@@ -683,11 +752,7 @@ void install(const std::function<std::string(uint32_t)>& replaced_by,const std::
     for(size_t i=0;i<g_actors.size();++i){auto& a=g_actors[i];if(a.spec.kind!="mod")continue;
         auto model=g_models.find({a.mod,a.spec.model});if(model==g_models.end()){exception_report::raise("Prepared model unavailable for mod actor "+a.mod+":"+a.spec.id);}
         const std::string mod=a.mod,id=a.spec.id;
-        a.mod_token=mod_actor::declare(mod,a.spec,model->second.archive,model->second.index,[mod,id](){
-            auto found=std::find_if(g_actors.begin(),g_actors.end(),[&](const Actor& a){return a.mod==mod&&a.spec.id==id;});if(found==g_actors.end())return;
-            if(!found->spec.flag.empty())set_flag(story_store::book(),mod,found->spec.flag);
-            actions(mod,found->spec.then);story_scenes::trigger("talk",mod,id);
-        },model->second.minimum,model->second.maximum,model->second.skinned,model->second.clips,model->second.rig);if(!a.mod_token)exception_report::raise("Cannot declare generic mod actor "+mod+":"+id);has_mod=true;
+        a.mod_token=mod_actor::declare(mod,a.spec,model->second.archive,model->second.index,mod_talked(mod,id),model->second.minimum,model->second.maximum,model->second.skinned,model->second.clips,model->second.rig);if(!a.mod_token)exception_report::raise("Cannot declare generic mod actor "+mod+":"+id);has_mod=true;
         if(a.spec.combat_enabled){const auto marker=a.combat_marker;std::vector<story_items::PropDrop> drops;for(const auto&drop:a.spec.drops)drops.push_back({drop.item,drop.quantity});
             if(!mod_actor::set_combat_reward(mod,id,[marker,mod,drops](){const auto result=story_items::claim_enemy_drops(marker,mod,drops);return result==story_items::EnemyClaimStatus::Committed?mod_actor::CombatReward::Committed:result==story_items::EnemyClaimStatus::AlreadyDefeated?mod_actor::CombatReward::AlreadyDone:mod_actor::CombatReward::Failed;}))exception_report::raise("Cannot bind generic combat rewards");}
         if(a.spec.carry_break_on_impact){const auto marker=a.carry_marker;std::vector<story_items::PropDrop> drops;for(const auto&drop:a.spec.drops)drops.push_back({drop.item,drop.quantity});

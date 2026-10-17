@@ -4827,7 +4827,7 @@ void run_main_loop() {
 #ifndef __ANDROID__
     {
       const bool focused = R.tv.window && (SDL_GetWindowFlags(R.tv.window) & SDL_WINDOW_INPUT_FOCUS);
-      const bool keep = !focused || overlay::is_open() || mods::mouse_captured();
+      const bool keep = !focused || overlay::is_open() || mods::mouse_captured() || overlay::pointer_layer_active();
       // A hidden pointer shown again for the overlay (or focus loss) gets a fresh 2 s once that ends.
       if (keep && !pointerKept && pointerHidden) mouseUsed = std::chrono::steady_clock::now();
       pointerKept = keep;

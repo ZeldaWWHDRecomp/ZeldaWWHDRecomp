@@ -401,7 +401,7 @@ void init() {
             if (gfx::text_input_key((__bridge void*)e)) return nil;  // the game's text prompt: typed text
             if (overlay::key(code, down, repeat, m)) {
                 // typed characters for the overlay's text fields (not shortcuts, not function/arrow keys)
-                if (e.type == NSEventTypeKeyDown && !(m & (overlay::kCtrl | overlay::kSuper)) && overlay::is_open()) {
+                if (e.type == NSEventTypeKeyDown && !(m & (overlay::kCtrl | overlay::kSuper)) && (overlay::is_open() || overlay::wants_text())) {
                     NSString* chars = e.characters ?: @"";
                     NSMutableString* typed = [NSMutableString string];
                     for (NSUInteger i = 0; i < chars.length; ++i) {

@@ -13,11 +13,19 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <thread>
 
 #include "../gfx/renderer.h"
 #include "../hle/save_root.h"
 #include "../input.h"
+#include "../mods/guest_mods.h"
+#include "../mods/packages.h"
 #include "../mods/story_actors.h"
+#include "../mods/story_mail.h"
 #include "../mods/story_mail_book.h"
 #include "../mods/story_scenes.h"
 #include "../mods/story_store.h"
@@ -56,6 +64,30 @@ void post(std::function<void(Cpu*)> job) {
     std::lock_guard<std::mutex> lk(g_jobs_mu);
     g_jobs.push_back(std::move(job));
 }
+// The game thread's Cpu while it runs the editor's services (a script's commands run there too).
+thread_local Cpu* t_game = nullptr;
+// Runs `f` on the game thread and waits for it (at most `ms`): directly when this is the game thread.
+bool on_game(const std::function<void(Cpu*)>& f, std::string& why, int ms = 1500) {
+    if (t_game) {
+        f(t_game);
+        return true;
+    }
+    struct Wait {
+        std::mutex mu;
+        std::condition_variable cv;
+        bool done = false;
+    };
+    auto w = std::make_shared<Wait>();
+    post([w, f](Cpu* c) {
+        f(c);
+        std::lock_guard<std::mutex> lk(w->mu);
+        w->done = true;
+        w->cv.notify_all();
+    });
+    std::unique_lock<std::mutex> lk(w->mu);
+    if (!w->cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return w->done; })) return why = "the game did not answer (paused or loading)", false;
+    return true;
+}
 
 // ---------------------------------------------------------------- game addresses (as story_scenes.cpp uses them)
 const uint32_t kPlayFn = GC(0x025200D4), kCameraFn = GC(0x024F8044), kStopCamera = GC(0x02514F2C), kStartCamera = GC(0x02514F38),
@@ -69,6 +101,11 @@ uint32_t call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args = {}) {
     Cpu k = *c;
     return guest_call(&k, fn, args);
 }
+double call_f1(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
+    Cpu k = *c;
+    guest_call(&k, fn, args);
+    return k.f[1].ps0;
+}
 std::string stage_of(uint32_t play) {
     char s[9] = {};
     std::memcpy(s, mem::ptr(play + kStage), 8);
@@ -76,6 +113,7 @@ std::string stage_of(uint32_t play) {
 }
 
 // ---------------------------------------------------------------- fly camera
+bool request_play(bool from_camera, bool restore, std::string& why);  // Play (below)
 struct FlyInput {
     float lx = 0, ly = 0, rx = 0, ry = 0;
     uint32_t buttons = 0;
@@ -97,6 +135,24 @@ struct Fly {
     float speed = 1000;                     // units per second
     uint32_t held = ~0u;                    // controller buttons held at the last step
 } g_fly;
+// A view the fly camera takes when it starts next (Stop, a resumed editor view) and a point to look at.
+struct ResumeView {
+    bool set = false;
+    double eye[3] = {}, yaw = 0, pitch = 0;
+    float speed = 1000;
+};
+ResumeView g_resume;                       // game thread
+std::mutex g_focus_mu;
+bool g_focus_set = false;                  // under g_focus_mu
+double g_focus[3] = {};
+int g_retry = 0;                           // logic steps a wanted fly start keeps trying (after a load)
+ResumeView current_view() {
+    ResumeView v;
+    v.set = true;
+    for (int i = 0; i < 3; i++) v.eye[i] = g_fly.eye[i];
+    v.yaw = g_fly.yaw, v.pitch = g_fly.pitch, v.speed = g_fly.speed;
+    return v;
+}
 
 void publish_view(Cpu* c) {
     FlyView v;
@@ -164,6 +220,11 @@ bool fly_start(Cpu* c, std::string& why) {
         std::lock_guard<std::mutex> lk(g_fly_mu);
         g_in = FlyInput{};
     }
+    if (g_resume.set) {
+        for (int i = 0; i < 3; i++) g_fly.eye[i] = g_resume.eye[i];
+        g_fly.yaw = g_resume.yaw, g_fly.pitch = g_resume.pitch, g_fly.speed = g_resume.speed;
+        g_resume.set = false;
+    }
     g_flying = true;
     fly_submit(c);
     LOG("[editor] fly camera on at %.1f %.1f %.1f (yaw %.1f, pitch %.1f degrees)", g_fly.eye[0], g_fly.eye[1], g_fly.eye[2],
@@ -210,8 +271,14 @@ void fly_tick(Cpu* c, double dt) {
     const int want = g_fly_want.exchange(0);
     std::string why;
     if (want == 1 && !g_fly.active) {
-        if (!fly_start(c, why)) set_status("Fly camera: " + why);
-        else set_status("Fly camera on");
+        if (fly_start(c, why)) {
+            g_retry = 0;
+            set_status("Fly camera on");
+        } else if (g_retry > 0) {
+            --g_retry;  // after a state load or a stage change: Link is under control again soon
+            g_fly_want = 1;
+        } else
+            set_status("Fly camera: " + why);
     }
     if (!g_fly.active) return publish_view(c);
     const uint32_t play = call(c, kPlayFn);
@@ -232,9 +299,23 @@ void fly_tick(Cpu* c, double dt) {
     g_fly.held = in.buttons;
     if (pressed & (input::kA | input::kB)) {
         const bool place = (pressed & input::kA) != 0;
+        if (launch_mode()) return publish_view(c);  // the editor's view stays: Play is Tab / the View button
         fly_stop(c, place, true);
         set_status(place ? "Fly camera off: Link is at the camera's place" : "Fly camera off");
         return publish_view(c);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_focus_mu);
+        if (g_focus_set) {  // look at the point from a short way back, slightly above
+            g_focus_set = false;
+            const double back = 700, up = 350;
+            g_fly.eye[0] = g_focus[0] - std::sin(g_fly.yaw) * back;
+            g_fly.eye[1] = g_focus[1] + up;
+            g_fly.eye[2] = g_focus[2] - std::cos(g_fly.yaw) * back;
+            const double d[3] = {g_focus[0] - g_fly.eye[0], g_focus[1] + 60 - g_fly.eye[1], g_focus[2] - g_fly.eye[2]};
+            g_fly.yaw = std::atan2(d[0], d[2]);
+            g_fly.pitch = std::atan2(d[1], std::hypot(d[0], d[2]));
+        }
     }
     const double look = 2.4;  // radians per second at full stick
     g_fly.yaw -= (double(in.rx) * look * dt + double(in.mdx) * 0.0035);
@@ -261,6 +342,136 @@ void fly_tick(Cpu* c, double dt) {
             g_fly.eye[0], g_fly.eye[1], g_fly.eye[2], g_fly.yaw, g_fly.pitch);
 }
 
+// ---------------------------------------------------------------- jobs that need Link under control
+// Warps, room reloads, test mode and test states need Link free: while the fly camera holds him, it
+// stops first and comes back at the same view afterwards (the editor's view in the launch mode).
+std::vector<std::function<void(Cpu*)>> g_free_jobs;  // game thread
+std::atomic<bool> g_manual_off{false};                 // fly_camera off in the launch mode: no automatic view
+void when_free(std::function<void(Cpu*)> job) {
+    post([job = std::move(job)](Cpu*) mutable {
+        g_free_jobs.push_back(std::move(job));
+        if (g_fly.active) {
+            g_resume = current_view();
+            g_fly_want = 2;
+        }
+    });
+}
+void run_free_jobs(Cpu* c) {
+    if (g_free_jobs.empty() || g_fly.active || !ss::control_problem().empty() || story_scenes::active()) return;
+    auto jobs = std::move(g_free_jobs);
+    g_free_jobs.clear();
+    for (auto& job : jobs) job(c);
+}
+
+// ---------------------------------------------------------------- the game's collision
+uint32_t g_gnd = 0;  // a dBgS_ObjGndChk in guest memory, for the editor's ground checks
+const uint32_t kGndCtor = GC(0x0237AABC), kGroundCross = GC(0x02008974);
+constexpr uint32_t kBgs = 0x12A0;  // dComIfG_Bgsp() in the play
+// the ground height below `p` (the game's own check, as mod actors use it); false: none
+bool ground_below(Cpu* c, double x, double y, double z, float& h) {
+    const uint32_t play = call(c, kPlayFn);
+    if (!play || !ld32(play + kPlayer)) return false;
+    if (!g_gnd) {
+        g_gnd = mem::host_alloc(0x80, 16);
+        std::memset(mem::ptr(g_gnd), 0, 0x80);
+        call(c, kGndCtor, {g_gnd});
+    }
+    stf32(g_gnd + 0x24, float(x));
+    stf32(g_gnd + 0x28, float(y));
+    stf32(g_gnd + 0x2C, float(z));
+    st32(g_gnd + 8, 0xFFFFFFFFu);
+    const double r = call_f1(c, kGroundCross, {play + kBgs, g_gnd});
+    if (!std::isfinite(r) || r < -1e8) return false;
+    h = float(r);
+    return true;
+}
+// the first ground a ray meets: steps along it and narrows the step where it passes below the ground
+bool ray_hit(Cpu* c, const WorldPoint& from, const WorldPoint& d, float range, WorldPoint& hit) {
+    const double step = 60;
+    double prev_t = 0;
+    float h = 0;
+    if (ground_below(c, from.x, from.y, from.z, h) && from.y < h - 1) return false;  // starts below the ground
+    for (double t = step; t <= range + step; t += step) {
+        const double tt = std::min<double>(t, range);
+        const double x = from.x + d.x * tt, y = from.y + d.y * tt, z = from.z + d.z * tt;
+        if (ground_below(c, x, y + 1, z, h) && y <= h) {
+            double lo = prev_t, hi = tt;
+            for (int i = 0; i < 12; i++) {
+                const double mid = (lo + hi) / 2;
+                float hm = 0;
+                const double mx = from.x + d.x * mid, my = from.y + d.y * mid, mz = from.z + d.z * mid;
+                if (ground_below(c, mx, my + 1, mz, hm) && my <= hm) hi = mid;
+                else lo = mid;
+            }
+            const double hx = from.x + d.x * hi, hz = from.z + d.z * hi;
+            float hy = 0;
+            if (!ground_below(c, hx, from.y + d.y * hi + 1, hz, hy)) hy = float(from.y + d.y * hi);
+            hit = {float(hx), hy, float(hz)};
+            return true;
+        }
+        prev_t = tt;
+        if (tt >= range) break;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------- dialogue preview (the game's message box)
+const uint32_t kMessageManager = GD(0x101F4B5C), kMessage = GC(0x025F7DB0), kMessageStatus = GC(0x025F795C),
+               kSetMessageStatus = GC(0x025F74D0), kResetMessage = GC(0x025F78C4);
+constexpr uint32_t kCarrier = 0x2CF3;
+struct Preview {
+    int phase = 0;  // 0 none, 1 opening, 2 shown, 3 closing
+    std::u16string text;
+    bool close = false;
+    int frames = 0, closing = 0;
+} g_preview;  // game thread
+// ends the shown text: the way a mod scene closes its message (FINISH, then CLOSED), or, when that does
+// not come (an aborted preview), the message core's own reset
+void preview_end(Cpu* c, bool immediate) {
+    const uint32_t manager = ld32(kMessageManager);
+    if (manager && g_preview.phase >= 2) {
+        const uint32_t status = call(c, kMessageStatus, {manager});
+        if (status == 18) call(c, kSetMessageStatus, {manager, 19});
+        else if (status != 0 && status != 19) {
+            if (!immediate && g_preview.closing == 0) {
+                call(c, kSetMessageStatus, {manager, 16});
+                g_preview.closing = 1;
+                g_preview.phase = 3;
+                return;
+            }
+            if (!immediate && ++g_preview.closing < 60) return;
+            call(c, kResetMessage, {manager});
+        }
+    }
+    story_mail::unsay();
+    g_preview = {};
+}
+void preview_tick(Cpu* c) {
+    if (!g_preview.phase) return;
+    const uint32_t manager = ld32(kMessageManager);
+    if (!manager || !g_fly.active) return preview_end(c, true);  // the box belongs to the editor's view
+    ++g_preview.frames;
+    if (g_preview.phase == 1) {
+        if (call(c, kMessage, {manager, kCarrier, 0}) != 0xFFFFFFFFu) g_preview.phase = 2;
+        else if (g_preview.frames > 60) {
+            story_mail::unsay();
+            g_preview = {};
+            set_status("Preview: the game did not open its message box");
+        }
+        return;
+    }
+    if (g_preview.close || g_preview.frames > 9000) preview_end(c, false);  // five minutes at most
+}
+
+// ---------------------------------------------------------------- Play
+std::atomic<bool> g_playing{false};
+struct PlayState {
+    bool restore = true, turned_test = false, snapshot = false;
+    ResumeView view;
+    std::vector<uint8_t> story;  // the story area at Play
+} g_play;                        // game thread
+std::string play_state_file() { return (fs::path(ss::states_dir()) / "editor-test" / "play.wwstate").string(); }
+
 // ---------------------------------------------------------------- test mode
 std::atomic<bool> g_test{false};
 std::vector<uint8_t> g_story_before;  // game thread
@@ -271,49 +482,72 @@ std::string safe(const std::string& id) {
     return s;
 }
 
+// ---------------------------------------------------------------- test mode on
+// the test save: a copy of the save folder as it is now; in-game saves write there
+bool test_save(std::string& why) {
+    std::error_code ec;
+    const fs::path save = editor_dir() / "save";
+    fs::remove_all(save, ec);
+    fs::create_directories(save, ec);
+    fs::copy(config::save_dir, save, fs::copy_options::recursive, ec);
+    if (ec) return why = "cannot copy the save folder for the test save: " + ec.message(), false;
+    g_test = true;
+    return true;
+}
+// game thread, Link free: the story area and the place to come back to (`then` when the state is written)
+void test_start(std::function<void(bool ok)> then) {
+    if (uint8_t* block = story_store::memory_block()) g_story_before.assign(block, block + story_store::kMemoryBytes);
+    else g_story_before.clear();
+    hle_fs::set_save_root((editor_dir() / "save").string());
+    ss::request_save_portable_file((editor_dir() / "start.wwstate").string(), [then](bool ok, const std::string& why) {
+        set_status(ok ? "Test mode on: in-game saves go to the test save" : "Test mode on (no return state: " + why + ")");
+        if (then) then(ok);
+    });
+}
+
 // ---------------------------------------------------------------- the host
+void reapply_mod(const std::string& mod);  // below: the live actors again (a model became ready)
 class GameHost final : public Host {
 public:
-    struct Startup {
-        std::set<std::string> ids, mod_ids, prepared;  // actors, mod-model actors, prepared models
-        std::set<std::string> restart_only;               // actors whose changes need a restart (story_actors::editor_restart_only)
-    };
-    std::map<std::string, Startup> startup;
-
     bool apply_actors(const std::string& mod, const std::vector<story_notebook::ManifestActor>& actors, const std::vector<std::string>& changed,
                       std::string& note, std::string& why) override {
-        // what can change live: the actors declared at start-up, and only prepared models
-        const auto& s = startup[mod];
-        std::set<std::string> ids;
-        for (const auto& a : actors) {
-            ids.insert(a.id);
-            if (!s.ids.contains(a.id)) return why = "actor " + a.id + " is new: it appears when the game starts again (save the package, then restart)", false;
-            if ((a.kind == "mod") != s.mod_ids.contains(a.id)) return why = "actor " + a.id + ": switching between a game actor and a mod model takes effect when the game starts again", false;
-            if (a.kind == "mod" && !s.prepared.contains(a.model))
-                return why = "model " + a.model + " is prepared when the game starts: save the package and restart to see it", false;
-        }
-        if (ids.size() != s.ids.size()) return why = "removing actors takes effect when the game starts again", false;
+        (void)why;
+        // what waits for a restart: start-up-only kinds, models not prepared yet (said at once; the game's
+        // update below says it again with the exact reason)
+        std::vector<std::string> later;
         for (const auto& a : actors)
-            if (std::find(changed.begin(), changed.end(), a.id) != changed.end() && (s.restart_only.contains(a.id) || story_actors::editor_restart_only(a)))
-                return why = "actor " + a.id + ": enemies, pots, barrels, crates, switches, doors and carried props take their changes after a restart (save the package, then restart)", false;
+            if (std::find(changed.begin(), changed.end(), a.id) != changed.end() && story_actors::editor_restart_only(a)) later.push_back(a.id);
         post([mod, actors, changed](Cpu*) {
             std::string w;
-            if (!story_actors::editor_update(mod, actors, changed, w)) set_status("Live update refused: " + w);
-            else if (!changed.empty()) set_status("Updated " + std::to_string(changed.size()) + " actor(s) in the game");
+            std::vector<std::string> pending;
+            if (!story_actors::editor_update(mod, actors, changed, w, &pending)) set_status("Live update refused: " + w);
+            else if (!pending.empty()) {
+                std::string list;
+                for (const auto& p : pending) list += (list.empty() ? "" : "; ") + p;
+                set_status("Saved in the package; after a restart: " + list);
+            } else if (!changed.empty())
+                set_status("Updated " + std::to_string(changed.size()) + " actor(s) in the game");
         });
-        note = changed.empty() ? "" : "Changed actors are created again in their room.";
+        if (!later.empty()) {
+            note = "Saved in the package. These take effect after a restart (save, then start the game again):";
+            for (const auto& id : later) note += " " + id;
+        } else
+            note = changed.empty() ? "" : "Changed actors are created again in their room.";
         return true;
     }
     bool reload_room(std::string& why) override {
-        const auto p = ss::link_place();
-        if (!p.valid) return why = "Link is not in the scene", false;
-        ss::Warp w;
-        w.stage = p.stage;
-        w.room = p.room;
-        w.at_position = true;
-        w.angle = p.angle;
-        std::memcpy(w.pos, p.pos, sizeof w.pos);
-        ss::request_warp(w, [](bool ok, const std::string& why) { set_status(ok ? "Reloading the room" : "Reload room: " + why); });
+        (void)why;
+        when_free([](Cpu*) {
+            const auto p = ss::link_place();
+            if (!p.valid) return set_status("Reload room: Link is not in the scene");
+            ss::Warp w;
+            w.stage = p.stage;
+            w.room = p.room;
+            w.at_position = true;
+            w.angle = p.angle;
+            std::memcpy(w.pos, p.pos, sizeof w.pos);
+            ss::request_warp(w, [](bool ok, const std::string& why) { set_status(ok ? "Reloading the room" : "Reload room: " + why); });
+        });
         return true;
     }
     std::vector<std::pair<std::string, std::vector<int>>> stage_rooms() override { return game_stage_rooms(config::game_dir); }
@@ -341,8 +575,11 @@ public:
             } else
                 return why = "no spawn point found for " + to.stage + " room " + std::to_string(to.room) + " in the game's files", false;
         }
-        ss::request_warp(w, [label = to.label.empty() ? to.stage : to.label](bool ok, const std::string& why) {
-            set_status(ok ? "Warping to " + label : "Warp: " + why);
+        const std::string label = to.label.empty() ? to.stage : to.label;
+        when_free([w, label](Cpu*) {
+            // the editor's view comes back at the destination, as the game's camera shows it
+            g_resume.set = false;
+            ss::request_warp(w, [label](bool ok, const std::string& why) { set_status(ok ? "Warping to " + label : "Warp: " + why); });
         });
         return true;
     }
@@ -357,11 +594,13 @@ public:
         return out;
     }
     bool busy(std::string& why) override {
-        why = g_flying ? "the fly camera is on" : story_scenes::active() ? "a mod scene is running" : ss::control_problem();
+        // the fly camera holds Link in an event of its own: what needs him free waits for it to stop
+        why = story_scenes::active() ? "a mod scene is running" : g_flying ? "" : ss::control_problem();
         return !why.empty();
     }
     bool fly(bool on, bool place_link, std::string& why) override {
         if (on == g_flying.load()) return why = on ? "the fly camera is already on" : "the fly camera is off", false;
+        g_manual_off = !on;
         g_fly_want = on ? 1 : place_link ? 3 : 2;
         if (on) overlay::set_open(false);  // the picture is the camera's
         return true;
@@ -382,35 +621,20 @@ public:
     bool set_test_mode(bool on, std::string& why) override {
         if (on == g_test.load()) return why = on ? "test mode is already on" : "test mode is off", false;
         if (on) {
-            if (!(why = ss::control_problem()).empty()) return false;
-            // the test save: a copy of the save folder as it is now; in-game saves write there
-            std::error_code ec;
-            const fs::path save = editor_dir() / "save";
-            fs::remove_all(save, ec);
-            fs::create_directories(save, ec);
-            fs::copy(config::save_dir, save, fs::copy_options::recursive, ec);
-            if (ec) return why = "cannot copy the save folder for the test save: " + ec.message(), false;
-            const std::string start = (editor_dir() / "start.wwstate").string();
-            post([save, start](Cpu*) {
-                if (uint8_t* block = story_store::memory_block()) g_story_before.assign(block, block + story_store::kMemoryBytes);
-                else g_story_before.clear();
-                hle_fs::set_save_root(save.string());
-                g_test = true;
-                ss::request_save_portable_file(start, [](bool ok, const std::string& why) {
-                    set_status(ok ? "Test mode on: in-game saves go to the test save" : "Test mode on (no return state: " + why + ")");
-                });
-            });
+            if (!test_save(why)) return false;
+            when_free([](Cpu*) { test_start(nullptr); });
             return true;
         }
+        g_test = false;
         const std::string start = (editor_dir() / "start.wwstate").string();
-        post([start](Cpu*) {
+        when_free([start](Cpu*) {
             hle_fs::set_save_root("");
             if (uint8_t* block = story_store::memory_block(); block && g_story_before.size() == story_store::kMemoryBytes)
                 std::memcpy(block, g_story_before.data(), g_story_before.size());
-            g_test = false;
             std::error_code ec;
             if (fs::exists(start, ec)) {
                 ss::request_load_portable_file(start);
+                g_retry = 450;
                 set_status("Test mode off: back to the progress and place from before the test");
             } else
                 set_status("Test mode off: story progress restored (no return state)");
@@ -438,8 +662,7 @@ public:
         const std::string state = (dir / ("test" + std::to_string(slot) + ".wwstate")).string();
         const std::string records = (dir / ("test" + std::to_string(slot) + ".records")).string();
         if (save) {
-            if (!(why = ss::control_problem()).empty()) return false;
-            post([state, records, own, slot](Cpu*) {
+            when_free([state, records, own, slot](Cpu*) {
                 // the mod's own records with the state: a portable state holds no story progress
                 story_mail::Book book = story_store::book();
                 Value list;
@@ -460,7 +683,7 @@ public:
             return true;
         }
         if (!fs::exists(state, ec)) return why = "test slot " + std::to_string(slot) + " is empty", false;
-        post([state, records, own, slot](Cpu*) {
+        when_free([state, records, own, slot](Cpu*) {
             std::ifstream f(records, std::ios::binary);
             std::stringstream text;
             text << f.rdbuf();
@@ -474,15 +697,168 @@ public:
             } catch (const std::exception&) {
             }
             ss::request_load_portable_file(state);
+            g_retry = 450;
             set_status("Loading test state " + std::to_string(slot));
         });
         return true;
     }
+
+    // ---- building new content ----
+    bool ground(const WorldPoint& above, float& height, std::string& why) override {
+        bool found = false;
+        if (!on_game([&](Cpu* c) { found = ground_below(c, above.x, above.y, above.z, height); }, why)) return false;
+        return found || (why = "no ground below (outside the loaded rooms?)", false);
+    }
+    bool ray(const WorldPoint& from, const WorldPoint& direction, float range, WorldPoint& hit, std::string& why) override {
+        bool found = false;
+        if (!on_game([&](Cpu* c) { found = ray_hit(c, from, direction, range, hit); }, why, 3000)) return false;
+        return found || (why = "the ray meets no ground in the loaded rooms", false);
+    }
+    Place camera() override {
+        const FlyView v = fly_view();
+        Place p;
+        if (!v.on) return p;
+        p.valid = true;
+        p.stage = v.stage;
+        p.position = {v.eye[0], v.eye[1], v.eye[2]};
+        p.room = v.stage == "sea" ? sea_room(v.eye[0], v.eye[2]) : v.room;
+        if (p.room < 0) p.room = 0;
+        p.angle = int(std::lround(std::atan2(double(v.target[0]) - v.eye[0], double(v.target[2]) - v.eye[2]) * 32768 / kPi)) & 0xFFFF;
+        return p;
+    }
+    bool focus(const WorldPoint& target, std::string& why) override {
+        (void)why;
+        {
+            std::lock_guard<std::mutex> lk(g_focus_mu);
+            g_focus_set = true;
+            g_focus[0] = target.x, g_focus[1] = target.y, g_focus[2] = target.z;
+        }
+        if (!g_flying) {
+            g_manual_off = false;
+            g_fly_want = 1;
+        }
+        return true;
+    }
+    bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) override {
+        (void)why;
+        // the model tool runs on a thread of its own; the game takes the result at its next pass
+        std::thread([mod, dir, model] {
+            std::string archive, w;
+            if (!guestmods::editor_prepare_model(mod, dir, mods::packages::package_data_directory(mod), model, archive, w)) return set_status("Model " + model.get("id").string() + ": " + w);
+            post([mod, model, archive](Cpu*) {
+                std::string w2;
+                if (!story_actors::editor_register_model(mod, model.get("id").string(), archive, model.get("kind").string() == "skinned", w2))
+                    return set_status("Model " + model.get("id").string() + ": " + w2 + " (it is prepared when the game starts)");
+                set_status("Model " + model.get("id").string() + " is ready: actors can use it now");
+                reapply_mod(mod);
+            });
+        }).detach();
+        note = "The model is being prepared for the game; actors using it appear when it is ready (a restart is needed for the first model "
+               "actor of a game that had none).";
+        return true;
+    }
+    bool preview_text(const std::string& text, bool close, std::string& why) override {
+        if (close) {
+            post([](Cpu*) { g_preview.close = true; });
+            return true;
+        }
+        if (!g_flying) return why = "the preview shows in the editor's view (the fly camera)", false;
+        if (!story_mail::can_say()) return why = "the game's message hooks are not installed (no story mod is loaded)", false;
+        std::u16string u;
+        if (!story_mail::append_utf16(text, true, u)) return why = "the text can't be shown (characters the game has no glyphs for?)", false;
+        post([u](Cpu* c) {
+            if (g_preview.phase) preview_end(c, true);  // a new text replaces the shown one
+            g_preview = {};
+            g_preview.text = u;
+            story_mail::say(kCarrier, &g_preview.text);
+            g_preview.phase = 1;
+        });
+        return true;
+    }
+    bool play(bool from_camera, bool restore, std::string& why) override { return request_play(from_camera, restore, why); }
+    bool stop(std::string& why) override;
+    bool playing() override { return g_playing; }
 };
 
 std::recursive_mutex g_mu;  // the session (recursive: a script runs on the game thread inside logic_service)
 GameHost g_host;
 Session g_session(&g_host);
+
+// The mod's actors as the session has them, applied again (a model became ready, a restart-only change
+// is not involved): what waited for the model is created now.
+void reapply_mod(const std::string& mod) {
+    std::vector<story_notebook::ManifestActor> actors;
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_mu);
+        const Value* m = g_session.manifest(mod);
+        std::string why;
+        if (!m || !story_notebook::parse_actors(*m, actors, why)) return;
+    }
+    std::string why;
+    std::vector<std::string> pending;
+    if (!story_actors::editor_update(mod, actors, {}, why, &pending)) set_status("Live update refused: " + why);
+}
+
+// ---------------------------------------------------------------- Play / Stop
+bool request_play(bool from_camera, bool restore, std::string& why) {
+    if (g_playing) return why = "already playing (Stop first)", false;
+    if (!g_flying) return why = "Play starts from the editor's view (the fly camera)", false;
+    g_playing = true;
+    bool turned_test = false;
+    if (!g_test) {
+        std::string w;
+        turned_test = test_save(w);
+        if (!turned_test) set_status("Play without test mode: " + w);
+    }
+    post([from_camera, restore, turned_test](Cpu* c) {
+        if (g_preview.phase) preview_end(c, true);
+        g_play.restore = restore;
+        g_play.view = current_view();
+        g_play.snapshot = false;
+        g_fly_want = from_camera ? 3 : 2;
+        // once Link is free: test mode's start, and the world as it is now (for Stop) after it: one state
+        // request at a time
+        g_free_jobs.push_back([restore, turned_test](Cpu*) {
+            auto snapshot = [restore](bool) {
+                if (!restore) return;
+                post([](Cpu*) {
+                    if (uint8_t* block = story_store::memory_block()) g_play.story.assign(block, block + story_store::kMemoryBytes);
+                    else g_play.story.clear();
+                    std::error_code ec;
+                    fs::create_directories(fs::path(play_state_file()).parent_path(), ec);
+                    ss::request_save_portable_file(play_state_file(), [](bool ok, const std::string& why) {
+                        g_play.snapshot = ok;
+                        if (!ok) set_status("Play: the world can't be restored at Stop (" + why + ")");
+                    });
+                });
+            };
+            if (turned_test) test_start(snapshot);
+            else snapshot(true);
+        });
+        set_status(from_camera ? "Playing from the camera's place (Tab or Stop: back to the editor)" : "Playing from Link's place (Tab or Stop: back to the editor)");
+    });
+    return true;
+}
+bool GameHost::stop(std::string& why) {
+    if (!g_playing) return why = "not playing", false;
+    post([](Cpu*) {
+        g_resume = g_play.view;
+        if (g_play.restore && g_play.snapshot) {
+            if (uint8_t* block = story_store::memory_block(); block && g_play.story.size() == story_store::kMemoryBytes)
+                std::memcpy(block, g_play.story.data(), g_play.story.size());
+            ss::request_load_portable_file(play_state_file());
+            set_status("Stopped: the world is back as it was before Play");
+        } else
+            set_status("Stopped");
+        g_playing = false;
+        g_manual_off = false;
+        if (!launch_mode()) {  // the launch mode's editor view comes back by itself once Link is in the world
+            g_retry = 450;
+            g_fly_want = 1;
+        }
+    });
+    return true;
+}
 
 // ---------------------------------------------------------------- test script (WWHD_EDITOR_SCRIPT)
 // "frame:{json request};frame:{...}" or "@file" with one "frame {json}" per line: each request runs at
@@ -546,19 +922,6 @@ void register_package(const std::string& mod, const std::string& name, const std
         manifest.get("quests").type == Value::Null)
         return;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
-    auto& s = g_host.startup[mod];
-    std::vector<story_notebook::ManifestActor> parsed;
-    std::string why;
-    if (story_notebook::parse_actors(manifest, parsed, why))
-        for (const auto& a : parsed)
-            if (story_actors::editor_restart_only(a)) s.restart_only.insert(a.id);
-    for (const auto& a : manifest.get("actors").array) {
-        s.ids.insert(a.get("id").string());
-        if (a.get("kind").string() == "mod") {
-            s.mod_ids.insert(a.get("id").string());
-            s.prepared.insert(a.get("model").string());  // load_world prepares every model an actor uses
-        }
-    }
     g_session.add_package(mod, name, dir, manifest);
     LOG("[editor] package %s registered (%zu actors)", mod.c_str(), manifest.get("actors").array.size());
 }
@@ -579,6 +942,48 @@ void with_session(const std::function<void(Session&)>& f) {
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     f(g_session);
 }
+bool try_with_session(const std::function<void(Session&)>& f) {
+    std::unique_lock<std::recursive_mutex> lk(g_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return false;
+    f(g_session);
+    return true;
+}
+// one worker runs the UI's commands in order: a command that waits for the game never holds up a frame
+namespace {
+struct Queued {
+    std::string command;
+    Value params;
+    std::function<void(const Value&)> done;
+};
+std::mutex g_queue_mu;
+std::condition_variable g_queue_cv;
+std::deque<Queued> g_queue;
+std::atomic<int> g_queued{0};
+}  // namespace
+void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done) {
+    static std::once_flag started;
+    std::call_once(started, [] {
+        std::thread([] {
+            for (;;) {
+                Queued q;
+                {
+                    std::unique_lock<std::mutex> lk(g_queue_mu);
+                    g_queue_cv.wait(lk, [] { return !g_queue.empty(); });
+                    q = std::move(g_queue.front());
+                    g_queue.pop_front();
+                }
+                const Value r = run(q.command, q.params);
+                if (q.done) q.done(r);
+                --g_queued;
+            }
+        }).detach();
+    });
+    ++g_queued;
+    std::lock_guard<std::mutex> lk(g_queue_mu);
+    g_queue.push_back({command, params, std::move(done)});
+    g_queue_cv.notify_one();
+}
+bool commands_pending() { return g_queued.load() > 0; }
 std::string status() {
     std::lock_guard<std::mutex> lk(g_status_mu);
     return g_status;
@@ -586,24 +991,90 @@ std::string status() {
 
 void logic_service(Cpu* c) {
     if (!enabled()) return;
-    run_script();
+    t_game = c;
+    // the jobs first: a command waiting on the game thread (a ground check) never waits for a script
     std::vector<std::function<void(Cpu*)>> jobs;
     {
         std::lock_guard<std::mutex> lk(g_jobs_mu);
         jobs.swap(g_jobs);
     }
     for (auto& job : jobs) job(c);
+    run_free_jobs(c);
+    run_script();
+    preview_tick(c);
+    t_game = nullptr;
 }
 
 void camera_service(Cpu* c, bool logic_pass) {
     if (!enabled()) return;
     const bool t60 = true60::enabled();
     if (!logic_pass && !t60) return;  // an interpolation-only pass draws between logic steps: no state change
+    t_game = c;
+    // the launch mode's editor view: the fly camera whenever Link is in the world and free, unless playing
+    // (or the fly camera was turned off by hand); it comes back after warps, loads and stage changes
+    static int calm = 0;
+    if (launch_mode() && logic_pass && !g_playing && !g_manual_off && !g_fly.active && g_fly_want == 0 && g_free_jobs.empty()) {
+        const uint32_t play = call(c, kPlayFn);
+        const bool free = play && ld32(play + kPlayer) && !story_scenes::active() && ss::control_problem().empty();
+        calm = free ? calm + 1 : 0;
+        if (calm >= 20) {  // two thirds of a second under control: the world is there
+            calm = 0;
+            g_fly_want = 1;
+            if (!g_resume.set) LOG("[editor] editor view: fly camera on");
+        }
+    } else
+        calm = 0;
     fly_tick(c, t60 ? 1.0 / 60 : 1.0 / 30);
+    t_game = nullptr;
+}
+
+bool playing() { return g_playing; }
+bool editor_view() { return launch_mode() && !g_playing && g_flying; }
+void toggle_play() {
+    std::string why;
+    if (g_playing) {
+        if (!g_host.stop(why)) set_status("Stop: " + why);
+    } else if (!request_play(true, true, why))
+        set_status("Play: " + why);
+}
+std::mutex g_view_mu;
+CameraView g_camera;  // under g_view_mu
+void camera_drawn(uint32_t cam) {
+    if (!enabled() || !cam) return;
+    CameraView v;
+    v.valid = true;
+    for (int i = 0; i < 3; i++) {
+        v.eye[i] = float(ldf32(cam + 0xDC + 4 * i));
+        v.center[i] = float(ldf32(cam + 0xE8 + 4 * i));
+        v.up[i] = float(ldf32(cam + 0xF4 + 4 * i));
+    }
+    v.near_z = float(ldf32(cam + 0xCC));
+    v.far_z = float(ldf32(cam + 0xD0));
+    v.fovy = float(ldf32(cam + 0xD4));
+    v.aspect = float(ldf32(cam + 0xD8));
+    for (int i = 0; i < 16; i++) v.proj[i] = float(ldf32(cam + 0x1A4 + 4 * i));
+    std::lock_guard<std::mutex> lk(g_view_mu);
+    g_camera = v;
+}
+CameraView camera_view() {
+    std::lock_guard<std::mutex> lk(g_view_mu);
+    return g_camera;
+}
+void add_look(float dx, float dy) {
+    if (!g_flying.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lk(g_fly_mu);
+    g_in.mdx += dx;
+    g_in.mdy += dy;
+}
+void add_speed(float notches) {
+    if (!g_flying.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lk(g_fly_mu);
+    g_in.wheel += notches;
 }
 
 void filter_pad(input::PadState& s) {
     if (!g_flying.load(std::memory_order_relaxed)) return;
+    if (overlay::wants_text()) s = input::PadState{};  // typing into the editor's fields moves nothing
     {
         std::lock_guard<std::mutex> lk(g_fly_mu);
         g_in.lx = s.lx, g_in.ly = s.ly, g_in.rx = s.rx, g_in.ry = s.ry;

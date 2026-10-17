@@ -298,6 +298,31 @@ int main(int argc,char** argv){
         assert(std::memcmp(before.data(),mem::ptr(kSave),before.size())==0);
         std::puts("Ym1 seated initializer, guarded native closure, restore latch, isolation and delete passed");return 0;
     }
+    if(argc==2&&std::strcmp(argv[1],"--editor")==0){
+        // the world editor's live changes: new actors are created, start-up-only kinds wait for a restart,
+        // a refused list changes nothing, removed actors leave the game and come back on undo
+        story_notebook::ManifestActor sign;sign.id="notice";sign.actor="sign";sign.stage="sea";sign.room=2;sign.flag="read";
+        std::string why;assert(story_actors::load("test",{sign},why));
+        story_actors::install([](uint32_t){return std::string{};},[](uint32_t a,void(*h)(Cpu*)){hooks[a]=h;});
+        Cpu c{};st8(kArena+0x7000+0x326,2);story_actors::native_room_loaded(&c,2);assert(created==1);
+        story_notebook::ManifestActor chest;chest.id="box";chest.actor="chest";chest.stage="sea";chest.room=0;chest.flag="opened";
+        story_notebook::ManifestActor pot;pot.id="pot";pot.actor="pot";pot.stage="sea";pot.room=0;pot.broken_flag="pot.broken";
+        std::vector<std::string> pending;
+        assert(story_actors::editor_update("test",{sign,chest,pot},{"box","pot"},why,&pending));
+        assert(pending.size()==1&&pending[0].rfind("pot:",0)==0);
+        story_actors::native_room_loaded(&c,0);assert(created==2&&story_actors::actor_address(&c,"test","box")==kActor);
+        std::vector<story_notebook::ManifestActor> crowded{sign,chest};std::vector<std::string> ids;
+        for(unsigned n=0;n<16;++n){auto more=chest;more.id="box"+std::to_string(n);more.flag="opened"+std::to_string(n);crowded.push_back(more);ids.push_back(more.id);}
+        const unsigned before=created;
+        assert(!story_actors::editor_update("test",crowded,ids,why)&&why.find("16")!=std::string::npos);
+        story_actors::native_room_loaded(&c,0);assert(created==before);
+        assert(story_actors::editor_update("test",{chest},{},why));
+        story_actors::service(&c);assert(deleted==1);
+        live.erase(ld32(kScratch+128));story_actors::service(&c);assert(ld32(kScratch+128)==0xFFFFFFFFu&&!story_actors::actor_address(&c,"test","notice"));
+        assert(story_actors::editor_update("test",{sign,chest},{},why));
+        story_actors::native_room_loaded(&c,2);assert(created==3&&story_actors::actor_address(&c,"test","notice"));
+        std::puts("editor live creation, pending kinds, refusal and removal passed");return 0;
+    }
     if(argc==2&&std::strcmp(argv[1],"--no-resident")==0){
         story_notebook::ManifestActor sign;sign.id="notice";sign.actor="sign";sign.stage="sea";sign.room=2;sign.flag="read";
         std::string why;assert(story_actors::load("sign-only",{sign},why));

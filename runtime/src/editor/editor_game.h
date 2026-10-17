@@ -1,4 +1,4 @@
-// World editor, phase E0: the running game's side of the command layer (docs/mod-editor.md).
+// World editor: the running game's side of the command layer (docs/mod-editor.md).
 //
 //   - the session: the active mods' packages (registered while they load), run from the overlay's Editor
 //     area, from a test script (WWHD_EDITOR_SCRIPT) and later from a tool interface; one lock;
@@ -35,6 +35,11 @@ Value run(const std::string& command, const Value& params = Value());
 Value query(const std::string& command, const Value& params = Value());  // the same, kept out of the command log (UI reads)
 std::string run_json(const std::string& request);
 void with_session(const std::function<void(Session&)>& f);  // the UI's read-only view, under the same lock
+bool try_with_session(const std::function<void(Session&)>& f);  // the same, false while a command runs (no waiting)
+// The UI's commands: run in order on a worker thread (a command may wait for the game); `done` gets the
+// result there.
+void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done);
+bool commands_pending();
 
 // The last asynchronous outcome (a warp started, a test state written, a live update refused), for the UI.
 std::string status();
@@ -56,5 +61,22 @@ struct FlyView {
     int room = -1;  // Link's room
 };
 FlyView fly_view();  // any thread
+
+// ---- the launch mode's editor view (render thread unless said) ----
+bool playing();      // Play is on: the editor's overlays hide (any thread)
+bool editor_view();  // the editor's overlays show: launch mode, the fly camera on, not playing (any thread)
+void toggle_play();  // Tab / the controller's View button: Play from the camera, or Stop
+// The game camera as camera_draw last drew it (eye, center, up, fovy in degrees, aspect, near/far and
+// the projection it built): what the overlays project the world with.
+struct CameraView {
+    bool valid = false;
+    float eye[3] = {}, center[3] = {}, up[3] = {};
+    float fovy = 0, aspect = 0, near_z = 0, far_z = 0;
+    float proj[16] = {};
+};
+void camera_drawn(uint32_t camera);  // interp.cpp, game thread: after camera_draw
+CameraView camera_view();
+void add_look(float dx, float dy);   // the editor view's right-button drag (pixels)
+void add_speed(float notches);       // the mouse wheel over the picture: the fly speed
 
 }  // namespace editor

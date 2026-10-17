@@ -2352,6 +2352,7 @@ void tab_about() {
              "Start confirms.");
     }
     note("Built with Dear ImGui %s (MIT License, Omar Cornut and contributors).", IMGUI_VERSION);
+    note("The world editor's handles use ImGuizmo (MIT License, Cedric Guillemet).");
 }
 
 void perf_window(bool menu_open) {
@@ -2685,6 +2686,19 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
 }
 // inputs still held when the overlay closes stay from the game in the hosts' input pumps (release_gate.h)
 bool blocks_input() { return captures(); }
+// A platform's input layer (extensions.h, the world editor): its mode while the menu is closed, and
+// whether its overlay windows were under the pointer at the last frame.
+std::atomic<bool> g_layer_mouse{false};
+int layer_mode() {
+    if (!ext::sealed() || is_open()) return 0;
+    const auto& layer = ext::input_layer();
+    return layer.mode ? layer.mode() : 0;
+}
+bool layer_takes_pointer() {
+    const int m = layer_mode();
+    return m == 1 || (m == 2 && g_layer_mouse.load());
+}
+bool pointer_layer_active() { return layer_mode() != 0; }
 bool captures() { return is_open() || text_entry::active(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
 bool perf_shown() { return g_perf.load(std::memory_order_relaxed); }
@@ -2725,6 +2739,18 @@ bool key(int code, bool down, bool repeat, int mods, KeyOrigin origin) {
         else if (activate) activate_shortcut(action, origin);
         return true;
     }
+    if (const int layer = text_entry::active() ? 0 : layer_mode()) {
+        // the world editor's overlays: their key handler first (Tab), then Dear ImGui sees the key too;
+        // the game keeps it unless a text field of the overlays has the keyboard
+        const bool typing = g_wants_text.load();
+        const auto& filter = ext::input_layer().key;
+        if (filter && filter(code, down, repeat, typing)) return true;
+        if (layer == 1 || typing) {
+            if (code >= 0 && code < 256 && !repeat) g_held_keys[code] = down;
+            push({Event::Key, code, down, 0, 0, mods});
+        }
+        if (typing) return true;
+    }
     if (!is_open()) {
         // the game's text prompt (text_entry.h) has the keyboard while it shows; F1 above still opens the menu
         if (!text_entry::active()) return false;
@@ -2746,7 +2772,7 @@ bool key(int code, bool down, bool repeat, int mods, KeyOrigin origin) {
     return true;
 }
 bool text(const char* utf8) {
-    if (!is_open() || g_no_host_keys || !utf8 || !*utf8) return false;
+    if ((!is_open() && !(layer_mode() && g_wants_text.load())) || g_no_host_keys || !utf8 || !*utf8) return false;
     Event e{Event::Text};
     e.text = utf8;
     push(e);
@@ -2756,12 +2782,13 @@ void set_clipboard_text(const char* utf8) {
     std::lock_guard<std::mutex> lk(g_mu);
     g_clipboard = utf8 ? utf8 : "";
 }
-bool wants_text() { return is_open() && g_wants_text.load(); }
+bool wants_text() { return (is_open() || layer_mode() != 0) && g_wants_text.load(); }
 void set_stereo_pointer_visible(bool visible) { g_stereo_pointer_visible=visible; }
 bool mouse_move(float nx, float ny, bool touch) {
-    if (g_no_host || (!captures() && stereo::requestedMode==stereo::Off)) return false;
+    const int layer = layer_mode();
+    if (g_no_host || (!captures() && stereo::requestedMode==stereo::Off && !layer)) return false;
     push({Event::MousePos, 0, false, nx, ny, 0, touch});
-    return captures();
+    return captures() || layer_takes_pointer();
 }
 // The capture and navigation order is shared with the game-free SDL UI regression.
 void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
@@ -2783,6 +2810,10 @@ bool pointer_shortcut(int code, bool down) {
     return true;
 }
 bool mouse_button(int button, bool down, bool touch) {
+    if (!captures() && layer_takes_pointer() && !g_no_host) {
+        if (button >= 0 && button < 5) push({Event::MouseButton, button, down, 0, 0, 0, touch});
+        return true;
+    }
     if (!captures() || g_no_host) return false;
     if (button < 0 || button >= 5) return true;
     if (!touch && g_capturing_keys.load() && down) {
@@ -2793,6 +2824,10 @@ bool mouse_button(int button, bool down, bool touch) {
     return true;
 }
 bool mouse_wheel(float dx, float dy) {
+    if (!captures() && layer_takes_pointer() && !g_no_host) {
+        push({Event::Wheel, 0, false, dx, dy, 0});
+        return true;
+    }
     if (!captures() || g_no_host) return false;
     if (g_capturing_keys.load() && dy != 0) {
         g_capture_mods = 0; g_capture_key = dy > 0 ? input_map::kWheelUp : input_map::kWheelDown;
@@ -2980,7 +3015,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     setup_run_tick();
     modsui::tick(mods_host(), open);
     if (!open && !g_restart_notice.started()) restart_notice_frame(false);
-    g_wants_text = open && io.WantTextInput;
+    const int layer = open ? 0 : layer_mode();
+    g_wants_text = (open || layer) && io.WantTextInput;
     guesthud::frame();
     gfx::g_pip_preview=false;
     if (open) settings_window();
@@ -3011,6 +3047,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
         ImGui::End();
     }
+    g_layer_mouse = !open && layer && io.WantCaptureMouse;
     ImGui::Render();
     overlay_trace::state();
     return ImGui::GetDrawData();

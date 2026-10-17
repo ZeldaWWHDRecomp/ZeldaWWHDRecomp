@@ -1001,6 +1001,19 @@ void init() {
 
 void set_package_observer(PackageObserver observer){g_package_observer=observer;}
 
+// The world editor's model import (any thread but the game's: it runs the model tool). The archive is
+// prepared as load_world prepares a model at start-up; the caller registers it on the game thread.
+bool editor_prepare_model(const std::string& mod,const std::string& package_dir,const std::string& data_dir,const mods::json::Value& entry,std::string& archive,std::string& why){
+    story_notebook::ManifestModel model;model.id=entry.get("id").string();model.source=entry.get("source").string();model.kind=entry.get("kind").string("static");
+    if(model.id.empty()||model.source.empty())return why="the model has no id or source",false;
+    try {
+        const auto bridge=BuildBridge::installed(std::string());
+        const auto tool=std::filesystem::path(bridge.builder).parent_path().parent_path()/"story_mods"/(model.kind=="skinned"?"skinned_actor_model.py":"actor_model.py");
+        archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir);
+        return true;
+    } catch(const std::exception& e) {return why=e.what(),false;}
+}
+
 std::vector<ModIdentity> enabled_mods() {
     std::vector<ModIdentity> mods;for(const auto& mod:g_loaded)mods.push_back({mod.id,mod.version});return mods;
 }

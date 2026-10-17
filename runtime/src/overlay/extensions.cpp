@@ -22,6 +22,7 @@ std::vector<Shortcut> g_shortcuts;
 ReleaseGate g_taken;  // the inputs a shortcut took, until each one is released
 TextInput g_text_input;
 std::vector<FrameLayer> g_frame_layers;
+InputLayer g_input_layer;
 
 bool too_late(const char* what) {
     if (!g_sealed.load(std::memory_order_acquire)) return false;
@@ -99,6 +100,11 @@ void add_frame_layer(FrameLayer layer) {
     g_frame_layers.push_back(std::move(layer));
 }
 
+void set_input_layer(InputLayer layer) {
+    if (too_late("set_input_layer")) return;
+    g_input_layer = std::move(layer);
+}
+
 void seal() {
     if (g_sealed.load(std::memory_order_acquire)) return;
     // The render thread's first frame and the input thread's first shortcut poll may both get here
@@ -158,6 +164,7 @@ bool poll_shortcuts(PadValues& pad, bool menu_open) {
 }
 const TextInput& text_input() { seal(); return g_text_input; }
 const std::vector<FrameLayer>& frame_layers() { seal(); return g_frame_layers; }
+const InputLayer& input_layer() { seal(); return g_input_layer; }
 
 void reset_for_test() {
     g_sealed = false;
@@ -170,6 +177,7 @@ void reset_for_test() {
     g_taken = ReleaseGate{};
     g_text_input = nullptr;
     g_frame_layers.clear();
+    g_input_layer = InputLayer{};
 }
 
 }  // namespace overlay::ext

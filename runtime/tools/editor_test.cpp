@@ -77,6 +77,48 @@ struct FakeHost : editor::Host {
         last_state = (save ? "save " : "load ") + std::to_string(slot) + " " + mod;
         return true;
     }
+    // building: the ground is at y 5 everywhere near the sea square, the camera flies at (100, 500, 200)
+    float ground_height = 5;
+    bool has_ground = true, camera_on = false, is_playing = false, last_restore = false, last_from_camera = false;
+    std::string preview, prepared;
+    int focused = 0;
+    bool ground(const editor::WorldPoint&, float& h, std::string& why) override {
+        if (!has_ground) return why = "no ground below", false;
+        h = ground_height;
+        return true;
+    }
+    bool ray(const editor::WorldPoint& from, const editor::WorldPoint& d, float range, editor::WorldPoint& hit, std::string& why) override {
+        if (d.y >= 0) return why = "the ray meets no ground", false;
+        const float t = (from.y - ground_height) / -d.y;
+        if (t > range) return why = "too far", false;
+        hit = {from.x + d.x * t, ground_height, from.z + d.z * t};
+        return true;
+    }
+    editor::Place camera() override {
+        editor::Place p;
+        p.valid = camera_on;
+        p.stage = "sea";
+        p.room = 44;
+        p.position = {100, 500, 200};
+        p.angle = 16384;
+        return p;
+    }
+    bool focus(const editor::WorldPoint&, std::string&) override { return ++focused, true; }
+    bool prepare_model(const std::string& mod, const std::string&, const Value& model, std::string& note, std::string&) override {
+        prepared = mod + ":" + model.get("id").string();
+        note = "prepared";
+        return true;
+    }
+    bool preview_text(const std::string& text, bool close, std::string&) override { return preview = close ? "" : text, true; }
+    bool play(bool from_camera, bool restore, std::string&) override {
+        is_playing = true, last_from_camera = from_camera, last_restore = restore;
+        return true;
+    }
+    bool stop(std::string& why) override {
+        if (!is_playing) return why = "not playing", false;
+        return is_playing = false, true;
+    }
+    bool playing() override { return is_playing; }
 };
 
 Value json(const char* text) { return mods::json::parse(text); }
@@ -407,6 +449,188 @@ void stage_tables() {
 }
 }  // namespace
 
+// ---------------------------------------------------------------- building new content
+const Value* actor_of(const editor::Session& s, const std::string& id) {
+    for (const auto& a : s.manifest(s.open_mod())->get("actors").array)
+        if (a.get("id").string() == id) return &a;
+    return nullptr;
+}
+fs::path temp_dir(const char* name) {
+    const fs::path dir = fs::temp_directory_path() / (std::string("wwhd-editor-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::remove_all(dir);
+    return dir;
+}
+
+void building(const fs::path& examples) {
+    FakeHost host;
+    editor::Session s(&host);
+    s.add_package("editor-test", "Editor test", "", json(kManifest));
+    Value r = s.run("list_actor_types");
+    CHECK(ok(r) && r.get("result").array.size() == 15);
+
+    // add: at Link (sea room 44, heading 100 of 65536), snapped onto the ground (y 5); one undo step
+    r = s.run("add_actor", json(R"({"type": "sign"})"));
+    CHECK(ok(r) && r.get("result").get("id").string() == "sign");
+    const Value* a = actor_of(s, "sign");
+    CHECK(a && a->get("stage").string() == "sea" && a->get("room").number == 44 && a->get("position").get("y").number == 5);
+    CHECK(a && a->get("flag").string() == "sign-read" && a->get("rotation").get("y").number == 0.5);
+    CHECK(host.last_changed.size() == 1 && host.last_changed[0] == "sign" && host.last_actors.size() == 3);
+    r = s.run("add_actor", json(R"({"type": "sign", "snap": false})"));
+    CHECK(ok(r) && r.get("result").get("id").string() == "sign-2" && actor_of(s, "sign-2")->get("position").get("y").number == 2);
+    CHECK(ok(s.run("undo")) && !actor_of(s, "sign-2"));
+    CHECK(ok(s.run("redo")) && actor_of(s, "sign-2"));
+    // at the camera (off: refused) and at a position on the sea (its square is the room)
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "chest", "at": "camera"})"))));
+    host.camera_on = true;
+    r = s.run("add_actor", json(R"({"type": "chest", "at": "camera", "id": "box"})"));
+    CHECK(ok(r) && actor_of(s, "box")->get("position").get("x").number == 100 && actor_of(s, "box")->get("rotation").get("y").number == 90);
+    r = s.run("add_actor", json(R"({"type": "resident", "at": "position", "position": {"x": 0, "y": 900, "z": -201500}, "stage": "sea", "options": {"resident": "um1"}})"));
+    CHECK(ok(r) && actor_of(s, "resident")->get("room").number == 11 && actor_of(s, "resident")->get("parameters").get("resident").string() == "um1");
+    // no ground below: placed where asked, with a note
+    host.has_ground = false;
+    r = s.run("add_actor", json(R"({"type": "crate"})"));
+    CHECK(ok(r) && r.get("result").get("snap_note").type == Value::String && actor_of(s, "crate")->get("broken_flag").string() == "crate-broken");
+    host.has_ground = true;
+    // a door needs a switch; enemies; a model type needs a model
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "door"})"))));
+    CHECK(ok(s.run("add_actor", json(R"({"type": "switch"})"))));
+    r = s.run("add_actor", json(R"({"type": "door"})"));
+    CHECK(ok(r) && actor_of(s, "door")->get("switch").string() == "switch");
+    CHECK(ok(s.run("add_actor", json(R"({"type": "bokoblin"})"))) && actor_of(s, "bokoblin")->get("defeated_flag").string() == "bokoblin-defeated");
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "model"})"))));
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "dragon"})"))));
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "sign", "id": "Bad Id"})"))));
+    CHECK(!ok(s.run("add_actor", json(R"({"type": "sign", "id": "guide"})"))));  // taken
+
+    // remove: needs confirm; the switch a door uses can't go; undo brings it back
+    CHECK(!ok(s.run("remove_actor", json(R"({"id": "sign-2"})"))));
+    CHECK(ok(s.run("remove_actor", json(R"({"id": "sign-2", "confirm": true})"))) && !actor_of(s, "sign-2"));
+    CHECK(!ok(s.run("remove_actor", json(R"({"id": "switch", "confirm": true})"))) && actor_of(s, "switch"));
+    CHECK(ok(s.run("undo")) && actor_of(s, "sign-2"));
+
+    // duplicate: a new id with flags of its own, next to it
+    r = s.run("duplicate_actor", json(R"({"id": "sign-a"})"));
+    CHECK(ok(r) && r.get("result").get("id").string() == "sign-a-2");
+    a = actor_of(s, "sign-a-2");
+    CHECK(a && a->get("flag").string() == "sign-a-2-read" && a->get("position").get("x").number == 110);
+    CHECK(ok(s.run("duplicate_actor", json(R"({"id": "switch", "new_id": "switch-b", "offset": {"x": 0, "y": 0, "z": 50}})"))));
+    CHECK(actor_of(s, "switch-b")->get("switch_flag").string() == "switch-b-pressed");
+
+    // place: at the camera, at Link, on the ground below
+    CHECK(ok(s.run("place_actor", json(R"({"id": "sign-a", "at": "camera"})"))) && actor_of(s, "sign-a")->get("position").get("z").number == 200);
+    host.ground_height = 40;
+    r = s.run("place_actor", json(R"({"id": "sign-a", "at": "ground"})"));
+    CHECK(ok(r) && actor_of(s, "sign-a")->get("position").get("y").number == 40 && actor_of(s, "sign-a")->get("position").get("z").number == 200);
+    CHECK(!ok(s.run("place_actor", json(R"({"id": "sign-a", "at": "moon"})"))));
+    // pick: a ray from above at 45 degrees meets the ground
+    r = s.run("pick", json(R"({"origin": {"x": 0, "y": 140, "z": -201500}, "direction": {"x": 1, "y": -1, "z": 0}})"));
+    CHECK(ok(r) && std::fabs(r.get("result").get("position").get("x").number - 100) < 0.2 && r.get("result").get("room").number == 11);
+    CHECK(!ok(s.run("pick", json(R"({"origin": {"x": 0, "y": 140, "z": 0}, "direction": {"x": 0, "y": 1, "z": 0}})"))));
+
+    // then actions and drops: checked like the package
+    CHECK(ok(s.run("set_then", json(R"({"id": "sign-a", "actions": [{"action": "flag", "id": "sign-a-done"}]})"))));
+    CHECK(actor_of(s, "sign-a")->get("then").array.size() == 1);
+    CHECK(!ok(s.run("set_then", json(R"({"id": "sign-a", "actions": [{"action": "give", "id": "item:none"}]})"))));
+    CHECK(actor_of(s, "sign-a")->get("then").array.size() == 1);
+    CHECK(ok(s.run("set_then", json(R"({"id": "sign-a", "actions": []})"))) && actor_of(s, "sign-a")->get("then").type == Value::Null);
+    CHECK(!ok(s.run("set_drops", json(R"({"id": "crate", "drops": [{"item": "item:none", "quantity": 1}]})"))));
+    CHECK(ok(s.run("set_drops", json(R"({"id": "crate", "drops": []})"))));
+
+    // dialogue preview: the actor's lines or given ones, in the game's message box
+    CHECK(ok(s.run("preview_dialogue", json(R"({"id": "sign-a"})"))) && host.preview == "Hello.");
+    CHECK(ok(s.run("preview_dialogue", json(R"({"lines": ["One", "Two"]})"))) && host.preview == "One\nTwo");
+    CHECK(ok(s.run("preview_dialogue", json(R"({"close": true})"))) && host.preview.empty());
+
+    // focus, play and stop
+    CHECK(ok(s.run("focus", json(R"({"id": "guide"})"))) && host.focused == 1);
+    CHECK(ok(s.run("play", json(R"({"from": "link", "restore": false})"))) && host.is_playing && !host.last_from_camera && !host.last_restore);
+    CHECK(ok(s.run("stop")) && !host.is_playing && !ok(s.run("stop")));
+    CHECK(ok(s.run("play")) && host.last_from_camera && host.last_restore);
+    CHECK(!ok(s.run("play", json(R"({"from": "moon"})"))));
+
+    // a refused package: the problem names the actor and the field
+    Value broken = json(kManifest);
+    broken["actors"].array[0].object.erase("flag");
+    editor::Session b(&host);
+    b.add_package("editor-test", "Editor test", "", broken);
+    r = b.run("check_package");
+    CHECK(ok(r) && r.get("result").get("problems").array.size() == 1);
+    CHECK(r.get("result").get("problems").array[0].get("id").string() == "sign-a" && r.get("result").get("problems").array[0].get("field").string() == "flag");
+    // the package as a whole is still valid; every step is in the log
+    r = s.run("check_package");
+    CHECK(ok(r) && r.get("result").get("valid").boolean);
+    CHECK(s.log().back().command == "check_package");
+
+    // models: check, import into the package (one undo step), use, export
+    const fs::path dir = temp_dir("build");
+    fs::copy(examples / "sdk-v3-windfall", dir, fs::copy_options::recursive);
+    std::ifstream in(dir / "manifest.json");
+    std::stringstream text;
+    text << in.rdbuf();
+    in.close();  // Windows cannot replace or delete a file that is still open
+    editor::Session w(&host);
+    w.add_package("sdk-v3-windfall", "Windfall", dir.string(), mods::json::parse(text.str()));
+    const std::string creature = (examples / "sdk-v3-creature" / "assets" / "creature.glb").string();
+    Value p;
+    p["file"] = creature;
+    r = w.run("check_model", p);
+    CHECK(ok(r) && r.get("result").get("kind").string() == "skinned" && r.get("result").get("bones").number >= 1 && !r.get("result").get("clips").array.empty());
+    p["file"] = (examples / "sdk-v3-windfall" / "assets" / "carved_post.glb").string();
+    r = w.run("check_model", p);
+    CHECK(ok(r) && r.get("result").get("kind").string() == "static" && r.get("result").get("triangles").number > 0);
+    std::ofstream(dir / "broken.glb") << "not a model";
+    p["file"] = (dir / "broken.glb").string();
+    r = w.run("check_model", p);
+    CHECK(!ok(r) && r.get("error").string().rfind("Size", 0) == 0);
+    fs::remove(dir / "broken.glb");
+    p["file"] = creature;
+    r = w.run("import_model", p);
+    CHECK(ok(r) && fs::exists(dir / "models" / "creature.glb") && host.prepared == "sdk-v3-windfall:creature");
+    CHECK(!ok(w.run("import_model", p)));  // the id is taken
+    r = w.run("add_actor", json(R"({"type": "model", "model": "creature", "at": "position", "position": {"x": 0, "y": 1040, "z": -201400}, "stage": "sea"})"));
+    CHECK(ok(r) && r.get("result").get("id").string() == "creature");
+    CHECK(ok(w.run("undo")) && ok(w.run("undo")));
+    CHECK(w.manifest("sdk-v3-windfall")->get("models").array.size() == 2);
+
+    // problems: each with what it is about
+    Value bad = *w.manifest("sdk-v3-windfall");
+    bad["models"].array[0]["source"] = "assets/missing.glb";
+    editor::Session v(&host);
+    v.add_package("sdk-v3-windfall", "Windfall", dir.string(), bad);
+    r = v.run("check_package");
+    CHECK(ok(r) && !r.get("result").get("valid").boolean);
+    bool model_problem = false;
+    for (const auto& pr : r.get("result").get("problems").array) model_problem |= pr.get("kind").string() == "model" && pr.get("id").string() == "carved-post";
+    CHECK(model_problem);
+    Value bad_export;  // built as a value: a Windows path has backslashes that are not JSON escapes
+    bad_export["confirm"] = true;
+    bad_export["path"] = dir.string() + "-out";
+    CHECK(!ok(v.run("export_package", bad_export)));
+
+    // export: a new folder with the manifest and the package's files; never into the package, never game files
+    const fs::path out = temp_dir("export");
+    Value e;
+    e["path"] = out.string();
+    CHECK(!ok(w.run("export_package", e)));  // confirm
+    e["confirm"] = true;
+    fs::create_directories(dir / "assets" / "__pycache__");
+    std::ofstream(dir / "assets" / "__pycache__" / "tool.cpython-312.pyc") << "x";
+    std::ofstream(dir / ".hidden") << "x";
+    r = w.run("export_package", e);
+    CHECK(!fs::exists(out / "assets" / "__pycache__") && !fs::exists(out / ".hidden"));
+    if (!ok(r)) std::fprintf(stderr, "export: %s\n", r.get("error").string().c_str());
+    CHECK(ok(r) && fs::exists(out / "manifest.json") && fs::exists(out / "assets" / "carved_post.glb") && fs::exists(out / "models" / "creature.glb"));
+    CHECK(!ok(w.run("export_package", e)));  // not empty now
+    e["path"] = (dir / "inside").string();
+    CHECK(!ok(w.run("export_package", e)));
+    std::ofstream(dir / "assets" / "stolen.szs") << "x";
+    e["path"] = (out.string() + "-2");
+    r = w.run("export_package", e);
+    CHECK(!ok(r) && r.get("error").string().find("stolen.szs") != std::string::npos && !fs::exists(out.string() + "-2"));
+    fs::remove_all(dir);
+    fs::remove_all(out);
+}
+
 int main(int argc, char** argv) {
     // editor_test --game <game dir> [stage room]: what the editor reads from a game folder (manual check)
     if (argc >= 3 && std::string(argv[1]) == "--game") {
@@ -427,6 +651,7 @@ int main(int argc, char** argv) {
     locations();
     records();
     package_files(argv[1]);
+    building(argv[1]);
     stage_tables();
     if (g_failures) {
         std::fprintf(stderr, "editor_test: %d failure(s)\n", g_failures);

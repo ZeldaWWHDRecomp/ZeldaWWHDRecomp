@@ -45,13 +45,21 @@ void state_loaded();
 void restore_talk_text();
 uint32_t actor_address(Cpu*,const std::string& mod,const std::string& id);
 // World editor (live reload, main game thread): `actors` are all of the mod's actors as the changed manifest
-// declares them; the ones named in `changed` are removed from the game and created again from their new
-// spec (in their room, once it is the player's). The same actors (ids, game or mod kind) must be declared
-// as at start-up and mod models must be prepared ones. False with a reason leaves everything unchanged.
-bool editor_update(const std::string& mod,const std::vector<story_notebook::ManifestActor>& actors,const std::vector<std::string>& changed,std::string& why);
+// declares them; `changed` the ids whose declaration differs. Changed actors are removed from the game and
+// created again from their new spec (in their room, once it is the player's); new actors are created and
+// actors missing from the list are removed (kept for an undo). Kinds whose state is declared at start-up
+// (editor_restart_only) and models not prepared yet keep their old state: `pending` lists them with the
+// reason, for a restart. False with a reason (a list the start-up checks refuse) leaves everything unchanged.
+bool editor_update(const std::string& mod,const std::vector<story_notebook::ManifestActor>& actors,const std::vector<std::string>& changed,std::string& why,
+                   std::vector<std::string>* pending=nullptr);
 // true for kinds whose changes take effect only after a restart (native props, switches, doors and
-// enemies, mod enemies and carried props): the editor says so instead of reloading them live
+// enemies, mod enemies and carried props)
 bool editor_restart_only(const story_notebook::ManifestActor&);
+// whether a new actor of this spec can be created while the game runs (else `why` says what waits)
+bool editor_live_capable(const std::string& mod,const story_notebook::ManifestActor&,std::string& why);
+// World editor (main game thread): a model imported while the game runs, prepared as `archive`
+// (actor_model_cache): actors can use it from now on.
+bool editor_register_model(const std::string& mod,const std::string& model,const std::string& archive,bool skinned,std::string& why);
 // actors removed for the editor and not created again yet
 unsigned editor_pending();
 bool position(Cpu*,const std::string& mod,const std::string& id,story_notebook::WorldPoint& out);

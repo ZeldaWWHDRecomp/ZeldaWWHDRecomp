@@ -53,6 +53,10 @@ bool blocks_input();
 // the overlay has keyboard, mouse and controller: the menu is open or the game's text prompt shows
 // (text_entry.h); hosts route the pointer by this
 bool captures();
+// the world editor's overlays (extensions.h InputLayer): a layer is active while the menu is closed, and
+// takes the pointer now (its mode, or the pointer over one of its windows)
+bool pointer_layer_active();
+bool layer_takes_pointer();
 // the renderer draws the overlay (frame() ran within the last second): the text prompt can show
 bool alive();
 bool perf_shown();          // performance overlay (FPS, frame time) on

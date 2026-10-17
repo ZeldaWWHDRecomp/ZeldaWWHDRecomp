@@ -1,4 +1,4 @@
-// World editor, phase E0: the command layer (docs/mod-editor.md).
+// World editor: the command layer (docs/mod-editor.md).
 //
 // Every editor action is one command: a name, JSON parameters, a JSON result. The Editor area of the
 // settings overlay calls only Session::run, and so will a later tool interface: there is no other way
@@ -85,6 +85,29 @@ public:
                                unsigned& erased, std::string& why) = 0;
     // Test mode only: the editor's own state slots (1..kTestSlots); a test state keeps the mod's records.
     virtual bool test_state(bool save, int slot, const std::string& mod, const std::vector<Record>& own, std::string& why) = 0;
+
+    // ---- building new content (each optional: the defaults say the game is not there) ----
+    // The ground under `above` (the game's own collision check): its height. False: no ground below.
+    virtual bool ground(const WorldPoint& above, float& height, std::string& why) { return why = "the game is not running", false; }
+    // The first ground the ray from `from` along `direction` (unit length) meets within `range` units.
+    virtual bool ray(const WorldPoint& from, const WorldPoint& direction, float range, WorldPoint& hit, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // The fly camera's place: its position, heading and the room under it (invalid while it is off).
+    virtual Place camera() { return {}; }
+    // Points the fly camera at `target` from a short distance (turns it on first if needed).
+    virtual bool focus(const WorldPoint& target, std::string& why) { return why = "the game is not running", false; }
+    // A model of `mod` was added or changed (its manifest entry; the file is in the package `dir`):
+    // convert and prepare it for the game, so actors can use it without a restart where possible.
+    virtual bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // Shows `text` in the game's own message box (close: hides it again).
+    virtual bool preview_text(const std::string& text, bool close, std::string& why) { return why = "the game is not running", false; }
+    // Play: the editor hides, Link plays from the camera's place or his own, in test mode; Stop goes back.
+    virtual bool play(bool from_camera, bool restore, std::string& why) { return why = "the game is not running", false; }
+    virtual bool stop(std::string& why) { return why = "the game is not running", false; }
+    virtual bool playing() { return false; }
 };
 inline constexpr int kTestSlots = 3;
 
@@ -163,9 +186,47 @@ private:
     std::vector<std::pair<std::string, Value>> all_manifests() const;
     std::vector<Location> locations() const;
     bool warp_to(const Location& to, std::string& why);
+    // the building commands (commands_build.cpp): add, remove, place, models, dialogue, export, play
+    Value dispatch_build(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    bool where(const Value& params, Place& place, std::string& why);  // at: link, camera or position (snapped)
+};
+
+// One problem of a package, with what it is about (for the editor's problem list: a click selects it).
+struct Problem {
+    std::string message;
+    std::string kind;   // "actor", "model", "scene", "quest", "item", "file" or "package"
+    std::string id;     // the actor's (model's...) id; empty for the whole package
+    std::string field;  // the field when known ("position", "model", ...)
 };
 
 // ---- pure helpers (unit-tested) ----
+// Every problem of the package: each actor, model, scene and quest checked on its own (as the mod
+// manager checks the whole), the model files, then the whole package. Empty: it is valid.
+std::vector<Problem> package_problems(const std::string& mod, const Value& manifest, const std::vector<std::pair<std::string, Value>>& all,
+                                      const std::string& dir);
+// The types `add_actor` places, with what each needs.
+struct ActorType {
+    std::string type, label, group, help;
+    bool needs_model = false;  // a mod model (static or skinned)
+    bool skinned = false;      // a skinned model only
+    bool live = true;          // appears without a restart (where the game has the kind already)
+};
+const std::vector<ActorType>& actor_types();
+// A new placed actor of `type` (actor_types) with id `id` at `place`, valid on its own: the flags it
+// needs get ids of its own. `model` for model types; `options` may name "resident", "switch", "lines".
+bool new_actor(const std::string& type, const std::string& id, const Place& place, const std::string& model, const Value& manifest,
+               const Value& options, Value& out, std::string& why);
+// A free actor id from `base` ("sign", "sign-2", ...).
+std::string free_id(const Value& list, const std::string& base);
+// A copy of the actor `a` under id `id`, with its own flags (each flag id gets the new id).
+Value duplicate_actor(const Value& a, const std::string& id);
+// A .glb file checked as the game would take it: {"kind", "size", "vertices", "triangles", "texture",
+// "bones", "clips"} or false with a message that says which limit (size, triangles, texture, bones,
+// clips, material) it breaks.
+bool check_model_file(const std::string& path, Value& info, std::string& why);
+// Writes the package (manifest plus the package's own files, never game files) into `dest`, a new or
+// empty folder. `written`: the files.
+bool export_package(const std::string& dir, const Value& manifest, const std::string& dest, std::vector<std::string>& written, std::string& why);
 // The manifest of `mod` as the mod manager checks it (models, actors, scenes, quests), together with the
 // other active packages (actor and room limits, flag collisions).
 bool validate_package(const std::string& mod, const Value& manifest, const std::vector<std::pair<std::string, Value>>& all,

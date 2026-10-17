@@ -48,6 +48,9 @@ void report_heaps(uint32_t a,const char* stage,const HeapSnapshot& before,const 
 constexpr uint32_t RecordStart=512,RecordStride=28;
 static_assert(RecordStart+128*RecordStride<=kScratchBytes);
 uint32_t record(size_t i){return scratch+RecordStart+uint32_t(i)*RecordStride;}
+// A declaration added while the game runs (the world editor) whose archive is loaded already: the
+// archive's measurements were taken when it loaded, for the declarations of that time.
+void inherit_measurements(size_t i){if(!scratch||i>=declarations.size())return;for(size_t j=0;j<declarations.size();++j)if(j!=i&&declarations[j].archive==declarations[i].archive)for(uint32_t field:{8u,12u})st32(record(i)+field,std::max(ld32(record(i)+field),ld32(record(j)+field)));}
 void model_cost(const Decl* own,uint32_t field,uint32_t bytes){for(size_t i=0;i<declarations.size();++i)if(declarations[i].archive==own->archive){const uint32_t at=record(i)+field;st32(at,std::max(ld32(at),bytes));}}
 bool check_budget(Cpu*c,uint32_t actor,std::string& why){
     std::vector<budget::Record> records;records.reserve(declarations.size());
@@ -506,7 +509,8 @@ void base_allocated(uint32_t token,uint32_t,uint32_t bytes){if(token&&token<=dec
 }
 size_t checkpoint(){return declarations.size();}
 void rollback(size_t count) noexcept{if(!installed&&count<=declarations.size())declarations.resize(count);}
-void configure(void(*o)(Cpu*,uint32_t),uint32_t(*i)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t s){original=o;invoke=i;scratch=s;native_actor_profiles::configure(o,i);}
+void configure(void(*o)(Cpu*,uint32_t),uint32_t(*i)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t s){original=o;invoke=i;scratch=s;native_actor_profiles::configure(o,i);declarations.reserve(128);}
+bool live_ready(){return installed;}
 namespace {
 // declare's checks, shared with redeclare so both validate identically: false for a spec the
 // model can't serve; head/upper are the look_at joints
@@ -527,7 +531,7 @@ bool checked(const story_notebook::ManifestActor&spec,const std::string&archive,
 uint32_t declare(const std::string&mod,const story_notebook::ManifestActor&spec,const std::string&archive,int index,std::function<void()> talked,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig){
     int head=-1,upper=-1;
     if(!checked(spec,archive,index,minimum,maximum,skinned,clips,rig,head,upper)||declarations.size()>=128)return 0;
-    declarations.push_back({mod,archive,spec,index,std::move(talked),minimum,maximum,skinned,std::move(clips),std::move(rig),head,upper,spec.combat_enabled,{}});declarations.back().fingerprint=story_actors::identity::fingerprint(mod+std::string(1,'\0')+archive,spec);return uint32_t(declarations.size());
+    declarations.push_back({mod,archive,spec,index,std::move(talked),minimum,maximum,skinned,std::move(clips),std::move(rig),head,upper,spec.combat_enabled,{}});declarations.back().fingerprint=story_actors::identity::fingerprint(mod+std::string(1,'\0')+archive,spec);if(installed)inherit_measurements(declarations.size()-1);return uint32_t(declarations.size());
 }
 bool redeclare(uint32_t token,const story_notebook::ManifestActor&spec,const std::string&archive,int index,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig,bool apply){
     if(!token||token>declarations.size())return false;auto&d=declarations[token-1];if(d.spec.id!=spec.id)return false;
@@ -536,7 +540,7 @@ bool redeclare(uint32_t token,const story_notebook::ManifestActor&spec,const std
     int head=-1,upper=-1;if(!checked(spec,archive,index,minimum,maximum,skinned,clips,rig,head,upper))return false;
     if(!apply)return true;
     d.spec=spec;d.archive=archive;d.index=index;d.minimum=minimum;d.maximum=maximum;d.skinned=skinned;d.clips=std::move(clips);d.rig=std::move(rig);d.head=head;d.upper=upper;
-    d.fingerprint=story_actors::identity::fingerprint(d.mod+std::string(1,'\0')+archive,spec);return true;
+    d.fingerprint=story_actors::identity::fingerprint(d.mod+std::string(1,'\0')+archive,spec);if(installed)inherit_measurements(size_t(token-1));return true;
 }
 bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;const bool has_carry=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.carry_enabled;});if(has_carry){for(const auto&d:declarations)if(d.spec.carry_break_on_impact&&!d.carry_break)return false;if(!native_actor_carry::configure(original,invoke)||!native_actor_carry::register_guard("mod-actor-carry",deny_carry)||!native_actor_carry::available(owner)||!owner(GC(0x0240A41C)).empty()||!owner(GC(0x023DCF8C)).empty()||!mod_actor_knockback::configure(invoke,knockback_identity))return false;}const bool has_combat=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.combat_enabled;});if(has_combat&&(!attention::configure(original,combat_priority)||!attention::available(owner)||!mod_actor_native_combat::configure(invoke,source_identity)||!mod_actor_knockback::configure(invoke,knockback_identity)))return false;if(declarations.empty()||!scratch||!invoke||!original||!native_actor_profiles::available(owner)||!owner(GC(0x02604550)).empty()||!owner(GC(0x02604EB4)).empty()||!owner(GC(0x02612E64)).empty())return false;std::memset(mem::ptr(scratch+256),0,kScratchBytes-256);uint32_t native=ld32(GD(0x101F3EE0)+0xB6*4);if(!native)return false;for(unsigned i=0;i<0x30;i+=4)st32(scratch+i,ld32(native+i));st16(scratch+8,kProfile);st32(scratch+0x10,Size);st32(scratch+0x14,0);st32(scratch+0x18,0);st32(scratch+0x24,scratch+0x30);st32(scratch+0x28,0x44100);st8(scratch+0x2C,0);st8(scratch+0x2D,14);void(*methods[])(Cpu*)={create,destroy,execute,is_delete,draw};for(unsigned i=0;i<5;++i)st32(scratch+0x30+i*4,dispatch::register_host(methods[i],"mod_actor_method"));LOG("[mod_actor] profile=%08X execute=%08X class_bytes=%u",scratch,ld32(scratch+0x38),Size);heap_callback=dispatch::register_host(heap,"mod_actor_heap");look_callback=dispatch::register_host(pre_joint,"mod_actor_look_joint");post_callback=dispatch::register_host(post_joint,"mod_actor_look_post_joint");if(!native_actor_profiles::add(kProfile,scratch,base_allocated)||!native_actor_profiles::install(owner,replace))return false;replace(GC(0x02604550),resource_table);replace(GC(0x02604EB4),archive_wrapper);replace(GC(0x02612E64),backing_archive_wrapper);if(has_combat){story_enemy_ownership::set_mod_collider_verifier(classify_combat_collider);if(!attention::install(owner,replace))return false;}if(has_carry){if(!native_actor_carry::install(owner,replace))return false;replace(GC(0x0240A41C),carry_attach);replace(GC(0x023DCF8C),carry_release);}installed=true;return true;}
 bool set_carry_break(const std::string&mod,const std::string&id,std::function<bool()>cb){if(installed||!cb)return false;for(auto&d:declarations)if(d.mod==mod&&d.spec.id==id&&d.spec.carry_break_on_impact){d.carry_break=std::move(cb);return true;}return false;}

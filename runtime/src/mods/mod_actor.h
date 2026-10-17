@@ -73,6 +73,9 @@ uint32_t declare(const std::string& mod,const story_notebook::ManifestActor&,con
 // effect after a restart). False leaves the declaration unchanged; apply=false only checks.
 bool redeclare(uint32_t token,const story_notebook::ManifestActor&,const std::string& archive,int resource_index,
                story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig,bool apply=true);
+// World editor: the profile is installed, so declare() may add actors while the game runs (their
+// records are in place for all 128 declarations).
+bool live_ready();
 bool install(const std::function<std::string(uint32_t)>& replaced_by,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
 void state_loaded();
 bool talking(uint32_t actor);
