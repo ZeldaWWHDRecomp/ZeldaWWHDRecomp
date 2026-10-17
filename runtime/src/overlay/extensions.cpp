@@ -64,6 +64,7 @@ void add_tab(Tab tab, const char* before_id) {
     t.name = std::move(tab.name);
     t.draw = std::move(tab.draw);
     t.shoulder = std::move(tab.shoulder);
+    t.shown = std::move(tab.shown);
     g_tabs.insert(g_tabs.begin() + at, std::move(t));
 }
 
@@ -128,7 +129,12 @@ int next_tab(int index, int direction) {
     seal();
     const int n = int(g_tabs.size());
     if (n == 0) return -1;
-    return ((index + direction) % n + n) % n;
+    int next = index;
+    for (int k = 0; k < n; k++) {
+        next = ((next + direction) % n + n) % n;
+        if (g_tabs[next].visible()) return next;
+    }
+    return index;
 }
 int shoulder(int index, int direction, const std::function<bool(int builtin, int direction)>& builtin_shoulder) {
     seal();

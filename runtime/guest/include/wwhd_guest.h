@@ -151,6 +151,40 @@ u32 wwhd_actor_set_animation(wwhd_actor_handle,const char* clip,f32 blend_second
 u32 wwhd_actor_walk(wwhd_actor_handle,const wwhd_actor_vec3* points,u32 count,f32 speed,u32 loop);
 u32 wwhd_actor_walk_quest(wwhd_actor_handle,const char* quest_id,f32 speed);
 u32 wwhd_actor_stop(wwhd_actor_handle);
+/* One-shot native particles from the curated named list. The actor call takes
+ * the current position of a live owned handle; the place call takes explicit
+ * world XYZ in Link's current room. Neither follows the actor after emission.
+ * Return 1 only when the native bank accepts the emitter. Both refuse Draw. */
+u32 wwhd_actor_particle(wwhd_actor_handle,const char* effect,f32 scale,u32 alpha);
+u32 wwhd_particle_at(const char* effect,f32 x,f32 y,f32 z,f32 scale,u32 alpha);
+/* Combat is opt-in immutable manifest configuration. These additions preserve v1
+ * behavior/hit/state layouts. on_hit remains informational; execute may poll. */
+enum { WWHD_COMBAT_ALIVE=0, WWHD_COMBAT_FLINCH=1, WWHD_COMBAT_STUNNED=2,
+       WWHD_COMBAT_DYING=3, WWHD_COMBAT_DEFEATED=4 };
+enum { WWHD_COMBAT_FLAG_ALIVE=1, WWHD_COMBAT_FLAG_ATTACKING=2,
+       WWHD_COMBAT_FLAG_SCENE_OWNED=4, WWHD_COMBAT_FLAG_QUARANTINED=8 };
+enum { WWHD_COMBAT_REWARD_NONE=0, WWHD_COMBAT_REWARD_PENDING=1,
+       WWHD_COMBAT_REWARD_CLAIMING=2, WWHD_COMBAT_REWARD_COMMITTED=3,
+       WWHD_COMBAT_REWARD_FAILED=4 };
+enum { WWHD_COMBAT_DROP_UNISSUED=0, WWHD_COMBAT_DROP_ISSUING=1,
+       WWHD_COMBAT_DROP_QUEUED=2, WWHD_COMBAT_DROP_FAILED=3,
+       WWHD_COMBAT_DROP_ADMITTED=4 };
+typedef struct {
+    u32 size,version,health,max_health,phase,flags,last_damage_sequence;
+    u32 reward_status,native_drop_status;
+    u32 invulnerability_frames,reaction_frames,attack_active_frames,attack_cooldown_frames;
+    u32 reserved[3];
+} wwhd_actor_combat_state_v1; /* 64 bytes. Initialize size=64, version=1. */
+/* Output must be owned static/package memory or live owned actor userdata.
+ * Failed queries leave the output unchanged. Queries are permitted in draw.
+ * Frame counts round up and use native 30 Hz logic frames, never display frames. */
+u32 wwhd_actor_combat_get(wwhd_actor_handle,wwhd_actor_combat_state_v1* state);
+/* Begin uses the declared attack, fails while unavailable/leased/cooling down.
+ * Cancel disables an attack without refunding its cooldown. Both deny draw.
+ * Native queued heart status describes issuance, never successful pickup. */
+u32 wwhd_actor_attack_begin(wwhd_actor_handle);
+u32 wwhd_actor_attack_cancel(wwhd_actor_handle);
+
 
 /* A scene music cue invokes this mod's real hook. A music step fails preflight
  * without one. RESTORE is sent once per distinct cue whose START or STOP callback

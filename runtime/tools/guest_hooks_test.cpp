@@ -119,28 +119,47 @@ bool register_model(const std::string&,const std::string&,const std::string&,int
 bool register_flags(const std::string&,const std::vector<std::string>&,std::string&){return true;}
 void service(Cpu*){}
 bool load(const std::string&,const std::vector<story_notebook::ManifestActor>&,std::string&){return true;}
+bool load(const std::string&,const std::vector<story_notebook::ManifestActor>&,std::string&,const std::vector<std::string>&){return true;}
 bool declared(){return false;}
 void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){}
 void set_scratch_memory(uint32_t){}
 void set_scene_start(std::function<bool(const std::string&,const std::string&)>){}
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void(*)(Cpu*))>&){}
 void state_loaded(){}
+void restore_talk_text(){}
 uint32_t actor_address(Cpu*,const std::string&,const std::string&){return 0;}
+bool particle_position(Cpu*,const std::string&,const std::string&,unsigned,story_notebook::WorldPoint&){return false;}
 bool actions(const std::string&,const std::vector<story_notebook::StoryAction>&){return true;}
 }
 namespace story_scenes {
 static MusicHook music_hook;
+size_t checkpoint(){return 0;}
+bool rollback(size_t) noexcept{return true;}
 bool register_music_hook(const std::string&,MusicHook hook){music_hook=std::move(hook);return true;}
 void set_place_resolver(ResolvePlace){}
 bool validate(const std::vector<story_notebook::ManifestScene>&,std::string&){return true;}
 void set_game_calls(uint32_t (*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){}
 void set_scratch_memory(uint32_t){}
 void set_callbacks(Resolve,Actions){}
+void set_particle_resolver(ResolveParticle){}
 bool declare(const std::string&,const std::vector<story_notebook::ManifestScene>&,std::string&){return true;}
 bool request(const std::string&,const std::string&){return false;}
 void tick(Cpu*,bool,unsigned){}
 void install(void (*)(Cpu*,uint32_t),const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void(*)(Cpu*))>&){}
 void state_loaded(){}
+}
+namespace story_actor_textures {
+size_t checkpoint(){return 0;}
+bool rollback(size_t) noexcept{return true;}
+uint32_t declare_png(const std::string&,std::span<const uint8_t>,std::string&){return 0;}
+bool allocate_session(){return true;}
+bool declared(){return false;}
+}
+namespace story_particles {
+bool configure(Invoke,uint32_t,uint32_t,uint32_t){return true;}
+bool burst(Cpu*,const Burst&){return false;}
+static unsigned calls=0;static bool accept=true;static std::string effect;static Placement placement;static Options options;
+bool burst_named(Cpu*,std::string_view e,const Placement&p,Options o){++calls;effect=e;placement=p;options=o;return accept;}
 }
 // Synthetic actor bridge: identities belong to one declared mod actor, and
 // process changes invalidate previously captured identities.
@@ -150,13 +169,19 @@ static Identity actor{"first","sprite",11,101},other{"first","other",12,102};
 static State current{};
 static uint32_t handle=0,other_handle=0;
 static unsigned paths_started=0;
+static bool combat_available=true;static unsigned attacks_begun=0,attacks_cancelled=0,combat_quarantines=0;static bool attack_live=false,other_attack_live=false;static uint32_t quarantined_token=0;
+static bool particle_identity=false;
 static constexpr uint32_t address=0x7F030000,userdata=0x7F020000;
 void set_behavior_sink(BehaviorSink value){sink=std::move(value);}
 uint32_t declaration_token(const std::string&m,const std::string&id){return m==actor.mod&&id==actor.id?actor.token:m==other.mod&&id==other.id?other.token:0;}
 bool identify(Cpu*,uint32_t a,Identity&out){if(a==address){out=actor;return true;}if(a==address+0x1000){out=other;return true;}return false;}
 bool live(const Identity&i){return (i.mod==actor.mod&&i.id==actor.id&&i.token==actor.token&&i.process_id==actor.process_id)||(i.mod==other.mod&&i.id==other.id&&i.token==other.token&&i.process_id==other.process_id);}
-uint32_t resolve(Cpu*,const Identity&i){return live(i)?address+(i.token==other.token?0x1000:0):0;}
+uint32_t resolve(Cpu*,const Identity&i){return live(i)?(particle_identity?0x10008000:address)+(i.token==other.token?0x1000:0):0;}
 bool snapshot(Cpu*,const Identity&i,State&out){if(!live(i))return false;out=current;return true;}
+bool combat_snapshot(Cpu*,const Identity&i,CombatState&out){if(!live(i)||!combat_available)return false;out={};out.health=i.token==actor.token?7:3;out.max_health=10;out.phase=1;out.flags=1;out.last_damage_sequence=19;out.reward_status=0;out.native_drop_status=2;out.invulnerability_frames=9;out.reaction_frames=8;out.attack_active_frames=0;out.attack_cooldown_frames=21;return true;}
+bool attack_begin(Cpu*,const Identity&i){if(!live(i)||!combat_available||current.scene_owned)return false;++attacks_begun;(i.token==other.token?other_attack_live:attack_live)=true;return true;}
+bool attack_cancel(Cpu*,const Identity&i){if(!live(i)||!combat_available)return false;++attacks_cancelled;(i.token==other.token?other_attack_live:attack_live)=false;return true;}
+void quarantine_combat(Cpu*,const Identity&i){assert(live(i));++combat_quarantines;quarantined_token=i.token;(i.token==other.token?other_attack_live:attack_live)=false;}
 bool set_position(Cpu*,const Identity&i,story_notebook::WorldPoint p){if(!live(i)||current.scene_owned)return false;current.position=p;return true;}
 bool set_rotation(Cpu*,const Identity&i,story_notebook::WorldPoint p){if(!live(i)||current.scene_owned)return false;current.rotation=p;return true;}
 bool set_collision(Cpu*,const Identity&i,float r,float h,bool e,bool p){if(!live(i)||current.scene_owned)return false;current.collision_radius=r;current.collision_height=h;current.collision_enabled=e;current.pushable=p;return true;}
@@ -202,6 +227,7 @@ const GameUi& game_ui() {static GameUi none;return none;}
 }
 // and so have the mod items (story_items_test) and the item icon archive (item_icons_test)
 namespace story_items {
+void set_model_presenter(std::function<void(uint16_t)>) {}
 bool define(const std::string&,const std::string&,const story_notebook::ManifestItem&,std::string&) {return false;}
 std::vector<Item> installed() {return {};}
 void set_frame_source(int (*)(uint16_t)) {}
@@ -250,8 +276,21 @@ void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::init
 void refresh_strip(Cpu*) {}
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void (*)(Cpu*))>&) {}
 }
+// Item presentation has its own native-routing/lifetime tests; this fixture isolates guest hooks.
+namespace story_item_models {
+bool declare(uint16_t,const std::string&,unsigned,std::string&,const std::string&) {return true;}
+size_t checkpoint() {return 0;}
+void rollback(size_t) noexcept {}
+void configure(uint32_t,void(*)(Cpu*,uint32_t),Invoke) {}
+bool install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void(*)(Cpu*))>&) {return true;}
+void request(uint16_t) {}
+void tick(Cpu*) {}
+void state_loaded() {}
+void progress_loaded() {}
+}
 // and so has the story progress store (story_notebook_test)
 namespace story_store {
+void set_progress_loaded(void(*)()) {}
 void set_memory(uint32_t) {}
 void set_game_calls(void (*)(Cpu*,uint32_t)) {}
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void (*)(Cpu*))>&) {}
@@ -265,12 +304,14 @@ static uint32_t actor_draw_result=99;
 static uint32_t actor_callback_result=1;
 static uint32_t actor_nested_handle=0,actor_nested_result=99;
 static bool actor_nested_active=false;
+static uint32_t actor_nested_attack_result=99,actor_draw_combat_query=99,actor_draw_attack_result=99;
 
 uint32_t guest_call(Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args) {
+    if(fn==GC(0x025200D4)){c->r[10]=0xDEAD;c->f[7].ps0=456;c->lr=0x123;return 0x10000000;}
     if(fn>=0x7F000090&&fn<=0x7F0000D0){
         actor_calls.push_back({fn,std::vector<uint32_t>(args),c->f[1].ps0});
-        if(actor_draw_mutation&&fn==0x7F0000B0){c->pc=fn;c->r[3]=*args.begin();c->f[1].ps0=999;guestmods::svc_actor_set_position(c);actor_draw_result=c->r[3];}
-        if(actor_nested_handle&&actor_nested_active&&fn==0x7F0000A0){c->pc=fn;c->r[3]=actor_nested_handle;c->f[1].ps0=777;guestmods::svc_actor_set_position(c);actor_nested_result=c->r[3];}
+        if(actor_draw_mutation&&fn==0x7F0000B0){c->pc=fn;c->r[3]=*args.begin();c->f[1].ps0=999;guestmods::svc_actor_set_position(c);actor_draw_result=c->r[3];c->r[3]=*args.begin();guestmods::svc_actor_attack_begin(c);actor_draw_attack_result=c->r[3];const uint32_t out=0x7F000880;st32(out,64);st32(out+4,1);c->r[3]=*args.begin();c->r[4]=out;guestmods::svc_actor_combat_get(c);actor_draw_combat_query=c->r[3];}
+        if(actor_nested_handle&&actor_nested_active&&fn==0x7F0000A0){c->pc=fn;c->r[3]=actor_nested_handle;c->f[1].ps0=777;guestmods::svc_actor_set_position(c);actor_nested_result=c->r[3];c->r[3]=actor_nested_handle;guestmods::svc_actor_attack_begin(c);actor_nested_attack_result=c->r[3];}
         else if(actor_nested_handle&&!actor_nested_active&&(fn==0x7F0000B0||fn==0x7F0000A0)){
             actor_nested_active=true;assert(guestmods::actor_dispatch(c,actor_nested_handle,mod_actor::behavior::Event::Execute));actor_nested_active=false;
         }
@@ -404,6 +445,37 @@ int main() {
     const uint32_t first_handle=mod_actor::handle;
     assert(first_handle&&actor_calls.back().function==data_base+0x90&&actor_calls.back().args==std::vector<uint32_t>({first_handle,mod_actor::userdata,0}));
     assert(ld32(mod_actor::userdata)==0);
+
+    // Exercise actual public particle service ABI against captured native boundary.
+    {
+#ifdef _WIN32
+        void* particle_mem=VirtualAlloc(mem::ptr(0x10000000),0x10000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
+#else
+        void* particle_mem=mmap(mem::ptr(0x10000000),0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+#endif
+        assert(particle_mem==mem::ptr(0x10000000));
+        st32(0x10005B34,0x10007000);st16(0x1000700E,0xA8);st32(0x10007004,55);st8(0x10007326,11);st8(0x10008326,11);
+        mod_actor::particle_identity=true;mod_actor::current.position={12,34,56};
+        const uint32_t name=data_base+0x900;std::strcpy(reinterpret_cast<char*>(mem::ptr(name)),"auction-sparkle");
+        auto request=[&](bool actor,uint32_t owner_pc,uint32_t handle,uint32_t string){
+            c.pc=owner_pc;c.r[3]=actor?handle:string;c.r[4]=actor?string:177;c.r[5]=188;
+            c.f[1].ps0=actor?1.25:101;c.f[2].ps0=202;c.f[3].ps0=303;c.f[4].ps0=2.5;
+            Cpu expected=c;if(actor)guestmods::svc_actor_particle(&c);else guestmods::svc_particle_at(&c);
+            const uint32_t result=c.r[3];expected.r[3]=result;assert(!memcmp(&expected,&c,sizeof c));return result;
+        };
+        g_logic_step.store(100);assert(request(true,data_base+0x100,first_handle,name)==1);
+        assert(story_particles::calls==1&&story_particles::effect=="auction-sparkle"&&story_particles::placement.room==11);
+        assert(story_particles::placement.position.x==12&&story_particles::placement.position.y==34&&story_particles::placement.position.z==56&&story_particles::options.scale==1.25&&story_particles::options.alpha==188);
+        assert(request(false,data_base+0x100,0,name)==1);assert(story_particles::placement.position.x==101&&story_particles::placement.position.y==202&&story_particles::placement.position.z==303&&story_particles::options.scale==2.5&&story_particles::options.alpha==177);
+        assert(!request(true,data_base+0x10100,first_handle,name));assert(!request(true,data_base+0x100,first_handle+999,name));assert(!request(false,data_base+0x100,0,data_base+0x10000));
+        guestmods::g_actor_draw_callback=true;assert(!request(true,data_base+0x100,first_handle,name));assert(!request(false,data_base+0x100,0,name));guestmods::g_actor_draw_callback=false;
+        st8(0x10008326,12);assert(!request(true,data_base+0x100,first_handle,name));st8(0x10008326,11);
+        st16(0x1000700E,0x175);assert(!request(false,data_base+0x100,0,name));st16(0x1000700E,0xA8);
+        assert(story_particles::calls==2);assert(request(false,data_base+0x100,0,name));assert(request(false,data_base+0x100,0,name));assert(!request(false,data_base+0x100,0,name));assert(story_particles::calls==4);
+        g_logic_step.store(101);story_particles::accept=false;assert(!request(false,data_base+0x100,0,name));assert(story_particles::calls==5);story_particles::accept=true;
+        const auto pid=mod_actor::actor.process_id;++mod_actor::actor.process_id;assert(!request(true,data_base+0x100,first_handle,name));mod_actor::actor.process_id=pid;
+        mod_actor::particle_identity=false;
+    }
     c.pc=data_base+0x100;c.r[3]=actor_id;guestmods::svc_actor_find(&c);assert(c.r[3]==first_handle);
     c.r[3]=first_handle;guestmods::svc_actor_userdata(&c);assert(c.r[3]==mod_actor::userdata);
     c.pc=data_base+0x10100;c.r[3]=first_handle;guestmods::svc_actor_userdata(&c);assert(c.r[3]==0);
@@ -412,6 +484,17 @@ int main() {
     st32(state,80);st32(state+4,1);assert(get(state)==1);
     st32(mod_actor::userdata,80);st32(mod_actor::userdata+4,1);assert(get(mod_actor::userdata)==1);
     assert(get(data_base+0x10000)==0&&get(mod_actor::userdata+240)==0&&get(0xFFFFFFF0)==0);
+    const uint32_t combat_out=data_base+0x880;
+    auto combat_get=[&](uint32_t handle,uint32_t out){c.r[3]=handle;c.r[4]=out;guestmods::svc_actor_combat_get(&c);return c.r[3];};
+    auto initialize_combat=[&](){std::memset(mem::ptr(combat_out),0xA5,64);st32(combat_out,64);st32(combat_out+4,1);};
+    initialize_combat();assert(combat_get(first_handle,combat_out)==1&&ld32(combat_out+8)==7&&ld32(combat_out+12)==10&&ld32(combat_out+24)==19&&ld32(combat_out+48)==21&&ld32(combat_out+52)==0&&ld32(combat_out+60)==0);
+    initialize_combat();std::array<uint8_t,64> untouched{};std::memcpy(untouched.data(),mem::ptr(combat_out),64);mod_actor::combat_available=false;assert(!combat_get(first_handle,combat_out)&&!std::memcmp(untouched.data(),mem::ptr(combat_out),64));mod_actor::combat_available=true;
+    for(unsigned bad_size:{0u,63u,65u}){initialize_combat();st32(combat_out,bad_size);std::memcpy(untouched.data(),mem::ptr(combat_out),64);assert(!combat_get(first_handle,combat_out)&&!std::memcmp(untouched.data(),mem::ptr(combat_out),64));}
+    initialize_combat();st32(combat_out+4,2);std::memcpy(untouched.data(),mem::ptr(combat_out),64);assert(!combat_get(first_handle,combat_out)&&!std::memcmp(untouched.data(),mem::ptr(combat_out),64));
+    initialize_combat();assert(!combat_get(first_handle,data_base+0x10000)&&!combat_get(first_handle,mod_actor::userdata+240)&&!combat_get(first_handle,0xFFFFFFF0)&&!combat_get(first_handle,combat_out+1));
+    c.pc=data_base+0x10100;assert(!combat_get(first_handle,combat_out));c.r[3]=first_handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==0);c.pc=data_base+0x100;
+    c.r[3]=first_handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==1&&mod_actor::attacks_begun==1);c.r[3]=first_handle;guestmods::svc_actor_attack_cancel(&c);assert(c.r[3]==1&&mod_actor::attacks_cancelled==1);
+    mod_actor::current.scene_owned=true;c.r[3]=first_handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==0);mod_actor::current.scene_owned=false;
     c.r[3]=first_handle;c.f[1].ps0=1;c.f[2].ps0=2;c.f[3].ps0=3;guestmods::svc_actor_set_position(&c);assert(c.r[3]==1&&mod_actor::current.position.x==1);
     c.r[3]=first_handle;c.f[1].ps0=10;c.f[2].ps0=20;c.f[3].ps0=30;guestmods::svc_actor_set_rotation(&c);assert(c.r[3]==1&&mod_actor::current.rotation.x==10&&mod_actor::current.rotation.z==30);
     c.r[3]=first_handle;c.r[4]=3;c.f[1].ps0=24;c.f[2].ps0=80;guestmods::svc_actor_set_collision(&c);assert(c.r[3]==1&&mod_actor::current.collision_radius==24&&mod_actor::current.collision_height==80&&mod_actor::current.pushable);
@@ -421,7 +504,7 @@ int main() {
     actor_saved=c;guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Execute,nullptr);
     assert(memcmp(&actor_saved,&c,sizeof c)==0&&actor_calls.back().dt==1.0/30.0);
     actor_draw_mutation=true;guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Draw,nullptr);actor_draw_mutation=false;
-    assert(actor_draw_result==0&&mod_actor::current.position.x==1&&memcmp(&actor_saved,&c,sizeof c)==0);
+    assert(actor_draw_result==0&&actor_draw_attack_result==0&&actor_draw_combat_query==1&&mod_actor::current.position.x==1&&memcmp(&actor_saved,&c,sizeof c)==0);
     for(unsigned phase=0;phase<3;++phase){guestmods::behavior_sink(&c,mod_actor::address,phase==0?mod_actor::BehaviorEvent::TalkBegin:phase==1?mod_actor::BehaviorEvent::TalkEnd:mod_actor::BehaviorEvent::TalkCancel,nullptr);assert(actor_calls.back().function==data_base+0xC0&&actor_calls.back().args[2]==phase);}
     mod_actor::Hit hit;hit.sequence=9;hit.attack_type=0x80;hit.attack_power=3;hit.source_kind=1;hit.position={4,5,6};hit.reaction={7,8,9};
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Hit,&hit);
@@ -446,20 +529,31 @@ int main() {
     std::strcpy(reinterpret_cast<char*>(mem::ptr(actor_id)),"sprite");
     actor_nested_handle=mod_actor::other_handle;assert(actor_nested_handle&&actor_nested_handle!=first_handle);actor_saved=c;
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Draw,nullptr);
-    assert(actor_nested_result==0&&mod_actor::current.position.x==1&&!guestmods::g_actor_draw_callback&&memcmp(&actor_saved,&c,sizeof c)==0);
+    assert(actor_nested_result==0&&actor_nested_attack_result==0&&mod_actor::current.position.x==1&&!guestmods::g_actor_draw_callback&&memcmp(&actor_saved,&c,sizeof c)==0);
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Execute,nullptr);
-    assert(actor_nested_result==1&&mod_actor::current.position.x==777&&!guestmods::g_actor_draw_callback&&memcmp(&actor_saved,&c,sizeof c)==0);
+    assert(actor_nested_result==1&&actor_nested_attack_result==1&&mod_actor::current.position.x==777&&!guestmods::g_actor_draw_callback&&memcmp(&actor_saved,&c,sizeof c)==0);
+    initialize_combat();c.pc=data_base+0x100;assert(combat_get(actor_nested_handle,combat_out)==1&&ld32(combat_out+8)==3); // Exact other actor state, not a cached first binding.
     actor_nested_handle=0;mod_actor::current.position.x=1;
     // State restore invalidates old handles while preserving native userdata.
     st32(mod_actor::userdata,0x12345678);guestmods::state_loaded();
     c.pc=data_base+0x100;c.r[3]=first_handle;guestmods::svc_actor_userdata(&c);assert(c.r[3]==0);
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::CreateRestored,nullptr);
     const uint32_t restored_handle=mod_actor::handle;assert(restored_handle!=first_handle&&ld32(mod_actor::userdata)==0x12345678&&actor_calls.back().args[2]==1);
-    ++mod_actor::actor.process_id;c.r[3]=restored_handle;guestmods::svc_actor_userdata(&c);assert(c.r[3]==0);
+    initialize_combat();std::memcpy(untouched.data(),mem::ptr(combat_out),64);assert(!combat_get(first_handle,combat_out)&&!std::memcmp(untouched.data(),mem::ptr(combat_out),64));
+    mod_actor::actor.process_id+=2;c.r[3]=restored_handle;guestmods::svc_actor_userdata(&c);assert(c.r[3]==0);
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::CreateNew,nullptr);assert(ld32(mod_actor::userdata)==0&&mod_actor::handle!=restored_handle);
+    assert(mod_actor::combat_quarantines==0); // Healthy callbacks and denied Draw mutations never quarantine.
+    c.pc=data_base+0x100;c.r[3]=mod_actor::handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==1&&mod_actor::attack_live);
     actor_callback_throws=true;actor_saved=c;guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Execute,nullptr);actor_callback_throws=false;
-    assert(memcmp(&actor_saved,&c,sizeof c)==0);const size_t quarantined_count=actor_calls.size();
+    assert(memcmp(&actor_saved,&c,sizeof c)==0&&mod_actor::combat_quarantines==1&&mod_actor::quarantined_token==mod_actor::actor.token&&!mod_actor::attack_live);const size_t quarantined_count=actor_calls.size();
+    initialize_combat();std::memcpy(untouched.data(),mem::ptr(combat_out),64);c.pc=data_base+0x100;assert(!combat_get(mod_actor::handle,combat_out)&&!std::memcmp(untouched.data(),mem::ptr(combat_out),64));c.r[3]=mod_actor::handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==0);
     guestmods::behavior_sink(&c,mod_actor::address,mod_actor::BehaviorEvent::Execute,nullptr);assert(actor_calls.size()==quarantined_count);
+    assert(mod_actor::combat_quarantines==1); // Already quarantined callbacks do not re-enter or issue work.
+    guestmods::behavior_sink(&c,mod_actor::address+0x1000,mod_actor::BehaviorEvent::CreateRestored,nullptr);
+    c.pc=data_base+0x100;c.r[3]=mod_actor::other_handle;guestmods::svc_actor_attack_begin(&c);assert(c.r[3]==1&&mod_actor::other_attack_live);
+    actor_saved=c;actor_callback_throws=true;guestmods::behavior_sink(&c,mod_actor::address+0x1000,mod_actor::BehaviorEvent::Draw,nullptr);actor_callback_throws=false;
+    assert(!memcmp(&actor_saved,&c,sizeof c)&&mod_actor::combat_quarantines==2&&mod_actor::quarantined_token==mod_actor::other.token&&!mod_actor::other_attack_live&&!guestmods::g_actor_draw_callback);
+
 #ifdef _WIN32
     VirtualFree(data,0,MEM_RELEASE);
 #else

@@ -18,6 +18,7 @@
 #include "guest_audio.h"
 #include "story_notebook_game.h"
 #include "guest_png.h"
+#include "mod_archive.h"
 #include "story_mail.h"
 #include "item_icons.h"
 #include "story_lyt_screen.h"
@@ -32,6 +33,12 @@
 #include "story_scenes.h"
 #include "story_notebook.h"
 #include "story_items.h"
+#include "story_item_models.h"
+#include "story_actor_textures.h"
+#include "story_prop_textures.h"
+#include "story_props.h"
+#include "story_particles.h"
+#include "mod_hash.h"
 #include "story_item_buttons.h"
 #include "story_bag.h"
 #include "story_manifest.h"
@@ -130,33 +137,77 @@ void call_original(Cpu* c, uint32_t func) {
     g_mod_bodies[i](c);
 }
 
+PackageObserver g_package_observer=nullptr;
 // Declarative world content is shared by guest and data-only content packages.
+bool prop_texture_context_valid(const story_prop_textures::Context& context){
+    if(context.actor<mem::kMem2Start||context.actor>mem::kMem2End-story_props::kClassBytes)return false;
+    uint32_t token=0,epoch=0,generation=0,begin=0,end=0;
+    return story_actors::prop_texture_identity(context.actor,context.pid,token,epoch,generation)&&
+           token&&epoch==context.epoch&&generation==context.generation&&
+           story_props::texture_heap(context.actor,begin,end)&&
+           begin==context.private_begin&&end==context.private_end&&
+           ld32(context.actor+0x790)==context.type;
+}
+bool prop_texture_binding_valid(const story_actor_textures::Binding& binding){
+    if(binding.actor<mem::kMem2Start||binding.actor>mem::kMem2End-story_props::kClassBytes||
+       !binding.model||binding.model!=ld32(binding.actor+0x3B4))return false;
+    story_prop_textures::Context context{binding.actor,binding.pid,binding.epoch,binding.generation,
+        ld32(binding.actor+0x790),binding.private_begin,binding.private_end};
+    return prop_texture_context_valid(context)&&binding.no_pattern_animation;
+}
 void load_world(const std::string& mod,const mods::json::Value& manifest,const std::string& package_dir,const std::string& data_dir) {
+    struct ItemModelBatch {size_t checkpoint=story_item_models::checkpoint();bool committed=false;~ItemModelBatch(){if(!committed)story_item_models::rollback(checkpoint);}} item_model_batch;
+    struct TextureBatch {size_t checkpoint=story_actor_textures::checkpoint();bool committed=false;~TextureBatch(){if(!committed)story_actor_textures::rollback(checkpoint);}} texture_batch;
+    struct SceneBatch {size_t checkpoint=story_scenes::checkpoint();bool committed=false;~SceneBatch(){if(!committed)story_scenes::rollback(checkpoint);}} scene_batch;
     std::vector<story_notebook::ManifestActor> actors;
     std::vector<story_notebook::ManifestScene> scenes;
     std::string why;
     if(!story_notebook::parse_actors(manifest,actors,why)||!story_notebook::parse_scenes(manifest,scenes,why))
         exception_report::raise("World manifest "+mod+": "+why);
+    for(auto& actor:actors)if(!actor.texture.empty()) {
+        namespace fs=std::filesystem;
+        if(!mods::archive::relative_path(actor.texture))exception_report::raise("World texture "+mod+":"+actor.id+": invalid path");
+        fs::path path=package_dir;
+        if(!fs::is_directory(path)||fs::is_symlink(path))exception_report::raise("World texture "+mod+":"+actor.id+": package unavailable");
+        for(const auto& part:fs::path(actor.texture)){path/=part;if(fs::is_symlink(path))exception_report::raise("World texture "+mod+":"+actor.id+": symlink path denied");}
+        if(!fs::is_regular_file(path)||fs::file_size(path)>2u*1024u*1024u)exception_report::raise("World texture "+mod+":"+actor.id+": PNG missing or oversized");
+        std::ifstream file(path,std::ios::binary);std::vector<uint8_t> bytes(size_t(fs::file_size(path)));
+        if(!file.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(bytes.size())))exception_report::raise("World texture "+mod+":"+actor.id+": PNG read failed");
+        actor.texture_digest=mods::hash::sha256_text(std::string(reinterpret_cast<const char*>(bytes.data()),bytes.size()));
+        actor.texture_token=story_actor_textures::declare_png(mod+":"+actor.id+":"+actor.actor+":"+actor.texture,bytes,why);
+        if(!actor.texture_token)exception_report::raise("World texture "+mod+":"+actor.id+": "+why);
+    }
     std::vector<story_notebook::ManifestModel> models;
     if(!story_notebook::parse_models(manifest,models,why))exception_report::raise("World models "+mod+": "+why);
+    std::vector<story_notebook::ManifestItem> model_items;
+    if(!story_notebook::parse_items(manifest,model_items,why))exception_report::raise("Item models "+mod+": "+why);
+    for(const auto& item:model_items)if(!item.held_model.empty()&&std::none_of(models.begin(),models.end(),[&](const auto&m){return m.id==item.held_model;}))exception_report::raise("Unknown held model "+mod+":"+item.held_model);
     for(const auto& model:models) {
-        if(std::none_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.kind=="mod"&&actor.model==model.id;}))continue;
+        const bool actor_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.kind=="mod"&&actor.model==model.id;});
+        const bool item_uses=std::any_of(model_items.begin(),model_items.end(),[&](const auto& item){return item.held_model==model.id;});
+        if(!actor_uses&&!item_uses)continue;
+        if(item_uses&&model.kind!="static")exception_report::raise("Held item models currently require static kind; skinned needs a separate Morf lifetime");
         try {
             const auto bridge=BuildBridge::installed(std::string());
             const auto tool=std::filesystem::path(bridge.builder).parent_path().parent_path()/"story_mods"/(model.kind=="skinned"?"skinned_actor_model.py":"actor_model.py");
             const auto archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir);
             story_notebook::WorldPoint minimum,maximum;
             if(!actor_model_cache::bounds_for(archive,minimum,maximum))exception_report::raise("Prepared model bounds unavailable");
-            if(!story_actors::register_model(mod,model.id,archive,1,why,minimum,maximum,model.kind=="skinned",actor_model_cache::clips_for(archive),actor_model_cache::rig_for(archive)))exception_report::raise("World model "+mod+": "+why);
+            for(const auto& item:model_items)if(item.held_model==model.id&&!story_item_models::declare(story_items::item_key(mod,item.id),archive,item.held_frames,why,mods::hash::sha256_file(actor_model_cache::archive_for("/vol/content/Common/Object/"+archive+".szs"))))exception_report::raise("Item model "+mod+": "+why);
+            if(actor_uses&&!story_actors::register_model(mod,model.id,archive,1,why,minimum,maximum,model.kind=="skinned",actor_model_cache::clips_for(archive),actor_model_cache::rig_for(archive)))exception_report::raise("World model "+mod+": "+why);
         } catch(const std::exception& e) {exception_report::raise("World model "+mod+":"+model.id+": "+e.what());}
     }
     std::vector<std::string> flags;
     for(const auto& scene:scenes)for(const auto& step:scene.steps)for(const auto& action:step.then)
         if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);
-    if(!story_scenes::validate(scenes,why)||!story_actors::register_flags(mod,flags,why)||
-       !story_actors::load(mod,actors,why)||!story_scenes::declare(mod,scenes,why))
+    if(!story_scenes::declare(mod,scenes,why)||
+       !story_actors::load(mod,actors,why,flags))
         exception_report::raise("World content "+mod+": "+why);
+    item_model_batch.committed=true;
+    texture_batch.committed=true;
+    scene_batch.committed=true;
     g_world_scenes|=!scenes.empty();
+    if(g_package_observer)g_package_observer(mod,manifest.get("name").string(mod),package_dir,manifest);  // the world editor's inspector
     if(!actors.empty()||!scenes.empty()) {
         story_notebook::note_import();story_mail::note_import();
         LOG("[world] %s: %zu actors, %zu scenes",mod.c_str(),actors.size(),scenes.size());
@@ -444,9 +495,11 @@ void svc_item_used(Cpu* c) {
 #include "guest_actor_services.inc"
 const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_actor_register",svc_actor_register},{"wwhd_actor_find",svc_actor_find},{"wwhd_actor_get",svc_actor_get},
+    {"wwhd_actor_combat_get",svc_actor_combat_get},{"wwhd_actor_attack_begin",svc_actor_attack_begin},{"wwhd_actor_attack_cancel",svc_actor_attack_cancel},
     {"wwhd_actor_userdata",svc_actor_userdata},{"wwhd_actor_set_position",svc_actor_set_position},{"wwhd_actor_set_rotation",svc_actor_set_rotation},
     {"wwhd_actor_set_collision",svc_actor_set_collision},{"wwhd_actor_set_animation",svc_actor_set_animation},
     {"wwhd_actor_walk",svc_actor_walk},{"wwhd_actor_walk_quest",svc_actor_walk_quest},{"wwhd_actor_stop",svc_actor_stop},
+    {"wwhd_actor_particle",svc_actor_particle},{"wwhd_particle_at",svc_particle_at},
     {"wwhd_scene_music_register",svc_scene_music_register},
     {"wwhd_audio_epoch",svc_audio_epoch},{"wwhd_audio_open",svc_audio_open},
     {"wwhd_audio_available",svc_audio_available},{"wwhd_audio_submit",svc_audio_submit},{"wwhd_audio_close",svc_audio_close},
@@ -637,7 +690,6 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
             prepare_npc_catalogue();
             story_notebook::declare(loaded.id,loaded.name,manifest);
         }
-        load_world(loaded.id,manifest,pkg.path,pkg.data_path);
         // the mod's items (story_items.h): kept in the Delivery Bag, owned in the save's story block
         std::vector<story_notebook::ManifestItem> items;std::string why;
         if(!story_notebook::parse_items(manifest,items,why))LOG("[items] %s: the manifest's items are not used: %s",loaded.id.c_str(),why.c_str());
@@ -647,6 +699,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
             story_items::note_import();story_notebook::note_import();story_mail::note_import();
             LOG("[items] %s: %zu item(s) from the manifest",loaded.id.c_str(),items.size());
         }
+        load_world(loaded.id,manifest,pkg.path,pkg.data_path);
     } catch(const std::exception& e) {LOG("[guestmods] %s: manifest quests not read: %s",loaded.id.c_str(),e.what());}
     g_loaded.push_back(std::move(loaded));
     guard.handle = nullptr; // module functions remain resident for the process lifetime
@@ -755,7 +808,7 @@ void init() {
     // with the game's saves in the story block of cking.sav. Without a story mod the file's block is
     // still kept as it is.
     const bool story=story_mail::imported()||story_chart::imported()||story_notebook::imported()||story_items::imported();
-    if(story){uint32_t areas=mem::host_alloc(story_store::kMemoryBytes,16);memset(mem::ptr(areas),0,story_store::kMemoryBytes);story_store::set_memory(areas);}
+    if(story){uint32_t areas=mem::runtime_alloc(story_store::kMemoryBytes,16);memset(mem::ptr(areas),0,story_store::kMemoryBytes);story_store::set_memory(areas);}
     // developer override of the notebook's model archive (the Story Notebook package's setup step builds it)
     if(const char* model=getenv("WWHD_NOTEBOOK_MODEL");model&&*model)story_mail::set_notebook_model(model);
     story_mail::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
@@ -813,6 +866,20 @@ void init() {
         g_mod_hook_flags[ordinal]=1;
     });
     if(story_actors::declared()) {
+        if(story_actor_textures::declared()){
+            if(!story_actor_textures::configure([](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);},
+                 [](const story_actor_textures::Texture&){return false;},prop_texture_binding_valid)||
+               !story_prop_textures::configure(prop_texture_context_valid))
+                exception_report::raise("Owned prop texture binding unavailable");
+            story_props::set_texture_apply([](Cpu* c,uint32_t prop_token,uint32_t actor,uint32_t pid,uint32_t texture_token,uint32_t begin,uint32_t end,bool ready_only){
+                uint32_t owner=0,epoch=0,generation=0;
+                if(!texture_token||!story_actors::prop_texture_identity(actor,pid,owner,epoch,generation)||owner!=prop_token)return false;
+                const uint32_t type=ld32(actor+0x790);
+                const char* name=type==0?"Txm_tsubo02":type==3?"k_taru04":type==15?"k_taru02":nullptr;
+                if(!name)return false;
+                return story_prop_textures::apply(c,{actor,pid,epoch,generation,type,begin,end},4,{{name,texture_token}},ready_only);
+            });
+        }
         mod_actor::set_behavior_sink(behavior_sink);
         story_actors::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
         story_actors::set_scratch_memory(mem::runtime_alloc(story_actors::kScratchBytes,16));
@@ -826,9 +893,19 @@ void init() {
             g_mod_hook_flags[ordinal]=1;
         });
     }
+    if(story_actor_textures::declared()&&!story_actor_textures::allocate_session())exception_report::raise("Owned prop texture snapshot cache allocation failed");
+    // 8152/8153 have native visual and finite-emitter proof. Door debris remains a
+    // private probe until a loaded bank and independent expiry proof admit it.
+    const bool door_probe=std::getenv("WWHD_TEST_PARTICLE_DOOR_DEBRIS_TICK")!=nullptr;
+    const uint32_t particle_scratch=mem::runtime_alloc(story_particles::kScratchBytes,16);
+    const uint32_t particle_mask=story_particles::kAuctionSparkleMask|story_particles::kBeaconSparkleMask|
+        (door_probe?story_particles::kDoorDebrisMask:0);
+    if(!story_particles::configure([](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);},particle_scratch,story_particles::kScratchBytes,particle_mask))
+        exception_report::raise("Curated particle scratch unavailable");
     story_scenes::set_game_calls([](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
     if(g_world_scenes)story_scenes::set_scratch_memory(mem::runtime_alloc(story_scenes::kScratchBytes,16));
     story_scenes::set_callbacks(story_actors::actor_address,story_actors::actions);
+    story_scenes::set_particle_resolver(story_actors::particle_position);
     story_scenes::set_place_resolver([](Cpu*,const std::string& mod,const std::string& quest)->std::optional<story_notebook::WorldPoint>{
         float x=0,z=0;if(!story_notebook::place_position(mod,quest,x,z))return {};return story_notebook::WorldPoint{x,0,z};
     });
@@ -891,6 +968,9 @@ void init() {
     });
     // Mod items and the notebook on X/Y/R (story_item_buttons.h): the item use in play and the HUD's
     // button read, with the story notebook's item menu hooks.
+    story_item_models::configure(mem::runtime_alloc(story_item_models::kMemoryBytes,16),call_original,[](Cpu*c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
+    story_items::set_model_presenter(story_item_models::request);
+    if(!story_item_models::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("item model hook missing");auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item models";g_mod_hook_flags[i]=1;}))exception_report::raise("Item model hook conflict");
     story_item_buttons::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
     story_item_buttons::install([](uint32_t addr) {
         auto it=g_chains.find(addr);return it==g_chains.end()?std::string():it->second.replace_mod;
@@ -902,6 +982,7 @@ void init() {
         g_mod_hook_flags[ordinal]=1;
     });
     story_store::set_game_calls(call_original);
+    story_store::set_progress_loaded(story_item_models::progress_loaded);
     story_store::install([](uint32_t addr) {
         auto it=g_chains.find(addr);return it==g_chains.end()?std::string():it->second.replace_mod;
     },[](uint32_t addr,PpcFunc fn) {
@@ -913,6 +994,8 @@ void init() {
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
 }
+
+void set_package_observer(PackageObserver observer){g_package_observer=observer;}
 
 std::vector<ModIdentity> enabled_mods() {
     std::vector<ModIdentity> mods;for(const auto& mod:g_loaded)mods.push_back({mod.id,mod.version});return mods;
@@ -938,21 +1021,40 @@ void draw_frame(Cpu* c,uint64_t step) {
         *c=saved;
     }
 }
-void logic_service(Cpu* c) { actor_sweep(c);story_scenes::tick(c,false,2); story_actors::service(c); }
+void logic_service(Cpu* c) {
+    const bool beacon=std::getenv("WWHD_TEST_PARTICLE_BEACON_SPARKLE_TICK")!=nullptr;
+    const bool sparkle=!beacon&&std::getenv("WWHD_TEST_PARTICLE_AUCTION_SPARKLE_TICK")!=nullptr;
+    const char* probe=beacon?"WWHD_TEST_PARTICLE_BEACON_SPARKLE_TICK":sparkle?"WWHD_TEST_PARTICLE_AUCTION_SPARKLE_TICK":"WWHD_TEST_PARTICLE_DOOR_DEBRIS_TICK";
+    if(const char* at=std::getenv(probe)){
+        static uint32_t tick=0;const unsigned long target=std::strtoul(at,nullptr,10);
+        if(++tick==target&&target>0&&target<=18000){
+            const uint32_t link=ld32(GD(0x1046F0B0)+0x5B34);
+            if(!(link&3)&&link>=mem::kMem2Start&&link<=mem::kMem2End-0x330&&ld16(link+0xE)==0xA8&&ld32(link+4)&&ld32(link+4)!=0xFFFFFFFFu){
+                story_particles::Burst burst;burst.effect=beacon?story_particles::Effect::BeaconSparkle:sparkle?story_particles::Effect::AuctionSparkle:story_particles::Effect::DoorDebris;
+                burst.position={u32_as_f32(ld32(link+0x314)),u32_as_f32(ld32(link+0x318)),u32_as_f32(ld32(link+0x31C))};
+                burst.room=int8_t(ld8(link+0x326));
+                LOG("[particles] private %s probe tick=%u result=%u",beacon?"beacon-sparkle":sparkle?"auction-sparkle":"door-debris",tick,unsigned(story_particles::burst(c,burst)));
+            }
+        }
+    }
+    story_item_models::tick(c);actor_sweep(c);story_scenes::tick(c,false,2);story_actors::service(c);
+}
 void service(Cpu* c) { story_lyt_screen::service(c); }
 void state_loaded() {
     std::lock_guard lock(g_hud_mutex);
     g_actor_registry.invalidate_all();g_actor_identities.clear();
     hud::store().reset();
     pcm::store().reset();
+    story_item_models::state_loaded();
+    story_mail::state_loaded();
     story_scenes::state_loaded();
     story_actors::state_loaded();
-    story_mail::state_loaded();
     story_treasure_chest::state_loaded();
     story_chart::state_loaded();
     story_notebook::state_loaded();
     story_bag::state_loaded();
     story_lyt_screen::state_loaded();
+    story_actors::restore_talk_text(); // Hydrate only after every old host text owner has been cleared.
     for(auto& mod:g_loaded)mod.hud_called=false;
 }
 

@@ -24,7 +24,7 @@ inline uint32_t cpu_vertex_classes(const LatteParsedFetchShaderAttribute& a) {
          a.format != F::HWFMT_16_FLOAT && a.format != F::HWFMT_16_16_FLOAT &&
          a.format != F::HWFMT_16_16_16_FLOAT && a.format != F::HWFMT_16_16_16_16_FLOAT ? CpuScaled : 0u) |
         (a.format == F::HWFMT_8_8_8 || a.format == F::HWFMT_16_16_16 ||
-         a.format == F::HWFMT_32_32_32 || a.format == F::HWFMT_32_32_32_FLOAT ? CpuThreeComponent : 0u) |
+         a.format == F::HWFMT_16_16_16_FLOAT || a.format == F::HWFMT_32_32_32 || a.format == F::HWFMT_32_32_32_FLOAT ? CpuThreeComponent : 0u) |
         (a.offset % 4 ? CpuUnaligned : 0u) | (a.nfa == 1 ? CpuInteger : 0u) |
         (a.nfa == 0 && !a.isSigned ? CpuUnorm : 0u);
 }

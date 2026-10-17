@@ -85,6 +85,18 @@ void added_and_hidden() {
     ext::hide_tab("about");
     ext::add_tab({"warp", "Warp", [] {}, nullptr});
     assert((ids() == std::vector<std::string>{"saves", "graphics", "display", "audio", "mods", "controls", "shortcuts", "warp"}));
+
+    // a tab a setting turns on: in the list, but L / R skip it while it is off
+    ext::reset_for_test();
+    bool on = false;
+    ext::Tab editor{"editor", "Editor", [] {}, nullptr};
+    editor.shown = [&] { return on; };
+    ext::add_tab(editor, "about");
+    const int at = ext::tab_index("editor");
+    assert(at >= 0 && !ext::tabs()[at].visible());
+    assert(ext::next_tab(at - 1, +1) == at + 1 && ext::next_tab(at + 1, -1) == at - 1);
+    on = true;
+    assert(ext::tabs()[at].visible() && ext::next_tab(at - 1, +1) == at && ext::next_tab(at + 1, -1) == at);
 }
 
 void sealed_late() {

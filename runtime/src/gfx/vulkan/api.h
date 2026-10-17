@@ -4,6 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <functional>
 
 namespace gfxvk {
 void peek_z(const uint32_t*, uint32_t);
@@ -33,6 +34,11 @@ void request_tv_dump(const std::string& path, int frames_ahead);
 void request_capture();
 void ss_reset_surfaces();
 void save_renderer_caches();
+// Opt-in endpoint, called under the GX2 execution mutex after render_sync.
+void flush_present_observer();
+bool background_renderer_caches_ready(); // acquire-only; safe on lifecycle threads before init
+void disable_background_renderer_caches(); // withdraw before joining the background saver
+std::function<void()> background_renderer_caches(); // completion wait, outside the execution lock
 void shutdown_renderer_caches();
 int renderer_smoke_test();
 std::string device_description();  // "<GPU>, driver <version>, Vulkan <version>" ("" before init)

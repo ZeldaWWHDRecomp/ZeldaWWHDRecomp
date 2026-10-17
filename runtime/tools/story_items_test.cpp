@@ -146,6 +146,10 @@ void test_manifest() {
     assert(!parse(R"({"items": [{"id": "x", "name": "X", "description": "D", "icon": "a.png", "use": {"action": "fly"}}]})"));
     assert(!parse(R"({"items": [{"id": "x", "name": "X", "description": "D", "icon": "a.png"}, {"id": "x", "name": "Y", "description": "D", "icon": "a.png"}]})"));
     assert(!parse(R"({"items": [{"id": "x", "name": "", "description": "D", "icon": "a.png"}]})"));
+    assert(parse(R"({"items":[{"id":"x","name":"X","description":"D","icon":"a.png","use":{"action":"event"},"held_model":"lantern","held_frames":120}]})"));
+    assert(items[0].held_model=="lantern"&&items[0].held_frames==120);
+    for(const char* fields:{R"("held_model":"lantern")",R"("held_frames":90)",R"("use":{"action":"event"},"held_model":"lantern","held_frames":301)",R"("use":{"action":"event"},"held_model":"../foreign")"})
+        assert(!parse(std::string(R"({"items":[{"id":"x","name":"X","description":"D","icon":"a.png",)")+fields+"}]}"));
     // quests name the items they give; an undeclared one is refused
     std::vector<story_notebook::ManifestQuest> quests;
     const std::string quest = R"("quests_format": 1, "quests": [{"id": "q", "title": "Q", "reward": {"item": "item:old-key"},
@@ -203,6 +207,7 @@ void test_services() {
     ManifestItem lamp;
     lamp.id = "lamp", lamp.name = "Lamp", lamp.description = "Bright.", lamp.icon = "assets/key.png", lamp.stack = 3,
     lamp.use = ManifestItem::Use::Event;
+    lamp.held_model="lantern";lamp.held_frames=120;
     ManifestItem step = lamp;
     step.id = "map", step.use = ManifestItem::Use::QuestStep, step.use_quest = "hunt", step.use_step = 2;
     ManifestItem missing = lamp;
@@ -233,13 +238,16 @@ void test_services() {
     // the bag's actions
     const uint16_t k = item_key("mod", "old-key"), l = item_key("mod", "lamp"), m = item_key("mod", "map");
     assert(act(k, Action::Info) && shown.back() == "Old key|Rusty.");
-    assert(!act(k, Action::Use) && !reason().empty());           // no use action
+    std::vector<uint16_t> presentations;set_model_presenter([&](uint16_t key){presentations.push_back(key);});
+    assert(!act(k, Action::Use) && presentations.empty() && !reason().empty());           // no use action
     assert(!act(k, Action::Assign, 1));                           // can't go on a button
     assert(act(l, Action::Use) && act(l, Action::Use) && used("mod", "lamp") == 2 && used("mod", "lamp") == 0);
-    assert(!act(m, Action::Use));                                 // Link doesn't have it
+    assert(presentations==std::vector<uint16_t>({l,l}));
+    assert(!act(m, Action::Use)&&presentations.size()==2);                                 // Link doesn't have it
     give("mod", "map", 1, "test");
     reached.clear();
     assert(act(m, Action::Use) && reached == std::vector<std::string>{"mod:hunt:2"});
+    set_model_presenter({});
     assert(act(l, Action::Assign, 2) && on_button(2) == l && number(l) && pool_number(number(l)));
     assert(act(l, Action::Assign, -1) && !on_button(2));
     // a game place: only an empty one of the game's save

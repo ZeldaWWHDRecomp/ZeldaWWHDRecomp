@@ -108,4 +108,12 @@ inline void vkCmdPipelineBarrier(VkCommandBuffer cmd, VkPipelineStageFlags sourc
     if(auto* recorder=dispatch_recorder())recorder->vkCmdPipelineBarrier(cmd, source, destination, flags, memoryCount, memory, bufferCount, buffers, imageCount, images);
     else gfxvk::vkCmdPipelineBarrier(cmd, source, destination, flags, memoryCount, memory, bufferCount, buffers, imageCount, images);
 }
+inline void vkCmdBeginRenderPass(VkCommandBuffer cmd, const VkRenderPassBeginInfo* info, VkSubpassContents contents) {
+    if(auto* recorder=dispatch_recorder())recorder->vkCmdBeginRenderPass(cmd, info, contents);
+    else gfxvk::vkCmdBeginRenderPass(cmd, info, contents);
+}
+inline void vkCmdEndRenderPass(VkCommandBuffer cmd) {
+    if(auto* recorder=dispatch_recorder())recorder->vkCmdEndRenderPass(cmd);
+    else gfxvk::vkCmdEndRenderPass(cmd);
+}
 } // namespace gfxvk::record

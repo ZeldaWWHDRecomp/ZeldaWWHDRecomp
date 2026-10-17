@@ -24,6 +24,22 @@
 #include "../mods/content.h"
 #include "../game_languages.h"
 #include "../rtl_text.h"
+#include "save_root.h"
+
+namespace hle_fs {
+namespace {
+std::mutex g_save_root_mutex;
+std::string g_save_root;
+}  // namespace
+void set_save_root(const std::string& dir) {
+    std::lock_guard<std::mutex> lk(g_save_root_mutex);
+    g_save_root = dir;
+}
+std::string save_root() {
+    std::lock_guard<std::mutex> lk(g_save_root_mutex);
+    return g_save_root.empty() ? config::save_dir : g_save_root;
+}
+}  // namespace hle_fs
 
 namespace {
 
@@ -76,7 +92,7 @@ std::string host_path_exact(const std::string& guest) {
     if (map("/vol/content", config::game_dir + "/content")) return p;
     if (map("/vol/code", config::game_dir + "/code")) return p;
     if (map("/vol/meta", config::game_dir + "/meta")) return p;
-    if (map("/vol/save", config::save_dir)) return p;
+    if (map("/vol/save", hle_fs::save_root())) return p;
     if (!p.empty() && p[0] != '/') return config::game_dir + "/content/" + p;  // relative to cwd (/vol/content)
     return config::game_dir + p;
 }

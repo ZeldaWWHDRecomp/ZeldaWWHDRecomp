@@ -98,6 +98,30 @@ std::string last_message();             // short status for the title bar ("" wh
 // a short notice shown the same way (overlay toast, title bar) for a few seconds: screenshots
 void notice(const std::string& text);
 
+// ---- world editor (editor/editor_game.cpp) ----
+// A warp with the game's own stage change: a spawn point of the stage (point >= 0), or Link's restart
+// point at `pos` facing `angle` (at_position), the way a void-out restarts a room. Done at the next frame
+// boundary while Link is under the player's control (pause-menu conditions); refused with a message
+// otherwise. The stage's own layer is kept when the warp stays in the current stage.
+struct Warp {
+    std::string stage;
+    int room = 0, point = 0, angle = 0;
+    bool at_position = false;
+    float pos[3] = {};
+};
+void request_warp(const Warp& w, std::function<void(bool ok, const std::string& why)> done = nullptr);
+// any thread, cheap (memory reads only): why Link is not under the player's control now, or ""
+std::string control_problem();
+struct LinkPlace {
+    bool valid = false;
+    std::string stage;
+    int room = -1, angle = 0;
+    float pos[3] = {};
+};
+LinkPlace link_place();  // any thread (a snapshot of the game's memory)
+// a portable state to any path (the editor's test slots); `done` as request_save's
+void request_save_portable_file(const std::string& path, std::function<void(bool ok, const std::string& why)> done);
+
 // ---- game thread: call at the frame boundary (top of the per-frame function) ----
 void service(Cpu* c);
 

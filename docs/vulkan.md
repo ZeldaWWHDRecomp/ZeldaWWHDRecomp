@@ -716,6 +716,30 @@ positive draw count to tune it. Empty or invalid values disable batching.
 `WWHD_VK_DRAW_BATCH_CAP=1|2|3` sets the maximum mid-frame submissions (default three).
 See `docs/performance.md` for the local Windows comparison.
 
+## Recording graphics on a second thread (on by default on Android, optional elsewhere)
+
+Settings → Graphics → Advanced → "Record graphics on a second thread" moves the recording and
+submission of the Vulkan commands from the render thread to a second thread. The render thread
+still decides what to draw (shaders, pipelines, textures, uploads); it copies each command's
+arguments into a compact byte stream, and the second thread turns that stream into the actual
+Vulkan calls and submits them. The pictures are the same either way.
+
+- It can raise the frame rate on devices whose CPU limits it, such as phones and handhelds.
+- On computers where the CPU is not the limit it brings nothing, and the hand-over between the
+  two threads can make frame times less even.
+- It uses a little more CPU time and battery.
+
+The choice is saved with the other graphics settings and applies the next time the game starts.
+`WWHD_VK_RECORD_WORKER=1` turns it on and any other value turns it off for one start; the
+environment variable takes precedence over the saved setting. The log says which path runs
+(`[vulkan record worker] enabled` or `disabled`).
+
+Uploads, descriptor pools and other resources of a submission stay alive until its GPU fence
+completes, exactly as without the second thread. Screenshots and other readbacks, presentation,
+save states and shutdown first wait for the second thread to finish the commands they depend on.
+A command whose arguments do not fit the stream is recorded directly by the render thread after
+the second thread has caught up, so the order of the commands never changes.
+
 ## macOS defaults and tuning
 
 Mac/MoltenVK gameplay and correctness tests are the current priority. The macOS

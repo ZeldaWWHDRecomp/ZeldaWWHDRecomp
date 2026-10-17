@@ -23,7 +23,7 @@ const auto caller = std::this_thread::get_id();
 std::mutex gateMutex;
 std::condition_variable gate;
 bool released = false;
-VkResult desired = VK_SUCCESS;
+VkResult desired = VK_SUCCESS, mergeDesired = VK_SUCCESS;
 std::atomic<bool> failNextCallerAllocation = false, failNextWorkerAllocation = false;
 std::atomic<unsigned> creates = 0, destroys = 0, pipelinesDestroyed = 0, merges = 0, compileCalls = 0;
 VKAPI_ATTR VkResult VKAPI_CALL create_cache(VkDevice, const VkPipelineCacheCreateInfo*, const VkAllocationCallbacks*, VkPipelineCache* out) {
@@ -34,7 +34,7 @@ VKAPI_ATTR void VKAPI_CALL destroy_cache(VkDevice, VkPipelineCache, const VkAllo
 VKAPI_ATTR void VKAPI_CALL destroy_pipeline(VkDevice, VkPipeline, const VkAllocationCallbacks*) { ++pipelinesDestroyed; }
 VKAPI_ATTR VkResult VKAPI_CALL merge_cache(VkDevice, VkPipelineCache, uint32_t count, const VkPipelineCache*) {
   assert(std::this_thread::get_id() == caller && count == 1);
-  ++merges; return VK_SUCCESS;
+  ++merges; return mergeDesired;
 }
 VKAPI_ATTR VkResult VKAPI_CALL create_pipeline(VkDevice, VkPipelineCache, uint32_t count,
     const VkGraphicsPipelineCreateInfo* info, const VkAllocationCallbacks*, VkPipeline* out) {
@@ -297,6 +297,25 @@ int main() {
   try { unprepared.set_stage_module(99,handle<VkShaderModule>(8)); } catch(const std::out_of_range&) {badIndex=true;}
   try { unprepared.set_stage_module(0,VK_NULL_HANDLE); } catch(const std::invalid_argument&) {nullModule=true;}
   assert(badIndex && nullModule);
+  // Live snapshots skip an in-flight native compile without stopping admission.
+  reset(VK_SUCCESS);
+  const auto oldCompiles = compileCalls.load();
+  auto live = begin_pipeline_async(state(), 20, 20, "guest_pipeline");
+  while (compileCalls == oldCompiles) std::this_thread::yield();
+  assert(!merge_pipeline_demand_cache(handle<VkPipelineCache>(11)));
+  release();
+  auto liveResult = live->wait({});
+  vkDestroyPipeline(handle<VkDevice>(1), liveResult.pipeline, nullptr); live.reset();
+  mergeDesired = VK_ERROR_UNKNOWN;
+  assert(!merge_pipeline_demand_cache(handle<VkPipelineCache>(11), true));
+  mergeDesired = VK_SUCCESS;
+  assert(merge_pipeline_demand_cache(handle<VkPipelineCache>(11), true));
+  assert(!merge_pipeline_demand_cache(handle<VkPipelineCache>(11), true));
+  // More work after the snapshot stays dirty and merges again at shutdown.
+  reset(VK_SUCCESS);
+  auto newer = build_pipeline_async(state(), 21, 21, "guest_pipeline", release);
+  vkDestroyPipeline(handle<VkDevice>(1), newer.pipeline, nullptr);
+  assert(finish_pipeline_demand(handle<VkPipelineCache>(11)));
   stutter::trace().flush();
   std::ifstream trace(tracePath);
   assert(trace.good());

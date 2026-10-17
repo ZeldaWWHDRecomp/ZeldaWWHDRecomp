@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import threading
 import adb_util
 import time
 
@@ -77,6 +78,26 @@ def app_windows_on_display(dump, display_id, package):
         raise AssertionError("Missing InputDispatcher window inventory")
     return [line for line in entries if package in line and "CLONE" not in line and
             "displayId=" + str(display_id) + "," in line]
+
+
+def startup_acquisitions(log, dumps, samples, display_id, package):
+    """Evidence that a launch with the GamePad screen saved Off took the second display.
+
+    The game logs "secondary display=" just before it creates the Presentation
+    (and "fold panes=" for a split screen); pass the log from before the launch on.
+    InputDispatcher dumps and metrics are polled from before the launch on, so a
+    window or picture shown only for a moment still counts (#222).
+    """
+    evidence = [line for line in log.splitlines()
+                if re.search(r"wwhd-display.*(?:secondary display=\d+|fold panes=)", line)]
+    for dump in dumps:
+        try:
+            evidence += app_windows_on_display(dump, display_id, package)
+        except AssertionError:
+            pass  # no window inventory while the process starts
+    evidence += ["metrics " + json.dumps(m) for m in samples
+                 if m.get("dual") or m.get("secondary_presented", 0) or m.get("touch")]
+    return evidence
 
 
 def capture_timeout_evidence(adb, output):
@@ -175,7 +196,7 @@ def main():
         before = metrics()
         command("swap0")
         until(label + " swap suspended", lambda m: not m["swap_requested"])
-        command("mode3")
+        command("choose_mode3")
         released = until(label + " releases surface", lambda m:
                          m["second_available"] and m["second_off"] and not m["dual"] and
                          not m["touch"] and not m["swap_active"] and
@@ -210,7 +231,7 @@ def main():
             until(label + " primary resumes with screen released", lambda m:
                   m["second_off"] and m["second_available"] and not m["dual"] and
                   m["primary_presented"] >= released["primary_presented"] + 20)
-        command("mode0")
+        command("choose_mode0")
         restored = until(label + " republishes surface and picture", lambda m:
                          m["dual"] and not m["second_off"] and
                          m["secondary_presented"] >= released["secondary_presented"] + 10)
@@ -763,21 +784,63 @@ def main():
             if "game" not in active or sum("Selected game assets " in line and line.endswith("/" + active["game"])
                                             for line in loaded.splitlines()) < 2:
                 raise AssertionError("Both SDL launches must select the runtime's paired asset tree")
-        command("mode3")
+        command("choose_mode3")
         until("saved Off releases display", lambda m:
               m["second_available"] and m["second_off"] and not m["dual"] and not m["swap_active"])
         settings = adb("shell", "cat", settings_path)
         if not re.search(r"(?m)^androidSecondScreenOff=1$", settings):
             raise AssertionError("Off choice was not saved")
+        ids = re.findall(r"secondary display=(\d+)", adb("logcat", "-d", "-s", "wwhd-display:I", "*:S"))
+        if not ids:
+            raise AssertionError("saved Off restart has no published display ID")
+        saved_off_display = ids[-1]
         adb("shell", "am", "force-stop", PACKAGE)
         adb("shell", "run-as", PACKAGE, "rm", "-f", "files/display-smoke.json")
-        adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.DisplaySmokeActivity",
-            "--ez", "isolated_secondary", "true" if args.require_isolated_device else "false",
-            "--ez", "shared_general", "true" if args.shared_general else "false")
-        until("saved Off survives restart", lambda m:
-              m["second_available"] and m["second_off"] and not m["dual"] and
-              not m["touch"] and not m["swap_active"] and m["swap_requested"] and
-              m["primary_presented"] >= 20)
+        launch_marker = "smoke saved-Off launch " + str(time.monotonic_ns())
+        adb("shell", "log", "-t", "wwhd-display", "-p", "i", launch_marker)
+        # From process start on, a saved Off must never take the second display,
+        # not even for a moment before the native settings load (#222).
+        launch_dumps, launch_samples = [], []
+        polling = threading.Event()
+        def poll_launch():
+            while not polling.is_set():
+                try:
+                    launch_dumps.append(adb("shell", "dumpsys", "input"))
+                except subprocess.SubprocessError:
+                    pass
+                try:
+                    launch_samples.append(metrics())
+                except (ValueError, subprocess.SubprocessError):
+                    pass
+        poller = threading.Thread(target=poll_launch, daemon=True)
+        poller.start()
+        try:
+            adb("shell", "am", "start", "-W", "-n", PACKAGE + "/.DisplaySmokeActivity",
+                "--ez", "isolated_secondary", "true" if args.require_isolated_device else "false",
+                "--ez", "shared_general", "true" if args.shared_general else "false")
+            settled = until("saved Off survives restart", lambda m:
+                            m["second_available"] and m["second_off"] and not m["dual"] and
+                            not m["touch"] and not m["swap_active"] and m["swap_requested"] and
+                            m["primary_presented"] >= 20)
+            until("saved Off stays released", lambda m:
+                  m["second_off"] and not m["dual"] and
+                  m["primary_presented"] >= settled["primary_presented"] + 20)
+        finally:
+            polling.set()
+            poller.join(timeout=30)
+        launch_log = adb("logcat", "-d", "-s", "wwhd-display:I", "*:S")
+        if launch_marker not in launch_log:
+            raise AssertionError("saved Off restart lost its logcat marker")
+        launch_log = launch_log.split(launch_marker, 1)[1]
+        if "secondary released (GamePad screen off)" not in launch_log:
+            raise AssertionError("saved Off restart never saw the second display to keep it released")
+        taken = startup_acquisitions(launch_log, launch_dumps, launch_samples, saved_off_display, PACKAGE)
+        observations.append({"phase": "saved Off launch polling", "input_dumps": len(launch_dumps),
+                             "metric_samples": len(launch_samples), "acquisitions": taken})
+        if len(launch_dumps) < 3:
+            raise AssertionError("saved Off restart polled too few window inventories: " + str(len(launch_dumps)))
+        if taken:
+            raise AssertionError("saved Off restart took the second display at start: " + repr(taken[:5]))
         command("show_drc")
         until("show reacquires saved released display", lambda m:
               m["dual"] and not m["second_off"] and m["swap_active"] and
@@ -785,7 +848,7 @@ def main():
         command("hide_drc")
         hidden = until("hide releases display again", lambda m:
                        m["second_available"] and m["second_off"] and not m["dual"] and not m["touch"])
-        command("mode0")
+        command("choose_mode0")
         until("mode reacquires hidden display", lambda m:
               m["dual"] and not m["second_off"] and m["swap_active"] and
               m["secondary_presented"] >= hidden["secondary_presented"] + 10)

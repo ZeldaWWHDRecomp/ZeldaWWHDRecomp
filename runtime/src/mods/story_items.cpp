@@ -35,6 +35,7 @@ constexpr uint32_t kJingle = 0x8F5;             // JA_SE_ME_ITEM_GET_S
 constexpr uint32_t kSaveReserve = 0xA6;         // the save's delivery bag places (dSv_player_bag_item_c::mReserve, 8 bytes)
 
 std::mutex g_mu;
+prop_rewards::Registry g_prop_markers;
 std::vector<Item> g_items;               // declaration order
 std::map<uint16_t, unsigned> g_uses;     // use action "event": uses not yet read by the mod (session)
 struct Pending {
@@ -83,12 +84,15 @@ uint8_t game_reserve(unsigned place) { return have_save() && place < kGamePlaces
 
 }  // namespace
 
+namespace { std::function<void(uint16_t)> model_presenter; }
+void set_model_presenter(std::function<void(uint16_t)> fn){model_presenter=std::move(fn);}
 bool define(const std::string& mod, const std::string& package_dir, const story_notebook::ManifestItem& m, std::string& why) {
     Item it;
     it.key = item_key(mod, m.id), it.mod = mod, it.id = m.id, it.name = m.name, it.description = m.description;
     it.icon_path = (std::filesystem::path(package_dir) / m.icon).string();
     it.icon_hash = file_hash(it.icon_path);
     if (!it.icon_hash) return why = "item " + m.id + ": no icon file " + m.icon, false;
+    it.held_model=m.held_model;it.held_frames=m.held_frames;
     it.stack = m.stack, it.use = m.use, it.use_quest = m.use_quest, it.use_step = m.use_step;
     std::lock_guard lock(g_mu);
     for (Item& o : g_items) {
@@ -173,6 +177,100 @@ bool assign_notebook(int button) {
     return b.set_notebook_button(unsigned(button), true);
 }
 
+PropMarkerCheckpoint prop_marker_checkpoint() {
+    std::lock_guard lock(g_mu);
+    return g_prop_markers.checkpoint();
+}
+bool rollback_prop_markers(PropMarkerCheckpoint checkpoint) {
+    std::lock_guard lock(g_mu);
+    return g_prop_markers.rollback(checkpoint);
+}
+PropMarkerHandle register_prop_marker(const std::string& mod, const std::string& actor_id,
+                                     const std::string& broken_flag, std::string& why) {
+    std::lock_guard lock(g_mu);
+    return g_prop_markers.add(mod, actor_id, broken_flag, why);
+}
+bool prop_broken(PropMarkerHandle handle) {
+    std::lock_guard lock(g_mu);
+    const auto* marker = g_prop_markers.get(handle);
+    return marker && have_save() && story_store::book().get(prop_rewards::kBroken, marker->key) == 1;
+}
+EnemyMarkerHandle register_enemy_marker(const std::string& mod, const std::string& actor_id,
+                                       const std::string& defeat_flag, std::string& why) {
+    std::lock_guard lock(g_mu);
+    return {g_prop_markers.add(mod, actor_id, defeat_flag, why, prop_rewards::kDefeated)};
+}
+bool enemy_defeated(EnemyMarkerHandle handle) {
+    std::lock_guard lock(g_mu);
+    const auto* marker = g_prop_markers.get(handle.value, prop_rewards::kDefeated);
+    return marker && have_save() && story_store::book().get(prop_rewards::kDefeated, marker->key) == 1;
+}
+static PropClaimStatus claim_marker_drops(PropMarkerHandle handle, uint8_t marker_kind, const std::string& mod,
+                                const std::vector<PropDrop>& drops, bool caption) try {
+    std::lock_guard lock(g_mu); // no guest/native calls or callbacks in this transaction
+    const auto* marker = g_prop_markers.get(handle, marker_kind);
+    if (!marker || marker->mod != mod || drops.size() > 8) return PropClaimStatus::InvalidDefinition;
+    if (!have_save()) return PropClaimStatus::StoreUnavailable;
+    std::vector<prop_rewards::Drop> resolved;
+    std::vector<const Item*> items;
+    for (const auto& d : drops) {
+        if (!story_mail::valid_id(d.item)) return PropClaimStatus::InvalidDefinition;
+        const auto* it = find_locked(mod, d.item);
+        if (!it) return PropClaimStatus::InvalidDefinition;
+        resolved.push_back({it->key, d.quantity, it->stack}); items.push_back(it);
+    }
+    const uint32_t loaded_save = save_base();
+    uint8_t* const area = story_store::area();
+    const auto plan = prop_rewards::stage(area, marker->key, resolved, g_pages.load(), marker_kind);
+    if (plan.status != PropClaimStatus::Committed) return plan.status;
+    // All allocating caption preparation precedes commit; notification itself may fail afterwards.
+    std::vector<Pending> pending;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (!caption && plan.placed[i]) continue;
+        const auto& it = *items[i];
+        std::string text = it.description;
+        if (!plan.placed[i]) text += "\n\nThe Delivery Bag is full: it is kept until a place is free.";
+        pending.push_back({it.name + (plan.counts[i] > 1 && it.stack > 1 ?
+            " (" + std::to_string(plan.counts[i]) + ")" : ""), std::move(text)});
+    }
+    if (save_base() != loaded_save || story_store::area() != area || g_prop_markers.get(handle, marker_kind) != marker)
+        return PropClaimStatus::Stale;
+    const auto result = prop_rewards::commit(area, plan, [&] {
+        for (auto& message : pending) g_pending.push_back(std::move(message));
+    });
+    if (result == PropClaimStatus::Committed) try {
+        // Evidence reads the authoritative loaded bytes after commit, never planned counts.
+        const char* trace = std::getenv("WWHD_NATIVE_ACTOR_TRACE");
+        static unsigned reports = 0; // serialized game-logic caller, host-only bounded diagnostic
+        if (trace && std::strcmp(trace, "1") == 0) {
+            const story_mail::Book live(area, prop_rewards::kRecords);
+            if (reports < 512) {
+                ++reports;
+                LOG("[%s] %s:%s marker_key=%04X %s=%u", marker_kind == prop_rewards::kBroken ? "native_prop_reward" : "native_enemy_reward", mod.c_str(), marker->actor.c_str(),
+                    marker->key, marker_kind == prop_rewards::kBroken ? "broken" : "defeated", unsigned(live.get(marker_kind, marker->key)));
+            }
+            for (size_t i = 0; i < items.size() && reports < 512; ++i) {
+                ++reports;
+                LOG("[%s] %s:%s item=%s item_key=%04X count=%u", marker_kind == prop_rewards::kBroken ? "native_prop_reward" : "native_enemy_reward", mod.c_str(), marker->actor.c_str(),
+                    items[i]->id.c_str(), items[i]->key, unsigned(live.get(kRecordItemCount, items[i]->key)));
+            }
+        }
+    } catch (...) { /* diagnostics cannot turn a committed grant into a retry */ }
+    return result;
+} catch (...) {
+    // Allocation/preparation failure precedes commit; postcommit notifications are caught inside commit.
+    return PropClaimStatus::StoreUnavailable;
+}
+
+PropClaimStatus claim_prop_drops(PropMarkerHandle handle, const std::string& mod,
+                                const std::vector<PropDrop>& drops, bool caption) {
+    return claim_marker_drops(handle, prop_rewards::kBroken, mod, drops, caption);
+}
+EnemyClaimStatus claim_enemy_drops(EnemyMarkerHandle handle, const std::string& mod,
+                                  const std::vector<PropDrop>& drops, bool caption) {
+    return claim_marker_drops(handle.value, prop_rewards::kDefeated, mod, drops, caption);
+}
+
 int32_t give(const std::string& mod, const std::string& id, uint32_t n, const char* how, bool caption) {
     const std::optional<Item> it = find(mod, id);
     if (!it || n == 0 || n > kMaxCount) return kResultInvalid;
@@ -255,26 +353,28 @@ bool act(uint16_t key, Action action, int arg) {
     switch (action) {
     case Action::Info:
         return g_show && g_show(it->name, it->description, "the item's Info") ? true : refuse("The item's Info can't be shown now.");
-    case Action::Use:
+    case Action::Use: {
+        auto used=[&](bool ok){if(ok&&model_presenter&&!it->held_model.empty())model_presenter(key);return ok;};
         switch (it->use) {
         case story_notebook::ManifestItem::Use::None: return refuse("This item can't be used.");
         case story_notebook::ManifestItem::Use::Show:
-            return g_show && g_show(it->name, it->description, "the item's use") ? true : refuse("The item can't be shown now.");
+            return used(g_show && g_show(it->name, it->description, "the item's use") ? true : refuse("The item can't be shown now."));
         case story_notebook::ManifestItem::Use::OpenNotebook:
-            return g_open_notebook && g_open_notebook("an item's use") ? true : refuse("The notebook can't be opened now.");
+            return used(g_open_notebook && g_open_notebook("an item's use") ? true : refuse("The notebook can't be opened now."));
         case story_notebook::ManifestItem::Use::QuestStep:
             if (!g_reach || g_reach(it->mod, it->use_quest, it->use_step) < 0) return refuse("Nothing happens.");
             LOG("[items] %s: item \"%s\" used: quest \"%s\" step %u", it->mod.c_str(), it->id.c_str(), it->use_quest.c_str(), it->use_step);
-            return true;
+            return used(true);
         case story_notebook::ManifestItem::Use::Event: {
             std::lock_guard lock(g_mu);
             unsigned& n = g_uses[key];
             n = std::min(n + 1, 255u);
             if (trace()) LOG("[items] %s: item \"%s\" used (%u unread)", it->mod.c_str(), it->id.c_str(), n);
-            return true;
+            return used(true);
         }
         }
         return false;
+    }
     case Action::Assign:
         if (arg >= 0 && !it->usable()) return refuse("This item can't go on a button.");
         if (arg < 0) {
@@ -352,6 +452,7 @@ void install(const std::function<std::string(uint32_t)>& replaced_by, const std:
 void reset() {
     std::lock_guard lock(g_mu);
     g_items.clear(), g_uses.clear(), g_pending.clear(), g_reason.clear();
+    g_prop_markers = prop_rewards::Registry{};
 }
 
 namespace hooks {

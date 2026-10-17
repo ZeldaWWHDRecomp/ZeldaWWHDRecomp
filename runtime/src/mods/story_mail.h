@@ -57,6 +57,13 @@ void state_loaded();  // a full state was loaded: forget the letter being shown
 // A resident's line: while armed, the message `number` shows `text` (kept alive by the caller) for the
 // talk that looks it up; unsay() ends it. Used by story_notebook's resident takeovers.
 void say(uint32_t number, const std::u16string* text);
+// Snapshot-owned provenance for world residents; never inferred from an arbitrary text lookup.
+struct SayOwner {uint32_t actor=0,pid=0,token=0,partner=0;bool operator==(const SayOwner&) const=default;};
+void set_say_restore_record(uint32_t guest,uint32_t bytes);
+void say_owned(uint32_t number,const std::u16string* text,SayOwner owner);
+bool restore_say_owner(uint32_t number,SayOwner& owner);
+bool resume_say(uint32_t number,const std::u16string* text,SayOwner owner);
+
 void unsay();
 bool said();     // the armed line was looked up for display (its text replaced)
 bool can_say();  // the hooks are installed and have text buffers: say() can work

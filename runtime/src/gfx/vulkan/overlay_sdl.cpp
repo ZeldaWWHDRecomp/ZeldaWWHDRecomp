@@ -284,7 +284,7 @@ void load_saved_options() {
     if (saved("vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode((int)num("vkPresentMode"));
 #ifdef __ANDROID__
     if (v.count("androidSwapDisplays")) dual_display::requested_swap = num("androidSwapDisplays") != 0;
-    if (v.count("androidSecondScreenOff")) gfx::g_second_screen_off = num("androidSecondScreenOff") != 0;
+    gfx::load_second_screen_off(v.count("androidSecondScreenOff") && num("androidSecondScreenOff") != 0);
 #endif
     // GamePad screen (display_modes.h); the start-up test overrides after the saved choices
     using namespace gfx;
@@ -374,7 +374,13 @@ void tv_fullscreen_changed() {
 }
 // the GamePad screen modes of display_modes.h (as the AppKit host's Display menu)
 int drc_modes() { return gfx::kDrcModeCount; }
-bool drc_mode_offered(int m) { return m == gfx::kDrcWindow ? gfxvk::gamepad_window_available() : gfx::drc_mode_offered(m); }
+bool drc_mode_offered(int m) {
+#ifdef __ANDROID__
+    return gfx::drc_mode_offered(m);  // no SDL GamePad window: "window" is the second display (#222)
+#else
+    return m == gfx::kDrcWindow ? gfxvk::gamepad_window_available() : gfx::drc_mode_offered(m);
+#endif
+}
 int drc_mode() { return gfx::g_mode; }
 void set_drc_mode(int m) {
     if (!drc_mode_offered(m)) return;

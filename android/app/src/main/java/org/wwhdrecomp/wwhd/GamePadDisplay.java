@@ -47,6 +47,7 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
     private Runnable dismissalRecovery;
     private int failedDisplay = -1, invalidShows;
     private boolean invalidRetryPending;
+    private boolean releasedLogged;
     private int syntheticInvalidShows;
     private final WindowInfoTrackerCallbackAdapter folds;
     private Consumer<WindowLayoutInfo> foldListener;
@@ -54,6 +55,8 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
             (v, l, t, r, b, oldL, oldT, oldR, oldB) -> refresh();
 
     private static native boolean publishAvailability(boolean available);
+    /** The saved Off choice before native settings load; ignored once they have (#222). */
+    static native void seedSavedOff(boolean off);
     private static native void publishSurface(Surface surface, int width, int height, long generation);
     private static native boolean touch(float x, float y, boolean down, boolean dragging, long generation);
 
@@ -166,8 +169,11 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
         boolean available = pick != null || foldPanes() != null;
         if (publishAvailability(available)) {
             if (presentation != null || embedded != null || dismissalRecovery != null) close();
+            if (available && !releasedLogged) Log.i("wwhd-display", "secondary released (GamePad screen off)");
+            releasedLogged = available;
             return;
         }
+        releasedLogged = false;
         if (presentation != null && pick != null &&
                 presentation.getDisplay().getDisplayId() == pick.getDisplayId()) return;
         if (pick == null) {

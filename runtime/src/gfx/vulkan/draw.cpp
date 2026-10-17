@@ -893,16 +893,32 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
       attributes.push_back(
           {uint32_t(loc), g.attributeBufferIndex, fmt, a.offset});
       const auto nativeFormat = vk::vertex_format(a.format);
-#ifdef __ANDROID__
       // Metadata only: never record vertex contents, guest addresses, or save data.
-      static std::set<std::tuple<unsigned, unsigned, unsigned, unsigned, unsigned>> seenVertexInputs;
-      const auto diagnostic = std::make_tuple(unsigned(a.format), unsigned(a.endianSwap),
-          unsigned(a.nfa), unsigned(a.isSigned), unsigned(a.offset % 4));
-      if (seenVertexInputs.size() < 64 && seenVertexInputs.insert(diagnostic).second)
-        LOG("[vulkan vertex observed] guestFormat=0x%02x native=%s fetch=%s endian=%u numeric=%u signed=%u offset=%u offsetMod4=%u offsetWithinLimit=%u fallback=%u",
-            unsigned(a.format), vk::vertex_format_name(nativeFormat), vk::vertex_format_name(fmt), unsigned(a.endianSwap),
-            unsigned(a.nfa), unsigned(a.isSigned), a.offset, a.offset % 4, a.offset <= R.properties.limits.maxVertexInputAttributeOffset, R.vertexFormats.fallback(nativeFormat));
+      static const bool observeVertexInputs = [] {
+#ifdef __ANDROID__
+        return true;
+#else
+        const char* setting = std::getenv("WWHD_VK_VERTEX_METADATA");
+        return setting && !std::strcmp(setting, "1");
 #endif
+      }();
+      if (observeVertexInputs) {
+        // Keep the offset and its own guest binding stride together. An offset-limit check
+        // alone says nothing about access beyond stride; zero stride is a constant input.
+        const uint32_t observedStride =
+            (r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
+        const uint64_t attributeEnd = uint64_t(a.offset) + vertex_format_bytes(nativeFormat);
+        static std::set<std::tuple<unsigned, unsigned, unsigned, unsigned, unsigned, unsigned>> seenVertexInputs;
+        const auto diagnostic = std::make_tuple(unsigned(a.format), unsigned(a.endianSwap),
+            unsigned(a.nfa), unsigned(a.isSigned), unsigned(a.offset), unsigned(observedStride));
+        if (seenVertexInputs.size() < 64 && seenVertexInputs.insert(diagnostic).second)
+          LOG("[vulkan vertex observed] guestFormat=0x%02x native=%s fetch=%s endian=%u numeric=%u signed=%u offset=%u offsetMod4=%u offsetWithinLimit=%u fallback=%u stride=%u attributeEnd=%llu offsetBeyondStride=%u attributeEndBeyondStride=%u cpu=%u",
+              unsigned(a.format), vk::vertex_format_name(nativeFormat),
+              cpu ? (vk::cpu_vertex_float(a) ? "R32G32B32A32_SFLOAT" : "R32G32B32A32_UINT") : vk::vertex_format_name(fmt), unsigned(a.endianSwap),
+              unsigned(a.nfa), unsigned(a.isSigned), a.offset, a.offset % 4, unsigned(a.offset <= R.properties.limits.maxVertexInputAttributeOffset),
+              unsigned(!cpu && R.vertexFormats.fallback(nativeFormat)), observedStride, static_cast<unsigned long long>(attributeEnd),
+              unsigned(observedStride && a.offset >= observedStride), unsigned(observedStride && attributeEnd > observedStride), unsigned(cpu));
+      }
       if (!cpu && R.vertexFormats.fallback(nativeFormat)) {
         if (tailLocation >= R.properties.limits.maxVertexInputAttributes ||
             attributes.size() >= R.properties.limits.maxVertexInputAttributes)

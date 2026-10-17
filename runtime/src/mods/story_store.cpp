@@ -31,6 +31,7 @@ std::vector<uint8_t> g_unplaced;     // a block read before set_memory (payload 
 std::atomic<int> g_quiet{0};
 bool g_installed = false;
 void (*g_original)(Cpu*, uint32_t) = nullptr;
+void (*g_progress_loaded)() = nullptr;
 
 bool trace() {
     static const bool on = [] { const char* e = getenv("WWHD_STORY_STORE_TRACE"); return e && *e == '1'; }();
@@ -53,13 +54,16 @@ void card_to_memory(Cpu* c) {
     const uint32_t log = c->r[5];
     g_original(c, kCardToMemory);
     if (g_quiet || !g_memory || log >= kQuestLogs) return;
-    std::lock_guard lock(g_mu);
-    memcpy(area(), saved_copy(log), kAreaSize);
-    const uint32_t base = ld32(kSavePtr);
-    if (base && story_block::migrate(mem::ptr(base + kReserve), area()))
-        LOG("[story] Quest Log %u: story progress moved from the game's reserved save bytes into the story block", log + 1);
-    if (trace()) LOG("[story] Quest Log %u loaded (%u records)", log + 1, story_mail::Book(area(), story_block::kAreaRecords).records() -
-                                                                          story_mail::Book(area(), story_block::kAreaRecords).free_records());
+    {
+        std::lock_guard lock(g_mu);
+        memcpy(area(), saved_copy(log), kAreaSize);
+        const uint32_t base = ld32(kSavePtr);
+        if (base && story_block::migrate(mem::ptr(base + kReserve), area()))
+            LOG("[story] Quest Log %u: story progress moved from the game's reserved save bytes into the story block", log + 1);
+        if (trace()) LOG("[story] Quest Log %u loaded (%u records)", log + 1, story_mail::Book(area(), story_block::kAreaRecords).records() -
+                                                                              story_mail::Book(area(), story_block::kAreaRecords).free_records());
+    }
+    if (g_progress_loaded) g_progress_loaded();
 }
 void memory_to_card(Cpu* c) {
     const uint32_t log = c->r[5];
@@ -103,6 +107,7 @@ void set_memory(uint32_t guest) {
     }
 }
 bool ready() { return g_memory != 0; }
+uint8_t* memory_block() { return g_memory ? mem::ptr(g_memory) : nullptr; }
 uint8_t* area() { return g_memory ? mem::ptr(g_memory) : nullptr; }
 story_mail::Book book() { return story_mail::Book(area(), story_block::kAreaRecords); }
 
@@ -193,6 +198,7 @@ void written(const std::string& guest_path, const std::string& host_path) {
 }
 
 void set_game_calls(void (*original)(Cpu*, uint32_t)) { g_original = original; }
+void set_progress_loaded(void (*callback)()) { g_progress_loaded = callback; }
 
 void install(const std::function<std::string(uint32_t)>& replaced_by, const std::function<void(uint32_t, void (*)(Cpu*))>& replace) {
     if (g_installed || !g_original || !g_memory) return;

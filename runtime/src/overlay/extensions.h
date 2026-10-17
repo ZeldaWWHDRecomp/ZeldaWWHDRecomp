@@ -47,6 +47,9 @@ struct Tab {
     // optional: controller L / R while the tab is selected (-1 / +1), for a tab with its own sub-tabs
     // as Mods has. True: the tab moved inside itself; false (at its ends): the overlay changes tabs.
     std::function<bool(int direction)> shoulder;
+    // optional (any thread, cheap): false leaves the tab out of the tab bar for now (a setting turns it
+    // on later, as the world editor's tab); L / R skip it then. Null: always shown.
+    std::function<bool()> shown;
 };
 // Places the tab before the tab `before_id` (built-in or added); null or an unknown id: before "about"
 // (at the end if "about" is hidden). Ids already taken are ignored.
@@ -112,11 +115,13 @@ struct ShownTab {
     int builtin = -1;  // index in kBuiltinTabs; -1: an added tab (draw and shoulder from its Tab)
     std::function<void()> draw;
     std::function<bool(int direction)> shoulder;
+    std::function<bool()> shown;  // null: always
+    bool visible() const { return !shown || shown(); }
 };
-const std::vector<ShownTab>& tabs();  // the tab bar, in order
+const std::vector<ShownTab>& tabs();  // the tab bar, in order (check visible() for each)
 int tab_index(const std::string& id);  // in tabs(); -1 if not shown
 int builtin_tab(int index);            // kBuiltinTabs index of tabs()[index]; -1 for an added tab or out of range
-// Controller L / R on the tab bar: the tab after (direction +1) or before (-1) `index`, wrapping around.
+// Controller L / R on the tab bar: the visible tab after (direction +1) or before (-1) `index`, wrapping around.
 int next_tab(int index, int direction);
 // Controller L / R while tabs()[index] is open: the tab to switch to, or -1 when the tab moved between
 // its own sub-tabs instead (an added tab's shoulder, or `builtin_shoulder` for a built-in tab: Mods).

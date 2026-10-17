@@ -123,6 +123,9 @@ int main() {
         LatteParsedFetchShaderAttribute a{};
         a.format=f.format;a.nfa=numeric;a.isSigned=sign;a.endianSwap=E(endian);a.offset=offset;
         if (f.floating) assert(!(cpu_vertex_classes(a)&CpuScaled));
+        // Component classification includes half-float RGB, even for decoder combinations
+        // which are explicitly unsupported; it follows the attribute shape, not its numeric mode.
+        assert(bool(cpu_vertex_classes(a)&CpuThreeComponent)==(f.count==3));
         uint8_t storage[20]{};auto* p=storage+offset;
         for (unsigned i=0;i<16;++i) {
             random=random*1664525u+1013904223u;

@@ -1,3 +1,4 @@
+#include "record_worker.h"
 #include "pass.h"
 #ifdef __ANDROID__
 #include "overlay/overlay.h"
@@ -45,6 +46,7 @@
 #include <string>
 #include <thread>
 
+namespace gx2 { void request_background_vulkan_cache_checkpoint(); }
 namespace gfxvk {
 extern uint64_t g_stat_full_checks, g_stat_uploads;
 void request_tv_dump(const std::string&,int);
@@ -306,15 +308,20 @@ void renderpass_retirement_check() {
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
   rendering.renderArea.extent={8,8};rendering.layerCount=1;
   rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
-  DeferredCommands captured;captured.start_capture();
+  DeferredCommands captured;
+  auto* pod = record_worker_commands();
+  const size_t commandsBefore = pod ? pod->command_count() : 0;
+  if (!pod) captured.start_capture();
   begin_pass(cmd,rendering,[&] { return color_pass(surface.fmt.pixel,surface.layout); });
   end_pass(cmd);
-  require(captured.command_count()==2,"classic begin/end did not enter the deferred command stream");
+  require((pod ? pod->command_count()-commandsBefore : captured.command_count())==2,
+      "classic begin/end did not enter the owned command stream");
   require(pass_caches().framebuffer_count()==cached+1,"captured framebuffer was not resolved at recording time");
   destroy_surface_image(&surface);
   require(pass_caches().framebuffer_count()==cached,"view deferral retained a framebuffer cache entry");
   require(R.garbageFramebuffers.size()==retired+1,"framebuffer did not share its view's submission retirement");
-  captured.finish_exact();flush_async();
+  if (!pod) captured.finish_exact();
+  flush_async();
  }
  wait_idle();
  for(const auto& slot:R.submissions)
@@ -934,6 +941,9 @@ int android_display_smoke_test() {
       gfx::g_second_screen_off=secondOff;
       hostui::save_pip_position();  // saves the display options again, with the player's choice
     }
+    // the player choosing a mode in Settings: Off releases a connected second screen (#222)
+    if (value.size()==12 && value.starts_with("choose_mode") && value[11]>='0' && value[11]<'0'+gfx::kDrcModeCount)
+      hostui::set_drc_mode(value[11]-'0');
     if (value == "secondary_profile1") R.secondaryProfile=true;
     if (value == "secondary_profile0") R.secondaryProfile=false;
     if (value == "timing_reset") {
@@ -1262,10 +1272,18 @@ int renderer_smoke_test() {
         (unsigned long long)(measured.timestamp_writes - before.timestamp_writes));
   }
   test_hdr_presentation();
+  if (std::getenv("WWHD_TEST_CACHE_BACKGROUND")) {
+    // Synthetic durability test: let the caller kill this process after the
+    // background checkpoint reaches disk, bypassing orderly shutdown entirely.
+    gx2::request_background_vulkan_cache_checkpoint();
+    LOG("[renderer smoke] waiting for kill after background cache request");
+    for (;;) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
   save_pipeline_cache();
   wait_idle();
+  stop_record_worker();
   reset_pass_caches();
   LOG("[renderer smoke] PASS: actual device upload/clear/blit/depth/triangle/present");return 0;
- }catch(const std::exception& e){LOG("[renderer smoke] FAIL: %s",e.what());try {command_buffer();flush();}catch(...){}return 1;}
+ }catch(const std::exception& e){LOG("[renderer smoke] FAIL: %s",e.what());try {command_buffer();flush();}catch(...){}try {stop_record_worker();}catch(...){}return 1;}
 }
 } // namespace gfxvk

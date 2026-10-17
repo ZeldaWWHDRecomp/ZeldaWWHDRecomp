@@ -1292,6 +1292,7 @@ static bool skip(int bit) {
 }
 static bool g_in_execute = false;  // inside fpcEx_Handler (actor Execute): logic, not drawing
 namespace mods { void after_execute(Cpu* c, uint32_t execute_fn); }  // mods/turbo.cpp
+namespace editor { void logic_service(Cpu* c); void camera_service(Cpu* c, bool logic_pass); }  // editor/editor_game.cpp: the world editor (live actors, fly camera)
 extern "C" void hook_025DE788(Cpu* c) {
     if (skip(1) && !true60::enabled()) return;  // true 60: the per-process gate decides (true60.cpp)
     interp::record_executed_step();
@@ -1299,7 +1300,8 @@ extern "C" void hook_025DE788(Cpu* c) {
     uint32_t execute_fn = c->r[3];
     f_025DE788_orig(c);
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
-    if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
+    if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);editor::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
+    editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass, and true 60's 60 Hz passes
     guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;
 }

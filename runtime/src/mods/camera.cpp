@@ -54,6 +54,7 @@
 #include "mods.h"
 #include "../motion/motion.h"
 #include "runtime.h"
+#include "../editor/editor_game.h"
 
 extern "C" {
 void f_0250FDC8_orig(Cpu* c);  // dCamera_c::manualCamera
@@ -177,12 +178,14 @@ bool test_mouse() {
 }  // namespace
 
 void mouse_add(float dx, float dy) {
+    if (editor::take_mouse(dx, dy)) return;  // the fly camera looks around with it
     std::lock_guard<std::mutex> lk(g_mu);
     g_dx += dx;
     g_dy += dy;
     g_move_step = step();
 }
 void mouse_wheel(float dy) {
+    if (editor::take_wheel(dy)) return;  // the fly camera's speed
     std::lock_guard<std::mutex> lk(g_mu);
     g_wheel += dy;
 }
@@ -268,6 +271,7 @@ void filter_pad(input::PadState& s) {
     }
     if (now >= g_r3_from && now < g_r3_to) s.buttons |= input::kStickR;
     lock_on_filter_pad(s);
+    editor::filter_pad(s);  // the world editor's fly camera takes the controller (the game gets nothing)
 }
 
 }  // namespace mods

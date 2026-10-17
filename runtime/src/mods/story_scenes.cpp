@@ -2,6 +2,7 @@
 #include "story_mail.h"
 #include "story_scene_choice.h"
 #include "story_scene_motion.h"
+#include "story_particles.h"
 #include "mod_actor.h"
 #include "story_notebook_game.h"
 #include "guest_addr.h"
@@ -38,7 +39,7 @@ uint64_t g_generation=0;
 bool g_loaded=false,g_suppress_loaded_room=false,g_cleanup_pending=false,g_cleanup_loaded=false,g_abort_pending=false;
 Cpu* g_cpu=nullptr;
 Resolve g_resolve;
-Actions g_actions;ResolvePlace g_places;std::map<std::string,MusicHook> g_music;
+Actions g_actions;ResolvePlace g_places;ResolveParticle g_particle_resolve;std::map<std::string,MusicHook> g_music;
 StopReason g_restore_reason=StopReason::Aborted;uint32_t g_lease_serial=0;
 motion::Path g_camera_path;motion::Follow g_camera_follow;
 struct Entry {std::string mod;ManifestScene scene;};
@@ -233,6 +234,20 @@ public:
             const auto found=g_music.find(g_entries[g_current].mod);if(found==g_music.end())return false;
             const uint32_t at=g_scratch+MusicMask+uint32_t(index/32)*4;st32(at,ld32(at)|(1u<<(index%32)));
             return dispatch_music(found->second,step.cue,step.music_action=="start"?MusicPhase::Start:MusicPhase::Stop,step.fade_frames,StopReason::Finished);
+        }else if(step.kind==SceneStep::Kind::Particle){
+            if(!g_cpu||!owns(call(kPlay))||!same_room(call(kPlay)))return false;
+            WorldPoint where=step.position;
+            if(step.actor=="link"){
+                const uint32_t actor=resolve(step.actor);
+                if((actor&3)||actor<mem::kMem2Start||uint64_t(actor)+kPos+12>mem::kMem2End||
+                   !ld32(actor+4)||ld32(actor+4)==0xFFFFFFFFu||ld8(actor+kRoom)!=ld8(g_scratch+24)||
+                   ld16(actor+0xE)!=0x00A8)return false;
+                where=position(actor);
+            }else if(!step.actor.empty()&&(!g_particle_resolve||
+                    !g_particle_resolve(g_cpu,g_entries[g_current].mod,step.actor,ld8(g_scratch+24),where)))return false;
+            return story_particles::burst_named(g_cpu,step.particle,
+                {{where.x,where.y,where.z},int32_t(ld8(g_scratch+24))},
+                {step.particle_scale,step.particle_alpha});
         }else if(step.kind==SceneStep::Kind::Move) {
             const uint32_t actor=resolve(step.actor);const auto value=identity(actor);
             if(value.token){const WorldPoint from=position(actor);const double dx=step.position.x-from.x,dy=step.position.y-from.y,dz=step.position.z-from.z;const float speed=float(std::sqrt(dx*dx+dy*dy+dz*dz)*60/std::max(1u,step.frames));if(!lease_actor(value,actor))return false;st32(g_scratch+176,actor);st32(g_scratch+180,value.process_id);return mod_actor::scene_path(g_cpu,value,ld32(g_scratch+LeaseID),{from,step.position},speed);}
@@ -315,13 +330,14 @@ void set_game_calls(uint32_t (*fn)(Cpu*,uint32_t,std::initializer_list<uint32_t>
 void set_scratch_memory(uint32_t guest){g_scratch=guest;}
 void set_callbacks(Resolve resolve_fn,Actions actions_fn){g_resolve=std::move(resolve_fn);g_actions=std::move(actions_fn);}
 void set_place_resolver(ResolvePlace resolver){g_places=std::move(resolver);}
+void set_particle_resolver(ResolveParticle resolver){g_particle_resolve=std::move(resolver);}
 bool register_music_hook(const std::string& owner,MusicHook hook){if(owner.empty()||!hook||g_player.active()||g_cleanup_pending||g_music.count(owner))return false;g_music.emplace(owner,std::move(hook));return true;}
 bool validate(const std::vector<ManifestScene>& scenes,std::string& why) {
     for(const auto& scene:scenes){
         if(scene.steps.empty()||scene.steps.size()>kMaxSceneSteps||scene.steps.back().kind!=SceneStep::Kind::End)return why="scene "+scene.id+": invalid step list",false;
         std::vector<Timing> timing;const bool graph=std::any_of(scene.steps.begin(),scene.steps.end(),[](const auto& step){return !step.successors.empty();});
         for(size_t i=0;i<scene.steps.size();++i){const auto& step=scene.steps[i];
-            if(unsigned(step.kind)>unsigned(SceneStep::Kind::Music))return why="unsupported scene step",false;
+            if(unsigned(step.kind)>unsigned(SceneStep::Kind::Particle))return why="unsupported scene step",false;
             if(step.kind!=SceneStep::Kind::Choice&&step.successors.size()>1)return why="only choices have two successors",false;
             if(!graph&&step.kind==SceneStep::Kind::End&&i+1!=scene.steps.size())return why="scene "+scene.id+": end must be last",false;
             const bool placed=step.kind==SceneStep::Kind::Move||step.kind==SceneStep::Kind::Face||step.kind==SceneStep::Kind::Animation||step.kind==SceneStep::Kind::Walk;
@@ -339,6 +355,12 @@ bool validate(const std::vector<ManifestScene>& scenes,std::string& why) {
             }else if(step.kind==SceneStep::Kind::Animation){if(step.clip.empty()||!std::isfinite(step.blend_seconds)||step.blend_seconds<0||step.blend_seconds>10)return why="invalid scene animation",false;
             }else if(step.kind==SceneStep::Kind::Walk){if(!std::isfinite(step.speed)||step.speed<=0||step.speed>1500||step.loop||(!step.quest_place.empty()&&!step.walk_points.empty())||(step.quest_place.empty()&&(step.walk_points.size()<2||step.walk_points.size()>16)))return why="invalid scene walk",false;for(const auto& p:step.walk_points)if(!motion::valid(motion_point(p)))return why="invalid scene walk point",false;
             }else if(step.kind==SceneStep::Kind::Music){if(step.cue.empty()||(step.music_action!="start"&&step.music_action!="stop")||step.fade_frames>600)return why="invalid scene music hook",false;}
+            else if(step.kind==SceneStep::Kind::Particle){
+                if((step.particle!="auction-sparkle"&&step.particle!="beacon-sparkle")||(step.actor.empty()!=step.particle_has_position)||
+                   (step.particle_has_position&&!motion::valid(motion_point(step.position)))||
+                   !std::isfinite(step.particle_scale)||step.particle_scale<0.1f||step.particle_scale>4||step.particle_alpha>255)
+                    return why="invalid curated scene particle",false;
+            }
             timing.push_back({step.kind==SceneStep::Kind::End?0:std::max(1u,step.frames),step.kind==SceneStep::Kind::End,step.successors});
         }
         if(!valid_graph(timing))return why="scene "+scene.id+": invalid branch graph or five minute limit",false;
@@ -352,6 +374,8 @@ bool declare(const std::string& mod,const std::vector<ManifestScene>& scenes,std
     for(const auto& scene:scenes)g_entries.push_back({mod,scene});
     return true;
 }
+size_t checkpoint(){return g_entries.size();}
+bool rollback(size_t count) noexcept{if(g_cpu||g_player.active()||g_cleanup_pending||count>g_entries.size())return false;g_entries.resize(count);return true;}
 bool request(const std::string& mod,const std::string& id){
     for(size_t i=0;i<g_entries.size();++i)if(g_entries[i].mod==mod&&g_entries[i].scene.id==id){
         const std::optional<size_t> active=(g_player.active()||g_cleanup_pending)?std::optional<size_t>(g_current):std::nullopt;

@@ -53,4 +53,7 @@ PipelineBuildResult build_pipeline_async(const GraphicsPipelineState& state,
 bool pipeline_demand_active();
 // Under the renderer execution lock, after queued rendering has drained.
 bool finish_pipeline_demand(VkPipelineCache target);
+// Caller serializes target access. Normal checkpoints skip a busy compiler;
+// background/explicit checkpoints may wait off the UI thread, without stopping it.
+bool merge_pipeline_demand_cache(VkPipelineCache target, bool wait = false);
 }

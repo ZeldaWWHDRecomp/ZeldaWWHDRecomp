@@ -55,6 +55,8 @@
 #include "mods/save_backup.h"
 #include "mods/save_folder.h"
 #include "runtime.h"
+#include "overlay/editor_panel.h"
+#include "editor/editor_game.h"
 #if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
 #endif
@@ -67,7 +69,8 @@ namespace interp { void set_mode(int); }
 #ifdef WWHD_HAS_VULKAN
 namespace gfxvk { int renderer_smoke_test(); int warm_headstart_shaders(); }
 #ifdef __ANDROID__
-namespace gfxvk { int android_display_smoke_test(); void shutdown_renderer_caches(); }
+namespace gfxvk { int android_display_smoke_test(); }
+namespace gx2 { void shutdown_vulkan_caches(); }
 #endif
 #endif
 #ifdef WWHD_HAS_METAL
@@ -457,6 +460,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--trace")) g_trace_hle = true;
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
+        else if (!strcmp(argv[i], "--editor")) editor::set_launch_mode(true);  // the world editor (docs/mod-editor.md)
 #ifdef WWHD_HAS_VULKAN
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
 #ifdef __ANDROID__
@@ -471,6 +475,7 @@ int main(int argc, char** argv) {
 #endif
     }
     crash_context::initialize();
+    editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -528,7 +533,7 @@ int main(int argc, char** argv) {
 #ifdef __ANDROID__
             if (display_smoke) {
                 result = gfxvk::android_display_smoke_test();
-                gfxvk::shutdown_renderer_caches();
+                gx2::shutdown_vulkan_caches();
             }
             else
 #endif
@@ -611,6 +616,7 @@ int main(int argc, char** argv) {
         _exit(ok ? 0 : 1);
     }
     if (mods::packages::has_code_mod_support() && mods::required::check_local()) mods::packages::refresh_guest_startup();
+    guestmods::set_package_observer(editor::register_package);  // the world editor's inspector
     guestmods::init();  // trusted manager packages, before guest threads start
 #ifdef WWHD_DECOMP
     decomp::init();  // decomp build: which functions run decompiled (runtime/src/decomp), after the mods

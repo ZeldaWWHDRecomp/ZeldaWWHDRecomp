@@ -59,6 +59,10 @@ extern std::atomic<bool> g_has_drc_window; // the host made a GamePad window (wi
 // GamePad screen hidden (#222). Not the single-screen mode, which is Off by default on Android.
 extern std::atomic<bool> g_second_screen_off;
 extern std::atomic<bool> g_second_display_available; // capability, independent of live surface
+// Android start: the saved Off choice read by Java before the native settings load, so a saved Off never
+// acquires the second screen for a moment (#222). Ignored once load_second_screen_off ran.
+void seed_second_screen_off(bool off);
+void load_second_screen_off(bool off);  // the saved choice from settings.ini (hostui::load_saved_options)
 
 int find_name(const char* const* names, int n, const char* s, int def);  // index of s, def if absent
 double display_now();  // seconds, monotonic (the automatic overlay's clock)

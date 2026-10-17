@@ -1380,6 +1380,11 @@ uint64_t last_load_step() { return g_last_load_step.load(); }
 
 std::string states_dir() { return state_dir(); }
 
+namespace {
+void service_warp(Cpu* c);       // world editor (below)
+void service_file_save(Cpu* c);
+}  // namespace
+
 void service(Cpu* c) {
     crashrec::service();
     // test aids (TV frames): WWHD_STATE_SAVE_AT / WWHD_STATE_LOAD_AT for full states,
@@ -1406,6 +1411,8 @@ void service(Cpu* c) {
     }();
     (void)env_load;
     track_events();
+    service_warp(c);       // world editor
+    service_file_save(c);  // world editor test states
     if (int slot = g_psave_req.exchange(0)) do_portable_save(c, slot);
     service_portable_load(c);
     watch_arrival(c);
@@ -1440,6 +1447,111 @@ void service(Cpu* c) {
         for (int k = 1; k <= dump; k++)
             render::request_tv_dump("state_load" + std::to_string(s->slot) + "_" + std::to_string(k) + ".png", k);
     }
+}
+
+// ---------------------------------------------------------------- world editor (savestate.h)
+namespace {
+struct PendingWarp { bool set = false; Warp w; std::function<void(bool, const std::string&)> done; };
+PendingWarp g_warp;  // under g_mu
+struct PendingFileSave { std::string path; std::function<void(bool, const std::string&)> done; };
+PendingFileSave g_file_save;  // under g_mu
+
+void service_warp(Cpu* c) {
+    PendingWarp p;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (!g_warp.set) return;
+        p = std::move(g_warp);
+        g_warp = PendingWarp{};
+    }
+    auto finish = [&](bool ok, const std::string& why) {
+        if (!ok) message("Warp: %s", why.c_str());
+        LOG("[editor] warp to %s room %d %s: %s", p.w.stage.c_str(), p.w.room,
+            p.w.at_position ? "(position)" : ("point " + std::to_string(p.w.point)).c_str(), ok ? "started" : why.c_str());
+        if (p.done) p.done(ok, why);
+    };
+    std::string why;
+    bool retry = false;
+    if (!gameplay_ready(why, retry) || !player_has_control(c, why)) return finish(false, why);
+    const uint32_t sv = ld32(kSaveInfoPtr);
+    char name[8] = {};
+    memcpy(name, p.w.stage.data(), std::min<size_t>(p.w.stage.size(), 7));
+    // the current stage's layer when staying in it; otherwise the game picks the layer (-1)
+    const int8_t layer = p.w.stage == stage_name() ? (int8_t)ld8(kStartStage + 11) : -1;
+    uint16_t point = (uint16_t)(int16_t)p.w.point;
+    if (p.w.at_position) {
+        const uint32_t rs = sv + kRestart;  // dSv_restart_c, as apply_portable sets it
+        st8(rs + 0, (uint8_t)p.w.room);
+        st16(rs + 0x16, (uint16_t)p.w.angle);
+        for (int i = 0; i < 3; i++) stf32(rs + 0x18 + 4 * i, p.w.pos[i]);
+        st32(rs + 0x24, (uint32_t)(p.w.room & 0x3F) | 0xFF000000u);
+        stf32(rs + 0x28, 0.0);
+        st32(rs + 0x2C, 0);
+        point = 0xFFFF;
+    }
+    for (int i = 0; i < 8; i++) st8(kNextStage + i, (uint8_t)name[i]);
+    st16(kNextStage + 8, point);
+    st8(kNextStage + 10, (uint8_t)p.w.room);
+    st8(kNextStage + 11, (uint8_t)layer);
+    st8(kNextStage + 13, 0);  // wipe: fade
+    mods::moon_jump_reset();
+    st8(kNextStage + 12, 1);  // enabled
+    finish(true, "");
+}
+
+void service_file_save(Cpu* c) {
+    PendingFileSave p;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_file_save.path.empty()) return;
+        p = std::move(g_file_save);
+        g_file_save = PendingFileSave{};
+    }
+    mods::lock_on_reset();
+    pstate::State s;
+    std::string why;
+    bool retry;
+    bool ok = gameplay_ready(why, retry) && player_has_control(c, why) && capture_portable(c, s, why) && write_portable(p.path, s, why);
+    LOG("[editor] state %s: %s", p.path.c_str(), ok ? "written" : why.c_str());
+    if (p.done) p.done(ok, why);
+}
+}  // namespace
+
+void request_warp(const Warp& w, std::function<void(bool ok, const std::string& why)> done) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_warp = PendingWarp{true, w, std::move(done)};
+}
+
+void request_save_portable_file(const std::string& path, std::function<void(bool ok, const std::string& why)> done) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_file_save = PendingFileSave{path, std::move(done)};
+}
+
+std::string control_problem() {
+    const uint32_t sv = ld32(kSaveInfoPtr);
+    if (!in_mem2(sv)) return "no game in progress";
+    const std::string st = stage_name();
+    if (st.empty() || st == "sea_T" || st == "Name" || st == "ENDumi") return "no game in progress";
+    if (!in_mem2(ld32(kLinkPtr))) return "Link is not in the scene";
+    if (ld8(kEventRun) || g_event_wait > 0) return "a cutscene or event is running";
+    if (ld8(kMesgStatus) || ld8(kScopeMesgStatus)) return "a message or dialogue is open";
+    if (ld8(kMenuFlag)) return "a game menu is open";
+    if (ld8(kNextStage + 12)) return "a stage change is in progress";
+    if (ld32(kPlayerPtr) != ld32(kLinkPtr)) return "Link is not the controlled character";
+    return "";
+}
+
+LinkPlace link_place() {
+    LinkPlace p;
+    const uint32_t link = ld32(kLinkPtr);
+    const std::string st = stage_name();
+    if (!in_mem2(link) || st.empty()) return p;
+    p.valid = true;
+    p.stage = st;
+    p.room = (int8_t)ld8(link + kActorRoom);
+    p.angle = ld16(link + kShapeAngleY);
+    for (int i = 0; i < 3; i++) p.pos[i] = (float)ldf32(link + kActorPos + 4 * i);
+    return p;
 }
 
 }  // namespace ss

@@ -7,6 +7,7 @@
 #include "runtime.h"
 
 #include <cassert>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -387,6 +388,35 @@ void test_bag_gate() {
     assert(send("mod", "held", "Me", "Held") == kResultRead);
 }
 
+void test_owned_restore_text(){
+    constexpr uint32_t record=kArena+0x17000;
+    set_say_restore_record(record,128);
+    const SayOwner owner{kActor,123,1,77};const std::u16string text=u"Own seated resident, restored exactly.";
+    say_owned(0x2CF3,&text,owner);st32(kSet,kMsbt);st32(kMsg+0x11C,0x2CF3);lookup_index=kIndex;
+    Cpu c{};c.r[3]=0x101F4AE8;c.r[4]=kMsg;hooks::get_message(&c);assert(said());
+    std::array<uint8_t,128> saved;std::memcpy(saved.data(),mem::ptr(record),saved.size());
+    // Full snapshots restore provenance, while host-only text bytes and host override are lost.
+    state_loaded();unsay(); // A prior host owner cleans up after restore; it must not erase restored provenance.
+    std::memset(mem::ptr(kArena+0x18000+4096),0xA5,2048);assert(!said());
+    SayOwner restored;assert(restore_say_owner(0x2CF3,restored)&&restored==owner);
+    calls.clear();assert(resume_say(0x2CF3,&text,owner));assert(calls.empty());
+    c.r[3]=kMsbt;c.r[4]=kIndex;hooks::get_text(&c);
+    assert(calls.empty()&&ld16(c.r[3])==0x0E&&guest_u16(c.r[3]+8)==text);
+    c.r[3]=kMsbt;c.r[4]=kIndex+1;hooks::get_text(&c);assert(c.r[3]==kGameText&&calls==std::vector<std::string>{"text"});
+    for(unsigned field=0;field<4;++field){SayOwner wrong=owner;if(field==0)++wrong.actor;else if(field==1)++wrong.pid;else if(field==2)++wrong.token;else ++wrong.partner;assert(!resume_say(0x2CF3,&text,wrong));}
+    assert(!resume_say(0x999,&text,owner));const std::u16string oversized(701,u'x');assert(!resume_say(0x2CF3,&oversized,owner));
+    auto checksum=[&]{uint32_t h=2166136261u;for(uint32_t i=4;i<104;++i)h=(h^ld8(record+i))*16777619u;st32(record+104,h);};
+    // Invalidated/new conversations cannot reuse an older restored key accidentally.
+    unsay();assert(!restore_say_owner(0x2CF3,restored));
+    std::memcpy(mem::ptr(record),saved.data(),saved.size());st32(record+20,0xFFFFFFF0);checksum();assert(!restore_say_owner(0x2CF3,restored));
+    std::memcpy(mem::ptr(record),saved.data(),saved.size());st32(record+36,65);checksum();assert(!resume_say(0x2CF3,&text,owner));
+    std::memcpy(mem::ptr(record),saved.data(),saved.size());st32(record+28,129);checksum();assert(!restore_say_owner(0x2CF3,restored));
+    std::memcpy(mem::ptr(record),saved.data(),saved.size());say(0x2CF3,&text);assert(!restore_say_owner(0x2CF3,restored));
+    set_say_restore_record(0xFFFFFFF0,128);assert(!restore_say_owner(0x2CF3,restored));
+    set_say_restore_record(record,127);assert(!restore_say_owner(0x2CF3,restored));
+    set_say_restore_record(record,128);std::memcpy(mem::ptr(record),saved.data(),saved.size());state_loaded();assert(resume_say(0x2CF3,&text,owner));unsay();assert(!restore_say_owner(0x2CF3,restored));
+}
+
 }  // namespace
 
 int main() {
@@ -398,6 +428,7 @@ int main() {
     test_services();
     test_hooks();
     test_bag_gate();
+    test_owned_restore_text();
     std::puts("story_mail_test: ok");
     return 0;
 }

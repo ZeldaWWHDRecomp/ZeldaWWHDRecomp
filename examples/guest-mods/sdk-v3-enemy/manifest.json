@@ -1,0 +1,85 @@
+{
+  "format_version": 1,
+  "id": "sdk-v3-enemy",
+  "name": "Patrol enemy (SDK v3 preview)",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "Original animated patrol enemy using native Link collision damage and one native heart drop.",
+  "game_id": "wwhd",
+  "minimum_manager_version": "1.5.0",
+  "kind": "guest",
+  "experimental": true,
+  "guest": {
+    "api_version": 1,
+    "elf": "mod.elf"
+  },
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "patrol-enemy",
+      "kind": "skinned",
+      "source": "assets/patrol_enemy.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "patrol-enemy",
+      "kind": "mod",
+      "model": "patrol-enemy",
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": 800,
+        "y": 1040,
+        "z": -201500
+      },
+      "collision": {
+        "radius": 35,
+        "height": 140,
+        "mode": "solid"
+      },
+      "animation": "idle",
+      "combat": {
+        "health": 6,
+        "invulnerability_frames": 15,
+        "flinch": {
+          "clip": "flinch",
+          "frames": 12,
+          "knockback_speed": 180,
+          "knockback_frames": 6
+        },
+        "stun": {
+          "clip": "stun",
+          "frames": 30
+        },
+        "death": {
+          "clip": "death",
+          "frames": 30
+        },
+        "attack": {
+          "damage": 1,
+          "radius": 55,
+          "height": 100,
+          "forward_offset": 55,
+          "y_offset": 0,
+          "active_frames": 8,
+          "cooldown_frames": 45
+        },
+        "target_priority": "normal"
+      },
+      "defeated_flag": "patrol-enemy.defeated",
+      "drops": [],
+      "native_drops": [
+        {
+          "item": "heart",
+          "quantity": 1
+        }
+      ]
+    }
+  ]
+}

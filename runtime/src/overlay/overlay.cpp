@@ -16,6 +16,7 @@
 #include "setup_test.h"
 #include "setup_flow.h"
 #include "mods_tab.h"
+#include "editor_panel.h"
 #include "graphics_switch.h"
 #include "restart_dialog.h"
 #include "quit_dialog.h"
@@ -1028,6 +1029,20 @@ void tab_graphics() {
     }
 #ifdef WWHD_HAS_VULKAN
     heading("Advanced");
+    // Vulkan commands recorded and submitted on a worker thread (gfx/vulkan/record_worker.h)
+#ifdef __ANDROID__
+    constexpr bool recordWorkerDefault = true;  // gfx/vulkan/record_worker.h record_worker_default()
+#else
+    constexpr bool recordWorkerDefault = false;
+#endif
+    static bool recordWorker = [] { std::string value; return hostui::get("vkRecordWorker", value) ? value == "1" : recordWorkerDefault; }();
+    if (check("Record graphics on a second thread", recordWorker, &v, !getenv("WWHD_VK_RECORD_WORKER"))) {
+        recordWorker = v;
+        hostui::post([v] { hostui::set("vkRecordWorker", v ? "1" : "0"); });
+    }
+    help("Applies after restarting the game. Hands the graphics work to a second CPU thread. This can raise "
+         "the frame rate on devices whose CPU holds it back (phones, handhelds). On other computers it can "
+         "make frame times less even. Uses a little more CPU and battery. On by default on Android, off elsewhere.");
     static bool forceVertexFallback = [] { std::string value; return hostui::get("vkVertexFallback", value) && value == "1"; }();
     if (check("Force RGB vertex fallback", forceVertexFallback, &v, !getenv("WWHD_VK_VERTEX_FALLBACK"))) {
         forceVertexFallback = v;
@@ -2446,6 +2461,7 @@ void settings_window() {
         restart_notice_frame(true);
         if (ImGui::BeginTabBar("tabs", ImGuiTabBarFlags_FittingPolicyShrink)) {
             for (int i = 0; i < int(tabs.size()); i++) {
+                if (!tabs[i].visible()) continue;  // a tab only some launches have (the world editor's, with --editor)
                 ImGuiTabItemFlags f = U.select_tab == i ? ImGuiTabItemFlags_SetSelected : 0;
                 if (ImGui::BeginTabItem(tabs[i].name.c_str(), nullptr, f)) {
                     if (U.tab != i) U.cap_action = -1, g_capturing_keys = false, U.cap_note.clear();

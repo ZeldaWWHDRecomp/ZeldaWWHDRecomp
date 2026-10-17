@@ -27,7 +27,7 @@ void log_msg(const char* format,...) {
 namespace audio { void flush(){} float master_volume(){return 1;} void set_master_volume(float,bool){} }
 namespace ss { void request_save(int){++saves;} void request_load(int){++loads;} }
 namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){return 42;} Api active(){return Api::Vulkan;} }
-namespace gx2 { void checkpoint_vulkan_caches(){} }
+namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} }

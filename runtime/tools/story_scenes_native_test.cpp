@@ -2,6 +2,7 @@
 #include "mods/story_scenes.h"
 #include "mods/story_mail.h"
 #include "mods/story_scene_choice.h"
+#include "mods/story_particles.h"
 #include "mods/mod_actor.h"
 #include <map>
 #include <stdexcept>
@@ -25,6 +26,7 @@ std::map<uint32_t,void(*)(Cpu*)> choice_hooks;bool native_choice=false;unsigned 
 bool fake_mod=false,walk_finished=false;unsigned actor_claims=0,actor_releases=0,actor_paths=0,actor_animations=0;uint32_t actor_lease=0;std::vector<story_notebook::WorldPoint> last_path;
 std::vector<std::string> reward_flags;
 unsigned native_calls=0,end_calls=0,finished=0,sounds=0;
+unsigned particle_calls=0;bool particle_accept=true,particle_identity=true;story_particles::Placement last_particle;
 uint32_t pad_buttons=0;void(*trim_hook)(Cpu*)=nullptr;bool armed=false;unsigned message_status=0,close_ticks=0,reset_calls=0;float fade_rate=0;bool admit_ok=true,advance_close=true;
 std::vector<unsigned> mode_calls;
 void* map(uint32_t at,uint32_t bytes){
@@ -77,6 +79,12 @@ void test_tick(Cpu* cpu,bool skip=false,unsigned frames=1){
 }
 void clear_guest(){std::memset(mem::ptr(kArena),0,0x50000);st32(0x101F4B5C,kManager);st8(kCamera+4,1);st8(kPlay+0x5C22,1);st32(kCamera+0x73C+0x6C,f32_as_u32(60));st32(kCamera+0x600,0);st32(kCamera+0x10,f32_as_u32(123));st32(kPlay+0x5B34,kActor);std::memcpy(mem::ptr(kPlay+0x5134),"sea",4);}
 }
+namespace story_particles {
+bool burst_named(Cpu*,std::string_view effect,const Placement& placement,Options options){
+    assert((effect=="auction-sparkle"||effect=="beacon-sparkle")&&options.scale==1.5f&&options.alpha==180);
+    ++particle_calls;last_particle=placement;return particle_accept;
+}
+}
 namespace mod_actor {
 bool identify(Cpu*,uint32_t actor,Identity& out){if(!fake_mod||actor!=kActor)return false;out={"mod","sprite",1,ld32(kActor+4)};return true;}
 bool has_animation(Cpu*,const Identity&,const std::string& clip){return clip=="walk"||clip=="talk"||clip=="idle";}
@@ -103,6 +111,10 @@ int main(){
     SceneStep se;se.kind=SceneStep::Kind::Sound;se.sound="SE_MENU_CANCEL";se.frames=1;
     s.steps={camera,say,fade,face,se,end};std::string why;
     story_scenes::set_callbacks([](Cpu*,const std::string&,const std::string&){return kActor;},[](const std::string&,const std::vector<StoryAction>& actions){++finished;for(const auto& a:actions)reward_flags.push_back(a.id);return true;});
+    story_scenes::set_particle_resolver([](Cpu*,const std::string& mod,const std::string& id,unsigned room,WorldPoint& out){
+        if(!particle_identity||mod!="mod"||id!="sprite"||room!=ld8(kActor+0x326)||!ld32(kActor+4))return false;
+        out={u32_as_f32(ld32(kActor+0x314)),u32_as_f32(ld32(kActor+0x318)),u32_as_f32(ld32(kActor+0x31C))};return true;
+    });
     assert(story_scenes::declare("mod",{s},why));
     story_scenes::install([](Cpu*,uint32_t){},[](uint32_t){return std::string();},[](uint32_t address,void(*hook)(Cpu*)){assert(address==0x024FF8A0);trim_hook=hook;});assert(trim_hook);
     admit_ok=false;assert(story_scenes::request("mod","intro"));test_tick(&cpu);assert(!story_scenes::active()&&ld8(kPlay+0x5290)==0&&ld8(kPlay+0x5292)==0);admit_ok=true;
@@ -234,5 +246,25 @@ int main(){
     assert(story_scenes::request("queue-0","queued"));assert(story_scenes::request("queue-1","queued"));assert(story_scenes::request("queue-2","queued"));test_tick(&cpu);assert(story_scenes::active());const auto before_interrupt_rewards=finished;
     st8(kPlay+0x5292,1);test_tick(&cpu);assert(!story_scenes::active());st8(kPlay+0x5292,0);for(unsigned n=0;n<12;++n)test_tick(&cpu);assert(!story_scenes::active()&&finished==before_interrupt_rewards);
     assert(story_scenes::request("queue-0","queued"));assert(story_scenes::request("queue-1","queued"));assert(story_scenes::request("queue-2","queued"));test_tick(&cpu);assert(story_scenes::active());test_tick(&cpu,true);for(unsigned n=0;n<12;++n)test_tick(&cpu);assert(!story_scenes::active()&&finished==before_interrupt_rewards+2);
+    // An instant particle step emits once at its copied world position. A
+    // missing native bank aborts the scene before its end reward.
+    SceneStep particle;particle.kind=SceneStep::Kind::Particle;particle.particle="auction-sparkle";
+    particle.position={11,22,33};particle.particle_has_position=true;particle.particle_scale=1.5f;particle.particle_alpha=180;
+    s.id="particle";s.steps={particle,end};assert(story_scenes::declare("mod",{s},why));
+    const auto before_particle_rewards=finished;assert(story_scenes::request("mod","particle"));test_tick(&cpu);
+    assert(particle_calls==1&&last_particle.position.x==11&&last_particle.position.y==22&&last_particle.position.z==33);
+    test_tick(&cpu);test_tick(&cpu);assert(!story_scenes::active()&&finished==before_particle_rewards+1);
+    particle_accept=false;assert(story_scenes::request("mod","particle"));test_tick(&cpu);
+    assert(particle_calls==2&&!story_scenes::active()&&finished==before_particle_rewards+1);particle_accept=true;
+    particle.actor="sprite";particle.particle_has_position=false;s.id="actor-particle";s.steps={particle,end};
+    assert(story_scenes::declare("mod",{s},why));st32(kActor+4,33);st8(kActor+0x326,1);
+    st32(kActor+0x314,f32_as_u32(45));st32(kActor+0x318,f32_as_u32(46));st32(kActor+0x31C,f32_as_u32(47));
+    assert(story_scenes::request("mod","actor-particle"));test_tick(&cpu);
+    assert(particle_calls==3&&last_particle.position.x==45&&last_particle.position.y==46&&last_particle.position.z==47);
+    test_tick(&cpu);test_tick(&cpu);assert(!story_scenes::active());
+    particle_identity=false;const auto before_stale_actor=particle_calls;
+    assert(story_scenes::request("mod","actor-particle"));test_tick(&cpu);
+    assert(!story_scenes::active()&&particle_calls==before_stale_actor);particle_identity=true;
+    particle.particle="beacon-sparkle";particle.actor.clear();particle.particle_has_position=true;s.id="beacon-particle";s.steps={particle,end};assert(story_scenes::declare("mod",{s},why));const auto before_beacon=particle_calls;assert(story_scenes::request("mod","beacon-particle"));test_tick(&cpu);assert(particle_calls==before_beacon+1);test_tick(&cpu);test_tick(&cpu);assert(!story_scenes::active());
     std::puts("story scene native contract tests passed (synthetic memory)");
 }

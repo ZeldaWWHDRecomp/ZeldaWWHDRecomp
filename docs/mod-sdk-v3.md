@@ -28,8 +28,26 @@ The initial allowlist is deliberately small:
 | Actor | Names accepted | Parameters |
 | --- | --- | --- |
 | Sign | `sign`, `kanban`, `PROC_KANBAN` | A mod-owned `flag`; optional dialogue |
-| Resident | `resident`, `NpcPeople`, `PROC_NPC_PEOPLE` | `parameters: {"resident": 9}` (Um1) |
+| Resident | `resident`, `NpcPeople`, `PROC_NPC_PEOPLE` | `parameters: {"resident": "uo2"}`, `"um1"` or seated `"ym1"`; default and legacy numeric `9` select Um1 |
 | Chest | `chest`, `Tbox`, `takara`, `PROC_TBOX` | A mod-owned `flag`; safe rupee `parameters.item` |
+| Breakable prop | `pot`, `barrel`, `crate` | Required mod-owned `broken_flag` and `drops` list |
+| Latched floor switch | `switch` | Required mod-owned `switch_flag`; fixed yellow switch |
+| Rotating gate | `door` | Required `switch` naming a switch actor in the same mod |
+| Native enemies (preview) | `chuchu`, `bokoblin`, `moblin`, `keese` | Required mod-owned `defeated_flag` and `drops`; fixed ordinary variants |
+
+Resident names are exact native object codes. This preview supports only `uo2`, `um1` and seated `ym1`, with fixed ordinary parameters and no native rail or quest variants.
+Other names and numeric values are rejected. Each placed copy uses mod dialogue
+and flags; retail originals keep their own dialogue and quests. Placed copies
+are excluded from retail named cohorts and figurine registration, while normal
+world freezing, attention and collision remain native. Restored open dialogue
+rebinds its mod text; deletion or room teardown cancels without running `then`.
+
+`ym1` uses the native seated action with fixed parameters. Its initializer affects
+only the placed copy and does not change the game's progress prerequisites or
+save flags. Author the seated character's height and location; this adapter does
+not ground-correct, walk, or support scene `move`/`face`. Its narrow native
+relocation area near x=-202066, z=320123 is rejected. Camera following and dialogue
+remain available. Other Ym1/Ym2 staff variants are unsupported.
 
 Other actor names and unsafe parameters are validator errors. Only ordinary chest
 raw `params: 0` is accepted at present. The port owns the remaining chest/sign
@@ -50,6 +68,314 @@ Optional `when` conditions can name `quest` plus `step`, an owned mod `item`
 is populated and reconciled in the current room on game logic steps. Pending
 creation/deletion retains its identity; an active conversation finishes before
 its partner is removed. Actors belong to the native room layer and unload with it.
+
+## Breakable native props
+
+The experimental prop adapter uses the player's native models, ground physics,
+target collision and break effects. Packages ship no native models or profile
+metadata. A private runtime profile separates these copies from retail pot
+searches and shop/container cohorts. Native acceptance of this new adapter is
+still pending.
+
+```json
+{
+  "id": "garden-pot", "actor": "pot", "stage": "sea", "room": 11,
+  "position": {"x": 800, "y": 1040, "z": -201500},
+  "broken_flag": "garden-pot.broken",
+  "drops": [{"item": "item:coral-shard", "quantity": 2}]
+}
+```
+
+The item must be declared by the same package. `drops` is required and may be
+empty or contain up to eight distinct items, each with quantity 1–254. Each prop
+needs its own distinct `broken_flag`. These markers have a separate story-record
+namespace from ordinary actor flags. Breaking adds all declared counts directly
+to the mod Delivery Bag and persists the broken marker in one transaction.
+Capacity, stack or invalid-store failures grant nothing and set no marker;
+the physical prop can still break. A failed instance is not immediately respawned:
+it can retry after a real room/stage transition or a full/progress load. A committed
+marker prevents later respawn. Deletion, room teardown and eligibility changes
+never grant drops. Full states restore both the native instance and mod story state.
+A restored prop must match its captured package, actor ID and complete declaration.
+Changed or reordered declarations fail closed until a real room/stage transition;
+compatibility across edited manifests is not promised for native residents.
+
+Pots and crates keep native sword break behavior. Barrels require a native bomb
+or hammer hit; an ordinary sword does not break them. Props permit yaw rotation
+only and uniform XYZ scale from 0.1 to 4. Existing `when` conditions are supported.
+Raw parameters, game drops, switches, health overrides, custom models, dialogue,
+`then`, paths, carrying and throwing are unsupported. Owned copies cannot be lifted
+or hook-carried, activate native weight switches, or register outgoing attack
+collision; their incoming target collision and solid collision remain native.
+These restrictions apply to placed copies; retail props keep their original behavior.
+
+### Switches and doors
+
+Switches use a mod-owned flag. A door refers to a switch actor ID, including a
+switch declared later in the actor list. Several doors may share a switch.
+
+```json
+{"id":"courtyard-switch","actor":"switch","stage":"sea","room":11,
+ "position":[100,1040,-201500],"switch_flag":"courtyard.open"}
+```
+
+```json
+{"id":"courtyard-gate","actor":"door","stage":"sea","room":11,
+ "position":[400,1040,-201500],"switch":"courtyard-switch"}
+```
+
+The switch latches when fully pressed. The gate follows that flag using its native
+opening and closing motion and solid collision. Retail switches, doors and save
+flags retain their original behavior. These adapters do not run retail event
+scripts, pause requests, room transitions or key checks. Only the fixed yellow
+floor switch and rotating gate are accepted; raw parameters and other variants
+are rejected. Use yaw-only rotation and scale 1. Dialogue, generic `flag`, `then`,
+drops and custom models are unsupported for these types.
+
+Full-state restoration requires the captured declaration to match the current
+mod declaration. A mismatch disables that copy until a real room/stage transition.
+Progress loads recreate switches and gates using the current mod-owned switch
+flags; they do not rewind those flags. Full-state loads restore the captured
+flags and actor motion, subject to the port's normal thread-safety checks.
+
+## Native enemies (preview)
+
+Place these fixed enemy variants with native movement and combat using the
+player's game resources. The declaring mod owns their rewards and defeat
+persistence. The preview has been checked in game at 30 fps, including each type's
+defeat and save safety, with targeted full-state and progress-load checks.
+The allowlist below defines the supported variants.
+
+| `actor` | Fixed variant |
+| --- | --- |
+| `chuchu` | Ordinary green ChuChu |
+| `bokoblin` | Ordinary type-4 Bokoblin |
+| `moblin` | Ordinary Moblin |
+| `keese` | Ordinary Keese, the native KI bat; not Morth |
+
+All four use the same declaration fields:
+
+```json
+{
+  "id": "courtyard-bokoblin", "actor": "bokoblin",
+  "stage": "sea", "room": 11,
+  "position": {"x": 100, "y": 1040, "z": -201500},
+  "rotation": {"x": 0, "y": 90, "z": 0},
+  "defeated_flag": "courtyard-bokoblin.defeated",
+  "drops": [{"item": "item:coral-shard", "quantity": 1}]
+}
+```
+
+Use `"actor": "chuchu"`, `"moblin"` or `"keese"` for the other fixed variants,
+with a distinct actor ID and defeat flag for each copy. Declare reward items in
+the same package. `drops` is required and may be empty or contain up to eight
+distinct same-mod items, each with quantity 1–254. Only yaw rotation is accepted;
+X/Z rotation must be zero and scale must be one on every axis. Existing `when`
+conditions apply. Place enemies on suitable native terrain and leave enough
+space for their movement and attacks.
+
+A recognized defeat atomically records `defeated_flag` and adds the declared
+mod-item counts. Bag placement follows the existing mod inventory rules. The enemy-defeat marker has its own story-record
+namespace, separate from ordinary actor and broken-prop flags. Capacity, stack
+or store failures grant no items and set no marker; the native enemy may already
+have completed its defeat. A committed marker prevents later respawn. Deletion,
+room teardown, eligibility changes and constructor failure never grant rewards.
+Full states rewind the native instance and mod records together. Progress loads
+preserve the current mod story records while rebuilding eligible native actors;
+defeated copies stay absent. Restored bindings must match the captured declaration
+and ownership generation; compatibility after editing manifests is not promised.
+
+The adapter fixes native parameters and persistence sentinels. Packages cannot
+supply raw parameters, retail save bits or item tables, health overrides, capture
+or prison variants, dialogue, `then`, paths or custom models for these enemies.
+Own Bokoblin/Moblin weapon copies cannot be lifted or taken by Link in this
+preview. Combat is restricted to verified Link interactions; owned enemies and
+weapons must not damage retail actors or join retail enemy cohorts. Native item
+drops are replaced by the declared Bag rewards. Some native disappearance effects
+are omitted because their native effect actor also creates retail drops; identical
+retail defeat effects are not promised.
+
+Packages ship no game models, weapons, animations, shaders or global resource
+replacements for these declarations. Retail originals retain their own behavior
+and progress. The fixed variants are the entire preview allowlist; elemental,
+quest and alternate weapon variants are unsupported.
+
+## Original mod enemies (combat preview)
+
+An original skinned mod actor can opt into `combat`. The original patrol example is in
+[`examples/guest-mods/sdk-v3-enemy`](../examples/guest-mods/sdk-v3-enemy/).
+Its guest behavior requests attacks; the runtime owns health and reactions.
+The example was exercised at 30 fps against native Link combat, including
+guarded and unguarded attacks, Link's damage invulnerability, sword flinch and
+defeat, boomerang stun, lock-on priority, and native heart pickup.
+
+Add these fields to a placed `kind: "mod"` actor using a declared skinned model:
+
+```json
+{
+  "collision": {"radius": 35, "height": 140, "mode": "solid"},
+  "combat": {
+    "health": 6,
+    "invulnerability_frames": 15,
+    "flinch": {"clip": "flinch", "frames": 12,
+               "knockback_speed": 180, "knockback_frames": 6},
+    "stun": {"clip": "stun", "frames": 30},
+    "death": {"clip": "death", "frames": 30},
+    "attack": {"damage": 1, "radius": 55, "height": 100,
+               "forward_offset": 55, "y_offset": 0,
+               "active_frames": 8, "cooldown_frames": 45},
+    "target_priority": "normal"
+  },
+  "defeated_flag": "patrol-enemy.defeated",
+  "drops": [],
+  "native_drops": [{"item": "heart", "quantity": 1}]
+}
+```
+
+The model must contain `idle` plus the named stun and death clips; any named
+flinch clip must also exist. Combat requires yaw-only rotation, scale one and
+solid body collision with radius at most 200 and height at most 400. Dialogue,
+prompts, `then` and generic actor flags cannot be combined with combat.
+`when` conditions still control eligibility. Configuration is immutable after
+registration; attack requests cannot supply new damage or collision types.
+
+| Field | Accepted values |
+| --- | --- |
+| `health` | Required integer 1–255 |
+| `invulnerability_frames` | 0–900; default 15 |
+| Reaction `frames` | 0–900; a named clip requires a positive value |
+| Flinch `knockback_speed`, `knockback_frames` | Speed 0–1500; frames 0–30; both positive or both zero |
+| Attack `damage` | Required integer 1–4 native quarter-heart units; native Hero Mode rules still apply |
+| Attack `radius`, `height` | Required 1–200 and 1–400 |
+| Attack `forward_offset`, `y_offset` | Optional 0–300 and −200–300 |
+| Attack `active_frames` | Required integer 1–150 |
+| Attack `cooldown_frames` | Required integer from `active_frames` through 900 |
+| `target_priority` | `low`, `normal` or `high`; default `normal` |
+
+All frame durations use 30 Hz game logic, never display frames. Priority changes
+only the owned actor's native attention weight; it does not rewrite retail actors
+or guarantee selection over every competing target. Knockback uses native
+background wall/ground correction and can be refused at a boundary.
+
+Incoming combat accepts exact Link attacks or explicitly verified Link projectile
+lineage. Zero-power ordinary hits do not remove health. Verified boomerang and
+hookshot hits apply damage-free stun; Link hammer hits can damage and stun.
+Native outgoing collision supplies Link's ordinary shield and invulnerability
+path. The 30 fps game runs confirmed that guarding prevents damage during active
+attack windows and that an unguarded hit follows the native damage-wait timer.
+Sword and boomerang reactions were also checked in game; hookshot and hammer
+lineage are bounded by the same source contract but were not separately exercised
+in those runs.
+The runtime protects reaction/death animations and disables attacks while the
+actor is reacting, dying, scene-owned or quarantined.
+
+`defeated_flag` and a `drops` array are required; `drops: []` is valid. Nonempty
+mod drops follow the same atomic marker/count and Bag placement rules as native
+enemy rewards above. Each copy needs a distinct defeat flag. Optional
+`native_drops` is empty or contains exactly one `heart` with quantity 1. After a
+newly committed mod reward, the runtime requests that native heart once. The
+native queue is separate from the atomic mod-record transaction: allocation or
+asynchronous creation can fail without undoing the committed reward, and there
+is no automatic retry. Native Hero Mode may suppress the heart. Queue status
+never means the heart was created or picked up; successful native pickup is what
+changes Link's life. Packages do not ship the game's heart resources.
+
+The additive C API preserves the existing v1 behavior, actor-state and hit packet
+layouts. Initialize `wwhd_actor_combat_state_v1` with `size = 64` and
+`version = 1`, then call `wwhd_actor_combat_get(handle, &state)`. It reports health,
+phase, flags, last damage sequence, reward/drop status and remaining timers.
+The output must be owned package memory or live actor userdata; a failed query
+leaves it unchanged. Queries are allowed during draw. `wwhd_actor_attack_begin`
+requests the immutable declared attack and fails while unavailable, scene-owned
+or cooling down. `wwhd_actor_attack_cancel` disables it without refunding cooldown.
+Both mutations are denied during draw. `on_hit` remains informational: runtime
+health has already been handled, so the callback must not deduct damage again.
+
+Invalid ownership, callback faults or mismatched captured configuration fail
+closed through quarantine. Full states rewind native combat objects, health,
+timers, mod records and once-only queue state together. Progress loads preserve
+current mod story records while recreating eligible actors; a committed defeat
+keeps that copy absent. Restored identities must match the declaration fingerprint
+and ownership generation. Editing a manifest is not a supported way to preserve
+compatibility with an old full state.
+
+## Carrying original mod actors (preview)
+
+A noncombat original `kind: "mod"` actor can opt into Link's normal lift, carry,
+put-down and throw controls with `"carry": {"break_on_impact": false}`. Static
+and skinned models are supported. Use solid body collision with radius at most
+100 and height at most 200, yaw-only placement and scale one. Carry cannot be
+combined with dialogue, attention prompts, look-at, pushable collision or combat.
+Lift, put-down, throw and ground landing have been exercised in the native game.
+
+Link's native grab procedures attach the actor to his hands and determine when
+put-down or throw releases it. The runtime pauses its authored path while held
+or airborne and resumes the saved path cursor after landing or put-down.
+Position, rotation, collision, animation, path and scene mutations are refused
+while carry owns the actor. Draw does not advance carry physics.
+
+Flight uses the native release speed (19 horizontal and 34 upward units per
+logic tick), bounded authored gravity of −2 units per tick and a −50 terminal
+vertical speed, with the game's native wall/ground correction. This is not the
+native pot's complete material-specific bounce or fracture simulation. A wall
+stops horizontal travel; an unbroken object then falls to the ground. Flight is
+bounded to 300 logic ticks and malformed ownership or motion quarantines the
+actor. Held and airborne bodies do not register their solid cylinder or deal
+contact damage to other actors.
+
+To break on a thrown wall or ground impact, set `break_on_impact: true` and add a
+distinct mod-owned `broken_flag` plus a `drops` array using the same-mod item
+syntax as native props. An empty array is valid. Impact atomically records the
+marker and grants those drops before requesting deletion; failure grants nothing
+and quarantines the copy. Put-down and ordinary deletion do not grant a reward.
+This preview removes the model on break; it does not provide native pot shards.
+
+Full states retain the carry mode, exact actor/Link identities, paused path and
+flight velocity in guest memory. Progress loads recreate only eligible copies;
+a committed broken marker keeps its copy absent. Changed declarations cannot
+rebind an old full-state actor. Native room transitions, interrupted carry and
+throw-camera cleanup still require acceptance evidence before release.
+
+## Original item models in Link's hand (preview)
+
+An inventory item may reference a same-mod static entry from `models` using
+`held_model`. A successful item **Use** requests a separate model presentation
+attached to Link's animated left hand. It does not equip a native weapon or
+change Link's equipment slots. This preview does not add a custom use animation.
+The native Delivery Bag assignment and Use path has been exercised with an
+original textured model visible in Link's hand.
+
+```json
+{
+  "models": [{"id": "lantern", "kind": "static", "source": "assets/lantern.glb"}],
+  "items": [{
+    "id": "lantern", "name": "Lantern", "description": "An original lantern.",
+    "icon": "assets/lantern.png", "use": {"action": "event"},
+    "held_model": "lantern", "held_frames": 90
+  }]
+}
+```
+
+Author the original model with its grip at the origin; the native left-hand
+joint supplies its transform. The model follows the existing hand pose. The
+static-model validation and player-local conversion requirements below apply.
+Skinned item models and item-model animation are currently unsupported.
+`held_frames` is an integer from 1 to 300, default 90, measured in game logic
+frames at 30 Hz. Loading uses this same bounded interval. Rendering does not
+advance it. An item needs a `use` action; failed Use and Info do not request a
+presentation. An event action is suitable when no modal information page is
+wanted. At most eight item model declarations are accepted per session.
+
+One presentation is active for Link. A later successful modeled Use replaces
+it; expiry, room/stage change, Link replacement and a real Quest Log load retire
+it. Full-state loading restores its remaining interval and native allocation
+when its item/model fingerprint still matches; it does not replay Use. Resource
+loading may delay replacement while an outstanding native load finishes.
+Original retail equipment and resource tables remain separate.
+
+`held_model` does **not** replace a chest's get-item model. Custom chest get-item
+presentation is unsupported in this preview; existing chest rewards retain
+their existing stand-in presentation.
 
 ## Static mod actors
 
@@ -263,6 +589,7 @@ minutes). Fast-forward intentionally follows the game clock.
 | `walk` | Owned skinned `actor`, `speed`, deadline; either 2–16 `points` or owned quest ID `quest_place` |
 | `choice` | `text`, exactly two `options: [{"text": "…", "next": "step-id"}, …]`, deadline; optional `default: 0` or `1` |
 | `music` | Textual `cue`, `action: "start"` or `"stop"`, optional `fade_frames` (0–600) |
+| `particle` | `effect: "auction-sparkle"` or `"beacon-sparkle"`; exactly one `actor` or world XYZ `position`; optional `scale` and `alpha`; emits once |
 | `end` | Optional `then` actions |
 
 Character references name a placed actor ID or `link` where supported. Movement
@@ -321,3 +648,87 @@ end rewards. Stop reasons are 0 Finished, 1 Skipped, 2 Aborted, 3 StateLoaded,
 4 Interrupted, 5 Failed and 6 TimedOut. START/STOP receive reason 0; RESTORE receives
 the actual lease exit reason. A data-only scene without
 a registered hook must not declare music steps.
+
+
+## Native particles (preview)
+
+The curated effects `auction-sparkle` (`8153`, blue geometric sparkle) and
+`beacon-sparkle` (`8152`, orange/yellow beacon burst) use callback-free native
+effects. Native 30 fps proof covers both visible bursts and their exact emitters'
+return to the native free list. `door-debris` and `dust` are unavailable in the
+public preview. The stock dust effect needs its retail callback to stop; it is
+not a safe callback-free one-shot.
+
+The [guest C header](../runtime/guest/include/wwhd_guest.h) provides:
+
+```c
+u32 wwhd_actor_particle(wwhd_actor_handle actor, const char* effect,
+                       f32 scale, u32 alpha);
+u32 wwhd_particle_at(const char* effect, f32 x, f32 y, f32 z,
+                    f32 scale, u32 alpha);
+```
+
+The actor call copies the current position of a live handle owned by the calling
+mod and requires the actor to be in Link's current room. The place call accepts
+explicit world XYZ in that current room; it does not infer height from a map or
+quest marker. Coordinates must be finite and within ±1000000 game units, scale
+must be 0.1–4, and alpha must be 0–255. Both calls reject Draw callbacks and return
+1 only when the native emitter is accepted. C API calls share a global limit of
+four emission attempts per logic step across mods; an attempt may consume the
+budget even when emission fails.
+
+```c
+wwhd_actor_handle actor = wwhd_actor_find("tide-sprite");
+if (actor) wwhd_actor_particle(actor, "auction-sparkle", 1.0f, 255);
+/* Explicit XYZ, using Link's current room. */
+wwhd_particle_at("auction-sparkle", 100.0f, 1040.0f, -201580.0f, 1.0f, 255);
+```
+
+A scene can emit at a declared character (including `link`) or at an explicit
+world position in the scene's room:
+
+```json
+{"type":"particle","effect":"auction-sparkle","actor":"link"}
+```
+
+```json
+{"type":"particle","effect":"auction-sparkle",
+ "position":{"x":100,"y":1040,"z":-201580},"scale":1,"alpha":255}
+```
+
+Use exactly one of `actor` and `position`; `scale` defaults to 1 and `alpha` to
+255. The step emits once when entered and has no duration field. A missing or
+stale actor, room mismatch, or unavailable native effect fails the step and aborts
+the scene rather than silently continuing to its end rewards.
+
+Effects use the currently loaded native bank. Availability can change between
+rooms; an absent effect returns failure without replacing or loading a bank.
+These calls create a one-shot at a copied position: the effect does not follow
+an actor, expose a cancellation handle, or retain a guest pointer. The native
+particle system owns its expiry.
+
+## Textures on owned native props (preview)
+
+A placed `pot`, `barrel`, or `crate` may name a PNG in its own package. The SDK
+replaces the supported base-colour texture on that copy of the native object;
+other copies in the room continue using the game's texture. Lighting and the
+native toon texture still come from the object. For example:
+
+```json
+{"actors":[{"id":"harbor-pot","actor":"pot","stage":"sea","room":11,
+  "position":{"x":100,"y":1040,"z":-201580},
+  "broken_flag":"harbor-pot.broken","texture":"textures/harbor-pot.png"}]}
+```
+
+The path must be a relative `.png` inside `textures/` or `assets/` in the
+package. The file must be at most 2 MiB and decode as a noninterlaced 8-bit RGBA
+PNG. Width and height may be at most 512 pixels; width must be a multiple of
+64 and height a multiple of 8. Invalid or missing files reject the declaration.
+The preview supports one named base-colour slot for a pot or crate, and the
+barrel's primary base-colour slot; other native objects and material slots are
+not accepted. Up to eight texture definitions can be active in one session.
+
+Mod-shipped simple JPAC sprites are not registered in this preview. The isolated
+writer is experimental: native draw selectors, private texture-context binding,
+and snapshot-safe bank ownership and retained texture/emitter lifetimes still
+need integration and native proof before custom effects can be loaded.

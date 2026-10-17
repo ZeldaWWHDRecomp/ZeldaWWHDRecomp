@@ -71,6 +71,8 @@ jobs:
           java -cp build/setup-recovery-test SetupRecoveryPolicyTest
           javac -d build/fold-layout-test android/app/src/main/java/org/wwhdrecomp/wwhd/FoldLayout.java tools/android/FoldLayoutTest.java
           java -cp build/fold-layout-test FoldLayoutTest
+          javac -d build/saved-second-screen-test android/app/src/main/java/org/wwhdrecomp/wwhd/AndroidUserDirectories.java android/app/src/main/java/org/wwhdrecomp/wwhd/SavedSecondScreen.java tools/android/SavedSecondScreenTest.java
+          java -cp build/saved-second-screen-test org.wwhdrecomp.wwhd.SavedSecondScreenTest
           clang++ -std=c++20 -I runtime/src runtime/tools/gamepad_touch_test.cpp -o build/gamepad-touch-test
           build/gamepad-touch-test
           clang++ -std=c++20 -pthread -I runtime/src runtime/tools/present_worker_test.cpp -o build/present-worker-test

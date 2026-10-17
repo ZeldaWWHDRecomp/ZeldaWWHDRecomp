@@ -193,6 +193,7 @@ struct Renderer {
   bool retainedUnsubmitted=false;
   DeferredCommands* deferredOwner=nullptr;
   uint64_t serial=0; // Submission order on the single graphics queue.
+  uint64_t recordWorkerSerial=0; // CPU acknowledgment before ANY fence query or pool reuse.
   std::vector<UploadBlock> uploadBlocks;
   std::vector<std::function<void()>> completions;
   std::vector<Buffer> garbageBuffers;
@@ -283,3 +284,8 @@ namespace gfxvk { void reset_feedback_images(); } // Call before device teardown
 #ifdef WWHD_SDL_HOST
 namespace gfxvk { SDL_Window* ensure_gamepad_window(bool create = true); bool gamepad_window_available(); }
 #endif
+namespace gfxvk {
+// Renderer-thread/execution-mutex only; opt-in diagnostic endpoints.
+void poll_present_observer();
+void flush_present_observer();
+}

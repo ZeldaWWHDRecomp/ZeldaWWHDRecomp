@@ -64,10 +64,15 @@ void begin_render_pass(VkCommandBuffer cmd, const VkRenderingInfo& info, const P
     // Resolve handles NOW, before deferred recording can seal this submission or
     // defer a view. The emitted command owns values only, never a cache lookup.
     auto prepared = prepare_pass(pass_caches(), info, pass);
-    record::emit_owned([cmd, prepared] { prepared.begin(cmd, pass_caches().api()); });
+    if (auto* recorder = dispatch_recorder(); recorder && recorder->pod_mode()) {
+        auto info = prepared.info; info.pClearValues = prepared.clears.data();
+        record::vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+    } else record::emit_owned([cmd, prepared] { prepared.begin(cmd, pass_caches().api()); });
 }
 void end_render_pass(VkCommandBuffer cmd) {
-    record::emit_owned([cmd] { vkCmdEndRenderPass(cmd); });
+    if (auto* recorder = dispatch_recorder(); recorder && recorder->pod_mode())
+        record::vkCmdEndRenderPass(cmd);
+    else record::emit_owned([cmd] { vkCmdEndRenderPass(cmd); });
 }
 void render_pass_pipeline_targets(VkGraphicsPipelineCreateInfo& info, const VkPipelineRenderingCreateInfo& targets) {
     info.pNext = nullptr; info.subpass = 0;

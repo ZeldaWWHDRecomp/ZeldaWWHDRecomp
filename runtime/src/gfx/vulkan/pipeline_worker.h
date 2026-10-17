@@ -32,6 +32,6 @@ PipelineWarmupResult warm_resolved_pipeline_recipes(std::vector<std::shared_ptr<
     const std::function<void(size_t)>& progress = {});
 // Offline warming only: finish the whole startup queue instead of cancelling it.
 PipelineWarmupResult finish_pipeline_warmup();
-// After save_pipeline_recipes has joined; caller serializes access to target.
-bool merge_pipeline_worker_cache(VkPipelineCache target);
+// Caller serializes target access; skip active compilation unless wait is true.
+bool merge_pipeline_worker_cache(VkPipelineCache target, bool wait = false);
 }

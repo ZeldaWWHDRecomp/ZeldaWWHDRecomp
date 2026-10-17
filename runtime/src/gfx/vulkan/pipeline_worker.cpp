@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <chrono>
 #include <thread>
@@ -47,8 +48,9 @@ struct Worker {
   RecipeSaveRevision revision;
   std::chrono::steady_clock::time_point lastSave = std::chrono::steady_clock::now();
   bool stopped = false;
-  VkPipelineCache cache = VK_NULL_HANDLE; // Worker writes; caller reads only after join.
-  bool merged = false;
+  std::shared_mutex cacheMutex;
+  VkPipelineCache cache = VK_NULL_HANDLE; // Published/mutated under cacheMutex.
+  std::atomic<bool> cacheChanged{false};
   std::unordered_map<std::string, Ready> ready;
   std::unordered_map<std::string, std::shared_ptr<PipelineRecipe>> recipes;
   std::unordered_set<std::string> consumed;
@@ -279,6 +281,7 @@ void run(Worker& w, std::vector<uint8_t> seed) {
       if (vkCreatePipelineCache(w.device, &ci, nullptr, &cache) != VK_SUCCESS)
         throw std::runtime_error("worker pipeline cache creation failed");
     }
+    { std::unique_lock lock(w.cacheMutex); w.cache = cache; }
     std::vector<uint8_t>().swap(seed); // Vulkan copied initial cache data during creation.
     std::fprintf(stderr, "[vulkan warmup] %zu exact pipeline recipes queued\n", loaded.size());
     for (auto& recipe : loaded) {
@@ -295,7 +298,11 @@ void run(Worker& w, std::vector<uint8_t> seed) {
         if (w.consumed.contains(key)) { ++cancelled; continue; }
       }
       WarmPipeline result;
-      if (compile(w.device, cache, *recipe, result) != VK_SUCCESS) { ++failed; continue; }
+      {
+        std::shared_lock cacheLock(w.cacheMutex);
+        if (compile(w.device, cache, *recipe, result) != VK_SUCCESS) { ++failed; continue; }
+        w.cacheChanged = true;
+      }
       bool publish;
       {
         std::lock_guard lock(w.mutex);
@@ -313,7 +320,6 @@ void run(Worker& w, std::vector<uint8_t> seed) {
     ++failed;
     std::fprintf(stderr, "[vulkan warmup] skipped: %s\n", error.what());
   }
-  w.cache = cache;
   w.result = {completed, failed};
 }
 
@@ -394,15 +400,18 @@ void save_pipeline_recipes() {
     std::fprintf(stderr, "[vulkan warmup] final snapshot failed: %s\n", error.what());
   }
 }
-bool merge_pipeline_worker_cache(VkPipelineCache target) {
+bool merge_pipeline_worker_cache(VkPipelineCache target, bool wait) {
   auto& w = worker();
-  if (!w.device || w.thread.joinable() || !target || !w.cache || w.merged) return false;
+  std::unique_lock lock(w.cacheMutex, std::defer_lock);
+  if (wait) lock.lock();
+  else if (!lock.try_lock()) return false;
+  if (!w.device || !target || !w.cache || !w.cacheChanged.load()) return false;
   const auto result = vkMergePipelineCaches(w.device, target, 1, &w.cache);
   if (result != VK_SUCCESS) {
     std::fprintf(stderr, "[vulkan warmup] cache merge failed (%d)\n", int(result));
     return false;
   }
-  w.merged = true;
+  w.cacheChanged = false;
   std::fprintf(stderr, "[vulkan warmup] worker pipeline cache merged for persistence\n");
   return true;
 }
@@ -427,7 +436,13 @@ PipelineWarmupResult warm_resolved_pipeline_recipes(std::vector<std::shared_ptr<
       if (!skip) {
         WarmPipeline handles;
         try {
-          if (compile(w.device, w.cache, *recipe, handles) != VK_SUCCESS) ++failed;
+          VkResult compiled;
+          {
+            std::shared_lock cacheLock(w.cacheMutex);
+            compiled = compile(w.device, w.cache, *recipe, handles);
+            if (compiled == VK_SUCCESS) w.cacheChanged = true;
+          }
+          if (compiled != VK_SUCCESS) ++failed;
           else {
             std::lock_guard lock(w.mutex);
             if (!insert_recipe(w, recipe)) { destroy(w.device, handles); ++failed; }

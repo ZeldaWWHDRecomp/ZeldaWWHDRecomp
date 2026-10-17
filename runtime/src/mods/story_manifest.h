@@ -105,6 +105,8 @@ struct ManifestItem {
     Use use = Use::None;                      // what using it (on X, Y or R) does; None: it can't go on a button
     std::string use_quest;                    // Use::QuestStep: the mod's quest ...
     unsigned use_step = 0;                    // ... reaches this step
+    std::string held_model; // same-mod static models entry, separate hand presentation
+    unsigned held_frames = 90; // logic frames at30Hz, 1..300
 };
 inline constexpr size_t kMaxItemNameBytes = 40, kMaxItemDescriptionBytes = 200, kMaxItemIconBytes = 128;
 inline constexpr unsigned kMaxItemsPerMod = 32;
@@ -158,6 +160,17 @@ inline bool parse_items(const mods::json::Value& manifest, std::vector<ManifestI
                 return why = "item " + m.id + ": unknown use action (show, open_notebook, quest_step, event)", false;
         } else if (use.type != Value::Null)
             return why = "item " + m.id + ": \"use\" must be an object", false;
+        if(it.get("held_model").type!=Value::Null) {
+            if(it.get("held_model").type!=Value::String||!story_mail::valid_id(it.get("held_model").text)||m.use==ManifestItem::Use::None)
+                return why="held_model requires a valid same-mod model id and a use action",false;
+            m.held_model=it.get("held_model").text;
+        }
+        if(it.get("held_frames").type!=Value::Null) {
+            const auto& n=it.get("held_frames");
+            if(m.held_model.empty()||n.type!=Value::Number||n.number<1||n.number>300||std::floor(n.number)!=n.number)
+                return why="held_frames requires held_model and integer1..300",false;
+            m.held_frames=unsigned(n.number);
+        }
         for (const ManifestItem& o : out)
             if (o.id == m.id) return why = "item " + m.id + " is declared twice", false;
         out.push_back(std::move(m));

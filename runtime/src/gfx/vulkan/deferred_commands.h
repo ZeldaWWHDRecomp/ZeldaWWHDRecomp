@@ -9,6 +9,7 @@
 #include <vector>
 
 namespace gfxvk {
+class PodCommands;
 class DeferredCommands;
 // Guest recording and cross-thread checkpoint/quit hold GX2's execution mutex.
 inline DeferredCommands* active_deferred_commands=nullptr;
@@ -36,6 +37,10 @@ public:
     DeferredCommands& operator=(const DeferredCommands&) = delete;
     // Destruction releases CPU copies only. GPU emission must be explicit.
     void start_capture(std::function<void()> beforeExact = {});
+    // Startup/shutdown only: reuse the existing dispatch pointer without adding
+    // an extra branch to the default immediate command path.
+    void set_pod_commands(PodCommands* commands);
+    bool pod_mode() const { return pod_ != nullptr; }
     bool capturing() const { return capturing_; }
     size_t command_count() const { return commands_.size()-emitted_; }
     size_t payload_bytes() const { return payloadBytes_; }
@@ -94,7 +99,10 @@ public:
     void vkCmdClearDepthStencilImage(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, const VkClearDepthStencilValue* value, uint32_t count, const VkImageSubresourceRange* ranges);
     void vkCmdBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* info);
     void vkCmdPipelineBarrier(VkCommandBuffer cmd, VkPipelineStageFlags source, VkPipelineStageFlags destination, VkDependencyFlags flags, uint32_t memoryCount, const VkMemoryBarrier* memory, uint32_t bufferCount, const VkBufferMemoryBarrier* buffers, uint32_t imageCount, const VkImageMemoryBarrier* images);
+    void vkCmdBeginRenderPass(VkCommandBuffer cmd, const VkRenderPassBeginInfo* info, VkSubpassContents contents);
+    void vkCmdEndRenderPass(VkCommandBuffer cmd);
 private:
+    PodCommands* pod_ = nullptr;
     Limits limits_{};
     bool capturing_=false;
     size_t payloadBytes_=0, emitted_=0;

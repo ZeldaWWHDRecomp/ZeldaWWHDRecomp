@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -80,23 +81,33 @@ inline void set_thread_name(const char* name) noexcept {
 // user-interactive (the default QoS let macOS park them on efficiency cores). Windows: above-normal
 // priority and no power throttling (hybrid P/E-core CPUs otherwise move busy threads to E-cores).
 // Linux: a small nice boost where the process may raise priority (needs CAP_SYS_NICE; otherwise a
-// no-op). WWHD_NO_QOS=1 leaves the thread untouched on every platform.
+// logged failure). WWHD_NO_QOS=1 leaves the thread untouched on every platform.
 inline void boost_thread_priority() {
  if(getenv("WWHD_NO_QOS")) return;
 #ifdef __APPLE__
- pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
+ const int error = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
+ if(error) std::fprintf(stderr,"[thread priority] thread=%s operation=set_qos error=%d\n",thread_label.c_str(),error);
 #elif defined(_WIN32)
- SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);
+ if(!SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL)) {
+  const DWORD error=GetLastError();
+  std::fprintf(stderr,"[thread priority] thread=%s operation=set_priority error=%lu\n",thread_label.c_str(),(unsigned long)error);
+ }
  // SetThreadInformation(ThreadPowerThrottling) exists from Windows 10 1709; looked up at run time
  struct PowerThrottling { ULONG Version, ControlMask, StateMask; };
  using SetInfo=BOOL(WINAPI*)(HANDLE,int,LPVOID,DWORD);
  static const auto set_info=(SetInfo)GetProcAddress(GetModuleHandleW(L"Kernel32.dll"),"SetThreadInformation");
  if(set_info) {
   PowerThrottling state{1 /* THREAD_POWER_THROTTLING_CURRENT_VERSION */,1 /* EXECUTION_SPEED */,0 /* off */};
-  set_info(GetCurrentThread(),3 /* ThreadPowerThrottling */,&state,sizeof state);
- }
+  if(!set_info(GetCurrentThread(),3 /* ThreadPowerThrottling */,&state,sizeof state)) {
+   const DWORD error=GetLastError();
+   std::fprintf(stderr,"[thread priority] thread=%s operation=disable_power_throttling error=%lu\n",thread_label.c_str(),(unsigned long)error);
+  }
+ } else std::fprintf(stderr,"[thread priority] thread=%s operation=disable_power_throttling unavailable\n",thread_label.c_str());
 #else
- setpriority(PRIO_PROCESS,(id_t)syscall(SYS_gettid),-5);  // EPERM without CAP_SYS_NICE: ignored
+ if(setpriority(PRIO_PROCESS,(id_t)syscall(SYS_gettid),-5)==-1) {
+  const int error=errno;
+  std::fprintf(stderr,"[thread priority] thread=%s operation=setpriority error=%d\n",thread_label.c_str(),error);
+ }
 #endif
 }
 inline void get_thread_name(char* out,size_t size) {

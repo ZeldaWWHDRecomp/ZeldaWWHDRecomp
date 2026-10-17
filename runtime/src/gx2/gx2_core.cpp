@@ -1,3 +1,5 @@
+#include "platform/present_observer.h"
+#include "platform/r5_slow_render.h"
 #include "gfx/display_modes.h"
 #include "../game_clock.h"
 #include "vsync_pacing.h"
@@ -28,6 +30,7 @@
 #include "state_groups.h"
 #ifdef WWHD_HAS_VULKAN
 #include "gfx/vulkan/api.h"
+#include "gfx/vulkan/background_checkpoint.h"
 #endif
 #include "runtime.h"
 #include "savestate.h"
@@ -226,7 +229,7 @@ static uint64_t g_fence_issued = 0, g_fence_done = 0;
 
 static void render_thread_main() {
     host::set_thread_name("GX2 render");
-    host::boost_thread_priority();
+    if (!r5_slow_render::apply("GX2 render")) host::boost_thread_priority();
     perf_hint::add_current_thread();
     thread_sampler::add_current_thread("render");
     for (;;) {
@@ -341,12 +344,43 @@ static void emit_host(Op op, std::initializer_list<uint32> payload) {
 }
 
 #ifdef WWHD_HAS_VULKAN
+static gfxvk::BackgroundCheckpoint& background_cache_checkpoint() {
+    static gfxvk::BackgroundCheckpoint worker([] {
+        host::set_thread_name("Vulkan cache save");
+        // If a periodic write was already in flight, wait outside execution
+        // and take a second snapshot for any newer revision before returning.
+        for (int pass = 0; pass < 2; ++pass) {
+            std::function<void()> wait;
+            {
+                std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+                host::with_autorelease_pool([&] { wait = gfxvk::background_renderer_caches(); });
+            }
+            if (wait) wait();
+        }
+    });
+    return worker;
+}
+void request_background_vulkan_cache_checkpoint() {
+    // SDL can send lifecycle events while main-thread Vulkan initialization is still running.
+    // Do not create the saver or inspect renderer/cache objects until publication completes.
+    if (!gfxvk::background_renderer_caches_ready()) return;
+    background_cache_checkpoint().request();
+}
+void checkpoint_present_observer() {
+    if (!present_observer::enabled()) return;
+    render_sync();
+    std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+    host::with_autorelease_pool([] { gfxvk::flush_present_observer(); });
+}
 void checkpoint_vulkan_caches() {
     render_sync();
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     host::with_autorelease_pool([] { gfxvk::save_renderer_caches(); });
 }
 void shutdown_vulkan_caches() {
+    // The background saver may be waiting for g_exec_mutex. Join before locking.
+    gfxvk::disable_background_renderer_caches();
+    background_cache_checkpoint().stop();
     render_sync();
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     host::with_autorelease_pool([] { gfxvk::shutdown_renderer_caches(); });
@@ -514,6 +548,8 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         if (load) test_frame_load("WWHD_TEST_RENDER_LOAD_MS");
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
         if (n >= 3 && p[2]) render::request_capture();
+        if (n >= 5 && present_observer::enabled())
+            present_observer::render_swap(uint64_t(p[3]) | (uint64_t(p[4]) << 32), render::frame_count());
         render::swap();
         break;
     }
@@ -731,12 +767,15 @@ static void trace_flip(const PendingFlip& f, std::chrono::steady_clock::time_poi
             (unsigned long long)at, int(!f.step), int(vsync_granule()));
 }
 static void update_flips() {  // g_flip_mutex held
+    static const bool observeDeadlines = present_observer::enabled();
     uint64_t now = vsync_index();
     while (!g_pending_flips.empty()) {
         const uint64_t due = flip_due(g_pending_flips.front());
         if ((!uncapped_benchmark() && due > now) || render::frames_completed() < g_pending_flips.front().swap) break;
         uint64_t at = now / vsync_granule() * vsync_granule();
-        const auto dueAt = trace_flips_file() ? tick_time(due) : std::chrono::steady_clock::time_point{};
+        // Preserve the actual scheduler target BEFORE this flip may move its grid.
+        const auto dueAt = (trace_flips_file() || observeDeadlines) ? tick_time(due) : std::chrono::steady_clock::time_point{};
+        const int64_t shiftBefore = observeDeadlines ? g_vsync_shift.load(std::memory_order_relaxed) : 0;
         if (!uncapped_benchmark()) {  // on its vsync, or late: then the grid may move (vsync_pacing.h)
             int64_t shift = g_vsync_shift.load(std::memory_order_relaxed);
             const int64_t t = vsync_clock_now();
@@ -752,6 +791,11 @@ static void update_flips() {  // g_flip_mutex held
         } else {
             g_step_slot = -1;
         }
+        if (observeDeadlines)
+            present_observer::scheduler_due(g_pending_flips.front().swap,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(dueAt.time_since_epoch()).count(),
+                due, shiftBefore, g_vsync_shift.load(std::memory_order_relaxed), uint32_t(vsync_granule()),
+                game_clock::shifted(), uncapped_benchmark());
         log_flip_pacing(g_pending_flips.front());
         trace_flip(g_pending_flips.front(), dueAt, due, at);
         g_pending_flips.pop_front();
@@ -972,12 +1016,26 @@ HLE(gx2, GX2SwapScanBuffers) {
                 captureStep ? "logic step" : "game counter",(unsigned long long)offset,counter);
         }
     }
-    if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
+    static const bool observeSwap = present_observer::enabled();
+    uint64_t observedSwap = 0;
+    if (observeSwap) {
+        {
+            std::lock_guard<std::mutex> lk(g_flip_mutex);
+            if (g_swap_count == UINT64_MAX) present_observer::fail("diagnostic swap ID overflow");
+            else observedSwap = g_swap_count + 1;
+        }
+        // Explicit ID travels with this command; never sample mutable producer
+        // counters or drawable-acquisition timing on the render thread.
+        emit_host(OP_SWAP, {ab, hold ? 1u : 0u, capture ? 1u : 0u,
+                           uint32_t(observedSwap), uint32_t(observedSwap >> 32)});
+    } else if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
     else emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
     {
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
         g_swap_count++;
+        if (observeSwap && (!observedSwap || observedSwap != g_swap_count))
+            present_observer::fail("diagnostic swap ID ordering/reset mismatch");
         g_pending_flips.push_back({g_swap_count, std::chrono::steady_clock::now(), !hold});
     }
     // debug: WWHD_LOG_SLOW_SWAP=ms logs swaps that came more than ms after the previous one

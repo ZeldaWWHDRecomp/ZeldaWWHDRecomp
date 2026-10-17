@@ -10,6 +10,21 @@ static gfx::PresentPlan frame(unsigned i) {
     return gfx::display_plan(true, 1280, 720, true, 854, 480, 1920, 1080, i);
 }
 int main() {
+    // Android start (#222): the saved Off read by Java holds until the native settings load,
+    // which then decides, including a missing key; a late seed cannot override it.
+    gfx::seed_second_screen_off(true);
+    assert(gfx::drc_screen_off());
+    gfx::seed_second_screen_off(false);
+    assert(!gfx::drc_screen_off());
+    gfx::seed_second_screen_off(true);
+    gfx::load_second_screen_off(false);
+    assert(!gfx::drc_screen_off());
+    gfx::seed_second_screen_off(true);
+    assert(!gfx::drc_screen_off());
+    gfx::load_second_screen_off(true);
+    gfx::seed_second_screen_off(false);
+    assert(gfx::drc_screen_off());
+    gfx::g_second_screen_off = false;
     // Android's default Off mode on a phone is not a request to release a display.
     gfx::g_has_drc_window = false;
     gfx::g_second_display_available = false;

@@ -1,3 +1,4 @@
+#include "platform/present_observer.h"
 // Display: the TV and GamePad windows, full screen, and the final composition of the TV and GamePad
 // images onto the screen (scale to fit with letterbox/pillarbox, scaling filter, GamePad screen as a
 // separate window or as a picture-in-picture overlay inside the TV window).
@@ -316,7 +317,8 @@ static NSWindow* make_window(int index, NSString* title, NSView* view, int w, in
 static CAMetalLayer* attach_layer(int i) {
     NSWindow* win = g_windows[i];
     if (!win) return nil;
-    CAMetalLayer* layer = [CAMetalLayer layer];
+    CAMetalLayer* layer = i == 0 && present_observer::enabled() ? present_observer::make_layer(win) : [CAMetalLayer layer];
+    if (i == 0 && present_observer::enabled()) layer.frame = win.contentView.bounds;
     layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     [win.contentView setLayer:layer];
     g_layers[i] = layer;
@@ -423,8 +425,8 @@ static void create_windows() {
         beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical | NSActivityIdleDisplaySleepDisabled
                           reason:@"game running"];
     (void)activity;
-    // scripted test runs (WWHD_NO_HOST_INPUT) run as a background app: no Dock icon, never takes the
-    // keyboard focus from the user's game
+    // Scripted tests (WWHD_NO_HOST_INPUT) have no Dock icon. Native presentation
+    // observation activates the TV window; other tests leave keyboard focus alone.
     bool test = getenv("WWHD_NO_HOST_INPUT") != nullptr;
     [NSApp setActivationPolicy:test ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
     if (!test) set_dock_icon();
@@ -469,7 +471,17 @@ static void create_windows() {
     if (hidden_windows()) {
         // test run: never on screen
     } else if (test) {
-        [tv orderBack:nil];  // scripted test run: stay behind, don't take focus
+        if (present_observer::enabled()) {
+            // Native presentation timing requires an onscreen drawable. Merely
+            // ordering a background test window forward can leave it occluded
+            // in another Space, where presentedTime stays zero.
+            // Keep the observation drawable onscreen when another ordinary
+            // app takes focus. Occlusion/native-time gates still apply; this
+            // does not change window geometry or normal player windows.
+            tv.level = NSFloatingWindowLevel;
+            [tv makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        } else [tv orderBack:nil];  // scripted test run: stay behind, don't take focus
     } else {
         [tv makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];

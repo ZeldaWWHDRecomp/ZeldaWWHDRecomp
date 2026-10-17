@@ -66,6 +66,17 @@ std::atomic<float> g_drc_aspect{854.0f / 480.0f};
 std::atomic<bool> g_has_drc_window{false};
 std::atomic<bool> g_second_screen_off{false};
 std::atomic<bool> g_second_display_available{false};
+static std::mutex g_second_screen_seed_mu;
+static bool g_second_screen_loaded = false;
+void seed_second_screen_off(bool off) {
+    std::lock_guard<std::mutex> lk(g_second_screen_seed_mu);
+    if (!g_second_screen_loaded) g_second_screen_off = off;
+}
+void load_second_screen_off(bool off) {
+    std::lock_guard<std::mutex> lk(g_second_screen_seed_mu);
+    g_second_screen_off = off;
+    g_second_screen_loaded = true;
+}
 
 int find_name(const char* const* names, int n, const char* s, int def) {
     for (int i = 0; i < n; i++)

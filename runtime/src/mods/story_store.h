@@ -34,6 +34,9 @@ inline constexpr uint32_t kMemoryBytes = (1 + story_block::kQuestLogs) * story_b
 // the file is kept as bytes and written back unchanged
 void set_memory(uint32_t guest);
 bool ready();
+// all kMemoryBytes of the areas (the loaded Quest Log's, then the saved copies); null before set_memory.
+// The world editor's test mode keeps a copy while it runs and puts it back after.
+uint8_t* memory_block();
 // the loaded Quest Log's area (null before set_memory)
 uint8_t* area();
 // the record view of it (a null Book before set_memory)
@@ -50,6 +53,7 @@ void written(const std::string& guest_path, const std::string& host_path);
 
 // the game side
 void set_game_calls(void (*original)(Cpu*, uint32_t));
+void set_progress_loaded(void (*callback)());
 void install(const std::function<std::string(uint32_t)>& replaced_by, const std::function<void(uint32_t, void (*)(Cpu*))>& replace);
 bool installed();
 // while alive, the game's save copy functions don't move story areas (portable save states use

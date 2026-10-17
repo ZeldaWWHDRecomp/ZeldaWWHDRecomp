@@ -1,9 +1,11 @@
+#include "platform/process_peak_rss.h"
+#include "platform/present_observer.h"
 #include "../mods/fast_forward.h"
 #include "../mods/mods.h"
 #ifdef WWHD_HAS_VULKAN
 #include "gfx/vulkan/stutter_trace.h"
 #include "gfx/vulkan/headstart.h"
-namespace gx2 { void checkpoint_vulkan_caches(); }
+namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observer(); }
 #endif
 // Keyboard and GameController input, merged into one GamePad state.
 //
@@ -610,6 +612,7 @@ static void apply_scenario(PadState& s) {
     if (!sc.origin || (!ol && render::frame_count() < sc.origin)) return;
     // scenario time = game time: full logic steps / 30 (frame-time hitches don't shift the input)
     static const uint64_t s0 = [ol_step] {
+        present_observer::scenario_origin(render::frame_count(), ol_step ? ol_step : interp::logic_steps());
         if (ol_step) {
             LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
                 (unsigned long long)ol_step);
@@ -654,8 +657,12 @@ static void apply_scenario(PadState& s) {
         LOG("[test] t=%.3f s: end", t);
         #ifdef WWHD_HAS_VULKAN
         gfxvk::stutter::trace().flush();
-        if (render::active() == render::Api::Vulkan) gx2::checkpoint_vulkan_caches();
+        if (render::active() == render::Api::Vulkan) {
+            gx2::checkpoint_vulkan_caches();
+            gx2::checkpoint_present_observer();
+        }
 #endif
+        process_peak_rss::write_endpoint(render::frame_count());
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
     // Opt-in raw controller fixture: exercise bindings and the dead zone before guest delivery.
