@@ -249,6 +249,16 @@ public class WwhdActivity extends SDLActivity {
         // GamePad screen saved Off: known before onResume acquires a second display (AYN Thor, #222)
         if (!mBrokenLibraries && !isReusingNativeSession())
             GamePadDisplay.seedSavedOff(SavedSecondScreen.off(files));
+        // heat guard: fan-cooled handhelds pause 60 fps later than phones (#247)
+        if (!mBrokenLibraries) {
+            try {
+                int heat = HeatGuardDevice.publish(android.os.Build.MANUFACTURER, android.os.Build.BRAND, android.os.Build.MODEL);
+                Log.i("wwhd", "heat guard device: " + (heat == HeatGuardDevice.FAN_HANDHELD ? "handheld (fan)" : "phone"));
+            } catch (UnsatisfiedLinkError e) {
+                // an on-device game library from before device classes: the phone limits stay
+                Log.w("wwhd", "heat guard device class not passed: " + e.getMessage());
+            }
+        }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         applyFullScreen();
         // on-screen controls over the game (the button under the view button shows or hides them)

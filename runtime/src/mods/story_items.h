@@ -62,6 +62,9 @@ PropClaimStatus claim_prop_drops(PropMarkerHandle handle, const std::string& mod
 // Enemy terminal adapters alone decide when to claim; Delete/unload/Create failure never imply defeat.
 EnemyMarkerHandle register_enemy_marker(const std::string& mod, const std::string& actor_id,
                                        const std::string& defeat_flag, std::string& why);
+// World editor (main game thread): a prop's or enemy's marker that no declaration uses any more (its
+// flag changed); the actor registers the new one.
+bool forget_prop_marker(PropMarkerHandle handle);
 bool enemy_defeated(EnemyMarkerHandle handle);
 EnemyClaimStatus claim_enemy_drops(EnemyMarkerHandle handle, const std::string& mod,
                                   const std::vector<PropDrop>& drops, bool caption = true);

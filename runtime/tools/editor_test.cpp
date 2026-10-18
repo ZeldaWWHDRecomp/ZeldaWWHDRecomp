@@ -1,3 +1,18 @@
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 // World editor command layer (runtime/src/editor/commands.h): apply / undo / redo, refused changes,
 // JSON round trips, the warp list, the test-mode record reset and saving into the package.
 // Usage: editor_test <examples/guest-mods>
@@ -5,16 +20,6 @@
 #include "editor/stage_files.h"
 #include "mods/story_mail_book.h"
 
-#include <algorithm>
-#include <cassert>
-#include <chrono>
-#include <cmath>
-#include <cstring>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <sstream>
 
 namespace fs = std::filesystem;
 using editor::Value;
@@ -81,6 +86,8 @@ struct FakeHost : editor::Host {
     float ground_height = 5;
     bool has_ground = true, camera_on = false, is_playing = false, last_restore = false, last_from_camera = false;
     std::string preview, prepared;
+    bool prepared_collision=false, queried_wireframe=false, query_fails=false, query_clear=true;
+    int world_queries=0;
     int focused = 0;
     bool ground(const editor::WorldPoint&, float& h, std::string& why) override {
         if (!has_ground) return why = "no ground below", false;
@@ -106,7 +113,18 @@ struct FakeHost : editor::Host {
     bool focus(const editor::WorldPoint&, std::string&) override { return ++focused, true; }
     bool prepare_model(const std::string& mod, const std::string&, const Value& model, std::string& note, std::string&) override {
         prepared = mod + ":" + model.get("id").string();
+        prepared_collision = model.get("collision").boolean;
         note = "prepared";
+        return true;
+    }
+    bool world_object_query(const std::string&, const story_notebook::ManifestActor& actor, bool wireframe, Value& result, std::string& why) override {
+        ++world_queries; queried_wireframe=wireframe;
+        if(query_fails)return why="collision is not prepared",false;
+        result["clear"]=query_clear;
+        result["id"]=actor.id;result["position"]["x"]=actor.position.x;
+        result["conflicts"].type=Value::Array;result["budget"]["bytes"]=1234;
+        if(!query_clear)result["conflicts"].array.push_back(mods::json::parse("{\"kind\":\"event\",\"message\":\"protected event\"}"));
+        if(wireframe){result["vertices"]=mods::json::parse("[[0,0,0],[1,0,0]]");result["edges"]=mods::json::parse("[[0,1]]");}
         return true;
     }
     bool preview_text(const std::string& text, bool close, std::string&) override { return preview = close ? "" : text, true; }
@@ -139,6 +157,7 @@ const char* kManifest = R"({
   ],
   "scenes": [{"id": "intro", "steps": [{"type": "wait", "frames": 30}, {"type": "end"}]}]
 })";
+
 
 void command_layer() {
     FakeHost host;
@@ -285,6 +304,10 @@ void locations() {
         quest += l.group == "Quest";
     }
     CHECK(islands == 49 && rooms == 3 && quest == 3);  // two actors, one step with a place
+    {auto interior=m;interior["quests"].array[0]["steps"].array[0]["place"]=json(R"({"stage":"Pnezumi","room":0,"point":2,"sea":{"x":-200000,"z":300000}})");
+        const auto places=editor::build_locations({},{{"editor-test",interior}});bool found=false;
+        for(const auto&p:places)if(p.id=="step:editor-test:q:1"){found=true;CHECK(p.stage=="Pnezumi"&&p.room==0&&p.point==2&&p.group=="Quest");}CHECK(found);}
+
     auto find = [&](const std::string& id) -> const editor::Location* {
         for (const auto& l : list)
             if (l.id == id) return &l;
@@ -303,11 +326,16 @@ void records() {
     Value m = json(kManifest);
     m["quests_format"] = 1;
     m["quests"] = json(R"([{"id": "q", "title": "Q", "steps": [{"n": 1, "text": "Go"}]}])");
+    m["actors"].array[1].object.erase("lines");
+    m["actors"].array[1].object.erase("then");
+    m["actors"].array[1]["talks"] = json(R"([{"lines":"Hi.","then":[{"action":"flag","id":"met-guide"},{"action":"flag","id":"branch-seen"}]}])");
     const auto own = editor::mod_records("editor-test", m);
     using namespace story_mail;
     auto has = [&](uint8_t kind, uint16_t key) { return std::find(own.begin(), own.end(), editor::Record{kind, key}) != own.end(); };
     CHECK(has(kRecordActorFlag, letter_key("editor-test", "actor-flag:sign-a-read")));
     CHECK(has(kRecordActorFlag, letter_key("editor-test", "actor-flag:met-guide")));
+    CHECK(has(kRecordActorFlag, letter_key("editor-test", "actor-flag:branch-seen")));
+    CHECK(has(kRecordQuestActionReward, letter_key("editor-test", "q")));
     CHECK(has(kRecordQuest, letter_key("editor-test", "q")) && has(kRecordQuestFlags, letter_key("editor-test", "q")));
 
     // a story area with the mod's records, another mod's, and a key both mods' names map to
@@ -315,6 +343,8 @@ void records() {
     Book book(area, 64);
     CHECK(book.set(kRecordActorFlag, letter_key("editor-test", "actor-flag:sign-a-read"), 1));
     CHECK(book.set(kRecordQuest, letter_key("editor-test", "q"), 2));
+    CHECK(book.set(kRecordQuestActionReward, letter_key("editor-test", "q"), 6));
+    CHECK(book.set(kRecordActorFlag, letter_key("editor-test", "actor-flag:branch-seen"), 1));
     CHECK(book.set(kRecordActorFlag, letter_key("other", "actor-flag:x"), 1));
     CHECK(book.set(kRecordQuest, letter_key("other", "q"), 5));
     CHECK(book.set(kRecordItem, 1, 1));  // the notebook
@@ -324,7 +354,9 @@ void records() {
     std::memcpy(copy, area, sizeof area);
     unsigned skipped = 0;
     const unsigned erased = editor::reset_records(book, own, {collide}, skipped);
-    CHECK(erased == 2 && skipped == 1);
+    CHECK(erased == 4 && skipped == 1);
+    CHECK(!book.has(kRecordQuestActionReward, letter_key("editor-test", "q")));
+    CHECK(!book.has(kRecordActorFlag, letter_key("editor-test", "actor-flag:branch-seen")));
     CHECK(!book.has(kRecordActorFlag, letter_key("editor-test", "actor-flag:sign-a-read")) && !book.has(kRecordQuest, letter_key("editor-test", "q")));
     CHECK(book.get(kRecordActorFlag, letter_key("other", "actor-flag:x")) == 1 && book.get(kRecordQuest, letter_key("other", "q")) == 5);
     CHECK(book.get(kRecordItem, 1) == 1 && book.get(collide.kind, collide.key) == 1);
@@ -459,6 +491,125 @@ fs::path temp_dir(const char* name) {
     const fs::path dir = fs::temp_directory_path() / (std::string("wwhd-editor-") + name + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::remove_all(dir);
     return dir;
+}
+
+void world_object_commands() {
+    FakeHost host;editor::Session session(&host);
+    auto manifest=json(kManifest);
+    manifest["models"]=json(R"([{"id":"island","source":"assets/island.glb"},{"id":"skin","source":"assets/skin.glb","kind":"skinned"}])");
+    session.add_package("editor-test","Editor test","",manifest);
+    Value place=json(R"({"id":"island-a","model":"island","collision":{"mesh":"island"},"stage":"sea","room":12,"position":{"x":75000,"y":0,"z":-201500}})");
+    auto result=session.run("place_world_object",place);
+    CHECK(ok(result)&&session.undo_depth()==1);
+    const auto* actor=actor_of(session,"island-a");
+    CHECK(actor&&actor->get("behaviour").string()=="static"&&actor->get("collision").get("mesh").string()=="island");
+    CHECK(ok(session.run("undo"))&&!actor_of(session,"island-a"));
+    CHECK(ok(session.run("redo"))&&actor_of(session,"island-a"));
+    auto before=*session.manifest("editor-test");const auto depth=session.undo_depth();
+    CHECK(!ok(session.run("place_world_object",place))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);
+    place["id"]="bad";place["behaviour"]="drifting";
+    CHECK(!ok(session.run("place_world_object",place))&&!actor_of(session,"bad")&&session.undo_depth()==depth);
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"island-a","collision":{"mesh":"missing"}})")))&&*session.manifest("editor-test")==before);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"island-a","collision":{"shape":"box","size":{"x":100,"y":40,"z":200},"surface":"wood"}})"))));
+    CHECK(actor_of(session,"island-a")->get("collision").get("shape").string()=="box");
+    CHECK(ok(session.run("undo"))&&actor_of(session,"island-a")->get("collision").get("mesh").string()=="island");
+    CHECK(!ok(session.run("set_actor",json(R"({"id":"island-a","property":"behaviour","value":null})"))));
+    CHECK(ok(session.run("set_actor",json(R"({"id":"island-a","property":"behaviour","value":"static"})"))));
+    before=*session.manifest("editor-test");const auto query_depth=session.undo_depth();
+    result=session.run("preview_collision",json(R"({"id":"island-a"})"));
+    CHECK(ok(result)&&host.queried_wireframe&&result.get("result").get("vertices").array.size()==2&&result.get("result").get("position").get("x").number==75000);
+    result=session.run("placement_conflicts",json(R"({"id":"island-a"})"));
+    CHECK(ok(result)&&!host.queried_wireframe&&result.get("result").get("budget").get("bytes").number==1234);
+    CHECK(*session.manifest("editor-test")==before&&session.undo_depth()==query_depth);
+    CHECK(!ok(session.run("preview_collision",json(R"({"id":"sign-a"})"))));
+    host.query_fails=true;CHECK(!ok(session.run("preview_collision",json(R"({"id":"island-a"})"))));
+    CHECK(ok(session.run("prepare_collision",json(R"({"model":"island"})")))&&host.prepared_collision&&host.prepared=="editor-test:island");
+    CHECK(*session.manifest("editor-test")==before&&session.undo_depth()==query_depth);
+    CHECK(!ok(session.run("prepare_collision",json(R"({"model":"skin"})"))));
+    CHECK(!ok(session.run("prepare_collision",json(R"({"model":"missing"})"))));
+    // Placement failures are refused before committing a manifest or undo step.
+    auto move=json(R"({"id":"island-a","position":{"x":76000,"y":0,"z":-201500}})");
+    CHECK(!ok(session.run("move_actor",move))&&*session.manifest("editor-test")==before&&session.undo_depth()==query_depth);
+    host.query_fails=false;host.query_clear=false;
+    result=session.run("move_actor",move);
+    CHECK(!ok(result)&&result.get("error").string().find("protected event")!=std::string::npos&&*session.manifest("editor-test")==before&&session.undo_depth()==query_depth);
+    auto validate=session.run("validate");CHECK(ok(validate)&&!validate.get("result").get("valid").boolean);
+    CHECK(!ok(session.run("save_package")));
+    // An existing unprepared object does not prevent unrelated dialogue work.
+    host.query_fails=true;
+    CHECK(ok(session.run("set_dialogue",json(R"({"id":"sign-a","lines":["Changed independently."]})"))));
+    host.query_fails=false;host.query_clear=true;
+    CHECK(ok(session.run("move_actor",move)));
+
+}
+
+void floating_world_object_commands() {
+    FakeHost host;editor::Session session(&host);auto manifest=json(kManifest);
+    manifest["models"]=json(R"([{"id":"raft","source":"assets/raft.glb"}])");session.add_package("editor-test","Editor test","",manifest);
+    auto place=json(R"({"id":"raft-a","model":"raft","collision":{"shape":"box","size":{"x":100,"y":20,"z":200},"surface":"wood"},"behaviour":"floating","buoyancy":{"draft":-20,"damping":0.3,"max_tilt":10},"stage":"sea","room":12,"position":{"x":75000,"y":0,"z":-201500}})");
+    CHECK(ok(session.run("place_world_object",place)));
+    CHECK(actor_of(session,"raft-a")->get("buoyancy").get("draft").number==-20);
+    auto drift=json(R"({"id":"raft-a","behaviour":"drifting","drift":{"wind_speed":4,"current":{"x":3,"z":-2},"max_speed":8},"anchor":{"point":{"x":75000,"y":0,"z":-201500},"radius":500}})");
+    CHECK(ok(session.run("set_world_object",drift)));
+    auto actor=*actor_of(session,"raft-a");CHECK(actor.get("behaviour").string()=="drifting"&&actor.get("collision").get("shape").string()=="box"&&actor.get("anchor").get("radius").number==500);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"raft-a","buoyancy":{"draft":-30,"damping":0.5,"max_tilt":15}})"))));
+    CHECK(actor_of(session,"raft-a")->get("behaviour").string()=="drifting"&&actor_of(session,"raft-a")->get("drift").get("wind_speed").number==4&&actor_of(session,"raft-a")->get("buoyancy").get("draft").number==-30);
+    CHECK(ok(session.run("set_actor",json(R"({"id":"raft-a","property":"anchor","value":null})"))));CHECK(actor_of(session,"raft-a")->get("anchor").type==Value::Null);
+    CHECK(ok(session.run("undo"))&&actor_of(session,"raft-a")->get("anchor").get("radius").number==500);
+    CHECK(ok(session.run("set_actor",json(R"({"id":"raft-a","property":"drift","value":{"wind_speed":2,"max_speed":5}})"))));
+    CHECK(ok(session.run("set_actor",json(R"({"id":"raft-a","property":"buoyancy","value":{"damping":1}})"))));
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"raft-a","anchor":null})"))));CHECK(actor_of(session,"raft-a")->get("anchor").type==Value::Null);
+    CHECK(ok(session.run("undo"))&&actor_of(session,"raft-a")->get("anchor").get("radius").number==500);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"raft-a","behaviour":"floating"})"))));
+    CHECK(actor_of(session,"raft-a")->get("drift").type==Value::Null&&actor_of(session,"raft-a")->get("anchor").type==Value::Null&&actor_of(session,"raft-a")->get("buoyancy").get("damping").number==1);
+    CHECK(ok(session.run("undo"))&&actor_of(session,"raft-a")->get("behaviour").string()=="drifting");
+    CHECK(ok(session.run("redo"))&&actor_of(session,"raft-a")->get("behaviour").string()=="floating");
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"raft-a","behaviour":"static"})"))));CHECK(actor_of(session,"raft-a")->get("buoyancy").type==Value::Null);
+    auto before=*session.manifest("editor-test");auto depth=session.undo_depth();
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"raft-a","behaviour":"drifting","drift":{"wind_speed":0,"max_speed":5}})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"raft-a","behaviour":"floating","drift":{"wind_speed":1,"max_speed":5}})")))&&*session.manifest("editor-test")==before);
+    CHECK(!ok(session.run("set_actor",json(R"({"id":"raft-a","property":"buoyancy","value":{"draft":2}})")))&&*session.manifest("editor-test")==before);
+    host.query_clear=false;CHECK(!ok(session.run("set_world_object",json(R"({"id":"raft-a","behaviour":"floating"})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);
+}
+
+void grapple_world_object_commands() {
+    FakeHost host;editor::Session session(&host);auto manifest=json(kManifest);
+    manifest["models"]=json(R"([{"id":"tower","source":"assets/tower.glb"}])");session.add_package("editor-test","Editor test","",manifest);
+    auto place=json(R"({"id":"tower-a","model":"tower","collision":{"shape":"box","size":{"x":100,"y":1000,"z":100}},"stage":"sea","room":12,"position":{"x":100,"y":500,"z":200},"grapple_points":[{"id":"beam","position":{"x":0,"y":800,"z":-330},"yaw":90}]})");
+    CHECK(ok(session.run("place_world_object",place)));CHECK(actor_of(session,"tower-a")->get("grapple_points").array.size()==1);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"tower-a","collision":{"shape":"box","size":{"x":200,"y":1000,"z":100}}})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").array.size()==1);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"tower-a","grapple_points":[{"id":"new-beam","position":{"x":1,"y":900,"z":-300}}]})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").array[0].get("id").string()=="new-beam");
+    CHECK(ok(session.run("undo"))&&actor_of(session,"tower-a")->get("grapple_points").array[0].get("id").string()=="beam");CHECK(ok(session.run("redo")));
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"tower-a","grapple_points":null})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").type==Value::Null);CHECK(ok(session.run("undo")));
+    CHECK(ok(session.run("set_actor",json(R"({"id":"tower-a","property":"grapple_points","value":[{"id":"third","position":{"x":0,"y":10,"z":0},"yaw":180}]})"))));
+    CHECK(actor_of(session,"tower-a")->get("grapple_points").array[0].get("id").string()=="third");
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"tower-a","behaviour":"floating","buoyancy":{"draft":0}})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").array.size()==1);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"tower-a","behaviour":"static"})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").array.size()==1);
+    const auto before=*session.manifest("editor-test");const auto depth=session.undo_depth();
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"tower-a","collision":{"shape":"sphere","radius":10},"grapple_points":[{"id":"bad","position":{"x":20001,"y":0,"z":0}}]})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);
+    CHECK(!ok(session.run("set_actor",json(R"({"id":"tower-a","property":"grapple_points","value":[{"id":"same","position":{"x":0,"y":0,"z":0}},{"id":"same","position":{"x":1,"y":0,"z":0}}]})")))&&*session.manifest("editor-test")==before);
+    CHECK(!ok(session.run("set_actor",json(R"({"id":"sign-a","property":"grapple_points","value":[]})")))&&*session.manifest("editor-test")==before);
+    host.query_clear=false;CHECK(!ok(session.run("set_world_object",json(R"({"id":"tower-a","grapple_points":[]})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);host.query_clear=true;
+    CHECK(ok(session.run("set_actor",json(R"({"id":"tower-a","property":"grapple_points","value":null})"))));CHECK(actor_of(session,"tower-a")->get("grapple_points").type==Value::Null);
+    auto cleared=place;cleared["id"]="tower-b";cleared["grapple_points"]=Value{};CHECK(ok(session.run("place_world_object",cleared))&&actor_of(session,"tower-b")->get("grapple_points").type==Value::Null);
+}
+
+void island_world_object_commands() {
+    FakeHost host;editor::Session session(&host);auto manifest=json(kManifest);manifest["models"]=json(R"([{"id":"island","source":"assets/island.glb"},{"id":"low","source":"assets/low.glb"},{"id":"coast","source":"assets/coast.glb"}])");session.add_package("editor-test","Editor test","",manifest);
+    auto place=json(R"({"id":"island-a","model":"island","collision":{"shape":"box","size":{"x":100,"y":100,"z":100}},"stage":"sea","room":12,"position":{"x":100,"y":0,"z":200},"distant":{"model":"low"},"shoreline":{"model":"coast"},"chart_marker":{"label":"Horizon Isle","when_flag":"island.arrived"},"arrival":{"name":"Horizon Isle","radius":2200,"flag":"island.arrived"}})");
+    CHECK(ok(session.run("place_world_object",place)));CHECK(actor_of(session,"island-a")->get("distant").get("model").string()=="low"&&actor_of(session,"island-a")->get("chart_marker").get("label").string()=="Horizon Isle");
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"island-a","collision":{"shape":"sphere","radius":50}})"))));CHECK(actor_of(session,"island-a")->get("distant").get("model").string()=="low"&&actor_of(session,"island-a")->get("arrival").get("radius").number==2200);
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"island-a","distant":null})"))));CHECK(actor_of(session,"island-a")->get("distant").type==Value::Null);CHECK(ok(session.run("undo"))&&actor_of(session,"island-a")->get("distant").get("model").string()=="low");CHECK(ok(session.run("redo")));CHECK(ok(session.run("undo")));
+    CHECK(ok(session.run("set_actor",json(R"({"id":"island-a","property":"shoreline","value":null})"))));CHECK(actor_of(session,"island-a")->get("shoreline").type==Value::Null);CHECK(ok(session.run("undo")));
+    CHECK(ok(session.run("set_actor",json(R"({"id":"island-a","property":"arrival","value":{"name":"New Horizon","radius":3000,"flag":"island.arrived"}})"))));CHECK(actor_of(session,"island-a")->get("arrival").get("name").string()=="New Horizon");
+    const auto before=*session.manifest("editor-test");const auto depth=session.undo_depth();
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"island-a","arrival":null})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth); // Marker still reads this producer.
+    CHECK(!ok(session.run("set_world_object",json(R"({"id":"island-a","collision":{"shape":"box","size":{"x":200,"y":100,"z":100}},"distant":{"model":"missing"}})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);
+    CHECK(!ok(session.run("set_actor",json(R"({"id":"sign-a","property":"chart_marker","value":{"label":"Foreign"}})")))&&*session.manifest("editor-test")==before);
+    host.query_clear=false;CHECK(!ok(session.run("set_world_object",json(R"({"id":"island-a","arrival":{"name":"Other","radius":3000,"flag":"island.arrived"}})")))&&*session.manifest("editor-test")==before&&session.undo_depth()==depth);host.query_clear=true;
+    CHECK(ok(session.run("set_world_object",json(R"({"id":"island-a","distant":null,"shoreline":null,"chart_marker":null,"arrival":null,"behaviour":"floating"})"))));const auto*a=actor_of(session,"island-a");CHECK(a->get("behaviour").string()=="floating"&&a->get("distant").type==Value::Null&&a->get("chart_marker").type==Value::Null);
+    CHECK(ok(session.run("undo"))&&actor_of(session,"island-a")->get("distant").get("model").string()=="low"&&actor_of(session,"island-a")->get("arrival").get("name").string()=="New Horizon");
+    auto empty=place;empty["id"]="island-b";for(const char*key:{"distant","shoreline","chart_marker","arrival"})empty[key]=Value{};CHECK(ok(session.run("place_world_object",empty))&&actor_of(session,"island-b")->get("arrival").type==Value::Null);
 }
 
 void building(const fs::path& examples) {
@@ -631,6 +782,58 @@ void building(const fs::path& examples) {
     fs::remove_all(out);
 }
 
+// The handle drag (Session::drag_preview): the game shows every step of it, but the package, the undo
+// stack and the log change only once, when the handle is let go.
+void handle_drag() {
+    FakeHost host;
+    editor::Session s(&host);
+    s.add_package("editor-test", "Editor test", "", json(kManifest));
+    const Value before = *s.manifest("editor-test");
+    const size_t logged = s.log().size();
+    std::vector<std::string> later;
+    std::string why;
+    for (int i = 1; i <= 20; i++) {
+        Value poses = json(R"([{"id": "sign-a"}])");
+        poses.array[0]["position"] = point(10 + i, 1040, -201500);
+        CHECK(s.drag_preview("editor-test", poses, later, why) && later.empty());
+        CHECK(host.last_changed == std::vector<std::string>{"sign-a"} && host.last_actors[0].position.x == 10 + i);
+    }
+    CHECK(host.applied == 20);
+    CHECK(*s.manifest("editor-test") == before && s.undo_depth() == 0 && s.log().size() == logged && !s.dirty("editor-test"));
+    // let go: one command, one undo step, one log entry
+    Value p;
+    p["id"] = "sign-a";
+    p["position"] = point(30, 1040, -201500);
+    Value r = s.run("move_actor", p);
+    CHECK(ok(r) && s.undo_depth() == 1 && s.log().size() == logged + 1 && host.last_actors[0].position.x == 30);
+    // undo: back at the start in one step
+    r = s.run("undo");
+    CHECK(ok(r) && s.undo_depth() == 0 && host.last_actors[0].position.x == 10 && *s.manifest("editor-test") == before);
+    // a group drag: both actors follow every step; letting go is one move_actors (one undo step)
+    const int applied = host.applied;
+    for (int i = 1; i <= 5; i++) {
+        Value poses = json(R"([{"id": "sign-a"}, {"id": "guide"}])");
+        poses.array[0]["position"] = point(10 + i, 1040, -201500);
+        poses.array[1]["position"] = point(-500 + i, 1200, -201500);
+        CHECK(s.drag_preview("editor-test", poses, later, why));
+        CHECK(host.last_changed.size() == 2 && host.last_actors[1].position.x == -500 + i);
+    }
+    CHECK(host.applied == applied + 5 && s.undo_depth() == 0);
+    r = s.run("move_actors", json(R"({"ids": ["sign-a", "guide"], "offset": {"x": 5, "y": 0, "z": 0}})"));
+    CHECK(ok(r) && s.undo_depth() == 1 && host.last_actors[0].position.x == 15 && host.last_actors[1].position.x == -495);
+    // a turn drag
+    Value turn = json(R"([{"id": "guide", "rotation": {"x": 0, "y": 90, "z": 0}}])");
+    CHECK(s.drag_preview("editor-test", turn, later, why) && host.last_changed == std::vector<std::string>{"guide"});
+    // cancelled (Esc): a pose without a place shows the package's place again
+    CHECK(s.drag_preview("editor-test", json(R"([{"id": "sign-a"}, {"id": "guide"}])"), later, why));
+    CHECK(host.last_actors[0].position.x == 15 && host.last_actors[1].position.x == -495 && s.undo_depth() == 1);
+    // refused: an unknown actor or mod, nothing dragged
+    CHECK(!s.drag_preview("editor-test", json(R"([{"id": "nobody"}])"), later, why) && !why.empty());
+    CHECK(!s.drag_preview("no-such-mod", turn, later, why));
+    CHECK(!s.drag_preview("editor-test", json("[]"), later, why));
+    CHECK(s.log().size() == logged + 3);  // move_actor, undo, move_actors: the drag steps never show in the log
+}
+
 int main(int argc, char** argv) {
     // editor_test --game <game dir> [stage room]: what the editor reads from a game folder (manual check)
     if (argc >= 3 && std::string(argv[1]) == "--game") {
@@ -647,7 +850,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: editor_test <examples/guest-mods>\n");
         return 2;
     }
+    world_object_commands();
+    floating_world_object_commands();
+    grapple_world_object_commands();
+    island_world_object_commands();
     command_layer();
+    handle_drag();
     locations();
     records();
     package_files(argv[1]);

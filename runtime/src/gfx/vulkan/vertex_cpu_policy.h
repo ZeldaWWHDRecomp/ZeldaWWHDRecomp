@@ -78,7 +78,9 @@ inline CpuVertexChoice choose_cpu_vertices(uint32_t vendor, const char* option,
     if (override && !std::strcmp(override, "0")) return {0, env ? "WWHD_VK_CPU_VERTICES=0" : "Graphics option: CPU vertices off"};
     uint32_t mask;
     if (classes && parse_cpu_vertex_classes(classes, mask)) return {mask, "CPU vertex class diagnostic"};
-    if (vendor == 0x1010) return {CpuAll, "driver rule: PowerVR CPU vertex conversion (#207)"};
+    // PowerVR (#207, Pixel 10 Pro, driver 25.3): only 32-bit endian-swapped attributes decode wrongly in the
+    // shader; the tester's per-class run showed swap32 alone gives the correct picture. "On (all)" stays available.
+    if (vendor == 0x1010) return {CpuSwap32, "driver rule: PowerVR CPU vertex conversion of swap32 attributes (#207)"};
     return {0, "default"};
 }
 // Reserve unused bindings for mixed groups. Raw attributes retain their original layout.

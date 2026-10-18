@@ -112,7 +112,7 @@ void frame() {
     // Presentation regions are physical pixels; ImGui vertices use logical points.
     float sx=io.DisplayFramebufferScale.x>0?io.DisplayFramebufferScale.x:1;
     float sy=io.DisplayFramebufferScale.y>0?io.DisplayFramebufferScale.y:1;
-    if(tv_visible)draw(tv,ImGui::GetBackgroundDrawList(),tv_width>0?tv_width/sx:io.DisplaySize.x,
+    if(tv_visible)draw(tv,ImGui::GetBackgroundDrawList(ImGui::GetMainViewport()),tv_width>0?tv_width/sx:io.DisplaySize.x,
         tv_height>0?tv_height/sy:io.DisplaySize.y,tv_x/sx,tv_y/sy);
     if(!gamepad)gamepad=std::make_unique<ImDrawList>(ImGui::GetDrawListSharedData());
     gamepad->_ResetForNewFrame();

@@ -1,11 +1,39 @@
+#include <cmath>
+#include <exception>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <optional>
+#include <span>
+#include <system_error>
+#include <thread>
+#include <tuple>
+#include <utility>
 // Guest mods (Mod SDK v2 prototype, docs/mod-sdk-v2.md): PowerPC mods translated to C on install and
 // compiled into a module by the player's own compiler (tools/guestmod/). They hook or replace game
 // functions at runtime through the per-function flag check that recomp.py --mod-hooks puts at the
 // start of every game function body (PPC_MOD_HOOK in ppc.h).
 //
 // The mod manager builds and loads its frozen, trusted guest set before guest code runs.
+#include "../editor/editor_game.h"
+#include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "../model_probe.h"
+#include "story_native_refresh_dispatch_audit.h"
+#include "story_native_manager_cancel_dispatch_audit.h"
+#include "story_native_cancel_dispatch_lifetime.h"
+#include "story_native_stage_owner_observer.h"
+#include "story_native_event_dispatch.h"
+#include "story_native_outer_return.h"
+#include "../native_quiescence.h"
+#include "story_native_event_game_thread.h"
+#include "story_native_stage_owner_hooks.h"
+#include "story_native_setinfo_diagnostic.h"
+#include "story_native_wait_runtime.h"
+#include "story_native_scene_request.h"
+#include <atomic>
+#include <mutex>
 #include "guest_validation.h"
 #include "guest_build.h"
 #include "packages.h"
@@ -53,6 +81,7 @@
 #include <limits>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,11 +101,19 @@
 #include "../platform/host.h"
 #include "wwhd_guest_abi.h"
 
+namespace {std::recursive_mutex&native_hook_mutex(){static std::recursive_mutex mutex;return mutex;}
+std::atomic<bool> native_hooks_sealed{false},native_hooks_fault{false},guest_init_started{false};
+uint8_t*sealed_mod_flags=nullptr;const PpcFunc*sealed_mod_bodies=nullptr;unsigned sealed_mod_count=0;}
 extern "C" {
 unsigned g_mod_hook_count = 0;  // initialized only by a hook-enabled game-code build
 uint8_t* g_mod_hook_flags = nullptr;
 const PpcFunc* g_mod_bodies = nullptr;
 void ppc_mod_register(unsigned count, uint8_t* flags, const PpcFunc* bodies) {
+    std::lock_guard mutation(native_hook_mutex());
+    if(native_hooks_sealed.load(std::memory_order_acquire)){native_hooks_fault=true;return;}
+#ifndef WWHD_GUEST_HOOKS_STARTUP_FIXTURE
+    if(g_mod_hook_count){native_hooks_fault=true;return;}
+#endif
     g_mod_hook_count = count; g_mod_hook_flags = flags; g_mod_bodies = bodies;
 }
 extern volatile int g_core_preempt[3];
@@ -92,7 +129,17 @@ void set_game_calls(void (*original)(Cpu*, uint32_t), uint32_t (*call)(Cpu*, uin
 void install(const std::function<void(uint32_t, void (*)(Cpu*))>& replace);
 }
 namespace guestmods {
+// This sole production issuer brackets the final committed startup call. It
+// exposes no callback or request-controlled way to reopen allocation admission.
+class NativeSceneRequestIssuer final {
+public:
+ static void startup(bool installed,story_native_wait_runtime::LogicStep step){
+  story_native_scene_request::StartupWindow window;
+  story_native_wait_runtime::startup(installed,step);
+ }
+};
 namespace {
+void call_original(Cpu*,uint32_t);
 
 struct Chain {
     uint32_t addr = 0, ordinal = 0;
@@ -130,11 +177,264 @@ int ordinal_of(uint32_t addr) {
     return it != e && it->addr == addr ? (int)(it - b) : -1;
 }
 
+// SetInfo/teardown stay native pass-through while the event-resource owner
+// receipt is being proved. Installing all eleven flags ensures the same original
+// wrapper covers calls from recompiled game code and guestmods::call_original.
+// No observer, receipt, or native scene route is enabled by these flags.
+// Bulk heap destruction outside these entry points remains unproven.
+bool install_stage_owner_pass_through() {
+    std::lock_guard mutation(native_hook_mutex());
+    if(native_hooks_sealed.load())return false;
+    static bool installed=false;
+    if(installed)return true;
+    if(!g_mod_hook_count||!g_mod_hook_flags||!g_mod_bodies)return false;
+    const std::array<uint32_t,11> addresses={
+        story_native_stage_owner_hooks::SetInfo(),
+        story_native_stage_owner_hooks::DeleteInfo(),
+        story_native_stage_owner_hooks::FreePackEntry(),
+        story_native_stage_owner_hooks::UnloadArchive(),
+        story_native_stage_owner_hooks::ManagerDisposer(),
+        story_native_stage_owner_hooks::ArchiveHolderDtor(),
+        story_native_stage_owner_hooks::PackHolderDtor(),
+        story_native_stage_owner_hooks::StageHeapDtor(),
+        story_native_stage_owner_hooks::ArchiveResourceDtor(),
+        story_native_stage_owner_hooks::SarcResourceDtor(),
+        story_native_stage_owner_hooks::ArrayDelete()};
+    std::array<unsigned,11> ordinals{};
+    for(unsigned n=0;n<addresses.size();++n){
+        const uint32_t addr=addresses[n];
+        if(!addr)return false;
+        const int i=ordinal_of(addr);
+        if(i<0||unsigned(i)>=g_mod_hook_count||!g_mod_bodies[i]||g_mod_hook_flags[i]||g_chains.contains(addr))return false;
+        for(unsigned k=0;k<n;++k)if(addresses[k]==addr)return false;
+        ordinals[n]=unsigned(i);
+    }
+    g_chains.reserve(g_chains.size()+addresses.size());
+    unsigned inserted=0;
+    try{
+        for(unsigned n=0;n<addresses.size();++n){
+            Chain chain;chain.addr=addresses[n];chain.ordinal=ordinals[n];
+            if(!g_chains.emplace(addresses[n],std::move(chain)).second)break;
+            ++inserted;
+        }
+    }catch(...){for(unsigned n=0;n<inserted;++n)g_chains.erase(addresses[n]);throw;}
+    if(inserted!=addresses.size()){
+        for(unsigned n=0;n<inserted;++n)g_chains.erase(addresses[n]);
+        return false;
+    }
+    for(unsigned n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    installed=true;
+    return true;
+}
+
+namespace {
+struct NativePipelineEvidence {
+ Cpu* cpu{};uint32_t function{};unsigned delegates=0,started=0,completed=0;bool delegating=false,invalid=false;
+ std::optional<story_native_event_depth::FrameWitness>witness;
+ NativePipelineEvidence*previous=nullptr;
+};
+thread_local NativePipelineEvidence* native_pipeline=nullptr;
+struct PipelinePin {NativePipelineEvidence& evidence;explicit PipelinePin(NativePipelineEvidence&e):evidence(e){e.previous=native_pipeline;native_pipeline=&e;}~PipelinePin(){native_pipeline=evidence.previous;}};
+struct WaitRouteFrame {Cpu*cpu;uint32_t function,receiver;bool next=false;unsigned started=0,completed=0;WaitRouteFrame*previous;};
+thread_local WaitRouteFrame*wait_route_frame=nullptr;
+void original_started(Cpu*c,uint32_t fn){
+ if(auto*f=wait_route_frame;f&&f->cpu==c&&f->function==fn)++f->started;
+ if(auto*e=native_pipeline;e&&e->function==fn){if(e->cpu!=c||!e->delegating)e->invalid=true;++e->started;}
+}
+void original_completed(Cpu*c,uint32_t fn){
+ if(auto*f=wait_route_frame;f&&f->cpu==c&&f->function==fn)++f->completed;
+ if(auto*e=native_pipeline;e&&e->function==fn){if(e->cpu!=c||!e->delegating)e->invalid=true;++e->completed;}
+}
+
+const std::array<uint32_t,kNativeWaitRouteCount>& native_wait_addresses() {
+    static const std::array<uint32_t,kNativeWaitRouteCount> addresses={
+        GC_OPTIONAL(0x022C36D0),GC_OPTIONAL(0x024FFA3C),GC_OPTIONAL(0x02544374),
+        GC_OPTIONAL(0x022C2958),GC_OPTIONAL(0x0259F858),GC_OPTIONAL(0x024FF164),
+        GC_OPTIONAL(0x02543D80),GC_OPTIONAL(0x02541664),GC_OPTIONAL(0x02542D88),
+        GC_OPTIONAL(0x02543280),GC_OPTIONAL(0x0259FA00),GC_OPTIONAL(0x0259FA64),
+        GC_OPTIONAL(0x0254465C),GC_OPTIONAL(0x02542C9C),GC_OPTIONAL(0x024FE3E8),
+        GC_OPTIONAL(0x0253EFA8),GC_OPTIONAL(0x0253FF34),
+        GC_OPTIONAL(0x02543C6C),GC_OPTIONAL(0x02542A38),
+        GC_OPTIONAL(0x025A0984),GC_OPTIONAL(0x025A0B3C)};
+    return addresses;
+}
+bool world_actor_overlap(size_t n) {return n==0||n==3||n==8||n==18;}
+NativeWaitDispatch native_wait_dispatch=nullptr;
+std::array<PpcFunc,kNativeWaitRouteCount> native_wait_prior{};
+// Recorded only by this module's own story_actors::install callback. A guest
+// replacement can choose the same display name, but cannot become this owner.
+std::array<PpcFunc,kNativeWaitRouteCount> native_wait_known_world_actor{};
+PpcFunc native_wait_known_notebook_people=nullptr;
+bool known_native_wait_owner(size_t n,PpcFunc owner,const std::string& name){
+    return (world_actor_overlap(n)&&native_wait_known_world_actor[n]&&
+            owner==native_wait_known_world_actor[n]&&name=="the port's world actors")||
+           (n==0&&native_wait_known_notebook_people&&owner==native_wait_known_notebook_people&&
+            name=="the port's story notebook");
+}
+bool native_wait_installed=false;
+void run_native_wait_route(Cpu* c,size_t n) {
+    const auto route=native_wait_dispatch;
+    if(!route)fatal("[guestmods] native WAIT route called before installation");
+    const uint32_t address=native_wait_addresses()[n];
+    bool next_called=false;
+    WaitRouteFrame frame{c,address,c->r[3],false,0,0,wait_route_frame};wait_route_frame=&frame;
+    struct Pop{WaitRouteFrame*previous;~Pop(){wait_route_frame=previous;}}pop{frame.previous};
+    const NativeWaitNext next=[&] {
+        if(next_called)return;
+        next_called=true;frame.next=true;
+        NativePipelineEvidence*e=native_pipeline;
+        const bool proving=e&&e->cpu==c&&e->function==address&&n==1&&!native_wait_prior[n];
+        if(proving){++e->delegates;e->delegating=true;}
+        struct EndDelegate{NativePipelineEvidence*e;~EndDelegate(){if(e)e->delegating=false;}}end{proving?e:nullptr};
+        if(auto prior=native_wait_prior[n])prior(c);
+        else call_original(c,address);
+    };
+    if(route(c,address,next)==NativeWaitDecision::Delegate)next();
+}
+template<size_t N> void native_wait_trampoline(Cpu* c) {run_native_wait_route(c,N);}
+const std::array<PpcFunc,kNativeWaitRouteCount> native_wait_trampolines={
+    native_wait_trampoline<0>,native_wait_trampoline<1>,native_wait_trampoline<2>,
+    native_wait_trampoline<3>,native_wait_trampoline<4>,native_wait_trampoline<5>,
+    native_wait_trampoline<6>,native_wait_trampoline<7>,native_wait_trampoline<8>,
+    native_wait_trampoline<9>,native_wait_trampoline<10>,native_wait_trampoline<11>,
+    native_wait_trampoline<12>,native_wait_trampoline<13>,native_wait_trampoline<14>,
+    native_wait_trampoline<15>,native_wait_trampoline<16>,native_wait_trampoline<17>,
+    native_wait_trampoline<18>,native_wait_trampoline<19>,native_wait_trampoline<20>};
+}
+NativeWaitRouteCoverage native_wait_route_coverage_impl();
+bool install_native_wait_routes_impl(NativeWaitDispatch route) {
+    std::lock_guard mutation(native_hook_mutex());
+    if(native_hooks_sealed.load())return false;
+    if(native_wait_installed)
+        return route && native_wait_dispatch==route &&
+               native_wait_route_coverage_impl().certified;
+    if(!route||!hooks_built())return false;
+    const auto& addresses=native_wait_addresses();
+    std::array<unsigned,kNativeWaitRouteCount> ordinals{};
+    std::array<PpcFunc,kNativeWaitRouteCount> prior{};
+    const auto refuse=[&](size_t n,const char* reason){
+        LOG("[native_wait] route refused index=%u address=%08X reason=%s",
+            unsigned(n),addresses[n],reason);
+        return false;
+    };
+    for(size_t n=0;n<addresses.size();++n) {
+        const auto address=addresses[n];
+        if(!address)return refuse(n,"mapping");
+        const int ordinal=ordinal_of(address);
+        if(ordinal<0||unsigned(ordinal)>=g_mod_hook_count||!g_mod_bodies[ordinal])return refuse(n,"native body");
+        for(size_t k=0;k<n;++k)
+            if(addresses[k]==address||ordinals[k]==unsigned(ordinal))return false;
+        ordinals[n]=unsigned(ordinal);
+        const auto it=g_chains.find(address);
+        const bool flagged=g_mod_hook_flags[ordinal]!=0;
+        if((it==g_chains.end())!=!flagged)return refuse(n,"flag/chain");
+        if(it==g_chains.end())continue;
+        const Chain& chain=it->second;
+        if(chain.addr!=address||chain.ordinal!=unsigned(ordinal))return refuse(n,"ordinal");
+        if(chain.replace) {
+            if(!known_native_wait_owner(n,chain.replace,chain.replace_mod)){
+                LOG("[native_wait] replacement owner=%s known=%u matches=%u",
+                    chain.replace_mod.c_str(),unsigned(bool(native_wait_known_world_actor[n])),
+                    unsigned(chain.replace==native_wait_known_world_actor[n]));
+                return refuse(n,"replacement owner");
+            }
+            prior[n]=chain.replace;
+        }
+    }
+    // Stage a complete copy first. Allocation or string failures leave every
+    // flag and chain untouched; the final swap precedes enabling all flags.
+    try {
+        auto staged=g_chains;
+        staged.reserve(staged.size()+addresses.size());
+        for(size_t n=0;n<addresses.size();++n) {
+            Chain& chain=staged[addresses[n]];
+            chain.addr=addresses[n];chain.ordinal=ordinals[n];
+            chain.replace=native_wait_trampolines[n];
+            chain.replace_mod="the port's native WAIT route";
+        }
+        g_chains.swap(staged);
+    } catch (...) {
+        return false;
+    }
+    native_wait_prior=prior;
+    native_wait_dispatch=route;
+    for(size_t n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    native_wait_installed=true;
+    return true;
+}
+bool routes_owned_impl() {return native_wait_route_coverage_impl().certified;}
+NativeWaitRouteCoverage native_wait_route_coverage_impl() {
+    NativeWaitRouteCoverage result{uint32_t(kNativeWaitRouteCount),0,0,false};
+    if(!native_wait_installed||!native_wait_dispatch||!hooks_built())return result;
+    const auto& addresses=native_wait_addresses();
+    for(size_t n=0;n<addresses.size();++n) {
+        const int ordinal=ordinal_of(addresses[n]);
+        if(ordinal<0||unsigned(ordinal)>=g_mod_hook_count||
+           !g_mod_bodies[ordinal]||!g_mod_hook_flags[ordinal])return result;
+        const auto it=g_chains.find(addresses[n]);
+        if(it==g_chains.end()||it->second.addr!=addresses[n]||
+           it->second.ordinal!=unsigned(ordinal)||
+           it->second.replace!=native_wait_trampolines[n])return result;
+        if(native_wait_prior[n]&&
+           !((world_actor_overlap(n)&&native_wait_prior[n]==native_wait_known_world_actor[n])||
+             (n==0&&native_wait_prior[n]==native_wait_known_notebook_people)))return result;
+        ++result.installed;
+        if(native_wait_prior[n]){
+            if(n==0&&native_wait_prior[n]==native_wait_known_notebook_people)++result.notebook_composed;
+            else ++result.world_actors_composed;
+        }
+    }
+    result.certified=result.installed==result.requested;
+    if(result.certified)for(size_t n=0;n<3;++n)
+        result.outer_owner[n]=uint64_t(reinterpret_cast<uintptr_t>(native_wait_trampolines[n]));
+    return result;
+}
+
+namespace {
+std::atomic<NativeEventObserver> g_native_event_observer{nullptr};
+std::atomic<NativeOuterReturnCallback> g_native_outer_return_callback{nullptr};
+bool native_event_outer(uint32_t fn){return fn==GC(0x022C36D0)||fn==GC(0x024FFA3C)||fn==GC(0x02544374);}
+ }
+} // private implementation namespace
+class NativeOuterReturnIssuer {
+public:
+ static void completed(Cpu*c,story_native_event_depth::Tracker&t,const NativePipelineEvidence&e){
+  const auto callback=g_native_outer_return_callback.load(std::memory_order_acquire);
+  const int ordinal=ordinal_of(e.function);
+  if(ordinal<0||dispatch::lookup(e.function)!=g_recomp_funcs[ordinal].fn)return;
+  if(!callback||!native_hooks_sealed.load()||native_hooks_fault.load()||!dispatch::native_text_sealed()||g_mod_hook_flags!=sealed_mod_flags||g_mod_bodies!=sealed_mod_bodies||g_mod_hook_count!=sealed_mod_count||e.cpu!=c||e.function!=GC(0x024FFA3C)||e.invalid||e.delegates!=1||e.started!=1||e.completed!=1||!e.witness||!e.witness->valid()||!e.witness->returned(t)||!native_wait_route_coverage_impl().certified)return;
+  story_native_outer_return::OuterReturn token(c,t,*e.witness);
+  if(token.current(c,e.witness->expected()))callback(c,token);
+ }
+};
+namespace {
+namespace {
+template<class Next>void observed_native(Cpu*c,uint32_t fn,bool original,Next&&next){
+ auto observer=g_native_event_observer.load(std::memory_order_acquire);
+ if(!observer||!native_event_outer(fn)){next();return;}
+ story_native_event_depth::Tracker*tracker=nullptr;story_native_event_depth::Call call;
+ if(!observer(c,fn,tracker,call)){next();return;}
+ if(!tracker){if(call.authority==story_native_event_depth::Authority::Foreign)next();else c->r[3]=1;return;}
+ if(call.function!=fn){
+  if(call.authority==story_native_event_depth::Authority::Foreign){auto invalid=call;invalid.authority=story_native_event_depth::Authority::InvalidOwned;auto fault=tracker->enter(invalid);next();return;}
+  call.authority=story_native_event_depth::Authority::InvalidOwned;
+ }
+ NativePipelineEvidence evidence;evidence.cpu=c;evidence.function=fn;
+ const auto body=[&](){if(!original&&call.authority==story_native_event_depth::Authority::Owned&&fn==GC(0x024FFA3C))evidence.witness=tracker->current_owned_frame();next();return c->r[3];};
+ std::optional<PipelinePin>pin;if(!original)pin.emplace(evidence);
+ const auto result=original?story_native_event_dispatch::original(*tracker,call,body):story_native_event_dispatch::dispatcher(*tracker,call,body);
+ if(!result.executed)c->r[3]=1; // exact invalid owned consumer is denied; foreign always delegates
+ pin.reset();
+ if(!original&&result.executed&&result.observed)NativeOuterReturnIssuer::completed(c,*tracker,evidence);
+}
+}
 void call_original(Cpu* c, uint32_t func) {
     int i = ordinal_of(func);
     if (i < 0) fatal("[guestmods] call_original: %08X is not a game function", func);
-    if (g_mod_hook_flags[i]) c->mod_skip = func;  // consumed by the check at the start of the body
-    g_mod_bodies[i](c);
+    observed_native(c,func,true,[&]{
+        if (g_mod_hook_flags[i]) c->mod_skip = func;  // consumed by the body check
+        story_native_stage_owner_hooks::invoke_original(c,func,[&]{original_started(c,func);g_mod_bodies[i](c);original_completed(c,func);});
+    });
 }
 
 PackageObserver g_package_observer=nullptr;
@@ -156,6 +456,7 @@ bool prop_texture_binding_valid(const story_actor_textures::Binding& binding){
     return prop_texture_context_valid(context)&&binding.no_pattern_animation;
 }
 void load_world(const std::string& mod,const mods::json::Value& manifest,const std::string& package_dir,const std::string& data_dir) {
+    mod_actor::configure_world_objects(config::game_dir);
     struct ItemModelBatch {size_t checkpoint=story_item_models::checkpoint();bool committed=false;~ItemModelBatch(){if(!committed)story_item_models::rollback(checkpoint);}} item_model_batch;
     struct TextureBatch {size_t checkpoint=story_actor_textures::checkpoint();bool committed=false;~TextureBatch(){if(!committed)story_actor_textures::rollback(checkpoint);}} texture_batch;
     struct SceneBatch {size_t checkpoint=story_scenes::checkpoint();bool committed=false;~SceneBatch(){if(!committed)story_scenes::rollback(checkpoint);}} scene_batch;
@@ -185,16 +486,24 @@ void load_world(const std::string& mod,const mods::json::Value& manifest,const s
     for(const auto& model:models) {
         const bool actor_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.kind=="mod"&&actor.model==model.id;});
         const bool item_uses=std::any_of(model_items.begin(),model_items.end(),[&](const auto& item){return item.held_model==model.id;});
-        if(!actor_uses&&!item_uses)continue;
+        const bool collision_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.collision_mesh==model.id;});
+        const bool visual_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.distant.model==model.id||actor.shoreline.model==model.id;});
+        const bool shoreline_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.shoreline.model==model.id;});
+        const bool distant_uses=std::any_of(actors.begin(),actors.end(),[&](const auto& actor){return actor.distant.model==model.id;});
+        if(shoreline_uses&&(actor_uses||item_uses||collision_uses||distant_uses))exception_report::raise("A shoreline model must be dedicated to shoreline use");
+        if(!actor_uses&&!item_uses&&!collision_uses&&!visual_uses)continue;
+        if(visual_uses&&model.kind!="static")exception_report::raise("Distant and shoreline models require static kind");
         if(item_uses&&model.kind!="static")exception_report::raise("Held item models currently require static kind; skinned needs a separate Morf lifetime");
         try {
             const auto bridge=BuildBridge::installed(std::string());
             const auto tool=std::filesystem::path(bridge.builder).parent_path().parent_path()/"story_mods"/(model.kind=="skinned"?"skinned_actor_model.py":"actor_model.py");
-            const auto archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir);
+            const auto archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir,collision_uses,shoreline_uses);
+            if(visual_uses&&(actor_model_cache::triangles_for(archive)==0||actor_model_cache::triangles_for(archive)>1024))exception_report::raise("Distant and shoreline models must contain 1..1024 render triangles");
+            if(collision_uses&&!mod_actor::register_collision(mod,model.id,actor_model_cache::collision_for(archive)))exception_report::raise("Prepared collision unavailable");
             story_notebook::WorldPoint minimum,maximum;
             if(!actor_model_cache::bounds_for(archive,minimum,maximum))exception_report::raise("Prepared model bounds unavailable");
             for(const auto& item:model_items)if(item.held_model==model.id&&!story_item_models::declare(story_items::item_key(mod,item.id),archive,item.held_frames,why,mods::hash::sha256_file(actor_model_cache::archive_for("/vol/content/Common/Object/"+archive+".szs"))))exception_report::raise("Item model "+mod+": "+why);
-            if(actor_uses&&!story_actors::register_model(mod,model.id,archive,1,why,minimum,maximum,model.kind=="skinned",actor_model_cache::clips_for(archive),actor_model_cache::rig_for(archive)))exception_report::raise("World model "+mod+": "+why);
+            if((actor_uses||visual_uses)&&!story_actors::register_model(mod,model.id,archive,1,why,minimum,maximum,model.kind=="skinned",actor_model_cache::clips_for(archive),actor_model_cache::rig_for(archive)))exception_report::raise("World model "+mod+": "+why);
         } catch(const std::exception& e) {exception_report::raise("World model "+mod+":"+model.id+": "+e.what());}
     }
     std::vector<std::string> flags;
@@ -721,7 +1030,44 @@ struct Args {
 
 }  // namespace
 
+bool install_native_wait_routes(NativeWaitDispatch route) {
+    return install_native_wait_routes_impl(route);
+}
+bool routes_owned() {return routes_owned_impl();}
+NativeWaitRouteCoverage native_wait_route_coverage() {
+    return native_wait_route_coverage_impl();
+}
+
+namespace {
+bool native_restore_coverage_current(NativeEventObserver observer,NativeOuterReturnCallback outer,const std::array<uint64_t,3>&owners){
+ std::lock_guard lock(native_hook_mutex());
+ if(!observer||!outer||g_native_event_observer.load(std::memory_order_acquire)!=observer||g_native_outer_return_callback.load(std::memory_order_acquire)!=outer||!native_hooks_sealed.load()||native_hooks_fault.load()||!dispatch::native_text_sealed()||g_mod_hook_flags!=sealed_mod_flags||g_mod_bodies!=sealed_mod_bodies||g_mod_hook_count!=sealed_mod_count)return false;
+ const auto routes=native_wait_route_coverage_impl();return routes.certified&&routes.outer_owner==owners&&owners[0]&&owners[1]&&owners[2];
+}
+}
+class NativeRestoreTrackerIssuer final {
+public:
+ static std::unique_ptr<story_native_event_depth::Tracker>acquire(const story_native_restore_resume::Boundary&boundary,Cpu*cpu){try{
+  std::lock_guard lock(native_hook_mutex());
+  const auto observer=g_native_event_observer.load(std::memory_order_acquire);
+  const auto outer=g_native_outer_return_callback.load(std::memory_order_acquire);
+  const auto owners=native_wait_route_coverage_impl().outer_owner;
+  const auto current=[observer,outer,owners]{return native_restore_coverage_current(observer,outer,owners);};
+  if(!cpu||!current())return {};
+  story_native_event_depth::Coverage coverage{{owners[0],owners[0],true},{owners[1],owners[1],true},{owners[2],owners[2],true},true};
+  return story_native_event_depth::Tracker::restore_provisional(boundary,cpu,coverage,current);
+ }catch(...){return {};}}
+};
+std::unique_ptr<story_native_event_depth::Tracker>acquire_native_restore_tracker(const story_native_restore_resume::Boundary&boundary,Cpu*cpu){return NativeRestoreTrackerIssuer::acquire(boundary,cpu);}
+
+bool register_native_event_observer(NativeEventObserver observer){
+ if(!observer)return false;NativeEventObserver empty=nullptr;
+ return g_native_event_observer.compare_exchange_strong(empty,observer,std::memory_order_release,std::memory_order_relaxed);
+}
+
 void init() {
+    std::lock_guard mutation(native_hook_mutex());
+    if(guest_init_started.exchange(true)||native_hooks_sealed.load()){native_hooks_fault=true;return;}
     namespace packages=mods::packages;
     // start_guests invokes callbacks under the package-manager mutex. Resolve its
     // directory before entering those callbacks to avoid recursively locking it.
@@ -805,6 +1151,16 @@ void init() {
         LOG("[guestmods] the story system is inactive: the Story Notebook package (%s) isn't installed",story_notebook::kNotebookPackage.c_str());
         return;
     }
+    const char* setinfo_probe=std::getenv("WWHD_TEST_NATIVE_SETINFO_PROBE");
+    const bool probe_setinfo=setinfo_probe&&std::strcmp(setinfo_probe,"1")==0;
+    const bool stage_pass_through=(g_world_scenes||probe_setinfo)&&install_stage_owner_pass_through();
+    if(g_world_scenes&&!stage_pass_through)
+        LOG("[world] native event resource pass-through hooks unavailable; scenes retain fallback");
+    if(probe_setinfo){
+        if(stage_pass_through&&story_native_setinfo_diagnostic::enable())
+            LOG("[native_setinfo_probe] enabled");
+        else LOG("[native_setinfo_probe] unavailable");
+    }
     // Letters from mods: host replacements of the postbox and message functions, only when a loaded
     // mod uses the letter services (story_mail.h).
     if(story_mail::imported())story_mail::set_text_buffers(mem::host_alloc(8192,16),8192);
@@ -867,6 +1223,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] notebook: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story notebook";
+        if(addr==native_wait_addresses()[0])native_wait_known_notebook_people=fn;
         g_mod_hook_flags[ordinal]=1;
     });
     if(story_actors::declared()) {
@@ -888,12 +1245,16 @@ void init() {
         story_actors::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
         story_actors::set_scratch_memory(mem::runtime_alloc(story_actors::kScratchBytes,16));
         story_actors::set_scene_start(story_scenes::request);
+        if(editor::launch_mode())story_actors::editor_live_kinds();  // --editor: native props, switches, doors and enemies placed live
         story_actors::install([](uint32_t addr) {
             auto it=g_chains.find(addr);return it==g_chains.end()?std::string():it->second.replace_mod;
         },[](uint32_t addr,PpcFunc fn) {
             int ordinal=ordinal_of(addr);
             if(ordinal<0)fatal("[guestmods] actors: %08X is not a game function",addr);
             Chain& ch=g_chains[addr];ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's world actors";
+            const auto& wait_addresses=native_wait_addresses();
+            for(size_t n=0;n<wait_addresses.size();++n)
+                if(world_actor_overlap(n)&&addr==wait_addresses[n])native_wait_known_world_actor[n]=fn;
             g_mod_hook_flags[ordinal]=1;
         });
     }
@@ -997,6 +1358,14 @@ void init() {
         g_mod_hook_flags[ordinal]=1;
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
+    NativeSceneRequestIssuer::startup(stage_pass_through,[]() -> uint64_t {
+        return g_logic_step.load(std::memory_order_relaxed);
+    });
+#ifndef WWHD_GUEST_HOOKS_STARTUP_FIXTURE
+    sealed_mod_flags=g_mod_hook_flags;sealed_mod_bodies=g_mod_bodies;sealed_mod_count=g_mod_hook_count;
+    if(!dispatch::seal_native_text())native_hooks_fault=true;
+    native_hooks_sealed.store(true,std::memory_order_release);
+#endif
 }
 
 void set_package_observer(PackageObserver observer){g_package_observer=observer;}
@@ -1006,16 +1375,91 @@ void set_package_observer(PackageObserver observer){g_package_observer=observer;
 bool editor_prepare_model(const std::string& mod,const std::string& package_dir,const std::string& data_dir,const mods::json::Value& entry,std::string& archive,std::string& why){
     story_notebook::ManifestModel model;model.id=entry.get("id").string();model.source=entry.get("source").string();model.kind=entry.get("kind").string("static");
     if(model.id.empty()||model.source.empty())return why="the model has no id or source",false;
+    const bool collision=entry.get("collision").boolean;
+    if(collision&&model.kind!="static")return why="collision requires a static model",false;
     try {
         const auto bridge=BuildBridge::installed(std::string());
         const auto tool=std::filesystem::path(bridge.builder).parent_path().parent_path()/"story_mods"/(model.kind=="skinned"?"skinned_actor_model.py":"actor_model.py");
-        archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir);
+        archive=actor_model_cache::prepare(mod,model,package_dir,data_dir,bridge.python,tool.string(),config::game_dir,collision);
         return true;
     } catch(const std::exception& e) {return why=e.what(),false;}
 }
 
 std::vector<ModIdentity> enabled_mods() {
     std::vector<ModIdentity> mods;for(const auto& mod:g_loaded)mods.push_back({mod.id,mod.version});return mods;
+}
+
+namespace {
+bool refresh_dispatch_current()noexcept{try{
+ std::lock_guard readback(native_hook_mutex());
+ using namespace story_native_refresh_dispatch;
+ detail::View view;
+ view.hooks_sealed=native_hooks_sealed.load(std::memory_order_acquire)&&!native_hooks_fault.load();
+ view.text_sealed=dispatch::native_text_sealed();view.probe_quiet=model_probe::native_refresh_quiescent();
+ view.registration_exact=g_mod_hook_count==g_recomp_func_count&&g_mod_hook_count==sealed_mod_count&&g_mod_hook_flags&&g_mod_bodies&&g_mod_hook_flags==sealed_mod_flags&&g_mod_bodies==sealed_mod_bodies;
+ view.route=[](uint32_t raw,detail::Route&out){const auto address=GC(raw);const int i=ordinal_of(address);if(i<0||unsigned(i)>=g_mod_hook_count)return false;out={g_recomp_funcs[i].fn,dispatch::lookup(address),g_mod_hook_flags[i]!=0,g_chains.find(address)!=g_chains.end()};return true;};
+ return detail::audit(view);
+}catch(...){return false;}}
+}
+std::optional<story_native_refresh_dispatch::Guard>acquire_native_people_refresh_dispatch(){
+ if(!refresh_dispatch_current())return std::nullopt;
+ return story_native_refresh_dispatch::Guard([]{return refresh_dispatch_current();});
+}
+
+namespace {
+bool cancel_dispatch_current()noexcept{try{
+ std::lock_guard readback(native_hook_mutex());
+ if(!native_hooks_sealed.load(std::memory_order_acquire)||native_hooks_fault.load()||!dispatch::native_text_sealed()||
+    g_mod_hook_count!=g_recomp_func_count||g_mod_hook_count!=sealed_mod_count||!g_mod_hook_flags||!g_mod_bodies||g_mod_hook_flags!=sealed_mod_flags||g_mod_bodies!=sealed_mod_bodies||!native_wait_route_coverage_impl().certified)return false;
+ for(auto raw:story_native_manager_cancel_dispatch::required_functions()){
+  const auto address=GC(raw);const int i=ordinal_of(address);
+  if(i<0||unsigned(i)>=g_mod_hook_count||dispatch::lookup(address)!=g_recomp_funcs[i].fn)return false;
+  auto chain=g_chains.find(address);
+  if(raw==story_native_code_identity::CANONICAL_CODE_ID(0x0254465C).value()||raw==story_native_code_identity::CANONICAL_CODE_ID(0x02542C9C).value()){const size_t n=raw==story_native_code_identity::CANONICAL_CODE_ID(0x0254465C).value()?12:13;
+   if(!g_mod_hook_flags[i]||chain==g_chains.end()||chain->second.ordinal!=unsigned(i)||!chain->second.entry.empty()||!chain->second.ret.empty()||chain->second.replace!=native_wait_trampolines[n]||native_wait_prior[n])return false;
+  }else if(g_mod_hook_flags[i]||chain!=g_chains.end())return false;
+ }
+ return true;
+}catch(...){return false;}}
+}
+std::optional<story_native_manager_cancel_dispatch::Guard>acquire_native_manager_cancel_dispatch(story_native_event_depth::Tracker&t,Cpu*c,std::shared_ptr<const threads::NativeQuiescence> quiescence){
+ namespace D=story_native_event_depth;namespace A=story_native_manager_cancel_dispatch::detail;
+ if(!c||!quiescence||quiescence->read_only()||!quiescence->current(c)||!cancel_dispatch_current())return {};
+ const auto ticket=story_native_event_game_thread::ticket(c);if(!ticket.epoch||!story_native_event_game_thread::verify(c,ticket))return {};
+ auto witness=t.current_owned_frame();if(!witness||!witness->current(t))return {};
+ const auto call=t.current_owned_call();const auto depth=t.snapshot();
+ if(!call||call->entry!=D::Entry::CameraExecute||call->function!=GC(0x024FFA3C)||!depth.coverage||depth.fault||depth.state!=D::State::Active||depth.camera_depth!=1||depth.npc_depth||depth.manager_depth||depth.callback_depth||depth.foreign_depth)return {};
+ auto stage=std::make_shared<story_native_stage_owner::Tracker::Scan>(story_native_stage_owner_observer::tracker().try_scan());if(!stage->current())return {};
+ auto held=std::make_shared<story_native_manager_cancel_dispatch::detail::PinnedStage>(std::move(stage),std::move(quiescence));
+ const auto thread=std::this_thread::get_id();
+ A::Read read=[](uint32_t address,std::span<uint8_t>out){if(address<mem::kMem2Start||uint64_t(address)+out.size()>mem::kMem2End)return false;std::copy_n(mem::ptr(address),out.size(),out.begin());return true;};
+ A::Census census;if(!A::census(read,GD(0x101F3328),census))return {};
+ return story_native_manager_cancel_dispatch::Guard([&t,c,ticket,held,thread,call=*call,depth,witness=*witness,read,census=std::move(census)]{
+  if(thread!=std::this_thread::get_id()||held->quiescence->read_only()||!held->quiescence->current(c)||!witness.valid()||!witness.current(t)||!held->stage->current()||!story_native_event_game_thread::verify(c,ticket)||!cancel_dispatch_current())return false;
+  const auto now=t.current_owned_call();const auto d=t.snapshot();
+  if(!now||now->entry!=call.entry||now->function!=call.function||now->receiver!=call.receiver||now->subject!=call.subject||now->pid!=call.pid||now->token!=call.token||now->identity!=call.identity||now->authority!=call.authority||d.fault||!d.coverage||d.state!=depth.state||d.camera_depth!=depth.camera_depth||d.npc_depth||d.manager_depth||d.callback_depth||d.foreign_depth)return false;
+  A::Census fresh;return A::census(read,GD(0x101F3328),fresh)&&fresh==census;
+ });
+}
+
+bool register_native_outer_return_callback(NativeOuterReturnCallback callback){
+ std::lock_guard lock(native_hook_mutex());if(!callback||native_hooks_sealed.load())return false;
+ NativeOuterReturnCallback empty=nullptr;return g_native_outer_return_callback.compare_exchange_strong(empty,callback);
+}
+bool native_camera_run_original_current(const Cpu*c,const story_native_event_depth::Tracker&t)noexcept{try{
+ const auto*f=wait_route_frame;const auto fn=GC(0x024FE3E8);
+ const auto*p=native_pipeline;if(!p||p->cpu!=c||p->function!=GC(0x024FFA3C)||!p->delegating||p->started!=1||p->completed||p->invalid)return false;
+ if(!c||!f||f->cpu!=c||f->function!=fn||!native_hooks_sealed.load()||native_hooks_fault.load()||!dispatch::native_text_sealed()||!native_wait_route_coverage_impl().certified||native_wait_prior[14])return false;
+ const int ordinal=ordinal_of(fn);if(ordinal<0||dispatch::lookup(fn)!=g_recomp_funcs[ordinal].fn||g_mod_hook_flags!=sealed_mod_flags||g_mod_bodies!=sealed_mod_bodies||g_mod_hook_count!=sealed_mod_count)return false;
+ const auto it=g_chains.find(fn);if(it==g_chains.end()||!it->second.entry.empty()||!it->second.ret.empty()||it->second.replace!=native_wait_trampolines[14])return false;
+ const auto witness=t.current_owned_frame();if(!witness||!witness->current(t))return false;
+ const auto&call=witness->root_call();const auto&e=witness->expected();
+ if(call.entry!=story_native_event_depth::Entry::CameraExecute||call.function!=GC(0x024FFA3C)||call.receiver!=e.camera.address-0x248||call.subject!=call.receiver||call.pid!=e.camera.pid||call.token||call.identity!=e.identity||f->receiver!=e.camera.address)return false;
+ return (!f->next&&!f->started&&!f->completed)||(f->next&&f->started==1&&f->completed==1);
+}catch(...){return false;}}
+
+bool native_camera_run_original_pending(const Cpu*c,const story_native_event_depth::Tracker&t)noexcept{
+ const auto*f=wait_route_frame;return f&&!f->next&&!f->started&&!f->completed&&native_camera_run_original_current(c,t);
 }
 
 bool hooks_built() { return g_mod_hook_count != 0 && g_mod_hook_flags && g_mod_bodies; }
@@ -1039,6 +1483,9 @@ void draw_frame(Cpu* c,uint64_t step) {
     }
 }
 void logic_service(Cpu* c) {
+    // Reached only from the game's completed logic Execute hook. Native event
+    // admission may later use this live thread binding; it grants no lease.
+    story_native_event_game_thread::observe_logic(c);
     const bool beacon=std::getenv("WWHD_TEST_PARTICLE_BEACON_SPARKLE_TICK")!=nullptr;
     const bool sparkle=!beacon&&std::getenv("WWHD_TEST_PARTICLE_AUCTION_SPARKLE_TICK")!=nullptr;
     const char* probe=beacon?"WWHD_TEST_PARTICLE_BEACON_SPARKLE_TICK":sparkle?"WWHD_TEST_PARTICLE_AUCTION_SPARKLE_TICK":"WWHD_TEST_PARTICLE_DOOR_DEBRIS_TICK";
@@ -1055,9 +1502,12 @@ void logic_service(Cpu* c) {
         }
     }
     story_item_models::tick(c);actor_sweep(c);story_scenes::tick(c,false,2);story_actors::service(c);
+    story_native_wait_runtime::logic(c);
 }
 void service(Cpu* c) { story_lyt_screen::service(c); }
 void state_loaded() {
+    story_native_event_game_thread::state_loaded();
+    story_native_wait_runtime::state_loaded();
     std::lock_guard lock(g_hud_mutex);
     g_actor_registry.invalidate_all();g_actor_identities.clear();
     hud::store().reset();
@@ -1087,6 +1537,8 @@ extern "C" void ppc_mod_run(Cpu* c) {
     auto it = g_chains.find(addr);
     if (it == g_chains.end()) fatal("[guestmods] %08X flagged without hooks", addr);
     const Chain& ch = it->second;
+    guestmods::observed_native(c,addr,false,[&]{
+    story_native_stage_owner_hooks::invoke_dispatch(c,addr,[&]{
     Args a;
     a.save(c);
     for (PpcFunc h : ch.entry) {
@@ -1094,7 +1546,7 @@ extern "C" void ppc_mod_run(Cpu* c) {
         a.load(c);
     }
     if (ch.replace) ch.replace(c);
-    else { c->mod_skip = addr; g_mod_bodies[ch.ordinal](c); }
+    else { c->mod_skip = addr; story_native_stage_owner_hooks::invoke_original(c,addr,[&]{guestmods::original_started(c,addr);g_mod_bodies[ch.ordinal](c);guestmods::original_completed(c,addr);}); }
     if (!ch.ret.empty()) {
         uint32_t r3 = c->r[3], r4 = c->r[4];
         double f1a = c->f[1].ps0, f1b = c->f[1].ps1;
@@ -1104,4 +1556,6 @@ extern "C" void ppc_mod_run(Cpu* c) {
         }
         c->r[3] = r3; c->r[4] = r4; c->f[1].ps0 = f1a; c->f[1].ps1 = f1b;
     }
+    });
+    });
 }

@@ -10,7 +10,7 @@ namespace story_enemies {namespace {
 struct Entry {Spec spec;Token token=0;story_items::EnemyMarkerHandle marker{};uint32_t pid=0xFFFFFFFFu,address=0;bool quarantine=false,claiming=false,search_known=false;uint8_t search_mode=0;};
 std::vector<Entry> entries;std::array<uint32_t,4> profiles{};
 void(*original)(Cpu*,uint32_t)=nullptr;uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
-std::function<void(Token,uint32_t)> retired;bool installed=false;ChildBridge children;bool weapon_admission=false;
+std::function<void(Token,uint32_t)> retired;bool installed=false,editor_allowed=false;ChildBridge children;bool weapon_admission=false;
 thread_local Entry* executing=nullptr;thread_local Entry* ice_owner=nullptr;
 struct DrowningScope {Entry*entry=nullptr;uint32_t helper=0;bool queued=false;};thread_local DrowningScope* drowning=nullptr;
 const uint32_t CCcreate=GC(0x02110D4C),CCexec=GC(0x0210DD3C),CCdraw=GC(0x0210BFEC),CCdelete=GC(0x021104B4);
@@ -91,6 +91,18 @@ bool verify_actor(Token t,Kind kind,uint32_t a){const auto*e=get(t);const auto&d
 Token declare(const Spec&s,std::string&why){if(installed||!supported(s.kind)||s.mod.empty()||s.id.empty()||s.defeated_flag.empty()||!s.epoch||entries.size()>=128){why="Unsupported or invalid native enemy declaration";return 0;}for(const auto&e:entries)if(e.spec.mod==s.mod&&(e.spec.id==s.id||e.spec.defeated_flag==s.defeated_flag)){why="Duplicate native enemy identity or defeat flag";return 0;}if(s.drops.size()>8){why="Too many native enemy drops";return 0;}for(size_t i=0;i<s.drops.size();++i){const auto&drop=s.drops[i];if(!drop.quantity||drop.quantity>254||!story_items::find(s.mod,drop.item)){why="Unavailable same-mod enemy item";return 0;}for(size_t j=0;j<i;++j)if(s.drops[j].item==drop.item){why="Duplicate native enemy item";return 0;}}
  auto marker=story_items::register_enemy_marker(s.mod,s.id,s.defeated_flag,why);if(!marker)return 0;Token t=story_enemy_ownership::declare_actor(s.kind,parameters(s.kind),s.fingerprint,s.epoch,why);if(!t)return 0;entries.push_back({s,t,marker});return t;}
 size_t checkpoint(){return entries.size();}void rollback(size_t n)noexcept{if(!installed&&n<=entries.size())entries.resize(n);}
+void editor_enable(){editor_allowed=true;}
+bool live(){return installed&&editor_allowed;}
+Token editor_declare(const Spec&s,std::string&why){if(!live()){why="an enemy appears after a restart";return 0;}installed=false;struct Back{~Back(){installed=true;}}back;const Token t=declare(s,why);if(t)LOG("[native_enemy] %s:%s declared by the editor (token %u)",s.mod.c_str(),s.id.c_str(),t);return t;}
+bool editor_redeclare(Token t,const Spec&s,std::string&why){auto*e=get(t);if(!live()||!e){why="the enemy takes this change after a restart";return false;}
+ if(s.kind!=e->spec.kind||s.mod!=e->spec.mod){why="another kind of enemy is a new declaration";return false;}if(e->pid!=0xFFFFFFFFu||e->address){why="the enemy is still in the game";return false;}
+ if(s.drops.size()>8){why="Too many native enemy drops";return false;}for(size_t i=0;i<s.drops.size();++i){if(!s.drops[i].quantity||s.drops[i].quantity>254||!story_items::find(s.mod,s.drops[i].item)){why="Unavailable same-mod enemy item";return false;}for(size_t j=0;j<i;++j)if(s.drops[j].item==s.drops[i].item){why="Duplicate native enemy item";return false;}}
+ for(const auto&o:entries)if(o.token!=t&&o.spec.mod==s.mod&&(o.spec.id==s.id||o.spec.defeated_flag==s.defeated_flag)){why="Duplicate native enemy identity or defeat flag";return false;}
+ auto marker=e->marker;
+ if(s.defeated_flag!=e->spec.defeated_flag||s.id!=e->spec.id){story_items::forget_prop_marker(e->marker.value);marker=story_items::register_enemy_marker(s.mod,s.id,s.defeated_flag,why);if(!marker.value){e->marker=story_items::register_enemy_marker(e->spec.mod,e->spec.id,e->spec.defeated_flag,why);return false;}}
+ if(!story_enemy_ownership::editor_refingerprint(t,s.fingerprint)){why="the enemy's ownership record is gone";return false;}
+ const uint32_t epoch=e->spec.epoch;e->spec=s;e->spec.epoch=epoch;e->marker=marker;e->quarantine=false;return true;}
+bool editor_refingerprint(Token t,const story_enemy_ownership::Fingerprint&fp){auto*e=get(t);if(!e||!story_enemy_ownership::editor_refingerprint(t,fp))return false;e->spec.fingerprint=fp;return true;}
 void bind(Token t,uint32_t pid,bool restored){if(auto*e=get(t)){if(!restored&&!story_enemy_ownership::bind_pending(t,pid)){disable(*e,e->address);return;}e->pid=pid;e->address=0;e->quarantine=false;}}
 bool available(Token t){auto*e=get(t);return e&&!e->quarantine&&!story_items::enemy_defeated(e->marker);}
 void quarantine(Token t){if(auto*e=get(t))disable(*e,e->address);}
@@ -99,7 +111,7 @@ void state_loaded(){executing=ice_owner=nullptr;drowning=nullptr;for(auto&e:entr
 bool owns_actor(uint32_t a){return find(a)!=nullptr;}
 bool deny_carry(uint32_t a){return find(a,false)!=nullptr;}
 void configure(void(*o)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),const std::array<uint32_t,4>&storage,std::function<void(Token,uint32_t)>notify){original=o;invoke=call;profiles=storage;retired=std::move(notify);native_actor_profiles::configure(o,call);}
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if(entries.empty()||!original||!invoke||!native_actor_profiles::available(owner))return false;
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if((entries.empty()&&!editor_allowed)||!original||!invoke||!native_actor_profiles::available(owner))return false;
  const std::pair<uint32_t,void(*)(Cpu*)>hooks[]={{BKcreate,bk_create},{BKexec,bk_exec},{BKdraw,bk_draw},{BKdelete,bk_delete},{MOcreate,mo_create},{MOexec,mo_exec},{MOdraw,mo_draw},{MOdelete,mo_delete},{CCcreate,cc_create},{CCexec,cc_exec},{CCdraw,cc_draw},{CCdelete,cc_delete},{KIcreate,ki_create},{KIexec,ki_exec},{KIdraw,ki_draw},{KIdelete,ki_delete},{Disappear,disappear},{Ice,ice},{TableItem,table_item},{KiSearch,ki_search},{RoomSearch,room_search},{GC(0x021C9AA0),mo_capture},{GC(0x025D7B24),potential_event},{GC(0x020A47B4),bk_carry_drop},{GC(0x021D0294),mo_carry_drop},{GC(0x020A3B18),water_fail},{GC(0x02041570),fire},{GC(0x02041F94),damage_reaction},{GC(0x02043F34),damage_set},{GC(0x025D57E0),delete_request}};
  for(const auto&h:hooks)if(!owner(h.first).empty())return false;
  for(Kind k:{Kind::ChuChu,Kind::Bokoblin,Kind::Moblin,Kind::Keese}){if(!supported(k))continue;const auto&d=story_enemy_ownership::descriptor(k);uint32_t storage=profiles[unsigned(k)],native=ld32(GD(0x101F3EE0)+4*d.native_profile);if(!native_actor_profiles::valid_storage(storage)||!memory(native,0x30)||ld32(native+0x10)!=d.bytes)return false;}

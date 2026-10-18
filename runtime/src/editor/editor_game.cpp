@@ -23,10 +23,14 @@
 #include "../hle/save_root.h"
 #include "../input.h"
 #include "../mods/guest_mods.h"
+#include "../mods/mod_actor.h"
+#include "../mods/actor_model_cache.h"
 #include "../mods/packages.h"
 #include "../mods/story_actors.h"
+#include "../mods/story_items.h"
 #include "../mods/story_mail.h"
 #include "../mods/story_mail_book.h"
+#include "../mods/story_notebook_list.h"
 #include "../mods/story_scenes.h"
 #include "../mods/story_store.h"
 #include "../overlay/hostui.h"
@@ -49,6 +53,14 @@ bool env_on() {
         if (const char* e = std::getenv(name); e && *e == '1') return true;
     return false;
 }
+
+// ---------------------------------------------------------------- the story records, for any thread
+// read_state, the quest graph, the status bar and the Flags panel read story records from any thread (the UI
+// every frame): the game thread keeps a copy of the loaded Quest Log's story area, refreshed a few times a
+// second and right after the editor writes records (records_tick).
+std::mutex g_records_mu;
+std::vector<uint8_t> g_records_copy;  // under g_records_mu; empty: no story progress seen
+void records_tick(bool now = false);   // game thread
 
 // ---------------------------------------------------------------- status and game-thread jobs
 std::mutex g_status_mu;
@@ -465,12 +477,46 @@ void preview_tick(Cpu* c) {
 
 // ---------------------------------------------------------------- Play
 std::atomic<bool> g_playing{false};
+std::atomic<int> g_play_after{0};  // > 0: start at a step asked for Play once the editor's view is back (logic steps counted)
 struct PlayState {
     bool restore = true, turned_test = false, snapshot = false;
     ResumeView view;
     std::vector<uint8_t> story;  // the story area at Play
 } g_play;                        // game thread
 std::string play_state_file() { return (fs::path(ss::states_dir()) / "editor-test" / "play.wwstate").string(); }
+
+// ---------------------------------------------------------------- scene preview
+// preview_scene: the fly camera stops (Link free), test mode's start and the world as it is are kept (one
+// state request at a time), the scene is requested, plays, and when it ends (or is skipped or stopped)
+// the world goes back to how it was and the editor's view returns.
+std::atomic<bool> g_previewing{false};
+struct ScenePreview {
+    int phase = 0;  // 1 getting ready, 2 requested, 3 playing, 4 done
+    std::string mod;
+    story_notebook::ManifestScene scene;
+    bool declared = false, restore = true, snapshot = false, stop = false, skip = false, native = false;
+    int frames = 0;
+    ResumeView view;
+    std::vector<uint8_t> story;
+} g_scene;  // game thread
+std::mutex g_scene_mu;
+Value g_scene_state;  // under g_scene_mu: scene_state for any thread
+std::string preview_file() { return (fs::path(ss::states_dir()) / "editor-test" / "preview.wwstate").string(); }
+void publish_scene(const std::string& phase, size_t step) {
+    Value v;
+    v["playing"] = g_previewing.load();
+    if (g_previewing) {
+        v["phase"] = phase;
+        v["scene"] = g_scene.scene.id == "editor-preview" ? std::string("editor-preview") : g_scene.scene.id;
+        v["mod"] = g_scene.mod;
+        if (step) v["step"] = int(step);
+        v["native"] = g_scene.native;
+    }
+    std::lock_guard<std::mutex> lk(g_scene_mu);
+    g_scene_state = v;
+}
+void scene_preview_end(const std::string& status);
+
 
 // ---------------------------------------------------------------- test mode
 std::atomic<bool> g_test{false};
@@ -517,10 +563,10 @@ public:
         std::vector<std::string> later;
         for (const auto& a : actors)
             if (std::find(changed.begin(), changed.end(), a.id) != changed.end() && story_actors::editor_restart_only(a)) later.push_back(a.id);
-        post([mod, actors, changed](Cpu*) {
+        post([mod, actors, changed](Cpu* c) {
             std::string w;
             std::vector<std::string> pending;
-            if (!story_actors::editor_update(mod, actors, changed, w, &pending)) set_status("Live update refused: " + w);
+            if (!story_actors::editor_update(mod, actors, changed, w, &pending, c)) set_status("Live update refused: " + w);
             else if (!pending.empty()) {
                 std::string list;
                 for (const auto& p : pending) list += (list.empty() ? "" : "; ") + p;
@@ -535,6 +581,41 @@ public:
             note = changed.empty() ? "" : "Changed actors are created again in their room.";
         return true;
     }
+    // a drag step, on the game thread (drag_tick): the actors that exist move in place
+    bool pose_actors(const std::string& mod, const Value& poses, std::vector<std::string>& moved, std::string& why) override {
+        if (!t_game) return why = "not on the game thread", false;
+        for (const auto& pose : poses.array) {
+            story_notebook::WorldPoint p, r;
+            const Value &pv = pose.get("position"), &rv = pose.get("rotation");
+            auto num = [](const Value& v, const char* k) { return float(v.get(k).number); };
+            if (pv.type != Value::Object) continue;
+            p = {num(pv, "x"), num(pv, "y"), num(pv, "z")};
+            if (rv.type == Value::Object) r = {num(rv, "x"), num(rv, "y"), num(rv, "z")};
+            if (story_actors::editor_pose(t_game, mod, pose.get("id").string(), p, r)) moved.push_back(pose.get("id").string());
+        }
+        return true;
+    }
+    bool preview_actors(const std::string& mod, const std::vector<story_notebook::ManifestActor>& actors, const std::vector<std::string>& changed,
+                        std::vector<std::string>& later, std::string& why) override {
+        // restart-only kinds keep their place until the change is saved and the game starts again
+        std::vector<std::string> now;
+        for (const auto& id : changed) {
+            const auto it = std::find_if(actors.begin(), actors.end(), [&](const story_notebook::ManifestActor& a) { return a.id == id; });
+            if (it != actors.end() && story_actors::editor_restart_only(*it)) later.push_back(id);
+            else now.push_back(id);
+        }
+        if (now.empty()) return true;
+        auto update = [mod, actors, now](Cpu*) {
+            std::string w;
+            std::vector<std::string> pending;
+            if (!story_actors::editor_update(mod, actors, now, w, &pending)) set_status("Live update refused: " + w);
+        };
+        if (t_game) update(t_game);  // the drag's own step (drag_tick): at once
+        else post(update);
+        (void)why;
+        return true;
+    }
+    bool live_kind(const std::string& type, bool fallback) override { return story_actors::editor_kind_live(type, fallback); }
     bool reload_room(std::string& why) override {
         (void)why;
         when_free([](Cpu*) {
@@ -747,6 +828,8 @@ public:
             if (!guestmods::editor_prepare_model(mod, dir, mods::packages::package_data_directory(mod), model, archive, w)) return set_status("Model " + model.get("id").string() + ": " + w);
             post([mod, model, archive](Cpu*) {
                 std::string w2;
+                if (model.get("collision").boolean && !mod_actor::register_collision(mod, model.get("id").string(), actor_model_cache::collision_for(archive)))
+                    return set_status("Model " + model.get("id").string() + ": prepared collision could not be registered");
                 if (!story_actors::editor_register_model(mod, model.get("id").string(), archive, model.get("kind").string() == "skinned", w2))
                     return set_status("Model " + model.get("id").string() + ": " + w2 + " (it is prepared when the game starts)");
                 set_status("Model " + model.get("id").string() + " is ready: actors can use it now");
@@ -756,6 +839,9 @@ public:
         note = "The model is being prepared for the game; actors using it appear when it is ready (a restart is needed for the first model "
                "actor of a game that had none).";
         return true;
+    }
+    bool world_object_query(const std::string& mod, const story_notebook::ManifestActor& actor, bool wireframe, Value& result, std::string& why) override {
+        return mod_actor::world_object_query(mod, actor, wireframe, result, why);
     }
     bool preview_text(const std::string& text, bool close, std::string& why) override {
         if (close) {
@@ -775,9 +861,176 @@ public:
         });
         return true;
     }
+    bool look(const WorldPoint& eye, const WorldPoint& target, std::string& why) override {
+        if (g_playing || g_previewing) return why = "not while playing", false;
+        const double d[3] = {double(target.x) - eye.x, double(target.y) - eye.y, double(target.z) - eye.z};
+        if (std::fabs(d[0]) + std::fabs(d[1]) + std::fabs(d[2]) < 1e-3) return why = "the eye and the target are one point", false;
+        post([eye, d](Cpu*) {
+            ResumeView v;
+            v.set = true;
+            v.eye[0] = eye.x, v.eye[1] = eye.y, v.eye[2] = eye.z;
+            v.yaw = std::atan2(d[0], d[2]);
+            v.pitch = std::atan2(d[1], std::hypot(d[0], d[2]));
+            v.speed = g_fly.active ? g_fly.speed : 1000;
+            if (g_fly.active) {
+                for (int i = 0; i < 3; i++) g_fly.eye[i] = v.eye[i];
+                g_fly.yaw = v.yaw, g_fly.pitch = v.pitch;
+            } else {
+                g_resume = v;
+                g_manual_off = false;
+                g_fly_want = 1;
+            }
+        });
+        return true;
+    }
+    bool preview_scene(const std::string& mod, const story_notebook::ManifestScene& scene, bool declared, bool restore, std::string& why) override {
+        if (g_playing) return why = "Stop first: a scene preview starts from the editor's view", false;
+        if (g_previewing) return why = "a scene preview plays already (skip_scene or stop_scene)", false;
+        if (!g_flying) return why = "a scene preview starts from the editor's view (the fly camera)", false;
+        bool turned = false;
+        if (!g_test) {  // as Play does: in-game saves go to the test save from now on
+            if (!test_save(why)) return false;
+            turned = true;
+        }
+        g_previewing = true;
+        post([mod, scene, declared, restore, turned](Cpu* c) {
+            if (g_preview.phase) preview_end(c, true);
+            g_scene = {};
+            g_scene.phase = 1;
+            g_scene.mod = mod, g_scene.scene = scene, g_scene.declared = declared, g_scene.restore = restore;
+            g_scene.view = current_view();
+            g_resume = g_scene.view;
+            g_fly_want = 2;  // the fly camera stops; Link stays where he is
+            publish_scene("starting", 0);
+            g_free_jobs.push_back([turned](Cpu*) {
+                auto request = [](bool) {
+                    post([](Cpu*) {
+                        if (!g_previewing || g_scene.phase != 1) return;
+                        std::string w;
+                        if (g_scene.stop) return scene_preview_end("Preview stopped");
+                        if (!story_scenes::editor_preview(g_scene.mod, g_scene.scene, g_scene.declared, w)) return scene_preview_end("Preview: " + w);
+                        g_scene.phase = 2;
+                        g_scene.frames = 0;
+                        set_status("Preview: scene " + g_scene.scene.id + " requested");
+                    });
+                };
+                auto snapshot = [request](bool ok) {
+                    (void)ok;
+                    if (!g_scene.restore) return request(true);
+                    post([request](Cpu*) {
+                        if (uint8_t* block = story_store::memory_block()) g_scene.story.assign(block, block + story_store::kMemoryBytes);
+                        std::error_code ec;
+                        fs::create_directories(fs::path(preview_file()).parent_path(), ec);
+                        ss::request_save_portable_file(preview_file(), [request](bool ok2, const std::string& why2) {
+                            g_scene.snapshot = ok2;
+                            if (!ok2) set_status("Preview: the world can't be restored afterwards (" + why2 + ")");
+                            request(ok2);
+                        });
+                    });
+                };
+                if (turned) test_start(snapshot);
+                else snapshot(true);
+            });
+        });
+        return true;
+    }
+    bool scene_control(bool stop, std::string& why) override {
+        if (!g_previewing) return why = "no scene preview plays", false;
+        post([stop](Cpu*) {
+            if (stop) g_scene.stop = true;
+            else g_scene.skip = true;
+        });
+        return true;
+    }
+    Value scene_state() override {
+        std::lock_guard<std::mutex> lk(g_scene_mu);
+        if (g_scene_state.type == Value::Null) {
+            Value v;
+            v["playing"] = false;
+            return v;
+        }
+        return g_scene_state;
+    }
     bool play(bool from_camera, bool restore, std::string& why) override { return request_play(from_camera, restore, why); }
     bool stop(std::string& why) override;
     bool playing() override { return g_playing; }
+    // any thread, cheap: the game thread's last copy of the story area (records_tick)
+    bool read_records(const std::vector<Record>& records, std::vector<int>& values, std::string& why) override {
+        std::lock_guard<std::mutex> lk(g_records_mu);
+        if (g_records_copy.empty()) return why = "no story progress in this game yet (no story mod, or no save file loaded)", false;
+        const story_mail::Book book(g_records_copy.data(), story_block::kAreaRecords);
+        values.clear();
+        for (const auto& r : records) values.push_back(book.has(r.kind, r.key) ? int(book.get(r.kind, r.key)) : -1);
+        return true;
+    }
+    bool write_records(const std::string& mod, const std::vector<RecordValue>& values, std::string& why) override {
+        if (!g_test) return why = "test mode only", false;
+        if (!story_store::ready()) return why = "no story progress in this game (no story mod is loaded)", false;
+        post([mod, values](Cpu*) {
+            story_mail::Book book = story_store::book();
+            unsigned n = 0;
+            for (const auto& v : values) n += v.value < 0 ? book.erase(v.record.kind, v.record.key) : book.set(v.record.kind, v.record.key, uint8_t(v.value));
+            set_status("Set " + std::to_string(n) + " flag(s) of " + mod + " (test mode)");
+            records_tick(true);
+        });
+        return true;
+    }
+    bool start_at_step(const std::string& mod, const std::vector<Record>& erase, const std::vector<RecordValue>& values,
+                       const std::vector<std::pair<std::string, int>>& items, const Location& to, bool play, std::string& why) override {
+        if (!story_store::ready()) return why = "no story progress in this game (no story mod is loaded)", false;
+        if (g_playing) return why = "Stop first: a quest starts at a step from the editor's view", false;
+        bool turned = false;
+        if (!g_test) {  // as Play does: in-game saves go to the test save from now on
+            if (!test_save(why)) return false;
+            turned = true;
+        }
+        const bool warp = !to.id.empty();
+        ss::Warp w;
+        if (warp) {  // the start-at-step destinations stand at a position (an actor's front, a step's place)
+            w.stage = to.stage;
+            w.room = to.room;
+            w.at_position = true;
+            w.pos[0] = to.position.x, w.pos[1] = to.position.y, w.pos[2] = to.position.z;
+            w.angle = to.angle;
+        }
+        const std::string label = to.label;
+        // the records first, then the warp: one state request at a time (test mode's return state first)
+        auto go = [mod, erase, values, items, warp, w, play, label]() {
+            post([mod, erase, values, items, warp, w, play, label](Cpu*) {
+                story_mail::Book book = story_store::book();
+                for (const auto& r : erase) book.erase(r.kind, r.key);
+                unsigned quest_step = 0;
+                for (const auto& v : values) {
+                    if (v.record.kind == story_mail::kRecordTracked) {  // never untrack another mod's quest
+                        const uint16_t now = story_notebook::tracked_key(book);
+                        if (now && now != v.record.key) continue;
+                    }
+                    if (v.record.kind == story_mail::kRecordQuest) quest_step = unsigned(v.value);
+                    book.set(v.record.kind, v.record.key, uint8_t(v.value));
+                }
+                for (const auto& [id, n] : items) {
+                    const int have = std::max(0, int(story_items::count(mod, id)));
+                    if (have < n) story_items::give(mod, id, uint32_t(n - have), "the editor (start at a step)", false);
+                    else if (have > n) story_items::take(mod, id, uint32_t(have - n));
+                }
+                records_tick(true);
+                set_status("Quest of " + mod + " at step " + std::to_string(quest_step) + (warp ? ": warping to " + label : ""));
+                if (warp) {
+                    g_resume.set = false;  // the editor's view comes back at the destination
+                    ss::request_warp(w, [play](bool ok, const std::string& why) {
+                        if (!ok) set_status("Start at step: " + why);
+                        else if (play) g_play_after = 1;
+                    });
+                } else if (play)
+                    g_play_after = 1;
+            });
+        };
+        when_free([turned, go](Cpu*) {
+            if (turned) test_start([go](bool) { go(); });  // the story area and place from before the test, kept first
+            else go();
+        });
+        return true;
+    }
 };
 
 std::recursive_mutex g_mu;  // the session (recursive: a script runs on the game thread inside logic_service)
@@ -797,6 +1050,109 @@ void reapply_mod(const std::string& mod) {
     std::string why;
     std::vector<std::string> pending;
     if (!story_actors::editor_update(mod, actors, {}, why, &pending)) set_status("Live update refused: " + why);
+}
+
+// ---------------------------------------------------------------- the handle drag
+// The render thread leaves the latest poses here (never waiting); the game thread shows them at most once per
+// logic step, when the session is free (a command that waits for the game holds it: the next step then).
+// An actor that exists in the game moves in place (story_actors::editor_pose); the release's command then
+// keeps that copy when it stands where the command puts it (the drag's end check, editor_update).
+std::mutex g_drag_mu;
+struct DragSlot {
+    std::string mod;
+    Value poses;            // the latest poses (or the ids to put back, without places)
+    uint64_t seq = 0, shown = 0;
+    std::string note;       // what can't move live
+} g_drag;
+constexpr int kDragSettle = 4;  // logic steps a re-created actor shows before the next pose (its first frames draw nothing)
+void drag_tick(Cpu* c) {
+    // An actor without a copy to move (not created yet) is created again at its new place, and a new
+    // actor takes a few logic steps to load and draw: the next pose waits until those actors exist and
+    // have shown for kDragSettle steps, or a drag would remove them before they ever show.
+    static int settled = kDragSettle;
+    static std::vector<std::string> shown_ids;
+    static std::string shown_mod;
+    if (story_actors::editor_pending()) return;
+    for (const auto& id : shown_ids)
+        if (!story_actors::actor_address(c, shown_mod, id)) return void(settled = 0);
+    if (settled < kDragSettle) return void(++settled);
+    std::string mod;
+    Value poses;
+    uint64_t seq;
+    {
+        std::lock_guard<std::mutex> lk(g_drag_mu);
+        if (g_drag.seq == g_drag.shown) return;
+        mod = g_drag.mod, poses = g_drag.poses, seq = g_drag.seq;
+    }
+    std::unique_lock<std::recursive_mutex> session(g_mu, std::try_to_lock);
+    if (!session.owns_lock()) return;  // the next logic step
+    std::vector<std::string> later, in_place;
+    std::string why;
+    const bool ok = g_session.drag_preview(mod, poses, later, why, &in_place);
+    session.unlock();
+    std::string note;
+    if (!ok) note = "Live move: " + why;
+    else if (!later.empty()) {
+        note = "Moves when you let go, shows after a restart:";
+        for (const auto& id : later) note += " " + id;
+    }
+    // actors moved in place show at once; only those created again need their settle time
+    shown_mod = mod, shown_ids.clear();
+    if (ok)
+        for (const auto& pose : poses.array) {
+            const std::string id = pose.get("id").string();
+            if (std::find(later.begin(), later.end(), id) == later.end() && std::find(in_place.begin(), in_place.end(), id) == in_place.end()) shown_ids.push_back(id);
+        }
+    settled = shown_ids.empty() ? kDragSettle : 0;
+    std::lock_guard<std::mutex> lk(g_drag_mu);
+    g_drag.shown = seq;
+    g_drag.note = note;
+}
+
+// ---------------------------------------------------------------- scene preview (game thread)
+void scene_preview_end(const std::string& status) {
+    const bool restore = g_scene.restore && g_scene.snapshot;
+    if (restore) {
+        if (uint8_t* block = story_store::memory_block(); block && g_scene.story.size() == story_store::kMemoryBytes)
+            std::memcpy(block, g_scene.story.data(), g_scene.story.size());
+        ss::request_load_portable_file(preview_file());
+    }
+    g_resume = g_scene.view;
+    g_scene.phase = 4;
+    g_previewing = false;
+    g_manual_off = false;
+    g_retry = 450;
+    if (!launch_mode()) g_fly_want = 1;  // the launch mode's editor view comes back by itself once Link is free
+    publish_scene("", 0);
+    set_status(status + (restore ? ": the world goes back to how it was before" : ""));
+}
+void scene_preview_tick() {
+    if (!g_previewing || g_scene.phase < 2 || g_scene.phase > 3) return;
+    bool waiting = false, playing = false, native = false;
+    size_t step = 0;
+    const std::string id = g_scene.declared ? g_scene.scene.id : std::string("editor-preview");
+    story_scenes::editor_state(g_scene.mod, id, waiting, playing, native, step);
+    if (g_scene.stop) {
+        story_scenes::abort();  // ends the scene without its end actions, or drops the request
+        if (!story_scenes::active()) return scene_preview_end("Preview stopped");
+        return;
+    }
+    if (g_scene.skip && playing) {
+        g_scene.skip = false;
+        story_scenes::editor_skip();
+    }
+    if (g_scene.phase == 2) {
+        if (playing) {
+            g_scene.phase = 3;
+            g_scene.native = native;
+            set_status(std::string("Preview: scene ") + g_scene.scene.id + (native ? " plays (its native version)" : " plays"));
+        } else if (!waiting || ++g_scene.frames > 30 * 20)
+            return scene_preview_end(waiting ? "Preview: the scene did not start within 20 seconds" : "Preview: the game did not start the scene");
+        else
+            return publish_scene("starting", 0);
+    }
+    if (playing) return publish_scene("playing", step + 1);
+    if (!story_scenes::active()) scene_preview_end("Preview ended");
 }
 
 // ---------------------------------------------------------------- Play / Stop
@@ -954,13 +1310,14 @@ struct Queued {
     std::string command;
     Value params;
     std::function<void(const Value&)> done;
+    std::string source;
 };
 std::mutex g_queue_mu;
 std::condition_variable g_queue_cv;
 std::deque<Queued> g_queue;
 std::atomic<int> g_queued{0};
 }  // namespace
-void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done) {
+void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done, const std::string& source) {
     static std::once_flag started;
     std::call_once(started, [] {
         std::thread([] {
@@ -972,7 +1329,11 @@ void run_async(const std::string& command, const Value& params, std::function<vo
                     q = std::move(g_queue.front());
                     g_queue.pop_front();
                 }
-                const Value r = run(q.command, q.params);
+                Value r;
+                {
+                    std::lock_guard<std::recursive_mutex> lk(g_mu);
+                    r = g_session.run(q.command, q.params, true, q.source);
+                }
                 if (q.done) q.done(r);
                 --g_queued;
             }
@@ -980,18 +1341,65 @@ void run_async(const std::string& command, const Value& params, std::function<vo
     });
     ++g_queued;
     std::lock_guard<std::mutex> lk(g_queue_mu);
-    g_queue.push_back({command, params, std::move(done)});
+    g_queue.push_back({command, params, std::move(done), source});
     g_queue_cv.notify_one();
 }
 bool commands_pending() { return g_queued.load() > 0; }
+void drag_actors(const std::string& mod, const Value& poses) {
+    std::lock_guard<std::mutex> lk(g_drag_mu);
+    if (g_drag.mod == mod && g_drag.poses == poses) return;  // held still: nothing new to show
+    g_drag.mod = mod;
+    g_drag.poses = poses;
+    ++g_drag.seq;
+}
+void end_drag(const std::string& mod, const std::vector<std::string>& ids, bool put_back) {
+    std::lock_guard<std::mutex> lk(g_drag_mu);
+    g_drag.note.clear();
+    if (!put_back || ids.empty()) {
+        g_drag.shown = g_drag.seq;  // nothing more to show: the released command applies the change
+        g_drag.poses = Value();
+        return;
+    }
+    Value back;
+    back.type = Value::Array;
+    for (const auto& id : ids) {
+        Value pose;
+        pose["id"] = id;
+        back.array.push_back(pose);
+    }
+    g_drag.mod = mod;
+    g_drag.poses = back;
+    ++g_drag.seq;
+}
+std::string drag_note() {
+    std::lock_guard<std::mutex> lk(g_drag_mu);
+    return g_drag.note;
+}
+void note(const std::string& command, const Value& params, const Value& result, const std::string& source) {
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    g_session.note(command, params, result, source);
+}
 std::string status() {
     std::lock_guard<std::mutex> lk(g_status_mu);
     return g_status;
 }
 
+namespace {
+void records_tick(bool now) {
+    static int pass = 0;
+    if (++pass % 8 && !now) return;  // about four times a second
+    const uint8_t* area = story_store::ready() ? story_store::area() : nullptr;
+    std::vector<uint8_t> copy;
+    if (area) copy.assign(area, area + story_block::kAreaSize);
+    std::lock_guard<std::mutex> lk(g_records_mu);
+    g_records_copy = std::move(copy);
+}
+}  // namespace
+
 void logic_service(Cpu* c) {
     if (!enabled()) return;
     t_game = c;
+    records_tick();
     // the jobs first: a command waiting on the game thread (a ground check) never waits for a script
     std::vector<std::function<void(Cpu*)>> jobs;
     {
@@ -1000,7 +1408,21 @@ void logic_service(Cpu* c) {
     }
     for (auto& job : jobs) job(c);
     run_free_jobs(c);
+    // start at a step: Play from Link once the editor's view is back (after the warp), half a second calm
+    if (g_play_after > 0) {
+        if (g_playing) g_play_after = 0;
+        else if (g_flying && g_free_jobs.empty()) {
+            if (++g_play_after > 15) {
+                g_play_after = 0;
+                std::string why;
+                if (!request_play(false, true, why)) set_status("Play: " + why);
+            }
+        } else
+            g_play_after = 1;
+    }
     run_script();
+    scene_preview_tick();
+    drag_tick(c);
     preview_tick(c);
     t_game = nullptr;
 }
@@ -1013,7 +1435,7 @@ void camera_service(Cpu* c, bool logic_pass) {
     // the launch mode's editor view: the fly camera whenever Link is in the world and free, unless playing
     // (or the fly camera was turned off by hand); it comes back after warps, loads and stage changes
     static int calm = 0;
-    if (launch_mode() && logic_pass && !g_playing && !g_manual_off && !g_fly.active && g_fly_want == 0 && g_free_jobs.empty()) {
+    if (launch_mode() && logic_pass && !g_playing && !g_previewing && !g_manual_off && !g_fly.active && g_fly_want == 0 && g_free_jobs.empty()) {
         const uint32_t play = call(c, kPlayFn);
         const bool free = play && ld32(play + kPlayer) && !story_scenes::active() && ss::control_problem().empty();
         calm = free ? calm + 1 : 0;
@@ -1029,7 +1451,17 @@ void camera_service(Cpu* c, bool logic_pass) {
 }
 
 bool playing() { return g_playing; }
-bool editor_view() { return launch_mode() && !g_playing && g_flying; }
+bool previewing() { return g_previewing; }
+std::string preview_label() {
+    std::lock_guard<std::mutex> lk(g_scene_mu);
+    if (!g_scene_state.get("playing").boolean) return {};
+    std::string s = "Scene " + g_scene_state.get("scene").string();
+    if (g_scene_state.get("step").type == Value::Number) s += ": step " + std::to_string(int(g_scene_state.get("step").number));
+    else s += ": " + g_scene_state.get("phase").string();
+    if (g_scene_state.get("native").boolean) s += " (native)";
+    return s;
+}
+bool editor_view() { return launch_mode() && !g_playing && !g_previewing && g_flying; }
 void toggle_play() {
     std::string why;
     if (g_playing) {

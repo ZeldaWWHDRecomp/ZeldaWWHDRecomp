@@ -41,6 +41,9 @@ enum Op : uint32_t {
     OP_LAYOUT_ROOT,     // nw::lyt root pane: drawn into the target bound now (which screen it goes to)
     OP_PEEK_Z,          // signed x/y in 640x480 space, guest result address (triples)
     OP_LAYOUT_CONTENT,  // DrawSelf scope: clip TV menu content to the native layout region
+    // cloud research prototype (cloud_proto.cpp): brackets drawVrkumo's draws; payload: snapshot seq
+    OP_CLOUDS_BEGIN,
+    OP_CLOUDS_END,
     OP_COUNT
 };
 

@@ -205,6 +205,7 @@
 0256BB6C  # cloud_shadow_move: fog (moya) drawn halfway
 0256CA54  # poison_move: poison fog drawn halfway
 0256DDF8  # vrkumo_move: sky clouds drawn halfway
+02575B6C  # drawVrkumo: cloud research prototype (cloud_proto.cpp) brackets the sky-cloud draws
 0256A388  # dKyr_star_move: star twinkle drawn halfway
 0251D864  # dCloth_packet_c vertex fill: cloth drawn halfway after a simulation step
 025EC62C  # mDoExt_3DlineMat1 control-point upload (width overload): ropes at pass_t

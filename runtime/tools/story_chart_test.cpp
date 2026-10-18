@@ -1,3 +1,13 @@
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <initializer_list>
+#include <map>
+#include <string>
+#include <vector>
 // Mod charts and their sea chart markers (runtime/src/mods/story_chart.*): the shared save record, the
 // services and the sea chart menu hooks on a synthetic menu with synthetic panes and save. The game's
 // own functions are stubbed; no game files are needed.
@@ -6,13 +16,6 @@
 #include "mods/story_store.h"
 #include "runtime.h"
 
-#include <cassert>
-#include <cmath>
-#include <cstdio>
-#include <cstring>
-#include <map>
-#include <string>
-#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -249,6 +252,24 @@ void test_hooks() {
     set_tracked_source(nullptr);
 }
 
+void test_world_markers(){
+    const std::vector<uint8_t> save(mem::ptr(kSave),mem::ptr(kSave)+0x1000);
+    const WorldMarker island{"island","Mod Island",100000,0};
+    assert(publish_world_markers("world",{&island,1})&&world_markers().size()==1);
+    auto shown=shown_markers();assert(std::any_of(shown.begin(),shown.end(),[](const auto&m){return m.mod=="world"&&!m.done&&m.label=="Mod Island";}));
+    auto bad=island;bad.x=NAN;assert(!publish_world_markers("world",{&bad,1})&&world_markers().size()==1);bad=island;bad.label="bad\nlabel";assert(!publish_world_markers("world",{&bad,1}));
+    const WorldMarker duplicates[]={island,island};assert(!publish_world_markers("world",duplicates));
+    build_menu();game_shows={6};update();assert(visible(0)&&visible(6)&&close_to(tx(0),144)&&close_to(ty(0),-44));
+    capture_begin();assert(!visible(0)&&close_to(tx(0),home_x(0)));capture_end();assert(visible(0)&&close_to(tx(0),144));
+    // Pane transients disappear on load; immutable declarations remain available to republish.
+    state_loaded();build_menu();update();assert(visible(0)&&world_markers().size()==1);
+    clear_world_markers("world");update();assert(!visible(0));game_hides(6);
+    std::vector<WorldMarker> many;for(unsigned i=0;i<8;++i)many.push_back({"i"+std::to_string(i),"Island",float(i),0});
+    for(unsigned i=0;i<4;++i)assert(publish_world_markers("mod"+std::to_string(i),many));assert(world_markers().size()==32);assert(!publish_world_markers("overflow",{&island,1}));many.push_back(island);assert(!publish_world_markers("mod0",many)&&world_markers().size()==32);
+    for(unsigned i=0;i<4;++i)clear_world_markers("mod"+std::to_string(i));assert(world_markers().empty());
+    assert(std::memcmp(mem::ptr(kSave),save.data(),save.size())==0); // no treasure or retail progression writes
+}
+
 // ---- finished charts: the game's red circle (a salvaged treasure's mark) on the sea chart grid ----
 constexpr uint32_t kGrid = kArena + 0x8000, kOwner = kArena + 0x8400, kTouch = kArena + 0x8600, kCells0 = kArena + 0x9000,
                    kCirclePanes = kArena + 0xA000, kCellAnims = kArena + 0x8800;
@@ -452,6 +473,9 @@ void test_balloon() {
     calls.clear();
     run();
     assert((calls == std::vector<std::string>{"balloon", "circle hidden"}));
+    // An island needs no owned/finished treasure chart and uses the free native ring.
+    const WorldMarker island{"island","Island",1047,-201039};assert(publish_world_markers("world",{&island,1}));calls.clear();run();assert((calls==std::vector<std::string>{"balloon","circle shown"}));assert(close_to(ldf32(kCircle+0x1C),30.94f)&&close_to(ldf32(kCircle+0x20),40.78f));
+    st8(kIcon+0x158,1);stf32(kCircle+0x1C,7);run();assert(close_to(ldf32(kCircle+0x1C),7));st8(kIcon+0x158,0);clear_world_markers("world");
     // a state load: a circle the state holds is hidden once, if the game doesn't show it
     state_loaded();
     calls.clear();
@@ -733,6 +757,7 @@ int main() {
     test_record();
     test_services();
     test_hooks();
+    test_world_markers();
     test_circles();
     test_balloon();
     test_chart_list();

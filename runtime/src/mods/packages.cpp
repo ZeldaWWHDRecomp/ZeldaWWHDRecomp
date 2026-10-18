@@ -175,7 +175,7 @@ Manifest manifest(const fs::path& path){
         std::ifstream input(checked,std::ios::binary);std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
         static_models::ModelInfo info;
         if(model.kind=="skinned"){skinned_models::ModelInfo skin;require(skinned_models::validate_glb(bytes,skin,model_error),"Model "+model.id+": "+model_error);info=skin;}
-        else require(static_models::validate_glb(bytes,info,model_error),"Model "+model.id+": "+model_error);
+        else require(static_models::validate_glb(bytes,info,model_error,std::any_of(v.get("actors").array.begin(),v.get("actors").array.end(),[&](const auto& actor){return actor.get("collision").get("mesh").string()==model.id;})),"Model "+model.id+": "+model_error);
         const auto pixels=guestmods::hud::decode_png(std::span<const uint8_t>(bytes).subspan(info.image_offset,info.image_size));
         require(pixels.width==info.texture_width&&pixels.height==info.texture_height,"Invalid model PNG");
     }

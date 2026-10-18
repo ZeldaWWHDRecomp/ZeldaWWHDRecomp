@@ -799,7 +799,9 @@ void handle_event(const SDL_Event& event){
  // so Android does not close the app. Left alone while a text prompt is open (the game's name entry).
  if((event.type==SDL_EVENT_KEY_DOWN||event.type==SDL_EVENT_KEY_UP)&&event.key.scancode==SDL_SCANCODE_AC_BACK&&
     !text_entry::active()&&!overlay::wants_text()){
-  if(event.type==SDL_EVENT_KEY_DOWN&&!event.key.repeat)overlay::set_open(!overlay::is_open(),overlay::OpenReason::API);
+  // a dialog in Settings closes first (as Esc closes it), then the menu
+  if(overlay::dialog_open())overlay::key(kVK_Escape,event.type==SDL_EVENT_KEY_DOWN,event.key.repeat,0);
+  else if(event.type==SDL_EVENT_KEY_DOWN&&!event.key.repeat)overlay::set_open(!overlay::is_open(),overlay::OpenReason::API);
   return;
  }
 #endif

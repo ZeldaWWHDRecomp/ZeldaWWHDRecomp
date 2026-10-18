@@ -40,4 +40,14 @@ bool owns_actor(uint32_t actor);
 bool deny_carry(uint32_t actor);
 void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),const std::array<uint32_t,4>& profile_storage,std::function<void(Token,uint32_t)> retired={});
 bool install(const std::function<std::string(uint32_t)>& owner,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
+// World editor (--editor only, main game thread). editor_enable before install: the profiles install
+// even without declarations, so enemies placed while the game runs appear at once (live()).
+// editor_declare adds a declaration then (same checks as declare). editor_redeclare gives a declaration
+// a changed spec of the same kind (drops, defeat flag, fingerprint) while no copy of it exists.
+void editor_enable();
+bool live();
+Token editor_declare(const Spec&,std::string& why);
+bool editor_redeclare(Token,const Spec&,std::string& why);
+// A copy moved in place: the declaration's fingerprint follows (its ownership record too).
+bool editor_refingerprint(Token,const story_enemy_ownership::Fingerprint&);
 }

@@ -8,9 +8,11 @@
 #include "render_prof.h"
 #include "worker_metrics.h"
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <stdexcept>
 namespace gfxvk {
 namespace {
@@ -79,6 +81,14 @@ Buffer dispatch(const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_
                       VK_ACCESS_TRANSFER_READ_BIT|(readback?VK_ACCESS_HOST_READ_BIT:0));
     defer_buffer(input);return output;
 }
+// the BC block holding decoded pixel `pixel` (row-major over w x h x slices), as hex: lets a mismatch
+// report be replayed against the CPU decoder
+std::string block_hex(const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_t mode,size_t pixel) {
+    const size_t bx=(w+3)/4,by=(h+3)/4,x=pixel%w,y=pixel/w%h,z=pixel/(size_t(w)*h),bytes=bc::block_bytes(mode&255);
+    const size_t at=((z*by+y/4)*bx+x/4)*bytes;std::string hex;char digits[3];
+    for(size_t n=0;n<bytes&&at+n<blocks.size();++n){std::snprintf(digits,sizeof digits,"%02x",blocks[at+n]);hex+=digits;}
+    return hex+" pixel "+std::to_string((y%4)*4+x%4);
+}
 void verify(Buffer output,const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_t slices,uint32_t mode) {
     flush();
     auto reference=bc::decode(blocks,w,h,slices,mode);
@@ -100,7 +110,8 @@ void verify_when_complete(Buffer output,const std::vector<uint8_t>& blocks,uint3
         ++verified;
         for(size_t n=0;bytes&&n<reference.size();++n)if(bytes[n]!=reference[n]) {
             if(++mismatched<=20)
-                LOG("[vulkan BC] mismatch mode=%u size=%ux%ux%u byte=%zu (pixel %zu) GPU=%u CPU=%u",mode,w,h,slices,n,n/4,bytes[n],reference[n]);
+                LOG("[vulkan BC] mismatch mode=%u size=%ux%ux%u byte=%zu (pixel %zu) GPU=%u CPU=%u block %s",mode,w,h,slices,n,n/4,
+                    bytes[n],reference[n],block_hex(blocks,w,h,mode,n/4).c_str());
             break;
         }
         if(verified==1||verified%200==0)LOG("[vulkan BC] verified %u decoded uploads against the CPU decoder: %u mismatched",verified,mismatched);
@@ -145,6 +156,45 @@ void bc_decode_upload(Surface* s,uint32_t level,const std::vector<uint8_t>& bloc
     if(env_on("WWHD_VK_BC_TIMING"))LOG("[vulkan BC] mode=%u %ux%ux%u bytes=%zu CPU-upload-us=%.1f%s",mode,w,h,slices,blocks.size(),
         std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-start).count(),check?" (includes the verification copy)":" (dispatch recording only)");
 }
+// The compute decoder against the CPU decoder on the known-answer blocks of every format
+// (bc::known_answer_blocks: every selector in every pixel position of both channel palette modes,
+// signed and unsigned). One submission, waited for; run at device creation, before any frame.
+// Returns an empty string or the first difference.
+static std::string bc_decode_self_test() {
+    struct Run { uint32_t mode; std::vector<uint8_t> blocks; Buffer output; };
+    std::vector<Run> runs;
+    constexpr uint32_t side=64; // 16 x 16 blocks
+    for(uint32_t type=1;type<=5;++type)for(uint32_t sign=0;sign<=(type>=4?1u:0u);++sign) {
+        Run run{type|(sign<<8),bc::known_answer_blocks(type,(side/4)*(side/4)),{}};
+        run.output=dispatch(run.blocks,side,side,1,run.mode,true);runs.push_back(std::move(run));
+    }
+    flush();
+    std::string failure;
+    for(auto& run:runs) {
+        const auto reference=bc::decode(run.blocks,side,side,1,run.mode);
+        const auto* bytes=static_cast<const uint8_t*>(run.output.mapped);
+        for(size_t n=0;failure.empty()&&n<reference.size();++n)if(!bytes||bytes[n]!=reference[n]) {
+            char line[160];std::snprintf(line,sizeof line,"mode=%u pixel %zu channel %zu GPU=%u CPU=%u block ",run.mode,n/4,n%4,
+                bytes?bytes[n]:0u,reference[n]);
+            failure=line+block_hex(run.blocks,side,side,run.mode,n/4);
+        }
+        defer_buffer(run.output);
+    }
+    return failure;
+}
+void bc_decode_startup_check() {
+    const char* forced=std::getenv("WWHD_VK_FORCE_BC_DECODE");
+    if(R.bcCpuDecode||!R.computeQueue||(R.enabledFeatures.textureCompressionBC&&!(forced&&std::strcmp(forced,"0"))))return;
+    const std::string failure=bc_decode_self_test();
+    if(failure.empty()){LOG("[vulkan BC] compute decoder self-test passed (known-answer blocks, 7 formats)");return;}
+    // A driver that miscompiles the decoder (Qualcomm v762 did, see bc_shader.h) gets the CPU decoder;
+    // WWHD_VK_BC_CPU=0 keeps the compute decoder for diagnosis.
+    const char* choice=std::getenv("WWHD_VK_BC_CPU");
+    const bool keep=choice&&!std::strcmp(choice,"0");
+    LOG("[vulkan BC] compute decoder self-test FAILED (%s); %s",failure.c_str(),
+        keep?"keeping the compute decoder (WWHD_VK_BC_CPU=0)":"using the CPU decoder");
+    if(!keep)R.bcCpuDecode=true;
+}
 void bc_decode_shutdown() {
     if(pipeline)vkDestroyPipeline(R.device,pipeline,nullptr);
     if(layout)vkDestroyPipelineLayout(R.device,layout,nullptr);
@@ -161,6 +211,7 @@ void bc_decode_smoke() {
                 for(auto& byte:blocks){random=random*1664525+1013904223;byte=uint8_t(random>>24);}
                 if(seed==0)std::fill(blocks.begin(),blocks.end(),0);
                 if(seed==1)std::fill(blocks.begin(),blocks.end(),255);
+                if(seed==2){auto known=bc::known_answer_blocks(type,uint32_t(blocks.size()/bc::block_bytes(type)));blocks=known;}
                 Buffer output=dispatch(blocks,w,h,z,type|(sign<<8),true);
                 verify(output,blocks,w,h,z,type|(sign<<8));defer_buffer(output);++dispatches;
             }

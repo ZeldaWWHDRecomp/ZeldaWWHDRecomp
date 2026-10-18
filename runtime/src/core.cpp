@@ -25,6 +25,7 @@
 
 #include "recomp_table.h"
 #include "runtime.h"
+#include "native_text_startup_seal.h"
 
 bool g_trace_hle = false;
 namespace config {
@@ -235,6 +236,8 @@ bool load_rpx(const std::string& path, LoadedModule& out) {
 
 // ---------------------------------------------------------------- dispatch
 namespace dispatch {
+static detail::StartupSeal native_text_seal;
+static PpcFunc* sealed_text_table=nullptr;
 static constexpr uint32_t kTextBase = 0x02000000;
 static constexpr uint32_t kTextSize = 0x01000000;  // 16 MiB covers cking.rpx .text
 static PpcFunc* g_text_table;                        // indexed by (addr - kTextBase) / 4
@@ -249,6 +252,8 @@ static std::atomic<uint32_t> g_next_host{mem::kHleFuncBase};
 static std::unordered_map<uint32_t, std::string> g_host_names;
 
 void init() {
+    auto mutation=native_text_seal.lock();
+    if(!native_text_seal.begin_initialize())return;
     g_text_table = (PpcFunc*)calloc(kTextSize / 4, sizeof(PpcFunc));
     for (unsigned i = 0; i < g_recomp_func_count; i++) set(g_recomp_funcs[i].addr, g_recomp_funcs[i].fn);
     // imported functions are reachable through their import slot addresses
@@ -258,6 +263,8 @@ void init() {
 
 void set(uint32_t addr, PpcFunc fn) {
     if (addr - kTextBase < kTextSize) {
+        auto mutation=native_text_seal.lock();
+        if(!native_text_seal.writable())return;
         g_text_table[(addr - kTextBase) >> 2] = fn;
         return;
     }
@@ -266,6 +273,14 @@ void set(uint32_t addr, PpcFunc fn) {
     std::unique_lock lk(g_other_mutex);
     g_other[addr] = fn;
 }
+
+bool seal_native_text() noexcept {try{
+    auto mutation=native_text_seal.lock();
+    if(!g_text_table||!native_text_seal.seal())return false;
+    if(!sealed_text_table)sealed_text_table=g_text_table;
+    return sealed_text_table==g_text_table;
+}catch(...){return false;}}
+bool native_text_sealed() noexcept{try{auto mutation=native_text_seal.lock();return native_text_seal.current()&&sealed_text_table&&sealed_text_table==g_text_table;}catch(...){return false;}}
 
 PpcFunc lookup(uint32_t addr) {
     if (addr - kTextBase < kTextSize) return g_text_table[(addr - kTextBase) >> 2];

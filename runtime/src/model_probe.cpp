@@ -1,11 +1,37 @@
 // Temporary probe: find where WWHD's J3DModel keeps its joint matrices (WWHD_PROBE_MODEL=n models).
 #include <cmath>
 #include <cstdlib>
+#include <atomic>
+#include <mutex>
 #include <set>
 
 #include "runtime.h"
+#include "model_probe.h"
 
 extern "C" void f_027F4D5C_orig(Cpu* c);
+
+namespace {
+std::mutex probe_mutex;
+std::atomic<int>& remaining_probes() {
+    // Capture the same startup option once for both the wrapper and its private
+    // observer. Removing the environment variable cannot hide a pending probe.
+    static std::atomic<int> remaining{[] {
+        const char* value = std::getenv("WWHD_PROBE_MODEL");
+        return value ? std::atoi(value) : 0;
+    }()};
+    return remaining;
+}
+}
+namespace model_probe {
+bool native_refresh_quiescent() noexcept {
+    try {
+        // A last probe decrements before scanning: zero alone would not prove
+        // that its broad reads have finished. Fail closed while any scan runs.
+        std::unique_lock lock(probe_mutex, std::try_to_lock);
+        return lock.owns_lock() && remaining_probes().load(std::memory_order_acquire) <= 0;
+    } catch (...) { return false; }
+}
+}
 
 static bool plausible_mtx(uint32_t a) {
     // 3x4 row-major: rows of the 3x3 part have similar, non-zero length; translation finite
@@ -32,7 +58,9 @@ static bool guest_ptr(uint32_t p) { return p >= 0x10000000 && p < 0x50000000 && 
 extern "C" void hook_027F4D5C(Cpu* c) {
     uint32_t model = c->r[3];
     f_027F4D5C_orig(c);
-    static int left = getenv("WWHD_PROBE_MODEL") ? atoi(getenv("WWHD_PROBE_MODEL")) : 0;
+    auto& left = remaining_probes();
+    if (left.load(std::memory_order_acquire) <= 0) return;
+    std::lock_guard probe_lock(probe_mutex);
     static std::set<uint32_t> seen;
     if (left <= 0 || !seen.insert(model).second) return;
     left--;

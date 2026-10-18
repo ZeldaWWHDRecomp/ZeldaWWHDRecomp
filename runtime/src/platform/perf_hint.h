@@ -5,7 +5,8 @@
 #pragma once
 
 namespace perf_hint {
-void add_current_thread();  // a thread whose work makes the frames (render thread, game main thread)
+void add_current_thread();  // a thread whose work makes the frames (render thread, game main thread, record worker)
+void remove_current_thread();  // such a thread before it ends (the hint session is made anew without it)
 void frame_done();          // render thread, once per presented frame
 // Android: 60 fps (frame interpolation) as chosen by the player. frame_done() pauses and resumes the
 // interpolation itself where the phone cannot draw 60 frames a second or runs hot, so interp::mode()

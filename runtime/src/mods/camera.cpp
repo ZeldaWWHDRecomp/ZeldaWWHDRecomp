@@ -21,12 +21,17 @@
 //   sensitivity, converted to the speed unit with the live f25), @0251053C replaces the vertical
 //   stick rate f28 by the mouse's vertical movement (V += -f28 * [sp+0x14] degrees) and @02510EA0
 //   removes the V smoothing. The camera only runs manualCamera while the right stick is pushed, so
-//   while the mouse moves, a small right-stick x (0.45, above the 0.3 threshold, below the 0.5
-//   stick-as-button threshold) is fed to the game (filter_pad) to keep it in the manual mode.
+//   nextMode (024FA9C8) sees a small stick magnitude (0.45) only during its mode decision, for
+//   styles that support manualCamera. The pad itself always gets a proportional mouse rate, so
+//   other modes have a fallback without a fixed stick being switched on and off.
+//   Boat and BoatBattle free look use this same manualCamera (style 118), including sailing,
+//   paddling and salvage. rideCamera (0250D4E8) follows the ship while not looking around; it has
+//   no right-stick yaw/pitch or cLib_chaseF sites of its own. Sailing/paddling procedures 0x88/0x89
+//   are not item aiming: classifying them as aiming consumed the deltas before these sites ran.
 //   In first person (dCamera_c::subjectCamera 025071FC ran) the mouse drives both right-stick axes
 //   instead (rate control), which the game uses to look around / aim.
-//   Left click: while Link aims an item (bow, boomerang, hookshot, rope; procedures 0x76, 0x80-0x8D,
-//   0x94-0x95) it presses the item's button (daPy_lk_c+0x68D9 mReadyItemBtn: 0 X, 1 Y, 2 R; read
+//   Left click: while Link aims an item (bow, boomerang, hookshot, rope; procedures 0x76, 0x7D, 0x80-0x81,
+//   0x83-0x84, 0x8A-0x8D, 0x94-0x95) it presses the item's button (daPy_lk_c+0x68D9 mReadyItemBtn: 0 X, 1 Y, 2 R; read
 //   from daPy_lk_c::itemTrigger 023EAB40). Otherwise left click does nothing.
 // First person: R3 already toggles the game's first-person look (measured: R3 at rest -> camera
 //   distance 250 -> 20 in 7 steps, R3 again -> back). The mod adds the mouse wheel: forward enters
@@ -49,6 +54,8 @@
 #include <vector>
 
 #include "../camera_invert.h"
+#include "camera_mouse.h"
+#include "guest_addr.h"
 #include "../input_map.h"
 #include "input.h"
 #include "mods.h"
@@ -57,6 +64,8 @@
 #include "../editor/editor_game.h"
 
 extern "C" {
+void f_024FA9C8_orig(Cpu* c);  // dCamera_c::nextMode
+void f_0250D4E8_orig(Cpu* c);  // dCamera_c::rideCamera
 void f_0250FDC8_orig(Cpu* c);  // dCamera_c::manualCamera
 void f_025071FC_orig(Cpu* c);  // dCamera_c::subjectCamera
 void f_0240EBB0_orig(Cpu* c);  // daPy_Execute
@@ -66,12 +75,14 @@ namespace mods {
 namespace {
 constexpr uint32_t kCamSpeed = 0x154;   // dCamera_c: eased turning speed (manual camera)
 constexpr uint32_t kCamStickX = 0x170;  // dCamera_c: right stick x as the camera sees it (negated)
-constexpr float kSpeedToDeg = 0.92f;    // manualCamera: yaw degrees per step = speed * 0.92 * f25
 constexpr uint32_t kCurProc = 0x65F0;   // daPy_lk_c::mCurProc
 constexpr uint32_t kReadyItemBtn = 0x68D9;  // daPy_lk_c::mReadyItemBtn
 
 std::mutex g_mu;
-float g_dx = 0, g_dy = 0;       // mouse movement not yet used by the camera (points)
+float g_dx = 0, g_dy = 0;       // mouse movement awaiting the next input step (points)
+float g_direct_dx = 0, g_direct_dy = 0;  // this step's movement, reserved for direct camera sites
+float g_mouse_rx = 0, g_mouse_ry = 0;    // proportional fallback, stable across repeated pad reads
+uint64_t g_sample_step = ~0ull;
 uint64_t g_move_step = 0;       // logic step of the last mouse movement
 float g_wheel = 0;              // wheel movement not yet used
 bool g_left = false;            // left button held (captured)
@@ -89,7 +100,7 @@ uint32_t link_proc() {
     uint32_t l = g_link.load(std::memory_order_relaxed);
     return l ? ld32(l + kCurProc) : 0xFFFFFFFFu;
 }
-bool aiming_item(uint32_t p) { return p == 0x76 || (p >= 0x80 && p <= 0x8D) || p == 0x94 || p == 0x95; }
+bool aiming_item(uint32_t p) { return camera_mouse::aiming_item(p); }
 
 // test aid: WWHD_TEST_MOUSE=2-3:5:0,... moves the mouse by (dx, dy) points per logic step from 2 s
 // to 3 s of game time (full logic steps / 30, from boot);
@@ -222,27 +233,20 @@ void filter_pad(input::PadState& s) {
     bool active = mouse_camera() && (mouse_captured() || test_mouse()) && !motion::mouse_drives_gyro();
     bool stick_free = std::fabs(s.rx) < 0.2f && std::fabs(s.ry) < 0.2f;
     if (active && stick_free && recent(g_move_step, 8)) {
-        if (in_first_person() || aiming_item(link_proc())) {
-            // first person / aiming: the game looks around with the right stick (rate control); the
-            // movement since the last step sets the deflection
-            static uint64_t taken = ~0ull;
-            static float rx = 0, ry = 0;
-            if (taken != now) {
-                taken = now;
-                const float k = 0.08f;  // stick per point per step
-                rx = std::fmax(-1.0f, std::fmin(1.0f, g_dx * k));
-                ry = std::fmax(-1.0f, std::fmin(1.0f, -g_dy * k));
-                g_dx = g_dy = 0;
-            }
-            s.rx = rx;
-            s.ry = ry;
-        } else {
-            // keep the camera in its manual mode; the manualCamera sites take the movement itself
-            static float sign = 1.0f;
-            if (g_dx != 0) sign = g_dx > 0 ? 1.0f : -1.0f;
-            s.rx = 0.45f * sign;
-            s.ry = 0.0f;
+        // Snapshot once per logic step. Fallback input and direct hooks share the same movement;
+        // a fallback pad read must not consume the deltas before manualCamera gets them.
+        if (g_sample_step != now) {
+            g_sample_step = now;
+            g_direct_dx = g_dx;
+            g_direct_dy = g_dy;
+            g_mouse_rx = camera_mouse::fallback_stick(g_dx);
+            g_mouse_ry = camera_mouse::fallback_stick(-g_dy);
+            g_dx = g_dy = 0;
+            if (trace_on()) trace("mouse input dx=%.3f dy=%.3f rx=%.3f ry=%.3f aim=%d",
+                                  g_direct_dx, g_direct_dy, g_mouse_rx, g_mouse_ry, aim);
         }
+        s.rx = g_mouse_rx;
+        s.ry = g_mouse_ry;
         g_synth = true;
         g_synth_step = now;
     } else {
@@ -288,16 +292,14 @@ static void manual_speed(Cpu* c) {
         std::lock_guard<std::mutex> lk(g_mu);
         mouse = g_synth && g_synth_step + 1 >= step();
         if (mouse) {
-            dx = g_dx;
-            g_dx = 0;
+            dx = g_direct_dx;
+            g_direct_dx = 0;
         }
     }
     float speed;
     if (mouse && mouse_camera()) {
-        double f25 = c->f[25].ps0;
-        if (!(f25 > 0.01)) f25 = 8.0;
         // mouse right = stick right = negative speed (the camera stores stick x negated)
-        speed = (float)(-dx * mouse_sensitivity() / (kSpeedToDeg * f25));
+        speed = camera_mouse::yaw_speed(dx, mouse_sensitivity(), c->f[25].ps0);
     } else if (direct_camera()) {
         float x = (float)ldf32(cam + kCamStickX);
         speed = std::fmax(-1.0f, std::fmin(1.0f, x)) * camera_speed();
@@ -305,6 +307,7 @@ static void manual_speed(Cpu* c) {
         return;
     }
     stf32(cam + kCamSpeed, speed);
+    if (trace_on() && mouse) trace("mouse rate dx=%.3f f25=%.4f speed=%.6f", dx, c->f[25].ps0, speed);
     static uint64_t n = 0;
     if (trace_on() && (n++ % 30) == 0) trace("manual camera speed %.3f (%s)", speed, mouse ? "mouse" : "stick");
 }
@@ -313,14 +316,38 @@ extern "C" void site_025104A0(Cpu* c) { manual_speed(c); }
 
 static bool mouse_step() { return mouse_camera() && g_synth && g_synth_step + 1 >= step(); }
 
+// The manual-mode wake-up belongs to the camera's decision, never to the pad: modes without
+// direct mouse sites must see the proportional fallback. Let nextMode retain all its native
+// restrictions (events, aiming, forced cameras); only replace its manual-start stick test.
+extern "C" void hook_024FA9C8(Cpu* c) {
+    const uint32_t cam = c->r[3];
+    const uint32_t type = ld32(cam + 0x51C);
+    bool manual = false;
+    if (type < ld32(GD(0x10049348))) {  // dCamera_c::type_num
+        const int16_t style = (int16_t)ld16(GD(0x10049350) + type * 0x40 + 0x18 + 12 * 2);
+        manual = style >= 0 && ld32(GD(0x1004487C) + style * 0x84 + 4) == 10;  // MANUAL_CAMERA
+    }
+    const bool wake = manual && mouse_step() && !in_first_person() && !aiming_item(link_proc());
+    const float value = (float)ldf32(cam + 0x178), y = (float)ldf32(cam + 0x174);
+    if (wake) {
+        stf32(cam + 0x178, 0.45f);  // above manual-start threshold, below stick-as-button threshold
+        stf32(cam + 0x174, 0.0f);
+    }
+    f_024FA9C8_orig(c);
+    if (wake) {
+        stf32(cam + 0x178, value);
+        stf32(cam + 0x174, y);
+    }
+}
+
 // f28: vertical stick rate (+1 = stick up = V decreases by [sp+0x14] degrees per step)
 extern "C" void site_0251053C(Cpu* c) {
     if (!mouse_step()) return;
     float dy;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        dy = g_dy;
-        g_dy = 0;
+        dy = g_direct_dy;
+        g_direct_dy = 0;
     }
     double per = ldf32(c->r[1] + 0x14);
     if (!(std::fabs(per) > 0.01)) return;
@@ -350,10 +377,28 @@ extern "C" void site_02506C68(Cpu* c) { camera_stick_y(c, "02506C68"); }  // dCa
 extern "C" void site_02506C80(Cpu* c) { camera_stick_y(c, "02506C80"); }  // the same, with the game's inverted-aiming option
 extern "C" void site_02171B1C(Cpu* c) { camera_stick_y(c, "02171B1C"); }  // new_himo2_move: rope-swing event camera
 
+// Logic-step camera measurements, enabled only by WWHD_MODS_TRACE.
+static void camera_trace(uint32_t cam, const char* mode, int16_t before) {
+    if (!trace_on()) return;
+    int16_t after = (int16_t)ld16(cam + 0x42);
+    trace("camera mode=%s U=%d dU=%d V=%d manual=%llu dx=%.3f dy=%.3f synth=%d proc=%X type=%u mode=%u style=%u",
+          mode, after, (int16_t)(after - before), (int16_t)ld16(cam + 0x40),
+          (unsigned long long)g_manual_step, g_dx, g_dy, g_synth, link_proc(), ld32(cam + 0x51C), ld32(cam + 0x13C), ld32(cam + 0x514));
+}
+extern "C" void hook_0250D4E8(Cpu* c) {
+    uint32_t cam = c->r[3];
+    int16_t before = (int16_t)ld16(cam + 0x42);
+    f_0250D4E8_orig(c);
+    camera_trace(cam, "ride", before);
+}
+
 // which camera mode ran (for the mouse: manual camera vs first person)
 extern "C" void hook_0250FDC8(Cpu* c) {
     g_manual_step = step();
+    uint32_t cam = c->r[3];
+    int16_t before = (int16_t)ld16(cam + 0x42);
     f_0250FDC8_orig(c);
+    camera_trace(cam, "manual", before);
 }
 extern "C" void hook_025071FC(Cpu* c) {
     if (g_subject_step == ~0ull || step() > g_subject_step + 2) trace("first person (subject camera) starts");

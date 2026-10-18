@@ -1,13 +1,53 @@
-// Exercise the actual hook runner with synthetic game bodies and a port wrapper.
-#include "mods/guest_mods.cpp"
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
+// Exercise the actual hook runner with synthetic game bodies and a port wrapper.
+#define WWHD_GUEST_HOOKS_STARTUP_FIXTURE 1
+// This entire harness constructs synthetic startup registries; production has no unseal.
+#include "mods/guest_mods.cpp"
+namespace story_native_wait_runtime {
+void startup(bool,LogicStep) {assert(story_native_scene_request::startup_window_current());}
+void logic(Cpu*) {}
+void state_loaded() {}
+}
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
 
+namespace story_native_stage_owner_observer {story_native_stage_owner::Tracker&tracker()noexcept{static story_native_stage_owner::Tracker t;return t;}}
 static std::vector<int> calls;
+static std::vector<int> owner_calls;
+static void owner_setinfo_body(Cpu* c) {owner_calls.push_back(2);c->r[3]=1;}
+static void owner_delete_body(Cpu*) {owner_calls.push_back(2);}
+static void owner_unload_body(Cpu* c) {owner_calls.push_back(6);c->r[3]=1;}
+static void owner_freepack_body(Cpu* c) {owner_calls.push_back(7);c->r[3]=1;}
+static void owner_dtor_body(Cpu*) {owner_calls.push_back(8);}
+void guest_hooks_nested_run(Cpu*);
+bool guest_hooks_run_query(Cpu*,const guestmods::NativeWaitNext&);
+static bool route_original_throws=false,route_nested_run=false,route_run_original_throws=false;
+static void route_native_body(Cpu* c) {owner_calls.push_back(9);if(route_run_original_throws&&c->pc==GC(0x024FE3E8))throw std::runtime_error("run original");if(route_nested_run&&c->pc==GC(0x024FFA3C))guest_hooks_nested_run(c);if(route_original_throws)throw std::runtime_error("native original");c->r[3]=0xA55A;}
 extern "C" void guest_hooks_body(Cpu* c);
+extern "C" void guest_hooks_native_body(Cpu* c);
 extern "C" void guest_hooks_record_body() { calls.push_back(3); }
 static void port(Cpu* c) {
     calls.push_back(1);
@@ -25,10 +65,39 @@ static void ret_a(Cpu* c) { calls.push_back(4); assert(c->r[3] == 10); c->r[3] =
 static void ret_b(Cpu* c) { calls.push_back(5); assert(c->r[3] == 10); c->r[3] = 777; }
 extern "C" {
 extern const char g_guest_build_name[] = "USA";
-extern const RecompEntry g_recomp_funcs[] = {{0x02000000, port}};
-extern const unsigned g_recomp_func_count = 1;
-static const PpcFunc test_mod_bodies[] = {guest_hooks_body};
-static uint8_t test_mod_flags[1]{};
+extern const RecompEntry g_recomp_funcs[] = {{0x02000000, port},
+    {0x022C2958,route_native_body},{0x022C36D0,guest_hooks_native_body},
+    {0x024FE3E8,route_native_body},{0x024FF164,route_native_body},
+    {0x024FFA3C,route_native_body},{0x0253EFA8,route_native_body},
+    {0x0253FF34,route_native_body},{0x02541664,route_native_body},
+    {0x02542A38,route_native_body},{0x02542C9C,route_native_body},{0x02542D88,route_native_body},
+    {0x02543280,route_native_body},{0x02543C6C,route_native_body},
+    {0x02543D80,route_native_body},
+    {0x02544374,route_native_body},{0x0254465C,route_native_body},
+    {0x0259F858,route_native_body},{0x0259FA00,route_native_body},
+    {0x0259FA64,route_native_body},
+    {0x025A0984,route_native_body},{0x025A0B3C,route_native_body},
+    {0x0260623C,owner_setinfo_body},{0x0260757C,owner_delete_body},
+    {0x0261261C,owner_unload_body},{0x026126C0,owner_freepack_body},
+    {0x02613580,owner_dtor_body},{0x02613630,owner_dtor_body},
+    {0x026136A0,owner_dtor_body},{0x0273AFC8,owner_dtor_body},
+    {0x0275558C,owner_dtor_body},
+    {0x0275D1B4,owner_dtor_body},
+    {0x0275E1B4,owner_dtor_body}};
+extern const unsigned g_recomp_func_count = 33;
+static const PpcFunc test_mod_bodies[] = {guest_hooks_body,
+    route_native_body,guest_hooks_native_body,
+    route_native_body,route_native_body,route_native_body,route_native_body,
+    route_native_body,route_native_body,route_native_body,route_native_body,
+    route_native_body,route_native_body,route_native_body,route_native_body,
+    route_native_body,route_native_body,route_native_body,
+    route_native_body,route_native_body,
+    route_native_body,route_native_body,
+    owner_setinfo_body,owner_delete_body,owner_unload_body,owner_freepack_body,
+    owner_dtor_body,owner_dtor_body,
+    owner_dtor_body,owner_dtor_body,owner_dtor_body,owner_dtor_body,owner_dtor_body};
+static uint8_t test_mod_flags[33]{};
+static_assert(std::size(test_mod_bodies)==33&&std::size(g_recomp_funcs)==33);
 volatile int g_core_preempt[3]{};
 int g_ppc_trace = 0;
 void ppc_trace_enter(uint32_t) {}
@@ -50,10 +119,15 @@ std::optional<Value> read(const std::string& key) {
 }
 namespace input {PadState read() {return {};}}
 namespace true60 {float dt() {return 0.5f;}}
-namespace mem { std::string read_cstr(uint32_t) { return "option"; } uint32_t host_alloc(uint32_t,uint32_t) { return 0; } uint32_t runtime_alloc(uint32_t,uint32_t) {return 0;} }
-namespace dispatch { void set(uint32_t, PpcFunc) {} }
+namespace mem { std::string read_cstr(uint32_t) { return "option"; } uint32_t host_alloc(uint32_t,uint32_t) { return 0; } uint32_t runtime_alloc(uint32_t,uint32_t) {return 0;} uint32_t runtime_top(){return 0;} }
+namespace dispatch { bool fixture_text_sealed=false,fixture_dispatch_tampered=false;void set(uint32_t, PpcFunc) {} PpcFunc lookup(uint32_t a){if(fixture_dispatch_tampered)return nullptr;for(unsigned n=0;n<g_recomp_func_count;++n)if(g_recomp_funcs[n].addr==a)return g_recomp_funcs[n].fn;return nullptr;} bool seal_native_text()noexcept{return false;} bool native_text_sealed()noexcept{return fixture_text_sealed;} }
+namespace model_probe {bool native_refresh_quiescent()noexcept{return true;}}
+// The hook runner fixture has no guest scheduler. Its logic-service thread
+// attestor must therefore refuse instead of inventing a game-thread identity.
+namespace threads { Cpu* current() { return nullptr; } uint32_t current_thread() { return 0; } std::optional<QuiescenceWitness>current_quiescence(Cpu*){return {};} }
 namespace mods::packages {
 std::vector<View> list(){return {};}
+std::string package_data_directory(const std::string&){return {};}
 static bool in_startup_callback=false, inspected=false;
 std::string directory() { assert(!in_startup_callback); return {}; }
 void set_guest_builder(GuestInspect, GuestBuild, GuestCacheCheck) {}
@@ -71,6 +145,8 @@ void start_guests(const GuestInspect& inspect, const GuestLoad&) {
 }
 // the letter service has its own test (story_mail_test)
 namespace story_mail {
+void caption(uint32_t,const std::u16string*) {}
+void uncaption() {}
 int32_t send(const std::string&,const std::string&,const std::string&,const std::string&) {return kResultInvalid;}
 bool imported() {return false;}
 void set_text_buffers(uint32_t,uint32_t) {}
@@ -83,6 +159,8 @@ void state_loaded() {}
 }
 // and so has the chart service (story_chart_test)
 namespace story_chart {
+void set_entry_memory(uint32_t,uint32_t) {}
+void set_caption_text(CaptionFn) {}
 int32_t give(const std::string&,const std::string&) {return kResultInvalid;}
 int32_t finish(const std::string&,const std::string&) {return kResultInvalid;}
 int32_t state(const std::string&,const std::string&) {return kResultNone;}
@@ -109,12 +187,18 @@ namespace hooks { void exec_item_get(Cpu*) {} }
 }
 // World runtime has its own actor/scene tests; loader tests only exercise registration.
 namespace actor_model_cache {
+bool shoreline_for(const std::string&){return false;}
+unsigned triangles_for(const std::string&){return 12;}
+std::shared_ptr<const story_world_collision::mesh::Mesh> collision_for(const std::string&){return {};}
+std::string archive_for(const std::string&){return {};}
 mod_actor::ModelRig rig_for(const std::string&){return {};}
 std::vector<std::string> clips_for(const std::string&){return {};}
 bool bounds_for(const std::string&,story_notebook::WorldPoint&,story_notebook::WorldPoint&){return false;}
-std::string prepare(const std::string&,const story_notebook::ManifestModel&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&){return {}; }
+std::string prepare(const std::string&,const story_notebook::ManifestModel&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&,bool,bool){return {}; }
 }
 namespace story_actors {
+bool resident_event_declaration(const std::string&,const std::string&,ResidentEventDeclaration&){return false;}
+bool prop_texture_identity(uint32_t,uint32_t,uint32_t&,uint32_t&,uint32_t&){return false;}
 bool register_model(const std::string&,const std::string&,const std::string&,int,std::string&,story_notebook::WorldPoint,story_notebook::WorldPoint,bool,std::vector<std::string>,mod_actor::ModelRig){return true;}
 bool register_flags(const std::string&,const std::vector<std::string>&,std::string&){return true;}
 void service(Cpu*){}
@@ -132,6 +216,7 @@ bool particle_position(Cpu*,const std::string&,const std::string&,unsigned,story
 bool actions(const std::string&,const std::vector<story_notebook::StoryAction>&){return true;}
 }
 namespace story_scenes {
+bool declared_scene(const std::string&,const std::string&,story_notebook::ManifestScene&){return false;}
 static MusicHook music_hook;
 size_t checkpoint(){return 0;}
 bool rollback(size_t) noexcept{return true;}
@@ -149,11 +234,20 @@ void install(void (*)(Cpu*,uint32_t),const std::function<std::string(uint32_t)>&
 void state_loaded(){}
 }
 namespace story_actor_textures {
+bool configure(Invoke,VerifyTexture,VerifyOwner){return false;}
 size_t checkpoint(){return 0;}
 bool rollback(size_t) noexcept{return true;}
 uint32_t declare_png(const std::string&,std::span<const uint8_t>,std::string&){return 0;}
 bool allocate_session(){return true;}
 bool declared(){return false;}
+}
+namespace story_prop_textures {
+bool configure(VerifyContext){return false;}
+bool apply(Cpu*,const Context&,uint32_t,const std::vector<Replacement>&,bool){return false;}
+}
+namespace story_props {
+void set_texture_apply(TextureApply){}
+bool texture_heap(uint32_t,uint32_t&,uint32_t&){return false;}
 }
 namespace story_particles {
 bool configure(Invoke,uint32_t,uint32_t,uint32_t){return true;}
@@ -164,6 +258,8 @@ bool burst_named(Cpu*,std::string_view e,const Placement&p,Options o){++calls;ef
 // Synthetic actor bridge: identities belong to one declared mod actor, and
 // process changes invalidate previously captured identities.
 namespace mod_actor {
+void configure_world_objects(const std::string&,PlacementProvider){}
+bool register_collision(const std::string&,const std::string&,std::shared_ptr<const story_world_collision::mesh::Mesh>){return true;}
 static BehaviorSink sink;
 static Identity actor{"first","sprite",11,101},other{"first","other",12,102};
 static State current{};
@@ -198,6 +294,8 @@ bool stop_path(Cpu*,const Identity&i){return live(i);}
 // and so has the story notebook (story_notebook_test)
 namespace config { std::string game_dir; }
 namespace story_notebook {
+bool open_page(const char*){return false;}
+bool show_info(const std::string&,const std::string&,const char*){return false;}
 bool place_position(const std::string&,const std::string&,float&x,float&z){x=20;z=30;return true;}
 void logic_step(uint64_t) {}
 void set_look(const std::string&,const std::string&) {}
@@ -326,9 +424,290 @@ uint32_t guest_call(Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args) {
 }
 void log_msg(const char*, ...) {}
 [[noreturn]] void fatal(const char*, ...) { std::abort(); }
+
+namespace native_observer_test {
+namespace D=story_native_event_depth;
+D::Tracker* tracker=nullptr;D::Call descriptor;unsigned bodies=0;int failure=-1;bool observed=true;
+bool resolve(const Cpu*cpu,uint32_t function,D::Tracker*&out,D::Call&call) noexcept {if(!observed)return false;out=tracker;call=descriptor;call.function=function;call.receiver=call.subject=cpu->r[3];return true;}
+void entry(Cpu*c){assert(tracker->snapshot().npc_depth==1);c->r[3]=999;c->f[1].ps0=99;if(failure==0)throw std::runtime_error("observer entry");}
+void tail(Cpu*c){assert(tracker->snapshot().npc_depth==1);c->r[3]=888;c->f[1].ps0=88;if(failure==2)throw std::runtime_error("observer return");}
+void replacement(Cpu*c){assert(tracker->snapshot().npc_depth==1);guestmods::call_original(c,0x022C36D0);assert(tracker->snapshot().npc_depth==1);if(failure==1)throw std::runtime_error("observer replacement tail");}
+void skip(Cpu*c){assert(tracker->snapshot().npc_depth==1);c->r[3]=77;}
+void run(){
+ D::Expected expected;expected.identity={0x20000000,0x60000000,0x520,1,2,3,4};expected.room_number=11;for(unsigned n=0;n<2;++n)expected.actors[n]={0x20001000+n*0x1000,10+n,1+n,0x175,1,{}};expected.camera.address=0x20003248;expected.camera.pid=12;
+ D::Coverage coverage{{11,11,true},{0,0,true},{0,0,true},true};descriptor={D::Entry::PeopleExecute,D::entry_address(D::Entry::PeopleExecute),expected.actors[0].address,expected.actors[0].address,10,1,expected.identity,D::Authority::Owned};
+ auto&chain=guestmods::g_chains[0x022C36D0];chain.addr=0x022C36D0;chain.ordinal=unsigned(guestmods::ordinal_of(0x022C36D0));chain.entry={entry};chain.ret={tail};chain.replace=replacement;g_mod_hook_flags[chain.ordinal]=1;
+ assert(!guestmods::register_native_event_observer(nullptr));assert(guestmods::register_native_event_observer(resolve));assert(!guestmods::register_native_event_observer(resolve));
+ Cpu cpu{};D::Tracker active(expected,coverage);tracker=&active;cpu.r[3]=expected.actors[0].address;guest_hooks_native_body(&cpu);assert(cpu.r[3]==expected.actors[0].address+1&&bodies==1&&active.snapshot().idle()&&cpu.f[1].ps0==7.5);
+ cpu.r[3]=expected.actors[0].address;guestmods::call_original(&cpu,0x022C36D0);assert(bodies==2&&cpu.mod_skip==0&&active.snapshot().idle());
+ chain.replace=skip;cpu.r[3]=expected.actors[0].address;guest_hooks_native_body(&cpu);assert(cpu.r[3]==77&&bodies==2&&active.snapshot().idle());chain.replace=replacement;
+ for(int at=0;at<3;++at){D::Tracker broken(expected,coverage);tracker=&broken;failure=at;cpu.r[3]=expected.actors[0].address;try{guest_hooks_native_body(&cpu);assert(false);}catch(const std::runtime_error&){}assert(broken.snapshot().fault&&broken.snapshot().npc_depth==0);}failure=-1;
+ D::Tracker fenced(expected,coverage);tracker=&fenced;assert(fenced.begin_drain());descriptor.authority=D::Authority::Foreign;descriptor.receiver=descriptor.subject=0x20009000;descriptor.pid=99;descriptor.token=0;chain.entry.clear();chain.ret.clear();chain.replace=nullptr;auto prior=bodies;cpu.r[3]=descriptor.subject;guest_hooks_native_body(&cpu);assert(bodies==prior+1&&fenced.snapshot().fault);
+ // No active lease resolves false: existing native chain delegates unchanged.
+ observed=false;prior=bodies;guest_hooks_native_body(&cpu);assert(bodies==prior+1);tracker=nullptr;
+}
+}
+extern "C" void guest_hooks_native_record_body(){++native_observer_test::bodies;auto*t=native_observer_test::tracker;if(t&&!t->snapshot().fault)assert(t->snapshot().npc_depth==1);}
+static void stage_owner_pass_through_test(){
+    namespace H=story_native_stage_owner_hooks;
+    const std::array<uint32_t,11> addresses={H::SetInfo(),H::DeleteInfo(),
+        H::FreePackEntry(),H::UnloadArchive(),H::ManagerDisposer(),
+        H::ArchiveHolderDtor(),H::PackHolderDtor(),H::StageHeapDtor(),
+        H::ArchiveResourceDtor(),H::SarcResourceDtor(),H::ArrayDelete()};
+    auto&conflict=guestmods::g_chains[H::StageHeapDtor()];
+    conflict.addr=H::StageHeapDtor();conflict.replace=owner_dtor_body;
+    assert(!guestmods::install_stage_owner_pass_through());
+    for(uint32_t addr:addresses)assert(!g_mod_hook_flags[guestmods::ordinal_of(addr)]);
+    guestmods::g_chains.erase(H::StageHeapDtor());
+    auto&raw_conflict=guestmods::g_chains[H::ArrayDelete()];
+    raw_conflict.addr=H::ArrayDelete();raw_conflict.replace=owner_dtor_body;
+    assert(!guestmods::install_stage_owner_pass_through());
+    for(uint32_t addr:addresses)assert(!g_mod_hook_flags[guestmods::ordinal_of(addr)]);
+    guestmods::g_chains.erase(H::ArrayDelete());
+    assert(guestmods::install_stage_owner_pass_through());
+    assert(guestmods::install_stage_owner_pass_through());
+    for(uint32_t addr:addresses)assert(g_mod_hook_flags[guestmods::ordinal_of(addr)]);
+    for(uint32_t addr:{H::SetInfo(),H::DeleteInfo(),H::UnloadArchive(),H::FreePackEntry(),
+        H::ManagerDisposer(),H::ArchiveHolderDtor(),H::PackHolderDtor(),H::StageHeapDtor(),
+        H::ArchiveResourceDtor(),H::SarcResourceDtor(),H::ArrayDelete()}){
+        auto&ch=guestmods::g_chains.at(addr);assert(ch.addr==addr&&!ch.replace&&ch.entry.empty()&&ch.ret.empty());
+        Cpu c{};c.pc=addr;c.r[3]=0x123;owner_calls.clear();ppc_mod_run(&c);
+        assert(owner_calls.size()==1); // no observer has been registered yet
+        owner_calls.clear();c.r[3]=0x123;guestmods::call_original(&c,addr);
+        assert(owner_calls.size()==1);
+    }
+}
+namespace stage_owner_observer_test {
+namespace H=story_native_stage_owner_hooks;
+uint64_t before_setinfo(Cpu*c,const H::Args&a){assert(a.r3_r6[0]==0x123);
+    owner_calls.push_back(0);c->r[3]=0;c->pc=0;return 1;}
+uint64_t before(Cpu*c,uint32_t fn,const H::Args&a){assert(fn==H::DeleteInfo());assert(a.r3_r6[0]==0x123);
+    owner_calls.push_back(1);c->r[3]=0;c->pc=0;return 2;}
+void after(Cpu*c,const H::Args&a,uint32_t result,uint64_t cookie){assert(a.r3_r6[0]==0x123&&result==1&&cookie==1);
+    owner_calls.push_back(3);c->r[3]=0;c->pc=0;}
+void failed(Cpu*,const H::Args&,uint64_t){assert(false);}
+void after_destroy(Cpu*,uint32_t,const H::Args&,uint64_t cookie){assert(cookie==2);}
+void fault()noexcept{assert(false);}
+const H::Observer observer{before_setinfo,before,after,failed,after_destroy,fault};
+void replacement(Cpu*c){owner_calls.push_back(4);guestmods::call_original(c,H::SetInfo());}
+void no_original(Cpu*c){owner_calls.push_back(5);c->r[3]=9;}
+void run(){
+    assert(H::register_observer(&observer));
+    owner_calls.clear();
+    auto& set=guestmods::g_chains[H::SetInfo()];set.addr=H::SetInfo();set.ordinal=unsigned(guestmods::ordinal_of(H::SetInfo()));g_mod_hook_flags[set.ordinal]=1;
+    auto& del=guestmods::g_chains[H::DeleteInfo()];del.addr=H::DeleteInfo();del.ordinal=unsigned(guestmods::ordinal_of(H::DeleteInfo()));g_mod_hook_flags[del.ordinal]=1;
+    Cpu c{};c.pc=H::SetInfo();c.r[3]=0x123;
+    ppc_mod_run(&c);assert((owner_calls==std::vector<int>{0,2,3})&&c.r[3]==1);
+    owner_calls.clear();set.replace=replacement;c.pc=H::SetInfo();c.r[3]=0x123;
+    ppc_mod_run(&c);assert((owner_calls==std::vector<int>{4,0,2,3})&&c.r[3]==1);
+    owner_calls.clear();set.replace=no_original;c.pc=H::SetInfo();c.r[3]=0x123;
+    ppc_mod_run(&c);assert((owner_calls==std::vector<int>{5})&&c.r[3]==9);
+    owner_calls.clear();c.pc=H::DeleteInfo();c.r[3]=0x123;
+    ppc_mod_run(&c);assert((owner_calls==std::vector<int>{1,2})&&c.r[3]==0x123);
+    owner_calls.clear();c.r[3]=0x123;guestmods::call_original(&c,H::DeleteInfo());
+    assert((owner_calls==std::vector<int>{1,2})&&c.r[3]==0x123);
+    set.replace=nullptr;g_mod_hook_flags[set.ordinal]=0;g_mod_hook_flags[del.ordinal]=0;
+}
+}
+namespace native_wait_route_test {
+int mode=0;
+uint32_t world_address=0;
+void world_owner(Cpu* c) {
+    owner_calls.push_back(10);
+    guestmods::call_original(c,world_address);
+}
+void candidate_owner(Cpu*c){
+    owner_calls.push_back(14);
+    // Stand-in for the already installed world's exact owned-resident filter.
+    if(c->r[3]==0x20001000){c->r[3]=0;return;}
+    guestmods::call_original(c,guestmods::native_wait_addresses()[18]);
+}
+void entry(Cpu*) {owner_calls.push_back(11);}
+void tail(Cpu* c) {owner_calls.push_back(12);c->r[3]=0xFFFF;}
+guestmods::NativeWaitDecision route(Cpu* c,uint32_t address,
+                                     const guestmods::NativeWaitNext& next) {
+    owner_calls.push_back(13);
+    assert(address==c->pc);
+    if(mode>=8&&address==GC(0x024FE3E8)){guest_hooks_run_query(c,next);return guestmods::NativeWaitDecision::Handled;}
+    if(mode==10&&address==GC(0x024FFA3C))guest_hooks_nested_run(c);
+    if(mode==1) {c->r[3]=0xBEEF;return guestmods::NativeWaitDecision::Handled;}
+    if(mode==2) {next();next();return guestmods::NativeWaitDecision::Delegate;}
+    if(mode==4){next();throw std::runtime_error("after original");}
+    if(mode==5){guestmods::call_original(c,address);return guestmods::NativeWaitDecision::Handled;}
+    if(mode==6){next();guestmods::call_original(c,address);return guestmods::NativeWaitDecision::Handled;}
+    if(mode==3&&address==guestmods::native_wait_addresses()[18]) {return guestmods::NativeWaitDecision::Handled;}
+    return guestmods::NativeWaitDecision::Delegate;
+}
+void run() {
+    const auto& addresses=guestmods::native_wait_addresses();
+    assert(addresses.size()==21 && !guestmods::routes_owned());
+    assert(!guestmods::install_native_wait_routes(nullptr));
+    const uint32_t conflict=addresses[11];
+    auto& bad=guestmods::g_chains[conflict];
+    bad.addr=conflict;bad.ordinal=unsigned(guestmods::ordinal_of(conflict));
+    bad.replace=route_native_body;bad.replace_mod="unknown owner";
+    g_mod_hook_flags[bad.ordinal]=1;
+    assert(!guestmods::install_native_wait_routes(route));
+    assert(!guestmods::routes_owned());
+    for(uint32_t addr:addresses)if(addr!=conflict&&addr!=addresses[0])
+        assert(!g_mod_hook_flags[guestmods::ordinal_of(addr)]);
+    g_mod_hook_flags[bad.ordinal]=0;guestmods::g_chains.erase(conflict);
+    auto& spoof=guestmods::g_chains[addresses[3]];
+    spoof.addr=addresses[3];spoof.ordinal=unsigned(guestmods::ordinal_of(spoof.addr));
+    spoof.replace=route_native_body;
+    spoof.replace_mod="the port's world actors";
+    g_mod_hook_flags[spoof.ordinal]=1;
+    assert(!guestmods::install_native_wait_routes(route));
+    assert(!guestmods::routes_owned());
+    g_mod_hook_flags[spoof.ordinal]=0;guestmods::g_chains.erase(addresses[3]);
+    // All four appended sites participate in the same all-or-none
+    // transaction, including the last site's genuine-owner authentication.
+    for(size_t n:{size_t(17),size_t(18),size_t(19),size_t(20)})for(const char*name:{"unknown owner","the port's world actors"}){
+        auto&ch=guestmods::g_chains[addresses[n]];ch.addr=addresses[n];ch.ordinal=unsigned(guestmods::ordinal_of(ch.addr));ch.replace=route_native_body;ch.replace_mod=name;g_mod_hook_flags[ch.ordinal]=1;
+        const auto before=guestmods::g_chains;std::array<uint8_t,33>flags{};std::copy_n(test_mod_flags,flags.size(),flags.begin());
+        assert(!guestmods::install_native_wait_routes(route)&&!guestmods::routes_owned());
+        assert(before.size()==guestmods::g_chains.size());
+        for(const auto&[address,old]:before){const auto&now=guestmods::g_chains.at(address);assert(now.addr==old.addr&&now.ordinal==old.ordinal&&now.replace==old.replace&&now.replace_mod==old.replace_mod&&now.entry==old.entry&&now.ret==old.ret);}
+        assert(std::equal(flags.begin(),flags.end(),test_mod_flags));
+        g_mod_hook_flags[ch.ordinal]=0;guestmods::g_chains.erase(addresses[n]);
+    }
+    auto prior_people=guestmods::g_chains[addresses[0]];
+    auto& spoof_notebook=guestmods::g_chains[addresses[0]];
+    spoof_notebook.addr=addresses[0];spoof_notebook.ordinal=unsigned(guestmods::ordinal_of(addresses[0]));
+    spoof_notebook.replace=world_owner;spoof_notebook.replace_mod="the port's story notebook";
+    g_mod_hook_flags[spoof_notebook.ordinal]=1;
+    assert(!guestmods::install_native_wait_routes(route)); // name alone is not the notebook capability
+    guestmods::g_chains[addresses[0]]=prior_people;
+    g_mod_hook_flags[guestmods::ordinal_of(addresses[0])]=prior_people.replace||!prior_people.entry.empty()||!prior_people.ret.empty();
+    auto broken=std::array<PpcFunc,33>{};
+    std::copy_n(test_mod_bodies,broken.size(),broken.begin());
+    broken[guestmods::ordinal_of(addresses[12])]=nullptr;
+    ppc_mod_register(33,test_mod_flags,broken.data());
+    assert(!guestmods::install_native_wait_routes(route));
+    ppc_mod_register(33,test_mod_flags,test_mod_bodies);
+    assert(!guestmods::routes_owned());
+
+    // Known world-actors and the notebook's actual People owner compose. Entry and
+    // return hooks on an existing chain survive the transactional replacement.
+    for(size_t n:{size_t(0),size_t(3),size_t(8),size_t(18)}) {
+        const uint32_t address=addresses[n];
+        auto& ch=guestmods::g_chains[address];
+        ch.addr=address;ch.ordinal=unsigned(guestmods::ordinal_of(address));
+        ch.replace=n==18?candidate_owner:world_owner;
+        if(n==0){ch.replace_mod="the port's story notebook";guestmods::native_wait_known_notebook_people=world_owner;}
+        else {ch.replace_mod="the port's world actors";guestmods::native_wait_known_world_actor[n]=ch.replace;}
+        g_mod_hook_flags[ch.ordinal]=1;
+    }
+    auto& chain=guestmods::g_chains[addresses[10]];
+    chain.addr=addresses[10];chain.ordinal=unsigned(guestmods::ordinal_of(chain.addr));
+    chain.entry={entry};chain.ret={tail};g_mod_hook_flags[chain.ordinal]=1;
+    assert(guestmods::install_native_wait_routes(route));
+    assert(guestmods::install_native_wait_routes(route));
+    assert(guestmods::routes_owned());
+    auto coverage=guestmods::native_wait_route_coverage();
+    assert(coverage.certified&&coverage.requested==21&&coverage.installed==21&&
+           coverage.world_actors_composed==3&&coverage.notebook_composed==1);
+    for(auto owner:coverage.outer_owner)assert(owner);
+    for(uint32_t address:addresses)assert(g_mod_hook_flags[guestmods::ordinal_of(address)]);
+    const auto& installed_chain=guestmods::g_chains.at(addresses[10]);
+    assert(installed_chain.entry.size()==1&&installed_chain.ret.size()==1);
+
+    Cpu c{};c.pc=addresses[10];c.r[3]=7;
+    owner_calls.clear();mode=0;ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{11,13,9,12})&&c.r[3]==0xA55A);
+    owner_calls.clear();mode=1;c.r[3]=7;ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{11,13,12})&&c.r[3]==0xBEEF);
+    owner_calls.clear();mode=2;c.r[3]=7;ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{11,13,9,12})&&c.r[3]==0xA55A);
+    // The foreign path delegates through the captured world-actors owner,
+    // which itself reaches the native original once.
+    c.pc=addresses[3];world_address=c.pc;c.r[3]=7;mode=0;owner_calls.clear();
+    ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{13,10,9})&&c.r[3]==0xA55A);
+    c.pc=addresses[0];world_address=c.pc;c.r[3]=7;owner_calls.clear();
+    const auto people_bodies=native_observer_test::bodies;
+    ppc_mod_run(&c);assert((owner_calls==std::vector<int>{13,10})&&c.r[3]==8&&
+        native_observer_test::bodies==people_bodies+1&&c.f[1].ps0==7.5);
+    // New startProc delegates its native body exactly once even when the
+    // dispatcher asks twice and also returns Delegate.
+    c.pc=addresses[17];c.r[3]=7;mode=2;owner_calls.clear();ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{13,9})&&c.r[3]==0xA55A);
+    // TURN_START and TURN_PROCESS have no registered world-actors prior at
+    // these actual sites. Native delegation is still single-use; handled SDK
+    // paths suppress the original without granting any actor authority here.
+    for(size_t n:{size_t(19),size_t(20)}){
+        c.pc=addresses[n];c.r[3]=7;mode=0;owner_calls.clear();ppc_mod_run(&c);assert((owner_calls==std::vector<int>{13,9})&&c.r[3]==0xA55A);
+        c.r[3]=7;mode=2;owner_calls.clear();ppc_mod_run(&c);assert((owner_calls==std::vector<int>{13,9})&&c.r[3]==0xA55A);
+        c.r[3]=7;mode=1;owner_calls.clear();ppc_mod_run(&c);assert((owner_calls==std::vector<int>{13})&&c.r[3]==0xBEEF);
+    }
+    // Ordinary candidates preserve the authentic prior world filter and reach
+    // the native callback once. Outside a handled cast, SDK actors stay blocked.
+    c.pc=addresses[18];c.r[3]=7;mode=0;owner_calls.clear();ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{13,14,9})&&c.r[3]==0xA55A);
+    c.r[3]=0x20001000;owner_calls.clear();ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{13,14})&&c.r[3]==0);
+    // A separately authenticated cast dispatcher may handle the candidate
+    // before the captured filter; this runner introduces no cast authority.
+    c.r[3]=0x20001000;mode=3;owner_calls.clear();ppc_mod_run(&c);
+    assert((owner_calls==std::vector<int>{13})&&c.r[3]==0x20001000);
+    auto&candidate_chain=guestmods::g_chains.at(addresses[18]);const auto saved=candidate_chain.replace;candidate_chain.replace=route_native_body;
+    assert(!guestmods::routes_owned()&&!guestmods::install_native_wait_routes(route));candidate_chain.replace=saved;assert(guestmods::routes_owned());
+    assert(!guestmods::install_native_wait_routes(nullptr));
+}
+}
+namespace outer_issuer_test {
+namespace D=story_native_event_depth;unsigned callbacks=0;D::Expected current_expected;bool returned_hook=false;
+void callback(Cpu*c,const story_native_outer_return::OuterReturn&token)noexcept{
+ ++callbacks;assert(native_observer_test::tracker->snapshot().idle());assert(token.current(c,current_expected));assert(returned_hook);
+ Cpu other{};assert(!token.current(&other,current_expected));auto wrong=current_expected;++wrong.identity.generation;assert(!token.current(c,wrong));
+ std::thread foreign([&]{assert(!token.current(c,current_expected)&&!token.claim(c,current_expected));});foreign.join();
+ assert(token.claim(c,current_expected)&&token.claimed_current(c,current_expected)&&!token.claim(c,current_expected));
+}
+void tail(Cpu*){returned_hook=true;}
+void throwing_tail(Cpu*){throw std::runtime_error("outer return hook");}
+void run(){
+ assert(!guestmods::register_native_outer_return_callback(nullptr));assert(guestmods::register_native_outer_return_callback(callback));assert(!guestmods::register_native_outer_return_callback(callback));
+ sealed_mod_flags=g_mod_hook_flags;sealed_mod_bodies=g_mod_bodies;sealed_mod_count=g_mod_hook_count;native_hooks_sealed=true;dispatch::fixture_text_sealed=true;
+ current_expected.identity={0x20000000,0x60000000,0x520,1,2,3,4};current_expected.camera.address=0x20003248;current_expected.camera.pid=12;
+ for(unsigned n=0;n<2;++n)current_expected.actors[n]={0x20001000+n*0x1000,10+n,1+n,0x175,1,{}};
+ const auto coverage=guestmods::native_wait_route_coverage();assert(coverage.certified);
+ const auto observer=guestmods::g_native_event_observer.load();const auto outer=guestmods::g_native_outer_return_callback.load();
+ assert(guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));
+ auto wrong_owners=coverage.outer_owner;++wrong_owners[0];assert(!guestmods::native_restore_coverage_current(observer,outer,wrong_owners));
+ assert(!guestmods::native_restore_coverage_current(nullptr,outer,coverage.outer_owner)&&!guestmods::native_restore_coverage_current(observer,nullptr,coverage.outer_owner));
+ native_hooks_sealed=false;assert(!guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));native_hooks_sealed=true;
+ native_hooks_fault=true;assert(!guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));native_hooks_fault=false;
+ dispatch::fixture_text_sealed=false;assert(!guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));dispatch::fixture_text_sealed=true;
+ const auto registered_observer=guestmods::g_native_event_observer.exchange(nullptr);assert(!guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));guestmods::g_native_event_observer=registered_observer;
+ const auto registered_outer=guestmods::g_native_outer_return_callback.exchange(nullptr);assert(!guestmods::native_restore_coverage_current(observer,outer,coverage.outer_owner));guestmods::g_native_outer_return_callback=registered_outer;
+ D::Coverage covered{{coverage.outer_owner[0],coverage.outer_owner[0],true},{coverage.outer_owner[1],coverage.outer_owner[1],true},{coverage.outer_owner[2],coverage.outer_owner[2],true},true};
+ const auto fn=GC(0x024FFA3C);auto&chain=guestmods::g_chains[fn];chain.ret={tail};
+ for(unsigned test=0;test<14;++test){D::Tracker tracker(current_expected,covered);native_observer_test::tracker=&tracker;native_observer_test::observed=true;
+  native_observer_test::descriptor={D::Entry::CameraExecute,fn,current_expected.camera.address-0x248,current_expected.camera.address-0x248,current_expected.camera.pid,0,current_expected.identity,D::Authority::Owned};
+  Cpu cpu{};cpu.pc=fn;cpu.r[3]=current_expected.camera.address-0x248;const auto before=callbacks;returned_hook=false;
+  native_wait_route_test::mode=test==1?1:test==2?2:test==3?4:test==4?5:test==5?6:test==11?8:test==12?10:test==13?8:0;route_nested_run=test==11||test==13;route_run_original_throws=test==13;
+  route_original_throws=test==6;chain.ret={test==7?throwing_tail:tail};dispatch::fixture_dispatch_tampered=test==9;
+  if(test==8)native_observer_test::descriptor.authority=D::Authority::Foreign;
+  try{if(test==10)guestmods::call_original(&cpu,fn);else ppc_mod_run(&cpu);}catch(const std::runtime_error&){}
+  assert(callbacks==before+unsigned(test==0||test==2||test==11||test==12));
+  route_original_throws=route_nested_run=route_run_original_throws=false;dispatch::fixture_dispatch_tampered=false;
+ }
+ chain.ret.clear();native_observer_test::tracker=nullptr;native_observer_test::observed=false;native_wait_route_test::mode=0;
+ assert(!guestmods::register_native_outer_return_callback(callback));
+}
+}
+
+void guest_hooks_nested_run(Cpu*c){const auto pc=c->pc,receiver=c->r[3];c->pc=GC(0x024FE3E8);c->r[3]=outer_issuer_test::current_expected.camera.address;ppc_mod_run(c);c->pc=pc;c->r[3]=receiver;assert(!guestmods::native_camera_run_original_current(c,*native_observer_test::tracker));}
+bool guest_hooks_run_query(Cpu*c,const guestmods::NativeWaitNext&next){auto&t=*native_observer_test::tracker;
+ const bool genuine=native_wait_route_test::mode!=10;assert(guestmods::native_camera_run_original_current(c,t)==genuine);
+ if(!genuine)return false;
+ try{next();}catch(...){assert(!guestmods::native_camera_run_original_current(c,t));throw;}
+ assert(guestmods::native_camera_run_original_current(c,t));return true;
+}
+
 int main() {
     assert(!guestmods::hooks_built());
-    ppc_mod_register(1, test_mod_flags, test_mod_bodies);
+    ppc_mod_register(33, test_mod_flags, test_mod_bodies);
     assert(guestmods::hooks_built());
     const char* missing="__wwhd_nonexistent_guest_build_config_for_test__.json";
     assert(!std::filesystem::exists(missing));
@@ -337,7 +716,9 @@ int main() {
 #else
     setenv("WWHD_GUEST_BUILD_CONFIG",missing,1);
 #endif
+    assert(!story_native_scene_request::startup_window_current());
     guestmods::init();
+    assert(!story_native_scene_request::startup_window_current());
     assert(mods::packages::inspected);
     Cpu c{};
     c.r[3] = 5; port(&c);
@@ -354,12 +735,17 @@ int main() {
     // ORIGINAL bypasses both mods and the port wrapper, and consumes the skip token.
     calls.clear(); c.r[3] = 20; guestmods::call_original(&c, 0x02000000);
     assert((calls == std::vector<int>{3})); assert(c.r[3] == 21); assert(c.mod_skip == 0);
+    native_observer_test::run();
+    stage_owner_pass_through_test();
+    stage_owner_observer_test::run();
+    native_wait_route_test::run();
+    // Reserve the exact synthetic guest pages; a hint can move under Guard Malloc.
     // Map only synthetic mod data for string/input/heap service checks.
     constexpr uint32_t data_base=0x7F000000;
 #ifdef _WIN32
     void* data=VirtualAlloc(mem::ptr(data_base),0x30000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
 #else
-    void* data=mmap(mem::ptr(data_base),0x30000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    void* data=mmap(mem::ptr(data_base),0x30000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
 #endif
     assert(data==mem::ptr(data_base));
     // Typed services select the owning mod by its translated import callsite.
@@ -451,7 +837,7 @@ int main() {
 #ifdef _WIN32
         void* particle_mem=VirtualAlloc(mem::ptr(0x10000000),0x10000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
 #else
-        void* particle_mem=mmap(mem::ptr(0x10000000),0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        void* particle_mem=mmap(mem::ptr(0x10000000),0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
 #endif
         assert(particle_mem==mem::ptr(0x10000000));
         st32(0x10005B34,0x10007000);st16(0x1000700E,0xA8);st32(0x10007004,55);st8(0x10007326,11);st8(0x10008326,11);
@@ -559,5 +945,13 @@ int main() {
 #else
     munmap(data,0x30000);
 #endif
+    // End the explicit startup fixture and exercise real post-seal rejection.
+    outer_issuer_test::run();
+    native_hooks_sealed=true;
+    const auto flags_before=g_mod_hook_flags;const auto bodies_before=g_mod_bodies;const auto count_before=g_mod_hook_count;
+    ppc_mod_register(0,nullptr,nullptr);
+    assert(g_mod_hook_flags==flags_before&&g_mod_bodies==bodies_before&&g_mod_hook_count==count_before&&native_hooks_fault.load());
+    assert(!guestmods::install_native_wait_routes(nullptr));
+    guestmods::init();assert(native_hooks_fault.load());
     std::puts("guest hook ordering and original passed");
 }

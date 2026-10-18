@@ -22,6 +22,12 @@ void swap();
 void set_frame_aspect(float a);  // aspect ratio of the TV picture from the next frame on (aspect.cpp)
 bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky);
 uint64_t frames_completed();
+// even frame delivery (backend.cpp; interp_pacing.h EvenSchedule), render thread: the next swap's
+// intended frame interval (ns, 0: none) and whether it is an in-between frame; the steady-clock time
+// (ns) a held TV frame is due (0: none); present it if its time has come
+void set_present_interval(uint32_t ns, bool hold);
+int64_t present_due();
+void service_present();
 void with_autorelease_pool(void (*fn)());
 void set_tv_format(uint32_t gx2Format, bool tv);
 void invalidate(uint32_t flags, uint32_t addr, uint32_t size);

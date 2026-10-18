@@ -15,6 +15,7 @@ void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std:
 bool valid_storage(uint32_t guest_profile);
 bool available(const Owner&);
 // Reserved IDs: 7FFE generic, 7FFD props, 7FFC switch, 7FFB door.
+// World objects: 7FF6; owned grapple target proxies: 7FF5.
 // Planned enemy IDs: 7FFA ChuChu, 7FF9 Bokoblin, 7FF8 Moblin, 7FF7 KeeseKI.
 // Reserving an ID does not admit an enemy or install its native adapter.
 // Once installed, unregistered reserved profiles fail closed at lookup/base-create.

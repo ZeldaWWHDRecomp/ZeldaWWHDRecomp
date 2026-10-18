@@ -120,6 +120,9 @@ Files index(const fs::path& directory, bool allow_empty_world){
         if(e.is_directory())continue;
         require(e.is_regular_file(),"Unsupported content file type");require(!lower(e.path().filename().string()).starts_with(".deleted_"),"SDCafiine file hiding is not supported yet");auto n=e.file_size();total+=n;
         require(n<=128ull*1024*1024&&total<=512ull*1024*1024,"Content size limit exceeded");
+        // Source-controlled world examples use an empty marker to keep their
+        // content folder. It is not a game replacement shared by every mod.
+        if(allow_empty_world&&e.path().filename()==".gitkeep"&&n==0)continue;
         auto relative=e.path().lexically_relative(directory).generic_string();
         require(archive::relative_path(relative),"Invalid content path");
         require(out.emplace(lower(relative),e.path().string()).second,"Duplicate content path (case insensitive)");

@@ -1,0 +1,166 @@
+{
+  "format_version": 1,
+  "id": "sdk-v3-native-scene",
+  "name": "Harbor meeting (SDK v3 preview)",
+  "version": "0.1.0",
+  "author": "SDK examples",
+  "description": "Two Windfall residents with a scripted fallback and an experimental parallel native scene alternative.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "actors": [
+    {
+      "id": "harbor-guide",
+      "actor": "resident",
+      "parameters": {
+        "resident": "uo2"
+      },
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": 100,
+        "y": 1040,
+        "z": -201500
+      },
+      "rotation": {
+        "x": 0,
+        "y": 180,
+        "z": 0
+      },
+      "lines": [
+        "Come watch the harbor with us."
+      ],
+      "then": [
+        {
+          "action": "scene",
+          "id": "harbor-meeting"
+        }
+      ]
+    },
+    {
+      "id": "harbor-friend",
+      "actor": "resident",
+      "parameters": {
+        "resident": "uo2"
+      },
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": 400,
+        "y": 1040,
+        "z": -201500
+      },
+      "rotation": {
+        "x": 0,
+        "y": 180,
+        "z": 0
+      },
+      "lines": [
+        "The evening breeze is picking up."
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "harbor-meeting",
+      "steps": [
+        {
+          "type": "face",
+          "actor": "harbor-guide",
+          "position": {
+            "x": 400,
+            "y": 1040,
+            "z": -201500
+          }
+        },
+        {
+          "type": "face",
+          "actor": "harbor-friend",
+          "position": {
+            "x": 100,
+            "y": 1040,
+            "z": -201500
+          }
+        },
+        {
+          "type": "camera",
+          "eye": {
+            "x": -500,
+            "y": 1350,
+            "z": -201100
+          },
+          "target": {
+            "x": 250,
+            "y": 1100,
+            "z": -201500
+          },
+          "frames": 240
+        },
+        {
+          "type": "wait",
+          "frames": 120
+        },
+        {
+          "type": "end"
+        }
+      ],
+      "native": {
+        "type": "turn_camera",
+        "actors": [
+          {
+            "id": "harbor-guide",
+            "turn_to": {
+              "x": 400,
+              "y": 1040,
+              "z": -201500
+            }
+          },
+          {
+            "id": "harbor-friend",
+            "turn_to": {
+              "x": 100,
+              "y": 1040,
+              "z": -201500
+            }
+          }
+        ],
+        "wait_ticks": 30,
+        "camera": {
+          "hold_ticks": 30,
+          "move_ticks": 120,
+          "start_eye": {
+            "x": -500,
+            "y": 1350,
+            "z": -201100
+          },
+          "start_target": {
+            "x": 250,
+            "y": 1100,
+            "z": -201500
+          },
+          "end_eye": {
+            "x": 1000,
+            "y": 1350,
+            "z": -201100
+          },
+          "end_target": {
+            "x": 250,
+            "y": 1100,
+            "z": -201500
+          },
+          "fovy": 45
+        },
+        "timekeeper_ticks": 300,
+        "watchdog_ticks": 600
+      }
+    }
+  ]
+}

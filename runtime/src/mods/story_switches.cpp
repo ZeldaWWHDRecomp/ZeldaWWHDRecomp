@@ -13,7 +13,7 @@ namespace story_switches {namespace {
 struct Declaration {std::string mod,id;Kind kind;uint32_t token,source=0,pid=0xFFFFFFFFu,address=0;bool ready=false,quarantined=false,committing=false;};
 std::vector<Declaration> declarations;
 std::map<uint32_t,uint32_t> backgrounds;
-uint32_t next_token=1,sw_profile=0,door_profile=0;bool installed=false;
+uint32_t next_token=1,sw_profile=0,door_profile=0;bool installed=false,editor_allowed=false,sw_live=false,door_live=false;
 void(*original)(Cpu*,uint32_t)=nullptr;
 uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
 ReadFlag read_flag;WriteFlag write_flag;Retired retired;
@@ -98,9 +98,14 @@ void door_execute(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){den
     if(!address(ld32(a+0x3B8))||!valid_door_state(ld8(a+0x3BC),int16_t(ld16(a+0x3BE)))){d->quarantined=true;c->r[3]=1;return;}bool on;if(!flag(*d,on)){c->r[3]=1;return;}original(c,DoorExecute);
 }
 void door_draw(Cpu*c){const uint32_t a=c->r[3];if(!find(a,true)){deny(c,DoorDraw,a);return;}original(c,DoorDraw);}
-uint32_t declare(const std::string&mod,const std::string&id,Kind kind,uint32_t source,std::string&why){if(installed||mod.empty()||id.empty()||declarations.size()>=128||!next_token)return why="invalid native switch/door declaration",0;for(const auto&d:declarations)if(d.mod==mod&&d.id==id)return why="duplicate native switch/door",0;if(kind==Kind::Door){auto*s=get(source);if(!s||s->kind!=Kind::Switch||s->mod!=mod)return why="door must reference a same-mod switch",0;}const uint32_t token=next_token++;declarations.push_back({mod,id,kind,token,source});return token;}
+uint32_t declare(const std::string&mod,const std::string&id,Kind kind,uint32_t source,std::string&why,bool editor=false){if((installed&&!editor)||mod.empty()||id.empty()||declarations.size()>=128||!next_token)return why="invalid native switch/door declaration",0;for(const auto&d:declarations)if(d.mod==mod&&d.id==id)return why="duplicate native switch/door",0;if(kind==Kind::Door){auto*s=get(source);if(!s||s->kind!=Kind::Switch||s->mod!=mod)return why="door must reference a same-mod switch",0;}const uint32_t token=next_token++;declarations.push_back({mod,id,kind,token,source});return token;}
 }
 uint32_t declare_switch(const std::string&m,const std::string&i,std::string&w){return declare(m,i,Kind::Switch,0,w);}
+void editor_enable(){editor_allowed=true;}
+bool live(Kind k){return installed&&(k==Kind::Switch?sw_live:door_live);}
+uint32_t editor_declare_switch(const std::string&m,const std::string&i,std::string&w){if(!live(Kind::Switch)||!editor_allowed)return w="a switch appears after a restart",0;const uint32_t t=declare(m,i,Kind::Switch,0,w,true);if(t)LOG("[native_switch] %s:%s declared by the editor",m.c_str(),i.c_str());return t;}
+uint32_t editor_declare_door(const std::string&m,const std::string&i,uint32_t s,std::string&w){if(!live(Kind::Door)||!editor_allowed)return w="a door appears after a restart",0;const uint32_t t=declare(m,i,Kind::Door,s,w,true);if(t)LOG("[native_door] %s:%s declared by the editor",m.c_str(),i.c_str());return t;}
+bool editor_set_source(uint32_t door,uint32_t source,std::string&w){auto*d=get(door);auto*sw=get(source);if(!d||d->kind!=Kind::Door||!sw||sw->kind!=Kind::Switch||sw->mod!=d->mod)return w="door must reference a same-mod switch",false;d->source=source;return true;}
 uint32_t declare_door(const std::string&m,const std::string&i,uint32_t s,std::string&w){return declare(m,i,Kind::Door,s,w);}
 size_t checkpoint(){return declarations.size();}void rollback(size_t n)noexcept{if(!installed&&n<=declarations.size())declarations.resize(n);}
 void bind(uint32_t token,uint32_t pid,bool restored){if(auto*d=get(token)){d->pid=pid;d->address=0;d->ready=restored;}}
@@ -109,13 +114,13 @@ void retry(uint32_t token){if(auto*d=get(token)){d->quarantined=false;d->committ
 void quarantine(uint32_t token){if(auto*d=get(token))d->quarantined=true;}
 void state_loaded(){backgrounds.clear();for(auto&d:declarations){d.pid=0xFFFFFFFFu;d.address=0;d.ready=false;d.quarantined=false;d.committing=false;}}
 void configure(void(*o)(Cpu*,uint32_t),uint32_t(*call_fn)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t sw,uint32_t door,ReadFlag read,WriteFlag write,Retired notify){if(installed)return;original=o;invoke=call_fn;sw_profile=sw;door_profile=door;read_flag=std::move(read);write_flag=std::move(write);retired=std::move(notify);native_actor_profiles::configure(o,call_fn);}
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if(declarations.empty()||!original||!invoke||!read_flag||!write_flag||!native_actor_profiles::available(owner))return false;
-    bool sw=false,door=false;for(const auto&d:declarations){sw|=d.kind==Kind::Switch;door|=d.kind==Kind::Door;}
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if((declarations.empty()&&!editor_allowed)||!original||!invoke||!read_flag||!write_flag||!native_actor_profiles::available(owner))return false;
+    bool sw=editor_allowed,door=editor_allowed;for(const auto&d:declarations){sw|=d.kind==Kind::Switch;door|=d.kind==Kind::Door;}
     const std::pair<uint32_t,void(*)(Cpu*)> sw_hooks[]={{SwCreate,switch_create},{SwDelete,switch_delete},{SwExecute,switch_execute},{SwDraw,switch_draw},{Upper,upper},{Lower,lower},{Lowering,lowering},{Btp,btp},{DemoSwitch,demo_switch},{DemoPause,demo_pause},{Ride,ride}};
     const std::pair<uint32_t,void(*)(Cpu*)> door_hooks[]={{DoorCreate,door_create},{DoorDelete,door_delete},{DoorExecute,door_execute},{DoorDraw,door_draw},{DoorClosed,door_closed},{DoorOpen,door_open}};
     if(sw)for(const auto&h:sw_hooks)if(!owner(h.first).empty())return false;if(door)for(const auto&h:door_hooks)if(!owner(h.first).empty())return false;
     if(sw){if(!native_actor_profiles::valid_storage(sw_profile)||ld32(GD(0x101CD034)+0x10)!=kSwitchClassBytes)return false;std::memcpy(mem::ptr(sw_profile),mem::ptr(GD(0x101CD034)),0x30);st16(sw_profile+8,kSwitchProfile);if(!native_actor_profiles::add(kSwitchProfile,sw_profile))return false;}
     if(door){if(!native_actor_profiles::valid_storage(door_profile)||ld32(GD(0x1018FFE8)+0x10)!=kDoorClassBytes)return false;std::memcpy(mem::ptr(door_profile),mem::ptr(GD(0x1018FFE8)),0x30);st16(door_profile+8,kDoorProfile);if(!native_actor_profiles::add(kDoorProfile,door_profile))return false;}
-    if(!native_actor_profiles::install(owner,replace))return false;if(sw)for(const auto&h:sw_hooks)replace(h.first,h.second);if(door)for(const auto&h:door_hooks)replace(h.first,h.second);installed=true;return true;
+    if(!native_actor_profiles::install(owner,replace))return false;if(sw)for(const auto&h:sw_hooks)replace(h.first,h.second);if(door)for(const auto&h:door_hooks)replace(h.first,h.second);installed=true;sw_live=sw;door_live=door;return true;
 }
 }

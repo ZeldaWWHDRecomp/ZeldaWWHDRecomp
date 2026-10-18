@@ -1,5 +1,6 @@
 #include "game_clock.h"
 #include "mods/fast_forward.h"
+#include "mods/story_native_stage_owner.h"
 // Guest threads run on host pthreads. OS synchronization objects live in guest
 // memory (the game allocates them) and are backed by host objects keyed by
 // their guest address.
@@ -29,6 +30,8 @@
 #include <vector>
 
 #include "runtime.h"
+#include "native_quiescence.h"
+#include "native_quiescence_audit.h"
 #include "savestate.h"
 #include "state_metadata_validation.h"
 #include "scheduler_tick.h"
@@ -87,11 +90,16 @@ enum State : uint8_t { NONE = 0, READY = 1, RUNNING = 2, WAITING = 4, MORIBUND =
 struct HostThread {
     uint32_t guest = 0;  // OSThread*
     Cpu cpu{};
+    // Captured once at create_thread, separate from mutable guest OSThread
+    // fields. threads_ss_load leaves these invalid for recreated threads.
+    uint32_t stack_bottom = 0, stack_top = 0;
+    bool stack_bounds_valid = false;
     std::mutex m;
     std::condition_variable cv;
     int suspend = 1;
-    bool started = false;
-    bool exited = false;
+    std::atomic<bool> initialized{false};
+    std::atomic<bool> started{false};
+    std::atomic<bool> exited{false};
     uint32_t exit_value = 0;
     uint32_t entry = 0, argc = 0, argv = 0;
     uint32_t core = 1;  // emulated core this thread is bound to (for OSGetCoreId)
@@ -145,6 +153,19 @@ static uint16_t g_next_id = 1;
 namespace threads {
 Cpu* current() { return t_cpu; }
 uint32_t current_thread() { return t_self ? t_self->guest : 0; }
+bool current_stack_bounds(const Cpu* c, uint32_t& bottom, uint32_t& top) {
+    bottom=top=0;
+    HostThread* const t=t_self;
+    if(!c||!t||t_cpu!=c||c!=&t->cpu||c->thread!=t||!t->guest||
+       !t->stack_bounds_valid)return false;
+    const uint32_t sp=c->r[1];
+    // Native callers can reserve frames such as 0x18; stack ownership is a
+    // read-only query. Invocation adapters enforce their own alignment.
+    if((sp&7)||uint64_t(sp)<uint64_t(t->stack_bottom)+0x40||
+       sp>t->stack_top)return false;
+    bottom=t->stack_bottom;top=t->stack_top;
+    return true;
+}
 }  // namespace threads
 
 // ---------------------------------------------------------------- per-core scheduling
@@ -414,6 +435,11 @@ static std::mutex g_frz_m;
 static std::condition_variable g_frz_cv;
 static bool g_frozen = false;
 static HostThread* g_frz_owner = nullptr;
+static threads::detail::FreezeOwnership g_freeze_ownership;
+static bool g_freeze_success=false;
+static thread_local std::vector<threads::detail::FreezeClaim> legacy_freeze_attempts;
+static const void* freeze_owner_tag(){return t_self?static_cast<const void*>(t_self):static_cast<const void*>(&t_cpu);}
+
 
 static void park_gate(HostThread* t) {
     std::unique_lock<std::mutex> l(g_frz_m);
@@ -619,6 +645,10 @@ static void* thread_main(void* p) {
     LOG("[thread] start \"%s\" core %d prio %d affinity %X", name.c_str(), ht->core, (int)ld32(ht->guest + osthread::kBasePrio),
         ld32(ht->guest + osthread::kAffinity));
     uint32_t rv = 0;
+    // A thread resumed while another owner holds an authenticated freeze must
+    // not execute its first guest instruction before passing the same gate.
+    ht->wst.store(kParked);
+    park_gate(ht);
     core_acquire(ht);
     try {
         rv = guest_call(&ht->cpu, ht->entry, {ht->argc, ht->argv});
@@ -628,10 +658,11 @@ static void* thread_main(void* p) {
     core_release(ht);
     {
         std::lock_guard<std::mutex> lk(ht->m);
-        ht->exited = true;
         ht->exit_value = rv;
         st32(ht->guest + osthread::kExitValue, rv);
         st8(ht->guest + osthread::kState, osthread::MORIBUND);
+        // Publish quiescence only after the final guest-memory writes.
+        ht->exited.store(true, std::memory_order_release);
     }
     ht->cv.notify_all();
     TRACE("[thread] %s exited with %08X", name.c_str(), rv);
@@ -668,9 +699,17 @@ static void init_cpu(Cpu& c, uint32_t stack_top) {
 }
 
 static HostThread* create_thread(uint32_t t, uint32_t entry, uint32_t argc, uint32_t argv, uint32_t stack_top,
-                                 uint32_t stack_size, int prio, uint32_t attr) {
+                                 uint32_t stack_size, int prio, uint32_t attr, bool service = false) {
     auto* ht = new HostThread();
-    ht->guest = t;
+    ht->guest = t;ht->service=service;
+    const uint64_t bottom=uint64_t(stack_top)-stack_size;
+    const bool mem2=stack_size&&bottom>=mem::kMem2Start&&stack_top<=mem::kMem2End;
+    const bool runtime=stack_size&&bottom>=mem::kRuntimeStart&&stack_top<=mem::kHostStart;
+    if((mem2||runtime)&&bottom<stack_top){
+        ht->stack_bottom=uint32_t(bottom);
+        ht->stack_top=stack_top;
+        ht->stack_bounds_valid=true;
+    }
     ht->entry = entry;
     ht->argc = argc;
     ht->argv = argv;
@@ -692,6 +731,9 @@ static HostThread* create_thread(uint32_t t, uint32_t entry, uint32_t argc, uint
     ht->core = core_from_affinity(attr, t_self ? t_self->core : 1);
     ht->cpu.core = ht->core;
     ht->prio = prio;
+    // Publish normal construction before insertion. Service initialization
+    // continues in make_service_cpu and remains visibly incomplete meanwhile.
+    ht->initialized.store(!service, std::memory_order_release);
     std::lock_guard<std::mutex> lk(g_threads_mutex);
     g_threads[t] = ht;
     return ht;
@@ -729,17 +771,17 @@ Cpu* make_service_cpu(const char* name, uint32_t stack_size) {
     // host-only memory: service threads start at different times in different sessions
     uint32_t stack = mem::host_alloc(stack_size, 0x100);
     uint32_t t = mem::host_alloc(osthread::kSize, 8);
-    HostThread* ht = create_thread(t, 0, 0, 0, stack + stack_size, stack_size, 0, 0x7);
+    HostThread* ht = create_thread(t, 0, 0, 0, stack + stack_size, stack_size, 0, 0x7, true);
     ht->prio = -1;  // interrupt-like: preempts guest threads
-    ht->service = true;
     uint32_t nm = mem::host_alloc((uint32_t)strlen(name) + 1);
     mem::write_cstr(nm, name, (uint32_t)strlen(name) + 1);
     st32(t + osthread::kName, nm);
     t_self = ht;
     t_cpu = &ht->cpu;
-    ht->started = true;
     ht->wait_kind = W_SERVICE;
     ht->wst.store(kParked);  // idle until service_begin
+    ht->started.store(true, std::memory_order_relaxed);
+    ht->initialized.store(true, std::memory_order_release);
     host::boost_thread_priority();
     return &ht->cpu;
 }
@@ -783,7 +825,7 @@ HLE(coreinit, OSJoinThread) {
     if (!ht) { ret(c, 0); return; }
     {
         std::unique_lock<std::mutex> lk(ht->m);
-        park_wait(lk, ht->cv, [&] { return ht->exited; }, W_JOIN, arg(c, 0));
+        park_wait(lk, ht->cv, [&] { return ht->exited.load(); }, W_JOIN, arg(c, 0));
     }
     if (arg(c, 1)) st32(arg(c, 1), ht->exit_value);
     ret(c, 1);
@@ -1285,9 +1327,14 @@ static std::string thread_name(HostThread* t) {
 
 bool quiesce(int timeout_ms, std::string& busy, int entry_mode, int entry_after_ms) {
     HostThread* me = t_self;
+    legacy_freeze_attempts.emplace_back();
     {
         std::lock_guard<std::mutex> l(g_frz_m);
-        g_frozen = true;
+        auto&claim=legacy_freeze_attempts.back();
+        if(g_frozen||!g_freeze_ownership.claim(detail::FreezeKind::Legacy,freeze_owner_tag(),claim)){
+            busy="another freeze already owns the requester";return false;
+        }
+        g_frozen = true;g_freeze_success=false;
         g_frz_owner = me;
     }
     if (me) me->wst.store(kRequester);
@@ -1311,17 +1358,20 @@ bool quiesce(int timeout_ms, std::string& busy, int entry_mode, int entry_after_
                 }
             }
         }
-        if (busy.empty()) { g_entry_parks = 0; return true; }
+        if (busy.empty()) { g_entry_parks = 0;std::lock_guard lock(g_frz_m);g_freeze_success=g_freeze_ownership.current(legacy_freeze_attempts.back());return g_freeze_success; }
         if (std::chrono::steady_clock::now() > end) { g_entry_parks = 0; return false; }
         std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
 }
 
 void thaw() {
-    g_entry_parks = 0;
+    if(legacy_freeze_attempts.empty())return;
+    const auto claim=legacy_freeze_attempts.back();legacy_freeze_attempts.pop_back();
+    if(!claim.epoch)return; // a rejected nested/conflicting attempt owns nothing
     {
         std::lock_guard<std::mutex> l(g_frz_m);
-        g_frozen = false;
+        if(!g_freeze_ownership.release(claim))return;
+        g_entry_parks = 0;g_frozen = false;g_freeze_success=false;
         g_frz_owner = nullptr;
     }
     g_frz_cv.notify_all();
@@ -1329,6 +1379,118 @@ void thaw() {
     block_end();
     if (me) me->wst.store(kRunning);
 }
+
+namespace {
+struct ParkedThread {
+ uint32_t guest;HostThread*thread;bool initialized,started,exited;int state;
+ bool operator==(const ParkedThread&)const=default;
+};
+std::vector<ParkedThread> parked_set(HostThread*owner,bool&parked){
+ std::vector<ParkedThread>result;parked=true;
+ for(const auto&[guest,t]:g_threads){
+  const bool initialized=t->initialized.load(std::memory_order_acquire),started=t->started.load(),exited=t->exited.load();const int state=t->wst.load();
+  if(!initialized)parked=false;
+  if(t!=owner&&started&&!exited&&state!=kParked)parked=false;
+  result.push_back({guest,t,initialized,started,exited,t==owner?kRequester:state});
+ }
+ std::sort(result.begin(),result.end(),[](const auto&a,const auto&b){return a.guest<b.guest;});return result;
+}
+bool owns_core(HostThread*t,uint32_t core){
+ if(!g_sched_on||core>=3||!t->holds_core||t->held_core!=core||t->core!=core||t->cpu.core!=core)return false;
+ std::lock_guard lock(g_sched[core].m);return g_sched[core].owner==t;
+}
+// True only while this host owns the real registry lock in a borrowed read window.
+thread_local bool borrowed_registry_held=false;
+struct NativeFreezeState {
+ HostThread*owner=nullptr;Cpu*cpu=nullptr;story_native_event_game_thread::Ticket ticket{};
+ detail::FreezeClaim claim{};uint32_t core=0;int previous_state=kRunning;bool active=false;
+ std::thread::id host=std::this_thread::get_id();
+ std::unique_lock<std::mutex>registry;
+ std::vector<ParkedThread>set;
+ bool current(const Cpu*c)const{
+  if(!active||host!=std::this_thread::get_id()||t_self!=owner||t_cpu!=cpu||c!=cpu||cpu->thread!=owner||!registry.owns_lock()||owner->wst.load()!=kRequester||!story_native_event_game_thread::verify(cpu,ticket)||!owns_core(owner,core))return false;
+  std::lock_guard freeze(g_frz_m);
+  if(!g_frozen||g_frz_owner!=owner||!g_freeze_success||!g_freeze_ownership.current(claim)||g_entry_parks.load())return false;
+  bool parked=false;return parked_set(owner,parked)==set&&parked;
+ }
+ void release(){
+  if(!active)return;if(host!=std::this_thread::get_id()||t_self!=owner||t_cpu!=cpu)std::terminate();
+  // Regain the original core before opening gates, including every timeout.
+  core_acquire(owner);
+  if(registry.owns_lock())registry.unlock();
+  {std::lock_guard freeze(g_frz_m);if(!g_freeze_ownership.release(claim))std::terminate();g_frozen=false;g_frz_owner=nullptr;g_freeze_success=false;g_entry_parks=0;}
+  active=false;owner->wst.store(previous_state);g_frz_cv.notify_all();
+ }
+ ~NativeFreezeState(){release();}
+};
+}
+struct BorrowedNativeReadState {
+ HostThread*owner;Cpu*cpu;story_native_event_game_thread::Ticket ticket;detail::FreezeClaim claim;
+ std::thread::id host=std::this_thread::get_id();std::unique_lock<std::mutex>registry;
+ std::vector<ParkedThread>set;bool active=false;
+ bool current(const Cpu*c)const{
+  if(!active||host!=std::this_thread::get_id()||!borrowed_registry_held||!registry.owns_lock()||t_self!=owner||t_cpu!=cpu||c!=cpu||cpu->thread!=owner||!story_native_event_game_thread::verify(cpu,ticket)||legacy_freeze_attempts.empty()||legacy_freeze_attempts.back()!=claim)return false;
+  std::lock_guard freeze(g_frz_m);bool parked=false;return g_frozen&&g_frz_owner==owner&&g_freeze_success&&g_freeze_ownership.current(claim)&&owner->wst.load()==kRequester&&!g_entry_parks.load()&&parked_set(owner,parked)==set&&parked;
+ }
+ void release(){if(!active)return;if(host!=std::this_thread::get_id())std::terminate();active=false;borrowed_registry_held=false;registry.unlock();}
+ ~BorrowedNativeReadState(){release();}
+};
+class NativeQuiescenceIssuer {
+public:
+ static std::optional<NativeQuiescence>borrow(Cpu*c,story_native_event_game_thread::Ticket ticket,const QuiescenceWitness&w,std::string&why){
+  why.clear();HostThread*me=t_self;uint32_t bottom=0,top=0;
+  if(borrowed_registry_held||current_thread_holds_native_quiescence()||!c||!me||t_cpu!=c||c!=&me->cpu||c->thread!=me||me->service||!me->initialized.load(std::memory_order_acquire)||!me->started.load()||me->exited.load()||me->wst.load()!=kRequester||me->irq_off||!story_native_event_game_thread::verify(c,ticket)||!current_stack_bounds(c,bottom,top)){why="borrowed legacy requester";return {};}
+  if(story_native_stage_owner::current_thread_holds_lifetime_pin()){why="Stage lifetime pin held before borrowed read";return {};}
+  if(!w.current(c)){why="not current legacy park";return {};}
+  try{
+   auto state=std::make_shared<BorrowedNativeReadState>();state->owner=me;state->cpu=c;state->ticket=ticket;state->claim=legacy_freeze_attempts.back();state->registry=std::unique_lock<std::mutex>(g_threads_mutex);bool parked=false;state->set=parked_set(me,parked);if(!parked){why="legacy registry not parked";return {};}
+   borrowed_registry_held=true;state->active=true;if(!w.current(c)||!state->current(c)){why="legacy park changed";return {};}
+   return NativeQuiescence([state](const Cpu*p){return state->current(p);},[state]{state->release();},true);
+  }catch(...){why="borrowed legacy capture failed";return {};}
+ }
+
+ static std::optional<NativeQuiescence> acquire(Cpu*c,story_native_event_game_thread::Ticket ticket,int timeout_ms,std::string&why){
+  why.clear();HostThread*me=t_self;uint32_t bottom=0,top=0;
+  if(timeout_ms<1||timeout_ms>250||!c||!me||t_cpu!=c||c!=&me->cpu||c->thread!=me||me->service||!me->initialized.load(std::memory_order_acquire)||!me->started.load()||me->exited.load()||me->wst.load()!=kRunning||me->irq_off||!story_native_event_game_thread::verify(c,ticket)||!current_stack_bounds(c,bottom,top)||!owns_core(me,me->core)){why="native requester";return {};}
+  if(story_native_stage_owner::current_thread_holds_lifetime_pin()){why="Stage lifetime pin held before native freeze";return {};}
+  const Cpu saved=*c;auto state=std::make_shared<NativeFreezeState>();state->owner=me;state->cpu=c;state->ticket=ticket;state->core=me->core;state->previous_state=me->wst.load();
+  {std::lock_guard freeze(g_frz_m);if(g_frozen||g_entry_parks.load()||!g_freeze_ownership.claim(detail::FreezeKind::Native,me,state->claim)){why="freeze already owned";return {};}g_frozen=true;g_frz_owner=me;g_freeze_success=false;state->active=true;}
+  me->wst.store(kRequester);core_release(me);
+  const auto start=std::chrono::steady_clock::now();const auto deadline=start+std::chrono::milliseconds(timeout_ms);
+  try{for(;;){
+   std::unique_lock registry(g_threads_mutex);bool parked=false;auto set=parked_set(me,parked);
+   if(parked){
+    state->registry=std::move(registry);state->set=std::move(set);
+    {std::lock_guard freeze(g_frz_m);if(!g_freeze_ownership.current(state->claim)){why="freeze revoked";break;}g_freeze_success=true;g_entry_parks=0;}
+    core_acquire(me);
+    if(std::memcmp(c,&saved,sizeof(Cpu))||!state->current(c)){why="requester changed";break;}
+    return NativeQuiescence([state](const Cpu*cpu){return state->current(cpu);},[state]{state->release();});
+   }
+   registry.unlock();const auto now=std::chrono::steady_clock::now();
+   if(now>=deadline){why="guest threads not parked";break;}
+   if(now-start>=std::chrono::milliseconds(std::min(10,timeout_ms/2))){g_entry_parks=1;for(unsigned core=0;core<3;++core)g_core_preempt[core]=1;}
+   std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }}catch(...){why="quiescence capture failed";}
+  state->release();std::memcpy(c,&saved,sizeof(Cpu));return {};
+ }
+ static std::optional<QuiescenceWitness> legacy(Cpu*c){
+  HostThread*me=t_self;const auto host=std::this_thread::get_id();if(!c||!me||t_cpu!=c||c!=&me->cpu||c->thread!=me||legacy_freeze_attempts.empty())return {};
+  const auto claim=legacy_freeze_attempts.back();
+  const auto owns=[me,claim]{return claim.kind==detail::FreezeKind::Legacy&&g_frozen&&g_frz_owner==me&&g_freeze_success&&g_freeze_ownership.current(claim)&&me->wst.load()==kRequester;};
+  {std::lock_guard freeze(g_frz_m);if(!owns())return {};}
+  std::unique_lock registry(g_threads_mutex,std::defer_lock);if(!borrowed_registry_held)registry.lock();bool parked=false;const auto set=parked_set(me,parked);if(!parked)return {};
+  return QuiescenceWitness([c,me,host,claim,set](const Cpu*cpu){
+   if(host!=std::this_thread::get_id()||cpu!=c||t_cpu!=c||t_self!=me||c->thread!=me||legacy_freeze_attempts.empty()||legacy_freeze_attempts.back()!=claim)return false;
+   {std::lock_guard freeze(g_frz_m);if(!g_frozen||g_frz_owner!=me||!g_freeze_success||!g_freeze_ownership.current(claim)||me->wst.load()!=kRequester)return false;}
+   std::unique_lock registry(g_threads_mutex,std::defer_lock);if(!borrowed_registry_held)registry.lock();std::lock_guard freeze(g_frz_m);bool parked=false;
+   return g_frozen&&g_frz_owner==me&&g_freeze_success&&g_freeze_ownership.current(claim)&&parked_set(me,parked)==set&&parked;
+  });
+ }
+};
+std::optional<NativeQuiescence>try_native_quiescence(Cpu*c,story_native_event_game_thread::Ticket ticket,int timeout_ms,std::string&why){return NativeQuiescenceIssuer::acquire(c,ticket,timeout_ms,why);}
+std::optional<NativeQuiescence>borrow_native_read_quiescence(Cpu*c,story_native_event_game_thread::Ticket t,const QuiescenceWitness&w,std::string&why){return NativeQuiescenceIssuer::borrow(c,t,w,why);}
+std::optional<QuiescenceWitness>current_quiescence(Cpu*c){return NativeQuiescenceIssuer::legacy(c);}
+
 }  // namespace threads
 
 namespace {
@@ -1577,6 +1739,7 @@ void threads_ss_load(ss::Reader& r) {
             t->core = s.core;
             t->exit_value = s.exit_value;
             t->woken = s.woken;
+            t->initialized.store(true, std::memory_order_release);
             (void)self;
         }
     }

@@ -45,6 +45,7 @@ struct Job {
     bool tv = false;
     bool bgra = false;
     std::chrono::steady_clock::time_point queued;
+    uint32_t max_width = 0;  // a capture's
 };
 std::deque<Job>& g_jobs = *new std::deque<Job>;
 std::condition_variable& g_cv = *new std::condition_variable;
@@ -69,17 +70,53 @@ std::vector<uint64_t> scripted_frames() {
 void put_be32(std::vector<uint8_t>& o, uint32_t v) {
     for (int s = 24; s >= 0; s -= 8) o.push_back(uint8_t(v >> s));
 }
-void chunk(FILE* f, const char* type, const uint8_t* data, size_t n, bool& ok) {
-    std::vector<uint8_t> head;
-    put_be32(head, uint32_t(n));
-    head.insert(head.end(), type, type + 4);
+void chunk(std::vector<uint8_t>& o, const char* type, const uint8_t* data, size_t n) {
+    put_be32(o, uint32_t(n));
+    const size_t at = o.size();
+    o.insert(o.end(), type, type + 4);
+    if (n) o.insert(o.end(), data, data + n);
     uLong crc = crc32(0, Z_NULL, 0);
-    crc = crc32(crc, (const Bytef*)type, 4);
-    if (n) crc = crc32(crc, data, uInt(n));
-    std::vector<uint8_t> tail;
-    put_be32(tail, uint32_t(crc));
-    ok = ok && fwrite(head.data(), 1, head.size(), f) == head.size() && (!n || fwrite(data, 1, n, f) == n) &&
-         fwrite(tail.data(), 1, tail.size(), f) == tail.size();
+    crc = crc32(crc, o.data() + at, uInt(4 + n));
+    put_be32(o, uint32_t(crc));
+}
+
+// A tool client's capture (capture()): the next frame's picture in memory. Its paths are marked so the
+// renderers' usual calls (take, write_async) carry it without knowing about it.
+const char kCaptureTv[] = "\001capture:tv", kCaptureGamePad[] = "\001capture:gamepad";
+struct Capture {
+    bool pending = false;  // waiting for take()
+    bool active = false;   // taken: waiting for its picture
+    bool gamepad = false;
+    uint32_t max_width = 0;
+    CaptureDone done;
+};
+Capture& g_capture = *new Capture;  // under g_mu
+bool is_capture(const std::string& path) { return !path.empty() && path[0] == '\001'; }
+
+// RGBA8 (BGRA8) pixels scaled down to at most `max_width` wide (area average), tightly packed RGBA8
+std::vector<uint8_t> scaled(uint32_t w, uint32_t h, size_t stride, const uint8_t* px, bool bgra, uint32_t max_width, uint32_t& ow, uint32_t& oh) {
+    ow = w, oh = h;
+    if (max_width && w > max_width) {
+        ow = max_width;
+        oh = std::max<uint32_t>(1, uint32_t((uint64_t(h) * max_width + w / 2) / w));
+    }
+    std::vector<uint8_t> out(size_t(ow) * oh * 4);
+    for (uint32_t y = 0; y < oh; y++) {
+        const uint32_t y0 = uint32_t(uint64_t(y) * h / oh), y1 = std::max(y0 + 1, uint32_t(uint64_t(y + 1) * h / oh));
+        for (uint32_t x = 0; x < ow; x++) {
+            const uint32_t x0 = uint32_t(uint64_t(x) * w / ow), x1 = std::max(x0 + 1, uint32_t(uint64_t(x + 1) * w / ow));
+            uint32_t sum[4] = {};
+            for (uint32_t sy = y0; sy < y1; sy++)
+                for (uint32_t sx = x0; sx < x1; sx++)
+                    for (int c = 0; c < 4; c++) sum[c] += px[size_t(sy) * stride + size_t(sx) * 4 + c];
+            const uint32_t n = (y1 - y0) * (x1 - x0);
+            uint8_t* o = out.data() + (size_t(y) * ow + x) * 4;
+            for (int c = 0; c < 4; c++) o[c] = uint8_t((sum[c] + n / 2) / n);
+            if (bgra) std::swap(o[0], o[2]);
+            o[3] = 255;
+        }
+    }
+    return out;
 }
 
 void worker() {
@@ -94,6 +131,21 @@ void worker() {
             g_cv.wait(lk, [] { return !g_jobs.empty(); });
             j = std::move(g_jobs.front());
             g_jobs.pop_front();
+        }
+        if (is_capture(j.path)) {
+            uint32_t w = 0, h = 0;
+            CaptureDone done;
+            {
+                std::lock_guard<std::mutex> lk(g_mu);
+                done = std::move(g_capture.done);
+                g_capture = Capture{};
+            }
+            const std::vector<uint8_t> rgba = scaled(j.w, j.h, j.stride, j.pixels, j.bgra, j.max_width, w, h);
+            j.owner.reset();
+            std::vector<uint8_t> png;
+            const bool ok = encode_png(w, h, size_t(w) * 4, rgba.data(), false, png);
+            if (done) done(ok ? std::string(png.begin(), png.end()) : std::string(), w, h, ok ? std::string() : "the picture could not be encoded");
+            continue;
         }
         auto t0 = std::chrono::steady_clock::now();
         std::string tmp = j.path + ".part";
@@ -261,6 +313,17 @@ void note_swap(uint64_t frame) {
 bool take(uint64_t frame, std::string& tv, std::string& gamepad) {
     static const std::vector<uint64_t> scripted = scripted_frames();
     note_swap(frame);
+    {
+        // a tool client's capture first (a player's screenshot waits for the next frame)
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_capture.pending) {
+            g_capture.pending = false;
+            g_capture.active = true;
+            tv = kCaptureTv;
+            gamepad = g_capture.gamepad ? kCaptureGamePad : "";
+            return true;
+        }
+    }
     bool want = g_requests.exchange(0) > 0;
     if (!scripted.empty() && std::find(scripted.begin(), scripted.end(), frame) != scripted.end()) want = true;
     if (!want) return false;
@@ -295,6 +358,21 @@ void write_async(const std::string& path, uint32_t width, uint32_t height, size_
         std::thread(worker).detach();
         g_worker = true;
     }
+    if (is_capture(path)) {
+        // only the picture asked for: the TV picture comes with every capture (the renderers need it)
+        if (!g_capture.active || (path == kCaptureGamePad) != g_capture.gamepad) return;
+        if (!pixels || !width || !height) {
+            CaptureDone done = std::move(g_capture.done);
+            g_capture = Capture{};
+            if (done) done({}, 0, 0, path == kCaptureGamePad ? "the GamePad picture is not shown (GamePad window or picture-in-picture)" : "no picture");
+            return;
+        }
+        Job j{path, width, height, stride, pixels, std::move(owner), frame, tv, bgra, std::chrono::steady_clock::now()};
+        j.max_width = g_capture.max_width;
+        g_jobs.push_back(std::move(j));
+        g_cv.notify_one();
+        return;
+    }
     if (!pixels || !width || !height) {
         g_reserved.erase(path);
         g_cv_done.notify_all();
@@ -304,7 +382,8 @@ void write_async(const std::string& path, uint32_t width, uint32_t height, size_
     g_cv.notify_one();
 }
 
-bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra) {
+bool encode_png(uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra, std::vector<uint8_t>& out) {
+    out.clear();
     if (!width || !height || !rgba) return false;
     // scanlines: one filter byte + RGB; per row the filter (None, Sub, Up, Average, Paeth) with the
     // smallest sum of absolute differences (the usual heuristic: well compressible, cheap)
@@ -357,21 +436,39 @@ bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t 
     std::vector<uint8_t> z(zn);
     // level 4: a third of level 6's time on game pictures (about 0.2 s at 2x 21:9), 7% larger
     if (compress2(z.data(), &zn, filtered.data(), uLong(filtered.size()), 4) != Z_OK) return false;
-    FILE* f = fopen(path.c_str(), "wb");
-    if (!f) return false;
     static const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-    bool ok = fwrite(sig, 1, 8, f) == 8;
+    out.assign(sig, sig + 8);
     std::vector<uint8_t> ihdr;
     put_be32(ihdr, width);
     put_be32(ihdr, height);
     ihdr.insert(ihdr.end(), {8, 2, 0, 0, 0});  // 8 bit, RGB, deflate, adaptive filtering, no interlace
-    chunk(f, "IHDR", ihdr.data(), ihdr.size(), ok);
+    chunk(out, "IHDR", ihdr.data(), ihdr.size());
     const uint8_t srgb = 0;  // sRGB, perceptual intent: the values are display-encoded sRGB
-    chunk(f, "sRGB", &srgb, 1, ok);
-    chunk(f, "IDAT", z.data(), zn, ok);
-    chunk(f, "IEND", nullptr, 0, ok);
+    chunk(out, "sRGB", &srgb, 1);
+    chunk(out, "IDAT", z.data(), zn);
+    chunk(out, "IEND", nullptr, 0);
+    return true;
+}
+
+bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra) {
+    std::vector<uint8_t> png;
+    if (!encode_png(width, height, stride, rgba, bgra, png)) return false;
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return false;
+    bool ok = fwrite(png.data(), 1, png.size(), f) == png.size();
     ok = fclose(f) == 0 && ok;
     return ok;
+}
+
+bool capture(bool gamepad, uint32_t max_width, CaptureDone done) {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_capture.pending || g_capture.active) return false;
+    g_capture = Capture{true, false, gamepad, max_width, std::move(done)};
+    return true;
+}
+void cancel_capture() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_capture = Capture{};
 }
 
 }  // namespace screenshot

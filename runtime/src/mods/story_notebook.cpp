@@ -262,6 +262,19 @@ struct LivePlace {
 LivePlace g_live;
 constexpr uint64_t kLiveSteps = 30;
 
+// An interior's chart marker is its declared sea entrance, not the local
+// coordinates of a resident visited on the way. Code-owned places keep the
+// existing sea-place/following behaviour.
+bool interior_place(const Quest&q,uint8_t saved){
+    if(q.texts_from_mod)return false;
+    const unsigned step=saved?saved:1;
+    std::lock_guard lock(g_mu);
+    for(const auto&d:g_declared)if(d.key==q.key&&d.mod==q.mod&&d.quest.id==q.id)
+        for(const auto&st:d.quest.steps)if(st.n==step)
+            return st.has_place&&st.destination.stage!="sea";
+    return false;
+}
+
 // story_chart's source of the tracked quest's marker (game thread)
 bool tracked_marker(float& x, float& z, std::string& label) {
     if (!have_save()) return false;
@@ -280,7 +293,7 @@ bool tracked_marker(float& x, float& z, std::string& label) {
     }
     no_place_logged = 0;
     x = q->x, z = q->z, label = q->title;
-    if (g_live.quest == q->key && g_live.step == saved_step(book(), q->key) && g_step.load() - g_live.at <= kLiveSteps)
+    if (!interior_place(*q,saved_step(book(),q->key)) && g_live.quest == q->key && g_live.step == saved_step(book(), q->key) && g_step.load() - g_live.at <= kLiveSteps)
         x = g_live.x, z = g_live.z;
     return true;
 }
@@ -958,6 +971,31 @@ int32_t no_place(const std::string& mod, const std::string& quest) {
     return saved(q->key);
 }
 
+bool place_destination(const std::string&mod,const std::string&quest,QuestDestination&out){
+    if(mod.empty()||!story_mail::valid_id(quest)||!have_save()||!book().usable())return false;
+    std::vector<Quest> storage;
+    const auto current=rows_now(storage);
+    for(const auto&row:current){const auto&q=*row.quest;
+        if(q.mod!=mod||q.id!=quest)continue;
+        if((row.status!=Status::New&&row.status!=Status::InProgress)||!q.has_place)return false;
+        if(!q.texts_from_mod){
+            const auto saved=saved_step(book(),q.key);const unsigned step=saved?saved:1;
+            std::lock_guard lock(g_mu);
+            for(const auto&d:g_declared)if(d.key==q.key&&d.mod==mod&&d.quest.id==quest)
+                for(const auto&st:d.quest.steps)if(st.n==step&&st.has_place&&st.destination.stage!="sea"){
+                    out=st.destination;return true;
+                }
+        }
+        // The resolved sea place also covers code-only quests, code overrides
+        // and catalogue-derived places that have no explicit destination DTO.
+        QuestDestination sea;std::string why;mods::json::Value v;
+        v["x"]=double(q.x);v["z"]=double(q.z);
+        if(!parse_quest_destination(v,sea,why))return false;
+        out=std::move(sea);return true;
+    }
+    return false;
+}
+
 bool place_position(const std::string& mod,const std::string& quest,float& x,float& z) {
     if(mod.empty()||!story_mail::valid_id(quest)||!have_save()||!book().usable())return false;
     std::vector<Quest> storage;
@@ -1016,6 +1054,33 @@ int32_t done(const std::string& mod, const std::string& quest) {
     if (finish(b, key) < 0) return kResultNoRoom;
     LOG("[notebook] %s: quest \"%s\" done", mod.c_str(), quest.c_str());
     return kResultDone;
+}
+
+int32_t done_action(const std::string&mod,const std::string&quest){
+    uint16_t key=0;uint8_t reward=0;
+    {std::lock_guard lock(g_mu);for(const auto&d:g_declared)if(d.mod==mod&&d.quest.id==quest){key=d.key;reward=d.quest.reward_item;break;}}
+    if(!key)return kResultInvalid;
+    if(!have_save())return kResultNoRoom;
+    auto b=book();if(saved_step(b,key)==kStepDone)return kResultDone;
+    if(reward&&!b.set(story_mail::kRecordQuestActionReward,key,reward))return kResultNoRoom;
+    const auto result=done(mod,quest);
+    if(result<0&&reward)b.erase(story_mail::kRecordQuestActionReward,key);
+    return result;
+}
+
+// Rupee-only rewards run on the game thread through the game's own item getter.
+// The pending record is snapshot-owned and removed before handing over the item.
+void action_rewards(Cpu*c){
+    if(!have_save()||!c||!g_call)return;
+    auto b=book();
+    for(unsigned r=0;r<b.records();++r)if(b.record_kind(r)==story_mail::kRecordQuestActionReward){
+        const auto key=b.record_key(r);const auto item=b.record_value(r);
+        if(saved_step(b,key)!=kStepDone||item<1||item>6)continue;
+        bool enabled=false;{std::lock_guard lock(g_mu);for(const auto&d:g_declared)if(d.key==key&&d.quest.reward_item==item){enabled=true;break;}}
+        if(!enabled)continue;
+        b.erase(story_mail::kRecordQuestActionReward,key);Cpu probe=*c;g_call(&probe,GC(0x0254DA38),{item});
+        LOG("[notebook] quest action reward invoked key=%04X item=%u",unsigned(key),unsigned(item));
+    }
 }
 
 int32_t state(const std::string& mod, const std::string& quest) {
@@ -1078,7 +1143,7 @@ std::vector<Row> rows_now(std::vector<Quest>& storage) {
                         q.next = st.text, q.where = st.where, q.has_place = st.has_place, q.x = st.x, q.z = st.z;
                         if (!st.find_chart.empty() && story_chart::state(d.mod, st.find_chart) == story_chart::kResultOwned)
                             q.chart_mod = d.mod, q.chart = st.find_chart;
-                        if (st.when.any() && !available(st.when, event_flags(), hour_now())) {
+                        if (st.when.any() && !available(st.when, event_flags(), hour_now(),b)) {
                             q.hint = "Not yet possible: " + st.when.text;  // no ring, no talk until it holds
                             q.has_place = false;
                         }
@@ -1158,12 +1223,13 @@ bool declare(const std::string& mod, const std::string& mod_name, const mods::js
         std::lock_guard lock(g_mu);
         Quest* reg = find(mod, q.id);
         reg->hidden = q.journal != "on_enable";
-        g_declared.push_back({mod, reg->key, q});
+        auto owned=q;for(auto&st:owned.steps)st.when.flag_mod=mod;
+        g_declared.push_back({mod, reg->key, owned});
         if (q.letter_encloses_notebook && q.has_letter) {
             if (mod == kNotebookPackage) story_mail::set_notebook_letter(mod, q.letter_id);
             else LOG("[notebook] %s: only the Story Notebook package's letter brings the notebook", mod.c_str());
         }
-        for (const ManifestStep& st : q.steps) {
+        for (const ManifestStep& st : owned.steps) {
             if (st.has_talk && !st.needs_letter && !st.when.any())
                 LOG("[notebook] %s: warning: quest \"%s\" step %u takes over %s with no condition (no letter, no \"available\"): it "
                     "speaks for the quest whenever the step is current", mod.c_str(), q.id.c_str(), st.n,
@@ -1242,6 +1308,7 @@ void declared_tick() {
             story_chart::give(d.mod, d.quest.reward_chart) == story_chart::kResultOwned)
             LOG("[notebook] %s: quest \"%s\" is done: Link gets chart \"%s\"", d.mod.c_str(), d.quest.id.c_str(), d.quest.reward_chart.c_str());
         if (now == kStepDone && !d.quest.reward_mod_item.empty() && !b.get(story_items::kRecordQuestRewardItem, d.key) &&
+            b.set(story_items::kRecordQuestRewardItem,d.key,0) &&
             story_items::give(d.mod, d.quest.reward_mod_item, 1, "its quest's reward") >= 0)
             b.set(story_items::kRecordQuestRewardItem, d.key, 1);
     }
@@ -1430,6 +1497,7 @@ void pad(input::PadState& p, Cpu* c) {
     if (!g_installed) return;  // no quest mod: nothing of the notebook runs
     static uint32_t ticks = 0;
     if (++ticks % 15 == 0) declared_tick();
+    action_rewards(c);
     chart_test_open(ticks);
     bag_icon();
     story_item_buttons::test_assign();

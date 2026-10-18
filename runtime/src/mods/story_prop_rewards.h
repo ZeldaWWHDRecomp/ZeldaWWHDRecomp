@@ -50,6 +50,12 @@ public:
         markers_.push_back({token, {mod, actor, flag, key, kind}});
         return token;
     }
+    // World editor: a marker whose actor changed its flag goes (the actor registers the new one).
+    bool remove(PropMarkerHandle h) {
+        for (size_t i = 0; i < markers_.size(); ++i)
+            if (markers_[i].token == h) { markers_.erase(markers_.begin() + long(i)); return true; }
+        return false;
+    }
     const Marker* get(PropMarkerHandle h, uint8_t kind = kBroken) const {
         for (const auto& entry : markers_) if (entry.token == h && entry.marker.kind == kind) return &entry.marker;
         return nullptr;

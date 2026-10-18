@@ -29,4 +29,12 @@ void state_loaded();
 void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),
                uint32_t switch_profile,uint32_t door_profile,ReadFlag,WriteFlag,Retired={});
 bool install(const std::function<std::string(uint32_t)>& owner,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
+// World editor (--editor only, main game thread). editor_enable before install: both profiles install even
+// without declarations, so switches and doors placed while the game runs appear at once (live(kind)).
+// editor_declare_* add declarations then; editor_set_source gives a door another switch.
+void editor_enable();
+bool live(Kind);
+uint32_t editor_declare_switch(const std::string& mod,const std::string& id,std::string& why);
+uint32_t editor_declare_door(const std::string& mod,const std::string& id,uint32_t source,std::string& why);
+bool editor_set_source(uint32_t door,uint32_t source,std::string& why);
 }

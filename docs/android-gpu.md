@@ -36,13 +36,30 @@ fields with fixed or bounded shifts, and avoids module-scope mutable state, 64-b
 types, `bitfieldExtract` and signed division. On MoltenVK its output matches the CPU decoder byte for
 byte (1,400+ game textures from the title screen to Outset Island).
 
+Qualcomm's driver release 762 (Adreno 750, Xiaomi 14) compiled an earlier version of this shader
+wrongly when the decoder was forced on (`WWHD_VK_FORCE_BC_DECODE=1`; that phone normally samples BC
+textures natively): in BC3 alpha and BC4/BC5 channel blocks of the 6-value mode (first endpoint ≤
+second), selector 6 from the second pixel on came out as the 8-value interpolant (2·a0 + 5·a1)/7
+instead of 0 (597 of 2,200 texture uploads; ragged halos on alpha-tested edges such as the HUD hearts,
+streaks in BC5 textures). The shader now builds each channel's 8-value palette once per block and
+picks entries with a chain of selects. Before any frame, a device that decodes with the compute
+shader runs it on known-answer blocks (every selector in every pixel position of both palette modes,
+signed and unsigned) and compares with the CPU decoder; on any difference it uses the CPU decoder and
+logs `[vulkan BC] compute decoder self-test FAILED (…); using the CPU decoder`.
+
+Signed BC4/BC5 (both decoders): the palette mode follows the raw endpoints, so -127 > -128 is the
+8-value mode although both endpoints decode to -1.0 (the D3D/Khronos rule, which native BC sampling
+follows); the decoders used to pick the 6-value mode after clamping -128 to -127.
+
 Debug switches:
 
 - `WWHD_VK_FORCE_BC_DECODE=1`: force fallback even on BC-capable desktop GPUs.
 - `WWHD_VK_BC_CPU=1` / `0`: use the CPU decoder / the compute decoder whatever the driver rule says.
 - `WWHD_VK_BC_VERIFY=1`: compare every byte the compute decoder wrote with the CPU decoder once the
   frame has finished on the GPU. The log counts the checked textures every 200 and names the first
-  20 that differ (`[vulkan BC] mismatch …`). Costs a copy per texture; for diagnosis only.
+  20 that differ (`[vulkan BC] mismatch …`, with the block's bytes and the pixel in the block). Costs a
+  copy per texture; for diagnosis only.
+- `WWHD_VK_BC_CPU=0` also keeps the compute decoder after a failed start-up self-test (diagnosis).
 - `WWHD_VK_BC_TIMING=1`: log CPU recording/upload duration; when verification is enabled this
   includes GPU completion and CPU comparison. These are not GPU timestamp measurements.
 
@@ -50,6 +67,7 @@ Debug switches:
 | --- | --- |
 | CPU BC reference tests | PASS: BC1–5, signed channels, endpoint/selectors, tails, malformed lengths |
 | Compute synthetic tests | PASS: 7 format variants, 3 shapes including layers/tails, 12 seeds, 252 dispatches |
+| `bc_compute_test` (MoltenVK, Apple M3 Max) | PASS: known-answer and random blocks byte-exact with the CPU decoder; native BC sampling within 2.5 steps (Apple interpolates with its own precision); a copy of the shader with the v762 fault put in is caught |
 | Production surface smoke | PASS: 10 linear/sRGB/signed formats, 2 mip levels, 2 layers, cache reuse and invalidation |
 | Native and forced `--renderer-smoke`, MoltenVK with validation | PASS; no validation errors; existing 3D-image maintenance9 forward-compatibility warnings |
 | Scripted native/forced frame comparison | PASS: two 1280×720 Windfall frames; details below |
@@ -142,8 +160,10 @@ pushes, merges or GitHub posts were made.
 
 ## PowerVR graphics
 
-PowerVR devices automatically convert vertices on the CPU to prevent stretched spikes and
-broken geometry. This can reduce performance. In **Graphics → Advanced**, set
+PowerVR devices automatically convert one kind of vertex data on the CPU (32-bit values stored in
+the console's byte order, which their drivers decode wrongly) to prevent stretched spikes and
+broken geometry. All other vertex data stays on the fast GPU path. If something still looks
+broken, **On (all)** converts all vertex data instead, at a larger speed cost. In **Graphics → Advanced**, set
 **Convert vertices on the CPU** to **Off** to disable the workaround, or **Automatic**
 to restore it. **On (all)** enables it on any device. Restart the game after changing it.
 

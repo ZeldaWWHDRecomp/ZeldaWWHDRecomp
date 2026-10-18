@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <functional>
 #include <initializer_list>
 #include <string>
@@ -14,14 +15,21 @@ inline constexpr uint32_t kPropsScratchOffset=5376;
 inline constexpr uint32_t kSwitchScratchOffset=kPropsScratchOffset+0x30;
 inline constexpr uint32_t kDoorScratchOffset=kSwitchScratchOffset+0x30;
 inline constexpr uint32_t kIdentityScratchOffset=5632;
-static_assert(kDoorScratchOffset+0x30<=kIdentityScratchOffset);
+// One snapshot-owned selected dialogue record in the existing unused gap.
+inline constexpr uint32_t kTalkProofScratchOffset=kDoorScratchOffset+0x30;
+inline constexpr uint32_t kTalkProofBytes=64;
+static_assert(kTalkProofScratchOffset>=kDoorScratchOffset+0x30);
+static_assert(kTalkProofScratchOffset+kTalkProofBytes<=kIdentityScratchOffset);
 // Preserve existing resident/prop/switch snapshot offsets when adding enemies.
 inline constexpr uint32_t kEnemyProfilesScratchOffset=10752;
 inline constexpr uint32_t kEnemyOwnershipScratchOffset=kEnemyProfilesScratchOffset+4*0x30;
 inline constexpr uint32_t kEnemyEpochScratchOffset=kEnemyOwnershipScratchOffset+story_enemy_ownership::kStorageBytes;
-inline constexpr uint32_t kScratchBytes=kEnemyEpochScratchOffset+128*4;
+inline constexpr uint32_t kGrappleScratchOffset=(kEnemyEpochScratchOffset+128*4+15)&~15u;
+inline constexpr uint32_t kVisualScratchOffset=kGrappleScratchOffset+0x4000;
+inline constexpr uint32_t kScratchBytes=kVisualScratchOffset+0x3000;
 static_assert(kEnemyProfilesScratchOffset>=kIdentityScratchOffset+128*40);
 static_assert((kEnemyOwnershipScratchOffset&15)==0);
+static_assert(kTalkProofScratchOffset+kTalkProofBytes<=kScratchBytes);
 bool load(const std::string& mod,const std::vector<story_notebook::ManifestActor>& actors,std::string& why);
 // Scene flags commit or roll back with the complete actor declaration batch.
 bool load(const std::string& mod,const std::vector<story_notebook::ManifestActor>& actors,std::string& why,const std::vector<std::string>& scene_flags);
@@ -50,10 +58,22 @@ uint32_t actor_address(Cpu*,const std::string& mod,const std::string& id);
 // actors missing from the list are removed (kept for an undo). Kinds whose state is declared at start-up
 // (editor_restart_only) and models not prepared yet keep their old state: `pending` lists them with the
 // reason, for a restart. False with a reason (a list the start-up checks refuse) leaves everything unchanged.
+// With `cpu`, an actor a handle drag moved in place (editor_pose) whose change is only that move keeps its
+// copy in the game: the drag's end checks it exists, is ours and stands at the new place (solid kinds,
+// switches, doors and chests, are always created again).
 bool editor_update(const std::string& mod,const std::vector<story_notebook::ManifestActor>& actors,const std::vector<std::string>& changed,std::string& why,
-                   std::vector<std::string>* pending=nullptr);
-// true for kinds whose changes take effect only after a restart (native props, switches, doors and
-// enemies, mod enemies and carried props)
+                   std::vector<std::string>* pending=nullptr,Cpu* cpu=nullptr);
+// World editor, a handle drag (main game thread): the actor's copy in the game moves to `position` and
+// turns to `rotation` (degrees) in place, without being created again. False when it has no copy now.
+bool editor_pose(Cpu*,const std::string& mod,const std::string& id,const story_notebook::WorldPoint& position,const story_notebook::WorldPoint& rotation);
+// --editor, before install: native props, switches, doors, enemies and residents are installed even
+// without declarations, so the editor places them while the game runs.
+void editor_live_kinds();
+// Whether actors of a world-editor type ("pot", "door", "bokoblin", "model_enemy"...) appear while the
+// game runs (`fallback` for the others).
+bool editor_kind_live(const std::string& type,bool fallback);
+// true for kinds whose changes take effect only after a restart (mod enemies and carried props; native
+// props, switches, doors and enemies unless the editor installed them for live placement)
 bool editor_restart_only(const story_notebook::ManifestActor&);
 // whether a new actor of this spec can be created while the game runs (else `why` says what waits)
 bool editor_live_capable(const std::string& mod,const story_notebook::ManifestActor&,std::string& why);
@@ -69,6 +89,45 @@ bool position(Cpu*,const std::string& mod,const std::string& id,story_notebook::
 bool particle_position(Cpu*,const std::string& mod,const std::string& id,unsigned room,story_notebook::WorldPoint& out);
 // Exact placed prop snapshot identity for owned texture binding. Returns the
 // declaration token and current native stage/room generation, never a retail copy.
+// Pure resident ownership for native event Capture. No native search or writes.
+// Existing 40-byte resident row persists magic/token/full fingerprint; zero old
+// rows deny this accessor while ordinary resident talk remains unchanged.
+// Returns declaration + restored row identity only. Native leases must
+// independently match saved config fingerprint/token in the native-only arena;
+// this getter alone never authorizes a restored event. Historical scratch unchanged.
+struct ResidentEventIdentity {
+ uint32_t token=0,actor=0,pid=0,stage_pid=0,room_pid=0,room=0,subtype=0;
+ std::array<uint8_t,32> fingerprint{};
+};
+struct ResidentEventDeclaration {
+ uint32_t token=0,room=0,subtype=0;std::string stage;
+ std::array<uint8_t,32> fingerprint{};
+};
+// Pure startup declaration authority, independent of any snapshot/native address.
+bool resident_event_declaration(const std::string& mod,const std::string& id,ResidentEventDeclaration&);
+// Data-only placed process lineage. No address lookup, guest call or entry
+// authority. Absent is the private unplaced sentinel corroborated by scratch;
+// pending deletion/quarantine and incomplete rows refuse instead.
+struct ResidentEventProcess {
+ enum class Presence {Absent,Present};Presence presence=Presence::Absent;
+ ResidentEventDeclaration declaration;uint32_t pid=0;
+ uint32_t pid_slot=0,identity_row=0,scratch_window=0;
+ std::array<uint8_t,4>pid_bytes{};std::array<uint8_t,40>identity_bytes{};
+ // Contains the actual stage name, stage PID and all room PID clocks. Other
+ // bytes are retained verbatim, never interpreted as ownership predicates.
+ std::array<uint8_t,0x200>scratch_bytes{};
+};
+bool resident_event_process(const std::string& mod,const std::string& id,ResidentEventProcess&);
+// Explicit native query BEFORE pure Capture only. Restores its scratch output;
+// caller must verify game-thread boundary and preserve outgoing stack/Cpu.
+// Candidate address is NOT ownership; resident_event_identity must follow.
+uint32_t query_resident_event_address(Cpu*,const std::string& mod,const std::string& id);
+bool resident_event_identity(const std::string& mod,const std::string& id,
+ uint32_t actor,uint32_t pid,ResidentEventIdentity&);
+// Exact same identity predicates, with no diagnostic allocation/log mutex.
+// Required for bounded reads while other guest threads are physically parked.
+bool resident_event_identity_quiet(const std::string& mod,const std::string& id,
+ uint32_t actor,uint32_t pid,ResidentEventIdentity&);
 bool prop_texture_identity(uint32_t actor,uint32_t pid,uint32_t& token,uint32_t& epoch,uint32_t& generation);
 bool actions(const std::string& mod,const std::vector<story_notebook::StoryAction>& actions);
 // Notebook hooks delegate only actors created by this service. Returns true when handled.

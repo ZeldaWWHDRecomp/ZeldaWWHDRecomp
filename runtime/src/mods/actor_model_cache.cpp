@@ -3,21 +3,28 @@
 #include "static_model_validation.h"
 #include "skinned_model_validation.h"
 #include "../platform/process.h"
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 #include <fstream>
 #include <map>
 #include <mutex>
 namespace actor_model_cache {
 namespace {
-struct Entry {std::string mod,model,path;story_notebook::WorldPoint minimum,maximum;std::vector<std::string> clips;mod_actor::ModelRig rig;};
-std::mutex mutex;
+struct Entry {std::string mod,model,path;unsigned triangles=0;story_notebook::WorldPoint minimum,maximum;std::vector<std::string> clips;mod_actor::ModelRig rig;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;bool shoreline=false;};
+std::mutex mutex,prepare_mutex;
 std::map<std::string,Entry> entries;
 void check(bool ok,const char* reason){if(!ok)exception_report::raise(reason);}
 }
 std::string prepare(const std::string& mod,const story_notebook::ManifestModel& model,
                     const std::string& package_dir,const std::string& data_dir,
-                    const std::vector<std::string>& python,const std::string& tool,const std::string& game_dir){
-    namespace fs=std::filesystem;
+                    const std::vector<std::string>& python,const std::string& tool,const std::string& game_dir,bool collision,bool shoreline){
+    std::lock_guard preparing(prepare_mutex);namespace fs=std::filesystem;
     const bool owner_ok=!mod.empty()&&mod.size()<=64&&mod.front()!='.'&&std::all_of(mod.begin(),mod.end(),[](unsigned char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.';});
     check(owner_ok&&story_mail::valid_id(model.id),"Invalid model owner or id");
     mods::json::Value manifest,source;source["id"]=model.id;source["source"]=model.source;source["kind"]=model.kind;manifest["models"].type=mods::json::Value::Array;manifest["models"].array.push_back(source);
@@ -32,32 +39,49 @@ std::string prepare(const std::string& mod,const story_notebook::ManifestModel& 
         check(old==entries.end()||(old->second.mod==mod&&old->second.model==model.id),"Static model archive identity collision");
         if(old!=entries.end())entries.erase(old); // a failed rebuild must never expose stale output
     }
-    std::ifstream source_file(input,std::ios::binary);std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(source_file),{}};
+    std::ifstream source_file(input,std::ios::binary);std::vector<uint8_t> bytes(8*1024*1024+1);source_file.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(bytes.size()));bytes.resize(size_t(source_file.gcount()));check(bytes.size()<=8*1024*1024&&!source_file.bad(),"Oversized or unreadable static model source");
     static_models::ModelInfo info;std::vector<std::string> clips;mod_actor::ModelRig rig;
     if(model.kind=="skinned"){
         skinned_models::ModelInfo skin;check(skinned_models::validate_glb(bytes,skin,why),"Invalid skinned model source");
         info=skin;rig={skin.joint_names,skin.joint_parents,skin.joint_look_compatible};for(const auto& clip:skin.clips)clips.push_back(clip.name);
-    }else check(static_models::validate_glb(bytes,info,why),"Invalid static model source");
+    }else check(static_models::validate_glb(bytes,info,why,collision),"Invalid static model source");
     const story_notebook::WorldPoint minimum{info.minimum[0],info.minimum[1],info.minimum[2]},maximum{info.maximum[0],info.maximum[1],info.maximum[2]};
     check(!fs::is_symlink(fs::path(data_dir)/"models"),"Static model cache cannot use a symlink directory");
     fs::create_directories(destination.parent_path());
-    for(const auto& suffix:{"",".tmp",".json",".json.tmp"})check(!fs::is_symlink(destination.string()+suffix),"Static model cache cannot use symlink outputs");
+    for(const auto& suffix:{"",".tmp",".json",".json.tmp",".wcol",".wcol.tmp"})check(!fs::is_symlink(destination.string()+suffix),"Static model cache cannot use symlink outputs");
     // The converter verifies source/template/version hashes and the cached archive
     // digest before reuse. Keep the existing bytes available for that check;
     // mappings remain absent until a successful conversion or verified cache hit.
 
     auto command=python;command.push_back(tool);command.insert(command.end(),{"--game",game_dir,"--glb",input.string(),"--identity",identity,"--out",destination.string()});
+    const auto collision_path=destination.string()+".wcol";
+    if(collision){check(model.kind=="static","Collision requires a static model");command.insert(command.end(),{"--collision-out",collision_path});}
+    if(shoreline){check(!collision&&model.kind=="static","Shoreline requires a collision-free static model");command.push_back("--shoreline");}
     const auto process=host::run_process(command);
     check(process.error.empty()&&process.code==0,"Static model conversion failed; check the model and player game resources");
     const auto end=process.output.find_last_not_of("\r\n");check(end!=std::string::npos,"Static model converter returned no result");
     const auto line=process.output.rfind('\n',end);const auto begin=line==std::string::npos?0:line+1;
     mods::json::Value result;try{result=mods::json::parse(process.output.substr(begin,end-begin+1));}catch(...){exception_report::raise("Static model converter returned invalid metadata");}
+    check(result.get("shoreline").boolean==shoreline,"Wrong shoreline conversion mode");
     check(result.get("identity").string()==identity,"Static model converter returned another archive identity");
+    check(static_models::integer(result.get("triangles"),1,static_models::kMaxTriangles)&&unsigned(result.get("triangles").number)==info.triangle_count,"Static model converter returned inconsistent render triangle metadata");
     check(fs::is_regular_file(destination)&&!fs::is_symlink(destination)&&fs::file_size(destination)>=16&&fs::file_size(destination)<=16*1024*1024,"Static model converter produced a missing or oversized archive");
     std::ifstream archive(destination,std::ios::binary);char magic[4]{};archive.read(magic,4);check(archive&&std::string(magic,4)=="Yaz0","Static model converter produced an invalid archive");
-    {std::lock_guard guard(mutex);entries.emplace(identity,Entry{mod,model.id,destination.string(),minimum,maximum,std::move(clips),std::move(rig)});}
+    std::shared_ptr<const story_world_collision::mesh::Mesh> collision_data;
+    if(collision){
+        check(fs::is_regular_file(collision_path)&&!fs::is_symlink(collision_path)&&fs::file_size(collision_path)<=100000,"Invalid collision sidecar");
+        std::ifstream file(collision_path,std::ios::binary);std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(file),{}};
+        auto decoded=std::make_shared<story_world_collision::mesh::Mesh>();
+        check(story_world_collision::mesh::decode(bytes,*decoded,why),"Invalid converted collision geometry");
+        check(result.get("collision_sha256").string()==mods::hash::sha256_text(std::string(bytes.begin(),bytes.end())),"Collision sidecar digest mismatch");
+        collision_data=std::move(decoded);
+    }
+    {std::lock_guard guard(mutex);entries.emplace(identity,Entry{mod,model.id,destination.string(),info.triangle_count,minimum,maximum,std::move(clips),std::move(rig),std::move(collision_data),shoreline});}
     return identity;
 }
+bool shoreline_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found!=entries.end()&&found->second.shoreline;}
+unsigned triangles_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found==entries.end()?0:found->second.triangles;}
+std::shared_ptr<const story_world_collision::mesh::Mesh> collision_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found==entries.end()?nullptr:found->second.collision;}
 std::string archive_for(const std::string& guest_path){
     constexpr const char* prefix="/vol/content/Common/Object/";constexpr size_t prefix_size=27;
     if(!guest_path.starts_with(prefix)||guest_path.size()!=prefix_size+31+4||!guest_path.ends_with(".szs"))return {};

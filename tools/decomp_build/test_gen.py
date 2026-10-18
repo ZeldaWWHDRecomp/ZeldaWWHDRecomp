@@ -58,6 +58,18 @@ class GenTest(unittest.TestCase):
         with open(os.path.join(self.out, name)) as f:
             return f.read()
 
+    def test_mouse_camera_hooks_stay_in_runtime(self):
+        # Recompiled camera bodies must retain the mouse sites in decomp builds too.
+        with open(os.path.join(self.src, "wwhd_src/a2.cpp"), "a") as f:
+            for addr in (0x024FA9C8, 0x0250D4E8, 0x0250FDC8):
+                f.write("VERIFY(0x%08X, camera_%08X)\n" % (addr, addr))
+        self.run_gen()
+        excluded = self.read("excluded.txt")
+        listed = self.read("decomp_hooks.txt")
+        for addr in ("024FA9C8", "0250D4E8", "0250FDC8"):
+            self.assertIn(addr, excluded)
+            self.assertNotIn(addr, listed)
+
     def test_lists(self):
         out = self.run_gen()
         self.assertIn("2 game units, 4 functions decompiled, 2 excluded", out)

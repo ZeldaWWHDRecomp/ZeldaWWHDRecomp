@@ -6,6 +6,7 @@
 #include "renderer.h"
 
 namespace gfx {
+void sky_clouds_begin(const uint32_t* regs, uint32_t seq);  // metal_clouds.mm
 void peek_z(const uint32_t*, uint32_t);
 void request_tv_dump(const std::string& path, int frames_ahead);
 void run_appkit_loop();
@@ -29,6 +30,7 @@ namespace render {
 const Backend& metal_backend() {
     static const Backend b = [] {
         Backend b{};
+        b.sky_clouds_begin = gfx::sky_clouds_begin;
         b.api = Api::Metal;
         b.init = gfx::init;
         b.run_main_loop = gfx::run_appkit_loop;  // [NSApp run] plus the test hooks (display.mm)

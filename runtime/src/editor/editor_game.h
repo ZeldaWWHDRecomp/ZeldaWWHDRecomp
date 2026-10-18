@@ -38,8 +38,19 @@ void with_session(const std::function<void(Session&)>& f);  // the UI's read-onl
 bool try_with_session(const std::function<void(Session&)>& f);  // the same, false while a command runs (no waiting)
 // The UI's commands: run in order on a worker thread (a command may wait for the game); `done` gets the
 // result there.
-void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done);
+// `source` marks the command log entry ("MCP": a tool client, editor/mcp.h).
+void run_async(const std::string& command, const Value& params, std::function<void(const Value&)> done, const std::string& source = {});
 bool commands_pending();
+// The editor's handle drag (render thread, never waits): while a handle is dragged the actors follow it
+// in the game, once per logic step, through the live update the commands use (Session::drag_preview),
+// without a command, an undo step or a log entry. `poses`: [{"id", "position"?, "rotation"?}], sent every
+// frame (unchanged poses cost nothing). end_drag: the drag is over; `put_back` shows `ids` at the
+// package's places again (cancelled, or the released command changed nothing); otherwise the released
+// command's own live update follows.
+void drag_actors(const std::string& mod, const Value& poses);
+void end_drag(const std::string& mod, const std::vector<std::string>& ids, bool put_back);
+std::string drag_note();  // what the drag can't move live ("" all of it)
+void note(const std::string& command, const Value& params, const Value& result, const std::string& source);  // a log entry
 
 // The last asynchronous outcome (a warp started, a test state written, a live update refused), for the UI.
 std::string status();
@@ -66,6 +77,9 @@ FlyView fly_view();  // any thread
 bool playing();      // Play is on: the editor's overlays hide (any thread)
 bool editor_view();  // the editor's overlays show: launch mode, the fly camera on, not playing (any thread)
 void toggle_play();  // Tab / the controller's View button: Play from the camera, or Stop
+// A scene preview runs (preview_scene): the editor's overlays hide but for its Skip / Stop bar (any thread).
+bool previewing();
+std::string preview_label();  // "harbor: step 3" while previewing
 // The game camera as camera_draw last drew it (eye, center, up, fovy in degrees, aspect, near/far and
 // the projection it built): what the overlays project the world with.
 struct CameraView {

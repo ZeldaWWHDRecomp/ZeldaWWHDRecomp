@@ -44,6 +44,9 @@ inline constexpr uint8_t kRecordQuestOrder = 9; // when a quest was started: key
 inline constexpr uint8_t kRecordLetterEnclosures = 16; // a manifest letter on its own was read and gave what it encloses: key letter_key, value 1
 inline constexpr uint8_t kRecordActorFlag = 17; // SDK v3 actors: mod-owned opened/read flags, key actor flag_key, value 0/1
 
+// 18..19: owned prop/enemy markers (story_prop_rewards.h).
+inline constexpr uint8_t kRecordQuestActionReward = 20; // pending safe rupee item number for quest_done
+
 inline constexpr uint16_t kItemNotebook = 1;  // the story notebook
 
 // Letter states. The values follow the game's own letter registers (dLetter: 2 waiting in the

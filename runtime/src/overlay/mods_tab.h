@@ -27,6 +27,7 @@
 #include "../mods/packages.h"
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "popup.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
@@ -847,12 +848,15 @@ inline void review_popup(Host& h) {
     auto& r = s.review;
     const char* id = "###mods_review";
     std::string title = (r.mode == Review::Install ? "Install " : r.mode == Review::Update ? "Update " : "Switch on ") + r.name + id;
-    if (r.request) { ImGui::OpenPopup(id); r.request = false; }
+    (void)id;  // the dialog's ID whatever the title says
+    const bool open = r.request;
+    r.request = false;
+    if (!popup::begin(title.c_str(), open, ImGui::GetFontSize() * 22)) return;
     const ImVec2 vp = ImGui::GetMainViewport()->Size;
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(vp.x * 0.92f, ImGui::GetFontSize() * 22), 0), ImVec2(vp.x * 0.94f, vp.y * 0.9f));
-    if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
-    ImGui::PushTextWrapPos(std::min(ImGui::GetFontSize() * 30, vp.x * 0.85f));
+    bool ready = source_ready(r);
+    bool busy = state().job.flow.phase == Phase::Working;
+    popup::body_begin(!ready || busy ? 2 : 1);  // the buttons (and why Install waits) stay below the scrolling text
+    ImGui::PushTextWrapPos(popup::wrap_pos(30));
     if (!r.description.empty()) text(first_sentence(r.description, 240));
     ImGui::Spacing();
     // what it needs, all at once
@@ -898,9 +902,7 @@ inline void review_popup(Host& h) {
     summary += "takes " + duration_text(preview.total_expected());
     muted(summary);
     ImGui::PopTextWrapPos();
-    ImGui::Spacing();
-    bool ready = source_ready(r);
-    bool busy = state().job.flow.phase == Phase::Working;
+    popup::body_end();
     const char* go = r.mode == Review::Install ? "Install##review" : r.mode == Review::Update ? "Update##review" : "Switch on##review";
     ImGui::BeginDisabled(!ready || busy);
     bool accept = button(go, ImVec2(ImGui::GetFontSize() * 7, 0));
@@ -914,12 +916,12 @@ inline void review_popup(Host& h) {
     if (h.test && ready && !busy)
         for (const char* key : {"WWHD_TEST_MOD_SETUP", "WWHD_TEST_MOD_ENABLE", "WWHD_TEST_CATALOGUE_INSTALL"})
             if (const char* t = getenv(key); t && r.id == t) accept = true;
-    if (h.back || ImGui::IsKeyPressed(ImGuiKey_Escape)) { cancel = true; accept = false; h.b_used = h.b_used || h.back; }
+    if (popup::dismissed(h.back)) { cancel = true; accept = false; h.b_used = h.b_used || h.back; }  // the X, a tap outside, Esc or B
     if (accept && ready && !busy) {
         begin(h, ImGui::GetTime());
         ImGui::CloseCurrentPopup();
     } else if (cancel) ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
+    popup::end();
 }
 
 // ---------------------------------------------------------------- the story system's required package
@@ -1203,15 +1205,14 @@ inline void troubleshooting(const Host& h, const mods::packages::View& v, const 
     for (const auto& [path, hash] : v.content_hashes) muted("SHA-256 " + path + ": " + hash);
     ImGui::Unindent();
 }
-inline void remove_popup(const Host& h) {
+inline void remove_popup(Host& h) {
     auto& s = state();
-    const char* id = "Remove mod##mods_remove";
-    if (s.remove_request) { ImGui::OpenPopup(id); s.remove_request = false; }
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal(id, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+    const bool open = s.remove_request;
+    s.remove_request = false;
+    if (!popup::begin("Remove mod##mods_remove", open)) return;
     std::string name = s.remove_id;
     for (const auto& v : mods::packages::list()) if (v.id == s.remove_id) name = v.name;
-    ImGui::PushTextWrapPos(std::min(ImGui::GetFontSize() * 26, ImGui::GetMainViewport()->Size.x * 0.85f));
+    ImGui::PushTextWrapPos(popup::wrap_pos(26));
     text("Remove " + name + "?");
     text("This deletes the mod and the files it prepared (" + size_text(s.remove_bytes) + "). Your saves are not touched.");
     ImGui::PopTextWrapPos();
@@ -1220,7 +1221,7 @@ inline void remove_popup(const Host& h) {
     bool cancel = button("Cancel##remove", ImVec2(ImGui::GetFontSize() * 6, 0));
     ImGui::SetItemDefaultFocus();
     if (h.test) if (const char* t = getenv("WWHD_TEST_MOD_REMOVE"); t && s.remove_id == t) accept = true;
-    if (h.back || ImGui::IsKeyPressed(ImGuiKey_Escape)) { cancel = true; accept = false; }
+    if (popup::dismissed(h.back)) { cancel = true; accept = false; h.b_used = h.b_used || h.back; }  // the X, a tap outside, Esc or B
     if (accept) {
         std::string error;
         if (mods::packages::remove(s.remove_id, error)) {
@@ -1230,7 +1231,7 @@ inline void remove_popup(const Host& h) {
         } else s.error = error;
     }
     if (accept || cancel) { s.remove_id.clear(); ImGui::CloseCurrentPopup(); }
-    ImGui::EndPopup();
+    popup::end();
 }
 inline void package_page(Host& h, const mods::packages::View& v) {
     using namespace mods::packages;

@@ -19,6 +19,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <span>
 
 struct Cpu;
 
@@ -94,6 +95,15 @@ struct MarkerView {
     bool done = false;
 };
 std::vector<MarkerView> shown_markers();
+
+// Immutable world-island declarations, published independently of treasure ownership/completion.
+// Atomically replaces this mod's set; IDs are unique, 8/mod and 32 total. Invalid input leaves it intact.
+// Publish before chart hook installation (publication requests the hooks), then refresh eligibility
+// on the game thread as owned mod conditions change. Full-state pane transients are reset separately.
+struct WorldMarker {std::string id,label;float x=0,z=0;};
+bool publish_world_markers(const std::string& mod,std::span<const WorldMarker> markers);
+void clear_world_markers(const std::string& mod);
+std::vector<MarkerView> world_markers();
 
 // The story notebook's tracked quest (story_notebook.h): its next step has the white ring, whether
 // or not a chart is owned (and in the zoomed square the red circle, before finished charts' markers). The source returns false when there is

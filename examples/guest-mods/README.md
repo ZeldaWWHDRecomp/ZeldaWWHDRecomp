@@ -16,6 +16,11 @@ Story mods (letters, quests, charts) live in the mod repository with their conte
 | `hud-cost` | performance fixture: exactly 200 rectangles versus no HUD callback, selected by a restart-only option. |
 | `addcalc-replace` | a full replacement of a small game function (`cLib_addCalc2`, `0200ED84`) with an equivalent implementation; every other call goes to the game's own code (`WWHD_GAME_ORIGINAL`). No visible change; the log counts the calls. |
 
+The SDK v3 preview also includes the content-only [harbor meeting](sdk-v3-native-scene/README.md)
+example: two residents, a talk trigger, mandatory fallback steps and an experimental
+native alternative. It needs no C build; the game plays an eligible `turn_camera`
+alternative itself when its readiness checks pass, and the fallback steps otherwise.
+
 Build (needs clang with the PowerPC target and ld.lld; on macOS `brew install llvm lld`):
 
 ```sh

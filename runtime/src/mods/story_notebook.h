@@ -37,11 +37,19 @@ int32_t no_place(const std::string& mod, const std::string& quest);
 // Read the owner's current resolved quest place (XZ only, not stage/room/height).
 // Uses existing mod-owned progress; never writes a record. Outputs stay unchanged on failure.
 // The actor adapter must constrain navigation to its current room and ground.
+struct QuestDestination;
+// Current resolved warp destination (or manifest step 1 before starting).
+// Interior places preserve stage/room and spawn point or XYZ; sea places and
+// code-owned overrides use sea coordinates. Unavailable/completed has no target.
+// Keeps outputs unchanged on failure.
+bool place_destination(const std::string& mod,const std::string& quest,QuestDestination& out);
 bool place_position(const std::string& mod,const std::string& quest,float& x,float& z);
 // wwhd_quest_known, wwhd_quest_portrait: what is known so far; the quest's portrait (package image)
 int32_t known(const std::string& mod, const std::string& quest, const std::string& text);
 int32_t portrait(const std::string& mod, const std::string& quest, const std::string& path, const std::string& package_dir);
 int32_t done(const std::string& mod, const std::string& quest);
+// Declarative completion also queues the manifest rupee reward, once.
+int32_t done_action(const std::string& mod,const std::string& quest);
 // The quests a mod declares in its manifest.json ("quests"), when the mod is loaded: false (logged)
 // if the declaration is not accepted.
 bool declare(const std::string& mod, const std::string& mod_name, const mods::json::Value& manifest);

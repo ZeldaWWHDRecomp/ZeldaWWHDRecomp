@@ -36,6 +36,7 @@ class RequestQueue {
 public:
     bool push(size_t scene,std::optional<size_t> active={}){if(pending_.size()>=16||(active&&*active==scene)||std::find(pending_.begin(),pending_.end(),scene)!=pending_.end())return false;pending_.push_back(scene);return true;}
     std::optional<size_t> pop(){if(pending_.empty())return {};const size_t scene=pending_.front();pending_.pop_front();return scene;}
+    std::optional<size_t> front()const{if(pending_.empty())return {};return pending_.front();}
     template<class Predicate> void discard(Predicate predicate){pending_.erase(std::remove_if(pending_.begin(),pending_.end(),predicate),pending_.end());}
     void clear(){pending_.clear();}
     size_t size()const{return pending_.size();}

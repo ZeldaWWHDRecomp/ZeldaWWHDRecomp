@@ -5,6 +5,7 @@
 #include "validation_diagnostics.h"
 #include "../../audio_out.h"
 #include "../../mods/save_folder_writes.h"
+#include "../../interp_pacing.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
 #endif
@@ -1407,7 +1408,54 @@ void flush() {
 #ifdef __ANDROID__
 static void wait_secondary_present();
 #endif
+// ---------------------------------------------------------------- even frame delivery
+// Android by default, WWHD_INTERP_EVEN_PACING=0/1 (interp_pacing.h EvenSchedule): the GX2 swap carries the frame's
+// intended distance to the previous one (set_present_interval); present() submits the TV frame's
+// work as always but holds the present call of a frame that is ready before its slot. The render
+// thread goes on with the next frame's commands and presents the held frame at an op boundary or
+// while it waits for commands (gx2_core.cpp), at the latest when the next frame presents or the
+// swapchain changes. frames_completed() advances as before, so the game never waits for a held frame.
+// WWHD_VK_PRESENT_TRACE=file writes a line per TV frame of a swap: frame, in-between frame (1),
+// interval, ready, planned and actual present call (steady clock, ns).
+struct HeldPresent {
+  bool pending = false;
+  int64_t due = 0;
+  VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+  uint32_t index = 0;
+  VkSemaphore wait = VK_NULL_HANDLE;
+  uint32_t observedPresentId = 0;
+  uint64_t frame = 0, generation = 0;
+};
+static HeldPresent heldPresent;
+static interp::pacing::EvenSchedule evenSchedule;
+static uint32_t evenPresentInterval = 0;  // of the frame being swapped (ns; 0: no schedule)
+static bool evenPresentHold = false, evenPresentSwap = false;
+static uint64_t evenFrames = 0, evenHeldPresents = 0, evenForcedPresents = 0, evenHeldNs = 0;
+static int64_t even_now_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static FILE* even_trace_file() {
+  static FILE* out = getenv("WWHD_VK_PRESENT_TRACE") ? fopen(getenv("WWHD_VK_PRESENT_TRACE"), "w") : nullptr;
+  return out;
+}
+struct EvenTraceLine { uint64_t frame; int hold; uint32_t interval; int64_t ready, due; };
+static EvenTraceLine evenTracePending{};
+static void trace_even_present(uint64_t frame, bool hold, uint32_t interval, int64_t ready, int64_t due) {
+  if (!even_trace_file()) return;
+  evenTracePending = {frame, hold ? 1 : 0, interval, ready, due};
+}
+static void trace_even_presented(int64_t at) {
+  FILE* out = even_trace_file();
+  if (!out || !evenTracePending.ready) return;
+  const auto& l = evenTracePending;
+  fprintf(out, "%llu %d %u %lld %lld %lld\n", (unsigned long long)l.frame, l.hold, l.interval, (long long)l.ready,
+          (long long)l.due, (long long)at);
+  evenTracePending = {};
+}
+static void present_held(bool forced);
+static bool async_present();
 static VkResult device_wait_idle() {
+  present_held(true);
   drain_record_commands();
 #ifdef __ANDROID__
   wait_secondary_present(); // synchronize host access to the dedicated queue
@@ -1420,6 +1468,21 @@ void wait_idle() {
 }
 void with_autorelease_pool(void (*fn)()) { host::with_autorelease_pool(fn); }
 uint64_t frames_completed() { return R.completed.load(); }
+void set_present_interval(uint32_t ns, bool hold) {
+  // tuning aid: WWHD_INTERP_EVEN_PACING_LEAK=n sets the schedule's leak to 1/n of the interval
+  static const bool leakSet = [] {
+    if (const char* e = getenv("WWHD_INTERP_EVEN_PACING_LEAK")) evenSchedule.leakDivisor = std::max(1, atoi(e));
+    return true;
+  }();
+  (void)leakSet;
+  evenPresentInterval = async_present() ? ns : 0;  // (synchronous presentation waits for the GPU anyway)
+  evenPresentHold = hold;
+  if (!evenPresentInterval) evenSchedule.reset();
+}
+int64_t present_due() { return heldPresent.pending ? heldPresent.due : 0; }
+void service_present() {
+  if (heldPresent.pending && even_now_ns() >= heldPresent.due) present_held(false);
+}
 uint64_t frame_count() { return std::atomic_ref<uint64_t>(R.frame).load(); }
 static bool has_extension(const std::vector<VkExtensionProperties> &es,
                           const char *name) {
@@ -1432,6 +1495,7 @@ static bool secondary_retirement_available();
 #endif
 static bool async_present();
 static void make_swapchain(Screen &s) {
+  if (&s == &R.tv) present_held(true);  // even frame delivery: a held frame goes out first
   if(active_deferred_commands)active_deferred_commands->finish_exact();
 #ifdef __ANDROID__
   if (&s == &R.tv) {
@@ -1662,6 +1726,7 @@ static void recover_primary_surface() {
 }
 
 static void recreate_surface(Screen &s) {
+  if (&s == &R.tv) present_held(true);
   if(active_deferred_commands)active_deferred_commands->finish_exact();
   if (!SDL_GetPointerProperty(SDL_GetWindowProperties(s.window),
                               SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr)) {
@@ -2198,7 +2263,96 @@ static bool screen_has_window(const Screen& s) {
 #endif
   return s.window != nullptr;
 }
+// One queue presentation of a screen's image (present(), or a held TV frame later: then `frame` is
+// the frame it belongs to, no longer R.frame)
+// (present observation: the request is registered while present() runs, inside the drawable's
+// identity scope; a held frame registered it then)
+static void register_observed_present(Screen &s, uint32_t observedPresentId, uint64_t frame) {
+  pendingObservedPresents.emplace(observedPresentId, ObservedPresent{s.swapchainGeneration, frame});
+  present_observer::google_present(s.swapchainGeneration, observedPresentId, frame);
+}
+static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t index, VkSemaphore wait,
+                              const void* pNext, uint32_t observedPresentId, uint64_t frame, bool secondary,
+                              bool registered = false) {
+  uint64_t handoffPresentId = 0;
+  auto& timing = screenTiming[&s == &R.tv ? 0 : 1];
+  VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+  pi.pNext = pNext;
+  pi.waitSemaphoreCount = 1;
+  pi.pWaitSemaphores = &wait;
+  pi.swapchainCount = 1;
+  pi.pSwapchains = &swapchain;
+  pi.pImageIndices = &index;
+  VkResult pr = timed_call(timing.present, [&] {
+    if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentBegin, 0, frame, &s == &R.tv ? 1 : 2);
+    if (presentObservation && &s == &R.tv && observedHistory) {
+      VkPresentTimeGOOGLE observedTime{};
+      VkPresentTimesInfoGOOGLE observedTimes{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
+      if (observedPresentId) {
+        observedTime.presentID = observedPresentId;
+        handoffPresentId = observedTime.presentID;
+        observedTime.desiredPresentTime = 0; // Observe; never change pacing.
+        if (!registered) register_observed_present(s, observedPresentId, frame);
+        observedTimes.swapchainCount = 1;
+        observedTimes.pTimes = &observedTime;
+        observedTimes.pNext = pi.pNext;
+        pi.pNext = &observedTimes;
+        std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+        return vkQueuePresentKHR(R.queue, &pi);
+      }
+    }
+    std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+    VkResult result=vkQueuePresentKHR(R.queue, &pi);
+#ifdef __ANDROID__
+    if(secondary)result=secondary_present_result(result);
+#endif
+    return result;
+  }, rprof::kWaitPresent);
+  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentEnd, 0, frame, &s == &R.tv ? 1 : 2, handoffPresentId);
+  if (presentObservation && &s == &R.tv) {
+    if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR)
+      present_observer::fail("observed TV queue presentation failed");
+    poll_present_observer();
+  }
+  if (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR)
+    ++s.presented;
+#ifdef __ANDROID__
+  // SUBOPTIMAL here only says the compositor rotates the picture (identity pre-transform, see
+  // make_swapchain); size changes come as window events. Rebuilding would happen every frame.
+  if (pr == VK_ERROR_OUT_OF_DATE_KHR)
+    s.resize = true;
+  else if (pr == VK_SUBOPTIMAL_KHR) {
+  } else if (pr == VK_ERROR_SURFACE_LOST_KHR) {
+    if (&s == &R.tv) recover_primary_surface();
+    else secondary_surface_lost();
+  }
+  else
+    vk_check(pr, "present scan buffer");
+#else
+  if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR)
+    s.resize = true;
+  else
+    vk_check(pr, "present scan buffer");
+#endif
+  return pr;
+}
+static void present_held(bool forced) {
+  if (!heldPresent.pending) return;
+  HeldPresent h = heldPresent;
+  heldPresent.pending = false;
+  if (h.generation != R.tv.swapchainGeneration || h.swapchain != R.tv.swapchain) {
+    // (cannot happen: every swapchain change presents a held frame first)
+    LOG("[vulkan] even pacing: a held frame's swapchain is gone; frame %llu not presented", (unsigned long long)h.frame);
+    return;
+  }
+  const int64_t at = even_now_ns();
+  if (forced && at < h.due) ++evenForcedPresents;  // early: the next frame or a swapchain change forced it out
+  queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
+  evenSchedule.presented(h.due, at);
+  trace_even_presented(at);
+}
 static bool present(Screen &s) {
+  if (&s == &R.tv) present_held(true);  // the previous frame, if it is still held
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (presentObservation && &s == &R.tv) poll_present_observer();
   if(active_deferred_commands) {
@@ -2616,58 +2770,34 @@ static bool present(Screen &s) {
     return false;
   }
 #endif
-  uint64_t handoffPresentId = 0;
-  VkResult pr = timed_call(timing.present, [&] {
-    if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentBegin, 0, R.frame, &s == &R.tv ? 1 : 2);
-    if (presentObservation && &s == &R.tv && observedHistory) {
-      VkPresentTimeGOOGLE observedTime{};
-      VkPresentTimesInfoGOOGLE observedTimes{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
-      if (observedPresentId) {
-        observedTime.presentID = observedPresentId;
-        handoffPresentId = observedTime.presentID;
-        observedTime.desiredPresentTime = 0; // Observe; never change pacing.
-        pendingObservedPresents.emplace(observedTime.presentID,
-            ObservedPresent{s.swapchainGeneration, R.frame});
-        present_observer::google_present(s.swapchainGeneration, observedTime.presentID, R.frame);
-        observedTimes.swapchainCount = 1;
-        observedTimes.pTimes = &observedTime;
-        observedTimes.pNext = pi.pNext;
-        pi.pNext = &observedTimes;
-        return vkQueuePresentKHR(R.queue, &pi);
-      }
+  // Even frame delivery (interp_pacing.h EvenSchedule; interp.cpp: on by default on Android): a TV frame of a
+  // swap that is ready before its slot is held (its work is submitted; only the present call waits)
+  if (&s == &R.tv && async && evenPresentSwap && !secondary && !present_capture_requested() &&
+      (evenPresentInterval || even_trace_file())) {
+    const int64_t ready = even_now_ns();
+    const int64_t due = evenSchedule.plan(ready, evenPresentInterval);
+    trace_even_present(R.frame, evenPresentHold, evenPresentInterval, ready, due);
+    if (evenPresentInterval && ++evenFrames % 1200 == 0) {
+      LOG("[vulkan] even pacing: %.0f%% of the last 1200 frames held (%.2f ms on average), %llu forced out early",
+          evenHeldPresents / 12.0, evenHeldPresents ? evenHeldNs / 1e6 / evenHeldPresents : 0.0,
+          (unsigned long long)evenForcedPresents);
+      evenHeldPresents = evenForcedPresents = evenHeldNs = 0;
     }
-    VkResult result=vkQueuePresentKHR(R.queue, &pi);
-#ifdef __ANDROID__
-    if(secondary)result=secondary_present_result(result);
-#endif
-    return result;
-  }, rprof::kWaitPresent);
-  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentEnd, 0, R.frame, &s == &R.tv ? 1 : 2, handoffPresentId);
-  if (presentObservation && &s == &R.tv) {
-    if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR)
-      present_observer::fail("observed TV queue presentation failed");
-    poll_present_observer();
+    if (due > ready + 100'000) {  // more than 0.1 ms early
+      if (presentObservation && observedHistory && observedPresentId)
+        register_observed_present(s, observedPresentId, R.frame);
+      heldPresent = {true, due, s.swapchain, index, finishedSemaphore, observedPresentId, R.frame, s.swapchainGeneration};
+      ++evenHeldPresents;
+      evenHeldNs += uint64_t(due - ready);
+      return true;
+    }
+    const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, false);
+    const int64_t at = even_now_ns();
+    evenSchedule.presented(due, at);
+    trace_even_presented(at);
+    return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
   }
-  if (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR)
-    ++s.presented;
-#ifdef __ANDROID__
-  // SUBOPTIMAL here only says the compositor rotates the picture (identity pre-transform, see
-  // make_swapchain); size changes come as window events. Rebuilding would happen every frame.
-  if (pr == VK_ERROR_OUT_OF_DATE_KHR)
-    s.resize = true;
-  else if (pr == VK_SUBOPTIMAL_KHR) {
-  } else if (pr == VK_ERROR_SURFACE_LOST_KHR) {
-    if (&s == &R.tv) recover_primary_surface();
-    else secondary_surface_lost();
-  }
-  else
-    vk_check(pr, "present scan buffer");
-#else
-  if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR)
-    s.resize = true;
-  else
-    vk_check(pr, "present scan buffer");
-#endif
+  const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, secondary);
   if (!async)
     vk_check(timed_call(timing.idle, [&] { return vkQueueWaitIdle(R.queue); }, rprof::kWaitGpu),
              "present completion");
@@ -3117,7 +3247,9 @@ void swap() {
     swapPhaseTiming[0].ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now()-swapPhaseStarted).count();
   }
-  timed_call(swapPhaseTiming[1],[&] { present(R.tv);return VK_SUCCESS; });
+  evenPresentSwap = true;  // (repeated frames while a pipeline compiles are never held)
+  try { timed_call(swapPhaseTiming[1],[&] { present(R.tv);return VK_SUCCESS; }); } catch (...) { evenPresentSwap = false; throw; }
+  evenPresentSwap = false;
   if (plan.drc_window)
     timed_call(swapPhaseTiming[2],[&] { present(R.drc);return VK_SUCCESS; });
   // Asynchronous presentation is retired by the ring's fences. Present dumps and captures
@@ -4229,6 +4361,7 @@ static void init_device(std::vector<const char *> extensions,
     const char* frame = getenv("WWHD_CAPTURE");
     request_tv_dump(path, frame ? std::max(0, atoi(frame)) : 120);
   }
+  bc_decode_startup_check();
   // Instantiate both static worker states before the saver can be constructed, even when
   // async compilation/warmup is disabled. They must outlive the saver's static destructor.
   merge_pipeline_demand_cache(VK_NULL_HANDLE);

@@ -2,6 +2,10 @@
 #include "story_mail.h"
 #include "story_scene_choice.h"
 #include "story_scene_motion.h"
+#include "story_native_scene_playback.h"
+#include "story_native_scene_run_owner.h"
+#include "story_native_scene_checkpoint.h"
+#include "story_native_scene_retire.h"
 #include "story_particles.h"
 #include "mod_actor.h"
 #include "story_notebook_game.h"
@@ -34,9 +38,10 @@ uint32_t g_scratch=0,g_buttons=0;
 unsigned g_frame_units=1;
 void (*g_original)(Cpu*,uint32_t)=nullptr;
 bool g_trim_installed=false,g_choice_installed=false;
-std::atomic<bool> g_active_input{false},g_swallow_plus{false};
+std::atomic<bool> g_active_input{false},g_swallow_plus{false},g_editor_skip{false};
+std::atomic<bool>g_native_restore_reserved{false},g_reserved_abort{false},g_reserved_load{false};
 uint64_t g_generation=0;
-bool g_loaded=false,g_suppress_loaded_room=false,g_cleanup_pending=false,g_cleanup_loaded=false,g_abort_pending=false;
+bool g_loaded=false,g_suppress_loaded_room=false,g_cleanup_pending=false,g_cleanup_loaded=false,g_abort_pending=false,g_starting=false;
 Cpu* g_cpu=nullptr;
 Resolve g_resolve;
 Actions g_actions;ResolvePlace g_places;ResolveParticle g_particle_resolve;std::map<std::string,MusicHook> g_music;
@@ -45,9 +50,12 @@ motion::Path g_camera_path;motion::Follow g_camera_follow;
 struct Entry {std::string mod;ManifestScene scene;};
 std::vector<Entry> g_entries;
 RequestQueue g_queue;std::set<size_t> g_pending;
+std::optional<size_t>g_native_deferred;unsigned g_native_deferred_attempts=0;
+void clear_native_deferral(){g_native_deferred.reset();g_native_deferred_attempts=0;}
 std::set<size_t> g_fired;
 size_t g_current=0;
 Player g_player;
+story_native_scene_playback::Player g_native_player;
 std::string g_room;
 std::u16string g_text;
 unsigned g_message_phase=0;std::array<std::u16string,2> g_choice_labels;
@@ -331,7 +339,7 @@ void set_scratch_memory(uint32_t guest){g_scratch=guest;}
 void set_callbacks(Resolve resolve_fn,Actions actions_fn){g_resolve=std::move(resolve_fn);g_actions=std::move(actions_fn);}
 void set_place_resolver(ResolvePlace resolver){g_places=std::move(resolver);}
 void set_particle_resolver(ResolveParticle resolver){g_particle_resolve=std::move(resolver);}
-bool register_music_hook(const std::string& owner,MusicHook hook){if(owner.empty()||!hook||g_player.active()||g_cleanup_pending||g_music.count(owner))return false;g_music.emplace(owner,std::move(hook));return true;}
+bool register_music_hook(const std::string& owner,MusicHook hook){if(g_native_restore_reserved.load(std::memory_order_acquire)||owner.empty()||!hook||g_player.active()||g_native_player.active()||g_cleanup_pending||g_music.count(owner))return false;g_music.emplace(owner,std::move(hook));return true;}
 bool validate(const std::vector<ManifestScene>& scenes,std::string& why) {
     for(const auto& scene:scenes){
         if(scene.steps.empty()||scene.steps.size()>kMaxSceneSteps||scene.steps.back().kind!=SceneStep::Kind::End)return why="scene "+scene.id+": invalid step list",false;
@@ -367,18 +375,21 @@ bool validate(const std::vector<ManifestScene>& scenes,std::string& why) {
     }return true;
 }
 bool declare(const std::string& mod,const std::vector<ManifestScene>& scenes,std::string& why) {
-    if(g_player.active()||g_cleanup_pending||g_cpu)return why="scene declarations are immutable during execution",false;
+    if(g_native_restore_reserved.load(std::memory_order_acquire)||g_player.active()||g_native_player.active()||g_cleanup_pending||g_cpu)return why="scene declarations are immutable during execution",false;
     if(!validate(scenes,why))return false;
     for(const auto& scene:scenes)
         for(const auto& old:g_entries)if(old.mod==mod&&old.scene.id==scene.id)return why="scene "+scene.id+": already registered",false;
     for(const auto& scene:scenes)g_entries.push_back({mod,scene});
     return true;
 }
+bool declared_scene(const std::string& mod,const std::string& id,ManifestScene& out){out={};for(const auto&e:g_entries)if(e.mod==mod&&e.scene.id==id){out=e.scene;return true;}return false;}
+std::vector<NativeSceneId> native_scene_ids(){std::vector<NativeSceneId> out;for(const auto&e:g_entries)if(e.scene.native)out.emplace_back(e.mod,e.scene.id);return out;}
 size_t checkpoint(){return g_entries.size();}
-bool rollback(size_t count) noexcept{if(g_cpu||g_player.active()||g_cleanup_pending||count>g_entries.size())return false;g_entries.resize(count);return true;}
+bool rollback(size_t count) noexcept{if(g_native_restore_reserved.load(std::memory_order_acquire)||g_cpu||g_player.active()||g_native_player.active()||g_cleanup_pending||count>g_entries.size())return false;g_entries.resize(count);return true;}
 bool request(const std::string& mod,const std::string& id){
+    if(g_native_restore_reserved.load(std::memory_order_acquire))return false;
     for(size_t i=0;i<g_entries.size();++i)if(g_entries[i].mod==mod&&g_entries[i].scene.id==id){
-        const std::optional<size_t> active=(g_player.active()||g_cleanup_pending)?std::optional<size_t>(g_current):std::nullopt;
+        const std::optional<size_t> active=(g_player.active()||g_native_player.active()||g_cleanup_pending||g_starting)?std::optional<size_t>(g_current):std::nullopt;
         if(!g_queue.push(i,active))return false;g_pending.insert(i);return true;
     }return false;
 }
@@ -411,7 +422,25 @@ void install(void (*original_fn)(Cpu*,uint32_t),const std::function<std::string(
     g_trim_installed=true;
 }
 void tick(Cpu* cpu,bool skip,unsigned frames){
-    if(!cpu||!g_call||!g_scratch||g_entries.empty())return;g_cpu=cpu;g_frame_units=std::min(2u,std::max(1u,frames));
+    if(!cpu||g_cpu||!g_call||!g_scratch||g_entries.empty()||g_native_restore_reserved.load(std::memory_order_acquire))return;
+    if(g_editor_skip.exchange(false,std::memory_order_acq_rel))skip=true;  // the world editor's Skip
+    if(g_reserved_load.exchange(false,std::memory_order_acq_rel))state_loaded();
+    if(g_reserved_abort.exchange(false,std::memory_order_acq_rel))abort();
+    g_cpu=cpu;g_frame_units=std::min(2u,std::max(1u,frames));
+    if(g_native_player.active()){
+        const uint32_t buttons=input::read().buttons;const bool skip_edge=(buttons&input::kPlus)&&!(g_buttons&input::kPlus);g_buttons=buttons;
+        if(!(buttons&input::kPlus))g_swallow_plus.store(false,std::memory_order_relaxed);
+        if(g_abort_pending){g_abort_pending=false;g_native_player.request_stop(StopReason::Aborted);}
+        if(g_loaded){g_queue.clear();g_pending.clear();}
+        if(skip||skip_edge){if(skip_edge)g_swallow_plus.store(true,std::memory_order_relaxed);g_native_player.request_stop(StopReason::Skipped);}
+        const auto result=g_native_player.tick(cpu,g_generation);
+        if(g_native_player.consume_load_reconciliation(g_generation))g_loaded=false;
+        const auto reason=g_native_player.stop_reason();
+        if(reason&&(*reason==StopReason::StateLoaded||*reason==StopReason::Interrupted)){g_queue.clear();g_pending.clear();}
+        g_active_input.store(g_native_player.active(),std::memory_order_relaxed);
+        if(result!=story_native_scene_playback::TickResult::Active)LOG("[scenes] native alternative ended (%u)",unsigned(result));
+        g_cpu=nullptr;return;
+    }
     if(g_abort_pending){g_abort_pending=false;g_restore_reason=StopReason::Aborted;if(g_player.active())g_player.stop(StopReason::Aborted);else restore(false,true);g_cpu=nullptr;return;}
     if(g_loaded){if(g_player.active())g_player.tick(g_generation);else restore(true);g_loaded=false;g_queue.clear();g_pending.clear();if(g_cleanup_pending){g_cpu=nullptr;return;}}
     else if(g_cleanup_pending){restore(g_cleanup_loaded);g_cpu=nullptr;return;}
@@ -435,6 +464,7 @@ void tick(Cpu* cpu,bool skip,unsigned frames){
         const std::string stage(reinterpret_cast<const char*>(mem::ptr(play+kStage)),strnlen(reinterpret_cast<const char*>(mem::ptr(play+kStage)),8));
         const unsigned room=ld8(link+kRoom);const std::string room_key=stage+":"+std::to_string(room);
         if(room_key!=g_room){
+            clear_native_deferral();
             g_room=room_key;g_fired.clear();
             g_queue.discard([&](size_t i){const auto& s=g_entries[i].scene;const bool remove=(s.trigger=="room"||s.trigger=="area")&&(s.stage!=stage||s.room!=room);if(remove)g_pending.erase(i);return remove;});
         }
@@ -449,18 +479,150 @@ void tick(Cpu* cpu,bool skip,unsigned frames){
             if(match){const bool queued=g_pending.count(i)!=0;if(queued||request(g_entries[i].mod,s.id))g_fired.insert(i);}
         }
     }
+    if(!g_queue.size())clear_native_deferral();
+    if(g_native_deferred&&(skip||skip_edge)&&g_queue.front()==g_native_deferred){
+        if(skip_edge)g_swallow_plus.store(true,std::memory_order_relaxed);
+        g_pending.erase(*g_queue.pop());clear_native_deferral();g_cpu=nullptr;return;
+    }
     if(g_queue.size()&&!ld8(play+kMode)&&!ld8(play+kOrderCount)){
-        g_current=*g_queue.pop();g_pending.erase(g_current);std::vector<Timing> timing;
+        g_current=*g_queue.front();
+        if(g_native_deferred&&*g_native_deferred!=g_current)clear_native_deferral();
+        g_starting=true;
+        struct Starting{~Starting(){g_starting=false;}}starting;
+        auto native=g_native_player.start(cpu,g_entries[g_current].mod,g_entries[g_current].scene,g_generation,
+            [](const std::string&mod,const std::vector<StoryAction>&rewards){return rewards.empty()||(g_actions&&g_actions(mod,rewards));});
+        if(native==story_native_scene_playback::StartResult::Deferred){
+            if(g_abort_pending||g_loaded){clear_native_deferral();g_abort_pending=false;g_cpu=nullptr;return;}
+            if(skip||skip_edge){if(skip_edge)g_swallow_plus.store(true,std::memory_order_relaxed);g_queue.pop();g_pending.erase(g_current);clear_native_deferral();g_cpu=nullptr;return;}
+            g_native_deferred=g_current;
+            if(++g_native_deferred_attempts<story_native_scene_playback::kNativeDeferredAttempts){g_cpu=nullptr;return;}
+            LOG("[scenes] %s:%s native pre-entry deferred %u attempts; whole fallback",g_entries[g_current].mod.c_str(),g_entries[g_current].scene.id.c_str(),g_native_deferred_attempts);
+            native=story_native_scene_playback::StartResult::WholeFallback;
+        }
+        // Deferred attempts keep the actual FIFO front and duplicate guard.
+        // Only a definitive decision consumes it; denied ownership never replays.
+        g_queue.pop();g_pending.erase(g_current);clear_native_deferral();
+        if(native!=story_native_scene_playback::StartResult::WholeFallback){
+            if(g_abort_pending){g_abort_pending=false;g_native_player.request_stop(StopReason::Aborted);}
+            if(skip||skip_edge){if(skip_edge)g_swallow_plus.store(true,std::memory_order_relaxed);g_native_player.request_stop(StopReason::Skipped);}
+            g_active_input.store(true,std::memory_order_relaxed);g_cpu=nullptr;return;
+        }
+        if(g_abort_pending){g_abort_pending=false;g_cpu=nullptr;return;}
+        std::vector<Timing> timing;
         for(const auto& s:g_entries[g_current].scene.steps)timing.push_back({s.kind==SceneStep::Kind::End?0:std::max(1u,s.frames),s.kind==SceneStep::Kind::End,s.successors});
         g_player.start(std::move(timing),g_driver,g_generation,false);
+        if(g_abort_pending){g_abort_pending=false;g_player.stop(StopReason::Aborted);}
     }g_cpu=nullptr;
 }
 void mute(input::PadState& pad) {
     if(g_active_input.load(std::memory_order_relaxed)){pad.buttons&=~input::kPlus;if(!story_scene_choice::active())pad.lx=pad.ly=pad.rx=pad.ry=0;}
     else if(g_swallow_plus.load(std::memory_order_relaxed))pad.buttons&=~input::kPlus;
 }
-void state_loaded(){g_abort_pending=false;story_scene_choice::state_loaded();g_camera_follow.reset();g_restore_reason=StopReason::StateLoaded;++g_generation;g_loaded=true;g_suppress_loaded_room=true;g_queue.clear();g_pending.clear();g_fired.clear();g_room.clear();}
-void abort(){g_queue.clear();g_pending.clear();if(g_cpu)g_player.stop();else g_abort_pending=true;}
-bool active(){return g_player.active()||g_cleanup_pending;}
-size_t current_step(){return g_player.step();}
+void state_loaded(){if(g_native_restore_reserved.load(std::memory_order_acquire)){g_reserved_load.store(true,std::memory_order_release);return;}clear_native_deferral();g_native_player.state_loaded(g_generation+1);g_abort_pending=false;story_scene_choice::state_loaded();g_camera_follow.reset();g_restore_reason=StopReason::StateLoaded;++g_generation;g_loaded=true;g_suppress_loaded_room=true;g_queue.clear();g_pending.clear();g_fired.clear();g_room.clear();}
+void abort(){if(g_native_restore_reserved.load(std::memory_order_acquire)){g_reserved_abort.store(true,std::memory_order_release);return;}clear_native_deferral();g_queue.clear();g_pending.clear();if(g_starting){g_abort_pending=true;return;}if(g_native_player.active()){g_native_player.request_stop(StopReason::Aborted);return;}if(g_cpu)g_player.stop();else g_abort_pending=true;}
+bool active(){return g_native_player.active()||g_player.active()||g_cleanup_pending;}
+bool native_owner(const story_native_scene_playback::Activation&a)noexcept{return g_native_player.owns(a);}
+bool fallback_active()noexcept{return g_player.active()||g_cleanup_pending;}
+class NativeCheckpointIssuer {
+public:
+ static std::optional<story_native_scene_checkpoint::Checkpoint>capture(
+  const story_native_scene_playback::Activation&a,const std::shared_ptr<story_native_scene_playback::RunOwnerCell>&cell)noexcept{try{
+  auto&p=g_native_player;
+  if(g_native_restore_reserved.load(std::memory_order_acquire)||g_cpu||g_starting||g_loaded||g_cleanup_pending||g_player.active()||!cell||g_current>=g_entries.size()||
+     p.busy_||p.blocked_||p.reason_||p.load_generation_||!p.run_||p.run_->owner_!=cell||p.run_->activation_.get()!=&a||p.generation_!=g_generation)return {};
+  auto life=cell->checkpoint_life(a,p.generation_);if(!life)return {};
+  const auto&entry=g_entries[g_current];
+  story_native_scene_checkpoint::Checkpoint checkpoint(p.run_->activation_,cell,std::move(life),entry.mod,entry.scene,g_current,p.generation_);
+  if(!checkpoint.definition_current())return {};return checkpoint;
+ }catch(...){return {};}}
+ static std::optional<story_native_scene_checkpoint::PreparedRetire>prepare_retire(
+  story_native_scene_checkpoint::CurrentRunRevocation&&revoked)noexcept{
+  if(revoked.thread_!=std::this_thread::get_id()||revoked.consumed_)return {};
+  revoked.consumed_=true;
+  if(!revoked.context_||!revoked.life_||!revoked.current_owner_||!revoked.load_epoch_)return {};
+  if(g_native_restore_reserved.exchange(true,std::memory_order_acq_rel))return {};
+  bool transferred=false;struct Release{bool&transferred;~Release(){if(!transferred)g_native_restore_reserved.store(false,std::memory_order_release);}}release{transferred};
+  try{
+   auto&player=g_native_player;
+   if(g_cpu||g_starting||!g_loaded||g_player.active()||g_cleanup_pending||player.busy_)return {};
+   if(player.active()&&(!player.run_||!player.run_->owner_||player.run_->owner_!=revoked.current_cell_))return {};
+   if(revoked.current_cell_&&(!player.run_||player.run_->owner_!=revoked.current_cell_))return {};
+   auto empty=std::make_unique<story_native_scene_playback::Player>();
+   story_native_scene_checkpoint::PreparedRetire prepared(player,std::move(empty),g_active_input,g_native_restore_reserved);
+   transferred=true;return prepared;
+  }catch(...){return {};}
+ }
+ static std::optional<story_native_scene_checkpoint::PreparedRestore>prepare(
+  const story_native_scene_checkpoint::Checkpoint&checkpoint,story_native_scene_checkpoint::CurrentRunRevocation&&revoked)noexcept{
+  if(revoked.consumed_)return {};revoked.consumed_=true;
+  if(revoked.thread_!=std::this_thread::get_id()||!revoked.load_epoch_)return {};
+  const bool actual_owner=revoked.context_&&revoked.life_;
+  const bool actual_none=!revoked.context_&&!revoked.life_&&!revoked.current_cell_&&revoked.current_owner_;
+  if(!actual_owner&&!actual_none)return {};
+  if(g_native_restore_reserved.exchange(true,std::memory_order_acq_rel))return {};
+  bool transferred=false;struct Release{bool&transferred;~Release(){if(!transferred)g_native_restore_reserved.store(false,std::memory_order_release);}}release{transferred};
+  try{
+   auto&player=g_native_player;
+   if(g_cpu||g_starting||!g_loaded||g_player.active()||g_cleanup_pending||player.busy_||
+      !checkpoint.definition_current()||checkpoint.scene_index()>=g_entries.size())return {};
+   const auto&entry=g_entries[checkpoint.scene_index()];
+   if(entry.mod!=checkpoint.mod()||entry.scene!=checkpoint.definition())return {};
+   if(player.active()&&(!player.run_||!player.run_->owner_||player.run_->owner_!=revoked.current_cell_))return {};
+   const auto&cell=checkpoint.cell();const auto&activation=checkpoint.activation();
+   const auto prior=cell->frontend_binding(*activation);if(!prior||g_generation<=*prior)return {};
+   std::unique_ptr<story_native_scene_playback::Player>replacement;
+   if(!player.run_||player.run_->owner_!=cell){
+    replacement=std::make_unique<story_native_scene_playback::Player>();
+    replacement->run_=std::unique_ptr<story_native_scene_playback::Run>(new story_native_scene_playback::Run(activation,[cell](Cpu*c){return cell->poll(c);},[cell](StopReason reason){cell->queue_stop(reason);},cell));
+    replacement->mod_=checkpoint.mod();replacement->coverage_=story_native_scene_coverage::inspect(checkpoint.definition());
+    if(replacement->coverage_.selection!=story_native_scene_coverage::Selection::NativeAlternative)return {};
+    replacement->generation_=*prior;replacement->load_generation_=g_generation;replacement->reason_=StopReason::StateLoaded;
+    if(player.load_generation_&&*player.load_generation_==g_generation)replacement->post_load_stop_=player.post_load_stop_;
+    if(g_abort_pending)replacement->post_load_stop_=StopReason::Aborted;
+    replacement->finish_=[](const std::string&mod,const std::vector<StoryAction>&rewards){return rewards.empty()||(g_actions&&g_actions(mod,rewards));};
+   }else if(player.generation_!=*prior)return {};
+   cell->record_load(*activation,*prior,g_generation);
+   story_native_scene_checkpoint::PreparedRestore prepared(player,std::move(replacement),g_current,checkpoint.scene_index(),g_active_input,g_native_restore_reserved);
+   transferred=true;return prepared;
+  }catch(...){return {};}
+ }
+};
+std::optional<story_native_scene_checkpoint::Checkpoint>capture_native_checkpoint(
+ const story_native_scene_playback::Activation&a,const std::shared_ptr<story_native_scene_playback::RunOwnerCell>&cell)noexcept{
+ return NativeCheckpointIssuer::capture(a,cell);
+}
+std::optional<story_native_scene_checkpoint::PreparedRestore>prepare_native_restore(
+ const story_native_scene_checkpoint::Checkpoint&checkpoint,story_native_scene_checkpoint::CurrentRunRevocation&&revoked)noexcept{
+ return NativeCheckpointIssuer::prepare(checkpoint,std::move(revoked));
+}
+std::optional<story_native_scene_checkpoint::PreparedRetire>prepare_native_retire(
+ story_native_scene_checkpoint::CurrentRunRevocation&&revoked)noexcept{
+ return NativeCheckpointIssuer::prepare_retire(std::move(revoked));
+}
+size_t current_step(){return g_native_player.active()?0:g_player.step();}
+bool editor_preview(const std::string& mod,const ManifestScene& scene,bool declared,std::string& why){
+    if(!g_scratch||!g_call||g_entries.empty())return why="the game started without mod scenes: scene previews work after a restart with a scene saved in the package",false;
+    if(g_native_restore_reserved.load(std::memory_order_acquire)||g_cpu||g_player.active()||g_native_player.active()||g_cleanup_pending||g_starting)return why="a scene is running",false;
+    const bool choice=std::any_of(scene.steps.begin(),scene.steps.end(),[](const SceneStep& s){return s.kind==SceneStep::Kind::Choice;});
+    if(choice&&!g_choice_installed)return why="choices play after a restart (the game started without a scene that has one)",false;
+    if(declared){for(const auto& e:g_entries)if(e.mod==mod&&e.scene.id==scene.id)return request(mod,scene.id)||(why="the scene can't be queued now",false);return why="the game has no scene "+scene.id+" of "+mod,false;}
+    std::vector<ManifestScene> one{scene};one[0].id="editor-preview";one[0].trigger.clear();one[0].native.reset();
+    if(!validate(one,why))return false;
+    for(size_t i=0;i<g_entries.size();++i)if(g_entries[i].mod==mod&&g_entries[i].scene.id=="editor-preview"){
+        if(g_pending.count(i))return why="the previous preview still waits to start",false;
+        g_entries[i].scene=one[0];return request(mod,"editor-preview")||(why="the scene can't be queued now",false);
+    }
+    g_entries.push_back({mod,one[0]});
+    return request(mod,"editor-preview")||(why="the scene can't be queued now",false);
+}
+void editor_skip(){g_editor_skip.store(true,std::memory_order_release);}
+bool editor_state(const std::string& mod,const std::string& id,bool& waiting,bool& playing,bool& native,size_t& step){
+    waiting=playing=native=false;step=0;
+    for(size_t i=0;i<g_entries.size();++i)if(g_entries[i].mod==mod&&g_entries[i].scene.id==id){
+        waiting=g_pending.count(i)!=0||(g_starting&&g_current==i);
+        playing=(g_player.active()||g_native_player.active()||g_cleanup_pending)&&g_current==i;
+        native=playing&&g_native_player.active();step=playing?current_step():0;return true;
+    }
+    return false;
+}
 } // namespace story_scenes

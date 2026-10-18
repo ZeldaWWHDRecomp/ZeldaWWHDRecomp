@@ -1,0 +1,86 @@
+{
+  "format_version": 1,
+  "id": "world-objects-w0",
+  "name": "World objects collision proof",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "Original handmade platform, buoy and raft for the collision proof.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "platform",
+      "source": "assets/platform.glb"
+    },
+    {
+      "id": "buoy",
+      "source": "assets/buoy.glb"
+    },
+    {
+      "id": "raft",
+      "source": "assets/raft.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "platform",
+      "kind": "mod",
+      "model": "platform",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 75000,
+        "y": 150,
+        "z": -201500
+      },
+      "collision": {
+        "radius": 30,
+        "height": 50,
+        "mode": "solid"
+      }
+    },
+    {
+      "id": "buoy",
+      "kind": "mod",
+      "model": "buoy",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 78000,
+        "y": 20,
+        "z": -201500
+      },
+      "collision": {
+        "radius": 30,
+        "height": 50,
+        "mode": "solid"
+      }
+    },
+    {
+      "id": "raft",
+      "kind": "mod",
+      "model": "raft",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 76500,
+        "y": 45,
+        "z": -201500
+      },
+      "collision": {
+        "radius": 30,
+        "height": 50,
+        "mode": "solid"
+      }
+    }
+  ]
+}

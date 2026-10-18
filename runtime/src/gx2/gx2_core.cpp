@@ -15,6 +15,8 @@
 // copies and presentation.
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -23,6 +25,7 @@
 
 #include "gx2.h"
 #include "gx2_cmd.h"
+#include "../cloud_proto.h"
 #include "gx2_regs.h"
 #include "register_blocks.h"
 #include "gx2_texture_regs.h"
@@ -228,6 +231,9 @@ static std::vector<uint32> g_q_pending, g_q_work;
 static bool g_q_waiting = false;
 static uint64_t g_fence_issued = 0, g_fence_done = 0;
 
+static int64_t steady_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 static void render_thread_main() {
     host::set_thread_name("GX2 render");
     if (!r5_slow_render::apply("GX2 render")) host::boost_thread_priority();
@@ -239,6 +245,27 @@ static void render_thread_main() {
             g_q_waiting = true;
             if (g_q_pending.empty()) {
                 const uint64_t idle = rprof::enabled() ? rprof::now_ns() : 0;
+                // even frame delivery: a held frame is presented at its time while no commands come
+                // (a timed wait wakes up to a millisecond late: it ends 0.3 ms early, the rest yields)
+                for (int64_t due; g_q_pending.empty() && (due = render::present_due()) != 0;) {
+                    const int64_t now = steady_ns();
+                    if (now < due - 300'000) {
+                        g_q_cv.wait_until(lk, std::chrono::steady_clock::time_point(std::chrono::nanoseconds(due - 300'000)));
+                        continue;
+                    }
+                    if (now < due) {
+                        lk.unlock();
+                        std::this_thread::yield();
+                        lk.lock();
+                        continue;
+                    }
+                    lk.unlock();
+                    {
+                        std::lock_guard<std::recursive_mutex> ex(g_exec_mutex);
+                        render::with_autorelease_pool([] { render::service_present(); });
+                    }
+                    lk.lock();
+                }
                 g_q_cv.wait(lk, [] { return !g_q_pending.empty(); });
                 if (idle) rprof::add_idle(rprof::now_ns() - idle);
             }
@@ -474,6 +501,12 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     case OP_SWAP: kind = rprof::kOpSwap; break;
     default: kind = rprof::kOpOther; break;
     }
+    // even frame delivery: a held frame is presented when its time has come (checked before each
+    // draw, clear and copy, which is fine-grained enough: one takes a few microseconds)
+    if (kind != rprof::kOpOther && kind != rprof::kOpRegs) {
+        const int64_t due = render::present_due();
+        if (due && steady_ns() >= due) render::service_present();
+    }
     const uint64_t started = rprof::op_begin(kind);
     execute_op(op, p, n);
     rprof::op_end(kind, started);
@@ -483,9 +516,12 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
 // Test only: WWHD_TEST_RENDER_LOAD_MS=x / WWHD_TEST_GAME_LOAD_MS=x busy-wait x ms per frame on the
 // render thread (before each swap is executed) / on the game thread (at each GX2SwapScanBuffers):
 // the frame time of a slower computer, for measuring frame pacing (docs/performance.md).
-static void test_frame_load(const char* name) {
+// WWHD_TEST_GAME_LOAD_MS=x:y busy-waits x ms at the swap of a logic step's frame and y ms at an
+// in-between frame's (the uneven passes of a phone whose game thread is the bottleneck).
+static void test_frame_load(const char* name, bool hold = false) {
     const char* e = getenv(name);
-    const double ms = e ? atof(e) : 0;
+    const char* colon = e ? strchr(e, ':') : nullptr;
+    const double ms = e ? (hold && colon ? atof(colon + 1) : atof(e)) : 0;
     if (ms <= 0) return;
     const auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(int64_t(ms * 1e6));
     while (std::chrono::steady_clock::now() < until) {}
@@ -551,6 +587,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         if (n >= 3 && p[2]) render::request_capture();
         if (n >= 5 && present_observer::enabled())
             present_observer::render_swap(uint64_t(p[3]) | (uint64_t(p[4]) << 32), render::frame_count());
+        render::set_present_interval(n >= 6 ? p[5] : 0u, n >= 2 && p[1]);
         render::swap();
         break;
     }
@@ -569,6 +606,16 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     }
     case OP_LAYOUT_CONTENT:
         aspect::set_content_clip(n && p[0]);
+        break;
+    case OP_CLOUDS_BEGIN:
+        cloud_proto::g_active_seq = n ? p[0] : 0;
+        cloud_proto::g_drawn = false;
+        if (render::g_backend->sky_clouds_begin && cloud_proto::g_active_seq)
+            render::g_backend->sky_clouds_begin(g_regs, cloud_proto::g_active_seq);
+        break;
+    case OP_CLOUDS_END:
+        if (cloud_proto::g_on_end && cloud_proto::g_active_seq) cloud_proto::g_on_end();
+        cloud_proto::g_active_seq = 0;
         break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
@@ -637,7 +684,7 @@ using namespace gx2;
 static uint64_t g_swap_count = 0, g_flip_count = 0;
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); int vsync_rate(); int frames_per_step(); bool paced_interpolation(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); int vsync_rate(); int frames_per_step(); bool paced_interpolation(); int64_t frame_interval_ns(); }
 static std::mutex g_flip_mutex;
 static const auto g_vsync_epoch = std::chrono::steady_clock::now();
 static constexpr std::chrono::nanoseconds kVsyncPeriod(16683333);  // 59.94 Hz
@@ -985,10 +1032,6 @@ HLE(gx2, GX2SwapScanBuffers) {
         }
         LOG("%s", buf);
     }
-    {
-        static const bool load = getenv("WWHD_TEST_GAME_LOAD_MS") != nullptr;
-        if (load) test_frame_load("WWHD_TEST_GAME_LOAD_MS");
-    }
     gfx::display_read_gamepad_ui(); // read-only; no guest reads outside auto or a pending pause view
     float a = aspect::on_swap();  // aspect ratio of the next frame (game projections, render targets)
     uint32 ab;
@@ -998,6 +1041,10 @@ HLE(gx2, GX2SwapScanBuffers) {
     const uint64_t steps = interp::logic_steps();
     const bool hold = steps == lastSteps;
     lastSteps = steps;
+    {
+        static const bool load = getenv("WWHD_TEST_GAME_LOAD_MS") != nullptr;
+        if (load) test_frame_load("WWHD_TEST_GAME_LOAD_MS", hold);
+    }
     // Opt-in correctness capture: select the guest frame before it enters
     // the asynchronous render queue. Renderer-frame parity is not a game clock.
     static const char* captureCounter = getenv("WWHD_TEST_CAPTURE_LOAD_COUNTER");
@@ -1019,6 +1066,9 @@ HLE(gx2, GX2SwapScanBuffers) {
     }
     static const bool observeSwap = present_observer::enabled();
     uint64_t observedSwap = 0;
+    // even frame delivery (interp.h frame_interval_ns): the frame's intended distance to the
+    // previous one travels with its swap (ns; 0: present it as soon as it is ready)
+    const uint32_t interval = uncapped_benchmark() ? 0u : uint32_t(std::clamp<int64_t>(interp::frame_interval_ns(), 0, 1'000'000'000));
     if (observeSwap) {
         {
             std::lock_guard<std::mutex> lk(g_flip_mutex);
@@ -1028,8 +1078,9 @@ HLE(gx2, GX2SwapScanBuffers) {
         // Explicit ID travels with this command; never sample mutable producer
         // counters or drawable-acquisition timing on the render thread.
         emit_host(OP_SWAP, {ab, hold ? 1u : 0u, capture ? 1u : 0u,
-                           uint32_t(observedSwap), uint32_t(observedSwap >> 32)});
-    } else if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
+                           uint32_t(observedSwap), uint32_t(observedSwap >> 32), interval});
+    } else if (interval) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, capture ? 1u : 0u, 0u, 0u, interval});
+    else if (capture) emit_host(OP_SWAP, {ab, hold ? 1u : 0u, 1u});
     else emit_host(OP_SWAP, {ab, hold ? 1u : 0u});
     {
         std::lock_guard<std::mutex> lk(g_flip_mutex);

@@ -290,6 +290,33 @@ Uneven/s is left out where every interval exceeds 1.4 frames. v0.2.12 is tag 5c3
 each with only the trace and load aids added.
 
 
+## Even frame pacing (2026-10-18)
+
+With frame interpolation the passes of a logic step take different times: the logic pass runs the
+game, an in-between pass only draws. Where the game thread is the limit (Xiaomi 14 with "Record
+graphics on a second thread": logic pass 19-20 ms, in-between pass 12-14 ms) frames were ready 20
+and 13 ms apart, and on the 120 Hz screen a third of the 60 fps frames stayed for one or three
+refreshes instead of two. Asking the compositor for present times did not help (the times were
+already past; a feedback on the measured interval fell to 24 fps; holds landed on wrong refreshes).
+
+Now each frame's swap carries its intended interval (the step's length over its planned frames).
+The Vulkan renderer submits the frame's work at once but holds its present call until one interval
+after the previous frame, less 1/128 of an interval, so the slower kind of frame sets the rhythm and
+a schedule pushed late by a hitch comes back within about a hundred frames. A late frame goes out at
+once, no frame waits longer than one interval, and the game never waits for a held frame. Paced
+steps plan only in-between counts that divide the display's refreshes per step (on a 120 Hz screen
+one or three, never two: 90 fps would stay 1, 1 and 2 refreshes). On by default on Android, off
+elsewhere; `WWHD_INTERP_EVEN_PACING=0/1` overrides, `WWHD_VK_PRESENT_TRACE=file` writes ready,
+planned and actual present times per frame, `WWHD_TEST_GAME_LOAD_MS=x:y` loads logic and in-between
+passes unevenly to reproduce the case on a computer.
+
+Xiaomi 14, Windfall, 120 fps setting paced to 60, frames shown for 1 / 2 / 3 refreshes
+(SurfaceFlinger): record worker on 11.5-16.8 / 66.5-75.8 / 12.2-16.0 % without, 0.9-2.1 / 92.0-95.6
+/ 2.0-5.0 % with it (five runs; in-between frames held about 4-5 ms, logic frames 1-2 ms); 60 fps
+setting 82-84 % -> 87-94 % two-refresh frames. Record worker off (render thread is the limit, frames
+already even): nothing is held, no change. fps unchanged; frame-time p99 about 1-2 ms higher. Mac
+(MoltenVK, ProMotion, `WWHD_TEST_GAME_LOAD_MS=12:5.5`): 49 % -> 88-97 % two-refresh frames.
+
 ## Desktop CPU/GPU overlap and CPU path defaults (2026-10-07)
 
 Apple M3 Max, MoltenVK, Vulkan renderer, `tools/bench/run_bench.py`, Outset (slot 3) and Windfall

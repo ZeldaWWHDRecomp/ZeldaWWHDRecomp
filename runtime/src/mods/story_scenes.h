@@ -6,10 +6,12 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <utility>
 #include "story_world_manifest.h"
 #include "story_scenes_core.h"
 struct Cpu;
 namespace input {struct PadState;}
+namespace story_native_scene_playback {class Activation;}
 namespace story_scenes {
 inline constexpr uint32_t kScratchBytes = 1024;
 using Resolve = std::function<uint32_t(Cpu*,const std::string&,const std::string&)>;
@@ -30,6 +32,12 @@ void set_callbacks(Resolve resolve, Actions actions);
 bool validate(const std::vector<story_notebook::ManifestScene>& scenes,std::string& why);
 bool declare(const std::string& mod,const std::vector<story_notebook::ManifestScene>& scenes,std::string& why);
 // Startup batch rollback; never mutates an installed or active scene player.
+// Pure copy from the registered immutable declaration set. Call only after the
+// startup world batch has committed; never authenticates a live native lease.
+bool declared_scene(const std::string& mod,const std::string& scene,story_notebook::ManifestScene&);
+// Pure copied IDs only; not commit, startup, actor or native authority.
+using NativeSceneId=std::pair<std::string,std::string>; // module, scene
+std::vector<NativeSceneId> native_scene_ids();
 size_t checkpoint();
 bool rollback(size_t checkpoint) noexcept;
 // Requests wait for the current talk/game event to finish; bounded FIFO, one scene at a time.
@@ -42,5 +50,19 @@ void mute(input::PadState& pad);
 void state_loaded();
 void abort();
 bool active();
+// Real frontend ownership predicates, not native leases. Runtime boundaries
+// may distinguish their exact native activation from fallback scene activity.
+bool native_owner(const story_native_scene_playback::Activation&) noexcept;
+bool fallback_active() noexcept;
 size_t current_step();
+// World editor (main game thread, outside tick): plays `scene` of `mod` as a preview. `declared`: the
+// declared scene of that id is requested (its native version may play). Otherwise the steps play from an
+// editor-only entry "editor-preview" (no trigger, never native) that replaces the mod's previous one.
+// False with why when no scene can start (none declared at start-up, a scene running, a choice without
+// the choice hooks).
+bool editor_preview(const std::string& mod,const story_notebook::ManifestScene& scene,bool declared,std::string& why);
+// The next tick skips the current scene (as Plus/Start does).
+void editor_skip();
+// Whether `mod`'s scene `id` waits in the queue or plays; `step` the fallback step it is at.
+bool editor_state(const std::string& mod,const std::string& id,bool& waiting,bool& playing,bool& native,size_t& step);
 } // namespace story_scenes

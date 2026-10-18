@@ -32,7 +32,7 @@ static void run(const Case& c, const char* dir) {
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowPadding = ImVec2(16, 14); s.FramePadding = ImVec2(9, 5); s.ItemSpacing = ImVec2(10, 7);
     s.FrameBorderSize = 1; s.WindowRounding = 10; s.FrameRounding = 5;
-    if (c.phone) { s.FramePadding = ImVec2(10, 16); s.ItemInnerSpacing = ImVec2(10, 8); s.ScrollbarSize = 49; s.GrabMinSize = 49; }
+    if (c.phone) mobile_ui::apply_touch_style(s, mobile_ui::layout(450, 450 / 160.0f, 0, float(c.w), float(c.h)));
     const char* fonts[] = {"/System/Library/Fonts/Supplemental/Arial.ttf", "C:/Windows/Fonts/arial.ttf",
                            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"};
     bool font = false;
@@ -114,12 +114,14 @@ static void run(const Case& c, const char* dir) {
 }
 
 int main(int argc, char** argv) {
-    const float phone = mobile_ui::scale(450, 450 / 160.0f, 0);  // density 450, Automatic UI size
+    // density 450, Automatic UI size: the layout the game picks for that screen (mobile_ui.h)
+    auto phone_at = [](int w, int h) { return mobile_ui::layout(450, 450 / 160.0f, 0, float(w), float(h)).scale; };
+    const float phone = phone_at(2376, 1080);
     const Case cases[] = {
         {"phone-2376x1080", 2376, 1080, true, phone},
         {"phone-2340x1080", 2340, 1080, true, phone},
         {"phone-portrait-1080x2376", 1080, 2376, true, phone},
-        {"phone-2376-wide-tall-window", 2376, 2700, true, phone},  // the same width, tall enough to show every option
+        {"phone-2376-wide-tall-window", 2376, 2700, true, phone_at(2376, 2700)},  // the same width, tall enough to show every option
         {"desktop-1920x1080", 1920, 1080, false, std::max(1.0f, 1080 / 820.0f)},
         {"desktop-2560x1440-hidpi", 2560, 1440, false, 2.0f},
         {"desktop-1280x720", 1280, 720, false, 1.0f},

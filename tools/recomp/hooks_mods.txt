@@ -1,5 +1,7 @@
 # Gameplay mods (runtime/src/mods/, Gameplay menu). Address = function entry, @ADDR = instruction hook.
-# Camera (mods/camera.cpp): dCamera_c::manualCamera (0250FDC8), the right-stick camera
+# Camera (mods/camera.cpp): manualCamera (0250FDC8), on foot and boat free look
+024FA9C8  # dCamera_c::nextMode: manual-start magnitude only in the mode decision (proportional pad fallback)
+0250D4E8  # dCamera_c::rideCamera: trace boat camera logic steps
 0250FDC8  # dCamera_c::manualCamera: remembers that the manual camera ran (mouse camera)
 @02510448 # manualCamera: after cLib_chaseF of the turning speed (this+0x154): direct stick / mouse yaw
 @025104A0 # manualCamera: the same on the other branch

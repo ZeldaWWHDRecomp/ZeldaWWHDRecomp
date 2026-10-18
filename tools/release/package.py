@@ -52,6 +52,8 @@ TOOL_FILES = [
     "tools/guestmod/guestmod.py",
     "tools/story_mods/npc_catalogue.py",  # the NPC catalogue from the player's game files (story_npc_catalogue.h)
     "tools/story_mods/notebook_model.py",  # shared player-local BFRES template patching
+    "tools/story_mods/collision_mesh.py",  # original static collision geometry
+    "tools/story_mods/shoreline_model.py",  # player-local animated coast material
     "tools/story_mods/actor_model.py",  # original static GLB models using the player's own materials
     "tools/story_mods/skinned_actor_model.py",  # original rigged GLB and player-local skin material
     "tools/story_mods/actor_animation.py",  # original skeletal clips in the native format

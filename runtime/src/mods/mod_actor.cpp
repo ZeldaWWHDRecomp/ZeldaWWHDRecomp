@@ -1,4 +1,18 @@
+#include <cstdint>
+#include <functional>
+#include <initializer_list>
+#include <memory>
+#include <span>
+#include <string>
+#include <utility>
 #include "mod_actor.h"
+#include "story_world_collision_proof.h"
+#include "story_world_collision_native.h"
+#include <map>
+#include <mutex>
+#include "story_world_placement.h"
+#include "story_world_motion.h"
+#include "story_world_grapple.h"
 #include "mod_actor_carry.h"
 #include "native_actor_carry.h"
 #include "mod_actor_combat_core.h"
@@ -27,14 +41,17 @@
 namespace mod_actor { namespace {
 // The extension is guest memory: model, resource phase and collision survive full states.
 constexpr uint32_t Phase=0x3AC,Model=0x3B4,Stts=0x3B8,Cyl=0x3F4,Name=0x524,Safe=0x564,Matrix=0x56C,Source=0x59C,Talk=0x5E0,TalkStatus=0x5E4,HeapBaseline=0x630,HeapStarted=0x650,Morf=0x654,LookObject=0x658,LookVtable=0x660,LookAngles=0x670,Motion=0x67C,SavedMotion=0x74C,SceneLease=0x81C,SavedClip=0x820,SavedFrame=0x824,SavedLoop=0x828,ClipIndex=0x82C,ClipLoop=0x830,Radius=0x834,Height=0x838,CollisionFlags=0x83C,BehaviorHandle=0x840,Userdata=0x850,HitSequence=0x950,Ground=0x954,GroundReady=0x9A8,BehaviorCreated=0x9AC,HitPacket=0x9B0,PostObject=0x9F0,PostVtable=0x9F8,HeadAnchor=0xA08,UpperAnchor=0xA14,Combat=0xA20,AttackStts=0xA48,AttackCyl=0xA84,AttackSource=0xBB4,Heart=0xBF8,Knockback=0xC18,KnockbackLeft=0xC24,Quarantined=0xC28,CombatIdentity=0xC40,Acch=0xC80,AcchCircles=0xE44,AcchOld=0xF04,AcchSpeed=0xF10,AcchReady=0xF1C,Carry=0xF40,CarryMotion=0xF70,Size=kInstanceBytes;
-struct Decl {std::string mod,archive;story_notebook::ManifestActor spec;int index;std::function<void()> talked;story_notebook::WorldPoint minimum,maximum;bool skinned=false;std::vector<std::string> clips;ModelRig rig;int head=-1,upper=-1;bool hits=false;CombatRewardSink reward;story_actors::identity::Fingerprint fingerprint{};std::function<bool()> carry_break;};
+struct Decl {std::string mod,archive;story_notebook::ManifestActor spec;int index;std::function<void()> talked;story_notebook::WorldPoint minimum,maximum;bool skinned=false;std::vector<std::string> clips;ModelRig rig;int head=-1,upper=-1;bool hits=false;CombatRewardSink reward;story_actors::identity::Fingerprint fingerprint{};std::function<bool()> carry_break;TalkProvider talk_provider;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;unsigned visual_role=0;std::vector<story_actors::identity::Fingerprint> visual_fingerprints;};
+std::recursive_mutex world_mutex;std::string world_game_directory;PlacementProvider placement_provider;
+std::map<std::pair<std::string,int>,story_world_placement::Index> placement_indexes;
 std::vector<Decl> declarations;
+std::map<std::pair<std::string,std::string>,std::shared_ptr<const story_world_collision::mesh::Mesh>> collision_models;
 struct ArchiveMeasurement {const Decl* declaration=nullptr;uint32_t heap=0,info=0;};
 thread_local ArchiveMeasurement* archive_measurement=nullptr;
-uint32_t scratch=0,heap_callback=0,look_callback=0,post_callback=0;BehaviorSink behavior_sink;std::set<std::pair<uint32_t,uint32_t>> restored;bool installed=false;
+uint32_t scratch=0,heap_callback=0,look_callback=0,post_callback=0;BehaviorSink behavior_sink;std::set<std::pair<uint32_t,uint32_t>> restored;bool installed=false,world_profile_ready=false;uint32_t grapple_storage_address=0;bool grapple_installed=false;
 void(*original)(Cpu*,uint32_t)=nullptr;
 uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
-uint32_t talk_actor=0;std::u16string text;
+uint32_t talk_actor=0;std::u16string text;std::function<void()> talk_completed;bool custom_talk=false;
 uint32_t call(Cpu*c,uint32_t f,std::initializer_list<uint32_t> a){return invoke(c,f,a);}
 struct KeepCpu{Cpu* cpu;Cpu saved;explicit KeepCpu(Cpu*c):cpu(c),saved(*c){}~KeepCpu(){*cpu=saved;}};
 uint32_t heap_size(Cpu*c,uint32_t h){if(!h)return 0;uint32_t vt=ld32(h+0xC);if(!vt)return 0;uint32_t fn=ld32(vt+0x6C);return fn?invoke(c,fn,{h}):0;}
@@ -55,10 +72,10 @@ void model_cost(const Decl* own,uint32_t field,uint32_t bytes){for(size_t i=0;i<
 bool check_budget(Cpu*c,uint32_t actor,std::string& why){
     std::vector<budget::Record> records;records.reserve(declarations.size());
     for(size_t i=0;i<declarations.size();++i){const auto& d=declarations[i];const uint32_t r=record(i),a=ld32(r);
-        const bool active=a&&ld32(a+4)==ld32(r+4)&&ld16(a+0xE)==kProfile&&ld8(a+0x3AA)==1&&ld32(a+0xB0)==i+1;
+        const bool active=a&&ld32(a+4)==ld32(r+4)&&own_profile(ld16(a+0xE))&&ld8(a+0x3AA)==1&&ld32(a+0xB0)==i+1;
         std::memcpy(mem::ptr(scratch+400),d.archive.c_str(),d.archive.size()+1);st32(scratch+472,scratch+400);st32(scratch+476,GD(0x10012504));
         const bool loaded=call(c,GC(0x02612504),{ld32(GD(0x101F4F7C)),scratch+472})!=0;
-        records.push_back({d.mod,d.archive,int(d.spec.room),ld32(r+8),ld32(r+12),ld32(r+16),ld32(r+24),loaded,active});
+        records.push_back({d.mod,d.archive,(d.visual_role&&active?int(int8_t(ld8(a+0x326))):int(d.spec.room)),ld32(r+8),ld32(r+12),ld32(r+16),ld32(r+24)+uint32_t(d.spec.grapple_points.size())*(story_world_grapple::kProxyBytes+64),loaded,active});
     }
     budget::Usage usage;const int room=int8_t(ld8(actor+0x326));
     const bool ok=budget::check(records,room,usage,why);
@@ -67,9 +84,11 @@ bool check_budget(Cpu*c,uint32_t actor,std::string& why){
 }
 Decl* declaration(uint32_t a){auto t=ld32(a+0xB0);return t&&t<=declarations.size()?&declarations[t-1]:nullptr;}
 bool valid_actor(uint32_t a){
-    if(a<0x10000000u||a>=0xC0000000u||!scratch||ld16(a+0xE)!=kProfile||ld8(a+0x3AA)!=1)return false;
+    if(a<0x10000000u||a>=0xC0000000u||!scratch||!own_profile(ld16(a+0xE))||ld8(a+0x3AA)!=1)return false;
     const uint32_t token=ld32(a+0xB0);if(!token||token>declarations.size())return false;
+    if(ld16(a+0xE)!=(declarations[token-1].spec.world_object()?kWorldProfile:kProfile))return false;
     if((declarations[token-1].spec.combat_enabled||declarations[token-1].spec.carry_enabled)&&!story_actors::identity::matches(mem::ptr(a+CombatIdentity),declarations[token-1].fingerprint))return false;
+    if(declarations[token-1].visual_role&&!story_actors::identity::matches(mem::ptr(a+CombatIdentity),declarations[token-1].fingerprint))return false;
     return ld32(record(token-1))==a&&ld32(record(token-1)+4)==ld32(a+4);
 }
 float number(uint32_t at){return u32_as_f32(ld32(at));}
@@ -102,7 +121,7 @@ bool clear_invalid_carry_keep(Cpu*c,uint32_t link,uint32_t a,bool stale_only=fal
     st32(scratch+80,0);call(c,GC(0x025D54C4),{pid,scratch+80});const uint32_t resolved=ld32(scratch+80);
     // A stale SDK tuple cannot authorize writes to a retail process reusing its
     // address. A genuinely current retail keep is delegated normally.
-    if(resolved==a&&(stale_only||ld16(a+0xE)!=kProfile||ld32(a+4)!=pid))return false;
+    if(resolved==a&&(stale_only||!own_profile(ld16(a+0xE))||ld32(a+4)!=pid))return false;
     // Native clearData only writes this keep's PID/pointer. With the keep empty,
     // freeGrabItem cannot dereference/cancel either the invalid or recycled actor.
     call(c,GC(0x023DC63C),{link+0x65A0});return ld32(link+0x65A0)==0xFFFFFFFFu&&ld32(link+0x65A4)==0;
@@ -112,14 +131,14 @@ bool carry_attach_allowed(Cpu*c,uint32_t link,uint32_t a){
     const auto state=read_carry(a);return carry::valid(state,ld32(a+4))&&(state.phase==0||(state.phase==1&&state.link_pid==ld32(link+4)));
 }
 bool deny_carry(uint32_t a){
-    if(a<mem::kMem2Start||a>mem::kMem2End-Size||ld16(a+0xE)!=kProfile)return false;
+    if(a<mem::kMem2Start||a>mem::kMem2End-Size||!own_profile(ld16(a+0xE)))return false;
     if(!valid_actor(a))return true;const auto*d=declaration(a);const auto state=read_carry(a);
     return !d->spec.carry_enabled||(ld32(a+0x2E0)&0x2000)||ld32(a+SceneLease)||ld32(a+Quarantined)||!carry::valid(state,ld32(a+4))||state.phase!=0;
 }
 void carry_quarantine(uint32_t a){auto state=read_carry(a);carry::quarantine(state);write_carry(a,state);st32(a+Quarantined,1);st32(a+0x39C,0);}
 void carry_attach(Cpu*c){
     const uint32_t link=c->r[3];if(link>=mem::kMem2Start&&link<=mem::kMem2End-0x65F4){const uint32_t candidate=ld32(link+0x65A4);if(candidate>=mem::kMem2Start&&candidate<=mem::kMem2End-Size){
-        const bool private_actor=ld16(candidate+0xE)==kProfile;
+        const bool private_actor=own_profile(ld16(candidate+0xE));
         if(private_actor&&!carry_attach_allowed(c,link,candidate)){
             if(clear_invalid_carry_keep(c,link,candidate)){Cpu reset=*c;reset.r[3]=link;original(&reset,GC(0x023DCF8C));original(c,GC(0x0240A41C));}return;
         }
@@ -135,7 +154,7 @@ void carry_attach(Cpu*c){
 void carry_release(Cpu*c){
     const uint32_t link=c->r[3];uint32_t a=0;carry::State state;bool own=false,thrown=false;float forward=0,up=0;int16_t yaw=0;
     if(link>=mem::kMem2Start&&link<=mem::kMem2End-0x65F4){a=ld32(link+0x65A4);own=carry_link(c,link,a);if(own){state=read_carry(a);own=carry::valid(state,ld32(a+4))&&state.phase==1&&state.link_pid==ld32(link+4);if(own){forward=number(a+0x370);up=number(a+0x340);yaw=int16_t(ld16(a+0x322));thrown=ld32(link+0x65F0)==0x71&&std::fabs(forward-19.f)<.01f&&std::fabs(up-34.f)<.01f;}}}
-    if(a>=mem::kMem2Start&&a<=mem::kMem2End-Size&&ld16(a+0xE)==kProfile&&!own){if(clear_invalid_carry_keep(c,link,a))original(c,GC(0x023DCF8C));return;}
+    if(a>=mem::kMem2Start&&a<=mem::kMem2End-Size&&own_profile(ld16(a+0xE))&&!own){if(clear_invalid_carry_keep(c,link,a))original(c,GC(0x023DCF8C));return;}
     if(!own&&a>=mem::kMem2Start&&a<=mem::kMem2End-Size&&clear_invalid_carry_keep(c,link,a,true)){original(c,GC(0x023DCF8C));return;}
     original(c,GC(0x023DCF8C));KeepCpu returned(c);
     if(!own||!valid_actor(a))return;
@@ -160,12 +179,12 @@ story_enemy_ownership::ModCollider classify_combat_collider(uint32_t object){
     };
     // Claimed exact objects remain denial-owned when their Stts is damaged.
     // A retail process genuinely reusing the allocation is left untouched.
-    if(scratch)for(size_t i=0;i<declarations.size();++i){if(!declarations[i].spec.combat_enabled)continue;const uint32_t a=ld32(record(i));if(a<0x10000000u||a>=0xC0000000u-Size||ld16(a+0xE)!=kProfile||(object!=a+Cyl&&object!=a+AttackCyl))continue;
+    if(scratch)for(size_t i=0;i<declarations.size();++i){if(!declarations[i].spec.combat_enabled)continue;const uint32_t a=ld32(record(i));if(a<0x10000000u||a>=0xC0000000u-Size||!own_profile(ld16(a+0xE))||(object!=a+Cyl&&object!=a+AttackCyl))continue;
         if(ld32(record(i)+4)!=ld32(a+4)){const auto*current=declaration(a);if(current&&!current->spec.combat_enabled)continue;}
         return classify_owned(a);
     }
     const uint32_t status=ld32(object+0x44);if(status<0x10000000u||status>=0xC0000000u-0x14)return Role::Foreign;
-    const uint32_t a=ld32(status+0xC);if(a<0x10000000u||a>=0xC0000000u-Size||ld16(a+0xE)!=kProfile)return Role::Foreign;
+    const uint32_t a=ld32(status+0xC);if(a<0x10000000u||a>=0xC0000000u-Size||!own_profile(ld16(a+0xE)))return Role::Foreign;
     const auto*d=declaration(a);if(d&&!d->spec.combat_enabled)return Role::Foreign;
     return classify_owned(a);
 }
@@ -190,7 +209,7 @@ MotionState read_motion(uint32_t at){MotionState m;m.count=ld32(at);m.next=ld32(
 void write_motion(uint32_t at,const MotionState&m){st32(at,m.count);st32(at+4,m.next);number(at+8,m.speed);st32(at+12,(m.loop?1:0)|(m.finished?2:0)|(m.enabled?4:0));for(unsigned i=0;i<16;++i)point(at+16+12*i,m.points[i]);}
 bool emit(Cpu*c,uint32_t a,BehaviorEvent event,const Hit*hit=nullptr){
     if(!valid_actor(a))return false;Identity id;const auto*d=declaration(a);id={d->mod,d->spec.id,ld32(a+0xB0),ld32(a+4)};
-    if(!behavior_sink)return true;behavior_sink(c,a,event,hit);return resolve(c,id)==a&&(!(d->spec.combat_enabled||d->spec.carry_enabled)||!ld32(a+Quarantined));
+    if(d->visual_role||!behavior_sink)return true;behavior_sink(c,a,event,hit);return resolve(c,id)==a&&(!(d->spec.combat_enabled||d->spec.carry_enabled)||!ld32(a+Quarantined));
 }
 void pre_joint(Cpu*c){
     const uint32_t self=c->r[3],a=self?ld32(self+4):0,index=c->r[4],info=c->r[5];
@@ -265,19 +284,74 @@ bool animate(Cpu*c,uint32_t a,const std::string&clip,float blend,bool loop){
     PoseScope scope(morf);c->f[1].ps0=blend;c->f[2].ps0=1;c->f[3].ps0=0;c->f[4].ps0=-1;
     call(c,GC(0x025E4A98),{morf,animation,loop?2u:0u,0});st32(a+ClipIndex,index);st32(a+ClipLoop,loop);return true;
 }
+constexpr uint32_t WorldMotion=0x10C0,WorldMotionMagic=0x574D5431;
+using WaterState=story_world_motion::State;
+float water_radius(const Decl&d){float radius=0;for(const auto&p:d.collision->vertices)radius=std::max(radius,std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z));return radius;}
+WaterState water_state(uint32_t actor){WaterState state;state.initialized=ld32(actor+WorldMotion)==WorldMotionMagic&&ld32(actor+WorldMotion+4)==ld32(actor+4)&&ld32(actor+WorldMotion+8)==1;auto read=[&](uint32_t offset){const auto p=point(actor+WorldMotion+offset);return story_world_motion::Point{p.x,p.y,p.z};};state.position=read(12);state.rotation=read(24);state.velocity=read(36);state.residual=read(48);return state;}
+void water_state(uint32_t actor,const WaterState&state){st32(actor+WorldMotion,WorldMotionMagic);st32(actor+WorldMotion+4,ld32(actor+4));st32(actor+WorldMotion+8,state.initialized?1:0);auto write=[&](uint32_t offset,story_world_motion::Point p){point(actor+WorldMotion+offset,{p.x,p.y,p.z});};write(12,state.position);write(24,state.rotation);write(36,state.velocity);write(48,state.residual);}
+// This bound encloses every allowed wave/tilt pose, so horizontal sweeps cannot
+// miss a protruding corner when the native wave changes during movement.
+bool world_bounds(const Decl&d,story_notebook::WorldPoint center,story_world_placement::Bounds&bounds){
+    using namespace story_world_placement;const auto&g=*d.collision;
+    if(d.spec.water_object()){const float radius=water_radius(d),y=d.spec.position.y-d.spec.buoyancy.draft;bounds={{center.x-radius,y-2048-radius,center.z-radius},{center.x+radius,y+2048+radius,center.z+radius}};return valid(bounds);}
+    return transform_bounds({{g.minimum.x,g.minimum.y,g.minimum.z},{g.maximum.x,g.maximum.y,g.maximum.z}},{center.x,center.y,center.z},{d.spec.rotation.x,d.spec.rotation.y,d.spec.rotation.z},{1,1,1},bounds);
+}
+story_world_placement::Index world_environment(Cpu*c,uint32_t actor,const Decl&d){
+    using namespace story_world_placement;const auto key=std::make_pair(d.spec.stage,int(d.spec.room));auto found=placement_indexes.find(key);if(found==placement_indexes.end())found=placement_indexes.emplace(key,placement_provider?placement_provider(d.spec.stage,int(d.spec.room)):load_native_room(world_game_directory,d.spec.stage,int(d.spec.room))).first;
+    Index index=found->second;
+    for(size_t i=0;i<declarations.size();++i){const auto&other=declarations[i];if(&other==&d||!other.collision||other.spec.stage!=d.spec.stage||other.spec.room!=d.spec.room)continue;auto pos=other.spec.position;const uint32_t a=ld32(record(i));if(valid_actor(a)&&story_world_collision::native::stored(a,other.fingerprint))pos=point(a+0x314);Bounds bounds;if(world_bounds(other,pos,bounds))index.bounds.push_back({d.spec.stage,int(d.spec.room),"world_object",other.mod+":"+other.spec.id,bounds});}
+    const uint32_t ship=ld32(GD(0x10474BEC));if(story_world_collision::proof::address(ship,0x1500)&&ld8(ship+0x3AA)==1&&int8_t(ld8(ship+0x326))==int(d.spec.room)){const auto p=point(ship+0x314);index.bounds.push_back({d.spec.stage,int(d.spec.room),"ship","ship",{{p.x-250,-1000000,p.z-250},{p.x+250,1000000,p.z+250}}});}
+    (void)c;(void)actor;return index;
+}
+bool water_step(Cpu*c,uint32_t actor,Decl&d,bool initialize){
+    std::lock_guard guard(world_mutex);using namespace story_world_motion;using story_world_placement::Bounds;
+    if(!d.spec.water_object())return true;if(!d.collision||water_radius(d)>2000)return false;
+    WaterState state=initialize?WaterState{}:water_state(actor);if(!initialize&&!state.initialized)return false;
+    Config config;const auto&spec=d.spec;config.origin={spec.position.x,spec.position.y,spec.position.z};config.base_rotation={spec.rotation.x,spec.rotation.y,spec.rotation.z};config.draft=spec.buoyancy.draft;config.damping=spec.buoyancy.damping;config.max_tilt=spec.buoyancy.max_tilt;config.drifting=spec.behaviour=="drifting";config.wind_speed=spec.drift.wind_speed;config.current_x=spec.drift.current.x;config.current_z=spec.drift.current.z;config.max_speed=spec.drift.max_speed;config.anchored=spec.anchor.enabled;config.anchor={spec.anchor.point.x,spec.anchor.point.y,spec.anchor.point.z};config.anchor_radius=spec.anchor.radius;
+    std::string why;if(!story_world_motion::valid(config,why)||(!initialize&&!valid_state(config,state,why)))return false;
+    const Point previous=initialize?config.origin:state.position;
+    Bounds envelope;if(!world_bounds(d,{previous.x,previous.y,previous.z},envelope))return false;
+    const auto environment=world_environment(c,actor,d);
+    const auto initial=story_world_placement::check(spec.stage,int(spec.room),envelope,environment);
+    if(std::any_of(initial.begin(),initial.end(),[](const auto&conflict){return conflict.kind=="coverage"||conflict.kind=="invalid";}))return false;
+    const float radius=std::max(100.f,water_radius(d));
+    auto sample=[&](float x,float z){Cpu probe=*c;probe.f[1].ps0=x;probe.f[2].ps0=z;call(&probe,GC(0x0246BA0C),{});return float(probe.f[1].ps0);};
+    Samples samples{sample(previous.x,previous.z),sample(previous.x-radius,previous.z),sample(previous.x+radius,previous.z),sample(previous.x,previous.z-radius),sample(previous.x,previous.z+radius),radius};
+    for(float height:{samples.center,samples.left,samples.right,samples.front,samples.back})if(!std::isfinite(height)||std::fabs(height)>2048)return false;
+    Point wind{};if(config.drifting&&config.wind_speed>0){call(c,GC(0x0257DB28),{actor+WorldMotion+60});auto p=point(actor+WorldMotion+60);wind={p.x,p.y,p.z};}
+    if(!step(config,samples,wind,1.f/30.f,state,why))return false;
+    const auto swept=story_world_placement::sweep(spec.stage,int(spec.room),envelope,{state.position.x-previous.x,0,state.position.z-previous.z},environment);
+    // A nearby ship is transient. Recreate the body at its validated authored
+    // placement and hold drift until the ship clears its conservative envelope.
+    if(initialize&&swept.blocked&&std::any_of(swept.conflicts.begin(),swept.conflicts.end(),[](const auto&conflict){return conflict.kind!="ship";}))return false;
+    if(swept.blocked){state.position.x=previous.x+swept.allowed_delta.x;state.position.z=previous.z+swept.allowed_delta.z;state.velocity.x=swept.allowed_delta.x*30;state.velocity.z=swept.allowed_delta.z*30;state.residual.x=state.residual.z=0;}
+    if(config.anchored&&std::hypot(double(state.position.x)-config.anchor.x,double(state.position.z)-config.anchor.z)>config.anchor_radius){state.position.x=previous.x;state.position.z=previous.z;state.velocity.x=state.velocity.z=0;state.residual.x=state.residual.z=0;}
+    water_state(actor,state);point(actor+0x314,{state.position.x,state.position.y,state.position.z});for(unsigned i=0;i<3;++i){const float degrees=i==0?state.rotation.x:i==1?state.rotation.y:state.rotation.z;st16(actor+0x328+i*2,uint16_t(int32_t(degrees*32768.f/180.f)));}
+    const char*trace=std::getenv("WWHD_WORLD_COLLISION_TRACE");if(trace&&std::strcmp(trace,"1")==0&&ld32(actor+story_world_collision::native::State+12)%30==0)LOG("[world_motion] actor=%08X id=%s x=%.4f y=%.4f z=%.4f pitch=%.4f roll=%.4f vx=%.4f vz=%.4f wave=%.4f wind_x=%.4f wind_z=%.4f blocked=%u",actor,spec.id.c_str(),double(state.position.x),double(state.position.y),double(state.position.z),double(state.rotation.x),double(state.rotation.z),double(state.velocity.x),double(state.velocity.z),double(samples.center),double(wind.x),double(wind.z),unsigned(swept.blocked));
+    return true;
+}
+bool grapple_update(Cpu*c,uint32_t actor,Decl&d){
+    if(d.spec.grapple_points.empty())return true;if(!grapple_installed)return false;
+    std::array<story_world_grapple::Target,8> targets{};const float sx=number(actor+0x330),sy=number(actor+0x334),sz=number(actor+0x338);constexpr float rad=3.14159265358979323846f/180;
+    for(size_t i=0;i<d.spec.grapple_points.size();++i){const auto&t=d.spec.grapple_points[i];const float x=t.position.x*sx,y=t.position.y*sy,z=t.position.z*sz;auto&out=targets[i];out.position={number(actor+Matrix)*x+number(actor+Matrix+4)*y+number(actor+Matrix+8)*z+number(actor+Matrix+12),number(actor+Matrix+16)*x+number(actor+Matrix+20)*y+number(actor+Matrix+24)*z+number(actor+Matrix+28),number(actor+Matrix+32)*x+number(actor+Matrix+36)*y+number(actor+Matrix+40)*z+number(actor+Matrix+44)};
+        const float vx=sx*std::sin(t.yaw*rad),vz=sz*std::cos(t.yaw*rad);out.yaw=std::atan2(number(actor+Matrix)*vx+number(actor+Matrix+8)*vz,number(actor+Matrix+32)*vx+number(actor+Matrix+40)*vz)/rad;}
+    return story_world_grapple::update(c,actor,ld32(actor+4),d.fingerprint,std::span<const story_world_grapple::Target>(targets.data(),d.spec.grapple_points.size()));
+}
+void retire_world(Cpu*c,uint32_t actor){story_world_grapple::destroy(c,actor,ld32(actor+4));story_world_collision::native::destroy(c,actor,call);}
 void heap(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,0);return;}st32(a+Safe,a+Name);st32(a+Safe+4,GD(0x10012504));const std::string filename=d->archive+".bmd";uint32_t data=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)});LOG("[mod_actor] %s:%s archive=%s named_resource=%s data=%08X",d->mod.c_str(),d->spec.id.c_str(),d->archive.c_str(),filename.c_str(),data);uint32_t current=call(c,GC(0x027EC230),{}),before=heap_free(c,current);uint32_t model=0;
 if(data&&d->skinned){
     auto idle=std::find(d->clips.begin(),d->clips.end(),d->spec.animation.empty()?"idle":d->spec.animation);const size_t clip=idle==d->clips.end()?0:size_t(idle-d->clips.begin());
     const uint32_t animation=d->clips.empty()?0:call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)+1+uint32_t(clip)});
     const uint32_t morf=(animation||d->clips.empty())?create_morf(c,data,animation):0;st32(a+Morf,morf);st32(a+ClipIndex,d->clips.empty()?0xFFFFFFFFu:uint32_t(clip));st32(a+ClipLoop,1);if(morf&&d->head>=0){st32(morf+0xC0,a+LookObject);st32(morf+0xC4,a+PostObject);}
     if(morf&&ld32(morf+0xA8)&&ld32(morf+0xAC)&&!ld32(morf+0xBC))model=ld32(morf+0x90);
-}else if(data)model=call(c,GC(0x025E38E0),{data,0x80000});uint32_t after=heap_free(c,current);LOG("[mod_actor] %s:%s model heap=%08X free_before=%u free_after=%u model_bytes=%u",d->mod.c_str(),d->spec.model.c_str(),current,before,after,before>=after?before-after:0);st32(a+Model,model);st32(a+0x368,model);st32(a+0x348,model?model+0xC8:0);transform(a);result(c,model!=0);}
-void create(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,5);return;}if(!ld8(a+0x3AA)){call(c,GC(0x025D4ED0),{a});std::memset(mem::ptr(a+Phase),0,Size-Phase);if(d->spec.combat_enabled){combat::State state;if(!combat::initialize(state,combat_config(*d))){result(c,5);return;}write_combat(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->spec.carry_enabled){carry::State state;state.pid=ld32(a+4);write_carry(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}number(a+Radius,d->spec.collision_radius);number(a+Height,d->spec.collision_height);st32(a+CollisionFlags,1|(d->spec.pushable?2:0));st32(a+LookObject,a+LookVtable);st32(a+LookObject+4,a);st32(a+LookVtable+0xC,look_callback);st32(a+PostObject,a+PostVtable);st32(a+PostObject+4,a);st32(a+PostVtable+0xC,post_callback);MotionState motion_;motion_.count=unsigned(d->spec.path.points.size());motion_.speed=d->spec.path.speed;motion_.loop=d->spec.path.loop;motion_.enabled=motion_.count>=2;for(unsigned i=0;i<motion_.count;++i)motion_.points[i]=d->spec.path.points[i];write_motion(a+Motion,motion_);std::memcpy(mem::ptr(a+Name),d->archive.c_str(),d->archive.size()+1);call(c,GC(0x0200BD2C),{a+Stts});call(c,GC(0x02515DA0),{a+Stts+0x1C});st32(a+Stts+0x18,GD(0x1004AE88));st32(a+Stts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515FB8),{a+Cyl});st32(a+Cyl+0x114,GD(0x100015A8));st32(a+Cyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+Cyl+0x118});st32(a+Cyl+0x3C,GD(0x1004B108));st32(a+Cyl+0x114,GD(0x1004B160));st32(a+Cyl+0x12C,GD(0x1004B150));}
+}else if(data)model=call(c,GC(0x025E38E0),{data,0x80000});uint32_t after=heap_free(c,current);LOG("[mod_actor] %s:%s model heap=%08X free_before=%u free_after=%u model_bytes=%u",d->mod.c_str(),d->spec.model.c_str(),current,before,after,before>=after?before-after:0);st32(a+Model,model);st32(a+0x368,model);st32(a+0x348,model?model+0xC8:0);if(d->visual_role==2&&model){const uint32_t animation=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)+1});const uint32_t btk=animation?call(c,GC(0x025E7C6C),{0}):0;st32(a+0x854,btk);c->f[1].ps0=1;if(!btk||!call(c,GC(0x025E7CE0),{btk,data,animation,1,2,0,0xFFFFFFFFu,0})){result(c,0);return;}const uint32_t play=call(c,GC(0x025200D4),{});number(btk+4,play?float(ld16(play+0x5D00)%100):0.f);}if(d->spec.water_object()&&!water_step(c,a,*d,true)){result(c,0);return;}transform(a);const auto proof_kind=story_world_collision::proof::selected(d->mod,d->spec);const bool proof_ok=model&&story_world_collision::proof::heap_create(c,a,proof_kind,call)&&(!d->spec.world_object()||(d->collision&&story_world_collision::native::heap_create(c,a,*d->collision,d->fingerprint,call)));result(c,proof_ok);}
+void create(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,5);return;}if(!ld8(a+0x3AA)){call(c,GC(0x025D4ED0),{a});std::memset(mem::ptr(a+Phase),0,Size-Phase);if(d->spec.combat_enabled){combat::State state;if(!combat::initialize(state,combat_config(*d))){result(c,5);return;}write_combat(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->spec.carry_enabled){carry::State state;state.pid=ld32(a+4);write_carry(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->visual_role){const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());const float scale[]={d->spec.scale.x,d->spec.scale.y,d->spec.scale.z};for(unsigned i=0;i<3;++i)number(a+0x330+i*4,scale[i]);if(d->visual_role==1)number(a+0x364,10.f);}
+number(a+Radius,d->spec.collision_radius);number(a+Height,d->spec.collision_height);st32(a+CollisionFlags,d->visual_role?0:1|(d->spec.pushable?2:0));st32(a+LookObject,a+LookVtable);st32(a+LookObject+4,a);st32(a+LookVtable+0xC,look_callback);st32(a+PostObject,a+PostVtable);st32(a+PostObject+4,a);st32(a+PostVtable+0xC,post_callback);MotionState motion_;motion_.count=unsigned(d->spec.path.points.size());motion_.speed=d->spec.path.speed;motion_.loop=d->spec.path.loop;motion_.enabled=motion_.count>=2;for(unsigned i=0;i<motion_.count;++i)motion_.points[i]=d->spec.path.points[i];write_motion(a+Motion,motion_);std::memcpy(mem::ptr(a+Name),d->archive.c_str(),d->archive.size()+1);call(c,GC(0x0200BD2C),{a+Stts});call(c,GC(0x02515DA0),{a+Stts+0x1C});st32(a+Stts+0x18,GD(0x1004AE88));st32(a+Stts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515FB8),{a+Cyl});st32(a+Cyl+0x114,GD(0x100015A8));st32(a+Cyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+Cyl+0x118});st32(a+Cyl+0x3C,GD(0x1004B108));st32(a+Cyl+0x114,GD(0x1004B160));st32(a+Cyl+0x12C,GD(0x1004B150));}
 if(heap_trace()&&!ld32(a+HeapStarted)){const auto before=heaps(c);for(unsigned i=0;i<4;++i){st32(a+HeapBaseline+i*8,before[i].first);st32(a+HeapBaseline+i*8+4,before[i].second);}st32(a+HeapStarted,1);}
 uint32_t phase=call(c,GC(0x02520460),{a+Phase,a+Name});if(phase!=4){if(phase>=5)fail_create(a);result(c,phase);return;}if(!ld32(a+Model)){
     if(heap_trace()){HeapSnapshot before{};for(unsigned i=0;i<4;++i)before[i]={ld32(a+HeapBaseline+i*8),ld32(a+HeapBaseline+i*8+4)};report_heaps(a,"archive_load",before,heaps(c));}
     const auto before=heap_trace()?heaps(c):HeapSnapshot{};
-    if(!call(c,GC(0x025D63E8),{a,heap_callback,0x40000})){fail_create(a);result(c,5);return;}
+    if(!call(c,GC(0x025D63E8),{a,heap_callback,uint32_t(0x40000+(d->collision?story_world_collision::mesh::allocation_bytes(*d->collision):0))})){fail_create(a);result(c,5);return;}
     if(heap_trace())report_heaps(a,"model_create",before,heaps(c));
 }
 const uint32_t token=ld32(a+0xB0),account=record(token-1),solid=ld32(a+0xF4),parent=solid?ld32(solid+0x24):0;
@@ -290,8 +364,8 @@ call(c,GC(0x02515F14),{a+Stts,d->spec.pushable?100u:255u,0,a});for(unsigned i=0;
     call(c,GC(0x0200BD2C),{a+AttackStts});call(c,GC(0x02515DA0),{a+AttackStts+0x1C});st32(a+AttackStts+0x18,GD(0x1004AE88));st32(a+AttackStts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515F14),{a+AttackStts,255,0,a});
     call(c,GC(0x02515FB8),{a+AttackCyl});st32(a+AttackCyl+0x114,GD(0x100015A8));st32(a+AttackCyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+AttackCyl+0x118});st32(a+AttackCyl+0x3C,GD(0x1004B108));st32(a+AttackCyl+0x114,GD(0x1004B160));st32(a+AttackCyl+0x12C,GD(0x1004B150));
     const auto&at=d->spec.combat.attack;if(!mod_actor_native_combat::write_attack_source(a+AttackSource,{at.radius,at.height,at.forward_offset,at.y_offset,at.damage})){fail_create(a);result(c,5);return;}call(c,GC(0x02516518),{a+AttackCyl,a+AttackSource});st32(a+AttackCyl+0x44,a+AttackStts);st32(a+0x39C,4);st8(a+0x38A,3);
-}if(d->spec.carry_enabled){st32(a+0x39C,0x10);st8(a+0x38C,8);}if(!ld32(a+BehaviorCreated)){st32(a+BehaviorCreated,1);emit(c,a,BehaviorEvent::CreateNew);}result(c,4);}
-void destroy(Cpu*c){uint32_t a=c->r[3];if(!valid_actor(a)){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;if(clear_invalid_carry_keep(c,link,a)){Cpu reset=*c;reset.r[3]=link;original(&reset,GC(0x023DCF8C));}}if(valid_actor(a)&&declaration(a)->spec.carry_enabled){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;if(carry_link(c,link,a))call(c,GC(0x023DCF8C),{link});if(ld32(a+AcchReady)){mod_actor_knockback::destroy(c,knockback_context(a));st32(a+AcchReady,0);}}for(auto&entry:heading_proofs)if(entry.actor==a)entry={};restored.erase({a,ld32(a+4)});emit(c,a,BehaviorEvent::Destroy);if(ld32(a+GroundReady)){call(c,GC(0x0237A940),{a+Ground,0});st32(a+GroundReady,0);}if(auto*d=declaration(a);d&&d->spec.combat_enabled){if(ld32(a+AcchReady)){mod_actor_knockback::destroy(c,knockback_context(a));st32(a+AcchReady,0);}call(c,GC(0x02515A70),{a+AttackCyl,2});call(c,GC(0x02515860),{a+AttackStts,2});}mod_actor_shadow_proof::forget_model(ld32(a+Model));const uint32_t token=ld32(a+0xB0);if(token&&token<=declarations.size()&&ld32(record(token-1))==a)st32(record(token-1),0);const auto before=heap_trace()?heaps(c):HeapSnapshot{};if(talk_actor==a){story_mail::unsay();talk_actor=0;text.clear();}call(c,GC(0x02515A70),{a+Cyl,2});call(c,GC(0x02515860),{a+Stts,2});call(c,GC(0x025204C8),{a+Phase,a+Name});if(heap_trace())report_heaps(a,"resource_delete",before,heaps(c));result(c,1);}
+}if(d->spec.world_object()&&!story_world_collision::native::created(c,a,d->fingerprint,call)){retire_world(c,a);fail_create(a);result(c,5);return;}if(d->spec.world_object()&&!grapple_update(c,a,*d)){retire_world(c,a);fail_create(a);result(c,5);return;}if(d->mod=="world-objects-w0"&&!story_world_collision::proof::created(c,a,call)){fail_create(a);result(c,5);return;}if(d->spec.carry_enabled){st32(a+0x39C,0x10);st8(a+0x38C,8);}if(d->visual_role)st32(a+0x39C,0);if(!ld32(a+BehaviorCreated)){st32(a+BehaviorCreated,1);emit(c,a,BehaviorEvent::CreateNew);}result(c,4);}
+void destroy(Cpu*c){uint32_t a=c->r[3];if(own_profile(ld16(a+0xE)))retire_world(c,a);if(auto*d=declaration(a);d&&d->mod=="world-objects-w0")story_world_collision::proof::destroy(c,a,call);if(!valid_actor(a)){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;if(clear_invalid_carry_keep(c,link,a)){Cpu reset=*c;reset.r[3]=link;original(&reset,GC(0x023DCF8C));}}if(valid_actor(a)&&declaration(a)->spec.carry_enabled){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;if(carry_link(c,link,a))call(c,GC(0x023DCF8C),{link});if(ld32(a+AcchReady)){mod_actor_knockback::destroy(c,knockback_context(a));st32(a+AcchReady,0);}}for(auto&entry:heading_proofs)if(entry.actor==a)entry={};restored.erase({a,ld32(a+4)});emit(c,a,BehaviorEvent::Destroy);if(ld32(a+GroundReady)){call(c,GC(0x0237A940),{a+Ground,0});st32(a+GroundReady,0);}if(auto*d=declaration(a);d&&d->spec.combat_enabled){if(ld32(a+AcchReady)){mod_actor_knockback::destroy(c,knockback_context(a));st32(a+AcchReady,0);}call(c,GC(0x02515A70),{a+AttackCyl,2});call(c,GC(0x02515860),{a+AttackStts,2});}mod_actor_shadow_proof::forget_model(ld32(a+Model));const uint32_t token=ld32(a+0xB0);if(token&&token<=declarations.size()&&ld32(record(token-1))==a)st32(record(token-1),0);const auto before=heap_trace()?heaps(c):HeapSnapshot{};if(talk_actor==a){story_mail::unsay();talk_actor=0;text.clear();talk_completed={};custom_talk=false;}call(c,GC(0x02515A70),{a+Cyl,2});call(c,GC(0x02515860),{a+Stts,2});call(c,GC(0x025204C8),{a+Phase,a+Name});if(heap_trace())report_heaps(a,"resource_delete",before,heaps(c));result(c,1);}
 void is_delete(Cpu*c){result(c,1);}
 motion::Blocker link_blocker(uint32_t player){
     motion::Blocker blocker;const uint32_t shape=player+0x765C+0x118;
@@ -411,19 +485,34 @@ bool carry_step(Cpu*c,uint32_t a,uint32_t play,uint32_t player){
     if(ground||wall){carry::impact(state,d->spec.carry_break_on_impact);write_carry(a,state);if(d->spec.carry_break_on_impact){bool committed=false;try{if(d->carry_break)committed=d->carry_break();}catch(...){}if(!valid_actor(a))return true;if(!committed){carry_quarantine(a);return true;}if(call(c,GC(0x025D57E0),{a}))state.frames=1;write_carry(a,state);}else write_motion(a+Motion,read_motion(a+CarryMotion));}
     else write_carry(a,state);return true;
 }
-void execute(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,1);return;}HeadingExecuteScope heading_scope(a);uint32_t play=call(c,GC(0x025200D4),{});if(!play||!ld32(play+0x5B34)){result(c,1);return;}const uint32_t player=ld32(play+0x5B34);if(restored.erase({a,ld32(a+4)})){call(c,GC(0x0251621C),{a+Cyl});if(!emit(c,a,BehaviorEvent::CreateRestored)){result(c,1);return;}}if(!combat_step(c,a)||!emit(c,a,BehaviorEvent::Execute)||!consume_hit(c,a,player)){result(c,1);return;}const bool carry_motion=carry_step(c,a,play,player);knockback_movement(c,a,play,player);if(!carry_motion&&(!d->spec.combat_enabled||read_combat(a).phase==uint32_t(combat::Phase::Alive)))movement(c,a,play,player);look(c,a,player);if(const uint32_t morf=ld32(a+Morf))call(c,GC(0x025E535C),{morf,a+0x314,0,0});if(ld32(a+CollisionFlags)&2)for(unsigned i=0;i<3;++i)st32(a+0x314+i*4,f32_as_u32(u32_as_f32(ld32(a+0x314+i*4))+u32_as_f32(ld32(a+Stts+i*4))));call(c,GC(0x02515E50),{a+Stts+0x1C});for(unsigned i=0;i<3;++i){float v=u32_as_f32(ld32(a+0x314+i*4))+(i==1?(d->spec.carry_enabled?30.f:number(a+Height)*0.7f):0);st32(a+0x37C+i*4,f32_as_u32(v));st32(a+0x390+i*4,f32_as_u32(v));}call(c,GC(0x020182E0),{a+Cyl+0x118,a+0x314});c->f[1].ps0=number(a+Radius);call(c,GC(0x020184DC),{a+Cyl+0x118});c->f[1].ps0=number(a+Height);call(c,GC(0x02018428),{a+Cyl+0x118});st32(a+Cyl+0x18,d->hits?0x1F:0);st32(a+Cyl+0x28,d->spec.combat_enabled?0xFFFFFFFFu:d->hits?2u:0u);st32(a+Cyl+0x94,d->hits?6:0);if(!carry_busy(a)&&(ld32(a+CollisionFlags)&1)&&(!d->spec.combat_enabled||combat::alive(read_combat(a))))call(c,GC(0x0200E240),{play+0x26A4,a+Cyl});attack_collision(c,a,play);
+void execute(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,1);return;}if(d->visual_role){if(valid_actor(a)){st32(a+CollisionFlags,0);st32(a+0x39C,0);if(d->visual_role==2&&ld32(a+0x854))call(c,GC(0x025E742C),{ld32(a+0x854)});transform(a);}result(c,1);return;}if(d->spec.world_object()){
+    bool unchanged=true;auto expected=d->spec.position;auto rotation=d->spec.rotation;
+    if(d->spec.water_object()){const auto state=water_state(a);unchanged=state.initialized;expected={state.position.x,state.position.y,state.position.z};rotation={state.rotation.x,state.rotation.y,state.rotation.z};}
+    const float position[]={expected.x,expected.y,expected.z},angles[]={rotation.x,rotation.y,rotation.z},scale[]={d->spec.scale.x,d->spec.scale.y,d->spec.scale.z};
+    for(unsigned i=0;i<3;++i){const float p=number(a+0x314+i*4);unchanged&=std::isfinite(p)&&std::fabs(p-position[i])<=.01f;unchanged&=std::isfinite(angles[i])&&std::fabs(angles[i])<=360.f&&ld16(a+0x328+i*2)==uint16_t(int32_t(angles[i]*32768.f/180.f));unchanged&=number(a+0x330+i*4)==scale[i];}
+    unchanged&=!read_motion(a+Motion).enabled&&ld32(a+CollisionFlags)==0;
+    if(!unchanged){retire_world(c,a);fail_create(a);result(c,1);return;}
+}if(d->spec.world_object()&&!story_world_collision::native::stored(a,d->fingerprint)){retire_world(c,a);fail_create(a);result(c,1);return;}HeadingExecuteScope heading_scope(a);uint32_t play=call(c,GC(0x025200D4),{});if(!play||!ld32(play+0x5B34)){result(c,1);return;}const uint32_t player=ld32(play+0x5B34);if(restored.erase({a,ld32(a+4)})){call(c,GC(0x0251621C),{a+Cyl});if(!emit(c,a,BehaviorEvent::CreateRestored)){result(c,1);return;}}if(!combat_step(c,a)||!emit(c,a,BehaviorEvent::Execute)||!consume_hit(c,a,player)){result(c,1);return;}const bool carry_motion=carry_step(c,a,play,player);knockback_movement(c,a,play,player);if(!carry_motion&&(!d->spec.combat_enabled||read_combat(a).phase==uint32_t(combat::Phase::Alive)))movement(c,a,play,player);look(c,a,player);if(const uint32_t morf=ld32(a+Morf))call(c,GC(0x025E535C),{morf,a+0x314,0,0});if(ld32(a+CollisionFlags)&2)for(unsigned i=0;i<3;++i)st32(a+0x314+i*4,f32_as_u32(u32_as_f32(ld32(a+0x314+i*4))+u32_as_f32(ld32(a+Stts+i*4))));call(c,GC(0x02515E50),{a+Stts+0x1C});for(unsigned i=0;i<3;++i){float v=u32_as_f32(ld32(a+0x314+i*4))+(i==1?(d->spec.carry_enabled?30.f:number(a+Height)*0.7f):0);st32(a+0x37C+i*4,f32_as_u32(v));st32(a+0x390+i*4,f32_as_u32(v));}call(c,GC(0x020182E0),{a+Cyl+0x118,a+0x314});c->f[1].ps0=number(a+Radius);call(c,GC(0x020184DC),{a+Cyl+0x118});c->f[1].ps0=number(a+Height);call(c,GC(0x02018428),{a+Cyl+0x118});st32(a+Cyl+0x18,d->hits?0x1F:0);st32(a+Cyl+0x28,d->spec.combat_enabled?0xFFFFFFFFu:d->hits?2u:0u);st32(a+Cyl+0x94,d->hits?6:0);if(!carry_busy(a)&&(ld32(a+CollisionFlags)&1)&&(!d->spec.combat_enabled||combat::alive(read_combat(a))))call(c,GC(0x0200E240),{play+0x26A4,a+Cyl});attack_collision(c,a,play);
 if(ld16(a+0xF8)==1){
     const uint32_t player=ld32(play+0x5B34);
     if(player){const float dx=u32_as_f32(ld32(player+0x314))-u32_as_f32(ld32(a+0x314)),dz=u32_as_f32(ld32(player+0x31C))-u32_as_f32(ld32(a+0x31C));st16(a+0x32A,uint16_t(int32_t(std::atan2(dx,dz)*32768.0/3.14159265358979323846)));}
     // Guest talk state is independent of native message IDs: zero is a successful messageSet result.
     // 0 = inactive, 1 = native message started, 2 = closed, waiting for event reset.
     if(!talk_actor&&ld32(a+Talk)!=2&&story_mail::can_say()){
-        const bool resumed=ld32(a+Talk)==1;talk_actor=a;
-        if(!resumed){animate(c,a,"talk",6,true);if(!emit(c,a,BehaviorEvent::TalkBegin)){result(c,1);return;}}story_mail::append_utf16(d->spec.lines,true,text);story_mail::say(0x2CF3,&text);
+        const bool resumed=ld32(a+Talk)==1;TalkSelection selection;
+        if(d->talk_provider){bool accepted=false;try{accepted=d->talk_provider(a,resumed,selection);}catch(...){}
+            if(!accepted){story_mail::unsay();talk_completed={};custom_talk=false;talk_actor=0;text.clear();st32(a+Talk,2);
+                // Cancel only our actual native talk owner; passive cached IDs
+                // alone never permit resetting a foreign or idle event.
+                const uint32_t control=play+0x51D0,pid=ld32(a+4);
+                if(ld8(control+0xC2)==1&&(ld32(control+0xC4)==pid||ld32(control+0xC8)==pid||ld32(control+0xCC)==pid))st16(control+0xE8,ld16(control+0xE8)|8);
+                if(!emit(c,a,BehaviorEvent::TalkCancel)){result(c,1);return;}result(c,1);return;}}
+        talk_actor=a;custom_talk=bool(d->talk_provider);talk_completed=std::move(selection.completed);
+        if(!resumed){animate(c,a,"talk",6,true);if(!emit(c,a,BehaviorEvent::TalkBegin)){result(c,1);return;}}story_mail::append_utf16(custom_talk?selection.lines:d->spec.lines,true,text);story_mail::say(0x2CF3,&text);
         uint32_t message=0;
         if(!resumed){message=call(c,GC(0x025F7DB0),{ld32(GD(0x101F4B5C)),0x2CF3,a+0x37C});
             if(message!=0xFFFFFFFFu)st32(a+Talk,1);
-            else {story_mail::unsay();talk_actor=0;text.clear();st32(a+Talk,2);animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkCancel)){result(c,1);return;}}}
+            else {story_mail::unsay();talk_actor=0;text.clear();talk_completed={};custom_talk=false;st32(a+Talk,2);animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkCancel)){result(c,1);return;}}}
         if(talk_trace())LOG("[mod_actor_talk] %s actor=%08X message=%08X state=%u",resumed?"resume":"start",a,message,ld32(a+Talk));
     }else if(talk_actor==a){
         const uint32_t status=call(c,GC(0x025F795C),{ld32(GD(0x101F4B5C))});
@@ -436,14 +525,15 @@ if(ld16(a+0xF8)==1){
             st16(play+0x51D0+0xE8,ld16(play+0x51D0+0xE8)|8);
             story_mail::unsay();talk_actor=0;text.clear();st32(a+Talk,2);
             if(talk_trace())LOG("[mod_actor_talk] finish actor=%08X command=%u event_flags=%04X",a,unsigned(ld16(a+0xF8)),unsigned(ld16(play+0x51D0+0xE8)));
-            animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkEnd)){result(c,1);return;}if(d->talked)d->talked();
+            auto completed=std::move(talk_completed);const bool custom=custom_talk;custom_talk=false;
+            animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkEnd)){result(c,1);return;}if(custom){if(completed)completed();}else if(d->talked)d->talked();
         }
     }
 }else {
-    if(talk_actor==a){if(talk_trace())LOG("[mod_actor_talk] cancel actor=%08X",a);story_mail::unsay();talk_actor=0;text.clear();animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkCancel)){result(c,1);return;}}
+    if(talk_actor==a){if(talk_trace())LOG("[mod_actor_talk] cancel actor=%08X",a);story_mail::unsay();talk_actor=0;text.clear();talk_completed={};custom_talk=false;animate(c,a,"idle",6,true);if(!emit(c,a,BehaviorEvent::TalkCancel)){result(c,1);return;}}
     st32(a+Talk,0);st32(a+TalkStatus,0);st16(a+0xFA,ld16(a+0xFA)|1);
 }
-transform(a);heading_scope.complete=true;result(c,1);}
+if(d->mod=="world-objects-w0"){story_world_collision::proof::pose(c,a,call);transform(a);if(!story_world_collision::proof::move(c,a,call)){result(c,1);return;}}else{if(d->spec.water_object()&&!water_step(c,a,*d,false)){retire_world(c,a);fail_create(a);result(c,1);return;}transform(a);if(d->spec.world_object()&&!story_world_collision::native::move(c,a,d->fingerprint,call)){retire_world(c,a);fail_create(a);result(c,1);return;}if(d->spec.world_object()&&!grapple_update(c,a,*d)){retire_world(c,a);fail_create(a);result(c,1);return;}}heading_scope.complete=true;result(c,1);}
 void trace_pose(uint32_t actor,uint32_t model,uint32_t morf){
     static int remaining=[](){const char* value=std::getenv("WWHD_MOD_ACTOR_POSE_TRACE");return value?std::clamp(std::atoi(value),0,120):0;}();
     if(!remaining||!morf)return;const uint32_t joints=ld32(model+0x2C),matrix=joints?ld32(joints+0x10):0;const unsigned count=joints?ld16(joints+0x2C):0;
@@ -453,7 +543,19 @@ void trace_pose(uint32_t actor,uint32_t model,uint32_t morf){
     for(unsigned j=0;j<count;++j){float m[12];for(unsigned k=0;k<12;++k)m[k]=u32_as_f32(ld32(matrix+j*48+k*4));
         LOG("[mod_actor_pose] actor=%08X model=%08X frame=%.6f joint=%u matrix=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",actor,model,double(u32_as_f32(ld32(morf+0x9C))),j,double(m[0]),double(m[1]),double(m[2]),double(m[3]),double(m[4]),double(m[5]),double(m[6]),double(m[7]),double(m[8]),double(m[9]),double(m[10]),double(m[11]));}
 }
-void draw(Cpu*c){uint32_t a=c->r[3];const int heading_before=int16_t(ld16(a+0x32A));if(!emit(c,a,BehaviorEvent::Draw)){result(c,1);return;}uint32_t m=ld32(a+Model);if(m){uint32_t env=call(c,GC(0x02555D0C),{});call(c,GC(0x025626A4),{env,0,a+0x314,a+0x110});call(c,GC(0x02562F5C),{env,m,a+0x110});mod_actor_shadow_proof::begin_model(m);if(const uint32_t morf=ld32(a+Morf)){PoseScope scope(morf);if(scope.root)call(c,GC(0x025E54D8),{morf});}else call(c,GC(0x025E2DE0),{m,0});trace_pose(a,m,ld32(a+Morf));heading_draw(a,heading_before,m);mod_actor_shadow_proof::end_model();}result(c,1);}
+struct DistantClipScope {
+ Cpu*c;uint32_t clip=0,previous=0;
+ DistantClipScope(Cpu*cpu,bool enabled):c(cpu){if(enabled){clip=GD(0x1048CFF0);previous=ld32(clip+0x54);number(clip+0x54,500000.f);try{call(c,GC(0x0283801C),{clip});}catch(...){st32(clip+0x54,previous);throw;}}}
+ ~DistantClipScope(){if(clip){st32(clip+0x54,previous);try{call(c,GC(0x0283801C),{clip});}catch(...){}}}
+};
+// Coast BTK is seeded from the retail phase, then its native controller advances
+// on actor updates. New islands have no retail shore-sound actor to tick the shared clock.
+struct CoastDrawScope {
+ uint32_t opa=0,xlu=0;bool active=false;
+ CoastDrawScope(Cpu*c,uint32_t actor,uint32_t model,bool enabled){if(!enabled)return;const uint32_t play=call(c,GC(0x025200D4),{}),btk=ld32(actor+0x854);const uint32_t data=ld32(model+0xAC);if(!play||!btk||!data)return;const float phase=ldf32(btk+4);c->f[1].ps0=phase;call(c,GC(0x025E7FC4),{btk,data});const char*trace=std::getenv("WWHD_WORLD_VISUAL_TRACE");const unsigned tick=ld32(actor+Userdata);if(trace&&std::strcmp(trace,"1")==0&&(tick<4||tick%300==0))LOG("[world_foam] actor=%08X phase=%.3f sample_frame=%.3f binding=%08X backend=%08X",actor,double(phase),double(ldf32(btk+4)),ld32(data+0x44),btk+0x10);opa=ld32(GD(0x104B4634));xlu=ld32(GD(0x104B4638));st32(GD(0x104B4634),ld32(play+0x5D70));st32(GD(0x104B4638),ld32(play+0x5D74));active=true;}
+ ~CoastDrawScope(){if(active){st32(GD(0x104B4634),opa);st32(GD(0x104B4638),xlu);}}
+};
+void draw(Cpu*c){uint32_t a=c->r[3];const auto*d=declaration(a);if(!d||!valid_actor(a)){result(c,1);return;}if(d->visual_role||!d->spec.distant.model.empty()){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;const int room=link?int(int8_t(ld8(link+0x326))):-1;const float x=link?ldf32(link+0x314):NAN,z=link?ldf32(link+0x31C):NAN;const int square=std::isfinite(x)&&std::isfinite(z)?1+int(std::clamp(std::lround(z/100000.f),-3L,3L)+3)*7+int(std::clamp(std::lround(x/100000.f),-3L,3L)+3):-1;const bool visible=d->visual_role==1?room==int(int8_t(ld8(a+0x326)))&&square>0&&square!=int(d->spec.room):(!d->visual_role||room==int(int8_t(ld8(a+0x326))))&&square==int(d->spec.room);if(!visible){result(c,1);return;}}const int heading_before=int16_t(ld16(a+0x32A));if(!emit(c,a,BehaviorEvent::Draw)){result(c,1);return;}uint32_t m=ld32(a+Model);if(m){uint32_t env=call(c,GC(0x02555D0C),{});call(c,GC(0x025626A4),{env,d->visual_role==2?2u:0u,d->visual_role==2?0u:a+0x314,a+0x110});call(c,GC(0x02562F5C),{env,m,a+0x110});DistantClipScope far_clip(c,d->visual_role==1);CoastDrawScope coast_scope(c,a,m,d->visual_role==2);if(d->visual_role==2&&!coast_scope.active){result(c,1);return;}if(d->visual_role){const char*trace=std::getenv("WWHD_WORLD_VISUAL_TRACE");if(trace&&std::strcmp(trace,"1")==0){const uint32_t tick=ld32(a+Userdata)+1;st32(a+Userdata,tick);if(tick==1||tick%300==0)LOG("[world_visual] draw mod=%s id=%s role=%u actor=%08X pid=%u room=%d model=%08X",d->mod.c_str(),d->spec.id.c_str(),d->visual_role,a,ld32(a+4),int(int8_t(ld8(a+0x326))),m);}}mod_actor_shadow_proof::begin_model(m);if(const uint32_t morf=ld32(a+Morf)){PoseScope scope(morf);if(scope.root)call(c,GC(0x025E54D8),{morf});}else call(c,GC(0x025E2DE0),{m,0});trace_pose(a,m,ld32(a+Morf));heading_draw(a,heading_before,m);mod_actor_shadow_proof::end_model();}result(c,1);}
 void resource_table(Cpu*c){
     const uint32_t info=c->r[3],key=c->r[4],heap=c->r[5];
     const uint32_t chars=key?ld32(key):0;
@@ -466,7 +568,7 @@ void resource_table(Cpu*c){
     const std::string filename=found->archive+".bmd";
     std::memcpy(mem::ptr(scratch+128),filename.c_str(),filename.size()+1);
     st32(scratch+200,scratch+128);st32(scratch+204,GD(0x10012504));
-    const uint32_t count=uint32_t(found->index)+1+uint32_t(found->clips.size());
+    const uint32_t count=uint32_t(found->index)+1+uint32_t(found->clips.size())+uint32_t(found->visual_role==2);
     call(c,GC(0x02604470),{info,count,heap});call(c,GC(0x026044E0),{info,count,heap});
     const uint32_t model_before=heap_trace()?heap_free(c,heap):0;
     call(c,GC(0x02608308),{info,uint32_t(found->index),uint32_t(found->index),scratch+200,heap});
@@ -474,6 +576,7 @@ void resource_table(Cpu*c){
         const std::string clip=found->clips[i]+".bck";std::memcpy(mem::ptr(scratch+128),clip.c_str(),clip.size()+1);
         const uint32_t index=uint32_t(found->index)+1+uint32_t(i);call(c,GC(0x0260873C),{info,index,index,scratch+200,heap});
     }
+    if(found->visual_role==2){const std::string coast=found->archive+".btk";std::memcpy(mem::ptr(scratch+128),coast.c_str(),coast.size()+1);const uint32_t index=uint32_t(found->index)+1;call(c,GC(0x02608F80),{info,index,index,scratch+200,heap});}
     if(heap_trace()){const uint32_t after=heap_free(c,heap);LOG("[mod_actor_heaps] archive=%s stage=resource_model heap=%08X free_before=%u free_after=%u delta=%lld",found->archive.c_str(),heap,model_before,after,static_cast<long long>(model_before)-after);}
     if(heap_trace()){const uint32_t after=heap_free(c,heap);LOG("[mod_actor_heaps] archive=%s stage=resource_table heap=%08X free_before=%u free_after=%u delta=%lld",found->archive.c_str(),heap,before,after,static_cast<long long>(before)-after);}
     LOG("[mod_actor] native archive table %s index=%d model=%08X",found->archive.c_str(),found->index,ld32(info+0x60)?ld32(ld32(info+0x60)+uint32_t(found->index)*4):0);
@@ -507,14 +610,17 @@ void archive_wrapper(Cpu*c){
 }
 void base_allocated(uint32_t token,uint32_t,uint32_t bytes){if(token&&token<=declarations.size())st32(record(token-1)+24,bytes);}
 }
-size_t checkpoint(){return declarations.size();}
-void rollback(size_t count) noexcept{if(!installed&&count<=declarations.size())declarations.resize(count);}
-void configure(void(*o)(Cpu*,uint32_t),uint32_t(*i)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t s){original=o;invoke=i;scratch=s;native_actor_profiles::configure(o,i);declarations.reserve(128);}
+size_t checkpoint(){std::lock_guard guard(world_mutex);return declarations.size();}
+void rollback(size_t count) noexcept{std::lock_guard guard(world_mutex);if(!installed&&count<=declarations.size())declarations.resize(count);}
+void configure(void(*o)(Cpu*,uint32_t),uint32_t(*i)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t s,uint32_t grapple_storage){original=o;invoke=i;scratch=s;grapple_storage_address=grapple_storage;native_actor_profiles::configure(o,i);declarations.reserve(128);
+    if(grapple_storage)story_world_grapple::configure(o,i,grapple_storage,[](uint32_t parent,uint32_t pid,const story_actors::identity::Fingerprint&identity){return story_world_collision::proof::address(parent,Size)&&valid_actor(parent)&&ld32(parent+4)==pid&&declaration(parent)->fingerprint==identity&&story_world_collision::native::stored(parent,identity);});}
 bool live_ready(){return installed;}
 namespace {
 // declare's checks, shared with redeclare so both validate identically: false for a spec the
 // model can't serve; head/upper are the look_at joints
 bool checked(const story_notebook::ManifestActor&spec,const std::string&archive,int index,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,const std::vector<std::string>&clips,const ModelRig&rig,int&head,int&upper){
+    if(!spec.world_object()&&!spec.grapple_points.empty())return false;
+    if(spec.world_object()&&((spec.behaviour!="static"&&!spec.water_object())||skinned||spec.carry_enabled||spec.combat_enabled||spec.pushable||spec.look_at.enabled||!spec.path.points.empty()||!spec.animation.empty()))return false;
     if(clips.size()>8||(!skinned&&!clips.empty())||(!spec.animation.empty()&&std::find(clips.begin(),clips.end(),spec.animation)==clips.end()))return false;
     for(size_t i=0;i<clips.size();++i)if(!story_mail::valid_id(clips[i])||std::find(clips.begin(),clips.begin()+i,clips[i])!=clips.begin()+i)return false;
     if(rig.joint_names.size()!=rig.joint_parents.size()||rig.joint_names.size()>32)return false;
@@ -528,21 +634,110 @@ bool checked(const story_notebook::ManifestActor&spec,const std::string&archive,
     return true;
 }
 }
+bool register_collision(const std::string&mod,const std::string&model,std::shared_ptr<const story_world_collision::mesh::Mesh> collision){
+    std::lock_guard guard(world_mutex);std::string why;if(!collision||!story_world_collision::mesh::validate(*collision,why))return false;collision_models[{mod,model}]=std::move(collision);return true;
+}
+namespace {
+bool collision_geometry(const std::string&mod,const story_notebook::ManifestActor&spec,std::shared_ptr<const story_world_collision::mesh::Mesh>&out){
+    if(!spec.world_object()){out.reset();return true;}
+    using namespace story_world_collision;mesh::Mesh geometry;std::string why;
+    if(!spec.collision_mesh.empty()){auto found=collision_models.find({mod,spec.collision_mesh});if(found==collision_models.end())return false;geometry=*found->second;}
+    else{const std::array<std::string,6> surfaces{"stone","grass","wood","sand","metal","wall"};const auto at=std::find(surfaces.begin(),surfaces.end(),spec.collision_surface);if(at==surfaces.end()||!mesh::make_shape(spec.collision_shape,{spec.collision_size.x,spec.collision_size.y,spec.collision_size.z},spec.collision_radius,spec.collision_height,uint16_t(at-surfaces.begin()),geometry,why))return false;}
+    geometry.minimum={INFINITY,INFINITY,INFINITY};geometry.maximum={-INFINITY,-INFINITY,-INFINITY};
+    for(auto&p:geometry.vertices){p.x*=spec.scale.x;p.y*=spec.scale.y;p.z*=spec.scale.z;geometry.minimum.x=std::min(geometry.minimum.x,p.x);geometry.minimum.y=std::min(geometry.minimum.y,p.y);geometry.minimum.z=std::min(geometry.minimum.z,p.z);geometry.maximum.x=std::max(geometry.maximum.x,p.x);geometry.maximum.y=std::max(geometry.maximum.y,p.y);geometry.maximum.z=std::max(geometry.maximum.z,p.z);}
+    if(!mesh::validate(geometry,why)||mesh::allocation_bytes(geometry)>512*1024)return false;
+    if(spec.water_object())for(const auto&p:geometry.vertices)if(std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z)>2000)return false;
+    if(spec.grapple_points.size()>8)return false;
+    std::set<std::string> targets;float radius=0;for(const auto&p:geometry.vertices)radius=std::max(radius,std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z));
+    for(const auto&target:spec.grapple_points){const auto&p=target.position;const float x=p.x*spec.scale.x,y=p.y*spec.scale.y,z=p.z*spec.scale.z;
+        if(!story_mail::valid_id(target.id)||!targets.insert(target.id).second||!std::isfinite(target.yaw)||std::fabs(target.yaw)>360||std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)})>20000||!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||x<geometry.minimum.x||x>geometry.maximum.x||y<geometry.minimum.y||y>geometry.maximum.y||z<geometry.minimum.z||z>geometry.maximum.z||(spec.water_object()&&std::sqrt(x*x+y*y+z*z)>radius))return false;}
+    out=std::make_shared<const mesh::Mesh>(std::move(geometry));return true;
+}
+story_actors::identity::Fingerprint declaration_fingerprint(const Decl&d){
+    std::string identity=d.mod+std::string(1,'\0')+d.archive;if(d.visual_role)identity+=std::string(d.visual_role==2?"native-coast.v1":"world-visual.v1")+char(d.visual_role);
+    if(d.collision){std::vector<uint8_t> bytes;std::string why;std::array<uint8_t,9> raw{0,1,2,3,4,5,6,7,8};if(story_world_collision::mesh::build_native(*d.collision,raw,uint16_t(d.spec.room),bytes,why))identity+=mods::hash::sha256_text(std::string(bytes.begin(),bytes.end()));}
+    return story_actors::identity::fingerprint(identity,d.spec);
+}
+}
+void configure_world_objects(const std::string& directory,PlacementProvider provider){std::lock_guard guard(world_mutex);if(world_game_directory!=directory||provider||placement_provider){world_game_directory=directory;placement_indexes.clear();}placement_provider=std::move(provider);}
+bool world_object_query(const std::string&mod,const story_notebook::ManifestActor&spec,bool wireframe,mods::json::Value& result,std::string&why){
+    std::lock_guard guard(world_mutex);using namespace story_world_placement;using mods::json::Value;
+    result=Value{};result["conflicts"].type=Value::Array;
+    std::shared_ptr<const story_world_collision::mesh::Mesh> geometry;
+    if(!spec.world_object()||!collision_geometry(mod,spec,geometry))return why="collision mesh is unavailable or exceeds its limits; prepare it before placing",false;
+    Bounds local{{geometry->minimum.x,geometry->minimum.y,geometry->minimum.z},{geometry->maximum.x,geometry->maximum.y,geometry->maximum.z}},bounds;
+    if(!transform_bounds(local,{spec.position.x,spec.position.y,spec.position.z},{spec.rotation.x,spec.rotation.y,spec.rotation.z},{1,1,1},bounds))return why="invalid collision transform",false;
+    if(spec.water_object()){float radius=0;for(const auto&p:geometry->vertices)radius=std::max(radius,std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z));const float y=spec.position.y-spec.buoyancy.draft;bounds={{spec.position.x-radius,y-2048-radius,spec.position.z-radius},{spec.position.x+radius,y+2048+radius,spec.position.z+radius}};}
+    const auto key=std::make_pair(spec.stage,int(spec.room));
+    auto found=placement_indexes.find(key);if(found==placement_indexes.end())found=placement_indexes.emplace(key,placement_provider?placement_provider(spec.stage,int(spec.room)):load_native_room(world_game_directory,spec.stage,int(spec.room))).first;
+    auto conflicts=check(spec.stage,int(spec.room),bounds,found->second);
+    const uint64_t own_allocation=story_world_collision::mesh::allocation_bytes(*geometry)+spec.grapple_points.size()*(story_world_grapple::kProxyBytes+64);
+    uint64_t allocation=own_allocation;size_t grapple_count=spec.grapple_points.size();
+    for(const auto&d:declarations){
+        if(!d.collision||d.spec.stage!=spec.stage||d.spec.room!=spec.room||(d.mod==mod&&d.spec.id==spec.id))continue;
+        allocation+=story_world_collision::mesh::allocation_bytes(*d.collision)+d.spec.grapple_points.size()*(story_world_grapple::kProxyBytes+64);grapple_count+=d.spec.grapple_points.size();
+        Bounds other;
+        if(!world_bounds(d,d.spec.position,other))return why="invalid existing object bounds",false;
+        Index placed;placed.coverage.push_back({spec.stage,int(spec.room),true,true,true,{}});placed.bounds.push_back({spec.stage,int(spec.room),"world_object",d.mod+":"+d.spec.id,other});
+        auto overlapping=check(spec.stage,int(spec.room),bounds,placed);conflicts.insert(conflicts.end(),overlapping.begin(),overlapping.end());
+    }
+    if(grapple_count>16)conflicts.push_back({"grapple","room","Room grapple targets exceed the limit of 16"});
+    if(allocation>2*1024*1024)conflicts.push_back({"memory","room","Room collision allocation exceeds 2 MiB"});
+    for(const auto&conflict:conflicts){Value item;item["kind"]=conflict.kind;item["id"]=conflict.id;item["message"]=conflict.message;result["conflicts"].array.push_back(std::move(item));}
+    auto point_json=[](Point p){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);return v;};
+    result["grapple_target_count"]=int(spec.grapple_points.size());result["room_grapple_target_count"]=int(grapple_count);
+    result["minimum"]=point_json(bounds.minimum);result["maximum"]=point_json(bounds.maximum);result["vertices"]=int(geometry->vertices.size());result["triangles"]=int(geometry->triangles.size());result["allocation_bytes"]=double(own_allocation);result["room_allocation_bytes"]=double(allocation);result["clear"]=conflicts.empty();
+    if(wireframe){
+        result["points"].type=Value::Array;result["edges"].type=Value::Array;
+        constexpr float rad=3.14159265358979323846f/180;const float x=spec.rotation.x*rad,y=spec.rotation.y*rad,z=spec.rotation.z*rad,cx=std::cos(x),sx=std::sin(x),cy=std::cos(y),sy=std::sin(y),cz=std::cos(z),sz=std::sin(z);
+        for(const auto&p:geometry->vertices)result["points"].array.push_back(point_json({(cy*cz+sy*sx*sz)*p.x+(-cy*sz+sy*sx*cz)*p.y+sy*cx*p.z+spec.position.x,cx*sz*p.x+cx*cz*p.y-sx*p.z+spec.position.y,(-sy*cz+cy*sx*sz)*p.x+(sy*sz+cy*sx*cz)*p.y+cy*cx*p.z+spec.position.z}));
+        std::set<std::pair<uint16_t,uint16_t>> edges;for(const auto&t:geometry->triangles)for(unsigned i=0;i<3;++i)edges.insert(std::minmax(t.indices[i],t.indices[(i+1)%3]));
+        for(const auto&[a,b]:edges){Value edge;edge.type=Value::Array;edge.array.push_back(int(a));edge.array.push_back(int(b));result["edges"].array.push_back(std::move(edge));}
+        result["grapple_targets"].type=Value::Array;
+        for(const auto&target:spec.grapple_points){const Point p{target.position.x*spec.scale.x,target.position.y*spec.scale.y,target.position.z*spec.scale.z};Value item;item["id"]=target.id;item["position"]=point_json({(cy*cz+sy*sx*sz)*p.x+(-cy*sz+sy*sx*cz)*p.y+sy*cx*p.z+spec.position.x,cx*sz*p.x+cx*cz*p.y-sx*p.z+spec.position.y,(-sy*cz+cy*sx*sz)*p.x+(sy*sz+cy*sx*cz)*p.y+cy*cx*p.z+spec.position.z});const float vx=spec.scale.x*std::sin(target.yaw*rad),vz=spec.scale.z*std::cos(target.yaw*rad);item["yaw"]=double(std::atan2((cy*cz+sy*sx*sz)*vx+sy*cx*vz,(-sy*cz+cy*sx*sz)*vx+cy*cx*vz)/rad);result["grapple_targets"].array.push_back(std::move(item));}
+
+    }
+    return true;
+}
+bool set_talk_provider(const std::string&mod,const std::string&id,TalkProvider provider){
+    for(auto&d:declarations)if(d.mod==mod&&d.spec.id==id){if(d.spec.combat_enabled||d.spec.carry_enabled)return false;d.talk_provider=std::move(provider);return true;}return false;
+}
 uint32_t declare(const std::string&mod,const story_notebook::ManifestActor&spec,const std::string&archive,int index,std::function<void()> talked,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig){
-    int head=-1,upper=-1;
+    std::lock_guard guard(world_mutex);int head=-1,upper=-1;
+    if(spec.world_object()&&installed&&(!world_profile_ready||(!spec.grapple_points.empty()&&!grapple_installed)))return 0;
+    if(spec.world_object()){mods::json::Value status;std::string why;if(!world_object_query(mod,spec,false,status,why)||!status.get("clear").boolean){LOG("[world_collision] placement rejected %s:%s (%s)",mod.c_str(),spec.id.c_str(),why.c_str());return 0;}}
     if(!checked(spec,archive,index,minimum,maximum,skinned,clips,rig,head,upper)||declarations.size()>=128)return 0;
-    declarations.push_back({mod,archive,spec,index,std::move(talked),minimum,maximum,skinned,std::move(clips),std::move(rig),head,upper,spec.combat_enabled,{}});declarations.back().fingerprint=story_actors::identity::fingerprint(mod+std::string(1,'\0')+archive,spec);if(installed)inherit_measurements(declarations.size()-1);return uint32_t(declarations.size());
+    declarations.push_back({mod,archive,spec,index,std::move(talked),minimum,maximum,skinned,std::move(clips),std::move(rig),head,upper,spec.combat_enabled,{}});if(!collision_geometry(mod,spec,declarations.back().collision)){declarations.pop_back();return 0;}declarations.back().fingerprint=declaration_fingerprint(declarations.back());if(installed)inherit_measurements(declarations.size()-1);return uint32_t(declarations.size());
 }
 bool redeclare(uint32_t token,const story_notebook::ManifestActor&spec,const std::string&archive,int index,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig,bool apply){
-    if(!token||token>declarations.size())return false;auto&d=declarations[token-1];if(d.spec.id!=spec.id)return false;
+    std::lock_guard guard(world_mutex);if(!token||token>declarations.size())return false;auto&d=declarations[token-1];if(d.spec.id!=spec.id)return false;
+    if(installed&&!spec.grapple_points.empty()&&!grapple_installed)return false;
     // combat and carry keep install-time hooks, reward/break sinks and saved identities: a restart applies them
     if(d.spec.combat_enabled||spec.combat_enabled||d.spec.carry_enabled||spec.carry_enabled)return false;
     int head=-1,upper=-1;if(!checked(spec,archive,index,minimum,maximum,skinned,clips,rig,head,upper))return false;
+    std::shared_ptr<const story_world_collision::mesh::Mesh> collision;if(!collision_geometry(d.mod,spec,collision))return false;
+    if(spec.world_object()){mods::json::Value status;std::string why;if(!world_object_query(d.mod,spec,false,status,why)||!status.get("clear").boolean)return false;}
+    if(d.spec.world_object()!=spec.world_object())return false;
+    if(d.visual_role){auto proposed=d;proposed.spec=spec;proposed.archive=archive;proposed.collision=collision;const auto fp=declaration_fingerprint(proposed);if(std::find(d.visual_fingerprints.begin(),d.visual_fingerprints.end(),fp)==d.visual_fingerprints.end()&&d.visual_fingerprints.size()>=128)return false;}
     if(!apply)return true;
     d.spec=spec;d.archive=archive;d.index=index;d.minimum=minimum;d.maximum=maximum;d.skinned=skinned;d.clips=std::move(clips);d.rig=std::move(rig);d.head=head;d.upper=upper;
-    d.fingerprint=story_actors::identity::fingerprint(d.mod+std::string(1,'\0')+archive,spec);if(installed)inherit_measurements(size_t(token-1));return true;
+    d.collision=std::move(collision);d.fingerprint=declaration_fingerprint(d);if(d.visual_role&&std::find(d.visual_fingerprints.begin(),d.visual_fingerprints.end(),d.fingerprint)==d.visual_fingerprints.end())d.visual_fingerprints.push_back(d.fingerprint);if(installed)inherit_measurements(size_t(token-1));return true;
 }
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;const bool has_carry=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.carry_enabled;});if(has_carry){for(const auto&d:declarations)if(d.spec.carry_break_on_impact&&!d.carry_break)return false;if(!native_actor_carry::configure(original,invoke)||!native_actor_carry::register_guard("mod-actor-carry",deny_carry)||!native_actor_carry::available(owner)||!owner(GC(0x0240A41C)).empty()||!owner(GC(0x023DCF8C)).empty()||!mod_actor_knockback::configure(invoke,knockback_identity))return false;}const bool has_combat=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.combat_enabled;});if(has_combat&&(!attention::configure(original,combat_priority)||!attention::available(owner)||!mod_actor_native_combat::configure(invoke,source_identity)||!mod_actor_knockback::configure(invoke,knockback_identity)))return false;if(declarations.empty()||!scratch||!invoke||!original||!native_actor_profiles::available(owner)||!owner(GC(0x02604550)).empty()||!owner(GC(0x02604EB4)).empty()||!owner(GC(0x02612E64)).empty())return false;std::memset(mem::ptr(scratch+256),0,kScratchBytes-256);uint32_t native=ld32(GD(0x101F3EE0)+0xB6*4);if(!native)return false;for(unsigned i=0;i<0x30;i+=4)st32(scratch+i,ld32(native+i));st16(scratch+8,kProfile);st32(scratch+0x10,Size);st32(scratch+0x14,0);st32(scratch+0x18,0);st32(scratch+0x24,scratch+0x30);st32(scratch+0x28,0x44100);st8(scratch+0x2C,0);st8(scratch+0x2D,14);void(*methods[])(Cpu*)={create,destroy,execute,is_delete,draw};for(unsigned i=0;i<5;++i)st32(scratch+0x30+i*4,dispatch::register_host(methods[i],"mod_actor_method"));LOG("[mod_actor] profile=%08X execute=%08X class_bytes=%u",scratch,ld32(scratch+0x38),Size);heap_callback=dispatch::register_host(heap,"mod_actor_heap");look_callback=dispatch::register_host(pre_joint,"mod_actor_look_joint");post_callback=dispatch::register_host(post_joint,"mod_actor_look_post_joint");if(!native_actor_profiles::add(kProfile,scratch,base_allocated)||!native_actor_profiles::install(owner,replace))return false;replace(GC(0x02604550),resource_table);replace(GC(0x02604EB4),archive_wrapper);replace(GC(0x02612E64),backing_archive_wrapper);if(has_combat){story_enemy_ownership::set_mod_collider_verifier(classify_combat_collider);if(!attention::install(owner,replace))return false;}if(has_carry){if(!native_actor_carry::install(owner,replace))return false;replace(GC(0x0240A41C),carry_attach);replace(GC(0x023DCF8C),carry_release);}installed=true;return true;}
+// Render-only variants share the prepared model/heap lifecycle, with no interaction body.
+bool visual_role(uint32_t token,bool distant){std::lock_guard guard(world_mutex);if(!token||token>declarations.size())return false;auto&d=declarations[token-1];if(d.skinned||d.spec.world_object()||d.spec.carry_enabled||d.spec.combat_enabled||!d.spec.grapple_points.empty())return false;auto next=d;next.visual_role=distant?1:2;const auto fp=declaration_fingerprint(next);if(std::find(d.visual_fingerprints.begin(),d.visual_fingerprints.end(),fp)==d.visual_fingerprints.end()&&d.visual_fingerprints.size()>=128)return false;d.visual_role=next.visual_role;d.fingerprint=fp;if(std::find(d.visual_fingerprints.begin(),d.visual_fingerprints.end(),fp)==d.visual_fingerprints.end())d.visual_fingerprints.push_back(fp);return true;}
+bool owns_visual(uint32_t actor,uint32_t token){std::lock_guard guard(world_mutex);if(!token||token>declarations.size()||!declarations[token-1].visual_role||!story_world_collision::proof::address(actor,Size)||ld16(actor+0xE)!=kProfile||ld8(actor+0x3AA)!=1||ld32(actor+0xB0)!=token||ld32(record(token-1))!=actor||ld32(record(token-1)+4)!=ld32(actor+4))return false;for(const auto&fp:declarations[token-1].visual_fingerprints)if(story_actors::identity::matches(mem::ptr(actor+CombatIdentity),fp))return true;return false;}
+// W0 observation only: delegate the native rider correction exactly once.
+void proof_correction(Cpu*c){
+    const uint32_t body=c->r[3],owner_actor=c->r[4],position=c->r[7];
+    const bool own=story_world_collision::proof::address(owner_actor,Size)&&valid_actor(owner_actor)&&
+        declaration(owner_actor)->mod=="world-objects-w0"&&story_world_collision::proof::stored(owner_actor)&&ld32(owner_actor+0x854)==body&&
+        story_world_collision::proof::address(position,12);
+    const auto before=own?point(position):story_notebook::WorldPoint{};
+    original(c,GC(0x024EE708));
+    if(own){const auto after=point(position);const uint32_t count=ld32(owner_actor+0x894)+1;st32(owner_actor+0x894,count);
+        if(count<=8||count%120==0)LOG("[world_w0] native_correction actor=%08X body=%08X count=%u position=%08X before=(%.5f,%.5f,%.5f) after=(%.5f,%.5f,%.5f)",owner_actor,body,count,position,double(before.x),double(before.y),double(before.z),double(after.x),double(after.y),double(after.z));}
+}
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;const bool has_proof=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return story_world_collision::proof::selected(d.mod,d.spec)!=story_world_collision::proof::Kind::None;});if(has_proof&&std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return story_world_collision::proof::selected(d.mod,d.spec)==story_world_collision::proof::Kind::None;})){LOG("[world_w0] proof requires an isolated set of fixture actors");return false;}if(has_proof&&!owner(GC(0x024EE708)).empty())return false;const bool has_carry=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.carry_enabled;});if(has_carry){for(const auto&d:declarations)if(d.spec.carry_break_on_impact&&!d.carry_break)return false;if(!native_actor_carry::configure(original,invoke)||!native_actor_carry::register_guard("mod-actor-carry",deny_carry)||!native_actor_carry::available(owner)||!owner(GC(0x0240A41C)).empty()||!owner(GC(0x023DCF8C)).empty()||!mod_actor_knockback::configure(invoke,knockback_identity))return false;}const bool has_combat=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.combat_enabled;});if(has_combat&&(!attention::configure(original,combat_priority)||!attention::available(owner)||!mod_actor_native_combat::configure(invoke,source_identity)||!mod_actor_knockback::configure(invoke,knockback_identity)))return false;if(declarations.empty()||!scratch||!invoke||!original||!native_actor_profiles::available(owner)||!owner(GC(0x02604550)).empty()||!owner(GC(0x02604EB4)).empty()||!owner(GC(0x02612E64)).empty())return false;std::memset(mem::ptr(scratch+256),0,kScratchBytes-256);uint32_t native=ld32(GD(0x101F3EE0)+0xB6*4);if(!native)return false;for(unsigned i=0;i<0x30;i+=4)st32(scratch+i,ld32(native+i));if(has_proof){const uint32_t raft=ld32(GD(0x101F3EE0)+0x44*4);if(!raft)return false;st32(scratch+4,ld32(raft+4));st16(scratch+0x20,ld16(raft+0x20));LOG("[world_w0] schedule list=%u list_priority=%u priority=%u",unsigned(ld16(scratch+4)),unsigned(ld16(scratch+6)),unsigned(ld16(scratch+0x20)));}st16(scratch+8,kProfile);st32(scratch+0x10,Size);st32(scratch+0x14,0);st32(scratch+0x18,0);st32(scratch+0x24,scratch+0x30);st32(scratch+0x28,0x44100);st8(scratch+0x2C,0);st8(scratch+0x2D,14);void(*methods[])(Cpu*)={create,destroy,execute,is_delete,draw};for(unsigned i=0;i<5;++i)st32(scratch+0x30+i*4,dispatch::register_host(methods[i],"mod_actor_method"));LOG("[mod_actor] profile=%08X execute=%08X class_bytes=%u",scratch,ld32(scratch+0x38),Size);heap_callback=dispatch::register_host(heap,"mod_actor_heap");look_callback=dispatch::register_host(pre_joint,"mod_actor_look_joint");post_callback=dispatch::register_host(post_joint,"mod_actor_look_post_joint");if(!native_actor_profiles::add(kProfile,scratch,base_allocated))return false;{const uint32_t world=scratch+208,raft=ld32(GD(0x101F3EE0)+0x44*4);if(!raft&&std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.world_object();}))return false;if(raft){for(unsigned i=0;i<0x30;i+=4)st32(world+i,ld32(scratch+i));st32(world+4,ld32(raft+4));st16(world+0x20,ld16(raft+0x20));st16(world+8,kWorldProfile);if(!native_actor_profiles::add(kWorldProfile,world,base_allocated))return false;world_profile_ready=true;}}if(grapple_storage_address&&world_profile_ready&&story_world_grapple::available(owner)){if(!story_world_grapple::install(owner,replace))return false;grapple_installed=true;}else if(std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return !d.spec.grapple_points.empty();}))return false;if(!native_actor_profiles::install(owner,replace))return false;replace(GC(0x02604550),resource_table);replace(GC(0x02604EB4),archive_wrapper);replace(GC(0x02612E64),backing_archive_wrapper);if(has_combat){story_enemy_ownership::set_mod_collider_verifier(classify_combat_collider);if(!attention::install(owner,replace))return false;}if(has_carry){if(!native_actor_carry::install(owner,replace))return false;replace(GC(0x0240A41C),carry_attach);replace(GC(0x023DCF8C),carry_release);}if(has_proof)replace(GC(0x024EE708),proof_correction);installed=true;return true;}
 bool set_carry_break(const std::string&mod,const std::string&id,std::function<bool()>cb){if(installed||!cb)return false;for(auto&d:declarations)if(d.mod==mod&&d.spec.id==id&&d.spec.carry_break_on_impact){d.carry_break=std::move(cb);return true;}return false;}
 
 void set_behavior_sink(BehaviorSink sink){behavior_sink=std::move(sink);}
@@ -565,10 +760,10 @@ bool combat_snapshot(Cpu*c,const Identity&id,CombatState&out){
 bool attack_begin(Cpu*c,const Identity&id){const uint32_t a=resolve(c,id);if(!a)return false;const auto*d=declaration(a);if(!d->spec.combat_enabled)return false;auto s=read_combat(a);if(!combat::begin_attack(s,combat_config(*d),combat_blocked(a)))return false;write_combat(a,s);return true;}
 bool attack_cancel(Cpu*c,const Identity&id){const uint32_t a=resolve(c,id);if(!a)return false;const auto*d=declaration(a);if(!d->spec.combat_enabled||combat_blocked(a))return false;auto s=read_combat(a);if(!combat::valid(s,combat_config(*d)))return false;combat::cancel_attack(s);write_combat(a,s);return true;}
 bool snapshot(Cpu*c,const Identity&id,State&out){const uint32_t a=resolve(c,id);if(!a)return false;auto*d=declaration(a);out.position=point(a+0x314);out.rotation={float(int16_t(ld16(a+0x328)))*180.f/32768,float(int16_t(ld16(a+0x32A)))*180.f/32768,float(int16_t(ld16(a+0x32C)))*180.f/32768};out.collision_radius=number(a+Radius);out.collision_height=number(a+Height);out.collision_enabled=ld32(a+CollisionFlags)&1;out.pushable=ld32(a+CollisionFlags)&2;out.scene_owned=ld32(a+SceneLease)!=0;const unsigned index=ld32(a+ClipIndex);out.animation=index<d->clips.size()?d->clips[index]:std::string();const uint32_t morf=ld32(a+Morf);out.animation_frame=morf?number(morf+0x9C):0;return true;}
-bool set_position(Cpu*c,const Identity&id,story_notebook::WorldPoint p){const uint32_t a=resolve(c,id);if(!a||carry_busy(a)||ld32(a+SceneLease)||!motion::valid(motion_point(p)))return false;point(a+0x314,p);transform(a);return true;}
+bool set_position(Cpu*c,const Identity&id,story_notebook::WorldPoint p){const uint32_t a=resolve(c,id);if(!a||declaration(a)->spec.world_object()||carry_busy(a)||ld32(a+SceneLease)||!motion::valid(motion_point(p)))return false;point(a+0x314,p);transform(a);return true;}
 bool rotation_impl(uint32_t a,story_notebook::WorldPoint r){if((declaration(a)->spec.look_at.enabled||declaration(a)->spec.combat_enabled||declaration(a)->spec.carry_enabled)&&(std::fabs(std::remainder(r.x,360.f))>1e-4||std::fabs(std::remainder(r.z,360.f))>1e-4))return false;if(!std::isfinite(r.x)||!std::isfinite(r.y)||!std::isfinite(r.z)||r.x<-360||r.x>360||r.y<-360||r.y>360||r.z<-360||r.z>360)return false;st16(a+0x328,uint16_t(int32_t(r.x*32768/180)));st16(a+0x32A,uint16_t(int32_t(r.y*32768/180)));st16(a+0x32C,uint16_t(int32_t(r.z*32768/180)));transform(a);return true;}
-bool set_rotation(Cpu*c,const Identity&id,story_notebook::WorldPoint r){const uint32_t a=resolve(c,id);return a&&!carry_busy(a)&&!ld32(a+SceneLease)&&rotation_impl(a,r);}
-bool set_collision(Cpu*c,const Identity&id,float radius,float height,bool enabled,bool pushable){const uint32_t a=resolve(c,id);if(!a||carry_busy(a)||ld32(a+SceneLease)||!std::isfinite(radius)||radius<=0||radius>1000||!std::isfinite(height)||height<=0||height>2000)return false;if(declaration(a)->spec.carry_enabled&&(pushable||!enabled||radius>100||height>200))return false;if(declaration(a)->spec.combat_enabled||declaration(a)->spec.carry_enabled){if(pushable||radius>200||height>400)return false;if(ld32(a+AcchReady)&&!mod_actor_knockback::update_dimensions(knockback_context(a),radius,height))return false;}number(a+Radius,radius);number(a+Height,height);st32(a+CollisionFlags,(enabled?1:0)|(pushable?2:0));st8(a+Stts+0x14,pushable?100:255);return true;}
+bool set_rotation(Cpu*c,const Identity&id,story_notebook::WorldPoint r){const uint32_t a=resolve(c,id);return a&&!declaration(a)->spec.world_object()&&!carry_busy(a)&&!ld32(a+SceneLease)&&rotation_impl(a,r);}
+bool set_collision(Cpu*c,const Identity&id,float radius,float height,bool enabled,bool pushable){const uint32_t a=resolve(c,id);if(!a||declaration(a)->spec.world_object()||carry_busy(a)||ld32(a+SceneLease)||!std::isfinite(radius)||radius<=0||radius>1000||!std::isfinite(height)||height<=0||height>2000)return false;if(declaration(a)->spec.carry_enabled&&(pushable||!enabled||radius>100||height>200))return false;if(declaration(a)->spec.combat_enabled||declaration(a)->spec.carry_enabled){if(pushable||radius>200||height>400)return false;if(ld32(a+AcchReady)&&!mod_actor_knockback::update_dimensions(knockback_context(a),radius,height))return false;}number(a+Radius,radius);number(a+Height,height);st32(a+CollisionFlags,(enabled?1:0)|(pushable?2:0));st8(a+Stts+0x14,pushable?100:255);return true;}
 bool has_animation(Cpu*c,const Identity&id,const std::string&clip){const uint32_t a=resolve(c,id);if(!a)return false;const auto*d=declaration(a);return std::find(d->clips.begin(),d->clips.end(),clip)!=d->clips.end();}
 bool set_animation(Cpu*c,const Identity&id,const std::string&clip,float blend,bool loop){const uint32_t a=resolve(c,id);return a&&!carry_busy(a)&&!ld32(a+SceneLease)&&(!declaration(a)->spec.combat_enabled||(read_combat(a).phase==uint32_t(combat::Phase::Alive)&&!ld32(a+Quarantined)))&&animate(c,a,clip,blend,loop);}
 uint32_t userdata_address(Cpu*c,const Identity&id){const uint32_t a=resolve(c,id);return a?a+Userdata:0;}
@@ -580,16 +775,16 @@ bool get_motion(Cpu*c,const Identity&id,MotionState&out){const uint32_t a=resolv
 bool apply_motion(uint32_t a,const MotionState&m){
     if(!m.enabled){write_motion(a+Motion,m);return true;}motion::Path path;path.count=m.count;path.loop=m.loop;path.speed=m.speed;for(unsigned i=0;i<16;++i)path.points[i]=motion_point(m.points[i]);if(!motion::valid(path)||m.next>=m.count)return false;write_motion(a+Motion,m);return true;
 }
-bool set_motion(Cpu*c,const Identity&id,const MotionState&m){const uint32_t a=resolve(c,id);return a&&!carry_busy(a)&&!ld32(a+SceneLease)&&apply_motion(a,m);}
+bool set_motion(Cpu*c,const Identity&id,const MotionState&m){const uint32_t a=resolve(c,id);return a&&!declaration(a)->spec.world_object()&&!carry_busy(a)&&!ld32(a+SceneLease)&&apply_motion(a,m);}
 bool path_impl(uint32_t a,const std::vector<story_notebook::WorldPoint>&points,float speed,bool loop){if(points.size()<2||points.size()>16)return false;MotionState m;m.count=unsigned(points.size());m.speed=speed;m.loop=loop;m.enabled=true;for(unsigned i=0;i<m.count;++i)m.points[i]=points[i];return apply_motion(a,m);}
-bool start_path(Cpu*c,const Identity&id,const std::vector<story_notebook::WorldPoint>&points,float speed,bool loop){const uint32_t a=resolve(c,id);return a&&!carry_busy(a)&&!ld32(a+SceneLease)&&path_impl(a,points,speed,loop);}
+bool start_path(Cpu*c,const Identity&id,const std::vector<story_notebook::WorldPoint>&points,float speed,bool loop){const uint32_t a=resolve(c,id);return a&&!declaration(a)->spec.world_object()&&!carry_busy(a)&&!ld32(a+SceneLease)&&path_impl(a,points,speed,loop);}
 bool stop_path(Cpu*c,const Identity&id){const uint32_t a=resolve(c,id);if(!a||carry_busy(a)||ld32(a+SceneLease))return false;auto state=read_motion(a+Motion);state.enabled=false;write_motion(a+Motion,state);if(!declaration(a)->spec.combat_enabled||read_combat(a).phase==uint32_t(combat::Phase::Alive))animate(c,a,"idle",6,true);return true;}
-bool begin_scene(Cpu*c,const Identity&id,uint32_t lease){const uint32_t a=resolve(c,id);if(!a||!lease||carry_busy(a)||ld32(a+SceneLease))return false;write_motion(a+SavedMotion,read_motion(a+Motion));st32(a+SavedClip,ld32(a+ClipIndex));st32(a+SavedLoop,ld32(a+ClipLoop));number(a+SavedFrame,ld32(a+Morf)?number(ld32(a+Morf)+0x9C):0);st32(a+SceneLease,lease);if(declaration(a)->spec.combat_enabled){auto state=read_combat(a);combat::cancel_attack(state);write_combat(a,state);st32(a+0x39C,0);}auto stopped=read_motion(a+Motion);stopped.enabled=false;write_motion(a+Motion,stopped);return true;}
+bool begin_scene(Cpu*c,const Identity&id,uint32_t lease){const uint32_t a=resolve(c,id);if(!a||declaration(a)->spec.world_object()||!lease||carry_busy(a)||ld32(a+SceneLease))return false;write_motion(a+SavedMotion,read_motion(a+Motion));st32(a+SavedClip,ld32(a+ClipIndex));st32(a+SavedLoop,ld32(a+ClipLoop));number(a+SavedFrame,ld32(a+Morf)?number(ld32(a+Morf)+0x9C):0);st32(a+SceneLease,lease);if(declaration(a)->spec.combat_enabled){auto state=read_combat(a);combat::cancel_attack(state);write_combat(a,state);st32(a+0x39C,0);}auto stopped=read_motion(a+Motion);stopped.enabled=false;write_motion(a+Motion,stopped);return true;}
 bool end_scene(Cpu*c,const Identity&id,uint32_t lease){const uint32_t a=resolve(c,id);if(!a||!lease||carry_busy(a)||ld32(a+SceneLease)!=lease)return false;write_motion(a+Motion,read_motion(a+SavedMotion));const auto*d=declaration(a);const uint32_t clip=ld32(a+SavedClip);if(clip<d->clips.size()){const float frame=number(a+SavedFrame);if(!std::isfinite(frame)||frame<0||frame>900)return false;st32(a+ClipIndex,0xFFFFFFFFu);if(!animate(c,a,d->clips[clip],0,ld32(a+SavedLoop)!=0))return false;if(ld32(a+Morf))number(ld32(a+Morf)+0x9C,frame);}st32(a+SceneLease,0);return true;}
 bool scene_path(Cpu*c,const Identity&id,uint32_t lease,const std::vector<story_notebook::WorldPoint>&points,float speed){const uint32_t a=resolve(c,id);return a&&lease&&ld32(a+SceneLease)==lease&&path_impl(a,points,speed,false);}
 bool scene_rotation(Cpu*c,const Identity&id,uint32_t lease,story_notebook::WorldPoint degrees){const uint32_t a=resolve(c,id);return a&&lease&&ld32(a+SceneLease)==lease&&rotation_impl(a,degrees);}
 bool scene_animation(Cpu*c,const Identity&id,uint32_t lease,const std::string&clip,float blend,bool loop){const uint32_t a=resolve(c,id);return a&&lease&&ld32(a+SceneLease)==lease&&animate(c,a,clip,blend,loop);}
-void state_loaded(){restored.clear();if(scratch)for(size_t i=0;i<declarations.size();++i){const uint32_t a=ld32(record(i));if(valid_actor(a)){restored.insert({a,ld32(a+4)});st32(a+BehaviorHandle,0);if(declaration(a)->spec.combat_enabled){auto state=read_combat(a);if(combat::abandon_inflight_reward(state))write_combat(a,state);}}}mod_actor_shadow_proof::state_loaded();if(talk_actor)story_mail::unsay();talk_actor=0;text.clear();}
+void state_loaded(){story_world_grapple::state_loaded();restored.clear();if(scratch)for(size_t i=0;i<declarations.size();++i){const uint32_t a=ld32(record(i));if(valid_actor(a)){restored.insert({a,ld32(a+4)});st32(a+BehaviorHandle,0);if(declaration(a)->spec.combat_enabled){auto state=read_combat(a);if(combat::abandon_inflight_reward(state))write_combat(a,state);}}}mod_actor_shadow_proof::state_loaded();if(talk_actor)story_mail::unsay();talk_actor=0;text.clear();talk_completed={};custom_talk=false;}
 bool talking(uint32_t actor){return actor&&talk_actor==actor;}
 bool failed(uint32_t token){return scratch&&token&&token<=128&&ld8(scratch+256+token-1)!=0;}
 void retry(uint32_t token){if(scratch&&token&&token<=128)st8(scratch+256+token-1,0);}

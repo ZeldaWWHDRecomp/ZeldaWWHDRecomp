@@ -71,7 +71,8 @@ static std::array<uint32_t,4> reference(const Format& f, const LatteParsedFetchS
     return result;
 }
 int main() {
-    assert(choose_cpu_vertices(0x1010,nullptr,nullptr,nullptr).mask==CpuAll);
+    assert(choose_cpu_vertices(0x1010,nullptr,nullptr,nullptr).mask==CpuSwap32);  // PowerVR: swap32 only (#207)
+    assert(choose_cpu_vertices(0x1010,"auto",nullptr,nullptr).mask==CpuSwap32);
     for (uint32_t vendor : {0u,0x8086u,0x10deu,0x1002u,0x13b5u,0x5143u})
         assert(choose_cpu_vertices(vendor,nullptr,nullptr,nullptr).mask==0);
     assert(choose_cpu_vertices(0x1010,"0",nullptr,nullptr).mask==0);
@@ -79,7 +80,8 @@ int main() {
     assert(choose_cpu_vertices(0x1010,"1","0","swap16").mask==0);
     assert(choose_cpu_vertices(0,"0","1","none").mask==CpuAll);
     assert(choose_cpu_vertices(0x1010,"auto",nullptr,"swap16,snorm").mask==(CpuSwap16|CpuSnorm));
-    assert(choose_cpu_vertices(0x1010,nullptr,nullptr,"invalid").mask==CpuAll);
+    assert(choose_cpu_vertices(0x1010,nullptr,nullptr,"invalid").mask==CpuSwap32);
+    assert(choose_cpu_vertices(0x1010,"1",nullptr,nullptr).mask==CpuAll);  // "On (all)" still converts everything
     uint32_t parsed;
     for (uint32_t mask=0;mask<=CpuAll;++mask) {
         assert(parse_cpu_vertex_classes(cpu_vertex_class_names(mask).c_str(),parsed) && parsed==mask);

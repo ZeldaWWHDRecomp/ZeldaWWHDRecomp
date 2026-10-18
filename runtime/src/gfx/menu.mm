@@ -109,6 +109,9 @@ static void load_prefs() {
     if (saved(@"aoHires", {"WWHD_AO_HIRES"})) render::set_ao_hires([pref(@"aoHires") boolValue]);
     if (saved(@"aniso", {"WWHD_ANISO"})) render::set_aniso([pref(@"aniso") boolValue]);
     if (saved(@"bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength([pref(@"bloomStrength") floatValue]);
+    if (saved(@"horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) render::set_horizon_haze([pref(@"horizonHaze") floatValue]);
+    if (saved(@"cloudShadows", {"WWHD_CLOUD_SHADOWS"})) render::set_cloud_shadows([pref(@"cloudShadows") boolValue]);
+    if (saved(@"cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style([pref(@"cloudStyle") intValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
     // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation, 2 true 60; the key predates
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
@@ -127,6 +130,9 @@ static void save_prefs() {
     if (!env_set({"WWHD_AO_HIRES"})) set_pref(@"aoHires", @(render::ao_hires()));
     if (!env_set({"WWHD_ANISO"})) set_pref(@"aniso", @(render::aniso()));
     if (!env_set({"WWHD_BLOOM_STRENGTH"})) set_pref(@"bloomStrength", @(render::bloom_strength()));
+    if (!env_set({"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) set_pref(@"horizonHaze", @(render::horizon_haze()));
+    if (!env_set({"WWHD_CLOUD_SHADOWS"})) set_pref(@"cloudShadows", @(render::cloud_shadows()));
+    if (!env_set({"WWHD_CLOUD_STYLE"})) set_pref(@"cloudStyle", @(render::cloud_style()));
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
     if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
@@ -281,6 +287,9 @@ static WWStateMenu* g_state_menu;
     [alert runModal];
 }
 - (void)setBloom:(NSMenuItem*)item { render::set_bloom_strength(item.tag / 100.0f); update_title(); }
+- (void)setHaze:(NSMenuItem*)item { render::set_horizon_haze(item.tag / 100.0f); update_title(); }
+- (void)setCloudStyle:(NSMenuItem*)item { render::set_cloud_style((int)item.tag); update_title(); }
+- (void)toggleCloudShadows:(NSMenuItem*)item { render::set_cloud_shadows(!render::cloud_shadows()); update_title(); }
 - (void)setAO:(NSMenuItem*)item { render::set_ao_mode((int)item.tag); update_title(); }
 - (void)toggleAniso:(NSMenuItem*)item { render::set_aniso(!render::aniso()); update_title(); }
 - (void)capture:(NSMenuItem*)item { render::request_capture(); }
@@ -345,6 +354,12 @@ static WWStateMenu* g_state_menu;
     }
     if (item.action == @selector(setBloom:))
         item.state = fabsf(render::bloom_strength() * 100.0f - item.tag) < 0.5f ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(setCloudStyle:))
+        item.state = render::cloud_style() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(toggleCloudShadows:))
+        item.state = render::cloud_shadows() ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(setHaze:))
+        item.state = fabsf(render::horizon_haze() * 100.0f - item.tag) < 0.5f ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleFxaa:)) {
         item.state = render::fxaa() ? NSControlStateValueOn : NSControlStateValueOff;
         return render::feature_available(render::kFeatureFXAA);
@@ -466,6 +481,22 @@ void install_menu(NSWindow* tv) {
     add(bloomMenu, @"100% (default)", @selector(setBloom:), @"", 100);
     add(bloomMenu, @"150%", @selector(setBloom:), @"", 150);
     add(bloomMenu, @"200%", @selector(setBloom:), @"", 200);
+    NSMenuItem* hazeItem = [g addItemWithTitle:@"Horizon haze" action:nil keyEquivalent:@""];
+    hazeItem.toolTip = @"The pale band low in the sky. Less haze gives a clearer, deeper blue sky.";
+    NSMenu* hazeMenu = [[NSMenu alloc] initWithTitle:@"Horizon haze"];
+    hazeItem.submenu = hazeMenu;
+    add(hazeMenu, @"Off (clear sky)", @selector(setHaze:), @"", 0);
+    add(hazeMenu, @"30%", @selector(setHaze:), @"", 30);
+    add(hazeMenu, @"60%", @selector(setHaze:), @"", 60);
+    add(hazeMenu, @"100% (default)", @selector(setHaze:), @"", 100);
+    NSMenuItem* cloudItem = [g addItemWithTitle:@"Cloud style" action:nil keyEquivalent:@""];
+    NSMenu* cloudMenu = [[NSMenu alloc] initWithTitle:@"Cloud style"];
+    cloudItem.submenu = cloudMenu;
+    add(cloudMenu, @"Original (default)", @selector(setCloudStyle:), @"", 0);
+    add(cloudMenu, @"Toon clouds (Lite)", @selector(setCloudStyle:), @"", 1);
+    add(cloudMenu, @"Toon clouds (High)", @selector(setCloudStyle:), @"", 2);
+    add(g, @"Cloud shadows", @selector(toggleCloudShadows:), @"").toolTip =
+        @"Soft shadows of the drifting sky clouds on the sea, islands and characters";
     add(g, @"16x anisotropic filtering (N)", @selector(toggleAniso:), @"N");
     add(g, @"Edge smoothing, FXAA", @selector(toggleFxaa:), @"8");
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);

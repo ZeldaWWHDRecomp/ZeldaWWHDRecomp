@@ -53,6 +53,7 @@ bool blocks_input();
 // the overlay has keyboard, mouse and controller: the menu is open or the game's text prompt shows
 // (text_entry.h); hosts route the pointer by this
 bool captures();
+bool dialog_open();  // any thread: a dialog or a list is open in Settings (Esc and Android's Back close it)
 // the world editor's overlays (extensions.h InputLayer): a layer is active while the menu is closed, and
 // takes the pointer now (its mode, or the pointer over one of its windows)
 bool pointer_layer_active();
@@ -81,6 +82,9 @@ bool wants_text();
 bool mouse_move(float nx, float ny, bool touch = false);
 bool pointer_shortcut(int code, bool down); // physical mouse buttons/wheel, before game mouse handling
 bool mouse_button(int button, bool down, bool touch = false);  // 0 left, 1 right, 2 middle
+// Test aid for scripted hidden runs (the world editor's WWHD_TEST_EDITOR_DRAG): the pointer at (nx, ny) in 0..1
+// of the picture and the left button, as if the host had sent them (also with WWHD_NO_HOST_INPUT).
+void test_pointer(float nx, float ny, bool down);
 void set_stereo_pointer_visible(bool visible); // host: pointer is inside the TV window
 bool mouse_wheel(float dx, float dy);      // in lines, +y = away from the user
 void set_android_screen_dpi(float dpi);  // physical Android display DPI

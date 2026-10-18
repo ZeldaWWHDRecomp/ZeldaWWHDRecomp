@@ -29,4 +29,10 @@ float paced_drawn_share();  // share of in-between frames drawn lately (paced an
 void set_display_hz(int hz);
 int display_hz();           // (WWHD_DISPLAY_HZ overrides the detected rate)
 void set_present_vsync(bool on);
+
+// even frame delivery (on by default on Android, WWHD_INTERP_EVEN_PACING=0/1; interp_pacing.h
+// EvenSchedule): the intended distance (ns) of the frame being swapped to the previous one, 0 when
+// frames go out as they come
+bool even_pacing();
+int64_t frame_interval_ns();
 }  // namespace interp

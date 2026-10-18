@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "story_notebook_list.h"
+#include "story_actors_core.h"
 #include "story_npc_catalogue.h"
 
 namespace story_notebook {
@@ -30,15 +31,23 @@ struct Availability {
     std::vector<uint16_t> events, not_events;  // the game's event flag numbers (high byte: byte, low byte: mask)
     int time = 0;                              // 0 any, 1 day (6:00-18:00), 2 night
     std::string text;
-    bool any() const { return !events.empty() || !not_events.empty() || time; }
+    std::string flag_mod;std::vector<std::string> flags,not_flags;
+    bool any() const { return !events.empty() || !not_events.empty() || time || !flags.empty() || !not_flags.empty(); }
 };
 // event_flags: the save's event flag block (0x100 bytes); hour: the game's hour of the day
 inline bool event_flag(const uint8_t* event_flags, uint16_t flag) { return (event_flags[flag >> 8] & (flag & 0xFF)) != 0; }
-inline bool available(const Availability& a, const uint8_t* event_flags, int hour) {
+inline bool mod_flags_available(const Availability&a,const story_mail::Book&book){
+    if((!a.flags.empty()||!a.not_flags.empty())&&(!book.usable()||a.flag_mod.empty()))return false;
+    for(const auto&f:a.flags)if(!story_actors::flag(book,a.flag_mod,f))return false;
+    for(const auto&f:a.not_flags)if(story_actors::flag(book,a.flag_mod,f))return false;
+    return true;
+}
+inline bool available(const Availability& a, const uint8_t* event_flags, int hour, const story_mail::Book& book=story_mail::Book(nullptr)) {
+    if(!mod_flags_available(a,book))return false;
     for (uint16_t f : a.events)
-        if (!event_flag(event_flags, f)) return false;
+        if (!event_flags || !event_flag(event_flags, f)) return false;
     for (uint16_t f : a.not_events)
-        if (event_flag(event_flags, f)) return false;
+        if (!event_flags || event_flag(event_flags, f)) return false;
     const bool day = hour >= 6 && hour < 18;
     if (a.time == 1 && !day) return false;
     if (a.time == 2 && day) return false;
@@ -68,7 +77,7 @@ inline bool carries(const story_mail::Book& b, uint16_t quest) { return b.get(kR
 inline bool wants(const Takeover& t, const story_mail::Book& b, const uint8_t* event_flags, int hour) {
     const uint8_t step = saved_step(b, t.quest);
     return step && step != kStepDone && t.step == step && (!t.needs_letter || carries(b, t.quest)) &&
-           (!event_flags || available(t.when, event_flags, hour));
+           (event_flags ? available(t.when,event_flags,hour,b) : mod_flags_available(t.when,b));
 }
 // The live takeover for this resident, or null. Every active quest may want it (tracking is not
 // needed): none, the game's line; one, that quest's line; several, the tracked quest's first, else the

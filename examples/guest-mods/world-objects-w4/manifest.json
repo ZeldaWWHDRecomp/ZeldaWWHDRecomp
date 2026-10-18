@@ -1,0 +1,66 @@
+{
+  "format_version": 1,
+  "id": "world-objects-w4",
+  "name": "Horizon Isle",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An original island with a distant silhouette, foam coast and mod-owned arrival flag.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "island",
+      "source": "assets/island.glb"
+    },
+    {
+      "id": "island-lod",
+      "source": "assets/island-lod.glb"
+    },
+    {
+      "id": "island-foam",
+      "source": "assets/island-foam.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "island",
+      "kind": "mod",
+      "model": "island",
+      "behaviour": "static",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 75000,
+        "y": 0,
+        "z": -201500
+      },
+      "collision": {
+        "mesh": "island"
+      },
+      "distant": {
+        "model": "island-lod"
+      },
+      "shoreline": {
+        "model": "island-foam"
+      },
+      "chart_marker": {
+        "label": "Horizon Isle",
+        "when_flag": "horizon.arrived"
+      },
+      "arrival": {
+        "name": "Horizon Isle",
+        "radius": 2200,
+        "flag": "horizon.arrived"
+      }
+    }
+  ]
+}

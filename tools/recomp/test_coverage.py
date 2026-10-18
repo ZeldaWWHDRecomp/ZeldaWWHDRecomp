@@ -3,7 +3,8 @@
 
 This is a source audit, not a C++ parser or proof of matching field layouts.
 Keep non-address exceptions narrow and documented; new game literals must use
-GC/GD and have a shipped mapping.
+GC/GD and have a shipped mapping. Canonical host dispatch identities use the
+explicit CanonicalCodeId marker and still require a shipped code mapping.
 """
 from pathlib import Path
 import re
@@ -27,14 +28,14 @@ NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
                                   0x02665000, 0x02468000, 0x02287000, 0x020C1000)})
 TRIVIA = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 LITERAL = re.compile(r'\b0[xX]([0-9a-fA-F]{1,8})(?![0-9a-fA-F])[uUlL]*\b')
-WRAPPED = re.compile(r'\b(GC|GD)\s*\([^;]*?\)', re.S)
+WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID)\s*\([^;]*?\)', re.S)
 FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
 
 
 
 def address_errors(source, name, mapping):
     text = TRIVIA.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), source)
-    spans = [(m.start(), m.end(), "code" if m[1] == "GC" else "data")
+    spans = [(m.start(), m.end(), "code" if m[1] in ("GC", "GC_OPTIONAL", "CANONICAL_CODE_ID") else "data")
              for m in WRAPPED.finditer(text)]
     errors = []
     for m in LITERAL.finditer(text):
@@ -81,6 +82,8 @@ class CoverageTests(unittest.TestCase):
         for address in (0x02715310, 0x02574144):
             self.assertTrue(any(canon == address for _, canon, _, _ in entries))
             self.assertTrue(valid_address(self.mapping, "code", address))
+        # Stage child heaps enter this destructor directly during ancestor teardown.
+        self.assertEqual(self.mapping.code(0x0275558C), 0x02755E48)
 
     def test_runtime_game_literals_are_wrapped_and_mapped(self):
         errors = []
@@ -91,6 +94,18 @@ class CoverageTests(unittest.TestCase):
             name = path.relative_to(root).as_posix()
             errors.extend(address_errors(path.read_text(encoding="utf-8"), name, self.mapping))
         self.assertEqual(errors, [], "\n".join(errors))
+
+    def test_canonical_dispatch_ids_are_explicit_and_mapped(self):
+        # Canonical metadata must not be region-translated twice. The C++
+        # marker is consteval and has no implicit native-pointer conversion.
+        self.assertEqual(address_errors(
+            "story_native_code_identity::CANONICAL_CODE_ID(0x0254465C).value();",
+            "new.cpp", self.mapping), [])
+        self.assertTrue(address_errors("uint32_t raw = 0x0254465C;", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(
+            "CANONICAL_CODE_ID(0x02000000).value();", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(
+            "CANONICAL_CODE_ID(0x101F84DC).value();", "new.cpp", self.mapping))
 
     def test_portable_play_fields_keep_their_offsets(self):
         # The cutscene/rope gates and boat restoration derive addresses from kPlay.

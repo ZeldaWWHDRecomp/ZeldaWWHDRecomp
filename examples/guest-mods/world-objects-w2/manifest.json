@@ -1,0 +1,151 @@
+{
+  "format_version": 1,
+  "id": "world-objects-w2",
+  "name": "Original floating objects",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "Original wave-following rafts, a buoy and anchored drifting flotsam.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "raft",
+      "source": "assets/raft.glb"
+    },
+    {
+      "id": "buoy",
+      "source": "assets/buoy.glb"
+    },
+    {
+      "id": "flotsam",
+      "source": "assets/flotsam.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "floating-raft",
+      "kind": "mod",
+      "model": "raft",
+      "behaviour": "floating",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 75000,
+        "y": 45,
+        "z": -204500
+      },
+      "collision": {
+        "mesh": "raft"
+      },
+      "buoyancy": {
+        "draft": 0,
+        "damping": 0.05,
+        "max_tilt": 10
+      }
+    },
+    {
+      "id": "buoy",
+      "kind": "mod",
+      "model": "buoy",
+      "behaviour": "floating",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 78000,
+        "y": 20,
+        "z": -203500
+      },
+      "collision": {
+        "mesh": "buoy"
+      },
+      "buoyancy": {
+        "draft": 20,
+        "damping": 0.2,
+        "max_tilt": 8
+      }
+    },
+    {
+      "id": "drift-raft",
+      "kind": "mod",
+      "model": "raft",
+      "behaviour": "drifting",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 79000,
+        "y": 45,
+        "z": -205000
+      },
+      "collision": {
+        "mesh": "raft"
+      },
+      "buoyancy": {
+        "draft": 0,
+        "damping": 0.05,
+        "max_tilt": 10
+      },
+      "drift": {
+        "wind_speed": 8,
+        "current": {
+          "x": -12,
+          "z": 8
+        },
+        "max_speed": 30
+      },
+      "anchor": {
+        "point": {
+          "x": 79000,
+          "y": 0,
+          "z": -205000
+        },
+        "radius": 600
+      }
+    },
+    {
+      "id": "flotsam",
+      "kind": "mod",
+      "model": "flotsam",
+      "behaviour": "drifting",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 77000,
+        "y": 25,
+        "z": -206500
+      },
+      "collision": {
+        "mesh": "flotsam"
+      },
+      "buoyancy": {
+        "draft": 5,
+        "damping": 0.2,
+        "max_tilt": 12
+      },
+      "drift": {
+        "wind_speed": 20,
+        "current": {
+          "x": 0,
+          "z": 12
+        },
+        "max_speed": 35
+      },
+      "anchor": {
+        "point": {
+          "x": 77000,
+          "y": 0,
+          "z": -206500
+        },
+        "radius": 350
+      }
+    }
+  ]
+}

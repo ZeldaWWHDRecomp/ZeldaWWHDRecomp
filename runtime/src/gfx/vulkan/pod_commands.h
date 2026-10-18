@@ -3,10 +3,14 @@
 #include "pod_failure_reason.h"
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <utility>
 #include <vector>
 namespace gfxvk {
+// Host access to the graphics queue from two threads: the record worker's submissions and a held TV
+// present (even frame delivery, backend.cpp) that the producer issues between commands.
+std::mutex& graphics_queue_mutex();
 // CPU argument storage only. Submission owner retains all referenced Vulkan
 // resources. Append failure is atomic: caller drains then uses its existing
 // immediate fallback.

@@ -564,6 +564,131 @@ static void test_steps_on_vsync() {
     CHECK(slot_step_start(1080, 100, 20, 1000, true).how == StepStart::kLate && slot_step_start(1080, 100, 20, 1000, true).start == 1080);
 }
 
+// Even frame delivery (EvenSchedule): frames ready unevenly (logic pass 20 ms, in-between pass 13.4
+// ms, a step of 33.37 ms) go out evenly; late frames at once; a hitch does not leave lasting delay;
+// a frame is never held longer than one interval; interval 0 passes every frame through.
+static void test_even_in_between() {
+    // 120 Hz: 4 refreshes a step: 1 or 3 in-between frames, never 2 (90 fps: 1, 1, 2 refreshes)
+    CHECK(even_in_between(3, 4) == 3);
+    CHECK(even_in_between(2, 4) == 1);
+    CHECK(even_in_between(1, 4) == 1);
+    // 240 Hz: 8 refreshes: 7, 3 or 1
+    CHECK(even_in_between(7, 8) == 7);
+    CHECK(even_in_between(6, 8) == 3);
+    CHECK(even_in_between(4, 8) == 3);
+    // 60 Hz: 2 refreshes: 1; 144 Hz (4.8 -> 5 refreshes): only 1 (5 is prime)
+    CHECK(even_in_between(1, 2) == 1);
+    CHECK(even_in_between(3, 5) == 1);
+    // 180 Hz: 6 refreshes: 5, 2 or 1
+    CHECK(even_in_between(3, 6) == 2);
+    // unknown display: as planned
+    CHECK(even_in_between(2, 0) == 2);
+    CHECK(even_in_between(0, 0) == 1);
+}
+static void test_even_schedule() {
+    constexpr int64_t kMs = 1'000'000;
+    const int64_t step = 2 * 16'683'333, interval = step / 2;
+    std::mt19937 rng(7);
+    std::uniform_int_distribution<int64_t> jitter(-kMs / 2, kMs / 2);
+    // ready times of the game's frames: logic at step start + 20 ms, in-between at + 33.4 - 0.3 ms
+    auto ready_at = [&](int i, int64_t extra) {
+        const int64_t s = (i / 2) * step;
+        return (i % 2 ? s + step - kMs / 3 : s + 20 * kMs) + jitter(rng) + extra;
+    };
+    EvenSchedule e;
+    std::vector<int64_t> out, ready;
+    for (int i = 0; i < 600; ++i) {
+        const int64_t r = ready_at(i, i == 300 ? 9 * kMs : 0);  // one 9 ms hitch on a logic frame
+        const int64_t t = e.plan(r, interval);
+        CHECK(t >= r);
+        CHECK(t - r <= interval);  // never more than one frame of added latency
+        ready.push_back(r);
+        out.push_back(t);
+    }
+    // without pacing, intervals alternate ~20 / ~13 ms; with it, every interval is within 1.5 ms of
+    // the frame interval except right at the hitch
+    int uneven = 0, unevenBefore = 0;
+    double maxHold = 0;
+    for (size_t i = 21; i < out.size(); ++i) {
+        const int64_t d = out[i] - out[i - 1];
+        if (std::llabs(d - interval) > 3 * kMs / 2 && !(i >= 300 && i <= 302)) uneven++;
+        if (std::llabs((ready[i] - ready[i - 1]) - interval) > 3 * kMs / 2) unevenBefore++;
+        if (i > 450) maxHold = std::max(maxHold, double(out[i] - ready[i]) / kMs);
+    }
+    std::printf("even schedule: %d uneven intervals of %zu (before: %d); hold %.1f ms at most 150 frames after a 9 ms hitch\n",
+                uneven, out.size() - 21, unevenBefore, maxHold);
+    CHECK(unevenBefore > 400);
+    CHECK(uneven <= 6);
+    // after the hitch the schedule comes back to the frames' own times: in-between frames wait about
+    // the difference of the passes, logic frames almost not at all
+    CHECK(maxHold < 5.0);
+    // the game's rate is kept: the last frame goes out within one interval of its ready time
+    CHECK(out.back() - ready.back() <= interval);
+    // late frames go out at once
+    {
+        EvenSchedule l;
+        l.plan(0, interval);
+        CHECK(l.plan(interval + 5 * kMs, interval) == interval + 5 * kMs);
+        // an early frame waits for its slot, the next one counts from that slot
+        CHECK(l.plan(interval + 6 * kMs, interval) == interval + 5 * kMs + interval - EvenSchedule{}.leak(interval));
+    }
+    // a frame that would wait longer than an interval starts anew (a burst after a pause or a forced present)
+    {
+        EvenSchedule l;
+        l.plan(100 * kMs, interval);
+        l.presented(100 * kMs, 140 * kMs);  // the presenting thread was busy: counts from the actual time
+        CHECK(l.plan(141 * kMs, interval) == 140 * kMs + interval - EvenSchedule{}.leak(interval));
+        EvenSchedule m;
+        m.plan(100 * kMs, interval);
+        m.presented(100 * kMs, 200 * kMs);  // (a clock jump: the slot would be more than an interval away)
+        CHECK(m.plan(150 * kMs, interval) == 150 * kMs);
+        // a little late keeps the slot; forced out early counts from then
+        EvenSchedule n;
+        n.plan(100 * kMs, interval);
+        n.presented(100 * kMs, 101 * kMs);
+        CHECK(n.plan(105 * kMs, interval) == 100 * kMs + interval - EvenSchedule{}.leak(interval));
+        n.presented(100 * kMs + interval - EvenSchedule{}.leak(interval), 110 * kMs);
+        CHECK(n.plan(111 * kMs, interval) == 110 * kMs + interval - EvenSchedule{}.leak(interval));
+    }
+    // the presenting thread wakes up 0.8 ms late every time: the holds stay what the passes need
+    // (3-4 ms for the in-between frame), they do not grow towards a whole interval
+    {
+        EvenSchedule w;
+        double worstHold = 0;
+        for (int i = 0; i < 600; ++i) {
+            const int64_t r = ready_at(i, 0);
+            const int64_t due = w.plan(r, interval);
+            const int64_t at = due > r ? due + 4 * kMs / 5 : due;
+            w.presented(due, at);
+            if (i > 100) worstHold = std::max(worstHold, double(at - r) / kMs);
+        }
+        std::printf("even schedule, presents 0.8 ms late: hold %.1f ms at most\n", worstHold);
+        CHECK(worstHold < 5.5);
+    }
+    // interval 0 (30 fps, no interpolation): every frame at once, and the next paced frame starts anew
+    {
+        EvenSchedule z;
+        z.plan(0, interval);
+        CHECK(z.plan(2 * kMs, 0) == 2 * kMs);
+        CHECK(z.plan(3 * kMs, interval) == 3 * kMs);
+    }
+    // 120 fps (n = 3): logic pass 12 ms, in-between passes 7 ms each in a 33.37 ms step
+    {
+        EvenSchedule q;
+        const int64_t iv = step / 4;
+        int64_t prev = 0, worst = 0;
+        for (int i = 0; i < 400; ++i) {
+            const int64_t s = (i / 4) * step, k = i % 4;
+            const int64_t r = k == 0 ? s + 12 * kMs : s + 12 * kMs + k * 7 * kMs;
+            const int64_t t = q.plan(r, iv);
+            if (i > 20) worst = std::max<int64_t>(worst, std::llabs((t - prev) - iv));
+            prev = t;
+        }
+        std::printf("even schedule at 120 fps: worst interval error %.2f ms\n", worst / 1e6);
+        CHECK(worst <= 4 * EvenSchedule{}.leak(iv) + 1);  // the step's leaks add up on its logic frame
+    }
+}
+
 int main() {
     test_fractions();
     test_blends();
@@ -572,6 +697,8 @@ int main() {
     test_plan_and_next();
     test_simulation();
     test_steps_on_vsync();
+    test_even_schedule();
+    test_even_in_between();
     if (g_failed) {
         std::fprintf(stderr, "interp_pacing_test: %d check(s) failed\n", g_failed);
         return 1;

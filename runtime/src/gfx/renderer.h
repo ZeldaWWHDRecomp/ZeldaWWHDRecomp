@@ -74,6 +74,16 @@ struct Backend {
     // the bits of a register that can change this renderer's shader key (true: `mask` is set; mask 0:
     // none); false: every change of a shader-relevant register counts. Null: as Metal / Vulkan.
     bool (*shader_key_mask)(uint32_t reg, uint32_t& mask);
+    // optional (null: frames are presented when they are swapped), render thread: even frame
+    // delivery (interp_pacing.h EvenSchedule). The next swap's intended frame interval (ns; 0: none)
+    // and whether it is an in-between frame; the steady-clock time (ns) a held frame is due (0:
+    // none); present a held frame whose time has come.
+    void (*set_present_interval)(uint32_t ns, bool hold);
+    int64_t (*present_due)();
+    void (*service_present)();
+    // optional: the game starts drawing its sky clouds (drawVrkumo, cloud_proto.cpp) into the sky
+    // buffer, whose pass is the open one; `seq` names the cloud snapshot. Draws the horizon-haze grade.
+    void (*sky_clouds_begin)(const uint32_t* regs, uint32_t seq);
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
                      kFeatureShaderHeadStart };
@@ -123,6 +133,9 @@ inline void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint3
 }
 inline void copy_to_scan(uint32_t cb, uint32_t target) { g_backend->copy_to_scan(cb, target); }
 inline void swap() { g_backend->swap(); }
+inline void set_present_interval(uint32_t ns, bool hold) { if (g_backend->set_present_interval) g_backend->set_present_interval(ns, hold); }
+inline int64_t present_due() { return g_backend->present_due ? g_backend->present_due() : 0; }
+inline void service_present() { if (g_backend->service_present) g_backend->service_present(); }
 inline void peek_z(const uint32_t* cells, uint32_t words) { g_backend->peek_z(cells, words); }
 inline void set_frame_aspect(float a) { g_backend->set_frame_aspect(a); }
 inline bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) { return g_backend->target_aspect_factors(w, h, kx, ky); }
@@ -151,6 +164,16 @@ inline void set_aniso(bool v) { g_backend->set_aniso(v); }
 // Bloom intensity multiplier: 0 off, 1 original, 2 double. Shared by both renderers.
 float bloom_strength();
 void set_bloom_strength(float strength);
+// Horizon haze, the pale band low in the sky: 1 original, 0 removed (a deeper blue sky). Shared by both
+// renderers; below 1 the sky-cloud hook (cloud_proto.cpp) is active.
+float horizon_haze();
+// Cloud shadows on the sea, islands and characters (off: the original game). WWHD_CLOUD_SHADOWS=1.
+bool cloud_shadows();
+// Cloud style: 0 Original (the game's own clouds), 1 Toon clouds (Lite), 2 Toon clouds (High). WWHD_CLOUD_STYLE.
+int cloud_style();
+void set_cloud_style(int style);
+void set_cloud_shadows(bool on);
+void set_horizon_haze(float haze);
 // The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
 void scale_bloom_uniforms(void* remapped, size_t size);
 inline bool fxaa() { return g_backend->fxaa(); }

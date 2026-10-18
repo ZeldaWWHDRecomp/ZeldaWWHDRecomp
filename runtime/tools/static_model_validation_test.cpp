@@ -1,6 +1,13 @@
-#include "mods/static_model_validation.h"
+#include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <span>
+#include <string>
+#include <vector>
+#include "mods/static_model_validation.h"
 #include "static_model_fixture.h"
 using namespace static_model_fixture;
 int main(){static_models::ModelInfo info;std::string why;auto doc=document();auto bin=binary();auto good=glb(doc,bin);assert(static_models::validate_glb(good,info,why));assert(info.vertex_count==3&&info.triangle_count==1&&info.texture_width==64&&info.texture_height==8);
@@ -42,5 +49,22 @@ int main(){static_models::ModelInfo info;std::string why;auto doc=document();aut
     doc["nodes"].array[0]["translation"]=mods::json::parse("[1,2,3]");doc["nodes"].array[0]["scale"]=mods::json::parse("[2,3,4]");assert(static_models::validate_glb(glb(doc,positioned),info,why));assert((info.minimum==std::array<float,3>{-100,-1300,-3300})&&(info.maximum==std::array<float,3>{1500,2600,2700}));
     doc=cube_document();const auto cube=cube_binary();assert(static_models::validate_glb(glb(doc,cube),info,why)&&info.vertex_count==8&&info.triangle_count==12);assert((info.minimum==std::array<float,3>{-50,-50,-50})&&(info.maximum==std::array<float,3>{50,50,50}));
     doc["nodes"].array[0]["translation"]=mods::json::parse("[1,2,3]");doc["nodes"].array[0]["scale"]=mods::json::parse("[2,3,4]");assert(static_models::validate_glb(glb(doc,cube),info,why));assert((info.minimum==std::array<float,3>{0,50,100})&&(info.maximum==std::array<float,3>{200,350,500}));
+    // Original collision-only mesh: no normals/UV/texture, separate material,
+    // nested mirrored transform. Rendering bounds and PNG offset stay authored.
+    auto with_collision=[](){auto d=cube_document();auto mesh=d["meshes"].array[0];mesh["name"]="island_col";mesh["primitives"].array[0]["attributes"]=mods::json::parse("{\"POSITION\":0}");mesh["primitives"].array[0]["material"]=1;d["meshes"].array.push_back(mesh);d["materials"].array.push_back(mods::json::parse("{\"name\":\"col_grass\"}"));d["nodes"].array.push_back(mods::json::parse("{\"translation\":[2,1,0],\"children\":[2]}"));d["nodes"].array.push_back(mods::json::parse("{\"mesh\":1,\"scale\":[-1,2,3]}"));d["scenes"].array[0]["nodes"].array.push_back(1);return d;};
+    doc=with_collision();auto collision_glb=glb(doc,cube);assert(static_models::validate_glb(collision_glb,info,why));assert(info.vertex_count==8&&info.triangle_count==12);assert((info.minimum==std::array<float,3>{-50,-50,-50}));assert(collision_glb[info.image_offset]==137&&collision_glb[info.image_offset+1]==80);
+    auto second=doc["meshes"].array[1]["primitives"].array[0];second["material"]=2;doc["materials"].array.push_back(mods::json::parse("{\"name\":\"col_wall\"}"));doc["meshes"].array[1]["primitives"].array.push_back(second);assert(static_models::validate_glb(glb(doc,cube),info,why));
+    doc=with_collision();doc["materials"].array[1]["name"]="col_objects";assert(static_models::validate_glb(glb(doc,cube),info,why));
+    doc=with_collision();doc["materials"].array[1]["name"]="col_climb";assert(static_models::validate_glb(glb(doc,cube),info,why));
+    doc=with_collision();doc["materials"].array[1]["name"]="col_hookshot";assert(static_models::validate_glb(glb(doc,cube),info,why));
+    doc=with_collision();doc["materials"].array[1]["name"]="col_unknown";bad(doc,cube);
+    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[0,1,1]");bad(doc,cube);
+    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[1000,1,1]");bad(doc,cube);
+    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[201,0,0]");bad(doc,cube);
+    doc=with_collision();doc["scenes"].array[0]["nodes"].array.pop_back();bad(doc,cube);
+    doc=with_collision();doc["meshes"].array[1]["primitives"].array[0]["mode"]=1;bad(doc,cube);
+    doc=cube_document();assert(static_models::validate_glb(glb(doc,cube),info,why,true));doc["nodes"].array[0]["translation"]=mods::json::parse("[201,0,0]");assert(!static_models::validate_glb(glb(doc,cube),info,why,true)&&info.vertex_count==0);
+    doc=with_collision();auto flat=cube;for(size_t n=0;n<96;++n)flat[n]=0;bad(doc,flat);
+    doc=with_collision();auto many=doc["meshes"].array[1]["primitives"].array[0];doc["meshes"].array[1]["primitives"].array.assign(64,many);doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(3);for(unsigned n=0;n<4;++n){doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(int(4+n));}bad(doc,cube);
     std::cout<<"static model validation tests passed\n";
 }

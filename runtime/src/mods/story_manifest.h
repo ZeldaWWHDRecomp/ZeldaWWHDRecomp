@@ -4,6 +4,7 @@
 // shows each step's texts and place, and runs the declared resident talks; the mod's code only reports
 // progress the port can't see. Pure code, unit-tested in runtime/tools/story_notebook_test.cpp.
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -25,11 +26,35 @@ namespace story_notebook {
 // depends on it (packages.cpp).
 inline const std::string kNotebookPackage = "story-notebook";
 
+struct QuestDestination {
+    std::string stage="sea";unsigned room=0;int point=-2;
+    WorldPoint position;float sea_x=0,sea_z=0;
+};
+// Shared with the editor warp list. Interior chart coordinates must be explicit;
+// a stage name alone does not uniquely identify a sea entrance.
+inline bool parse_quest_destination(const mods::json::Value&v,QuestDestination&out,std::string&why){
+    using namespace world_manifest;QuestDestination d;
+    const bool interior=v.object.contains("stage")||v.object.contains("room");
+    if(!interior){
+        if(v.type!=Value::Object||!number(v.get("x"),-350000,350000,d.sea_x)||!number(v.get("z"),-350000,350000,d.sea_z))return why="quest place requires finite sea x/z",false;
+        const int col=std::clamp(int(std::floor((d.sea_x+350000)/100000)),0,6),row=std::clamp(int(std::floor((d.sea_z+350000)/100000)),0,6);
+        d.room=unsigned(row*7+col+1);d.point=-1;d.position={d.sea_x,2000,d.sea_z};
+    }else{
+        if(!keys(v,{"stage","room","point","x","y","z","sea"})||!place(v,d.stage,d.room)||d.stage=="sea")return why="interior place requires stage and room 0..63",false;
+        const auto&sea=v.get("sea");
+        if(!keys(sea,{"x","z"})||!number(sea.get("x"),-350000,350000,d.sea_x)||!number(sea.get("z"),-350000,350000,d.sea_z))return why="interior place requires a sea hint with finite x/z",false;
+        const bool at=v.object.contains("x")||v.object.contains("y")||v.object.contains("z");
+        if(at){if(v.object.contains("point")||!point(v,d.position))return why="interior place uses either point or all of x/y/z",false;d.point=-1;}
+        else if(v.object.contains("point")){if(!integer(v.get("point"),0,255))return why="interior point must be 0..255",false;d.point=int(v.get("point").number);}
+    }
+    out=std::move(d);return true;
+}
 struct ManifestStep {
     unsigned n = 0;
     std::string text, where;
     bool has_place = false;
     float x = 0, z = 0;
+    QuestDestination destination;
     bool has_talk = false;
     Resident resident = kResidentNone;
     bool needs_letter = false;
@@ -258,6 +283,13 @@ inline bool parse_available(const mods::json::Value& v, Availability& a, std::st
             if (!event_number(e, n)) return why = std::string("invalid ") + key + " flag", false;
             (std::string(key) == "event" ? a.events : a.not_events).push_back(n);
         }
+    for(const char* key:{"flag","not_flag"}){
+        const auto& value=v.get(key);if(value.type==Value::Null)continue;
+        const auto entries=value.type==Value::Array?value.array:std::vector<Value>{value};
+        if(entries.empty()||entries.size()>8)return why="flag conditions need 1..8 flag ids",false;
+        for(const auto&entry:entries){if(!world_manifest::flag_id(entry))return why="invalid mod-owned flag condition",false;
+            (std::string(key)=="flag"?a.flags:a.not_flags).push_back(entry.text);}
+    }
     if (v.get("time").type == Value::String) {
         const std::string& t = v.get("time").text;
         if (t == "day") a.time = 1;
@@ -353,12 +385,13 @@ inline bool parse_quests(const mods::json::Value& manifest, std::vector<Manifest
             if (!text(st.get("text"), kMaxNextBytes, false, s.text, "step text") || !text(st.get("where"), kMaxWhereBytes, false, s.where, "where"))
                 return false;
             const Value& place = st.get("place");
-            if (place.type == Value::Object && place.get("x").type == Value::Number && place.get("z").type == Value::Number) {
-                s.x = float(place.get("x").number), s.z = float(place.get("z").number);
-                if (!(std::fabs(s.x) <= 350000 && std::fabs(s.z) <= 350000)) return why = "quest " + m.id + ": place off the sea", false;
-                s.has_place = true;
+            if(place.type!=Value::Null){
+                if(!parse_quest_destination(place,s.destination,why))return why="quest "+m.id+": "+why,false;
+                s.x=s.destination.sea_x;s.z=s.destination.sea_z;s.has_place=true;
             }
             if (!parse_available(st.get("available"), s.when, why)) return why = "quest " + m.id + ": " + why, false;
+            for(const auto* flags:{&s.when.flags,&s.when.not_flags})for(const auto&flag:*flags)
+                if(!world_manifest::known_flag(manifest,flag))return why="quest "+m.id+": flag condition requires a same-manifest flag producer",false;
             if (st.get("find").type != Value::Null && (s.find_chart = chart_ref(st.get("find"))).empty())
                 return why = "quest " + m.id + ": \"find\" must be \"chart:<id>\"", false;
             // "sail_line": a string, or up to three strings (one message box)

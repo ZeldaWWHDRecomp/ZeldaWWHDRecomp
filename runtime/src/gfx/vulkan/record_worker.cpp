@@ -3,6 +3,7 @@
 #include "platform/host.h"
 #include "render_prof.h"
 #include "platform/r5_slow_render.h"
+#include "platform/perf_hint.h"
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -76,11 +77,22 @@ void RecordWorker::stop() {
 void RecordWorker::run() {
     host::set_thread_name("Vulkan record");
     const bool forcedSlow = r5_slow_render::apply("Vulkan record");
-    // The rejected worker boost stays disabled; retain only the slow diagnostic override.
+    // The worker records and submits every frame: the render thread's present waits for it, so it is
+    // scheduled like the render thread (gx2_core.cpp): raised priority, the fast cores and, on Android,
+    // the performance hint session. Left out, a Xiaomi 14 (Snapdragon 8 Gen 3) ran it on any core
+    // at the default priority. WWHD_R5_NO_RECORD_BOOST=1 leaves it as before (measurements).
+    const bool boost = !forcedSlow && !no_record_boost();
+    if (boost) {
+        host::boost_thread_priority();
+        perf_hint::add_current_thread();
+    }
     std::fprintf(stderr,
         "[R5 isolation] no_record_boost=%u legacy_publish=%u forced_slow=%u boost_requested=%u\n",
-        unsigned(no_record_boost()), 1u, unsigned(forcedSlow),
-        0u); // no record-worker boost request in the kept source
+        unsigned(no_record_boost()), 1u, unsigned(forcedSlow), unsigned(boost));
+    struct LeaveHintSession {
+        bool on;
+        ~LeaveHintSession() { if (on) perf_hint::remove_current_thread(); }
+    } leave{boost};
     for (;;) {
         Job job;
         {

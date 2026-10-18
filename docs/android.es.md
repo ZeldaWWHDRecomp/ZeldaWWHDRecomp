@@ -20,6 +20,13 @@ copia del juego de Wii U; este proyecto nunca proporciona archivos del juego.
 
 Android solicita 60 Hz para 30 fps, 60 fps interpolados y 60 fps reales, o la cadencia seleccionada de 120/240 Hz para una interpolación más rápida. Android puede elegir otra frecuencia compatible. La solicitud se repite al volver al juego. Para dejar la elección de frecuencia completamente en manos de Android, establece `WWHD_NO_60HZ=1` en una compilación de desarrollo (`0` mantiene la solicitud activada).
 
+Con 60 fps o más, los fotogramas se reparten de forma uniforme: un fotograma que está listo antes
+espera unos milisegundos para que cada uno permanezca en pantalla el mismo tiempo. Se nota sobre todo con **Record graphics on a second
+thread** activado: en una pantalla de 120 Hz, un tercio de los fotogramas se mostraba durante uno o tres
+refrescos en lugar de dos, lo que se veía como un ligero tirón; ahora casi todos duran dos. El juego nunca espera por esto, así que
+su velocidad no cambia. Para desactivarlo, establece `WWHD_INTERP_EVEN_PACING=0` en una compilación
+de desarrollo.
+
 ## Teléfonos probados
 
 Medido con el medidor del propio juego en la zona más exigente de la Isla Initia (unas 3900

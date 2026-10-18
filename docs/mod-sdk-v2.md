@@ -779,6 +779,47 @@ only it may enclose the notebook; your letters enclose `letter:...` or `chart:..
   an `npc_catalogue` version newer than the port's) keeps the mod from being enabled; the Mods tab
   shows the reason ("Story quests: ...").
 
+### Mod flags and places inside buildings
+
+A step's `available` can also use `flag` and `not_flag`. Each accepts a string
+or a list of up to eight flag IDs, and every condition must hold:
+
+```json
+"available": {"flag":["notice-read","door-open"], "not_flag":"reward-taken",
+              "text":"Read the notice and open the door first."}
+```
+
+These are the mod's own actor flags, not game event bits. Each flag must have a
+producer in the same manifest: an actor's read/open, switch, break or defeat
+flag, or a `flag` action, including a talk or scene end. Naming a flag in a
+condition does not declare it. The existing `event` / `not_event` conditions
+remain read-only checks of game events. The notebook and resident talks
+re-evaluate mod-flag conditions as quest availability changes.
+
+A sea place keeps its existing `{"x":100,"z":-201500}` form. For a building,
+cave or dungeon, give its stage and room together with the sea entrance hint:
+
+```json
+"place": {"stage":"Pnezumi", "room":0,
+          "sea":{"x":0,"z":-200000}, "point":0}
+```
+
+`room` is 0–63 and `point` is a spawn number from 0–255. Omit `point` to use the room's normal entrance,
+or replace it with all three room coordinates: `"x":10,"y":0,"z":20`.
+Coordinates must be finite and within ±350000. Do not combine `point` and
+coordinates. The explicit `sea` hint is required:
+a stage can have several entrances, so a stage name does not uniquely identify
+the island to mark. The notebook shows the step's `where` text, and the sea
+chart's ring stays at the hint even if the step also names a resident. There is
+no interior minimap or world-space quest ring. The editor's Quest warp list
+uses the stage/room and spawn or coordinates to enter the destination.
+
+Placed actors can finish a declared quest with
+`{"action":"quest_done","id":"lantern"}` in their dialogue actions or a
+scene's final `end.then`. The reward is given once; a repeated completion does
+nothing. See the SDK v3 dialogue section for flag-gated actors, multiple quest
+conditions and ordered talks.
+
 ### Talking to residents
 
 A step can have a game resident speak your lines instead of their own, once: the friend reads

@@ -14,6 +14,7 @@
 #include "overlay/hostui.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
+#include "platform/heat_guard.h"
 #include "platform/dual_display.h"
 #include "runtime.h"
 #include "platform/gaming_mode.h"
@@ -229,10 +230,15 @@ void graphics_changed() {
     put("aoHires", {"WWHD_AO_HIRES"}, gfxvk::ao_hires_enabled() ? "1" : "0");
     put("aniso", {"WWHD_ANISO"}, gfxvk::aniso_enabled() ? "1" : "0");
     put("bloomStrength", {"WWHD_BLOOM_STRENGTH"}, std::to_string(render::bloom_strength()));
+    put("horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"}, std::to_string(render::horizon_haze()));
+    put("cloudShadows", {"WWHD_CLOUD_SHADOWS"}, render::cloud_shadows() ? "1" : "0");
+    put("cloudStyle", {"WWHD_CLOUD_STYLE"}, std::to_string(render::cloud_style()));
     put("fxaa", {"WWHD_FXAA"}, gfxvk::fxaa_enabled() ? "1" : "0");
 #ifdef __ANDROID__
     // the player's choice: the phone pauses interpolation by itself (platform/perf_hint.cpp)
     put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, interp::mode() == 2 ? "2" : perf_hint::fps60_chosen() ? "1" : "0");
+    // Graphics > Heat guard: normal | relaxed | off
+    put("heatGuard", {"WWHD_HEAT_GUARD"}, heat_guard::name(heat_guard::to_setting(heat_guard::choice.load())));
 #else
     put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, std::to_string(interp::mode()));
 #endif
@@ -296,6 +302,9 @@ void load_saved_options() {
     if (saved("aoHires", {"WWHD_AO_HIRES"})) gfxvk::set_ao_hires(num("aoHires") != 0);
     if (saved("aniso", {"WWHD_ANISO"})) gfxvk::set_aniso(num("aniso") != 0);
     if (saved("bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength((float)num("bloomStrength"));
+    if (saved("horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) render::set_horizon_haze((float)num("horizonHaze"));
+    if (saved("cloudShadows", {"WWHD_CLOUD_SHADOWS"})) render::set_cloud_shadows(num("cloudShadows") != 0);
+    if (saved("cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style((int)num("cloudStyle"));
     if (saved("fxaa", {"WWHD_FXAA"})) gfxvk::set_fxaa(num("fxaa") != 0);
     if (saved("interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps((int)num("interpFps"));
     if (saved("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode((int)num("fps60"));
@@ -304,6 +313,7 @@ void load_saved_options() {
     if (saved("scaleFilter", {"WWHD_SCALE_FILTER"})) gfxvk::set_scale_filter((int)num("scaleFilter"));
     if (saved("vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode((int)num("vkPresentMode"));
 #ifdef __ANDROID__
+    if (saved("heatGuard", {"WWHD_HEAT_GUARD"})) heat_guard::choice = heat_guard::parse(v["heatGuard"].c_str());
     if (v.count("androidSwapDisplays")) dual_display::requested_swap = num("androidSwapDisplays") != 0;
     gfx::load_second_screen_off(v.count("androidSecondScreenOff") && num("androidSecondScreenOff") != 0);
 #endif

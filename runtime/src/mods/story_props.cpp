@@ -122,6 +122,34 @@ void trace_lift(uint32_t target){if(auto*d=find(target))trace(*d,target,"lift-de
 }
 bool is_prop(const story_notebook::ManifestActor&s){return s.actor=="pot"||s.actor=="barrel"||s.actor=="crate";}
 uint32_t parameters(const story_notebook::ManifestActor&s){return (type(s)<<24)|0x007FFF3Fu;}
+namespace {bool editor_allowed=false;}
+static bool prop_spec_ok(const std::string&mod,const story_notebook::ManifestActor&s,std::vector<story_items::PropDrop>&drops,std::string&why){
+    if(!is_prop(s)||s.broken_flag.empty()||s.drops.size()>8)return why="invalid native prop declaration",false;
+    if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y)||!std::isfinite(s.position.z)||!std::isfinite(s.rotation.y)||s.rotation.x!=0||s.rotation.z!=0||!std::isfinite(s.scale.x)||s.scale.x<.1f||s.scale.x>4||s.scale.x!=s.scale.y||s.scale.x!=s.scale.z||!s.kind.empty()||!s.model.empty()||!s.lines.empty()||!s.then.empty()||!s.flag.empty()||s.params||!s.path.points.empty()||s.look_at.enabled)return why="unsupported native prop settings",false;
+    drops.clear();
+    for(const auto&drop:s.drops){if(!drop.quantity||drop.quantity>254||!story_items::find(mod,drop.item))return why="prop names an unavailable same-mod item",false;for(const auto&old:drops)if(old.item==drop.item)return why="duplicate prop item",false;drops.push_back({drop.item,drop.quantity});}
+    return true;
+}
+void editor_enable(){editor_allowed=true;}
+bool live(){return installed;}
+uint32_t editor_declare(const std::string&mod,const story_notebook::ManifestActor&s,std::string&why){
+    if(!installed||!editor_allowed)return why="a pot, barrel or crate appears after a restart",0;
+    if(declarations.size()>=128)return why="128 props were declared in this session: a restart makes room",0;
+    if(s.texture_token)return why="a prop with its own texture appears after a restart",0;
+    std::vector<story_items::PropDrop> drops;if(!prop_spec_ok(mod,s,drops,why))return 0;
+    const auto marker=story_items::register_prop_marker(mod,s.id,s.broken_flag,why);if(!marker)return 0;
+    declarations.push_back({mod,s,marker,std::move(drops)});LOG("[native_prop] %s:%s declared by the editor (token %zu)",mod.c_str(),s.id.c_str(),declarations.size());return uint32_t(declarations.size());
+}
+bool editor_redeclare(uint32_t token,const std::string&mod,const story_notebook::ManifestActor&s,std::string&why){
+    if(!installed||!editor_allowed||!token||token>declarations.size())return why="the prop takes this change after a restart",false;
+    auto&d=declarations[token-1];if(d.mod!=mod)return why="not this mod's prop",false;
+    if(d.process!=0xFFFFFFFFu)return why="the prop is still in the game",false;
+    if(s.texture_token!=d.spec.texture_token)return why="a prop's texture changes after a restart",false;
+    std::vector<story_items::PropDrop> drops;if(!prop_spec_ok(mod,s,drops,why))return false;
+    auto marker=d.marker;
+    if(s.broken_flag!=d.spec.broken_flag||s.id!=d.spec.id){story_items::forget_prop_marker(d.marker);marker=story_items::register_prop_marker(mod,s.id,s.broken_flag,why);if(!marker){d.marker=story_items::register_prop_marker(mod,d.spec.id,d.spec.broken_flag,why);return false;}}
+    d.spec=s;d.marker=marker;d.drops=std::move(drops);d.quarantined=false;d.breaking=d.broken=false;return true;
+}
 uint32_t declare(const std::string&mod,const story_notebook::ManifestActor&s,std::string&why){
     if(installed||!is_prop(s)||declarations.size()>=128||s.broken_flag.empty()||s.drops.size()>8)return why="invalid native prop declaration",0;
     if(!std::isfinite(s.position.x)||!std::isfinite(s.position.y)||!std::isfinite(s.position.z)||!std::isfinite(s.rotation.y)||s.rotation.x!=0||s.rotation.z!=0||!std::isfinite(s.scale.x)||s.scale.x<.1f||s.scale.x>4||s.scale.x!=s.scale.y||s.scale.x!=s.scale.z||!s.kind.empty()||!s.model.empty()||!s.lines.empty()||!s.then.empty()||!s.flag.empty()||s.params||!s.path.points.empty()||s.look_at.enabled)return why="unsupported native prop settings",0;
@@ -139,8 +167,8 @@ void quarantine(uint32_t token){if(token&&token<=declarations.size()){auto&d=dec
 void state_loaded(){cylinders.clear();for(auto&d:declarations){d.process=0xFFFFFFFFu;d.heap_started=false;d.breaking=false;d.broken=false;d.quarantined=false;d.texture_pending=d.spec.texture_token!=0;}}
 void set_texture_apply(TextureApply apply){if(!installed)texture_apply=std::move(apply);}
 bool texture_heap(uint32_t actor,uint32_t& begin,uint32_t& end){return address(actor)&&private_heap(actor,begin,end);}
-void configure(void(*o)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t guest,std::function<void(uint32_t,uint32_t)> notify){original=o;invoke=call;profile=guest;retired=std::move(notify);native_actor_profiles::configure(o,call);carry_bridge=native_actor_carry::configure(o,call);if(!declarations.empty())native_actor_carry::register_guard("props",deny_lift,trace_lift);}
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if(declarations.empty()||!original||!invoke){LOG("[native_prop] install failed: declarations or native bridge unavailable");return false;}if(!native_actor_profiles::valid_storage(profile)){LOG("[native_prop] install failed: profile storage %08X outside snapshot runtime region",profile);return false;}if(!native_actor_profiles::available(owner)){LOG("[native_prop] install failed: shared native profile hook conflict");return false;}
+void configure(void(*o)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t guest,std::function<void(uint32_t,uint32_t)> notify){original=o;invoke=call;profile=guest;retired=std::move(notify);native_actor_profiles::configure(o,call);carry_bridge=native_actor_carry::configure(o,call);if(!declarations.empty()||editor_allowed)native_actor_carry::register_guard("props",deny_lift,trace_lift);}
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if((declarations.empty()&&!editor_allowed)||!original||!invoke){LOG("[native_prop] install failed: declarations or native bridge unavailable");return false;}if(!native_actor_profiles::valid_storage(profile)){LOG("[native_prop] install failed: profile storage %08X outside snapshot runtime region",profile);return false;}if(!native_actor_profiles::available(owner)){LOG("[native_prop] install failed: shared native profile hook conflict");return false;}
     std::vector<std::pair<uint32_t,void(*)(Cpu*)>> hooks={{create,create_hook},{destroy,delete_hook},{execute,execute_hook},{damaged,break_hook},{set,set_hook}};
     if(std::any_of(declarations.begin(),declarations.end(),[](const Declaration&d){return d.spec.texture_token!=0;})){
         hooks.push_back({draw,draw_hook});hooks.push_back({model_texture_update,model_texture_update_hook});

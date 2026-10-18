@@ -19,7 +19,14 @@ struct State {
     uint64_t frame = 0;
     std::atomic<bool> recording{true};
     std::atomic<unsigned> writers{0};
-    explicit State(const char* p) : path(p) {}
+    // WWHD_VK_HANDOFF_TRACE_FROM=frame: record from that producer frame on (the fixed buffer then
+    // covers the steady state, not the load)
+    uint64_t from = 0;
+    bool flushed = false;
+    explicit State(const char* p) : path(p) {
+        if (const char* f = std::getenv("WWHD_VK_HANDOFF_TRACE_FROM")) from = std::strtoull(f, nullptr, 10);
+        if (from) recording = false;
+    }
 };
 State* state() {
     static const auto value = []() -> std::unique_ptr<State> {
@@ -40,7 +47,13 @@ uint64_t now() {
 }
 uint64_t native_now_ns() { return now(); }
 bool enabled() { return state() != nullptr; }
-void set_producer_frame(uint64_t frame) { if (auto* s = state()) s->frame = frame; }
+void set_producer_frame(uint64_t frame) {
+    auto* s = state();
+    if (!s) return;
+    s->frame = frame;
+    if (s->from && frame >= s->from && !s->flushed && !s->recording.load(std::memory_order_relaxed))
+        s->recording.store(true, std::memory_order_seq_cst);
+}
 uint64_t producer_frame() { auto* s = state(); return s ? s->frame : 0; }
 void emit(Lane lane, Kind kind, uint64_t serial, uint64_t frame, uint64_t a, uint64_t b) {
     auto* s = state();
@@ -70,6 +83,7 @@ void slow_opcode(uint32_t opcode, uint64_t start, uint64_t end, uint64_t cpu_sta
 bool flush() {
     auto* s = state();
     if (!s) return true;
+    s->flushed = true;
     s->recording.store(false, std::memory_order_seq_cst);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (s->writers.load(std::memory_order_seq_cst)) {

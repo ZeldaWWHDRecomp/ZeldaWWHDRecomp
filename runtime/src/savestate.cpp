@@ -27,6 +27,15 @@
 // runtime allocations) and guest memory (MEM2, runtime objects, fixed slots, foreground bucket,
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
+#include "savestate_native_gate.h"
+#include "mods/story_native_restore_resume.h"
+// The issuer exists only in the actual full-load pipeline, never a caller
+// boolean, snapshot decoder or generic native-gate success adapter.
+namespace ss {class NativeRestorePipelineIssuer {public:
+ static std::unique_ptr<story_native_restore_resume::LoadWindow>begin(Cpu*c){return std::unique_ptr<story_native_restore_resume::LoadWindow>(new story_native_restore_resume::LoadWindow(c));}
+ static void threads_loaded(story_native_restore_resume::LoadWindow&w){w.threads_loaded();}
+ static void after_thaw(story_native_restore_resume::LoadWindow&w){w.after_thaw();}
+};}
 #include "guest_addr.h"
 #include "full_state_header.h"
 #include "full_state_stream.h"
@@ -371,9 +380,12 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
     return ok;
 }
 
+// commit (optional) runs after the whole state is written to the temporary file and
+// before it replaces the slot; false discards the file and keeps the old slot.
 template<class Pointer,class Touched>
 bool write_memory_slot(int slot,const Header& h,const Writer& metadata,const std::vector<Region>& regs,
-                       Pointer pointer,Touched touched,uint64_t& rawSize) {
+                       Pointer pointer,Touched touched,uint64_t& rawSize,
+                       const std::function<bool()>& commit = {}) {
     const auto plan=plan_regions(regs,pointer,touched);
     const std::string tmp=slot_path(slot,"tmp");
     struct Temporary {
@@ -388,7 +400,8 @@ bool write_memory_slot(int slot,const Header& h,const Writer& metadata,const std
     rawSize=stream.raw_size();
     if(!stream.finish())return false;
     const bool closed=fclose(temp.file)==0;temp.file=nullptr;
-    return closed && host::replace_file(tmp,slot_path(slot));
+    if(!closed || (commit && !commit()))return false;
+    return host::replace_file(tmp,slot_path(slot));
 }
 
 bool read_header(FILE* f, Header& h, std::string& why) {
@@ -501,9 +514,24 @@ bool do_save_fast(int slot) {
         report_done(slot, false, "game busy:" + busy);
         return true;
     }
+    // A registered native controller retains its own entry fence through the
+    // complete RALC and guest-memory capture, including its final receipt
+    // commit before any captured payload can be written.
+    std::unique_ptr<native_gate::Hold> native_hold;
+    auto* native_controller = native_gate::controller();
+    if (native_controller) {
+        native_hold = native_gate::try_begin_save(native_controller);
+        if (!native_hold) {
+            threads::thaw();
+            if (!is_auto(slot)) message("Slot %d: not saved (native event transaction busy)", slot);
+            report_done(slot, false, "native event transaction busy");
+            return true;
+        }
+    }
     gx2_ss_drain();
     Writer threads_w;
     if (!threads_ss_save(threads_w, why)) {
+        native_hold.reset(); // workers are still parked; thaw may wait for one
         threads::thaw();
         if (++g_attempts < 30) return false;
         if (!is_auto(slot)) message("Slot %d: not saved (%s)", slot, why.c_str());
@@ -553,6 +581,14 @@ bool do_save_fast(int slot) {
     h.game_id = game_id();
     h.cpu_size = sizeof(Cpu);
     h.controller = input::pro_controller() ? 2 : 1;
+    if (native_controller && !native_gate::try_finish_save(native_controller)) {
+        native_hold.reset();
+        threads::thaw();
+        if (!is_auto(slot)) message("Slot %d: not saved (native capture receipt changed)", slot);
+        report_done(slot, false, "native capture receipt changed");
+        return true;
+    }
+    native_hold.reset(); // completed capture; release before thaw reacquires the core
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG("[savestate] slot %d: captured %.1f MB in %.1f ms (stage %s)", slot, payload->b.size() / 1048576.0, ms, stage.c_str());
@@ -596,9 +632,23 @@ bool do_save_streaming(int slot) {
         return true;
     }
     struct ThawGuard {bool active=true;~ThawGuard(){if(active)threads::thaw();}} thaw;
+    // The same native entry fence as the fast path, held through the streamed
+    // capture; its receipt commit runs before the written file replaces the slot.
+    std::unique_ptr<native_gate::Hold> native_hold;
+    auto* native_controller = native_gate::controller();
+    if (native_controller) {
+        native_hold = native_gate::try_begin_save(native_controller);
+        if (!native_hold) {
+            threads::thaw();thaw.active=false;
+            if (!is_auto(slot)) message("Slot %d: not saved (native event transaction busy)", slot);
+            report_done(slot, false, "native event transaction busy");
+            return true;
+        }
+    }
     gx2_ss_drain();
     Writer threads_w;
     if (!threads_ss_save(threads_w, why)) {
+        native_hold.reset(); // workers are still parked; thaw may wait for one
         threads::thaw();thaw.active=false;
         if (++g_attempts < 30) return false;
         if (!is_auto(slot)) message("Slot %d: not saved (%s)", slot, why.c_str());
@@ -640,13 +690,23 @@ bool do_save_streaming(int slot) {
     h.cpu_size = sizeof(Cpu);
     h.controller = input::pro_controller() ? 2 : 1;
     uint64_t rawSize=0;
-    bool ok=false;
+    bool ok=false,receipt_refused=false;
     try {
         struct ChartCaptureGuard { ChartCaptureGuard(){story_chart::capture_begin();} ~ChartCaptureGuard(){story_chart::capture_end();} } chartCapture;
         ok=write_memory_slot(slot,h,metadata,regions(),[](uint32_t a){return mem::ptr(a);},
-             [](const uint8_t* p,size_t n){return host::memory_touched(const_cast<uint8_t*>(p),n);},rawSize);
+             [](const uint8_t* p,size_t n){return host::memory_touched(const_cast<uint8_t*>(p),n);},rawSize,
+             [&]{
+                 if(!native_controller || native_gate::try_finish_save(native_controller))return true;
+                 receipt_refused=true;return false;
+             });
     } catch(const std::exception&) {ok=false;}
+    native_hold.reset(); // completed capture; release before thaw reacquires the core
     threads::thaw();thaw.active=false;io.unlock();
+    if(receipt_refused) {
+        if (!is_auto(slot)) message("Slot %d: not saved (native capture receipt changed)", slot);
+        report_done(slot, false, "native capture receipt changed");
+        return true;
+    }
     const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
     LOG("[savestate] slot %d: %s %.1f MB streamed in %.1f ms (guest paused)",slot,ok?"written":"WRITE FAILED",rawSize/1048576.0,ms);
     if(ok) {
@@ -714,6 +774,20 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
         message("%s: cannot load here (%s)", slot_label(s->slot).c_str(), why.c_str());
         return true;
     }
+    // All saved inputs are owned by Snapshot::payload. This is the last
+    // no-mutation point before restore_memory; the controller must validate
+    // its saved journal and retain a real fence through restore, until thaw.
+    std::unique_ptr<native_gate::Hold> native_hold;
+    auto* native_controller = native_gate::controller();
+    if (native_controller) {
+        native_hold = native_gate::try_begin_load(native_controller,
+            {s->section(kSecAllocs), s->regs, s->chunks});
+        if (!native_hold) {
+            threads::thaw();thaw.active=false;
+            message("%s: cannot load here (native event transaction)", slot_label(s->slot).c_str());
+            return true;
+        }
+    }
     restore_memory(*s);  // the host's controller choice stays (controller_reapply: the game follows it)
     Reader r = s->section(kSecAllocs);
     mem::raise_runtime_top(r.u32());
@@ -730,13 +804,22 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     aspect::ss_reset();
     button_glyphs::ss_reset();
     rumble::reset();     // an effect running before the load is not the restored game's
+    // A failed rehydrate cannot undo the restored memory. The controller's
+    // begin/finish contract must keep native admission quarantined on failure.
+    auto native_resume_window=NativeRestorePipelineIssuer::begin(threads::current());
+    const bool native_reconciled = !native_controller || native_gate::try_finish_load(native_controller,
+        {s->section(kSecAllocs), s->regs, s->chunks});
     r = s->section(kSecThreads);
     threads_ss_load(r);  // last: wakes the parked threads (they continue after the thaw)
+    if(native_reconciled&&r.ok)NativeRestorePipelineIssuer::threads_loaded(*native_resume_window);
+    native_hold.reset(); // completed restore; no held fence across core reacquire
     threads::thaw();thaw.active=false;
+    if(native_reconciled)NativeRestorePipelineIssuer::after_thaw(*native_resume_window);
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     std::string area = s->h.area[0] ? " (" + area_label(s->h.area) + ")" : "";
     const bool mods_differ=guestmods::different_mods(s->guest_mods,guestmods::enabled_mods());
-    message("Loaded %s%s", is_auto(s->slot) ? slot_label(s->slot).c_str() : ("slot " + std::to_string(s->slot)).c_str(), area.c_str());
+    message("Loaded %s%s%s", is_auto(s->slot) ? slot_label(s->slot).c_str() : ("slot " + std::to_string(s->slot)).c_str(),
+            area.c_str(), native_reconciled ? "" : " (native event transaction quarantined)");
     append_mod_warning(mods_differ);
     LOG("[savestate] slot %d: restored in %.1f ms", s->slot, ms);
     controller_reapply::request("full load");
@@ -1000,6 +1083,18 @@ void apply_hd_sections(Cpu* c, const pstate::State& s) {
 // puts a portable state into the running game; false + retry when the game is not ready yet
 bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retry) {
     if (!gameplay_ready(why, retry)) return false;
+    // Portable states have no snapshot-owned native journal. An active native
+    // controller must quarantine its old publication before any guest write;
+    // that quarantine must survive this call's Hold and the stage transition.
+    std::unique_ptr<native_gate::Hold> native_hold;
+    if (auto* gate = native_gate::controller()) {
+        native_hold = native_gate::try_begin_progress_load(gate);
+        if (!native_hold) {
+            why = "native event transaction";
+            retry = false;
+            return false;
+        }
+    }
     CallScope scope(c);
     const uint32_t sv = ld32(kSaveInfoPtr), info = sv + kInfo, buf = scratch();
     memcpy(mem::ptr(buf), s.savedata.data(), pstate::kSaveDataSize);

@@ -142,6 +142,7 @@ struct Applied {
 };
 
 std::mutex g_mu;
+std::vector<MarkerView> g_world_markers;  // immutable declarations, g_mu
 std::vector<Marker> g_markers;  // placement order
 std::map<uint32_t, std::vector<Applied>> g_applied;  // per menu (game thread)
 bool g_imported = false, g_installed = false;
@@ -229,8 +230,6 @@ void apply(uint32_t menu) {
     applied.clear();
     const uint32_t main = ld32(menu + kMainPane);
     if (!main || !have_save()) return;
-    story_mail::Book b = book();
-    if (!b.usable()) return;
     struct Place {
         float x, z;
     };
@@ -240,6 +239,7 @@ void apply(uint32_t menu) {
         std::string label;
         if (g_tracked(t.x, t.z, label)) shown.push_back(t), tracked = true;
     }
+    for(const auto& m:world_markers())shown.push_back({m.x,m.z});
     if (shown.empty()) return;
     const float cx = float(ldf32(main + kPaneTranslate)), cy = float(ldf32(main + kPaneTranslate + 4));
     const float sx = float(ldf32(main + kPaneSize)) / kSquaresPerSide, sy = float(ldf32(main + kPaneSize + 4)) / kSquaresPerSide;
@@ -643,6 +643,24 @@ int32_t unmark(const std::string& mod, const std::string& chart, const std::stri
 
 void set_tracked_source(TrackedSource source) { g_tracked = source; }
 
+bool publish_world_markers(const std::string& mod,std::span<const WorldMarker> markers){
+    if(mod.empty()||mod.size()>128||markers.size()>kMaxMarkersPerMod)return false;
+    std::u16string checked;if(!story_mail::append_utf16(mod,false,checked))return false;
+    for(size_t i=0;i<markers.size();++i){const auto&m=markers[i];if(!story_mail::valid_id(m.id)||m.label.empty()||!valid_label(m.label)||
+        !std::isfinite(m.x)||!std::isfinite(m.z)||m.x<=-kSeaHalf||m.x>=kSeaHalf||m.z<=-kSeaHalf||m.z>=kSeaHalf)return false;
+        for(size_t j=0;j<i;++j)if(markers[j].id==m.id)return false;
+    }
+    std::lock_guard lock(g_mu);
+    const size_t others=std::count_if(g_world_markers.begin(),g_world_markers.end(),[&](const auto&m){return m.mod!=mod;});
+    if(others+markers.size()>kMaxMarkers)return false;
+    std::vector<MarkerView> next;next.reserve(others+markers.size());
+    for(const auto&m:g_world_markers)if(m.mod!=mod)next.push_back(m);
+    for(const auto&m:markers)next.push_back({mod,"islands",m.id,m.label,m.x,m.z,kIconStory,false});
+    g_world_markers.swap(next);if(!markers.empty())g_imported=true;return true;
+}
+void clear_world_markers(const std::string& mod){publish_world_markers(mod,{});}
+std::vector<MarkerView> world_markers(){std::lock_guard lock(g_mu);return g_world_markers;}
+
 std::vector<MarkerView> shown_markers() {
     std::vector<MarkerView> out;
     if (!have_save()) return out;
@@ -652,6 +670,7 @@ std::vector<MarkerView> shown_markers() {
     }
     story_mail::Book b = book();
     std::lock_guard lock(g_mu);
+    out.insert(out.end(),g_world_markers.begin(),g_world_markers.end());
     for (const Marker& m : g_markers)
         if (chart_value(b, m.key) == kChartDone) out.push_back({m.mod, m.chart, m.id, m.label, m.x, m.z, m.icon, true});
     return out;
@@ -811,6 +830,8 @@ void icon_update(Cpu* c) {
     // the tracked step's spot in this square first, else a finished chart's marker in it
     bool found = g_tracked && g_tracked(x, z, label) && place(x, z, px, py);
     const bool tracked = found;
+    bool world=false;
+    if(!found)for(const auto&m:world_markers())if(place(m.x,m.z,px,py)){x=m.x;z=m.z;found=world=true;break;}
     if (!found)
         for (const Spot& m : done_spots())
             if (place(m.x, m.z, px, py)) {
@@ -826,7 +847,7 @@ void icon_update(Cpu* c) {
     if (trace()) {  // the circle following a moving resident
         static float last_x = 1e9f, last_y = 1e9f;
         if (std::fabs(px - last_x) > 0.5f || std::fabs(py - last_y) > 0.5f)
-            LOG("[chart] balloon %08X: the %s circle at %.1f,%.1f (world %.0f,%.0f)", icon, tracked ? "tracked quest's" : "finished chart's", px, py, x,
+            LOG("[chart] balloon %08X: the %s circle at %.1f,%.1f (world %.0f,%.0f)", icon, tracked ? "tracked quest's" : world ? "world island's" : "finished chart's", px, py, x,
                 z),
                 last_x = px, last_y = py;
     }
@@ -834,7 +855,7 @@ void icon_update(Cpu* c) {
         Cpu call = keep;
         g_call(&call, kAnimStop, {anims, kFishAnim, kFishSlot});
         g_borrowed[icon] = anims;
-        LOG("[chart] the %s circle is in the zoomed square %d,%d at %.1f,%.1f (mode %u)", tracked ? "tracked quest's" : "finished chart's", cell_x,
+        LOG("[chart] the %s circle is in the zoomed square %d,%d at %.1f,%.1f (mode %u)", tracked ? "tracked quest's" : world ? "world island's" : "finished chart's", cell_x,
             cell_y, px, py, mode);
     }
 }

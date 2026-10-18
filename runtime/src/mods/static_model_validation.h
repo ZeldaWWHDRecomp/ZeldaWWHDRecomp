@@ -9,6 +9,8 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
 namespace static_models {
 inline constexpr size_t kMaxSourceBytes=8*1024*1024;
 inline constexpr unsigned kMaxVertices=4096,kMaxTriangles=8192,kMaxTextureDimension=512;
@@ -16,7 +18,7 @@ struct ModelInfo {unsigned vertex_count=0,triangle_count=0,texture_width=0,textu
 inline uint32_t le32(const uint8_t* p){return uint32_t(p[0])|(uint32_t(p[1])<<8)|(uint32_t(p[2])<<16)|(uint32_t(p[3])<<24);}
 inline uint32_t be32(const uint8_t* p){return uint32_t(p[3])|(uint32_t(p[2])<<8)|(uint32_t(p[1])<<16)|(uint32_t(p[0])<<24);}
 inline bool integer(const mods::json::Value& v,size_t lo,size_t hi){return v.type==mods::json::Value::Number&&std::isfinite(v.number)&&v.number>=double(lo)&&v.number<=double(hi)&&std::floor(v.number)==v.number;}
-inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string& why){
+inline bool validate_glb_strict(std::span<const uint8_t> b,ModelInfo& info,std::string& why,bool collision=false){
     using mods::json::Value;info={};auto fail=[&](const char* s){why=s;return false;};
     if(b.size()<28||b.size()>kMaxSourceBytes||std::memcmp(b.data(),"glTF",4)||le32(b.data()+4)!=2||le32(b.data()+8)!=b.size())return fail("invalid or oversized GLB 2.0");
     const size_t jl=le32(b.data()+12);if(jl%4||jl>b.size()-28||le32(b.data()+16)!=0x4E4F534A)return fail("invalid GLB JSON chunk");
@@ -52,8 +54,10 @@ inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string&
         out={base+off+local,count,stride,component};return true;
     };
     Access pos,nrm,uv,idx;const auto& at=p.get("attributes");
-    if(at.type!=Value::Object||at.object.size()!=3||!accessor(at.get("POSITION"),"VEC3",3,false,pos)||!accessor(at.get("NORMAL"),"VEC3",3,false,nrm)||!accessor(at.get("TEXCOORD_0"),"VEC2",2,false,uv)||!accessor(p.get("indices"),"SCALAR",1,true,idx)||pos.count!=nrm.count||pos.count!=uv.count||idx.count%3)return fail("invalid static model attributes or indices");
-    for(const auto& pair:{std::pair{pos,size_t(3)},std::pair{nrm,size_t(3)},std::pair{uv,size_t(2)}})for(size_t i=0;i<pair.first.count;++i)for(size_t k=0;k<pair.second;++k){const auto& a=pair.first;const uint32_t bits=le32(b.data()+a.offset+i*a.stride+k*4);float f;std::memcpy(&f,&bits,4);if(!std::isfinite(f))return fail("nonfinite or excessive model coordinate");}
+    if(at.type!=Value::Object||!accessor(at.get("POSITION"),"VEC3",3,false,pos)||!accessor(p.get("indices"),"SCALAR",1,true,idx)||idx.count%3)return fail("invalid model attributes or indices");
+    if(!collision&&(at.object.size()!=3||!accessor(at.get("NORMAL"),"VEC3",3,false,nrm)||!accessor(at.get("TEXCOORD_0"),"VEC2",2,false,uv)||pos.count!=nrm.count||pos.count!=uv.count))return fail("invalid static model attributes");
+    if(collision){if(at.get("NORMAL").type!=Value::Null&&(!accessor(at.get("NORMAL"),"VEC3",3,false,nrm)||nrm.count!=pos.count))return fail("invalid collision normals");if(at.get("TEXCOORD_0").type!=Value::Null&&(!accessor(at.get("TEXCOORD_0"),"VEC2",2,false,uv)||uv.count!=pos.count))return fail("invalid collision UVs");if(pos.count>4096||idx.count>4096*3)return fail("collision exceeds vertex/triangle limits");for(const auto& [key,value]:at.object)if(key!="POSITION"&&key!="NORMAL"&&key!="TEXCOORD_0")return fail("unsupported collision attributes");}
+    for(const auto& pair:{std::pair{pos,size_t(3)},std::pair{nrm,size_t(3)},std::pair{uv,size_t(2)}})for(size_t i=0;i<pair.first.count;++i)for(size_t k=0;k<pair.second;++k){const auto& a=pair.first;const uint32_t bits=le32(b.data()+a.offset+i*a.stride+k*4);float f;std::memcpy(&f,&bits,4);if(!std::isfinite(f))return fail("nonfinite model coordinate");}
     for(size_t i=0;i<idx.count;++i){const auto* q=b.data()+idx.offset+i*idx.stride;const uint32_t n=idx.component==5121?uint32_t(q[0]):idx.component==5123?uint32_t(q[0])|(uint32_t(q[1])<<8):le32(q);if(n>=pos.count)return fail("model index outside vertex buffer");}
     const auto& nodes=doc.get("nodes");if(nodes.type!=Value::Array||nodes.array.empty()||nodes.array.size()>256)return fail("invalid static model nodes");
     auto vector_ok=[](const Value& v,size_t n){if(v.type!=Value::Array||v.array.size()!=n)return false;for(const auto& x:v.array)if(x.type!=Value::Number||!std::isfinite(x.number))return false;return true;};
@@ -91,7 +95,14 @@ inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string&
     const double det=world[0]*cof[0]+world[1]*cof[1]+world[2]*cof[2];if(!std::isfinite(det)||std::fabs(det)<=1e-12)return fail("singular model transform");
     auto number=[&](const Access& a,size_t i,size_t k){const uint32_t bits=le32(b.data()+a.offset+i*a.stride+k*4);float f;std::memcpy(&f,&bits,4);return double(f);};
     std::array<float,3> minimum,maximum;minimum.fill(std::numeric_limits<float>::infinity());maximum.fill(-std::numeric_limits<float>::infinity());
-    for(size_t v=0;v<pos.count;++v){double normal_length=0;for(size_t r=0;r<3;++r){double coordinate=world[r*4+3],normal=0;for(size_t k=0;k<3;++k){coordinate+=world[r*4+k]*number(pos,v,k);normal+=cof[r*3+k]*number(nrm,v,k)/det;}coordinate*=100;if(!std::isfinite(coordinate)||std::fabs(coordinate)>1000000)return fail("baked model exceeds coordinate range");minimum[r]=std::min(minimum[r],float(coordinate));maximum[r]=std::max(maximum[r],float(coordinate));normal_length+=normal*normal;}if(!std::isfinite(normal_length)||normal_length<=1e-24)return fail("invalid model normal");}
+    for(size_t v=0;v<pos.count;++v){double normal_length=0;for(size_t r=0;r<3;++r){double coordinate=world[r*4+3],normal=0;for(size_t k=0;k<3;++k){coordinate+=world[r*4+k]*number(pos,v,k);if(!collision)normal+=cof[r*3+k]*number(nrm,v,k)/det;}coordinate*=100;if(!std::isfinite(coordinate)||std::fabs(coordinate)>(collision?20000:1000000))return fail("baked model exceeds coordinate range");minimum[r]=std::min(minimum[r],float(coordinate));maximum[r]=std::max(maximum[r],float(coordinate));normal_length+=normal*normal;}if(!collision&&(!std::isfinite(normal_length)||normal_length<=1e-24))return fail("invalid model normal");}
+    if(collision){
+        for(size_t k=0;k<3;++k)if(double(maximum[k])-minimum[k]>20000)return fail("collision extent exceeds 20000 game units");
+        auto point=[&](size_t i){std::array<float,3> q{};for(size_t r=0;r<3;++r){double value=world[r*4+3];for(size_t k=0;k<3;++k)value+=world[r*4+k]*number(pos,i,k);q[r]=float(value*100);}return q;};
+        auto index=[&](size_t i){const auto* q=b.data()+idx.offset+i*idx.stride;return idx.component==5121?uint32_t(q[0]):idx.component==5123?uint32_t(q[0])|(uint32_t(q[1])<<8):le32(q);};
+        for(size_t i=0;i<idx.count;i+=3){const auto a=point(index(i)),bb=point(index(i+1)),c=point(index(i+2));double u[3],v[3];for(size_t k=0;k<3;++k){u[k]=double(bb[k])-a[k];v[k]=double(c[k])-a[k];}const double x=u[1]*v[2]-u[2]*v[1],y=u[2]*v[0]-u[0]*v[2],z=u[0]*v[1]-u[1]*v[0];if(!(x*x+y*y+z*z>1e-12))return fail("degenerate collision triangle");}
+        info={unsigned(pos.count),unsigned(idx.count/3),0,0,0,0,minimum,maximum};return true;
+    }
     const auto& materials=doc.get("materials");const auto& textures=doc.get("textures");const auto& images=doc.get("images");
     if(materials.type!=Value::Array||materials.array.size()!=1||!integer(p.get("material"),0,0)||textures.type!=Value::Array||textures.array.size()!=1||images.type!=Value::Array||images.array.size()!=1)return fail("static GLB needs one material and texture");
     const auto& mat=materials.array[0];const auto& colour=mat.get("pbrMetallicRoughness").get("baseColorTexture");
@@ -116,5 +127,42 @@ inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string&
     }
     if(!ended)return fail("incomplete PNG image");
     info={unsigned(pos.count),unsigned(idx.count/3),w,h,base+off,len,minimum,maximum};return true;
+}
+
+// Partition original collision-only meshes before reusing the strict rendering
+// validator. The projection preserves node transforms and embedded BIN offsets.
+inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string& why,bool collision_requested=false){
+    using mods::json::Value;info={};auto fail=[&](const char* text){why=text;return false;};
+    if(b.size()<28||b.size()>kMaxSourceBytes||std::memcmp(b.data(),"glTF",4)||le32(b.data()+4)!=2||le32(b.data()+8)!=b.size())return fail("invalid or oversized GLB 2.0");
+    const size_t jl=le32(b.data()+12);if(jl%4||jl>b.size()-28||le32(b.data()+16)!=0x4E4F534A)return fail("invalid GLB JSON chunk");
+    const size_t base=28+jl;if(le32(b.data()+20+jl)!=b.size()-base||le32(b.data()+24+jl)!=0x004E4942||(b.size()-base)%4)return fail("invalid GLB BIN chunk");
+    Value doc;try{doc=mods::json::parse(std::string(reinterpret_cast<const char*>(b.data()+20),jl));}catch(...){return fail("invalid GLB JSON");}
+    const auto& nodes=doc.get("nodes");const auto& meshes=doc.get("meshes");
+    if(nodes.type!=Value::Array||nodes.array.empty()||nodes.array.size()>256||meshes.type!=Value::Array||meshes.array.empty()||meshes.array.size()>64)return fail("invalid static scene size");
+    std::vector<std::pair<size_t,size_t>> collision,render;std::set<size_t> used;
+    auto named=[](const Value& value){return value.get("name").type==Value::String&&value.get("name").text.ends_with("_col");};
+    for(size_t i=0;i<nodes.array.size();++i){const auto& node=nodes.array[i];if(node.get("mesh").type==Value::Null)continue;if(!integer(node.get("mesh"),0,meshes.array.size()-1))return fail("node mesh outside input");const size_t mi=size_t(node.get("mesh").number);used.insert(mi);(named(node)||named(meshes.array[mi])?collision:render).emplace_back(i,mi);}
+    if(collision.empty()){
+        if(!validate_glb_strict(b,info,why))return false;
+        if(collision_requested){ModelInfo geometry;if(!validate_glb_strict(b,geometry,why,true)){info={};return false;}const auto name=doc.get("materials").array[0].get("name").string();if(name.starts_with("col_")&&name!="col_stone"&&name!="col_grass"&&name!="col_wood"&&name!="col_sand"&&name!="col_metal"&&name!="col_wall"&&name!="col_objects"&&name!="col_climb"&&name!="col_hookshot"){info={};return fail("unknown or unsupported collision material");}}
+        return true;
+    }
+    if(render.size()!=1||used.size()!=meshes.array.size())return fail("one render mesh instance and no unused meshes required");
+    std::function<bool(const Value&)> extensions_ok=[&](const Value& value){if(value.type==Value::Object){if(value.get("extensions").type!=Value::Null&&!(value.get("extensions").type==Value::Object&&value.get("extensions").object.empty()))return false;for(const auto& [key,child]:value.object)if(!extensions_ok(child))return false;}else if(value.type==Value::Array)for(const auto& child:value.array)if(!extensions_ok(child))return false;return true;};
+    if(!extensions_ok(doc))return fail("GLB extensions are unsupported");
+    const auto& materials=doc.get("materials");if(materials.type!=Value::Array||materials.array.empty())return fail("model needs materials");
+    auto project=[&](size_t node_index,const Value& mesh){auto clean=doc;for(auto& node:clean["nodes"].array)node.object.erase("mesh");clean["nodes"].array[node_index]["mesh"]=0;clean["meshes"].type=Value::Array;clean["meshes"].array={mesh};return clean;};
+    auto packed=[&](const Value& clean){auto text=mods::json::dump(clean);while(text.size()%4)text+=' ';std::vector<uint8_t> out;auto word=[&](uint32_t n){for(unsigned k=0;k<4;++k)out.push_back(uint8_t(n>>(8*k)));};word(0x46546C67);word(2);word(uint32_t(28+text.size()+b.size()-base));word(uint32_t(text.size()));word(0x4E4F534A);out.insert(out.end(),text.begin(),text.end());word(uint32_t(b.size()-base));word(0x004E4942);out.insert(out.end(),b.begin()+base,b.end());return out;};
+    auto [rn,rm]=render[0];auto render_mesh=meshes.array[rm];const auto& primitives=render_mesh.get("primitives");if(primitives.type!=Value::Array||primitives.array.size()!=1)return fail("one render primitive required");
+    const auto& mat=primitives.array[0].get("material");if(!integer(mat,0,materials.array.size()-1))return fail("render material outside input");const size_t material=size_t(mat.number);render_mesh["primitives"].array[0]["material"]=0;
+    auto clean=project(rn,render_mesh);clean["materials"].array={materials.array[material]};const auto projected=packed(clean);ModelInfo result;
+    if(!validate_glb_strict(projected,result,why))return false;
+    const size_t projected_base=28+le32(projected.data()+12);if(result.image_offset<projected_base)return fail("invalid projected image offset");result.image_offset=result.image_offset-projected_base+base;
+    size_t vertices=0,triangles=0;std::array<float,3> low,high;low.fill(std::numeric_limits<float>::infinity());high.fill(-std::numeric_limits<float>::infinity());
+    for(auto [ni,mi]:collision){const auto& mesh=meshes.array[mi];const auto& ps=mesh.get("primitives");if(mesh.get("weights").type!=Value::Null||ps.type!=Value::Array||ps.array.empty()||ps.array.size()>64)return fail("invalid collision mesh");
+        for(const auto& p:ps.array){const auto& material_index=p.get("material");if(!integer(material_index,0,materials.array.size()-1))return fail("collision material outside input");const auto name=materials.array[size_t(material_index.number)].get("name").string();if(name!="col_stone"&&name!="col_grass"&&name!="col_wood"&&name!="col_sand"&&name!="col_metal"&&name!="col_wall"&&name!="col_objects"&&name!="col_climb"&&name!="col_hookshot")return fail("unknown or unsupported collision material");
+            auto one=mesh;one["primitives"].array={p};const auto geometry=packed(project(ni,one));ModelInfo part;if(!validate_glb_strict(geometry,part,why,true))return false;vertices+=part.vertex_count;triangles+=part.triangle_count;if(vertices>4096||triangles>4096)return fail("collision exceeds vertex/triangle limits");for(size_t k=0;k<3;++k){low[k]=std::min(low[k],part.minimum[k]);high[k]=std::max(high[k],part.maximum[k]);}}
+    }
+    for(size_t k=0;k<3;++k)if(double(high[k])-low[k]>20000)return fail("collision extent exceeds 20000 game units");info=result;return true;
 }
 }

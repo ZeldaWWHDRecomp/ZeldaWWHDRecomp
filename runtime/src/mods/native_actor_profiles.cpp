@@ -7,12 +7,12 @@
 #include <cstring>
 namespace native_actor_profiles { namespace {
 struct Entry {uint16_t id=0;uint32_t address=0;BaseAllocated allocated=nullptr;};
-std::array<Entry,8> entries{};
+std::array<Entry,10> entries{};
 struct Listener {std::string name;BeforeDelete callback=nullptr;};
 std::array<Listener,8> listeners{};
 void(*original)(Cpu*,uint32_t)=nullptr;uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;bool installed=false;
 bool tracing(){const char*v=std::getenv("WWHD_MOD_ACTOR_HEAPS");return v&&std::strcmp(v,"1")==0;}
-bool reserved(uint32_t id){return id>=0x7FF7&&id<=0x7FFE;}
+bool reserved(uint32_t id){return id>=0x7FF5&&id<=0x7FFE;}
 const Entry* entry(uint32_t id){for(const auto&e:entries)if(e.address&&id==e.id)return &e;return nullptr;}
 uint32_t free(Cpu*c,uint32_t heap){if(!heap)return 0;const uint32_t vt=ld32(heap+0xC),fn=vt?ld32(vt+0x74):0;return fn?invoke(c,fn,{heap}):0;}
 using Heaps=std::array<std::pair<uint32_t,uint32_t>,4>;

@@ -200,6 +200,10 @@ EnemyMarkerHandle register_enemy_marker(const std::string& mod, const std::strin
     std::lock_guard lock(g_mu);
     return {g_prop_markers.add(mod, actor_id, defeat_flag, why, prop_rewards::kDefeated)};
 }
+bool forget_prop_marker(PropMarkerHandle handle) {
+    std::lock_guard lock(g_mu);
+    return g_prop_markers.remove(handle);
+}
 bool enemy_defeated(EnemyMarkerHandle handle) {
     std::lock_guard lock(g_mu);
     const auto* marker = g_prop_markers.get(handle.value, prop_rewards::kDefeated);

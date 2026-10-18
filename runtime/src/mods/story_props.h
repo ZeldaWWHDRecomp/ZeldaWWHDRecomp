@@ -31,4 +31,12 @@ bool texture_heap(uint32_t actor,uint32_t& begin,uint32_t& end);
 // before installing any of them; a new guard cannot be added after the shared hook is installed.
 void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t guest_profile,std::function<void(uint32_t token,uint32_t old_pid)> retired={});
 bool install(const std::function<std::string(uint32_t)>& owner,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
+// World editor (--editor only, main game thread). editor_enable before install: the profile installs even
+// without declarations, so props placed while the game runs appear at once (live()). editor_declare adds
+// a declaration then (same checks as declare); editor_redeclare gives one a changed spec (kind, drops,
+// broken flag, scale, texture) for its next copy, while no copy of it exists.
+void editor_enable();
+bool live();
+uint32_t editor_declare(const std::string& mod,const story_notebook::ManifestActor&,std::string& why);
+bool editor_redeclare(uint32_t token,const std::string& mod,const story_notebook::ManifestActor&,std::string& why);
 }

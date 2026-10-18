@@ -1,0 +1,41 @@
+#include <array>
+#include <bit>
+#include <cassert>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <limits>
+#include <set>
+#include <string>
+#include <vector>
+#include "mods/story_world_collision_mesh.h"
+using namespace story_world_collision::mesh;
+namespace {
+uint32_t word(const std::vector<uint8_t>&b,size_t p){return (uint32_t(b[p])<<24)|(uint32_t(b[p+1])<<16)|(uint32_t(b[p+2])<<8)|b[p+3];}
+uint16_t half(const std::vector<uint8_t>&b,size_t p){return uint16_t((b[p]<<8)|b[p+1]);}
+void put(std::vector<uint8_t>&b,size_t p,uint32_t v){for(unsigned k=0;k<4;++k)b[p+k]=uint8_t(v>>(24-k*8));}
+std::vector<uint8_t> wcol(const Mesh&m){std::vector<uint8_t>b(40+m.vertices.size()*12+m.triangles.size()*8);put(b,0,0x57434F4C);put(b,4,1);put(b,8,uint32_t(m.vertices.size()));put(b,12,uint32_t(m.triangles.size()));const float bounds[]={m.minimum.x,m.minimum.y,m.minimum.z,m.maximum.x,m.maximum.y,m.maximum.z};for(unsigned k=0;k<6;++k)put(b,16+4*k,std::bit_cast<uint32_t>(bounds[k]));for(size_t i=0;i<m.vertices.size();++i){auto p=m.vertices[i];const float values[]={p.x,p.y,p.z};for(unsigned k=0;k<3;++k)put(b,40+i*12+k*4,std::bit_cast<uint32_t>(values[k]));}for(size_t i=0;i<m.triangles.size();++i){const auto&t=m.triangles[i];for(unsigned k=0;k<4;++k){const uint16_t v=k<3?t.indices[k]:t.semantic;const size_t p=40+m.vertices.size()*12+i*8+k*2;b[p]=uint8_t(v>>8);b[p+1]=uint8_t(v);}}return b;}
+void hierarchy(const std::vector<uint8_t>&b){const auto triangles=word(b,8),blocks=word(b,16),nodes=word(b,24),bp=word(b,20),np=word(b,28);std::set<unsigned> visited,seenblocks;std::function<void(unsigned,unsigned,unsigned)> visit=[&](unsigned id,unsigned parent,unsigned depth){assert(depth<=8&&id<nodes&&visited.insert(id).second);assert(half(b,np+20*id+2)==parent);if(half(b,np+20*id)&1){const unsigned block=half(b,np+20*id+4);assert(block<blocks&&seenblocks.insert(block).second);const unsigned begin=half(b,bp+2*block),end=block+1==blocks?triangles:half(b,bp+2*(block+1));assert(begin<end&&end-begin<=LeafTriangles);for(unsigned k=1;k<8;++k)assert(half(b,np+20*id+4+2*k)==0xFFFF);}else{unsigned children=0;for(unsigned k=0;k<8;++k){auto next=half(b,np+20*id+4+2*k);if(next!=0xFFFF){++children;visit(next,id,depth+1);}}assert(children==2);}};visit(0,0xFFFF,0);assert(visited.size()==nodes&&seenblocks.size()==blocks);}
+// The native filter applies only at depth 2; an empty root must never expose
+// geometry before the normal child has been tested against the query mask.
+bool normal_group_visible(const std::vector<uint8_t>&b,unsigned mask){const auto group=word(b,0x24);unsigned hits=0;std::function<void(unsigned,unsigned)> visit=[&](unsigned id,unsigned depth){const auto g=group+52*id;if(depth==2&&!(mask&1))return;if(half(b,g+0x2E)!=0xFFFF)++hits;for(unsigned child=half(b,g+0x28);child!=0xFFFF;child=half(b,group+52*child+0x26))visit(child,depth+1);};visit(0,1);return hits!=0;}
+
+}
+int main(){std::string why;Mesh m,out;std::array<uint8_t,9> raw{2,4,1,11,9,0,0,0,1};
+    for(const auto*shape:{"box","cylinder","sphere"}){
+        assert(make_shape(shape,{100,80,120},50,80,1,m,why));assert(validate(m,why));
+        double volume=0;for(auto&t:m.triangles){auto a=m.vertices[t.indices[0]],b=m.vertices[t.indices[1]],c=m.vertices[t.indices[2]];volume+=(double(a.x)*(double(b.y)*c.z-double(b.z)*c.y)+double(a.y)*(double(b.z)*c.x-double(b.x)*c.z)+double(a.z)*(double(b.x)*c.y-double(b.y)*c.x))/6;}assert(volume>0);
+        const auto original=wcol(m);assert(decode(original,out,why)&&out.vertices.size()==m.vertices.size()&&out.triangles.size()==m.triangles.size());
+        std::vector<uint8_t> native;assert(build_native(out,raw,12,native,why));hierarchy(native);assert(normal_group_visible(native,1));assert(!normal_group_visible(native,0xE));assert(word(native,32)==2);const auto gp=word(native,0x24),tp=word(native,12);for(unsigned i=0;i<word(native,8);++i)assert(half(native,tp+10*i+8)==1);for(unsigned i=0;i<2;++i)assert(word(native,gp+52*i+0x30)==0);const auto c=counts(out);assert(word(native,16)==c.blocks&&word(native,24)==c.nodes);assert(allocation_bytes(out)>=native.size()+0xBC);
+        const uint32_t attribute=word(native,0x2C),group=word(native,0x24),name=word(native,group);for(unsigned i=0;i<9;++i){assert(word(native,attribute+16*i)==0x07FFE0FF);assert(word(native,attribute+16*i+4)==(0xFFu|(i==7?0x100u:0)|(uint32_t(raw[i])<<16)));assert(word(native,attribute+16*i+8)==0xFFFFFFFF);assert(word(native,attribute+16*i+12)==(i==6?0xEDu:i==8?0x10u:0));}
+        const auto before=native;for(unsigned field:{group+0x28,word(native,12)+8}){auto broken=before;broken[field]=0;broken[field+1]=0;assert(!relocate(broken,0x20000000,why));}assert(!relocate(native,0xFFFFFFF0,why)&&native==before);assert(relocate(native,0x20000000,why));for(unsigned i=0;i<6;++i)assert(word(native,i*8+4)==word(before,i*8+4)+0x20000000);assert(word(native,group)==name+0x20000000&&word(native,group+52)==name+0x20000000&&word(native,0x30)==0x80000000);const auto relocated=native;assert(!relocate(native,0x20000000,why)&&native==relocated);
+        for(auto mutate:{0,1,2,3,4,5,6}){auto bad=original;if(mutate==0)bad.push_back(0);if(mutate==1)put(bad,4,2);if(mutate==2)put(bad,8,4097);if(mutate==3)put(bad,16,std::bit_cast<uint32_t>(m.minimum.x-1));if(mutate==4)put(bad,40,0x7FC00000);if(mutate==6)put(bad,40,std::bit_cast<uint32_t>(20001.f));if(mutate==5){const size_t p=40+m.vertices.size()*12;bad[p+6]=0;bad[p+7]=9;}out=m;assert(!decode(bad,out,why)&&out.vertices.empty()&&!why.empty());}
+    }
+    assert(make_shape("box",{100,100,100},0,0,0,m,why));const auto initial=m.triangles;while(m.triangles.size()+initial.size()<=MaxTriangles)m.triangles.insert(m.triangles.end(),initial.begin(),initial.end());while(m.triangles.size()<MaxTriangles)m.triangles.push_back(initial[0]);std::vector<uint8_t> native;assert(build_native(m,raw,0,native,why));hierarchy(native);assert(counts(m).blocks==128&&counts(m).nodes==255);
+    auto bad=m;bad.triangles[0].indices[1]=bad.triangles[0].indices[0];assert(!validate(bad,why));bad=m;bad.triangles[0].indices[0]=4096;assert(!validate(bad,why));bad=m;bad.vertices[0].x=std::numeric_limits<float>::infinity();assert(!validate(bad,why));raw[0]=32;assert(!build_native(m,raw,0,native,why)&&native.empty());
+    assert(make_shape("box",{100,100,100},0,0,0,m,why));m.triangles[0].semantic=6;assert(decode(wcol(m),out,why)&&out.triangles[0].semantic==6);assert(!make_shape("box",{100,100,100},0,0,6,out,why));
+    for(uint16_t semantic:{7,8}){m.triangles[0].semantic=semantic;assert(decode(wcol(m),out,why)&&out.triangles[0].semantic==semantic);assert(!make_shape("box",{100,100,100},0,0,semantic,out,why));}
+    assert(!make_shape("box",{0,1,1},1,1,0,out,why));assert(!make_shape("sphere",{},10001,0,0,out,why));assert(!make_shape("capsule",{},1,1,0,out,why));
+}

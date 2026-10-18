@@ -24,6 +24,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace screenshot {
 
@@ -52,7 +53,16 @@ std::string dir();  // (created when a screenshot is taken)
 void finish();
 std::string last_file();  // the newest screenshot written ("" none yet)
 
-// PNG (RGB, 8 bit, sRGB chunk) of RGBA8 (BGRA8: bgra) pixels; false on a write error
+// The picture of the next frame shown, in memory, for the world editor's tool clients (editor/mcp.h):
+// `done` runs on the encoding worker with a PNG (scaled down to at most `max_width` pixels wide, 0: full
+// size) or an empty one and the reason. Nothing is written to disk, no notice shows. False: a capture is
+// already waiting. cancel_capture: the caller stopped waiting (`done` is dropped).
+using CaptureDone = std::function<void(const std::string& png, uint32_t width, uint32_t height, const std::string& why)>;
+bool capture(bool gamepad, uint32_t max_width, CaptureDone done);
+void cancel_capture();
+
+// PNG (RGB, 8 bit, sRGB chunk) of RGBA8 (BGRA8: bgra) pixels in memory / into a file (false on a write error)
+bool encode_png(uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra, std::vector<uint8_t>& out);
 bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra = false);
 
 }  // namespace screenshot

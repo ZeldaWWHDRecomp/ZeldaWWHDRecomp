@@ -64,7 +64,10 @@ creation and the amount of additional actor work. It is a conservative policy,
 not a measurement of spare game heap.
 
 Optional `when` conditions can name `quest` plus `step`, an owned mod `item`
-(`item:<id>`), and `time` (`day` or `night`). Conditions are checked when the room
+(`item:<id>`), `time` (`day` or `night`), and `flag` / `not_flag` (a mod flag that
+must be set / unset). `quests` accepts up to eight `{"quest":"a","step":2}`
+entries; every entry must match. A single `quest` / `step`, if also present, must
+match too. Conditions are checked when the room
 is populated and reconciled in the current room on game logic steps. Pending
 creation/deletion retains its identity; an active conversation finishes before
 its partner is removed. Actors belong to the native room layer and unload with it.
@@ -426,6 +429,10 @@ package's local data cache; do not ship them in packages. Editing the model or
 changing the player template invalidates its cache key. Packages and this
 repository must never include game-derived material or shader templates.
 
+For walkable meshes and solid shapes that also block the ship, see
+[World objects](world-objects.md). The following cylinder form remains
+available for ordinary model actors.
+
 `collision` specifies an upright cylinder with explicit game-unit dimensions:
 `radius` is greater than zero and at most 1000; `height` is greater than zero and
 at most 2000. The cylinder stays upright and uses these declared dimensions
@@ -559,12 +566,47 @@ array contains at most eight actions:
 same manifest. Actions run in order after the talk closes; a failing action stops
 the sequence. Skipping or aborting a scene does not apply its end actions.
 
+`{"action":"quest_done","id":"lantern"}` completes a quest declared in the
+same manifest. It gives the declared reward once, marks the quest done in the
+notebook, and clears its tracking selection. Completing an already completed
+quest does nothing. This action works in actor dialogue and a scene's final
+`end.then`; `quest_step` remains forward-only.
+
+Flag conditions read only the declaring mod's flags. Every referenced flag must
+have a producer in the same manifest: an actor's read/open, switch, break or defeat
+flag, or a `flag` action in an actor, talk or scene end. A reference alone does not
+declare a flag. Foreign mod IDs and game event bit numbers are rejected.
+
+Use `talks` to give a character different reactions to quest progress:
+
+```json
+"talks": [
+  {"when":{"quest":"lantern","step":1},
+   "lines":["Bring the lantern back."],
+   "then":[{"action":"quest_step","id":"lantern","step":2}]},
+  {"when":{"quest":"lantern","step":2},
+   "lines":["Thank you!"],
+   "then":[{"action":"quest_done","id":"lantern"}]},
+  {"lines":["The lantern is safe."]}
+]
+```
+
+Residents, signs and mod actors without combat or carry support can have up to
+eight talks. The first matching talk is selected;
+an entry without `when` is a fallback, so put it last. Each talk has the same
+line and eight-action limits as the single-dialogue form. The actor's top-level
+`when` still controls whether it appears. Do not combine `talks` with top-level
+`lines` or `then`; the old single-dialogue form remains valid. There is no `any`
+condition: all supplied conditions must hold. Once a conversation starts, its
+selected text and actions stay fixed. Restoring a conversation whose selected
+definition has changed must not run replacement actions.
+
 A placed character belongs to its declaring mod: its actor ID is local to that
 mod. Multiple mods may place separate characters using the same native resident
 model. They do not compete for that placed character's lines. Existing catalogue
 resident takeovers keep SDK v2's rules: tracked quest first, then start order;
 one quest per talk. The existing choice box chooses among eligible quest topics.
-A placed character's `lines` remains linear. Scene `choice` steps provide two explicit forward branches.
+A talk's `lines` remains linear. Scene `choice` steps provide two explicit forward branches.
 
 ## Scenes
 
@@ -609,22 +651,82 @@ scenes to continue. Already fired room/area triggers do not immediately fire aga
 after an interruption; loading a state also suppresses those triggers in the loaded
 room until the room changes.
 
-The implementation uses the **fallback route**: native compulsory-event admission,
-the game's camera and message functions, and native event teardown. It does not
-replace the stage's event-list resource. Runtime event-list generation would need
-additional ownership and resource-lifetime verification. Native admission provides
-the event control lock; camera trimming supplies the letterbox framing.
+A scene plays on one of two routes. The **fallback route** runs the scene's
+`steps` through native compulsory-event admission, the game's camera and message
+functions, and native event teardown. It does not replace the stage's event-list
+resource. Native admission provides the event control lock; camera trimming
+supplies the letterbox framing.
 
-Completion, timeout, interruption and state load release the scene's ownership.
-Non-natural exits reset only the scene-owned message through the native message
-core, so restoring control does not require another A press.
+The **native route** is an optional, experimental alternative: a scene may add a
+`native` block that the game's own event system plays instead of the steps.
+Its only `type` is `"turn_camera"`: two placed Uo2 residents turn toward fixed
+points in parallel and wait, while the game's FIXEDFRM and UNITRANS camera
+actions hold a starting view and then move to an ending view. A scene with an
+eligible `native` block uses the native route when the runtime's readiness
+checks pass; every other scene uses the fallback route.
+
+The [harbor meeting example](../examples/guest-mods/sdk-v3-native-scene/README.md)
+contains two residents, a talk trigger and both routes.
+
+| Native field | Meaning and limits |
+| --- | --- |
+| `actors` | Exactly two distinct same-mod placed resident IDs, both declared with `parameters.resident: "uo2"`, in the same stage and room. Each entry contains `id` and a fixed XYZ `turn_to`. |
+| `wait_ticks` | Native WAIT duration, 1–9000 logic ticks. Both residents turn toward their respective positions in parallel, then each performs WAIT. |
+| `camera` | `hold_ticks`, `move_ticks`, `start_eye`, `start_target`, `end_eye`, `end_target`, and `fovy`. The native camera holds the starting view with FIXEDFRM, then moves to the ending view with UNITRANS. |
+| `camera.hold_ticks`, `camera.move_ticks` | Each is 1–9000; their sum must not exceed 9000. |
+| `camera.fovy` | Finite field of view, 5–120 degrees. Eye and target must remain at least one world unit apart throughout the linear move. |
+| `timekeeper_ticks` | 1–9000; at least `wait_ticks` and at least `hold_ticks + move_ticks`. |
+| `watchdog_ticks` | At most 18000 and strictly greater than `timekeeper_ticks`; a completion deadline, not an extra native action. |
+
+These timers use 30 Hz game logic ticks, independently of rendering speed and
+the fallback timeline. All native XYZ components must be finite and within
+−350000 to 350000. Unknown fields are errors. Stage and room come from the two
+actor placements; a room or area trigger must match them. The native route has
+been checked with the game running at 30 fps; at other frame-rate settings it is
+still experimental.
+
+The native alternative is an explicitly authored parallel timeline, rather than
+a conversion of every fallback step. Native selection currently covers only
+the following fallback shapes:
+
+| Fallback scene content | Native alternative eligibility |
+| --- | --- |
+| `face` | Either of the two named Uo2 residents, facing a fixed `position`; no `target_actor`. |
+| `camera` | Fixed XYZ eye and target; an optional pan also uses fixed ending positions. No actor target. |
+| `wait` | Supported with a valid duration. |
+| `end` | Exactly one final END; its `then` actions remain the scene's completion actions. |
+| Dialogue, movement, animation, camera paths/follow, choices, sound, music, fades, particles | The whole scene uses the fallback route. |
+| Branches or intermediate `then` actions | The whole scene uses the fallback route. The eligible fallback graph must be linear. |
+
+Fallback `steps` remain mandatory, including for a scene with `native`. If the
+alternative is unsupported or readiness fails before the native scene starts,
+the whole fallback scene runs instead. Once the native scene has started, a
+failure stops it; it does not replay the fallback scene. When the game is briefly
+busy before the start (control, camera or event contention), the request stays
+at the front of the queue for up to 60 scene ticks and then falls back to the
+whole fallback scene. A waiting request holds nothing: skip, abort and state
+load discard it without completion rewards.
+
+Plus/Start skips a native scene too: both residents and the camera are restored
+and control returns. Save states made during or after a native scene load
+normally, and the scene can be started again afterwards. Restoring a save state
+taken in the middle of a native scene works only in the same game session that
+made it; after a restart the port refuses to load such a state. A state taken
+before any native scene started loads in any session.
+
+The fallback route releases its scene ownership on completion, timeout,
+interruption or state load. Its non-natural exits reset only the scene-owned
+message through the native message core, so restoring control does not require
+another A press. The native route releases its ownership only after the game's
+own event has finished or been cancelled cleanly; if that cannot be confirmed,
+the scene stays blocked rather than freeing actors the game still uses.
 The lease snapshot is stored in state-captured runtime memory so loading an older
 mid-scene state can restore control even after the host player has finished that
 scene. The port checks ownership before resetting anything: an unrelated native
 event must retain its camera and control. Press **Plus/Start** during a scene to skip it; the skip press is consumed so it
 does not also open the pause menu. A/B remain available for the message window.
-The scene route remains experimental; native event-list generation is not part
-of this preview.
+The scene route remains experimental; native execution is limited to the
+eligible `turn_camera` alternative described above.
 
 Every scene step may have an `id`; `next` names a strictly later step. Without
 `next`, playback continues to the following step. Choice options name their own

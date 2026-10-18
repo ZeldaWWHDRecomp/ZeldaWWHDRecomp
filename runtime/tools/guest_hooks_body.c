@@ -13,3 +13,11 @@ void guest_hooks_body(Cpu* __restrict c) {
     guest_hooks_record_body();
     c->r[3] += 1;
 }
+
+void guest_hooks_native_record_body(void);
+void guest_hooks_native_body(Cpu* __restrict c) {
+    PPC_MOD_HOOK(2, 0x022C36D0u);
+    guest_hooks_native_record_body();
+    c->r[3] += 1;
+    c->f[1].ps0 = 7.5;
+}

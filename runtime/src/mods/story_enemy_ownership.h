@@ -23,6 +23,9 @@ bool configure(uint32_t arena,uint32_t bytes,void(*original)(Cpu*,uint32_t),Veri
 void initialize_storage();
 Token declare_actor(Kind,uint32_t parameters,const Fingerprint&,uint32_t epoch,std::string& why);
 size_t checkpoint();void rollback(size_t) noexcept;
+// World editor: a declaration's spec changed (or its copy moved in place): its fingerprint follows, and
+// its record keeps its state (active, pending, retired) with the new fingerprint.
+bool editor_refingerprint(Token,const Fingerprint&);
 enum class BindingState { Uninitialized,Fresh,Queued,Active,Retired,Quarantined };
 struct Binding {BindingState state=BindingState::Uninitialized;uint32_t pid=0,actor=0,epoch=0;};
 bool binding_state(Token,Binding&);

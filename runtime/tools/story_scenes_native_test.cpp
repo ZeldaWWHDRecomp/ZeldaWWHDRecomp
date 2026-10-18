@@ -14,10 +14,22 @@
 #include <cstdio>
 #include <cmath>
 #include <vector>
+#include <cstdlib>
+#include <string>
+#include <optional>
+#include <cstdint>
+#include <utility>
+#include <string_view>
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <cstdlib>
+#include <string>
+#include <optional>
+#include <cstdint>
+#include <utility>
+#include <string_view>
 #endif
 void log_msg(const char*,...){}
 namespace {
@@ -116,6 +128,23 @@ int main(){
         out={u32_as_f32(ld32(kActor+0x314)),u32_as_f32(ld32(kActor+0x318)),u32_as_f32(ld32(kActor+0x31C))};return true;
     });
     assert(story_scenes::declare("mod",{s},why));
+    const unsigned declaration_calls=native_calls;ManifestScene copied;
+    assert(story_scenes::declared_scene("mod","intro",copied)&&copied.steps.size()==s.steps.size()&&native_calls==declaration_calls);
+    copied.steps[0].frames=999;copied.id="mutated";assert(story_scenes::declared_scene("mod","intro",copied)&&copied.id=="intro"&&copied.steps[0].frames==2);
+    assert(!story_scenes::declared_scene("foreign","intro",copied)&&copied.id.empty()&&copied.steps.empty()&&native_calls==declaration_calls);
+    const auto declaration_checkpoint=story_scenes::checkpoint();auto transient=s;transient.id="transient";assert(story_scenes::declare("mod",{transient},why));assert(story_scenes::rollback(declaration_checkpoint));assert(!story_scenes::declared_scene("mod","transient",copied)&&native_calls==declaration_calls);
+
+    // Enumeration is a pure copy, includes only optional-native declarations,
+    // preserves module identity, and rolls back with its actual source registry.
+    assert(story_scenes::native_scene_ids().empty());
+    auto native_enum=s;native_enum.id="native-enumeration";native_enum.native.emplace();
+    assert(story_scenes::declare("mod",{native_enum},why));
+    assert(story_scenes::declare("other",{native_enum},why));
+    const std::vector<story_scenes::NativeSceneId> expected_native_ids{{"mod","native-enumeration"},{"other","native-enumeration"}};
+    auto native_ids=story_scenes::native_scene_ids();assert(native_ids==expected_native_ids&&native_calls==declaration_calls);
+    native_ids[0].first="mutated";assert(story_scenes::native_scene_ids()==expected_native_ids);
+    assert(story_scenes::rollback(declaration_checkpoint)&&story_scenes::native_scene_ids().empty());
+
     story_scenes::install([](Cpu*,uint32_t){},[](uint32_t){return std::string();},[](uint32_t address,void(*hook)(Cpu*)){assert(address==0x024FF8A0);trim_hook=hook;});assert(trim_hook);
     admit_ok=false;assert(story_scenes::request("mod","intro"));test_tick(&cpu);assert(!story_scenes::active()&&ld8(kPlay+0x5290)==0&&ld8(kPlay+0x5292)==0);admit_ok=true;
     assert(story_scenes::request("mod","intro"));assert(!story_scenes::request("mod","intro"));
@@ -229,7 +258,7 @@ int main(){
     // must dispatch from restored SceneIndex, never stale host g_current.
     std::vector<std::pair<std::string,story_scenes::MusicPhase>> owner_music;
     std::vector<std::pair<std::string,story_scenes::StopReason>> owner_reasons;
-    for(const std::string owner:{std::string("restore-a"),std::string("restore-b")}){auto owned_music=music;owned_music.cue=owner;s.id="cross-owner";s.steps={owned_music,end};assert(story_scenes::declare(owner,{s},why));assert(story_scenes::register_music_hook(owner,[&,owner](Cpu*,const std::string& cue,story_scenes::MusicPhase phase,unsigned,story_scenes::StopReason reason){assert(cue==owner);owner_music.emplace_back(owner,phase);owner_reasons.emplace_back(owner,reason);return true;}));}
+    for(const std::string& owner:{std::string("restore-a"),std::string("restore-b")}){auto owned_music=music;owned_music.cue=owner;s.id="cross-owner";s.steps={owned_music,end};assert(story_scenes::declare(owner,{s},why));assert(story_scenes::register_music_hook(owner,[&,owner](Cpu*,const std::string& cue,story_scenes::MusicPhase phase,unsigned,story_scenes::StopReason reason){assert(cue==owner);owner_music.emplace_back(owner,phase);owner_reasons.emplace_back(owner,reason);return true;}));}
     assert(story_scenes::request("restore-a","cross-owner"));test_tick(&cpu);uint8_t owner_a_state[story_scenes::kScratchBytes];std::memcpy(owner_a_state,mem::ptr(kScratch),sizeof(owner_a_state));test_tick(&cpu);test_tick(&cpu);assert(!story_scenes::active());
     assert(story_scenes::request("restore-b","cross-owner"));test_tick(&cpu);assert(story_scenes::active());assert(owner_music.back()==std::make_pair(std::string("restore-b"),story_scenes::MusicPhase::Start));const unsigned before_cross_owner_rewards=finished;
     std::memcpy(mem::ptr(kScratch),owner_a_state,sizeof(owner_a_state));st8(kPlay+0x5292,3);story_scenes::state_loaded();test_tick(&cpu);assert(!story_scenes::active()&&finished==before_cross_owner_rewards);assert(owner_music.back()==std::make_pair(std::string("restore-a"),story_scenes::MusicPhase::Restore));assert(owner_reasons.back()==std::make_pair(std::string("restore-a"),story_scenes::StopReason::StateLoaded));
@@ -267,4 +296,5 @@ int main(){
     assert(!story_scenes::active()&&particle_calls==before_stale_actor);particle_identity=true;
     particle.particle="beacon-sparkle";particle.actor.clear();particle.particle_has_position=true;s.id="beacon-particle";s.steps={particle,end};assert(story_scenes::declare("mod",{s},why));const auto before_beacon=particle_calls;assert(story_scenes::request("mod","beacon-particle"));test_tick(&cpu);assert(particle_calls==before_beacon+1);test_tick(&cpu);test_tick(&cpu);assert(!story_scenes::active());
     std::puts("story scene native contract tests passed (synthetic memory)");
+    return 0;
 }

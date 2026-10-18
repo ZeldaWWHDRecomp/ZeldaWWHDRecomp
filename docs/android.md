@@ -20,6 +20,12 @@ game; this project never provides game files.
 
 Android requests a 60 Hz display mode for 30 fps, interpolated 60 fps and true 60 fps, or the selected 120/240 Hz cadence for faster interpolation. Android may choose another supported rate. The request is reapplied after returning to the game. To leave refresh-rate selection entirely to Android, set `WWHD_NO_60HZ=1` in a developer build (`0` keeps the request enabled).
 
+With 60 fps or faster on, frames are spaced evenly: a frame that is ready early waits a few
+milliseconds so that each one stays on screen for the same time. This matters most with **Record graphics on a second
+thread** on: on a 120 Hz phone screen a third of the frames used to stay for one or three refreshes
+instead of two, which looked like a slight judder; now almost all stay for two. The game itself never waits for this, so its speed does not
+change. To turn it off, set `WWHD_INTERP_EVEN_PACING=0` in a developer build.
+
 ## Tested phones
 
 Measured with the game's own profiler in the busiest part of Outset Island (about 3,900 draws per
@@ -35,6 +41,24 @@ frame). *Game speed* is the game's logic steps per second: 30 is full speed.
 
 You need a 64-bit Android device with Android 13 or newer and Vulkan 1.3 (or a custom driver on Adreno),
 and a few GB of free storage.
+
+## 60 fps and heat
+
+60 fps draws twice as many pictures as 30 fps, so the device works harder and gets warmer. When the
+device says it is close to getting too hot, the game pauses 60 fps and shows a steady 30 fps at full
+game speed. Once the device has cooled down, 60 fps comes back by itself.
+
+Handhelds with a cooling fan (AYANEO, KONKR, AYN Odin and Thor, Retroid) can stay at 60 fps longer
+than phones, so the game waits longer on them before it pauses 60 fps.
+
+You can change this in **Settings → Graphics → Heat guard**, next to the frame rate:
+
+- **Normal** (default): the right limit for your kind of device.
+- **Relaxed**: waits longer before pausing 60 fps, on any device.
+- **Off**: never pauses 60 fps because of heat.
+
+Relaxed and Off keep 60 fps longer, but the device may get warm, and when it gets too hot it slows
+itself down, which can make the game stutter or run slower. If that happens, go back to Normal.
 
 ## Gyro aiming with your phone
 
@@ -109,7 +133,7 @@ The Wii U release of The Wind Waker HD, USA or Europe. Saves from a real Wii U w
 
 **My Android device gets hot. Is that normal?**
 The game is demanding. When the Android device gets warm, the game drops from 60 to a steady 30 fps on its
-own and keeps its full speed.
+own and keeps its full speed. See [60 fps and heat](#60-fps-and-heat) for the Heat guard setting.
 
 **What happens when I save a full state?**
 By default, Android pauses the game while memory is compressed in small chunks and written to the

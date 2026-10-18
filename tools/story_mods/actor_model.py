@@ -12,6 +12,7 @@ import os
 import re
 import struct
 import sys
+import tempfile
 import zlib
 
 import notebook_model as base
@@ -196,7 +197,9 @@ def read_glb(path):
 
 
 def inspect(path):
-    try: return read_glb(path)[1]
+    try:
+        import collision_mesh
+        return collision_mesh.read_static(path)[1]
     except (KeyError, IndexError, TypeError, ValueError, OverflowError, struct.error, RecursionError) as exc: raise BuildError('malformed GLB: ' + str(exc)) from exc
 
 
@@ -256,17 +259,30 @@ def validate_bfres(data, identity, vertex_count, index_count):
     require(f.u32(surface + 0x20) == width * height * 4 and 0 <= f.rel(texture + 0xB0) <= len(data) - width * height * 4, 'output texture span invalid')
 
 
-def build(game, glb_path, identity, out):
+def build(game, glb_path, identity, out, collision_out=None):
     require(re.fullmatch(r'[a-z][a-z0-9_]{0,30}', identity) is not None, 'invalid archive identity')
-    try: glb,info=read_glb(glb_path)
+    try:
+        import collision_mesh
+        with open(glb_path, 'rb') as source: source_bytes = source.read(MAX_SOURCE + 1)
+        require(len(source_bytes) <= MAX_SOURCE, 'GLB exceeds 8 MiB')
+        # Parse exactly the bytes hashed below, even if the author saves the
+        # source again while the converter is running.
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = os.path.join(directory, 'source.glb')
+            with open(snapshot, 'wb') as target: target.write(source_bytes)
+            glb,info,collision=collision_mesh.read_static(snapshot, collision=collision_out is not None)
     except (KeyError, IndexError, TypeError, ValueError, OverflowError, struct.error, RecursionError) as exc: raise BuildError('malformed GLB: '+str(exc)) from exc
     with open(os.path.join(game,base.ARCHIVE),'rb') as source: files=dict(base.shaderprep.sarc(base.shaderprep.yaz0(source.read())))
     require(set(files)=={'Vbeso.bfres','vbeso.sharcfb'},'unexpected player template archive')
     digest=hashlib.sha256()
-    with open(glb_path,'rb') as source: source_bytes = source.read(MAX_SOURCE + 1)
-    for body in (str(VERSION).encode(),identity.encode(),source_bytes,files['Vbeso.bfres'],files['vbeso.sharcfb']):
+    with open(__file__, 'rb') as source: converter_source = source.read()
+    with open(collision_mesh.__file__, 'rb') as source: collision_source = source.read()
+    for body in (str(VERSION).encode(),converter_source,collision_source,str(bool(collision_out)).encode(),identity.encode(),source_bytes,files['Vbeso.bfres'],files['vbeso.sharcfb']):
         digest.update(struct.pack('>I',len(body))); digest.update(body)
     info.update(identity=identity,cache_key=digest.hexdigest(),converter_version=VERSION)
+    if collision_out:
+        require(os.path.abspath(collision_out) not in (os.path.abspath(out), os.path.abspath(out+'.json'), os.path.abspath(glb_path)), 'collision output must have a separate cache path')
+        info['collision_path'] = os.path.abspath(collision_out)
     # Reuse only a complete, byte-verified cache for these exact inputs. Never
     # trust a metadata key alone: interrupted writes and damaged archives rebuild.
     try:
@@ -275,6 +291,10 @@ def build(game, glb_path, identity, out):
         with open(out+'.json') as source: cached = json.load(source)
         with open(out,'rb') as source: packed = source.read(16 * 1024 * 1024 + 1)
         expected = all(cached.get(key) == value for key,value in info.items())
+        if collision_out:
+            require(os.path.getsize(collision_out) == len(collision), 'cached collision size mismatch')
+            with open(collision_out, 'rb') as source: cached_collision = source.read(len(collision)+1)
+            expected = expected and cached_collision == collision
         if (expected and cached.get('archive_bytes') == len(packed) and
                 cached.get('archive_sha256') == hashlib.sha256(packed).hexdigest()):
             return cached
@@ -283,23 +303,41 @@ def build(game, glb_path, identity, out):
     bfres=build_bfres(files['Vbeso.bfres'],glb,identity)
     packed=base.yaz0_stored(base.sarc({identity+'.bfres':bfres,identity+'.sharcfb':files['vbeso.sharcfb']}))
     info.update(archive_bytes=len(packed),archive_sha256=hashlib.sha256(packed).hexdigest())
-    os.makedirs(os.path.dirname(os.path.abspath(out)),exist_ok=True)
-    with open(out+'.tmp','wb') as target: target.write(packed)
-    os.replace(out+'.tmp',out)
-    with open(out+'.json.tmp','w') as target: json.dump(info,target,sort_keys=True); target.write('\n')
-    os.replace(out+'.json.tmp',out+'.json')
+    def publish(path, data):
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=directory, prefix='.actor-model-', delete=False) as target:
+                temporary = target.name
+                target.write(data)
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
+    publish(out, packed)
+    if collision_out:
+        publish(collision_out, collision)
+    # Metadata commits the generation last. A crash or competing conversion
+    # leaves either a verified generation or a cache miss on the next request.
+    publish(out+'.json', (json.dumps(info,sort_keys=True)+'\n').encode())
     return info
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--glb',required=True); parser.add_argument('--inspect',action='store_true'); parser.add_argument('--game'); parser.add_argument('--identity'); parser.add_argument('--out')
+    parser.add_argument('--glb',required=True); parser.add_argument('--inspect',action='store_true'); parser.add_argument('--game'); parser.add_argument('--identity'); parser.add_argument('--out'); parser.add_argument('--collision-out'); parser.add_argument('--shoreline',action='store_true')
     args=parser.parse_args()
     try:
         if args.inspect: result=inspect(args.glb)
         else:
             require(all((args.game,args.identity,args.out)),'--game, --identity and --out required')
-            result=build(args.game,args.glb,args.identity,args.out)
+            if args.shoreline:
+                require(not args.collision_out,'shoreline is collision-free')
+                import shoreline_model
+                result=shoreline_model.build(args.game,args.glb,args.identity,args.out)
+            else: result=build(args.game,args.glb,args.identity,args.out,args.collision_out)
     except (BuildError,OSError) as exc: parser.exit(1,'actor_model: '+str(exc)+'\n')
     print(json.dumps(result,sort_keys=True))
 

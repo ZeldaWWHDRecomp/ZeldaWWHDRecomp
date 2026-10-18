@@ -1,4 +1,6 @@
 #include "interp.h"
+#include "mods/story_native_restore_resume.h"
+namespace interp {class NativeResumeBoundaryIssuer {public:static void after_service(Cpu*c){story_native_restore_resume::LoadWindow::service_return(c);}};}
 #include "countdown.h"
 #include "mods/guest_mods.h"
 #include "mods/mods.h"
@@ -831,6 +833,33 @@ static uint64_t g_paced_possible = 0, g_paced_holds = 0, g_paced_steps = 0, g_pa
 constexpr auto kPacedStep = std::chrono::nanoseconds(2 * 16'683'333);
 // the passes of a step wait for the grid's vsyncs and together take the whole step: 2 ms of slack
 constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono::milliseconds(2));
+// Even frame delivery (interp_pacing.h EvenSchedule): the renderer holds a frame that is ready
+// early until one frame interval after the previous one. On by default on Android (phones whose
+// game thread is the bottleneck: logic and in-between passes of different lengths showed a third of
+// the 60 fps frames for 1 or 3 refreshes of a 120 Hz screen); off elsewhere until measured there.
+// WWHD_INTERP_EVEN_PACING=0/1 wins. The interval of the frame being swapped: the step's length over
+// its planned frames (60 fps and true 60: 16.68 ms; paced 120/240 fps: over the frames this step
+// plans); 0 (frames go out as they come) at 30 fps.
+#ifdef __ANDROID__
+constexpr bool kEvenPacingDefault = true;
+#else
+constexpr bool kEvenPacingDefault = false;
+#endif
+static const char* const g_env_even = getenv("WWHD_INTERP_EVEN_PACING");
+static const bool g_even_pacing = g_env_even ? atoi(g_env_even) != 0 : kEvenPacingDefault;
+bool even_pacing() { return g_even_pacing; }
+int64_t frame_interval_ns() {
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LOG("[interp] even frame pacing %s (%s): %s", g_even_pacing ? "on" : "off",
+            g_env_even ? "WWHD_INTERP_EVEN_PACING" : "default on this platform",
+            g_even_pacing ? "a frame ready early waits for its slot before it is presented" : "frames are presented when ready");
+    }
+    if (!g_even_pacing) return 0;
+    if (!enabled() || frames_per_step() < 2) return 0;
+    return int64_t(kPacedStep.count()) / (std::max(1, g_step_n) + 1);
+}
 // debug: WWHD_TRACE_STEPS=file writes a line per paced logic pass at 120/240 fps: its start (steady
 // clock, ms), the step start before and after it (W waited for it, K kept the schedule, N started a
 // new one), and the recent logic and hold pass durations; and a line per skip to the record pass
@@ -929,6 +958,9 @@ static int plan_step() {
     if (n > 1 && paced() && interp_on()) {
         n = pacing::plan_in_between(n, kPacedBudget.count(), std::chrono::duration_cast<std::chrono::nanoseconds>(g_logic_avg).count(),
                                     std::chrono::duration_cast<std::chrono::nanoseconds>(g_hold_avg).count());
+        // even frame delivery: only counts that divide the display's refreshes per step evenly
+        if (g_even_pacing && present_vsync() && display_hz() > 0)
+            n = pacing::even_in_between(n, int(std::lround(display_hz() * std::chrono::duration<double>(kPacedStep).count())));
         g_paced_planned += n;
     }
     if (g_exact_step) n = 1;  // drawn exactly; its record pass makes the next step blend again
@@ -1082,6 +1114,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     perf::game_frame();
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
+    interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
     mods::hud_service();  // the boost bar and climb wheel fade out over the game's menus, events, messages
     const bool was_fast_forward = mods::fast_forward_active();

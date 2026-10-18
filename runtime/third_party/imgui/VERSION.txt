@@ -1,5 +1,11 @@
-Dear ImGui v1.92.9b (https://github.com/ocornut/imgui, tag v1.92.9b), MIT License (LICENSE.txt).
-Unmodified core library, plus a locally extended backends/imgui_impl_metal (Metal renderer) and
+Dear ImGui v1.92.9b, docking branch (https://github.com/ocornut/imgui, tag v1.92.9b-docking,
+commit b48d1afbe8ee8b238e2961dc363a949dd7304e23), MIT License (LICENSE.txt). The docking branch is the
+same author's official branch at the same version (the master release is tag v1.92.9b, commit
+f1cc2ae15e53a861a874c3034aae6798fde194ab); docking is turned on only in the world editor's launch mode
+(--editor), multi-viewports never.
+Core library with one local diagnostic extension (wwhd_trace.h: the overlay's opt-in scroll trace in
+imgui.cpp, imgui_internal.h and imgui_widgets.cpp, WWHD_OVERLAY_TRACE=1), plus a locally extended
+backends/imgui_impl_metal (Metal renderer) and
 backends/imgui_impl_sdl3 and backends/imgui_impl_sdlrenderer3 for the graphical installer (tools/installer/gui).
 The Vulkan renderer and the input feeding are the game's own (runtime/src/overlay/), so they can share
 the renderer's command buffers, formats and threads.

@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 namespace gx2 { void shutdown_vulkan_caches(); }
+namespace gfxvk { void sky_clouds_begin(const uint32_t* regs, uint32_t seq); }  // clouds.cpp
 
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 // AppKit host (gfx/display.mm): windows exist, each view gets a CAMetalLayer for a Vulkan surface
@@ -26,6 +27,7 @@ const Backend& vulkan_backend() {
     static const Backend b = [] {
         Backend b{};
         b.api = Api::Vulkan;
+        b.sky_clouds_begin = gfxvk::sky_clouds_begin;
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
         b.init = [] {
             gfx::display_create_windows();
@@ -55,6 +57,9 @@ const Backend& vulkan_backend() {
         b.set_frame_aspect = gfxvk::set_frame_aspect;
         b.target_aspect_factors = gfxvk::target_aspect_factors;
         b.frames_completed = gfxvk::frames_completed;
+        b.set_present_interval = gfxvk::set_present_interval;
+        b.present_due = gfxvk::present_due;
+        b.service_present = gfxvk::service_present;
         b.with_autorelease_pool = gfxvk::with_autorelease_pool;
         b.set_tv_format = gfxvk::set_tv_format;
         b.invalidate = gfxvk::stereo_invalidate;

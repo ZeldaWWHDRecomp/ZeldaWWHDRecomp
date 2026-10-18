@@ -20,6 +20,12 @@ própria cópia do jogo de Wii U; este projeto nunca fornece arquivos do jogo.
 
 O Android solicita 60 Hz para 30 fps, 60 fps interpolados e 60 fps reais, ou a cadência selecionada de 120/240 Hz para interpolação mais rápida. O Android pode escolher outra frequência compatível. A solicitação é reaplicada ao voltar ao jogo. Para deixar a escolha da frequência inteiramente com o Android, defina `WWHD_NO_60HZ=1` em uma compilação de desenvolvimento (`0` mantém a solicitação ativada).
 
+Com 60 fps ou mais, os quadros são distribuídos de forma uniforme: um quadro que fica pronto antes
+espera alguns milissegundos para que cada um permaneça na tela pelo mesmo tempo. Isso faz mais diferença com **Record graphics on a second
+thread** ativado: em uma tela de 120 Hz, um terço dos quadros ficava por uma ou três
+atualizações em vez de duas, o que parecia uma leve trepidação; agora quase todos ficam por duas. O jogo nunca espera por isso, então sua velocidade
+não muda. Para desativar, defina `WWHD_INTERP_EVEN_PACING=0` em uma compilação de desenvolvimento.
+
 ## Celulares testados
 
 Medido com o medidor do próprio jogo na parte mais pesada da Ilha de Outset (cerca de 3.900

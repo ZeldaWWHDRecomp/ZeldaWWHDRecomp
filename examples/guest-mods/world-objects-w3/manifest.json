@@ -1,0 +1,28 @@
+{
+  "format_version": 1,
+  "id": "world-objects-w3",
+  "name": "Original interactive tower",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An original tower with climbable collision, a hookshot surface and a grapple beam.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [{"id": "story-notebook", "minimum_version": "0.0.0"}],
+  "models": [{"id": "tower", "source": "assets/tower.glb"}],
+  "actors": [
+    {
+      "id": "tower",
+      "kind": "mod",
+      "model": "tower",
+      "behaviour": "static",
+      "stage": "sea",
+      "room": 12,
+      "position": {"x": 75000, "y": 500, "z": -201500},
+      "collision": {"mesh": "tower"},
+      "grapple_points": [{"id": "beam", "position": {"x": 0, "y": 800, "z": -330}, "yaw": 90}]
+    }
+  ]
+}

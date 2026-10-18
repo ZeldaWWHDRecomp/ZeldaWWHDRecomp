@@ -7,20 +7,57 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: heat guard for handhelds with a fan** (#247). AYANEO, KONKR, AYN and Retroid handhelds now keep 60 fps
+  until they are much hotter than phones, and the new **Settings → Graphics → Heat guard** (Normal / Relaxed / Off)
+  sets how early 60 fps pauses when the device gets hot. Phones keep their current limit by default.
+- **Android: even frame pacing at 60 fps.** A frame that is ready early now waits a few milliseconds, so each frame
+  stays on screen equally long. With **Record graphics on a second thread** on, a third of the frames on a 120 Hz phone
+  screen used to stay for one or three refreshes instead of two (a slight judder); now almost all stay for two. The
+  game's speed is unchanged. On by default on Android.
+- **World editor: scene editor, live actors and smooth dragging** (`--editor`, for mod makers). A new Scenes window
+  edits a scene's steps, takes camera keys from the fly camera, shows a timeline to scrub and retime, and sets choices,
+  walking paths, triggers and the native version; scenes preview in the game with Skip and Stop. Pots, barrels, crates,
+  switches, doors and enemies now appear and change live in the room, and dragging an actor moves it smoothly in place
+  (one undo step). The editor and its MCP tools also cover the new quest forms: talks, flag and multi-quest conditions,
+  finishing a quest and places inside buildings.
+- **Mod SDK v3 preview: world objects** (for mod makers). Mods can place solid scenery and walkable islands in the sea,
+  with collision from the model and wood, sand or grass ground; objects that bob on the waves or drift and can be
+  ridden; surfaces Link can climb, hookshot and grapple; islands that are visible from neighbouring sea squares, get
+  a ring on the sea chart and an arrival notice; and animated coast foam that uses the game's own foam look.
+- **Mod quests: finishing, flags and places inside buildings** (for mod makers). A character's dialogue or a scene's end
+  can now finish a quest (the reward is given once), characters and quest steps can react to the mod's own flags or to
+  several quests at once, a character can offer step-specific conversations, and a quest step can point into a
+  building, cave or dungeon (the notebook shows where, and the sea chart marks the island).
+- **Graphics: toon clouds, horizon haze and cloud shadows** (Settings → Graphics → Effects, all optional).
+  **Cloud style** adds *Toon clouds (Lite / High)*: puffy, cel-shaded clouds that follow the game's own clouds, weather
+  and time of day (Original stays the default; Lite is the lighter one for weaker devices). **Horizon haze** (100 % =
+  original) gives a clearer, deeper blue sky when lowered together with Bloom strength. **Cloud shadows** (off by
+  default) let the drifting clouds cast soft shadows on the sea, islands and characters. Stereo 3D keeps the original
+  clouds for now.
+- **Mod SDK v3 preview: native scenes** (for mod makers). A scene can include an optional native `turn_camera`
+  version that the game's own event system plays: two residents turning toward each other and a camera move. It can be
+  skipped with Plus and survives save states, and the scene's normal steps play whenever the native version can't run.
+- **Android/Vulkan: texture decoder self-test.** Phones that decode compressed (BC) textures in a compute shader now
+  check that decoder at start-up and switch to the CPU decoder if the graphics driver gets it wrong (Qualcomm's driver
+  762 miscompiled it, leaving speckled edges on the HUD hearts and streaks on water when that path was used). One rare
+  case in signed BC4/BC5 textures also decodes correctly now.
+- **Mouse camera: smooth while sailing** (#237). Turning the camera with the mouse on the boat (sailing, paddling,
+  salvage) now follows the mouse directly at the same sensitivity as on foot, instead of turning in jerky steps.
+
+- **Settings dialogs and phone text size.** Every dialog in Settings now has a close button in its title bar and also
+  closes with a tap outside it, Esc, B or Back; long dialogs such as Gyro aiming keep Close on screen. On phones,
+  Settings uses smaller text so more fits at once, while buttons stay at least 7 mm tall to tap. Tablets, handhelds
+  and PCs look as before, and the UI size setting still wins.
 - **Android: code mods** (such as the story quests). Turn on **Code mods** in the setup app (or Settings → Mods): your
   device builds the game again with mod support, and builds each code mod itself the first time it's used. Uses the
   compiler and Python the setup already has; the download grows by only a few KB.
-- **Record graphics on a second thread** (Graphics → Advanced; **on by default on Android**, off elsewhere). The
-  render thread hands recording and submitting the Vulkan commands to a second CPU thread. On a Xiaomi 14 Ultra that
-  gave 4–7% more fps with 15–23% less render-thread time and identical pictures; it uses a little more CPU and battery.
-  On other devices it can make frame times less even, so it stays opt-in there. **Steam Deck owners:** please try it
-  on and off in the same spot and tell us the fps, the 1% lows and whether the Deck runs warmer.
+- **Record graphics on a second thread** (Graphics → Advanced, off by default). The render thread hands recording and
+  submitting the Vulkan commands to a second CPU thread. On a Xiaomi 14 it makes typical frames a little faster (about
+  20% less render-thread time) but adds short hitches (the slowest 1% of frames about 3 ms slower), so it stays opt-in
+  everywhere for now. **Steam Deck owners:** please try it on and off in the same spot and tell us the fps, the 1% lows
+  and whether the Deck runs warmer.
 - **Shader cache saved more often:** pipelines built while playing are now saved every few minutes and when the Android
   app goes to the background, so fewer are rebuilt after a crash or after Android closes the game.
-
-- **World editor (preview, for mod makers):** start the game with `--editor` to get an Editor tab for your mod: change
-  placed actors live with undo/redo, warp to any island, room or quest place, fly a free camera, and test quests in a
-  test mode that never touches your real save. Saving writes only your mod's own package. See docs/mod-editor.md.
 
 - **World editor (preview, for mod makers):** start the game with `--editor` for a dedicated editor mode: after the
   title screen and file select it opens a free camera with its own panels (toolbar, outliner, inspector, problems &
@@ -30,6 +67,24 @@ what is on `devel` and not released yet (also in the
   the package with a clickable problem list and export it. **Play / Stop** lets you test as Link in a test mode that
   never touches your real save, and Stop puts the world back. New enemies, pots, switches and doors appear after a
   restart. Saving writes only your mod's own package. See docs/mod-editor.md.
+
+- **World editor: Claude and other MCP clients** (for mod makers). In `--editor` mode, Settings → Editor → **Claude /
+  MCP access** lets Claude Code (or another MCP client) use the editor's commands: place and change actors, write
+  dialogue, warp, take screenshots and check the package. It is off at every start, only reachable from your own
+  computer with a new token each session, and removing, replacing or exporting asks you to **Allow** in the game first.
+  See docs/mod-editor.md.
+
+- **World editor: visual quest editor** (for mod makers). Build a quest as a graph: steps are nodes, and dragging
+  from one step to the next chooses who moves the quest on; branches, unreachable steps and other problems show on
+  the nodes. **Start at this step** jumps straight into a test of any step (test mode, only your mod's own progress
+  is set), the quest step and your mod's flags show live while you play, and you can search, select several actors
+  and copy/paste actors and steps, also into another room.
+
+- **World editor: live handles, docking panels, Esc** (for mod makers). Dragging a move or turn handle now moves the
+  actor (or the whole selection) live in the game, still as one Undo step. The editor's panels dock to the screen edges
+  and into each other as tabs, with a default layout and **Reset layout**. While placing, dragging or connecting quest
+  steps, the first Esc cancels that; Esc with nothing to cancel opens Settings.
+
 - **Mod SDK v3 preview: enemies, props, switches and effects** (for mod makers). Mods can now place the game's own
   residents, breakable props, switches and doors, and enemies with their own state; original mod enemies take damage,
   react to hits, can be targeted, defeated and drop items; mod props can be carried and thrown, and original item models
@@ -38,7 +93,8 @@ what is on `devel` and not released yet (also in the
 
 - **Android two-screen handhelds:** with GamePad screen set to Off, the game no longer takes the lower screen for a moment when it starts (#222).
 - **PowerVR phones (e.g. Pixel 10): no more stretched spikes** (#207). On PowerVR GPUs the game now converts vertex
-  data on the CPU automatically, because their drivers decode some of it wrongly in the shader. It can cost some speed;
+  data on the CPU automatically, because their drivers decode some of it wrongly in the shader. Only the one kind of
+  data they get wrong is converted (found with a tester's help), so it costs much less speed than converting all of it;
   **Graphics → Advanced → Convert vertices on the CPU** switches it off (Automatic restores it).
 - **Shortcuts: remapping works, Esc opens Settings** (#220). Remapped shortcuts take effect again (the Controls tab was
   catching the input first). Every binding clears the same way in Controls and Shortcuts (right-click, or Delete /

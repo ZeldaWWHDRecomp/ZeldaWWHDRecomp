@@ -44,6 +44,7 @@ void setup(uint32_t a,uint32_t token,unsigned type){st32(a+4,100+token);st16(a+0
 namespace story_items {
 std::optional<Item> find(const std::string&mod,const std::string&id){if(mod=="test"&&id=="shard")return Item{};return {};}
 PropMarkerHandle register_prop_marker(const std::string&,const std::string&,const std::string&,std::string&){static unsigned id=0;return ++id;}
+bool forget_prop_marker(PropMarkerHandle){return true;}
 bool prop_broken(PropMarkerHandle h){return markers[h];}
 PropClaimStatus claim_prop_drops(PropMarkerHandle h,const std::string&mod,const std::vector<PropDrop>&drops,bool){assert(mod=="test"&&drops.size()==1&&drops[0].item=="shard"&&drops[0].quantity==2);++claims;if(markers[h])return PropClaimStatus::AlreadyBroken;if(outcome==PropClaimStatus::Committed)markers[h]=true;return outcome;}
 }

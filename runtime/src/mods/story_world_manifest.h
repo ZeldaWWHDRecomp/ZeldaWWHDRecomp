@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <utility>
 #include <string>
 #include <vector>
@@ -11,11 +12,13 @@
 #include "story_mail_book.h"
 #include "story_scenes_core.h"
 #include "story_mod_combat_manifest.h"
+#include "story_native_scene_manifest.h"
 namespace story_notebook {
-struct WorldPoint { float x=0,y=0,z=0; };
+struct WorldPoint { float x=0,y=0,z=0; bool operator==(const WorldPoint&)const=default; };
 struct StoryAction {
-    enum class Kind { Give,Take,QuestStep,Flag,StartScene };
+    enum class Kind { Give,Take,QuestStep,Flag,StartScene,QuestDone };
     Kind kind=Kind::Flag; std::string id; unsigned value=1;
+    bool operator==(const StoryAction&)const=default;
 };
 struct ManifestModel { std::string id,source,kind="static"; };
 struct ManifestLookAt {
@@ -24,9 +27,27 @@ struct ManifestLookAt {
 };
 struct ManifestPath {std::vector<WorldPoint> points;float speed=100;bool loop=false;};
 struct ManifestPropDrop {std::string item;unsigned quantity=1;};
+struct QuestCondition {std::string quest;unsigned step=0;bool operator==(const QuestCondition&)const=default;};
+struct ManifestTalk {
+    std::string quest,item,time,when_flag,when_not_flag,lines;unsigned quest_step=0;
+    std::vector<QuestCondition> quests;std::vector<StoryAction> then;
+};
+struct ManifestVisualModel {std::string model;};
+struct ManifestChartMarker {bool enabled=false;std::string label,when_flag;};
+struct ManifestArrival {bool enabled=false;std::string name,flag;float radius=0;};
+struct ManifestGrapplePoint {std::string id;WorldPoint position;float yaw=0;};
+struct ManifestBuoyancy {float draft=0,damping=.25f,max_tilt=10;};
+struct ManifestDrift {float wind_speed=0,max_speed=30;WorldPoint current;};
+struct ManifestAnchor {bool enabled=false;WorldPoint point;float radius=0;};
 struct ManifestActor {
     std::string id,actor,stage,kind,model,animation,prompt="check",texture,texture_digest; unsigned room=0,texture_token=0;
     float collision_radius=30,collision_height=100; bool pushable=false;
+    std::string behaviour,collision_mesh,collision_shape,collision_surface="stone";WorldPoint collision_size{};
+    ManifestBuoyancy buoyancy;ManifestDrift drift;ManifestAnchor anchor;
+    std::vector<ManifestGrapplePoint> grapple_points;
+    ManifestVisualModel distant,shoreline;ManifestChartMarker chart_marker;ManifestArrival arrival;
+    bool world_object()const{return !behaviour.empty();}
+    bool water_object()const{return behaviour=="floating"||behaviour=="drifting";}
     ManifestLookAt look_at;ManifestPath path;
     bool carry_enabled=false,carry_break_on_impact=false;
     bool combat_enabled=false,native_heart_drop=false;story_mod_combat::Config combat;
@@ -35,9 +56,19 @@ struct ManifestActor {
     std::string broken_flag,switch_flag,switch_actor,defeated_flag;std::vector<ManifestPropDrop> drops;
     std::string flag,quest,item,time,lines; unsigned quest_step=0;
     std::vector<StoryAction> then;
+    std::string when_flag,when_not_flag;std::vector<QuestCondition> quests;std::vector<ManifestTalk> talks;
 };
-struct SceneCameraKey {WorldPoint eye,target;unsigned frames=0;};
-struct SceneChoiceOption {std::string text,next;size_t next_step=0;};
+template<class Condition,class Quest,class Item,class Flag>
+inline bool condition_matches(const Condition&c,Quest quest,Item item,Flag flag,bool day){
+    if(!c.quest.empty()&&quest(c.quest)!=int32_t(c.quest_step))return false;
+    for(const auto&q:c.quests)if(quest(q.quest)!=int32_t(q.step))return false;
+    if(!c.item.empty()&&item(c.item.substr(5))<=0)return false;
+    if(!c.when_flag.empty()&&!flag(c.when_flag))return false;
+    if(!c.when_not_flag.empty()&&flag(c.when_not_flag))return false;
+    return c.time.empty()||day==(c.time=="day");
+}
+struct SceneCameraKey {WorldPoint eye,target;unsigned frames=0;bool operator==(const SceneCameraKey&)const=default;};
+struct SceneChoiceOption {std::string text,next;size_t next_step=0;bool operator==(const SceneChoiceOption&)const=default;};
 struct SceneStep {
     enum class Kind { Camera,Say,Move,Face,Wait,Sound,Fade,End,CameraPath,CameraFollow,Animation,Walk,Choice,Music,Particle };
     Kind kind=Kind::Wait; std::string actor,target_actor,text,sound;
@@ -47,11 +78,14 @@ struct SceneStep {
     std::vector<WorldPoint> walk_points;std::vector<SceneChoiceOption> choices;unsigned default_choice=0,fade_frames=0;
     WorldPoint eye,target,position,eye_to,target_to; unsigned frames=0,particle_alpha=255; float particle_scale=1; bool pan=false,fade_in=false,particle_has_position=false;
     std::vector<StoryAction> then;
+    bool operator==(const SceneStep&)const=default;
 };
 struct ManifestScene {
     std::string id; std::vector<SceneStep> steps;
+    std::optional<story_native_scene_manifest::Definition> native;
     std::string trigger,stage,actor,quest,chart; unsigned room=0,quest_step=0;
     WorldPoint position; float radius=0;
+    bool operator==(const ManifestScene&)const=default;
 };
 inline constexpr unsigned kMaxActorsPerRoom=16,kMaxActorsPerMod=64,kMaxScenesPerMod=16,kMaxSceneSteps=64,kMaxSceneFrames=18000;
 namespace world_manifest {
@@ -73,6 +107,38 @@ inline bool texture_path(const Value&v){
     size_t start=0;while(start<v.text.size()){const size_t end=v.text.find('/',start);const auto part=v.text.substr(start,end==std::string::npos?end:end-start);if(part.empty()||part=="."||part=="..")return false;for(unsigned char c:part)if(c<32||c==127||c=='\\'||c==':')return false;if(end==std::string::npos)break;start=end+1;}return true;
 }
 inline bool flag_id(const Value& v) {return id(v)&&v.text.rfind("0x",0)!=0;}
+// A readable flag must have a same-manifest producer. References cannot declare flags.
+inline bool known_flag(const Value& m,const std::string& name) {
+    const auto produces=[&](const Value&v){return flag_id(v)&&v.text==name;};
+    auto writes=[&](const Value& list){
+        if(list.type!=Value::Array||list.array.size()>8)return false;
+        for(const auto&a:list.array)if(keys(a,{"action","id","value"})&&a.get("action").string()=="flag"&&
+            produces(a.get("id"))&&(!a.object.contains("value")||a.get("value").type==Value::Bool))return true;
+        return false;
+    };
+    for(const auto&a:m.get("actors").array){
+        const auto type=a.get("actor").string();
+        const bool sign=type=="sign"||type=="kanban"||type=="PROC_KANBAN";
+        const bool chest=type=="chest"||type=="Tbox"||type=="takara"||type=="PROC_TBOX";
+        const bool mod=a.get("kind").string()=="mod"&&!a.object.contains("actor");
+        if((sign||chest||(mod&&!a.object.contains("combat")))&&produces(a.get("flag")))return true;
+        if(mod&&a.get("behaviour").string()=="static"&&a.get("stage").string()=="sea"&&produces(a.get("arrival").get("flag")))return true;
+        if(type=="switch"&&produces(a.get("switch_flag")))return true;
+        if((type=="pot"||type=="barrel"||type=="crate"||(mod&&a.get("carry").get("break_on_impact").type==Value::Bool&&a.get("carry").get("break_on_impact").boolean))&&produces(a.get("broken_flag")))return true;
+        if((type=="chuchu"||type=="bokoblin"||type=="moblin"||type=="keese"||
+            (mod&&a.get("combat").type==Value::Object))&&produces(a.get("defeated_flag")))return true;
+        if(writes(a.get("then")))return true;
+        for(const auto&t:a.get("talks").array)if(writes(t.get("then")))return true;
+    }
+    for(const auto&scene:m.get("scenes").array)for(const auto&step:scene.get("steps").array)
+        if(step.get("type").string()=="end"&&writes(step.get("then")))return true;
+    return false;
+}
+inline bool read_flag(const Value&m,const Value&v,std::string&out,std::string&why){
+    if(v.type==Value::Null)return true;
+    if(!flag_id(v)||!known_flag(m,v.text))return why="flag condition requires a same-manifest flag producer",false;
+    out=v.text;return true;
+}
 inline bool point(const Value& v,WorldPoint& p,float limit=350000) {
     if(v.type!=Value::Object) return false;
     for(auto key:{"x","y","z"}) if(v.get(key).type!=Value::Number||!std::isfinite(v.get(key).number)||std::fabs(v.get(key).number)>limit) return false;
@@ -118,12 +184,29 @@ inline bool actions(const Value& m,const Value& v,std::vector<StoryAction>& out,
         } else if(kind=="quest_step") {s.kind=StoryAction::Kind::QuestStep;if(!keys(a,{"action","id","step"}))return why="unknown quest action field",false;
             if(!integer(a.get("step"),1,254)||!quest_step(m,s.id,unsigned(a.get("step").number))) return why="action names an undeclared quest step",false;
             s.value=unsigned(a.get("step").number);
+        } else if(kind=="quest_done") {s.kind=StoryAction::Kind::QuestDone;
+            if(!keys(a,{"action","id"})||!id(a.get("id"))||!declared(m,"quests",s.id))return why="quest_done names an undeclared same-mod quest",false;
         } else if(kind=="flag") {s.kind=StoryAction::Kind::Flag;if(!keys(a,{"action","id","value"}))return why="unknown flag action field",false;
             if(a.object.contains("value")){if(a.get("value").type!=Value::Bool)return why="flag value must be boolean",false;s.value=a.get("value").boolean?1:0;}if(!flag_id(a.get("id"))) return why="flag must be a mod-owned id",false;
         } else if(kind=="scene") {s.kind=StoryAction::Kind::StartScene;if(!keys(a,{"action","id"}))return why="unknown scene action field",false;if(!declared(m,"scenes",s.id)) return why="action names an undeclared scene",false;
         } else return why="unknown then action",false;
         out.push_back(s);
     } return true;
+}
+template<class Condition> inline bool actor_condition(const Value&m,const Value&when,Condition&out,std::string&why){
+    if(when.type!=Value::Null&&!keys(when,{"quest","step","item","time","flag","not_flag","quests"}))return why="actor when must be an object",false;
+        if(when.get("quest").type!=Value::Null){out.quest=when.get("quest").string();if(!integer(when.get("step"),1,254)||!quest_step(m,out.quest,unsigned(when.get("step").number)))return why="actor condition names an undeclared quest step",false;out.quest_step=unsigned(when.get("step").number);}
+        if(!read_flag(m,when.get("flag"),out.when_flag,why)||!read_flag(m,when.get("not_flag"),out.when_not_flag,why))return false;
+        if(when.get("step").type!=Value::Null&&when.get("quest").type==Value::Null)return why="actor step requires quest",false;
+        const auto& multiple=when.get("quests");
+        if(multiple.type!=Value::Null){
+            if(multiple.type!=Value::Array||multiple.array.empty()||multiple.array.size()>8)return why="quests condition needs 1..8 quest steps",false;
+            for(const auto&q:multiple.array){if(!keys(q,{"quest","step"})||!integer(q.get("step"),1,254)||!quest_step(m,q.get("quest").string(),unsigned(q.get("step").number)))return why="quests condition names an undeclared quest step",false;
+                out.quests.push_back({q.get("quest").text,unsigned(q.get("step").number)});}
+        }
+        if(when.get("item").type!=Value::Null){out.item=when.get("item").string();if(out.item.rfind("item:",0)!=0||!declared(m,"items",out.item.substr(5)))return why="actor condition names an undeclared mod item",false;}
+        if(when.get("time").type!=Value::Null){out.time=when.get("time").string();if(out.time!="day"&&out.time!="night")return why="actor time must be day or night",false;}
+    return true;
 }
 inline bool place(const Value& v,std::string& stage,unsigned& room) {
     if(v.get("stage").type!=Value::String||v.get("stage").text.empty()||v.get("stage").text.size()>8||!integer(v.get("room"),0,63)) return false;
@@ -177,8 +260,9 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
     using namespace world_manifest;out.clear();std::vector<ManifestModel> models;if(!parse_models(m,models,why))return false;const auto& list=m.get("actors");
     if(list.type==Value::Null)return true;
     if(list.type!=Value::Array||list.array.size()>kMaxActorsPerMod)return why="actors must be a list of up to 64",false;
+    unsigned chart_marker_count=0;
     for(const auto& v:list.array){ManifestActor a;
-        if(!keys(v,{"id","actor","kind","model","animation","look_at","path","collision","attention","stage","room","position","rotation","scale","params","parameters","flag","broken_flag","defeated_flag","drops","carry","combat","native_drops","switch_flag","switch","when","lines","then","texture"}))return why="unknown actor field",false;
+        if(!keys(v,{"id","actor","kind","model","animation","look_at","path","collision","behaviour","buoyancy","drift","anchor","grapple_points","distant","shoreline","chart_marker","arrival","attention","stage","room","position","rotation","scale","params","parameters","flag","broken_flag","defeated_flag","drops","carry","combat","native_drops","switch_flag","switch","when","lines","then","texture","talks"}))return why="unknown actor field",false;
         if(!id(v.get("id")))return why="invalid actor id",false;a.id=v.get("id").text;a.actor=v.get("actor").string();
         if(v.object.contains("kind")) {
             if(v.get("kind").string()!="mod"||v.object.contains("actor"))return why="mod actor kind cannot name a native actor",false;
@@ -206,17 +290,52 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
             }
             if(v.object.contains("params")||v.object.contains("parameters"))return why="mod actors cannot use native parameters",false;
             const auto& collision=v.get("collision");
+            if(v.object.contains("behaviour")){
+                a.behaviour=v.get("behaviour").string();
+                if(a.behaviour!="static"&&!a.water_object())return why="world object behaviour must be static, floating or drifting",false;
+                if(!a.water_object()&&(v.object.contains("buoyancy")||v.object.contains("drift")||v.object.contains("anchor")))return why="buoyancy, drift and anchor require a water object",false;
+                if(a.water_object()){
+                    const auto& b=v.get("buoyancy");if(b.type!=Value::Null){if(!keys(b,{"draft","damping","max_tilt"}))return why="invalid buoyancy settings",false;
+                    if((b.object.contains("draft")&&!number(b.get("draft"),-1000,1000,a.buoyancy.draft))||(b.object.contains("damping")&&!number(b.get("damping"),0,10,a.buoyancy.damping))||(b.object.contains("max_tilt")&&!number(b.get("max_tilt"),0,30,a.buoyancy.max_tilt)))return why="buoyancy settings exceed their bounds",false;}
+                    if(a.behaviour=="drifting"){const auto& d=v.get("drift");if(!keys(d,{"wind_speed","current","max_speed"}))return why="drifting requires bounded drift settings",false;
+                        if((d.object.contains("wind_speed")&&!number(d.get("wind_speed"),0,100,a.drift.wind_speed))||(d.object.contains("max_speed")&&!number(d.get("max_speed"),0,100,a.drift.max_speed,true)))return why="invalid drift speed",false;
+                        if(d.object.contains("current")){const auto& q=d.get("current");if(!keys(q,{"x","z"})||!number(q.get("x"),-100,100,a.drift.current.x)||!number(q.get("z"),-100,100,a.drift.current.z))return why="current needs bounded x and z velocities",false;}
+                        if(a.drift.wind_speed==0&&a.drift.current.x==0&&a.drift.current.z==0)return why="drifting requires wind or current",false;
+                        if(v.object.contains("anchor")){const auto& q=v.get("anchor");if(!keys(q,{"point","radius"})||!keys(q.get("point"),{"x","y","z"})||!point(q.get("point"),a.anchor.point)||!number(q.get("radius"),0,10000,a.anchor.radius,true))return why="anchor needs a world point and positive radius up to 10000",false;a.anchor.enabled=true;}
+                    }else if(v.object.contains("drift")||v.object.contains("anchor"))return why="drift and anchor require drifting behaviour",false;
+                }
+                if(skinned_model||v.object.contains("carry")||v.object.contains("combat")||v.object.contains("path")||v.object.contains("animation")||v.object.contains("attention")||v.object.contains("talks")||v.object.contains("lines")||v.object.contains("then"))return why="world objects require a rigid model without actor interaction, animation or paths",false;
+                if(collision.get("mesh").type!=Value::Null){
+                    if(!keys(collision,{"mesh"})||!id(collision.get("mesh")))return why="invalid collision mesh reference",false;
+                    a.collision_mesh=collision.get("mesh").text;
+                    auto source=std::find_if(models.begin(),models.end(),[&](const auto& model){return model.id==a.collision_mesh;});
+                    if(source==models.end()||source->kind!="static")return why="collision mesh must name a declared static model",false;
+                }else{
+                    if(!keys(collision,{"shape","size","radius","height","surface"}))return why="invalid simple collision shape",false;
+                    a.collision_shape=collision.get("shape").string();a.collision_surface=collision.get("surface").string("stone");
+                    if(a.collision_surface!="stone"&&a.collision_surface!="grass"&&a.collision_surface!="wood"&&a.collision_surface!="sand"&&a.collision_surface!="metal"&&a.collision_surface!="wall")return why="unknown collision surface",false;
+                    if(a.collision_shape=="box"){
+                        const auto& size=collision.get("size");
+                        if(collision.object.contains("radius")||collision.object.contains("height")||!keys(size,{"x","y","z"})||!number(size.get("x"),0,20000,a.collision_size.x,true)||!number(size.get("y"),0,20000,a.collision_size.y,true)||!number(size.get("z"),0,20000,a.collision_size.z,true))return why="box collision needs positive size x/y/z up to 20000",false;
+                    }else if(a.collision_shape=="cylinder"||a.collision_shape=="sphere"){
+                        if(collision.object.contains("size")||!number(collision.get("radius"),0,10000,a.collision_radius,true))return why="shape radius must be positive and at most 10000",false;
+                        if(a.collision_shape=="cylinder"){if(!number(collision.get("height"),0,20000,a.collision_height,true))return why="cylinder height must be positive and at most 20000",false;}
+                        else if(collision.object.contains("height"))return why="sphere collision does not take height",false;
+                    }else return why="collision requires mesh or box, cylinder or sphere shape",false;
+                }
+            }else{
             if(!keys(collision,{"radius","height","mode"}))return why="mod actor needs cylinder collision",false;
             const auto& radius=collision.get("radius");const auto& height=collision.get("height");
             if(radius.type!=Value::Number||height.type!=Value::Number||!std::isfinite(radius.number)||!std::isfinite(height.number)||radius.number<=0||radius.number>1000||height.number<=0||height.number>2000)return why="collision radius must be 0..1000 and height 0..2000 (exclusive zero)",false;
             const auto mode=collision.get("mode").string();if(mode!="solid"&&mode!="pushable")return why="collision mode must be solid or pushable",false;
             a.collision_radius=float(radius.number);a.collision_height=float(height.number);if(a.collision_radius<=0||a.collision_height<=0)return why="collision dimensions are too small",false;a.pushable=mode=="pushable";
+            }
             const auto& attention=v.get("attention");if(attention.type!=Value::Null){if(!keys(attention,{"prompt"}))return why="invalid mod actor attention",false;a.prompt=attention.get("prompt").string();if(a.prompt!="talk"&&a.prompt!="check")return why="attention prompt must be talk or check",false;}
             if(v.object.contains("flag")){if(!flag_id(v.get("flag")))return why="mod actor flag must be a mod-owned id",false;a.flag=v.get("flag").text;}
             if(v.object.contains("combat")){
                 if(!skinned_model||!story_mod_combat::parse(v.get("combat"),a.combat,why))return why=why.empty()?"combat requires a skinned model":why,false;
                 if(a.combat.stun.clip.empty()||a.combat.death.clip.empty())return why="combat requires named stun and death animation clips",false;
-                for(const char* forbidden:{"flag","lines","then","attention"})if(v.object.contains(forbidden))return why="combat actors cannot declare dialogue, prompts or generic flags",false;
+                for(const char* forbidden:{"flag","lines","then","talks","attention"})if(v.object.contains(forbidden))return why="combat actors cannot declare dialogue, prompts or generic flags",false;
                 if(!flag_id(v.get("defeated_flag")))return why="combat requires a mod-owned defeated_flag",false;
                 if(a.pushable||a.collision_radius>200||a.collision_height>400)return why="combat requires solid collision with radius up to 200 and height up to 400",false;
                 a.combat_enabled=true;a.defeated_flag=v.get("defeated_flag").text;
@@ -228,11 +347,11 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
                 }
                 if(v.object.contains("native_drops")&&!story_mod_combat::parse_native_drops(v.get("native_drops"),a.native_heart_drop,why))return false;
             }
-        }else if(v.object.contains("model")||v.object.contains("animation")||v.object.contains("look_at")||v.object.contains("path")||v.object.contains("collision")||v.object.contains("attention"))return why="model, animation, look_at, path, collision and attention require kind mod",false;
+        }else if(v.object.contains("model")||v.object.contains("animation")||v.object.contains("look_at")||v.object.contains("path")||v.object.contains("collision")||v.object.contains("attention")||v.object.contains("behaviour")||v.object.contains("buoyancy")||v.object.contains("drift")||v.object.contains("anchor"))return why="model, animation, look_at, path, collision and attention require kind mod",false;
         if(v.object.contains("carry")){
             const auto& carry=v.get("carry");if(a.kind!="mod"||a.combat_enabled||!keys(carry,{"break_on_impact"})||(carry.object.contains("break_on_impact")&&carry.get("break_on_impact").type!=Value::Bool))return why="carry requires a noncombat mod actor and boolean break_on_impact",false;
             a.carry_enabled=true;a.carry_break_on_impact=carry.get("break_on_impact").boolean;
-            if(!v.object.contains("collision")||v.object.contains("attention")||v.object.contains("lines")||v.object.contains("then")||v.object.contains("flag")||a.look_at.enabled||a.pushable||a.collision_radius>100||a.collision_height>200)return why="carry actors require a bounded solid body and no talk, look_at or pushable mode",false;
+            if(!v.object.contains("collision")||v.object.contains("attention")||v.object.contains("lines")||v.object.contains("then")||v.object.contains("talks")||v.object.contains("flag")||a.look_at.enabled||a.pushable||a.collision_radius>100||a.collision_height>200)return why="carry actors require a bounded solid body and no talk, look_at or pushable mode",false;
         }
         if((v.object.contains("combat")||v.object.contains("native_drops"))&&!a.combat_enabled)return why="combat and native_drops require a combat mod actor",false;
         if(a.actor=="kanban"||a.actor=="PROC_KANBAN")a.actor="sign";
@@ -246,6 +365,42 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
         if(!place(v,a.stage,a.room)||!point(v.get("position"),a.position))return why="actor "+a.id+": invalid stage, room or position",false;
         if(v.get("rotation").type!=Value::Null&&!point(v.get("rotation"),a.rotation,360))return why="invalid actor rotation",false;
         if(v.get("scale").type!=Value::Null&&(!point(v.get("scale"),a.scale,10)||a.scale.x<=0||a.scale.y<=0||a.scale.z<=0))return why="invalid actor scale",false;
+        if((v.object.contains("buoyancy")||v.object.contains("drift")||v.object.contains("anchor"))&&!a.water_object())return why="motion settings require floating or drifting behaviour",false;
+        const bool island_fields=v.object.contains("distant")||v.object.contains("shoreline")||v.object.contains("chart_marker")||v.object.contains("arrival");
+        if(island_fields&&(!a.world_object()||a.behaviour!="static"||a.stage!="sea"))return why="distant, shoreline, chart_marker and arrival require a static sea world object",false;
+        auto visual_model=[&](const char*key,ManifestVisualModel&out){
+            if(!v.object.contains(key))return true;const auto&value=v.get(key);
+            if(!keys(value,{"model"})||!id(value.get("model")))return false;
+            out.model=value.get("model").text;
+            return std::any_of(models.begin(),models.end(),[&](const auto&model){return model.id==out.model&&model.kind=="static";});
+        };
+        if(!visual_model("distant",a.distant)||!visual_model("shoreline",a.shoreline))return why="distant and shoreline must name declared same-package rigid static models",false;
+        auto island_text=[](const Value&value,std::string&out){std::u16string decoded;if(value.type!=Value::String||value.text.empty()||value.text.size()>96||!story_mail::append_utf16(value.text,false,decoded))return false;out=value.text;return true;};
+        if(v.object.contains("arrival")){
+            const auto&value=v.get("arrival");
+            if(!keys(value,{"name","radius","flag"})||!island_text(value.get("name"),a.arrival.name)||!number(value.get("radius"),100,20000,a.arrival.radius)||!flag_id(value.get("flag")))return why="arrival requires a single-line name up to 96 bytes, radius 100..20000 and a mod-owned flag",false;
+            a.arrival.enabled=true;a.arrival.flag=value.get("flag").text;
+        }
+        if(v.object.contains("chart_marker")){
+            const auto&value=v.get("chart_marker");
+            if(!keys(value,{"label","when_flag"})||!island_text(value.get("label"),a.chart_marker.label))return why="chart_marker requires a single-line label up to 96 bytes",false;
+            if(value.object.contains("when_flag")){if(!flag_id(value.get("when_flag"))||!known_flag(m,value.get("when_flag").text))return why="chart marker when_flag must name a known mod-owned producer",false;a.chart_marker.when_flag=value.get("when_flag").text;}
+            if(++chart_marker_count>8)return why="a mod may declare at most eight island chart markers",false;
+            a.chart_marker.enabled=true;
+        }
+        if(v.object.contains("grapple_points")){
+            const auto&points=v.get("grapple_points");
+            if(!a.world_object()||points.type!=Value::Array||points.array.size()>8)return why="grapple_points requires a world object and at most eight points",false;
+            for(const auto&value:points.array){ManifestGrapplePoint p;
+                if(!keys(value,{"id","position","yaw"})||!id(value.get("id"))||!keys(value.get("position"),{"x","y","z"})||!point(value.get("position"),p.position,20000))return why="grapple point needs an id and bounded local position",false;
+                p.id=value.get("id").text;
+                if(value.object.contains("yaw")&&!number(value.get("yaw"),-360,360,p.yaw))return why="grapple point yaw must be within -360 to 360 degrees",false;
+                if(std::any_of(a.grapple_points.begin(),a.grapple_points.end(),[&](const auto&old){return old.id==p.id;}))return why="grapple point ids must be unique within an object",false;
+                a.grapple_points.push_back(std::move(p));
+            }
+        }
+        if(a.water_object()&&(a.stage!="sea"||a.rotation.x!=0||a.rotation.z!=0))return why="water objects require sea placement and yaw-only base rotation",false;
+        if(a.anchor.enabled&&std::hypot(double(a.position.x)-a.anchor.point.x,double(a.position.z)-a.anchor.point.z)>a.anchor.radius)return why="object position lies outside its anchor radius",false;
         if(enemy){
             if(!native_enemy_fields(m,v,a,why))return false;
             for(const auto& old:out)if(old.defeated_flag==a.defeated_flag)return why="enemies require distinct defeated_flag IDs",false;
@@ -289,13 +444,20 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
         }
         if(a.actor=="resident"&&a.resident==19&&std::fabs(a.position.x+202066.f)<10&&std::fabs(a.position.z-320123.f)<10)return why="ym1 position intersects native relocation area",false;
         if(a.actor=="sign"||a.actor=="chest"){if(!flag_id(v.get("flag")))return why="chests and signs require a mod-owned flag id",false;a.flag=v.get("flag").text;}
-        const auto& when=v.get("when");if(when.type!=Value::Null&&!keys(when,{"quest","step","item","time"}))return why="actor when must be an object",false;
-        if(when.get("quest").type!=Value::Null){a.quest=when.get("quest").string();if(!integer(when.get("step"),1,254)||!quest_step(m,a.quest,unsigned(when.get("step").number)))return why="actor condition names an undeclared quest step",false;a.quest_step=unsigned(when.get("step").number);}
-        if(when.get("item").type!=Value::Null){a.item=when.get("item").string();if(a.item.rfind("item:",0)!=0||!declared(m,"items",a.item.substr(5)))return why="actor condition names an undeclared mod item",false;}
-        if(when.get("time").type!=Value::Null){a.time=when.get("time").string();if(a.time!="day"&&a.time!="night")return why="actor time must be day or night",false;}
+        if(!actor_condition(m,v.get("when"),a,why))return false;
         if(v.get("lines").type!=Value::Null&&!lines(v.get("lines"),a.lines))return why="invalid actor dialogue",false;
         if(!actions(m,v.get("then"),a.then,why))return false;
         if(!a.then.empty()&&a.lines.empty())return why="actor then requires dialogue lines",false;
+        if(v.object.contains("talks")){
+            const auto&talks=v.get("talks");
+            const bool dialogue=a.actor=="resident"||a.actor=="sign"||(a.actor=="mod"&&!a.combat_enabled&&!a.carry_enabled);
+            if(!dialogue||v.object.contains("lines")||v.object.contains("then"))return why="talks requires a dialogue actor and replaces its lines/then",false;
+            if(talks.type!=Value::Array||talks.array.empty()||talks.array.size()>8)return why="talks must contain 1..8 ordered talks",false;
+            for(const auto&t:talks.array){ManifestTalk talk;
+                if(!keys(t,{"when","lines","then"})||!actor_condition(m,t.get("when"),talk,why)||!lines(t.get("lines"),talk.lines)||!actions(m,t.get("then"),talk.then,why))return why=why.empty()?"invalid actor talk":why,false;
+                a.talks.push_back(std::move(talk));
+            }
+        }
         unsigned count=1;for(const auto& old:out){if(old.id==a.id)return why="duplicate actor id",false;if(old.stage==a.stage&&old.room==a.room)++count;}
         if(count>kMaxActorsPerRoom)return why="actors exceed the 16 per room limit",false;
         out.push_back(std::move(a));
@@ -310,7 +472,7 @@ inline bool parse_scenes_impl(const mods::json::Value& m,std::vector<ManifestSce
     using namespace world_manifest;out.clear();const auto& list=m.get("scenes");
     if(list.type==Value::Null)return true;
     if(list.type!=Value::Array||list.array.size()>kMaxScenesPerMod)return why="scenes must be a list of up to 16",false;
-    for(const auto& v:list.array){ManifestScene s;if(!keys(v,{"id","trigger","steps"}))return why="unknown scene field",false;if(!id(v.get("id")))return why="invalid scene id",false;s.id=v.get("id").text;
+    for(const auto& v:list.array){ManifestScene s;if(!keys(v,{"id","trigger","steps","native"}))return why="unknown scene field",false;if(!id(v.get("id")))return why="invalid scene id",false;s.id=v.get("id").text;
         for(const auto& old:out)if(old.id==s.id)return why="duplicate scene id",false;
         const auto& trigger=v.get("trigger");if(trigger.type!=Value::Null){s.trigger=trigger.get("type").string();
             bool trigger_keys=false;
@@ -325,6 +487,19 @@ inline bool parse_scenes_impl(const mods::json::Value& m,std::vector<ManifestSce
             else if(s.trigger=="quest_step"){s.quest=trigger.get("quest").string();if(!integer(trigger.get("step"),1,254)||!quest_step(m,s.quest,unsigned(trigger.get("step").number)))return why="unknown trigger quest step",false;s.quest_step=unsigned(trigger.get("step").number);}
             else if(s.trigger=="salvage"){s.chart=trigger.get("chart").string();if(!declared(m,"charts",s.chart))return why="unknown trigger chart",false;}
             else return why="unknown scene trigger",false;
+        }
+        if(v.object.contains("native")){
+            story_native_scene_manifest::Definition definition;
+            if(!story_native_scene_manifest::parse(v.get("native"),definition,why))return false;
+            std::vector<ManifestActor> placed;if(!parse_actors_impl(m,placed,why))return false;
+            std::array<const ManifestActor*,2> references{};
+            for(unsigned n=0;n<2;++n){for(const auto&a:placed)if(a.id==definition.actors[n].id)references[n]=&a;
+                if(!references[n]||references[n]->actor!="resident"||references[n]->resident!=1)return why="native scene requires same-mod placed Uo2 resident actor references",false;
+            }
+            if(references[0]->stage!=references[1]->stage||references[0]->room!=references[1]->room)return why="native scene actors must share one stage and room",false;
+            definition.stage=references[0]->stage;definition.room=references[0]->room;
+            if((s.trigger=="room"||s.trigger=="area")&&(s.stage!=definition.stage||s.room!=definition.room))return why="native scene trigger and actor placements must share stage and room",false;
+            s.native=std::move(definition);
         }
         const auto& steps=v.get("steps");if(steps.type!=Value::Array||steps.array.empty()||steps.array.size()>kMaxSceneSteps)return why="scene needs 1..64 steps",false;
         bool explicit_graph=false;for(const auto& st:steps.array){SceneStep p;const auto type=st.get("type").string();bool timed=false;
@@ -415,6 +590,8 @@ inline bool parse_scenes_impl(const mods::json::Value& m,std::vector<ManifestSce
         out.push_back(std::move(s));
     }return true;
 }
+// Internal render roles needed in addition to the authored actor declaration.
+inline unsigned visual_variant_count(const ManifestActor&a){return unsigned(!a.distant.model.empty())+unsigned(!a.shoreline.model.empty());}
 inline bool parse_actors(const mods::json::Value& m,std::vector<ManifestActor>& out,std::string& why) {
     out.clear();std::vector<ManifestActor> parsed;if(!parse_actors_impl(m,parsed,why))return false;out=std::move(parsed);return true;
 }
@@ -424,16 +601,19 @@ inline bool parse_scenes(const mods::json::Value& m,std::vector<ManifestScene>& 
 namespace world_manifest {
 // Validate the selected package graph before any actor or scene registry is mutated.
 inline bool validate_world_packages(const std::vector<std::pair<std::string,mods::json::Value>>& packages,std::string& why) {
-    unsigned total=0;std::map<std::pair<std::string,unsigned>,unsigned> rooms;
+    unsigned total=0,chart_markers=0;std::map<std::pair<std::string,unsigned>,unsigned> rooms;
     std::map<uint16_t,std::pair<std::string,std::string>> flags;
     for(const auto& [mod,manifest]:packages){
         std::vector<ManifestActor> actors;std::vector<ManifestScene> scenes;
         if(!parse_actors(manifest,actors,why)||!parse_scenes(manifest,scenes,why)){why=mod+": "+why;return false;}
         total+=unsigned(actors.size());if(total>128)return why="enabled packages exceed 128 actors overall",false;
+        for(const auto&actor:actors)if(actor.chart_marker.enabled&&++chart_markers>32)return why="enabled packages exceed 32 island chart markers",false;
         std::vector<std::string> names;
         for(const auto& actor:actors){
             if(++rooms[{actor.stage,actor.room}]>kMaxActorsPerRoom)return why="enabled packages exceed 16 actors in "+actor.stage+" room "+std::to_string(actor.room),false;
             if(!actor.flag.empty())names.push_back(actor.flag);
+            if(actor.arrival.enabled)names.push_back(actor.arrival.flag);
+            if(actor.chart_marker.enabled&&!actor.chart_marker.when_flag.empty())names.push_back(actor.chart_marker.when_flag);
             for(const auto& action:actor.then)if(action.kind==StoryAction::Kind::Flag)names.push_back(action.id);
         }
         for(const auto& scene:scenes)for(const auto& step:scene.steps)for(const auto& action:step.then)

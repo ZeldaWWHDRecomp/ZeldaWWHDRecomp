@@ -68,6 +68,7 @@ bool available(const Owner&){return true;}bool add(uint16_t,uint32_t,BaseAllocat
 namespace story_items {
 std::optional<Item> find(const std::string&,const std::string&){return std::nullopt;}
 EnemyMarkerHandle register_enemy_marker(const std::string&,const std::string&,const std::string&,std::string&){return EnemyMarkerHandle{++marker_sequence};}
+bool forget_prop_marker(PropMarkerHandle){return true;}
 bool enemy_defeated(EnemyMarkerHandle h){return defeated[h.value];}
 EnemyClaimStatus claim_enemy_drops(EnemyMarkerHandle h,const std::string&,const std::vector<PropDrop>&,bool){++claims;if(fail_claim)return EnemyClaimStatus::InvalidDefinition;if(defeated[h.value])return EnemyClaimStatus::AlreadyDefeated;defeated[h.value]=true;return EnemyClaimStatus::Committed;}
 }

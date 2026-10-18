@@ -1,6 +1,7 @@
 // The world editor's panels (editor_panel.h). They only read the session's snapshot and run commands.
 #include "editor_panel.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cfloat>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "../editor/editor_game.h"
+#include "../editor/mcp_game.h"
 #include "editor_shell.h"
 #include "extensions.h"
 #include "hostui.h"
@@ -166,10 +168,21 @@ std::string kind_label(const Value& a) {
     if (is_prop(actor)) return actor + " (prop)";
     return actor;
 }
+// whether the running game shows changes to this actor's kind at once (list_actor_types, asked once)
 bool restart_only(const Value& a) {
+    static std::map<std::string, bool> live;
+    static int asked = -1000;
+    const int frame = ImGui::GetFrameCount();
+    if (live.empty() || frame - asked > 120)  // the game installs its kinds after the overlay starts: asked again now and then
+        asked = frame, editor::try_with_session([&](editor::Session& s) {
+            for (const auto& t : s.run("list_actor_types", Value(), false).get("result").array) live[t.get("type").string()] = t.get("live").boolean;
+        });
     const std::string actor = a.get("actor").string();
-    return is_enemy(actor) || is_prop(actor) || actor == "switch" || actor == "door" ||
-           (a.get("kind").string() == "mod" && (a.get("combat").type != Value::Null || a.get("carry").type != Value::Null));
+    std::string type = actor;
+    if (a.get("kind").string() == "mod") type = a.get("combat").type != Value::Null ? "model_enemy" : a.get("carry").type != Value::Null ? "model_carry" : "model";
+    const auto it = live.find(type);
+    if (it != live.end()) return !it->second;
+    return is_enemy(actor) || is_prop(actor) || actor == "switch" || actor == "door" || type == "model_enemy" || type == "model_carry";
 }
 // a text field for one string property (empty removes it)
 void edit_property(const Value& p, const Value& a, const char* label, const char* property, size_t max = 32) {
@@ -418,8 +431,19 @@ std::string& focus_field() { return U.field; }
 void actor_list(const Value& m) {
     for (const auto& a : m.get("actors").array) {
         const std::string id = a.get("id").string();
-        if (ImGui::Selectable((id + "##actor").c_str(), U.actor == id)) {
-            U.actor = id;
+        auto& multi = multi_selection();
+        const bool in_multi = std::find(multi.begin(), multi.end(), id) != multi.end();
+        if (ImGui::Selectable((id + "##actor").c_str(), U.actor == id || in_multi)) {
+            const ImGuiIO& io = ImGui::GetIO();
+            if (io.KeyCtrl || io.KeySuper || io.KeyShift) {  // more than one: Ctrl (Cmd) or Shift adds or takes away
+                if (multi.empty() && !U.actor.empty()) multi.push_back(U.actor);
+                if (in_multi) multi.erase(std::find(multi.begin(), multi.end(), id));
+                else multi.push_back(id);
+                U.actor = multi.empty() ? std::string() : (in_multi ? multi.back() : id);
+            } else {
+                U.actor = id;
+                multi = {id};
+            }
             U.field.clear();
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
@@ -577,6 +601,35 @@ void actor_inspector(const Value& m) {
     }
     edit_property(p, *a, "Flag (set when talked to or opened)", "flag");
     then_form(m, *a, p);
+    // when it appears and its ordered talks, as the package writes them
+    if (ImGui::CollapsingHeader("Conditions and talks (JSON)")) {
+        for (const char* property : {"when", "talks"}) {
+            static std::map<std::string, std::string> texts;
+            const std::string key = a->get("id").string() + ":" + property + ":" + mods::json::dump(a->get(property));
+            auto& t = texts[std::string(property)];
+            static std::map<std::string, std::string> shown_for;
+            if (shown_for[property] != key) shown_for[property] = key, t = a->get(property).type == Value::Null ? std::string() : editor::pretty(a->get(property));
+            static std::vector<char> buf;
+            buf.assign(t.begin(), t.end());
+            buf.resize(t.size() + 2048, 0);
+            ImGui::TextUnformatted(property);
+            if (ImGui::InputTextMultiline((std::string("##json_") + property).c_str(), buf.data(), buf.size(), ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5)))
+                t = buf.data();
+            if (ImGui::SmallButton((std::string("Apply ") + property).c_str())) {
+                try {
+                    Value q = p;
+                    q["property"] = property;
+                    q["value"] = t.find_first_not_of(" \n\t") == std::string::npos ? Value() : mods::json::parse(t);
+                    command("set_actor", q);
+                } catch (const std::exception& e) {
+                    U.message_ok = false;
+                    U.message = std::string(property) + ": " + e.what();
+                }
+            }
+        }
+        muted("when: quest and step, quests (all must hold), item, time, flag, not_flag. talks: up to eight "
+              "{when, lines, then}; the first that matches is said (one without when last).");
+    }
 }
 
 void models_area(const Value& m) {
@@ -603,6 +656,7 @@ void import_area() {
     ImGui::SameLine();
     if (ImGui::Button("Choose...##import"))
         hostui::choose_file("Choose a model (.glb)", "glb", false, [](std::string path) {
+            editor_mcp::user_picked(path);  // tool clients may read what the player picked
             std::lock_guard<std::mutex> lk(g_pick_mu);
             g_picked = path;
             g_picked_for = 1;
@@ -671,53 +725,21 @@ void scenes_area(const Value& m) {
 }
 
 void quests_area(const Value& m) {
+    if (ImGui::Button("Open the quest editor")) show_quest(U.quest, "");
     for (const auto& q : m.get("quests").array) {
         const std::string id = q.get("id").string();
         if (!ImGui::TreeNode((id + "##quest").c_str(), "%s  %s", id.c_str(), q.get("title").string().c_str())) continue;
         for (const auto& s : q.get("steps").array) {
             const int n = int(num(s, "n"));
             const std::string label = "Step " + std::to_string(n) + ": " + s.get("text").string() + "##" + id + std::to_string(n);
-            if (ImGui::Selectable(label.c_str(), U.quest == id && U.step == n)) U.quest = id, U.step = n;
+            if (ImGui::Selectable(label.c_str(), U.quest == id && U.step == n)) {
+                U.quest = id, U.step = n;
+                show_quest(id, "step:" + std::to_string(n));
+            }
         }
         ImGui::TreePop();
     }
-    if (m.get("quests").array.empty()) muted("This mod has no quests.");
-    const Value* q = by_id(m.get("quests"), U.quest);
-    if (!q) return;
-    const Value* step = nullptr;
-    for (const auto& s : q->get("steps").array)
-        if (int(num(s, "n")) == U.step) step = &s;
-    if (!step) return;
-    ImGui::Separator();
-    ImGui::TextColored(kHead, "%s step %d", U.quest.c_str(), U.step);
-    auto set = [&](const char* property, const Value& value) {
-        Value p;
-        p["quest"] = U.quest;
-        p["step"] = U.step;
-        p["property"] = property;
-        p["value"] = value;
-        command("set_quest_step", p);
-    };
-    std::string t;
-    ImGui::TextUnformatted("Text");
-    if (edit_text("##step_text", step->get("text").string(), t, 120)) set("text", t);
-    ImGui::TextUnformatted("Where");
-    if (edit_text("##step_where", step->get("where").string(), t, 60)) set("where", t.empty() ? Value() : Value(t));
-    const auto& place = step->get("place");
-    double x, z;
-    ImGui::TextUnformatted("Place on the sea chart (x, z)");
-    const bool ex = edit_number("##place_x", num(place, "x"), x);
-    ImGui::SameLine();
-    const bool ez = edit_number("##place_z", num(place, "z"), z);
-    if (ex || ez) {
-        Value p = place.type == Value::Object ? place : Value();
-        if (ex) p["x"] = x;
-        if (ez) p["z"] = z;
-        if (p.get("x").type != Value::Number) p["x"] = 0;
-        if (p.get("z").type != Value::Number) p["z"] = 0;
-        set("place", p);
-    }
-    muted("Quest changes take effect when the game starts again (save the package first).");
+    if (m.get("quests").array.empty()) muted("This mod has no quests: the quest editor (Quests in the toolbar) adds one.");
 }
 
 void warp_area() {
@@ -787,7 +809,11 @@ void camera_test_area() {
         if (ImGui::Button(label)) command("save_state", p);
         ImGui::SameLine();
         std::snprintf(label, sizeof label, "Load test %d", slot);
-        if (ImGui::Button(label)) command("load_state", p);
+        if (ImGui::Button(label)) {  // the button is the user's own choice: confirmed
+            Value q = p;
+            q["confirm"] = true;
+            command("load_state", q);
+        }
     }
     ImGui::EndDisabled();
     if (confirm_popup("Reset quest?", "Erase this mod's quest progress and flags from the loaded Quest Log?\n"
@@ -805,7 +831,8 @@ void log_area() {
         const auto& e = log[i];
         const bool ok = e.result.get("ok").boolean;
         ImGui::PushID(int(e.seq));
-        if (ImGui::TreeNode("entry", "%llu  %s  %s", (unsigned long long)e.seq, e.command.c_str(), ok ? "ok" : e.result.get("error").string().c_str())) {
+        if (ImGui::TreeNode("entry", "%llu  %s%s  %s", (unsigned long long)e.seq, e.source.empty() ? "" : "[MCP] ", e.command.c_str(),
+                            ok ? "ok" : e.result.get("error").string().c_str())) {
             ImGui::TextWrapped("params: %s", mods::json::dump(e.params).c_str());
             ImGui::TextWrapped("result: %s", mods::json::dump(e.result).substr(0, 4000).c_str());
             ImGui::TreePop();
@@ -831,7 +858,9 @@ void problems_area() {
         const auto& pr = U.problems.array[i];
         const std::string what = pr.get("kind").string() + (pr.get("id").type == Value::String ? " " + pr.get("id").text : std::string());
         ImGui::PushID(int(i));
-        ImGui::PushStyleColor(ImGuiCol_Text, kBad);
+        // the quest editor's own checks are warnings (yellow); the mod manager's refusals are problems (red)
+        const std::string severity = pr.get("severity").string();
+        ImGui::PushStyleColor(ImGuiCol_Text, severity == "warning" ? ImVec4(0.98f, 0.78f, 0.35f, 1) : severity == "info" ? kMuted : kBad);
         if (ImGui::Selectable((what + ": " + pr.get("message").string()).c_str())) {
             // jump: select the actor and look at it, and mark the field
             if (pr.get("kind").string() == "actor") {
@@ -849,6 +878,7 @@ void problems_area() {
             } else if (pr.get("kind").string() == "quest") {
                 U.quest = pr.get("id").string();
                 U.select_area = 3;
+                show_quest(U.quest, pr.get("field").string());
             } else if (pr.get("kind").string() == "model")
                 U.select_area = 1;
         }
@@ -866,6 +896,7 @@ void export_area() {
     ImGui::SameLine();
     if (ImGui::Button("Choose...##export"))
         hostui::choose_file("Choose a folder for the package", "", true, [](std::string path) {
+            editor_mcp::user_picked(path);  // tool clients may export into a folder the player picked
             std::lock_guard<std::mutex> lk(g_pick_mu);
             g_picked = path + "/" + g_snap.open;
             g_picked_for = 2;
@@ -942,12 +973,82 @@ void mod_bar() {
     }
 }
 
+// ---------------------------------------------------------------- Claude / MCP
+void mcp_area() {
+    ImGui::TextColored(kHead, "Claude / MCP access");
+    if (!editor_mcp::available()) {
+        muted("This build has no MCP interface.");
+        return;
+    }
+    muted("Lets Claude Code, or another MCP client on this computer, use the editor's commands: warp, place and move "
+          "actors, write dialogue, check the package, take screenshots. Off at every start.");
+    editor_mcp::Status st = editor_mcp::status();
+    bool on = st.on;
+    if (ImGui::Checkbox("Claude / MCP access", &on)) {
+        std::string why;
+        if (!editor_mcp::set_on(on, why)) {
+            U.message = why;
+            U.message_ok = false;
+        }
+        st = editor_mcp::status();
+    }
+    if (!st.error.empty()) wrapped(kBad, "Could not start: " + st.error);
+    if (!st.on) return;
+    ImGui::TextColored(st.connected ? kGood : kMuted, "%s", st.connected ? "A client is connected." : "Waiting for a client.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%llu call(s))", (unsigned long long)st.calls);
+    ImGui::Text("Address: http://127.0.0.1:%d/mcp  (this computer only)", st.port);
+    ImGui::TextUnformatted("Token:");
+    ImGui::SameLine();
+    ImGui::TextUnformatted(st.token.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy##mcp_token")) ImGui::SetClipboardText(st.token.c_str());
+    ImGui::Spacing();
+    ImGui::TextUnformatted("For Claude Code, run this in a terminal:");
+    const std::string cmd = editor_mcp::client_command(st);
+    wrapped(ImVec4(0.85f, 0.88f, 0.92f, 1), cmd);
+    if (ImGui::Button("Copy command##mcp_command")) ImGui::SetClipboardText(cmd.c_str());
+    muted("Exports over MCP go into " + editor_mcp::export_folder() + " or a folder you choose under Export.");
+    ImGui::Spacing();
+    muted("The token is new each time you turn this on and is never saved. After a restart, run "
+          "\"claude mcp remove wwhd-editor\" and add it again with the new command.");
+    muted("Removing actors, reverting, saving, exporting, resetting a quest and loading a test state ask you first "
+          "(Allow / Deny). Claude reads files only inside the open package or ones you picked here; anything else asks "
+          "you. Every call shows in the Log, marked [MCP].");
+}
+
+// Claude wants to: ... Allow / Deny (drawn by the editor's overlays and by this tab, once per frame)
+void mcp_prompt() {
+    static int drawn = -1;
+    if (drawn == ImGui::GetFrameCount()) return;
+    uint64_t id = 0;
+    std::string text;
+    if (!editor_mcp::prompt(id, text)) return;
+    drawn = ImGui::GetFrameCount();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.4f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(600.0f, vp->WorkSize.x - 32), 0));
+    ImGui::SetNextWindowFocus();
+    ImGui::Begin("Claude / MCP##mcp_prompt", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    if (ImGui::Button("Allow")) editor_mcp::answer(id, true);
+    ImGui::SameLine();
+    if (ImGui::Button("Deny")) editor_mcp::answer(id, false);
+    ImGui::End();
+}
+
 // ---------------------------------------------------------------- the Editor tab
 void register_tab() {
     overlay::ext::Tab tab{"editor", "Editor", [] { draw(); }, nullptr};
     tab.shown = [] { return editor::enabled(); };
     overlay::ext::add_tab(std::move(tab), "about");
     editor_shell::register_layers();
+    editor_mcp::start_for_tests();  // test runs only (WWHD_TEST_EDITOR_MCP)
 }
 
 void draw() {
@@ -971,9 +1072,11 @@ void draw() {
     const std::string status = editor::status();
     if (!U.message.empty()) wrapped(U.message_ok ? kGood : kBad, U.message);
     if (!status.empty()) wrapped(kMuted, status);
-    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Warp", "Camera & test", "Problems", "Export", "Log"};
+    mcp_prompt();
+    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Warp", "Camera & test", "Problems", "Export", "Log", "Claude / MCP"};
+    const int areas = int(sizeof kAreas / sizeof kAreas[0]) - (editor_mcp::available() ? 0 : 1);
     if (ImGui::BeginTabBar("editor_areas", ImGuiTabBarFlags_FittingPolicyShrink)) {
-        for (int i = 0; i < int(sizeof kAreas / sizeof kAreas[0]); i++) {
+        for (int i = 0; i < areas; i++) {
             const ImGuiTabItemFlags f = U.select_area == i ? ImGuiTabItemFlags_SetSelected : 0;
             if (ImGui::BeginTabItem(kAreas[i], nullptr, f)) {
                 U.area = i;
@@ -1004,6 +1107,7 @@ void draw() {
     case 5: camera_test_area(); break;
     case 6: problems_area(); break;
     case 7: export_area(); break;
+    case 9: mcp_area(); break;
     default: log_area(); break;
     }
     ImGui::EndChild();

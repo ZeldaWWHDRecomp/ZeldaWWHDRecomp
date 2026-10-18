@@ -21,6 +21,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include "gx2/gx2_cmd.h"
 #include "write_watch.h"
 #include "metal.h"
+#include "cloud_proto.h"
 #include "runtime.h"
 #include "util/helpers/StringBuf.h"
 
@@ -1245,6 +1246,20 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
     return R.enc != nil;
 }
 
+// cloud prototype (metal_clouds.mm): opens a pass on colour target 0 of the registers (and their depth
+// buffer), when the sky-cloud hook finds no open pass
+bool open_target_pass(const uint32_t* regs) {
+    uint32_t slice = 0, depthSlice = 0;
+    Surface* colors[8] = {};
+    uint32_t slices[8] = {};
+    colors[0] = color_target(regs, 0, &slice);
+    slices[0] = slice;
+    if (!colors[0]) return false;
+    Surface* depth = regs[mmDB_DEPTH_BASE] ? depth_target(regs, &depthSlice) : nullptr;
+    if (depth && (depth->tex.width < colors[0]->tex.width || depth->tex.height < colors[0]->tex.height)) depth = nullptr;
+    return ensure_pass(colors, slices, depth, depthSlice);
+}
+
 // ---------------------------------------------------------------- indices
 // Converts guest indices (possibly big-endian, possibly a primitive type Metal lacks)
 // into a 32-bit little-endian index list. Returns the Metal primitive type.
@@ -1587,6 +1602,18 @@ void report_skips() {
     g_stat_full_checks = g_stat_uploads = g_stat_invalidates = g_stat_invalidated_surfaces = g_stat_hashed_bytes = 0;
 }
 
+
+// cloud research prototype (metal_clouds.mm)
+bool clouds_draw(id<MTLRenderCommandEncoder> enc, const MTLViewport& vp, Surface* const* colors, const uint32_t* colorSlices,
+                 Surface* depth, uint32_t depthSlice, bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t));
+bool clouds_sky_surface(Surface* s);
+bool clouds_shadow_target(Surface* s);
+bool clouds_shadow_depth(Surface* s);
+void clouds_shadows_now();
+void clouds_after_sky_composite(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, const MTLViewport& vp, bool hasDepth,
+                                id<MTLDepthStencilState> depthState, bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t));
+void clouds_mark_start(Surface* const* colors, const uint32_t* colorSlices, Surface* depth, uint32_t depthSlice,
+                       bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t));
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
           uint32_t instances) {
     static bool cacheLoaded = (cache_load(), true);
@@ -1680,18 +1707,34 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     MTLPrimitiveType ptype;
     if (!build_indices(prim, count, indexType, indexAddr, indices, ptype)) { g_skip[SK_PRIM]++; return; }
     rprof::mark(rprof::kIndices);
+    bool samplesSky = false;  // cloud prototype: this draw reads the half-res sky buffer (its composite)
+    bool readsPicture = false;  // ... or the picture the cloud shadows go into
     for (Shader* sh : {vs, ps}) {
         uint32_t texBase = sh == vs ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
         for (int u = 0; u < sh->dec->textureUnitListCount; u++) {
             uint8_t unit = sh->dec->textureUnitList[u];
             Surface* s = sampled_texture(&regs[texBase + unit * 7], sh->dec->textureUsesDepthCompare[unit]);
-            (void)s;
+            if (s && clouds_sky_surface(s)) samplesSky = true;
+            if (s && clouds_shadow_target(s)) readsPicture = true;
         }
     }
 
     rprof::mark(rprof::kTextures);
+    {
+        static const uint64_t traceFrame = getenv("WWHD_CLOUDS_TRACE_FRAME") ? strtoull(getenv("WWHD_CLOUDS_TRACE_FRAME"), nullptr, 10) : 0;
+        if (traceFrame && R.frame == traceFrame)
+            LOG("[ctrace] draw %llu: target %08X %ux%u depth %08X/%p fmt %lu ps %08X sky %d picture %d prim %X count %u dctl %08X",
+                (unsigned long long)R.drawCount, colors[0] ? colors[0]->addr : 0, colors[0] ? colors[0]->width : 0,
+                colors[0] ? colors[0]->height : 0, depth ? depth->addr : 0, (void*)depth, depth ? (unsigned long)depth->tex.pixelFormat : 0,
+                regs[mmSQ_PGM_START_PS] << 8, samplesSky, readsPicture, prim, count, regs[REGADDR::DB_DEPTH_CONTROL]);
+    }
+    // ... or a depth-only draw into its depth buffer is next (the game rewrites the depth there before its
+    // post effects, which would lose the islands and characters)
+    if (!readsPicture && !colors[0] && depth && clouds_shadow_depth(depth)) readsPicture = true;
+    if (readsPicture) clouds_shadows_now();
     if (!ensure_pass(colors, colorSlices, depth, depthSlice)) { g_skip[SK_PASS]++; return; }
     rprof::mark(rprof::kPass);
+    if (cloud_proto::g_active_seq) clouds_mark_start(colors, colorSlices, depth, depthSlice, ensure_pass);
     TargetFormats tf;
     for (int i = 0; i < 8; i++)
         if (colors[i]) tf.color[i] = colors[i]->format;
@@ -1752,6 +1795,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         aspect::panes::clip(w, h, ax, ay, sx, sy, ex, ey);
     if (ex <= sx || ey <= sy) { g_skip[SK_SCISSOR]++; return; }
     [enc setScissorRect:MTLScissorRect{sx, sy, ex - sx, ey - sy}];
+    if (cloud_proto::g_active_seq && clouds_draw(enc, vp, colors, colorSlices, depth, depthSlice, ensure_pass)) return;
     rprof::mark(rprof::kRecord);
     rprof::UploadKind vertexUploads(rprof::kUpVertex);
 
@@ -1805,6 +1849,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     for (int i = 0; i < 8; i++)
         if (colors[i] && regs[mmCB_COLOR0_BASE + i]) g_target_drawn[regs[mmCB_COLOR0_BASE + i]].drawn(R.frame);
     if (depth && regs[mmDB_DEPTH_BASE]) g_target_drawn[regs[mmDB_DEPTH_BASE]].drawn(R.frame);
+    if (samplesSky) clouds_after_sky_composite(enc, regs, vp, depth != nullptr, get_depth_state(regs, depth != nullptr), ensure_pass);
     // debug: WWHD_DUMP_DRAWS=frame:i,j,k dumps color target 0 after those draws
     static uint64_t dumpFrame = ~0ull;
     static std::set<uint64_t> dumpDraws = [] {

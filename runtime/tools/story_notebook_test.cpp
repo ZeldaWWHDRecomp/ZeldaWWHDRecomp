@@ -52,6 +52,7 @@ bool g_pro = false;
 bool pro_controller() { return g_pro; }  // the menu on the GamePad unless a test says otherwise
 }
 
+namespace story_notebook {void action_rewards(Cpu*);}
 namespace {
 
 constexpr uint32_t kGlobals = 0x101F0000, kArena = 0x20000000, kSave = kArena;
@@ -446,6 +447,7 @@ uint32_t get_item_over = 0;
 uint32_t game_call(Cpu*, uint32_t fn, std::initializer_list<uint32_t> args) {
     std::vector<uint32_t> a(args);
     switch (fn) {
+    case 0x0254DA38: calls.push_back("action reward " + std::to_string(a.at(0)));return 0;
     case 0x025200D4: return kPlayObj;
     case 0x02006478: return ld32(a.at(0) + 4);  // hdStateMachine: the current state
     case 0x025D7DEC: calls.push_back("present item " + std::to_string(a.at(1))); return 77;
@@ -2045,7 +2047,97 @@ void test_manifest_charts() {
     assert(page.input(press(kPadX), rs).kind == Page::Action::None && page.open());
 }
 
+// Public destination resolution must agree with notebook/chart state and
+// remain independent of local NPC coordinates for an interior entrance.
+void test_quest_destinations() {
+    auto manifest=mods::json::parse(R"({"quests_format":1,
+      "scenes":[{"id":"place-flags","steps":[{"type":"end","then":[
+        {"action":"flag","id":"opened"},{"action":"flag","id":"closed"}]}]}],
+      "quests":[{"id":"destinations","title":"Interior destination","steps":[
+        {"n":1,"text":"Enter the building","where":"Inside the building",
+         "place":{"stage":"Pnezumi","room":0,"point":3,"sea":{"x":-200000,"z":100000}},
+         "npc":{"who":"windfall-ub3","lines":["Meet me inside."]}},
+        {"n":2,"text":"Find the room","where":"The back room",
+         "available":{"flag":["opened"],"not_flag":"closed","text":"Open the entrance"},
+         "place":{"stage":"Pnezumi","room":1,"x":10,"y":20,"z":30,"sea":{"x":-200000,"z":100000}}},
+        {"n":3,"text":"Return to sea","place":{"x":1000,"z":2000},"npc":{"who":"windfall-ub3","lines":["Back at sea."]}}]}]})");
+    assert(declare("destination-test","Destinations",manifest));
+    assert(reach("destination-test","destinations",1)==1);
+    auto b=story_store::book();assert(toggle_tracked(b,quest_key("destination-test","destinations")));
+    QuestDestination destination;
+    assert(place_destination("destination-test","destinations",destination));
+    assert(destination.stage=="Pnezumi"&&destination.room==0&&destination.point==3);
+    float x=0,z=0;assert(place_position("destination-test","destinations",x,z)&&x==-200000&&z==100000);
+    auto marker=[] {for(const auto&m:story_chart::shown_markers())if(m.chart=="notebook"&&m.marker=="tracked")return m;assert(false);return story_chart::MarkerView{};};
+    auto before=marker();assert(before.x==-200000&&before.z==100000);
+    constexpr uint32_t npc=kArena+0xB000;
+    st8(npc+0x905,5);st8(npc+0x326,11);
+    st32(npc+0x314,f32_as_u32(12345));st32(npc+0x31C,f32_as_u32(67890));
+    memcpy(mem::ptr(kPlayObj+0x5134),"sea",4);
+    call(0x022C36D0,npc); // actual public hook updates the live resident cache
+    auto after=marker();assert(after.x==-200000&&after.z==100000);
+    std::vector<Quest> storage;const auto rows=rows_now(storage);
+    auto row=std::find_if(rows.begin(),rows.end(),[](const auto&r){return r.quest->mod=="destination-test";});
+    assert(row!=rows.end()&&row->quest->where=="Inside the building");
+    assert(reach("destination-test","destinations",2)==2);
+    destination.stage="unchanged";
+    assert(!place_destination("destination-test","destinations",destination)&&destination.stage=="unchanged");
+    assert(story_actors::set_flag(b,"another-mod","opened"));
+    assert(!place_destination("destination-test","destinations",destination));
+    assert(story_actors::set_flag(b,"destination-test","opened"));
+    assert(place_destination("destination-test","destinations",destination));
+    assert(destination.stage=="Pnezumi"&&destination.room==1&&destination.point==-1&&destination.position.x==10&&destination.position.y==20&&destination.position.z==30);
+    assert(story_actors::set_flag(b,"destination-test","closed"));
+    assert(!place_destination("destination-test","destinations",destination));
+    assert(story_actors::set_flag(b,"destination-test","closed",false));
+    assert(reach("destination-test","destinations",3)==3);
+    assert(place_destination("destination-test","destinations",destination)&&destination.stage=="sea"&&destination.position.x==1000&&destination.position.z==2000);
+    call(0x022C36D0,npc);
+    auto followed=marker();assert(followed.x==12345&&followed.z==67890); // positive control: sea following still updates the cache
+    assert(step("destination-test","destinations",3,"Code-owned direction","Elsewhere")==3);
+    assert(place("destination-test","destinations",500,-900)==3);
+    assert(place_destination("destination-test","destinations",destination)&&destination.stage=="sea"&&destination.position.x==500&&destination.position.z==-900);
+    assert(no_place("destination-test","destinations")==3);
+    destination.stage="unchanged";
+    assert(!place_destination("destination-test","destinations",destination)&&destination.stage=="unchanged");
+    assert(!place_destination("another-mod","destinations",destination));
+    // Code-only quests retain the existing sea-place counterpart too.
+    assert(define("destination-test","Destinations","code-only","Code only","","")==kResultNew);
+    assert(step("destination-test","code-only",1,"Go","Sea")==1);
+    assert(place("destination-test","code-only",3000,4000)==1);
+    assert(place_destination("destination-test","code-only",destination)&&destination.stage=="sea"&&destination.position.x==3000);
+    const std::vector<uint8_t> saved_area(story_store::area(),story_store::area()+story_block::kAreaSize);
+    const std::vector<uint8_t> game_save(mem::ptr(kSave),mem::ptr(kSave)+0x800);
+    assert(place_destination("destination-test","code-only",destination));
+    assert(std::equal(saved_area.begin(),saved_area.end(),story_store::area()));
+    assert(std::equal(game_save.begin(),game_save.end(),mem::ptr(kSave)));
+}
+
 int main() {
+    {
+        QuestDestination d;std::string why;
+        auto v=mods::json::parse(R"({"stage":"Pnezumi","room":0,"sea":{"x":-200000,"z":100000}})");
+        assert(parse_quest_destination(v,d,why)&&d.stage=="Pnezumi"&&d.room==0&&d.point==-2&&d.sea_x==-200000);
+        v["point"]=3;assert(parse_quest_destination(v,d,why)&&d.point==3);
+        v["x"]=1;v["y"]=2;v["z"]=3;assert(!parse_quest_destination(v,d,why));v.object.erase("point");
+        assert(parse_quest_destination(v,d,why)&&d.point==-1&&d.position.y==2);
+        v.object.erase("sea");assert(!parse_quest_destination(v,d,why));
+        assert(!parse_quest_destination(mods::json::parse(R"({"stage":"../bad","room":0,"sea":{"x":0,"z":0}})"),d,why));
+        assert(!parse_quest_destination(mods::json::parse(R"({"x":0})"),d,why));
+        assert(parse_quest_destination(mods::json::parse(R"({"x":0,"z":0})"),d,why)&&d.stage=="sea"&&d.room==25&&d.point==-1);
+    }
+
+    {
+        std::array<uint8_t,1024> bytes{};story_mail::Book b(bytes.data());
+        Availability a;a.flag_mod="local";a.flags={"read"};a.not_flags={"blocked"};
+        assert(!available(a,nullptr,12,b));
+        assert(story_actors::set_flag(b,"foreign","read"));assert(!available(a,nullptr,12,b));
+        assert(story_actors::set_flag(b,"local","read"));assert(available(a,nullptr,12,b));
+        assert(story_actors::set_flag(b,"local","blocked"));assert(!available(a,nullptr,12,b));
+        assert(story_actors::set_flag(b,"local","blocked",false));assert(available(a,nullptr,12,b));
+        assert(!available(a,nullptr,12));
+    }
+
     assert(map(kGlobals, 0x10000) && map(kArena, 0x40000));
     assert(map(0x10470000, 0x10000));  // g_dComIfG_gameInfo's play.mSelectItem (story_item_buttons.cpp)
     story_store::set_memory(kArena + 0x20000);
@@ -2074,6 +2166,21 @@ int main() {
     test_sail_manifest();
     test_sail_rules();
     test_sail_hooks();
+    test_quest_destinations();
+    {
+        auto m=mods::json::parse(R"({"quests_format":1,"quests":[{"id":"action","title":"Action reward","reward":{"item":"rupee_orange"},"steps":[{"n":1,"text":"Go","where":"Inside","place":{"stage":"Pnezumi","room":0,"point":1,"sea":{"x":0,"z":-200000}}}]}]})");
+        assert(declare("action-test","Action",m));auto b=story_store::book();
+        assert(reach("action-test","action",1)==1);assert(toggle_tracked(b,quest_key("action-test","action")));
+        QuestDestination destination;assert(place_destination("action-test","action",destination)&&destination.stage=="Pnezumi"&&destination.point==1);
+        assert(done_action("action-test","missing")==kResultInvalid);
+        assert(done_action("action-test","action")==255&&tracked_key(b)==0);
+        assert(done_action("action-test","action")==255);
+        calls.clear();Cpu c{};action_rewards(&c);action_rewards(&c);
+        assert(std::count(calls.begin(),calls.end(),"action reward 6")==1);
+        assert(done_action("action-test","action")==255);action_rewards(&c);
+        assert(std::count(calls.begin(),calls.end(),"action reward 6")==1);
+        assert(!place_destination("action-test","action",destination));
+    }
     std::puts("story_notebook_test: ok");
     return 0;
 }

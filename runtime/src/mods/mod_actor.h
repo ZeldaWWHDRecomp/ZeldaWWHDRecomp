@@ -6,11 +6,19 @@
 #include <vector>
 #include <initializer_list>
 #include <string>
+#include <memory>
+#include "story_world_collision_mesh.h"
+#include "story_world_placement.h"
 struct Cpu;
 namespace mod_actor {
-inline constexpr uint16_t kProfile=0x7FFE;
+inline constexpr uint16_t kProfile=0x7FFE,kWorldProfile=0x7FF6;
+inline constexpr bool own_profile(uint16_t profile){return profile==kProfile||profile==kWorldProfile;}
 inline constexpr uint32_t kScratchBytes=4096;
-inline constexpr uint32_t kInstanceBytes=0x1040;
+inline constexpr uint32_t kInstanceBytes=0x1120;
+using PlacementProvider=std::function<story_world_placement::Index(const std::string&,int)>;
+void configure_world_objects(const std::string& game_directory,PlacementProvider={});
+bool world_object_query(const std::string& mod,const story_notebook::ManifestActor&,bool wireframe,mods::json::Value&,std::string& why);
+bool register_collision(const std::string& mod,const std::string& model,std::shared_ptr<const story_world_collision::mesh::Mesh>);
 struct ModelRig {std::vector<std::string> joint_names;std::vector<int> joint_parents;std::vector<bool> joint_look_compatible;};
 struct Identity {std::string mod,id;uint32_t token=0,process_id=0;};
 struct State {
@@ -33,6 +41,12 @@ bool attack_cancel(Cpu*,const Identity&);
 void quarantine_combat(Cpu*,const Identity&);
 enum class CombatReward {Committed,AlreadyDone,Failed};
 using CombatRewardSink=std::function<CombatReward()>;
+// Called only by the actor's existing owned native talk start/resume branch.
+// The returned text and completion are latched until its genuine native END.
+struct TalkSelection {std::string lines;std::function<void()> completed;};
+using TalkProvider=std::function<bool(uint32_t actor,bool resumed,TalkSelection&)>;
+bool set_talk_provider(const std::string&mod,const std::string&id,TalkProvider);
+
 bool set_combat_reward(const std::string& mod,const std::string& id,CombatRewardSink);
 bool set_carry_break(const std::string& mod,const std::string& id,std::function<bool()>);
 using BehaviorSink=std::function<void(Cpu*,uint32_t,BehaviorEvent,const Hit*)>;
@@ -63,7 +77,7 @@ bool scene_animation(Cpu*,const Identity&,uint32_t lease,const std::string&,floa
 // Startup-private provisional declarations cannot escape through installed services.
 size_t checkpoint();
 void rollback(size_t) noexcept;
-void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t scratch);
+void configure(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t scratch,uint32_t grapple_storage=0);
 // Declaration tokens go into native create parameters; they remain stable across state loads.
 uint32_t declare(const std::string& mod,const story_notebook::ManifestActor&,const std::string& archive,int resource_index,std::function<void()> talked,
                  story_notebook::WorldPoint minimum={-50,0,-50},story_notebook::WorldPoint maximum={50,200,50},
@@ -73,6 +87,9 @@ uint32_t declare(const std::string& mod,const story_notebook::ManifestActor&,con
 // effect after a restart). False leaves the declaration unchanged; apply=false only checks.
 bool redeclare(uint32_t token,const story_notebook::ManifestActor&,const std::string& archive,int resource_index,
                story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig,bool apply=true);
+// Internal collision-free distant/coast variants; never exposed as behaviour callbacks.
+bool visual_role(uint32_t token,bool distant);
+bool owns_visual(uint32_t actor,uint32_t token);
 // World editor: the profile is installed, so declare() may add actors while the game runs (their
 // records are in place for all 128 declarations).
 bool live_ready();

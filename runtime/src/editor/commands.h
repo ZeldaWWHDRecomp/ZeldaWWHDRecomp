@@ -58,6 +58,11 @@ struct Record {
     uint16_t key = 0;
     bool operator==(const Record& o) const { return kind == o.kind && key == o.key; }
 };
+// A record and the value to write (< 0: erase it).
+struct RecordValue {
+    Record record;
+    int value = 0;
+};
 
 // What the command layer needs from the running game. Every call comes from the thread that runs the
 // session; the game implementation queues the work for its own thread and returns at once.
@@ -69,6 +74,15 @@ public:
     // `note` may say what needs a room reload or a restart.
     virtual bool apply_actors(const std::string& mod, const std::vector<story_notebook::ManifestActor>& actors,
                               const std::vector<std::string>& changed, std::string& note, std::string& why) = 0;
+    // A handle drag in progress (Session::drag_preview): the same live update as apply_actors, but
+    // quietly (no status per step) and only for what can change while the game runs; `later` gets the
+    // changed ids that can't (restart-only kinds), which keep their old state. The default: apply_actors.
+    virtual bool preview_actors(const std::string& mod, const std::vector<story_notebook::ManifestActor>& actors,
+                                const std::vector<std::string>& changed, std::vector<std::string>& later, std::string& why) {
+        (void)later;
+        std::string note;
+        return apply_actors(mod, actors, changed, note, why);
+    }
     virtual bool reload_room(std::string& why) = 0;
     // Stages and the rooms each has, from the game's own files (sorted). Empty without game files.
     virtual std::vector<std::pair<std::string, std::vector<int>>> stage_rooms() = 0;
@@ -102,12 +116,66 @@ public:
     virtual bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) {
         return why = "the game is not running", false;
     }
+    // Snapshot query: collision geometry and placement/budget findings for one
+    // parsed object, including motion, grapple points and island presentation. The host
+    // synchronizes its geometry, wave envelope and protected world snapshot.
+    virtual bool world_object_query(const std::string& mod, const story_notebook::ManifestActor& actor,
+                                    bool wireframe, Value& result, std::string& why) {
+        return why = "the game is not running", false;
+    }
     // Shows `text` in the game's own message box (close: hides it again).
     virtual bool preview_text(const std::string& text, bool close, std::string& why) { return why = "the game is not running", false; }
     // Play: the editor hides, Link plays from the camera's place or his own, in test mode; Stop goes back.
     virtual bool play(bool from_camera, bool restore, std::string& why) { return why = "the game is not running", false; }
     virtual bool stop(std::string& why) { return why = "the game is not running", false; }
     virtual bool playing() { return false; }
+
+    // ---- quests and flags (each optional) ----
+    // The values of story records in the loaded Quest Log (-1: no such record): read_state's quest steps and
+    // flags, the quest editor's graph, status bar and Flags panel. Any thread, cheap: the game may answer
+    // from its own copy of the story records (refreshed a few times a second). False: not known (no story
+    // progress, or the game has not looked yet).
+    virtual bool read_records(const std::vector<Record>& records, std::vector<int>& values, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // Test mode only: writes records of `mod` (value < 0 erases one).
+    virtual bool write_records(const std::string& mod, const std::vector<RecordValue>& values, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // Start a quest at a step (test mode, turned on first as Play does): erases `erase` (the mod's own
+    // records), writes `values`, gives or takes the mod's items to the `items` counts, warps to `to` when it
+    // names a place, then plays from Link when `play`.
+    virtual bool start_at_step(const std::string& mod, const std::vector<Record>& erase, const std::vector<RecordValue>& values,
+                               const std::vector<std::pair<std::string, int>>& items, const Location& to, bool play, std::string& why) {
+        return why = "the game is not running", false;
+    }
+
+    // Whether actors of a list_actor_types type appear while the game runs (`fallback`: the type's own
+    // default, when the game doesn't know). Native props, switches, doors and enemies do in --editor.
+    virtual bool live_kind(const std::string& type, bool fallback) { return fallback; }
+
+    // ---- scenes (each optional) ----
+    // The fly camera looks from `eye` at `target` (scrubbing a scene's camera; turns it on if needed).
+    virtual bool look(const WorldPoint& eye, const WorldPoint& target, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // Plays `scene` of `mod` in the game from the editor's view, in test mode: the editor hides, the scene
+    // plays, and when it ends (or stops) the editor's view comes back; with `restore` the world goes back to
+    // how it was before. `declared`: the scene is the one the game started with (its native version may
+    // play); otherwise the edited steps play (never the native version).
+    virtual bool preview_scene(const std::string& mod, const story_notebook::ManifestScene& scene, bool declared, bool restore, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    // The running preview: skip (as Plus / Start does) or stop (ends it at once, back to the editor).
+    virtual bool scene_control(bool stop, std::string& why) { return why = "the game is not running", false; }
+    // {"playing": bool, "scene", "step", "native", "phase"} of the editor's preview.
+    virtual Value scene_state() { return Value(); }
+    // A handle drag's step: the actors in `poses` moved where they are in the game, in place (no new
+    // actor); `moved` the ids that moved so. The default: none (the drag shows through preview_actors).
+    virtual bool pose_actors(const std::string& mod, const Value& poses, std::vector<std::string>& moved, std::string& why) {
+        (void)mod, (void)poses, (void)moved;
+        return why = "the game is not running", false;
+    }
 };
 inline constexpr int kTestSlots = 3;
 
@@ -129,6 +197,7 @@ struct LogEntry {
     uint64_t seq = 0;
     std::string command;
     Value params, result;
+    std::string source;  // "" the editor's own UI or a script; "MCP" a tool client (editor/mcp.h)
 };
 
 class Session {
@@ -139,13 +208,25 @@ public:
     void add_package(const std::string& mod, const std::string& name, const std::string& dir, const Value& manifest);
     // {"ok": true, "result": ...} or {"ok": false, "error": "..."}; never throws. `log`: false for the UI's
     // own reads every frame (read_state, list_locations...), which stay out of the command log.
-    Value run(const std::string& command, const Value& params = Value(), bool log = true);
+    Value run(const std::string& command, const Value& params = Value(), bool log = true, const std::string& source = {});
+    // A log entry for something that is not a command (a tool client's screenshot, a refused request).
+    void note(const std::string& command, const Value& params, const Value& result, const std::string& source);
     // {"command": "...", "params": {...}} as text, the result as text
     std::string run_json(const std::string& request);
+    // A handle drag in progress: the game shows the actors in `poses` ([{"id", "position"?, "rotation"?}])
+    // where the drag has them, through the host's live update (Host::preview_actors). Nothing changes in
+    // the package: no command, no undo step, no log entry; letting go runs the one command that keeps the
+    // change. A pose without position and rotation puts that actor back at the package's place (a drag
+    // cancelled). The actors that exist in the game move in place (Host::pose_actors, `in_place` gets
+    // them); the others are created again at the new place. `later`: the ids that can't move while the
+    // game runs. False with `why`: nothing shown.
+    bool drag_preview(const std::string& mod, const Value& poses, std::vector<std::string>& later, std::string& why,
+                      std::vector<std::string>* in_place = nullptr);
 
     const std::deque<LogEntry>& log() const { return log_; }
     std::string open_mod() const { return open_; }
     const Value* manifest(const std::string& mod) const;
+    std::string package_dir(const std::string& mod) const;  // the package folder ("" unknown)
     bool dirty(const std::string& mod) const;
     std::vector<std::string> mods() const;
     size_t undo_depth() const { return undo_.size(); }
@@ -161,10 +242,13 @@ private:
     struct Package {
         std::string mod, name, dir;
         Value manifest, saved;
+        Value started;  // the manifest the game started with (its scenes are the ones the game declared)
+        Value layout, layout_saved;  // the editor's own sidecar (editor/quest-layout.json): graph node places
     };
     struct Step {
         std::string mod, label;
         Value before, after;
+        bool layout = false;  // a layout step: before / after are layouts
     };
     Host* host_;
     std::vector<Package> packages_;
@@ -189,6 +273,13 @@ private:
     // the building commands (commands_build.cpp): add, remove, place, models, dialogue, export, play
     Value dispatch_build(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
     bool where(const Value& params, Place& place, std::string& why);  // at: link, camera or position (snapped)
+    Value progress(const std::string& mod, const Value& manifest);    // read_state: quest steps and flags
+    // quests, flags, search, copy and paste (commands_quest.cpp)
+    Value dispatch_quest(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    bool change_layout(Package& p, const std::string& label, const Value& layout, Value& result);
+    Value clipboard_;  // copy / paste: {"kind": "actors" | "quest_steps" | "scenes" | "scene_steps", "items": [...]}
+    // scenes: steps, camera keys, timeline, preview (commands_scene.cpp)
+    Value dispatch_scene(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
 };
 
 // One problem of a package, with what it is about (for the editor's problem list: a click selects it).
@@ -197,6 +288,7 @@ struct Problem {
     std::string kind;   // "actor", "model", "scene", "quest", "item", "file" or "package"
     std::string id;     // the actor's (model's...) id; empty for the whole package
     std::string field;  // the field when known ("position", "model", ...)
+    std::string severity;  // "" an error (the mod manager refuses the package), "warning" or "info" (the editor's own checks)
 };
 
 // ---- pure helpers (unit-tested) ----

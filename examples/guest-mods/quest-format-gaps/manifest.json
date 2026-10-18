@@ -1,0 +1,142 @@
+{
+  "format_version": 1,
+  "id": "quest-format-gaps",
+  "name": "Harbor notice",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "A sign, an interior destination and a resident with two quest talks.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "quests_format": 1,
+  "quests": [
+    {
+      "id": "notice",
+      "title": "The harbor notice",
+      "start": {
+        "text": "Read the sign near the harbor."
+      },
+      "reward": {
+        "text": "An orange rupee",
+        "item": "rupee_orange"
+      },
+      "steps": [
+        {
+          "n": 1,
+          "text": "Speak to the harbor keeper.",
+          "where": "Windfall harbor",
+          "place": {
+            "x": 100,
+            "z": -201500
+          }
+        },
+        {
+          "n": 2,
+          "text": "Return to the keeper after checking the building.",
+          "where": "Inside the building",
+          "place": {
+            "stage": "Pnezumi",
+            "room": 0,
+            "sea": {
+              "x": 0,
+              "z": -200000
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "actors": [
+    {
+      "id": "notice-sign",
+      "actor": "sign",
+      "flag": "read",
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": -800,
+        "y": 1040,
+        "z": -201500
+      },
+      "lines": [
+        "Please speak to the harbor keeper."
+      ],
+      "then": [
+        {
+          "action": "quest_step",
+          "id": "notice",
+          "step": 1
+        }
+      ]
+    },
+    {
+      "id": "keeper",
+      "actor": "resident",
+      "parameters": {
+        "resident": "uo2"
+      },
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": 100,
+        "y": 1040,
+        "z": -201500
+      },
+      "when": {
+        "flag": "read"
+      },
+      "talks": [
+        {
+          "when": {
+            "quest": "notice",
+            "step": 1
+          },
+          "lines": [
+            "The building is marked in your notebook."
+          ],
+          "then": [
+            {
+              "action": "quest_step",
+              "id": "notice",
+              "step": 2
+            }
+          ]
+        },
+        {
+          "when": {
+            "quest": "notice",
+            "step": 2
+          },
+          "lines": [
+            "Thank you for checking the notice."
+          ],
+          "then": [
+            {
+              "action": "quest_done",
+              "id": "notice"
+            }
+          ]
+        },
+        {
+          "lines": [
+            "The harbor notice is taken care of."
+          ],
+          "then": [
+            {
+              "action": "quest_done",
+              "id": "notice"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

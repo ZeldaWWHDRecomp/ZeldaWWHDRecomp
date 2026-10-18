@@ -50,4 +50,26 @@ void problems_area();                   // the last check's problems: a click se
 void import_area();                     // a .glb into the open mod (check, import)
 void export_area();                     // check and write the package into a folder
 void mod_bar();                         // the open mod, undo / redo, check, save, revert
+void mcp_area();                        // Claude / MCP: the switch, the address, the token and the command
+void mcp_prompt();                      // a tool client's Allow / Deny question, when one waits
+
+// ---- the quest editor (editor_quests.cpp) ----
+void quest_editor(const Value& m);      // the Quests window: the graph (or the list) and its inspector
+void quest_live(const Value& m);        // while playing: the graph with the game's step highlighted
+bool quest_graph_while_playing();       // the user wants the graph over the game while playing
+bool quest_connecting();                // two steps are being connected (the drag, or the popup that completes it)
+void cancel_quest_connect();            // Esc: drop that connection
+void flags_area();                      // the open mod's flags and their values (test mode: editable)
+void search_area();                     // search the open mod
+std::string quest_status();             // "Lighthouse quest: step 3 of 6" for the status bar ("" none)
+void show_quest(const std::string& quest, const std::string& field);  // a problem was clicked: open that quest and step
+std::vector<std::string>& multi_selection();  // the selected actors (Ctrl or Shift adds); selected() is the main one
+
+// ---- the scene editor (editor_scenes.cpp) ----
+void scene_editor(const Value& m);      // the Scenes window: steps, timeline, inspector, trigger, native version, previews
+void show_scene(const std::string& scene, int step);  // open the Scenes window at that scene and step (0: none)
+bool scenes_focused();                  // the Scenes window has the keyboard (Ctrl+C / Ctrl+V are its own)
+// What the picture shows of the scene editor: the shown scene, its selected step and walk point (1-based,
+// 0 none) and the timeline's cursor (frames, < 0 none). False without a scene.
+bool scene_picture(std::string& scene, int& step, int& point, double& scrub);
 }  // namespace editor_ui

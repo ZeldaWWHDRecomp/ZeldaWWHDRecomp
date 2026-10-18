@@ -53,13 +53,9 @@ void set_record_worker_saved_choice(bool on);
 bool record_worker_requested(); // no thread while disabled
 // Default of Graphics > Advanced "Record graphics on a second thread" when the player never chose:
 // on for Android (phones are usually limited by the render thread), off elsewhere
-constexpr bool record_worker_default() {
-#ifdef __ANDROID__
-    return true;
-#else
-    return false;
-#endif
-}
+// Off by default everywhere: on a Xiaomi 14 (Snapdragon 8 Gen 3) it made typical frames ~0.6 ms faster but
+// the slowest 1% ~3 ms slower (1% low 42 instead of 49 fps at 120 fps interpolation) than the single-thread path.
+constexpr bool record_worker_default() { return false; }
 bool producer_presentation_recording(); // producer-only scoped routing
 bool record_worker_active(); // producer only, under GX2 execution mutex
 void start_record_worker();

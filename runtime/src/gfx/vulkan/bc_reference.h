@@ -7,6 +7,13 @@
 namespace gfxvk::bc {
 inline unsigned block_bytes(unsigned type) { return type == 1 || type == 4 ? 8 : 16; }
 inline uint32_t word(const uint8_t* p, unsigned n) { return uint32_t(p[n]) | uint32_t(p[n+1]) << 8; }
+// BC3 alpha / BC4 / BC5 channel block (2 endpoint bytes, 48 selector bits). Which palette a block
+// uses is decided on the raw endpoints: signed -127 > -128 is the 8-value mode although both decode
+// to -1.0 (D3D / Khronos BC4 rule; native BC hardware agrees). Selector 6 / 7 of the 6-value mode
+// are the constants 0 / 255 (signed: -127 / 127), never interpolants.
+inline bool eight_values(const uint8_t* p, bool sign) {
+    return sign ? int8_t(p[0]) > int8_t(p[1]) : p[0] > p[1];
+}
 inline int channel(const uint8_t* p, unsigned pixel, bool sign) {
     int a = sign ? std::max(-127, int(int8_t(p[0]))) : p[0];
     int b = sign ? std::max(-127, int(int8_t(p[1]))) : p[1];
@@ -14,7 +21,7 @@ inline int channel(const uint8_t* p, unsigned pixel, bool sign) {
     unsigned i = (bits >> (3*pixel)) & 7;
     if (i == 0) return a;
     if (i == 1) return b;
-    if (a > b) return ((8-int(i))*a + (int(i)-1)*b)/7;
+    if (eight_values(p, sign)) return ((8-int(i))*a + (int(i)-1)*b)/7;
     if (i < 6) return ((6-int(i))*a + (int(i)-1)*b)/5;
     return i == 6 ? (sign ? -127 : 0) : (sign ? 127 : 255);
 }
@@ -46,9 +53,10 @@ inline std::array<uint8_t,4> pixel(const uint8_t* block, unsigned type, bool sig
 inline std::array<int,8> channel_palette(const uint8_t* p, bool sign) {
     int a = sign ? std::max(-127, int(int8_t(p[0]))) : p[0];
     int b = sign ? std::max(-127, int(int8_t(p[1]))) : p[1];
+    const bool eight = eight_values(p, sign);
     std::array<int,8> v{a, b};
     for (int i = 2; i < 8; ++i)
-        v[i] = a > b ? ((8-i)*a + (i-1)*b)/7 : i < 6 ? ((6-i)*a + (i-1)*b)/5 : i == 6 ? (sign ? -127 : 0) : (sign ? 127 : 255);
+        v[i] = eight ? ((8-i)*a + (i-1)*b)/7 : i < 6 ? ((6-i)*a + (i-1)*b)/5 : i == 6 ? (sign ? -127 : 0) : (sign ? 127 : 255);
     return v;
 }
 // One whole block, row by row (16 RGBA pixels): the palettes once per block. The production CPU
@@ -86,6 +94,38 @@ inline void decode_block(const uint8_t* block, unsigned type, bool sign, uint8_t
         if (type == 2) out[4*n+3] = uint8_t(((block[n/2] >> (4*(n%2))) & 15)*17);
         if (type == 3) out[4*n+3] = uint8_t(alpha[(abits >> (3*n)) & 7]);
     }
+}
+// Known-answer blocks for the GPU decoder's self-test and the tests: every selector in every pixel
+// position of both channel palette modes (also a whole block of one selector, the case Qualcomm's
+// v762 compiler got wrong), endpoint pairs around the mode boundary for unsigned and signed blocks
+// (incl. -127 / -128), and the colour modes; the remaining bytes are pseudo-random. `count` blocks
+// of `block_bytes(type)` bytes.
+inline std::vector<uint8_t> known_answer_blocks(unsigned type, unsigned count = 256) {
+    static constexpr uint8_t ends[][2] = {{0,0},{0,255},{255,0},{30,255},{2,32},{200,10},{128,127},{127,128},
+        {0x80,0x81},{0x81,0x80},{1,0},{0,1},{100,100},{0xff,0xfe},{0xfe,0xff},{64,192}};
+    const unsigned bytes = block_bytes(type);
+    std::vector<uint8_t> blocks(size_t(count) * bytes);
+    uint32_t random = 0x2545f491u + type;
+    for (auto& b : blocks) { random = random * 1664525u + 1013904223u; b = uint8_t(random >> 24); }
+    for (unsigned n = 0; n < count; ++n) {
+        uint8_t* block = blocks.data() + size_t(n) * bytes;
+        const unsigned pattern = n % 16;  // 0..7: pixel p has selector (p + k) % 8; 8..15: all selector k
+        const auto* e = ends[(n / 16) % 16];
+        uint64_t bits = 0;
+        for (unsigned p = 0; p < 16; ++p) bits |= uint64_t(pattern < 8 ? (p + pattern) % 8 : pattern - 8) << (3*p);
+        auto put = [&](uint8_t* c, uint8_t a, uint8_t b) {
+            c[0] = a; c[1] = b;
+            for (unsigned i = 0; i < 6; ++i) c[2+i] = uint8_t(bits >> (8*i));
+        };
+        if (type == 3 || type == 4 || type == 5) put(block, e[0], e[1]);
+        if (type == 5) put(block + 8, e[1], e[0]);  // the other order in the second channel
+        if (type <= 3 && (n / 16) % 2) {  // colour blocks: equal and swapped 565 endpoints for both BC1 modes
+            uint8_t* color = block + (type == 1 ? 0 : 8);
+            color[2] = color[0]; color[3] = color[1];
+            if ((n / 32) % 2) color[0] ^= 1;
+        }
+    }
+    return blocks;
 }
 inline std::vector<uint8_t> decode(const std::vector<uint8_t>& blocks, unsigned w, unsigned h, unsigned slices, unsigned mode) {
     unsigned type=mode&255; bool sign=mode&256;

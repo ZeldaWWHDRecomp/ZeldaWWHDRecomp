@@ -5,10 +5,15 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
 namespace gfxvk {
+std::mutex& graphics_queue_mutex() {
+  static std::mutex m;
+  return m;
+}
 namespace {
 struct Header {
   uint32_t opcode;
@@ -1118,7 +1123,12 @@ void PodCommands::replay(const std::vector<std::byte> &bytes) {
           info.pSignalSemaphores = signals.data();
           info.pWaitDstStageMask = stages.data();
           if (handoff_trace::enabled()) handoff_trace::emit_worker(handoff_trace::Kind::QueueSubmitBegin);
-          const VkResult result = gfxvk::vkQueueSubmit(queue, 1, &info, fence);
+          VkResult result;
+          {
+            // a held TV present (even frame delivery) may be issued by the producer meanwhile
+            std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+            result = gfxvk::vkQueueSubmit(queue, 1, &info, fence);
+          }
           if (handoff_trace::enabled()) handoff_trace::emit_worker(handoff_trace::Kind::QueueSubmitEnd, uint64_t(int64_t(result)));
           checked(result);
         }

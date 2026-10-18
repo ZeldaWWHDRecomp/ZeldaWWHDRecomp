@@ -53,7 +53,7 @@ static void menu(int mode,float width,float height,float density) {
     // TAB's horizontal seam must also be continuous.
     move(.4f,.49f);float y=io.MousePos.y;
     move(.4f,.51f);assert(std::fabs((io.MousePos.y-y)-io.DisplaySize.y*.02f)<1.01f);
-    if(io.MouseDrawCursor)assert(ImGui::GetForegroundDrawList()->VtxBuffer.Size>0);
+    if(io.MouseDrawCursor)assert(ImGui::GetForegroundDrawList(ImGui::GetMainViewport())->VtxBuffer.Size>0);
     io.DisplaySize.x*=1.25f;move(.4f,.51f);assert(std::fabs(io.MousePos.x-io.DisplaySize.x*.4f)<1.01f);
     move(-FLT_MAX,-FLT_MAX);assert(!ImGui::IsMousePosValid());
     ImGui::DestroyContext();

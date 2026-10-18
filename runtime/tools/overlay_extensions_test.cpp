@@ -12,6 +12,7 @@
 #include "imgui_internal.h"
 #include "input_map.h"
 #include "overlay/extensions.h"
+#include "overlay/layer_escape.h"
 #include "overlay/release_gate.h"
 #include "overlay/text_entry.h"
 
@@ -286,6 +287,41 @@ void text_fields() {
     ext::reset_for_test();
 }
 
+// Esc and a layer's action (layer_escape.h): the first Esc cancels the editor's placing, handle drag or
+// quest connection and is taken with its repeats and release; an Esc with nothing to cancel is Settings'.
+void layer_escape() {
+    using editor_escape::Cancel;
+    assert(editor_escape::what(true, true, true) == Cancel::Drag);
+    assert(editor_escape::what(false, true, true) == Cancel::Connect);
+    assert(editor_escape::what(false, false, true) == Cancel::Placing);
+    assert(editor_escape::what(false, false, false) == Cancel::None);
+    editor_escape::Gate gate;
+    LayerEscape esc;
+    const std::function<bool()> cancel = [&] { return gate.take(); };
+    // placing: the first Esc cancels it (taken), the release too; the render thread then stops placing
+    gate.publish(Cancel::Placing);
+    assert(esc.route(true, false, true, cancel));
+    assert(esc.route(true, true, true, cancel));   // a held Esc's repeats stay with it
+    assert(esc.route(false, false, true, cancel));  // and its release
+    assert(gate.requested() == Cancel::Placing && gate.requested() == Cancel::None);
+    // nothing going on: Esc is not the layer's (Settings opens)
+    gate.publish(Cancel::None);
+    assert(!esc.route(true, false, true, cancel) && !esc.route(false, false, true, cancel));
+    // a taken Esc waits for its frame: a second Esc before it is Settings', and a publish meanwhile is ignored
+    gate.publish(Cancel::Drag);
+    assert(esc.route(true, false, true, cancel) && esc.route(false, false, true, cancel));
+    gate.publish(Cancel::Drag);
+    assert(!esc.route(true, false, true, cancel));
+    esc.route(false, false, true, cancel);
+    assert(gate.requested() == Cancel::Drag);
+    // the layer off (Settings or the game's text prompt open, not the editor view): never the layer's
+    gate.publish(Cancel::Connect);
+    assert(!esc.route(true, false, false, cancel) && !esc.route(false, false, false, cancel));
+    assert(gate.requested() == Cancel::None);
+    // a layer without cancel
+    assert(!esc.route(true, false, true, nullptr));
+}
+
 }  // namespace
 
 int main() {
@@ -294,6 +330,7 @@ int main() {
     sealed_late();
     shortcuts();
     text_fields();
+    layer_escape();
     printf("overlay extensions: tabs, features, seal, shortcuts and text fields passed\n");
     return 0;
 }

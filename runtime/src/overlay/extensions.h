@@ -118,6 +118,11 @@ struct InputLayer {
     // input thread, before the game sees a key (and before Dear ImGui): true takes it. `typing`: a text
     // field of the overlays has the keyboard.
     std::function<bool(int code, bool down, bool repeat, bool typing)> key;
+    // input thread, Esc pressed while the settings menu is closed (after a captured mouse was freed, the
+    // first Esc's own use): true when the layer had an action going (placing, dragging, connecting) and
+    // cancels it; that Esc (and its release) is then taken, and Settings opens only on an Esc with nothing
+    // to cancel. Optional.
+    std::function<bool()> cancel;
 };
 void set_input_layer(InputLayer layer);
 
