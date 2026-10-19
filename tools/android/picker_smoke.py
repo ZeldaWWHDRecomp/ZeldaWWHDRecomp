@@ -13,6 +13,41 @@ from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 
 
+def wait_for_feedback(fragment, read_nodes, expand_details, scroll_forward, rewind,
+                      *, clock=time.monotonic, timeout=60):
+    """Search the scrollable setup screen, including its collapsed technical record.
+
+    A hierarchy dump can take seconds on the CI emulator. Do not spend the entire
+    feedback timeout dumping every page twice and repeatedly returning to the top.
+    Inspect each post-scroll snapshot on the next iteration. Two bounded passes
+    allow a refresh/window transition without an unbounded scrolling retry loop.
+    """
+    deadline = clock() + timeout
+    seen = []
+    for _ in range(2):
+        previous = None
+        for _ in range(12):
+            if clock() >= deadline:
+                break
+            nodes = read_nodes()
+            seen = [node.get("text", "") for node in nodes if node.get("text")]
+            if any(fragment in text for text in seen):
+                rewind()
+                return
+            if any(node.get("text") == "Details" for node in nodes):
+                expand_details()
+                previous = None
+                continue
+            current = [(node.get("text"), node.get("bounds")) for node in nodes]
+            if current == previous or not scroll_forward(nodes):
+                break
+            previous = current
+        if clock() >= deadline:
+            break
+        rewind()
+    raise AssertionError("Missing feedback: " + fragment + "; text on the last screen: " + repr(seen))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", default="adb")
@@ -219,22 +254,7 @@ def main():
         raise AssertionError("Picker grant observation timed out")
 
     def wait_text(fragment):
-        # The setup screen scrolls: the technical record (behind Details) is its last part and is
-        # below the visible area once the screen shows more choices. Page through it, then return
-        # to the start, where the following steps find their controls.
-        deadline = time.monotonic() + 15
-        seen = []
-        while time.monotonic() < deadline:
-            nodes = ui()
-            seen = [node.get("text", "") for node in nodes if node.get("text")]
-            if any(fragment in text for text in seen):
-                to_top()
-                return
-            if find("Details", nodes=nodes) is not None:
-                tap("Details")  # the technical record
-                continue
-            if not swipe(nodes) or screen(ui()) == screen(nodes): to_top()  # at the end: look again from the start
-        raise AssertionError("Missing feedback: " + fragment + "; text on the last screen: " + repr(seen))
+        wait_for_feedback(fragment, ui, lambda: tap("Details"), swipe, to_top)
 
     def preservation(identity):
         root = "no_backup/ondevice/jobs/" + identity
