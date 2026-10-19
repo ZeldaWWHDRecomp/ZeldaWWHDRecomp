@@ -288,6 +288,41 @@ void cross_thread_checkpoint_and_isolated_dispatch() {
     recorder.finish_exact();assert(calls==std::vector<int>{1});calls.clear();
 }
 
+void stereo_eye_stream() {
+    // Stereo (gfx/vulkan/stereo.cpp): eye 1's commands are held in a detached recorder, then
+    // replayed in order through the renderer's own recorder at a splice point.
+    gfxvk::DeferredCommands renderer,eye;
+    renderer.start_capture();
+    eye.start_detached_capture([] { throw std::logic_error("held out of order"); });
+    assert(gfxvk::active_deferred_commands==&renderer&&eye.capturing());
+    gfxvk::record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle<VkPipeline>(2));
+    gfxvk::eye_deferred_commands=&eye;
+    gfxvk::record::vkCmdDraw(cmd,3,1,0,0);
+    {
+        gfxvk::IsolatedCommandDispatch isolated;
+        assert(gfxvk::dispatch_recorder()==nullptr);
+    }
+    assert(renderer.command_count()==1&&eye.command_count()==1&&calls.empty());
+    gfxvk::eye_deferred_commands=nullptr;
+    auto held=eye.take();
+    assert(held.size()==1&&!eye.command_count()&&eye.capturing()&&gfxvk::active_deferred_commands==&renderer);
+    for(auto& command:held)gfxvk::record::emit_owned(std::move(command));
+    assert(renderer.command_count()==2&&calls.empty());
+    // A nested record:: call during the renderer's emission reaches the API even while the
+    // eye stream is attached (a deferred pipeline bind).
+    gfxvk::record::emit_owned([] { gfxvk::record::vkCmdDraw(cmd,3,1,0,0); });
+    gfxvk::eye_deferred_commands=&eye;
+    renderer.emit_exact();
+    assert((calls==std::vector<int>{2,1,1})&&!eye.command_count()&&gfxvk::eye_deferred_commands==&eye);calls.clear();
+    gfxvk::eye_deferred_commands=nullptr;
+    // A detached tail cannot be emitted in place of the commands recorded before it.
+    eye.vkCmdDraw(cmd,3,1,0,0);
+    bool refused=false;
+    try { eye.finish_exact(); }catch(const std::logic_error&){refused=true;}
+    assert(refused&&calls.empty()&&eye.command_count()==1);
+    eye.take();
+}
+
 void guest_thread_exit_retains_global_recorder() {
     std::mutex execution;
     gfxvk::DeferredCommands* started=nullptr;
@@ -305,4 +340,4 @@ void guest_thread_exit_retains_global_recorder() {
 }
 
 }
-int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();guest_thread_exit_retains_global_recorder(); }
+int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();stereo_eye_stream();guest_thread_exit_retains_global_recorder(); }

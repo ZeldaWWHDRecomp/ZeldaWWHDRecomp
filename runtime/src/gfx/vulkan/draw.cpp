@@ -93,9 +93,13 @@ struct DrawBatchState {
 DrawBatchState drawBatchState;
 uint64_t drawBatchSubmissions = 0;
 bool aoPrivateReplay = false;
-uint32_t aoPrivateSource = 0;
-uint64_t aoPrivateFrame = ~0ull;
-Surface aoPrivateColor, aoPrivateDepth;
+struct AoPrivate {
+  uint32_t source = 0;
+  uint64_t frame = ~0ull;
+  Surface color, depth;
+};
+std::array<AoPrivate, 2> aoPrivateEyes;  // stereo: each eye replays into its own images
+AoPrivate& ao_private() { return aoPrivateEyes[stereoEye]; }
 Surface* private_ao_surface(Surface& dst, const Surface* like) {
   const uint64_t logicalWidth = uint64_t(like->width) * 3 / 2;
   const uint64_t logicalHeight = uint64_t(like->height) * 3 / 2;
@@ -1700,7 +1704,8 @@ VkImageView feedback_view(Surface *source, const uint32_t *textureWords,
   }();
   Surface temporary;
   Surface* copy = &temporary;
-  FeedbackScratch* slot = reuse && unit < kFeedbackUnitsPerStage
+  // Not in stereo: eye 1's held draws would sample a copy eye 0 has since replaced (stereo.h).
+  FeedbackScratch* slot = reuse && unit < kFeedbackUnitsPerStage && stereo::frame.mode == stereo::Off
       ? &feedbackScratch[(vertex ? kFeedbackUnitsPerStage : 0) + unit]
       : nullptr;
   // Device recreation is not a supported lifecycle today; refuse to reuse or
@@ -1894,7 +1899,8 @@ struct ContinuedDraw {
   Pipeline* pipeline = nullptr;
   ContinuedStage stages[2];
 };
-ContinuedDraw continued;
+// Stereo: each eye's command stream continues its own previous draw (stereo.h).
+std::array<ContinuedDraw, 2> continuedEyes;
 struct ContinuedStats {
   uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
   std::array<uint64_t, kReasons> reasons{};
@@ -1947,11 +1953,12 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
   const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
   const uint32_t guestHeight = colors[0] ? colors[0]->height : 0;
   if (aoPrivateReplay && colors[0]) {
-    aoPrivateSource = colors[0]->addr;
-    colors[0] = private_ao_surface(aoPrivateColor, colors[0]);
+    auto& ao = ao_private();
+    ao.source = colors[0]->addr;
+    colors[0] = private_ao_surface(ao.color, colors[0]);
     t.slices[0] = 0;
     if (depth) {
-      depth = private_ao_surface(aoPrivateDepth, depth);
+      depth = private_ao_surface(ao.depth, depth);
       t.depthSlice = 0;
     }
   }
@@ -1989,10 +1996,11 @@ Surface* resolve_texture(const uint32_t* r, vk::Shader* sh, uint32_t unit, bool*
   auto *s = sampled_texture(r + texbase + unit * 7, sh->dec->textureUsesDepthCompare[unit]);
   if (!s)
     exception_report::raise("missing sampled texture");
-  if (!sh->vertex && ao_hires_enabled() && aoPrivateSource &&
-      s->addr == aoPrivateSource && aoPrivateFrame == R.frame &&
+  auto& ao = ao_private();
+  if (!sh->vertex && ao_hires_enabled() && ao.source &&
+      s->addr == ao.source && ao.frame == R.frame &&
       sh->kind == gfx::ProgramKind::OcclusionPixel) {
-    s = &aoPrivateColor;
+    s = &ao.color;
     if (substituted) *substituted = true;
   }
   upload_surface(s);
@@ -2313,7 +2321,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
 }
 // WWHD_VK_FASTPATH_VERIFY: the full resolution of a continued draw, compared with the reused state
 bool verify_continued(const uint32_t* r, uint32_t prim) {
-  const auto& c = continued;
+  const auto& c = continuedEyes[stereoEye];
   int kind = -1;
   char detail[200] = "";
   uint64_t fsKey = 0;
@@ -2371,7 +2379,7 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   return false;
 }
 ContinuedReason continued_reason(uint32_t prim) {
-  const auto& c = continued;
+  const auto& c = continuedEyes[stereoEye];
   if (!c.valid) return c.invalidReason;
   if (c.frame != R.frame) return kNewFrame;
   if (c.stateVersion != gx2::g_full_state_version) return kRegisters;
@@ -2407,30 +2415,22 @@ UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
                                 windowLength,data,poisonUnused);
 }
 
-namespace {
-uint32_t stereoOtherAoSource = 0;
-uint64_t stereoOtherAoFrame = ~0ull;
-Surface stereoOtherAoColor, stereoOtherAoDepth;
-}
-void stereo_swap_ao() {
-  std::swap(aoPrivateSource, stereoOtherAoSource);
-  std::swap(aoPrivateFrame, stereoOtherAoFrame);
-  std::swap(aoPrivateColor, stereoOtherAoColor);
-  std::swap(aoPrivateDepth, stereoOtherAoDepth);
-}
 void stereo_release_ao() {
-  destroy_surface_image(&stereoOtherAoColor);
-  destroy_surface_image(&stereoOtherAoDepth);
-  stereoOtherAoColor={};
-  stereoOtherAoDepth={};
-  stereoOtherAoSource=0;
-  stereoOtherAoFrame=~0ull;
+  auto& ao = aoPrivateEyes[1];
+  destroy_surface_image(&ao.color);
+  destroy_surface_image(&ao.depth);
+  ao = {};
 }
-void reset_ao_private_cache() { aoPrivateFrame = ~0ull; aoPrivateSource = 0; }
+void reset_ao_private_cache() {
+  for (auto& ao : aoPrivateEyes) {
+    ao.frame = ~0ull;
+    ao.source = 0;
+  }
+}
 void drain_pending_guest_pipelines() {
   for (auto& [key, value] : pipelines) resolve_pending_pipeline(value);
 }
-void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continued = {}; }
+void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continuedEyes = {}; }
 uint64_t draw_batch_submissions() { return drawBatchSubmissions; }
 // WWHD_VK_TRACE_PASSES=1 (issue #144): log each new render pass shape once, just before the driver
 // sees it, so a crash inside vkCmdBeginRendering names the last pass in the crash report's log lines
@@ -2459,6 +2459,11 @@ static void trace_pass(const std::array<Surface *, 8> &colors, uint32_t ncolor, 
             (depth->fmt.stencil ? "/stencil" : "");
   LOG("[vulkan pass] %ux%u, %u colour attachment(s)%s", width, height, ncolor, text.c_str());
 }
+// The depth target is the light-space sun atlas both eyes share (stereo_light_atlas).
+static bool sun_atlas_target(const uint32_t* r) {
+  return r[mmDB_HTILE_DATA_BASE]==((1024u<<16)|1024u) && r[gx2::kDepthSlicesReg]==3 &&
+      LatteMRT::GetActiveDepthBufferMask(*reinterpret_cast<const LatteContextRegister*>(r));
+}
 void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexType,
                  uint32_t indexAddr,uint32_t baseVertex,uint32_t instances) {
   if(stereo::frame.mode==stereo::Off) {
@@ -2466,12 +2471,19 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances);
     return;
   }
+  // Eye 0 always draws first, so it makes every transition of the shared atlas in the
+  // renderer's stream. Eye 1's held commands may still sample the atlas: emit them before
+  // it is drawn again, and emit an eye 1 draw into it at once.
+  const bool atlas=sun_atlas_target(r);
+  if(atlas) stereo_flush();
   bool shared=false;
   try {
+    stereo_select_eye(0);
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances,&shared);
     if(shared) return; // keep the light-space render pass open
-    stereo_select_eye(1-stereoEye);
+    stereo_select_eye(1);
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances);
+    if(atlas) stereo_flush();
   } catch(...) { stereo_select_eye(0);throw; }
 }
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
@@ -2479,6 +2491,7 @@ bool clouds_skip_card();
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
+  auto& continued = continuedEyes[stereoEye];
   if (clouds_skip_card()) return;  // clouds.cpp: toon clouds replace the game's cloud cards
   if (!count || !instances || ((prim == 0x13 || prim == 0x14) && count < 4))
     return;
@@ -2542,9 +2555,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // Both eyes use the same sun-cascade atlas, rendered from the light's view.
   // All camera-space passes, including the shadow mask, still draw twice.
   if(viewIndependent)
-    *viewIndependent = r[mmDB_HTILE_DATA_BASE]==((1024u<<16)|1024u) &&
-      r[gx2::kDepthSlicesReg]==3 &&
-      LatteMRT::GetActiveDepthBufferMask(*reinterpret_cast<const LatteContextRegister*>(r)) &&
+    *viewIndependent = sun_atlas_target(r) &&
       !LatteMRT::GetActiveColorBufferMask(ps->dec,*reinterpret_cast<const LatteContextRegister*>(r));
   const bool stripRestart = indexAddr &&
       (prim == 3 || prim == 6) &&
@@ -2797,7 +2808,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     bool viewportValid = false, scissorValid = false;
     bool blendValid = false, stencilValid = false;
   };
-  static DrawStateCache state;
+  // per eye: while stereo is on, each eye's pass stays open in its own command stream
+  static std::array<DrawStateCache, 2> states;
+  auto& state = states[stereoEye];
   // A tracked active pass can only contain our draw commands. Every pass end,
   // including submit/fence/reset, makes reusePass false on the next draw.
   // Reset conservatively on a new pass so external command recording cannot
@@ -3158,13 +3171,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (depth) mark_draw_target_written(depth);
   R.drawCount++;
   if (aoPrivateReplay) {
-    aoPrivateFrame = R.frame;
+    ao_private().frame = R.frame;
     return;
   }
   if (ao_hires_enabled() && colors[0] &&
       ps->kind == gfx::ProgramKind::DepthDownsample) {
     struct ReplayGuard {
-      ReplayGuard() { aoPrivateReplay = true; aoPrivateFrame = ~0ull; }
+      ReplayGuard() { aoPrivateReplay = true; ao_private().frame = ~0ull; }
       ~ReplayGuard() { aoPrivateReplay = false; }
     } guard;
     draw(r, prim, count, indexType, indexAddr, baseVertex, instances);

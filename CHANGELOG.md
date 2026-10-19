@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Stereo 3D costs far less GPU time** (#248): each eye keeps its render pass open instead of ending it at every
+  draw, so a stereo frame draws in about a seventh of the render passes (90 instead of about 635 in a Windfall
+  interior). On phones and standalone headsets, whose GPUs store and reload the picture at every pass, stereo
+  had cost five to seven times a 2D frame; on a desktop GPU the frame's GPU time about halves. The picture is
+  unchanged.
 - **Quick-use locked items** (Mods > Built-in, off by default; #196, thanks mhbxyz): while locked onto an enemy, one
   item-button press equips and uses the bow (including fire, ice and light arrows), boomerang, hookshot or grappling
   rope; bombs are readied and thrown, and equipping the hammer completes one strike. A **Quick-use animation speed**

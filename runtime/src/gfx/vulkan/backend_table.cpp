@@ -52,7 +52,8 @@ const Backend& vulkan_backend() {
         b.clear_depth_stencil = [](const uint32_t* r, uint32_t db, float d, uint32_t s, uint32_t f) { gfxvk::stereo_pair([&] { gfxvk::clear_depth_stencil(r, db, d, s, f); }); };
         b.copy_surface = [](uint32_t s, uint32_t sm, uint32_t sl, uint32_t d, uint32_t dm, uint32_t dl) { gfxvk::stereo_pair([&] { gfxvk::copy_surface(s, sm, sl, d, dm, dl); }); };
         b.copy_to_scan = [](uint32_t cb, uint32_t t) { gfxvk::stereo_pair([&] { gfxvk::copy_to_scan(cb, t); }); };
-        b.swap = [] { gfxvk::stereo_select_eye(0); gfxvk::swap(); gfxvk::stereo_latch(); };
+        // eye 1's held commands precede the presentation recorded into the frame's last submission
+        b.swap = [] { gfxvk::stereo_flush(); gfxvk::stereo_select_eye(0); gfxvk::swap(); gfxvk::stereo_latch(); };
         b.peek_z = [](const uint32_t* c, uint32_t n) { gfxvk::stereo_select_eye(0); gfxvk::peek_z(c,n); };
         b.set_frame_aspect = gfxvk::set_frame_aspect;
         b.target_aspect_factors = gfxvk::target_aspect_factors;

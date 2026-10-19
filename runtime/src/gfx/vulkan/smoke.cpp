@@ -603,7 +603,7 @@ void stereo_geometry_check() {
  std::vector<int> order;
  stereo_pair([&]{order.push_back(stereoEye);},true);
  stereo_pair([&]{order.push_back(stereoEye);},true);
- require(order==std::vector<int>({0,1,1,0}),"stereo eye scheduling changed per-eye order");
+ require(order==std::vector<int>({0,1,0,1}),"stereo eye scheduling changed per-eye order");
  left->gpuWritten=right->gpuWritten=false;
  left->dirty=right->dirty=false;
  left->lastCheckedFrame=right->lastCheckedFrame=R.frame;
@@ -656,6 +656,52 @@ void stereo_geometry_check() {
  stereo::frame=oldFrame;stereo::requestedMode=oldMode;
  flush();
  fprintf(stderr,"[renderer smoke] stereo geometry, convergence, HUD, eye isolation and toggle cleanup PASS\n");
+}
+// Issue #248: switching eyes keeps both render passes open; eye 1's held commands follow eye 0's
+// at the submission, also behind a deferred capture of the renderer's own commands.
+void stereo_stream_check() {
+ const auto oldFrame=stereo::frame;
+ stereo::frame.mode=stereo::HalfSBS;
+ SurfaceDesc desc;desc.addr=0x3E100000;desc.width=desc.height=desc.pitch=16;desc.format=0x1a;
+ Surface* left=find_or_create_surface(desc,true);
+ stereo_select_eye(1);
+ Surface* right=find_or_create_surface(desc,true);
+ stereo_select_eye(0);
+ auto open=[](Surface* s,float red) {
+  transition_image(s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(s,0);target.imageLayout=s->layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[0]=red;target.clearValue.color.float32[3]=1;
+  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea={{0,0},{s->extent.width,s->extent.height}};ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
+  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s->fmt.pixel,s->layout); });
+  R.rendering=R.passTracked=true;R.passColors={};R.passColors[0]=s;mark_gpu_written(s);
+ };
+ for(int captured=0;captured<2;++captured) {
+  if(captured) {
+   if(active_deferred_commands) break; // the record worker's stream: no capture to append to
+   deferred_commands().start_capture();
+  }
+  open(left,1);
+  stereo_select_eye(1);
+  require(!R.rendering,"eye 1 inherited eye 0's render pass");
+  open(right,captured?.25f:.5f);
+  require(eye_deferred_commands&&eye_deferred_commands->command_count(),"eye 1 commands were not held");
+  stereo_select_eye(0);
+  require(R.rendering&&R.passColors[0]==left,"eye switch ended eye 0's render pass");
+  stereo_select_eye(1);
+  require(R.rendering&&R.passColors[0]==right,"eye switch ended eye 1's render pass");
+  if(captured) {
+   const size_t before=active_deferred_commands->command_count();
+   stereo_flush();
+   require(active_deferred_commands->command_count()>before,"held eye 1 commands bypassed the renderer's capture");
+  }
+  flush();
+  require(!R.rendering&&!eye_deferred_commands->command_count(),"submission left eye 1's pass open");
+  stereo_select_eye(0);
+  require(!R.rendering,"submission left eye 0's pass open");
+  auto l=read_image(*left,VK_IMAGE_ASPECT_COLOR_BIT,4),r=read_image(*right,VK_IMAGE_ASPECT_COLOR_BIT,4);
+  require(l[0]==255&&std::abs(int(r[0])-(captured?64:128))<=1,"held eye 1 pass rendered the wrong image");
+ }
+ stereo::frame=oldFrame;
+ fprintf(stderr,"[renderer smoke] stereo eye streams keep both passes open PASS\n");
 }
 // Bind a rendered base first, then a mip-chain assembled from that same base.
 // The second resolution must not invalidate the first descriptor's read layout.
@@ -1256,6 +1302,7 @@ int renderer_smoke_test() {
     R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
     fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
    }
+   stereo_stream_check();
    stereo_geometry_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);

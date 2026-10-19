@@ -965,6 +965,7 @@ VkCommandBuffer command_buffer() {
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (!R.recording) {
+    RendererCommands rendererCommands;  // the submission's timestamps open it, never eye 1's commands
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (auto* stream = record_worker_commands()) {
@@ -1288,6 +1289,8 @@ static void publish_or_finish_present_prefix(DeferredCommands& owner) {
 static void submit(VkSemaphore wait = VK_NULL_HANDLE,
                    VkSemaphore signal = VK_NULL_HANDLE, bool asynchronous=false) {
   if (!R.recording)return;
+  stereo_flush(); // stereo eye 1's held commands belong to this submission
+  RendererCommands rendererCommands;
   // Presentation owns externally synchronized semaphores: finish the entire
   // ordered CPU tail before handing those semaphores to Vulkan.
   bool externalSync=wait || signal;

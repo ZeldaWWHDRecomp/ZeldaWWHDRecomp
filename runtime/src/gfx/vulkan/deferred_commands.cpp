@@ -52,6 +52,19 @@ void DeferredCommands::start_capture(std::function<void()> beforeExact) {
     if(capturing_ || !commands_.empty())throw std::logic_error("deferred command tail already active");
     beforeExact_=std::move(beforeExact);capturing_=true;active_deferred_commands=this;
 }
+void DeferredCommands::start_detached_capture(std::function<void()> beforeExact) {
+    if (pod_) throw std::logic_error("POD worker does not retain lambda capture");
+    if(capturing_ || !commands_.empty())throw std::logic_error("deferred command tail already active");
+    beforeExact_=std::move(beforeExact);capturing_=true;
+}
+std::vector<std::function<void()>> DeferredCommands::take() {
+    if (pod_) throw std::logic_error("POD worker owns no lambda tail");
+    std::vector<std::function<void()>> tail;
+    tail.reserve(commands_.size()-emitted_);
+    for(size_t i=emitted_;i<commands_.size();++i)tail.emplace_back(std::move(commands_[i]));
+    commands_.clear();payloadBytes_=0;emitted_=0;
+    return tail;
+}
 void DeferredCommands::force_exact() {
     if (pod_) { drain_record_commands(); return; }
     capturing_=false;
@@ -65,6 +78,13 @@ void DeferredCommands::emit_exact() {
     if (pod_) { drain_record_commands(); return; }
     capturing_=false;
     if(active_deferred_commands==this)active_deferred_commands=nullptr;
+    // Emitted commands reach the API now; a nested record:: call (a deferred pipeline
+    // bind) must not be held by the stereo eye stream if the second eye is selected.
+    struct EyeDispatch {
+        DeferredCommands* eye=eye_deferred_commands;
+        EyeDispatch() { eye_deferred_commands=nullptr; }
+        ~EyeDispatch() { eye_deferred_commands=eye; }
+    } eyeDispatch;
     while(emitted_<commands_.size()) { commands_[emitted_]();++emitted_; }
     commands_.clear();payloadBytes_=0;emitted_=0;beforeExact_={};
 }
