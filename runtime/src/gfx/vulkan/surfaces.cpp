@@ -161,6 +161,11 @@ static void target_aspect(const Surface* s, float& kx, float& ky) {
     bool on = screen_shaped(s->width, s->height, s->fmt.compressed, s->mips, s->slices);
     kx = on ? g_aspect_kx : 1.0f;
     ky = on ? g_aspect_ky : 1.0f;
+    // Half SBS and top-and-bottom show each eye at half the width (height): render it at that size
+    // rather than drawing twice the pixels and squeezing half of them away. Allocation only: the
+    // projections and layouts keep the picture's shape (target_aspect_factors).
+    if (on && stereo::frame.mode == stereo::HalfSBS) kx *= 0.5f;
+    if (on && stereo::frame.mode == stereo::TAB) ky *= 0.5f;
 }
 
 // the factor a render target gets. Shadow maps (depth arrays: the game's cascades) scale with the
@@ -1175,10 +1180,21 @@ void upload_surface(Surface* s) {
     for(uint32_t level=0;level<levels;++level)
         hash=(hash^content_hash(mem::ptr(ranges[level].first),size_t(ranges[level].second)))*1099511628211ull;
     if(!s->dirty&&hash==s->contentHash)return;
-    end_encoder();transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    // A render target at another size than the guest's (stereo renders each eye narrower, stereo.h):
+    // upload at the guest size, then scale into it.
+    Surface guestSized;
+    Surface* target=s;
+    if(s->mips==1&&s->imageType==VK_IMAGE_TYPE_2D&&!s->fmt.compressed&&
+       (s->extent.width<s->width||s->extent.height<s->height)) {
+        guestSized.width=s->width;guestSized.height=s->height;guestSized.slices=s->slices;guestSized.dim=s->dim;
+        guestSized.format=s->format;guestSized.fmt=s->fmt;guestSized.isDepth=s->isDepth;
+        create_surface_image(&guestSized,false);
+        target=&guestSized;
+    }
+    end_encoder();transition_image(target,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     for(uint32_t level=0;level<s->mips;++level) {
         std::vector<uint8_t> data;uint32_t w,h,slices;decode_level(s,level,mip_base(s,level),data,w,h,slices);
-        if (s->bcDecoded) { bc_decode_upload(s,level,data,w,h,slices); continue; }
+        if (s->bcDecoded) { bc_decode_upload(target,level,data,w,h,slices); continue; }
         std::vector<VkBufferImageCopy> copies;std::vector<uint8_t> packed;
         bool threeD=s->imageType==VK_IMAGE_TYPE_3D;
         uint32_t layers=threeD?1:slices;
@@ -1197,8 +1213,12 @@ void upload_surface(Surface* s) {
         if(!staging.mapped){defer_buffer(staging);exception_report::raise("Vulkan texture staging allocation is not mapped");}
         memcpy(staging.mapped,packed.data(),packed.size());
         rprof::add_upload(rprof::kUpTexture,packed.size());
-        record::vkCmdCopyBufferToImage(command_buffer(),staging.buffer,s->image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(copies.size()),copies.data());
+        record::vkCmdCopyBufferToImage(command_buffer(),staging.buffer,target->image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(copies.size()),copies.data());
         defer_buffer(staging);
+    }
+    if(target!=s) {
+        resample(target,s,s->arrayLayers);
+        destroy_surface_image(target);
     }
     transition_image(s,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     s->contentHash=hash;s->writeSeq=next_write_seq();s->dirty=false;++g_stat_uploads;++g_surface_epoch;

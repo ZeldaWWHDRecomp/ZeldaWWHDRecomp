@@ -2811,15 +2811,22 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
   Screen &s = stereoEye ? stereoRight : (target == 4 ? R.drc : R.tv);
-  if (!s.buildingScan || s.buildingScan->extent.width != src->extent.width ||
-      s.buildingScan->extent.height != src->extent.height ||
+  // Half SBS and top-and-bottom render each eye at half the width (height) (surfaces.cpp): the scan
+  // keeps the picture's full shape, so presentation and captures lay it out as before.
+  uint32_t width = src->extent.width, height = src->extent.height;
+  if (stereo_screen_target(src->width, src->height)) {
+    if (stereo::frame.mode == stereo::HalfSBS) width *= 2;
+    if (stereo::frame.mode == stereo::TAB) height *= 2;
+  }
+  if (!s.buildingScan || s.buildingScan->extent.width != width ||
+      s.buildingScan->extent.height != height ||
       s.buildingScan->fmt.pixel != src->fmt.pixel) {
     if (s.buildingScan)
       destroy_surface_image(s.buildingScan.get());
     s.buildingScan = std::make_unique<Surface>();
     auto *d = s.buildingScan.get();
-    d->width = src->extent.width;
-    d->height = src->extent.height;
+    d->width = width;
+    d->height = height;
     d->format = src->format;
     d->fmt = src->fmt;
     d->scale = 1;
