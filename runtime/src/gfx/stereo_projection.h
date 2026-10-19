@@ -31,8 +31,32 @@ inline bool camera_projection(const float* p) {
         p[4]==0 && p[6]==0 && p[7]==0 && p[8]==0 && p[9]==0 &&
         p[10]<=-1 && p[11]<0 && p[12]==0 && p[13]==0 && p[14]==-1 && p[15]==0;
 }
+// The HD layouts (nw::lyt, aspect.cpp) draw the HUD, menus and message text through a
+// perspective projection of their own (fovy 40, near 1, far 10000). Every draw through one keeps
+// zero disparity, so all 2D information shares one plane, whichever way the matrix reaches the
+// shader (registers or a uniform block) and whichever layout was tagged last (TV or GamePad).
+// The TV's upload narrows the x row for the aspect ratio: the y and z rows identify it.
+struct LayoutSignature { float y, z, w; };
+inline LayoutSignature layoutSignatures[8];
+inline int layoutSignatureCount = 0, layoutSignatureNext = 0;  // render thread, like the tag in stereo.h
+inline bool layout_projection(const float* p) {
+    // The game's own value (DrawInfo's fovy 40, near 1, far 10000): also for layouts whose
+    // projection reaches the shader without the tag (the hearts, the B button's frame).
+    if (std::fabs(p[5]-2.747477f)<1e-4f && std::fabs(p[10]+1.0002f)<2e-6f &&
+        std::fabs(p[11]+2.0002f)<1e-4f) return true;
+    for (int i=0;i<layoutSignatureCount;++i)
+        if (p[5]==layoutSignatures[i].y && p[10]==layoutSignatures[i].z && p[11]==layoutSignatures[i].w)
+            return true;
+    return false;
+}
+inline void add_layout_signature(const float* p) {
+    if (!camera_projection(p) || layout_projection(p)) return;
+    layoutSignatures[layoutSignatureNext]={p[5],p[10],p[11]};
+    layoutSignatureNext=(layoutSignatureNext+1)%8;
+    if (layoutSignatureCount<8) ++layoutSignatureCount;
+}
 inline bool project_eye(float* p, float eye, float convergence) {
-    if (!camera_projection(p)) return false;
+    if (!camera_projection(p) || layout_projection(p)) return false;
     const float projectedEye = eye*p[0];
     p[2] -= projectedEye/convergence;
     p[3] -= projectedEye;

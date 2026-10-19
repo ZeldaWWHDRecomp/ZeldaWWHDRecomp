@@ -12,6 +12,8 @@ what is on `devel` and not released yet (also in the
   interior). On phones and standalone headsets, whose GPUs store and reload the picture at every pass, stereo
   had cost five to seven times a 2D frame; on a desktop GPU the frame's GPU time about halves. The picture is
   unchanged.
+- **Stereo 3D: the HUD, menus and text sit on one flat plane.** Button prompts, menus and message boxes no
+  longer separate from their labels: every HD layout element now has the same (zero) depth in both eyes.
 - **Quick-use locked items** (Mods > Built-in, off by default; #196, thanks mhbxyz): while locked onto an enemy, one
   item-button press equips and uses the bow (including fire, ice and light arrows), boomerang, hookshot or grappling
   rope; bombs are readied and thrown, and equipping the hammer completes one strike. A **Quick-use animation speed**

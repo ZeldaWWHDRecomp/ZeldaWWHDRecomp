@@ -63,4 +63,22 @@ int main() {
     stereo::set_convergence(0); assert(stereo::requestedConvergence==10);
     stereo::set_mode(stereo::TAB);stereo::latch();
     stereo::set_mode(stereo::Off);assert(stereo::frame.mode==stereo::TAB);
+    // HD layouts (HUD, menus, text): every projection with a tagged layout's y and z rows keeps
+    // zero disparity, also with a differently narrowed x row; game cameras are still shifted.
+    float layout[16]={1.4f,0,0,0, 0,2.74748f,0,0, 0,0,-1.0002f,-2.0002f, 0,0,-1,0};
+    uint32_t words[16];std::memcpy(words,layout,sizeof words);
+    stereo::tag_layout(0x40,words);
+    layout[0]=1.54546f;
+    float hud[16];std::memcpy(hud,layout,sizeof hud);
+    assert(!stereo::project_eye(hud,8,600)&&!std::memcmp(hud,layout,sizeof hud));
+    float camera[16];std::memcpy(camera,original,sizeof camera);
+    assert(stereo::project_eye(camera,8,600));
+    for (int i=0;i<12;++i) { float other[16];std::memcpy(other,original,sizeof other);other[11]=-30.0f-i;stereo::add_layout_signature(other); }
+    assert(stereo::layoutSignatureCount==8);
+    // The game's own layout projection keeps zero disparity even if it was never tagged.
+    stereo::layoutSignatureCount=0;
+    const float n=1,f=10000,t=std::tan(20.0f*3.14159265f/180.0f);
+    float untagged[16]={1/(t*16/9.0f),0,0,0, 0,1/t,0,0, 0,0,-(f+n)/(f-n),-2*f*n/(f-n), 0,0,-1,0};
+    float moved[16];std::memcpy(moved,untagged,sizeof moved);
+    assert(!stereo::project_eye(moved,8,600)&&!std::memcmp(moved,untagged,sizeof moved));
 }

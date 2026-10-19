@@ -563,8 +563,12 @@ void stereo_geometry_check() {
  std::vector<uint32_t> regs(0x10000);
  const uint32_t base=mmSQ_ALU_CONSTANT0_0+0x400;
  const float camera[16]={2,0,0,0, 0,3,0,0, 0,0,-1.01f,-20, 0,0,-1,0};
+ // An HD layout's projection (fovy 40, near 1, far 10000), its x row narrowed for the TV.
+ const float layout[16]={1.4f,0,0,0, 0,2.74748f,0,0, 0,0,-1.0002f,-2.0002f, 0,0,-1,0};
+ const auto oldSignatures=std::to_array(stereo::layoutSignatures);
+ const int oldSignatureCount=stereo::layoutSignatureCount,oldSignatureNext=stereo::layoutSignatureNext;
  memcpy(regs.data()+base,camera,64);
- memcpy(regs.data()+base+32,camera,64);
+ memcpy(regs.data()+base+32,layout,64);
  const auto oldTag=stereo::layoutProjection;
  const auto oldStart=stereo::layoutProjectionStart;
  stereo::tag_layout(base+32,regs.data()+base+32);
@@ -578,9 +582,16 @@ void stereo_geometry_check() {
  float leftRow[4],rightRow[4];
  memcpy(leftRow,leftUniforms.data()+16,16);memcpy(rightRow,rightUniforms.data()+16,16);
  require(leftRow[3]==16 && rightRow[3]==-16,"stereo remapped world projection not applied");
- require(!memcmp(leftUniforms.data()+64,camera,16)&&!memcmp(rightUniforms.data()+64,camera,16),"stereo moved tagged HUD projection");
+ require(!memcmp(leftUniforms.data()+64,layout,16)&&!memcmp(rightUniforms.data()+64,layout,16),"stereo moved tagged HUD projection");
+ // The same layout through a uniform block, with the tag naming other registers, and with the
+ // GamePad's unnarrowed x row: every HUD draw stays at zero disparity.
+ float block[16];memcpy(block,layout,64);block[0]=1.54546f;
+ stereo::project_uniform_block(reinterpret_cast<unsigned char*>(block),64,8,600);
+ require(block[0]==1.54546f&&!memcmp(block+1,layout+1,60),"stereo moved an HD layout projection in a uniform block");
  require(!memcmp(regs.data()+base,camera,64),"stereo modified shared guest uniforms");
  stereo::layoutProjection=oldTag;stereo::layoutProjectionStart=oldStart;
+ std::copy(oldSignatures.begin(),oldSignatures.end(),stereo::layoutSignatures);
+ stereo::layoutSignatureCount=oldSignatureCount;stereo::layoutSignatureNext=oldSignatureNext;
  SurfaceDesc desc;desc.addr=0x3E000000;desc.width=64;desc.height=64;desc.pitch=64;desc.format=0x1a;
  Surface* left=find_or_create_surface(desc,true);
  const float nearLeft=triangle(*left,-.4f,2);

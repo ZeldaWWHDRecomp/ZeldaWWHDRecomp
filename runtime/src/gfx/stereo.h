@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include "stereo_projection.h"
 
 // Output packing is independent of the aspect ratio of one eye.
 namespace stereo {
@@ -27,6 +28,8 @@ inline std::array<uint32_t,16> layoutProjection{};
 inline void tag_layout(uint32_t start, const uint32_t* words) {
     layoutProjectionStart=start;
     std::memcpy(layoutProjection.data(),words,64);
+    float p[16];std::memcpy(p,words,64);
+    add_layout_signature(p);
 }
 inline bool is_layout(const uint32_t* regs) {
     return layoutProjectionStart && !std::memcmp(regs+layoutProjectionStart,layoutProjection.data(),64);
