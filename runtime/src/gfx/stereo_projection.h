@@ -26,10 +26,13 @@ inline bool shadow_uniforms(unsigned char* bytes, size_t size, bool vertex,
 // GX2's row-major perspective matrix. Validate all four rows so orthographic
 // layouts, world transforms, and light-space texture matrices are not shifted.
 inline bool camera_projection(const float* p) {
+    // Scanned at every 16-byte offset of every vertex uniform block, per draw and eye: the w row
+    // rejects almost all of them before the remaining tests.
+    if (p[14]!=-1 || p[15]!=0 || p[12]!=0 || p[13]!=0) return false;
+    if (!(p[0]>0 && p[5]>0 && p[1]==0 && p[2]==0 && p[3]==0 &&
+          p[4]==0 && p[6]==0 && p[7]==0 && p[8]==0 && p[9]==0 && p[10]<=-1 && p[11]<0)) return false;
     for (int i=0;i<16;++i) if (!std::isfinite(p[i])) return false;
-    return p[0]>0 && p[5]>0 && p[1]==0 && p[2]==0 && p[3]==0 &&
-        p[4]==0 && p[6]==0 && p[7]==0 && p[8]==0 && p[9]==0 &&
-        p[10]<=-1 && p[11]<0 && p[12]==0 && p[13]==0 && p[14]==-1 && p[15]==0;
+    return true;
 }
 // The HD layouts (nw::lyt, aspect.cpp) draw the HUD, menus and message text through a
 // perspective projection of their own (fovy 40, near 1, far 10000). Every draw through one keeps
@@ -61,6 +64,14 @@ inline bool project_eye(float* p, float eye, float convergence) {
     p[2] -= projectedEye/convergence;
     p[3] -= projectedEye;
     return true;
+}
+// Whether project_uniform_block would change the block (read in place: no copy without a camera).
+inline bool has_camera_projection(const unsigned char* bytes, size_t size) {
+    for (size_t at=0;at+64<=size;at+=16) {
+        float p[16];std::memcpy(p,bytes+at,64);
+        if (camera_projection(p) && !layout_projection(p)) return true;
+    }
+    return false;
 }
 inline void project_uniform_block(unsigned char* bytes, size_t size, float eye, float convergence,
                                   const void* excludedProjection = nullptr) {

@@ -1581,11 +1581,14 @@ struct FeedbackScratch {
   VkDevice device = VK_NULL_HANDLE;
   VkDeviceSize allocationBytes = 0;
 };
-std::array<FeedbackScratch, kFeedbackUnitsPerStage * 2> feedbackScratch;
+// per stereo eye: each eye's command stream reuses only its own copies (stereo.h)
+std::array<std::array<FeedbackScratch, kFeedbackUnitsPerStage * 2>, 2> feedbackScratchEyes;
 VkDeviceSize feedbackRetainedBytes = 0;
 // the draw (R.drawCount while it is prepared) that last used each retained slot
-std::array<uint64_t, kFeedbackUnitsPerStage * 2> feedbackUseDraw = [] {
-  std::array<uint64_t, kFeedbackUnitsPerStage * 2> a; a.fill(UINT64_MAX); return a; }();
+std::array<std::array<uint64_t, kFeedbackUnitsPerStage * 2>, 2> feedbackUseDrawEyes = [] {
+  std::array<std::array<uint64_t, kFeedbackUnitsPerStage * 2>, 2> a;
+  for (auto& eye : a) eye.fill(UINT64_MAX);
+  return a; }();
 bool feedback_compatible(const Surface& copy, const Surface& source) {
   return copy.image && copy.fmt.pixel == source.fmt.pixel &&
          copy.aspect == source.aspect && copy.imageType == source.imageType &&
@@ -1614,6 +1617,7 @@ void make_feedback_image(Surface& copy, const Surface& source) {
   create_surface_image(&copy, false);
 }
 void reset_feedback_scratch() {
+  for (auto& feedbackScratch : feedbackScratchEyes)
   for (auto& slot : feedbackScratch) {
     // Reset must run before replacing the device. Foreign handles cannot be
     // placed into this device's deferred retirement lists.
@@ -1702,10 +1706,13 @@ VkImageView feedback_view(Surface *source, const uint32_t *textureWords,
     const char* e = std::getenv("WWHD_VK_REUSE_FEEDBACK_IMAGES");
     return e && !std::strcmp(e, "1");
   }();
+  // On in stereo: the copies double there, and creating and retiring an image per draw took about a
+  // quarter of the render thread (Windows, NVIDIA). Each eye keeps its own slots.
+  auto& feedbackScratch = feedbackScratchEyes[stereoEye];
+  auto& feedbackUseDraw = feedbackUseDrawEyes[stereoEye];
   Surface temporary;
   Surface* copy = &temporary;
-  // Not in stereo: eye 1's held draws would sample a copy eye 0 has since replaced (stereo.h).
-  FeedbackScratch* slot = reuse && unit < kFeedbackUnitsPerStage && stereo::frame.mode == stereo::Off
+  FeedbackScratch* slot = (reuse || stereo::frame.mode != stereo::Off) && unit < kFeedbackUnitsPerStage
       ? &feedbackScratch[(vertex ? kFeedbackUnitsPerStage : 0) + unit]
       : nullptr;
   // Device recreation is not a supported lifecycle today; refuse to reuse or
@@ -1901,6 +1908,15 @@ struct ContinuedDraw {
 };
 // Stereo: each eye's command stream continues its own previous draw (stereo.h).
 std::array<ContinuedDraw, 2> continuedEyes;
+// Stereo: eye 1 draws the same guest operation right after eye 0 (draw_stereo), with the same
+// registers, so it takes eye 0's fetch, vertex and pixel shaders instead of looking them up again.
+struct StereoShaders {
+  LatteFetchShader* fs = nullptr;
+  uint64_t fsKey = 0;
+  vk::Shader *vs = nullptr, *ps = nullptr;
+} stereoShaders;
+StereoShaders* stereoShadersOut = nullptr;       // eye 0's draw records
+const StereoShaders* stereoShadersIn = nullptr;  // eye 1's draw reuses
 struct ContinuedStats {
   uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
   std::array<uint64_t, kReasons> reasons{};
@@ -2184,7 +2200,10 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     if (m.uniformBuffersBindingPoint[i] >= 0) {
       uint32_t addr = r[block + i * 7];
       uint32_t size = std::min<uint32_t>(r[block + i * 7 + 1] + 1, 0x10000);
-      if (sh->vertex && eyeOffset != 0 && addr) {
+      // Only a block holding a camera projection gets an eye copy; the others keep their
+      // buffer-cache upload by address.
+      if (sh->vertex && eyeOffset != 0 && addr &&
+          stereo::has_camera_projection(static_cast<const unsigned char*>(mem::ptr(addr)), size)) {
         static thread_local std::vector<uint8_t> eyeBlock;
         eyeBlock.resize(size);memcpy(eyeBlock.data(),mem::ptr(addr),size);
         stereo::project_uniform_block(eyeBlock.data(),size,eyeOffset,stereo::frame.convergence);
@@ -2479,12 +2498,15 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
   bool shared=false;
   try {
     stereo_select_eye(0);
+    stereoShaders={};
+    stereoShadersOut=&stereoShaders;
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances,&shared);
     if(shared) return; // keep the light-space render pass open
     stereo_select_eye(1);
+    stereoShadersIn=stereoShaders.vs?&stereoShaders:nullptr;
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances);
     if(atlas) stereo_flush();
-  } catch(...) { stereo_select_eye(0);throw; }
+  } catch(...) { stereoShadersOut=nullptr;stereoShadersIn=nullptr;stereo_select_eye(0);throw; }
 }
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
 bool clouds_skip_card();
@@ -2492,6 +2514,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
   auto& continued = continuedEyes[stereoEye];
+  // the top-level stereo draw only, never the AO replay below
+  StereoShaders* shadersOut = std::exchange(stereoShadersOut, nullptr);
+  const StereoShaders* shadersIn = std::exchange(stereoShadersIn, nullptr);
   if (clouds_skip_card()) return;  // clouds.cpp: toon clouds replace the game's cloud cards
   if (!count || !instances || ((prim == 0x13 || prim == 0x14) && count < 4))
     return;
@@ -2538,6 +2563,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     fsKey = continued.fsKey;
     vs = continued.vs;
     ps = continued.ps;
+  } else if (shadersIn) {
+    fs = shadersIn->fs;
+    fsKey = shadersIn->fsKey;
+    vs = shadersIn->vs;
+    ps = shadersIn->ps;
   } else {
     fs = vk::get_fetch_shader(r, &fsKey, R.frame);
     if (!fs)
@@ -2547,6 +2577,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                            vs && vs->ready() ? vs : nullptr);
   }
   rprof::mark(rprof::kShader);
+  if (shadersOut && vs && vs->ready() && ps && ps->ready()) *shadersOut = {fs, fsKey, vs, ps};
   if (!vs || !vs->ready() || !ps || !ps->ready())
     exception_report::raise("Vulkan shader translation failed: " +
                              (vs && !vs->ready() ? vs->error
