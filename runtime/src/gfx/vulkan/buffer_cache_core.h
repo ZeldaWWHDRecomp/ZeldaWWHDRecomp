@@ -186,6 +186,18 @@ class Cache {
   // any thread (save-state load): every entry is re-uploaded on its next use
   void invalidate_all() { epoch_.fetch_add(1, std::memory_order_acq_rel); }
 
+  // Resolved draw programs may retain an Entry until end_frame()/clear(). They
+  // still validate every guest write and save-state epoch; only the hash-table
+  // lookup is omitted. A miss leaves normal lookup responsible for retirement.
+  bool retained_hit(Entry& entry, uint32_t size) {
+    ++stats.lookups;
+    if (!entry.region.valid() || size > entry.size ||
+        entry.epoch != epoch_.load(std::memory_order_acquire) || !current(entry)) return false;
+    entry.lastUse = frame_;
+    ++stats.hits;
+    return true;
+  }
+
   // Finds the entry for key covering size source bytes. kHit: e->region holds current bytes. kMiss: the
   // range is armed; read guest memory now (not earlier) and call upload(). kBypass: dynamic range, use
   // the uncached path. e stays valid until the next end_frame().

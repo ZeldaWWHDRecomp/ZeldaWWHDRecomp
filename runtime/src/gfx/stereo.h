@@ -23,13 +23,18 @@ struct Frame {
     bool swap = false;
 };
 inline Frame frame; // renderer-thread only; settings take effect at a frame boundary
+// The command stream brackets nw::lyt Pane::DrawSelf. Projection values alone
+// cannot distinguish a layout from a 3D camera with the same lens parameters.
+inline unsigned layoutDrawDepth = 0;
+inline void layout_draw(bool begin) {
+    if (begin) ++layoutDrawDepth;
+    else if (layoutDrawDepth) --layoutDrawDepth;
+}
 inline uint32_t layoutProjectionStart = 0;
 inline std::array<uint32_t,16> layoutProjection{};
 inline void tag_layout(uint32_t start, const uint32_t* words) {
     layoutProjectionStart=start;
     std::memcpy(layoutProjection.data(),words,64);
-    float p[16];std::memcpy(p,words,64);
-    add_layout_signature(p);
 }
 inline bool is_layout(const uint32_t* regs) {
     return layoutProjectionStart && !std::memcmp(regs+layoutProjectionStart,layoutProjection.data(),64);

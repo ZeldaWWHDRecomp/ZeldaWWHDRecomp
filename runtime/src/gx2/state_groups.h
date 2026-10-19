@@ -96,6 +96,9 @@ inline uint8_t state_group_change(uint8_t tableGroup, uint32_t old, uint32_t val
 // render thread (gx2_core.cpp): bumped on every register value change outside kSgContinuedMask, on
 // context loads and on save-state loads; groups changed since the last take_dirty_groups()
 extern uint64_t g_full_state_version;
+// Register-backed uniform payloads: PS then VS. Guest-memory blocks still need
+// their normal write-tracking checks, regardless of these generations.
+extern uint64_t g_uniform_state_version[2];
 extern uint32_t g_dirty_groups;
 inline uint32_t take_dirty_groups() {
     uint32_t g = g_dirty_groups;

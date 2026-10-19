@@ -515,9 +515,15 @@ void aspect::ss_reset() {
 
 // Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
 // under the same container, and tabs may have an offscreen origin but visible descendants.
+static thread_local std::vector<bool> t_layoutScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
-    if (original()) return;
+    const bool scoped=!original()||stereo::requestedMode!=stereo::Off;
+    // No additional GX2 commands in ordinary mono. Remember the decision until
+    // the matching return, even if the user changes modes during DrawSelf.
+    if(scoped||!t_layoutScopes.empty())t_layoutScopes.push_back(scoped);
+    if(!scoped)return;
+    if (original()) { gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,1}); return; }
     uint32_t pane = c->r[3];
     // content unless the pane or one of its parents has a rule (it may reach past the 16:9 region)
     // or the layout is placed at an actor
@@ -527,10 +533,13 @@ extern "C" void site_0287714C(Cpu* c) {
                                   : (ldf32(p + kPaneTrans) != 0 || ldf32(p + kPaneTrans + 4) != 0) && has_world_anchor(p))
             content = false;
     }
-    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u});
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1});
 }
 extern "C" void site_02877150(Cpu*) {
-    if (!aspect::original()) gx2::emit(gx2::OP_LAYOUT_CONTENT, {0});
+    if(t_layoutScopes.empty())return;
+    const bool scoped=t_layoutScopes.back();t_layoutScopes.pop_back();
+    if(!scoped)return;
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,0});
 }
 namespace aspect {
 thread_local bool g_content_clip = false; // consumed only by the render command thread

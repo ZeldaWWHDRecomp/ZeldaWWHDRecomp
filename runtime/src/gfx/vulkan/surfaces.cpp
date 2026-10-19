@@ -453,6 +453,7 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
         }
         if (renderedDepth) return renderedDepth;
     }
+    if (Surface* shared = stereo_eye0_texture(d)) return shared;  // already uploaded this frame
     Surface* s = find_or_create_surface(d, false);
     upload_surface(s);
     return s && s->gpuWritten && d.mips > 1 && !d.isDepth ? with_mip_chain(s, d) : s;

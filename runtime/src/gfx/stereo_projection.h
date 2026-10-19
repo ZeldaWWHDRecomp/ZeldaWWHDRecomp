@@ -34,51 +34,51 @@ inline bool camera_projection(const float* p) {
     for (int i=0;i<16;++i) if (!std::isfinite(p[i])) return false;
     return true;
 }
-// The HD layouts (nw::lyt, aspect.cpp) draw the HUD, menus and message text through a
-// perspective projection of their own (fovy 40, near 1, far 10000). Every draw through one keeps
-// zero disparity, so all 2D information shares one plane, whichever way the matrix reaches the
-// shader (registers or a uniform block) and whichever layout was tagged last (TV or GamePad).
-// The TV's upload narrows the x row for the aspect ratio: the y and z rows identify it.
-struct LayoutSignature { float y, z, w; };
-inline LayoutSignature layoutSignatures[8];
-inline int layoutSignatureCount = 0, layoutSignatureNext = 0;  // render thread, like the tag in stereo.h
-inline bool layout_projection(const float* p) {
-    // The game's own value (DrawInfo's fovy 40, near 1, far 10000): also for layouts whose
-    // projection reaches the shader without the tag (the hearts, the B button's frame).
-    if (std::fabs(p[5]-2.747477f)<1e-4f && std::fabs(p[10]+1.0002f)<2e-6f &&
-        std::fabs(p[11]+2.0002f)<1e-4f) return true;
-    for (int i=0;i<layoutSignatureCount;++i)
-        if (p[5]==layoutSignatures[i].y && p[10]==layoutSignatures[i].z && p[11]==layoutSignatures[i].w)
-            return true;
-    return false;
-}
-inline void add_layout_signature(const float* p) {
-    if (!camera_projection(p) || layout_projection(p)) return;
-    layoutSignatures[layoutSignatureNext]={p[5],p[10],p[11]};
-    layoutSignatureNext=(layoutSignatureNext+1)%8;
-    if (layoutSignatureCount<8) ++layoutSignatureCount;
-}
 inline bool project_eye(float* p, float eye, float convergence) {
-    if (!camera_projection(p) || layout_projection(p)) return false;
+    if (!camera_projection(p)) return false;
     const float projectedEye = eye*p[0];
     p[2] -= projectedEye/convergence;
     p[3] -= projectedEye;
     return true;
 }
+// The x rows project_eye shifted in a packed buffer, with their unshifted values: the other eye's
+// bytes are the same buffer with these rows shifted for its eye (apply_eye_rows), exactly as
+// project_eye computes them.
+struct EyeRows {
+    struct Row { unsigned offset; float p0, p2, p3; };
+    Row rows[16];
+    int count = 0;
+    bool overflow = false;
+    void add(size_t offset, const float* unshifted) {
+        if (count < 16) rows[count++] = {unsigned(offset), unshifted[0], unshifted[2], unshifted[3]};
+        else overflow = true;
+    }
+};
+inline void apply_eye_rows(unsigned char* bytes, const EyeRows& rows, float eye, float convergence) {
+    for (int i=0;i<rows.count;++i) {
+        const auto& row = rows.rows[i];
+        const float projectedEye = eye*row.p0;
+        const float shifted[2] = {row.p2 - projectedEye/convergence, row.p3 - projectedEye};
+        std::memcpy(bytes+row.offset+8, shifted, sizeof shifted);
+    }
+}
 // Whether project_uniform_block would change the block (read in place: no copy without a camera).
 inline bool has_camera_projection(const unsigned char* bytes, size_t size) {
     for (size_t at=0;at+64<=size;at+=16) {
         float p[16];std::memcpy(p,bytes+at,64);
-        if (camera_projection(p) && !layout_projection(p)) return true;
+        if (camera_projection(p)) return true;
     }
     return false;
 }
 inline void project_uniform_block(unsigned char* bytes, size_t size, float eye, float convergence,
-                                  const void* excludedProjection = nullptr) {
+                                  const void* excludedProjection = nullptr,
+                                  EyeRows* rows = nullptr, size_t rowBase = 0) {
     for (size_t at=0;at+64<=size;at+=16) {
         if (excludedProjection && !std::memcmp(bytes+at,excludedProjection,64)) continue;
         float p[16];std::memcpy(p,bytes+at,64);
+        const float unshifted[4] = {p[0],p[1],p[2],p[3]};
         if (project_eye(p,eye,convergence)) {
+            if (rows) rows->add(rowBase+at,unshifted);
             std::memcpy(bytes+at,p,16);
             at+=48;
         }

@@ -20,6 +20,10 @@ inline DeferredCommands* eye_deferred_commands=nullptr;
 // Isolated presentation owns a separate command pool/queue outside that mutex.
 // Bypass before reading the global pointer, avoiding both capture and a data race.
 inline thread_local bool isolated_command_dispatch=false;
+// Producer-only deferred draw batches must precede the next command that can
+// change their state, end a pass, or transfer a resource. Worker/WSI threads have
+// their own null hook and never inspect producer batching state.
+inline thread_local void (*before_record_command)() = nullptr;
 struct IsolatedCommandDispatch {
     bool previous=isolated_command_dispatch;
     IsolatedCommandDispatch() { isolated_command_dispatch=true; }
@@ -27,6 +31,7 @@ struct IsolatedCommandDispatch {
 };
 inline DeferredCommands* dispatch_recorder() {
     if (isolated_command_dispatch) return nullptr;
+    if (before_record_command) before_record_command();
     return eye_deferred_commands ? eye_deferred_commands : active_deferred_commands;
 }
 // Owns CPU command arguments, not Vulkan handles or pointed-to GPU resources.
@@ -48,12 +53,15 @@ public:
     void start_detached_capture(std::function<void()> beforeExact);
     // The unemitted tail, in order; capture continues with an empty tail.
     std::vector<std::function<void()>> take();
+    // Detached capture: hold the commands this POD encoder takes as its bytes, without an
+    // allocation per command; take() returns each run of them as one command, in order.
+    void hold_in(PodCommands* held);
     // Startup/shutdown only: reuse the existing dispatch pointer without adding
     // an extra branch to the default immediate command path.
     void set_pod_commands(PodCommands* commands);
     bool pod_mode() const { return pod_ != nullptr; }
     bool capturing() const { return capturing_; }
-    size_t command_count() const { return commands_.size()-emitted_; }
+    size_t command_count() const { return commands_.size()-emitted_+held_command_count(); }
     size_t payload_bytes() const { return payloadBytes_; }
     void emit_exact();
     void finish_exact() { force_exact(); }
@@ -70,6 +78,7 @@ public:
         }
         std::function<void()> owned;
         try {
+            seal_held();
             owned=action;
             commands_.reserve(commands_.size()+1);
         } catch(const std::bad_alloc&) {
@@ -114,6 +123,10 @@ public:
     void vkCmdEndRenderPass(VkCommandBuffer cmd);
 private:
     PodCommands* pod_ = nullptr;
+    PodCommands* held_ = nullptr;  // hold_in
+    size_t held_command_count() const;
+    template<class Encode, class... Args> bool hold(Encode encode, Args&&... args);
+    void seal_held();  // the held bytes, as one command at the end of the tail
     Limits limits_{};
     bool capturing_=false;
     size_t payloadBytes_=0, emitted_=0;
@@ -128,6 +141,7 @@ private:
             force_exact(); immediate(); return;
         }
         try {
+            seal_held();
             auto command=make();
             commands_.emplace_back(std::move(command));
             payloadBytes_+=payload;

@@ -43,6 +43,8 @@ struct Surface {
  uint64_t writtenBackSeq=0; // writeSeq when last written back to guest memory (linear surfaces, write_back_linear_targets)
  // CPU textures: write stamp (write_watch.h) of all levels' pages at the last full check
  uint64_t watchStamp=0; bool watched=false;
+ // stereo: eye 1's held commands of this flush generation sample this eye 0 texture (stereo.h)
+ uint64_t eyeHeld=0;
  uint32_t dataSize=0; FormatInfo fmt;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
@@ -66,12 +68,21 @@ struct Screen {
  // built. Publish at swap; reuse the former published allocation next time.
  std::unique_ptr<Surface> buildingScan;
  bool buildingScanDirty=false,buildingScanSrgb=false,scanSrgb=false;
+ // Display shape is separate from storage: Half SBS/TAB scans keep eye-sized
+ // pixels until final composition, avoiding an upsample followed by a squeeze.
+ VkExtent2D scanDisplayExtent{},buildingScanDisplayExtent{};
  std::atomic<bool> visible{true},srgb{false},resize{false};
  int presentMode=-1,presentWanted=-1; // present mode of the swapchain, and the setting it was made for
  std::atomic<int> width{1280},height{720};
  uint64_t swapchainGeneration=0; // renderer-thread lifecycle diagnostics
  std::atomic<uint64_t> presented{0}; // successful queue presentations, for display diagnostics
 };
+inline VkExtent3D scan_display_extent(const Screen& screen) {
+ if(!screen.scan)return {};
+ return screen.scanDisplayExtent.width && screen.scanDisplayExtent.height
+     ? VkExtent3D{screen.scanDisplayExtent.width,screen.scanDisplayExtent.height,1}
+     : screen.scan->extent;
+}
 struct GpuScopeMetadata {
  uint32_t kind=0; // 0 render pass, 1 feedback copy.
  std::array<VkFormat,8> colors{};

@@ -94,6 +94,7 @@ static ShaderKeyDirtyStats shaderKeyDirtyStats;
 
 // register state groups (state_groups.h): the continued-draw fast path of the Vulkan renderer
 uint64_t g_full_state_version = 1;
+uint64_t g_uniform_state_version[2] = {1, 1};
 uint32_t g_dirty_groups = 0;
 static const struct StateGroupTable {
     uint8_t group[kNumRegs];
@@ -103,10 +104,20 @@ static inline void note_state_change(uint32 reg, uint32 old, uint32 value) {
     const uint32 g = state_group_change(g_state_groups.group[reg], old, value);
     g_dirty_groups |= 1u << g;
     g_full_state_version += !((kSgContinuedMask >> g) & 1);
+    if (g == kSgAluConst) {
+        const uint32 word = reg - mmSQ_ALU_CONSTANT0_0;
+        if (word < 0x400) ++g_uniform_state_version[0];
+        else if (word < 0x800) ++g_uniform_state_version[1];
+    } else if (g == kSgDynamic) {
+        ++g_uniform_state_version[0];
+        ++g_uniform_state_version[1];
+    }
 }
 static inline void note_full_state_change() {
     g_dirty_groups |= 1u << kSgOther;
     ++g_full_state_version;
+    ++g_uniform_state_version[0];
+    ++g_uniform_state_version[1];
 }
 ShaderKeyDirtyStats shader_key_dirty_stats() { return shaderKeyDirtyStats; }
 
@@ -163,6 +174,30 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (first >= kNumRegs || n > kNumRegs - first) return;
     g_register_blocks.touch(first, n);
 #ifdef WWHD_HAS_VULKAN
+    // The dominant packets contain transforms, colors and animation constants.
+    // Their semantics are uniform across the range: no shader/pipeline lookup
+    // changes, and the entire packet belongs to one constant bank. Apply it as
+    // a block, publishing one dependency change instead of classifying every
+    // float through the general register interpreter.
+    static const bool blockConstants = [] {
+        const char* e = getenv("WWHD_VK_BLOCK_CONSTANTS");
+        return render::vulkan() && (!e || strcmp(e, "0"));
+    }();
+    if (blockConstants && first >= mmSQ_ALU_CONSTANT0_0 &&
+        first < mmSQ_ALU_CONSTANT0_0 + 0x1000 &&
+        n <= 0x400 - ((first - mmSQ_ALU_CONSTANT0_0) & 0x3ff)) {
+        if (memcmp(g_regs + first, v, n * 4)) {
+            static const bool collectStats = getenv("WWHD_VK_STATS") != nullptr;
+            if (collectStats) ++shaderKeyDirtyStats.changedBatches;
+            g_dirty_groups |= 1u << kSgAluConst;
+            const uint32 bank = (first - mmSQ_ALU_CONSTANT0_0) / 0x400;
+            if (bank < 2) ++g_uniform_state_version[bank];
+            if (rprof::enabled()) rprof::g_reg_dirty |= 1;
+            memcpy(g_regs + first, v, n * 4);
+        }
+        if (g_shadow) memcpy(g_shadow + first, v, n * 4);
+        return;
+    }
     // Vulkan renderer only (the Metal renderer keeps the original bulk path)
     static const bool fusedSmall = [] {
         const char* e = getenv("WWHD_VK_FUSE_SMALL_REGS");
@@ -606,6 +641,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     }
     case OP_LAYOUT_CONTENT:
         aspect::set_content_clip(n && p[0]);
+        if (n >= 2) stereo::layout_draw(p[1] != 0);
         break;
     case OP_CLOUDS_BEGIN:
         cloud_proto::g_active_seq = n ? p[0] : 0;
@@ -1099,7 +1135,10 @@ HLE(gx2, GX2SwapScanBuffers) {
         prev = now;
         if (ms > slow_ms) LOG("[gx2] slow swap %llu: %.1f ms", (unsigned long long)g_swap_count, ms);
     }
-    if (g_swap_count % 300 == 1) {
+    // Console/file output is synchronous: routine performance reporting must not
+    // introduce a stall on the game thread during ordinary play.
+    static const bool report_stats = getenv("WWHD_VK_STATS") || getenv("WWHD_LOG_FLIP_PACING") || getenv("WWHD_SCHED_STATS");
+    if (report_stats && g_swap_count % 300 == 1) {
         static auto last = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
         double s = std::chrono::duration<double>(now - last).count();
@@ -1300,6 +1339,7 @@ void gx2_ss_load(ss::Reader& r) {
     g_shader_state_gen++;
     note_full_state_change();
     g_swap_interval = std::max<uint32>(r.u32(), 1);
+    stereo::layoutDrawDepth = 0;
     uint64_t guest_swaps = r.u64();
     {
         std::lock_guard<std::mutex> fl(g_flip_mutex);

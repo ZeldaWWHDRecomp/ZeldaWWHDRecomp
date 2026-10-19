@@ -1,5 +1,6 @@
 // Synthetic Vulkan handles and API callbacks only; never loads a driver or game.
 #include "gfx/vulkan/deferred_commands.h"
+#include "gfx/vulkan/pod_commands.h"
 #include "gfx/vulkan/deferred_dispatch.h"
 #include "gfx/vulkan/pipeline_failure.h"
 #include <cassert>
@@ -339,5 +340,52 @@ void guest_thread_exit_retains_global_recorder() {
     assert(calls==std::vector<int>{1});calls.clear();
 }
 
+void stereo_pod_tail_ownership() {
+    gfxvk::PodCommands bytes;
+    gfxvk::DeferredCommands eye;
+    eye.hold_in(&bytes);
+    eye.start_detached_capture([] { throw std::logic_error("held out of order"); });
+    eye.vkCmdDraw(cmd,3,1,0,0);
+    assert(eye.command_count()==1 && calls.empty());
+    bool refused=false;
+    try { eye.reset(); } catch(const std::logic_error&) { refused=true; }
+    assert(refused && eye.capturing() && eye.command_count()==1);
+    // Owned callbacks split byte runs, preserving order and argument ownership.
+    eye.emit_owned([] { calls.push_back(99); });
+    eye.vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle<VkPipeline>(2));
+    auto tail=eye.take();
+    assert(tail.size()==3 && eye.command_count()==0 && calls.empty());
+    for(auto& command:tail) command();
+    assert((calls==std::vector<int>{1,99,2})); calls.clear();
+    eye.reset();
+    eye.start_detached_capture({});
+    eye.vkCmdDraw(cmd,3,1,0,0);
+    eye.emit_exact();
+    assert(calls==std::vector<int>{1} && eye.command_count()==0); calls.clear();
+    eye.reset();
 }
-int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();stereo_eye_stream();guest_thread_exit_retains_global_recorder(); }
+
+void draw_batch_flush_order() {
+    gfxvk::DeferredCommands renderer;
+    renderer.start_capture();
+    gfxvk::before_record_command = [] {
+        gfxvk::before_record_command = nullptr;
+        gfxvk::record::vkCmdDraw(cmd,3,1,0,0);
+    };
+    // A separate WSI/recording thread cannot flush a producer's batch.
+    std::thread([] { assert(gfxvk::before_record_command == nullptr); }).join();
+    {
+        gfxvk::IsolatedCommandDispatch isolated;
+        assert(gfxvk::dispatch_recorder() == nullptr);
+        assert(gfxvk::before_record_command != nullptr);
+    }
+    gfxvk::record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle<VkPipeline>(2));
+    assert(gfxvk::before_record_command == nullptr);
+    assert(renderer.command_count() == 2 && calls.empty());
+    renderer.finish_exact();
+    assert((calls == std::vector<int>{1,2}));
+    calls.clear();
+}
+
+}
+int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();stereo_eye_stream();guest_thread_exit_retains_global_recorder();stereo_pod_tail_ownership();draw_batch_flush_order(); }

@@ -129,10 +129,13 @@ int main() {
     Region first = e->region;
     assert(use(cache, a, 3 * P) == kHit && use(cache, a, 100) == kHit);
     assert(cache.stats.uploads == 1);
+    assert(cache.retained_hit(*e, 3 * P) && cache.retained_hit(*e, 100));
+    assert(!cache.retained_hit(*e, 4 * P));
     printf("hit and sub-range: ok\n");
 
     // 2. a CPU write into the range (page fault) makes it stale; the old region is retired, not reused
     g_mem[a + P + 7] ^= 0x5A;
+    assert(!cache.retained_hit(*e, 3 * P));
     assert(use(cache, a, 3 * P, &e) == kMiss);
     assert(e->region.offset != first.offset && backing.pending_has(first));
     assert(cache.stats.staleWrites == 1);
@@ -167,6 +170,7 @@ int main() {
     // 5. save-state load: everything is uploaded again
     assert(use(cache, a, 4 * P) == kHit && use(cache, h, 2 * P) == kHit);
     std::thread([&] { cache.invalidate_all(); }).join();  // any thread
+    assert(!cache.retained_hit(*e, 3 * P));
     assert(use(cache, a, 4 * P) == kMiss && use(cache, h, 2 * P) == kMiss);
     assert(use(cache, a, 4 * P) == kHit && use(cache, h, 2 * P) == kHit);
     printf("invalidate all: ok\n");

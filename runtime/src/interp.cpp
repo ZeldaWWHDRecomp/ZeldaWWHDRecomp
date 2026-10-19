@@ -98,6 +98,13 @@ namespace true60_test { void logic_step(uint64_t step); }
 
 namespace interp {
 
+// Keep periodic diagnostic I/O off the game thread unless requested. Model
+// cleanup and the pacing counters still run regardless of whether logs are on.
+static bool performance_reports() {
+    static const bool on = getenv("WWHD_INTERP_PASS_STATS") || getenv("WWHD_LOG_FLIP_PACING") || getenv("WWHD_VK_STATS");
+    return on;
+}
+
 // Output frame rate with interpolation: 60, 120 or 240 (in-between frames per step: fps/30 - 1).
 // WWHD_INTERP_FPS=60|120|240 sets it at start (and switches interpolation on); it wins over the
 // saved choice and is not saved.
@@ -1013,11 +1020,11 @@ static void paced_step_done(int holds) {
         recentHolds = recentPossible = recentN = 0;
     }
     if (g_paced_steps >= 300) {
-        if (n > 1)
+        if (performance_reports() && n > 1)
             LOG("[interp] paced: %.0f%% of in-between frames drawn (in-between pass %.1f ms; %.2f of %d planned per step)",
                 100.0 * g_paced_holds / double(g_paced_possible), std::chrono::duration<double, std::milli>(g_hold_avg).count(),
                 g_paced_planned / double(g_paced_steps), n);
-        else
+        else if (performance_reports())
             LOG("[interp] paced: %.0f%% of in-between frames drawn (in-between pass %.1f ms)", 100.0 * g_paced_holds / double(g_paced_possible),
                 std::chrono::duration<double, std::milli>(g_hold_avg).count());
         g_paced_possible = g_paced_holds = g_paced_steps = g_paced_planned = 0;
@@ -1237,9 +1244,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t n = 0, t0 = timebase::now(), f0 = 0;
     if (++n % 300 == 0) {
         uint64_t t = timebase::now();
-        LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut%s",
-            300.0 * timebase::kTicksPerSec / (double)(t - t0), mode_name(), (frames - f0) / 300.0, g_mstats.blended / 300.0,
-            g_mstats.fresh / 300.0, g_mstats.cut / 300.0, pass_cpu_report().c_str());
+        if (performance_reports())
+            LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut%s",
+                300.0 * timebase::kTicksPerSec / (double)(t - t0), mode_name(), (frames - f0) / 300.0, g_mstats.blended / 300.0,
+                g_mstats.fresh / 300.0, g_mstats.cut / 300.0, pass_cpu_report().c_str());
         t0 = t;
         f0 = frames;
         g_mstats.blended = g_mstats.fresh = g_mstats.cut = 0;

@@ -162,7 +162,8 @@ void buffer_cache_mismatch(const char* what, const bufcache::Entry& e, uint32_t 
         what, e.addr, size, e.size, (unsigned long long)e.uploadFrame, (unsigned long long)s.cache.frame(), firstDiff);
 }
 
-bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlice& out) {
+bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlice& out, bufcache::Entry** retained) {
+  if (retained) *retained = nullptr;
   if (!addr || size < 16 || size > kMaxCachedRange || uint64_t(addr) + size > 0x100000000ull) return false;
   auto& cache = state().cache;
   bufcache::Entry* e;
@@ -180,6 +181,7 @@ bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlic
   case bufcache::kBypass: return false;
   }
   out = buffer_cache_slice(*e, size);
+  if (retained) *retained = e;
   return true;
 }
 

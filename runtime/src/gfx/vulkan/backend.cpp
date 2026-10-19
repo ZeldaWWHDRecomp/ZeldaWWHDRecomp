@@ -1078,6 +1078,7 @@ void transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
+  if (conservativePassBreak) stereo_release_texture(s);  // a texture both eyes sample
   if (narrow_barriers() && stage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT &&
       access == (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT) &&
       layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
@@ -2811,12 +2812,11 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
   Screen &s = stereoEye ? stereoRight : (target == 4 ? R.drc : R.tv);
-  // Half SBS and top-and-bottom render each eye at half the width (height) (surfaces.cpp): the scan
-  // keeps the picture's full shape, so presentation and captures lay it out as before.
-  uint32_t width = src->extent.width, height = src->extent.height;
-  if (stereo_screen_target(src->width, src->height)) {
-    if (stereo::frame.mode == stereo::HalfSBS) width *= 2;
-    if (stereo::frame.mode == stereo::TAB) height *= 2;
+  const uint32_t width = src->extent.width, height = src->extent.height;
+  s.buildingScanDisplayExtent = {width,height};
+  if (target != 4 && stereo_screen_target(src->width, src->height)) {
+    if (stereo::frame.mode == stereo::HalfSBS) s.buildingScanDisplayExtent.width *= 2;
+    if (stereo::frame.mode == stereo::TAB) s.buildingScanDisplayExtent.height *= 2;
   }
   if (!s.buildingScan || s.buildingScan->extent.width != width ||
       s.buildingScan->extent.height != height ||
@@ -2834,7 +2834,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
   }
   resample(src, s.buildingScan.get(), 1);
   if (target & 1)
-    draw_mod_overlay(*s.buildingScan);  // HUD of gameplay mods (stamina wheel), as the Metal renderer
+    draw_mod_overlay(*s.buildingScan,s.buildingScanDisplayExtent);
   mark_gpu_written(s.buildingScan.get());
   s.buildingScanSrgb = s.srgb.load();
   s.buildingScanDirty = true;
@@ -3121,6 +3121,7 @@ void swap() {
 #endif
   for (Screen* s : {&R.tv, &R.drc, &stereoRight}) if (s->buildingScanDirty) {
     s->scan.swap(s->buildingScan);
+    std::swap(s->scanDisplayExtent,s->buildingScanDisplayExtent);
     s->scanSrgb = s->buildingScanSrgb;
     s->buildingScanDirty = false;
   }
@@ -3165,6 +3166,7 @@ void swap() {
   // comes from gfx/display_modes.cpp, which both window hosts and the Metal renderer share
   Surface *tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
   Surface *drcScan = R.drc.scan && R.drc.scan->image ? R.drc.scan.get() : nullptr;
+  const auto tvDisplay = scan_display_extent(R.tv);
 #ifdef WWHD_SDL_HOST
   gfx::g_filter = scale_filter();  // the SDL host keeps the scaling filter with the Vulkan settings
   const float layerW = float(R.tv.width.load()), layerH = float(R.tv.height.load());
@@ -3172,7 +3174,7 @@ void swap() {
   const float layerW = float(R.tv.swapExtent.width), layerH = float(R.tv.swapExtent.height);
 #endif
   gfx::PresentPlan plan = gfx::display_plan(
-      tvScan, tvScan ? float(tvScan->extent.width) : 0, tvScan ? float(tvScan->extent.height) : 0,
+      tvScan, float(tvDisplay.width), float(tvDisplay.height),
       drcScan, drcScan ? float(drcScan->extent.width) : 0, drcScan ? float(drcScan->extent.height) : 0,
       layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
 #ifdef __ANDROID__
@@ -3184,8 +3186,8 @@ void swap() {
     plan.pip_wanted = false;
     plan.drc_only = false;
     plan.tv = gfx::display_layout(layerW, layerH,
-        tvScan ? float(tvScan->extent.width) : 1280,
-        tvScan ? float(tvScan->extent.height) : 720);
+        tvScan ? float(tvDisplay.width) : 1280,
+        tvScan ? float(tvDisplay.height) : 720);
     if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
       bool swapped = dual_display::active_swap;
       float w = swapped ? layerW : float(R.drc.width.load());
@@ -3208,7 +3210,7 @@ void swap() {
   gfx::PresentPlan inputPlan=plan;
   if(stereo::frame.mode==stereo::FullSBS) {
     inputPlan=gfx::display_plan_for(plan,layerW*.5f,layerH,
-        tvScan?float(tvScan->extent.width):0,tvScan?float(tvScan->extent.height):0,
+        float(tvDisplay.width),float(tvDisplay.height),
         drcScan?float(drcScan->extent.width):0,drcScan?float(drcScan->extent.height):0);
     gfx::display_input_plan(inputPlan);
   }
@@ -4583,6 +4585,9 @@ void shutdown_renderer_caches() {
   vk::save_shader_cache();
   save_pipeline_cache();
   reset_pass_caches();
+  // The SDL quit path uses _Exit, so static destructors never flush this.
+  // Save after compiler/record workers have joined, including their last events.
+  stutter::trace().flush();
 }
 #ifdef WWHD_SDL_HOST
 // GamePad touch screen: the left mouse button on the GamePad picture, in the GamePad window (window

@@ -14,9 +14,22 @@ decltype(Renderer::surfaces)& stereo_copy_cache(uint32_t addr,uint32_t width,uin
 // every switch cost several times the frame (issue #248). Eye 1's commands are emitted as one
 // run after eye 0's pass, at every submission and wherever the eyes must stay ordered
 // (stereo_flush). The eyes share only buffers (never overwritten while recorded commands use
-// them) and the sun atlas, which eye 0 writes and transitions first.
+// them), the sun atlas, which eye 0 writes and transitions first, and the textures neither eye
+// renders (below).
 void stereo_select_eye(int eye);
+// Eye 1 samples eye 0's image of a texture the guest uploads and neither eye renders: one image
+// and one upload for both eyes, and eye 1 can bind eye 0's descriptor set (draw.cpp). Shared while
+// eye 1 has no surface at its address, eye 0 no render target there, and it is uploaded for this
+// frame in the sampling layout, so eye 1's held commands record no transition of it.
+bool stereo_shared_texture(const Surface* s);
+Surface* stereo_eye0_texture(const SurfaceDesc& d);  // eye 1 selected: the shared texture, else null
+void stereo_hold_texture(Surface* s);  // eye 1's held commands sample s
 void stereo_flush();
+extern uint64_t stereoFlushGeneration;  // advanced by every stereo_flush that emits commands
+// Before s changes (a layout transition): eye 1's held commands that sample it run first.
+inline void stereo_release_texture(Surface* s) {
+    if (s->eyeHeld == stereoFlushGeneration) stereo_flush();
+}
 void stereo_invalidate(uint32_t flags, uint32_t addr, uint32_t size);
 // Operations other than draws keep the earlier interleaved order: eye 1's held commands are
 // emitted first, then each eye runs in turn in the renderer's stream, ending its pass.

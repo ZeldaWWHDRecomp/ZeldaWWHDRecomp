@@ -3,6 +3,7 @@
 #include "deferred_dispatch.h"
 #include "record_worker.h"
 #include "../hdr.h"
+#include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "overlay/hostui.h"
 #include <cstdlib>
 #include <limits>
@@ -28,6 +29,9 @@ struct EyePass {
 // Eye 1's held commands. Unbounded: a limit would emit them in place, inside eye 0's pass.
 DeferredCommands eyeCommands{DeferredCommands::Limits{std::numeric_limits<size_t>::max(),
                                                       std::numeric_limits<size_t>::max()}};
+// ... as POD bytes (no allocation per command), replayed in one run per flush.
+PodCommands eyePodCommands{PodCommands::Limits{std::numeric_limits<size_t>::max(),
+                                               std::numeric_limits<size_t>::max()}};
 int inOrderScopes = 0;
 bool streaming() { return stereo::frame.mode != stereo::Off && !inOrderScopes; }
 void swap_pass() {
@@ -43,10 +47,12 @@ void swap_pass() {
     std::swap(slot.activeRenderScope, otherPass.scope);
 }
 DeferredCommands* eye_stream() {
-    if (!eyeCommands.capturing())
+    if (!eyeCommands.capturing()) {
+        if (!eyeCommands.command_count()) eyeCommands.hold_in(&eyePodCommands);
         eyeCommands.start_detached_capture([] {
             throw std::logic_error("stereo eye commands cannot be emitted out of order");
         });
+    }
     return &eyeCommands;
 }
 void attach_eye_stream() { eye_deferred_commands = stereoEye && streaming() ? eye_stream() : nullptr; }
@@ -89,9 +95,44 @@ void stereo_select_eye(int eye) {
     stereoEye = eye;
     attach_eye_stream();
 }
+uint64_t stereoFlushGeneration = 1;
+bool stereo_shared_texture(const Surface* s) {
+    if (!streaming() || s->gpuWritten || s->dirty || s->lastCheckedFrame != R.frame ||
+        s->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return false;
+    auto& eye0 = stereoEye ? otherSurfaces : R.surfaces;
+    auto& eye1 = stereoEye ? R.surfaces : otherSurfaces;
+    if (eye1.count(s->addr)) return false;
+    bool found = false;
+    auto range = eye0.equal_range(s->addr);
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second->gpuWritten) return false;
+        found |= it->second.get() == s;
+    }
+    return found;
+}
+Surface* stereo_eye0_texture(const SurfaceDesc& d) {
+    if (stereoEye != 1 || !streaming() || R.surfaces.count(d.addr)) return nullptr;
+    // find_or_create_surface's sampled match among textures nobody rendered
+    const bool volume = static_cast<Latte::E_DIM>(d.dim) == Latte::E_DIM::DIM_3D;
+    Surface* exact = nullptr;
+    auto range = otherSurfaces.equal_range(d.addr);
+    for (auto it = range.first; it != range.second; ++it) {
+        auto* s = it->second.get();
+        if (s->gpuWritten) return nullptr;
+        if (s->isDepth == d.isDepth && s->width == d.width && s->height == d.height && s->format == d.format &&
+            s->slices == d.slices && (s->imageType == VK_IMAGE_TYPE_3D) == volume && s->mips >= d.mips &&
+            (!exact || s->writeSeq > exact->writeSeq))
+            exact = s;
+    }
+    if (!exact || !stereo_shared_texture(exact)) return nullptr;
+    stereo_hold_texture(exact);
+    return exact;
+}
+void stereo_hold_texture(Surface* s) { s->eyeHeld = stereoFlushGeneration; }
 void stereo_flush() {
     // Eye 1's pass is open only while its begin is still held.
     if (!eyeCommands.command_count()) return;
+    ++stereoFlushGeneration;  // the held commands below no longer wait for any texture
     // End eye 1's pass at the end of its held commands, then eye 0's in the renderer's stream.
     if (stereoEye == 0) swap_pass();
     eye_deferred_commands = &eyeCommands;
@@ -143,6 +184,7 @@ void stereo_latch() {
             stereoRight.scan.reset();
             stereoRight.buildingScan.reset();
             stereoRight.buildingScanDirty=false;
+            stereoRight.scanDisplayExtent=stereoRight.buildingScanDisplayExtent={};
             stereoRight.buildingScanSrgb=stereoRight.scanSrgb=false;
         }
         return;
