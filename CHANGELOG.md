@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mac (Metal): far fewer shaders to prepare.** Shader variants that differ only in settings a shader doesn't use now
+  share one translation, as on Vulkan: in Outset about 570 instead of 5,800 translations, and a much smaller shader
+  cache. Existing caches still work.
+- **Crash logs and the performance report** now show how many shaders, pipelines and (Linux, Android) memory mappings
+  exist (idea from the GreenNaugahyde Android fork).
+
 - **Fixed: the Pirate's Charm shook without ringing at 60 fps and above** (#262). With frame interpolation the
   game's on-screen interface logic also ran on the in-between frames, where sounds are skipped so nothing plays twice,
   and the charm's ring always landed there. It now runs once per game step at every frame rate, as at 30 fps; this
