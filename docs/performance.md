@@ -99,6 +99,12 @@ directory) to check that the run still renders correctly. The "Sort by top of st
 `sample.txt` shows where the CPU time goes. `run.log` prints the shader and pipeline counts every
 few seconds.
 
+Crash logs and the overlay's "Copy performance report" carry one line with the renderer's live
+objects (`runtime/src/render_objects.h`): `renderer objects: 572 shaders, 337 pipelines`, plus on
+Linux and Android `memory mappings N (limit L)` from `/proc/self/maps` and `vm.max_map_count`.
+Every pipeline and shader module maps driver memory on Android; a process that reaches the limit
+crashes (the GreenNaugahyde Android fork's crash #48).
+
 ### Windows on ARM64: sampling the frame threads
 
 macOS `sample` has no counterpart on Windows that works without administrator rights (ETW / WPR
@@ -632,6 +638,12 @@ Outset route (60 s from save state slot 3, empty caches, `WWHD_SYNC_SHADERS=1`, 
 The verify mode checked 5,210 wide keys on that route: no violations. Captured frames at Outset
 +400 and +1,500 logic steps and Windfall +600 (TV, present and GamePad pictures and the target of
 every draw of the frame: 441, 395 and 127 images) are byte-identical to the wide key's.
+
+An existing user cache (82 MB, 67,279 shader and 35,607 pipeline records written with the wide key)
+still replays: 1,494 translations instead of 67,406 and 847 pipelines built ahead instead of ~17,900,
+in 0.7 s instead of 1.7–2.4 s (the remaining time is reading and hashing the records). The Metal
+`[gfx]` report also counts compile waits and draws skipped while compiling, since the start
+(`[gfx] compile waits: ...`).
 
 ### Metal: index conversion (`build_indices`)
 
