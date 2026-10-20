@@ -4016,6 +4016,7 @@ static void init_device(std::vector<const char *> extensions,
     set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : record_worker_default());
   }
   nativeWorkerPresentation = false;
+  LOG("[vulkan] detailed per-draw profiling %s",rprof::enabled()?"enabled":"disabled");
   if (record_worker_requested()) {
     const char* nativeOption = std::getenv("WWHD_R5_NATIVE_PRESENT");
     const bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
@@ -4595,6 +4596,9 @@ void shutdown_renderer_caches() {
   vk::save_shader_cache();
   save_pipeline_cache();
   reset_pass_caches();
+  // The SDL quit path uses _Exit, so static destructors never flush this.
+  // Save after compiler/record workers have joined, including their last events.
+  stutter::trace().flush();
 }
 #ifdef WWHD_SDL_HOST
 // GamePad touch screen: the left mouse button on the GamePad picture, in the GamePad window (window

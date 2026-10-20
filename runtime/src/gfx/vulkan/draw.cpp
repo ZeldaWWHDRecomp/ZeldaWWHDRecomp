@@ -1872,9 +1872,11 @@ VkImageView feedback_view(Surface *source, const uint32_t *textureWords,
 // textures are never continued.
 // WWHD_VK_FASTPATH_VERIFY=N (unless WWHD_VK_FASTPATH=0): on every Nth continued draw
 // also run the full resolution, compare shaders, targets, pipeline and texture/sampler bindings,
-// count and log mismatches (the draw then uses the full result). Statistics every 120 frames.
+// count and log mismatches (the draw then uses the full result). Statistics every 120 frames
+// only with WWHD_VK_STATS or verification: synchronous console writes can stall rendering.
 struct FastPathConfig {
   bool on = false;
+  bool stats = false;
   uint32_t verifyEvery = 0;
 };
 const FastPathConfig& fastpath_config() {
@@ -1884,6 +1886,7 @@ const FastPathConfig& fastpath_config() {
     const char* e = std::getenv("WWHD_VK_FASTPATH");
     c.on = e ? std::atoi(e) != 0 : true;
     if (!c.on) c.verifyEvery = 0;
+    c.stats = preparation_stats_enabled() || c.verifyEvery;
     LOG("[vulkan] continued-draw fast path %s%s", c.on ? "on" : "off (WWHD_VK_FASTPATH=0)", c.verifyEvery ? " (verify mode)" : "");
     return c;
   }();
@@ -2741,7 +2744,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   bool fast = false;
   if (fastPathDraw) {
-    report_continued_stats();
+    if (fastPath.stats) report_continued_stats();
     ContinuedReason reason = continued_reason(prim);
     if (reason == kContinued) {
       // guest writes to the reused textures (write tracking, GX2Invalidate) upload here; an upload
@@ -2759,11 +2762,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       }
     }
     fast = reason == kContinued;
-    ++continuedStats.draws;
-    ++continuedStats.reasons[reason];
-    if (reason == kRegisters)
-      for (int g = 0; g < gx2::kSgCount; ++g)
-        if ((dirtyGroups & ~gx2::kSgContinuedMask) >> g & 1) ++continuedStats.groups[g];
+    if (fastPath.stats) {
+      ++continuedStats.draws;
+      ++continuedStats.reasons[reason];
+      if (reason == kRegisters)
+        for (int g = 0; g < gx2::kSgCount; ++g)
+          if ((dirtyGroups & ~gx2::kSgContinuedMask) >> g & 1) ++continuedStats.groups[g];
+    }
     // a full draw records a new state below; exceptions leave none
     continued.valid = false;
     continued.invalidReason = kNoState;

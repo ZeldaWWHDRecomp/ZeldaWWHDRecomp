@@ -32,7 +32,7 @@ namespace rprof {
 bool enabled() {
     static const bool on = [] {
         const char* e = getenv("WWHD_PROFILE");
-        return !e || strcmp(e, "0") != 0;
+        return e && strcmp(e, "0") != 0;
     }();
     return on;
 }

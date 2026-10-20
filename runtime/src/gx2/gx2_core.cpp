@@ -1245,7 +1245,10 @@ HLE(gx2, GX2SwapScanBuffers) {
         prev = now;
         if (ms > slow_ms) LOG("[gx2] slow swap %llu: %.1f ms", (unsigned long long)g_swap_count, ms);
     }
-    if (g_swap_count % 300 == 1) {
+    // Console/file output is synchronous: routine performance reporting must not
+    // introduce a stall on the game thread during ordinary play.
+    static const bool report_stats = getenv("WWHD_VK_STATS") || getenv("WWHD_LOG_FLIP_PACING") || getenv("WWHD_SCHED_STATS");
+    if (report_stats && g_swap_count % 300 == 1) {
         static auto last = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
         double s = std::chrono::duration<double>(now - last).count();
