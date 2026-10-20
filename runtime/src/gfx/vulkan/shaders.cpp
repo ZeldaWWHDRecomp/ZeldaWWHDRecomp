@@ -52,7 +52,7 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 void log_msg(const char* fmt, ...);  // runtime.h (not included here: the Cemu headers)
 namespace gfxvk::vk {
 using Latte::REGADDR;
-static UniformInputPlan make_uniform_input_plan(const Shader& shader) {
+UniformInputPlan make_uniform_input_plan(const Shader& shader) {
     UniformInputPlan plan;
     const auto& offsets = shader.uniforms;
     plan.bytes = (std::max(offsets.offset_endOfBlock, 16) + 15) & ~15;
@@ -74,7 +74,7 @@ static UniformInputPlan make_uniform_input_plan(const Shader& shader) {
     const uint32_t block = shader.vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
     if (offsets.offset_remapped >= 0) {
         for (const auto& entry : shader.dec->list_remappedUniformEntries_register)
-            add(alu, entry.indexOffset, offsets.offset_remapped + entry.mappedIndexOffset, 16, false);
+            add(alu, (entry.indexOffset / 4) * 4, offsets.offset_remapped + entry.mappedIndexOffset, 16, false);
         for (const auto& group : shader.dec->list_remappedUniformEntries_bufferGroups)
             for (const auto& entry : group.entries)
                 add(block + group.kcacheBankIdOffset / 4, entry.indexOffset,
@@ -1454,7 +1454,8 @@ bool update_prepared_uniforms(const uint32_t* regs, const Shader& shader,
 
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
                         std::vector<uint8_t>& data, float scaleX, float scaleY,
-                        float eyeOffset, float convergence, stereo::EyeRows* eyeRows, const UniformReader* reader) {
+                        float eyeOffset, float convergence, stereo::EyeRows* eyeRows, const UniformReader* reader,
+                        bool useInputPlan) {
     if (stereo::layoutDrawDepth) eyeOffset = 0;
     const auto& offsets = shader.uniforms;
     data.resize((std::max(offsets.offset_endOfBlock, 16) + 15) & ~15);
@@ -1462,6 +1463,19 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     // including gaps, padding, and remapped blocks with missing guest addresses.
     std::fill(data.begin(), data.end(), uint8_t{0});
     if (!shader.dec) return;
+    // Full draws need the same input copies as continued draws. Execute the
+    // translation-time, coalesced plan in mono and for unprojected stereo
+    // stages instead of walking each decompiler register/block entry again.
+    // Projected vertex stages retain the independent row-discovery path below.
+    if (useInputPlan && (!shader.vertex || eyeOffset == 0) &&
+        update_prepared_uniforms(regs, shader, data, scaleX, scaleY, reader)) {
+        for (int offset : offsets.offset_texScale) {
+            if (offset < 0 || size_t(offset) + 8 > data.size()) continue;
+            const float scale[] = {1, 1};
+            memcpy(data.data() + offset, scale, sizeof scale);
+        }
+        return;
+    }
     auto copy = [&](int offset, const void* src, size_t size) {
         if (offset >= 0 && size_t(offset) + size <= data.size()) memcpy(data.data() + offset, src, size);
     };

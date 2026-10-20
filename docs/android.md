@@ -113,6 +113,30 @@ Code mods (for example the story quests) need the game built with code-mod suppo
 
 The full steps are in the README, section *Android (build it yourself)*.
 
+### Quest floating screen (preview)
+
+The same APK supports Quest and ordinary Android devices. On Quest it opens a
+floating screen; phones and tablets retain the normal app view without starting
+OpenXR. If OpenXR cannot initialize, the renderer falls back to the normal
+Android surface. No separate APK or setting change is needed on a phone.
+
+The PC build steps above include the theater by default. To omit it and the
+OpenXR loader, use `QUEST_THEATER=OFF android/build_native.sh` and
+`./gradlew assembleRelease -PwwhdQuestTheater=false`. Set both options together.
+
+The screen starts in 2D against a black background. Point below it to reveal
+**Adjust**, then use the trigger to open controls for 2D/3D, curvature,
+passthrough and recentering. Hold grip while pointing at the screen to move it;
+while holding, the stick adjusts size horizontally and distance vertically.
+Quest controllers operate the theater; use a gamepad for gameplay. Hand tracking
+is not included. Curvature, passthrough and controller models depend on runtime
+support. Controller model appearance still needs broader device validation.
+
+The game still renders with Vulkan. OpenXR presents the floating screen and its
+controls; it does not turn the game into a head-tracked first-person VR game.
+Frame interpolation can provide smoother output, but neither a locked 30 FPS
+simulation nor locked 60 FPS output is guaranteed on Quest 3.
+
 Moon jump is an optional cheat in **Gameplay → Cheats**, off by default. Enable it and hold **L** to rise; the left stick steers relative to the camera while airborne, including after you release L. Release the stick to stop horizontal flight. **No fall damage after moon jump** is a separate option that applies only to a flight started with this cheat. Both options work with 30 fps, frame interpolation and true 60; loading a state clears the current flight.
 
 ## Fair play

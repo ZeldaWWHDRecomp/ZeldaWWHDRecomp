@@ -8,6 +8,15 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="false" />
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
+    <uses-feature android:name="com.oculus.feature.RENDER_MODEL" android:required="false" />
+    <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+    </queries>
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -87,6 +96,20 @@
             android:exported="false" android:label="Preparing shaders"
             android:screenOrientation="sensorLandscape"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|density" />
+        <activity android:name=".QuestActivity"
+            android:label="@string/app_name"
+            android:enabled="${questTheaterEnabled}"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
         <activity android:name=".WwhdActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"

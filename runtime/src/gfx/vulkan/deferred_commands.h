@@ -53,6 +53,9 @@ public:
     void start_detached_capture(std::function<void()> beforeExact);
     // The unemitted tail, in order; capture continues with an empty tail.
     std::vector<std::function<void()>> take();
+    // A wholly POD detached tail can follow the worker's prefix directly.
+    // Mixed/custom commands stay owned here and use take()'s exact fallback.
+    bool publish_held();
     // Detached capture: hold the commands this POD encoder takes as its bytes, without an
     // allocation per command; take() returns each run of them as one command, in order.
     void hold_in(PodCommands* held);

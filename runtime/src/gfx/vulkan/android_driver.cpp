@@ -1,6 +1,8 @@
 #ifdef __ANDROID__
 #include "../../exception_report.h"
 #include "android_driver.h"
+#include "backend.h"
+#include "platform/quest_theater.h"
 #include "runtime.h"
 #include <SDL3/SDL_system.h>
 #include <SDL3/SDL_vulkan.h>
@@ -108,9 +110,10 @@ PFN_vkGetInstanceProcAddr open_custom() {
     }catch(const std::exception& e){status=e.what();if(store)store->failed();LOG("[vulkan driver] %s",status.c_str());return nullptr;}
 }
 bool create_surface(SDL_Window* window,VkInstance instance,const VkAllocationCallbacks* allocator,VkSurfaceKHR* surface) {
-    if(!driver_handle||active_id.empty())return SDL_Vulkan_CreateSurface(window,instance,allocator,surface);
+    auto xrWindow=window==R.tv.window?quest_theater::window():nullptr;
+    if(!xrWindow&&(!driver_handle||active_id.empty()))return SDL_Vulkan_CreateSurface(window,instance,allocator,surface);
     auto create=reinterpret_cast<PFN_vkCreateAndroidSurfaceKHR>(vkGetInstanceProcAddr(instance,"vkCreateAndroidSurfaceKHR"));
-    auto native=static_cast<ANativeWindow*>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,nullptr));
+    auto native=xrWindow?xrWindow:static_cast<ANativeWindow*>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER,nullptr));
     if(!create||!native)return SDL_SetError("Custom driver Android surface entry point/window unavailable");
     VkAndroidSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};info.window=native;
     auto result=create(instance,&info,allocator,surface);

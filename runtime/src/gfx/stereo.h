@@ -26,6 +26,8 @@ inline Frame frame; // renderer-thread only; settings take effect at a frame bou
 // The command stream brackets nw::lyt Pane::DrawSelf. Projection values alone
 // cannot distinguish a layout from a 3D camera with the same lens parameters.
 inline unsigned layoutDrawDepth = 0;
+// The game's captured-photo pane samples a single canonical image in both eyes.
+inline bool layoutPhotograph = false;
 inline void layout_draw(bool begin) {
     if (begin) ++layoutDrawDepth;
     else if (layoutDrawDepth) --layoutDrawDepth;

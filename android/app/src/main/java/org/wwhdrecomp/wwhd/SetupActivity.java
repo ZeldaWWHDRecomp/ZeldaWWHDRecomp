@@ -127,7 +127,7 @@ public class SetupActivity extends Activity {
                 !getIntent().getBooleanExtra(EXTRA_SHOW_SETUP, false) && readyToPlay())) {
             launchingGame = true;
             CrashReports.offer(this, () -> {
-                startActivity(new Intent(this, WwhdActivity.class));
+                startActivity(QuestActivity.gameIntent(this));
                 finish();
             });
             return;
@@ -163,7 +163,7 @@ public class SetupActivity extends Activity {
         detail.setPadding(0, gap / 2, 0, gap);
         layout.addView(detail);
         // Play first: once a game is ready it is the main action
-        play = button(layout, getString(R.string.setup_play), () -> startActivity(new Intent(this, WwhdActivity.class)));
+        play = button(layout, getString(R.string.setup_play), () -> startActivity(QuestActivity.gameIntent(this)));
         button(layout, "Share log", () -> LogShare.share(this));
         play.setTextSize(20);
         play.setTextColor(0xFFFFFFFF);

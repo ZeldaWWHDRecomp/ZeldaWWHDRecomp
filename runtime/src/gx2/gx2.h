@@ -33,6 +33,10 @@ void set_uncapped(bool on);
 // on the virtual vsync (its step's slot, gx2/vsync_pacing.h); false if there is none yet
 bool next_step_time(std::chrono::steady_clock::time_point& at);
 void drop_step_slot();  // a logic pass more than a step late: the schedule starts anew
+#ifdef __ANDROID__
+// The XR session first gates new presents, then waits for existing surface writes.
+void quiesce_quest_presentation();
+#endif
 }  // namespace gx2
 
 // The renderer backend (Metal). All calls come from the thread executing GX2

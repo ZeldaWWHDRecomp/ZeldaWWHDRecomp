@@ -22,6 +22,7 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <android/native_window_jni.h>
 #include <jni.h>
+#include "platform/quest_theater.h"
 #endif
 #include "backend.h"
 #include "pass.h"
@@ -692,6 +693,7 @@ void note_upload_block(const Buffer& buffer) {
 }
 }  // namespace
 UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
+  ensure_submission();
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
   auto slice = [&](Renderer::UploadBlock& block) {
@@ -962,6 +964,7 @@ static void report_gpu_timestamps() {
   previousFrame = R.frame;
 }
 VkCommandBuffer command_buffer() {
+  ensure_submission();
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (!R.recording) {
@@ -1133,7 +1136,9 @@ static void destroy_unsubmitted_slot(Renderer::Submission& slot) {
 static VkResult try_initialize_submission(Renderer::Submission& slot) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex=R.queueFamily;
-  pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  // Slots are recycled as whole pools after their fences, never by resetting
+  // individual buffers. Let the driver allocate/reset command storage in bulk.
+  pool.flags=0;
   VkResult result=vkCreateCommandPool(R.device,&pool,nullptr,&slot.commandPool);
   if(result!=VK_SUCCESS)return result;
   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -1237,11 +1242,11 @@ static void activate_submission(size_t index) {
   R.commandPool=slot.commandPool;R.cmd=slot.cmd;R.fence=slot.fence;
   R.descriptorPool=slot.descriptorPool;
   R.uploadBlocks=std::move(slot.uploadBlocks);
-  R.garbageBuffers=std::move(slot.garbageBuffers);
-  R.garbageImages=std::move(slot.garbageImages);
-  R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
-  R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
+  // retire_submission has emptied the slot's garbage. Keep objects deferred
+  // since the preceding submit (screenshots and cache eviction can do this
+  // without recording commands); the next submission will own their lifetime.
   R.recording=false;R.rendering=false;R.passTracked=false;
+  R.submissionNeeded=false;
 }
 static void drain_submissions() {
   if(active_deferred_commands)active_deferred_commands->finish_exact();
@@ -1278,6 +1283,13 @@ static size_t next_submission_slot() {
   }
   resolve_retained_submission(R.submissions[next]);
   return next;
+}
+void ensure_submission() {
+  if (R.submissionNeeded) activate_submission(next_submission_slot());
+}
+VkDescriptorPool descriptor_pool() {
+  ensure_submission();
+  return R.descriptorPool;
 }
 // Resolved once from the selected driver, only when the worker is requested.
 // Unknown drivers conservatively retain producer presentation on every OS.
@@ -1388,7 +1400,18 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     }
   } else if(owner) owner->owned_boundary(seal,execute);
   else { seal();execute(); }
-  if(asynchronous)activate_submission(next_submission_slot());
+  if(asynchronous) {
+    // Do not put the next slot's fence wait/pool reset ahead of this frame's
+    // present and GX2 queue fence. The game can produce its next work while
+    // the GPU consumes this submission. Acquire storage at its first use.
+    R.submissionNeeded=true;
+    R.recording=false;R.rendering=false;R.passTracked=false;
+    R.commandPool=VK_NULL_HANDLE;R.cmd=VK_NULL_HANDLE;
+    R.fence=VK_NULL_HANDLE;R.descriptorPool=VK_NULL_HANDLE;
+    // Invalidate prepared descriptors/uploads immediately, including paths
+    // that inspect cache generations before allocating their first resource.
+    ++R.submissionGeneration;
+  }
   else {
     retire_submission(slot,wait ? presentSubmitWait : submitWait);
     activate_submission(R.activeSubmission);
@@ -1407,6 +1430,7 @@ void flush() {
                        !R.garbageCacheRegions.empty())) command_buffer();
   submit();
   drain_submissions();
+  ensure_submission();
 }
 #ifdef __ANDROID__
 static void wait_secondary_present();
@@ -1595,7 +1619,9 @@ static void make_swapchain(Screen &s) {
   // changes then and the swapchain is made again for the new size.)
   {
     int pw = 0, ph = 0;
-    if (s.window && SDL_GetWindowSizeInPixels(s.window, &pw, &ph) && pw > 0 && ph > 0)
+    if (&s == &R.tv && quest_theater::active())
+      extent = {quest_theater::width,quest_theater::height};
+    else if (s.window && SDL_GetWindowSizeInPixels(s.window, &pw, &ph) && pw > 0 && ph > 0)
       extent = {uint32_t(pw), uint32_t(ph)};
     else if (&s == &R.drc && s.width > 0 && s.height > 0)
       extent = {uint32_t(s.width.load()), uint32_t(s.height.load())};
@@ -2355,6 +2381,9 @@ static void present_held(bool forced) {
   trace_even_presented(at);
 }
 static bool present(Screen &s) {
+#ifdef __ANDROID__
+  if (&s == &R.tv && quest_theater::active() && !quest_theater::visible()) return false;
+#endif
   if (&s == &R.tv) present_held(true);  // the previous frame, if it is still held
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (presentObservation && &s == &R.tv) poll_present_observer();
@@ -2776,6 +2805,9 @@ static bool present(Screen &s) {
   // Even frame delivery (interp_pacing.h EvenSchedule; interp.cpp: on by default on Android): a TV frame of a
   // swap that is ready before its slot is held (its work is submitted; only the present call waits)
   if (&s == &R.tv && async && evenPresentSwap && !secondary && !present_capture_requested() &&
+#ifdef __ANDROID__
+      !quest_theater::active() &&
+#endif
       (evenPresentInterval || even_trace_file())) {
     const int64_t ready = even_now_ns();
     const int64_t due = evenSchedule.plan(ready, evenPresentInterval);
@@ -2801,6 +2833,9 @@ static bool present(Screen &s) {
     return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
   }
   const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, secondary);
+#ifdef __ANDROID__
+  if (&s == &R.tv && (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR)) quest_theater::presented(stereo::frame.mode);
+#endif
   if (!async)
     vk_check(timed_call(timing.idle, [&] { return vkQueueWaitIdle(R.queue); }, rprof::kWaitGpu),
              "present completion");
@@ -4009,9 +4044,14 @@ static void init_device(std::vector<const char *> extensions,
   // starts with the device); WWHD_VK_RECORD_WORKER takes precedence (record_worker.cpp)
   {
     std::string value;
-    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : record_worker_default());
+    bool defaultWorker=record_worker_default();
+#ifdef __ANDROID__
+    defaultWorker=defaultWorker||quest_theater::device();
+#endif
+    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : defaultWorker);
   }
   nativeWorkerPresentation = false;
+  LOG("[vulkan] detailed per-draw profiling %s",rprof::enabled()?"enabled":"disabled");
   if (record_worker_requested()) {
     const char* nativeOption = std::getenv("WWHD_R5_NATIVE_PRESENT");
     const bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
@@ -4326,7 +4366,7 @@ static void init_device(std::vector<const char *> extensions,
   for (auto& slot:R.submissions) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex = R.queueFamily;
-  pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool.flags = 0; // whole-pool reset after the slot fence (cleanup_submission)
   vk_check(vkCreateCommandPool(R.device, &pool, nullptr, &slot.commandPool),
            "create command pool");
   VkCommandBufferAllocateInfo ca{
@@ -4498,6 +4538,7 @@ void init() {
   if (!R.tv.window)
     exception_report::raise(SDL_GetError());
 #ifdef __ANDROID__
+  quest_theater::initialize();
   // one surface: the GamePad picture is drawn into it (display_modes.h: picture-in-picture, GamePad
   // only), never a window of its own
 #else
@@ -4541,6 +4582,9 @@ void init() {
   input::init();
   install_graphics_menu(R.tv.window);
   ::hostui::load_saved_options();  // graphics and GamePad screen options saved by the settings overlay (settings.ini)
+#ifdef __ANDROID__
+  if (quest_theater::active()) stereo::set_mode(stereo::Off); // opt in using the theater's 3D button
+#endif
 }
 #endif
 void save_renderer_caches() {

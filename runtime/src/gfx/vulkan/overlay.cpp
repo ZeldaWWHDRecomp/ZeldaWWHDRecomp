@@ -340,7 +340,7 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
             VkDescriptorSet& set = sets[t];
             if (!set) {
                 VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-                a.descriptorPool = R.descriptorPool;
+                a.descriptorPool = descriptor_pool();
                 a.descriptorSetCount = 1;
                 a.pSetLayouts = &res.descriptors;
                 vk_check(vkAllocateDescriptorSets(R.device, &a, &set), "overlay descriptor set");

@@ -1,6 +1,6 @@
 // Render-thread profiler shared by both renderers (render_prof.cpp).
 //
-// Cheap enough to stay on: every command op is counted; draws and register writes are timed on one
+// Opt-in diagnostics: every command op is counted; draws and register writes are timed on one
 // call in 64 (and the phases inside those sampled draws), rare ops (clears, copies, flushes, swaps)
 // on every call. Upload bytes are split by kind; "unique guest bytes" (the union of the guest ranges
 // that vertex, index and uniform copies read) is measured on one frame in 16. A classifier counts
@@ -9,7 +9,7 @@
 //
 // Every 120 swaps the counters are turned into a text report: logged with WWHD_PROFILE=1,
 // WWHD_VK_STATS or WWHD_VK_CPU_ONLY_STATS=1, and kept for the overlay's "Copy performance report"
-// button (latest_report()). WWHD_PROFILE=0 turns the profiler off.
+// button (latest_report()). Disabled by default; WWHD_PROFILE=1 enables it.
 #pragma once
 #include <cstdint>
 #include <string>

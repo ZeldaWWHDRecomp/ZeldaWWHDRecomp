@@ -35,6 +35,7 @@
 // kMaxBackoff frames) it is tried again.
 #pragma once
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -204,8 +205,18 @@ class Cache {
   Status lookup(const Key& key, uint32_t size, Entry*& e) {
     ++stats.lookups;
     const uint32_t epoch = epoch_.load(std::memory_order_acquire);
-    auto [it, inserted] = map_.try_emplace(key);
-    e = &it->second;
+    // Repeated draws revisit the same buffers. Retain only their identity here;
+    // all size, epoch, write tracking and dynamic-range checks still run below.
+    // unordered_map rehash preserves Entry addresses; erasure clears this table.
+    auto& recent = recent_[KeyHash{}(key) & (recent_.size()-1)];
+    bool inserted = false;
+    if (recent.entry && recent.key == key) e = recent.entry;
+    else {
+      auto result = map_.try_emplace(key);
+      inserted = result.second;
+      e = &result.first->second;
+      recent = {key, e};
+    }
     Entry& x = *e;
     x.lastUse = frame_;
     if (inserted) {
@@ -299,6 +310,7 @@ class Cache {
     if (!over && frame_ - lastSweep_ < 64) return;
     lastSweep_ = frame_;
     pressure_ = false;
+    recent_ = {}; // the sweep may erase entries
     for (auto it = map_.begin(); it != map_.end();) {
       Entry& x = it->second;
       if (x.lastUse + kIdleFrames < frame_ && frame_ >= x.dynamicUntil) {
@@ -321,6 +333,7 @@ class Cache {
   }
 
   void clear() {
+    recent_ = {};
     for (auto& [k, x] : map_) drop_region(x);
     map_.clear();
   }
@@ -364,6 +377,8 @@ class Cache {
 
   Backing& backing_;
   std::unordered_map<Key, Entry, KeyHash> map_;
+  struct RecentEntry { Key key; Entry* entry = nullptr; };
+  std::array<RecentEntry, 128> recent_{};
   std::atomic<uint32_t> epoch_{0};
   uint64_t frame_ = 0, lastSweep_ = 0, resident_ = 0;
   bool pressure_ = false;

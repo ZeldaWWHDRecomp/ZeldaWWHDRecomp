@@ -50,6 +50,8 @@ enum Op : uint32_t {
 // emit a command (records into the active display list, or executes now)
 void emit(Op op, const uint32_t* payload, uint32_t n);
 inline void emit(Op op, std::initializer_list<uint32_t> payload) { emit(op, payload.begin(), (uint32_t)payload.size()); }
+// Producer-thread state: recorded commands may be replayed after a mode change.
+bool recording_display_list();
 
 // register writes
 void set_reg(uint32_t reg, uint32_t value);

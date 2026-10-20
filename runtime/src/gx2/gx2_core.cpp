@@ -253,6 +253,7 @@ struct Recording {
     uint32 start = 0, pos = 0, end = 0;
 };
 static thread_local Recording t_rec;
+bool recording_display_list() { return t_rec.start != 0; }
 
 static void execute_one(Op op, const uint32* p, uint32 n);
 
@@ -429,6 +430,13 @@ void request_background_vulkan_cache_checkpoint() {
     if (!gfxvk::background_renderer_caches_ready()) return;
     background_cache_checkpoint().request();
 }
+#ifdef __ANDROID__
+void quiesce_quest_presentation() {
+    if (!gfxvk::background_renderer_caches_ready()) return;
+    std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+    gfxvk::wait_idle();
+}
+#endif
 void checkpoint_present_observer() {
     if (!present_observer::enabled()) return;
     render_sync();
@@ -642,6 +650,12 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_LAYOUT_CONTENT:
         aspect::set_content_clip(n && p[0]);
         if (n >= 2) stereo::layout_draw(p[1] != 0);
+        // A photo pane samples the canonical captured image. Changing that
+        // policy invalidates continued texture bindings, even with identical registers.
+        if (const bool photo = n >= 3 && p[2]; photo != stereo::layoutPhotograph) {
+            stereo::layoutPhotograph = photo;
+            note_full_state_change();
+        }
         break;
     case OP_CLOUDS_BEGIN:
         cloud_proto::g_active_seq = n ? p[0] : 0;

@@ -116,6 +116,30 @@ int main() {
     for (uint64_t i = 0; i < kSize; i++) g_mem[i] = (uint8_t)(i * 13 + 5);
     allocator_tests();
 
+    // Recent identities must survive map rehash, but never survive erasure.
+    {
+        TestBacking localBacking;
+        Cache local(localBacking);
+        local.set_frame(1);
+        Entry* first = nullptr;
+        const Key key{0x90000, kRaw, 0};
+        assert(local.lookup(key, 64, first) == kMiss);
+        assert(local.upload(*first, g_mem + key.addr, 64));
+        for (uint32_t i = 1; i < 4096; ++i) {
+            Entry* ignored;
+            local.lookup({key.addr + i * 16, kRaw, i}, 16, ignored);
+        }
+        Entry* found = nullptr;
+        assert(local.lookup(key, 64, found) == kHit && found == first);
+        local.set_frame(100000);
+        local.end_frame(localBacking.budget);
+        assert(local.lookup(key, 64, found) == kMiss);
+        assert(local.upload(*found, g_mem + key.addr, 64));
+        local.clear();
+        assert(local.lookup(key, 64, found) == kMiss);
+        printf("recent buffer identity lifetime: ok\n");
+    }
+
     TestBacking backing;
     Cache cache(backing);
     uint64_t frame = 1;

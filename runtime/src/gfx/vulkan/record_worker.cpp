@@ -42,7 +42,9 @@ uint64_t RecordWorker::publish(PodCommands& commands) {
     // Allocate queue storage BEFORE moving the producer tail. Allocation failure
     // leaves every pending command owned by the producer for explicit recovery.
     jobs_.push_back({serial, frame, {}});
-    jobs_.back().bytes = commands.take();
+    std::vector<std::byte> replacement;
+    if (recycledCount_) replacement.swap(recycled_[--recycledCount_]);
+    jobs_.back().bytes = commands.take(std::move(replacement));
     published_ = serial;
     trace::emit(Lane::Producer, Kind::Published, serial, frame, jobs_.size(), jobs_.back().bytes.size());
     changed_.notify_all();
@@ -120,6 +122,10 @@ void RecordWorker::run() {
         if (trace::enabled()) trace::emit_worker(Kind::ReplayCPU, cpuStart, cpuEnd);
         {
             std::lock_guard lock(mutex_);
+            if (recycledCount_ < recycled_.size()) {
+                job.bytes.clear();
+                recycled_[recycledCount_++].swap(job.bytes);
+            }
             completed_ = job.serial;
             trace::emit(Lane::Worker, Kind::Completed, job.serial, job.producerFrame); changed_.notify_all();
         }
@@ -175,6 +181,12 @@ void start_record_worker() {
 }
 uint64_t publish_record_commands() {
     return worker && !pending.empty() ? worker->publish(pending) : 0;
+}
+bool publish_held_record_commands(PodCommands& commands) {
+    if (!worker || producerPresentationRecording) return false;
+    publish_record_commands();
+    if (!commands.empty()) worker->publish(commands);
+    return true;
 }
 void publish_record_commands_at_draw_boundary() {
     // Restore the previous policy: only a complete draw crossing 32 KiB

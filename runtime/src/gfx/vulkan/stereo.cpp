@@ -97,21 +97,39 @@ void stereo_select_eye(int eye) {
 }
 uint64_t stereoFlushGeneration = 1;
 bool stereo_shared_texture(const Surface* s) {
-    if (!streaming() || s->gpuWritten || s->dirty || s->lastCheckedFrame != R.frame ||
-        s->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return false;
+    if (!streaming() || s->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return false;
+    const bool photograph = stereo::layoutPhotograph && s->gpuWritten && !s->isDepth;
+    if (!photograph && (s->gpuWritten || s->dirty || s->lastCheckedFrame != R.frame)) return false;
     auto& eye0 = stereoEye ? otherSurfaces : R.surfaces;
     auto& eye1 = stereoEye ? R.surfaces : otherSurfaces;
-    if (eye1.count(s->addr)) return false;
+    if (!photograph && eye1.count(s->addr)) return false;
     bool found = false;
     auto range = eye0.equal_range(s->addr);
     for (auto it = range.first; it != range.second; ++it) {
-        if (it->second->gpuWritten) return false;
+        if (!photograph && it->second->gpuWritten) return false;
         found |= it->second.get() == s;
     }
     return found;
 }
 Surface* stereo_eye0_texture(const SurfaceDesc& d) {
-    if (stereoEye != 1 || !streaming() || R.surfaces.count(d.addr)) return nullptr;
+    if (stereoEye != 1 || !streaming()) return nullptr;
+    // PF_Pictograph_00 is a photograph, not a second live camera. Its GPU
+    // preview must match the canonical image subsequently saved by the guest.
+    // Eye 0's draw has already resolved format aliases and transitioned it;
+    // the normal held-texture lease orders any later rewrite after this read.
+    if (stereo::layoutPhotograph && !d.isDepth) {
+        Surface* photo = nullptr;
+        auto range = otherSurfaces.equal_range(d.addr);
+        for (auto it = range.first; it != range.second; ++it) {
+            auto* s = it->second.get();
+            if (s->gpuWritten && !s->isDepth && s->width == d.width && s->height == d.height &&
+                (s->format & 0x3f) == (d.format & 0x3f) && s->slices == d.slices &&
+                s->dim == d.dim && stereo_shared_texture(s) && (!photo || s->writeSeq > photo->writeSeq))
+                photo = s;
+        }
+        if (photo) { stereo_hold_texture(photo); return photo; }
+    }
+    if (R.surfaces.count(d.addr)) return nullptr;
     // find_or_create_surface's sampled match among textures nobody rendered
     const bool volume = static_cast<Latte::E_DIM>(d.dim) == Latte::E_DIM::DIM_3D;
     Surface* exact = nullptr;
@@ -141,8 +159,12 @@ void stereo_flush() {
     eye_deferred_commands = nullptr;
     end_encoder();
     if (stereoEye == 1) swap_pass();
-    auto held = eyeCommands.take();
     try {
+        // Both eye streams refer to the same submission-owned resources. Queue
+        // a pure POD eye after eye 0 rather than draining and replaying its Vulkan
+        // calls on the producer. Custom owned commands retain the exact path.
+        if (eyeCommands.publish_held()) { attach_eye_stream(); return; }
+        auto held = eyeCommands.take();
         // The record worker owns the renderer's stream; held commands follow its queued work.
         if (auto* recorder = active_deferred_commands; recorder && recorder->pod_mode())
             drain_record_commands();

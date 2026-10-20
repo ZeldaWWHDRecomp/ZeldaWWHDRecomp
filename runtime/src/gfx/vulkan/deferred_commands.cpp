@@ -80,7 +80,17 @@ std::vector<std::function<void()>> DeferredCommands::take() {
     commands_.clear();payloadBytes_=0;emitted_=0;
     return tail;
 }
+bool DeferredCommands::publish_held() {
+    if (!capturing_ || !held_ || commands_.size() != emitted_ ||
+        !active_deferred_commands || !active_deferred_commands->pod_mode()) return false;
+    if (!publish_held_record_commands(*held_)) return false;
+    commands_.clear();payloadBytes_=0;emitted_=0;
+    return true;
+}
 void DeferredCommands::force_exact() {
+    // A producer batch has not reached this stream yet. Append it while capture
+    // is still active, before an older pending-pipeline bind can invoke dispatch.
+    if(active_deferred_commands==this && before_record_command)before_record_command();
     if (pod_) { drain_record_commands(); return; }
     capturing_=false;
     if(active_deferred_commands==this)active_deferred_commands=nullptr;
@@ -90,6 +100,7 @@ void DeferredCommands::force_exact() {
     emit_exact();
 }
 void DeferredCommands::emit_exact() {
+    if(active_deferred_commands==this && before_record_command)before_record_command();
     if (pod_) { drain_record_commands(); return; }
     seal_held();
     capturing_=false;
@@ -98,8 +109,9 @@ void DeferredCommands::emit_exact() {
     // bind) must not be held by the stereo eye stream if the second eye is selected.
     struct EyeDispatch {
         DeferredCommands* eye=eye_deferred_commands;
-        EyeDispatch() { eye_deferred_commands=nullptr; }
-        ~EyeDispatch() { eye_deferred_commands=eye; }
+        void (*producerBatch)()=before_record_command;
+        EyeDispatch() { eye_deferred_commands=nullptr;before_record_command=nullptr; }
+        ~EyeDispatch() { eye_deferred_commands=eye;before_record_command=producerBatch; }
     } eyeDispatch;
     while(emitted_<commands_.size()) { commands_[emitted_]();++emitted_; }
     commands_.clear();payloadBytes_=0;emitted_=0;beforeExact_={};

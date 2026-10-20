@@ -58,7 +58,7 @@ public final class GameShortcut {
             for (ShortcutInfo pinned : shortcuts.getPinnedShortcuts())
                 if (pinned.getId().equals(ID)) return true;
             Bitmap art = icon(new File(game, "meta/iconTex.tga"));
-            Intent play = new Intent(Intent.ACTION_MAIN).setClass(context, WwhdActivity.class)
+            Intent play = QuestActivity.gameIntent(context).setAction(Intent.ACTION_MAIN)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             ShortcutInfo.Builder info = new ShortcutInfo.Builder(context, ID)
                 .setShortLabel(context.getString(R.string.app_name))

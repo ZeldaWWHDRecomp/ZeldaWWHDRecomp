@@ -1984,6 +1984,19 @@ struct ContinuedTexture {
   Surface* surface = nullptr;
   VkImageView view = VK_NULL_HANDLE;
   VkSampler sampler = VK_NULL_HANDLE;
+  uint32_t textureReg = 0, samplerReg = 0;
+  std::array<uint32_t, 10> inputWords{};
+  void capture_inputs(const uint32_t* r, const vk::Shader& shader) {
+    textureReg = (shader.vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS) + unit * 7;
+    samplerReg = REGADDR::SQ_TEX_SAMPLER_WORD0_0 +
+        ((shader.vertex ? 18 : 0) + shader.dec->textureUnitSamplerAssignment[unit]) * 3;
+    std::copy_n(r + textureReg, 7, inputWords.begin());
+    std::copy_n(r + samplerReg, 3, inputWords.begin() + 7);
+  }
+  bool inputs_match(const uint32_t* r) const {
+    return !std::memcmp(inputWords.data(), r + textureReg, 7 * sizeof(uint32_t)) &&
+        !std::memcmp(inputWords.data() + 7, r + samplerReg, 3 * sizeof(uint32_t));
+  }
 };
 struct PreparedStage {
   struct Uniform {
@@ -2006,9 +2019,18 @@ struct ContinuedStage {
   bool continuable = true;
   std::array<ContinuedTexture, LATTE_NUM_MAX_TEX_UNITS> textures{};
   mutable PreparedStage prepared;
-  void add(const ContinuedTexture& t) {
-    if (count < textures.size()) textures[count++] = t;
+  void add(const ContinuedTexture& t, const uint32_t* r, const vk::Shader& shader) {
+    if (count < textures.size()) {
+      auto& stored = textures[count++];
+      stored = t;
+      stored.capture_inputs(r, shader);
+    }
     else continuable = false;
+  }
+  bool texture_inputs_match(const uint32_t* r) const {
+    for (uint32_t i = 0; i < count; ++i)
+      if (!textures[i].inputs_match(r)) return false;
+    return true;
   }
 };
 struct DrawTargets {
@@ -2360,7 +2382,8 @@ bool bind_prepared_stage(const uint32_t* r, vk::Shader* sh, VkDescriptorSetLayou
     return false;
   if (verifyNow) {
       std::vector<uint8_t> reference;
-      vk::pack_uniforms_into(r, *sh, reference, sx, sy, 0, 600, nullptr, verificationReader);
+      // Keep the reference independent of the copy plan being verified.
+      vk::pack_uniforms_into(r, *sh, reference, sx, sy, 0, 600, nullptr, verificationReader, false);
       for (uint32_t i = 0; i < resolved.count; ++i) {
         const auto& texture = resolved.textures[i];
         const int offset = sh->uniforms.offset_texScale[texture.unit];
@@ -2377,7 +2400,7 @@ bool bind_prepared_stage(const uint32_t* r, vk::Shader* sh, VkDescriptorSetLayou
             offset, unsigned(reference[offset]), unsigned(prepared.support[offset]), supportUnchanged,
             sh->uniformInputs.readsGuestMemory, (unsigned long long)uniformVersion,
             (unsigned long long)prepared.uniformVersion, sx, sy);
-        exception_report::raise("prepared mono uniform payload differs from resolved shader payload");
+        exception_report::raise("prepared uniform payload differs from resolved shader payload");
       }
   }
   // Resource use still accumulates shader readers, even when no new descriptor
@@ -2476,13 +2499,29 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     const char* e = std::getenv("WWHD_VK_PREPARED_STAGES");
     return !e || std::strcmp(e, "0");
   }();
-  // Stereo's projection modifications and held resource leases continue
-  // through their paired-eye path.
-  const bool prepareStage = preparedStages && dynamicUniforms && stereo::frame.mode == stereo::Off &&
+  // Ordinary pixel constants have no eye projection. Reuse their prepared
+  // bindings on eye 0 as in mono, then give eye 1 an explicit shared-texture
+  // lease. Projection/shadow stages keep the paired-eye preparation path.
+  const bool stereoPixel = stereo::frame.mode != stereo::Off && stereoEye == 0 &&
+      !sh->vertex && !sunShadow && replayOut;
+  const bool prepareStage = preparedStages && dynamicUniforms && (stereo::frame.mode == stereo::Off || stereoPixel) &&
       !aoPrivateReplay && sh->kind != gfx::ProgramKind::OcclusionVertex &&
       (sh->vertex || (r[mmSQ_PGM_START_PS] << 8) != 0x44F91200);
-  if (prepareStage && reuse && bind_prepared_stage(r, sh, layout, sx, sy, *reuse, out))
-    return out;
+  if (prepareStage && reuse) {
+    bool shared = true;
+    if (stereoPixel) for (uint32_t i = 0; i < reuse->count; ++i)
+      shared &= stereo_shared_texture(reuse->textures[i].surface);
+    if (shared && bind_prepared_stage(r, sh, layout, sx, sy, *reuse, out)) {
+      if (stereoPixel) {
+        replayOut->valid = true;
+        replayOut->uniformCount = replayOut->eyeTextureCount = 0;
+        replayOut->textureCount = reuse->count;
+        for (uint32_t i = 0; i < reuse->count; ++i)
+          replayOut->textures[i] = reuse->textures[i].surface;
+      }
+      return out;
+    }
+  }
   // A reusable stage can fall back on upload-arena rollover. Rebuild its
   // texture list rather than appending a second copy of the old bindings.
   if (record) {
@@ -2704,7 +2743,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     replayTexture(s, unit, binding, aliases || substituted);
     if (record) {
       if (aliases || substituted || shares_target_address(s, colors, depth)) record->continuable = false;
-      record->add({unit, binding, s, sampledView, samplerValue});
+      record->add({unit, binding, s, sampledView, samplerValue}, r, *sh);
     }
   }
   rprof::mark(rprof::kTextures);
@@ -2795,6 +2834,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
 // The stage's descriptor set for these writes: reused within the submission, else written.
 VkDescriptorSet stage_descriptor_set(bool vertex, VkDescriptorSetLayout layout,
                                      VkWriteDescriptorSet* writes, uint32_t writeCount) {
+  ensure_submission();
   VkDescriptorSet set{};
   // Resource preparation above must always run, even when the descriptor set
   // itself is reusable. Pool reset/slot activation invalidates every old set.
@@ -2820,7 +2860,7 @@ VkDescriptorSet stage_descriptor_set(bool vertex, VkDescriptorSetLayout layout,
     return found;
   }
   VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  ai.descriptorPool = R.descriptorPool;
+  ai.descriptorPool = descriptor_pool();
   ai.descriptorSetCount = 1;
   ai.pSetLayouts = &layout;
   vk_check(vkAllocateDescriptorSets(R.device, &ai, &set), "descriptor set");
@@ -2947,6 +2987,34 @@ ContinuedReason continued_reason(uint32_t prim) {
   return kContinued;
 }
 } // namespace
+void stage_input_smoke_check() {
+  std::vector<uint32_t> r(0x10000);
+  for (bool vertex : {false, true}) {
+    LatteDecompilerShader decoded(vertex ? LatteConst::ShaderType::Vertex : LatteConst::ShaderType::Pixel);
+    vk::Shader shader; shader.vertex = vertex; shader.dec = &decoded;
+    decoded.textureUnitSamplerAssignment[2] = 5; // sampler differs from texture unit
+    ContinuedStage stage;
+    stage.add({2, 0, nullptr, VK_NULL_HANDLE, VK_NULL_HANDLE}, r.data(), shader);
+    const auto& input = stage.textures[0];
+    const auto require = [](bool ok) { if (!ok) exception_report::raise("stage texture dependency mismatch"); };
+    require(stage.texture_inputs_match(r.data()));
+    // Every word of a used texture or its assigned sampler invalidates reuse.
+    for (uint32_t i = 0; i < 10; ++i) {
+      const uint32_t reg = i < 7 ? input.textureReg + i : input.samplerReg + i - 7;
+      r[reg] ^= 1; require(!stage.texture_inputs_match(r.data())); r[reg] ^= 1;
+    }
+    const uint32_t otherTexture = (vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS) + 2 * 7;
+    const uint32_t otherSampler = REGADDR::SQ_TEX_SAMPLER_WORD0_0 + ((vertex ? 0 : 18) + 5) * 3;
+    r[otherTexture] ^= 1; r[otherSampler] ^= 1;
+    r[input.textureReg + 7] ^= 1; // unused unit in the same stage
+    require(stage.texture_inputs_match(r.data()));
+    r[otherTexture] ^= 1; r[otherSampler] ^= 1; r[input.textureReg + 7] ^= 1;
+    stage.count = 0;
+    r[input.textureReg] ^= 1;
+    require(stage.texture_inputs_match(r.data()));
+    r[input.textureReg] ^= 1;
+  }
+}
 VkDescriptorSet texture_stage_smoke_bind(const uint32_t* registers,
     VkDescriptorSetLayout layout, uint32_t textureCount) {
   if (textureCount > LATTE_NUM_MAX_TEX_UNITS)
@@ -3024,6 +3092,7 @@ static bool sun_atlas_target(const uint32_t* r) {
 }
 void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexType,
                  uint32_t indexAddr,uint32_t baseVertex,uint32_t instances) {
+  ensure_submission();
   if (preparation_stats_enabled()) {
     static uint64_t reportedFrame = 0;
     if (R.frame >= reportedFrame + 120) {
@@ -3062,6 +3131,7 @@ void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0
 bool clouds_skip_card();
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
+  ensure_submission();
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
   auto& continued = continuedEyes[stereoEye];
   // the top-level stereo draw only, never the AO replay below
@@ -3373,19 +3443,22 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     return !e || std::strcmp(e, "0");
   }();
   // Geometry, shaders, and raster state need not invalidate an unchanged
-  // stage's resource bindings. Keep the conservative whole-draw path for
-  // texture/sampler/attachment changes, external invalidations, and settings.
+  // stage's resource bindings. Texture/sampler writes are global dirty groups,
+  // but a stage depends only on the units it samples. Compare those exact inputs
+  // so pixel material changes do not rebuild an unaffected vertex stage (or vice
+  // versa). Attachment changes, external invalidations and settings stay gated.
   bool reuseStage[2] = {fast, fast};
-  if (independentStages && recordState && stereo::frame.mode == stereo::Off &&
+  if (independentStages && recordState && (stereo::frame.mode == stereo::Off || stereoEye == 0) &&
       continued.frame == R.frame && continued.surfaceEpoch == g_surface_epoch &&
       continued.aoMode == ao_mode() && continued.aoHires == ao_hires_enabled() &&
       continued.aniso == aniso_enabled() && continued.targets.same(targets) &&
-      !(dirtyGroups & ((1u << gx2::kSgTexture) | (1u << gx2::kSgSampler) |
-                       (1u << gx2::kSgTargets) | (1u << gx2::kSgOther)))) {
+      !(dirtyGroups & ((1u << gx2::kSgTargets) | (1u << gx2::kSgOther)))) {
     vk::Shader* current[] = {vs, ps};
     for (int st = 0; st < 2; ++st) {
       auto& stage = continued.stages[st];
       if (!stage.continuable || !stage.prepared.valid || stage.prepared.shader != current[st]) continue;
+      if ((dirtyGroups & ((1u << gx2::kSgTexture) | (1u << gx2::kSgSampler))) &&
+          !stage.texture_inputs_match(r)) continue;
       for (uint32_t i = 0; i < stage.count; ++i) upload_surface(stage.textures[i].surface);
       if (continued.surfaceEpoch == g_surface_epoch) reuseStage[st] = true;
     }

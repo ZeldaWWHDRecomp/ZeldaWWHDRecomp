@@ -557,6 +557,85 @@ float triangle(Surface& s, float eyeOffset=0, float clipW=1,
  double sum=0;for(size_t i=0;i<pixels.size();i+=4)if(pixels[i]==255)sum+=(i/4)%s.extent.width;
  return float(sum/red);
 }
+void submission_reuse_check() {
+ flush();
+ const size_t rounds=R.submissions.size()*3;
+ Buffer output=create_readback_buffer(rounds*sizeof(uint32_t));
+ struct Cleanup { Buffer buffer; ~Cleanup(){defer_buffer(buffer);} } cleanup{output};
+ VkBuffer betweenSubmissions=VK_NULL_HANDLE;
+ for(size_t i=0;i<rounds;++i) {
+  const auto upload=allocate_upload(sizeof(uint32_t),4);
+  require(!R.submissionNeeded,"upload did not acquire a writable submission");
+  if(betweenSubmissions) {
+   require(std::any_of(R.garbageBuffers.begin(),R.garbageBuffers.end(),[&](const Buffer& b){return b.buffer==betweenSubmissions;}),
+       "slot activation lost an object deferred between submissions");
+  }
+  const uint32_t value=0x12340000u+uint32_t(i);
+  memcpy(upload.mapped,&value,sizeof(value));
+  const auto cmd=command_buffer();
+  VkBufferCopy copy{upload.offset,i*sizeof(value),sizeof(value)};
+  record::vkCmdCopyBuffer(cmd,upload.buffer,output.buffer,1,&copy);
+  VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;barrier.dstAccessMask=VK_ACCESS_HOST_READ_BIT;
+  barrier.srcQueueFamilyIndex=barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+  barrier.buffer=output.buffer;barrier.offset=copy.dstOffset;barrier.size=copy.size;
+  record::vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&barrier,0,nullptr);
+  const size_t submitted=R.activeSubmission;
+  const uint64_t generation=R.submissionGeneration;
+  flush_async();
+  require(R.submissionNeeded&&R.activeSubmission==submitted,
+      "asynchronous submit eagerly recycled the next slot");
+  require(!R.cmd&&!R.descriptorPool&&R.submissionGeneration!=generation,
+      "sealed submission exposed reusable command/descriptor state");
+  require(!R.submissions[submitted].uploadBlocks.empty(),"submitted upload ownership was lost");
+  Buffer garbage=create_readback_buffer(16);
+  betweenSubmissions=garbage.buffer;defer_buffer(garbage);
+ }
+ // Exercise descriptor-only acquisition, without an upload or command first.
+ require(descriptor_pool()!=VK_NULL_HANDLE&&!R.submissionNeeded,"descriptor allocation did not acquire a slot");
+ flush();
+ for(size_t i=0;i<rounds;++i)
+  require(static_cast<const uint32_t*>(output.mapped)[i]==0x12340000u+uint32_t(i),
+      "submission ring reused upload bytes before GPU completion");
+ fprintf(stderr,"[renderer smoke] on-demand submission reuse, upload lifetime and between-submit garbage passed\n");
+}
+void uniform_input_plan_check() {
+ // Compare the compiled copy plan with the original decompiler-list path,
+ // including padding, reordered registers, absent blocks and changing inputs.
+ std::vector<uint32_t> regs(0x10000);
+ const uint32_t address=mem::host_alloc(256,256);
+ uint32_t random=0x12345678;
+ for(bool vertex:{false,true}) {
+  LatteDecompilerShader metadata(vertex?LatteConst::ShaderType::Vertex:LatteConst::ShaderType::Pixel);
+  metadata.list_remappedUniformEntries_register={{0,0},{16,16},{48,32},{32,48}};
+  metadata.list_remappedUniformEntries_bufferGroups.emplace_back(0,0);
+  metadata.list_remappedUniformEntries_bufferGroups.back().entries={{0,64},{16,80},{48,96}};
+  vk::Shader shader;shader.vertex=vertex;shader.dec=&metadata;
+  auto& u=shader.uniforms;
+  u.offset_remapped=0;u.offset_uniformRegister=128;u.count_uniformRegister=4;
+  u.offset_alphaTestRef=192;u.offset_pointSize=196;
+  u.offset_windowSpaceToClipSpaceTransform=200;u.offset_fragCoordScale=208;
+  u.offset_texScale[0]=224;u.offset_texScale[7]=232;u.offset_endOfBlock=241;
+  const auto plan=vk::make_uniform_input_plan(shader);
+  require(plan.ready&&plan.spans.size()<8,"uniform input ranges did not coalesce");
+  std::vector<uint8_t> planned(512,0xa5),reference(512,0x5a);
+  for(unsigned pass=0;pass<32;++pass) {
+   for(auto& word:regs) {random=random*1664525u+1013904223u;word=random;}
+   for(unsigned i=0;i<256;++i)mem::ptr(address)[i]=uint8_t(random+i*13+pass);
+   const uint32_t block=vertex?mmSQ_VTX_UNIFORM_BLOCK_START:mmSQ_PS_UNIFORM_BLOCK_START;
+   regs[block]=pass%3?address:0;regs[block+1]=255;
+   const float sx=pass%2?1.5f:0,sy=pass%2?2.0f:0;
+   shader.uniformInputs=plan;
+   vk::pack_uniforms_into(regs.data(),shader,planned,sx,sy);
+   shader.uniformInputs.ready=false;
+   vk::pack_uniforms_into(regs.data(),shader,reference,sx,sy);
+   require(planned==reference,"compiled uniform inputs differ from original packing");
+  }
+  metadata.list_remappedUniformEntries_register.push_back({64,0});
+  require(!vk::make_uniform_input_plan(shader).ready,"overlapping uniform destinations accepted");
+ }
+ fprintf(stderr,"[renderer smoke] compiled uniform inputs matched original packing\n");
+}
 void stereo_geometry_check() {
  // Exercise the real remapped-uniform path, including a stale HUD register
  // range beside a world projection. Each eye must get an immutable snapshot.
@@ -615,6 +694,20 @@ void stereo_geometry_check() {
  require(std::fabs(zeroLeft-zeroRight)<.01f,"convergence plane has disparity");
  require(farRight>farLeft+2,"far geometry has wrong disparity sign");
  require(std::fabs(hudLeft-hudRight)<.01f,"orthographic HUD has disparity");
+ // A captured photograph is canonical even when eye 1 already has a GPU
+ // image at the same guest address. Ordinary scene textures remain per-eye.
+ const auto photoMode=stereo::frame.mode;
+ stereo::frame.mode=stereo::HalfSBS;
+ transition_image(left,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+ stereo_select_eye(1);
+ require(!stereo_eye0_texture(desc),"ordinary GPU scene texture shared between eyes");
+ stereo::layoutPhotograph=true;
+ require(stereo_eye0_texture(desc)==left,"photo preview used the second camera's image");
+ require(left->eyeHeld==stereoFlushGeneration,"photo preview did not retain its source image");
+ stereo::layoutPhotograph=false;
+ require(!stereo_eye0_texture(desc),"photo sampling policy leaked into scene rendering");
+ stereo_select_eye(0);
+ stereo::frame.mode=photoMode;
  std::vector<int> order;
  stereo_pair([&]{order.push_back(stereoEye);},true);
  stereo_pair([&]{order.push_back(stereoEye);},true);
@@ -987,7 +1080,7 @@ void dynamic_uniform_check(Surface& s) {
    memcpy(transforms[draw].mapped,transform,16);memcpy(factors[draw].mapped,factor,16);memcpy(tintSlices[draw].mapped,tints[round][draw],16);
   }
   require(transforms[0].buffer==tintSlices[1].buffer&&transforms[0].buffer==factors[1].buffer,"dynamic UBO fixture requires pooled slices");
-  VkDescriptorSet sets[2]{};VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=R.descriptorPool;allocation.descriptorSetCount=2;allocation.pSetLayouts=objects.sets;
+  VkDescriptorSet sets[2]{};VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=descriptor_pool();allocation.descriptorSetCount=2;allocation.pSetLayouts=objects.sets;
   vk_check(vkAllocateDescriptorSets(R.device,&allocation,sets),"smoke dynamic descriptor sets");
   VkDescriptorBufferInfo buffers[3]={{transforms[0].buffer,0,16},{tintSlices[0].buffer,0,16},{factors[0].buffer,0,16}};
   VkWriteDescriptorSet writes[3]{};
@@ -1408,6 +1501,10 @@ int renderer_smoke_test() {
    }
    stereo_stream_check();
    stereo_resize_upload_check();
+   submission_reuse_check();
+   uniform_input_plan_check();
+   stage_input_smoke_check();
+   fprintf(stderr,"[renderer smoke] stage-local texture/sampler dependencies passed\n");
    stereo_geometry_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);

@@ -21,6 +21,8 @@ import java.io.File;
 
 // The game: SDL loads libmain.so and runs its SDL_main (runtime/src/main.cpp).
 public class WwhdActivity extends SDLActivity {
+    public boolean useQuestTheater() { return false; }
+    public boolean isQuestDevice() { return QuestActivity.isQuest(this); }
     public static String downloadCatalogue(String url, String destination, long limit) {
         return HttpsDownload.download(url, destination, limit);
     }

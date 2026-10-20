@@ -73,6 +73,7 @@ struct Shader {
     }
     bool ready() const { return dec && (!spirv().empty() || binary) && error.empty(); }
 };
+UniformInputPlan make_uniform_input_plan(const Shader& shader);
 // Render-thread-only lookup; recorded pipeline identity, never program hash.
 const Shader* find_pipeline_shader(uint64_t pipelineId, bool vertex);
 // Resolve the optional batching binary only for an eligible mono draw.
@@ -130,7 +131,7 @@ struct UniformReader {
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     std::vector<uint8_t>& data, float scaleX = 1.0f, float scaleY = 1.0f,
     float eyeOffset = 0, float convergence = 600, stereo::EyeRows* eyeRows = nullptr,
-    const UniformReader* reader = nullptr);
+    const UniformReader* reader = nullptr, bool useInputPlan = true);
 // Updates an already initialized mono payload; padding and texture scales are
 // retained from its resolved stage. Guest inputs and dynamic fields stay fresh.
 bool update_prepared_uniforms(const uint32_t* regs, const Shader& shader,

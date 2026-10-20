@@ -731,7 +731,7 @@ std::string performance_report() {
     float sum = 0, worst = 0;
     for (float f : U.frame_ms) { sum += f; worst = std::max(worst, f); }
     char frame[180];
-    snprintf(frame, sizeof frame, "FPS %.1f (average %.1f), frame %.2f ms (worst %.2f), average logic steps/s %.1f\n",
+    snprintf(frame, sizeof frame, "Output FPS %.1f (average %.1f), render interval %.2f ms (worst %.2f), average logic steps/s %.1f\n",
              U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
     std::string report = std::string(frame) + perf::summary();
 #ifdef __ANDROID__
@@ -739,7 +739,8 @@ std::string performance_report() {
 #endif
     report += "CPU time is thread running time per output frame. GPU submission intervals may include stalls; not GPU load.\n";
     const std::string detailed = rprof::latest_report();
-    report += detailed.empty() ? "No detailed report yet: play for a few seconds, then copy again.\n" : detailed;
+    report += !detailed.empty() ? detailed : rprof::enabled()
+        ? "Detailed profiling report is warming up.\n" : "Detailed per-draw profiling is disabled.\n";
     // which build, system, GPU and rendering-path switches (report_header.h)
     reporthdr::Info h;
     h.version = build::version();
@@ -2298,7 +2299,7 @@ void perf_window(bool menu_open) {
     ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##perf", nullptr, fl)) {
-        ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
+        ImGui::Text("%.0f fps   Render interval %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
         {
             // slow motion: frame interpolation without Keep game speed below its frame target

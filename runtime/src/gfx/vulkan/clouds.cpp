@@ -400,7 +400,7 @@ void shadows_now() {
                      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = R.descriptorPool;
+    alloc.descriptorPool = descriptor_pool();
     alloc.descriptorSetCount = 1;
     alloc.pSetLayouts = &sres.set;
     check_vk(vkAllocateDescriptorSets(R.device, &alloc, &set), "allocate cloud shadow descriptors");
@@ -832,7 +832,7 @@ void draw_clouds(uint32_t seq, uint32_t target, bool depthTested) {
     std::memcpy(iu.mapped, inst.data(), sizeof(cloud_scene::Inst) * inst.size());
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = R.descriptorPool;
+    alloc.descriptorPool = descriptor_pool();
     alloc.descriptorSetCount = 1;
     alloc.pSetLayouts = &cres.set;
     check_vk(vkAllocateDescriptorSets(R.device, &alloc, &set), "allocate cloud descriptors");

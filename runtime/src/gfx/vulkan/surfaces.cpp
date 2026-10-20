@@ -920,7 +920,7 @@ static void draw_depth_copy(Surface* src,uint32_t srcLevel,uint32_t srcLayer,uin
     VkViewport viewport{0,0,float(dstW),float(dstH),0,1};VkRect2D area{{0,0},{dstW,dstH}};
     for(uint32_t i=0;i<layers;++i) {
         VkDescriptorSet set=VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=R.descriptorPool;
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=descriptor_pool();
         allocation.descriptorSetCount=1;allocation.pSetLayouts=&depthCopy.descriptors;
         check_vk(vkAllocateDescriptorSets(R.device,&allocation,&set),"allocate depth copy descriptors");
         VkDescriptorImageInfo images[2]{{depthCopy.sampler,depth_copy_source_view(src,VK_IMAGE_ASPECT_DEPTH_BIT,srcLevel,srcLayer+i),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},

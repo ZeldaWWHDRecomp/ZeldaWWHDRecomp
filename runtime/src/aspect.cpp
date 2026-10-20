@@ -518,13 +518,19 @@ void aspect::ss_reset() {
 static thread_local std::vector<bool> t_layoutScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
-    const bool scoped=!original()||stereo::requestedMode!=stereo::Off;
-    // No additional GX2 commands in ordinary mono. Remember the decision until
-    // the matching return, even if the user changes modes during DrawSelf.
+    // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
+    // enabled. Keep their 2D identity in the list, independent of the mode at
+    // recording time. Immediate original-aspect mono still needs no markers.
+    const bool scoped=gx2::recording_display_list()||!original()||stereo::requestedMode!=stereo::Off;
+    // Remember the decision until the matching return, even if the user changes
+    // modes during DrawSelf.
     if(scoped||!t_layoutScopes.empty())t_layoutScopes.push_back(scoped);
     if(!scoped)return;
-    if (original()) { gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,1}); return; }
     uint32_t pane = c->r[3];
+    // The Pictobox and album display a captured photograph in this pane.
+    // Its pixels, like the guest's saved photo, belong to one camera.
+    const uint32_t photograph = name_of(pane) == "PF_Pictograph_00";
+    if (original()) { gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,1,photograph}); return; }
     // content unless the pane or one of its parents has a rule (it may reach past the 16:9 region)
     // or the layout is placed at an actor
     bool content = true;
@@ -533,7 +539,7 @@ extern "C" void site_0287714C(Cpu* c) {
                                   : (ldf32(p + kPaneTrans) != 0 || ldf32(p + kPaneTrans + 4) != 0) && has_world_anchor(p))
             content = false;
     }
-    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1});
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1,photograph});
 }
 extern "C" void site_02877150(Cpu*) {
     if(t_layoutScopes.empty())return;
