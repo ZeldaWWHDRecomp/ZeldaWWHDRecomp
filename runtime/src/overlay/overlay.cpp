@@ -1,3 +1,4 @@
+#include "render_objects.h"
 #include "tooltip.h"
 #include "controls_options.h"
 #include "gfx/display_modes.h"
@@ -735,6 +736,7 @@ std::string performance_report() {
     snprintf(frame, sizeof frame, "FPS %.1f (average %.1f), frame %.2f ms (worst %.2f), average logic steps/s %.1f\n",
              U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
     std::string report = std::string(frame) + perf::summary();
+    report += render_objects::line() + "\n";  // live shaders/pipelines, memory mappings (render_objects.h)
 #ifdef __ANDROID__
     report += android_telemetry() + "\n";
 #endif

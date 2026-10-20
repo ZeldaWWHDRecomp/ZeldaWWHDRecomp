@@ -3,6 +3,7 @@
 #include <tuple>
 #include "pass.h"
 #include "../../exception_report.h"
+#include "../../render_objects.h"
 #include "aspect.h"
 #include "aspect_panes.h"
 #include "../renderer.h"
@@ -786,6 +787,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
       return *value;
     }
   auto remember = [&](Pipeline& value) -> Pipeline& {
+    render_objects::set_pipelines(pipelines.size());  // crash logs, performance report
     lastPipelineLookup = {key, R.device, &value};
     if (useLookaside) pipelineLookaside.remember(lastPipelineLookup);
     return value;

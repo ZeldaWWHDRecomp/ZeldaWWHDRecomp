@@ -9,6 +9,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gfx/area_sample.h"
 #include "gfx/shader_linkage.h"
+#include "render_objects.h"
 #include "gfx/shader_identity.h"
 #include "gfx/target_draw_history.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -730,6 +731,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     s->key = wide_key(regs, vertex, base, fsKey);
     g_shaders.emplace(s->key, s);
     g_translations++;
+    render_objects::set_shaders(g_translations);  // crash logs, performance report
     double t0 = now_ms();
     s->dec = translate_msl(regs, vertex, fs, addr, size, base);
     if (!s->dec) {
@@ -924,6 +926,7 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
     } else {
         pl = new Pipeline();
         g_pipelines[h] = pl;
+        render_objects::set_pipelines(g_pipelines.size());
         cache_record_pipeline(regs, vs, ps, fsKey, tf);
     }
     const int attempt = ++pl->attempts;

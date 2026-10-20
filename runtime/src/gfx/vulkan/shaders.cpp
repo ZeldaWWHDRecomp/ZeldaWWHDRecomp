@@ -21,6 +21,7 @@
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "gfx/shader_linkage.h"
+#include "render_objects.h"
 #include "exact_state_memo.h"
 #include "program_hash_cache.h"
 #include "write_watch.h"
@@ -1015,6 +1016,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         use.failed = shader;
         std::string{}.swap(shader->glsl);
         shaders.emplace(shader->key, std::move(owned));
+        render_objects::set_shaders(shaders.size());
         fprintf(stderr, "[vulkan] shader %08X: %s\n", address, shader->error.c_str());
         return remember(shader);
     }
@@ -1062,6 +1064,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         }
     shader->key = key;
     shaders.emplace(key, std::move(owned));
+    render_objects::set_shaders(shaders.size());  // crash logs, performance report
     variants.emplace(key, shader);
     shadersByOutput.emplace(output, shader);
     remember(shader);
