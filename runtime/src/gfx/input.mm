@@ -34,6 +34,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
+#include "../fixed_seed.h"
 
 #include <memory>
 #include <string>
@@ -54,6 +55,8 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256];
+static std::atomic<bool> g_gameplay_focus{false};
+bool gameplay_focused() { return g_gameplay_focus.load(std::memory_order_relaxed); }
 static PadState g_pad;  // controller part, refreshed on the main thread
 static bool g_touch;
 static float g_tx, g_ty;
@@ -127,6 +130,8 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values() {
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
 void controller_values(float* v) {
+    g_gameplay_focus.store(NSApp.isActive && NSApp.keyWindow && !NSApp.modalWindow &&
+                          !NSApp.keyWindow.sheetParent, std::memory_order_relaxed);
     using namespace input_map;
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     for (const auto& [id, d] : devices_values())
@@ -207,6 +212,7 @@ void held_keys(bool* keys) {
 void release_keys() {
     mods::fast_forward_reset();
     mods::lock_on_reset();
+    mods::quick_use_reset();
     std::lock_guard<std::mutex> lk(g_mu);
     g_mouse_bindings.consume();
     memset(g_keys, 0, sizeof(g_keys));
@@ -428,9 +434,7 @@ void init() {
     // drop held keys when the window loses focus
     [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationDidResignActiveNotification
                                                       object:nil queue:nil usingBlock:^(NSNotification*) {
-        std::lock_guard<std::mutex> lk(g_mu);
-        g_mouse_bindings.consume();
-        memset(g_keys, 0, sizeof(g_keys));
+        release_keys();
     }];
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
@@ -609,7 +613,7 @@ static void apply_scenario(PadState& s) {
         ol_step = found;
         sc.origin = 1;
     }
-    if (!sc.origin || (!ol && render::frame_count() < sc.origin)) return;
+    if (!sc.origin || (!ol && fixed_seed::script_frame(render::frame_count()) < sc.origin)) return;
     // scenario time = game time: full logic steps / 30 (frame-time hitches don't shift the input)
     static const uint64_t s0 = [ol_step] {
         present_observer::scenario_origin(render::frame_count(), ol_step ? ol_step : interp::logic_steps());
@@ -718,20 +722,21 @@ PadState read() {
     std::lock_guard<std::mutex> lk(g_mu);
     // debug: WWHD_NO_HOST_INPUT=1 ignores keyboard and host controllers (scripted test runs)
     static const bool no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+    const uint64_t frame = fixed_seed::script_frame(render::frame_count());  // (TV frame unless WWHD_TEST_FIXED_SEED)
     if (!keys.empty()) {
         memset(g_script_keys, 0, sizeof g_script_keys);
         for (auto& p : keys)
-            if (render::frame_count() >= p.from && render::frame_count() <= p.to)
+            if (frame >= p.from && frame <= p.to)
                 for (int c : p.codes) if (c < 256) g_script_keys[c] = true;
     }
     PadState k = keyboard_state(!no_host), s = g_pad;
     if (no_host) s = PadState{};
     for (auto& p : script)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) s.buttons |= p.bits;
+        if (frame >= p.from && frame <= p.to) s.buttons |= p.bits;
     for (auto& p : sticks)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) { s.lx = p.x; s.ly = p.y; }
+        if (frame >= p.from && frame <= p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : rsticks)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) { s.rx = p.x; s.ry = p.y; }
+        if (frame >= p.from && frame <= p.to) { s.rx = p.x; s.ry = p.y; }
     apply_scenario(s);
     s.buttons |= k.buttons;
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
@@ -748,7 +753,12 @@ PadState read() {
         last_buttons = s.buttons;
     }
     mods::filter_pad(s);  // gameplay mods: mouse camera, wheel -> R3
-    if (overlay::blocks_input()) s = PadState{};  // the settings overlay has the input
+    if (overlay::blocks_input()) {
+        mods::quick_use_reset();  // no pending item press survives menu/text capture
+        s = PadState{};
+    } else {
+        mods::quick_use_filter_pad(s);  // final merged/polled pad, never overlay-owned input
+    }
     return s;
 }
 

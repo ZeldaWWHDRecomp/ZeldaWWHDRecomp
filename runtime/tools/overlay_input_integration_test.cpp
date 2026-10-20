@@ -30,7 +30,7 @@ namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){re
 namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
-namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} }
+namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} }
 namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }

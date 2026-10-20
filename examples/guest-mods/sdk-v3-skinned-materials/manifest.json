@@ -1,0 +1,174 @@
+{
+  "format_version": 1,
+  "id": "sdk-v3-skinned-materials",
+  "name": "Reed walker (several materials, animated)",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An original animated creature with three materials (cloth, bark and cut-out leaves) that walks on the Windfall pier and dances in a short cutscene.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "reed-walker",
+      "kind": "skinned",
+      "source": "assets/reed_walker.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "reed-walker",
+      "kind": "mod",
+      "model": "reed-walker",
+      "stage": "sea",
+      "room": 11,
+      "position": {
+        "x": 754,
+        "y": 95,
+        "z": -197181
+      },
+      "collision": {
+        "radius": 35,
+        "height": 160,
+        "mode": "solid"
+      },
+      "attention": {
+        "prompt": "talk"
+      },
+      "path": {
+        "points": [
+          {
+            "x": 754,
+            "y": 95,
+            "z": -197181
+          },
+          {
+            "x": 868,
+            "y": 95,
+            "z": -197017
+          }
+        ],
+        "speed": 40,
+        "mode": "back_and_forth"
+      },
+      "lines": [
+        "Rustle, rustle.",
+        "Watch my leaves dance!"
+      ],
+      "then": [
+        {
+          "action": "scene",
+          "id": "reed-dance"
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "reed-dance",
+      "steps": [
+        {
+          "type": "demo",
+          "frames": 240,
+          "origin": "link",
+          "camera": {
+            "eye": {
+              "keys": [
+                {
+                  "frame": 0,
+                  "value": {
+                    "x": -150,
+                    "y": 150,
+                    "z": -160
+                  }
+                }
+              ]
+            },
+            "target": {
+              "keys": [
+                {
+                  "frame": 0,
+                  "value": {
+                    "x": -150,
+                    "y": 100,
+                    "z": 140
+                  }
+                }
+              ]
+            },
+            "fovy": {
+              "keys": [
+                {
+                  "frame": 0,
+                  "value": 50
+                }
+              ]
+            }
+          },
+          "actors": [
+            {
+              "id": "reed",
+              "character": "reed-walker",
+              "position": {
+                "curve": "linear",
+                "keys": [
+                  {
+                    "frame": 0,
+                    "value": {
+                      "x": -150,
+                      "y": 0,
+                      "z": 260
+                    }
+                  },
+                  {
+                    "frame": 150,
+                    "value": {
+                      "x": -150,
+                      "y": 0,
+                      "z": 110
+                    }
+                  }
+                ]
+              },
+              "rotation": {
+                "keys": [
+                  {
+                    "frame": 0,
+                    "value": {
+                      "x": 0,
+                      "y": 180,
+                      "z": 0
+                    }
+                  }
+                ]
+              },
+              "clips": [
+                {
+                  "frame": 0,
+                  "clip": "walk",
+                  "loop": true
+                },
+                {
+                  "frame": 150,
+                  "clip": "idle",
+                  "loop": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "end"
+        }
+      ]
+    }
+  ]
+}

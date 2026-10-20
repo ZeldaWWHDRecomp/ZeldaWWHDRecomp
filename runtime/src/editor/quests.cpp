@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <map>
 #include <set>
 
@@ -59,6 +60,7 @@ struct Edge {
     // for start-at-step: what taking it hands out
     std::vector<std::pair<std::string, bool>> flags;
     std::vector<std::pair<std::string, int>> items;  // + give, - take
+    std::vector<std::string> charts;                  // the mod's charts it gives
     std::string letter;
     bool carried = false;
     std::string actor;  // the actor to stand in front of
@@ -76,7 +78,14 @@ std::string actor_verb(const Value& a) {
 void actions_of(const Value& then, const std::string& quest, Edge& e) {
     for (const auto& t : then.array) {
         const std::string action = t.get("action").string(), id = t.get("id").string();
-        if (action == "give" || action == "take") {
+        if (action == "give" && id.rfind("chart:", 0) == 0) {
+            e.charts.push_back(id.substr(6));
+            Value r;
+            r["kind"] = "chart";
+            r["id"] = id;
+            r["text"] = "gives " + id;
+            e.rewards.array.push_back(r);
+        } else if (action == "give" || action == "take") {
             const int count = whole(t.get("count")) ? int(t.get("count").number) : 1;
             e.items.push_back({item_id(id), action == "give" ? count : -count});
             Value r;
@@ -135,6 +144,10 @@ std::vector<Edge> edges_of(const Value& m, const Value& q) {
             if (id.rfind("item:", 0) == 0) {
                 e.items.push_back({item_id(id), 1});
                 e.rewards.array.push_back(badge("give", "encloses " + item_id(id)));
+            }
+            if (id.rfind("chart:", 0) == 0) {
+                e.charts.push_back(id.substr(6));
+                e.rewards.array.push_back(badge("chart", "encloses " + id));
             }
         }
         out.push_back(std::move(e));
@@ -216,10 +229,14 @@ std::vector<Edge> edges_of(const Value& m, const Value& q) {
     // scenes whose actions set a step: from the step that starts them
     for (const auto& sc : m.get("scenes").array) {
         const Value& trig = sc.get("trigger");
-        std::string from = "start";
+        std::string from = "start", salvage;
         if (trig.get("type").string() == "quest_step" && trig.get("quest").string() == quest && whole(trig.get("step")))
             from = node_of(unsigned(trig.get("step").number));
-        else  // an actor gated at a step of this quest that plays it
+        else if (trig.get("type").string() == "salvage") {  // salvaging a chart's treasure: from the step that finds it
+            salvage = trig.get("chart").string();
+            for (const auto& s : q.get("steps").array)
+                if (s.get("find").string() == "chart:" + salvage && step_n(s)) from = node_of(step_n(s));
+        } else  // an actor gated at a step of this quest that plays it
             for (const auto& a : m.get("actors").array) {
                 std::vector<const Value*> ds = {&a};
                 for (const auto& t : a.get("talks").array) ds.push_back(&t);
@@ -240,7 +257,7 @@ std::vector<Edge> edges_of(const Value& m, const Value& q) {
                 e.to = action == "quest_done" ? std::string("end") : node_of(whole(t.get("step")) ? unsigned(t.get("step").number) : 0);
                 e.via_kind = "scene";
                 e.via = sc.get("id").string();
-                e.label = "scene " + e.via + " ends";
+                e.label = (salvage.empty() ? std::string() : "salvage chart " + salvage + ": ") + "scene " + e.via + " ends";
                 actions_of(st.get("then"), quest, e);
                 out.push_back(std::move(e));
             }
@@ -335,6 +352,9 @@ bool quest_graph(const std::string& mod, const Value& m, const std::string& ques
     start["text"] = q->get("start").get("text").string(q->get("letter").type == Value::Object ? "the letter arrives" : "the mod is on");
     start["badges"] = arr();
     if (q->get("letter").type == Value::Object) start["badges"].array.push_back(badge("letter", "letter " + q->get("letter").get("id").string()));
+    for (const auto& enc : q->get("letter").get("encloses").array)
+        if (enc.type == Value::String && (enc.text.rfind("chart:", 0) == 0 || enc.text.rfind("item:", 0) == 0))
+            start["badges"].array.push_back(badge(enc.text[0] == 'c' ? "chart" : "give", "encloses " + enc.text));
     start["problems"] = problems["start"].type == Value::Array ? problems["start"] : arr();
     out["nodes"].array.push_back(start);
     for (const auto& s : q->get("steps").array) {
@@ -375,6 +395,7 @@ bool quest_graph(const std::string& mod, const Value& m, const std::string& ques
     end["badges"] = arr();
     if (q->get("reward").get("text").type == Value::String) end["badges"].array.push_back(badge("reward", q->get("reward").get("text").text));
     if (q->get("reward").get("item").type == Value::String) end["badges"].array.push_back(badge("reward", "gives " + q->get("reward").get("item").text));
+    if (q->get("reward").get("chart").type == Value::String) end["badges"].array.push_back(badge("chart", "gives " + q->get("reward").get("chart").text));
     end["problems"] = arr();
     out["nodes"].array.push_back(end);
     std::map<std::string, int> outs;
@@ -438,6 +459,8 @@ bool step_start(const std::string& mod, const Value& m, const std::string& quest
             flags[id] = on;
         }
         for (const auto& [id, delta] : e.items) count_item(id, delta, e.via_kind == "item" && id == e.via);
+        for (const auto& c : e.charts)
+            if (std::find(out.charts.begin(), out.charts.end(), c) == out.charts.end()) out.charts.push_back(c);
         // an actor that needs an item: Link had one there
         for (const auto& c : e.conditions.array)
             if (c.get("kind").string() == "item") count_item(item_id(c.get("id").string()), 0, true);
@@ -469,6 +492,7 @@ std::vector<RecordValue> step_records(const std::string& mod, const std::string&
     if (!s.letter.empty()) out.push_back({{kRecordLetter, letter_key(mod, s.letter)}, int(kRead)});
     if (s.carried) out.push_back({{kRecordCarried, key}, 1});
     for (const auto& [id, on] : s.flags) out.push_back({{kRecordActorFlag, letter_key(mod, "actor-flag:" + id)}, on ? 1 : 0});
+    for (const auto& c : s.charts) out.push_back({{kRecordMarker, letter_key(mod, c)}, 1});  // story_chart.h chart_key: owned
     return out;
 }
 
@@ -624,12 +648,26 @@ Value search_package(const std::string& mod, const Value& m, const std::string& 
         for (const auto& l : v.array) s += (s.empty() ? "" : " / ") + l.string();
         return s;
     };
+    // the charts and items a part of the package names ("item:lamp", "chart:old-map", a salvage trigger's chart)
+    std::function<void(const Value&, std::string&)> named = [&](const Value& v, std::string& to) {
+        if (v.type == Value::String && (v.text.rfind("item:", 0) == 0 || v.text.rfind("chart:", 0) == 0)) to += (to.empty() ? "" : ", ") + v.text;
+        if (v.type == Value::Object && v.get("type").string() == "salvage" && v.get("chart").type == Value::String)
+            to += (to.empty() ? "" : ", ") + std::string("chart:") + v.get("chart").text;
+        for (const auto& x : v.array) named(x, to);
+        for (const auto& [k, x] : v.object) named(x, to);
+    };
+    auto names = [&](const Value& v) {
+        std::string s;
+        named(v, s);
+        return s;
+    };
     for (const auto& a : m.get("actors").array) {
         const std::string id = a.get("id").string();
         if (hit(id)) add("actor", id, "id", id);
         else if (hit(a.get("actor").string())) add("actor", id, "actor", a.get("actor").string());
         else if (hit(a.get("model").string())) add("actor", id, "model", a.get("model").string());
         else if (hit(lines(a.get("lines")))) add("actor", id, "lines", lines(a.get("lines")));
+        else if (const std::string uses = names(a); hit(uses)) add("actor", id, "then", uses);  // gives, takes, needs or drops it
         else
             for (const auto& tk : a.get("talks").array)
                 if (hit(lines(tk.get("lines")))) {
@@ -640,8 +678,9 @@ Value search_package(const std::string& mod, const Value& m, const std::string& 
     for (const auto& q : m.get("quests").array) {
         const std::string id = q.get("id").string();
         if (hit(id) || hit(q.get("title").string())) add("quest", id, "title", q.get("title").string());
+        else if (const std::string uses = names(q.get("letter")) + " " + names(q.get("reward")); hit(uses)) add("quest", id, "letter", uses);
         for (const auto& s : q.get("steps").array) {
-            const std::string t = s.get("text").string() + " " + s.get("where").string() + " " + lines(s.get("npc").get("lines"));
+            const std::string t = s.get("text").string() + " " + s.get("where").string() + " " + lines(s.get("npc").get("lines")) + " " + names(s);
             if (!hit(t)) continue;
             Value* v = add("quest_step", id, "text", s.get("text").string());
             (*v)["quest"] = id;
@@ -660,6 +699,7 @@ Value search_package(const std::string& mod, const Value& m, const std::string& 
             if (say.empty() && hit(t)) say = lines(st.get("text")).empty() ? st.get("id").string() : lines(st.get("text")), at = n;
         }
         if (hit(id)) add("scene", id, "id", id);
+        else if (const std::string uses = names(sc); hit(uses)) add("scene", id, "trigger", uses);  // salvages a chart, gives an item
         else if (!say.empty()) {
             Value* v = add("scene", id, "text", say);
             (*v)["step"] = at;
@@ -668,6 +708,19 @@ Value search_package(const std::string& mod, const Value& m, const std::string& 
     for (const auto& it : m.get("items").array) {
         const std::string id = it.get("id").string();
         if (hit(id) || hit(it.get("name").string())) add("item", id, "name", it.get("name").string());
+        else if (hit(it.get("description").string())) add("item", id, "description", it.get("description").string());
+    }
+    for (const auto& c : m.get("charts").array) {
+        const std::string id = c.get("id").string();
+        if (hit(id) || hit(c.get("name").string())) add("chart", id, "name", c.get("name").string());
+        else if (hit(c.get("description").string())) add("chart", id, "description", c.get("description").string());
+        else if (const std::string uses = names(c); hit(uses)) add("chart", id, "item", uses);
+    }
+    for (const auto& l : m.get("letters").array) {
+        const std::string id = l.get("id").string();
+        if (hit(id) || hit(l.get("sender").string())) add("letter", id, "sender", l.get("sender").string());
+        else if (hit(l.get("text").string())) add("letter", id, "text", l.get("text").string());
+        else if (const std::string uses = names(l); hit(uses)) add("letter", id, "encloses", uses);
     }
     for (const auto& f : mod_flags(mod, m))
         if (hit(f.id)) {
@@ -676,6 +729,15 @@ Value search_package(const std::string& mod, const Value& m, const std::string& 
             for (const auto& u : f.used_by) (*v)["used_by"].array.push_back(Value(u));
         }
     return out;
+}
+
+bool letter_waits_for(const Value& letter, const std::string& quest, unsigned step) {
+    const Value& w = letter.get("when");
+    auto names = [&](const Value& c) { return c.get("quest").string() == quest && (!step || (whole(c.get("step")) && unsigned(c.get("step").number) == step)); };
+    if (names(w)) return true;
+    for (const auto& c : w.get("quests").array)
+        if (names(c)) return true;
+    return false;
 }
 
 bool renumber_steps(Value& m, const std::string& quest, const std::vector<std::pair<unsigned, unsigned>>& map, std::string& why) {
@@ -721,6 +783,15 @@ bool renumber_steps(Value& m, const std::string& quest, const std::vector<std::p
         for (auto& it : m["items"].array)
             if (it.get("use").get("action").string() == "quest_step" && it.get("use").get("quest").string() == quest && whole(it.get("use").get("step")))
                 it["use"]["step"] = int(mapped(unsigned(it.get("use").get("step").number)));
+    // a letter's "when" (story_manifest.h): its quest steps
+    if (m.get("letters").type == Value::Array)
+        for (auto& l : m["letters"].array) {
+            if (l.get("when").get("quest").string() == quest && whole(l.get("when").get("step")))
+                l["when"]["step"] = int(mapped(unsigned(l.get("when").get("step").number)));
+            if (l.get("when").get("quests").type == Value::Array)
+                for (auto& qs : l["when"]["quests"].array)
+                    if (qs.get("quest").string() == quest && whole(qs.get("step"))) qs["step"] = int(mapped(unsigned(qs.get("step").number)));
+        }
     // the steps in their numbers' order
     std::stable_sort((*q)["steps"].array.begin(), (*q)["steps"].array.end(), [](const Value& a, const Value& b) { return step_n(a) < step_n(b); });
     return true;
@@ -741,6 +812,9 @@ bool remove_step(Value& m, const std::string& quest, unsigned step, std::vector<
     for (const auto& it : m.get("items").array)
         if (it.get("use").get("quest").string() == quest && it.get("use").get("step").number == step)
             return why = "item " + it.get("id").string() + " sets step " + std::to_string(step) + " when used: change the item first", false;
+    for (const auto& l : m.get("letters").array)
+        if (letter_waits_for(l, quest, step))
+            return why = "letter " + l.get("id").string() + " waits for step " + std::to_string(step) + " (its \"when\"): change the letter first", false;
     auto& steps = (*q)["steps"].array;
     const auto it = std::find_if(steps.begin(), steps.end(), [&](const Value& s) { return step_n(s) == step; });
     if (it == steps.end()) return why = "quest " + quest + " has no step " + std::to_string(step), false;

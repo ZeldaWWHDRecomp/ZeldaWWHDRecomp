@@ -49,6 +49,7 @@ struct Info {
     std::string os;                // os_description()
     std::string gpu;               // vulkan_gpu() or the Metal device name; "" when unknown
     std::string renderer, host, fps;
+    int keepGameSpeed = -1;        // frame interpolation's "Keep game speed" at its rate: 0 / 1; -1 not shown
     float scale = 1;
     int bufferCache = -1;          // Vulkan: 0 / 1; -1 not shown (Metal)
     std::string gyro;              // gyro source id, "" when off

@@ -278,6 +278,8 @@ uint64_t next_write_seq();
 // uploads, GPU writes outside the draw's own targets (clears, copies), CPU copies, save-state resets.
 // The continued-draw fast path (draw.cpp) reuses resolved state only within one epoch.
 extern uint64_t g_surface_epoch;
+// bumped whenever a surface cache gains, loses or swaps surfaces (texture invalidation's footprint index)
+extern uint64_t g_surface_set_gen;
 inline void mark_gpu_written(Surface* s){s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
 // A draw's own attachments: their newer writeSeq can only change lookups at their own addresses,
 // which the fast path excludes (draw.cpp); a surface becoming GPU-written still ends the epoch.

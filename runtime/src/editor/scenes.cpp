@@ -1,5 +1,6 @@
 // World editor: the scene editor's pure helpers (scenes.h). No game dependencies.
 #include "scenes.h"
+#include "demo_tracks.h"
 
 #include <algorithm>
 #include <cmath>
@@ -133,6 +134,8 @@ unsigned scene_step_frames(const Value& step) {
             if (k.get("frames").type == Value::Number && k.get("frames").number > 0) sum += unsigned(k.get("frames").number);
         return sum;
     }
+    // a demo's frames are the game's 30 Hz cutscene frames: twice as many timeline units
+    if (t == "demo") return step.get("frames").type == Value::Number && step.get("frames").number > 0 ? unsigned(step.get("frames").number) * 2 : 0;
     if (!scene_step_timed(t)) return 0;
     if (step.get("seconds").type == Value::Number && step.get("seconds").number > 0) return unsigned(std::ceil(step.get("seconds").number * 60));
     if (step.get("frames").type == Value::Number && step.get("frames").number > 0) return unsigned(step.get("frames").number);
@@ -281,6 +284,16 @@ bool scene_camera_at(const Value& scene, double time, WorldPoint& eye, WorldPoin
             eye = wp(c.eye), target = wp(c.target), step = i, have = true, unknown.clear();
         } else if (type == "camera_follow") {
             unknown = label + " follows an actor: only the game knows where it is";
+        } else if (type == "demo" && s.get("camera").get("eye").type == Value::Object) {
+            // a demo's camera at its own frame (30 a second); one placed at Link: demo_pose knows where he is
+            if (s.get("origin").type == Value::String) {
+                unknown = label + " is placed at Link: demo_pose shows it";
+            } else {
+                Value pose;
+                std::string w;
+                if (!demo_pose(s, local / 2, {}, 0, pose, w)) return why = label + ": " + w, false;
+                if (pos(pose.get("camera").get("eye"), eye) && pos(pose.get("camera").get("target"), target)) step = i, have = true, unknown.clear();
+            }
         }
         t += frames;
     }
@@ -379,6 +392,9 @@ bool new_scene_steps(const std::string& type, const Value& m, const Value& scene
     } else if (type == "music") {
         s["cue"] = "theme";
         s["action"] = "start";
+    } else if (type == "demo") {
+        // keyframe tracks played by the game's cutscene system (demo_tracks.h): a camera key to start
+        s = new_demo_step(eye, target, 120);
     } else if (type == "particle") {
         s["effect"] = "auction-sparkle";
         s["position"] = pt(ahead);

@@ -38,6 +38,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
 #include "../overlay/text_entry.h"
+#include "../fixed_seed.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -66,6 +67,8 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256]={},g_script_keys[256]={};
+static std::atomic<bool> g_gameplay_focus{false};
+bool gameplay_focused(){return g_gameplay_focus.load(std::memory_order_relaxed);}
 static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
@@ -211,7 +214,7 @@ static int keycode(SDL_Scancode code) {
  }
 }
 void set_touch(bool down,float x,float y){std::lock_guard lk(g_mu);g_touch=down;g_tx=x;g_ty=y;}
-void release_keys(){mods::fast_forward_reset();mods::lock_on_reset();std::lock_guard lk(g_mu);g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);g_touch=false;}
+void release_keys(){mods::fast_forward_reset();mods::lock_on_reset();mods::quick_use_reset();std::lock_guard lk(g_mu);g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);g_touch=false;}
 void held_keys(bool* keys){std::lock_guard lk(g_mu);for(int i=0;i<256;i++)keys[i]=g_keys[i]||g_script_keys[i];}
 void controller_values(float* out){std::lock_guard lk(g_mu);std::copy(std::begin(g_values),std::end(g_values),out);}
 void host_controller_values(float* out){controller_values(out);}
@@ -334,6 +337,7 @@ static void apply_rumble(){
  if(phone)phone_rumble_level((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu));
 #endif
  std::lock_guard lk(g_pads_mu);
+ g_rumble_update_ms=SDL_GetTicks();  // with the motors, under the lock: the watchdog decides on both at once
  rumble_all_locked((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu),kRumbleRefreshMs);
 }
 static void rumble_watchdog(){
@@ -341,6 +345,9 @@ static void rumble_watchdog(){
   SDL_Delay(100);
   if(SDL_GetTicks()-g_rumble_update_ms<kRumbleStallMs)continue;
   std::lock_guard lk(g_pads_mu);
+  // again under the lock: an update may have run between the check above and here, and the level it
+  // just sent must stand (stopping it raced the update: input_sdl_test on a busy Windows runner)
+  if(SDL_GetTicks()-g_rumble_update_ms<kRumbleStallMs)continue;
   if(std::any_of(g_rumble_sent.begin(),g_rumble_sent.end(),[](auto& s){return s.second!=0;})){
    LOG("[rumble] the main loop stalls: motors stopped");
    rumble_all_locked(0,0);  // the next update runs them again
@@ -826,6 +833,7 @@ void handle_event(const SDL_Event& event){
 }
 void update(){
  update_overlay_window(SDL_GetKeyboardFocus());
+ g_gameplay_focus.store(SDL_GetKeyboardFocus()!=nullptr&&!text_prompt_active(),std::memory_order_relaxed);
  if(wwhd_trace::enabled()) {
   overlay_trace_sdl::begin(overlay::is_open());
   for(auto [id,pad]:g_controllers) overlay_trace_sdl::pad(id,pad);
@@ -1026,7 +1034,7 @@ static void apply_scenario(PadState& s) {
         ol_step = found;
         sc.origin = 1;
     }
-    if (!sc.origin || (!ol && render::frame_count() < sc.origin)) return;
+    if (!sc.origin || (!ol && fixed_seed::script_frame(render::frame_count()) < sc.origin)) return;
     // scenario time = game time: full logic steps / 30 (frame-time hitches don't shift the input)
     static const uint64_t s0 = [ol_step] {
         present_observer::scenario_origin(render::frame_count(), ol_step ? ol_step : interp::logic_steps());
@@ -1100,20 +1108,21 @@ PadState read() {
     std::lock_guard<std::mutex> lk(g_mu);
     // debug: WWHD_NO_HOST_INPUT=1 ignores keyboard and host controllers (scripted test runs)
     static const bool no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+    const uint64_t frame = fixed_seed::script_frame(render::frame_count());  // (TV frame unless WWHD_TEST_FIXED_SEED)
     if (!keys.empty()) {
         memset(g_script_keys, 0, sizeof g_script_keys);
         for (auto& p : keys)
-            if (render::frame_count() >= p.from && render::frame_count() <= p.to)
+            if (frame >= p.from && frame <= p.to)
                 for (int c : p.codes) if (c < 256) g_script_keys[c] = true;
     }
     PadState k = keyboard_state(!no_host), s = g_pad;
     if (no_host) s = PadState{};
     for (auto& p : script)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) s.buttons |= p.bits;
+        if (frame >= p.from && frame <= p.to) s.buttons |= p.bits;
     for (auto& p : sticks)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) { s.lx = p.x; s.ly = p.y; }
+        if (frame >= p.from && frame <= p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : rsticks)
-        if (render::frame_count() >= p.from && render::frame_count() <= p.to) { s.rx = p.x; s.ry = p.y; }
+        if (frame >= p.from && frame <= p.to) { s.rx = p.x; s.ry = p.y; }
     apply_scenario(s);
     s.buttons |= k.buttons;
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
@@ -1129,7 +1138,12 @@ PadState read() {
         last_buttons = s.buttons;
     }
     mods::filter_pad(s);  // gameplay mods: mouse camera, wheel -> R3
-    if (overlay::blocks_input()) s = PadState{};  // the settings overlay has the input
+    if (overlay::blocks_input()) {
+        mods::quick_use_reset();  // no pending item press survives menu/text capture
+        s = PadState{};
+    } else {
+        mods::quick_use_filter_pad(s);  // final merged/polled pad, never overlay-owned input
+    }
     return s;
 }
 

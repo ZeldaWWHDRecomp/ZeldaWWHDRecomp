@@ -20,6 +20,7 @@
 #include "../runtime.h"
 
 #include "../interp.h"
+#include "../interp_pacing.h"
 #include "heat_guard.h"
 
 namespace perf_hint {
@@ -58,7 +59,7 @@ int64_t thread_cpu_ns() {
 }
 
 // The heat guard's limits for this device and setting; the rule in use goes to the log at start-up
-// and again when the setting changes, e.g. "[perf] heat guard: handheld (fan) 0.90/0.80".
+// and again when the setting changes, e.g. "[perf] heat guard: handheld (fan) 1.00/0.90".
 heat_guard::Limits heat_guard_limits() {
     const auto device = heat_guard::to_device(heat_guard::device.load());
     const auto setting = heat_guard::to_setting(heat_guard::choice.load());
@@ -80,7 +81,8 @@ heat_guard::Limits heat_guard_limits() {
 // second at 2,100 draws a frame). With 60 fps chosen (long press on the view button), interpolation
 // is switched off while fewer than 50 frames a second are drawn, and back on once a 30 fps frame
 // costs the render thread less than 14 ms (room for two). A switch back that fails again soon
-// doubles the wait before the next try (5 s up to 2 min).
+// doubles the wait before the next try (5 s up to 2 min). At 40 fps the limits follow the rate
+// (interp::pacing::adapt_slow_fps, adapt_resume_ms: below 33.3 frames a second, 21 ms).
 void adapt_60(int64_t now) {
     static int64_t windowStart = 0, windowCpu = 0, lastSwitch = 0, cooldown = 5'000'000'000;
     static int frames = 0, slow = 0, roomy = 0;
@@ -104,7 +106,7 @@ void adapt_60(int64_t now) {
     // frames double the drawing work, so 60 fps pauses near the thermal limit (headroom forecast 10 s
     // ahead) and resumes once the device is well below it: the game keeps its 30 fps instead of
     // dropping below them. The limits (phones 0.72 / 0.60, a Galaxy S25 Ultra already halved its clocks
-    // at 0.76; fan-cooled handhelds 0.90 / 0.80) and the player's Heat guard setting: heat_guard.h.
+    // at 0.76; fan-cooled handhelds 1.00 / 0.90) and the player's Heat guard setting: heat_guard.h.
     static bool hot = false;
     {
         const heat_guard::Limits limits = heat_guard_limits();
@@ -129,8 +131,9 @@ void adapt_60(int64_t now) {
         if (mode == 0) { set_mode_auto(1); LOG("[perf] 60 fps on (paced)"); }
         return;
     }
+    const int chosenFps = interp::fps();
     if (mode == 1) {
-        slow = rate < 50 ? slow + 1 : 0;
+        slow = rate < interp::pacing::adapt_slow_fps(chosenFps) ? slow + 1 : 0;
         if (slow >= 2) {
             // a switch that does not hold for 30 s makes the next try wait longer
             cooldown = now - lastSwitch < 30'000'000'000 ? std::min<int64_t>(cooldown * 2, 120'000'000'000)
@@ -140,7 +143,7 @@ void adapt_60(int64_t now) {
             LOG("[perf] 60 fps paused: %.1f frames/s would slow the game down (retry in %.0f s)", rate, cooldown / 1e9);
         }
     } else if (mode == 0) {
-        roomy = rate >= 28 && msPerFrame < 14.0 && now - lastSwitch >= cooldown ? roomy + 1 : 0;
+        roomy = rate >= 28 && msPerFrame < interp::pacing::adapt_resume_ms(chosenFps) && now - lastSwitch >= cooldown ? roomy + 1 : 0;
         if (roomy >= 2) {
             set_mode_auto(1);
             lastSwitch = now; slow = roomy = 0;
@@ -236,9 +239,11 @@ void frame_done() {
     adapt_60(now.time_since_epoch().count());
     if (!enabled()) return;
     std::lock_guard<std::mutex> lk(g_mu);
-    // the budget of one presented frame: 33 ms at 30 fps, 17 ms at 60 fps, 8 / 4 ms at 120 / 240 fps
+    // the budget of one presented frame: 33 ms at 30 fps, 25 ms at 40 fps, 17 ms at 60 fps, 8 / 4 ms at
+    // 120 / 240 fps
     const int frames = interp::frames_per_step();
-    const int64_t target = !interp::mode() ? 33'333'333 : frames <= 2 ? 16'666'667 : 33'333'333 / frames;
+    const int64_t target = !interp::mode() ? 33'333'333 : interp::mode() == 1 && interp::output_fps() == 40 ? 25'000'000
+                         : frames <= 2 ? 16'666'667 : 33'333'333 / frames;
     if (g_changed) {
         // (re)create the session for the current set of threads
         g_changed = false;

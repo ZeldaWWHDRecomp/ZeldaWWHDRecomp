@@ -235,10 +235,14 @@ void apply(uint32_t menu) {
     };
     std::vector<Place> shown;
     bool tracked = false;
-    if (Place t{}; g_tracked) {  // the notebook's tracked quest comes first
+    // the notebook's tracked quest comes first, only with a story block the port can read (as before the
+    // world objects: an unreadable block shows no ring)
+    if (Place t{}; g_tracked && book().usable()) {
         std::string label;
         if (g_tracked(t.x, t.z, label)) shown.push_back(t), tracked = true;
     }
+    // world-object islands (publish_world_markers): fixed declarations that need no story record here;
+    // a marker behind a flag is published only once story_actors reads that flag from a usable block
     for(const auto& m:world_markers())shown.push_back({m.x,m.z});
     if (shown.empty()) return;
     const float cx = float(ldf32(main + kPaneTranslate)), cy = float(ldf32(main + kPaneTranslate + 4));
@@ -595,6 +599,33 @@ int32_t define(const std::string& mod, const std::string& chart, const std::stri
     if (g_defs.size() >= kMaxCharts) return kResultNoRoom;
     g_defs.push_back(d);
     return kResultNone;
+}
+
+bool redefine(const std::string& mod, const std::vector<Declared>& charts, std::vector<std::string>& kept, std::string& why) {
+    kept.clear();
+    std::vector<Def> made;
+    for (const Declared& c : charts) {
+        std::u16string caption, ignored;
+        if (!story_mail::valid_id(c.id) || c.name.empty() || c.name.size() > kMaxNameBytes || !story_mail::append_utf16(c.name, false, caption) ||
+            c.description.size() > kMaxDescriptionBytes || !story_mail::append_utf16(c.description, true, ignored) ||
+            !(c.x >= -kSeaHalf && c.x <= kSeaHalf && c.z >= -kSeaHalf && c.z <= kSeaHalf))
+            return why = "chart " + c.id + " is not valid", false;
+        made.push_back({mod, c.id, c.name, c.description, chart_key(mod, c.id), c.x, c.z, caption, c.item_mod, c.item_game});
+    }
+    std::lock_guard lock(g_mu);
+    std::vector<Def> next = g_defs;
+    for (const Def& d : made) {
+        bool replaced = false;
+        for (Def& old : next)
+            if (old.mod == mod && old.id == d.id) old = d, replaced = true;
+            else if (old.key == d.key && !(old.mod == mod && old.id == d.id)) return why = "chart " + d.id + " can't be told apart from another chart in the save file (same key); rename it", false;
+        if (!replaced) next.push_back(d);
+    }
+    if (next.size() > kMaxCharts) return why = "no room for more charts (" + std::to_string(kMaxCharts) + " in all)", false;
+    for (const Def& old : next)
+        if (old.mod == mod && std::none_of(made.begin(), made.end(), [&](const Def& d) { return d.id == old.id; })) kept.push_back(old.id);
+    g_defs = std::move(next);
+    return true;
 }
 
 size_t declared() {

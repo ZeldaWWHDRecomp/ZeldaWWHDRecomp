@@ -71,6 +71,17 @@ int32_t unmark(const std::string& mod, const std::string& chart, const std::stri
 // item_mod / item_game: what its treasure chest holds (manifest "item"; story_treasure.h)
 int32_t define(const std::string& mod, const std::string& chart, const std::string& name, const std::string& description, float x, float z,
                const std::string& item_mod = {}, uint8_t item_game = 0);
+// World editor (game thread, no menu open): the mod's declared charts as its manifest has them now. A
+// chart declared again changes in place and a new one comes after all others, so the chart numbers (and
+// the reserved save numbers of the treasure points) stay as they are; a chart the list no longer has stays
+// declared until a restart (`kept` gets its id). All or nothing: false (why) for an invalid chart or no room.
+struct Declared {
+    std::string id, name, description;
+    float x = 0, z = 0;
+    std::string item_mod;
+    uint8_t item_game = 0;
+};
+bool redefine(const std::string& mod, const std::vector<Declared>& charts, std::vector<std::string>& kept, std::string& why);
 struct ChartView {
     std::string mod, chart, name, description;
     float x, z;

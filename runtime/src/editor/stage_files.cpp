@@ -7,9 +7,11 @@
 #include <fstream>
 #include <map>
 #include <regex>
+#include <set>
 
 namespace editor {
 namespace {
+std::function<std::string(const std::string&)> g_stage_source;  // set_stage_archive_source
 namespace fs = std::filesystem;
 using Bytes = std::vector<uint8_t>;
 
@@ -195,6 +197,103 @@ std::vector<Spawn> find_spawns(const std::vector<uint8_t>& d) {
     return {};
 }
 
+std::string game_archive(const std::string& game_dir, const std::string& archive) {
+    if (archive.empty() || archive.find_first_of("/\\.:") != std::string::npos) return {};
+    for (const auto& p : packs(game_dir))
+        for (const auto& m : p.members)
+            if (m.name == archive + ".szs") return "Pack/" + p.file.filename().string();
+    std::error_code ec;
+    if (fs::is_regular_file(fs::path(game_dir) / "content" / "Common" / "Object" / (archive + ".szs"), ec)) return "Object";
+    return {};
+}
+
+std::vector<std::string> game_archive_names(const std::string& game_dir) {
+    std::set<std::string> names;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(fs::path(game_dir) / "content" / "Common" / "Object", ec))
+        if (e.path().extension() == ".szs") names.insert(e.path().stem().string());
+    for (const auto& p : packs(game_dir))
+        for (const auto& m : p.members) {
+            const std::string base = m.name.substr(m.name.find_last_of('/') == std::string::npos ? 0 : m.name.find_last_of('/') + 1);
+            if (base.size() > 4 && base.compare(base.size() - 4, 4, ".szs") == 0 && base.find("_Room") == std::string::npos && base.find("_Stage") == std::string::npos)
+                names.insert(base.substr(0, base.size() - 4));
+        }
+    return {names.begin(), names.end()};
+}
+
+std::vector<std::string> bfres_bones(const std::vector<uint8_t>& b) {
+    // FRES (Wii U, big-endian): the model index group at +0x20; a model's skeleton at +0xC; the skeleton's
+    // bone index group at +0x10. Offsets are relative to where they are stored; index groups are a length,
+    // a count and 16-byte entries (the first one the root), each {search, left, right, name, data}.
+    const size_t n = b.size();
+    auto s32 = [&](size_t o) -> int64_t { return o + 4 <= n ? int32_t(be32(&b[o])) : 0; };
+    auto rel = [&](size_t o) -> size_t { const int64_t r = s32(o); return r ? size_t(int64_t(o) + r) : 0; };
+    auto name = [&](size_t o) -> std::string {
+        if (!o || o >= n) return {};
+        const char* p = reinterpret_cast<const char*>(&b[o]);
+        return std::string(p, strnlen(p, n - o));
+    };
+    auto group = [&](size_t o, std::vector<std::pair<std::string, size_t>>& out) {
+        if (!o || o + 8 > n) return;
+        const int64_t count = s32(o + 4);
+        if (count < 0 || count > 4096 || o + 8 + size_t(count + 1) * 16 > n) return;
+        for (int64_t i = 1; i <= count; i++) {
+            const size_t e = o + 8 + size_t(i) * 16;
+            out.push_back({name(rel(e + 8)), rel(e + 12)});
+        }
+    };
+    if (n < 0x40 || std::memcmp(b.data(), "FRES", 4) != 0) return {};
+    std::vector<std::pair<std::string, size_t>> models;
+    group(rel(0x20), models);
+    std::vector<std::vector<std::string>> skeletons;
+    for (const auto& [model, at] : models) {
+        if (!at || at + 0x10 > n || std::memcmp(&b[at], "FMDL", 4) != 0) continue;
+        const size_t fskl = rel(at + 12);
+        if (!fskl || fskl + 0x14 > n || std::memcmp(&b[fskl], "FSKL", 4) != 0) continue;
+        std::vector<std::pair<std::string, size_t>> bones;
+        group(rel(fskl + 0x10), bones);
+        std::vector<std::string> names;
+        for (auto& [bone, data] : bones)
+            if (!bone.empty()) names.push_back(bone);
+        skeletons.push_back(std::move(names));
+    }
+    std::stable_sort(skeletons.begin(), skeletons.end(), [](const auto& a, const auto& c) { return a.size() > c.size(); });
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto& sk : skeletons)
+        for (const auto& bone : sk)
+            if (seen.insert(bone).second) out.push_back(bone);
+    return out;
+}
+
+std::vector<std::string> archive_bones(const std::string& game_dir, const std::string& archive) {
+    if (archive.empty() || archive.find_first_of("/\\.:") != std::string::npos) return {};
+    Bytes file;
+    std::error_code ec;
+    const fs::path loose = fs::path(game_dir) / "content" / "Common" / "Object" / (archive + ".szs");
+    if (fs::is_regular_file(loose, ec)) {
+        const auto size = fs::file_size(loose, ec);
+        if (ec || size > (64u << 20) || !read_range(loose, 0, size_t(size), file)) return {};
+    } else {
+        for (const auto& p : packs(game_dir))
+            for (const auto& m : p.members)
+                if (file.empty() && m.name == archive + ".szs" && m.end - m.start <= (64u << 20)) read_range(p.file, uint64_t(p.data) + m.start, m.end - m.start, file);
+        if (file.empty()) return {};
+    }
+    const Bytes sarc = yaz0(file);
+    std::vector<Member> members;
+    uint32_t data = 0;
+    if (!sarc_index(sarc.data(), sarc.size(), members, data)) return {};
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    for (const auto& m : members) {
+        if (m.name.size() < 6 || m.name.compare(m.name.size() - 6, 6, ".bfres") != 0 || uint64_t(data) + m.end > sarc.size()) continue;
+        for (auto& bone : bfres_bones(Bytes(sarc.begin() + data + m.start, sarc.begin() + data + m.end)))
+            if (seen.insert(bone).second) out.push_back(std::move(bone));
+    }
+    return out;
+}
+
 std::vector<std::pair<std::string, std::vector<int>>> game_stage_rooms(const std::string& game_dir) {
     std::vector<std::string> names = stage_dir_names(game_dir);
     for (const auto& p : packs(game_dir))
@@ -202,10 +301,14 @@ std::vector<std::pair<std::string, std::vector<int>>> game_stage_rooms(const std
     return stage_rooms_from_names(names);
 }
 
+void set_stage_archive_source(std::function<std::string(const std::string&)> source) { g_stage_source = std::move(source); }
+
 std::vector<Spawn> room_spawns(const std::string& game_dir, const std::string& stage, int room) {
     const std::string name = stage + "_Room" + std::to_string(room) + ".szs";
     Bytes file;
-    const fs::path loose = fs::path(game_dir) / "content" / "Common" / "Stage" / name;
+    fs::path loose = fs::path(game_dir) / "content" / "Common" / "Stage" / name;
+    if (g_stage_source)
+        if (auto local = g_stage_source(name); !local.empty()) loose = local;
     std::error_code ec;
     if (fs::is_regular_file(loose, ec)) {
         const auto size = fs::file_size(loose, ec);

@@ -147,7 +147,12 @@ fits it skips to the record pass (without one the next step has no "before" and 
 showing the same picture twice), otherwise drops the rest and the next logic pass waits for its
 time. Pass durations are averaged per kind (a slow logic pass must not keep cheap in-between
 passes out), a single sample counts at most twice the average (one hitch kept them out for 10 s),
-and after 10 s without an in-between pass one probe re-measures them.
+and after 10 s without an in-between pass one probe re-measures them. At every paced rate (60, 120
+and 240 fps) a step's logic frame is due on its step slot, two vsyncs after the previous step's
+(`gx2/vsync_pacing.h`); a logic pass that starts late, but less than a step late, keeps that
+schedule, so the step counts its lateness and skips the in-between frames that no longer fit
+until the game has caught up. At 60 fps a step after a skipped in-between frame starts at once (the
+time the skip saved counts as a lead), and a logic pass up to two steps late keeps the schedule.
 
 One-shot hides (`runtime/src/interp_nodraw.h`, `runtime/tools/interp_nodraw_test.cpp`): logic can
 hide an actor for one frame with `fopAcStts_NODRAW_e` (actor status `+0x2E0`, bit `0x01000000`);

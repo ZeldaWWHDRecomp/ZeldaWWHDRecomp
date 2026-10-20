@@ -17,7 +17,15 @@ inline constexpr uint32_t kScratchBytes=4096;
 inline constexpr uint32_t kInstanceBytes=0x1120;
 using PlacementProvider=std::function<story_world_placement::Index(const std::string&,int)>;
 void configure_world_objects(const std::string& game_directory,PlacementProvider={});
-bool world_object_query(const std::string& mod,const story_notebook::ManifestActor&,bool wireframe,mods::json::Value&,std::string& why);
+// `geometry`: the collision to check instead of the actor's own (the editor's water tool: a body not made yet).
+bool world_object_query(const std::string& mod,const story_notebook::ManifestActor&,bool wireframe,mods::json::Value&,std::string& why,
+                        std::shared_ptr<const story_world_collision::mesh::Mesh> geometry=nullptr);
+// The ground of the declared static world objects of `stage` (their own collision: island grounds, terraces, piers,
+// buildings; not bodies of water) under each of `above`: the highest at or below each point. False: none anywhere.
+bool object_grounds(const std::string& stage,const std::vector<story_notebook::WorldPoint>& above,std::vector<float>& heights,std::vector<bool>& found);
+// The height range of a room's own collision (its triangles' lowest and highest point, world space), from the
+// player's stage files: the game looks for a body of water only within it. False: unknown for that room.
+bool room_height_range(const std::string& stage,int room,float& low,float& high,std::string& why);
 bool register_collision(const std::string& mod,const std::string& model,std::shared_ptr<const story_world_collision::mesh::Mesh>);
 struct ModelRig {std::vector<std::string> joint_names;std::vector<int> joint_parents;std::vector<bool> joint_look_compatible;};
 struct Identity {std::string mod,id;uint32_t token=0,process_id=0;};
@@ -28,6 +36,7 @@ struct State {
 struct MotionState {
     std::array<story_notebook::WorldPoint,16> points{};unsigned count=0,next=0;
     float speed=100;bool loop=false,finished=false,enabled=false;
+    bool bounce=false,reverse=false,pauses=false,waiting=false;unsigned timer=0;  // back and forth; strolling pauses (mod_actor_motion.h Pauses)
 };
 enum class BehaviorEvent:uint32_t {CreateNew,CreateRestored,Execute,Draw,TalkBegin,TalkEnd,TalkCancel,Hit,Destroy};
 struct Hit {uint32_t sequence=0,attack_type=0,attack_power=0,source_kind=0,source_process_id=0;story_notebook::WorldPoint position,reaction;};
@@ -69,11 +78,18 @@ bool get_motion(Cpu*,const Identity&,MotionState&);
 bool set_motion(Cpu*,const Identity&,const MotionState&);
 bool start_path(Cpu*,const Identity&,const std::vector<story_notebook::WorldPoint>&,float speed,bool loop=false);
 bool stop_path(Cpu*,const Identity&);
+// the editor changed a live actor's declared path only: its walk takes the new route in place (the next
+// point kept in range); false when the actor is busy (a scene, carried) or not this declaration's
+bool reload_path(uint32_t actor,uint32_t token);
 bool begin_scene(Cpu*,const Identity&,uint32_t lease);
 bool end_scene(Cpu*,const Identity&,uint32_t lease);
 bool scene_path(Cpu*,const Identity&,uint32_t lease,const std::vector<story_notebook::WorldPoint>&,float speed);
 bool scene_rotation(Cpu*,const Identity&,uint32_t lease,story_notebook::WorldPoint degrees);
 bool scene_animation(Cpu*,const Identity&,uint32_t lease,const std::string&,float blend_frames=6,bool loop=true);
+// a demo track's pose for this frame (position, rotation in degrees) under the scene lease
+bool scene_pose(Cpu*,const Identity&,uint32_t lease,story_notebook::WorldPoint position,story_notebook::WorldPoint degrees);
+// the actor's J3D model (its joints carry other demo actors), or 0
+uint32_t model_address(Cpu*,const Identity&);
 // Startup-private provisional declarations cannot escape through installed services.
 size_t checkpoint();
 void rollback(size_t) noexcept;
@@ -89,10 +105,20 @@ bool redeclare(uint32_t token,const story_notebook::ManifestActor&,const std::st
                story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool skinned,std::vector<std::string> clips,ModelRig rig,bool apply=true);
 // Internal collision-free distant/coast variants; never exposed as behaviour callbacks.
 bool visual_role(uint32_t token,bool distant);
+// Game pieces (story_game_pieces.h): a set archive holds one model per piece part (resource slot i+1 is
+// models[i]); a piece's declaration names its first model's slot, and its second model and the light set
+// of each part (settingTevStruct BG types 1..4) are registered here. Before install or on the game thread.
+struct PieceDraw {int second_index=-1;int light[2]={1,4};};
+bool register_piece_set(const std::string& archive,std::vector<std::string> models);
+bool set_piece_draw(const std::string& archive,int index,PieceDraw);
 bool owns_visual(uint32_t actor,uint32_t token);
 // World editor: the profile is installed, so declare() may add actors while the game runs (their
 // records are in place for all 128 declarations).
 bool live_ready();
+// --editor: the profile is installed even when no package declares a model actor, so the first model
+// actor or island building placed in the editor appears at once. Call before install(); never without --editor.
+void editor_enable();
+void heap_sample(Cpu*); // WWHD_MOD_ACTOR_HEAPS=1 only: logs the game heaps' free bytes per stage and room
 bool install(const std::function<std::string(uint32_t)>& replaced_by,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
 void state_loaded();
 bool talking(uint32_t actor);

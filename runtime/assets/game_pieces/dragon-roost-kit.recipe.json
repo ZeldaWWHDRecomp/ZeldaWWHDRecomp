@@ -1,0 +1,379 @@
+{
+  "game_pieces_format": 1,
+  "set": "dragon-roost-kit",
+  "label": "Dragon Roost island parts",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room13.szs",
+    "room": 13
+  },
+  "memory": {
+    "archive_bytes": 6742032,
+    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); each placement adds its instance"
+  },
+  "textures": {
+    "Txe_Edragon_gake": {
+      "max_size": 512
+    },
+    "Txe_Edragon_gake_hai": {
+      "max_size": 256
+    }
+  },
+  "pieces": [
+    {
+      "id": "dragon-roost-torii",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Dragon Roost torii",
+      "description": "the shrine gate of Dragon Roost: two pillars and their cross beams",
+      "volume": [
+        1100,
+        150,
+        2290,
+        1870,
+        710,
+        2540
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yasiro_torii"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          304
+        ],
+        "collision_triangles": 204,
+        "textures": [
+          [
+            "Txe_Edragon_tesuri",
+            "Txe_Edragon_yasiro_isi"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "dragon-roost-shrine",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Dragon Roost shrine",
+      "description": "the round stone shrine platform of Dragon Roost with its steps and torii",
+      "volume": [
+        900,
+        -1010,
+        1440,
+        2100,
+        710,
+        3600
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yasiro_torii",
+          "Yasiro_kaidan",
+          "Yasiro_jimen_A",
+          "Yasiro_jimen_B",
+          "Yasiro_kabe"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          558
+        ],
+        "collision_triangles": 372,
+        "textures": [
+          [
+            "Txe_Edragon_gake_hai",
+            "Txe_Edragon_hai",
+            "Txe_Edragon_tesuri",
+            "Txe_Edragon_yasiro_isi"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "dragon-roost-walkway",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Dragon Roost walkway",
+      "description": "a straight wooden plank walkway",
+      "volume": [
+        1700,
+        2500,
+        -40,
+        3130,
+        2580,
+        1020
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yukasita_B",
+          "Ura_jimen_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          84
+        ],
+        "collision_triangles": 3,
+        "textures": [
+          [
+            "Txe_Edragon_ita"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "dragon-roost-walkway-turn",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Dragon Roost walkway turn",
+      "description": "a wooden plank walkway with a bend",
+      "volume": [
+        1130,
+        2500,
+        380,
+        2270,
+        2580,
+        2240
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yukasita_B",
+          "Ura_jimen_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          68
+        ],
+        "collision_triangles": 3,
+        "textures": [
+          [
+            "Txe_Edragon_ita"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "dragon-roost-rope-posts",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Dragon Roost rope posts",
+      "description": "two wooden posts joined by a rope",
+      "volume": [
+        -220,
+        3140,
+        230,
+        -20,
+        3490,
+        1040
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Rope_kui"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          208
+        ],
+        "collision_triangles": 42,
+        "textures": [
+          [
+            "Txe_Edragon_rope_kui"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-spire",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Tall sea rock",
+      "description": "a tall, slim rock standing in the sea",
+      "volume": [
+        10710,
+        -1010,
+        -7480,
+        11690,
+        3900,
+        -6400
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          49
+        ],
+        "collision_triangles": 35,
+        "textures": [
+          [
+            "Txe_Edragon_gake"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-pillar",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Sea rock pillar",
+      "description": "a rock pillar rising from the sea",
+      "volume": [
+        6170,
+        -1010,
+        -2370,
+        7000,
+        4190,
+        -1530
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_A",
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          54
+        ],
+        "collision_triangles": 38,
+        "textures": [
+          [
+            "Txe_Edragon_gake"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-stack",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Sea rock stack",
+      "description": "a narrow rock stack in the sea",
+      "volume": [
+        11410,
+        -1010,
+        -3370,
+        12010,
+        2900,
+        -2760
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          59
+        ],
+        "collision_triangles": 41,
+        "textures": [
+          [
+            "Txe_Edragon_gake"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    }
+  ]
+}

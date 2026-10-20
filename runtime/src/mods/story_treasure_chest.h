@@ -49,6 +49,15 @@ inline std::u16string get_text(const std::string& name, const std::string& descr
 // stand-in of a pending mod item, and hands every other number to `next` (the mod items' handler), or the
 // game's function (original(c, addr)) when null.
 void set_item_get_next(void (*next)(Cpu*), void (*original)(Cpu*, uint32_t));
+// Placed chests (SDK v3 "chest" actors, story_actors) with one of the mod's items carry kChestMarker too:
+// note_placed_chests() says some do (the hook is needed even without charts); `placed(actor, mod, item)`
+// answers for a chest actor (the address of the daTbox whose position the demo item is created at).
+void note_placed_chests();
+bool placed_chests();
+void set_placed_chest(bool (*placed)(uint32_t actor, std::string& mod, std::string& item));
+// the chest item hook (fopAcM_createItemForTrBoxDemo) is installed: chests of mod items may appear
+void set_item_hook_ready(bool ready);
+bool item_hook_ready();
 void state_loaded();  // a full state was loaded: no chest is pending
 bool pending();       // tests: a mod item's chest waits for its execItemGet
 namespace hooks {

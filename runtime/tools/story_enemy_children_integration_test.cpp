@@ -37,7 +37,7 @@ uint32_t call(uint32_t f,uint32_t a){Cpu c{};c.r[3]=a;hooks.at(f)(&c);return c.r
 }
 int main(){map(0x60000000,0x20000);map(Parent,0x40000);map(0x10460000,0x10000);
 assert(o::configure(Arena,o::kStorageBytes,original,[](o::Token,o::Kind,uint32_t){return true;}));o::initialize_storage();
-std::string why;o::Fingerprint fp{};fp[0]=17;auto token=o::declare_actor(o::Kind::Bokoblin,0xFFFF0004,fp,3,why);assert(token&&o::bind_pending(token,10));fixture(Parent,10,0x7FF9,0xFFFF0004);parent_colliders();fixture(Child,50,0x1CF,0);child_colliders();
+std::string why;o::Fingerprint fp{};fp[0]=17;auto token=o::declare_actor(o::Kind::Bokoblin,0xFFFFFF04,fp,3,why);assert(token&&o::bind_pending(token,10));fixture(Parent,10,0x7FF9,0xFFFFFF04);parent_colliders();fixture(Child,50,0x1CF,0);child_colliders();
 // Register every consumer before provider install, with real shared carry registry.
 native_actor_profiles::configure(original,invoke);assert(story_enemy_children::configure(original,invoke));assert(native_actor_profiles::add_before_delete_listener("test-parent",retire_parent));st16(Profile+8,0x7FF9);assert(native_actor_profiles::add(0x7FF9,Profile));
 auto owner=[](uint32_t){return std::string();};auto replace=[](uint32_t f,void(*h)(Cpu*)){assert(!hooks.count(f));hooks[f]=h;};assert(story_enemy_children::install(owner,replace));assert(o::install(owner,replace));assert(native_actor_profiles::install(owner,replace));

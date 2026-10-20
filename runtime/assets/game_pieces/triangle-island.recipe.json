@@ -1,0 +1,69 @@
+{
+  "game_pieces_format": 1,
+  "set": "triangle-island",
+  "label": "Triangle Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room18.szs",
+    "room": 18
+  },
+  "memory": {
+    "archive_bytes": 552960,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top; the distant view (about 120 KiB) is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "triangle-island",
+      "since": 4,
+      "category": "Islands",
+      "label": "Triangle Island ground",
+      "description": "a small grassy islet with a shallow cliff and a rock beside it, where a statue once stood; bare ground",
+      "volume": [
+        -1656,
+        -1100,
+        -2371,
+        2593,
+        640,
+        2588
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "Shima_1",
+            "Shima_2"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Shima_1",
+          "Shima_2",
+          "soko_stopA",
+          "soko_stopB"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD18.szs",
+        "triangles": 144
+      },
+      "expect": {
+        "triangles": [
+          360
+        ],
+        "textures": [
+          [
+            "Txe_Ebshima_gakeshiba_2"
+          ]
+        ],
+        "collision_triangles": 360
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

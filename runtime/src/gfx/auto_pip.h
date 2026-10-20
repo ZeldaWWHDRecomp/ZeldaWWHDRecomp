@@ -9,10 +9,11 @@ struct GamePadUiState {
     bool menu = false;
     bool off_tv = false;
     bool switching = false;
+    bool baton = false; // Wind Waker conducting: the game lists the songs on the GamePad
 };
 // Descriptors are data pointers in the running regional build, never canonical IDs.
 // Map every entry separately: a regional map may split the descriptor range.
-enum class GamePadSceneKind { Unknown, Other, Menu, Switch };
+enum class GamePadSceneKind { Unknown, Other, Menu, Switch, Baton };
 inline GamePadSceneKind gamepad_scene_kind(uint32_t descriptor) {
     struct Entry { uint32_t descriptor; GamePadSceneKind kind; };
     static const std::array<Entry, 54> states = {{
@@ -27,8 +28,8 @@ inline GamePadSceneKind gamepad_scene_kind(uint32_t descriptor) {
         {GD(0x1049ED34), GamePadSceneKind::Menu},
         {GD(0x1049ED60), GamePadSceneKind::Menu},
         {GD(0x1049ED8C), GamePadSceneKind::Menu},
-        {GD(0x1049EDB8), GamePadSceneKind::Other},
-        {GD(0x1049EDE4), GamePadSceneKind::Other},
+        {GD(0x1049EDB8), GamePadSceneKind::Baton}, // Wind Waker song list opening
+        {GD(0x1049EDE4), GamePadSceneKind::Baton}, // Wind Waker song list
         {GD(0x1049EE10), GamePadSceneKind::Menu},
         {GD(0x1049EE3C), GamePadSceneKind::Menu},
         {GD(0x1049EE68), GamePadSceneKind::Other},
@@ -79,6 +80,12 @@ inline bool gamepad_menu_state(uint32_t descriptor, uint32_t routing, uint32_t c
     // 2 routes the pause/menu overlay to DRC; 4 also occurs during ordinary cutscenes.
     return controller == 1 && (routing == 2 || bag_open || gamepad_scene_kind(descriptor) == GamePadSceneKind::Menu);
 }
+// Wind Waker: the metronome flag is on while Link conducts, the scene's song-list states
+// while the GamePad shows the songs (they open a few frames after the flag and close after it).
+// With the Pro Controller (0) the GamePad is not used; Off-TV (2) already shows it full size.
+inline bool gamepad_baton_state(uint32_t descriptor, bool metronome, uint32_t controller) {
+    return controller == 1 && (metronome || gamepad_scene_kind(descriptor) == GamePadSceneKind::Baton);
+}
 inline bool gamepad_switch_state(uint32_t descriptor) {
     return gamepad_scene_kind(descriptor) == GamePadSceneKind::Switch;
 }
@@ -86,10 +93,11 @@ struct AutoPipDecision {
     double until = 0;
     void update(GamePadUiState state, double now) {
         if (!state.available || state.off_tv || state.switching) until = 0;
-        else if (state.menu) until = now + 0.25;
+        else if (state.menu || state.baton) until = now + 0.25;
     }
     bool shown(GamePadUiState state, bool pin, double now) const {
-        return !state.off_tv && !state.switching && (pin || (state.available && (state.menu || now < until)));
+        return !state.off_tv && !state.switching &&
+            (pin || (state.available && (state.menu || state.baton || now < until)));
     }
 };
 } // namespace gfx

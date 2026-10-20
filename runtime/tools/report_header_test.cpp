@@ -119,6 +119,20 @@ int main() {
            "performance report: renderer Vulkan, host SDL, 60 fps interpolation, internal scale 2.0x, buffer cache on, "
            "gyro controller; overrides: WWHD_VK_REUSE_VERTEX_SNAPSHOTS=0, WWHD_VK_ASYNC_PRESENT=0\n",
            "Vulkan header with gyro and two overrides");
+    // frame interpolation: whether "Keep game speed" is on at its rate
+    in.overrides.clear();
+    in.gyro.clear();
+    in.keepGameSpeed = 1;
+    expect(format(in).substr(format(in).find('\n') + 1),
+           "performance report: renderer Vulkan, host SDL, 60 fps interpolation, keep game speed on, internal scale 2.0x, "
+           "buffer cache on\n",
+           "keep game speed on");
+    in.keepGameSpeed = 0;
+    in.fps = "120 fps interpolation";
+    expect(format(in).substr(format(in).find('\n') + 1),
+           "performance report: renderer Vulkan, host SDL, 120 fps interpolation, keep game speed off, internal scale 2.0x, "
+           "buffer cache on\n",
+           "keep game speed off at 120 fps");
     Info m;
     m.version = "v0.2.5+3";
     m.commit = "abcdef0-dirty";

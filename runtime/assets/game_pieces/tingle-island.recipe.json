@@ -1,0 +1,84 @@
+{
+  "game_pieces_format": 1,
+  "set": "tingle-island",
+  "label": "Tingle Island buildings",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room17.szs",
+    "room": 17
+  },
+  "memory": {
+    "archive_bytes": 4541300,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top"
+  },
+  "textures": {
+    "Txq_tinkle_motokabe": {
+      "max_size": 512,
+      "why": "2048 x 2048 on the tower base: kept at 512 x 512"
+    }
+  },
+  "pieces": [
+    {
+      "id": "tingle-tower",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Tingle's tower",
+      "description": "a tall painted wooden tower with a ladder and a fenced lookout on top (without the head on its top)",
+      "volume": [
+        -400,
+        270,
+        19620,
+        400,
+        1790,
+        20380
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "pole",
+            "hashigo",
+            "saku",
+            "saku2",
+            "yagura_teppen"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "object_nuke",
+          "hasigo_yoko1",
+          "hasigo_yoko",
+          "hasigo_ura",
+          "mo_face",
+          "hasigo_ue",
+          "hasigo",
+          "saku",
+          "pole"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          2678
+        ],
+        "collision_triangles": 662,
+        "textures": [
+          [
+            "Txq_tinkle_chuchu",
+            "Txq_tinkle_hashigo",
+            "Txq_tinkle_joumen_yuka",
+            "Txq_tinkle_moriburin",
+            "Txq_tinkle_motokabe",
+            "Txq_tinkle_moyou_all",
+            "Txq_tinkle_teppen_ki",
+            "Txq_tinkle_yousei"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

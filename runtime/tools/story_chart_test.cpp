@@ -244,6 +244,27 @@ void test_hooks() {
     assert(calls == std::vector<std::string>{"destroy"});
     capture_begin();
     assert(visible(0));  // nothing written into the freed menu
+    // an unreadable story block (unknown version): no tracked ring, as before the world objects
+    reset_pane(0);
+    update();
+    assert(visible(0));
+    uint8_t* block = story_store::area();
+    const uint8_t magic = block[0];
+    block[0] = uint8_t(magic ^ 0xFF);
+    assert(!story_store::book().usable());
+    update();
+    for (unsigned i = 0; i < 8; i++) assert(!visible(i));
+    // ... while a world-object island (a fixed declaration, no record read) still shows
+    const WorldMarker unflagged{"island", "Mod Island", 100000, 0};
+    assert(publish_world_markers("world", {&unflagged, 1}));
+    update();
+    assert(visible(0) && close_to(tx(0), 144.0f) && !visible(1));
+    clear_world_markers("world");
+    update();
+    for (unsigned i = 0; i < 8; i++) assert(!visible(i));
+    block[0] = magic;
+    update();
+    assert(visible(0) && close_to(tx(0), 71.0f + 73.0f));
     // untracked: no ring
     reset_pane(0);
     tracked_on = false;

@@ -7,6 +7,264 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod dungeons: sky islands and boss rooms** (for mod makers). A stage can borrow the sky of a game stage (day
+  sky, stars or dusk) over your own models; `list_stage_templates` in the editor and MCP lists which stages have a
+  sky, a boss door and music to borrow, and the Stages tab can filter for skies. New entry style: an updraft that
+  lifts Link into the stage. A big chest can hold a heart container, and a warp can wait until a chest is opened.
+  Talks and scene ends can take Link into a stage. A stage can bring its own shader template so it doesn't stutter
+  on the first visit (installed after setup: run setup's Repair). Game Over in a mod stage restarts at the stage's
+  start. New example: `examples/guest-mods/sky-island`.
+- **World editor: scenes play right away, and easier demo steps** (for mod makers). A new scene can be played with
+  Play scene or Play step without saving and restarting first. In the Scenes window the step row no longer hides its
+  buttons on narrow panels; the buttons say "Duplicate scene" / "Remove scene…" and "Duplicate step" / "Remove step",
+  a step can be removed with right-click or Delete, and Undo brings back a removed scene. A demo step's actors and events
+  are now picked from lists instead of typed as JSON: game characters, models and your mod's characters; sounds (with a
+  Play button) and particles by name; joints, animations, Link's modes, time, rain and messages. The JSON stays under
+  "Advanced". Full save states made by an older build in editor mode can't be loaded by this one.
+- **Water tool: new ponds are swimmable, and pond surfaces always appear.** A new pond's level now defaults to its
+  depth above the shore, so Link can swim in it right away; banks stay compact, and nothing reaches down to the sea
+  floor. Some pond outlines left the visible water out because its surface model couldn't be prepared; that is fixed,
+  and the editor names the reason if a model ever can't be prepared. Such a model no longer stops the game at start.
+- **Less render-thread work on the Vulkan renderer** (#178). Shader programs are fingerprinted again only after the
+  game writes to them, and texture invalidation now looks only at the textures it can reach. On a Snapdragon phone this
+  cut the render thread's CPU time by about 11% in Windfall; the picture is unchanged.
+
+- **World editor: building mod levels, also with an AI assistant** (for mod makers, preview). A new Stages tab creates
+  a level from your room models (import, add, build, warp in), adds rooms, places entries, exits, doors with locks,
+  chests, enemies, pots and return warps where Link stands, and moves them with handles in the picture. Check lists
+  unreachable rooms, keys behind their own doors and room models without UVs or named materials. Every step is also an
+  MCP command, so an assistant such as Claude Code can model rooms in Blender and build and look at the level in the
+  game; see the new guide "Building a dungeon with an AI assistant".
+
+- **Fixed: ponds on a mod's own island** (water tool). A pond drawn on a terrace of the mod's own island model no
+  longer turns into a column down to the sea floor and is no longer refused as "in the way": the water's level follows
+  the ground at its shore, the island's own surfaces count as ground, and only what really rises through the water (a
+  wall, a pillar, a house) blocks it. Messages now name the game place that blocks a spot and where it is.
+
+- **Mod SDK: a dungeon map for mod dungeons** (for mod makers, preview). A mod dungeon with a map shows it on the
+  GamePad's map page (and on the TV's map tab with the Pro Controller): rooms seen from above, made from the rooms'
+  floors, the rooms Link has visited, where he stands, and with the dungeon map every room; with the compass also the
+  chests (open or not) and the boss door. Only Link's floor is shown for now.
+
+- **40 fps mode.** A new frame rate next to 30, 60, 120 and 240 fps: three game steps over four frames, at full game
+  speed. It suits screens that run at 40, 80 or 120 Hz, such as the Steam Deck LCD at 40 Hz or the OLED at 80 Hz, where
+  every frame is shown for the same time. On Android the app asks for a matching screen rate; some phones choose the
+  rate themselves, and on a 60 Hz screen 40 fps runs unevenly (Settings says so). Keep game speed works as at 60 fps.
+
+- **Mod SDK: dungeons in mod levels** (for mod makers, preview). A mod level can now be a small dungeon: rooms taken
+  from any game room or the mod's own models, small-key, boss and shutter doors, chests with a small key, map, compass
+  or boss key, enemies (ChuChus, Bokoblins, Keese, Darknuts), pots and a return warp. Each mod dungeon keeps its own
+  keys, opened chests and switches; the game's save still only stores a normal entrance. See the example
+  "mod-stage-dungeon".
+
+- **Mod SDK: new levels of their own** (for mod makers, preview). A mod can add a new cave or dungeon level with its
+  own rooms, reached from a box in a game level and left through a floor exit. The level is built from the player's
+  own game files when the game starts, with the look and music of a game level the mod names; doors between its rooms
+  work. Saving inside it is safe: the game's save always keeps a normal entrance, so the save still loads with the mod
+  removed, and with the mod the Quest Log continues inside. Save states made in a mod level ask for its mod. The editor
+  lists mod levels for warping. See the example "mod-stage-cave".
+
+- **Automatic picture-in-picture shows the Wind Waker's song list** (#256). With the GamePad screen set to Automatic
+  picture-in-picture, the GamePad picture now also appears while Link conducts with the Wind Waker, with the song list
+  and the conducting guide, and goes away again when he stops.
+
+- **Fixed: Link's fist no longer flies in from elsewhere with frame interpolation** (#255). When Link's hand pose
+  changed (for example from standing to running, or after targeting), a hand pose could appear for one in-between
+  frame at the spot where it was last used and fly to his hand, most visibly at 120 fps and above. A part of a model
+  that comes back after being hidden is now drawn where it is, without blending; everything else blends as before.
+
+- **Mod SDK v3 and the editor: Kargarocs with riders and Wizzrobe summoners** (for mod makers). A Kargaroc can carry a
+  Moblin or Bokoblin along a mod path and drop it at the path's release point. A Wizzrobe summoner teleports between the
+  points of one path and calls waves of enemies at the points of the next, in the game's own wave sizes (up to 20);
+  summoned enemies give no drops. The editor sets up both paths when a summoner is placed.
+
+- **World editor: a water tool for ponds, rivers and waterfalls** (for mod makers, preview). Under Add > Water, click
+  points on an island's ground: a pond gets a level handle, a river a band with flow arrows, shallow parts to wade and
+  a reverse button, and a waterfall forms at a river's step or from two points. Link swims, wades and falls as in the
+  game. Banks slope into the island's own grass and sand, the water is the game's own, and foam shows only at the
+  shores. Check marks problems in red in the picture. The same is available as MCP commands. On the sea only; a pond
+  can't be dug into the ground, so on a slope it sits in a grassy mound.
+
+- **Fixed: the world editor no longer crashes at start when code mods are off.** With Code-mod support turned off
+  (and in the decomp version), `--editor` now starts; live editing is off and the editor says so, and edits are still
+  saved.
+
+- **Mod SDK v3 and the editor: paths, the wall cannon, warship routes and wandering Floormasters** (for mod makers).
+  A mod can draw lines and areas in a room (up to 16 per mod) and its enemies can use them. The game's wall cannon can
+  be placed with an area as its firing range: it turns to Link and fires while he is inside, and a bomb destroys it,
+  with the mod's own defeat flag and drops. An enemy warship can sail a route back and forth, firing at Link, and a
+  Floormaster can glide along a line. The editor draws and edits paths in the picture, and its Check warns when a
+  ship's route runs over land or a Floormaster's line leaves the floor; the same is available as MCP commands.
+
+- **Mod SDK v3 and the editor: every placeable villager can walk a route** (for mod makers). The Windfall villagers
+  without a walk of their own (the old women, the young women and the large sailors) now walk their routes with
+  another villager's walk, fitted to their own bodies when the game starts, from the player's own files. Feet stay on
+  the ground at any walking speed. Full save states made with the editor before this update can't be loaded.
+
+- **Keep game speed at 60 fps holds full speed on devices just under 60 fps** (#254). With Keep game speed on, a
+  device that draws a little under 60 fps (for example a phone at 57-58 fps) no longer runs the game slightly slow, and
+  a short hitch no longer costs game time: the game skips exactly as many in-between frames as it needs, without
+  waiting after a skip. A slow device that takes 20-25 ms per frame now shows a third to two thirds of its in-between
+  frames instead of almost none, at full game speed. 30 fps, 120/240 fps and Keep game speed off are unchanged.
+
+- **Mod SDK v3 and the editor: sea and dungeon enemies** (for mod makers). The Kargaroc (flying or perched, without
+  riders), the red Wizzrobe with its fireballs, the enemy warship (at sea only; its cannonballs hit only Link and his
+  boat), groups of one to five Gyorgs (they appear once Link has the boomerang), the Floormaster (it grabs Link and lets
+  go again, it never takes him away) and the Big Octo as a target whose eyes are shot out (no swallowing, no whirlpool)
+  can be placed, each with the mod's own defeat flag, drops and defeat switch. Defeating them by a mod doesn't count
+  toward the game's sea kills.
+
+- **Fixed: things can now be placed on top of a mod's island** (houses, signs, villagers, enemies and other world
+  objects); the island no longer counts as "in the way". Objects only block each other where their shapes really
+  overlap, so turned buildings next to each other are no longer refused. In the editor, clicking the open sea now
+  places an island (or anything else) on the water surface.
+
+- **Mod SDK v3 and the editor: more native enemies** (for mod makers). Stalfos, Redead, Mothula (on the ground or
+  winged), Morth, Magtail, Poe, Armos and Armos Knight can be placed, each with the mod's own defeat flag, drops and
+  defeat switch, live in the editor. What holds Link (a Redead's scream and bite, a Poe's possession, clinging Morths)
+  lets go when the enemy is removed, its room changes or a state is loaded. A placed Stalfos does not split in two under
+  a spin attack, and a placed Mothula does not release Morths; place Morths next to it instead.
+
+- **Animated mod models can have several materials too** (for mod makers): up to 16 per model, each with its own
+  texture, opaque or cut-out (for leaves, fences, hair) and optionally double-sided, with the same texture budget as
+  static models. They work in scenes and demo steps, with save states and in the editor. An example walker is included.
+
+- **Mod SDK v3 and the editor: demo steps, cutscenes played by the game's own cutscene system** (for mod makers, preview).
+  A scene can now play a demo: keyframed camera, actors flying or walking along curves (game characters, villagers the
+  mod placed, the mod's own actors, and Link in his cutscene poses), messages that wait for A, sounds and effects, one
+  actor carried on another's joint (for example the Helmaroc King carrying someone), and time of day and rain that come
+  back afterwards. Characters a demo needs but the room lacks are created for it. Demos can be skipped, follow each other
+  directly, and a choice between two demo steps picks which one plays. A time change in a demo never starts a new day.
+  In the editor, a demo step's lanes appear on the Scenes timeline with keys, clips, messages and carry markers, a
+  preview at the cursor and curve handles in the picture; the same is available as MCP commands. Nothing changes for
+  players or mods that don't use demo steps.
+
+- **Mod SDK v3 and the editor: more native enemies** (for mod makers). Boko Babas, red and blue Bubbles, Fire Keese,
+  Octoroks and Seahats can be placed, each with the mod's own defeat flag, drops and defeat switch. A Boko Baba bites but
+  never grabs Link and leaves no flying head behind; a Seahat or Octorok defeated by a mod does not count toward the
+  game's sea kills. (The game has no Ice Keese.)
+- **Fixed: Link's boomerang, arrows and bombs now hit mod enemies.** Thrown, fired and exploding ones were ignored
+  before, also by the Bokoblins, Moblins, Peahats and ChuChus placed by mods.
+
+- **Mod SDK v3 and the editor: island grounds** (for mod makers). Six islands without their buildings can be placed as
+  ground for a mod's own island: Crescent Moon, Triangle, Five-Star, Star, Bomb and a fairy island, in the editor's new
+  **Islands** list. Each is made from your own game files the first time a mod uses it, has its own collision, shows on
+  the horizon from the neighbouring squares, and the ship stops at its shore. Holes drop Link back to the room's start.
+- **Mod collision: water to swim in, shallow water, waterfalls, ice and void surfaces**, and a water material for ponds
+  (`"material": "water"`). A pond placed above the room's height range is not found as water; the docs explain this.
+- **Fixed: mod collision marked as metal hurt Link** (it was read as a damage surface, e.g. on the buoy example). Full
+  save states made before this update keep their objects; their old collision is used until the room is next loaded.
+
+- **Mod SDK v3 and the editor: island parts** (for mod makers). Smaller pieces of other islands can be placed like the
+  island buildings: Dragon Roost's shrine, torii, walkways, rope posts and sea rocks, Windfall's windmill cap, and two
+  Forsaken Fortress shipwrecks. They are made from your own game files the first time a mod uses them, have their own
+  collision and take the light of the room they stand in. Island pieces now check the textures they are built from, so
+  existing piece caches are rebuilt once.
+- **Fixed: the mod actor heap diagnostic** (`WWHD_MOD_ACTOR_HEAPS`) no longer crashes when a game heap isn't set up.
+- **Mod SDK v3 and the editor: rat holes and patrolling Moblins** (for mod makers). A rat hole lets out three rats (or
+  bomb rats, or a mix) one after another while Link is near; each defeated rat gives the hole's drops, and the hole
+  closes once all three are beaten (its `defeat_switch` is set then). A bomb rat's bomb only hurts Link and the mod's own
+  enemies. Placed Moblins can patrol a route like Bokoblins.
+- **Fixed: a mod enemy, prop, switch or door that the game refuses to create no longer stops the game** later.
+
+- **Island buildings and world objects: only real conflicts refuse a place now** (doors, start points, villagers and
+  their walks, chests, event triggers); pots, signs, rupees, message and hint areas and the sea's surface no longer
+  count. In the editor a building can be placed anywhere: on a red spot it shows as an outline with what is in the way
+  drawn in, and it appears in the game once dragged to a green spot.
+
+- **Mod SDK v3 and the editor: the Darknut** (for mod makers), plain, with a shield, with a helmet, or the Mighty Darknut
+  with its cape. Its sword and cape stay its own and go with it, it writes no game switch, and its defeat can open a
+  mod door (`defeat_switch`).
+
+- **Mod models can have up to 16 materials** (for mod makers), each with its own texture, so mod islands can mix sand,
+  grass, rock and wood like the game's own islands; cut-out materials (glTF alpha clip) for leaves, fences and foliage
+  cards, and double-sided faces lit correctly on both sides. New example `world-objects-w5`.
+- **Fixed: island buildings in released builds.** The release packages lacked the converter the island buildings
+  need.
+- **Quick-use locked items** (Mods > Built-in, off by default; #196, thanks mhbxyz): while locked onto an enemy, one
+  item-button press equips and uses the bow (including fire, ice and light arrows), boomerang, hookshot or grappling
+  rope; bombs are readied and thrown, and equipping the hammer completes one strike. A **Quick-use animation speed**
+  of 1x, 1.25x or 1.5x speeds up the supported equip animations.
+
+- **Keep game speed now holds the game's speed at 60 fps when the graphics can't keep up** (#178, e.g. Steam Deck):
+  in-between frames that don't fit are skipped instead of slowing the game to 21–25 logic steps a second. The
+  performance overlay's slow-motion warning now appears below 29 logic steps a second (was 26) and no longer flickers.
+- **Mod SDK v3: more enemies and enemy switches** (for mod makers). The Peahat and a black ChuChu can be placed;
+  enemies can open doors through a mod switch once all of them are defeated (`defeat_switch`, also in the editor's
+  Inspector); Bokoblins can patrol a route of the mod's own.
+- **World objects: island protection now works on the sea** (for mod makers). Placement used to read sea rooms at the
+  wrong coordinates and protected nothing there, and dungeon rooms with a turned map were checked turned. World objects
+  now keep clear of what the island needs (villagers and their routes, doors, chests, items, switches, cutscene areas
+  and the places where Link arrives) by their real size instead of wide 100 m zones, and may stand over grass and trees.
+  A world object that can't stand where it is placed is left out with a log line instead of stopping the game; the
+  editor shows its footprint in red with the reasons.
+- **Mod SDK v3 and the world editor: island buildings** (for mod makers). Mods can place some of the islands' own
+  buildings as `"actor": "piece:<id>"`: four Outset houses (their windows light up at night), Outset's lookout tower
+  and well shelter, the Flight Control Platform, the Private Oasis cabana and Tingle's tower. They are made once from
+  your own game files, lit by the island's light at every time of day and in all weather, and Link can walk on them;
+  their doors lead nowhere. A building must keep clear of the island's villagers and their routes, chests, doors,
+  items and cutscene areas (the editor shows what is in the way), and a room's buildings share 24 MiB. In the editor
+  they are in the Game objects palette.
+- **Performance report: it says whether Keep game speed is on** (and at which interpolation rate), and the log records
+  its value and where it came from at start and on every change.
+- **Controller rumble no longer stops by mistake:** the safety stop for a stalled game could switch off a rumble that had
+  just been started. The game's list of villager names (for mod makers) is now kept in the mod manager's folder; it is
+  built once more after the update.
+- **Mod SDK v3: placed villagers can walk a route.** Uo1, Uo2, Uo3, Um1 and Um2 walk up to 15 points with their own
+  walk: once, in a loop or back and forth, at their own pace or yours, with optional strolling pauses. They still stop
+  to look at Link and talk as usual, and a walker that runs into a wall or walks off an edge is caught. Your own
+  models' routes can also go back and forth, pause now and then, and name their walk and idle clips.
+- **World editor: a Route section in the Inspector** for walking villagers and your skinned models. Add points at Link
+  or the camera, drag them in the picture, reorder or remove them, and set speed, mode and pauses; the route shows in
+  green, and stretches without walkable ground in red. New route commands for MCP clients.
+- **Mods and the world editor can place the game's own objects by name** (`game:palm`, trees, tables, shelves, lamps,
+  plant pots, flowers, nests, the Rito and sea flags, the sea lookout tower, grass, flowers and small trees): they load
+  from your own game files, never from the mod. In the editor: Add > Game objects, with Variant, Turn and Scale in the
+  Inspector; `list_game_objects` over MCP.
+- **Mod SDK v3: thirteen more Windfall villagers can be placed** (residents uo1, uo3, ub1–ub4, uw1, uw2, um2,
+  sa1–sa4); um3, sa5, ug1 and ug2 are refused with the reason.
+- **Mod SDK v3: more enemies** — red, blue and yellow ChuChus (`parameters.variant`), the Miniblin, and Bokoblins with
+  a shield or a machete, each with the mod's defeat flag and drops. The editor picks a villager or an enemy variant
+  from a list in Add and in the Inspector.
+- **World editor: the Inspector no longer says an enemy's changes wait for a restart** when they apply at once.
+- **World editor: story changes while the game runs.** Quests, quest talks (also those for the game's villagers),
+  letters and charts change in the running game at the next calm moment, with every edit, Undo and Redo; an item's
+  name, description, amount and use change at once. A new item, its icon, held model and hold_up, and removed charts
+  still wait for a restart, and the status bar says which. The Quest Log is never touched: saves and save states
+  always play with the current story, and the status bar says when a renumbered step moved a loaded quest.
+- **World editor: New mod…** starts a new, empty mod of your own from inside the editor (also `new_mod` over MCP):
+  its own package, turned on in your mod profile and opened at once.
+- **World editor: quest talks for the game's villagers.** The game's own villagers show their names in the picture;
+  click one to give it a quest talk in your mod, as a new quest, a new step or a step's talk (also `list_villagers`,
+  `pick_villager` and `add_villager_talk`). The villager's own dialogue and save flags are never changed.
+- **World editor: placing and dragging fixed.** Clicks find the ground under the mouse again (piers, roofs and grass
+  were missed or hit the sea floor); residents, enemies and props appear at once also in a mod that had no actors at
+  start-up; a dragged enemy or resident now moves with the drag instead of staying at its old spot; and a resident's
+  type is chosen in Add and in the Inspector.
+- **Story mods: Bokoblins see Link.** Bokoblins placed by a mod stood blind and never attacked; they now notice Link
+  at the game's usual range and fight. (A save state with such a Bokoblin from before puts it aside.)
+- **World editor: the docked panels react to the mouse again.** Since the dockable panels arrived, the full-screen
+  picture could sit in front of the docked panels, so they got no hover or clicks on any renderer; the picture now
+  always stays behind them.
+- **Android: handhelds with a fan keep 60 fps longer** (#247). Their heat guard now pauses 60 fps at a thermal headroom of
+  1.00 instead of 0.90 (Relaxed: 1.10); the AYANEO EVO and KONKR Pocket FIT Elite ran 60 fps well around 0.90-0.96.
+  Phones keep their limit.
+- **World editor: native scene previews after loading a save state.** A scene's native version now also plays in the
+  preview after a save state was loaded or after a preview fell back to the scene's steps, and the editor says why
+  when it can't restore the world after a preview.
+
+- **Without mods and without `--editor`, the world editor and the Mod SDK v3 stay completely off.** Nothing of
+  theirs runs or reserves game memory then, so full save states made without mods by builds from before 17 October
+  load again.
+
+- **Story mods: more of a quest without code** (for mod makers). Content packages may hold only letters, charts,
+  items or quests; letters can wait for a quest or flag and a number of game days (`when`, `after_days`); characters and
+  scenes can give a treasure chart; items with `hold_up` are held over Link's head when he gets them; placed chests can
+  hold more rupees, a heart piece or container, or the mod's own items (with a "Chest holds" picker in the editor); and
+  `reset_quest` also clears the quest's charts and items.
+- **World editor: letters, treasure charts and items** (`--editor` and its MCP tools, for mod makers). A new Story tab
+  and commands create, change and remove letters on their own, treasure charts (with the X placed at Link or the
+  camera) and items (with icon import). Removing something still in use is refused with the list of its uses.
 - **Android: heat guard for handhelds with a fan** (#247). AYANEO, KONKR, AYN and Retroid handhelds now keep 60 fps
   until they are much hotter than phones, and the new **Settings → Graphics → Heat guard** (Normal / Relaxed / Off)
   sets how early 60 fps pauses when the device gets hot. Phones keep their current limit by default.
@@ -24,6 +282,10 @@ what is on `devel` and not released yet (also in the
   with collision from the model and wood, sand or grass ground; objects that bob on the waves or drift and can be
   ridden; surfaces Link can climb, hookshot and grapple; islands that are visible from neighbouring sea squares, get
   a ring on the sea chart and an arrival notice; and animated coast foam that uses the game's own foam look.
+
+- **GamePad picture-in-picture: simpler settings** (#221). Settings → Display → Picture-in-picture now has one slider each
+  for size (5–100 %) and opacity (10–100 %). Dragging the picture places it freely, and clicking one of the nine circles
+  in the diagram snaps it to that spot.
 - **Mod quests: finishing, flags and places inside buildings** (for mod makers). A character's dialogue or a scene's end
   can now finish a quest (the reward is given once), characters and quest steps can react to the mod's own flags or to
   several quests at once, a character can offer step-specific conversations, and a quest step can point into a

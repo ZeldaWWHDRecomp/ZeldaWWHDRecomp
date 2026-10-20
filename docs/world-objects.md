@@ -49,11 +49,11 @@ at sea-map coordinates in Blender.
 
 ## Author collision in the GLB
 
-Keep one visible mesh with one indexed triangle primitive, one opaque material
-and one embedded PNG texture, as for existing static mod models. Additional
-collision meshes may have multiple triangle primitives. Name each collision
-mesh or its scene node with an `_col` suffix, for example `island_col` or
-`pier_col`. These meshes are omitted from rendering.
+Keep one visible mesh. It can have several materials, each with its own
+embedded PNG texture (see [Several materials](#several-materials)). Collision
+meshes may have multiple triangle primitives. Name each collision mesh or its
+scene node with an `_col` suffix, for example `island_col` or `pier_col`. These
+meshes are omitted from rendering.
 
 A collision primitive needs indexed triangles and `POSITION`. Normals and UVs
 are optional; they do not control collision. Assign one of these material names:
@@ -69,6 +69,11 @@ are optional; they do not control collision. Assign one of these material names:
 | `col_objects` | Object collision, including the ship; Link and camera pass through |
 | `col_climb` | Native vine-style climbable wall |
 | `col_hookshot` | Hookshot attachment surface with wooden ground sounds |
+| `col_water` | Water to swim in: Link swims below its surface (see "Water") |
+| `col_shallow` | Shallow water: Link wades through it |
+| `col_waterfall` | The ground of a waterfall, as the game's own waterfalls |
+| `col_ice` | Ice: Link slides on it |
+| `col_void` | A drop: landing on it sends Link back to the room's restart point, as a bottomless pit does |
 
 Use separate material slots for different ground types. Triangle direction
 matters: orient ground faces upward and obstacle faces outward. The converter
@@ -78,9 +83,10 @@ material names.
 
 When no `_col` mesh exists, collision can be derived from the visible triangles.
 Equivalent positions are welded, but the converter does not reduce a detailed
-model to an arbitrary triangle budget. The visible material’s `col_*` name
-selects the fallback surface; other visible material names use stone. Use a
-separate, simpler `_col` mesh when the render mesh exceeds the collision limits.
+model to an arbitrary triangle budget. Each visible material’s `col_*` name
+selects the fallback surface of its triangles; other visible material names use
+stone. Use a separate, simpler `_col` mesh when the render mesh exceeds the
+collision limits, or when cut-out cards such as bushes should not be solid.
 
 Names such as `col_noship` and `col_shiponly` are not available. The native collision filter groups the ship with other objects; it
 has no separate ship-only category.
@@ -96,6 +102,68 @@ Ship collision samples several heights rather than treating every thin floating
 surface as a solid hull. Give static coasts and obstacles sufficient vertical
 sides. A shallow horizontal sheet alone is not a reliable obstacle to the ship.
 The original island example extends its coast below sea level.
+
+## Several materials
+
+A visible model can use up to 16 materials, so an island can have sand, grass,
+rock and wood that each repeat their own texture, like the game's own islands.
+Give each material one embedded PNG base colour texture. The mesh can have up to
+32 triangle primitives; each primitive uses one material, and several primitives
+may share a material. Blender exports one primitive per material slot.
+
+Two material kinds are available:
+
+| glTF material | Draws as |
+| --- | --- |
+| `alphaMode` `OPAQUE` (the default) | Opaque |
+| `alphaMode` `MASK` | Cut-out: texels with alpha below `alphaCutoff` (default 0.5) are left out. Use it for leaves, fences, grass and bush cards. |
+
+`doubleSided: true` draws both faces of either kind, each lit from its own side;
+use it for cut-out cards. The converter adds a mirrored copy of those faces, so
+they count twice toward the vertex and triangle limits.
+Blended transparency (`alphaMode` `BLEND`) isn't supported: the model is refused
+with a message. Paint a cut-out's soft edges hard, or use `MASK`.
+
+Every material is lit the same way, by the game's own lighting for objects, so
+the materials of one model match at every time of day. The converter takes the
+materials' shading from a get-item model with an opaque and a cut-out material
+in the player's own game; a mod contains only its own model and textures.
+
+| Limit | Value |
+| --- | --- |
+| Materials per model | 16, each used by at least one primitive |
+| Triangle primitives in the visible mesh | 32 |
+| Vertices and triangles | 4,096 and 8,192 for all primitives together; double-sided faces count twice |
+| One texture | at most 512 × 512 pixels; width a multiple of 64, height a multiple of 8 |
+| All textures of one model | 1 MiB as decoded RGBA: one 512 × 512, four 256 × 256 or sixteen 128 × 128 textures |
+
+Several materials sharing one image use one texture. The game's memory budgets
+for mod models still apply to the converted model: 2 MiB per model, 8 MiB per
+mod and 32 MiB per room. Each material adds one draw, so merge materials that
+share a texture and keep small repeating textures where they suffice.
+
+A model with one opaque, single-sided material converts exactly as before.
+
+Animated (skinned) models can use several materials too, with the same kinds and
+limits. Every primitive is bound to the model's one skin, so all parts of the
+model follow the same bones. Where two materials meet, the border vertices
+belong to both primitives; give them the same joints and weights in both (Blender
+does this when one mesh has several material slots) and the parts stay joined in
+every pose. An animated model with one opaque, single-sided material also converts
+exactly as before. See [Skinned models and motion](mod-sdk-v3.md#skinned-models-and-motion).
+
+`examples/guest-mods/world-objects-w5` contains an island with six materials:
+sand, grass, rock and wood, and cut-out fences and bushes. Its
+[`assets/make_fixtures.py`](../examples/guest-mods/world-objects-w5/assets/make_fixtures.py)
+reproduces the model and textures. It occupies the same sea area as the other
+island examples, so enable it on its own.
+
+`examples/guest-mods/sdk-v3-skinned-materials` contains an animated creature with
+three materials: cloth and bark for its body and head, and cut-out, double-sided
+leaves on its head and arms. Its body is cut into the cloth and bark materials at
+the waist, where its idle clip bends it. Its
+[`assets/make_reed_walker.py`](../examples/guest-mods/sdk-v3-skinned-materials/assets/make_reed_walker.py)
+reproduces the model, its textures and its idle and walk clips.
 
 ## Simple collision shapes
 
@@ -175,7 +243,7 @@ Drift speeds use game units per second. `wind_speed` follows the native wind
 direction and accepts 0 to 100. The optional current gives world-space X/Z
 components, each from −100 to 100. `max_speed` caps the combined horizontal
 speed, from above zero to 100; its default is 30. A drifting body needs nonzero
-wind or current movement. Drifting collision respects islands, protected areas,
+wind or current movement. Drifting collision respects islands, protected places,
 other mod objects and the ship; a blocked move does not move through them.
 
 An optional anchor confines the object's origin to a horizontal circle. `point`
@@ -218,24 +286,42 @@ least 16 free slots. Registration also requires native heap headroom: at least
 actor heap is finalized. Passing the mesh limits does not guarantee an
 allocation in every room.
 
-Placement checks use the player's installed game resources. They protect native
-collision bounds, authored actors and fixed events, and routes. The current
-index is deliberately conservative:
+Placement checks use the player's installed game resources: the room's collision and its layout, read
+where the game stores them (world coordinates, on the sea as in dungeons). An object keeps 50 units clear of:
 
-- Every authored native actor or tag, across layers, reserves 10,000 units around
-  its position in X/Z.
-- Native routes reserve a 2,000-unit corridor.
-- Protected geometry and routes receive an additional 100-unit placement clearance.
-  Native ground wholly below the object may touch its base; penetrating it is refused.
-- An object must stay inside the indexed room. A sea object that crosses into a
-  neighbouring square is refused until coverage for that placement is available.
-- Missing, malformed or unsupported collision, event or route data prevents
-  placement rather than treating the room as empty.
+- the room's walls and ground. Ground wholly below the object may touch its base; going into it is refused.
+  The sea's surface (the water plane of an island's square) and lava are not ground: a floating object or a
+  pier may reach into them;
+- what the island needs, each by its real size: villagers where they stand (a radius of 100 units, in every
+  story stage), their walking routes (a corridor 60 units to each side), chests (120), doors (250), a piece
+  of heart or heart container lying about (80), switches (150), the places where Link arrives (100), and
+  event triggers Link walks into (TagEv, Evsw, SW_C00: a small one whole, a wide one by its core of 300
+  units). Small props (lanterns, posts, stakes, enemies) count with 60 units, any other object with 120
+  (more when the layout scales it up, up to 600);
+- these don't count, an object may stand over them: grass, flowers, trees, palms, birds, crabs, pigs, pots,
+  barrels, signs, rupees and hearts, message, hint, sound, attention and island-name areas, the pigs'
+  digging spots, salvage points, invisible walls, light and weather areas, the sea chart's island markers
+  and the old Tingle Tuner switches. Routes at sea level (boats, swimmers) only count for what reaches down
+  to the water;
+- other world objects (this mod's and other mods') and the King of Red Lions.
 
-A conflict can therefore reserve more space than the visible island or event.
-Move or shrink the object and query again. Do not bypass a coverage error to
-place an island beside an unknown event. Conflicts between mod objects and
-collision-memory budgets are reported alongside native placement findings.
+Two static world objects are compared by their own collision, not by boxes around them: an object may
+stand on another's walkable top (an island ground, a platform, a pier) and reach up to 150 units into it
+where the ground slopes under it, as the islands' own buildings do; only a real overlap of their solid
+geometry is in the way (a cliff, a pillar, a wall, the ground higher up the object). Floating and drifting
+objects keep their whole motion range clear.
+
+An object must stay inside the indexed room. A sea object that crosses into a neighbouring square is
+refused until coverage for that placement is available. Missing, malformed or unsupported collision, event
+or route data prevents placement rather than treating the room as empty. Drifting objects stop at the same
+things as they move.
+
+A place that isn't clear is still placed in the editor (and saved), but the object isn't in the game until it
+is moved where it fits; Check and export list it as a problem, and at game start it is left out with a line in
+the log. The editor and MCP give what is in the way, in plain words with the game's own name
+("a door of the island", KNOB00D); `placement_conflicts` lists every finding. In the editor the selected
+object's footprint shows green or red with the first reason, and hovering it lists them all. Conflicts
+between mod objects and collision-memory budgets are reported alongside native placement findings.
 
 ## Editor commands
 
@@ -296,8 +382,16 @@ no model-collision preparation.
 ## Make a small island in Blender
 
 1. Model a low-poly hill with a beach and a pier near the origin. Use metre
-   coordinates. Keep one visible mesh and one opaque textured material; use a
-   texture atlas for several visible colors.
+   coordinates. Keep one visible mesh. Give it one material slot per surface
+   (sand, grass, rock, wood), each with an Image Texture node feeding Base Color
+   and nothing else. Leave Base Color's tint white and the material's other
+   inputs at their defaults. For leaves or a fence, use a PNG with transparency
+   and connect its Alpha to the Principled BSDF's Alpha. The material must
+   export as alpha clip (`alphaMode` `MASK`): in Blender 4.1 and earlier set
+   Blend Mode to Alpha Clip; in later versions put a Math node set to Greater
+   Than (threshold 0.5) between the image's Alpha and the BSDF's Alpha, as the
+   Blender manual's glTF page describes. Turn off Backface Culling for cards
+   seen from both sides (exported as `doubleSided`).
 2. Duplicate or rebuild the terrain as simple collision geometry. Delete visual
    details that Link cannot walk on. Name the collision object `island_col`.
 3. Assign `col_sand` to beach faces, `col_grass` to hill faces and `col_wood` to
@@ -305,7 +399,10 @@ no model-collision preparation.
    between ramps and platforms. Extend coast walls below the sea.
 4. Triangulate the visible and collision meshes. Check that collision has no
    collapsed faces and stays within the vertex, triangle and size limits.
-5. Export the visible mesh and `_col` mesh into one GLB with its PNG embedded.
+5. Export the visible mesh and `_col` mesh into one GLB with the PNGs embedded
+   (glTF Binary; Images: Automatic or PNG; no compression or extensions).
+   Each image must be 512 × 512 pixels or smaller, with a width that is a
+   multiple of 64 and a height that is a multiple of 8.
    Do not hide collision by excluding it from the export: the converter removes
    `_col` meshes from the visible output.
 6. Add the model and static actor declarations to the package. Choose an empty,
@@ -348,6 +445,106 @@ meets the climb face, and the front crossbeam leaves climb lanes at either
 side. The right-side gold patch is the hookshot target. Grapple anchors require
 separate object settings; a wooden collision material alone does not create
 a rope target.
+
+## Water
+
+A `col_water` surface is water Link can swim in. Author it as upward-facing faces at the water's level,
+covering the pond or pool; the faces need no thickness. Link passes through the surface (it is no ground): give
+the pond its own floor and banks with the ground materials (for example `col_sand` under the water and
+`col_stone` for the banks). Below the surface Link swims as in the sea, and he climbs out at a bank that
+is low enough, as on the islands. `col_shallow` is for water too shallow to swim in: Link wades.
+
+The surface is invisible by itself. Show it with a water surface model: a separate model declared as
+the actor's `shoreline` with `"material": "water"` (see "Island presentation"); the water of the
+game's spring pools moves on it. `"material": "pond"` gives it the calm water of an island's own
+shallows instead (Outset's): the blue of the shallows, wave lines over them and the coast foam along the
+shore, each from its own material in the model (see "Water surfaces with several materials").
+
+The game looks for a pond only within the height range of the room's own ground (the highest point of
+the island, its houses and cliffs in that square). A pond whose surface is higher than that is not
+found: Link walks on its floor as if it were dry. In a square of open sea the highest point can be
+low (about 1,200 units in the square of the examples below), so keep raised ponds below the top of the
+square's island. A pond at sea level is always found.
+
+### Rivers and waterfalls
+
+A shoreline can also carry flowing water: `"material": "river"` gives the model the flowing water of Forest
+Haven's streams, `"material": "waterfall"` Forest Haven's falling water (the same texture, three times as
+fast). Both scroll along the model's V: map V so that it grows downstream (downwards on a
+waterfall), about every 200 units on a river and every 700 units down a waterfall (as the game's own repeat it); U across,
+about every 200 units on a river and every 500 on a waterfall. A river fades out towards the mesh's open edges like the
+still water, so give it at least one row of inner points; a waterfall is drawn as Forest Haven's falls are, more opaque
+and foamy at the top than at the foot.
+
+#### Water surfaces with several materials
+
+A water surface model may have several materials, each named after its part: `surface` (the water
+itself, required), `waves` (lines on it), `edge` (the foam along a shore or over a fall's lip) and
+`splash` (where falling water lands). Each part gets its own material of the game's water there:
+
+| `"material"` | `surface` | `waves` | `edge` | `splash` |
+| --- | --- | --- | --- | --- |
+| `pond` | Outset's shallows | Outset's wave lines | Outset's coast foam | |
+| `water` | the spring pools' water | | | |
+| `river`, `waterfall` | Forest Haven's stream | | Forest Haven's bank foam | Forest Haven's spray |
+
+Map an `edge` part's V from 0 at the shore (or the lip) to 1 out on the water: the foam is strongest at 0.
+A model with one material is its `surface`, whatever its name. `foam` shorelines keep one material.
+
+`col_shallow` is the ground of shallow water: put it where Link walks (the river's bed), not at the
+water's surface. `col_waterfall` is the ground under a fall: Link standing on it gets the game's splash on
+his head; the falling sheet itself has no collision, so Link drops through it.
+
+### Bodies of water made with the editor
+
+The editor's water tool ([Water](mod-editor.md#water-ponds-rivers-and-waterfalls)) makes ponds, rivers and
+waterfalls from points clicked on an island's ground. Each is one static object with two original models:
+
+| Body | Its model (drawn, and its collision) | Its shoreline |
+| --- | --- | --- |
+| Pond | a bowl under the water (`col_sand`), a rim a little above the water that slopes down to the island's ground (`col_grass`, `col_stone` where it can't reach); `col_water` at the level | `pond`: the water, wave lines and (with `foam`) coast foam at the shore |
+| River | its bed, a few units above the ground, and banks on both sides that slope down to the ground; `col_water` at the level in deep sections, `col_shallow` on the bed in shallow ones | `river`: the stream, foam along both banks, over each step's lip and where the water lands |
+| Waterfall | rock behind the fall (`col_wall`) and a splash pad below it (`col_waterfall`) | `waterfall`: a thin sheet curling over the lip, foam over the lip and a ring of foam round its foot |
+
+A pond's outline is rounded off (each corner cut twice), and its rim and a river's banks are natural ones:
+a little above the water, then a slope (about 20 to 27 degrees, wandering a little from place to place, steeper
+where the water stands high so that it reaches the ground within about 2.4 m) down to where it meets the island's ground, asked at five distances up to about 8 m out. Where the ground can't
+be reached that way (a cliff edge, the open sea) a short skirt goes down instead, and next to a river's step the
+banks stop at the lip. The game's island ground can't be lowered, so water that must be deep enough to swim
+in (about 200 units) sits that far above the ground: a pond without a level of its own stands its depth above the
+lowest ground along its shore, its banks a low mound round it (higher on the downhill side of a slope). Ground
+under the sea's surface (a harbour, the sea beside an island) counts as the surface there, so no bank or level
+reaches down to the sea floor.
+The banks are painted with the island's own ground: each part of a bank asks for the texture of the ground
+where its slope meets it (glTF material `extras`: `{"wwhd_island": {"room": n, "points": [[x, z], ...]}}`,
+world units), and the converter reads that texture (the band of the ground atlas it uses there) from your
+room archive into your model cache. Without the room (another stage, or a missing file) the model's own
+plain texture is used.
+
+A river's level follows the ground sampled every 150 units along its centre line: deep sections hold their
+depth of water above the bed, shallow ones 30 units; it never flows uphill (a rise is reported, its water
+stays level), and where it would drop more than 60 units between two samples it steps down at once, which
+is where a waterfall goes. The models' files are named after their content under `models/water/`, and the
+tool's own parameters ride along in the first model (glTF `asset.extras`), which is how the editor changes
+them later. Because a body of water lies on the island's ground, its floor and banks may reach into the
+island's ground and walls (as island buildings do); everything else an object keeps clear of still counts.
+The same goes for world objects it lies on or in (an island ground or a terrace of your own): their ground
+is ground for the tool (its points, level and banks follow it), and of such an object only what rises
+through the water is in the way (a wall or a pillar standing in it, a house reaching into it, ground higher
+than the water inside its shore). A house or another object placed later is checked against the water the
+same way.
+
+Limits: bodies of water are made on the `sea` stage; a body takes two of a mod's 8 models; a pond has 3 to
+48 points, a river 2 to 32 (turns of at most 120 degrees), a waterfall is 100 to 4,000 units wide and falls 80
+to 6,000; the water surface has at most 1,024 triangles. Each prepared body takes about 0.6 to 1 MiB of
+the room's model memory (the surface's water textures and the banks' ground texture come from your game
+files). The game's spring gush (Ygush00) and the ambient water sounds of the islands (their sound emitters)
+are not added: they aren't game objects a mod can place yet. A waterfall's splash is its own foam (the
+game's splash particles appear where Link lands in the water).
+
+A full save state made with an earlier version keeps its world objects' collision as it was then
+(before the water, ice and void materials, and with `col_metal` still hurting Link) until the room
+loads again; then the objects get their collision anew.
 
 ## Grapple points
 
@@ -409,6 +606,15 @@ neighboring squares, with no distant collision. Shoreline decoration draws in
 the home square. Actors and their visual variants share 128 declaration slots;
 a sea square accepts at most 16 active visual variants. Removing objects in the
 editor retains their identities for undo and state restoration until restart.
+
+A shoreline can also be a water surface instead of foam: with `"shoreline": {"model": "pond-surface",
+"material": "water"}` the model gets the water of the game's spring pools, clear water with moving,
+bubbling ripples (the default `"material"` is `"foam"`). Model the water surface as a flat mesh at the
+water's level with a few rows of triangles; it fades out towards its open edges, so the water blends
+into the bank. Repeat U and V about twice per metre (every 50 units, as on the game's own spring). The surface is clear: the pond's colour comes from
+its floor and banks below it. An actor has one shoreline: an island with foam and a pond gives
+the pond its own static object (its basin as the model, with the `col_water` surface in its collision,
+and the water surface as its shoreline).
 
 Author the shoreline model as strips along the model's coast, just above the
 water. The game supplies the foam material, texture and animation from the

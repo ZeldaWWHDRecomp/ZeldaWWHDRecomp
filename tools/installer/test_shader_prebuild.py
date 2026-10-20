@@ -566,3 +566,87 @@ class TwoRendererTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ModStageTemplateTests(unittest.TestCase):
+    """docs/mod-stages.md, "Shaders": the enabled packages' stage templates join the prepared generation."""
+    REPO = Path(__file__).resolve().parents[2]
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        sys.path.insert(0, str(self.REPO / 'tools'))
+        self.addCleanup(sys.path.remove, str(self.REPO / 'tools'))
+        import shaderprep
+        self.shaderprep = shaderprep
+        self.game = self.root / 'own-game'
+        self.game.mkdir()
+        (self.game / 'synthetic.sharcfb').write_text('synthetic archive identity only')
+        self.base = self.root / 'release-template.bin'
+        self.write(self.base, [1])
+        self.cache = self.root / 'user' / 'shader-prebuild'
+        self.manager = self.root / 'user' / 'ModManager'
+        self.assembled = []
+
+    def write(self, path, hashes):
+        doc = {'version': 3, 'pipelines': [],
+               'states': [{'hash': h, 'vertex': 0, 'fetch': None, 'registers': [[0xA000, h]]} for h in hashes]}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.shaderprep.write_template(doc, str(path))
+
+    def package(self, ident, rel, enabled=True, hashes=None, raw=None):
+        folder = self.manager / 'Mods' / ident
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'manifest.json').write_text(json.dumps({'id': ident, 'stages': [{'id': 'sky', 'shaders': rel}]}))
+        if raw is not None:
+            (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+            (folder / rel).write_bytes(raw)
+        elif hashes is not None:
+            self.write(folder / rel, hashes)
+        profiles = self.manager / 'profiles.json'
+        data = json.loads(profiles.read_text()) if profiles.is_file() else {'active': 'Default', 'format_version': 1,
+                                                                               'profiles': {'Default': {'enabled': {}}}}
+        data['profiles']['Default']['enabled'][ident] = enabled
+        profiles.write_text(json.dumps(data))
+        return folder / rel
+
+    def builder(self, game, output, template):
+        doc = self.shaderprep.template_format.decode(Path(template).read_bytes())
+        self.assembled.append(sorted(s['hash'] for s in doc['states']))
+        Path(output).write_text('synthetic assembled output')
+
+    def prepare(self):
+        messages = []
+        result = prebuild.prepare(self.game, self.base, None, self.cache, self.REPO, builder=self.builder,
+                                  progress=messages.append)
+        return result, messages
+
+    def test_enabled_packages_stage_templates_join_the_generation(self):
+        sky = self.package('sky-island', 'assets/sky.wwht', hashes=[2])
+        self.package('turned-off', 'assets/off.wwht', enabled=False, hashes=[3])
+        self.package('outside', '../escape.wwht', hashes=[4])
+        self.assertEqual(prebuild.package_templates(self.cache), [sky.resolve()])
+        result, messages = self.prepare()
+        self.assertEqual(result['status'], 'warm_pending')
+        self.assertEqual(self.assembled, [[1, 2]])  # the release's states and the stage's
+        active = json.loads((self.cache / 'active.json').read_text())
+        self.assertEqual(active['identity']['mod_templates'], [prebuild.file_hash(sky)])
+        # the game checks the release template's file, never the merged one
+        self.assertEqual(active['launch']['template'], prebuild.metadata(self.base))
+        self.assertTrue(any('1 mod stage template' in m for m in messages))
+        # a changed stage template is a new generation
+        self.write(sky, [2, 5])
+        self.prepare()
+        self.assertEqual(self.assembled[-1], [1, 2, 5])
+
+    def test_a_template_that_is_not_code_free_is_left_out(self):
+        self.package('broken', 'assets/bad.wwht', raw=b'WWHT0003 not a template')
+        result, messages = self.prepare()
+        self.assertEqual(self.assembled, [[1]])
+        self.assertTrue(any('left out' in m and 'bad.wwht' in m for m in messages))
+
+    def test_without_mods_the_release_template_is_used_as_it_is(self):
+        result, _ = self.prepare()
+        self.assertEqual(self.assembled, [[1]])
+        self.assertNotIn('mod_templates', json.loads((self.cache / 'active.json').read_text())['identity'])

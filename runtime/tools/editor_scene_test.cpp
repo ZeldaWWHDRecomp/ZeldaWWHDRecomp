@@ -6,11 +6,15 @@
 // Usage: editor_scene_test [docs/mod-editor.md]
 #include "editor/commands.h"
 #include "editor/scenes.h"
+#include "editor/demo_tracks.h"
+#include "editor/demo_names.h"
+#include "editor/stage_files.h"
 #include "mods/story_world_manifest.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -39,6 +43,20 @@ struct FakeHost : editor::Host {
     bool last_declared = false, last_restore = false;
     std::string last_mod;
     std::vector<std::string> in_place;  // the actors pose_actors moves in place (the others are created again)
+    // the demo pickers: a game whose object name table has these names and whose archive "Dk" has files
+    std::vector<uint32_t> played;
+    bool stage_actor_names(std::vector<std::string>& out, std::string&) override { return out = {"Dk", "Ls1", "Tsubo", "Zz9"}, true; }
+    bool archive_files(const std::string& archive, std::vector<std::string>& out, std::string& why) override {
+        if (archive != "Dk") return why = "the game has no object archive called " + archive, false;
+        return out = {"dk.bdl", "fly1.bck", "wait1.bck"}, true;
+    }
+    bool archive_joints(const std::string& archive, std::vector<std::string>& out, std::string& why) override {
+        if (archive != "Dk") return why = "no joints", false;
+        return out = {"dk_allroot", "j_dk_ashi_r3"}, true;
+    }
+    std::vector<std::string> game_archives() override { return {"Dk", "Kamome", "Link"}; }
+    std::vector<NamedActor> more_actor_names() override { return {{"Tsubo", "Pot", "Always", "pot", "game objects"}}; }
+    bool play_sound(uint32_t id, std::string&) override { played.push_back(id); return true; }
     FakeHost() {
         link_place.valid = true;
         link_place.stage = "sea";
@@ -485,7 +503,11 @@ void copy_paste_remove() {
     // a scene the sign starts can't be removed; another one can
     CHECK(!ok(s.run("remove_scene", params(R"({"id": "harbor", "confirm": true})"))));
     CHECK(!ok(s.run("remove_scene", params(R"({"id": "other"})"))));  // needs confirm
+    const Value other_before = *scene_of(s, "other");
     CHECK(ok(s.run("remove_scene", params(R"({"id": "other", "confirm": true})"))) && !scene_of(s, "other"));
+    // Undo brings the removed scene back as it was (its steps too); Redo removes it again
+    CHECK(ok(s.run("undo")) && scene_of(s, "other") && *scene_of(s, "other") == other_before);
+    CHECK(ok(s.run("redo")) && !scene_of(s, "other"));
     CHECK(ok(s.run("duplicate_scene", params(R"({"id": "harbor", "new_id": "harbor-copy"})"))) && scene_of(s, "harbor-copy") &&
           !scene_of(s, "harbor-copy")->object.contains("trigger"));
     // search finds a scene by a step's text
@@ -543,6 +565,168 @@ void drag_is_one_undo_step() {
     CHECK(!s.drag_preview("scene-test", params(R"([{"id": "nobody"}])"), later, why));
 }
 
+
+// A demo step built and edited key by key: lanes, poses at a frame (the preview), events, actors, curves,
+// the game's own check, and undo / redo.
+void demo_steps() {
+    FakeHost host;
+    editor::Session s(&host);
+    s.add_package("scene-test", "Scene test", "", json(kManifest));
+    CHECK(ok(s.run("add_scene", params(R"({"id": "flight"})"))));
+    // a new demo step: the fly camera's view as its first camera key, 120 frames (240 on the timeline)
+    Value r = s.run("add_scene_step", params(R"({"scene": "flight", "type": "demo"})"));
+    CHECK(ok(r));
+    const size_t n = r.get("result").get("step").number;
+    CHECK(step_at(s, "flight", n).get("type").string() == "demo" && valid(s));
+    const std::string at = std::to_string(n);
+    auto run = [&](const std::string& cmd, const std::string& extra) { return s.run(cmd, params(("{\"scene\": \"flight\", \"step\": " + at + ", " + extra + "}").c_str())); };
+    Value t = s.run("scene_timeline", params(R"({"scene": "flight"})")).get("result");
+    CHECK(t.get("duration").number == 240);
+    // actors: a model from the game's archives, a mod character (the placed uo2), Link
+    CHECK(ok(run("add_demo_actor", R"("actor": {"id": "bird", "actor": "Dk"})")));
+    CHECK(ok(run("add_demo_actor", R"("actor": {"id": "guide", "character": "guide"})")));
+    CHECK(!ok(run("add_demo_actor", R"("actor": {"id": "bird", "model": {"archive": "Dk", "file": "dk.bdl"}})")));  // ids are unique
+    // the bird's flight: three keys, smooth; a key replaced; one moved; the lane's curve
+    CHECK(ok(run("set_demo_key", R"("lane": "bird.position", "frame": 0, "value": {"x": -2500, "y": 1800, "z": 3000})")));
+    CHECK(ok(run("set_demo_key", R"("lane": "bird.position", "frame": 120, "value": {"x": 2500, "y": 900, "z": 3000}, "curve": "smooth")")));
+    CHECK(ok(run("set_demo_key", R"("lane": "bird.position", "frame": 60, "value": {"x": 0, "y": 1500, "z": 3200})")));
+    CHECK(ok(run("set_demo_key", R"("lane": "bird.position", "frame": 60, "value": {"x": 0, "y": 1400, "z": 3200})")));
+    CHECK(ok(run("move_demo_key", R"("lane": "bird.position", "frame": 60, "to": 50)")));
+    CHECK(!ok(run("move_demo_key", R"("lane": "bird.position", "frame": 50, "to": 120)")));  // a key is there
+    CHECK(!ok(run("set_demo_key", R"("lane": "bird.position", "frame": 121, "value": {"x": 0, "y": 0, "z": 0})")));  // past the end
+    CHECK(!ok(run("set_demo_key", R"("lane": "camera.fovy", "frame": 0, "value": {"x": 0, "y": 0, "z": 0})")));  // a number lane
+    CHECK(ok(run("set_demo_key", R"("lane": "camera.fovy", "frame": 0, "value": 55)")));
+    CHECK(ok(run("set_demo_curve", R"("lane": "bird.position", "curve": "bspline")")));
+    CHECK(!ok(run("set_demo_curve", R"("lane": "bird.position", "curve": "wobbly")")));
+    // the camera's target from the fly camera
+    host.target = {100, 1200, -201300};
+    CHECK(ok(run("set_demo_key", R"("lane": "camera.target", "frame": 120, "from": "camera")")));
+    // events: a clip on the bird, a message, rain, the hour, the guide carried by the bird and let go
+    CHECK(ok(run("add_demo_event", R"("list": "clips", "actor": "bird", "event": {"frame": 0, "archive": "Dk", "file": "fly1.bck"})")));
+    CHECK(ok(run("add_demo_event", R"("list": "messages", "event": {"frame": 40, "text": "The Helmaroc King!"})")));
+    CHECK(ok(run("add_demo_event", R"("list": "weather", "event": {"frame": 20, "rain": 1})")));
+    CHECK(ok(run("add_demo_event", R"("list": "time", "event": {"frame": 10, "hour": 22})")));
+    { Value a = run("add_demo_event", R"("list": "attach", "event": {"frame": 60, "actor": "guide", "to": "bird", "joint": "j_dk_ashi_r3"})"); if (!ok(a)) std::fprintf(stderr, "  attach: %s\n", err(a).c_str()); CHECK(ok(a)); }
+    CHECK(ok(run("add_demo_event", R"("list": "detach", "event": {"frame": 100, "actor": "guide"})")));
+    CHECK(!ok(run("add_demo_event", R"("list": "clips", "event": {"frame": 0, "archive": "Dk", "file": "fly1.bck"})")));  // whose clip?
+    CHECK(!ok(run("add_demo_event", R"("list": "weather", "event": {"frame": 30, "rain": 5})")));  // the game's check: rain is 0..1
+    CHECK(ok(run("edit_demo_event", R"("list": "messages", "index": 0, "fields": {"text": "Look up!"})")));
+    CHECK(valid(s));
+    // the lanes as the timeline draws them
+    Value lanes = run("demo_lanes", "\"mod\": \"scene-test\"").get("result");
+    if (lanes.object.contains("problem")) std::fprintf(stderr, "  problem: %s\n", lanes.get("problem").string().c_str());
+    CHECK(lanes.get("frames").number == 120 && !lanes.object.contains("problem"));
+    bool bird = false, fovy = false;
+    for (const auto& l : lanes.get("lanes").array) {
+        if (l.get("lane").string() == "bird.position") bird = l.get("keys").array.size() == 3 && l.get("keys").array[1].number == 50 && l.get("curve").string() == "bspline";
+        if (l.get("lane").string() == "camera.fovy") fovy = l.get("kind").string() == "number";
+    }
+    CHECK(bird && fovy);
+    int lists = 0;
+    for (const auto& e : lanes.get("events").array) {
+        const std::string l = e.get("list").string();
+        if (l == "messages") lists += e.get("items").array[0].get("label").string() == "Look up!";
+        if (l == "weather" || l == "time" || l == "attach" || l == "detach") ++lists;
+        if (l == "clips") lists += e.get("actor").string() == "bird" && e.get("items").array[0].get("label").string() == "Dk/fly1.bck";
+    }
+    CHECK(lists == 6 && lanes.get("actors").array.size() == 2);
+    // the pose at a frame: on the curve, in the world (no origin), the fly camera moved there
+    Value pose = run("demo_pose", "\"frame\": 120").get("result");
+    CHECK(near(pose.get("actors").array[0].get("position").get("x").number, 2500) && near(pose.get("camera").get("target").get("x").number, 100));
+    CHECK(pose.get("camera").get("fovy").number == 55 && !host.looks.empty());
+    pose = run("demo_pose", "\"frame\": 0, \"move\": false").get("result");
+    CHECK(near(pose.get("actors").array[0].get("position").get("y").number, (5 * 1800 + 1400) / 6.0));  // bspline at the first key: (P0 + 4 P0 + P1) / 6
+    // an origin at Link: keys from Link's place are relative to it, the pose is placed back at Link
+    CHECK(ok(s.run("edit_scene_step", params(("{\"scene\": \"flight\", \"step\": " + at + ", \"fields\": {\"origin\": \"link\"}}").c_str()))));
+    CHECK(ok(run("set_demo_key", R"("lane": "guide.position", "frame": 0, "from": "link")")));
+    CHECK(near(step_at(s, "flight", n).get("actors").array[1].get("position").get("keys").array[0].get("value").get("x").number, 0));
+    pose = run("demo_pose", "\"frame\": 0, \"move\": false").get("result");
+    CHECK(near(pose.get("actors").array[1].get("position").get("x").number, 200) && near(pose.get("actors").array[1].get("position").get("z").number, -201400));
+    // what the game refuses shows as the step's problem, and a refused edit changes nothing
+    CHECK(!ok(run("remove_demo_actor", R"("id": "guide")")));  // the attachment names it
+    CHECK(ok(run("remove_demo_event", R"("list": "detach", "index": 0)")));
+    CHECK(ok(run("remove_demo_event", R"("list": "attach", "index": 0)")));
+    CHECK(ok(run("remove_demo_actor", R"("id": "guide")")));
+    // undo and redo of key edits
+    CHECK(ok(run("remove_demo_key", R"("lane": "bird.position", "frame": 50)")));
+    CHECK(step_at(s, "flight", n).get("actors").array[0].get("position").get("keys").array.size() == 2);
+    CHECK(ok(s.run("undo")) && step_at(s, "flight", n).get("actors").array[0].get("position").get("keys").array.size() == 3);
+    CHECK(ok(s.run("redo")) && step_at(s, "flight", n).get("actors").array[0].get("position").get("keys").array.size() == 2);
+    // a lane goes with its last key
+    CHECK(ok(run("remove_demo_key", R"("lane": "camera.fovy", "frame": 0)")) && !step_at(s, "flight", n).get("camera").object.contains("fovy"));
+    CHECK(!ok(s.run("set_demo_key", params(R"({"scene": "flight", "step": 1, "lane": "camera.eye", "frame": 0, "value": {"x": 0, "y": 0, "z": 0}})"))) || step_at(s, "flight", 1).get("type").string() == "demo");
+    CHECK(valid(s));
+}
+
+// The demo step's pickers: names for sounds, particles and actors, an archive's files and joints, the
+// suggested ids, the sound preview; and the BFRES bone reader behind the joint lists.
+void demo_pickers() {
+    FakeHost host;
+    editor::Session s(&host);
+    auto items = [&](const char* json) {
+        const Value r = s.run("demo_choices", params(json));
+        CHECK(ok(r));
+        return r.get("result").get("items");
+    };
+    // sounds and particles: ids with readable names, searchable
+    const Value sounds = items(R"({"what": "sounds"})");
+    CHECK(sounds.array.size() == editor::sound_names().size() && sounds.array.size() > 200);
+    const Value splash = items(R"({"what": "sounds", "query": "fall water"})");
+    CHECK(!splash.array.empty() && splash.array[0].get("code").string().find("FALL_WATER") != std::string::npos && splash.array[0].get("id").number > 0);
+    CHECK(items(R"({"what": "particles", "query": "smoke"})").array.size() >= 3);
+    CHECK(editor::sound_label(0x6918).find("fall water") != std::string::npos && editor::sound_label(0x12345) == "0x12345");
+    // actors: ours, the editor's catalogues, then the game's other names; a listed name the game lacks is dropped
+    const Value actors = items(R"({"what": "actors"})");
+    auto actor = [&](const std::string& name) -> const Value* {
+        for (const auto& a : actors.array)
+            if (a.get("actor").string() == name) return &a;
+        return nullptr;
+    };
+    CHECK(actor("Dk") && actor("Dk")->get("id").string() == "helmaroc" && actor("Dk")->get("archive").string() == "Dk");
+    CHECK(actor("Tsubo") && actor("Tsubo")->get("label").string() == "Pot");
+    CHECK(actor("Zz9") && actor("Zz9")->get("group").string() == "other");
+    CHECK(!actor("Cb1"));  // ours, but not in this game's table
+    CHECK(items(R"({"what": "actors", "query": "aryll"})").array.size() == 1);
+    // an archive's files and joints; refused for an unknown one
+    CHECK(items(R"({"what": "files", "archive": "Dk", "query": "bck"})").array.size() == 2);
+    CHECK(items(R"({"what": "joints", "archive": "Dk"})").array.size() == 2);
+    CHECK(!ok(s.run("demo_choices", params(R"({"what": "files", "archive": "Nope"})"))));
+    CHECK(!ok(s.run("demo_choices", params(R"({"what": "colours"})"))));
+    CHECK(items(R"({"what": "link_modes"})").array.size() == editor::link_mode_names().size());
+    CHECK(items(R"({"what": "archives", "query": "kam"})").array.size() == 1);
+    // the sound preview goes to the game
+    CHECK(ok(s.run("play_sound", params(R"({"id": 26904})"))) && host.played == std::vector<uint32_t>{26904});
+    CHECK(!ok(s.run("play_sound", params(R"({})"))));
+    // suggested ids: from the choice, unique in the demo
+    CHECK(editor::suggest_demo_id("helmaroc", {}) == "helmaroc");
+    CHECK(editor::suggest_demo_id("Helmaroc King (the one)", {}) == "helmaroc-king-the");
+    CHECK(editor::suggest_demo_id("link", {"link", "link-2"}) == "link-3");
+    CHECK(editor::suggest_demo_id("!!", {}) == "actor");
+    CHECK(editor::matches_query("voice: pig normal", "PIG voice") && !editor::matches_query("voice: pig normal", "pig turn"));
+    // BFRES bones: a synthetic file with one model of two bones
+    std::vector<uint8_t> b(0x200, 0);
+    auto put32 = [&](size_t at, uint32_t v) { b[at] = uint8_t(v >> 24), b[at + 1] = uint8_t(v >> 16), b[at + 2] = uint8_t(v >> 8), b[at + 3] = uint8_t(v); };
+    auto rel = [&](size_t at, size_t to) { put32(at, uint32_t(int32_t(to) - int32_t(at))); };
+    auto text = [&](size_t at, const char* t) { std::memcpy(&b[at], t, std::strlen(t)); };
+    text(0, "FRES");
+    rel(0x20, 0x40);                       // the model group
+    put32(0x44, 1);                        // one model (after the root entry)
+    rel(0x40 + 8 + 16 + 8, 0x180);         // its name
+    rel(0x40 + 8 + 16 + 12, 0x80);         // its data
+    text(0x80, "FMDL");
+    rel(0x80 + 12, 0xA0);                  // the skeleton
+    text(0xA0, "FSKL");
+    rel(0xA0 + 0x10, 0xC0);                // the bone group
+    put32(0xC4, 2);
+    rel(0xC0 + 8 + 16 + 8, 0x188);
+    rel(0xC0 + 8 + 32 + 8, 0x190);
+    text(0x180, "bird");
+    text(0x188, "root");
+    text(0x190, "j_wing");
+    CHECK((editor::bfres_bones(b) == std::vector<std::string>{"root", "j_wing"}));
+    CHECK(editor::bfres_bones(std::vector<uint8_t>(16, 0)).empty());
+}
+
 void docs_table(const char* path) {
     std::ifstream f(path);
     std::stringstream text;
@@ -567,6 +751,8 @@ int main(int argc, char** argv) {
     previews();
     copy_paste_remove();
     drag_is_one_undo_step();
+    demo_steps();
+    demo_pickers();
     if (argc > 1) docs_table(argv[1]);
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

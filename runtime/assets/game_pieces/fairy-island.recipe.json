@@ -1,0 +1,83 @@
+{
+  "game_pieces_format": 1,
+  "set": "fairy-island",
+  "label": "Northern Fairy Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room3.szs",
+    "room": 3
+  },
+  "memory": {
+    "archive_bytes": 2359296,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top; the distant view (about 120 KiB) is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "fairy-island",
+      "since": 4,
+      "category": "Islands",
+      "label": "Fairy Island ground",
+      "description": "a heart-shaped grassy island with the fountain's spiked stone hut; its doorway leads to a hole that sends Link back",
+      "volume": [
+        16497,
+        -1100,
+        17063,
+        23503,
+        3938,
+        23064
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "hontai",
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "hontai",
+          "sima",
+          "sima_sita",
+          "soko_kabe",
+          "irigutihukin",
+          "Hole_huti",
+          "Hole_kabe",
+          "Hole_soko"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD03.szs",
+        "triangles": 182
+      },
+      "expect": {
+        "triangles": [
+          815
+        ],
+        "textures": [
+          [
+            "Txq_0fentranaka",
+            "Txq_enter3",
+            "Txq_jimennana",
+            "Txq_moraikusa_1031",
+            "Txq_teppen",
+            "Txq_togepi",
+            "Txq_youseimoya",
+            "Txy_kai4"
+          ]
+        ],
+        "collision_triangles": 740
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

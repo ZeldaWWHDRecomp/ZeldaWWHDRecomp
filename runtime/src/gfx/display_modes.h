@@ -33,11 +33,24 @@ inline constexpr float kPipRupeeBottom = 0.86f;
 // Gameplay HUD extents at 720p: sword/D-pad ends near y=158, actions near y=215.
 inline constexpr float kPipLeftHudBottom = 0.24f;
 inline constexpr float kPipRightHudBottom = 0.32f;
+// Size and opacity limits (#221), shared by Settings, the settings files, the macOS menu and the test
+// variables. 100% size is the whole TV picture (a preset's HUD clearance may make it a little smaller).
+// Opacity stops at 10%: 0% would only hide the picture, which "Show GamePad screen" already does.
+inline constexpr float kPipSizeMin = 0.05f, kPipSizeMax = 1.0f, kPipSizeDefault = 0.25f;
+inline constexpr float kPipOpacityMin = 0.1f, kPipOpacityMax = 1.0f, kPipOpacityDefault = 1.0f;
 struct PipPosition { int anchor; float x, y; };
 float pip_clamp(float value, float lo, float hi, float fallback);
+float pip_clamp_size(float size);
+float pip_clamp_opacity(float opacity);
 int pip_load_anchor(const char* anchor, const char* legacy);
 Box pip_box(Box tv, float aspect, float size, PipPosition position);
-PipPosition pip_place(Box tv, float aspect, float size, float x, float y, bool snap = true);
+// Free placement (dragging, D-pad): the picture's centre near (x, y), never snapped to a preset.
+PipPosition pip_place(Box tv, float aspect, float size, float x, float y);
+// The nine preset targets of the placement diagram sit on a fixed 3x3 grid inside tv (10%/50%/90% across,
+// 12%/50%/88% down), whatever the size, so they stay apart and visible. pip_target_at returns the preset
+// whose target is nearest to (px, py) and at most `radius` away, or -1. A deliberate click/tap snaps to it.
+void pip_target_centre(Box tv, int anchor, float* x, float* y);
+int pip_target_at(Box tv, float px, float py, float radius);
 PipPosition pip_position();
 void pip_set_position(PipPosition position);
 extern const char* const kFilterNames[3];             // smooth, sharp, integer
@@ -47,8 +60,8 @@ extern std::atomic<int> g_mode;
 extern std::atomic<int> g_pip_anchor;
 extern std::atomic<float> g_pip_x, g_pip_y;
 extern std::atomic<bool> g_pip_preview;
-extern std::atomic<float> g_pip_size;      // fraction of the TV picture's width, 0.1..0.5
-extern std::atomic<float> g_pip_opacity;   // 0.2..1
+extern std::atomic<float> g_pip_size;      // fraction of the TV picture's width, kPipSizeMin..kPipSizeMax
+extern std::atomic<float> g_pip_opacity;   // kPipOpacityMin..kPipOpacityMax
 extern std::atomic<int> g_filter;          // picture scaling (the SDL host mirrors gfxvk::scale_filter)
 extern std::atomic<bool> g_shown;          // window / pip modes: GamePad screen shown (Cmd+G, Pro Controller)
 extern std::atomic<bool> g_auto_pin;       // auto mode: Cmd+G keeps the overlay up

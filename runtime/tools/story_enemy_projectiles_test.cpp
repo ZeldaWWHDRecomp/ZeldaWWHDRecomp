@@ -24,14 +24,34 @@ assert(VirtualAlloc(mem::ptr(a),n,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
 assert(mmap(mem::ptr(a),n,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
 #endif
 }
-void projectile(Kind k,uint32_t a,uint32_t pid){auto&d=descriptor(k);std::memset(mem::ptr(a),0,d.bytes);st32(a+4,pid);st16(a+0xE,d.profile);st32(a+0xB0,d.parameters);st32(a+0x2E8,0xFFFFFFFF);st32(a+d.object+0x44,a+d.stts);st32(a+d.stts+0xC,a);st32(a+d.stts+0x10,pid);st32(a+d.object+0x10,k==Kind::Arrow?0x4000:d.attack_type);st8(a+d.object+0x14,k==Kind::Arrow?2:d.power);if(fake_bad)st32(a+d.stts+0xC,Enemy);}
+uint32_t bomb_word=0;  // a bomb made in another state (Link's own is in state 1 when his item creation returns)
+void projectile(Kind k,uint32_t a,uint32_t pid){auto&d=descriptor(k);std::memset(mem::ptr(a),0,d.bytes);st32(a+4,pid);st16(a+0xE,d.profile);st32(a+0xB0,d.parameters);if(k==Kind::Bomb&&bomb_word)st32(a+0xB0,bomb_word);st32(a+0x2E8,0xFFFFFFFF);st32(a+d.object+0x44,a+d.stts);st32(a+d.stts+0xC,a);st32(a+d.stts+0x10,pid);st32(a+d.object+0x10,k==Kind::Arrow?0x4000:d.attack_type);st8(a+d.object+0x14,k==Kind::Arrow?2:d.power);if(fake_bad)st32(a+d.stts+0xC,Enemy);}
 void original(Cpu*c,uint32_t fn){++calls;if(fn==0x0205584C){uint32_t old=c->r[3];if(replace_failure)return;before_delete(old,ld32(old+4),ld16(old+0xE));projectile(Kind::Arrow,next_actor,next_pid);c->r[3]=next_actor;return;}if(fn==0x023DF600||fn==0x023EB120){projectile(next_kind,next_actor,next_pid);uint32_t keep=next_kind==Kind::Bomb?0x65A0:0x6590;st32(c->r[3]+keep,next_pid);st32(c->r[3]+keep+4,next_actor);c->r[7]=0xAABBCCDD;return;}c->r[3]=0;}
 void run(uint32_t fn,uint32_t a){Cpu c{};c.r[3]=a;hooks.at(fn)(&c);}
 }
 int main(){namespace O=story_enemy_ownership;map(Arena,0x10000);map(Link,0x400000);map(0x10000000,0x10000);st32(0x100073AC,0x4000);st8(0x100073B0,2);st32(Link+4,42);st16(Link+0xE,0xA8);assert(O::configure(Arena,O::kStorageBytes,original,[](O::Token,O::Kind,uint32_t){return true;}));O::initialize_storage();assert(O::set_link(Link,42));std::string why;O::Fingerprint fp{};fp[0]=1;auto enemy=O::declare_actor(O::Kind::ChuChu,0xFF000000,fp,1,why);st32(Enemy+4,100);st16(Enemy+0xE,0x7FFA);st32(Enemy+0xB0,0xFF000000);st8(Enemy+0x2DD,0xFF);st32(Enemy+0x7C4+0x44,Enemy+0x788);st32(Enemy+0x794,Enemy);st32(Enemy+0x798,100);assert(O::bind_pending(enemy,100)&&O::admit_created(enemy,Enemy));auto read=[](uint32_t&a,uint32_t&p){a=Link;p=ld32(Link+4);return true;};assert(configure(original,read));assert(install([](uint32_t){return std::string();},[](uint32_t fn,void(*h)(Cpu*)){hooks[fn]=h;}));assert(hooks.size()==3);
  uint32_t arrows=0;for(unsigned n=1;n<=5;++n){next_kind=Kind(n);next_actor=Projectile+n*0x40000;next_pid=500+n;uint16_t item=n==2?0x31:n==3?0x25:n==4?0x2F:0x2D;st16(Link+0x69B0,item);Cpu c{};c.r[3]=Link;hooks.at(n==1?0x023EB120:0x023DF600)(&c);assert(c.r[7]==0xAABBCCDD);auto&d=descriptor(next_kind);assert(owns_attack(next_actor+d.object));assert(O::pair_policy(next_actor+d.object,Enemy+0x7C4)==O::PairPolicy::Reject);if(n==1)arrows=next_actor;}
+ { // a thrown boomerang and a fired arrow (parameters 1 in flight) stay Link's; a bomb doesn't change
+  const uint32_t boom=Projectile+5*0x40000,arrow=Projectile+1*0x40000;st32(boom+0xB0,1);assert(owns_attack(boom+descriptor(Kind::Boomerang).object));st32(boom+0xB0,2);assert(!owns_attack(boom+descriptor(Kind::Boomerang).object));st32(boom+0xB0,0);
+  st32(arrow+0xB0,1);assert(owns_attack(arrow+0x4B8));st32(arrow+0xB0,0);
+  const uint32_t bomb=Projectile+2*0x40000;const uint32_t old=ld32(bomb+0xB0);st32(bomb+0xB0,1);assert(!owns_attack(bomb+descriptor(Kind::Bomb).object));st32(bomb+0xB0,old);assert(owns_attack(bomb+descriptor(Kind::Bomb).object));
+ }
  // Default native admission flag stays off. Explicit synthetic opt-in tests policy.
- assert(configure(original,read,true));assert(O::pair_policy(arrows+0x4B8,Enemy+0x7C4)==O::PairPolicy::Delegate);assert(O::pair_policy(Enemy+0x7C4,arrows+0x4B8)==O::PairPolicy::Reject);
+ assert(configure(original,read,true));assert(O::pair_policy(arrows+0x4B8,Enemy+0x7C4)==O::PairPolicy::Delegate);
+ { // Link's bomb, already in state 1 when it is captured, is his: its blast hits a mod enemy (it was never captured before)
+  bomb_word=0x80000001u;next_kind=Kind::Bomb;next_actor=Projectile+0x2C0000;next_pid=950;st16(Link+0x69B0,0x31);Cpu c{};c.r[3]=Link;hooks.at(0x023DF600)(&c);bomb_word=0;
+  const uint32_t at=next_actor+descriptor(Kind::Bomb).object;assert(owns_attack(at)&&O::pair_policy(at,Enemy+0x7C4)==O::PairPolicy::Delegate);st32(next_actor+0xB0,0x80000000u);assert(owns_attack(at));
+ }
+ { // a bomb's parameter word keeps its state in the low byte (daBomb changeState: 0..3; made as 3, 2 while carried,
+  // 1 or 0 later, when it blows up): its blast still hits a mod enemy's body; another word is refused
+  const uint32_t bomb=Projectile+2*0x40000,bomb_at=bomb+descriptor(Kind::Bomb).object;
+  for(uint32_t state:{3u,2u,1u,0u}){st32(bomb+0xB0,0x80000000u|state);assert(owns_attack(bomb_at)&&O::pair_policy(bomb_at,Enemy+0x7C4)==O::PairPolicy::Delegate);}
+  st32(bomb+0xB0,0x80000004u);assert(!owns_attack(bomb_at));st32(bomb+0xB0,0x81000003u);assert(!owns_attack(bomb_at));st32(bomb+0xB0,0x80000003u);
+ }
+ { // a thrown boomerang and a fired arrow (parameters 1 in flight) hit a mod enemy's body; before, their hits were refused
+  const uint32_t boom=Projectile+5*0x40000,boom_at=boom+descriptor(Kind::Boomerang).object;st32(boom+0xB0,1);assert(O::pair_policy(boom_at,Enemy+0x7C4)==O::PairPolicy::Delegate);st32(boom+0xB0,2);assert(O::pair_policy(boom_at,Enemy+0x7C4)==O::PairPolicy::Reject);st32(boom+0xB0,0);
+  st32(arrows+0xB0,1);assert(O::pair_policy(arrows+0x4B8,Enemy+0x7C4)==O::PairPolicy::Delegate);st32(arrows+0xB0,0);
+ }assert(O::pair_policy(Enemy+0x7C4,arrows+0x4B8)==O::PairPolicy::Reject);
  // A copied profile/parentFF without captured creation never gains provenance.
  uint32_t unknown=Projectile+0x180000;projectile(Kind::Arrow,unknown,900);assert(!owns_attack(unknown+0x4B8));assert(O::pair_policy(unknown+0x4B8,Enemy+0x7C4)==O::PairPolicy::Reject);
  // Replacement inherits the verified predecessor, even if its native deletion

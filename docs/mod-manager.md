@@ -38,7 +38,7 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
 *Restart to apply*, *Update available*, *Error*).
 
 - **Built-in** ("Included with the game. Switch on or off any time."): the mods compiled
-  into the game: direct camera, mouse camera, first-person shortcut, extended enemy lock-on, wall climbing,
+  into the game: direct camera, mouse camera, camera-directed items, first-person shortcut, extended enemy lock-on, wall climbing,
   run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere,
   quick doors, fast forward and fast scene changes; all off by default.
 - **Community** ("Made by players. Downloaded from the mod catalogue."): every installed
@@ -98,6 +98,18 @@ their own instead, and switching mods does not open a popup.
 
 **Letterbox while targeting** is on by default in **Mods > Built-in > Camera**; switch it off to remove bars during normal targeting while keeping cutscenes and special cameras unchanged.
 
+### Camera-directed items (prototype)
+
+**Camera-directed items (prototype)** is off by default. Enable it in
+**Mods > Built-in** to turn Link toward the free camera once when starting a
+supported grounded item action: bows, boomerang, hookshot, grappling hook,
+qualifying inventory-bomb throws, hammer strikes and empty-bottle swings.
+Grounded Deku Leaf gusts also follow the camera's up/down direction.
+Enemy lock-on and existing first-person aiming keep priority; other projectile
+pitch and ongoing aim stay native. This is partial, experimental coverage, not
+continuous camera-facing movement or full camera aiming for every item.
+Water, bait and other unsupported or contextual actions stay unchanged.
+
 ### Extended enemy lock-on
 
 **Extended enemy lock-on** is off by default. Switch it on in **Mods > Built-in**
@@ -107,6 +119,18 @@ interactions stay unchanged. **Cycle enemy targets with R3** is on by default:
 press R3 while locked onto an enemy to select the next eligible enemy. With no
 alternative target, the lock stays unchanged. Switching the mod off restores
 original targeting behavior.
+
+### Quick-use locked items
+
+In **Mods > Built-in**, switch on **Quick-use locked items** (off by default).
+While locked onto an enemy, one item-button press equips and uses a bow (including
+fire/ice/light arrows), boomerang, hookshot or grappling rope; inventory bombs
+are readied and thrown, and equipping the hammer completes one native strike.
+Already-equipped hammer attacks remain native. Without an enemy lock, aiming
+and item use are unchanged; native item restrictions and resource costs still apply.
+Choose **Quick-use animation speed**: **1x (vanilla)**, **1.25x** or **1.5x**.
+It speeds up supported equip animations and boomerang wind-up, not projectile
+flight or grapple countdowns. Choosing a speed alone does not enable quick use.
 
 Run/swim speed offers three animation choices. **Native** keeps the game's cycle with the boosted
 cadence. **Dash instead of walk** replaces the low-speed walk portion; the normal full-speed run
@@ -383,7 +407,7 @@ Package manifest fields:
 | `experimental` | Optional `true` for untested mods: hidden by default, enabling backs up the saves first (manager 1.4) |
 | `kind` | `native`, `settings`, `content` or `cemu` |
 | `abi_version`, `binaries` | Native ABI `1`; platform-to-relative-library map |
-| `content_dir` | Content package: relative folder holding game-relative replacement files |
+| `content_dir` | Content package: relative folder holding game-relative replacement files. A content package that only declares story content (letters, charts, items, quests, models, actors, scenes) can leave it out |
 | `cemu_dir` | Cemu package: relative folder holding `rules.txt` and shader files (empty for the package root) |
 | `settings` | Settings preset: built-in IDs to booleans |
 | `dependencies` | Objects with `id` and optional `minimum_version`; `builtin:<id>` allowed |
@@ -533,7 +557,10 @@ resolver. Missing paths fall through unchanged. Directory enumeration retains
 original names but reports replacement sizes for replaced entries: this adapter
 targets replacement of existing resources, not discovery of new files or
 deletion/hiding. Conflicting enabled packages are rejected, rather than silently
-choosing a load order. Content packages can declare setup options, but cannot declare dependencies. Native packages can depend on content packages, but wait until
+choosing a load order. Content packages can declare setup options, but cannot declare dependencies, with one
+exception: a content package with story content (letters, charts, items, quests, models, actors or scenes)
+depends on the Story Notebook, the story system's own package; it gets that dependency even when it doesn't
+declare it, and it can't depend on anything else. Native packages can depend on content packages, but wait until
 the required startup content is active.
 
 Installed payloads should not be edited externally while the game runs.

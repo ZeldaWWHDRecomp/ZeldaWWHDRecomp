@@ -27,8 +27,8 @@ void fixture(story_enemy_ownership::Kind k,uint32_t a,uint32_t pid,uint32_t para
  for(size_t i=0;i<d.collider_count;++i){auto&x=d.colliders[i];st32(a+x.object+0x44,a+x.stts);st32(a+x.stts+0xC,a);st32(a+x.stts+0x10,pid);if(x.helper)st32(a+x.helper,a);}
 }
 }
-int main(){using namespace story_enemy_ownership;map(Arena,0x10000);map(Base,0x100000);assert(!configure(0x68000000,kStorageBytes,original,[](Token,Kind,uint32_t){return true;}));assert(!configure(Arena,kStorageBytes-1,original,[](Token,Kind,uint32_t){return true;}));assert(configure(Arena,kStorageBytes,original,[](Token,Kind,uint32_t){return true;}));initialize_storage();std::string why;Fingerprint fp{};fp[0]=17;
- Token ts[4];uint32_t addresses[4];for(unsigned i=0;i<4;++i){auto k=Kind(i);uint32_t a=Base+0x10000*i;addresses[i]=a;const uint32_t params=i==1?0xFFFF0004u:0xFFFF0000u+i;fixture(k,a,100+i,params);ts[i]=declare_actor(k,params,fp,1,why);assert(ts[i]);Binding state;assert(binding_state(ts[i],state)&&state.state==BindingState::Fresh&&can_spawn(ts[i]));assert(bind_pending(ts[i],100+i));assert(binding_state(ts[i],state)&&state.state==BindingState::Queued&&state.pid==100+i&&!can_spawn(ts[i]));assert(admit_created(ts[i],a));assert(binding_state(ts[i],state)&&state.state==BindingState::Active&&state.actor==a&&!can_spawn(ts[i]));assert(enroll_colliders(ts[i]));for(size_t n=0;n<descriptor(k).collider_count;++n)assert(lookup_collider(a+descriptor(k).colliders[n].object)==ts[i]);}
+int main(){using namespace story_enemy_ownership;map(Arena,0x10000);map(Base,0x100000);map(0x10470000,0x10000);assert(!configure(0x68000000,kStorageBytes,original,[](Token,Kind,uint32_t){return true;}));assert(!configure(Arena,kStorageBytes-1,original,[](Token,Kind,uint32_t){return true;}));assert(configure(Arena,kStorageBytes,original,[](Token,Kind,uint32_t){return true;}));initialize_storage();std::string why;Fingerprint fp{};fp[0]=17;
+ Token ts[4];uint32_t addresses[4];for(unsigned i=0;i<4;++i){auto k=Kind(i);uint32_t a=Base+0x10000*i;addresses[i]=a;const uint32_t params=i==1?0xFFFFFF04u:0xFFFF0000u+i;fixture(k,a,100+i,params);ts[i]=declare_actor(k,params,fp,1,why);assert(ts[i]);Binding state;assert(binding_state(ts[i],state)&&state.state==BindingState::Fresh&&can_spawn(ts[i]));assert(bind_pending(ts[i],100+i));assert(binding_state(ts[i],state)&&state.state==BindingState::Queued&&state.pid==100+i&&!can_spawn(ts[i]));assert(admit_created(ts[i],a));assert(binding_state(ts[i],state)&&state.state==BindingState::Active&&state.actor==a&&!can_spawn(ts[i]));assert(enroll_colliders(ts[i]));for(size_t n=0;n<descriptor(k).collider_count;++n)assert(lookup_collider(a+descriptor(k).colliders[n].object)==ts[i]);}
  assert(pair_policy(Base+0x7C4,Base+0x10000+0xCE8)==PairPolicy::Reject);uint32_t retail=Base+0x80000;assert(pair_policy(retail,retail+0x100)==PairPolicy::Delegate);assert(pair_policy(Base+0x7C4,retail)==PairPolicy::Reject);
  uint32_t player=Base+0x60000;st32(player+4,900);st16(player+0xE,0xA8);st32(player+0x762C,player);st32(player+0x7630,900);st32(player+0x765C+0x44,player+0x7620);st32(player+0x7B1C+0x44,player+0x7620);assert(set_link(player,900));assert(pair_policy(Base+0x7C4,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(player+0x7B1C,Base+0x7C4)==PairPolicy::Delegate);assert(pair_policy(player+0x100,Base+0x7C4)==PairPolicy::Reject);st32(player+4,901);assert(pair_policy(player+0x7B1C,Base+0x7C4)==PairPolicy::Reject);st32(player+4,900);
  // Generic combat shares the early hook, with separate incoming/outgoing roles.
@@ -46,6 +46,14 @@ int main(){using namespace story_enemy_ownership;map(Arena,0x10000);map(Base,0x1
  st32(player+4,901);assert(pair_policy(generic_attack,player+0x765C)==PairPolicy::Reject);st32(player+4,900);
  set_mod_collider_verifier([](uint32_t)->ModCollider{throw 1;});assert(pair_policy(retail,retail+0x100)==PairPolicy::Reject);
  set_mod_collider_verifier({});assert(pair_policy(retail,retail+0x100)==PairPolicy::Delegate);
+ { // An Octorok's rock (a game actor: d_a_oq type 6) reaches only an owned Octorok's body, through the game's own rules
+  const uint32_t octo=Base+0xE0000,rock=Base+0xF0000;fixture(Kind::Octorok,octo,700,0xFFFFFF00u);std::string w;const Token t=declare_actor(Kind::Octorok,0xFFFFFF00u,fp,1,w);assert(t&&bind_pending(t,700)&&admit_created(t,octo)&&lookup_collider(octo+0x6EC)==t);
+  st32(rock+4,701);st16(rock+0xE,0xE3);st32(rock+0xB0,6);st8(rock+0x3DC,6);st32(rock+0xB4,0x10033E10);st32(rock+0x94C+0x44,rock+0x6B0);st32(rock+0x6B0+0xC,rock);st32(rock+0x6B0+0x10,701);
+  assert(pair_policy(rock+0x94C,octo+0x6EC)==PairPolicy::Delegate);assert(pair_policy(rock+0x94C,octo+0x81C)==PairPolicy::Reject);assert(pair_policy(rock+0x94C,Base+0x7C4)==PairPolicy::Reject);assert(pair_policy(octo+0x81C,rock+0xA78)==PairPolicy::Reject);st32(rock+0xA78+0x44,rock+0x6B0);assert(pair_policy(rock+0xA78,octo+0x6EC)==PairPolicy::Delegate);
+  st32(rock+0xB0,0);assert(pair_policy(rock+0x94C,octo+0x6EC)==PairPolicy::Reject);st32(rock+0xB0,6);st32(rock+0x6B0+0x10,702);assert(pair_policy(rock+0x94C,octo+0x6EC)==PairPolicy::Reject);st32(rock+0x6B0+0x10,701);
+  st32(rock+0xB4,0x12345678);assert(pair_policy(rock+0x94C,octo+0x6EC)==PairPolicy::Reject);
+  retire_before_delete(octo);
+ }
  // Known object ownership cannot be erased by replacing its Stts pointer.
  st32(Base+0x7C4+0x44,retail);assert(!lookup_collider(Base+0x7C4));assert(pair_policy(Base+0x7C4,retail)==PairPolicy::Reject);fixture(Kind::ChuChu,Base,100,0xFFFF0000);
  st32(Base+0x924,retail);assert(!lookup_collider(Base+0x990));fixture(Kind::ChuChu,Base,100,0xFFFF0000);
@@ -63,6 +71,56 @@ int main(){using namespace story_enemy_ownership;map(Arena,0x10000);map(Base,0x1
  auto fire_ticket=reserve_child_pending(ts[1],addresses[1],101,0x1CF,0,1);assert(fire_ticket&&commit_child_pending(fire_ticket,1500));st32(stick+4,1500);st16(stick+0xE,0x1CF);st32(stick+0xB0,0);st32(stick+0xB4,0x1000A478);st8(stick+0x2DD,0xFF);st32(stick+0x2E8,0xFFFFFFFFu);st8(stick+0x430,2);st32(stick+0x2E0,0x2000);st32(sphere+0x44,stick+0x6C4);st32(stick+0x6D0,stick);st32(stick+0x6D4,1500);st32(sphere+0x10,0x20000);st8(sphere+0x14,0);assert(admit_lineage(1500,stick));st32(fire+0x10,0x20000);
  assert(pair_policy(fire,sphere)==PairPolicy::Delegate);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);assert(pair_policy(fire,stick+0x82C)==PairPolicy::Reject);st32(fire+0x10,2);assert(pair_policy(fire,sphere)==PairPolicy::Reject);st32(fire+0x10,0x20000);
  const uint32_t verified_fire=retail+0x200;st32(verified_fire+0x10,0x200);set_projectile_verifier([&](uint32_t o){return o==verified_fire;},false);assert(pair_policy(verified_fire,sphere)==PairPolicy::Reject);set_projectile_verifier([&](uint32_t o){return o==verified_fire;},true);assert(pair_policy(verified_fire,sphere)==PairPolicy::Delegate);set_projectile_verifier({},false);
+ // A Wizzrobe's fireball: an owned child of a live owned Wizzrobe; its sphere hits Link only, and nothing hits it.
+ {auto wz_cp=checkpoint();const uint32_t wz=Base+0xE0000,ball=Base+0xF0000,ball_sphere=ball+0x8F0;fixture(Kind::Wizzrobe,wz,600,0xFFFFFF00u);Token tw=declare_actor(Kind::Wizzrobe,0xFFFFFF00u,fp,1,why);assert(tw&&bind_pending(tw,600)&&admit_created(tw,wz)&&enroll_colliders(tw));
+  auto ticket=reserve_child_pending(tw,wz,600,0xD0,0xFFFFFF0Au,1);assert(ticket&&commit_child_pending(ticket,1600));
+  st32(ball+4,1600);st16(ball+0xE,0xD0);st32(ball+0xB0,0xFFFFFF0Au);st32(ball+0xB4,0x10042D90);st8(ball+0x464,10);st32(ball_sphere+0x44,ball+0x784);st32(ball+0x784+0xC,ball);st32(ball+0x784+0x10,1600);assert(admit_lineage(1600,ball));
+  assert(pair_policy(ball_sphere,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(ball_sphere,retail)==PairPolicy::Reject);assert(pair_policy(retail,ball_sphere)==PairPolicy::Reject);assert(pair_policy(ball+0x7C0,player+0x765C)==PairPolicy::Reject);
+  st8(ball+0x464,0);assert(pair_policy(ball_sphere,player+0x765C)==PairPolicy::Reject);st8(ball+0x464,10);
+  st32(ball+0xB0,0xFFFFFF0Bu);assert(pair_policy(ball_sphere,player+0x765C)==PairPolicy::Reject);st32(ball+0xB0,0xFFFFFF0Au);
+  retire_before_delete(wz);assert(pair_policy(ball_sphere,player+0x765C)==PairPolicy::Reject);retire_lineage(1600);rollback(wz_cp);}
+ // A warship's cannonball: an owned child; it hits Link and his boat only. The one Link's boat fires hits the warship.
+ {auto ws_cp=checkpoint();const uint32_t ws=Base+0xE0000,ball=Base+0xF0000,sphere=ball+0x920,ship=Base+0xF4000;std::memset(mem::ptr(ws),0,0x10000);std::memset(mem::ptr(ball),0,0xC00);
+  fixture(Kind::Warship,ws,610,0xFFFFFF00u);Token tw=declare_actor(Kind::Warship,0xFFFFFF00u,fp,1,why);assert(tw&&bind_pending(tw,610)&&admit_created(tw,ws)&&enroll_colliders(tw));
+  assert(queue_child_pending(tw,ws,610,1610,0x126,0x80030004u,1));st32(ball+4,1610);st16(ball+0xE,0x126);st32(ball+0xB0,0x80030004u);st32(sphere+0x44,ball+0x8E4);st32(ball+0x8E4+0xC,ball);st32(ball+0x8E4+0x10,1610);assert(admit_lineage(1610,ball));
+  assert(pair_policy(sphere,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(sphere,retail)==PairPolicy::Reject);assert(pair_policy(sphere,ws+0x60C)==PairPolicy::Reject);
+  // the bomb's state byte changes in flight and when it explodes (state 0); the flag bits above it do not
+  st32(ball+0xB0,0x80030000u);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Delegate);st32(ball+0xB0,0x80020000u);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st32(ball+0xB0,0x80030004u);
+  const uint32_t ship_tg=ship+0x100;std::memset(mem::ptr(ship),0,0x200);st32(ship+4,620);st32(ship_tg+0x44,ship+0x40);st32(ship+0x40+0xC,ship);st32(0x1046F0B0+0x5B3C,ship);assert(pair_policy(sphere,ship_tg)==PairPolicy::Delegate);st32(0x1046F0B0+0x5B3C,0);assert(pair_policy(sphere,ship_tg)==PairPolicy::Reject);
+  // Link's boat cannonball (not a claimed child) may hit the owned warship; a retail bomb of another kind may not
+  const uint32_t boat=Base+0xF2000,boat_sphere=boat+0x920;std::memset(mem::ptr(boat),0,0xC00);st32(boat+4,1620);st16(boat+0xE,0x126);st32(boat+0xB0,0x80020004u);st32(boat_sphere+0x44,boat+0x8E4);st32(boat+0x8E4+0xC,boat);st32(boat+0x8E4+0x10,1620);
+  assert(pair_policy(boat_sphere,ws+0x60C)==PairPolicy::Delegate);st32(boat+0xB0,0x80020000u);assert(pair_policy(boat_sphere,ws+0x60C)==PairPolicy::Delegate);st32(boat+0xB0,0x80030004u);assert(pair_policy(boat_sphere,ws+0x60C)==PairPolicy::Reject);
+  retire_lineage(1610);retire_before_delete(ws);rollback(ws_cp);}
+ // A wall cannon's cannonball: the same BOMB and parameters as the warship's; it hits Link and his boat only,
+ // never the cannon, another enemy or a retail actor; the boat's cannonball may hit the owned cannon.
+ {auto wc_cp=checkpoint();const uint32_t wc=Base+0xE0000,ball=Base+0xF0000,sphere=ball+0x920,ship=Base+0xF4000;std::memset(mem::ptr(wc),0,0x10000);std::memset(mem::ptr(ball),0,0xC00);
+  fixture(Kind::WallCannon,wc,640,0xFFC0FFFFu);Token tc=declare_actor(Kind::WallCannon,0xFFC0FFFFu,fp,1,why);assert(tc&&bind_pending(tc,640)&&admit_created(tc,wc)&&enroll_colliders(tc));
+  assert(queue_child_pending(tc,wc,640,1640,0x126,0x80030004u,1));st32(ball+4,1640);st16(ball+0xE,0x126);st32(ball+0xB0,0x80030004u);st32(sphere+0x44,ball+0x8E4);st32(ball+0x8E4+0xC,ball);st32(ball+0x8E4+0x10,1640);assert(admit_lineage(1640,ball));
+  assert(pair_policy(sphere,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(sphere,retail)==PairPolicy::Reject);assert(pair_policy(sphere,wc+0x3F4)==PairPolicy::Reject);
+  const uint32_t ship_tg=ship+0x100;std::memset(mem::ptr(ship),0,0x200);st32(ship+4,650);st32(ship_tg+0x44,ship+0x40);st32(ship+0x40+0xC,ship);st32(0x1046F0B0+0x5B3C,ship);assert(pair_policy(sphere,ship_tg)==PairPolicy::Delegate);st32(0x1046F0B0+0x5B3C,0);
+  const uint32_t boat=Base+0xF2000,boat_sphere=boat+0x920;std::memset(mem::ptr(boat),0,0xC00);st32(boat+4,1650);st16(boat+0xE,0x126);st32(boat+0xB0,0x80020004u);st32(boat_sphere+0x44,boat+0x8E4);st32(boat+0x8E4+0xC,boat);st32(boat+0x8E4+0x10,1650);
+  assert(pair_policy(boat_sphere,wc+0x3F4)==PairPolicy::Delegate);
+  // a cannon that is gone: its cannonball hits nothing
+  retire_before_delete(wc);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);
+  retire_lineage(1640);rollback(wc_cp);}
+ // A Gyorg shark: an owned child of a live owned Gyorg controller; it bites Link and his boat only, and only
+ // Link's weapons and the boat's cannonball hit it.
+ {auto gy_cp=checkpoint();const uint32_t gc=Base+0xE0000,shark=Base+0xF0000,head=shark+0x628,body=shark+0x754,ship=Base+0xF4000,boat=Base+0xF2000;std::memset(mem::ptr(gc),0,0x10000);std::memset(mem::ptr(shark),0,0x1000);
+  fixture(Kind::Gyorg,gc,630,0xFFFF0531u);Token tg=declare_actor(Kind::Gyorg,0xFFFF0531u,fp,1,why);assert(tg&&bind_pending(tg,630)&&admit_created(tg,gc)&&enroll_colliders(tg));
+  auto ticket=reserve_child_pending(tg,gc,630,0xE4,0xFFFFFFFFu,1);assert(ticket&&commit_child_pending(ticket,1630));
+  st32(shark+4,1630);st16(shark+0xE,0xE4);st32(shark+0xB0,0xFFFFFFFFu);st32(head+0x44,shark+0x9C4);st32(body+0x44,shark+0x9C4);st32(shark+0x9C4+0xC,shark);st32(shark+0x9C4+0x10,1630);assert(admit_lineage(1630,shark));
+  assert(pair_policy(head,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(head,retail)==PairPolicy::Reject);
+  assert(pair_policy(player+0x7B1C,body)==PairPolicy::Delegate);assert(pair_policy(retail,body)==PairPolicy::Reject);assert(pair_policy(head,body)==PairPolicy::Reject);
+  const uint32_t ship_tg=ship+0x100;std::memset(mem::ptr(ship),0,0x200);st32(ship+4,640);st32(ship_tg+0x44,ship+0x40);st32(ship+0x40+0xC,ship);st32(0x1046F0B0+0x5B3C,ship);assert(pair_policy(head,ship_tg)==PairPolicy::Delegate);st32(0x1046F0B0+0x5B3C,0);assert(pair_policy(head,ship_tg)==PairPolicy::Reject);
+  const uint32_t boat_sphere=boat+0x920;std::memset(mem::ptr(boat),0,0xC00);st32(boat+4,1640);st16(boat+0xE,0x126);st32(boat+0xB0,0x80020004u);st32(boat_sphere+0x44,boat+0x8E4);st32(boat+0x8E4+0xC,boat);st32(boat+0x8E4+0x10,1640);assert(pair_policy(boat_sphere,body)==PairPolicy::Delegate);
+  retire_before_delete(gc);assert(pair_policy(head,player+0x765C)==PairPolicy::Reject);retire_lineage(1630);rollback(gy_cp);}
+ // A Big Octo eye: an owned child of a live owned Big Octo; Link's weapons hit it, it hits nothing.
+ {auto bo_cp=checkpoint();const uint32_t bo=Base+0xE0000,eye=Base+0xF0000,sph=eye+0x4D4;std::memset(mem::ptr(bo),0,0x10000);std::memset(mem::ptr(eye),0,0x1000);
+  fixture(Kind::BigOcto,bo,650,0xFFFFFF00u);Token tb=declare_actor(Kind::BigOcto,0xFFFFFF00u,fp,1,why);assert(tb&&bind_pending(tb,650)&&admit_created(tb,bo)&&enroll_colliders(tb));
+  auto ticket=reserve_child_pending(tb,bo,650,0xE2,0xFFFFFFFFu,1);assert(ticket&&commit_child_pending(ticket,1650));
+  st32(eye+4,1650);st16(eye+0xE,0xE2);st32(eye+0xB0,0xFFFFFFFFu);st32(sph+0x44,eye+0x600);st32(eye+0x600+0xC,eye);st32(eye+0x600+0x10,1650);assert(admit_lineage(1650,eye));
+  assert(pair_policy(player+0x7B1C,sph)==PairPolicy::Delegate);assert(pair_policy(retail,sph)==PairPolicy::Reject);assert(pair_policy(sph,player+0x765C)==PairPolicy::Reject);
+  retire_before_delete(bo);assert(pair_policy(player+0x7B1C,sph)==PairPolicy::Reject);retire_lineage(1650);rollback(bo_cp);}
  st16(stick+0x43C,900);st32(sphere,1);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Delegate);assert(pair_policy(fire,sphere)==PairPolicy::Reject);assert(pair_policy(sphere,retail)==PairPolicy::Reject);assert(pair_policy(sphere,Base+0x7C4)==PairPolicy::Reject);st32(sphere,0);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st32(sphere,1);
  st32(sphere+0x10,0x4000);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st32(sphere+0x10,0x20000);st8(sphere+0x14,1);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st8(sphere+0x14,0);st32(stick+0xB4,0x1000A47C);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st32(stick+0xB4,0x1000A478);
  st32(stick+0xB0,4);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st32(stick+0xB0,0);st16(stick+0x43C,901);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st16(stick+0x43C,0xFFFF);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st16(stick+0x43C,900);st8(stick+0x430,3);assert(pair_policy(sphere,player+0x765C)==PairPolicy::Reject);st8(stick+0x430,2);

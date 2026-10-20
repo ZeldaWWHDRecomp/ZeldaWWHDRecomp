@@ -1,12 +1,12 @@
 # GamePad screen modes
 
-Choose a mode in Graphics → GamePad screen (or set `WWHD_DRC_MODE` for one launch):
+Choose a mode in Display → GamePad screen (or set `WWHD_DRC_MODE` for one launch):
 
 | Mode | Behavior |
 | --- | --- |
 | `window` | GamePad picture in a separate window. If that display is unavailable, it appears in the TV window. |
 | `pip` | GamePad picture in a corner of the TV window. |
-| `auto` | GamePad menus appear in PiP while open and disappear about 250 ms after closing. The game’s Off-TV Play switches the main picture to the GamePad; returning to TV restores automatic menus. |
+| `auto` | GamePad menus, and the song list while Link conducts with the Wind Waker, appear in PiP while open and disappear about 250 ms after closing. The game’s Off-TV Play switches the main picture to the GamePad; returning to TV restores automatic menus. |
 | `off` | GamePad picture hidden; the game continues drawing it. |
 | `gamepad` | GamePad picture fills the main window. Use the game’s Minus button for Off-TV Play. |
 
@@ -19,6 +19,23 @@ The pin keeps PiP visible after closing a menu. During an Off-TV transition the 
 the full-size GamePad picture takes precedence until the game returns to TV. In other modes the
 shortcut keeps its usual show/hide behavior. PiP corner, size, opacity and touch mapping are shared
 with manual PiP.
+
+## Picture-in-picture placement
+
+Settings → Display → **Picture-in-picture placement** sets where the GamePad picture sits and how it
+looks. The game picture shows each change while this section is open.
+
+- **Position:** pick one of nine spots (or Custom) from the list, or use the small screen diagram.
+  Drag the picture in the diagram, or the outlined picture over the game, to put it anywhere; it
+  doesn't jump to a spot while you drag. To use one of the nine spots, click or tap its circle in
+  the diagram. With a controller, focus the diagram and move the picture with the D-pad.
+- **Size:** 5 to 100 % of the TV picture's width. At 100 % it covers the whole TV picture; at the
+  top-left, top-right and bottom-right spots it may stay a little smaller so the game's buttons
+  and rupee counter remain visible.
+- **Opacity:** 10 to 100 %. To hide the picture, turn off *Show GamePad screen* instead.
+
+Use the sliders for both; Ctrl+click a slider to type a number. Settings saved by an older
+version keep their values.
 
 The optional `WWHD_DRC_PAUSE=1` view (default on Android) still shows a paused menu full size after
 Plus in `pip` or `off`, then restores the previous view when that menu closes. It now reads menu
@@ -35,7 +52,7 @@ in **Full screen**, unless you already saved a choice or supplied a launch overr
 This also applies to the Windows build through Proton when the gamescope session is detected.
 Desktop Mode keeps its existing defaults.
 
-Change **View** under **Settings → Graphics → GamePad screen**, or change **Full screen**
+Change **View** under **Settings → Display → GamePad screen**, or change **Full screen**
 in Graphics. Your choices are remembered. A separate GamePad window is still available,
 but Gaming Mode shows one window at a time and may scale the game picture, making it blurry.
 
@@ -61,6 +78,10 @@ below are canonical USA addresses and are translated through `GD()` for regional
 - Scene descriptors `1049EC84/1049ECB0/1049ECDC` cover menu entry, menu and subwindow, including
   items, collection, map and Delivery Bag. Save/options, song lists, warp map, photo lists, Fishman
   hints and password entry have explicit descriptors listed in `runtime/src/gfx/auto_pip.h`.
+- Wind Waker: play object `1046F0B0` (`dComIfGp_get`) byte `+5BD1` is the metronome flag that
+  `daPy_lk_c::procTactWait_init` (`023E92A0`) sets while Link conducts and the song's end or a
+  cancel clears; scene descriptors `1049EDB8/1049EDE4` are the GamePad song list opening and open
+  (it trails the flag by a few frames on both ends). Either one shows PiP with GamePad routing `1`.
 - `1049F498`, `1049F4C4`, `1049F4F0` identify TV, DRC and Pro mode exchanges. These clear the closing
   delay and suppress PiP while routing changes; the pin survives.
 

@@ -1,0 +1,51 @@
+{
+  "format_version": 1,
+  "id": "mod-stage-cave",
+  "name": "A room behind the lava cave",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "A new cave chamber behind a hidden passage of the lava cave. Its exit leads back to the sea.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "stages": [
+    {
+      "id": "chamber",
+      "template": "Cave01",
+      "kind": "cave",
+      "music_like": "Cave01",
+      "entrance": {"stage": "sea", "room": 34, "point": 1},
+      "rooms": [
+        {
+          "room": 0,
+          "kit": 0,
+          "ground": "assets/room.glb",
+          "material": "lambert2_v",
+          "materials": {"wall": "E3mR02roomKB_v", "pillar": "E3mR02YK_v"},
+          "spawns": [
+            {"point": 0, "position": {"x": -1000, "y": 0, "z": 0}, "angle": 90}
+          ],
+          "exits": [
+            {
+              "id": "to-sea",
+              "box": {"min": {"x": 900, "y": -100, "z": -800}, "max": {"x": 1200, "y": 100, "z": 800}},
+              "to": {"stage": "sea", "room": 34, "point": 1}
+            }
+          ]
+        }
+      ],
+      "entries": [
+        {
+          "id": "hidden-passage",
+          "stage": "Cave01",
+          "room": 0,
+          "position": {"x": -1300, "y": -200, "z": -900},
+          "size": {"x": 200, "y": 200, "z": 200},
+          "to": {"room": 0, "point": 0}
+        }
+      ]
+    }
+  ]
+}

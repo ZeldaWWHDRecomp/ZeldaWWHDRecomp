@@ -39,12 +39,14 @@ uint32_t invoke(Cpu*,uint32_t fn,std::initializer_list<uint32_t> args){const std
     default:assert(!"unexpected native call");return 0;
 }}
 }
-int main(){using namespace story_world_collision;map(Arena,Bytes);map(0x101D0000,0x10000);for(unsigned i=0;i<32;++i)st32(0x101D51CC+i*4,0xFFFFFFFF);for(unsigned i=0;i<6;++i)st32(0x101D51CC+(31-i)*4,mesh::NativeResultIds[i]);
+int main(){using namespace story_world_collision;map(Arena,Bytes);map(0x101D0000,0x10000);for(unsigned i=0;i<32;++i)st32(0x101D51CC+i*4,0xFFFFFFFF);{unsigned code=31;for(unsigned i=0;i<mesh::NativeResultIds.size();++i){bool seen=false;for(unsigned j=0;j<i;++j)seen|=mesh::NativeResultIds[j]==mesh::NativeResultIds[i];if(!seen)st32(0x101D51CC+(code--)*4,mesh::NativeResultIds[i]);}}
     st32(Heap+0xC,Vtable);st32(Parent+0xC,Vtable);st32(Vtable+0x74,0x02000010);st32(Vtable+0x7C,0x02000014);st32(Heap+0x24,Parent);st32(Actor+0xF4,Heap);st32(Actor+4,17);st8(Actor+0x326,12);for(unsigned r=0;r<3;++r)st32(Actor+0x56C+(r*4+r)*4,f32_as_u32(1));
     story_actors::identity::Fingerprint identity{};identity[0]=42;auto other=identity;other[0]=43;Cpu cpu{};mesh::Mesh geometry;std::string why;assert(mesh::make_shape("box",{100,100,100},0,0,0,geometry,why));
     heap_free=1;assert(!native::heap_create(&cpu,Actor,geometry,identity,invoke)&&allocations==0);heap_free=8*1024*1024;largest=1;assert(!native::heap_create(&cpu,Actor,geometry,identity,invoke)&&allocations==0);largest=8*1024*1024;
     st32(0x101D51CC+31*4,0xFFFFFFFF);assert(!native::heap_create(&cpu,Actor,geometry,identity,invoke)&&allocations==0);st32(0x101D51CC+31*4,mesh::NativeResultIds[0]);
-    assert(native::heap_create(&cpu,Actor,geometry,identity,invoke)&&sets==1&&native::stored(Actor,identity));assert(!native::stored(Actor,other));solid_context=false;
+    assert(native::heap_create(&cpu,Actor,geometry,identity,invoke)&&sets==1&&native::stored(Actor,identity));assert(!native::stored(Actor,other));
+    // a body from an older full save state (the first layout's identity) is accepted only by that identity
+    assert(&native::accepted(Actor,other,&identity)==&identity&&&native::accepted(Actor,identity,&other)==&identity&&&native::accepted(Actor,other,nullptr)==&other);{auto third=identity;third[1]=7;assert(&native::accepted(Actor,other,&third)==&other);}solid_context=false;
     parent_free=1;assert(!native::created(&cpu,Actor,identity,invoke)&&registrations==0);parent_free=8*1024*1024;parent_largest=1;assert(!native::created(&cpu,Actor,identity,invoke)&&registrations==0);parent_largest=8*1024*1024;
     fail_register=true;assert(!native::created(&cpu,Actor,identity,invoke)&&registrations==0);fail_register=false;
     for(unsigned i=0;i<240;++i)st32(Play+0x12A0+i*20+4,1);assert(!native::created(&cpu,Actor,identity,invoke)&&registrations==0);for(unsigned i=0;i<240;++i)st32(Play+0x12A0+i*20+4,0);

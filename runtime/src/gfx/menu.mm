@@ -117,8 +117,8 @@ static void load_prefs() {
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
     if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
     if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
-    if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
-    if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::set_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
+    if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
+    if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
     if (saved(@"vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode([pref(@"vkPresentMode") intValue]);
 #endif
@@ -499,6 +499,7 @@ void install_menu(NSWindow* tv) {
         @"Soft shadows of the drifting sky clouds on the sea, islands and characters";
     add(g, @"16x anisotropic filtering (N)", @selector(toggleAniso:), @"N");
     add(g, @"Edge smoothing, FXAA", @selector(toggleFxaa:), @"8");
+    add(g, @"40 fps: frame interpolation (for 40, 80 and 120 Hz screens)", @selector(toggleInterpFps:), @"", 40);
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
     add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);
     add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);

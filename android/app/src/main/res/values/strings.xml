@@ -86,4 +86,5 @@
     <string name="touch_layout_done">Done</string>
     <string name="setup_code_mods">Code mods</string>
     <string name="setup_code_mods_detail">Lets you turn on code mods (for example the story quests) in Settings › Mods. The game code is built again with mod support, which takes about as long as the first setup, and the game runs a little slower. You can keep playing the current build meanwhile.</string>
+    <string name="game_icon_unsupported">This launcher cannot add app icons.</string>
 </resources>

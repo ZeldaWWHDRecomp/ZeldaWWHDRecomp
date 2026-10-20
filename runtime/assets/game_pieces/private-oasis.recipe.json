@@ -1,0 +1,80 @@
+{
+  "game_pieces_format": 1,
+  "set": "private-oasis",
+  "label": "Private Oasis buildings",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room33.szs",
+    "room": 33
+  },
+  "memory": {
+    "archive_bytes": 3123708,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top"
+  },
+  "pieces": [
+    {
+      "id": "oasis-cabana",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Oasis cabana",
+      "description": "a holiday cabana with a broad thatched roof, a veranda with a railing and lamps by the door",
+      "volume": [
+        19650,
+        950,
+        17350,
+        21660,
+        2960,
+        18990
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sm",
+            "hikari"
+          ],
+          "light": "bg0",
+          "without_materials": [
+            "Q_konomo_set_v"
+          ]
+        }
+      ],
+      "collision": {
+        "groups": [
+          "ie_yane",
+          "ie_kabe",
+          "ie_nokisita",
+          "ie_yuka",
+          "tesuri",
+          "beso_KIRI",
+          "lamp_bonboriiti_l",
+          "lamp_bonboriiti_r",
+          "lamp_bonboriiti_genkan",
+          "lamp_jmp_r",
+          "lamp_jmp_l",
+          "haihai_yuka"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          3048
+        ],
+        "collision_triangles": 392,
+        "textures": [
+          [
+            "Txa_beso_hasira",
+            "Txa_beso_itaba",
+            "Txa_beso_kabe_b",
+            "Txa_beso_yane",
+            "Txq_besso_jinkouyuka_kiwakiwa",
+            "Txq_besso_kasa",
+            "Txq_besso_lamp"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

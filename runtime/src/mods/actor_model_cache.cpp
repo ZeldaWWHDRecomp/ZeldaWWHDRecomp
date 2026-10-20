@@ -16,14 +16,14 @@
 #include <mutex>
 namespace actor_model_cache {
 namespace {
-struct Entry {std::string mod,model,path;unsigned triangles=0;story_notebook::WorldPoint minimum,maximum;std::vector<std::string> clips;mod_actor::ModelRig rig;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;bool shoreline=false;};
+struct Entry {std::string mod,model,path;unsigned triangles=0;story_notebook::WorldPoint minimum,maximum;std::vector<std::string> clips;mod_actor::ModelRig rig;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;bool shoreline=false;std::string material;};
 std::mutex mutex,prepare_mutex;
 std::map<std::string,Entry> entries;
 void check(bool ok,const char* reason){if(!ok)exception_report::raise(reason);}
 }
 std::string prepare(const std::string& mod,const story_notebook::ManifestModel& model,
                     const std::string& package_dir,const std::string& data_dir,
-                    const std::vector<std::string>& python,const std::string& tool,const std::string& game_dir,bool collision,bool shoreline){
+                    const std::vector<std::string>& python,const std::string& tool,const std::string& game_dir,bool collision,bool shoreline,const std::string& material_in){
     std::lock_guard preparing(prepare_mutex);namespace fs=std::filesystem;
     const bool owner_ok=!mod.empty()&&mod.size()<=64&&mod.front()!='.'&&std::all_of(mod.begin(),mod.end(),[](unsigned char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.';});
     check(owner_ok&&story_mail::valid_id(model.id),"Invalid model owner or id");
@@ -56,13 +56,23 @@ std::string prepare(const std::string& mod,const story_notebook::ManifestModel& 
     auto command=python;command.push_back(tool);command.insert(command.end(),{"--game",game_dir,"--glb",input.string(),"--identity",identity,"--out",destination.string()});
     const auto collision_path=destination.string()+".wcol";
     if(collision){check(model.kind=="static","Collision requires a static model");command.insert(command.end(),{"--collision-out",collision_path});}
-    if(shoreline){check(!collision&&model.kind=="static","Shoreline requires a collision-free static model");command.push_back("--shoreline");}
+    const std::string material=material_in=="foam"?std::string():material_in;
+    check(material.empty()||story_notebook::water_surface_material(material),"Unknown shoreline material");
+    check(shoreline||material.empty(),"A water surface is a shoreline model");
+    if(shoreline){check(!collision&&model.kind=="static","Shoreline requires a collision-free static model");command.push_back("--shoreline");if(!material.empty())command.insert(command.end(),{"--shoreline-material",material});}
     const auto process=host::run_process(command);
-    check(process.error.empty()&&process.code==0,"Static model conversion failed; check the model and player game resources");
+    if(!process.error.empty()||process.code!=0){
+        // the converter's own reason (its last line, "actor_model: ..."), so the editor says what went wrong
+        std::string reason=process.error;
+        if(reason.empty()){const auto end=process.output.find_last_not_of("\r\n");if(end!=std::string::npos){const auto start=process.output.rfind('\n',end);reason=process.output.substr(start==std::string::npos?0:start+1,end-(start==std::string::npos?0:start+1)+1);}}
+        for(char&c:reason)if((unsigned char)c<0x20)c=' ';
+        if(reason.size()>200)reason=reason.substr(0,200)+"...";
+        exception_report::raise("Static model conversion failed"+(reason.empty()?std::string():" ("+reason+")")+"; check the model and player game resources");
+    }
     const auto end=process.output.find_last_not_of("\r\n");check(end!=std::string::npos,"Static model converter returned no result");
     const auto line=process.output.rfind('\n',end);const auto begin=line==std::string::npos?0:line+1;
     mods::json::Value result;try{result=mods::json::parse(process.output.substr(begin,end-begin+1));}catch(...){exception_report::raise("Static model converter returned invalid metadata");}
-    check(result.get("shoreline").boolean==shoreline,"Wrong shoreline conversion mode");
+    check(result.get("shoreline").boolean==shoreline&&(!shoreline||result.get("shoreline_material").string()==(material.empty()?"foam":material)),"Wrong shoreline conversion mode");
     check(result.get("identity").string()==identity,"Static model converter returned another archive identity");
     check(static_models::integer(result.get("triangles"),1,static_models::kMaxTriangles)&&unsigned(result.get("triangles").number)==info.triangle_count,"Static model converter returned inconsistent render triangle metadata");
     check(fs::is_regular_file(destination)&&!fs::is_symlink(destination)&&fs::file_size(destination)>=16&&fs::file_size(destination)<=16*1024*1024,"Static model converter produced a missing or oversized archive");
@@ -76,10 +86,18 @@ std::string prepare(const std::string& mod,const story_notebook::ManifestModel& 
         check(result.get("collision_sha256").string()==mods::hash::sha256_text(std::string(bytes.begin(),bytes.end())),"Collision sidecar digest mismatch");
         collision_data=std::move(decoded);
     }
-    {std::lock_guard guard(mutex);entries.emplace(identity,Entry{mod,model.id,destination.string(),info.triangle_count,minimum,maximum,std::move(clips),std::move(rig),std::move(collision_data),shoreline});}
+    {std::lock_guard guard(mutex);entries.emplace(identity,Entry{mod,model.id,destination.string(),info.triangle_count,minimum,maximum,std::move(clips),std::move(rig),std::move(collision_data),shoreline,material});}
     return identity;
 }
+bool register_external(const std::string& identity,const std::string& path){
+    if(identity.size()!=31||path.empty())return false;
+    std::lock_guard guard(mutex);auto found=entries.find(identity);
+    if(found!=entries.end())return found->second.path==path&&found->second.mod.empty();
+    entries.emplace(identity,Entry{"","",path});return true;
+}
 bool shoreline_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found!=entries.end()&&found->second.shoreline;}
+bool water_for(const std::string& archive){return material_for(archive)=="water";}
+std::string material_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found!=entries.end()&&found->second.shoreline?found->second.material:std::string();}
 unsigned triangles_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found==entries.end()?0:found->second.triangles;}
 std::shared_ptr<const story_world_collision::mesh::Mesh> collision_for(const std::string& archive){std::lock_guard guard(mutex);auto found=entries.find(archive);return found==entries.end()?nullptr:found->second.collision;}
 std::string archive_for(const std::string& guest_path){

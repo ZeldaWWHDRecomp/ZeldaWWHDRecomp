@@ -25,6 +25,16 @@ int32_t send(const std::string& mod, const std::string& letter, const std::strin
 // wwhd_mail_state: the letter's state in the current save file
 int32_t state(const std::string& mod, const std::string& letter);
 
+// World editor (game thread, while busy() is false): the texts of the mod's registered letters as its
+// manifest has them now, and the letters it no longer declares forgotten (the postbox no longer hands
+// them out; what the save file says of them stays). Letters not registered yet come with their send().
+struct LetterText {
+    std::string id, sender, text;
+};
+void reload(const std::string& mod, const std::vector<LetterText>& texts, const std::vector<std::string>& forget);
+// A letter, a resident's quest line, a caption or the notebook's get message is being shown.
+bool busy();
+
 // Letters of the loaded mods and their state in the current save file (for lists of received letters).
 struct LetterInfo {
     std::string mod, id, sender;

@@ -111,6 +111,42 @@ bool get_motion(Cpu*,const Identity&,MotionState& out){out.finished=walk_finishe
 namespace input {PadState read(){PadState p;p.buttons=pad_buttons;return p;}}
 namespace story_mail {void say(uint32_t,const std::u16string*){armed=true;}void unsay(){armed=false;}bool can_say(){return true;}}
 namespace story_notebook {const GameUi& game_ui(){static GameUi ui=[] {GameUi u;u.sound=sound;return u;}();return ui;}}
+#ifdef STORY_SCENES_EDITOR_PREVIEW_TEST
+// The world editor (--editor) with no scene declared at start-up: before enable_editor_previews nothing
+// is installed and a preview is refused; after it the camera trim and choice hooks are installed and a
+// new, never declared scene (one camera step of 3 s, then the end) plays as a preview and ends.
+int main(){
+    assert(map(kArena,0x50000)==mem::ptr(kArena));assert(map(0x101F0000,0x10000)==mem::ptr(0x101F0000));clear_guest();
+    Cpu cpu{};story_scenes::set_game_calls(game_call);story_scenes::set_scratch_memory(kScratch);
+    story_scenes::set_callbacks([](Cpu*,const std::string&,const std::string&){return kActor;},[](const std::string&,const std::vector<story_notebook::StoryAction>&){++finished;return true;});
+    using namespace story_notebook;
+    ManifestScene s;s.id="shot";SceneStep camera;camera.kind=SceneStep::Kind::Camera;camera.frames=90;camera.eye={1,2,3};camera.target={4,5,6};
+    SceneStep end;end.kind=SceneStep::Kind::End;s.steps={camera,end};std::string why;
+    const auto replaced_by=[](uint32_t){return std::string();};
+    const auto replace=[](uint32_t address,void(*hook)(Cpu*)){if(address==0x024FF8A0)trim_hook=hook;else{assert(address==0x025F7980||address==0x027046D4);choice_hooks[address]=hook;}};
+    // a start without a declared scene and without the editor: inert
+    story_scenes::install([](Cpu*,uint32_t){},replaced_by,replace);
+    assert(!trim_hook&&choice_hooks.empty()&&!story_scenes::editor_previews());
+    assert(!story_scenes::editor_preview("mod",s,false,why)&&why.find("restart")==std::string::npos);
+    test_tick(&cpu);assert(native_calls==0);
+    // the editor: installed without a declaration
+    story_scenes::enable_editor_previews();assert(story_scenes::editor_previews());
+    story_scenes::install([](Cpu*,uint32_t){},replaced_by,replace);
+    assert(trim_hook&&choice_hooks.size()==2);
+    test_tick(&cpu);assert(native_calls==0&&!story_scenes::active());  // nothing runs before a preview
+    why.clear();assert(story_scenes::editor_preview("mod",s,false,why));
+    bool waiting=false,playing=false,native=false;size_t step=0;
+    assert(story_scenes::editor_state("mod","editor-preview",waiting,playing,native,step)&&waiting&&!playing);
+    test_tick(&cpu);assert(story_scenes::active()&&ld8(kPlay+0x5292)==3);
+    unsigned ticks=1;while(u32_as_f32(ld32(kCamera+0x10))!=4&&ticks<3){test_tick(&cpu);++ticks;}  // the step's first frame
+    assert(u32_as_f32(ld32(kCamera+0x10))==4&&u32_as_f32(ld32(kCamera+0x1C))==1);  // the step's view: target, eye
+    assert(story_scenes::editor_state("mod","editor-preview",waiting,playing,native,step)&&playing&&!native&&step==0);
+    while(story_scenes::active()&&ticks<400){test_tick(&cpu);++ticks;}
+    assert(!story_scenes::active()&&ticks>=90&&ticks<=93&&end_calls==1);
+    assert(!story_scenes::declared_scene("mod","shot",s));  // a preview is not a declaration
+    std::puts("story scenes editor preview passed");
+}
+#else
 int main(){
     assert(map(kArena,0x50000)==mem::ptr(kArena));assert(map(0x101F0000,0x10000)==mem::ptr(0x101F0000));clear_guest();st16(kActor+8,0x175);
     Cpu cpu{};story_scenes::set_game_calls(game_call);story_scenes::set_scratch_memory(kScratch);
@@ -298,3 +334,4 @@ int main(){
     std::puts("story scene native contract tests passed (synthetic memory)");
     return 0;
 }
+#endif

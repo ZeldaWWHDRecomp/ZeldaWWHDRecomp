@@ -2,6 +2,8 @@
 // or GPU.
 #include "../src/overlay/overlay.cpp"
 #include <cassert>
+#include <cmath>
+#include <initializer_list>
 void log_msg(const char *, ...) {}
 namespace input {
 void set_touch(bool, float, float) {}
@@ -13,6 +15,7 @@ namespace hostui {
 void post(std::function<void()> f) { f(); }
 void save_pip_position() {}
 } // namespace hostui
+static bool near(float a, float b) { return std::fabs(a - b) < 0.002f; }
 int main() {
     ImGui::CreateContext();
     auto &io = ImGui::GetIO();
@@ -39,17 +42,27 @@ int main() {
         overlay::pip_live_drag();
         ImGui::Render();
     };
+    // The diagram is 320 x 180 at (50, 50) for a 16:9 picture.
+    const gfx::Box diagram{50, 50, 320, 180};
+    auto target = [&](int anchor) {
+        ImVec2 c;
+        gfx::pip_target_centre(diagram, anchor, &c.x, &c.y);
+        return c;
+    };
+    auto tap = [&](ImVec2 at) {
+        io.AddMousePosEvent(at.x, at.y);
+        frame();
+        io.AddMouseButtonEvent(0, true);
+        frame();
+        io.AddMouseButtonEvent(0, false);
+        frame();
+    };
     frame();
     io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
-    io.AddMousePosEvent(50 + 240 * 0.4f, 50 + 135 * 0.4f);
-    frame();
-    io.AddMouseButtonEvent(0, true);
-    frame();
+    // A tap on an empty spot places the picture's centre there (free).
+    tap(ImVec2(50 + 320 * 0.4f, 50 + 180 * 0.4f));
     assert(gfx::g_pip_anchor == gfx::kPipCustom);
-    assert(std::fabs(gfx::g_pip_x - 0.4f) < 0.002f);
-    assert(std::fabs(gfx::g_pip_y - 0.4f) < 0.002f);
-    io.AddMouseButtonEvent(0, false);
-    frame();
+    assert(near(gfx::g_pip_x, 0.4f) && near(gfx::g_pip_y, 0.4f));
     frame(true);
     for (int i = 0; i < 3; ++i) {
         io.AddKeyEvent(ImGuiKey_GamepadDpadRight, true);
@@ -57,8 +70,61 @@ int main() {
         io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
         frame();
     }
-    assert(std::fabs(gfx::g_pip_x - 0.43f) < 0.002f);
+    assert(near(gfx::g_pip_x, 0.43f));
+    // Activating the focused diagram with A (no pointer) neither snaps nor moves it.
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true);
+    frame();
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
+    frame();
+    assert(gfx::g_pip_anchor == gfx::kPipCustom && near(gfx::g_pip_x, 0.43f) && near(gfx::g_pip_y, 0.4f));
+
+    // A tap on a preset target snaps to that preset, every one of the nine.
+    for (int a = 0; a < gfx::kPipCustom; ++a) {
+        gfx::pip_set_position({gfx::kPipCustom, a < 4 ? 0.8f : 0.2f, 0.5f});
+        const ImVec2 c = target(a);
+        tap(ImVec2(c.x + 3, c.y - 3));  // near the centre is enough
+        assert(gfx::g_pip_anchor == a);
+    }
+
+    // Dragging the picture exactly onto the bottom-right preset's spot, and on over the bottom-right
+    // target, never catches on either; releasing a drag on a target does not snap.
     io.AddMouseSourceEvent(ImGuiMouseSource_Mouse);
+    gfx::pip_set_position({gfx::kPipCustom, 0.3f, 0.3f});
+    auto b = gfx::pip_box(diagram, gfx::g_drc_aspect, gfx::g_pip_size, gfx::pip_position());
+    const auto q = gfx::pip_box(diagram, gfx::g_drc_aspect, gfx::g_pip_size, {gfx::kPipBR, 0, 0});
+    const ImVec2 start(b.x + b.w / 2, b.y + b.h / 2), spot(q.x + q.w / 2, q.y + q.h / 2), br = target(gfx::kPipBR);
+    io.AddMousePosEvent(start.x, start.y);
+    frame();
+    io.AddMouseButtonEvent(0, true);
+    frame();
+    auto dragTo = [&](ImVec2 from, ImVec2 to) {
+        for (int i = 1; i <= 20; ++i) {
+            const float t = i / 20.0f;
+            io.AddMousePosEvent(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+            frame();
+            assert(gfx::g_pip_anchor == gfx::kPipCustom);
+        }
+    };
+    dragTo(start, spot);
+    b = gfx::pip_box(diagram, gfx::g_drc_aspect, gfx::g_pip_size, gfx::pip_position());
+    assert(std::fabs(b.x - q.x) < 1 && std::fabs(b.y - q.y) < 1);  // exactly the preset's spot, still free
+    dragTo(spot, br);
+    io.AddMouseButtonEvent(0, false);
+    frame();
+    assert(gfx::g_pip_anchor == gfx::kPipCustom);
+
+    // A click (no drag) on a target covered by a large picture still snaps.
+    gfx::g_pip_size = 0.8f;
+    gfx::pip_set_position({gfx::kPipCustom, 0.5f, 0.5f});
+    tap(target(gfx::kPipTL));
+    assert(gfx::g_pip_anchor == gfx::kPipTL);
+    // A click inside the picture away from every target changes nothing.
+    gfx::pip_set_position({gfx::kPipCustom, 0.5f, 0.5f});
+    tap(ImVec2(50 + 320 * 0.62f, 50 + 180 * 0.38f));
+    assert(gfx::g_pip_anchor == gfx::kPipCustom && near(gfx::g_pip_x, 0.5f) && near(gfx::g_pip_y, 0.5f));
+    gfx::g_pip_size = 0.25f;
+
+    // The live preview over the game drags freely too, across the bottom-right preset.
     gfx::g_pip_preview = true;
     gfx::g_pip_anchor = gfx::kPipBR;
     auto box = gfx::pip_box({0, 0, 1280, 720}, gfx::g_drc_aspect, gfx::g_pip_size, gfx::pip_position());
@@ -66,13 +132,21 @@ int main() {
     frame();
     io.AddMouseButtonEvent(0, true);
     frame();
+    io.AddMousePosEvent(box.x + box.w / 2 - 1, box.y + box.h / 2);  // a pixel off the preset
+    frame();
+    assert(gfx::g_pip_anchor == gfx::kPipCustom);
+    io.AddMousePosEvent(box.x + box.w / 2, box.y + box.h / 2);  // back exactly onto it: no snap
+    frame();
+    assert(gfx::g_pip_anchor == gfx::kPipCustom);
     io.AddMousePosEvent(1280 * 0.6f, 720 * 0.5f);
     frame();
     assert(gfx::g_pip_anchor == gfx::kPipCustom);
-    assert(std::fabs(gfx::g_pip_x - 0.6f) < 0.002f && std::fabs(gfx::g_pip_y - 0.5f) < 0.002f);
+    assert(near(gfx::g_pip_x, 0.6f) && near(gfx::g_pip_y, 0.5f));
     io.AddMouseButtonEvent(0, false);
     frame();
     gfx::g_pip_preview = false;
+
+    // The sliders are the only size/opacity controls: 5..100% and 10..100%.
     auto percentFrame = [&](bool focus = false, bool opacity = false) {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -80,66 +154,67 @@ int main() {
         ImGui::Begin("percent", nullptr, ImGuiWindowFlags_NoDecoration);
         ImGui::SetCursorScreenPos(ImVec2(50, 50));
         if (focus) {
-            auto* window = ImGui::GetCurrentWindow();
+            auto *window = ImGui::GetCurrentWindow();
             ImGui::FocusWindow(window);
             ImGui::SetFocusID(window->GetID(opacity ? "Opacity (%)" : "Size (%)"), window);
             ImGui::GetCurrentContext()->NavCursorVisible = true;
         }
         ImGui::SetNextItemWidth(200);
         if (opacity)
-            overlay::pip_percent("Opacity (%)", "Exact opacity (%)", gfx::g_pip_opacity, 20, 100,
-                                 [](float value) { gfx::g_pip_opacity = value; });
+            overlay::pip_percent("Opacity (%)", gfx::g_pip_opacity, gfx::kPipOpacityMin, gfx::kPipOpacityMax,
+                                 [](float value) { gfx::g_pip_opacity = gfx::pip_clamp_opacity(value); });
         else
-            overlay::pip_percent("Size (%)", "Exact size (%)", gfx::g_pip_size, 10, 50,
-                                 [](float value) { gfx::g_pip_size = value; });
+            overlay::pip_percent("Size (%)", gfx::g_pip_size, gfx::kPipSizeMin, gfx::kPipSizeMax,
+                                 [](float value) { gfx::g_pip_size = gfx::pip_clamp_size(value); });
         ImGui::End();
         ImGui::Render();
     };
-    percentFrame(true);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame();
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame();
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, true); percentFrame();
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false); percentFrame();
-    assert(std::fabs(gfx::g_pip_size - 0.26f) < 0.002f);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame();
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame();
-    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
-    io.AddMousePosEvent(150, 60); percentFrame();
-    io.AddMouseButtonEvent(0, true); percentFrame();
-    io.AddMouseButtonEvent(0, false); percentFrame();
-    assert(std::fabs(gfx::g_pip_size - 0.30f) < 0.002f);
-    // The touch-accessible exact field accepts a typed value and clamps it.
-    auto typeSize = [&](const char* text) {
-        io.AddMousePosEvent(65, 50 + ImGui::GetFrameHeightWithSpacing() + ImGui::GetFrameHeight() / 2); percentFrame();
-        io.AddMouseButtonEvent(0, true); percentFrame();
-        io.AddMouseButtonEvent(0, false); percentFrame();
-        io.AddKeyEvent(ImGuiMod_Ctrl, true);
-        io.AddKeyEvent(ImGuiKey_A, true); percentFrame();
-        io.AddKeyEvent(ImGuiKey_A, false);
-        io.AddKeyEvent(ImGuiMod_Ctrl, false); percentFrame();
-        io.AddInputCharactersUTF8(text); percentFrame();
-        io.AddKeyEvent(ImGuiKey_Enter, true); percentFrame();
-        io.AddKeyEvent(ImGuiKey_Enter, false); percentFrame();
+    // press at x (inside the track), then drag to x2 before releasing
+    auto clickSlider = [&](float x, float x2, bool opacity) {
+        io.AddMousePosEvent(x, 60);
+        percentFrame(false, opacity);
+        io.AddMouseButtonEvent(0, true);
+        percentFrame(false, opacity);
+        io.AddMousePosEvent(x2, 60);
+        percentFrame(false, opacity);
+        io.AddMouseButtonEvent(0, false);
+        percentFrame(false, opacity);
     };
-    typeSize("37");
-    assert(std::fabs(gfx::g_pip_size - 0.37f) < 0.002f);
-    typeSize("99");
-    assert(gfx::g_pip_size == 0.5f);
-    percentFrame(false, true);
-    io.AddMousePosEvent(150, 60); percentFrame(false, true);
-    io.AddMouseButtonEvent(0, true); percentFrame(false, true);
-    io.AddMouseButtonEvent(0, false); percentFrame(false, true);
-    assert(std::fabs(gfx::g_pip_opacity - 0.60f) < 0.002f);
-    percentFrame(true, true);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame(false, true);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame(false, true);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, true); percentFrame(false, true);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false); percentFrame(false, true);
-    assert(std::fabs(gfx::g_pip_opacity - 0.61f) < 0.002f);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame(false, true);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame(false, true);
+    auto stepRight = [&](bool opacity) {
+        percentFrame(true, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame(false, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame(false, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadDpadRight, true); percentFrame(false, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false); percentFrame(false, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, true); percentFrame(false, opacity);
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false); percentFrame(false, opacity);
+    };
+    gfx::g_pip_size = 0.25f;
+    stepRight(false);
+    assert(near(gfx::g_pip_size, 0.26f));
+    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+    clickSlider(150, 0, false);  // dragged past the left end: the minimum
+    assert(near(gfx::g_pip_size, 0.05f));
+    clickSlider(150, 400, false);  // past the right end: the maximum (100%, the whole TV picture)
+    assert(near(gfx::g_pip_size, 1.0f));
+    clickSlider(150, 150, false);
+    assert(gfx::g_pip_size > 0.45f && gfx::g_pip_size < 0.60f);
+    clickSlider(150, 0, true);
+    assert(near(gfx::g_pip_opacity, 0.10f));
+    clickSlider(150, 400, true);
+    assert(near(gfx::g_pip_opacity, 1.0f));
+    clickSlider(150, 150, true);
+    assert(gfx::g_pip_opacity > 0.50f && gfx::g_pip_opacity < 0.60f);
+    const float opacity = gfx::g_pip_opacity;
+    stepRight(true);
+    assert(near(gfx::g_pip_opacity, opacity + 0.01f));
+    // A value saved under the old limits is shown and kept as it is.
+    gfx::g_pip_size = 0.33f;
+    percentFrame();
+    assert(gfx::g_pip_size == 0.33f);
+
     // Use the production Android control height and every UI scale preset.
-    auto& style = ImGui::GetStyle();
+    auto &style = ImGui::GetStyle();
     style.FontSizeBase = 17;
     style.FramePadding = ImVec2(10, 16);
     gfx::g_pip_size = 0.25f;
@@ -148,13 +223,10 @@ int main() {
         io.DisplaySize = ImVec2(1920 / scale, 1080 / scale);
         io.DisplayFramebufferScale = ImVec2(scale, scale);
         frame();
-        io.AddMousePosEvent(50 + 240 * 0.4f, 50 + 135 * 0.4f); frame();
-        io.AddMouseButtonEvent(0, true); frame();
-        io.AddMouseButtonEvent(0, false); frame();
-        assert(std::fabs(gfx::g_pip_x - 0.4f) < 0.002f && std::fabs(gfx::g_pip_y - 0.4f) < 0.002f);
+        tap(ImVec2(50 + 320 * 0.4f, 50 + 180 * 0.4f));
+        assert(gfx::g_pip_anchor == gfx::kPipCustom && near(gfx::g_pip_x, 0.4f) && near(gfx::g_pip_y, 0.4f));
+        tap(target(gfx::kPipBC));
+        assert(gfx::g_pip_anchor == gfx::kPipBC);
     }
-    percentFrame();
-    typeSize("42");
-    assert(std::fabs(gfx::g_pip_size - 0.42f) < 0.002f);
     ImGui::DestroyContext();
 }

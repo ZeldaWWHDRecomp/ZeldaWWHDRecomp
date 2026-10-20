@@ -21,6 +21,8 @@
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "exact_state_memo.h"
+#include "program_hash_cache.h"
+#include "write_watch.h"
 #include "render_prof.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -79,8 +81,14 @@ std::vector<uint32_t> shader_binary_words_exact(const std::shared_ptr<ShaderBina
 namespace {
 std::unordered_map<uint64_t, std::unique_ptr<Shader>> shaders;
 std::unordered_map<uint64_t, LatteFetchShader*> fetchShaders;
-struct ProgramHash { uint64_t hash = 0, frame = ~uint64_t{0}; };
-std::unordered_map<uint64_t, ProgramHash> programHashes;
+// program bytes hashed again only after a write to them (program_hash_cache.h)
+struct ProgramWatch {
+    static bool active() { return wwatch::active(); }
+    static uint64_t arm(uint32_t a, uint32_t n) { return wwatch::arm(a, n); }
+    static bool written_since(uint32_t a, uint32_t n, uint64_t stamp) { return wwatch::written_since(a, n, stamp); }
+    static uint64_t write_seq() { return wwatch::write_seq(); }
+};
+ProgramHashCache<ProgramWatch> programHashes;
 struct LastShader {
     const uint32_t* regs = nullptr;
     LatteFetchShader* fetch = nullptr;
@@ -173,13 +181,30 @@ void initialize_disk_cache() {
 }
 
 uint64_t program_hash(uint32_t address, uint32_t size, uint64_t frame) {
-    // Include size: the same address can refer to different program ranges.
-    auto& entry = programHashes[(uint64_t(address) << 32) | size];
-    if (frame == ~uint64_t{0} || entry.frame != frame) {
-        entry.hash = hash_bytes(ppc_ptr(address), size);
-        entry.frame = frame;
+    // Include size: the same address can refer to different program ranges. Hashed again on a new
+    // frame only if the program's pages were written (WWHD_VK_PROGRAM_HASH_WATCH=0: every frame).
+    static const bool watch = [] {
+        const char* e = std::getenv("WWHD_VK_PROGRAM_HASH_WATCH");
+        return !e || std::strcmp(e, "0") != 0;
+    }();
+    static const bool verify = std::getenv("WWHD_VK_PROGRAM_HASH_VERIFY") != nullptr;
+    programHashes.watchEnabled = watch;
+    programHashes.verify = verify;
+    static const bool report = std::getenv("WWHD_VK_STATS") || std::getenv("WWHD_VK_CPU_ONLY_STATS");
+    static uint64_t reportedFrame = 0;
+    if (report && frame != ~uint64_t{0} && frame >= reportedFrame + 600) {
+        const auto& st = programHashes.stats;
+        if (reportedFrame)
+            ::log_msg("[vulkan program hash] %zu programs; lookups %llu, hashed %llu (every frame while written: %llu), "
+                      "unchanged by write watch %llu, same frame %llu; became dynamic %llu; verified %llu, mismatches %llu; hashed %.1f MiB, skipped %.1f MiB",
+                      programHashes.size(), (unsigned long long)st.lookups, (unsigned long long)st.hashes,
+                      (unsigned long long)st.dynamicHashes, (unsigned long long)st.watchedHits,
+                      (unsigned long long)st.frameHits, (unsigned long long)st.becameDynamic,
+                      (unsigned long long)st.verified, (unsigned long long)st.mismatches,
+                      st.hashedBytes / 1048576.0, st.skippedBytes / 1048576.0);
+        reportedFrame = frame;
     }
-    return entry.hash;
+    return programHashes.get(address, size, frame, [&] { return hash_bytes(ppc_ptr(address), size); });
 }
 // Shader keys (two levels, as Cemu's LatteShader.cpp base and auxiliary hashes, but exact about
 // what our GLSL path reads; docs/vulkan.md, "Shader keys"):

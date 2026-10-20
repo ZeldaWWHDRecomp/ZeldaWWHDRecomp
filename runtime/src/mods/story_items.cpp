@@ -19,10 +19,13 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <string>
 
 #include "guest_addr.h"
 #include "runtime.h"
 #include "story_store.h"
+#include "story_treasure_chest.h"
 
 namespace story_items {
 namespace {
@@ -84,15 +87,38 @@ uint8_t game_reserve(unsigned place) { return have_save() && place < kGamePlaces
 
 }  // namespace
 
-namespace { std::function<void(uint16_t)> model_presenter; }
+namespace {
+std::function<void(uint16_t)> model_presenter;
+bool (*g_hold_up)(uint16_t) = nullptr;
+void (*g_chest_hold_up)(uint16_t, bool) = nullptr;
+bool (*g_item_get_text)(uint32_t, const std::u16string*) = nullptr;
+std::u16string g_get_text;  // the armed get message (kept while armed; game thread)
+}
 void set_model_presenter(std::function<void(uint16_t)> fn){model_presenter=std::move(fn);}
+void set_hold_up_presenter(bool (*presenter)(uint16_t), void (*chest)(uint16_t, bool)) { g_hold_up = presenter, g_chest_hold_up = chest; }
+void chest_hold_up(uint16_t key, bool on) {
+    if (g_chest_hold_up && (!on || (find(key) && find(key)->hold_up))) g_chest_hold_up(key, on);
+}
+void set_get_text(bool (*item_get_text)(uint32_t, const std::u16string*)) { g_item_get_text = item_get_text; }
+bool arm_get_text(uint16_t key, bool on) {
+    if (!g_item_get_text) return !on;
+    if (!on) return g_item_get_text(0, nullptr);
+    const std::optional<Item> it = find(key);
+    if (!it) return false;
+    std::u16string text = story_treasure_chest::get_text(it->name, it->description);
+    const std::u16string old = std::move(g_get_text);
+    g_get_text = std::move(text);
+    if (g_item_get_text(story_treasure_chest::stand_in_message(), &g_get_text)) return true;
+    g_get_text = old;
+    return false;
+}
 bool define(const std::string& mod, const std::string& package_dir, const story_notebook::ManifestItem& m, std::string& why) {
     Item it;
     it.key = item_key(mod, m.id), it.mod = mod, it.id = m.id, it.name = m.name, it.description = m.description;
     it.icon_path = (std::filesystem::path(package_dir) / m.icon).string();
     it.icon_hash = file_hash(it.icon_path);
     if (!it.icon_hash) return why = "item " + m.id + ": no icon file " + m.icon, false;
-    it.held_model=m.held_model;it.held_frames=m.held_frames;
+    it.held_model=m.held_model;it.held_frames=m.held_frames;it.hold_up=m.hold_up;
     it.stack = m.stack, it.use = m.use, it.use_quest = m.use_quest, it.use_step = m.use_step;
     std::lock_guard lock(g_mu);
     for (Item& o : g_items) {
@@ -292,7 +318,10 @@ int32_t give(const std::string& mod, const std::string& id, uint32_t n, const ch
             placed ? "" : "; the bag's pages are full, it waits for a free place");
         std::string text = it->description;
         if (!placed) text += "\n\nThe Delivery Bag is full: it is kept until a place is free.";
-        if (caption || !placed) {  // a quiet get still says when the bag is full
+        // an item Link holds up: the game's item-get pose with its model and the get message
+        const bool held = caption && placed && it->hold_up && g_hold_up && g_hold_up(it->key);
+        if (held) LOG("[items] %s: item \"%s\" is held up (the game's item get)", mod.c_str(), id.c_str());
+        if (!held && (caption || !placed)) {  // a quiet get still says when the bag is full
             std::lock_guard lock(g_mu);
             g_pending.push_back({it->name + (now > 1 && it->stack > 1 ? " (" + std::to_string(now) + ")" : ""), text});
         }

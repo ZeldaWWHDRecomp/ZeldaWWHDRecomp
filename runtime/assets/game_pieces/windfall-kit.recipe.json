@@ -1,0 +1,79 @@
+{
+  "game_pieces_format": 1,
+  "set": "windfall-kit",
+  "label": "Windfall island parts",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room11.szs",
+    "room": 11
+  },
+  "memory": {
+    "archive_bytes": 3599684,
+    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); each placement adds its instance"
+  },
+  "textures": {
+    "m_siba04": {
+      "max_size": 256
+    },
+    "m_komono11": {
+      "max_size": 256
+    },
+    "m_yane08": {
+      "max_size": 256
+    }
+  },
+  "pieces": [
+    {
+      "id": "windfall-windmill-cap",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Windfall windmill cap",
+      "description": "the top of Windfall's windmill: its pointed roof, the gallery ring and posts",
+      "volume": [
+        -120,
+        3450,
+        -3350,
+        1250,
+        5450,
+        -2100
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "polySurface4323"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "shape0",
+          "polySurface725",
+          "polySurface683"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          623
+        ],
+        "collision_triangles": 112,
+        "textures": [
+          [
+            "k_taru04",
+            "m_ki12",
+            "m_komono11",
+            "m_siba04",
+            "m_yane08",
+            "wood01",
+            "wood04",
+            "wood06"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    }
+  ]
+}

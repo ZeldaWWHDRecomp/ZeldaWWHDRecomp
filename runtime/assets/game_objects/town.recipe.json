@@ -1,0 +1,162 @@
+{
+  "game_objects_format": 1,
+  "group": "town",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files.",
+  "objects": [
+    {
+      "id": "nest",
+      "since": 1,
+      "category": "Town and outdoors",
+      "label": "Big nest",
+      "description": "a large bird's nest Link can stand in; it rocks a little when he moves",
+      "native": {
+        "name": "MtoriSU",
+        "process": "Obj_Nest",
+        "source": "d_a_obj_nest",
+        "subtype": 255,
+        "archive": "MtoriSU"
+      },
+      "variants": [
+        {
+          "id": "nest",
+          "label": "Big nest",
+          "params": "0x00000000"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 14336,
+        "archive_bytes": 0,
+        "measured": "own heap 12812 bytes and about 1 KiB more"
+      },
+      "notes": "no parameters are read"
+    },
+    {
+      "id": "flag-rito",
+      "since": 1,
+      "category": "Town and outdoors",
+      "label": "Small red flag",
+      "description": "a small red flag on a pole that flutters in the wind",
+      "native": {
+        "name": "TrFlag",
+        "process": "Tori_Flag",
+        "source": "d_a_tori_flag",
+        "subtype": 0,
+        "archive": "Trflag",
+        "also_archives": [
+          "Cloth"
+        ]
+      },
+      "variants": [
+        {
+          "id": "flag-rito",
+          "label": "Small red flag",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "the cloth keeps its own size"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 94208,
+        "archive_bytes": 0,
+        "measured": "own heap 90352-90504 bytes (the cloth) and about 1 KiB more"
+      },
+      "notes": "no parameters are read; the cloth uses the game's shared cloth archive"
+    },
+    {
+      "id": "flag-sea",
+      "since": 1,
+      "category": "Town and outdoors",
+      "label": "Tall banner flag",
+      "description": "a tall flag on a pole that flutters in the wind",
+      "native": {
+        "name": "SieFlag",
+        "process": "Sie_Flag",
+        "source": "d_a_sie_flag",
+        "subtype": 0,
+        "archive": "Eshata",
+        "also_archives": [
+          "Cloth"
+        ]
+      },
+      "variants": [
+        {
+          "id": "flag-sea",
+          "label": "Tall banner flag",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "the cloth keeps its own size"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 94208,
+        "archive_bytes": 0,
+        "measured": "own heap 90352-90504 bytes (the cloth) and about 1 KiB more"
+      },
+      "notes": "no parameters are read; the cloth uses the game's shared cloth archive"
+    },
+    {
+      "id": "lookout-tower",
+      "since": 1,
+      "category": "Town and outdoors",
+      "label": "Sea lookout tower",
+      "description": "a tall wooden lookout platform that stands in the sea, with or without a ladder Link can climb",
+      "native": {
+        "name": "Aygr",
+        "process": "Obj_Aygr",
+        "source": "d_a_obj_aygr",
+        "subtype": 255,
+        "archive": "Aygr"
+      },
+      "variants": [
+        {
+          "id": "tower-ladder",
+          "label": "With a ladder",
+          "params": "0x00000001"
+        },
+        {
+          "id": "tower",
+          "label": "Without a ladder",
+          "params": "0x00000000"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 55296,
+        "archive_bytes": 0,
+        "measured": "own heap 53084 bytes with the ladder and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "bit 0 adds the ladder (its own collision, climbable as the game's own); nothing else is read; no switches, save bits or events, and no other code looks for it"
+    }
+  ]
+}

@@ -46,6 +46,15 @@ inline constexpr uint8_t kRecordActorFlag = 17; // SDK v3 actors: mod-owned open
 
 // 18..19: owned prop/enemy markers (story_prop_rewards.h).
 inline constexpr uint8_t kRecordQuestActionReward = 20; // pending safe rupee item number for quest_done
+// a timed manifest letter on its own (story_manifest.h letter_due): the game day its "when" first held,
+// key letter_key, value the day's low and high byte; erased once the letter is sent
+inline constexpr uint8_t kRecordLetterDayLow = 21, kRecordLetterDayHigh = 22;
+// mod stages (mod_stages.h): the Quest Log was saved in a mod stage; key mod_stages::save_key(mod, stage), value the
+// room (kRecordStageResume) and the spawn point (kRecordStageResumePoint) it continues at while the package is installed
+inline constexpr uint8_t kRecordStageResume = 23, kRecordStageResumePoint = 24;
+// mod stages' own save records (mod_stages.h): a save group's slot (key mod_stages::save_key(mod, "group:" + group),
+// value 1..250) and the non-zero bytes of its 0x24-byte stage record (key slot << 8 | byte, value the byte)
+inline constexpr uint8_t kRecordStageGroup = 25, kRecordStageMemory = 26;
 
 inline constexpr uint16_t kItemNotebook = 1;  // the story notebook
 

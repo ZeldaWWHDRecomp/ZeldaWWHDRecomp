@@ -1,0 +1,161 @@
+{
+  "game_objects_format": 1,
+  "group": "furniture",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files.",
+  "objects": [
+    {
+      "id": "table",
+      "since": 1,
+      "category": "Furniture",
+      "label": "Wooden table",
+      "description": "a plain wooden table, or the small wooden stool that goes with it",
+      "native": {
+        "name": "Table",
+        "process": "Obj_Table",
+        "source": "d_a_obj_table",
+        "subtype": 255,
+        "archive": "Table"
+      },
+      "variants": [
+        {
+          "id": "table",
+          "label": "Table",
+          "params": "0xFFFFFF00"
+        },
+        {
+          "id": "stool",
+          "label": "Stool",
+          "params": "0xFFFFFF01"
+        },
+        {
+          "id": "stool-open",
+          "label": "Stool (Link walks through it)",
+          "params": "0xFFFFFF02"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 16384,
+        "archive_bytes": 0,
+        "measured": "solid heap 13008-13412 bytes and about 1 KiB more; the archive is in a permanent pack, already in memory"
+      },
+      "notes": "the parameter's low byte picks the model (0 table, 1 stool, 2 stool without collision); nothing else is read"
+    },
+    {
+      "id": "table-small",
+      "since": 1,
+      "category": "Furniture",
+      "label": "Small table",
+      "description": "a small wooden table that settles onto the ground below it",
+      "native": {
+        "name": "Otble",
+        "process": "OBJ_OTBLE",
+        "source": "d_a_obj_otble",
+        "subtype": 0,
+        "archive": "Okmono"
+      },
+      "variants": [
+        {
+          "id": "table-small",
+          "label": "Small table",
+          "params": "0x00000000"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 16384,
+        "archive_bytes": 0,
+        "measured": "own heap 14652-14728 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the parameter's low byte picks the model (0 small); it falls onto the ground below it"
+    },
+    {
+      "id": "table-long",
+      "since": 1,
+      "category": "Furniture",
+      "label": "Long table",
+      "description": "a long wooden table that settles onto the ground below it",
+      "native": {
+        "name": "OtbleL",
+        "process": "OBJ_OTBLE",
+        "source": "d_a_obj_otble",
+        "subtype": 1,
+        "archive": "Okmono"
+      },
+      "variants": [
+        {
+          "id": "table-long",
+          "label": "Long table",
+          "params": "0x00000001"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 16384,
+        "archive_bytes": 0,
+        "measured": "own heap 14576 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the parameter's low byte picks the model (1 long); it falls onto the ground below it"
+    },
+    {
+      "id": "shelf",
+      "since": 1,
+      "category": "Furniture",
+      "label": "Shelf",
+      "description": "a tall wooden shelf with pots and books",
+      "native": {
+        "name": "Otana",
+        "process": "Obj_Shelf",
+        "source": "d_a_obj_shelf",
+        "subtype": 0,
+        "archive": "Otana"
+      },
+      "variants": [
+        {
+          "id": "shelf",
+          "label": "Shelf",
+          "params": "0x00000000"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 14336,
+        "archive_bytes": 0,
+        "measured": "own heap 12680 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "bit 0 (looking for a character in an event) stays 0; it only shakes in an earthquake"
+    }
+  ]
+}

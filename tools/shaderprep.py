@@ -13,6 +13,12 @@ Usage:
                                                                  my-template.bin in the release folder); finds
                                                                  the caches itself, --from names their folder
   shaderprep.py merge    OUT T1 [T2 ...]                         maintainers: merge code-free templates
+  shaderprep.py stage-template OUT [CACHE] [--from DIR] [--base T]
+                                                                 mod makers: the render states your shader caches
+                                                                 (found as for export, or CACHE) have beyond
+                                                                 template T (default: the release's) -> a code-free
+                                                                 template a mod package ships with its stages
+                                                                 (docs/mod-stages.md, "Shaders")
   shaderprep.py build    [OUT] [--template T] [--max N]          head start from the game files + template
                          [--no-pipelines] [--jobs N]             (default OUT: game/shadercache/headstart.bin);
                          [--progress]                            --jobs: archive scan workers (default: a few);
@@ -844,6 +850,44 @@ def cmd_export(out=None, source=None):
     return 0
 
 
+def cmd_stage_template(out, cache, base, source=None):
+    """Mod makers: what the caches recorded while playing a mod's stages have beyond the base template (the
+    release's), as a code-free template the package ships; setup prepares it with the game's own."""
+    if not os.path.isfile(base):
+        print("No base template at %s (give it with --base)" % base)
+        return 1
+    if cache:
+        files = [cache]
+    else:
+        folder, files = find_player_caches(source)
+        if not files:
+            print("No shader cache found%s. Play the stage first, or give the folder with --from DIR." % (" in " + folder if folder else ""))
+            return 1
+        print("Reading the shader caches in %s" % folder)
+    known = TemplateBuilder()
+    known.add_template(base)
+    builder = TemplateBuilder()
+    for path in files:
+        builder.add_cache(path)
+    for key in list(builder.states):
+        if key in known.states:
+            del builder.states[key]
+    for key in list(builder.pipelines):
+        if key in known.pipelines:
+            del builder.pipelines[key]
+    for line in builder.report.warnings():
+        print("warning: " + line)
+    doc = builder.document()
+    try:
+        data = write_template(doc, out, guarded=True)
+    except ValueError as error:
+        print("Not written: %s" % error)
+        return 1
+    print("stage template: %d states, %d pipelines beyond %s, %d bytes -> %s" %
+          (len(doc["states"]), len(doc["pipelines"]), base, len(data), out))
+    return 0
+
+
 def cmd_merge(out, inputs):
     """Maintainers: merge players' code-free templates (de-duplicated); inputs and output pass the guard."""
     builder = TemplateBuilder()
@@ -1091,7 +1135,7 @@ def cmd_build(game, out, template, limit, with_pipelines=True, progress=None, jo
 
 def main():
     args = sys.argv[1:]
-    opts = {"--game": os.path.join(ROOT, "game", "content"), "--max": "2", "--template": TEMPLATE, "--merge": None, "--from": None,
+    opts = {"--game": os.path.join(ROOT, "game", "content"), "--max": "2", "--template": TEMPLATE, "--merge": None, "--from": None, "--base": None,
             "--jobs": str(default_jobs())}
     no_pipelines = "--no-pipelines" in args
     if no_pipelines:
@@ -1116,6 +1160,10 @@ def main():
         cmd_template(args[1], args[2] if len(args) > 2 else TEMPLATE, opts["--merge"])
     elif cmd == "export":
         sys.exit(cmd_export(args[1] if len(args) > 1 else None, opts["--from"]))
+    elif cmd == "stage-template":
+        if len(args) < 2:
+            sys.exit("usage: shaderprep.py stage-template OUT [CACHE] [--from DIR] [--base TEMPLATE]")
+        sys.exit(cmd_stage_template(args[1], args[2] if len(args) > 2 else None, opts["--base"] or opts["--template"], opts["--from"]))
     elif cmd == "merge":
         if len(args) < 3:
             sys.exit("usage: shaderprep.py merge OUT TEMPLATE1 [TEMPLATE2 ...]")

@@ -1,0 +1,43 @@
+{
+  "format_version": 1,
+  "id": "world-objects-w5",
+  "name": "Several-material island",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An original island with sand, grass, rock and wood materials and cut-out fences and bushes.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {
+      "id": "island",
+      "source": "assets/island.glb"
+    }
+  ],
+  "actors": [
+    {
+      "id": "island",
+      "kind": "mod",
+      "model": "island",
+      "behaviour": "static",
+      "stage": "sea",
+      "room": 12,
+      "position": {
+        "x": 75000,
+        "y": 0,
+        "z": -201500
+      },
+      "collision": {
+        "mesh": "island"
+      }
+    }
+  ]
+}

@@ -11,4 +11,5 @@ void show_inspector();   // render thread: bring the inspector to the front (a p
 void show_problems();
 void show_quests();      // bring the Quests window to the front
 void show_scenes();      // bring the Scenes window to the front
+void show_story();       // the Outliner's Story tab (letters, charts, items)
 }  // namespace editor_shell

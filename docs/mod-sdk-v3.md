@@ -28,15 +28,40 @@ The initial allowlist is deliberately small:
 | Actor | Names accepted | Parameters |
 | --- | --- | --- |
 | Sign | `sign`, `kanban`, `PROC_KANBAN` | A mod-owned `flag`; optional dialogue |
-| Resident | `resident`, `NpcPeople`, `PROC_NPC_PEOPLE` | `parameters: {"resident": "uo2"}`, `"um1"` or seated `"ym1"`; default and legacy numeric `9` select Um1 |
-| Chest | `chest`, `Tbox`, `takara`, `PROC_TBOX` | A mod-owned `flag`; safe rupee `parameters.item` |
+| Resident | `resident`, `NpcPeople`, `PROC_NPC_PEOPLE` | `parameters: {"resident": "uo2"}`: one of the villagers below; default and legacy numeric `9` select Um1 |
+| Chest | `chest`, `Tbox`, `takara`, `PROC_TBOX` | A mod-owned `flag`; what it holds in `parameters.item` (below) |
 | Breakable prop | `pot`, `barrel`, `crate` | Required mod-owned `broken_flag` and `drops` list |
 | Latched floor switch | `switch` | Required mod-owned `switch_flag`; fixed yellow switch |
 | Rotating gate | `door` | Required `switch` naming a switch actor in the same mod |
-| Native enemies (preview) | `chuchu`, `bokoblin`, `moblin`, `keese` | Required mod-owned `defeated_flag` and `drops`; fixed ordinary variants |
+| Native enemies (preview) | `chuchu`, `bokoblin`, `moblin`, `keese`, `miniblin`, `peahat`, `darknut`, `rat_hole`, `bokobaba`, `bubble`, `octorok`, `stalfos`, `redead`, `mothula`, `morth`, `magtail`, `poe`, `armos`, `armos_knight`, `kargaroc`, `wizzrobe`, `warship`, `gyorg`, `floormaster`, `big_octo`, `wall_cannon` | Required mod-owned `defeated_flag` and `drops`; fixed ordinary variants |
 
-Resident names are exact native object codes. This preview supports only `uo2`, `um1` and seated `ym1`, with fixed ordinary parameters and no native rail or quest variants.
-Other names and numeric values are rejected. Each placed copy uses mod dialogue
+Resident names are exact native object codes in lower case. Each placed copy uses fixed ordinary
+parameters: it stands where you put it (unless you give it a route, below) and has none of the
+character's quest or story variants.
+
+| Code | Who it looks like | Notes |
+| --- | --- | --- |
+| `uo2` | The man from the Windfall bar | |
+| `um1` | The windmill keeper | |
+| `uo1` | The old man on the sea-view bench | |
+| `uo3` | The well-dressed man walking through town | A placed copy stands still unless it has a route |
+| `ub1`, `ub2` | The two women chatting on the steps | Each is placed on its own |
+| `ub3` | The woman on the harbour pier | |
+| `ub4` | The woman by the town gate | Not in the photo studio (`Ocmera`) |
+| `uw1` | The young woman working in the bar | |
+| `uw2`, `um2` | The young woman and young man of the town square | A placed copy is there whatever their story |
+| `sa1` | The sailor who drinks in the bar at night | |
+| `sa2` | The sailor on the high lookout | |
+| `sa3` | The sailor on the stone dock | |
+| `sa4` | The sailor at the end of the wooden pier | |
+| `ym1` | A seated man | See below |
+
+Day and night: a copy looks like the character at the time of day it was created.
+Other names and numeric values are rejected. These Windfall people are not placeable, because
+their ordinary behaviour changes the game: `um3` (his telescope talk sets the game's progress at
+night), `sa5` (he moves the game's pigs), `ug1` and `ug2` (they follow the game's week and its
+hide-and-seek event). The other characters of the NPC catalogue are separate actor classes with
+their own quests and are not placeable yet. Each placed copy uses mod dialogue
 and flags; retail originals keep their own dialogue and quests. Placed copies
 are excluded from retail named cohorts and figurine registration, while normal
 world freezing, attention and collision remain native. Restored open dialogue
@@ -49,9 +74,83 @@ not ground-correct, walk, or support scene `move`/`face`. Its narrow native
 relocation area near x=-202066, z=320123 is rejected. Camera following and dialogue
 remain available. Other Ym1/Ym2 staff variants are unsupported.
 
+### Residents walking a route
+
+Every placed Windfall resident except the seated `ym1` can walk a route with the game's own walking:
+`uo1`, `uo2`, `uo3`, `um1` and `um2` with their own walking animation, and the women and sailors
+(`ub1`–`ub4`, `uw1`, `uw2`, `sa1`–`sa4`), who have none, with a borrowed one (below). It starts at its
+`position` and walks to the route's points:
+
+```json
+{
+  "id": "baker", "actor": "resident", "parameters": {"resident": "um1"},
+  "stage": "sea", "room": 11, "position": {"x": 600, "y": 95, "z": -199000},
+  "lines": ["Fresh bread at the market!"],
+  "path": {
+    "points": [{"x": 820, "y": 95, "z": -199100}, {"x": 700, "y": 95, "z": -199250}],
+    "mode": "loop", "speed": 70, "pauses": true
+  }
+}
+```
+
+| Field | |
+| --- | --- |
+| `points` | 1 to 15 points after the position; each more than one unit (across) from the one before |
+| `mode` | `once` (default: it walks to the last point and stands there), `loop` (back to its position and round again) or `back_and_forth` (it turns at each end) |
+| `speed` | game units per second, from half to twice the character's own pace; without it, its own pace (`uo1`, `uo2` 30, `uo3` 60, `um1` 63, `um2` 72, `ub1`–`ub4` 36, `uw1`, `uw2` 34, `sa1`–`sa4` 60) |
+| `pauses` | `true`: after walking for some seconds it stands for a moment, in the character's own rhythm as the game's walkers do; default `false` |
+
+It walks as the game's own walkers do: with its own walk and idle, turning on the spot at corners,
+following the ground, stopping to look at Link when he is close in front of it (and walking on when he
+leaves), and talking as usual (your lines). `uo2` still startles at a roll or a loud noise nearby. It has
+no ledge check of its own, so the port watches it: when it gets no closer to its next point for about a
+second and a half (a wall), it goes on to the point after; when the same point stays out of reach three
+times, or it gets nowhere over three such skips, it stops where it is. When it drops far below
+its route (an edge), it is put back where it last stood on its route and stops. Check the route in the
+world editor: segments over no ground, a drop or a step too high are drawn red.
+
+A route walks in the room where the resident is placed; when the room loads again, it starts again at
+its position (a `once` route too). Full save states keep where it is on its route. At most 32 residents
+of all enabled mods have a route.
+
+**Borrowed walks.** The women (`ub`, `uw`) and the sailors (`sa`) never walk in the game, so they
+have no walking animation. They walk with another villager's walk, fitted to their own body: the women
+with the calm walk of the man from the bar (`uo`), the sailors with the windmill keeper's walk (`um`).
+All the Windfall people share one skeleton, so only the joint rotations are taken over: each character
+keeps its own proportions, its feet stay on the ground, and the walk is timed to its own stride, so
+its feet don't slide at any speed. The port builds these walks when the game starts (or when the editor
+opens), from your own game files; nothing of the game is in your package or in the port. If your game
+files lack one of the archives, those villagers stand at their position and the log says why. They turn
+at corners in a tighter arc than the game's own walkers, so a slow walker doesn't circle wide past a
+corner. Their long skirts and coats hide most of the legs; the walk shows in the body, the arms and the
+steps below the hem.
+
+The seated `ym1` does not walk and is refused with "this villager is seated and does not walk". Each placed resident
+may have a route or none; `um3`, `sa5`, `ug1` and `ug2` stay unplaceable (see above).
+
 Other actor names and unsafe parameters are validator errors. Only ordinary chest
 raw `params: 0` is accepted at present. The port owns the remaining chest/sign
 parameters so a package cannot select a game switch or opened bit.
+
+**What a chest holds.** `"parameters": {"item": ...}` says what Link gets when he opens
+the chest: the game's item-get pose with the item and its message, as with the game's
+own chests.
+
+| Value | Link gets |
+| --- | --- |
+| `rupee_green`, `rupee_blue`, `rupee_yellow`, `rupee_red` | a green (1), blue (5), yellow (10) or red (20) rupee |
+| `rupee_purple`, `rupee_orange`, `rupee_silver` | a purple (50), orange (100) or silver (200) rupee |
+| `heart_piece`, `heart_container` | a piece of heart or a heart container |
+| `item:<id>` | one of your mod's items (declared in `items`); with `hold_up` and a `held_model`, Link holds your model up |
+| (none) | an orange rupee |
+
+These are the items a treasure chart's chest can hold, and for the same reason: they
+change only Link's rupees and hearts. No story or key item can be chosen, and the
+chest never sets one of the game's save bits: whether it is open is its mod `flag`.
+A piece of heart or a heart container changes Link's hearts for good (turning the mod off
+doesn't take them back), as one from a chart's chest does, so use them sparingly. A chest that holds one of your items needs the
+story system's chest hook: one added in the editor while the game runs appears after a
+restart.
 
 `flag` is a symbolic ID in the declaring mod's story records. It is not a game
 save-bit number. Chest opening and sign reading use this namespace. The runtime
@@ -71,6 +170,211 @@ match too. Conditions are checked when the room
 is populated and reconciled in the current room on game logic steps. Pending
 creation/deletion retains its identity; an active conversation finishes before
 its partner is removed. Actors belong to the native room layer and unload with it.
+
+## The game's own objects (game objects)
+
+A mod can place the game's own static objects, such as palm trees, large trees and tables, by
+naming them: `"actor": "game:palm"`. Nothing of the game goes into your package: the object
+loads from the player's own game files, exactly as the game draws and handles it, with its
+wind sway and its collision (Link and the boat bump into a palm's trunk).
+
+```json
+{
+  "requires": {"game_objects": 1},
+  "actors": [
+    {"id": "palm-1", "actor": "game:palm", "stage": "sea", "room": 11,
+     "position": {"x": -1500, "y": 322, "z": -199700}, "rotation": {"x": 0, "y": 45, "z": 0}},
+    {"id": "seat", "actor": "game:table", "variant": "stool", "stage": "sea", "room": 11,
+     "position": {"x": -1850, "y": 303, "z": -200200}}
+  ]
+}
+```
+
+A manifest that uses game objects says which version of the port's game objects catalogue it
+needs: `"requires": {"game_objects": 1}`. A port with an older catalogue refuses the mod with
+"update the port"; an object added in a later version can't be named with an older number.
+
+A game object takes only `id`, `actor`, `variant`, `stage`, `room`, `position`, `rotation` and
+`scale`. It turns about the vertical axis only (`rotation` x and z stay 0), and its `scale` is the
+same on all three axes and within the object's limits below. `variant` picks one of its forms (the
+first is the default). Parameters, flags, `then`, paths, conditions and dialogue are refused: the
+port gives each object the game's ordinary settings with no switch, save bit or event, so a game
+object never changes the player's progress. A package that places game objects must not contain
+game files (`.bfres`, `.szs`, `.sarc`, `.pack`, `.dzb`, `.ftex` and the like, under any name);
+the mod manager refuses it.
+
+| Id | What it is | Variants | Scale |
+| --- | --- | --- | --- |
+| `game:palm` | A tall palm tree whose leaves sway in the wind | `palm` | 1 |
+| `game:tree-large` | A large leafy tree | `tree` | 0.5–1.5 |
+| `game:plant-pot` | A leafy potted plant that sways when Link brushes past | `plant-pot` | 0.5–1.5 |
+| `game:flower-red` | A tall red flower (drops nothing) | `flower-red` | 0.5–1.5 |
+| `game:table` | A wooden table, or the small stool that goes with it | `table`, `stool`, `stool-open` (Link walks through it) | 1 |
+| `game:table-small`, `game:table-long` | Wooden tables that settle onto the ground below them | one each | 1 |
+| `game:shelf` | A tall shelf with pots and books | `shelf` | 1 |
+| `game:lamp-cafe` | A ceiling lamp that turns slowly (no collision) | `lamp-cafe` | 0.5–2 |
+| `game:lamp` | A small lamp with a flame that lights its surroundings | `lamp` | 1 |
+| `game:nest` | A large bird's nest Link can stand in | `nest` | 1 |
+| `game:flag-rito`, `game:flag-sea` | Flags on poles that flutter in the wind | one each | 1 |
+| `game:lookout-tower` | A tall wooden lookout platform that stands in the sea | `tower-ladder` (Link climbs its ladder), `tower` | 1 |
+
+Grass, flowers and small trees are the game's shared batches rather than single objects. Each variant
+plants a group of a given size; none of them drops anything when cut.
+
+| Id | Variants (units) | Mods' share per stage |
+| --- | --- | --- |
+| `game:grass` | `grass-1` (1), `grass-7` (7), `grass-21` (21) | 300 of the stage's 1500 |
+| `game:flower-white` | `flowers-1` (1), `flowers-7` (7), `flowers-17` (17) | 60 of 200 (with pink) |
+| `game:flower-pink` | `flowers-1` (1), `flowers-7` (7) | 60 of 200 (with white) |
+| `game:tree-small` | `trees-1` (1), `trees-3` (3), `trees-5` (5) | 16 of 64 |
+| `game:tree-bushy` | `tree-bushy` (1) | 40 of 200 |
+
+A batch is planted once per visit of its room, a moment after the room's own grass, and only on a
+stage that has that kind of batch itself (most islands do; Windfall has flowers but no grass). It
+leaves a quarter of the stage's batch free for the rooms that load next; when there isn't enough
+room it is left out for that visit (with a line in the log). Cut grass grows back, and a removed or
+moved batch goes from the game only when its room loads again.
+
+Objects whose collision keeps the game's size stay at scale 1, so what you see and what Link
+bumps into always match.
+
+Game objects count toward the 16 actors per room (all packages together). The game objects of a
+room also share a memory budget of 3 MiB (each object about 15–20 KiB; their archives are already
+in memory). A game object returns when its room loads again, and full and portable save states
+keep it. If the player's game doesn't have an object (another game version), it is left out with a
+line in the log, and the rest of the mod works.
+
+To see which objects your game has, run
+`python3 tools/story_mods/game_objects.py --game <game folder> --list` (add `--placements` to see
+how often the game itself places each one). It reads your game files and prints no game data.
+
+## Island buildings (game pieces)
+
+A mod can also place some of the islands' own buildings: `"actor": "piece:outset-house-small"`.
+These are parts of an island's model that stand on their own there (whole buildings, never a cut
+through a larger mesh). When the game starts with such a mod, or when you place one in the editor,
+the port builds the building once from the player's own game files into the player's model cache;
+nothing of the game goes into your package. A building looks as it does on its own island: it is
+drawn with the island's light (day, dusk, night, weather and fog), its windows light up at night,
+and it keeps the island's collision, so Link walks on its floors and balconies and bumps into its
+walls. Its doors lead nowhere: the doorways are solid.
+
+```json
+{
+  "requires": {"game_objects": 2},
+  "actors": [
+    {"id": "house", "actor": "piece:outset-house-small", "stage": "sea", "room": 12,
+     "position": {"x": 1200, "y": 140, "z": -199000}, "rotation": {"x": 0, "y": 90, "z": 0}}
+  ]
+}
+```
+
+Buildings share the game objects catalogue version and need version 2 or later. A building takes
+only `id`, `actor`, `stage`, `room`, `position` and `rotation` (about the vertical axis): no scale,
+because its light is baked for its size and its collision is the island's own. The position is the
+middle of the building at its lowest point.
+
+| Id | What it is | Window at night |
+| --- | --- | --- |
+| `piece:outset-house-ladder` | A two-storey island house with a balcony and a side ladder | yes |
+| `piece:outset-house-lookout` | A family house on posts with a rooftop lookout and a crawl hole | yes |
+| `piece:outset-house-terrace` | A tall island house with a steep roof and a wooden terrace | yes |
+| `piece:outset-house-small` | A small island house on posts with a pointed roof | yes |
+| `piece:outset-lookout-tower` | A tall wooden watchtower on a single post with a boardwalk | |
+| `piece:outset-well-shelter` | A small open wooden shelter with a slanted roof | |
+| `piece:flight-platform` | The tall two-level wooden flight platform on stilts, with its ramp, ladder and roof (without the goal posts) | |
+| `piece:oasis-cabana` | The Private Oasis holiday cabana with its thatched roof, veranda and lamps | |
+| `piece:tingle-tower` | Tingle's painted wooden tower with its ladder and fenced lookout (without the head on top) | |
+
+**Island parts** (the palette's "Island parts", catalogue version 3) are made the same way from other
+islands' room models: Dragon Roost's shrine pieces and walkways and its sea rocks, Windfall's windmill
+cap, and the Forsaken Fortress shipwrecks. Each has collision of its own and takes the light of the
+room it stands in.
+
+| Piece | What it is | Its base |
+|---|---|---|
+| `piece:dragon-roost-shrine` | Dragon Roost's round stone shrine platform with its steps and torii | 1000 units under its walkable top: place it at ground height minus 1000 |
+| `piece:dragon-roost-torii` | the shrine gate alone: two pillars and their cross beams | at the ground |
+| `piece:dragon-roost-walkway` | a straight wooden plank walkway | at the ground |
+| `piece:dragon-roost-walkway-turn` | a wooden plank walkway with a bend | at the ground |
+| `piece:dragon-roost-rope-posts` | two wooden posts joined by a rope | at the ground |
+| `piece:sea-rock-spire` | a tall, slim rock standing in the sea | 1000 units under the sea: place it at y -1000 |
+| `piece:sea-rock-pillar` | a rock pillar rising from the sea | 1000 units under the sea |
+| `piece:sea-rock-stack` | a narrow rock stack in the sea | 1000 units under the sea |
+| `piece:windfall-windmill-cap` | the top of Windfall's windmill: its pointed roof, the gallery ring and posts | at its gallery floor |
+| `piece:shipwreck-hull` | the hull of a wrecked ship, upright in the sea with its broken mast | about 370 units under the sea |
+| `piece:shipwreck-bow` | the bow of a wrecked ship lying in the sea | about 1050 units under the sea |
+
+A piece's position is its lowest point; the rocks, the shrine and the wrecks reach under the sea in their
+own islands, so their position is that far below the sea or ground. The island's water surface is not
+ground for the placement check, so they may stand in the sea.
+
+The buildings of one island share their textures and are built together (about 5.1 MiB of game
+memory for the Outset set while a room uses it). All the buildings of a room, every package's,
+share a budget of 24 MiB: each set once, and each building about 50 KiB (all four sets of today
+together take about 17 MiB). A mod that goes over it is refused with the reason. Buildings count toward the 16 actors per room, return when their room
+loads again, and full and portable save states keep them. A building may stand on an island, but not
+in the way of what the island needs, by the same rule as every world object (world-objects.md): its
+footprint (with 50 units around it) must keep clear of the island's villagers and their walking routes,
+chests, doors, items, switches, the places where Link arrives, cutscene and message areas and other objects
+(an object whose size isn't known counts with a radius of 120 units; pots, signs, rupees, message and hint areas don't count, see world-objects.md). Grass, flowers, trees, palms and
+birds may be under it, and unlike other world objects it may stand against the island's slopes and walls
+as its original did. It also stays in its room's square and clear of other world
+objects. A place that isn't clear is kept but not in the game: in the editor the footprint turns red and says what
+is in the way, an MCP `add_actor` or move returns `not_active` with every reason (with the game's own
+names), Check and export list it, and when the game starts it is left out with a line in the log.
+
+The buildings of one set share their materials: copies of one set in neighbouring rooms that are seen
+at once may share the light of one room.
+
+If the player's game files can't make a building (another game version, or the island's model
+differs from what the port expects), its placements are left out with a line in the log, and the
+rest of the mod works. The package must not contain game files, as for game objects.
+
+## Island grounds
+
+The ground of some small islands can be placed too, in the palette's **Islands** category: the
+island's rock and turf with its cliffs and its base under the sea, bare (no grass, flowers, trees or
+other objects, which are the game's actors, not part of the ground). Like the buildings, an island is
+built once from the player's own game files; nothing of the game goes into your package.
+
+```json
+{
+  "requires": {"game_objects": 4},
+  "actors": [
+    {"id": "crescent", "actor": "piece:crescent-moon-island", "stage": "sea", "room": 44,
+     "position": {"x": -174600, "y": 0, "z": 301125}, "rotation": {"x": 0, "y": 30, "z": 0}}
+  ]
+}
+```
+
+Island grounds need catalogue version 4. The position is the island's middle at its sea level: place it
+at `"y": 0` on the sea (the editor does this for you). Like a building, an island takes only `id`,
+`actor`, `stage`, `room`, `position` and `rotation` about the vertical axis.
+
+| Id | What it is |
+| --- | --- |
+| `piece:crescent-moon-island` | Crescent Moon Island: a low crescent of rock around a sheltered cove |
+| `piece:triangle-island` | Triangle Island: a small grassy islet with a shallow cliff and a rock beside it |
+| `piece:five-star-isles` | Five-Star Isles: five rocky pillars in a row with flat tops |
+| `piece:star-island` | Star Island: star-shaped, with grassy slopes and a pit in the middle |
+| `piece:bomb-island` | Bomb Island: a long island of grassy cliffs with a small pit |
+| `piece:fairy-island` | Northern Fairy Island: a heart-shaped grassy island with the fountain's spiked stone hut; its doorway leads to a hole |
+
+An island keeps its own collision: the ship stops at its shore, Link gets out and climbs onto it,
+walks its slopes and bumps into its cliffs and walls, as on the island itself. Its paths into
+caves and fountains lead nowhere: the pits of Star and Bomb Island and the hole of the Fairy Island
+are drops that send Link back to the room's restart point, as a bottomless pit does.
+An island also brings its own distant view: from the eight squares around its own, the island's
+low-detail model (the one the game shows for it from afar) stands where you placed it. Only Link's own
+square has the island's collision.
+
+An island is large (up to about 9,400 units across): choose a stretch of open sea in the square, away
+from the square's own island and its reefs, routes and objects. The usual placement rules apply
+(world-objects.md): what is in the way is listed in plain words, and an island that doesn't fit is kept
+in the editor but not in the game. The sea's surface around an island is not ground and doesn't count.
+An island costs about 0.5 MiB (Triangle Island) to 2.3 MiB (the Fairy Island) of its room's 24 MiB budget
+for buildings and island grounds, and its distant view about 0.12 MiB in a neighbouring square.
 
 ## Breakable native props
 
@@ -151,12 +455,34 @@ The allowlist below defines the supported variants.
 
 | `actor` | Fixed variant |
 | --- | --- |
-| `chuchu` | Ordinary green ChuChu |
-| `bokoblin` | Ordinary type-4 Bokoblin |
+| `chuchu` | Ordinary green ChuChu, or a declared colour (below) |
+| `bokoblin` | Ordinary type-4 Bokoblin, or a declared weapon variant (below) |
 | `moblin` | Ordinary Moblin |
-| `keese` | Ordinary Keese, the native KI bat; not Morth |
+| `keese` | Ordinary Keese, the native KI bat, or the Fire Keese (below); not Morth |
+| `miniblin` | Ordinary Miniblin: hidden until Link comes near and looks its way; never respawns |
+| `peahat` | Ordinary Peahat: it flies; knock it down (the boomerang, the Deku Leaf's wind, the hookshot), then strike. Or the Seahat (below) |
+| `darknut` | Darknut guarding its place with its sword, or a declared variant (below) |
+| `rat_hole` | A rat hole three rats come out of (see [Rat holes](#rat-holes)) |
+| `bokobaba` | Ordinary Boko Baba: a biting plant that stays where it is placed (put it on the ground). Strike its head to stun it, then cut its stem. It bites, but never grabs and chews Link. When it dies its head doesn't fly off and leave a Boko stick |
+| `bubble` | A red Bubble, or a blue one (below): a flaming skull that stays near the ground below it |
+| `octorok` | The small Octorok: it rises out of water and spits rocks at Link. Reflect a rock with the shield, or use arrows or the boomerang. Never the big Octorok that fires bombs |
+| `stalfos` | Ordinary Stalfos with its club: strike it until it falls apart, then hit its head before it pulls itself together (bombs and the Skull Hammer finish the head at once) |
+| `redead` | Ordinary standing Redead: its scream freezes Link, then it grabs and bites him; light stops it |
+| `mothula` | Mothula on the ground, or the winged one (below) |
+| `morth` | A single Morth: it clings to Link and slows him; a spin attack or rolling throws it off |
+| `magtail` | Ordinary Magtail: strike its head to curl it into a ball, then strike the ball (or lift and throw it) |
+| `poe` | Ordinary Poe with its lantern: without the lantern it possesses Link for a while |
+| `armos` | Armos statue: it wakes when Link comes near; strike its back |
+| `armos_knight` | Armos Knight: only a bomb in its open mouth (or a Light Arrow) defeats it |
+| `wizzrobe` | Red Wizzrobe: it appears and vanishes around where it was placed and casts fire at Link; or a summoner (variants `summoner_*`, below) |
+| `warship` | The enemy warship (sea stage only): it fires its cannon at Link; three hits from the boat's cannon sink it. Variant `route`: it sails one of the mod's paths (below) |
+| `big_octo` | **A target only:** the Big Octo (sea stage only), variants `four`, `eight` or `twelve` eyes (default `four`); it never attacks |
+| `floormaster` | Floormaster: a hand that rises from its hole, grabs Link for a moment and lets go. Variant `wandering`: its hole glides along one of the mod's paths (below) |
+| `gyorg` | A group of Gyorgs (sea stage only): variants `one` to `five` (default `three`); they come out of the sea when Link is near and bite him |
+| `kargaroc` | Kargaroc: it circles where it was placed and swoops at Link (variant `perched`: it sits until Link comes near; `moblin_rider` or `bokoblin_rider`: it carries a rider along one of the mod's paths, below) |
+| `wall_cannon` | The wall cannon: it turns to Link and fires cannonballs while he is inside its firing area, one of the mod's [room paths](#room-paths) (`"path": "<id>"`, an area, required); a bomb destroys it |
 
-All four use the same declaration fields:
+All of them use the same declaration fields:
 
 ```json
 {
@@ -169,7 +495,7 @@ All four use the same declaration fields:
 }
 ```
 
-Use `"actor": "chuchu"`, `"moblin"` or `"keese"` for the other fixed variants,
+Use any other `actor` name of the table for the other fixed variants,
 with a distinct actor ID and defeat flag for each copy. Declare reward items in
 the same package. `drops` is required and may be empty or contain up to eight
 distinct same-mod items, each with quantity 1–254. Only yaw rotation is accepted;
@@ -191,16 +517,345 @@ and ownership generation; compatibility after editing manifests is not promised.
 The adapter fixes native parameters and persistence sentinels. Packages cannot
 supply raw parameters, retail save bits or item tables, health overrides, capture
 or prison variants, dialogue, `then`, paths or custom models for these enemies.
-Own Bokoblin/Moblin weapon copies cannot be lifted or taken by Link in this
+Own Bokoblin/Moblin weapon copies and a Darknut's sword cannot be lifted or taken by Link in this
 preview. Combat is restricted to verified Link interactions; owned enemies and
 weapons must not damage retail actors or join retail enemy cohorts. Native item
 drops are replaced by the declared Bag rewards. Some native disappearance effects
 are omitted because their native effect actor also creates retail drops; identical
 retail defeat effects are not promised.
 
+What these enemies do to Link stays the game's own and ends on its own: a Bubble's curse or flames,
+a Fire Keese's burn and an Octorok's rock wear off as they do in the game. An Octorok's rocks are the
+game's own rocks: like the original's, a rock reflected with the shield can hit other enemies of the
+game nearby. A Seahat or an Octorok of a mod never counts towards the game's own tally of sea enemies.
+
+### Patrolling Bokoblins and Moblins
+
+A Bokoblin (any variant) or a Moblin with a `path` patrols it with the game's own patrol: it
+walks from its position through the points and turns round at the ends (`"mode": "back_and_forth"`)
+or goes round (`"mode": "loop"`). When it sees Link it fights him, then goes back to its route. Its
+pace and pauses are its own, so `speed` and `pauses` are refused, and so is `once`.
+
+```json
+{"id": "beach-patrol", "actor": "moblin", "stage": "sea", "room": 11,
+ "position": {"x": 0, "y": 1040, "z": -201500},
+ "path": {"points": [{"x": 0, "y": 1040, "z": -201000}, {"x": 500, "y": 1040, "z": -201000}], "mode": "loop"},
+ "defeated_flag": "beach-patrol.defeated", "drops": []}
+```
+
+The route is the port's own record (the one walking residents use), handed to the game's patrol
+code in place of a room path; the game's room data is never read for it. A route has up to 15
+points. In the editor, a Bokoblin's or Moblin's Inspector has the Route section.
+
+### Room paths
+
+Some of the game's actors take their path from the room they stand in: a line to follow or an area
+to watch. A mod declares its own such paths in a top-level `paths` list, and its actors name one by
+id (`"path": "<id>"`, a string; the route objects above stay the way residents, Bokoblins and Moblins
+walk):
+
+```json
+"paths": [
+  {"id": "fort-yard", "stage": "sea", "room": 11, "closed": true,
+   "points": [{"x": -800, "y": 0, "z": -197200}, {"x": 800, "y": 0, "z": -197200},
+              {"x": 800, "y": 0, "z": -195600}, {"x": -800, "y": 0, "z": -195600}]}
+]
+```
+
+| Field | |
+| --- | --- |
+| `id` | the path's id, unique in the mod |
+| `stage`, `room` | where it is; an actor uses only a path of its own stage and room |
+| `points` | 2 to 32 points, each more than one unit (across) from the one before |
+| `closed` | `true`: an area (the last point joins the first; at least 3 points, enclosing an area, its edges not crossing); default `false`: a line |
+| `next` | optional: the id of another of the mod's paths in the same room that follows this one (a Wizzrobe summoner summons at its points) |
+| a point's `release` | optional `true`: a Kargaroc lets its rider go at that point |
+
+The game's room data is never changed or read for these. Each path gets a number the room's own
+paths never use (the game's largest room has 56 paths; mod paths are numbered from 192), and when one
+of the mod's own actors asks its room for that number, the port answers with the path's record, in
+the game's own layout. The game's own lookup always runs first: a number the room has stays the room's,
+and the game's own actors never see a mod path. An area may be drawn either way round. The game's
+area test takes the point of the area nearest to what it tests and looks at the corner there, so keep
+areas convex (no corners pointing inwards); the editor's `path_inside` command uses the same test.
+A mod has up to 16 paths; the enabled mods together up to 64, and 24 in one room. Full save states
+keep the paths' records; after a load they are written again from the manifest.
+
+### Routes on room paths: warships and wandering Floormasters
+
+A warship with `"parameters": {"variant": "route"}` and a Floormaster with `"variant": "wandering"` need
+`"path"`: one of the mod's [room paths](#room-paths) in their own room, a line or an area.
+
+```json
+{"id": "patrol-ship", "actor": "warship", "parameters": {"variant": "route"}, "stage": "sea", "room": 11,
+ "position": {"x": -800, "y": 0, "z": -195800}, "path": "ship-lane",
+ "defeated_flag": "patrol-ship.defeated", "drops": []}
+```
+
+Both move with the game's own path movement, which always goes round: after the last point they head
+back to the first, so a line of two points is sailed (or glided) there and back as a loop. The warship
+turns in its own wide circle, so it may turn before reaching an end; it sails at the sea's height (the
+points' heights don't matter), slows to a stop to fire at Link and sails on. The Floormaster's hole
+glides along the points and rises when Link comes near, then sinks and glides on. Neither has a wall
+check of its own: the editor warns (it never refuses) when a warship's route crosses land (a route over
+land holds the ship at the shore) or a Floormaster's route leaves the floor (`check_path`, and the
+Inspector's Path section). The anchored warship and the ordinary Floormaster take no path.
+
+### Kargarocs with a rider
+
+A Kargaroc with `"parameters": {"variant": "moblin_rider"}` (or `"bokoblin_rider"`) carries a Moblin (or a
+Bokoblin) and flies one of the mod's room paths (`"path"`, its own room): round if the path is an area,
+there and back if it is a line. At a point of the path marked `"release": true` it lets the rider go;
+the rider drops and fights Link. A rider path needs at least one release point:
+
+```json
+"paths": [{"id": "raid", "stage": "sea", "room": 11, "closed": true, "points": [
+  {"x": -800, "y": 900, "z": -197000}, {"x": 800, "y": 900, "z": -197000},
+  {"x": 800, "y": 700, "z": -196200, "release": true}, {"x": -800, "y": 900, "z": -196200}]}]
+```
+
+The rider is an owned enemy of its own: its id is the Kargaroc's with `.rider`, its defeat flag the
+Kargaroc's with `.rider`, and it gives the Kargaroc's `drops` (the Kargaroc gives them too); its native
+drop is replaced like any owned enemy's. A rider still being carried goes with the Kargaroc (removed,
+unloaded or defeated); a released rider fights on until it is defeated or the room unloads. A rider that falls into
+the sea drowns as the game's own do, and that is its defeat (its flag and drops). A defeated rider is
+not made again: the Kargaroc then flies without one. Ids and defeat flags of rider Kargarocs are at most
+26 characters. In the editor, a point of the path is marked in the Path section ("Lets its rider go
+here") or with `set_path_point`.
+
+### Wizzrobe summoners
+
+A Wizzrobe with a summoner variant appears at the points of one of the mod's paths (`"path"`, its room)
+and summons enemies at the points of that path's next path (the path's `"next"`, another of the mod's
+paths in the same room; both are required). It is the game's own summoner: it throws a summon ball,
+the ball opens a summon door, and the door brings out one group of its wave (the game picks the group
+at random each time); when all of them are gone it summons again.
+
+| `variant` | The wave it summons |
+| --- | --- |
+| `summoner_keese` | Keese (up to 8) or Magtails (1 or 2) |
+| `summoner_keese_bubbles` | Keese (up to 8) or Bubbles (1 or 2) |
+| `summoner_bubbles` | Bubbles (1 or 2) |
+| `summoner_morths` | Morths, 15 or 20 at a time |
+| `summoner_chuchus` | ChuChus, 8 or 10 at a time |
+| `summoner_few_morths` | Morths, 8 or 10 at a time |
+
+```json
+"paths": [
+  {"id": "hall", "stage": "M_NewD2", "room": 0, "closed": true, "next": "spots", "points": [...]},
+  {"id": "spots", "stage": "M_NewD2", "room": 0, "closed": true, "points": [...]}
+],
+"actors": [{"id": "conjurer", "actor": "wizzrobe", "parameters": {"variant": "summoner_morths"},
+  "stage": "M_NewD2", "room": 0, "position": {"x": -1000, "y": 150, "z": 8300}, "path": "hall",
+  "defeated_flag": "conjurer.defeated", "drops": []}]
+```
+
+The summoned enemies are the port's own: owned like any placed enemy (the same rules for what they do
+to Link and to the game), but they have no flag and give no drops; only the summoner's own defeat sets
+its flag and gives its drops. A summon that is defeated is gone for that wave; the next wave brings new
+ones. Summons still there when the summoner goes (defeated, removed or unloaded) go with it. A
+summoner's summons don't count toward a room's 16 actors; they count toward the 128 owned actors of
+all enabled mods (a summoner of Morths counts 21). One summoner per room, two per mod. Its id and
+defeat flag are at most 23 characters (its summons add `.summon20`).
+
+### Wall cannons
+
+A wall cannon needs its firing area: one of the mod's [room paths](#room-paths), closed, in its own
+stage and room, named by `"path"`:
+
+```json
+{"id": "fort-cannon", "actor": "wall_cannon", "stage": "sea", "room": 11,
+ "position": {"x": 0, "y": 900, "z": -196000}, "rotation": {"x": 0, "y": 180, "z": 0},
+ "path": "fort-yard", "defeated_flag": "fort-cannon.defeated", "drops": []}
+```
+
+It is the game's own cannon: it turns towards Link (about 50 degrees to either side of where it faces)
+and fires while he, and the spot it aims at, are inside the area; it leads its shots when he is far.
+Its cannonballs hit only Link and his boat. A bomb (or the boat's cannon) destroys it in one hit; its
+defeat sets `defeated_flag` and gives the `drops`, and the destroyed cannon goes from the room. It sets
+no switch, never waits hidden for one and has no native drop. Keep its area convex and in front of it.
+Several cannons may share one area.
+
+### Rat holes
+
+`"actor": "rat_hole"` places a rat hole. Three rats come out of it, one after the other: the next
+one when the one before is defeated, while Link is near the hole (within about 13 metres, not right
+on top of it). They are the game's own rats: they climb out of the hole, run at Link when he has his
+back to them, jump on him and steal rupees, which they drop again as ordinary rupees when they are
+hit. The variant picks the rats:
+
+| `variant` | Rats |
+| --- | --- |
+| `rats` (the default) | Three ordinary rats |
+| `bomb_rats` | Three bomb rats: each lights a bomb, carries it to Link, throws it and runs back into the hole |
+| `mixed` | An ordinary rat, a bomb rat, then an ordinary rat |
+
+```json
+{"id": "cellar-hole", "actor": "rat_hole", "parameters": {"variant": "mixed"},
+ "stage": "sea", "room": 11, "position": {"x": 0, "y": 1040, "z": -201500},
+ "defeated_flag": "cellar-hole.closed", "drops": [{"item": "item:coral-shard", "quantity": 1}]}
+```
+
+Every rat is an enemy of its own: defeating it records `<defeated_flag>.rat1` (`.rat2`, `.rat3`)
+and gives the hole's `drops`, so `drops` are given once per rat. When all three are defeated the
+hole closes: its `defeated_flag` is set and the hole is gone for good; a `defeat_switch` on the hole
+is set at that moment. A rat that gets away comes out again later: a bomb rat throws its bomb at Link and
+runs back into the hole, and a rat that falls into deep water or carries something off is gone for now
+too. Only a rat Link defeats counts.
+
+A bomb rat's bomb belongs to the mod: its blast hurts Link and the mod's own enemies, but never the
+game's pots, barrels, switches, enemies or anything else of the game, and Link cannot pick it up.
+The hole is not blocked by objects set on it, as the game's own holes are, and it never calls the
+rat shop keeper. The hole's `id` and `defeated_flag` are at most 27 characters (the rats add `.rat1`
+to `.rat3`), and no other actor may use those rat names. A hole counts as four actors (itself and its
+rats) toward the 16 per room and 64 per mod; a room has at most two rat holes. In the editor, a
+placed hole's Inspector has **Variant**; removing the hole removes its rats too.
+
+### What the other enemies do, and what they leave out
+
+Each of these is the game's own enemy with its native movement and attacks; the declaring mod
+owns its defeat flag and drops, as above. Some parts of the original are left out where they would
+reach outside the mod:
+
+- **Stalfos:** its club belongs to it and leaves with it; Link cannot take it. A spin attack that
+  breaks it does not split it into a walking upper body and kicking legs (the upper body would be an
+  enemy of the game with its own drops): it falls apart as from any other finishing blow, and the
+  head must still be hit.
+- **Redead:** its scream and its bite hold Link the way the game does. If the Redead is removed (by
+  the editor, a room change or a state load) while it holds him, Link is free at once. It is not
+  created on the four stages whose game events have no Redead scream (`Ebesso`, `kazan`, `Msmoke`,
+  `tincle`).
+  Outdoors it can be stopped with reflected light only where the game has light; Light Arrows
+  destroy it.
+- **Mothula:** it fights alone; it does not release Morths (they would be the game's own Morths with
+  their drops). Place Morths next to it instead. A winged one that dives far from where it was
+  placed turns back. Its wings fly off as in the game.
+- **Morth:** place several for a swarm. A Morth that clings to Link stays in its room: when the room
+  changes, or the Morth is removed, it lets go of Link.
+- **Magtail:** Link can lift the curled ball and throw it; a thrown ball only hurts Link and the
+  mod's own enemies, not the world's objects.
+- **Poe:** its lantern belongs to it and leaves with it. Without the lantern it possesses Link (the
+  stick turns around for a while); removing the Poe ends the possession at once. Outdoors, where the
+  game has no light, only Light Arrows defeat it.
+- **Armos:** Link cannot carry a stunned Armos (carried away from its room it would vanish without a
+  defeat). In water it returns to where it was placed.
+- **Armos Knight:** it needs Link to have bombs (or Light Arrows). If it is removed while it holds a
+  swallowed bomb, the bomb goes with it. Its spikes only hurt Link and the mod's own enemies.
+- **Wizzrobe:** only the red one; the summoner (it calls other enemies) is not offered. Its fireballs
+  belong to it: they only hurt Link (they never light the world's torches) and vanish with it.
+- **Warship:** only on the sea; it stays where it was placed (never the ones that sail a route or the
+  golden treasure ship). Its flag and its cannonballs belong to it: the cannonballs only hurt Link and
+  his boat and go with the ship when it is removed. As in the game, its aim is loose: many of its
+  shots miss. The other "ship" pieces of the sea (the lookout
+  platforms, the Forsaken Fortress searchlights and wall cannons) are not offered.
+- **Big Octo (a target only):** this is not the game's full fight. It never swallows the boat, makes
+  no whirlpool and does not attack: it rises out of the sea when Link sails within its range on his
+  boat, and he shoots its eyes (arrows, the boomerang, the hookshot, bombs or the boat's cannon). When
+  the last eye is hit it is defeated and vanishes at once (no death scene, no earthquake). It has no
+  battle music.
+- **Floormaster:** it grabs only Link (never bombs, pots or other characters), and only for a moment:
+  it lets go instead of dragging him down, so it never sends him anywhere. It never makes a skull pot.
+  As in the game it only comes up on flat floor (all round its hole): on slopes, stairs or a narrow
+  pier it stays below.
+- **Gyorgs:** only on the sea, and, as in the game, only once Link has the boomerang (until then
+  nothing appears; the log says why). The whole group is one enemy with one `defeated_flag` and one
+  set of `drops`: it is defeated when every Gyorg of the group has been killed. Gyorgs that dive away
+  because Link left leave it undefeated, and the group comes back with the room. They only bite Link
+  and his boat, and killing them does not count towards the game's own Gyorg tally.
+  As in the game, they only come out in open water: not close to an island, a pier or one of the
+  sea's ships (Beedle's shop, rafts, the salvage ship), so place them well out at sea.
+- **Kargaroc:** it never carries Link or another enemy (the game's riders are not offered). It eats
+  bait Link throws near it, as in the game, and goes back to where it was placed when he leaves.
+
+None of them reads or writes the game's switches, and none sets the game's own enemy records; a
+fall out of the world (into deep water, or off the island) removes the copy without a defeat, and
+it comes back with its room.
+
+### Opening a door when enemies are defeated
+
+`"defeat_switch": "<switch actor id>"` on an enemy (a native one or your own combat model) names one of
+the mod's switch actors. When every enemy of the mod naming that switch is defeated, the switch's
+`switch_flag` is set, so the doors that follow it open. The game's own switches are never used. The
+defeat markers and the switch flag are mod story records, so a save state or a progress load restores
+them together; a defeat that happened just before is applied on the next game step.
+
+```json
+{"id": "gate-switch", "actor": "switch", "stage": "sea", "room": 11,
+ "position": {"x": 0, "y": 1040, "z": -201500}, "switch_flag": "gate.open"},
+{"id": "gate", "actor": "door", "stage": "sea", "room": 11,
+ "position": {"x": 300, "y": 1040, "z": -201500}, "switch": "gate-switch"},
+{"id": "guard-1", "actor": "bokoblin", "stage": "sea", "room": 11, "position": {"x": 100, "y": 1040, "z": -201200},
+ "defeated_flag": "guard-1.defeated", "drops": [], "defeat_switch": "gate-switch"},
+{"id": "guard-2", "actor": "miniblin", "stage": "sea", "room": 11, "position": {"x": -100, "y": 1040, "z": -201200},
+ "defeated_flag": "guard-2.defeated", "drops": [], "defeat_switch": "gate-switch"}
+```
+
+Stepping on the switch still sets it as well. In the editor, an enemy's Inspector has
+**Sets switch when defeated**, and a switch's or door's Inspector lists the enemies that set it.
+
+### Variants
+
+Some enemies have declared variants: name one with `"parameters": {"variant": "..."}`.
+Without it the enemy is its ordinary kind. A variant is a fixed choice the port has
+checked; packages still cannot give raw parameters.
+
+| `actor` | `variant` | What it does |
+| --- | --- | --- |
+| `chuchu` | `green` | The ordinary ChuChu (the same as no variant) |
+| `chuchu` | `red` | Jumps at Link when he comes close |
+| `chuchu` | `blue` | Sparks with electricity: a sword hit shocks Link; bombs or a stun first |
+| `chuchu` | `yellow` | Jumps at Link and sparks with electricity |
+| `chuchu` | `black` | Swords bounce off. Light (the Mirror Shield's reflection, the game's light beams) turns it to stone for a while: Link can lift and throw it to break it, or break it with the Skull Hammer |
+| `bokoblin` | `stick` | The ordinary Bokoblin with a stick (the same as no variant) |
+| `bokoblin` | `shield` | Carries a shield as well: it blocks and takes more hits |
+| `bokoblin` | `machete` | Fights with a machete instead of the stick |
+| `darknut` | `darknut` | The ordinary Darknut in armour with its sword (the same as no variant) |
+| `darknut` | `shield` | Carries a shield as well: it blocks Link's sword |
+| `darknut` | `helmet` | Wears a helmet and carries a shield: it takes twice the hits |
+| `darknut` | `mighty` | The Mighty Darknut: helmet, shield and cape, and it notices Link from further away |
+| `keese` | `normal` | The ordinary Keese (the same as no variant) |
+| `keese` | `fire` | The Fire Keese: its bite sets Link on fire for a moment; fire doesn't hurt it. (The game has no Ice Keese.) |
+| `peahat` | `peahat` | The ordinary Peahat (the same as no variant) |
+| `peahat` | `seahat` | The Seahat: bigger, it hovers over the water and dives at Link only while he sails the boat. Place it over the sea |
+| `bubble` | `red` | The Red Bubble (the same as no variant): its flames set Link on fire. Strike it, or first put its fire out with the Deku Leaf's wind or a bomb |
+| `bubble` | `blue` | The Blue Bubble: its touch curses Link, who can't use his sword or items until the curse wears off. Put its fire out with the Deku Leaf's wind or a bomb (a sword or the boomerang only bounce it off while it burns), then strike the skull |
+| `mothula` | `ground` | The Mothula on the ground, without wings (the same as no variant) |
+| `mothula` | `winged` | Flies and dives at Link; strike its wings off first |
+| `kargaroc` | `flying` | Circles where it was placed and swoops at Link (the same as no variant) |
+| `kargaroc` | `perched` | Sits where it was placed until Link comes near |
+
+```json
+{"id": "pier-chu", "actor": "chuchu", "parameters": {"variant": "blue"},
+ "stage": "sea", "room": 11, "position": {"x": 100, "y": 1040, "z": -201500},
+ "defeated_flag": "pier-chu.defeated", "drops": []}
+```
+
+Every colour uses the ordinary ground ChuChu with no game switch; defeat, drops and
+saves work as for the green one. A blue or yellow ChuChu can only be cut while it is not
+sparking: stun it first (the boomerang or a bomb), then use the sword. The stone black
+ChuChu is the one placed enemy Link may lift; breaking it counts as its defeat. Every Bokoblin variant is the ordinary waiting and
+searching Bokoblin without a path or game switch; its weapon stays the placed copy's
+own and cannot be taken. A Bokoblin can also patrol (above). The Moblin has no safe variant beyond the ordinary one: its lantern mode is the
+Forsaken Fortress searchlight guard (it raises the fortress alarm and reads the game's collection
+state), its flying mode needs a Kargaroc carrying it, its statue mode reads the game's Hyrule
+state. Its patrol is offered (above). Other names, and variants for an enemy that has
+none, are validator errors.
+
+Every Darknut guards the place you put it and fights Link when he comes near; it has no path and
+no game switch (defeating it opens no gate and makes no chest appear in the game; use your own
+`defeated_flag`, or `defeat_switch` to open one of your doors). Its armour, helmet and shield come off as in the game, and its sword can be
+knocked out of its hands; then it lies on the ground until the Darknut picks it up again. A Darknut
+picks up only its own sword, and Link cannot take it. The Mighty Darknut's cape tears under Link's
+sword (other attacks pass through it) and falls away with the armour. When the Darknut
+is defeated, removed in the editor or its room unloads, its sword and cape go with it. A full save
+state keeps it as it was (pieces off, sword on the ground); a portable one, like a room change,
+brings it back whole unless it was defeated. The game's frozen Darknuts (Hyrule Castle), the
+patrolling ones and the event Darknuts (the Master Sword chamber, the mini-boss ones) read game
+switches, paths or events and are not offered.
+
 Packages ship no game models, weapons, animations, shaders or global resource
 replacements for these declarations. Retail originals retain their own behavior
-and progress. The fixed variants are the entire preview allowlist; elemental,
+and progress. The variants above are the entire preview allowlist; other elemental,
 quest and alternate weapon variants are unsupported.
 
 ## Original mod enemies (combat preview)
@@ -365,7 +1020,7 @@ static-model validation and player-local conversion requirements below apply.
 Skinned item models and item-model animation are currently unsupported.
 `held_frames` is an integer from 1 to 300, default 90, measured in game logic
 frames at 30 Hz. Loading uses this same bounded interval. Rendering does not
-advance it. An item needs a `use` action; failed Use and Info do not request a
+advance it. An item needs a `use` action (or `hold_up`, below); failed Use and Info do not request a
 presentation. An event action is suitable when no modal information page is
 wanted. At most eight item model declarations are accepted per session.
 
@@ -376,9 +1031,25 @@ when its item/model fingerprint still matches; it does not replay Use. Resource
 loading may delay replacement while an outstanding native load finishes.
 Original retail equipment and resource tables remain separate.
 
-`held_model` does **not** replace a chest's get-item model. Custom chest get-item
-presentation is unsupported in this preview; existing chest rewards retain
-their existing stand-in presentation.
+**Holding it up when Link gets it.** With `"hold_up": true` the item is shown the
+way the game shows its own items: when Link gets it (a `give` action, a letter that
+encloses it, a quest reward, the chest of one of your treasure charts or your code),
+he plays the game's item-get pose and holds `held_model` up over his head, with the
+game's get message ("You got Lamp crystal!" and the item's description). The model
+takes the place of the item the game would hold up, turning the same way. The pose
+waits for a free moment (no talk, scene or other event running) and then plays once
+per get; when the Delivery Bag's pages are full, the caption says so instead. A full
+save state taken during the pose ends it the same way after loading. `hold_up` needs
+`held_model`; such an item needs no `use` action (with one, it is also shown in
+Link's hand when used).
+
+```json
+{"id": "crystal", "name": "Lamp crystal", "description": "It still glows faintly.",
+ "icon": "assets/crystal.png", "held_model": "crystal", "hold_up": true}
+```
+
+Without `hold_up`, a get shows the item's caption with a small jingle, and a chest of
+one of your charts holds up a stand-in of the game's.
 
 ## Static mod actors
 
@@ -405,25 +1076,34 @@ other placed actors. It must not specify `actor`, `params` or `parameters`.
 
 `source` is a package-relative `.glb` path with no parent components. Up to eight
 models may be declared per package. Source files are limited to 8 MiB, 4096
-vertices and 8192 triangles per model. Models contain one mesh, one indexed
-triangle primitive, one opaque material and one embedded RGB/RGBA PNG. Texture
-width and height are at most 512; width must be a multiple of 64 and height a
-multiple of eight. The original example and its reproducible source are listed
-in [ASSETS.md](../examples/guest-mods/sdk-v3-windfall/ASSETS.md).
+vertices and 8192 triangles per model. A model contains one mesh with up to 32
+indexed triangle primitives and up to 16 materials. Each material has one
+embedded RGB/RGBA PNG base colour texture and is opaque or a cut-out
+(`alphaMode` `MASK`); several primitives may share a material. Texture width and
+height are at most 512; width must be a multiple of 64 and height a multiple of
+eight. All textures of one model together take at most 1 MiB as decoded RGBA
+(one 512 × 512, four 256 × 256 or sixteen 128 × 128 textures). See
+[Several materials](world-objects.md#several-materials) for the material kinds.
+The original example and its reproducible source are listed in
+[ASSETS.md](../examples/guest-mods/sdk-v3-windfall/ASSETS.md).
 
 In Blender, model in metres with positive Y as the exported up axis. Put the
-object origin at its foot for ground placement, triangulate the mesh, assign a
-single material with a PNG base-colour texture, and export **glTF 2.0 Binary
-(.glb)** with normals and UVs. Export only the selected model and disable
-animations, skinning, morph targets and optional compression/extensions. The
-converter accepts a single instance in the active scene and bakes rigid node
-transforms, including scale; one exported metre becomes 100 game units. The
-manifest's position and collision dimensions use game units. The converter
-preserves the authored origin. Use opaque base colour with no tint; additional
-PBR texture inputs, transparency and double-sided materials are unsupported.
+object origin at its foot for ground placement, triangulate the mesh, give each
+surface its own material slot with one PNG base-colour texture (an Image Texture
+node feeding Base Color), and export **glTF 2.0 Binary (.glb)** with normals and
+UVs. Export only the selected model and disable animations, skinning, morph
+targets and optional compression/extensions. The converter accepts a single
+instance in the active scene and bakes rigid node transforms, including scale;
+one exported metre becomes 100 game units. The manifest's position and
+collision dimensions use game units. The converter preserves the authored
+origin. Use base colour textures with no tint. Alpha clip (`MASK`) cut-outs and
+double-sided materials are supported; blended transparency and additional PBR
+texture inputs (metallic-roughness, normal, occlusion, emissive) are refused.
 
 The player's machine converts the original GLB to Wii U BFRES using a static
-material, toon texture and shader from the player's own game. Each model receives
+material, toon texture and shader from the player's own game (for several
+materials or a cut-out, the opaque and cut-out materials of another get-item
+model, so all materials are lit alike). Each model receives
 its own archive and model identity. Generated BFRES and shaders belong in the
 package's local data cache; do not ship them in packages. Editing the model or
 changing the player template invalidates its cache key. Packages and this
@@ -441,7 +1121,8 @@ or `"pushable"`. `attention.prompt` chooses `"check"` (the default) or `"talk"`.
 Dialogue uses the existing message and action system; static actors face Link by
 turning their whole body. Skinned models add the bounded features described below. Model counts and geometry caps bound input
 size. The runtime also measures native game heap allocations and enforces
-2 MiB per model, 8 MiB per mod and 16 MiB per room. Shared model resources count
+2 MiB per model, 8 MiB per mod and 32 MiB per room (island buildings count toward the room's
+32 MiB and have their own 24 MiB within it, not the mod's 8 MiB). Shared model resources count
 once; actor instances count separately. Cached model resources remain charged
 until the game unloads them. Loading preserves at least 8 MiB in the backing
 archive heap and 1 MiB in the actor heap's parent. A model that cannot fit fails
@@ -452,7 +1133,18 @@ These budgets cover game heaps; they do not describe GPU memory usage.
 ## Skinned models and motion
 
 Set a model declaration's `kind` to `"skinned"`; omitted `kind` means `"static"`.
-The geometry, material and embedded PNG limits above also apply to skinned GLBs.
+The geometry, material and embedded PNG limits above also apply to skinned GLBs:
+up to 16 materials (opaque or `MASK` cut-out, optionally double-sided) in up to 32
+triangle primitives, and 1 MiB of decoded textures per model. Every primitive
+needs `JOINTS_0` and `WEIGHTS_0` and is bound to the same skin, so the parts of a
+model with several materials move together. A vertex on the border between two
+materials is exported once per material; give both copies the same joints and
+weights (Blender does) and the border stays closed in every pose. Every material
+copies the animated material of an object in the player's own game, so all of
+them are lit alike. The example in
+`examples/guest-mods/sdk-v3-skinned-materials` is an animated creature with cloth,
+bark and cut-out leaf materials that walks a route and plays its clips in a demo
+step; see [Several materials](world-objects.md#several-materials).
 Export one identity mesh node with one skin, and a connected, parent-first skeleton
 of at most 32 uniquely named bones. Bone names use ASCII letters followed by
 letters, digits or underscores, at most 31 characters. Bones use translation and
@@ -500,7 +1192,10 @@ that chain. Look-at actors must remain upright: X/Z rotation is zero modulo
 The angle limits constrain the local joint pose, not exact world-space targeting
 under arbitrary animated ancestor roll. Paths have 2–16
 points, speed greater than zero and at most 1500 game units/second, and mode
-`"once"` or `"loop"`. Adjacent points, including a loop's closing edge, need more
+`"once"`, `"loop"` or `"back_and_forth"` (it walks back to the first point and out again).
+`"pauses": true` makes it stand for a moment now and then (it walks for about 7 to 10 seconds,
+stands for 2 to 3, with its idle clip). `"walk"` and `"idle"` name the clips it walks and stands
+with (default `walk` and `idle`; both must be in the model). Adjacent points, including a loop's closing edge, need more
 than one game unit of horizontal separation. Native ground and collision checks
 can refuse movement; the path advances from accepted positions. Actors stop at
 Link's capsule rather than walking through it. Path-driven body facing turns
@@ -565,6 +1260,22 @@ array contains at most eight actions:
 `value`. Referenced items, quests, quest steps and scenes must be declared in the
 same manifest. Actions run in order after the talk closes; a failing action stops
 the sequence. Skipping or aborting a scene does not apply its end actions.
+
+`{"action": "stage", "id": "sky", "room": 0, "point": 0}` takes Link into one of
+the same package's own stages ([mod stages](mod-stages.md)), at spawn `point` of
+room `room` (both default to 0), with a fade. It works in a talk's `then` and a
+scene's `end.then`; at the end of a demo that carries Link (see
+[Carrying an actor on another's joint](#carrying-an-actor-on-anothers-joint)) it
+makes a ride into the stage. It fails (and stops the sequence) when the stage is
+not built.
+
+`{"action": "give", "id": "chart:keeper-map"}` gives Link one of your treasure charts
+(declared in the same manifest's `charts`, see
+[Charts and markers](mod-sdk-v2.md#charts-and-markers)). It works like a chart a letter
+encloses: the MAP screen's chart list shows it and the story notebook knows it. A chart is
+given once; giving it again (or after it is finished) changes nothing. It takes no `count`,
+and `take` can't take a chart. This action works in an actor's `then`, a talk's `then` and a
+scene's final `end.then`.
 
 `{"action":"quest_done","id":"lantern"}` completes a quest declared in the
 same manifest. It gives the declared reward once, marks the quest done in the
@@ -750,6 +1461,127 @@ end rewards. Stop reasons are 0 Finished, 1 Skipped, 2 Aborted, 3 StateLoaded,
 4 Interrupted, 5 Failed and 6 TimedOut. START/STOP receive reason 0; RESTORE receives
 the actual lease exit reason. A data-only scene without
 a registered hook must not declare music steps.
+
+### Demo steps (preview)
+
+A `demo` step plays keyframe tracks through the game's own cutscene system, the
+one its story cutscenes use. The port turns the tracks into the game's demo data
+when the step starts. The data never comes from a package file. The game then plays
+the demo and ends it.
+
+```json
+{"type": "demo", "frames": 240, "origin": "link",
+ "camera": {"eye": {"keys": [{"frame": 0, "value": {"x": 0, "y": 700, "z": -1200}}]},
+            "target": {"curve": "linear", "keys": [{"frame": 0, "value": {"x": -2500, "y": 1800, "z": 3000}},
+                                                   {"frame": 240, "value": {"x": 2500, "y": 900, "z": 3000}}]},
+            "fovy": {"keys": [{"frame": 0, "value": 55}]}},
+ "actors": [{"id": "bird", "model": {"archive": "Dk", "file": "dk.bdl"},
+             "position": {"curve": "linear", "keys": [{"frame": 0, "value": {"x": -2500, "y": 1800, "z": 3000}},
+                                                      {"frame": 240, "value": {"x": 2500, "y": 900, "z": 3000}}]},
+             "rotation": {"keys": [{"frame": 0, "value": {"x": 0, "y": 90, "z": 0}}]},
+             "clips": [{"frame": 0, "archive": "Dk", "file": "fly1.bck"}]}],
+ "sounds": [{"frame": 20, "id": 22820, "actor": "bird"}]}
+```
+
+- **Frames and timing.** `frames` (1–9000) is the demo's length in the game's 30 Hz cutscene frames. Every key, clip, sound and particle has a `frame` inside it.
+- **Origin.** `"origin": "link"` makes every position relative to where Link stands when the step starts. An `{x,y,z}` origin uses that point instead, and `angle` turns the whole demo around the vertical axis. Without an origin, positions are world positions.
+- **Tracks.** A track is `{"curve": ..., "keys": [{"frame": n, "value": ...}]}` with 1–64 keys in increasing frame order. A value is `{x,y,z}`, or a number for `fovy` (5–120) and `roll` (degrees).
+  - `curve` is `linear` (the default), `smooth` (passes through every key), `bspline` (rounder, does not pass through inner keys) or `step` (jumps at each key).
+  - After its last key, a track holds its final value.
+- **Camera.** `eye` and `target` come together. `fovy` and `roll` are optional. Without a camera track, the camera keeps its gameplay view.
+- **Actors.** An actor names one of four things:
+  - a game actor by its stage name, with `"actor": "Dk"`, for example. When the room has none, the port creates one for the demo at the first key of its position track (or beside Link) and removes it afterwards; `"params"` (a number or `"0x..."`) are its creation parameters. `"spawn": false` requires the room's own actor instead; without it the step fails with a reason in the log and the scene ends cleanly.
+  - Link, with `"actor": "Link"`.
+  - a model from the player's game, with `"model": {"archive", "file"}`.
+  - an actor this mod placed (a resident villager, a mod actor, an enemy), with `"character": "<its id>"`. It follows the tracks even where its own code doesn't know cutscenes; a mod actor plays its own clips by name, as `"clips": [{"frame": 0, "clip": "walk", "loop": true}]`.
+- **Actor tracks.** Every actor can have `position`, `rotation` (degrees) and `scale` tracks.
+- **Clips.** `clips` play a `.bck` from any archive at `speed` (default 1) on game actors whose code supports cutscenes (story characters, the Helmaroc King and other cutscene actors).
+- **Link.** Link takes demo `modes` instead of clips:
+  - `{"frame": 0, "mode": "walk"}` makes him walk along his position track. The names are `wait`, `walk`, `dash`, `turn`, `talk`, `holdup`, `keep`, `look_around`, `salute`, `surprised`, `lookup`, `nod`, `present` and `smile`; the game's own mode numbers work too.
+  - `{"frame": 60, "clip": "udeage_onetime.bck"}` plays one of his own cutscene animations (from the game's Link demo animation archive that is loaded at the time).
+  - `"data"` (hex) passes a raw cutscene data block, for modes the list doesn't cover.
+- **Archives.** Archive and file names refer to the player's own game. The port looks up their ids and loads the archives before the demo starts. Game demo archive names that the game treats specially are refused: Demo04, Demo08, Demo29, Demo37, Demo45 and Demo46.
+- **Sounds.** `sounds` play a game sound id at a `position` or following an actor, with `volume` and `pan` (0–1).
+- **Particles.** `particles` start a game particle id at a `position`, or on an actor, optionally on one of its joints (`joint`).
+- **Skip and save states.**
+  - Plus skips the scene; the demo stops where it is. An open message window closes first (a short out animation).
+  - Loading a state saved during a demo ends the demo and gives control back. It is never resumed.
+
+A demo step can follow another demo step directly: it starts as soon as the
+previous demo has been cleared (about a third of a second, longer while a message
+window closes). The step's deadline is its length plus a margin. A demo that the game does not
+start within a few seconds fails the scene instead of keeping control.
+`messages` (`{"frame", "text"}`, at least two frames before the end, up to 16)
+show their text in the game's message window at their frame. The demo then
+waits there until the player closes the message with A, and continues. Tracks
+that are moving along a curve keep moving while a message is open; the demo's
+next keys wait. Each message adds 20 seconds of reading time to the step's
+deadline. Messages are plain text; choices are not available inside a demo
+(use a `choice` step before or after it).
+
+#### Carrying an actor on another's joint
+
+`attach` puts one demo actor on a joint of another from a frame on; `detach`
+lets it go. This is how the game's own cutscenes have the Helmaroc King hold
+someone in its beak or claws.
+
+```json
+"attach": [{"frame": 0, "actor": "baker", "to": "bird", "joint": "j_dk_ashi_r3",
+            "offset": {"x": 150, "y": 0, "z": 0}, "upright": true}],
+"detach": [{"frame": 150, "actor": "baker", "fall": true}]
+```
+
+- `actor` and `to` are ids from the step's `actors`. The carried actor can be a
+  game actor, Link or one of your mod's characters (a villager or a mod actor).
+  The carrier can be a game actor that plays cutscene animation (the Helmaroc
+  King, story characters), Link or a mod actor. Models from the game's archives
+  (`"model"`) can't carry or be carried, and villagers can't carry.
+- `joint` is the carrier's joint name, as its model names it. When the name is
+  wrong, the log lists the model's joints and the actor is not carried.
+- `offset` (in the joint's own axes and scale) and `rotation` (degrees) place the
+  carried actor relative to the joint. A joint's axes rarely point the way the
+  world does, so try a few offsets. `"upright": true` keeps only the joint's
+  heading, so the carried actor stays upright.
+- While it is carried, an actor ignores its own position and rotation tracks.
+  After `detach` it stays where it was let go. With `"fall": true` it falls
+  from there to the ground below it. It stays there until its next position
+  key or its next `attach`, so leave out position keys between the detach and
+  where you want it to move again. Its own code may still turn it (a villager
+  goes back to its waiting pose).
+- Link can only be carried while he plays one of his demo animations (`"clip"`),
+  from the attach frame until the detach.
+- An actor has one carrier at a time, and a carried actor can't carry another.
+  A demo has up to 8 attachments.
+- Villagers only turn around their vertical axis, so they hang upright whatever
+  the rotation.
+
+#### Time and weather
+
+`time` and `weather` change the time of day and the rain at a frame. The
+game's own event system does this (the same instant change its story events
+use).
+
+```json
+"time": [{"frame": 40, "hour": 22}],
+"weather": [{"frame": 80, "rain": 1}],
+"keep_time": false, "keep_weather": false
+```
+
+- `hour` is 0–24 (fractions are minutes: 22.5 is 22:30).
+- A time change never starts a new day, even when it goes back past midnight
+  (22:00 to 06:00): the day of the week, letters and the game's daily events
+  stay as they were.
+- `rain` is 0–1: 1 is the game's full rain, 0 stops the rain, and values in
+  between give lighter rain. Rain also turns the sky and colours rainy. On the
+  Great Sea the port holds the demo's rain while the demo runs, so the game's
+  own changing weather doesn't take it away.
+- When the demo ends, is skipped, or a state is loaded, the time and weather
+  from before the demo come back. `"keep_time": true` or `"keep_weather": true`
+  keeps the demo's values instead. On the Great Sea the game's own weather
+  takes over again after a kept weather change.
+- A demo changes time and weather at up to 8 different frames. Each list is in
+  frame order.
+- Thunder and wind can't be set.
 
 
 ## Native particles (preview)

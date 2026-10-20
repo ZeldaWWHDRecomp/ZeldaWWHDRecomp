@@ -11,6 +11,7 @@
 #include "../mods/save_folder_writes.h"
 #include "../platform/filesystem.h"
 
+#include <atomic>
 #include <cstdio>
 #ifndef _WIN32
 #include <strings.h>
@@ -24,6 +25,7 @@
 #include "../runtime.h"
 #include "../write_watch.h"
 #include "../mods/content.h"
+#include "../mods/mod_stages_files.h"
 #include "../game_languages.h"
 #include "../rtl_text.h"
 #include "save_root.h"
@@ -32,12 +34,15 @@ namespace hle_fs {
 namespace {
 std::mutex g_save_root_mutex;
 std::string g_save_root;
+std::atomic<bool> g_save_root_set{false};  // an override is set (the world editor's test mode): only then the lock
 }  // namespace
 void set_save_root(const std::string& dir) {
     std::lock_guard<std::mutex> lk(g_save_root_mutex);
     g_save_root = dir;
+    g_save_root_set.store(!dir.empty(), std::memory_order_release);
 }
 std::string save_root() {
+    if (!g_save_root_set.load(std::memory_order_acquire)) return config::save_dir;
     std::lock_guard<std::mutex> lk(g_save_root_mutex);
     return g_save_root.empty() ? config::save_dir : g_save_root;
 }
@@ -156,6 +161,7 @@ std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(mode=="r"||mode=="rb")if(auto model=actor_model_cache::archive_for(guest);!model.empty())return model;
     if(mode=="r"||mode=="rb")if(auto model=story_mail::model_override(guest);!model.empty())return model;  // the story notebook's model
     if(mode=="r"||mode=="rb")if(auto lyt=story_lyt_screen::archive_for(guest);!lyt.empty())return lyt;  // a story layout (story_lyt_screen.h)
+    if(mode=="r"||mode=="rb")if(auto stage=mod_stages::archive_for(guest);!stage.empty())return stage;  // a mod stage (mod_stages.h)
     auto override=mods::content::replacement(guest,mode);
     if(!override.empty())if(const char* trace=std::getenv("WWHD_TEST_CONTENT_TRACE");trace&&std::string(trace)=="1")LOG("[content-mod] read %s -> %s",guest.c_str(),override.c_str());
     if(override.empty()&&(mode=="r"||mode=="rb"))override=game_lang::redirect(guest);

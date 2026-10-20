@@ -32,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 
 #include "guest_addr.h"
 #include "story_store.h"
@@ -227,6 +228,16 @@ bool stage_is(uint32_t addr, const std::string& name) {
         if (!ch) return true;
     }
     return name.size() == 8;
+}
+// the guest stage name at addr (up to 8 bytes)
+std::string stage_name(uint32_t addr) {
+    std::string name;
+    for (uint32_t i = 0; i < 8; i++) {
+        const char ch = char(ld8(addr + i));
+        if (!ch) break;
+        name += ch;
+    }
+    return name;
 }
 story_mail::Book book() { return story_store::book(); }
 
@@ -1183,6 +1194,38 @@ std::vector<std::pair<std::string, std::string>> npc_recipes() {
     return out;
 }
 
+namespace {
+// The tables of a mod's manifest quests (declare, redeclare): its registrations, declarations, resident
+// takeovers and sail lines.
+void add_quests(const std::string& mod, const std::string& mod_name, const std::vector<ManifestQuest>& quests) {
+    for (const ManifestQuest& q : quests) {
+        if (define(mod, mod_name, q.id, q.title, q.reward_text, "") < 0) {
+            LOG("[notebook] %s: quest \"%s\" not registered", mod.c_str(), q.id.c_str());
+            continue;
+        }
+        std::lock_guard lock(g_mu);
+        Quest* reg = find(mod, q.id);
+        reg->hidden = q.journal != "on_enable";
+        auto owned=q;for(auto&st:owned.steps)st.when.flag_mod=mod;
+        g_declared.push_back({mod, reg->key, owned});
+        if (q.letter_encloses_notebook && q.has_letter) {
+            if (mod == kNotebookPackage) story_mail::set_notebook_letter(mod, q.letter_id);
+            else LOG("[notebook] %s: only the Story Notebook package's letter brings the notebook", mod.c_str());
+        }
+        for (const ManifestStep& st : owned.steps) {
+            if (st.has_talk && !st.needs_letter && !st.when.any())
+                LOG("[notebook] %s: warning: quest \"%s\" step %u takes over %s with no condition (no letter, no \"available\"): it "
+                    "speaks for the quest whenever the step is current", mod.c_str(), q.id.c_str(), st.n,
+                    npc_catalogue().entry(st.resident)->name.c_str());
+            if (st.has_talk)
+                g_takeovers.push_back({reg->key, uint8_t(st.n), st.resident, st.needs_letter, st.lines, st.reward, st.when, st.follow,
+                                       st.give_chart.empty() && st.give_item.empty() ? std::string() : mod, st.give_chart, st.give_item});
+            if (!st.sail_line.empty()) g_sail_lines.push_back({reg->key, uint8_t(st.n), st.sail_line});
+        }
+    }
+}
+}  // namespace
+
 bool declare(const std::string& mod, const std::string& mod_name, const mods::json::Value& manifest) {
     std::vector<ManifestQuest> quests;
     std::vector<ManifestChart> charts;
@@ -1215,36 +1258,101 @@ bool declare(const std::string& mod, const std::string& mod_name, const mods::js
     }
     for (const std::string& w : warnings) LOG("[notebook] %s: warning: %s", mod.c_str(), w.c_str());
     if (quests.empty()) return true;
-    for (const ManifestQuest& q : quests) {
-        if (define(mod, mod_name, q.id, q.title, q.reward_text, "") < 0) {
-            LOG("[notebook] %s: quest \"%s\" not registered", mod.c_str(), q.id.c_str());
-            continue;
-        }
-        std::lock_guard lock(g_mu);
-        Quest* reg = find(mod, q.id);
-        reg->hidden = q.journal != "on_enable";
-        auto owned=q;for(auto&st:owned.steps)st.when.flag_mod=mod;
-        g_declared.push_back({mod, reg->key, owned});
-        if (q.letter_encloses_notebook && q.has_letter) {
-            if (mod == kNotebookPackage) story_mail::set_notebook_letter(mod, q.letter_id);
-            else LOG("[notebook] %s: only the Story Notebook package's letter brings the notebook", mod.c_str());
-        }
-        for (const ManifestStep& st : owned.steps) {
-            if (st.has_talk && !st.needs_letter && !st.when.any())
-                LOG("[notebook] %s: warning: quest \"%s\" step %u takes over %s with no condition (no letter, no \"available\"): it "
-                    "speaks for the quest whenever the step is current", mod.c_str(), q.id.c_str(), st.n,
-                    npc_catalogue().entry(st.resident)->name.c_str());
-            if (st.has_talk)
-                g_takeovers.push_back({reg->key, uint8_t(st.n), st.resident, st.needs_letter, st.lines, st.reward, st.when, st.follow,
-                                       st.give_chart.empty() && st.give_item.empty() ? std::string() : mod, st.give_chart, st.give_item});
-            if (!st.sail_line.empty()) g_sail_lines.push_back({reg->key, uint8_t(st.n), st.sail_line});
-        }
-    }
+    add_quests(mod, mod_name, quests);
     // the notebook, its marker on the sea chart and the letters are needed
     note_import();
     story_chart::note_import();
     story_mail::note_import();
     LOG("[notebook] %s: %zu quest(s) from the manifest", mod.c_str(), quests.size());
+    return true;
+}
+
+// the residents' takeovers as they are now (runtime/tools/story_notebook_test.cpp)
+std::vector<Takeover> takeovers() {
+    std::lock_guard lock(g_mu);
+    return g_takeovers;
+}
+
+bool story_idle(std::string& why) {
+    if (g_open) return why = "the story notebook is open", false;
+    if (g_talk.phase != Talk::None) return why = "a quest talk is running", false;
+    if (g_sail.phase != Sail::Idle) return why = "the King of Red Lions is speaking", false;
+    if (story_mail::busy()) return why = "a letter or a quest line is on the screen", false;
+    return true;
+}
+
+bool redeclare(const std::string& mod, const std::string& mod_name, const mods::json::Value& manifest, Redeclared& out, std::string& why) {
+    out = {};
+    std::vector<ManifestQuest> quests;
+    std::vector<ManifestChart> charts;
+    std::vector<ManifestLetter> letters;
+    std::vector<std::string> warnings;
+    if (!parse_quests(manifest, quests, why, npc_catalogue(), &warnings) || !parse_charts(manifest, charts, why) ||
+        !parse_letters(manifest, letters, why))
+        return false;
+    // what the mod's manifest declared so far, and room for the new list: nothing changes on a refusal
+    std::set<uint16_t> old_keys;
+    std::vector<std::string> old_letters;
+    {
+        std::lock_guard lock(g_mu);
+        for (const Declared& d : g_declared)
+            if (d.mod == mod) {
+                old_keys.insert(d.key);
+                if (d.quest.has_letter) old_letters.push_back(d.quest.letter_id);
+            }
+        for (const LooseLetter& l : g_letters)
+            if (l.mod == mod) old_letters.push_back(l.letter.id);
+        auto dropped = [&](const Quest& q) { return q.mod == mod && old_keys.count(q.key) && !q.texts_from_mod; };
+        unsigned all = 0, mine = 0;
+        for (const Quest& q : g_quests)
+            if (!dropped(q)) all++, mine += q.mod == mod;
+        for (const ManifestQuest& nq : quests) {
+            const uint16_t key = quest_key(mod, nq.id);
+            const Quest* had = find(mod, nq.id);
+            if (!had || dropped(*had)) all++, mine++;
+            for (const Quest& q : g_quests)
+                if (q.key == key && !(q.mod == mod && q.id == nq.id))
+                    return why = "quest " + nq.id + " can't be told apart from " + q.mod + "'s quest " + q.id + " in the save file (same key); rename one", false;
+        }
+        if (all > kMaxQuests || mine > kMaxQuestsPerMod)
+            return why = "no room in the notebook (" + std::to_string(kMaxQuestsPerMod) + " quests per mod, " + std::to_string(kMaxQuests) + " in all)", false;
+    }
+    std::vector<story_chart::Declared> defs;
+    for (const ManifestChart& ch : charts) defs.push_back({ch.id, ch.name, ch.description, ch.x, ch.z, ch.item_mod, ch.item_game});
+    if (!story_chart::redefine(mod, defs, out.charts_kept, why)) return false;
+    // the tables: this mod's entries out, the manifest's in
+    {
+        std::lock_guard lock(g_mu);
+        std::erase_if(g_declared, [&](const Declared& d) { return d.mod == mod; });
+        std::erase_if(g_takeovers, [&](const Takeover& t) { return old_keys.count(t.quest) != 0; });
+        std::erase_if(g_sail_lines, [&](const SailLine& l) { return old_keys.count(l.quest) != 0; });
+        std::erase_if(g_letters, [&](const LooseLetter& l) { return l.mod == mod; });
+        std::erase_if(g_quests, [&](const Quest& q) { return q.mod == mod && old_keys.count(q.key) && !q.texts_from_mod; });
+    }
+    add_quests(mod, mod_name, quests);
+    std::vector<story_mail::LetterText> texts;
+    std::vector<std::string> now_letters;
+    for (const ManifestQuest& q : quests)
+        if (q.has_letter) texts.push_back({q.letter_id, q.letter_sender, q.letter_text}), now_letters.push_back(q.letter_id);
+    {
+        std::lock_guard lock(g_mu);
+        for (const ManifestLetter& l : letters) {
+            texts.push_back({l.id, l.sender, l.text}), now_letters.push_back(l.id);
+            g_letters.push_back({mod, l});
+        }
+        for (const Takeover& t : g_takeovers)
+            for (const ManifestQuest& q : quests) out.talks += t.quest == quest_key(mod, q.id);
+        for (const ManifestQuest& q : quests)
+            for (const ManifestStep& st : q.steps) out.sail_waits |= !st.sail_line.empty() && !g_sail_installed;
+    }
+    std::vector<std::string> forget;
+    for (const std::string& id : old_letters)
+        if (std::find(now_letters.begin(), now_letters.end(), id) == now_letters.end()) forget.push_back(id);
+    story_mail::reload(mod, texts, forget);
+    out.quests = unsigned(quests.size()), out.letters = unsigned(letters.size()), out.charts = unsigned(charts.size());
+    for (const std::string& w : warnings) LOG("[notebook] %s: warning: %s", mod.c_str(), w.c_str());
+    LOG("[notebook] %s: the story tables again (world editor): %u quest(s), %u talk(s), %u letter(s), %u chart(s)", mod.c_str(), out.quests,
+        out.talks, out.letters, out.charts);
     return true;
 }
 
@@ -1265,9 +1373,25 @@ void declared_tick() {
         loose = g_letters;
     }
     for (const LooseLetter& l : loose) {
-        if (story_mail::send(l.mod, l.letter.id, l.letter.sender, l.letter.text) != story_mail::kResultRead) continue;
-        story_mail::Book b = book();
         const uint16_t key = story_mail::letter_key(l.mod, l.letter.id);
+        // a timed letter waits for its condition and its days, until it is sent
+        if (l.letter.timed() && story_mail::state(l.mod, l.letter.id) == story_mail::kResultNone) {
+            story_mail::Book b = book();
+            const bool holds = letter_condition(l.letter.when, [&](const std::string& q) { return int32_t(saved_step(b, quest_key(l.mod, q))); },
+                                                [&](const std::string& f) { return story_actors::flag(b, l.mod, f); });
+            const uint16_t today = ld16(save_base() + kSaveDay);
+            const bool counting = b.has(story_mail::kRecordLetterDayLow, key);
+            const bool due = holds && letter_due(b, key, l.letter.after_days, today);
+            if (holds && !counting && b.has(story_mail::kRecordLetterDayLow, key))
+                LOG("[notebook] %s: letter \"%s\" waits %u day(s) from day %u", l.mod.c_str(), l.letter.id.c_str(), l.letter.after_days, today);
+            if (!due) continue;
+            LOG("[notebook] %s: letter \"%s\" is due: it waits in the postbox", l.mod.c_str(), l.letter.id.c_str());
+        }
+        const int32_t sent = story_mail::send(l.mod, l.letter.id, l.letter.sender, l.letter.text);
+        if (sent < story_mail::kResultWaiting) continue;
+        story_mail::Book b = book();
+        if (l.letter.after_days && b.has(story_mail::kRecordLetterDayLow, key)) erase_letter_day(b, key);
+        if (sent != story_mail::kResultRead) continue;
         if (b.get(story_mail::kRecordLetterEnclosures, key)) continue;
         if (!b.set(story_mail::kRecordLetterEnclosures, key, 1)) continue;  // no room: next time
         for (const std::string& chart : l.letter.charts)
@@ -1780,9 +1904,7 @@ void note_live_place(Cpu* c, uint32_t npc) {
     const uint32_t stage = g_call(&probe, kPlay, {}) + kPlayStartStage;
     const uint8_t number = ld8(npc + kPeopleNumber);
     const int room = int8_t(ld8(npc + kActorRoom));
-    bool here = false;
-    for (const NpcActor& a : e->actors)
-        here |= a.actor_class == "people" && a.people_number == number && (a.room < 0 || a.room == room) && stage_is(stage, a.stage);
+    const bool here = e->people_at(stage_name(stage), room, number);
     if (!here || !stage_is(stage, "sea")) return;  // the chart's coordinates are the sea's
     g_live = {tracked, step, u32_as_f32(ld32(npc + kActorPos)), u32_as_f32(ld32(npc + kActorPos + 8)), g_step.load()};
 }
@@ -1807,11 +1929,10 @@ void people_message(Cpu* c) {
         const uint8_t number = ld8(npc + kPeopleNumber);
         const int room = int8_t(ld8(npc + kActorRoom));
         const NpcCatalogue& catalogue = npc_catalogue();
+        const std::string stage_text = stage_name(stage);
         for (size_t i = 0; i < catalogue.entries.size() && !live; i++) {
-            bool here = false;  // one of this character's people actors, where the table says it stands
-            for (const NpcActor& a : catalogue.entries[i].actors)
-                here |= a.actor_class == "people" && a.people_number == number && (a.room < 0 || a.room == room) && stage_is(stage, a.stage);
-            if (!here) continue;
+            // one of this character's people actors, where the table says it stands
+            if (!catalogue.entries[i].people_at(stage_text, room, number)) continue;
             if (g_skip_once == Resident(i + 1) && live_takeover(g_takeovers, b, Resident(i + 1), event_flags(), hour_now())) {
                 g_skip_once = kResidentNone;  // after "Never mind": this talk is the game's
                 LOG("[notebook] %s: after \"Never mind\", this talk is the game's", catalogue.entries[i].name.c_str());
@@ -2127,6 +2248,28 @@ void install(const std::function<std::string(uint32_t)>& replaced_by, const std:
     story_chart::set_tracked_source(tracked_marker);
     g_installed = true;
     LOG("[notebook] the story notebook is in the Delivery Bag");
+}
+
+// the game's actor list (fopAcIt_Executor's queue): its "people" residents the catalogue knows, where they
+// stand. Read-only; on the game thread (the list changes while the game runs).
+std::vector<LiveVillager> scan_villagers(const std::string& stage) {
+    const uint32_t kActorQueue = GD(0x101F3328);  // g_fopAcTg_Queue (turbo.cpp)
+    constexpr uint32_t kSubMethod = 0xF0;             // fopAc_ac_c::sub_method: its execute at +8
+    std::vector<LiveVillager> out;
+    const NpcCatalogue& catalogue = npc_catalogue();
+    uint32_t n = ld32(kActorQueue);
+    for (int k = 0; n && k < 2048; k++, n = ld32(n + 8)) {
+        if (n < 0x10000000 || n >= 0x50000000) break;
+        const uint32_t a = ld32(n + 0xC);
+        if (a < 0x10000000 || a >= 0x50000000) continue;
+        const uint32_t sub = ld32(a + kSubMethod);
+        if (sub < 0x10000000 || sub >= 0x50000000 || ld32(sub + 8) != kPeopleExecute) continue;
+        const int room = int8_t(ld8(a + kActorRoom));
+        const Resident who = catalogue.people_at(stage, room, ld8(a + kPeopleNumber));
+        if (who == kResidentNone || story_actors::owns_resident(a)) continue;  // the mods' own residents are not the game's
+        out.push_back({who, a, stage, room, u32_as_f32(ld32(a + kActorPos)), u32_as_f32(ld32(a + kActorPos + 4)), u32_as_f32(ld32(a + kActorPos + 8))});
+    }
+    return out;
 }
 
 void state_loaded() {

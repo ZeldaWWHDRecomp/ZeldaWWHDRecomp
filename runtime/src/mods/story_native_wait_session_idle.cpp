@@ -1,4 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <thread>
+#include <utility>
+#include <vector>
 #include "story_native_wait_session.h"
 #include "story_native_wait_run_footprint.h"
 #include "native_quiescence.h"
@@ -7,9 +21,6 @@
 #include "story_native_wait_snapshot_roots.h"
 #include "story_native_wait_snapshot_actor_roots.h"
 #include "guest_addr.h"
-#include <algorithm>
-#include <cstring>
-#include <thread>
 namespace story_native_wait_session {
 namespace F=story_native_wait_run_footprint;
 struct IdleCheckpoint::Data {
@@ -54,6 +65,15 @@ bool Session::idle_shape()const{
   record->phase==story_native_wait_journal::Phase::Unpublished&&record->definition==readiness_.definition_hash()&&
   record->arena==readiness_.arena().allocation.address&&story_native_event_arena::owns(readiness_.arena(),mem::runtime_alloc_log(),mem::runtime_top());
 }
+bool Session::preserve_progress_load(Cpu*c,const threads::QuiescenceWitness&w){
+ if(!c||!fence_held()||!w.current(c)||quarantined_||restore_pending_||publication_sealed_)return false;
+ const bool clean=unexposed()||(idle_shape()&&clean_progress_roots());
+ if(!clean||!w.current(c))return false;
+ // A progress load does not overwrite runtime memory. Retain the exact owned
+ // allocation and journal lineage; only live admission candidates become stale.
+ expected_.reset();canonical_image_.clear();
+ return true;
+}
 bool Session::idle_read(uint32_t at,std::span<uint8_t>out)const{
  if(!fence_held()||out.empty()||uint64_t(at)+out.size()>0x100000000ull)return false;
  const auto layout=readiness_.arena();const uint64_t begin=layout.allocation.address,end=begin+layout.allocation.bytes;
@@ -78,6 +98,19 @@ bool Session::snapshot_roots(F::Footprint&out)const{
  F::Footprint roots;if(!story_native_wait_snapshot_roots::capture(read,arena(),roots))return false;
  for(auto&b:roots)out.push_back(std::move(b));
  return story_native_wait_snapshot_actor_roots::append(read,arena(),mod,ids,out);
+}
+bool Session::clean_progress_roots()const{
+ if(!fence_held()||quarantined_||restore_pending_)return false;
+ auto read=[this](uint32_t at,std::span<uint8_t>b){return idle_read(at,b);};
+ F::Footprint before,after;
+ // This grants no publication authority and must also work while the editor
+ // changes a declaration or a resident is absent. Prove actual manager/camera
+ // roots and the complete bounded People census, not a current actor binding.
+ return story_native_wait_snapshot_roots::capture(read,arena(),before)&&
+  story_native_wait_snapshot_actor_roots::no_borrow(read,arena())&&
+  story_native_wait_snapshot_roots::capture(read,arena(),after)&&before==after&&
+  F::matches_live(read,before)&&story_native_wait_snapshot_actor_roots::no_borrow(read,arena())&&
+  fence_held()&&!quarantined_&&!restore_pending_;
 }
 bool Session::clean_rearm_roots()const{
  if(!fence_held()||quarantined_||restore_pending_)return false;

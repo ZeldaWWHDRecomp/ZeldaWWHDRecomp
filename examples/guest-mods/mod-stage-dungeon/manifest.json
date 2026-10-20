@@ -1,0 +1,83 @@
+{
+  "format_version": 1,
+  "id": "mod-stage-dungeon",
+  "name": "The lava cave's hidden keep",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "A small dungeon behind a hidden passage of the lava cave: a hall, the cave's own lava room with a chest, and a vault behind a locked door.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "stages": [
+    {
+      "id": "keep",
+      "template": "Cave01",
+      "kind": "dungeon",
+      "music_like": "Cave01",
+      "map": {"title": "Hidden Keep"},
+      "entrance": {"stage": "sea", "room": 34, "point": 1},
+      "rooms": [
+        {
+          "room": 0,
+          "kit": 0,
+          "ground": "assets/hall.glb",
+          "material": "lambert2_v",
+          "materials": {"wall": "E3mR02roomKB_v"},
+          "spawns": [{"point": 0, "position": {"x": -3000, "y": -200, "z": 0}, "angle": 90}],
+          "actors": [
+            {"id": "guard", "actor": "bokoblin", "variant": "stick", "position": {"x": -2300, "y": -200, "z": -400}, "angle": 270},
+            {"id": "pot-a", "actor": "pot", "position": {"x": -3400, "y": -200, "z": 700}},
+            {"id": "pot-b", "actor": "pot", "position": {"x": -3250, "y": -200, "z": 750}}
+          ]
+        },
+        {
+          "room": 1,
+          "kit": 1,
+          "ground": "kit",
+          "spawns": [{"point": 1, "position": {"x": -800, "y": -200, "z": 0}, "angle": 90}],
+          "actors": [
+            {"id": "key-chest", "actor": "chest", "item": "small_key", "position": {"x": -300, "y": -200, "z": 0}, "angle": 270}
+          ]
+        },
+        {
+          "room": 2,
+          "kit": 0,
+          "ground": "assets/vault.glb",
+          "material": "lambert2_v",
+          "materials": {"wall": "E3mR02roomKB_v"},
+          "spawns": [{"point": 2, "position": {"x": -2100, "y": -200, "z": 1300}, "angle": 0}],
+          "actors": [
+            {"id": "map-chest", "actor": "chest", "item": "map", "position": {"x": -1800, "y": -200, "z": 1700}, "angle": 270},
+            {"id": "compass-chest", "actor": "chest", "item": "compass", "position": {"x": -1800, "y": -200, "z": 2100}, "angle": 270}
+          ],
+          "exits": [
+            {
+              "id": "to-sea",
+              "box": {"min": {"x": -2600, "y": -300, "z": 2600}, "max": {"x": -1600, "y": -100, "z": 2900}},
+              "to": {"stage": "sea", "room": 34, "point": 1}
+            }
+          ]
+        }
+      ],
+      "doors": [
+        {"position": {"x": -1000, "y": -200, "z": 0}, "angle": 270, "rooms": [0, 1]},
+        {"position": {"x": -2100, "y": -200, "z": 900}, "angle": 180, "rooms": [0, 2], "lock": "small_key"}
+      ],
+      "warps": [
+        {"id": "home", "room": 2, "position": {"x": -2450, "y": -200, "z": 1500}, "size": {"x": 200, "y": 200, "z": 200}}
+      ],
+      "entries": [
+        {
+          "id": "hidden-passage",
+          "stage": "Cave01",
+          "room": 0,
+          "position": {"x": -1300, "y": -200, "z": -900},
+          "size": {"x": 200, "y": 200, "z": 200},
+          "to": {"room": 0, "point": 0}
+        }
+      ]
+    }
+  ]
+}

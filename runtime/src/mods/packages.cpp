@@ -1,5 +1,7 @@
 #include "../exception_report.h"
 #include "packages.h"
+#include "mod_stages_manifest.h"
+#include "story_game_objects_package.h"
 #include "manager.h"
 #include "mods.h"
 #include "traversal.h"
@@ -28,6 +30,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -64,6 +67,9 @@ std::mutex mutex;
 std::map<std::string,Record> records;
 Value database;
 fs::path root;
+// the story cache folder (story_cache_directory), set with root; its own mutex, not the manager's
+std::mutex story_mutex;
+std::string story_dir;
 bool ready=false,guests_started=false,code_mod_support=false;
 std::vector<std::string> guest_startup_ids;
 GuestInspect guest_inspect;
@@ -85,6 +91,8 @@ std::array<unsigned,3> version(const std::string& s) {
 }
 std::string string_field(const Value& v,const char* key,bool optional=false,size_t limit=8192){const auto& f=v.get(key);if(optional&&f.type==Value::Null)return {};require(f.type==Value::String&&f.text.size()<=limit&&f.text.find('\0')==std::string::npos,"Invalid field: "+std::string(key));return f.text;}
 using hash::sha256_file;
+// The manifest sections the story system reads (story_manifest.h, story_world_manifest.h)
+constexpr const char* kStorySections[]={"quests","charts","letters","items","models","actors","scenes","paths"};
 // The Story Notebook package's "notebook" block: {"icon": png, "model": glb, "layout": json}. Only that
 // package has one. Its files are its own: a PNG icon (up to 1024 x 1024), a binary glTF model (up to
 // 8 MiB) and a layout description whose folder holds the page's art (up to 64 PNGs, 64 MiB decoded);
@@ -155,9 +163,11 @@ Manifest manifest(const fs::path& path){
     auto minimum=string_field(v,"minimum_manager_version",true,64);
     if(!minimum.empty()&&version(minimum)>version(kManagerVersion))m.problem="Requires mod manager "+minimum;
     bool world_declarations = false;
+    // The manifest's story sections (story_manifest.h, story_world_manifest.h): present, even as an empty list
+    const bool story_sections=std::any_of(std::begin(kStorySections),std::end(kStorySections),[&](const char* key){return v.get(key).type!=Value::Null;});
     // story quests (story_manifest.h): an NPC this port's catalogue doesn't know, or a newer catalogue
     // version, keeps the mod from being enabled with the reason, never a silent no-op
-    if(m.problem.empty()&&(v.get("quests").type!=Value::Null||v.get("npc_catalogue").type!=Value::Null||v.get("charts").type!=Value::Null||v.get("letters").type!=Value::Null||v.get("items").type!=Value::Null||v.get("models").type!=Value::Null||v.get("actors").type!=Value::Null||v.get("scenes").type!=Value::Null)){
+    if(m.problem.empty()&&(story_sections||v.get("npc_catalogue").type!=Value::Null)){
         std::vector<story_notebook::ManifestQuest> quests;std::vector<story_notebook::ManifestChart> charts;
         std::vector<story_notebook::ManifestActor> actors;std::vector<story_notebook::ManifestScene> scenes;
         std::vector<story_notebook::ManifestLetter> letters;std::vector<story_notebook::ManifestItem> items;std::string why;
@@ -165,10 +175,26 @@ Manifest manifest(const fs::path& path){
            !story_notebook::parse_items(v,items,why)||!story_notebook::parse_actors(v,actors,why)||!story_notebook::parse_scenes(v,scenes,why))m.problem="Story quests: "+why;
         else world_declarations = !quests.empty() || !charts.empty() || !letters.empty() ||
                                   !items.empty() || !actors.empty() || !scenes.empty();
+        // the game's own objects and island buildings by reference: the package holds no game data (they come from the player's game files)
+        if(m.problem.empty()&&std::any_of(actors.begin(),actors.end(),[](const story_notebook::ManifestActor& a){return a.game_object()||a.game_piece();}))
+            if(const auto found=story_game_objects::game_data_file(path);!found.empty())
+                m.problem="Game objects: the package holds game data ("+found+"); game objects and buildings come from the player's own game files";
     }
     std::vector<story_notebook::ManifestModel> models;std::string model_error;
     require(story_notebook::parse_models(v,models,model_error),"Models: "+model_error);
     world_declarations = world_declarations || (!models.empty() && m.problem.empty());
+    // mod stages (mod_stages_manifest.h; built at start-up from the player's game files): an invalid "stages"
+    // section or a missing ground model keeps the package from being enabled, with the reason
+    if(m.problem.empty()&&v.get("stages").type!=Value::Null){
+        std::vector<mod_stages::Stage> stages;std::string why;
+        if(!mod_stages::parse(v,stages,why))m.problem="Stages: "+why;
+        for(const auto& stage:stages)for(const auto& room:stage.rooms){
+            if(room.kit_ground)continue;  // the kit room as it is: no file of the package
+            auto checked=path;for(const auto& part:fs::path(room.ground)){checked/=part;require(!fs::is_symlink(checked),"Stage ground paths may not use symlinks");}
+            if(m.problem.empty()&&(!fs::is_regular_file(checked)||fs::file_size(checked)>16u*1024*1024))m.problem="Stages: "+stage.id+" room "+std::to_string(room.room)+": the ground model "+room.ground+" is missing or larger than 16 MiB";
+        }
+        world_declarations = world_declarations || (!stages.empty() && m.problem.empty());
+    }
     for(const auto& model:models){
         auto checked=path;for(const auto& part:fs::path(model.source)){checked/=part;require(!fs::is_symlink(checked),"Model source paths may not use symlinks");}
         require(fs::is_regular_file(checked)&&fs::file_size(checked)<=static_models::kMaxSourceBytes,"Missing or oversized model source");
@@ -176,8 +202,10 @@ Manifest manifest(const fs::path& path){
         static_models::ModelInfo info;
         if(model.kind=="skinned"){skinned_models::ModelInfo skin;require(skinned_models::validate_glb(bytes,skin,model_error),"Model "+model.id+": "+model_error);info=skin;}
         else require(static_models::validate_glb(bytes,info,model_error,std::any_of(v.get("actors").array.begin(),v.get("actors").array.end(),[&](const auto& actor){return actor.get("collision").get("mesh").string()==model.id;})),"Model "+model.id+": "+model_error);
-        const auto pixels=guestmods::hud::decode_png(std::span<const uint8_t>(bytes).subspan(info.image_offset,info.image_size));
-        require(pixels.width==info.texture_width&&pixels.height==info.texture_height,"Invalid model PNG");
+        // every colour texture (a model may have up to 16 materials, one PNG each)
+        auto images=info.images;if(images.empty())images.push_back({info.image_offset,info.image_size,info.texture_width,info.texture_height});
+        for(const auto& image:images){const auto pixels=guestmods::hud::decode_png(std::span<const uint8_t>(bytes).subspan(image.offset,image.size));
+            require(pixels.width==image.width&&pixels.height==image.height,"Model "+model.id+": invalid model PNG");}
     }
     if(m.kind=="native") {
         require(v.get("abi_version").type==Value::Number&&v.get("abi_version").number==1,"Unsupported native mod ABI");
@@ -209,18 +237,24 @@ Manifest manifest(const fs::path& path){
         m.graphics=std::make_shared<cemu::Pack>(cemu::parse(path/folder));
         auto schema=cemu::options(*m.graphics);if(v.get("options").type==Value::Null)v["options"]=schema;else require(v.get("options")==schema,"Cemu preset options do not match rules.txt");
     } else if(m.kind=="content") {
-        auto folder=string_field(v,"content_dir",false,512);
-        require(archive::relative_path(folder),"Invalid content directory");
-        auto checked=path;for(const auto& part:fs::path(folder)){checked/=part;require(!fs::is_symlink(checked),"Content paths may not use symlinks");}
-        m.files=content::index(path/folder, world_declarations && m.problem.empty());
+        // A content package that only declares story content (a chart and its letter, say) needs no
+        // content folder: without "content_dir" it replaces no game files.
+        const bool story_only=(story_sections||v.get("stages").type!=Value::Null)&&v.get("content_dir").type==Value::Null;  // or stages only
+        if(!story_only){
+            auto folder=string_field(v,"content_dir",false,512);
+            require(archive::relative_path(folder),"Invalid content directory");
+            auto checked=path;for(const auto& part:fs::path(folder)){checked/=part;require(!fs::is_symlink(checked),"Content paths may not use symlinks");}
+            m.files=content::index(path/folder, world_declarations && m.problem.empty());
+        }
     } else {
         const auto& settings=v.get("settings");require(settings.type==Value::Object&&!settings.object.empty(),"Settings mod has no settings");
         for(const auto& [id,b]:settings.object){require(manager::find(id)&&b.type==Value::Bool,"Unknown built-in setting: "+id);m.settings[id]=b.boolean;}
     }
     const auto& deps=v.get("dependencies");require(deps.type==Value::Null||deps.type==Value::Array,"Dependencies must be an array");
     for(const auto& dep:deps.array){Requirement r;r.id=string_field(dep,"id",false,80);r.version=string_field(dep,"minimum_version",true,64);if(r.version.empty())r.version="0.0.0";version(r.version);require(id_ok(r.id)||(r.id.starts_with("builtin:")&&manager::find(r.id.substr(8))),"Invalid dependency ID");m.dependencies.push_back(r);}
-    // every quest mod depends on the story system's required package (required.h), declared or not
-    if(m.id!=story_notebook::kNotebookPackage&&(v.get("quests").type!=Value::Null||v.get("charts").type!=Value::Null||v.get("models").type!=Value::Null||v.get("actors").type!=Value::Null||v.get("scenes").type!=Value::Null)&&
+    // every story mod depends on the story system's required package (required.h), declared or not:
+    // without it the story system stays off, and its letters, charts, items, quests and actors with it
+    if(m.id!=story_notebook::kNotebookPackage&&story_sections&&
        std::none_of(m.dependencies.begin(),m.dependencies.end(),[](const Requirement& r){return r.id==story_notebook::kNotebookPackage;}))
         m.dependencies.push_back({story_notebook::kNotebookPackage,"0.0.0"});
     const auto& conflicts=v.get("conflicts");require(conflicts.type==Value::Null||conflicts.type==Value::Array,"Conflicts must be an array");
@@ -274,11 +308,13 @@ Manifest manifest(const fs::path& path){
     if(m.kind=="native"||m.kind=="guest"||!m.setup_tools.empty())m.trust_fingerprint=package_fingerprint(path);
     if(m.trust_fingerprint.empty())m.trust_fingerprint=m.fingerprint;
     if(m.kind=="content") {
-        // Declarative world content uses the story service without carrying executable guest code.
-        // Keep the existing dependency restriction for all other content and dependencies.
-        const bool world_content=!v.get("models").array.empty()||!v.get("actors").array.empty()||!v.get("scenes").array.empty();
-        require(m.dependencies.empty()||(world_content&&std::all_of(m.dependencies.begin(),m.dependencies.end(),[](const Requirement& r){return r.id==story_notebook::kNotebookPackage;})),
-                "Content packages only support the Story Notebook dependency for actors or scenes");
+        // Content packages are switched on at startup, before any code package loads, so they can't wait
+        // for a dependency to load or be confirmed: they declare none. The one exception is the Story
+        // Notebook for story content (letters, charts, items, quests, models, actors, scenes): it carries
+        // no game files, and the story system checks itself that the notebook is there (without it the
+        // story content stays off).
+        require(m.dependencies.empty()||(story_sections&&std::all_of(m.dependencies.begin(),m.dependencies.end(),[](const Requirement& r){return r.id==story_notebook::kNotebookPackage;})),
+                "Content packages can only depend on the Story Notebook, and only for story content (letters, charts, items, quests, models, actors, scenes)");
     }
     return m;
 }
@@ -370,6 +406,14 @@ void load_lock_on_options(const Value& options, bool startup = false) {
         set_lock_on_cycling(on);
     }
 }
+void load_quick_use_speed(const Value& options, bool startup = false) {
+    if (std::getenv("WWHD_MOD_QUICK_USE_SPEED")) return;
+    const auto& speed = options.get("quick-use.speed");
+    // Older profiles inherit settings.ini at startup, but switching profiles resets to vanilla.
+    if (startup && speed.type == Value::Null) return;
+    set_quick_use_speed(speed.type == Value::Number &&
+        (speed.number == 1.0 || speed.number == 1.25 || speed.number == 1.5) ? float(speed.number) : 1.f);
+}
 void save_move_speed_options(Value& options) {
     options["move-speed.land"] = double(move_speed_land_factor());
     options["move-speed.swim"] = double(move_speed_swim_factor());
@@ -440,7 +484,7 @@ void load_traversal_options(const Value& options) {
                                 valid_jump_button(uint32_t(b.number)) ? uint32_t(b.number) : 0x20);
     }
 }
-void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
+void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["builtin_options"]["quick-use.speed"]=double(quick_use_speed());p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
 void scan(){records.clear();if(!ready)return;fs::create_directories(root/"Mods");for(const auto& e:fs::directory_iterator(root/"Mods")){if(!e.is_directory()||e.is_symlink()||!id_ok(e.path().filename().string()))continue;Record r;r.path=e.path();try{r.manifest=manifest(e.path());require(r.manifest.id==e.path().filename(),"Folder and manifest IDs differ");}catch(const std::exception& ex){r.manifest.id=e.path().filename().string();r.manifest.name=r.manifest.id;r.manifest.problem=ex.what();}auto id=r.manifest.id;records.emplace(id,std::move(r));}}
 std::string source_warning(const std::vector<catalogue::Step>& steps) {
     catalogue::Sources sources(database.get("game_sources"));
@@ -592,11 +636,11 @@ std::string platform_key(){
 }
 void initialize(){
     std::lock_guard guard(mutex);if(ready)return;const char* override=std::getenv("WWHD_MOD_MANAGER_DIR");if(std::getenv("WWHD_NO_HOST_INPUT")&&!override)return;
-    root=override?fs::path(override):fs::path(host::config_dir())/"ModManager";ready=true;defaults();
+    root=override?fs::path(override):fs::path(host::config_dir())/"ModManager";ready=true;{std::lock_guard story(story_mutex);story_dir=(root/"story").string();}defaults();
     try{fs::create_directories(root);if(fs::exists(root/"profiles.json")){auto saved=json::parse(read_text(root/"profiles.json"));require(saved.get("format_version").type==Value::Number&&saved.get("format_version").number==1,"Unsupported profile format");require(saved.get("profiles").type==Value::Object&&!saved.get("profiles").object.empty(),"Invalid profiles");require(saved.get("active").type==Value::String&&saved.get("profiles").object.contains(saved.get("active").text),"Invalid active profile");database=std::move(saved);}scan();
         {auto messages=repair_graphics();if(!messages.empty()){save();notices.insert(notices.end(),messages.begin(),messages.end());}}
         for(const auto& e:manager::entries()){const auto& v=profile().get("builtins").get(e.id);if(!std::getenv(e.startup_env)&&v.type==Value::Bool)e.apply(v.boolean);}
-        const auto& options=profile().get("builtin_options");load_fast_forward_options(options);load_move_speed_options(options,true);load_traversal_options(options);load_lock_on_options(options,true);auto speed=options.get("direct-camera.speed"),sens=options.get("mouse-camera.sensitivity");if(!std::getenv("WWHD_MOD_CAMERA_SPEED")&&speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(!std::getenv("WWHD_MOD_MOUSE_SENS")&&sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);
+        const auto& options=profile().get("builtin_options");load_fast_forward_options(options);load_move_speed_options(options,true);load_traversal_options(options);load_lock_on_options(options,true);load_quick_use_speed(options,true);auto speed=options.get("direct-camera.speed"),sens=options.get("mouse-camera.sensitivity");if(!std::getenv("WWHD_MOD_CAMERA_SPEED")&&speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(!std::getenv("WWHD_MOD_MOUSE_SENS")&&sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);
         // A rebuild offer queues an enable for this profile. Apply it only in a
         // new process whose generated code registered the actual hook marker.
         if(code_mod_support&&!profile().get("code_mod_pending").object.empty()) {
@@ -653,6 +697,10 @@ void initialize(){
     }catch(const std::exception& e){last_problem=e.what();ready=false;records.clear();fprintf(stderr,"[mod-manager] %s\n",e.what());}
 }
 std::string directory(){std::lock_guard guard(mutex);return ready?(root/"Mods").string():"";}
+// The story cache folder is fixed once the manager knows its root, so reading it never takes the manager
+// mutex: start_guests holds that mutex while it calls the guests' start-up code, which asks for this folder
+// (the NPC catalogue), and the mutex is not re-entrant (a start with the Story Notebook hung there).
+std::string story_cache_directory(){std::lock_guard guard(story_mutex);return story_dir;}
 std::string package_data_directory(const std::string& id){std::lock_guard guard(mutex);return ready&&records.contains(id)?(root/"Data"/id).string():"";}
 std::vector<SetupView> setup_steps(const std::string& id) {
     std::lock_guard guard(mutex);std::vector<SetupView> out;
@@ -855,7 +903,8 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
 }
 std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
-bool install(const std::string& source,std::string& error,std::string* installed_id_out){return operation(error,[&]{
+// fresh: a new package only (install_new): refused when the ID is installed or its folder exists
+static bool install_package(const std::string& source,std::string& error,std::string* installed_id_out,bool fresh){return operation(error,[&]{
     auto nonce=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());auto stage=root/(".stage-"+nonce),backup=root/(".backup-"+nonce);fs::path target;bool backed=false,moved=false;
     try{if(fs::is_regular_file(source)&&content::known_pack(fs::path(source).filename().string())){
         require(!fs::is_symlink(source)&&fs::file_size(source)<=128ull*1024*1024,"Invalid or oversized replacement pack");
@@ -870,9 +919,11 @@ bool install(const std::string& source,std::string& error,std::string* installed
         auto named=fs::path(source).lexically_normal();if(named.filename().empty())named=named.parent_path();
         if(content_name(named.filename().string())&&!named.parent_path().filename().empty())named=named.parent_path();
         if(graphics)cemu::import_legacy(stage,named.filename().string());else content::import_legacy(stage,named.filename().string());
-    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);target=root/"Mods"/m.id;auto it=records.find(m.id);require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
+    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);target=root/"Mods"/m.id;auto it=records.find(m.id);if(fresh){std::error_code exists_error;require(it==records.end()&&!fs::exists(fs::symlink_status(target,exists_error)),"A mod with the ID "+m.id+" is installed already");}require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
     }catch(...){if(moved)fs::remove_all(target);if(backed)fs::rename(backup,target);if(fs::exists(stage))fs::remove_all(stage);throw;}
 });}
+bool install(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,false);}
+bool install_new(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,true);}
 bool remove(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to remove it");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["experimental_ack"].object.erase(id);database["catalogue_experimental"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);std::error_code ignored;fs::remove_all(root/"Data"/id,ignored);records.erase(it);dirty=true;});}
 uint64_t disk_use(const std::string& id){
     // the package files and the files its setup prepared (Data/<id>); Remove deletes both
@@ -956,8 +1007,8 @@ std::vector<std::string> take_notices(){std::lock_guard guard(mutex);auto result
 void disable_all(){std::string ignored;operation(ignored,[&]{auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;profile()["setup_pending"].object.clear();try{save();}catch(...){database=previous;throw;}dirty=true;});manager::disable_all();}
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
-bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
-bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
+bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
+bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
 bool delete_profile(const std::string& name,std::string& error){return operation(error,[&]{require(name!=database.get("active").string(),"Switch profiles before deleting the active one");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["profiles"].object.erase(name);try{save();}catch(...){database=previous;throw;}});}
 void remember_builtin(const std::string& id,bool on){std::string error;operation(error,[&]{profile()["builtins"][id]=on;save();dirty=true;});}
 void remember_option(const std::string& id,double value){std::string error;operation(error,[&]{profile()["builtin_options"][id]=value;save();});}

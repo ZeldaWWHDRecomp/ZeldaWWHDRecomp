@@ -1,0 +1,74 @@
+{
+  "game_pieces_format": 1,
+  "set": "star-island",
+  "label": "Star Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room2.szs",
+    "room": 2
+  },
+  "memory": {
+    "archive_bytes": 1183744,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top; the distant view (about 120 KiB) is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "star-island",
+      "since": 4,
+      "category": "Islands",
+      "label": "Star Island ground",
+      "description": "a star-shaped island with grassy slopes and a pit at its centre that sends Link back",
+      "volume": [
+        -4535,
+        -1136,
+        -25042,
+        4493,
+        813,
+        -15408
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "R02_1"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "R02",
+          "soko_stop",
+          "Hole_huti",
+          "Hole_kabe",
+          "Hole_soko"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD02.szs",
+        "triangles": 118
+      },
+      "expect": {
+        "triangles": [
+          447
+        ],
+        "textures": [
+          [
+            "Txo_grass",
+            "Txo_iwakabe_d",
+            "Txo_tuti"
+          ]
+        ],
+        "collision_triangles": 509
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

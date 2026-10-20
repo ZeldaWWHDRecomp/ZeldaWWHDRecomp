@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#include "native_actor_refusal.h"
 #include "story_switches.h"
 #include "native_actor_profiles.h"
 #include "guest_addr.h"
@@ -38,7 +39,7 @@ Declaration* find(uint32_t a,bool ready=false,bool allow_quarantined=false){
 bool flag(Declaration&d,bool&value){const uint32_t source=d.kind==Kind::Switch?d.token:d.source;auto*s=get(source);try{if(s&&s->kind==Kind::Switch&&s->mod==d.mod&&!s->quarantined&&read_flag&&read_flag(source,value))return true;}catch(...){}d.quarantined=true;return false;}
 uint32_t call(Cpu*c,uint32_t fn,std::initializer_list<uint32_t> args){Cpu probe=*c;return invoke(&probe,fn,args);}
 void deny_void(Cpu*c,uint32_t fn,uint32_t a){if(!reserved(a))original(c,fn);}
-void deny(Cpu*c,uint32_t fn,uint32_t a,uint32_t result=1){if(reserved(a))c->r[3]=result;else original(c,fn);}
+void deny(Cpu*c,uint32_t fn,uint32_t a,uint32_t result=1){if(reserved(a)){if(result==5)native_actor_refusal::refuse(c,a,invoke);else c->r[3]=result;}else original(c,fn);}
 void btp(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a);if(!d){deny_void(c,Btp,a);return;}if(d->kind!=Kind::Switch){c->r[3]=0;return;}bool on;if(flag(*d,on))stf32(a+0x3FC,on?1.f:0.f);}
 void upper(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){deny_void(c,Upper,a);return;}bool on;if(!flag(*d,on))return;if(!on){original(c,Upper);return;}st8(a+0x48B,0);call(c,GC(0x02398348),{a});}
 void lower(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){deny_void(c,Lower,a);return;}bool on;if(flag(*d,on)&&!on)original(c,Lower);}
@@ -75,7 +76,7 @@ bool initialize_lower_geometry(Cpu*c,uint32_t a){
     for(unsigned i=0;i<3;++i)st32(a+0x37C+i*4,ld32(a+0x314+i*4));
     return true;
 }
-void switch_create(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a);if(!d){deny(c,SwCreate,a,5);return;}if(d->kind!=Kind::Switch){c->r[3]=5;return;}bool on;if(!flag(*d,on)){c->r[3]=5;return;}
+void switch_create(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a);if(!d){deny(c,SwCreate,a,5);return;}if(d->kind!=Kind::Switch){native_actor_refusal::refuse(c,a,invoke);return;}bool on;if(!flag(*d,on)){native_actor_refusal::refuse(c,a,invoke);return;}
     d->address=a;original(c,SwCreate);const Cpu returned=*c;
     if(returned.r[3]==4){if(ld32(a+0x46C)!=0||!address(ld32(a+0x3BC))){d->quarantined=true;c->r[3]=5;return;}
         st32(a+0x474,0);st16(a+0x47A,0xFFFF);
@@ -87,9 +88,9 @@ void switch_execute(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){d
     bool on;if(!flag(*d,on)){c->r[3]=1;return;}backgrounds[ld32(a+0x3BC)]=d->token;original(c,SwExecute);
 }
 void switch_draw(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){deny(c,SwDraw,a);return;}bool on;if(!flag(*d,on)){c->r[3]=1;return;}stf32(a+0x3FC,on?1.f:0.f);original(c,SwDraw);}
-void retire(Cpu*c,uint32_t fn){const uint32_t a=c->r[3];auto*d=find(a,false,true);if(d){const uint32_t token=d->token,pid=d->pid;for(auto it=backgrounds.begin();it!=backgrounds.end();)if(it->second==token)it=backgrounds.erase(it);else ++it;d->pid=0xFFFFFFFFu;d->address=0;d->ready=false;if(retired)try{retired(token,pid);}catch(...){d->quarantined=true;}}original(c,fn);}
+void retire(Cpu*c,uint32_t fn){const uint32_t a=c->r[3];auto*d=find(a,false,true);if(d){const uint32_t token=d->token,pid=d->pid;for(auto it=backgrounds.begin();it!=backgrounds.end();)if(it->second==token)it=backgrounds.erase(it);else ++it;d->pid=0xFFFFFFFFu;d->address=0;d->ready=false;if(retired)try{retired(token,pid);}catch(...){d->quarantined=true;}}if(native_actor_refusal::base_only(a)){c->r[3]=1;return;}original(c,fn);}
 void switch_delete(Cpu*c){retire(c,SwDelete);}void door_delete(Cpu*c){retire(c,DoorDelete);}
-void door_create(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a);if(!d){deny(c,DoorCreate,a,5);return;}if(d->kind!=Kind::Door){c->r[3]=5;return;}bool on;if(!flag(*d,on)){c->r[3]=5;return;}d->address=a;original(c,DoorCreate);const Cpu returned=*c;
+void door_create(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a);if(!d){deny(c,DoorCreate,a,5);return;}if(d->kind!=Kind::Door){native_actor_refusal::refuse(c,a,invoke);return;}bool on;if(!flag(*d,on)){native_actor_refusal::refuse(c,a,invoke);return;}d->address=a;original(c,DoorCreate);const Cpu returned=*c;
     if(returned.r[3]==4){if(!address(ld32(a+0x3B8))){d->quarantined=true;c->r[3]=5;return;}d->ready=true;st8(a+0x3BC,on?3:1);st16(a+0x3BE,on?0x4000:0);call(c,GC(0x02057F50),{a});call(c,GC(0x024F43DC),{ld32(a+0x3B8)});}else if(returned.r[3]==5)d->quarantined=true;*c=returned;
 }
 void door_closed(Cpu*c){const uint32_t a=c->r[3];auto*d=find(a,true);if(!d){deny(c,DoorClosed,a);return;}bool on;if(flag(*d,on)&&on){const uint32_t reverb=call(c,GC(0x02520540),{uint32_t(int32_t(int8_t(ld8(a+0x326))))});call(c,GC(0x025E1A40),{0x69A4,a+0x37C,0,reverb});st8(a+0x3BC,4);}c->r[3]=1;}

@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
-#include "story_native_wait_active_save_gate.h"
 #include <atomic>
+#include <cstdint>
+#include <exception>
+#include <limits>
+#include <memory>
+#include <thread>
+#include <utility>
+#include "story_native_wait_active_save_gate.h"
 #include "native_quiescence.h"
 #include "story_native_restore_current_owner.h"
 #include "runtime.h"
-#include <limits>
-#include <exception>
 namespace story_native_wait_active_save_gate {
 namespace {
 std::atomic<uint64_t>epochs{0};
@@ -159,6 +163,14 @@ bool Controller::finish_load(const ss::native_gate::SavedView&view){
 std::unique_ptr<ss::native_gate::Hold>Controller::begin_progress_load(){
  if(mode_!=Mode::Idle)return {};
  auto guard=std::make_unique<Guard>(*this);thread_=std::this_thread::get_id();held_guard_=guard.get();
+ auto*c=threads::current();auto parked=threads::current_quiescence(c);
+ if(c&&parked){
+  guard->fence=session_.try_fence();
+  if(guard->fence&&(session_.preserve_progress_load(c,*parked)||session_.preserve_pristine_progress_load(c,*parked))){
+   mode_=Mode::Progress;return guard;
+  }
+  guard->fence.reset();
+ }
  if(auto clean=bootstrap_.begin_progress_load()){
   guard->bootstrap=std::move(clean);mode_=Mode::Progress;return guard;
  }

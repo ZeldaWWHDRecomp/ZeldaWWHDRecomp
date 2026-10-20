@@ -4,6 +4,7 @@
 //   WWHD_MOD_DIRECT_CAMERA=1   direct right-stick camera (WWHD_MOD_CAMERA_SPEED=1.5 multiplier)
 //   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point)
 //   WWHD_MOD_FIRST_PERSON=1    first person on R3 / mouse wheel
+//   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
 //   WWHD_MOD_QUICK_DOORS=1     quick doors
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,

@@ -37,6 +37,10 @@ int main() {
     const uint32_t globals = 0x101F0000, heap = 0x11000000;
     const size_t region = 0x10000;
     map(globals, region); map(heap, region);
+    // dComIfGp play object (function-local static); its metronome byte is the Wind Waker signal.
+    const uint32_t metronome = GD(0x1046F0B0) + 0x5BD1, playPage = metronome & ~uint32_t(region - 1);
+    map(playPage, region);
+    protect(playPage, region, PROT_READ);
     const uint32_t scene = heap, input = heap + 0x1000;
     st32(GD(0x101F8344), scene); st32(GD(0x101F5088), input);
     st32(scene + 0x18, scene + 4); // state object is the embedded state interface
@@ -83,6 +87,26 @@ int main() {
     protect(heap, region, PROT_READ);
     set(0x1049EC00, 0, 1);
     assert(!observed.menu);
+    const auto conduct = [&](uint8_t on) {
+        protect(playPage, region, PROT_READ | PROT_WRITE);
+        st8(metronome, on);
+        protect(playPage, region, PROT_READ);
+    };
+    conduct(1);
+    set(0x1049EC00, 0, 1);
+    assert(observed.available && observed.baton && !observed.menu);
+    set(0x1049EC00, 0, 0);
+    assert(!observed.baton); // Pro Controller
+    set(0x1049EC00, 0, 2);
+    assert(!observed.baton && observed.off_tv);
+    set(0x1049EDE4, 0, 1);
+    assert(observed.baton && !observed.menu);
+    conduct(0);
+    set(0x1049EDE4, 0, 1); // song list closing after the cancel
+    assert(observed.baton);
+    assert(!gamepad_baton_state(0x1049EDE4, false, 1)); // raw USA pointer must not match
+    set(0x1049EC00, 0, 1);
+    assert(!observed.baton);
     set(0x1049EC58, 4, 1); // cutscene-induced PauseDRC is not an interactive menu
     assert(observed.available && !observed.menu);
     set(0x1049ECB0, 1, 2);
@@ -103,6 +127,7 @@ int main() {
     assert(!observed.available && !observed.menu && !observed.off_tv && !observed.switching);
     assert(munmap(mem::ptr(globals), region) == 0);
     assert(munmap(mem::ptr(heap), region) == 0);
+    assert(munmap(mem::ptr(playPage), region) == 0);
     needed = false;
     display_read_gamepad_ui(); // no new guest reads after leaving auto
 }

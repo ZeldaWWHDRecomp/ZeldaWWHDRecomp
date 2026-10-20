@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#include "native_actor_refusal.h"
 #include "story_props.h"
 #include "native_actor_profiles.h"
 #include "native_actor_carry.h"
@@ -60,7 +61,7 @@ void trace(const Declaration&d,uint32_t a,const char*event,unsigned value=0){
 }
 void mask(uint32_t a){st32(a+0x39C,ld32(a+0x39C)&~0x10u);st32(a+0x2E0,ld32(a+0x2E0)&~(0x400u|0x80000u|0x200000u));st32(a+0x624,ld32(a+0x624)&~1u);}
 void remember(Declaration*d,uint32_t a){cylinders[a+0x624]=uint32_t(d-declarations.data())+1;}
-void create_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a,false);if(!d){if(reserved(a)){c->r[3]=5;return;}original(c,create);return;}
+void create_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a,false);if(!d){if(reserved(a)){native_actor_refusal::refuse(c,a,invoke);return;}original(c,create);return;}
     if(heap_trace()&&!d->heap_started){d->heap_before=heaps(c);d->heap_started=true;}
     st32(a+0x2E0,ld32(a+0x2E0)&~(0x400u|0x80000u|0x200000u));original(c,create);const Cpu returned=*c;
     if(c->r[3]==4){if(find(a)!=d||!apply_texture(c,*d,a)){d->quarantined=true;c->r[3]=5;return;}d->texture_pending=false;mask(a);remember(d,a);trace(*d,a,"created");
@@ -104,7 +105,7 @@ void draw_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a,false);
     }
     original(c,draw);
 }
-void delete_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a,false);const bool measure=d&&heap_trace();const auto before=measure?heaps(c):HeapSnapshot{};if(d){cylinders.erase(a+0x624);trace(*d,a,"delete");const uint32_t old_pid=d->process,token=uint32_t(d-declarations.data())+1;d->process=0xFFFFFFFFu;if(retired)retired(token,old_pid);}original(c,destroy);const Cpu returned=*c;if(measure)heap_report(*d,a,"resource_delete",before,heaps(c));*c=returned;}
+void delete_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a,false);const bool measure=d&&heap_trace();const auto before=measure?heaps(c):HeapSnapshot{};if(d){cylinders.erase(a+0x624);trace(*d,a,"delete");const uint32_t old_pid=d->process,token=uint32_t(d-declarations.data())+1;d->process=0xFFFFFFFFu;if(retired)retired(token,old_pid);}if(native_actor_refusal::base_only(a)){c->r[3]=1;return;}original(c,destroy);const Cpu returned=*c;if(measure)heap_report(*d,a,"resource_delete",before,heaps(c));*c=returned;}
 void break_hook(Cpu*c){const uint32_t a=c->r[3];Declaration*d=find(a);if(!d){if(reserved(a))return;original(c,damaged);return;}if(d->breaking||d->broken)return;d->breaking=true;d->broken=true;
     const auto outcome=story_items::claim_prop_drops(d->marker,d->mod,d->drops);
     if(outcome!=story_items::PropClaimStatus::Committed&&outcome!=story_items::PropClaimStatus::AlreadyBroken)d->quarantined=true;

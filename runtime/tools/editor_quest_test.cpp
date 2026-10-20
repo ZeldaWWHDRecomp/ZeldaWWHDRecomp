@@ -180,8 +180,8 @@ void graph() {
     bool talk = false;
     for (const auto& b : node(g, "step:3")->get("badges").array) talk = talk || b.get("kind").string() == "talk";
     CHECK(talk);
-    // the letter's edge goes from start, so start is marked
-    CHECK(node(g, "start")->get("badges").array.size() == 1);
+    // the letter's edge goes from start, so start is marked, with what the letter encloses
+    CHECK(node(g, "start")->get("badges").array.size() == 2 && node(g, "start")->get("badges").array[1].get("text").string() == "encloses item:lens");
 }
 
 void start_at() {
@@ -449,7 +449,9 @@ void search_copy_paste(const fs::path& tmp) {
     for (const auto& h : r.get("result").array) kinds.insert(h.get("kind").string() + ":" + h.get("id").string());
     CHECK(kinds.count("actor:post") && kinds.count("quest_step:lighthouse") && kinds.count("flag:post-read"));
     r = s.run("search", params(R"({"text": "lens"})"));
-    CHECK(ok(r) && r.get("result").array.size() == 1 && r.get("result").array[0].get("kind").string() == "item");
+    kinds.clear();
+    for (const auto& h : r.get("result").array) kinds.insert(h.get("kind").string() + ":" + h.get("id").string());
+    CHECK(ok(r) && r.get("result").array.size() == 2 && kinds.count("item:lens") && kinds.count("quest:lighthouse"));  // the letter encloses it
     CHECK(ok(s.run("search", params(R"({"text": ""})"))) && s.run("search", params(R"({"text": ""})")).get("result").array.empty());
     // copy two actors, paste at an offset: new ids, own flags, one undo step
     CHECK(!ok(s.run("paste")));

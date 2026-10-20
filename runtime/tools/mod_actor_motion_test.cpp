@@ -2,6 +2,7 @@
 #include <cassert>
 #include <iostream>
 #include <limits>
+#include <vector>
 using namespace mod_actor::motion;
 static Point accept(Point,Point proposal){return proposal;}
 static bool near(float a,float b,float e=1e-4f){return std::fabs(a-b)<e;}
@@ -22,5 +23,15 @@ int main(){
     state={};assert(advance(path,state,{},0,1,10,{},accept).status==Status::Moving&&state.next==0);
     look={.2f,.1f,.3f};const auto zero_pose=look;assert(look_at({0,0,0},{1,0,1},0,0,limits,look)&&look.head_yaw==zero_pose.head_yaw&&look.upper_yaw==zero_pose.upper_yaw);
     PathState finished{path.count-1,true};const auto idle=advance(path,finished,path.points[path.count-1],.1f,1,10,{},accept);assert(idle.status==Status::Finished&&!idle.has_direction);
+    // back and forth: it turns at the last point, walks back to the first and out again
+    {Path line;line.count=3;line.points[0]={0,0,0};line.points[1]={10,0,0};line.points[2]={20,0,0};line.speed=10;line.arrival=.01f;line.bounce=true;
+     PathState st;Point at{0,0,0};std::vector<unsigned> targets;for(int n=0;n<120;++n){const auto m=advance(line,st,at,.1f,1,10,{},accept);assert(m.status==Status::Moving&&!st.finished);at=m.position;if(targets.empty()||targets.back()!=st.next)targets.push_back(st.next);}
+     assert((targets==std::vector<unsigned>{1,2,1,0,1,2,1,0}||targets.size()>=6));assert(targets[0]==1&&targets[1]==2&&targets[2]==1&&targets[3]==0&&targets[4]==1);
+     assert(at.x>=0&&at.x<=20);}
+    // strolling pauses: 200..300 steps walking, 60..90 standing, again and again, from the saved seed
+    {Pauses p{false,0,12345};unsigned walked=0,stood=0,switches=0;bool last=true;for(int n=0;n<2000;++n){const bool w=pause_step(p);if(w)++walked;else ++stood;if(w!=last)++switches;last=w;}
+     assert(switches>=10&&walked>stood*2&&stood>0);
+     Pauses q{false,0,777};unsigned run=0;while(pause_step(q))++run;assert(run>=199&&run<=300);unsigned rest=1;while(!pause_step(q))++rest;assert(rest>=60&&rest<=91);
+     Pauses r{false,0,777};Pauses copy=r;for(int n=0;n<500;++n)assert(pause_step(r)==pause_step(copy));}
     std::cout<<"mod actor motion tests passed\n";
 }

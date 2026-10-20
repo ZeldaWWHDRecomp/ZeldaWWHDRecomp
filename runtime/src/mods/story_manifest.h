@@ -113,13 +113,65 @@ inline std::string item_ref(const mods::json::Value& v) {
     return v.text.substr(5);
 }
 
+// When a letter on its own is sent ("when"): every condition holds. A quest condition is met once the
+// quest has reached its step or gone past it ("step"), or once it is done ("done": true).
+struct LetterQuestCondition {
+    std::string quest;
+    unsigned step = 0;  // 1..254; 0 with done
+    bool done = false;
+    bool operator==(const LetterQuestCondition&) const = default;
+};
+struct LetterWhen {
+    std::vector<LetterQuestCondition> quests;  // "quest" with "step" or "done", and "quests": [...]
+    std::string flag, not_flag;                // the mod's own flags
+    bool any() const { return !quests.empty() || !flag.empty() || !not_flag.empty(); }
+    bool operator==(const LetterWhen&) const = default;
+};
 // A letter on its own ("letters": [...]): no quest, no journal entry. The port sends it while the mod
-// is enabled; once Link has read it, he has what it encloses (charts, items), once.
+// is enabled (or once its "when" holds and "after_days" game days have passed since); once Link has
+// read it, he has what it encloses (charts, items), once.
 struct ManifestLetter {
     std::string id, sender, text;
     std::vector<std::string> charts, items;  // "encloses": ["chart:<id>", "item:<id>"]
+    LetterWhen when;          // "when": nothing: sent at once
+    unsigned after_days = 0;  // "after_days": 1..255 days of the game's calendar after "when" first holds
+    bool timed() const { return when.any() || after_days != 0; }
 };
-inline constexpr unsigned kMaxLettersPerMod = 8;
+inline constexpr unsigned kMaxLettersPerMod = 8, kMaxLetterDays = 255;
+// The game's calendar: the day counter of the save file (dSv_player_status_b_c date, save base + 0x48),
+// counted up each time the clock passes midnight (also by the Song of Passing).
+inline constexpr uint32_t kSaveDay = 0x48;
+
+// A timed letter's condition: `quest(id)` the quest's saved step (0 not started, 1..254, 255 done),
+// `flag(id)` one of the mod's flags.
+template <class Quest, class Flag>
+inline bool letter_condition(const LetterWhen& w, Quest&& quest, Flag&& flag) {
+    for (const LetterQuestCondition& q : w.quests) {
+        const int32_t now = quest(q.quest);
+        if (q.done ? now != 255 : (now <= 0 || unsigned(now) < q.step)) return false;
+    }
+    if (!w.flag.empty() && !flag(w.flag)) return false;
+    if (!w.not_flag.empty() && flag(w.not_flag)) return false;
+    return true;
+}
+// Whether a timed letter whose condition holds is due on `today` (the game's day counter). The first
+// day its condition holds is kept in the save's story record (kRecordLetterDayLow/High, key the
+// letter's key), so the count goes on across saves and save states; erase_letter_day frees it once
+// the letter is sent. Without "after_days" the letter is due at once.
+inline bool letter_due(story_mail::Book& b, uint16_t key, unsigned after_days, uint16_t today) {
+    if (!after_days) return true;
+    if (!b.has(story_mail::kRecordLetterDayLow, key)) {
+        if (b.set(story_mail::kRecordLetterDayLow, key, uint8_t(today)) && !b.set(story_mail::kRecordLetterDayHigh, key, uint8_t(today >> 8)))
+            b.erase(story_mail::kRecordLetterDayLow, key);  // no room for both: next time
+        return false;
+    }
+    const uint16_t start = uint16_t(b.get(story_mail::kRecordLetterDayHigh, key) << 8 | b.get(story_mail::kRecordLetterDayLow, key));
+    return uint16_t(today - start) >= after_days;
+}
+inline void erase_letter_day(story_mail::Book& b, uint16_t key) {
+    b.erase(story_mail::kRecordLetterDayLow, key);
+    b.erase(story_mail::kRecordLetterDayHigh, key);
+}
 
 // An item declared in the manifest ("items": [...], docs/mod-sdk-v2.md "Items"): kept in the Delivery
 // Bag (its extra pages), owned in the save's story block (story_items_core.h)
@@ -132,6 +184,7 @@ struct ManifestItem {
     unsigned use_step = 0;                    // ... reaches this step
     std::string held_model; // same-mod static models entry, separate hand presentation
     unsigned held_frames = 90; // logic frames at30Hz, 1..300
+    bool hold_up = false;      // "hold_up": true: getting it plays the game's item-get pose with held_model over Link's head
 };
 inline constexpr size_t kMaxItemNameBytes = 40, kMaxItemDescriptionBytes = 200, kMaxItemIconBytes = 128;
 inline constexpr unsigned kMaxItemsPerMod = 32;
@@ -185,11 +238,17 @@ inline bool parse_items(const mods::json::Value& manifest, std::vector<ManifestI
                 return why = "item " + m.id + ": unknown use action (show, open_notebook, quest_step, event)", false;
         } else if (use.type != Value::Null)
             return why = "item " + m.id + ": \"use\" must be an object", false;
+        const Value& hold=it.get("hold_up");
+        if(hold.type!=Value::Null){
+            if(hold.type!=Value::Bool)return why="item "+m.id+": \"hold_up\" must be true or false",false;
+            m.hold_up=hold.boolean;
+        }
         if(it.get("held_model").type!=Value::Null) {
-            if(it.get("held_model").type!=Value::String||!story_mail::valid_id(it.get("held_model").text)||m.use==ManifestItem::Use::None)
-                return why="held_model requires a valid same-mod model id and a use action",false;
+            if(it.get("held_model").type!=Value::String||!story_mail::valid_id(it.get("held_model").text)||(m.use==ManifestItem::Use::None&&!m.hold_up))
+                return why="held_model requires a valid same-mod model id and a use action (or \"hold_up\": true)",false;
             m.held_model=it.get("held_model").text;
         }
+        if(m.hold_up&&m.held_model.empty())return why="item "+m.id+": \"hold_up\" needs \"held_model\", the model Link holds up",false;
         if(it.get("held_frames").type!=Value::Null) {
             const auto& n=it.get("held_frames");
             if(m.held_model.empty()||n.type!=Value::Number||n.number<1||n.number>300||std::floor(n.number)!=n.number)
@@ -502,6 +561,56 @@ inline bool parse_quests(const mods::json::Value& manifest, std::vector<Manifest
     return true;
 }
 
+// A letter's "when" and "after_days" (ManifestLetter). The quests, steps and flags it names are the
+// manifest's own.
+inline bool parse_letter_when(const mods::json::Value& manifest, const mods::json::Value& l, ManifestLetter& m, std::string& why) {
+    using mods::json::Value;
+    using namespace world_manifest;
+    const Value& days = l.get("after_days");
+    if (days.type != Value::Null) {
+        if (!integer(days, 1, kMaxLetterDays)) return why = "\"after_days\" must be a whole number of days, 1..255", false;
+        m.after_days = unsigned(days.number);
+    }
+    const Value& w = l.get("when");
+    if (w.type == Value::Null) return true;
+    if (!keys(w, {"quest", "step", "done", "quests", "flag", "not_flag"}) || w.object.empty())
+        return why = "\"when\" is an object with quest and step (or done), quests, flag or not_flag", false;
+    auto quest_condition = [&](const Value& q, LetterQuestCondition& out) {
+        if (!id(q.get("quest")) || !declared(manifest, "quests", q.get("quest").text))
+            return why = "\"when\" names a quest the manifest doesn't declare", false;
+        out.quest = q.get("quest").text;
+        const bool step = q.get("step").type != Value::Null, done = q.get("done").type != Value::Null;
+        if (step == done) return why = "quest " + out.quest + " in \"when\": give \"step\" or \"done\": true", false;
+        if (done) {
+            if (q.get("done").type != Value::Bool || !q.get("done").boolean) return why = "\"done\" must be true", false;
+            out.done = true;
+            return true;
+        }
+        if (!integer(q.get("step"), 1, 254) || !quest_step(manifest, out.quest, unsigned(q.get("step").number)))
+            return why = "\"when\" names a step quest " + out.quest + " doesn't declare", false;
+        out.step = unsigned(q.get("step").number);
+        return true;
+    };
+    if (w.get("quest").type != Value::Null) {
+        LetterQuestCondition q;
+        if (!quest_condition(w, q)) return false;
+        m.when.quests.push_back(q);
+    } else if (w.get("step").type != Value::Null || w.get("done").type != Value::Null)
+        return why = "\"step\" and \"done\" in \"when\" need \"quest\"", false;
+    const Value& list = w.get("quests");
+    if (list.type != Value::Null) {
+        if (list.type != Value::Array || list.array.empty() || list.array.size() > 8) return why = "\"quests\" in \"when\" lists 1..8 quests", false;
+        for (const Value& q : list.array) {
+            LetterQuestCondition c;
+            if (!keys(q, {"quest", "step", "done"})) return why = "each of \"quests\" is {quest, step} or {quest, done: true}", false;
+            if (!quest_condition(q, c)) return false;
+            m.when.quests.push_back(c);
+        }
+    }
+    if (!read_flag(manifest, w.get("flag"), m.when.flag, why) || !read_flag(manifest, w.get("not_flag"), m.when.not_flag, why)) return false;
+    return true;
+}
+
 // Parses the manifest's letters on their own ("letters": [{"id", "sender", "text", "encloses"}]); the
 // charts and items they enclose must be declared, and their ids must not be a quest letter's.
 inline bool parse_letters(const mods::json::Value& manifest, std::vector<ManifestLetter>& out, std::string& why) {
@@ -539,6 +648,7 @@ inline bool parse_letters(const mods::json::Value& manifest, std::vector<Manifes
             } else
                 return why = "letter " + m.id + ": it can enclose \"chart:<id>\" and \"item:<id>\"", false;
         }
+        if (!parse_letter_when(manifest, l, m, why)) return why = "letter " + m.id + ": " + why, false;
         for (const std::string& q : quest_letters)
             if (q == m.id) return why = "letter " + m.id + " is also a quest's letter", false;
         for (const ManifestLetter& o : out)

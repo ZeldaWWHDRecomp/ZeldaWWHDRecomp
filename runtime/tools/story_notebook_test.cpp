@@ -27,6 +27,8 @@
 #include <cstdio>
 #include <chrono>
 #include <cstring>
+#include <cstdarg>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -42,7 +44,8 @@ using namespace story_notebook;
 using story_mail::Book;
 
 void log_msg(const char* fmt, ...) {
-    (void)fmt;
+    if (!std::getenv("TLOG")) return;
+    va_list a; va_start(a, fmt); std::vfprintf(stderr, fmt, a); va_end(a); std::fputc('\n', stderr);
 }
 namespace mods {
 uint64_t step() { return 0; }  // story_item_buttons.cpp's research aid
@@ -52,7 +55,7 @@ bool g_pro = false;
 bool pro_controller() { return g_pro; }  // the menu on the GamePad unless a test says otherwise
 }
 
-namespace story_notebook {void action_rewards(Cpu*);}
+namespace story_notebook {void action_rewards(Cpu*);std::vector<Takeover> takeovers();}
 namespace {
 
 constexpr uint32_t kGlobals = 0x101F0000, kArena = 0x20000000, kSave = kArena;
@@ -2113,6 +2116,127 @@ void test_quest_destinations() {
     assert(std::equal(game_save.begin(),game_save.end(),mem::ptr(kSave)));
 }
 
+
+// The world editor's live story update (redeclare): only the edited mod's tables change, the save's records
+// stay, a talk running keeps the story system busy, a removed talk gives the resident back to the game.
+std::string live_manifest(const std::string& lines, const std::string& extra = "") {
+    std::string npc = lines.empty() ? "" : R"(, "npc": {"who": "windfall-ub3", "lines": [")" + lines + R"("]})";
+    return R"({"quests_format": 1, "quests": [{"id": "kreeb", "title": "Kreeb's lamp", "steps": [{"n": 1, "text": "Talk to her.")" + npc +
+           R"(}, {"n": 2, "text": "Then sail on."}]})" + extra + R"(]})";
+}
+std::vector<Takeover> takeovers_of(const std::string& mod, const std::string& quest) {
+    std::vector<Takeover> out;
+    for (const Takeover& t : takeovers())
+        if (t.quest == quest_key(mod, quest)) out.push_back(t);
+    return out;
+}
+bool listed(const std::string& mod, const std::string& id) {
+    for (const Quest& q : quests())
+        if (q.mod == mod && q.id == id) return true;
+    return false;
+}
+void test_redeclare() {
+    constexpr uint32_t kNpc = kArena + 0x8000;
+    Book b = story_store::book();
+    while (tracked_key(b)) toggle_tracked(b, tracked_key(b));
+    for (const Quest& q : quests()) b.set(story_mail::kRecordQuest, q.key, kStepDone);  // the earlier tests' quests want her no more
+    st8(kNpc + 0x905, 5), st8(kNpc + 0x326, 11);  // the harbour lady at the harbour
+    memcpy(mem::ptr(kPlayObj + 0x5134), "sea", 4);
+    st32(kNpc + 0x8A8, 0x1234), st32(kNpc + 0x8AC, 0);
+    auto end_talk = [&] {
+        st16(kNpc + 0xF8, 1);
+        call(0x022C36D0, kNpc);
+        st16(kNpc + 0xF8, 0);
+        call(0x022C36D0, kNpc);
+    };
+    // another mod with a talk for the same resident (not started), a letter and a chart of its own
+    const char* other = R"({"charts": [{"id": "b-map", "name": "B's map", "place": {"x": 1000, "z": -200000}}],
+      "letters": [{"id": "b-note", "sender": "B", "text": "Hello."}],
+      "quests_format": 1, "quests": [{"id": "other", "title": "B's tale",
+        "steps": [{"n": 1, "text": "Talk.", "npc": {"who": "windfall-ub3", "lines": ["B speaks."]}}]}]})";
+    assert(declare("live-b", "B", mods::json::parse(other)));
+    assert(declare("live-a", "A", mods::json::parse(live_manifest("Hello from A."))));
+    const auto b_talks = takeovers_of("live-b", "other");
+    const auto charts_before = story_chart::charts();
+    assert(b_talks.size() == 1 && takeovers_of("live-a", "kreeb").size() == 1);
+    const uint16_t ka = quest_key("live-a", "kreeb");
+    assert(reach_step(b, ka, 1) == 1);
+    // the talk runs: not a calm moment; it ends: the quest is done (the game's rules)
+    std::string why;
+    assert(story_idle(why));
+    assert(call(0x022C6C68, kNpc) == 0x2CF3);
+    assert(!story_idle(why) && why.find("talk") != std::string::npos);
+    end_talk();
+    assert(story_idle(why) && state("live-a", "kreeb") == kResultDone);
+    // the edit: other lines; the progress the save has stays as it is (here: step 1 again, by hand)
+    assert(b.set(story_mail::kRecordQuest, ka, 1));
+    std::vector<uint8_t> area(story_store::area(), story_store::area() + story_block::kAreaSize);
+    Redeclared r;
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("Edited line.")), r, why));
+    assert(r.quests == 1 && r.talks == 1 && r.letters == 0 && r.charts == 0);
+    assert(std::equal(area.begin(), area.end(), story_store::area()));  // nothing of the save written
+    auto a_talks = takeovers_of("live-a", "kreeb");
+    assert(a_talks.size() == 1 && a_talks[0].lines == "Edited line." && a_talks[0].step == 1);
+    assert(call(0x022C6C68, kNpc) == 0x2CF3);
+    end_talk();
+    assert(state("live-a", "kreeb") == kResultDone);
+    // the talk removed: the resident is the game's again, the quest stays where it is
+    assert(b.set(story_mail::kRecordQuest, ka, 1));
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("")), r, why) && r.talks == 0);
+    assert(takeovers_of("live-a", "kreeb").empty() && state("live-a", "kreeb") == 1);
+    calls.clear();
+    assert(call(0x022C6C68, kNpc) == 0x2CF1 && calls == std::vector<std::string>{"getMsg"});
+    // the talk back (an undo): it speaks again
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("Hello from A.")), r, why) && r.talks == 1);
+    assert(call(0x022C6C68, kNpc) == 0x2CF3);
+    end_talk();
+    // a letter and a chart of A's: added, changed, and the chart dropped (kept until a restart)
+    const std::string extra = R"(], "letters": [{"id": "a-note", "sender": "Kreeb", "text": "Thanks."}],
+      "charts": [{"id": "a-map", "name": "A's map", "place": {"x": 2000, "z": -200000}}], "x": [0)";
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("", extra)), r, why) && r.letters == 1 && r.charts == 1);
+    declared_tick();  // the letter is registered with its send
+    auto sender_of = [](const std::string& id) {
+        for (const auto& l : story_mail::letters())
+            if (l.mod == "live-a" && l.id == id) return l.sender;
+        return std::string();
+    };
+    assert(sender_of("a-note") == "Kreeb");
+    std::string renamed = extra;
+    renamed.replace(renamed.find("\"Kreeb\""), 7, "\"Kreeb, the lamp keeper\"");
+    renamed.replace(renamed.find("A's map"), 7, "Old lamp");
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("", renamed)), r, why));
+    assert(sender_of("a-note") == "Kreeb, the lamp keeper");
+    auto chart_named = [](const std::string& mod, const std::string& id) {
+        for (const auto& c : story_chart::charts())
+            if (c.mod == mod && c.chart == id) return c.name;
+        return std::string();
+    };
+    assert(chart_named("live-a", "a-map") == "Old lamp");
+    assert(redeclare("live-a", "A", mods::json::parse(live_manifest("")), r, why));
+    assert(sender_of("a-note").empty() && r.charts_kept == std::vector<std::string>{"a-map"} && chart_named("live-a", "a-map") == "Old lamp");
+    // a quest removed, another added; a quest the mod's code defined keeps its registration
+    assert(define("live-a", "A", "coded", "Coded quest", "", "") == kResultNew && step("live-a", "coded", 1, "By code.", "") == 1);
+    const char* swapped = R"({"quests_format": 1, "quests": [{"id": "fresh", "title": "A new tale", "steps": [{"n": 1, "text": "Go."}]}]})";
+    const uint8_t kreeb_was = b.get(story_mail::kRecordQuest, ka);
+    assert(kreeb_was == kStepDone);
+    assert(redeclare("live-a", "A", mods::json::parse(swapped), r, why));
+    assert(!listed("live-a", "kreeb") && listed("live-a", "fresh") && listed("live-a", "coded"));
+    assert(b.get(story_mail::kRecordQuest, ka) == kreeb_was);  // its record stays (an undo shows it again)
+    // a refused manifest changes nothing
+    assert(!redeclare("live-a", "A", mods::json::parse(R"({"quests_format": 1, "quests": [{"id": "", "title": "x"}]})"), r, why));
+    assert(listed("live-a", "fresh") && !listed("live-a", "kreeb"));
+    // the other mod: its quest, talk, chart and letter as they were
+    assert(listed("live-b", "other"));
+    const auto b_now = takeovers_of("live-b", "other");
+    assert(b_now.size() == 1 && b_now[0].lines == b_talks[0].lines && b_now[0].resident == b_talks[0].resident);
+    assert(chart_named("live-b", "b-map") == "B's map");
+    assert(sender_of("b-note").empty());  // (A's lookup) and B's letter is still B's:
+    bool b_letter = false;
+    for (const auto& l : story_mail::letters()) b_letter |= l.mod == "live-b" && l.id == "b-note" && l.sender == "B";
+    assert(b_letter);
+    (void)charts_before;
+}
+
 int main() {
     {
         QuestDestination d;std::string why;
@@ -2167,6 +2291,7 @@ int main() {
     test_sail_rules();
     test_sail_hooks();
     test_quest_destinations();
+    test_redeclare();
     {
         auto m=mods::json::parse(R"({"quests_format":1,"quests":[{"id":"action","title":"Action reward","reward":{"item":"rupee_orange"},"steps":[{"n":1,"text":"Go","where":"Inside","place":{"stage":"Pnezumi","room":0,"point":1,"sea":{"x":0,"z":-200000}}}]}]})");
         assert(declare("action-test","Action",m));auto b=story_store::book();

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +29,18 @@ int main() {
         assert(!world_manifest::actions(m,action,parsed,why));
         action.array[0]["id"]="delivery";action.array[0]["step"]=1;
         assert(!world_manifest::actions(m,action,parsed,why));
+    }
+    { // "stage": into one of the package's own stages (mod_stages), room and point packed into value
+        auto m=mods::json::parse(R"({"stages":[{"id":"sky"}]})");
+        std::vector<StoryAction> parsed;
+        assert(world_manifest::actions(m,mods::json::parse(R"([{"action":"stage","id":"sky","room":1,"point":3}])"),parsed,why));
+        assert(parsed.size()==1&&parsed[0].kind==StoryAction::Kind::EnterStage&&parsed[0].id=="sky"&&parsed[0].value==(1u<<8|3u));
+        parsed.clear();
+        assert(world_manifest::actions(m,mods::json::parse(R"([{"action":"stage","id":"sky"}])"),parsed,why)&&parsed[0].value==0);
+        for(const char* bad:{R"([{"action":"stage","id":"cave"}])",R"([{"action":"stage","id":"sky","room":64}])",
+                             R"([{"action":"stage","id":"sky","point":100}])",R"([{"action":"stage","id":"sky","wipe":1}])"}){
+            parsed.clear();assert(!world_manifest::actions(m,mods::json::parse(bad),parsed,why));
+        }
     }
     {
         auto m=example();m["quests"]=mods::json::parse(R"([{"id":"a","steps":[{"n":1}]},{"id":"b","steps":[{"n":2}]}])");
@@ -93,11 +106,16 @@ int main() {
     const auto prop_example=[](){return mods::json::parse(R"({"items":[{"id":"shard"}],"actors":[{"id":"vase","actor":"pot","stage":"town","room":0,"position":{"x":0,"y":0,"z":0},"broken_flag":"vase.broken","drops":[{"item":"item:shard","quantity":2}]}]})");};
     { // Validate all four curated native enemy declarations through the public parser.
         const auto fixture=[](){return mods::json::parse(R"({"items":[{"id":"shard"}],"actors":[{"id":"enemy","actor":"chuchu","stage":"sea","room":11,"position":{"x":0,"y":0,"z":0},"defeated_flag":"enemy.defeated","drops":[{"item":"item:shard","quantity":2}]}]})");};
-        for(const char* type:{"chuchu","bokoblin","moblin","keese"}){
-            auto data=fixture();auto& value=data["actors"].array[0];value["actor"]=type;ManifestActor candidate;candidate.actor=type;
+        std::vector<std::string> enemy_types{"chuchu","bokoblin","moblin","keese","miniblin","peahat","darknut","rat_hole","bokobaba","bubble","octorok"};for(const char* more:story_enemy_variants::kMoreEnemies)enemy_types.push_back(more);
+        for(const std::string& type_name:enemy_types){const char* type=type_name.c_str();
+            auto data=fixture();
+            if(story_enemy_variants::room_path_rule(type,"")){  // a wall cannon names its firing area (a mod room path)
+                data["paths"]=mods::json::parse(R"([{"id":"area","stage":"sea","room":11,"closed":true,"points":[{"x":0,"y":0,"z":0},{"x":500,"y":0,"z":0},{"x":250,"y":0,"z":400}]}])");
+                data["actors"].array[0]["path"]="area";}
+            auto& value=data["actors"].array[0];value["actor"]=type;ManifestActor candidate;candidate.actor=type;
             assert(world_manifest::native_enemy_fields(data,value,candidate,why)&&candidate.defeated_flag=="enemy.defeated"&&candidate.drops.size()==1&&candidate.drops[0].quantity==2);
             assert(parse_actors(data,actors,why)&&actors.size()==1&&actors[0].actor==type&&actors[0].defeated_flag=="enemy.defeated"&&actors[0].drops[0].item=="shard");
-            for(const char* field:{"params","parameters","flag","broken_flag","switch_flag","switch","lines","then","model","animation","look_at","path","collision","attention","kind"}){auto bad=value;bad[field]=Value{};assert(!world_manifest::native_enemy_fields(data,bad,candidate,why));}
+            for(const char* field:{"params","parameters","flag","broken_flag","switch_flag","switch","lines","then","model","animation","look_at","path","collision","attention","kind"}){if((std::string(type)=="bokoblin"||std::string(type)=="moblin"||story_enemy_variants::takes_room_path(type))&&std::string(field)=="path")continue;auto bad=value;bad[field]=Value{};assert(!world_manifest::native_enemy_fields(data,bad,candidate,why));}
             for(int quantity:{0,255}){auto bad=value;bad["drops"].array[0]["quantity"]=quantity;assert(!world_manifest::native_enemy_fields(data,bad,candidate,why));}
             auto bad=value;bad["drops"].array[0]["item"]="item:foreign";assert(!world_manifest::native_enemy_fields(data,bad,candidate,why));
             bad=value;bad["defeated_flag"]="0x80";assert(!world_manifest::native_enemy_fields(data,bad,candidate,why));
@@ -109,6 +127,83 @@ int main() {
             {auto bad=data;bad["actors"].array[0]["scale"]=mods::json::parse(R"({"x":2,"y":2,"z":2})");assert(!parse_actors(bad,actors,why)&&actors.empty());}
             candidate.scale={2,2,2};assert(!world_manifest::native_enemy_fields(data,value,candidate,why));candidate.scale={1,1,1};candidate.rotation.z=1;assert(!world_manifest::native_enemy_fields(data,value,candidate,why));
         }
+        // declared variants only: ChuChu colours; never raw parameters, never another kind's variant
+        for(const auto& v:story_enemy_variants::kVariants){auto data=fixture();auto& a=data["actors"].array[0];a["actor"]=v.kind;a["parameters"]=mods::json::parse(std::string(R"({"variant":")")+v.name+"\"}");
+            if(v.path){data["paths"]=mods::json::parse(R"([{"id":"route","stage":"sea","room":11,"closed":true,"next":"spots","points":[{"x":0,"y":0,"z":0},{"x":500,"y":0,"z":0},{"x":250,"y":0,"z":400,"release":true}]},
+                                                             {"id":"spots","stage":"sea","room":11,"closed":true,"points":[{"x":50,"y":0,"z":50},{"x":450,"y":0,"z":50},{"x":250,"y":0,"z":300}]}])");data["actors"].array[0]["path"]="route";}  // a route variant names its path (a rider's has a release point, a summoner's a next path)
+            assert(parse_actors(data,actors,why)&&actors[0].variant==v.name);
+            const auto fp=story_actors::identity::fingerprint("m",actors[0]);auto plain=actors[0];plain.variant.clear();assert(fp!=story_actors::identity::fingerprint("m",plain));}
+        {auto data=fixture();assert(parse_actors(data,actors,why)&&actors[0].variant.empty()&&story_enemy_variants::find("chuchu","")->params==0xFF000000u);}
+        for(const char* bad_variant:{R"({"variant":"purple"})",R"({"variant":""})",R"({"variant":3})",R"({"variant":"red","colour":1})",R"({"colour":"red"})",R"("red")"}){auto data=fixture();data["actors"].array[0]["parameters"]=mods::json::parse(bad_variant);assert(!parse_actors(data,actors,why)&&actors.empty());}
+        std::vector<std::string> plain_kinds{"moblin","miniblin","bokobaba","octorok"};for(const char* more:story_enemy_variants::kMoreEnemies)if(!story_enemy_variants::has_variants(more))plain_kinds.push_back(more);
+        for(const std::string& plain_name:plain_kinds){const char* plain_kind=plain_name.c_str();auto data=fixture();data["actors"].array[0]["actor"]=plain_kind;data["actors"].array[0]["parameters"]=mods::json::parse(R"({"variant":"red"})");assert(!parse_actors(data,actors,why)&&why.find("no variants")!=std::string::npos);}
+        {auto data=fixture();data["actors"].array[0]["parameters"]=mods::json::parse(R"({"variant":"purple"})");assert(!parse_actors(data,actors,why)&&why.find("green, red, blue, yellow or black")!=std::string::npos);}
+        for(const char* colour:{"red","blue","yellow"}){const auto*v=story_enemy_variants::find("chuchu",colour);assert(v&&(v->params&0xFFFF00FFu)==0xFF000000u&&((v->params>>8)&0xFF)>=1&&((v->params>>8)&0xFF)<=4);}
+        assert(story_enemy_variants::find("chuchu","black")->params==0xFF000300u);
+        // Fire Keese, the Seahat and the Bubble colours; the game has no Ice Keese and the bare-skull or path Bubble is never offered
+        assert(story_enemy_variants::find("keese","")->params==0xFFFF0000u&&story_enemy_variants::find("keese","fire")->params==0xFFFF8000u&&!story_enemy_variants::find("keese","ice"));
+        assert(story_enemy_variants::find("peahat","")->params==0xFFFFFF00u&&story_enemy_variants::find("peahat","seahat")->params==0xFFFFFF01u);
+        assert(story_enemy_variants::find("bubble","")->params==0xFFFFFF00u&&story_enemy_variants::find("bubble","blue")->params==0xFFFFFF01u&&!story_enemy_variants::find("bubble","skull"));
+        for(const auto& v:story_enemy_variants::kVariants)if(std::string(v.kind)=="bubble")assert((v.params&0xFEu)==0&&(v.params>>8)==0xFFFFFFu);
+        {auto data=fixture();data["actors"].array[0]["actor"]="keese";data["actors"].array[0]["parameters"]=mods::json::parse(R"({"variant":"ice"})");assert(!parse_actors(data,actors,why)&&why.find("normal or fire")!=std::string::npos);}
+        // a patrolling Bokoblin: points and mode (loop or back_and_forth), never speed or pauses; other enemies never take a path
+        {auto data=fixture();auto& a=data["actors"].array[0];a["actor"]="bokoblin";a["path"]=mods::json::parse(R"({"points":[{"x":300,"y":0,"z":0},{"x":300,"y":0,"z":300}],"mode":"back_and_forth"})");
+         assert(parse_actors(data,actors,why)&&actors[0].path.points.size()==2&&actors[0].path.back_and_forth);
+         a["path"]["mode"]="loop";assert(parse_actors(data,actors,why)&&actors[0].path.loop);
+         a["path"]["mode"]="once";assert(!parse_actors(data,actors,why));
+         a["path"]["mode"]="loop";a["path"]["speed"]=100;assert(!parse_actors(data,actors,why));a["path"].object.erase("speed");
+         a["path"]["pauses"]=true;assert(!parse_actors(data,actors,why));a["path"].object.erase("pauses");
+         a["parameters"]=mods::json::parse(R"({"variant":"shield"})");assert(parse_actors(data,actors,why));
+         assert(story_enemy_variants::bokoblin_patrol(0xFFFFFF24u)==0xFFFEFF20u&&story_enemy_variants::declared_params("bokoblin",0xFFFEFF20u)&&story_enemy_variants::bokoblin_patrols(0xFFFEFF20u)&&!story_enemy_variants::bokoblin_patrols(0xFFFFFF24u));
+         a["actor"]="moblin";a.object.erase("parameters");assert(parse_actors(data,actors,why)&&actors[0].path.loop);
+         assert(story_enemy_variants::moblin_patrol(0xFFFF0000u)==0xFFFE0000u&&story_enemy_variants::patrol_word(0xFFFE0000u));
+         a["actor"]="chuchu";assert(!parse_actors(data,actors,why));}
+        // a rat hole: the hole and three rats (four actors), its rats named "<id>.ratN" / "<flag>.ratN";
+        // ids and flags at most 27 characters, no other actor with its rats' names, two holes per room
+        {auto data=fixture();auto& a=data["actors"].array[0];a["actor"]="rat_hole";a["parameters"]=mods::json::parse(R"({"variant":"mixed"})");
+         assert(parse_actors(data,actors,why)&&actors[0].variant=="mixed"&&placed_actors(actors[0])==4&&story_enemy_variants::kRatsPerHole==3);
+         assert(!story_enemy_variants::rat_bomb("mixed",0)&&story_enemy_variants::rat_bomb("mixed",1)&&!story_enemy_variants::rat_bomb("mixed",2)&&story_enemy_variants::rat_bomb("bomb_rats",0)&&story_enemy_variants::rat_bomb("bomb_rats",2)&&!story_enemy_variants::rat_bomb("rats",1)&&!story_enemy_variants::rat_bomb("",1));
+         for(const char* name:{"rats","bomb_rats","mixed"})assert(story_enemy_variants::find("rat_hole",name)&&story_enemy_variants::find("rat_hole",name)->params==0xFF010100u);
+         assert(story_enemy_variants::find("rat_hole","")==story_enemy_variants::find("rat_hole","rats"));
+         {auto bad=data;bad["actors"].array[0]["path"]=mods::json::parse(R"({"points":[{"x":300,"y":0,"z":0}],"mode":"loop"})");assert(!parse_actors(bad,actors,why));}
+         {auto bad=data;bad["actors"].array[0]["id"]=std::string(28,'h');assert(!parse_actors(bad,actors,why)&&why.find("27")!=std::string::npos);}
+         {auto ok=data;ok["actors"].array[0]["id"]=std::string(27,'h');ok["actors"].array[0]["defeated_flag"]=std::string(27,'f');assert(parse_actors(ok,actors,why));}
+         {auto bad=data;bad["actors"].array[0]["defeated_flag"]=std::string(28,'f');assert(!parse_actors(bad,actors,why)&&why.find("27")!=std::string::npos);}
+         const auto chu=[](const std::string& id,const std::string& flag){auto v=mods::json::parse(R"({"actor":"chuchu","stage":"sea","room":11,"position":{"x":0,"y":0,"z":0},"drops":[]})");v["id"]=id;v["defeated_flag"]=flag;return v;};
+         {auto bad=data;bad["actors"].array.push_back(chu("enemy.rat2","other.defeated"));assert(!parse_actors(bad,actors,why)&&why.find("rats")!=std::string::npos);}
+         {auto bad=data;bad["actors"].array.push_back(chu("other","enemy.defeated.rat3"));assert(!parse_actors(bad,actors,why)&&why.find("rats")!=std::string::npos);}
+         {auto ok=data;ok["actors"].array.push_back(chu("enemy.rat4","enemy.defeated.rat4"));assert(parse_actors(ok,actors,why));}
+         {auto two=data;auto hole=two["actors"].array[0];hole["id"]="h2";hole["defeated_flag"]="h2.closed";two["actors"].array.push_back(hole);assert(parse_actors(two,actors,why));
+          hole["id"]="h3";hole["defeated_flag"]="h3.closed";two["actors"].array.push_back(hole);assert(!parse_actors(two,actors,why)&&why.find("two rat holes")!=std::string::npos);
+          two["actors"].array.back()["room"]=12;assert(parse_actors(two,actors,why));}
+         {auto full=data;for(int i=0;i<12;++i)full["actors"].array.push_back(chu("c"+std::to_string(i),"c"+std::to_string(i)+".d"));assert(parse_actors(full,actors,why));
+          full["actors"].array.push_back(chu("c12","c12.d"));assert(!parse_actors(full,actors,why)&&why.find("16 per room")!=std::string::npos);}
+         ManifestActor rat=actors.empty()?ManifestActor{}:actors[0];rat.actor="rat";rat.hole="enemy";const auto plain=story_actors::identity::fingerprint("m",rat);rat.rat_bomb=true;assert(plain!=story_actors::identity::fingerprint("m",rat));rat.hole="other";rat.rat_bomb=false;assert(plain!=story_actors::identity::fingerprint("m",rat));}
+        // defeat_switch: an enemy names one of the mod's switch actors; anything else is refused
+        {auto data=fixture();data["actors"].array.push_back(mods::json::parse(R"({"id":"gate-switch","actor":"switch","stage":"sea","room":11,"position":{"x":5,"y":0,"z":0},"switch_flag":"gate.open"})"));
+         data["actors"].array[0]["defeat_switch"]="gate-switch";assert(parse_actors(data,actors,why)&&actors[0].defeat_switch=="gate-switch");
+         auto plain=actors[0];plain.defeat_switch.clear();assert(story_actors::identity::fingerprint("m",actors[0])!=story_actors::identity::fingerprint("m",plain));
+         data["actors"].array[0]["defeat_switch"]="missing";assert(!parse_actors(data,actors,why)&&why.find("defeat_switch")!=std::string::npos);
+         data["actors"].array[0]["defeat_switch"]="enemy";assert(!parse_actors(data,actors,why));
+         data["actors"].array[0]["defeat_switch"]=3;assert(!parse_actors(data,actors,why));
+         data["actors"].array[0].object.erase("defeat_switch");data["actors"].array[1]["defeat_switch"]="gate-switch";assert(!parse_actors(data,actors,why)&&why.find("requires an enemy")!=std::string::npos);}
+        // a Mighty Darknut and a Bokoblin naming the same switch: both are enemies for defeat_switch
+        {auto data=fixture();data["actors"].array.push_back(mods::json::parse(R"({"id":"gate-switch","actor":"switch","stage":"sea","room":11,"position":{"x":5,"y":0,"z":0},"switch_flag":"gate.open"})"));
+         auto& knight=data["actors"].array[0];knight["actor"]="darknut";knight["parameters"]=mods::json::parse(R"({"variant":"mighty"})");knight["defeat_switch"]="gate-switch";
+         auto second=knight;second["id"]="guard";second["actor"]="bokoblin";second.object.erase("parameters");second["defeated_flag"]="guard.defeated";data["actors"].array.push_back(second);
+         assert(parse_actors(data,actors,why)&&actors.size()==3&&actors[0].actor=="darknut"&&actors[0].variant=="mighty"&&actors[0].defeat_switch=="gate-switch"&&actors[2].defeat_switch=="gate-switch");}
+        // Bokoblin: the stick is the default; the shield sets bit 0x20, the machete bit 0x40 (weapon 1)
+        assert(story_enemy_variants::find("bokoblin","")->params==0xFFFFFF04u&&story_enemy_variants::bokoblin_weapon(0xFFFFFF04u)==0);
+        assert(story_enemy_variants::find("bokoblin","shield")->params==0xFFFFFF24u&&story_enemy_variants::bokoblin_weapon(0xFFFFFF24u)==0);
+        assert(story_enemy_variants::find("bokoblin","machete")->params==0xFFFFFF44u&&story_enemy_variants::bokoblin_weapon(0xFFFFFF44u)==1);
+        {auto data=fixture();data["actors"].array[0]["actor"]="bokoblin";data["actors"].array[0]["parameters"]=mods::json::parse(R"({"variant":"red"})");assert(!parse_actors(data,actors,why)&&why.find("stick, shield or machete")!=std::string::npos);}
+        // Darknut: guard behaviour 4, no path and no spawn switch in every variant; the equipment (x rotation
+        // word bits 5..7) is the game's own pairing: none, shield, helmet and shield, helmet, shield and cape
+        assert(story_enemy_variants::find("darknut","")->params==0xFFFF9604u&&story_enemy_variants::find("darknut","")->angle_x==0);
+        for(const auto& v:story_enemy_variants::kVariants){if(std::string(v.kind)!="darknut")continue;assert((v.params&0xFFFF000Fu)==0xFFFF0004u&&!(v.angle_x&~0xE0u)&&story_enemy_variants::angle_x("darknut",v.params)==v.angle_x);}
+        assert(story_enemy_variants::find("darknut","shield")->angle_x==2u<<5&&story_enemy_variants::find("darknut","helmet")->angle_x==3u<<5&&story_enemy_variants::find("darknut","mighty")->angle_x==5u<<5);
+        for(const char* refused:{"frozen","patrol","boss","red"}){auto data=fixture();data["actors"].array[0]["actor"]="darknut";data["actors"].array[0]["parameters"]=mods::json::parse(std::string(R"({"variant":")")+refused+"\"}");assert(!parse_actors(data,actors,why)&&why.find("darknut, shield, helmet or mighty")!=std::string::npos);}
+        {auto data=fixture();data["actors"].array[0]["actor"]="darknut";data["actors"].array[0]["rotation"]=mods::json::parse(R"({"x":45,"y":0,"z":0})");assert(!parse_actors(data,actors,why));}
     }
     for(const auto& name:{"pot","barrel","crate"}){auto p=prop_example();p["actors"].array[0]["actor"]=name;assert(parse_actors(p,actors,why)&&actors[0].broken_flag=="vase.broken"&&actors[0].drops[0].item=="shard"&&actors[0].drops[0].quantity==2);}
     for(const auto& name:{"pot","barrel","crate"}){auto p=prop_example();p["actors"].array[0]["actor"]=name;p["actors"].array[0]["texture"]="textures/blue.png";assert(parse_actors(p,actors,why)&&actors[0].texture=="textures/blue.png");const auto initial=story_actors::identity::fingerprint("test",actors[0]);actors[0].texture_digest="different";assert(story_actors::identity::fingerprint("test",actors[0])!=initial);}
@@ -169,13 +264,69 @@ int main() {
     v=example();v["scenes"].array[0]["trigger"]["actor"]="missing";assert(!parse_scenes(v,scenes,why));
     v=example();v["scenes"].array[0]["steps"].array[3]["then"].array[0]["id"]="0x1234";assert(!parse_scenes(v,scenes,why));
     v=example();v["actors"].array[1]["actor"]="Tbox";v["actors"].array[1]["params"]=0;v["actors"].array[1]["parameters"]["item"]="rupee_blue";assert(parse_actors(v,actors,why)&&actors[1].item_game==2);
-    v["actors"].array[1]["parameters"]["item"]="heart_piece";assert(!parse_actors(v,actors,why)&&actors.empty());
+    v["actors"].array[1]["parameters"]["item"]="triforce";assert(!parse_actors(v,actors,why)&&actors.empty());
     v=example();v["actors"].array[0]["parameters"]["resident"]=10;assert(!parse_actors(v,actors,why)&&actors.empty());
     for(const auto& name:{"uo2","um1","ym1"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(parse_actors(v,actors,why));assert(actors[0].resident==(std::string(name)=="uo2"?1u:std::string(name)=="ym1"?19u:9u));}
-    for(const auto& name:{"Uo2","uo1","ug1","1",""}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(!parse_actors(v,actors,why));}
+    for(const auto& name:{"Uo2","ug1","1","","um3x"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(!parse_actors(v,actors,why));}
+    // the catalogue of placeable villagers: every declared code parses to its native subtype
+    {const std::pair<const char*,unsigned> codes[]={{"uo1",0},{"uo2",1},{"uo3",2},{"ub1",3},{"ub2",4},{"ub3",5},{"ub4",6},{"uw1",7},{"uw2",8},{"um1",9},{"um2",10},{"sa1",12},{"sa2",13},{"sa3",14},{"sa4",15},{"ym1",19}};
+     assert(std::size(codes)==std::size(story_resident_types::kTypes));
+     for(const auto&[code,subtype]:codes){v=example();v["actors"].array[0]["parameters"]["resident"]=code;assert(parse_actors(v,actors,why));assert(actors[0].resident==subtype);
+      const auto*t=story_resident_types::find(code);assert(t&&t->subtype==subtype&&story_resident_types::by_subtype(uint8_t(subtype))==t&&std::strlen(t->label)&&std::strlen(t->help));
+      assert(story_resident_types::profile(uint8_t(subtype))==(subtype==19?0x13B:0x175));
+      // the story-gated pair skips its gate (stage argument 0xFF); everyone else keeps the ordinary 0
+      assert(story_resident_types::params(uint8_t(subtype))==(subtype==19?1u:(subtype==8||subtype==10)?0x00FF00FFu:0x00FF0000u));}}
+    // unsafe characters are refused with the reason, the rest with the list
+    for(const auto& name:{"um3","sa5","ug1","ug2"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(!parse_actors(v,actors,why)&&actors.empty());assert(why.find("not supported")!=std::string::npos&&why.find(name)!=std::string::npos);}
+    v=example();v["actors"].array[0]["parameters"]["resident"]="rsh1";assert(!parse_actors(v,actors,why));assert(why.find("one of uo2, um1")!=std::string::npos&&why.find("ym1")!=std::string::npos);
+    // ub4: never in the photo studio, where the game decides whether she appears
+    v=example();v["actors"].array[0]["parameters"]["resident"]="ub4";v["actors"].array[0]["stage"]="Ocmera";v["actors"].array[0]["room"]=0;assert(!parse_actors(v,actors,why)&&why.find("Ocmera")!=std::string::npos);
+    v["actors"].array[0]["stage"]="Opub";assert(parse_actors(v,actors,why)&&actors[0].resident==6);
+    v["actors"].array[0]["parameters"]["resident"]="uo1";v["actors"].array[0]["stage"]="Ocmera";assert(parse_actors(v,actors,why));
+    // the new characters are people residents (scene move/face), ym1 is not
+    v=example();v["actors"].array[0]["parameters"]["resident"]="sa2";assert(story_notebook::world_manifest::resident_character(v,"guide"));
     v=example();v["actors"].array[0]["parameters"]["resident"]=19;assert(!parse_actors(v,actors,why));
     v=example();v["actors"].array[0]["parameters"]["resident"]=1;assert(!parse_actors(v,actors,why));
     v=example();v["actors"].array[0]["parameters"]["resident"]=9;assert(parse_actors(v,actors,why)&&actors[0].resident==9);
+    // a resident's route ("path"): 1..15 points after its position, the walking characters only
+    {auto route=[&](const char* code,const char* path_json){auto m=example();auto& a=m["actors"].array[0];a["parameters"]["resident"]=std::string(code);a["path"]=mods::json::parse(path_json);return m;};
+     v=route("uo2",R"({"points":[{"x":100,"y":0,"z":0}]})");assert(parse_actors(v,actors,why));
+     assert(actors[0].path.points.size()==1&&!actors[0].path.speed_given&&!actors[0].path.loop&&!actors[0].path.back_and_forth&&!actors[0].path.pauses&&std::string(actors[0].path.mode())=="once");
+     v=route("um1",R"({"points":[{"x":100,"y":0,"z":0},{"x":100,"y":0,"z":100}],"mode":"loop","speed":90,"pauses":true})");assert(parse_actors(v,actors,why));
+     assert(actors[0].path.loop&&actors[0].path.speed_given&&actors[0].path.speed==90&&actors[0].path.pauses);
+     v=route("uo3",R"({"points":[{"x":100,"y":0,"z":0}],"mode":"back_and_forth"})");assert(parse_actors(v,actors,why)&&actors[0].path.back_and_forth);
+     for(const char* walker:{"uo1","uo2","uo3","um1","um2"}){v=route(walker,R"({"points":[{"x":50,"y":0,"z":0}]})");assert(parse_actors(v,actors,why));}
+     // the women and sailors walk with a borrowed walk (story_resident_walk_clip.h), at their own pace's limits
+     for(const char* borrowed:{"ub1","ub2","ub3","ub4","uw1","uw2","sa1","sa2","sa3","sa4"}){v=route(borrowed,R"({"points":[{"x":50,"y":0,"z":0}],"mode":"loop"})");assert(parse_actors(v,actors,why)&&actors[0].path.loop);}
+     v=route("ub1",R"({"points":[{"x":50,"y":0,"z":0}],"speed":72})");assert(parse_actors(v,actors,why));
+     v=route("ub1",R"({"points":[{"x":50,"y":0,"z":0}],"speed":73})");assert(!parse_actors(v,actors,why)&&why.find("18 to 72")!=std::string::npos);
+     v=route("sa4",R"({"points":[{"x":50,"y":0,"z":0}],"speed":29})");assert(!parse_actors(v,actors,why));
+     v=route("ym1",R"({"points":[{"x":50,"y":0,"z":0}]})");assert(!parse_actors(v,actors,why)&&why.find("seated")!=std::string::npos);
+     // speed: 0.5..2 times the character's own pace (uo2: 30 units a second)
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"speed":15})");assert(parse_actors(v,actors,why));
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"speed":60})");assert(parse_actors(v,actors,why));
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"speed":14})");assert(!parse_actors(v,actors,why)&&why.find("15 to 60")!=std::string::npos);
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"speed":61})");assert(!parse_actors(v,actors,why));
+     v=route("um1",R"({"points":[{"x":50,"y":0,"z":0}],"speed":127})");assert(!parse_actors(v,actors,why));
+     // bounds and shapes
+     v=route("uo2",R"({"points":[]})");assert(!parse_actors(v,actors,why));
+     {std::string many=R"({"points":[)";for(int i=0;i<16;i++)many+=std::string(i?",":"")+"{\"x\":"+std::to_string(10*(i+1))+",\"y\":0,\"z\":0}";v=route("uo2",(many+"]}").c_str());assert(!parse_actors(v,actors,why));}
+     {std::string most=R"({"points":[)";for(int i=0;i<15;i++)most+=std::string(i?",":"")+"{\"x\":"+std::to_string(10*(i+1))+",\"y\":0,\"z\":0}";v=route("uo2",(most+"]}").c_str());assert(parse_actors(v,actors,why)&&actors[0].path.points.size()==15);}
+     v=route("uo2",R"({"points":[{"x":0.5,"y":0,"z":0}]})");assert(!parse_actors(v,actors,why)&&why.find("position")!=std::string::npos);
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0},{"x":50,"y":9,"z":0.5}]})");assert(!parse_actors(v,actors,why));
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0},{"x":0.5,"y":0,"z":0}],"mode":"loop"})");assert(!parse_actors(v,actors,why)&&why.find("loop")!=std::string::npos);
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"mode":"circle"})");assert(!parse_actors(v,actors,why)&&why.find("back_and_forth")!=std::string::npos);
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"pauses":1})");assert(!parse_actors(v,actors,why));
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"walk":"walk"})");assert(!parse_actors(v,actors,why));  // a resident walks with its own walk
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}],"gait":"run"})");assert(!parse_actors(v,actors,why));
+     // a sign has no route
+     {auto m=example();m["actors"].array[1]["path"]=mods::json::parse(R"({"points":[{"x":50,"y":0,"z":0}]})");assert(!parse_actors(m,actors,why));}
+     // the fingerprint follows every route field
+     v=route("uo2",R"({"points":[{"x":50,"y":0,"z":0}]})");assert(parse_actors(v,actors,why));const auto base=story_actors::identity::fingerprint("m",actors[0]);
+     for(const char* other:{R"({"points":[{"x":51,"y":0,"z":0}]})",R"({"points":[{"x":50,"y":0,"z":0}],"mode":"back_and_forth"})",R"({"points":[{"x":50,"y":0,"z":0}],"mode":"loop"})",
+                            R"({"points":[{"x":50,"y":0,"z":0}],"pauses":true})",R"({"points":[{"x":50,"y":0,"z":0}],"speed":30})"}){
+         v=route("uo2",other);assert(parse_actors(v,actors,why));assert(story_actors::identity::fingerprint("m",actors[0])!=base);}
+    }
     v=example();v["actors"].array[0]["parameters"]["resident"]="ym1";v["actors"].array[0]["position"]["x"]=-202066;v["actors"].array[0]["position"]["z"]=320123;assert(!parse_actors(v,actors,why));
     v["actors"].array[0]["position"]["x"]=-202056;assert(parse_actors(v,actors,why));
     v=example();v["actors"].array[0]["parameters"]["resident"]="ym1";assert(!story_notebook::world_manifest::resident_character(v,"guide"));
@@ -193,6 +344,33 @@ int main() {
     v=example();v["items"]=mods::json::parse(R"([{"id":"token"}])");auto& give=v["actors"].array[0]["then"].array[0];give=mods::json::parse(R"({"action":"give","id":"item:token","count":254})");assert(parse_actors(v,actors,why)&&actors[0].then[0].value==254);
     for(const auto& bad:{Value{},Value(0),Value(255),Value(1.5),Value(true),Value("2")}){give["count"]=bad;assert(!parse_actors(v,actors,why));}
     give["count"]=2;give["action"]="take";assert(parse_actors(v,actors,why)&&actors[0].then[0].value==2);
+    // a chart from dialogue: give chart:<id> of the manifest's charts, once (no count, never taken), in an
+    // actor's then, a talk's then and a scene's end
+    v=example();v["charts"]=mods::json::parse(R"([{"id":"keeper-map","name":"Keeper's map","place":{"x":0,"z":0}}])");
+    {auto& chart=v["actors"].array[0]["then"].array[0];chart=mods::json::parse(R"({"action":"give","id":"chart:keeper-map"})");
+     assert(parse_actors(v,actors,why)&&actors[0].then[0].kind==StoryAction::Kind::GiveChart&&actors[0].then[0].id=="chart:keeper-map");
+     chart["count"]=1;assert(!parse_actors(v,actors,why)&&why.find("no count")!=std::string::npos);chart.object.erase("count");
+     chart["action"]="take";assert(!parse_actors(v,actors,why)&&why.find("can't be taken")!=std::string::npos);chart["action"]="give";
+     chart["id"]="chart:nowhere";assert(!parse_actors(v,actors,why)&&why.find("undeclared mod chart")!=std::string::npos);chart["id"]="chart:keeper-map";}
+    {auto& end=v["scenes"].array[0]["steps"].array[3]["then"];end=mods::json::parse(R"([{"action":"give","id":"chart:keeper-map"}])");
+     assert(parse_scenes(v,scenes,why)&&scenes[0].steps.back().then[0].kind==StoryAction::Kind::GiveChart);}
+    {auto& a=v["actors"].array[0];a.object.erase("lines");a.object.erase("then");
+     a["talks"]=mods::json::parse(R"([{"lines":["Take my map."],"then":[{"action":"give","id":"chart:keeper-map"}]}])");
+     assert(parse_actors(v,actors,why)&&actors[0].talks[0].then[0].kind==StoryAction::Kind::GiveChart);}
+    v.object.erase("charts");assert(!parse_actors(v,actors,why));
+    // what a placed chest holds: the chart chests' game items, or one of the mod's items
+    {auto w=example();w["items"]=mods::json::parse(R"([{"id":"crystal","name":"Crystal","description":"It glows.","icon":"c.png"}])");
+     auto chest=mods::json::parse(R"({"id":"box","actor":"chest","stage":"sea","room":11,"position":{"x":0,"y":0,"z":0},"flag":"box-open"})");
+     auto with=[&](const char* item){auto x=w;auto c=chest;if(item)c["parameters"]["item"]=item;x["actors"].array.push_back(c);return x;};
+     auto holds=[&](const char* item,uint8_t game,const char* mod){if(!parse_actors(with(item),actors,why))return false;const auto& c=actors.back();return c.item_game==game&&c.item_mod==mod;};
+     assert(holds(nullptr,0x06,""));  // as before: an orange rupee
+     assert(holds("rupee_green",0x01,"")&&holds("rupee_red",0x04,"")&&holds("rupee_orange",0x06,""));
+     assert(holds("rupee_silver",0x0F,"")&&holds("heart_piece",0x07,"")&&holds("heart_container",0x08,""));
+     assert(holds("item:crystal",kChestModItem,"crystal"));
+     for(const char* bad:{"item:nothing","triforce","game:heart_piece","rupee_gold","",})
+         {assert(!parse_actors(with(bad),actors,why));}
+     auto n=with(nullptr);n["actors"].array.back()["parameters"]["item"]=4;assert(!parse_actors(n,actors,why)&&why.find("chest item must be")!=std::string::npos);
+     auto sign=with("rupee_red");sign["actors"].array.back()["actor"]="sign";assert(!parse_actors(sign,actors,why));}
     v=example();v["actors"].array[0]["switch"]=1;assert(!parse_actors(v,actors,why));
     v=example();v["actors"].array[0]["parameters"]["switch"]=1;assert(!parse_actors(v,actors,why));
     v=example();v["scenes"].array[0]["kind"]="mod";assert(!parse_scenes(v,scenes,why));
@@ -301,6 +479,15 @@ int main() {
         auto bare=island;for(const char*key:{"distant","shoreline","chart_marker","arrival"})bare["actors"].array[0].object.erase(key);assert(parse_actors(bare,actors,why)&&visual_variant_count(actors[0])==0);auto cleared=original;cleared.distant={};cleared.shoreline={};cleared.chart_marker={};cleared.arrival={};assert(story_actors::identity::fingerprint("own",actors[0])==story_actors::identity::fingerprint("own",cleared));
         for(const char*key:{"distant","shoreline"})for(const char*id:{"missing","other:low","../low","skin"}){auto bad=island;bad["actors"].array[0][key]["model"]=id;rejected(bad);}
         for(const char*key:{"distant","shoreline","chart_marker","arrival"}){auto bad=island;bad["actors"].array[0][key]=Value{};rejected(bad);bad=island;bad["actors"].array[0][key]["native_params"]=1;rejected(bad);}
+        // a shoreline may use the still-water material (a pond's surface), a river's or a waterfall's; only those or foam, and only on the shoreline
+        {auto water=island;water["actors"].array[0]["shoreline"]["material"]="water";assert(parse_actors(water,actors,why)&&actors[0].shoreline.material=="water"&&actors[0].shoreline.model=="coast");
+         const auto foam_identity=story_actors::identity::fingerprint("m",original);auto water_spec=actors[0];assert(story_actors::identity::fingerprint("m",water_spec)!=foam_identity);
+         assert(actors[0].water_body());
+         // pond, river and waterfall surfaces (the editor's water tool): each its own identity, each a body of water
+         for(const char*flowing:{"pond","river","waterfall"}){auto f=island;f["actors"].array[0]["shoreline"]["material"]=flowing;assert(parse_actors(f,actors,why)&&actors[0].shoreline.material==flowing&&actors[0].water_body());assert(story_actors::identity::fingerprint("m",actors[0])!=foam_identity&&story_actors::identity::fingerprint("m",actors[0])!=story_actors::identity::fingerprint("m",water_spec));}
+         water["actors"].array[0]["shoreline"]["material"]="foam";assert(parse_actors(water,actors,why)&&actors[0].shoreline.material.empty()&&!actors[0].water_body());
+         for(const char*bad_material:{"lava","Water",""}){auto bad=island;bad["actors"].array[0]["shoreline"]["material"]=bad_material;rejected(bad);}
+         auto bad=island;bad["actors"].array[0]["distant"]["material"]="water";rejected(bad);assert(parse_actors(island,actors,why));}
         for(const char*behaviour:{"floating","drifting"}){auto bad=island;bad["actors"].array[0]["behaviour"]=behaviour;if(std::string(behaviour)=="drifting")bad["actors"].array[0]["drift"]=mods::json::parse(R"({"wind_speed":1})");rejected(bad);}
         {auto bad=island;bad["actors"].array[0]["stage"]="town";rejected(bad);}
         {auto bad=island;auto&a=bad["actors"].array[0];a.object.erase("behaviour");a["collision"]=mods::json::parse(R"({"radius":30,"height":100,"mode":"solid"})");rejected(bad);}

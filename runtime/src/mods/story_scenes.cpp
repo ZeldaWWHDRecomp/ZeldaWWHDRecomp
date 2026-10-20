@@ -23,6 +23,7 @@
 
 namespace story_scenes {
 namespace {
+DemoBackend& demo_backend(){static DemoBackend backend;return backend;}
 using namespace story_notebook;
 const uint32_t kPlay=GC(0x025200D4),kOrder=GC(0x0253EC0C),kCheckStart=GC(0x0253FD1C),kEnd=GC(0x0253EFA8);
 const uint32_t kCamera=GC(0x024F8044),kStopCamera=GC(0x02514F2C),kStartCamera=GC(0x02514F38),kSetCamera=GC(0x02514F50),kResetCamera=GC(0x02515048),kTrim=GC(0x02515280);
@@ -38,6 +39,7 @@ uint32_t g_scratch=0,g_buttons=0;
 unsigned g_frame_units=1;
 void (*g_original)(Cpu*,uint32_t)=nullptr;
 bool g_trim_installed=false,g_choice_installed=false;
+bool g_editor_previews=false;  // --editor: installed without a declared scene (enable_editor_previews)
 std::atomic<bool> g_active_input{false},g_swallow_plus{false},g_editor_skip{false};
 std::atomic<bool>g_native_restore_reserved{false},g_reserved_abort{false},g_reserved_load{false};
 uint64_t g_generation=0;
@@ -147,6 +149,7 @@ void restore(bool loaded,bool immediate=false) {
             guest?guest->mod.c_str():"invalid",guest?guest->scene.id.c_str():"invalid",guest_index,ld32(g_scratch+LeaseID),
             host?host->mod.c_str():"invalid",host?host->scene.id.c_str():"invalid",unsigned(g_restore_reason),unsigned(ours));
     }
+    if(g_cpu&&demo_backend().release)demo_backend().release(g_cpu,loaded?"state load":g_restore_reason==StopReason::Skipped?"skipped":"scene ended");
     finish_move();release_actors();restore_music();story_scene_choice::close(g_cpu);g_camera_follow.reset();
     if(ours) {
         const uint32_t manager=ld32(kMessageManager);
@@ -242,6 +245,12 @@ public:
             const auto found=g_music.find(g_entries[g_current].mod);if(found==g_music.end())return false;
             const uint32_t at=g_scratch+MusicMask+uint32_t(index/32)*4;st32(at,ld32(at)|(1u<<(index%32)));
             return dispatch_music(found->second,step.cue,step.music_action=="start"?MusicPhase::Start:MusicPhase::Stop,step.fade_frames,StopReason::Finished);
+        }else if(step.kind==SceneStep::Kind::Demo){
+            // the game's demo system plays the tracks; this scene's compulsory event stays ours
+            std::string why;
+            const std::string mod=g_entries[g_current].mod;
+            if(!step.demo||!demo_backend().start||!demo_backend().start(g_cpu,*step.demo,true,[mod](const std::string& id)->uint32_t{return g_resolve&&g_cpu?g_resolve(g_cpu,mod,id):0;},why)){LOG("[scenes] %s:%s demo refused: %s",g_entries[g_current].mod.c_str(),g_entries[g_current].scene.id.c_str(),why.c_str());return false;}
+            return true;
         }else if(step.kind==SceneStep::Kind::Particle){
             if(!g_cpu||!owns(call(kPlay))||!same_room(call(kPlay)))return false;
             WorldPoint where=step.position;
@@ -286,6 +295,12 @@ public:
         const SceneStep& step=g_entries[g_current].scene.steps[index];
         if(step.kind==SceneStep::Kind::CameraPath){motion::Camera view;if(!g_camera_path.sample(elapsed,view)||!submit_camera(view))return StepResult::Failed;
         }else if(step.kind==SceneStep::Kind::CameraFollow){const uint32_t actor=resolve(step.actor);if(!actor||actor!=ld32(g_scratch+176)||ld32(actor+4)!=ld32(g_scratch+180))return StepResult::Failed;motion::Camera view;if(!g_camera_follow.update((uint64_t(ld32(actor+4))<<32)|actor,motion_point(position(actor)),1./60,view)||!submit_camera(view))return StepResult::Failed;
+        }else if(step.kind==SceneStep::Kind::Demo){
+            std::string why;const int poll=demo_backend().poll?demo_backend().poll(g_cpu,why):0;
+            if(poll==2)return StepResult::Complete;
+            if(poll==3){LOG("[scenes] demo failed: %s",why.c_str());return StepResult::Failed;}
+            if(poll==0)return StepResult::Failed;
+            return StepResult::Running;
         }else if(step.kind==SceneStep::Kind::Choice){
             if(!g_message_phase){const uint32_t manager=ld32(kMessageManager);if(!manager)return StepResult::Failed;const uint32_t status=call(kMessageStatus,{manager});if(status!=0&&status!=15)return StepResult::Running;if(!story_scene_choice::begin(g_cpu,g_choice_labels,step.default_choice))return StepResult::Failed;g_message_phase=1;return StepResult::Running;}
             unsigned selected=0;const auto result=story_scene_choice::poll(g_cpu,selected);if(result==story_scene_choice::Result::Failed)return StepResult::Failed;
@@ -335,7 +350,16 @@ public:
 } g_driver;
 }
 void set_game_calls(uint32_t (*fn)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){g_call=fn;}
+void register_demo_backend(const DemoBackend& backend){demo_backend()=backend;}
+uint32_t demo_arena_bytes(){return demo_backend().configure?demo_backend().arena_bytes:0;}
+void configure_demo(uint32_t arena,uint32_t (*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>),void (*original)(Cpu*,uint32_t)){if(demo_backend().configure)demo_backend().configure(arena,call,original);}
+void demo_tick(Cpu* c){if(demo_backend().configured&&demo_backend().configured())demo_backend().tick(c);}
+bool has_demo_steps(){return std::any_of(g_entries.begin(),g_entries.end(),[](const Entry& e){return std::any_of(e.scene.steps.begin(),e.scene.steps.end(),[](const SceneStep& s){return s.kind==SceneStep::Kind::Demo;});});}
+bool any_demo_step(const std::function<bool(const demo_scene::Demo&)>& test){for(const auto& e:g_entries)for(const auto& st:e.scene.steps)if(st.kind==SceneStep::Kind::Demo&&st.demo&&test(*st.demo))return true;return false;}
 void set_scratch_memory(uint32_t guest){g_scratch=guest;}
+bool scratch_memory(){return g_scratch!=0;}
+void enable_editor_previews(){if(!g_cpu&&!g_player.active()&&!g_native_player.active())g_editor_previews=true;}
+bool editor_previews(){return g_editor_previews;}
 void set_callbacks(Resolve resolve_fn,Actions actions_fn){g_resolve=std::move(resolve_fn);g_actions=std::move(actions_fn);}
 void set_place_resolver(ResolvePlace resolver){g_places=std::move(resolver);}
 void set_particle_resolver(ResolveParticle resolver){g_particle_resolve=std::move(resolver);}
@@ -345,7 +369,8 @@ bool validate(const std::vector<ManifestScene>& scenes,std::string& why) {
         if(scene.steps.empty()||scene.steps.size()>kMaxSceneSteps||scene.steps.back().kind!=SceneStep::Kind::End)return why="scene "+scene.id+": invalid step list",false;
         std::vector<Timing> timing;const bool graph=std::any_of(scene.steps.begin(),scene.steps.end(),[](const auto& step){return !step.successors.empty();});
         for(size_t i=0;i<scene.steps.size();++i){const auto& step=scene.steps[i];
-            if(unsigned(step.kind)>unsigned(SceneStep::Kind::Particle))return why="unsupported scene step",false;
+            if(unsigned(step.kind)>unsigned(SceneStep::Kind::Demo))return why="unsupported scene step",false;
+            if(step.kind==SceneStep::Kind::Demo&&!step.demo)return why="scene "+scene.id+": demo step without tracks",false;
             if(step.kind!=SceneStep::Kind::Choice&&step.successors.size()>1)return why="only choices have two successors",false;
             if(!graph&&step.kind==SceneStep::Kind::End&&i+1!=scene.steps.size())return why="scene "+scene.id+": end must be last",false;
             const bool placed=step.kind==SceneStep::Kind::Move||step.kind==SceneStep::Kind::Face||step.kind==SceneStep::Kind::Animation||step.kind==SceneStep::Kind::Walk;
@@ -400,9 +425,10 @@ void trigger(const std::string& kind,const std::string& mod,const std::string& i
     }
 }
 void install(void (*original_fn)(Cpu*,uint32_t),const std::function<std::string(uint32_t)>& replaced_by,const std::function<void(uint32_t,void(*)(Cpu*))>& replace) {
-    if(g_entries.empty()||!original_fn)return;
+    if((g_entries.empty()&&!g_editor_previews)||!original_fn||!g_scratch)return;
     g_original=original_fn;
-    const bool needs_choice=std::any_of(g_entries.begin(),g_entries.end(),[](const Entry& entry){return std::any_of(entry.scene.steps.begin(),entry.scene.steps.end(),[](const SceneStep& step){return step.kind==SceneStep::Kind::Choice;});});
+    if((has_demo_steps()||g_editor_previews)&&demo_backend().configured&&demo_backend().configured())demo_backend().install(replaced_by,replace);
+    const bool needs_choice=g_editor_previews||std::any_of(g_entries.begin(),g_entries.end(),[](const Entry& entry){return std::any_of(entry.scene.steps.begin(),entry.scene.steps.end(),[](const SceneStep& step){return step.kind==SceneStep::Kind::Choice;});});
     if(needs_choice&&!g_choice_installed){story_scene_choice::configure(original_fn,g_call,g_scratch+ChoiceScratch,scene_lease);g_choice_installed=story_scene_choice::install(replaced_by,replace);}
     if(g_trim_installed)return;
     const auto other=replaced_by(kCalcTrim);
@@ -454,7 +480,12 @@ void tick(Cpu* cpu,bool skip,unsigned frames){
         // Requests belong to this uninterrupted native event/room generation.
         // A reload may retain the same textual room key, so discard immediately
         // rather than allowing a stale later owner to start in the new generation.
-        if(interrupted){g_queue.clear();g_pending.clear();}
+        if(interrupted){
+            const uint32_t link=ld32(play+kPlayer);
+            LOG("[scenes] interrupted: owns %d (play %d mode %u control d8 %04X c4 %08X c8 %08X) room %d (link room %d/%d) camera %d",int(owns(play)),int(play==ld32(g_scratch+4)),ld8(play+kMode),ld16(play+kControl+0xD8),ld32(play+kControl+0xC4),ld32(play+kControl+0xC8),
+                int(same_room(play)),link?int(int8_t(ld8(link+kRoom))):-1,int(int8_t(ld8(g_scratch+24))),int(call(kCamera)==ld32(g_scratch+8)));
+            g_queue.clear();g_pending.clear();
+        }
         if(skip_edge)g_swallow_plus.store(true,std::memory_order_relaxed);
         for(unsigned i=0;i<g_frame_units&&g_player.active();++i)g_player.tick(g_generation,interrupted,skip||skip_edge);
         g_cpu=nullptr;return;
@@ -601,7 +632,8 @@ std::optional<story_native_scene_checkpoint::PreparedRetire>prepare_native_retir
 }
 size_t current_step(){return g_native_player.active()?0:g_player.step();}
 bool editor_preview(const std::string& mod,const ManifestScene& scene,bool declared,std::string& why){
-    if(!g_scratch||!g_call||g_entries.empty())return why="the game started without mod scenes: scene previews work after a restart with a scene saved in the package",false;
+    if(!g_scratch||!g_call||(g_entries.empty()&&!g_editor_previews))return why="scene previews are off in this game session: it started without the game's code-mod support (the log at start-up says why)",false;
+    if(!g_trim_installed)return why="scenes are off in this game session: another mod owns the scene camera (the log at start-up says which)",false;
     if(g_native_restore_reserved.load(std::memory_order_acquire)||g_cpu||g_player.active()||g_native_player.active()||g_cleanup_pending||g_starting)return why="a scene is running",false;
     const bool choice=std::any_of(scene.steps.begin(),scene.steps.end(),[](const SceneStep& s){return s.kind==SceneStep::Kind::Choice;});
     if(choice&&!g_choice_installed)return why="choices play after a restart (the game started without a scene that has one)",false;

@@ -4,12 +4,19 @@
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "../input.h"
 #include "../input_map.h"
 #include "../overlay/hostui.h"
 #include "../overlay/overlay.h"
 #include "../runtime.h"
 #include "display_modes.h"
+#include "renderer.h"
 
 namespace gfx {
 void quit_answered();  // quit_prompt.mm
@@ -144,6 +151,64 @@ void load_saved_options() {}
 
 namespace gfx {
 
+// test aid: WWHD_TEST_POST_MOUSE=600:move:0.5:0.1,620:click:0.1:0.06,640:rdown:..,660:rup:..
+// posts mouse events (moved, left click, left down / up, right down / up) at TV frames into the
+// app's event queue for the TV window, at (x, y) as fractions of its content (0,0 top left), so they take
+// the real path (the event monitors here and in mods/mouse.mm) also in hidden test runs. With
+// WWHD_NO_HOST_INPUT only these posted events reach the overlay, never the real mouse.
+static const NSTimeInterval kTestMouseTimestamp = 4243.0;
+static bool test_mouse_event(NSEvent* e) { return e.timestamp == kTestMouseTimestamp; }
+static void start_test_mouse(NSWindow* tv) {
+    const char* env = getenv("WWHD_TEST_POST_MOUSE");
+    if (!env || !*env) return;
+    struct Post { uint64_t frame; std::string what; double x, y; };
+    auto posts = std::make_shared<std::vector<Post>>();
+    for (const char* p = env; *p;) {
+        size_t len = strcspn(p, ",");
+        const std::string item(p, len);
+        p += len + (p[len] == ',');
+        char what[16] = {};
+        unsigned long long f = 0;
+        double x = 0, y = 0;
+        if (sscanf(item.c_str(), "%llu:%15[a-z]:%lf:%lf", &f, what, &x, &y) != 4) {
+            LOG("[overlay] WWHD_TEST_POST_MOUSE: cannot read \"%s\"", item.c_str());
+            continue;
+        }
+        posts->push_back({f, what, x, y});
+    }
+    std::stable_sort(posts->begin(), posts->end(), [](const Post& a, const Post& b) { return a.frame < b.frame; });
+    [NSTimer scheduledTimerWithTimeInterval:1.0 / 120 repeats:YES block:^(NSTimer* t) {
+        const uint64_t frame = render::frame_count();
+        while (!posts->empty() && frame >= posts->front().frame) {
+            const Post po = posts->front();
+            posts->erase(posts->begin());
+            NSView* v = tv.contentView;
+            const NSSize sz = v.bounds.size;
+            NSPoint local = NSMakePoint(po.x * sz.width, v.isFlipped ? po.y * sz.height : (1.0 - po.y) * sz.height);
+            const NSPoint at = [v convertPoint:local toView:nil];  // window coordinates
+            std::vector<NSEventType> types;
+            if (po.what == "move") types = {NSEventTypeMouseMoved};
+            else if (po.what == "click") types = {NSEventTypeMouseMoved, NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp};
+            else if (po.what == "down") types = {NSEventTypeMouseMoved, NSEventTypeLeftMouseDown};
+            else if (po.what == "up") types = {NSEventTypeLeftMouseUp};
+            else if (po.what == "rdown") types = {NSEventTypeMouseMoved, NSEventTypeRightMouseDown};
+            else if (po.what == "rup") types = {NSEventTypeRightMouseUp};
+            else {
+                LOG("[overlay] test mouse: unknown action %s", po.what.c_str());
+                continue;
+            }
+            LOG("[overlay] test mouse %s at %.3f %.3f (frame %llu)", po.what.c_str(), po.x, po.y, (unsigned long long)frame);
+            for (NSEventType type : types) {
+                NSEvent* ev = [NSEvent mouseEventWithType:type location:at modifierFlags:0 timestamp:kTestMouseTimestamp
+                                             windowNumber:tv.windowNumber context:nil eventNumber:0 clickCount:1
+                                                 pressure:type == NSEventTypeLeftMouseDown || type == NSEventTypeRightMouseDown ? 1.0f : 0.0f];
+                [NSApp postEvent:ev atStart:NO];
+            }
+        }
+        if (posts->empty()) [t invalidate];
+    }];
+}
+
 // mouse in the TV window while the overlay is open (installed with the menus, menu.mm)
 void install_overlay_input() {
     NSWindow* tv = (__bridge NSWindow*)display_tv_window();
@@ -152,13 +217,15 @@ void install_overlay_input() {
     density();
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeBackingPropertiesNotification object:tv queue:nil
                                                   usingBlock:^(NSNotification*) { density(); }];
-    if (getenv("WWHD_NO_HOST_INPUT")) return;
+    const bool test_only = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+    if (test_only && !getenv("WWHD_TEST_POST_MOUSE")) return;
+    start_test_mouse(tv);
     tv.acceptsMouseMovedEvents = YES;
     NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged |
                        NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown | NSEventMaskRightMouseUp |
                        NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
-        if (e.window != tv) return e;
+        if (e.window != tv || (test_only && !test_mouse_event(e))) return e;
         if (!overlay::captures() && overlay::pointer_layer_active() && !overlay::layer_takes_pointer()) {
             // the editor's small overlays over the running game: they follow the pointer, the game keeps the click
             NSView* v = tv.contentView;

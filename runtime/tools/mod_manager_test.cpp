@@ -10,7 +10,7 @@
 #include <string>
 
 namespace {
-bool state[6]{};
+bool state[7]{};
 float speed = 1, sensitivity = .15f;
 std::map<std::string,std::string> preferences;
 int reads = 0, writes = 0;
@@ -61,12 +61,18 @@ uint32_t move_speed_button() { return move_button; } void set_move_speed_button(
 static bool move_bar = true;
 bool move_speed_bar() { return move_bar; } void set_move_speed_bar(bool on) { move_bar = on; }
 
+static bool camera_items = false;
+bool camera_directed_items() { return camera_items; } void set_camera_directed_items(bool b) { camera_items=b; }
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
+bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
+static float quick_speed = 1.f;
+float quick_use_speed() { return quick_speed; }
+void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) quick_speed = f; }
 void set_camera_speed(float f) { speed=f; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
 }
@@ -90,7 +96,8 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==18);
+    assert(entries().size()==20);  // with camera-directed-items (#203) and quick-use (#196)
+    assert(find("camera-directed-items") && find("quick-use"));
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);
     assert(find("target-letterbox") && find("target-letterbox")->default_enabled);
@@ -107,8 +114,43 @@ int main() {
     assert(find("lock-on") && std::string(find("lock-on")->name)=="Extended enemy lock-on");
     assert(std::string(find("lock-on")->category)=="Gameplay");
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());
+    assert(find("camera-directed-items") && !mods::camera_directed_items());
+    preferences["mod.camera-directed-items.enabled"]="1";
+    load_saved(); assert(mods::camera_directed_items());
+    mods::set_camera_directed_items(false); env("WWHD_MOD_CAMERA_DIRECTED_ITEMS","0");
+    load_saved(); assert(!mods::camera_directed_items());
+    env("WWHD_MOD_CAMERA_DIRECTED_ITEMS",nullptr);
+    preferences.erase("mod.camera-directed-items.enabled");
+    assert(set_enabled("camera-directed-items",true)); assert(mods::camera_directed_items());
+    disable_all(); assert(!mods::camera_directed_items());
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     assert(!mods::ladder_speed() && !mods::sidle_speed() && !mods::sail_speed() && !mods::auto_wind());
+    env("WWHD_MOD_QUICK_USE_SPEED",nullptr);
+    assert(mods::quick_use_speed()==1.f);
+    load_saved();assert(mods::quick_use_speed()==1.f);
+    for (const char* value : {"1", "1.25", "1.5", "1.500000"}) {
+        preferences["mod.quick-use.speed"]=value;load_saved();
+        assert(mods::quick_use_speed()==std::strtof(value,nullptr));
+    }
+    for (const char* value : {"", "invalid", "nan", "inf", "0", "2", "1.2", "1.25000001", "1.5junk"}) {
+        preferences["mod.quick-use.speed"]=value;load_saved();assert(mods::quick_use_speed()==1.5f);
+    }
+    preferences["mod.quick-use.speed"]="1.25";
+    for (const char* override : {"1", "1.25", "1.5", "invalid"}) {
+        env("WWHD_MOD_QUICK_USE_SPEED",override);load_saved();assert(mods::quick_use_speed()==1.5f);
+    }
+    env("WWHD_MOD_QUICK_USE_SPEED",nullptr);load_saved();assert(mods::quick_use_speed()==1.25f);
+    const auto* quick=find("quick-use");assert(quick);
+    assert(std::string(quick->name)=="Quick-use locked items");
+    assert(std::string(quick->startup_env)=="WWHD_MOD_QUICK_USE");
+    preferences["mod.quick-use.enabled"]="invalid";load_saved();assert(!mods::quick_use());
+    preferences["mod.quick-use.enabled"]="1";load_saved();assert(mods::quick_use());
+    mods::set_quick_use(false);env("WWHD_MOD_QUICK_USE","0");load_saved();assert(!mods::quick_use());
+    preferences["mod.quick-use.enabled"]="0";mods::set_quick_use(true);
+    env("WWHD_MOD_QUICK_USE","1");load_saved();assert(mods::quick_use());
+    env("WWHD_MOD_QUICK_USE",nullptr);load_saved();assert(!mods::quick_use());
+    assert(set_enabled("quick-use",true)&&mods::quick_use());
+    assert(preferences["mod.quick-use.enabled"]=="1");
     preferences["mod.wall-climb.enabled"]="1";
     preferences["mod.quick-doors.enabled"]="invalid";
     preferences["mod.direct-camera.speed"]="1.5";
@@ -227,4 +269,5 @@ int main() {
     // Test isolation protects player settings even when toggles are exercised.
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);
+    assert(set_enabled("quick-use",true)&&mods::quick_use());assert(writes==prior);
 }

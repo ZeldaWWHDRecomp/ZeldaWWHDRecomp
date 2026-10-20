@@ -195,6 +195,114 @@ void test_manifest() {
         "use": {"action": "quest_step", "quest": "other", "step": 1}}]})"), quests, why));
 }
 
+// Letters on their own that wait: "when" (quest steps, a done quest, the mod's flags) and "after_days"
+// on the game's calendar, kept in the story record.
+void test_letter_timing() {
+    std::string why;
+    std::vector<story_notebook::ManifestLetter> letters;
+    const std::string decl = R"("quests_format": 1, "quests": [{"id": "light", "title": "The light", "steps": [{"n": 1, "text": "A"}, {"n": 2, "text": "B"}]}],
+        "actors": [{"id": "keeper", "actor": "sign", "stage": "sea", "room": 11, "position": {"x": 0, "y": 0, "z": 0}, "lines": ["Hi."],
+                    "then": [{"action": "flag", "id": "thanked"}]}])";
+    auto parse = [&](const std::string& letter) {
+        return story_notebook::parse_letters(mods::json::parse("{" + decl + R"(, "letters": [{"id": "thanks", "sender": "The keeper", "text": "Thank you.")" + letter + "}]}"),
+                                             letters, why);
+    };
+    assert(parse("") && !letters[0].timed());  // as before: sent at once
+    assert(parse(R"(, "when": {"quest": "light", "done": true}, "after_days": 3)"));
+    assert(letters[0].timed() && letters[0].after_days == 3 && letters[0].when.quests.size() == 1 && letters[0].when.quests[0].done);
+    assert(parse(R"(, "when": {"quest": "light", "step": 2, "quests": [{"quest": "light", "done": true}], "flag": "thanked"})"));
+    assert(letters[0].when.quests.size() == 2 && letters[0].when.quests[0].step == 2 && letters[0].when.flag == "thanked" && !letters[0].after_days);
+    assert(parse(R"(, "after_days": 1)") && letters[0].timed() && !letters[0].when.any());  // days after the mod is on
+    // refused, each with its reason
+    assert(!parse(R"(, "when": {"quest": "nope", "done": true})") && why.find("doesn't declare") != std::string::npos);
+    assert(!parse(R"(, "when": {"quest": "light", "step": 3})") && why.find("step") != std::string::npos);
+    assert(!parse(R"(, "when": {"quest": "light"})") && why.find("\"step\" or \"done\"") != std::string::npos);
+    assert(!parse(R"(, "when": {"quest": "light", "step": 1, "done": true})"));
+    assert(!parse(R"(, "when": {"quest": "light", "done": false})") && why.find("true") != std::string::npos);
+    assert(!parse(R"(, "when": {"step": 1})") && why.find("need \"quest\"") != std::string::npos);
+    assert(!parse(R"(, "when": {"flag": "nobody-sets-it"})") && why.find("flag") != std::string::npos);
+    assert(!parse(R"(, "when": {"day": 3})") && why.find("when") != std::string::npos);
+    assert(!parse(R"(, "when": {})"));
+    assert(!parse(R"(, "when": {"quests": []})"));
+    assert(!parse(R"(, "after_days": 0)") && why.find("1..255") != std::string::npos);
+    assert(!parse(R"(, "after_days": 256)") && !parse(R"(, "after_days": 1.5)") && !parse(R"(, "after_days": "2")"));
+    assert(why.rfind("letter thanks: ", 0) == 0);
+    // the condition: a step reached or passed, a done quest, the flags
+    story_notebook::LetterWhen w;
+    w.quests = {{"light", 2, false}};
+    int32_t step = 0;
+    bool thanked = false;
+    auto quest = [&](const std::string&) { return step; };
+    auto flag = [&](const std::string&) { return thanked; };
+    assert(!story_notebook::letter_condition(w, quest, flag));
+    step = 1;
+    assert(!story_notebook::letter_condition(w, quest, flag));
+    step = 2;
+    assert(story_notebook::letter_condition(w, quest, flag));
+    step = 255;
+    assert(story_notebook::letter_condition(w, quest, flag));  // done is past every step
+    w.quests = {{"light", 0, true}};
+    step = 254;
+    assert(!story_notebook::letter_condition(w, quest, flag));
+    step = 255;
+    assert(story_notebook::letter_condition(w, quest, flag));
+    w.flag = "thanked";
+    assert(!story_notebook::letter_condition(w, quest, flag));
+    thanked = true;
+    assert(story_notebook::letter_condition(w, quest, flag));
+    w.flag.clear(), w.not_flag = "thanked";
+    assert(!story_notebook::letter_condition(w, quest, flag));
+    // the days: counted from the first day the condition holds, in the story record, across the day
+    // counter's wrap; without after_days at once
+    clear_save();
+    story_mail::Book b = story_store::book();
+    const uint16_t key = story_mail::letter_key("m", "thanks");
+    assert(story_notebook::letter_due(b, key, 0, 7));
+    assert(!b.has(story_mail::kRecordLetterDayLow, key));
+    assert(!story_notebook::letter_due(b, key, 2, 0xFFFF));  // the first day: kept
+    assert(b.get(story_mail::kRecordLetterDayLow, key) == 0xFF && b.get(story_mail::kRecordLetterDayHigh, key) == 0xFF);
+    assert(!story_notebook::letter_due(b, key, 2, 0xFFFF));
+    assert(!story_notebook::letter_due(b, key, 2, 0));
+    assert(story_notebook::letter_due(b, key, 2, 1));  // two days later (the counter wrapped)
+    assert(story_notebook::letter_due(b, key, 2, 40));
+    // a save state holds the story area: the start day comes back with it
+    std::vector<uint8_t> state(mem::ptr(kArena + 0xE000), mem::ptr(kArena + 0xE000) + story_store::kMemoryBytes);
+    story_notebook::erase_letter_day(b, key);
+    assert(!b.has(story_mail::kRecordLetterDayLow, key) && !b.has(story_mail::kRecordLetterDayHigh, key));
+    std::memcpy(mem::ptr(kArena + 0xE000), state.data(), state.size());
+    assert(story_notebook::letter_due(b, key, 2, 1));
+    // a full record: the count starts when there is room (never half a day kept)
+    clear_save();
+    unsigned filled = 0;
+    while (b.set(30, uint16_t(++filled), 1)) {
+    }
+    assert(!story_notebook::letter_due(b, key, 2, 5) && !b.has(story_mail::kRecordLetterDayLow, key));
+    b.erase(30, 1);
+    assert(!story_notebook::letter_due(b, key, 2, 5) && !b.has(story_mail::kRecordLetterDayLow, key));  // one record free: not both
+    b.erase(30, 2);
+    assert(!story_notebook::letter_due(b, key, 2, 5) && b.has(story_mail::kRecordLetterDayHigh, key));
+    assert(story_notebook::letter_due(b, key, 2, 7));
+    clear_save();
+}
+
+// "hold_up": true or false, needs held_model; with it a held model needs no use action
+void test_hold_up_manifest() {
+    std::vector<story_notebook::ManifestItem> items;
+    std::string why;
+    auto parse = [&](const std::string& fields) {
+        return story_notebook::parse_items(mods::json::parse(R"({"items": [{"id": "crystal", "name": "Crystal", "description": "It glows.", "icon": "c.png")" + fields + "}]}"),
+                                           items, why);
+    };
+    assert(parse("") && !items[0].hold_up);
+    assert(parse(R"(, "held_model": "crystal", "hold_up": true)") && items[0].hold_up && items[0].held_model == "crystal" &&
+           items[0].use == story_notebook::ManifestItem::Use::None);
+    assert(parse(R"(, "held_model": "crystal", "hold_up": true, "use": {"action": "show"}, "held_frames": 30)") && items[0].held_frames == 30);
+    assert(!parse(R"(, "hold_up": true)") && why.find("held_model") != std::string::npos);
+    assert(!parse(R"(, "held_model": "crystal", "hold_up": "yes")") && why.find("true or false") != std::string::npos);
+    assert(!parse(R"(, "held_model": "crystal", "hold_up": false)") && why.find("use action") != std::string::npos);
+    assert(!parse(R"(, "held_model": "crystal")"));  // as before: a held model needs a use (or hold_up)
+}
+
 void test_services() {
     clear_save();
     reset();
@@ -285,6 +393,44 @@ void test_services() {
     cpu.r[3] = kPool.back();  // a pool number bound to nothing: nothing has it
     hooks::check_item_get(&cpu);
     assert(cpu.r[3] == 0);
+    // an item Link holds up ("hold_up"): the item-get presenter takes the give, no light caption; without
+    // a model (the presenter says no) the caption as before; a quiet give, nothing
+    ManifestItem crystal = key;
+    crystal.id = "crystal", crystal.name = "Crystal", crystal.description = "It glows.", crystal.held_model = "crystal-model", crystal.hold_up = true;
+    assert(define("mod", dir.string(), crystal, why) && find("mod", "crystal")->hold_up);
+    static std::vector<uint16_t> held, chest;
+    static bool hold_ok = true;
+    set_hold_up_presenter([](uint16_t key) { held.push_back(key); return hold_ok; }, [](uint16_t key, bool on) { chest.push_back(on ? key : 0); });
+    const uint16_t c = item_key("mod", "crystal");
+    while (present(&cpu)) {
+    }
+    shown.clear();
+    assert(give("mod", "crystal", 1, "test") == 1 && held == std::vector<uint16_t>{c} && !present(&cpu) && shown.empty());
+    take("mod", "crystal", 1), held.clear();
+    hold_ok = false;
+    assert(give("mod", "crystal", 1, "test") == 1 && held.size() == 1 && present(&cpu) && shown.back() == "Crystal|It glows.");
+    take("mod", "crystal", 1), held.clear(), hold_ok = true;
+    assert(give("mod", "crystal", 1, "the editor", false) == 1 && held.empty() && !present(&cpu));
+    take("mod", "crystal", 1);
+    assert(give("mod", "old-key", 1, "test") >= 1 && held.empty());  // an item without hold_up: its caption
+    while (present(&cpu)) {
+    }
+    // a chest's own demo: only items with hold_up
+    chest_hold_up(c, true), chest_hold_up(k, true), chest_hold_up(c, false);
+    assert(chest == std::vector<uint16_t>({c, 0}));
+    // the get message: the stand-in's, with the item's name and description
+    static uint32_t armed_number = 1;
+    static std::u16string armed_text;
+    assert(arm_get_text(c, false));  // no letter service: nothing to disarm
+    assert(!arm_get_text(c, true));
+    set_get_text([](uint32_t number, const std::u16string* text) {
+        armed_number = number, armed_text = text ? *text : u"";
+        return true;
+    });
+    assert(arm_get_text(c, true) && armed_number == 0x65 + 0x9D && armed_text == u"You got Crystal!\nIt glows.");
+    assert(arm_get_text(c, false) && armed_number == 0 && armed_text.empty());
+    assert(!arm_get_text(0x1234, true));
+    set_get_text(nullptr), set_hold_up_presenter(nullptr, nullptr);
     // a mod that isn't enabled any more: its items stay in the save, hidden
     reset();
     assert(!find(k) && count(k) == 1 && !at_game_place(5));
@@ -300,6 +446,8 @@ int main() {
     test_pool();
     test_bag();
     test_manifest();
+    test_letter_timing();
+    test_hold_up_manifest();
     test_services();
     std::puts("story_items_test: ok");
     return 0;

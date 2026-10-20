@@ -121,10 +121,68 @@ if(argc==2&&(std::strcmp(argv[1],"--world-proof")==0||std::strcmp(argv[1],"--wor
     assert(ld16(Scratch+4)==3&&ld16(Scratch+6)==0xFFFD&&ld16(Scratch+0x20)==432);
     assert(hooks.count(0x024EE708)==1&&hooks.size()==7);return 0;
 }
+// Placing on another world object: an island ground (a plateau with its top at y 500 and a pillar up to 1500) is
+// ground; a box (a house) stands on its top, may reach a little into it, and only a real overlap with its solid
+// geometry (the pillar, the plateau's top above the step) is in the way; the same mod's object says so.
+if(argc==2&&std::strcmp(argv[1],"--world-ground")==0){
+    world_mode=true;mod_actor::configure_world_objects("synthetic",[](const std::string&stage,int room){story_world_placement::Index index;index.coverage.push_back({stage,room,true,true,true,{}});return index;});
+    namespace mesh=story_world_collision::mesh;std::string why;mesh::Mesh plateau,pillar,ground;
+    assert(mesh::make_shape("box",{4000,700,4000},0,0,1,plateau,why)&&mesh::make_shape("box",{300,1100,300},0,0,0,pillar,why));
+    for(auto&v:plateau.vertices)v.y+=150;           // -200 .. 500
+    for(auto&v:pillar.vertices)v.x+=1200,v.y+=950;  // 400 .. 1500 at x 1200
+    ground=plateau;const auto base=uint16_t(ground.vertices.size());ground.vertices.insert(ground.vertices.end(),pillar.vertices.begin(),pillar.vertices.end());
+    for(auto t:pillar.triangles){for(auto&i:t.indices)i=uint16_t(i+base);ground.triangles.push_back(t);}
+    ground.minimum=ground.maximum=ground.vertices[0];for(auto p:ground.vertices){ground.minimum={std::min(ground.minimum.x,p.x),std::min(ground.minimum.y,p.y),std::min(ground.minimum.z,p.z)};ground.maximum={std::max(ground.maximum.x,p.x),std::max(ground.maximum.y,p.y),std::max(ground.maximum.z,p.z)};}
+    assert(mesh::validate(ground,why));assert(mod_actor::register_collision("test","ground",std::make_shared<const mesh::Mesh>(ground)));
+    story_notebook::ManifestActor isle;isle.kind="mod";isle.id="isle";isle.stage="sea";isle.room=12;isle.behaviour="static";isle.collision_mesh="ground";isle.position={1000,0,2000};
+    assert(mod_actor::declare("test",isle,"mod_unique",1,{})==1);
+    auto house=isle;house.id="house";house.collision_mesh.clear();house.collision_shape="box";house.collision_size={400,600,400};house.collision_surface="wood";
+    auto query=[&](const std::string&mod,story_notebook::WorldPoint at,float yaw){house.position=at;house.rotation={0,yaw,0};mods::json::Value r;assert(mod_actor::world_object_query(mod,house,false,r,why));return r;};
+    // on the plateau's top (box centred: its base at 500), turned
+    auto r=query("test",{1000-800,800,2000+600},222.5f);if(!r.get("clear").boolean)std::puts(mods::json::dump(r.get("conflicts")).c_str());assert(r.get("clear").boolean);
+    // sunk 100 into the top (a slope under its floor): still standing on it
+    r=query("test",{1000-800,700,2000+600},0);assert(r.get("clear").boolean);
+    // sunk 400: the top goes through the walls above the step
+    r=query("test",{1000-800,400,2000+600},0);assert(!r.get("clear").boolean&&r.get("conflicts").array[0].get("id").string()=="test:isle");
+    assert(r.get("conflicts").array[0].get("message").string()=="this mod's world object");
+    // into the pillar: in the way; another mod sees "another mod's"
+    r=query("test",{1000+1200,800,2000},0);assert(!r.get("clear").boolean&&r.get("conflicts").array[0].get("message").string()=="this mod's world object");
+    r=query("other",{1000+1200,800,2000},0);assert(!r.get("clear").boolean&&r.get("conflicts").array[0].get("message").string()=="another mod's world object");
+    // beside the pillar (its own box would touch the pillar's turned bounds, the solids don't): clear
+    r=query("test",{1780,800,2330},45);assert(r.get("clear").boolean);
+    // two houses side by side (the terrace case): only touching collision blocks
+    assert(mod_actor::declare("test",house,"mod_unique",1,{})==2);
+    house.id="house-2";r=query("test",{2400,800,2950},30);for(const auto&c:r.get("conflicts").array)assert(c.get("id").string()!="test:house");
+    r=query("test",{1880,800,2330},0);bool hit=false;for(const auto&c:r.get("conflicts").array)hit|=c.get("id").string()=="test:house";assert(hit);
+    // a body of water on the plateau (the editor's pond: its open water at the level, a sand bowl 200 deep dug into
+    // the ground): it lies in the plateau, so only what rises through its water is in the way (the pillar), and the
+    // check takes the body's own collision before it is made
+    mesh::Mesh pond;{const float o=300,f=250,d=-200;pond.vertices={{-o,0,-o},{o,0,-o},{o,0,o},{-o,0,o},{-f,d,-f},{f,d,-f},{f,d,f},{-f,d,f}};
+        pond.triangles={{{0,2,1},9},{{0,3,2},9},{{4,5,6},3},{{4,6,7},3}};for(uint16_t k=0;k<4;++k){const uint16_t j=uint16_t((k+1)%4);pond.triangles.push_back({{k,j,uint16_t(j+4)},3});pond.triangles.push_back({{k,uint16_t(j+4),uint16_t(k+4)},3});}
+        pond.minimum={-o,d,-o};pond.maximum={o,0,o};assert(mesh::validate(pond,why));}
+    auto spring=isle;spring.id="pond";spring.collision_mesh.clear();spring.shoreline.material="pond";assert(spring.water_body());
+    auto water_query=[&](story_notebook::WorldPoint at){spring.position=at;mods::json::Value r;assert(mod_actor::world_object_query("test",spring,false,r,why,std::make_shared<const mesh::Mesh>(pond)));return r;};
+    r=water_query({1000-800,500,2000+600});if(!r.get("clear").boolean)std::puts(mods::json::dump(r.get("conflicts")).c_str());assert(r.get("clear").boolean);
+    r=water_query({1000-800,700,2000+600});assert(r.get("clear").boolean);  // raised: a mound on the plateau
+    r=water_query({1000+1200,500,2000});assert(!r.get("clear").boolean&&r.get("conflicts").array[0].get("message").string()=="this mod's world object");  // the pillar in it
+    // the same pond made (its collision registered, declared as the game declares it): accepted, and a house put into
+    // its water is in the way while one beside it is not
+    assert(mod_actor::register_collision("test","pond-col",std::make_shared<const mesh::Mesh>(pond)));
+    spring.collision_mesh="pond-col";spring.position={1000-1400,500,2000-1400};assert(mod_actor::declare("test",spring,"mod_unique",1,{})==3);
+    house.id="house-3";r=query("test",{1000-1400,800,2000-1400},0);hit=false;for(const auto&c:r.get("conflicts").array)hit|=c.get("id").string()=="test:pond";assert(hit);
+    r=query("test",{1000-1400+600,800,2000-1400},0);for(const auto&c:r.get("conflicts").array)assert(c.get("id").string()!="test:pond");
+    // the world objects' own ground (the editor's water tool and snapping): the plateau's top, the pillar's, a house's
+    // roof; not the pond (a body of water), nothing beside the island or on another stage
+    std::vector<float> heights;std::vector<bool> found;
+    assert(mod_actor::object_grounds("sea",{{1000,5000,2000},{1000+1200,5000,2000},{1000+2100,5000,2000},{1000-1400,5000,2000-1400},{1000,450,2000},{1780,5000,2330}},heights,found));
+    assert(found[0]&&heights[0]==500&&found[1]&&heights[1]==1500&&!found[2]&&found[3]&&heights[3]==500&&!found[4]&&found[5]&&heights[5]==1100);
+    assert(!mod_actor::object_grounds("M_NewD2",{{1000,5000,2000}},heights,found)&&!found[0]);
+    std::puts("world ground placement ok");return 0;
+}
 if(argc==2&&(std::strcmp(argv[1],"--world-static")==0||std::strcmp(argv[1],"--world-floating")==0)){
     floating_mode=std::strcmp(argv[1],"--world-floating")==0;
     world_mode=true;st32(Play+0x5B34,Arena+0xF400);mod_actor::configure_world_objects("synthetic",[](const std::string&stage,int room){story_world_placement::Index index;index.coverage.push_back({stage,room,true,true,true,{}});return index;});map(Arena+0x20000,0x20000);map(0x101D0000,0x10000);if(floating_mode)map(0x10470000,0x10000);st32(Arena+0xA000+0x7C,0xF2000008);
-    for(unsigned i=0;i<32;++i)st32(0x101D51CC+i*4,0xFFFFFFFF);for(unsigned i=0;i<6;++i)st32(0x101D51CC+(31-i)*4,story_world_collision::mesh::NativeResultIds[i]);
+    for(unsigned i=0;i<32;++i)st32(0x101D51CC+i*4,0xFFFFFFFF);{unsigned code=31;for(unsigned i=0;i<story_world_collision::mesh::NativeResultIds.size();++i){bool seen=false;for(unsigned j=0;j<i;++j)seen|=story_world_collision::mesh::NativeResultIds[j]==story_world_collision::mesh::NativeResultIds[i];if(!seen)st32(0x101D51CC+(code--)*4,story_world_collision::mesh::NativeResultIds[i]);}}
     story_notebook::ManifestActor ordinary;ordinary.kind="mod";ordinary.id="ordinary";assert(mod_actor::declare("test",ordinary,"mod_unique",1,{})==1);
     auto shape=ordinary;shape.id="shape";shape.stage="sea";shape.room=12;shape.behaviour="static";shape.collision_shape="box";shape.collision_size={100,80,120};shape.collision_surface="stone";if(floating_mode){shape.behaviour="floating";shape.position.y=40;shape.buoyancy.draft=10;}assert(mod_actor::declare("test",shape,"mod_unique",1,{})==2);
     std::vector<uint8_t> bytes(84);auto put=[&](size_t p,uint32_t v){for(unsigned k=0;k<4;++k)bytes[p+k]=uint8_t(v>>(24-8*k));};put(0,0x57434F4C);put(4,1);put(8,3);put(12,1);put(28,f32_as_u32(100));put(36,f32_as_u32(100));put(60,f32_as_u32(100));put(64,f32_as_u32(100));bytes[79]=1;bytes[81]=2;bytes[83]=1;

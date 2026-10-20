@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <thread>
+#include <utility>
+#include <vector>
 #include "runtime.h"
 #include "mods/story_native_wait_session.h"
 #include "native_quiescence.h"
 #include "state_memory.h"
-#include <cassert>
-#include <vector>
-#include <map>
-#include <optional>
-#include <cstdint>
-#include <span>
-#include <utility>
-#include <memory>
 #ifdef STORY_NATIVE_IDLE_STAGE_TEST
 #include "mods/story_native_wait_idle_snapshot.h"
 namespace IdleStage=story_native_stage_owner_observer;
@@ -25,9 +28,6 @@ bool stage_saved(const ss::native_gate::SavedView&,uint32_t control,const IdleSt
 void issue_stage(){const auto*o=IdleStage::observer();const IdleStage::Args a{{0x60700000,0x60700010,0x60700020,0}};std::lock_guard lock(*o->lifetime_fence);const auto cookie=o->before_setinfo(nullptr,a);assert(cookie);o->after_setinfo(nullptr,a,1,cookie);assert(IdleStage::snapshot());}
 }
 #endif
-#include <cassert>
-#include <map>
-#include <thread>
 namespace threads {
 // Isolated primitive fixture. Production witnesses are issued by threads.cpp.
 class NativeQuiescenceIssuer {public:static QuiescenceWitness witness(Cpu*c,bool&live){return QuiescenceWitness([c,&live](const Cpu*x){return live&&x==c;});}};
@@ -36,12 +36,17 @@ static unsigned idle_case;
 template<class Fixture,class Session,class Hold>
 static void idle_test(Fixture&f,Session&s,Cpu&cpu,Hold&hold){
  bool live=true;auto witness=threads::NativeQuiescenceIssuer::witness(&cpu,live);
+ const auto before_progress=s.journal();assert(before_progress);
+ Cpu foreign=cpu;
+ assert(!s.preserve_progress_load(&foreign,witness));
+ live=false;assert(!s.preserve_progress_load(&cpu,witness));live=true;
+ assert(s.preserve_progress_load(&cpu,witness)&&s.journal()==before_progress);
  assert(!s.begin_idle_capture(&cpu,witness)); // actual nonrecursive fence held
  [[maybe_unused]]const auto retired_arena=s.arena();hold.reset();
 #ifndef STORY_NATIVE_IDLE_STAGE_TEST
  if(idle_case==4)f.idle=false; // Another frontend owner must not invalidate this retired arena.
- if(idle_case==5){f.put(f.e.identity.manager,retired_arena.wait.image.address);assert(!s.begin_idle_capture(&cpu,witness));return;}
- if(idle_case==6){f.put(f.e.actors[0].address+0x3E0,retired_arena.wait.image.address);assert(!s.begin_idle_capture(&cpu,witness));return;}
+ if(idle_case==5){f.put(f.e.identity.manager,retired_arena.wait.image.address);{auto proof=s.try_fence();assert(proof&&!s.preserve_progress_load(&cpu,witness));}assert(!s.begin_idle_capture(&cpu,witness));return;}
+ if(idle_case==6){f.put(f.e.actors[0].address+0x3E0,retired_arena.wait.image.address);{auto proof=s.try_fence();assert(proof&&!s.preserve_progress_load(&cpu,witness));}assert(!s.begin_idle_capture(&cpu,witness));return;}
 #endif
  {auto capture=s.begin_idle_capture(&cpu,witness);assert(capture&&s.fence_held());std::thread other([&]{assert(!s.try_fence());});other.join();}
  assert(!s.fence_held());
@@ -127,12 +132,6 @@ assert(retained&&s.fence_held()&&!s.expected()&&!s.unexposed()&&!s.quarantined()
 #define STORY_NATIVE_SESSION_IDLE_TEST_HOOK(f,s,c,h) do {idle_test(f,s,c,h);h.reset();unmap_arena(guest);return;} while(false)
 #define STORY_NATIVE_WAIT_TERMINAL_FIXTURE_ONLY
 #include "story_native_wait_controller_terminal_test.cpp"
-#include <vector>
-#include <optional>
-#include <cstdint>
-#include <span>
-#include <utility>
-#include <memory>
 #undef STORY_NATIVE_WAIT_TERMINAL_FIXTURE_ONLY
 #undef STORY_NATIVE_SESSION_IDLE_TEST_HOOK
 int main(){

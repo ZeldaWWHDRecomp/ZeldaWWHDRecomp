@@ -51,6 +51,13 @@ struct NpcEntry {
     bool has_spot = false;
     float x = 0, z = 0;                 // where it stands outside (by day if it is out by day): the chart's ring
     bool day = false, night = false;    // when it is out
+    // one of this character's "people" actors: resident number `number` in `room` of `stage` (where the
+    // recipe says it stands; a recipe actor without a room stands in any)
+    bool people_at(const std::string& stage, int room, uint8_t number) const {
+        for (const NpcActor& a : actors)
+            if (a.actor_class == "people" && a.people_number == number && (a.room < 0 || a.room == room) && a.stage == stage) return true;
+        return false;
+    }
     bool talks() const {                // the port can give it a quest's lines
         for (const NpcActor& a : actors)
             if (a.actor_class == "people") return true;
@@ -68,6 +75,12 @@ struct NpcCatalogue {
         return kResidentNone;
     }
     const NpcEntry* entry(Resident r) const { return r && r <= entries.size() ? &entries[r - 1] : nullptr; }
+    // the character a loaded resident is (NpcEntry::people_at), or none
+    Resident people_at(const std::string& stage, int room, uint8_t number) const {
+        for (size_t i = 0; i < entries.size(); i++)
+            if (entries[i].people_at(stage, room, number)) return Resident(i + 1);
+        return kResidentNone;
+    }
 
     // adds one place's recipe; false with a reason for anything it doesn't accept
     bool add_table(const std::string& text, std::string& why);

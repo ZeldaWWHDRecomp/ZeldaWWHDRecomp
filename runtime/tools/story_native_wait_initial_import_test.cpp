@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Fresh gate registry, real bootstrap Session and Stage-group restore. Only
 // scheduler/front issuance uses the existing isolated trusted primitive seam.
-#include "mods/story_native_wait_active_save_gate.h"
-#include "mods/story_native_restore_current_owner.h"
+#include <atomic>
 #include <cstdint>
 #include <span>
+#include "mods/story_native_wait_active_save_gate.h"
+#include "mods/story_native_restore_current_owner.h"
 namespace story_native_wait_runtime {class NativeResumeFrontIssuer {public:
  static auto capture(std::atomic<story_native_wait_runtime_controller::Context*>&c,std::atomic<story_native_event_depth::Tracker*>&d){return story_native_restore_front::Front(c,d);}
 };}
@@ -23,6 +24,12 @@ namespace story_native_wait_runtime {class NativeResumeFrontIssuer {public:
   auto owner=RC::Context::prepare_current_load(story_native_wait_runtime::NativeResumeFrontIssuer::capture(front_context,front_depth),saved.view(),2);assert(owner); \
   auto group=story_native_stage_restore_group::StageRestoreGroup::create();assert(group); \
   story_native_wait_active_save_gate::Controller gate(session,[]{return static_cast<RC::Context*>(nullptr);}); \
+  if(fault==0){ \
+   for(unsigned repeat=0;repeat<2;++repeat){ \
+    auto progress=gate.begin_progress_load();assert(progress&&session.fence_held()&&!gate.begin_progress_load()); \
+    assert(session.unexposed()&&!session.expected());progress.reset();assert(!session.fence_held()); \
+   } \
+  } \
   const auto set_saved=[&](uint32_t at,uint32_t value){auto&b=saved.bytes.at(at&~(ss::kMemoryChunk-1));const auto p=at&(ss::kMemoryChunk-1);for(unsigned n=0;n<4;++n)b[p+n]=uint8_t(value>>(24-8*n));}; \
   if(fault==1)set_saved(arena.allocation.address+story_native_wait_journal::kBytes,1); \
   if(fault==2)set_saved(GD(0x1046F0B0)+0x51D0+0xF4,arena.allocation.address); \
@@ -40,5 +47,3 @@ namespace story_native_wait_runtime {class NativeResumeFrontIssuer {public:
   group->close();load.reset();owner->close();assert(!session.fence_held()&&native_calls==0); \
  } while(false)
 #include "story_native_wait_run_restore_test.cpp"
-#include <cstdint>
-#include <span>

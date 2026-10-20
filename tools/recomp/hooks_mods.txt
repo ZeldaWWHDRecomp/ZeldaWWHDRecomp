@@ -29,10 +29,55 @@
 @024ECC70 # chaseAttention: enemy release distance, before check_distace
 @024EB868 # EnemyDistance: enemy-only cutoff, without changing returned distance
 @024EE574 # LockonReleaseDistanse: camera advisory release radius
+# Quick-use locked items (mods/quick_use.cpp): local ready-checker input policy, no global pad edits.
+023F32E4  # setStickData: cancel stale requests after native input, before action dispatch
+@023EFB44 # accepted slot change: retain one intent through the native equip animation
+@023F05EC # completed hammer equip: one local ready-item trigger result, native choice follows
+@0243CB70 # hammer front strike: native attack key success, trace observation only
+@0243C6F4 # hammer side strike: native attack-key quake call, trace observation only
+@023DF7C0 # successful native inventory bomb publication (mEquipItem becomes 100)
+@023EA474 # held-bomb checker: local matching-item trigger predicate
+@023E88B0 # native bow MOVE mode entry (all three bow inventory variants)
+@023EB2B0 # bow ready animation: local held result, release once
+@023EB434 # bow redraw animation: local held result, spent prevents a second draw
+@023EB2C4 # native arrow actor launch: trace observation only
+@0242E14C # native held-bomb release after throw key: trace observation only
+@0242E198 # native held-bomb release on carry-flag branch: trace observation only
+@023F0624 # hookshot native draw dispatch
+@023F0670 # grappling rope native draw dispatch
+@023F06AC # boomerang native draw dispatch
+@023F1764 # checkNextMode: hookshot draw dispatch
+@023F1784 # checkNextMode: rope draw dispatch
+@023F1728 # checkNextMode: boomerang draw dispatch
+@023EAE30 # hookshot idle ready checker: itemButton result
+@023EAE78 # hookshot retry itemButton result
+@023EC12C # rope idle ready checker: itemButton result
+@023EC178 # rope retry itemButton result
+@023EAE84 # hookshot release latch predicate, local r11 only
+@023EC184 # rope release latch predicate, local r0 only
+@023EB548 # boomerang ready checker: local pad release word r8
+@023EB614 # boomerang ready checker: itemButton result
+# Camera-directed items (Leaf prototype, default off; accepted-use yaw only, no continuous/camera/input override)
+@023E7A70 # procFanSwing_init: accepted grounded use faces camera once, before fan-model setup
+@023E7CF4 # bow Subject accepted aim entry (initial yaw only; native FP/pitch afterward)
+@023E88F4 # bow Move accepted aim entry, before native strafing yaw offset
+@023E8D34 # boomerang Subject accepted aim entry
+@023E8E40 # boomerang Move accepted aim entry, before native strafing yaw offset
+@023E8A58 # hookshot Subject accepted aim entry
+@023E8B20 # hookshot Move accepted aim entry, before native strafing yaw offset
+@023E902C # grappling Subject accepted aim entry (not hang/swing/anchor)
+@023E9130 # grappling Move accepted aim entry, before native strafing yaw offset
+@023E9E98 # normal owned inventory-bomb throw, before native carry geometry
+@023EDFC4 # hammer accepted side strike, before native heading load
+@0243C830 # hammer accepted front strike (not ready/recovery), before native heading load
+@023EDE00 # empty bottle accepted grounded swing, before native heading load
+024076CC  # daPy_lk_c::setCollision: scope gust direction before native BG ray/capsule/effects
 # Quick doors / fast scene changes (mods/turbo.cpp; extra logic steps from interp.cpp's fpcEx_Handler hook)
 0252A684  # dDoor_info_c::getDemoAction: a door event cut is running
 021C0078  # daMbdoor_c::getDemoAction
 025DC86C  # fopScnM_ChangeReq: scene change trigger (traces)
 023DE788  # daPy_lk_c::setFrameCtrl: the run/swim boost scales the animation rate (mods.cpp)
+023DE7E8  # daPy_lk_c::setActAnimeUpper: identify scoped quick-use animation generations
+@023FB49C # native boomerang launch: optional trace observation only
 023E048C  # daPy_lk_c::getAnmData: the boost can swap ANM_WALK for ANM_DASH (mods.cpp)
 023D6B30  # daPy_lk_c::jointBeforeCB: additive sprint pose, restored by the native jointAfterCB

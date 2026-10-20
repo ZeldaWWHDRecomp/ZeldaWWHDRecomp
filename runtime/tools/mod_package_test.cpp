@@ -1,3 +1,4 @@
+#include <cctype>
 #include "mods/setup_run.h"
 #include "mod_test_host.h"
 #include "mods/packages.h"
@@ -10,7 +11,29 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <iterator>
+#include <string>
+#ifdef _WIN32
+#include <process.h>
+#define wwhd_test_pid _getpid
+#else
+#include <unistd.h>
+#define wwhd_test_pid getpid
+#endif
 namespace {
+// A temporary folder that belongs to this process alone. ctest starts the --move-anim-startup cases (and
+// others) at the same moment, and a steady_clock count is no unique name across processes: two of them
+// shared one folder, and one read the other's profile (mod_move_anim_unset_missing found "sprint").
+// The process ID tells processes apart; create_directory() claims the name, or a next one is tried.
+std::filesystem::path unique_temp(const std::string& prefix) {
+    namespace fs=std::filesystem;
+    static unsigned serial=0;
+    for(;;) {
+        auto path=fs::temp_directory_path()/(prefix+std::to_string(wwhd_test_pid())+"-"+
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(++serial));
+        if(fs::create_directory(path))return path;
+    }
+}
 mods::packages::View view(const std::string& id) {for(auto v:mods::packages::list())if(v.id==id)return v;return {};}
 // Second process on the same storage: a confirmed native package loads after a restart without asking.
 int restart_check(const char* storage) {
@@ -27,8 +50,94 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     using namespace mods::packages;
     namespace fs=std::filesystem;
+    if(argc==4&&std::string(argv[1])=="--quick-use-speed-startup") {
+        // Numeric built-in profile options are separate from manifest option schemas.
+        const std::string override=argv[2],saved=argv[3];
+        auto root=fs::temp_directory_path()/("wwhd-quick-speed-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        env("WWHD_MOD_QUICK_USE_SPEED",override=="unset"?nullptr:override.c_str());
+        // Simulate runtime startup parsing; invalid overrides retain vanilla but still own precedence.
+        mods::set_quick_use_speed(1.f);
+        if(override=="1.25")mods::set_quick_use_speed(1.25f);
+        if(override=="1.5")mods::set_quick_use_speed(1.5f);
+        auto database=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtin_options":{}}}})");
+        auto& options=database["profiles"]["Default"]["builtin_options"];
+        if(saved!="missing") {
+            preferences["mod.quick-use.speed"]=saved=="legacy"?"1.25":saved;
+            if(saved=="string")options["quick-use.speed"]=std::string("1.5");
+            else if(saved!="legacy")options["quick-use.speed"]=saved=="invalid"?1.2:std::stod(saved);
+        }
+        database["profiles"]["Legacy"]["builtin_options"].type=mods::json::Value::Object;
+        database["profiles"]["Invalid"]["builtin_options"]["quick-use.speed"]=1.25000001;
+        std::ofstream(root/"profiles.json")<<mods::json::dump(database);
+        const float expected=override!="unset"?(override=="1.25"?1.25f:override=="1.5"?1.5f:1.f):
+            saved=="1.25"||saved=="legacy"?1.25f:saved=="1.5"?1.5f:1.f;
+        mods::manager::load_saved();assert(mods::quick_use_speed()==expected);
+        initialize();assert(mods::quick_use_speed()==expected);
+        assert(!mods::quick_use()); // A speed choice never enables the mod.
+        mods::set_quick_use_speed(1.5f);
+        hostui::set("mod.quick-use.speed","1.500000");remember_option("quick-use.speed",1.5);
+        std::ifstream file(root/"profiles.json");
+        const std::string text{std::istreambuf_iterator<char>(file),{}};file.close();
+        assert(mods::json::parse(text).get("profiles").get("Default").get("builtin_options").get("quick-use.speed").number==1.5);
+        std::string error;
+        assert(create_profile("Quick",error)); // Snapshot the getter, not just a remembered value.
+        mods::set_quick_use_speed(1.25f);remember_option("quick-use.speed",1.25);
+        if(override=="unset") {
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.5f);
+            assert(select_profile("Default",error)&&mods::quick_use_speed()==1.25f);
+            // Legacy/malformed profile switches use vanilla rather than leaking the previous speed.
+            assert(select_profile("Legacy",error)&&mods::quick_use_speed()==1.f);
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.5f);
+            assert(select_profile("Invalid",error)&&mods::quick_use_speed()==1.f);
+        } else {
+            assert(select_profile("Quick",error)&&mods::quick_use_speed()==1.25f);
+        }
+        fs::remove_all(root);
+        std::cout<<"Quick-use speed startup override "<<override<<" survives saved choice "<<saved<<"\n";
+        return 0;
+    }
+    if(argc==4&&std::string(argv[1])=="--quick-use-startup") {
+        // Synthetic settings/profile fixtures: no game, native library or lock-on mod.
+        const std::string override=argv[2],saved=argv[3];
+        auto root=fs::temp_directory_path()/("wwhd-quick-use-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        env("WWHD_MOD_QUICK_USE",override=="unset"?nullptr:override.c_str());
+        // Test host simulates the runtime module's environment-owned startup state.
+        mods::set_quick_use(override=="1");
+        auto database=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtins":{}}}})");
+        if(saved!="missing") {
+            preferences["mod.quick-use.enabled"]=saved;
+            database["profiles"]["Default"]["builtins"]["quick-use"]=saved=="1";
+        }
+        std::ofstream(root/"profiles.json")<<mods::json::dump(database);
+        const bool expected=override=="unset"?saved=="1":override=="1";
+        mods::manager::load_saved();assert(mods::quick_use()==expected);
+        initialize();assert(mods::quick_use()==expected);
+        std::string error;
+        assert(mods::manager::set_enabled("quick-use",true));
+        std::ifstream file(root/"profiles.json");
+        const std::string text{std::istreambuf_iterator<char>(file),{}};file.close();
+        assert(mods::json::parse(text).get("profiles").get("Default").get("builtins").get("quick-use").boolean);
+        assert(create_profile("Quick",error));
+        assert(mods::manager::set_enabled("quick-use",false));
+        assert(select_profile("Quick",error)&&mods::quick_use());
+        assert(select_profile("Default",error)&&!mods::quick_use());
+        // Generic settings packages can enable this built-in without another module.
+        auto preset=root/"preset";fs::create_directories(preset);
+        std::ofstream(preset/"manifest.json")<<R"({"format_version":1,"id":"quick-preset","name":"Quick preset","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"quick-use":true}})";
+        assert(install(preset.string(),error));
+        assert(enable("quick-preset",true,error));frame(1);assert(mods::quick_use()&&view("quick-preset").active);
+        assert(enable("quick-preset",false,error));frame(2);assert(!mods::quick_use());
+        assert(remove("quick-preset",error));
+        fs::remove_all(root);
+        std::cout<<"Quick-use startup override "<<override<<" survives saved toggle "<<saved<<"\n";
+        return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--setup-acceptance") {
-        auto root=fs::temp_directory_path()/("wwhd-acceptance-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-acceptance-");
         fs::create_directories(root/"source");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
         set_code_mod_support(true);initialize();std::string error;
         auto manifest=mods::json::parse(R"({"format_version":1,"id":"acceptance","name":"Acceptance fixture","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"options":[{"id":"consent","name":"Consent","type":"bool","default":false},{"id":"colour","name":"Colour","type":"enum","default":"green","choices":["green","blue"]}],"setup":[{"id":"consent","title":"Prepare the fixture","type":"confirm","option":"consent"},{"id":"colour","title":"Choose a colour","type":"choice","option":"colour","choices":["green","blue"]},{"id":"build","title":"Build fixture","type":"build_guest_mod"}]})");
@@ -90,7 +199,7 @@ int main(int argc, char** argv) {
     // manifest game IDs: "wwhd" (any region, manager 1.5) and "wwhd-usa" (older manifests) are this game
     if(argc==2&&std::string(argv[1])=="--game-id") {
         namespace fs=std::filesystem;
-        auto root=fs::temp_directory_path()/("wwhd-game-id-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-game-id-");
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
         initialize();std::string error;
         assert(mods::packages::game_id_supported("wwhd")&&mods::packages::game_id_supported("wwhd-usa"));
@@ -120,9 +229,46 @@ int main(int argc, char** argv) {
         fs::remove_all(root);
         std::cout<<"Game IDs: wwhd and wwhd-usa accepted, others refused, old and new imports load\n";return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--new-package") {
+        // install_new (the world editor's new mod): a new package only, never one that is installed or whose
+        // folder exists; the new mod's manifest (an empty actor list, the notebook dependency) installs and enables
+        namespace fs=std::filesystem;
+        auto root=unique_temp("wwhd-new-package-");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        initialize();std::string error,id;
+        auto source=[&](const std::string& name,const std::string& text){auto dir=root/"sources"/name;fs::create_directories(dir);std::ofstream(dir/"manifest.json",std::ios::binary)<<text;return dir.string();};
+        auto settings=[&](const std::string& pkg,const std::string& label,const std::string& builtin="wall-climb"){return R"({"format_version":1,"id":")"+pkg+R"(","name":")"+label+R"(","version":"1.0.0","game_id":"wwhd","kind":"settings","settings":{")"+builtin+R"(":true}})";};
+        assert(install(source("notebook",settings("story-notebook","Notebook stand-in")),error)&&enable("story-notebook",true,error));
+        assert(install(source("other",settings("other","Other","quick-doors")),error));if(!enable("other",true,error)){std::cerr<<error<<"\n";return 1;}
+        auto slurp=[&](const fs::path& p){std::ifstream f(p,std::ios::binary);return std::string{std::istreambuf_iterator<char>(f),{}};};
+        const auto other_before=slurp(fs::path(directory())/"other"/"manifest.json");
+        // an installed ID: refused, the package stays as it was (install() would replace a disabled one)
+        assert(!install_new(source("other-again",settings("other","Replaced","quick-doors")),error)&&error.find("installed already")!=std::string::npos);
+        assert(enable("other",false,error));
+        assert(!install_new(source("other-again",settings("other","Replaced","quick-doors")),error)&&view("other").name=="Other");
+        assert(slurp(fs::path(directory())/"other"/"manifest.json")==other_before);
+        // a folder of that ID in the mods folder without a package: refused, left alone
+        fs::create_directories(fs::path(directory())/"stray");std::ofstream(fs::path(directory())/"stray"/"note.txt")<<"keep";
+        assert(!install_new(source("stray",settings("stray","Stray")),error)&&slurp(fs::path(directory())/"stray"/"note.txt")=="keep");
+        assert(enable("other",true,error));
+        auto enabled_before=mods::json::parse(slurp(root/"manager"/"profiles.json")).get("profiles").get("Default").get("enabled");
+        // the new mod: installed, enabled in the active profile, nothing else changed
+        const std::string fresh=R"({"format_version":1,"id":"my-mod","name":"My mod","version":"0.1.0","author":"Me","game_id":"wwhd","minimum_manager_version":"1.5.0","kind":"content","dependencies":[{"id":"story-notebook","minimum_version":"0.0.0"}],"actors":[]})";
+        if(!install_new(source("my-mod",fresh),error,&id)){std::cerr<<"new mod refused: "<<error<<"\n";return 1;}
+        assert(id=="my-mod"&&view("my-mod").compatible&&!view("my-mod").enabled);
+        assert(slurp(fs::path(directory())/"my-mod"/"manifest.json")==fresh);
+        assert(enable("my-mod",true,error)&&view("my-mod").enabled&&view("other").enabled&&view("story-notebook").enabled);
+        auto saved=mods::json::parse(slurp(root/"manager"/"profiles.json"));
+        auto enabled_after=saved.get("profiles").get("Default").get("enabled");
+        assert(enabled_after.get("my-mod").boolean);enabled_after.object.erase("my-mod");assert(enabled_after==enabled_before);
+        assert(slurp(fs::path(directory())/"other"/"manifest.json")==other_before);
+        assert(!install_new(source("my-mod",fresh),error));
+        fs::remove_all(root);
+        std::cout<<"New packages: installed IDs and existing folders refused, the editor's new mod installs and enables\n";return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--game-source") {
         namespace fs=std::filesystem;
-        auto root=fs::temp_directory_path()/("wwhd-gc-source-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-gc-source-");
         fs::create_directories(root/"source");
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
         initialize();std::string error;
@@ -223,7 +369,7 @@ int main(int argc, char** argv) {
     namespace fs=std::filesystem;
     using namespace mods::packages;
     if(argc==3&&std::string(argv[1])=="--lock-on-startup") {
-        auto root=fs::temp_directory_path()/("wwhd-lock-on-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-lock-on-");
         fs::create_directories(root);
         env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
         const std::string mode=argv[2];
@@ -254,8 +400,32 @@ int main(int argc, char** argv) {
         assert(mods::lock_on_cycling());
         fs::remove_all(root);return 0;
     }
+    // The NPC catalogue's cache (guest_mods.cpp prepare_npc_catalogue) goes to the configured manager's folder:
+    // a hidden test run that sets WWHD_MOD_MANAGER_DIR (or only WWHD_USER_DIR) never writes into the player's
+    // folder. HOME points into the test folder too, so a wrong path cannot reach the real one.
+    if(argc==3&&std::string(argv[1])=="--story-cache-dir") {
+        const std::string how=argv[2];
+        const auto root=fs::weakly_canonical(unique_temp("wwhd-story-cache-"));
+        env("HOME",(root/"home").string().c_str());env("XDG_CONFIG_HOME",nullptr);env("APPDATA",(root/"appdata").string().c_str());
+        fs::path expected;
+        if(how=="manager") {  // the run scripts: a manager folder of their own, with or without WWHD_USER_DIR
+            env("WWHD_NO_HOST_INPUT","1");env("WWHD_USER_DIR",nullptr);env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+            expected=root/"manager"/"story";
+        } else {  // the player's game with --user-dir / WWHD_USER_DIR: the user folder's ModManager
+            assert(how=="user");
+            env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",nullptr);env("WWHD_USER_DIR",(root/"user").string().c_str());
+            expected=root/"user"/"ModManager"/"story";
+        }
+        assert(mods::packages::story_cache_directory().empty());  // nothing before the manager is set up
+        initialize();
+        const fs::path cache=mods::packages::story_cache_directory();
+        std::cout<<"NPC catalogue cache ("<<how<<"): "<<cache.string()<<"\n";
+        assert(cache==expected);
+        assert(!fs::exists(root/"home")&&!fs::exists(root/"appdata"));  // no default user folder was made
+        fs::remove_all(root);return 0;
+    }
     if(argc==4&&std::string(argv[1])=="--move-anim-startup") {
-        auto root=fs::temp_directory_path()/("wwhd-move-anim-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-move-anim-");
         fs::create_directories(root);
         env("WWHD_NO_HOST_INPUT",nullptr);
         env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
@@ -360,7 +530,7 @@ int main(int argc, char** argv) {
         assert(view("guest-fixture").enabled==supported);return 0;
     }
     if(argc==2&&std::string(argv[1])=="--guest-prepare") {
-        auto root=fs::temp_directory_path()/("wwhd-guest-prepare-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-guest-prepare-");
         fs::create_directories(root/"source");auto storage=root/"manager";
         env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
         auto manifest=mods::json::parse(R"({"format_version":1,"id":"prepare-guest","name":"Prepared guest","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1,"heap_size":0},"setup":[{"id":"build","type":"build_guest_mod","title":"Build guest module"}]})");
@@ -402,7 +572,7 @@ int main(int argc, char** argv) {
         fs::remove_all(root);std::cout<<"guest preparation preserves assignments/trust/restart gate passed\n";return 0;
     }
     if(argc==2&&std::string(argv[1])=="--guest-startup") {
-        auto root=fs::temp_directory_path()/("wwhd-guest-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-guest-startup-");
         auto storage=root/"manager";
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
         env("WWHD_TEST_TRUST_NATIVE_MODS","guest-a,guest-b,guest-c");
@@ -425,6 +595,9 @@ int main(int argc, char** argv) {
         int inspected=0,loaded=0;std::map<std::string,uint32_t> bases;
         auto inspect=[&](const GuestPackage& pkg){++inspected;assert(pkg.options.get("amount").number==3);return uint32_t(65536);};
         auto load=[&](const GuestPackage& pkg,uint32_t base){++loaded;bases[pkg.id]=base;
+            // the guests' start-up code asks for the story cache folder while start_guests holds the manager
+            // mutex (the NPC catalogue): it must answer, not wait on that mutex
+            assert(fs::path(mods::packages::story_cache_directory())==storage/"story");
             if(pkg.id=="guest-c")throw std::runtime_error("synthetic compiler failure");};
         start_guests(inspect,load);
         assert(inspected==3&&loaded==3);
@@ -444,7 +617,7 @@ int main(int argc, char** argv) {
         fs::remove_all(root);std::cout << "guest startup allocation/lifecycle passed\n";return 0;
     }
     if(argc==2&&std::string(argv[1])=="--guest-metadata") {
-        auto root=fs::temp_directory_path()/("wwhd-guest-metadata-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-guest-metadata-");
         fs::create_directories(root/"source/content/Common");
         std::ofstream(root/"source/content/Common/fixture.txt")<<"original fixture content";
         env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
@@ -568,7 +741,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if(argc==2&&std::string(argv[1])=="--cemu-conflicts"){
-        auto root=fs::temp_directory_path()/("wwhd-cemu-conflicts-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-cemu-conflicts-");
         auto storage=root/"storage";
         auto make=[&](const std::string& id,const std::string& rules,int shader){
             auto folder=storage/"Mods"/id;fs::create_directories(folder);
@@ -620,7 +793,7 @@ int main(int argc, char** argv) {
     }
     if(argc==2&&(std::string(argv[1])=="--cemu-startup"||std::string(argv[1])=="--cemu-backend")){
         bool backend=std::string(argv[1])=="--cemu-backend";
-        auto root=fs::temp_directory_path()/("wwhd-cemu-startup-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-cemu-startup-");
         auto storage=root/"storage",pack=storage/"Mods"/"cemu.test";fs::create_directories(pack);
         std::ofstream(pack/"manifest.json")<<R"({"format_version":1,"id":"cemu.test","name":"Test","version":"1.0.0","game_id":"wwhd-usa","kind":"cemu","cemu_dir":""})";
         std::ofstream(pack/"rules.txt")<<"[Definition]\nname=Test\ntitleIds=0005000010143500\nversion=4\n[Preset]\nname=Normal\n$scale=1\n[Preset]\nname=Double\n$scale=2\n[TextureRedefine]\nwidth=1280\nheight=720\noverwriteWidth=1280*$scale\n";
@@ -649,7 +822,7 @@ int main(int argc, char** argv) {
         std::cout<<"Cemu startup presets and restart-only immutable lifecycle passed\n";return 0;
     }
     if(argc==3&&std::string(argv[1])=="--world-content-startup") {
-        auto root=fs::temp_directory_path()/("wwhd-world-content-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-world-content-test-");
         auto storage=root/"storage";auto pack=storage/"Mods"/"sdk-v3-windfall";
         fs::create_directories(pack.parent_path());fs::copy(fs::absolute(argv[2]),pack,fs::copy_options::recursive);
         auto notebook=storage/"Mods"/"story-notebook";fs::create_directories(notebook);
@@ -670,6 +843,42 @@ int main(int argc, char** argv) {
         bad["id"]="world-content-other-dependency";bad["actors"]=mods::json::parse(R"([{"id":"notice","actor":"sign","stage":"sea","room":11,"flag":"read","position":{"x":0,"y":0,"z":0}}])");
         bad["dependencies"].array.push_back(mods::json::parse(R"({"id":"other-content"})"));
         std::ofstream(invalid/"manifest.json")<<mods::json::dump(bad);assert(!install(invalid.string(),error));
+        assert(error.find("only depend on the Story Notebook")!=std::string::npos);
+        {   // story content without actors or scenes: a chart and its letter, no content folder, the notebook added
+            auto chart=root/"chart-letter";fs::create_directories(chart);
+            std::ofstream(chart/"manifest.json")<<R"({"format_version":1,"id":"chart-letter","name":"Old map","version":"1.0.0","game_id":"wwhd","kind":"content",
+              "charts":[{"id":"old-map","name":"Old map","place":{"x":1759,"z":-202572}}],
+              "letters":[{"id":"map-letter","sender":"A sailor","text":"Dear Link,\nan old map.","encloses":["chart:old-map"]}]})";
+            assert(install(chart.string(),error)&&view("chart-letter").compatible);
+            auto deps=view("chart-letter").dependencies;
+            assert(deps.size()==1&&deps[0]=="story-notebook>=0.0.0");
+            assert(enable("chart-letter",true,error)&&view("chart-letter").enabled);
+            assert(enable("chart-letter",false,error));
+            // an item on its own, and a quest on its own, the same way
+            for(const char* section:{R"("items":[{"id":"key","name":"Key","description":"A key.","icon":"icons/key.png"}])",
+                                     R"("quests_format":1,"quests":[{"id":"q","title":"Q","steps":[{"n":1,"text":"Go."}]}])"}){
+                auto one=root/"story-one";fs::remove_all(one);fs::create_directories(one/"icons");
+                std::ofstream(one/"manifest.json")<<R"({"format_version":1,"id":"story-one","name":"One","version":"1.0.0","game_id":"wwhd","kind":"content",)"<<section<<"}";
+                assert(install(one.string(),error)&&view("story-one").compatible);
+                assert(view("story-one").dependencies.size()==1);
+                assert(remove("story-one",error));
+            }
+            // an empty actor list next to game files: the notebook dependency is accepted too
+            auto empty=root/"empty-actors";fs::create_directories(empty/"content");std::ofstream(empty/"content"/"fixture.marker")<<"original fixture";
+            std::ofstream(empty/"manifest.json")<<R"({"format_version":1,"id":"empty-actors","name":"Empty","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","actors":[]})";
+            assert(install(empty.string(),error)&&view("empty-actors").compatible);
+            // the protection stays: plain game files can't depend on anything, story content on nothing but the notebook
+            std::ofstream(empty/"manifest.json")<<R"({"format_version":1,"id":"plain-notebook","name":"Plain","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","dependencies":[{"id":"story-notebook"}]})";
+            assert(!install(empty.string(),error)&&error.find("only depend on the Story Notebook")!=std::string::npos);
+            std::ofstream(chart/"manifest.json")<<R"({"format_version":1,"id":"chart-other","name":"Old map","version":"1.0.0","game_id":"wwhd","kind":"content","dependencies":[{"id":"guest-code"}],
+              "charts":[{"id":"old-map","name":"Old map","place":{"x":1759,"z":-202572}}]})";
+            assert(!install(chart.string(),error)&&error.find("only depend on the Story Notebook")!=std::string::npos);
+            // a named content folder must still be there
+            std::ofstream(chart/"manifest.json")<<R"({"format_version":1,"id":"chart-folder","name":"Old map","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"missing",
+              "charts":[{"id":"old-map","name":"Old map","place":{"x":1759,"z":-202572}}]})";
+            assert(!install(chart.string(),error)&&error.find("Content folder is missing")!=std::string::npos);
+            assert(remove("chart-letter",error)&&remove("empty-actors",error));
+        }
         // Manifest-only owners must not install fake game replacements to carry scenes.
         auto scene_only=root/"scene-only";fs::create_directories(scene_only/"content");
         auto scene_manifest=mods::json::parse(R"({"format_version":1,"id":"scene-only","name":"Scene only","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","scenes":[{"id":"test","trigger":{"type":"area","stage":"sea","room":11,"position":{"x":0,"y":0,"z":0},"radius":80},"steps":[{"type":"wait","frames":1},{"type":"end"}]}]})");
@@ -686,6 +895,38 @@ int main(int argc, char** argv) {
         scene_manifest["id"]="malformed-scene";scene_manifest["scenes"]=mods::json::parse(R"([{"id":"bad"}])");
         std::ofstream(scene_only/"manifest.json")<<mods::json::dump(scene_manifest);
         assert(!install(scene_only.string(),error));
+        // The game's own objects by reference: the package carries no game data (by name or by content).
+        {
+            auto objects=root/"objects";fs::create_directories(objects/"content");std::ofstream(objects/"content"/"objects.marker")<<"original fixture";
+            auto om=mods::json::parse(R"({"format_version":1,"id":"objects","name":"Game objects","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","requires":{"game_objects":1},"actors":[{"id":"palm","actor":"game:palm","stage":"sea","room":11,"position":{"x":0,"y":0,"z":0}}]})");
+            std::ofstream(objects/"manifest.json")<<mods::json::dump(om);
+            assert(install(objects.string(),error)&&view("objects").compatible);
+            fs::create_directories(objects/"assets");
+            for(const auto& [name,bytes]:std::vector<std::pair<std::string,std::string>>{{"Oyashi.bfres","x"},{"room.dzb","x"},{"tex.ftex","x"},{"Lwood.szs","x"},{"renamed.bin","Yaz0...."},{"data.dat","SARC...."},{"model.png","FRES...."}}){
+                om["id"]="objects-"+std::to_string(name.size())+name.substr(0,3);for(char& ch:om["id"].text)if(ch=='.')ch='-';for(char& ch:om["id"].text)ch=char(std::tolower((unsigned char)ch));
+                std::ofstream(objects/"manifest.json")<<mods::json::dump(om);
+                {std::ofstream f(objects/"assets"/name,std::ios::binary);f<<bytes;}
+                assert(!install(objects.string(),error)&&error.find("game data")!=std::string::npos&&error.find(name)!=std::string::npos);
+                fs::remove(objects/"assets"/name);
+            }
+            // island buildings by reference: the same rule (no BFRES, SZS, DZB or other game data in the package)
+            {
+                auto pm=mods::json::parse(R"({"format_version":1,"id":"buildings","name":"Buildings","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","requires":{"game_objects":2},"actors":[{"id":"house","actor":"piece:outset-house-small","stage":"sea","room":12,"position":{"x":0,"y":0,"z":0},"rotation":{"x":0,"y":90,"z":0}}]})");
+                auto buildings=root/"buildings";fs::create_directories(buildings/"content");std::ofstream(buildings/"content"/"buildings.marker")<<"original fixture";
+                std::ofstream(buildings/"manifest.json")<<mods::json::dump(pm);
+                assert(install(buildings.string(),error)&&view("buildings").compatible);
+                fs::create_directories(buildings/"assets");
+                for(const auto& [name,bytes]:std::vector<std::pair<std::string,std::string>>{{"room.dzb","x"},{"Room44.bfres","x"},{"house.bin","FRES...."},{"sea_Room44.szs","x"}}){
+                    pm["id"]="buildings-"+std::to_string(name.size());std::ofstream(buildings/"manifest.json")<<mods::json::dump(pm);
+                    {std::ofstream f(buildings/"assets"/name,std::ios::binary);f<<bytes;}
+                    assert(!install(buildings.string(),error)&&error.find("game data")!=std::string::npos&&error.find(name)!=std::string::npos);
+                    fs::remove(buildings/"assets"/name);
+                }
+            }
+            // a package without game objects keeps its own rules (a content mod may replace game files)
+            std::ofstream(objects/"assets"/"Lwood.szs")<<"x";om["id"]="objects-none";om.object.erase("actors");om.object.erase("requires");
+            std::ofstream(objects/"manifest.json")<<mods::json::dump(om);assert(install(objects.string(),error));
+        }
         auto world_fixture=[&](const std::string& id,unsigned count){
             auto source=root/id;fs::create_directories(source/"content");std::ofstream(source/"content"/(id+".marker"))<<"original fixture";
             auto m=mods::json::parse(R"({"format_version":1,"id":"fixture","name":"World graph fixture","version":"1.0.0","game_id":"wwhd","kind":"content","content_dir":"content","actors":[]})");m["id"]=id;
@@ -698,7 +939,7 @@ int main(int argc, char** argv) {
         {std::error_code ignored;fs::remove_all(root,ignored);}std::cout<<"Real world-content example starts with notebook dependency; content dependency policy and aggregate actor graph validated\n";return 0;
     }
     if(argc==2&&std::string(argv[1])=="--content-startup"){
-        auto root=fs::temp_directory_path()/("wwhd-content-test-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-content-test-");
         auto storage=root/"storage";auto pack=storage/"Mods"/"content.test";
         fs::create_directories(pack/"content"/"Common");
         std::ofstream(pack/"content"/"Common"/"fixture.bin")<<"synthetic replacement";
@@ -766,7 +1007,9 @@ int main(int argc, char** argv) {
     assert(mods::manager::set_enabled("target-letterbox",false));
     remember_option("lock-on.range",2.5);remember_option("lock-on.cycling",0);
     mods::set_move_speed_bar(false);remember_option("move-speed.bar",0);  // "Show boost bar" off
+    assert(mods::manager::set_enabled("camera-directed-items",true));
     assert(create_profile("Adventure",error));
+    assert(mods::manager::set_enabled("camera-directed-items",false));
     assert(mods::manager::set_enabled("target-letterbox",true));
     mods::set_lock_on_range(1.f);mods::set_lock_on_cycling(true);
     assert(mods::manager::set_enabled("lock-on",false));
@@ -778,6 +1021,7 @@ int main(int argc, char** argv) {
     assert(select_profile("Adventure",error));frame(21);assert(!state[3]);
     assert(!mods::letterbox_while_targeting());
     assert(mods::fast_forward_rate()==3 && mods::fast_forward_button()==0x20 && !mods::fast_forward_mute());
+    assert(mods::camera_directed_items());
     assert(mods::extended_lock_on() && mods::lock_on_range()==2.5f && !mods::lock_on_cycling());
     assert(!mods::move_speed_bar());
     {std::ifstream saved_file(root/"storage/profiles.json");
@@ -790,6 +1034,7 @@ int main(int argc, char** argv) {
     assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(mods::move_speed_bar());assert(delete_profile("Adventure",error));
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());
     assert(mods::letterbox_while_targeting());
+    assert(!mods::camera_directed_items()); // Default profile preserves its independent off value.
     assert(install(package("missing-dep",",\"dependencies\":[{\"id\":\"absent\"}]"),error));
     assert(!enable("missing-dep",true,error));
     assert(remove("missing-dep",error));

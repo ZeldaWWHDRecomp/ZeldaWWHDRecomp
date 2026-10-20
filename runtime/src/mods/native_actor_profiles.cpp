@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_actor_profiles.h"
 #include "guest_addr.h"
+#include "guest_heap_query.h"
 #include "runtime.h"
 #include <array>
 #include <cstdlib>
 #include <cstring>
 namespace native_actor_profiles { namespace {
 struct Entry {uint16_t id=0;uint32_t address=0;BaseAllocated allocated=nullptr;};
-std::array<Entry,10> entries{};
+std::array<Entry,32> entries{};
 struct Listener {std::string name;BeforeDelete callback=nullptr;};
 std::array<Listener,8> listeners{};
 void(*original)(Cpu*,uint32_t)=nullptr;uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;bool installed=false;
 bool tracing(){const char*v=std::getenv("WWHD_MOD_ACTOR_HEAPS");return v&&std::strcmp(v,"1")==0;}
-bool reserved(uint32_t id){return id>=0x7FF5&&id<=0x7FFE;}
+bool reserved(uint32_t id){return id>=0x7FD0&&id<=0x7FFE;}
 const Entry* entry(uint32_t id){for(const auto&e:entries)if(e.address&&id==e.id)return &e;return nullptr;}
-uint32_t free(Cpu*c,uint32_t heap){if(!heap)return 0;const uint32_t vt=ld32(heap+0xC),fn=vt?ld32(vt+0x74):0;return fn?invoke(c,fn,{heap}):0;}
+uint32_t free(Cpu*c,uint32_t heap){return guest_heap::free_size(c,heap,invoke);}
 using Heaps=std::array<std::pair<uint32_t,uint32_t>,4>;
 Heaps heaps(Cpu*c){Cpu probe=*c;Heaps out{};const uint32_t getters[]={GC(0x025E3268),GC(0x025E2FBC),GC(0x025EE048),GC(0x025EE060)};for(unsigned i=0;i<4;++i){out[i].first=invoke(&probe,getters[i],{});out[i].second=free(&probe,out[i].first);}return out;}
 void lookup(Cpu*c){if(const auto*e=entry(c->r[3]))c->r[3]=e->address;else if(reserved(c->r[3]))c->r[3]=0;else original(c,GC(0x025E10E0));}
@@ -32,6 +33,7 @@ void destroy(Cpu*c){const uint32_t actor=c->r[3];const bool own=invoke&&tracing(
     *c=returned;
 }
 }
+std::array<uint32_t,5> heap_free(Cpu*c){std::array<uint32_t,5> out{};if(!c||!invoke)return out;const auto h=heaps(c);for(unsigned i=0;i<4;++i)out[i]=h[i].second;Cpu probe=*c;out[4]=free(&probe,ld32(GD(0x1018CA3C)));return out;}
 void configure(void(*fn)(Cpu*,uint32_t),uint32_t(*calls)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){if(!installed){original=fn;invoke=calls;}}
 bool valid_storage(uint32_t a){return a>=mem::kRuntimeStart&&a<=mem::kHostStart-0x30&&!(a&3);}
 bool available(const Owner&owner){return original&&(installed||(owner(GC(0x025E10E0)).empty()&&owner(GC(0x025DD414)).empty()&&owner(GC(0x025D4B4C)).empty()));}

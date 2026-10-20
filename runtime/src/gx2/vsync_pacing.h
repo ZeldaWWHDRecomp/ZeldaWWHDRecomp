@@ -48,7 +48,7 @@ inline uint64_t flip_executed(const Clock& c, int64_t& shift, uint64_t due, int6
     return at;
 }
 
-// Step slots (paced frame interpolation at 120/240 fps, issue #164). The game advances one logic
+// Step slots (paced frame interpolation at 60, 120 and 240 fps, issue #164). The game advances one logic
 // step every two 59.94 Hz vsyncs (its swap interval) and draws in-between frames between steps. A
 // step's first frame (its logic frame) is due on the step's slot, two vsyncs after the previous
 // step's slot, whatever the in-between frames did: the step schedule is the vsync grid itself.
@@ -77,6 +77,12 @@ inline uint64_t slot_tick(const Clock& c, int64_t slot, int64_t shift, uint64_t 
 // frame not before its step's slot (slot < 0: none).
 inline uint64_t step_due(const Clock& c, uint64_t due, int64_t slot, int64_t shift, uint64_t granule) {
     return slot < 0 ? due : std::max(due, slot_tick(c, slot, shift, granule));
+}
+// The frames a step whose slot is `slot` has before the next step's logic frame (at 40 fps, granule
+// 6 ticks, steps of 8: 2 for one step in three, 1 for the others; 60/120/240 fps: 2, 4, 8).
+inline int step_frames(const Clock& c, int64_t slot, int64_t step, int64_t shift, uint64_t granule) {
+    const uint64_t a = slot_tick(c, slot, shift, granule), b = slot_tick(c, slot + step, shift, granule);
+    return b > a ? int((b - a) / granule) : 1;
 }
 // A step's logic frame flipped at t; `slot`: its slot (or, without one, the time it was due). The
 // next step's slot (`step`: two vsyncs; `frame`: one frame at the drawn rate). Two steps late or

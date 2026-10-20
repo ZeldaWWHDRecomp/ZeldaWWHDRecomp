@@ -1,0 +1,97 @@
+{
+  "game_pieces_format": 1,
+  "set": "flight-platform",
+  "label": "Flight Control Platform",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room14.szs",
+    "room": 14
+  },
+  "memory": {
+    "archive_bytes": 3713072,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top"
+  },
+  "pieces": [
+    {
+      "id": "flight-platform",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Wooden flight platform",
+      "description": "a tall two-level wooden platform on stilts with railings, a ladder, a ramp and a small roof (without its goal posts)",
+      "volume": [
+        -3020,
+        -1010,
+        -3020,
+        890,
+        2510,
+        890
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "Hasira",
+            "Yane",
+            "Hasigo",
+            "Saka_hasira_A",
+            "Saka_hasira_B",
+            "Saka_yuka",
+            "Sita_hasiraA",
+            "Sita_hasira_B",
+            "Sita_hasira_C",
+            "Sita_hasira_D",
+            "Sita_tesuri",
+            "Sita_yuka",
+            "Ue_tesuri_A",
+            "Ue_tesuri_B",
+            "Ue_yuka",
+            "Ue_yukasita_A",
+            "Ue_yukasita_B",
+            "Ue_yukasita_C",
+            "Ue_yukasita_D"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Guard_A",
+          "Guard_B",
+          "Guard_C",
+          "Guard_D",
+          "Guard_E",
+          "Hasigo",
+          "Hasigo_U",
+          "Ue_yukasita_A",
+          "Ue_yukasita_B",
+          "Saka_sita",
+          "Saka_yuka",
+          "Sita_hasira_A",
+          "Sita_hasira_B",
+          "Tesuri",
+          "Shita_yuka",
+          "Ue_yuka_A",
+          "Ue_yuka_B",
+          "Hasira",
+          "Yane"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          3070
+        ],
+        "collision_triangles": 345,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

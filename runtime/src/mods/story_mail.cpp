@@ -33,6 +33,7 @@
 #include "story_mail.h"
 #include "story_mail_book.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <map>
@@ -265,6 +266,19 @@ int32_t send(const std::string& mod, const std::string& letter, const std::strin
     LOG("[mail] %s: letter \"%s\" is waiting in the postbox", mod.c_str(), letter.c_str());
     return kResultWaiting;
 }
+
+void reload(const std::string& mod, const std::vector<LetterText>& texts, const std::vector<std::string>& forget) {
+    std::lock_guard lock(g_mu);
+    for (const LetterText& t : texts)
+        for (Letter& l : g_letters)
+            if (l.mod == mod && l.id == t.id) {
+                std::u16string body = compose(t.sender, t.text);
+                if (!body.empty()) l.sender = t.sender, l.text = std::move(body);
+            }
+    std::erase_if(g_letters, [&](const Letter& l) { return l.mod == mod && std::find(forget.begin(), forget.end(), l.id) != forget.end(); });
+}
+
+bool busy() { return g_show.key || g_npc_text.text || g_caption_text.text || g_notebook_pending.load(); }
 
 int32_t state(const std::string& mod, const std::string& letter) {
     if (!valid_id(letter)) return kResultInvalid;

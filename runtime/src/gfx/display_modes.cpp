@@ -5,7 +5,7 @@
 // Debug / test environment (both hosts):
 //   WWHD_DRC_MODE=window|pip|auto|off|gamepad   GamePad screen mode at start (not saved)
 //   WWHD_DRC_PIP=br:0.25[:0.85]          overlay anchor (tl, tc, tr, cl, cc, cr, bl, bc, br, custom), size (fraction of the TV picture
-//                                        width) and opacity at start (not saved)
+//                                        width, 0.05..1) and opacity (0.1..1) at start (not saved)
 //   WWHD_SCALE_FILTER=smooth|sharp|integer
 //   WWHD_SIM_SCREEN=3024x1964            lay the TV picture out for a target of that size (present dumps and
 //                                        touch mapping), e.g. to check a full-screen layout without going full screen
@@ -60,7 +60,7 @@ static std::atomic<double> g_plus_at{-1};
 static std::atomic<int> g_pause_restore{-1};
 static GamePadUiState gamepad_ui() {
     const unsigned bits = g_gamepad_ui.load();
-    return {bool(bits & 1), bool(bits & 2), bool(bits & 4), bool(bits & 8)};
+    return {bool(bits & 1), bool(bits & 2), bool(bits & 4), bool(bits & 8), bool(bits & 16)};
 }
 std::atomic<float> g_drc_aspect{854.0f / 480.0f};
 std::atomic<bool> g_has_drc_window{false};
@@ -100,8 +100,8 @@ void display_env_overrides() {
         float sz = g_pip_size, op = g_pip_opacity;
         if (sscanf(e, "%15[a-z]:%f:%f", c, &sz, &op) >= 1) {
             g_pip_anchor = find_name(kAnchorNames, 10, c, g_pip_anchor);
-            g_pip_size = pip_clamp(sz, 0.1f, 0.5f, 0.25f);
-            g_pip_opacity = pip_clamp(op, 0.2f, 1.0f, 1.0f);
+            g_pip_size = pip_clamp_size(sz);
+            g_pip_opacity = pip_clamp_opacity(op);
         }
     }
     if (const char* e = getenv("WWHD_SCALE_FILTER")) g_filter = find_name(kFilterNames, 3, e, g_filter);
@@ -208,7 +208,7 @@ bool display_gamepad_state_needed() {
 }
 void display_gamepad_ui(GamePadUiState state) {
     g_gamepad_ui = unsigned(state.available) | (unsigned(state.menu) << 1) |
-        (unsigned(state.off_tv) << 2) | (unsigned(state.switching) << 3);
+        (unsigned(state.off_tv) << 2) | (unsigned(state.switching) << 3) | (unsigned(state.baton) << 4);
     const double now = display_now();
     if (g_mode == kDrcAuto) {
         AutoPipDecision decision{g_auto_until.load()};
@@ -240,6 +240,10 @@ void display_gamepad_ui(GamePadUiState state) {
 float pip_clamp(float v, float lo, float hi, float fallback) {
     return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
 }
+float pip_clamp_size(float size) { return pip_clamp(size, kPipSizeMin, kPipSizeMax, kPipSizeDefault); }
+float pip_clamp_opacity(float opacity) {
+    return pip_clamp(opacity, kPipOpacityMin, kPipOpacityMax, kPipOpacityDefault);
+}
 int pip_load_anchor(const char *anchor, const char *legacy) {
     return find_name(kAnchorNames, 10, anchor, find_name(kAnchorNames, 9, legacy, kPipBR));
 }
@@ -253,7 +257,7 @@ Box pip_box(Box tv, float aspect, float size, PipPosition p) {
     if (!std::isfinite(tv.w) || !std::isfinite(tv.h) || tv.w <= 0 || tv.h <= 0)
         return {};
     aspect = pip_clamp(aspect, 0.01f, 100, 854.0f / 480);
-    float w = tv.w * pip_clamp(size, 0.1f, 0.5f, 0.25f), h = w / aspect;
+    float w = tv.w * pip_clamp_size(size), h = w / aspect;
     // Keep the requested width wherever it fits. Only the selected preset's
     // margins/HUD clearance may reduce it; Custom can use the whole TV picture.
     const float margin = std::min(tv.w, tv.h) * 0.02f;
@@ -285,31 +289,34 @@ Box pip_box(Box tv, float aspect, float size, PipPosition p) {
     }
     return {tv.x + std::clamp(x, 0.0f, tv.w - w), tv.y + std::clamp(y, 0.0f, tv.h - h), w, h};
 }
-PipPosition pip_place(Box tv, float aspect, float size, float x, float y, bool snap) {
+PipPosition pip_place(Box tv, float aspect, float size, float x, float y) {
     if (!std::isfinite(tv.w) || !std::isfinite(tv.h) || tv.w <= 0 || tv.h <= 0)
         return {kPipCustom, 0.5f, 0.5f};
     Box b = pip_box(tv, aspect, size, {kPipCustom, x, y});
-    PipPosition p{kPipCustom, (b.x - tv.x + b.w / 2) / tv.w, (b.y - tv.y + b.h / 2) / tv.h};
-    if (snap) {
-        float best = 0.035f * std::min(tv.w, tv.h);
-        for (int a = 0; a < kPipCustom; ++a) {
-            Box q = pip_box(tv, aspect, size, {a, 0, 0});
-            // Compare the requested centre before Custom's edge clamping:
-            // a HUD-safe preset can be smaller than Custom at the same size.
-            const float qx = (q.x - tv.x + q.w / 2) / tv.w;
-            const float qy = (q.y - tv.y + q.h / 2) / tv.h;
-            const float requested = std::hypot((pip_clamp(x, 0, 1, 0.5f) - qx) * tv.w,
-                                               (pip_clamp(y, 0, 1, 0.5f) - qy) * tv.h);
-            const float actual = std::hypot(b.x + b.w / 2 - q.x - q.w / 2,
-                                            b.y + b.h / 2 - q.y - q.h / 2);
-            const float d = std::min(requested, actual);
-            if (d <= best) {
-                best = d;
-                p = {a, qx, qy};
-            }
+    return {kPipCustom, (b.x - tv.x + b.w / 2) / tv.w, (b.y - tv.y + b.h / 2) / tv.h};
+}
+void pip_target_centre(Box tv, int anchor, float* x, float* y) {
+    static constexpr float kAcross[3] = {0.1f, 0.5f, 0.9f}, kDown[3] = {0.12f, 0.5f, 0.88f};
+    anchor = std::clamp(anchor, 0, int(kPipCustom) - 1);
+    *x = tv.x + tv.w * kAcross[anchor % 3];
+    *y = tv.y + tv.h * kDown[anchor / 3];
+}
+int pip_target_at(Box tv, float px, float py, float radius) {
+    if (!std::isfinite(tv.w) || !std::isfinite(tv.h) || tv.w <= 0 || tv.h <= 0 || !std::isfinite(px) ||
+        !std::isfinite(py) || !(radius > 0))
+        return -1;
+    int best = -1;
+    float bestDistance = radius;
+    for (int a = 0; a < kPipCustom; ++a) {
+        float x, y;
+        pip_target_centre(tv, a, &x, &y);
+        const float d = std::hypot(px - x, py - y);
+        if (d <= bestDistance) {
+            bestDistance = d;
+            best = a;
         }
     }
-    return p;
+    return best;
 }
 
 // ---------------------------------------------------------------- layout
@@ -524,8 +531,8 @@ static void test_pip(uint64_t frame) {
     while (next < steps.size() && frame >= steps[next].frame) {
         const auto& step = steps[next++];
         pip_set_position(step.position);
-        g_pip_size = pip_clamp(step.size, 0.1f, 0.5f, 0.25f);
-        g_pip_opacity = pip_clamp(step.opacity, 0.2f, 1.0f, 1);
+        g_pip_size = pip_clamp_size(step.size);
+        g_pip_opacity = pip_clamp_opacity(step.opacity);
         LOG("[display] test PiP: %s, %.0f%% size, %.0f%% opacity at frame %llu", kAnchorNames[step.position.anchor],
             step.size * 100, step.opacity * 100, (unsigned long long)frame);
     }

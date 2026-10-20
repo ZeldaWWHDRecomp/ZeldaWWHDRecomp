@@ -1269,7 +1269,7 @@ void flags_area() {
 
 void search_area() {
     ImGui::SetNextItemWidth(-FLT_MIN);
-    text_entry::field("##search", Q.search, sizeof Q.search, 0, "Search actors, quests, scenes, items, flags");
+    text_entry::field("##search", Q.search, sizeof Q.search, 0, "Search actors, quests, scenes, letters, charts, items, flags");
     if (Q.hits_for != Q.search || ImGui::GetFrameCount() % 30 == 0) {
         Value p;
         p["text"] = std::string(Q.search);
@@ -1296,6 +1296,8 @@ void search_area() {
                 show_quest(id, kind == "quest_step" ? "step:" + std::to_string(int(num(h, "step"))) : std::string());
             else if (kind == "scene")
                 show_scene(id, int(num(h, "step")));
+            else if (kind == "letter" || kind == "chart" || kind == "item")
+                show_story(kind, id);
             else if (kind == "flag" && !h.get("used_by").array.empty()) {
                 selected() = h.get("used_by").array[0].string();
                 editor_shell::show_inspector();

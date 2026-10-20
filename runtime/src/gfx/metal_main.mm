@@ -15,6 +15,7 @@
 #include "metal.h"
 #include "runtime.h"
 #include "input.h"
+#include "../fixed_seed.h"
 
 // gameplay mods (runtime/src/mods): HUD drawn into the TV image
 namespace mods { void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex); }
@@ -490,8 +491,9 @@ void swap() {
     if (log_this_frame()) LOG("[frame] end %llu", (unsigned long long)R.frame);
     R.frame++;
     latch_res_scale();
-    if (capture_schedule::contains(g_dump_frames, R.frame))
-        dump_tv(capture_schedule::stem(R.frame, false));
+    if (const uint64_t scripted = fixed_seed::script_frame(R.frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+        capture_schedule::contains(g_dump_frames, scripted))
+        dump_tv(capture_schedule::stem(scripted, false));
     const uint64_t loaded = g_dump_load_frames.empty() ? 0 : ss::last_load_frame();
     if (capture_schedule::relative_due(g_dump_load_frames, R.frame, loaded)) {
         dump_tv(capture_schedule::stem(R.frame - loaded, true));

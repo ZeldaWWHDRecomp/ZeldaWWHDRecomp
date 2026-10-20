@@ -1,14 +1,24 @@
 // Production slot I/O with synthetic memory only. No game/assets are read.
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+#include <utility>
+#include <vector>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include "../src/savestate.cpp"
 #include "state_file_section.h"
-#include <cassert>
-#include <fstream>
-#include <algorithm>
-#include <string>
-#include <vector>
-#include <cstdint>
-#include <utility>
-#include <filesystem>
 namespace config {std::string game_dir="/nonexistent-synthetic-state-test";}
 void log_msg(const char*,...) {}
 namespace mem {std::vector<AllocRec> runtime_alloc_log(){return {{kRuntimeStart,32,0}};}}
@@ -41,9 +51,18 @@ void legacy_fixture(uint32_t version,bool oldHeader,const std::vector<uint8_t>& 
 }
 }
 int main() {
-    const auto directory=std::filesystem::temp_directory_path()/std::filesystem::path("wwhd-synthetic-state-test-"+std::to_string(getpid()));
+#ifdef _WIN32
+    const auto process_id=_getpid();
+#else
+    const auto process_id=getpid();
+#endif
+    const auto directory=std::filesystem::temp_directory_path()/std::filesystem::path("wwhd-synthetic-state-test-"+std::to_string(process_id));
     assert(!std::filesystem::exists(directory));std::filesystem::create_directory(directory);
-    setenv("WWHD_STATE_DIR",directory.string().c_str(),1);
+#ifdef _WIN32
+    assert(_putenv_s("WWHD_STATE_DIR",directory.string().c_str())==0);
+#else
+    assert(setenv("WWHD_STATE_DIR",directory.string().c_str(),1)==0);
+#endif
     struct Cleanup {std::filesystem::path path;~Cleanup(){std::filesystem::remove_all(path);}} cleanup{directory};
     constexpr uint32_t base=0x10000000;
     std::vector<uint8_t> memory(4*ss::kMemoryChunk), restored(memory.size(),0xcc);
@@ -72,6 +91,20 @@ int main() {
     assert(fastPayload.b==state->payload);
     auto fastHeader=header(ss::kFastVersion);
     assert(ss::write_slot(2,fastHeader,fastPayload.b));
+    // Editor full-state files share the production writer/reader while leaving
+    // numbered player slots untouched, including failed atomic replacement.
+    const auto regular_stream=file_bytes(ss::slot_path(1));
+    const auto regular_fast=file_bytes(ss::slot_path(2));
+    const std::string editor_fast=(directory/"editor-fast.bin").string();
+    const std::string editor_stream=(directory/"editor-stream.bin").string();
+    assert(ss::write_slot(-1,fastHeader,fastPayload.b,editor_fast));
+    assert(ss::read_slot(-1,why,editor_fast)->payload==fastPayload.b);
+    assert(ss::write_memory_slot(-1,header(),metadata,regions,pointer,touched,rawSize,{},editor_stream));
+    assert(ss::read_slot(-1,why,editor_stream)->payload==state->payload);
+    const auto previous_editor=file_bytes(editor_stream);
+    assert(!ss::write_memory_slot(-1,header(),metadata,regions,pointer,touched,rawSize,[]{return false;},editor_stream));
+    assert(file_bytes(editor_stream)==previous_editor);
+    assert(file_bytes(ss::slot_path(1))==regular_stream&&file_bytes(ss::slot_path(2))==regular_fast);
     const auto fastBytes=file_bytes(ss::slot_path(2));
     for(auto mode:{ss::SavePath::Auto,ss::SavePath::Streaming,ss::SavePath::Fast}) {
         ss::set_save_path(mode);assert(ss::save_path()==mode);

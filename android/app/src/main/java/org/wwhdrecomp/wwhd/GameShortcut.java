@@ -24,6 +24,10 @@ public final class GameShortcut {
 
     static final String ID = "game";
 
+    static boolean horizonOs(Context context) {
+        return context.getPackageManager().hasSystemFeature("horizonos.software.horizon_os");
+    }
+
     /** The game shortcut (the icon on launchers that can't pin widgets) is on the home screen. */
     static boolean pinned(Context context) {
         try {
@@ -38,7 +42,9 @@ public final class GameShortcut {
     /** Asks the launcher to pin the shortcut, unless it is pinned already or pinning is unsupported.
      *  False when Android refused the request (the app must be in front) or no launcher can pin. */
     public static boolean offer(Context context, File game) {
-        try {
+        // Meta Horizon OS (Quest): its Library pins shortcuts but shows no pinned widgets, and the
+        // widget request is accepted there without a result
+        if (!horizonOs(context)) try {
             android.appwidget.AppWidgetManager widgets = android.appwidget.AppWidgetManager.getInstance(context);
             android.content.ComponentName provider = new android.content.ComponentName(context, GameWidget.class);
             if (widgets.getAppWidgetIds(provider).length > 0) { GameWidget.refresh(context); return true; }

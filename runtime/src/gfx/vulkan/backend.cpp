@@ -146,6 +146,7 @@ uint64_t resident_bytes() {
 
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); void shutdown_vulkan_caches(); void request_background_vulkan_cache_checkpoint(); }
 #include "../../interp.h"
+#include "../../fixed_seed.h"
 
 extern uint32_t g_latteCpuVertexClasses;
 extern bool g_latteCpuVertexDecode;  // Cemu GLSL attribute decoder (LatteDecompiler.h), issue #207 diagnostic
@@ -2849,11 +2850,12 @@ static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
   static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
-  if (gfx::capture_schedule::contains(frames, frame)) {
-    dump_scan(R.tv, "frame_" + std::to_string(frame) + ".png");
-    dump_scan(R.drc, "frame_" + std::to_string(frame) + "_drc.png");
+  const uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+  if (gfx::capture_schedule::contains(frames, dumpFrame)) {
+    dump_scan(R.tv, "frame_" + std::to_string(dumpFrame) + ".png");
+    dump_scan(R.drc, "frame_" + std::to_string(dumpFrame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))
-      request_present_dump("frame_" + std::to_string(frame) + "_present.png");
+      request_present_dump("frame_" + std::to_string(dumpFrame) + "_present.png");
   }
   // Test captures relative to the completed full-state load, whose actual
   // renderer frame can vary even when WWHD_STATE_LOAD_AT is fixed.

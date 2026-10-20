@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 #include "story_native_wait_readiness.h"
 #include "story_native_wait_journal_store.h"
 #include "story_native_event_depth.h"
@@ -7,10 +16,6 @@
 #include "story_native_wait_saved_baseline.h"
 #include "story_native_wait_session_idle.h"
 #include "story_native_wait_session_pristine.h"
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <vector>
 
 namespace story_native_wait_controller { class Controller; }
 namespace story_native_wait_active_save_gate {class Controller;}
@@ -146,10 +151,14 @@ public:
     bool finish_restore(const Record& saved);
     // Portable progress load has no snapshot journal: permanently revoke.
     void begin_progress_load();
+    // Preserve only an authenticated unpublished arena under an actual parked
+    // game boundary. Published, borrowed, pending or quarantined state is refused.
+    bool preserve_progress_load(Cpu*,const threads::QuiescenceWitness&);
     bool quarantined() const;
 private:
     std::shared_ptr<const uint8_t>current_fence_identity()const noexcept;
     bool pristine_shape()const;
+    bool preserve_pristine_progress_load(Cpu*,const threads::QuiescenceWitness&);
     friend class story_native_wait_active_save_gate::Controller;
     bool initial_import_roots(const ss::native_gate::SavedView&,Cpu*,const threads::QuiescenceWitness&)const;
     std::shared_ptr<const void>pristine_lineage_;
@@ -184,6 +193,7 @@ private:
     // Data-only fresh root exclusion; usable only under the genuine issuer
     // lifetime/fence. It cannot mint a release or rearm certificate.
     bool clean_rearm_roots()const;
+    bool clean_progress_roots()const;
     bool reusable_=false;
     bool stage_image_impl(const story_native_people_pose_record::Poses*);
     std::optional<Expected> checked_baseline(bool native) const;

@@ -226,6 +226,37 @@ void test_get_message() {
     assert(story_mail::item_get_text(stand_in_message(), nullptr));
 }
 
+// A placed chest (SDK v3 "chest") holding a mod item: the same marker and stand-in, the chest found by its
+// actor (the demo item is created at the chest's position, actor + 0x314)
+uint32_t g_placed_actor = 0;
+bool placed(uint32_t actor, std::string& mod, std::string& item) {
+    if (actor != g_placed_actor) return false;
+    mod = "mod", item = "coin";
+    return true;
+}
+void test_placed_chest() {
+    assert(!placed_chests());
+    note_placed_chests();
+    assert(placed_chests() && !story_treasure::chest_hooks().empty());
+    set_placed_chest(placed);
+    set_item_get_next(next, original);
+    g_active = 0;  // no salvage
+    const int32_t before = story_items::count("mod", "coin");
+    g_placed_actor = kArena + 0x100 - 0x314;
+    calls.clear();
+    create(kChestMarker);
+    assert(calls == std::vector<std::string>{"create " + std::to_string(kStandIn)} && pending());
+    exec(kStandIn);
+    assert(!pending() && story_items::count("mod", "coin") == before + 1);
+    // another chest with the marker (not ours): the default item, nothing pending
+    g_placed_actor = 1;
+    calls.clear();
+    create(kChestMarker);
+    assert(calls == std::vector<std::string>{"create 6"} && !pending());
+    set_placed_chest(nullptr);
+    assert(story_notebook::kChestModItem == kChestMarker);
+}
+
 }  // namespace
 
 int main() {
@@ -236,6 +267,7 @@ int main() {
     test_manifest();
     test_chest();
     test_get_message();
+    test_placed_chest();
     std::puts("story_treasure_chest_test: ok");
     return 0;
 }

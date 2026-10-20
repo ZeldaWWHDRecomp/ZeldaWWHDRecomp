@@ -1,0 +1,67 @@
+{
+  "game_pieces_format": 1,
+  "set": "crescent-moon-island",
+  "label": "Crescent Moon Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room5.szs",
+    "room": 5
+  },
+  "memory": {
+    "archive_bytes": 880640,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); a placement is counted again on top; the distant view (about 120 KiB) is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "crescent-moon-island",
+      "since": 4,
+      "category": "Islands",
+      "label": "Crescent Moon Island ground",
+      "description": "a low crescent of rock curled around a sheltered cove; bare ground",
+      "volume": [
+        -2867,
+        -1113,
+        -2748,
+        3057,
+        608,
+        3131
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "polySurface3",
+            "soko_stop"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "soko_stop",
+          "polySurface3"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD05.szs",
+        "triangles": 120
+      },
+      "expect": {
+        "triangles": [
+          265
+        ],
+        "textures": [
+          [
+            "test_iwakabe_b"
+          ]
+        ],
+        "collision_triangles": 265
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

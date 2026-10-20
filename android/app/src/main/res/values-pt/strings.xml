@@ -85,4 +85,5 @@
     <string name="touch_layout_done">Concluir</string>
     <string name="setup_code_mods">Mods de código</string>
     <string name="setup_code_mods_detail">Permite ativar mods de código (por exemplo as missões de história) em Configurações › Mods. O código do jogo é compilado de novo com suporte a mods, o que leva mais ou menos o mesmo tempo que a primeira instalação, e o jogo fica um pouco mais lento. Enquanto isso, você pode continuar jogando a versão atual.</string>
+    <string name="game_icon_unsupported">Este launcher não permite adicionar ícones de apps.</string>
 </resources>

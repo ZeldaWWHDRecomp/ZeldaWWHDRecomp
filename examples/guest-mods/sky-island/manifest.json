@@ -1,0 +1,73 @@
+{
+  "format_version": 1,
+  "id": "sky-island",
+  "name": "The sky island",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An island floating above the sea, reached through an updraft off Outset Island. Its boss arena holds a heart container; the warp out opens once it is taken.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "stages": [
+    {
+      "id": "sky",
+      "template": "GTower",
+      "kind": "dungeon",
+      "music_like": "GTower",
+      "map": {"title": "Sky Island"},
+      "shaders": "assets/sky.wwht",
+      "entrance": {"stage": "sea", "room": 44, "point": 0},
+      "rooms": [
+        {
+          "room": 0,
+          "kit": 0,
+          "ground": "assets/island.glb",
+          "materials": {"grass": "test_lambert8_v", "rock": "enkei_lambert112_v", "stone": "lambert6_v"},
+          "spawns": [
+            {"point": 0, "position": {"x": 0, "y": 30, "z": -1500}, "angle": 0}
+          ],
+          "actors": [
+            {"id": "boss-key", "actor": "chest", "item": "boss_key", "position": {"x": -900, "y": 30, "z": 300}, "angle": 90},
+            {"id": "guard-1", "actor": "bokoblin", "position": {"x": 800, "y": 30, "z": 600}, "angle": 270},
+            {"id": "guard-2", "actor": "keese", "position": {"x": -500, "y": 300, "z": 1200}, "angle": 180},
+            {"id": "pot-1", "actor": "pot", "position": {"x": 400, "y": 30, "z": -600}},
+            {"id": "pot-2", "actor": "pot", "position": {"x": 520, "y": 30, "z": -520}}
+          ]
+        },
+        {
+          "room": 1,
+          "kit": 0,
+          "ground": "assets/arena.glb",
+          "materials": {"stone": "lambert6_v", "wall": "lambert2_v", "rock": "enkei_lambert112_v"},
+          "spawns": [
+            {"point": 1, "position": {"x": 0, "y": 200, "z": 2650}, "angle": 0}
+          ],
+          "actors": [
+            {"id": "champion", "actor": "darknut", "position": {"x": 0, "y": 200, "z": 3600}, "angle": 180},
+            {"id": "heart", "actor": "chest", "item": "heart_container", "position": {"x": 0, "y": 200, "z": 4400}, "angle": 180}
+          ]
+        }
+      ],
+      "doors": [
+        {"position": {"x": 0, "y": 200, "z": 2400}, "angle": 180, "rooms": [0, 1], "lock": "boss"}
+      ],
+      "warps": [
+        {"id": "home", "room": 1, "position": {"x": 600, "y": 200, "z": 4300}, "size": {"x": 250, "y": 250, "z": 250}, "after": "heart"}
+      ],
+      "entries": [
+        {
+          "id": "updraft",
+          "stage": "sea",
+          "room": 44,
+          "style": "updraft",
+          "height": 1500,
+          "position": {"x": -194845, "y": 0, "z": 315400},
+          "size": {"x": 400, "y": 800, "z": 400},
+          "to": {"room": 0, "point": 0}
+        }
+      ]
+    }
+  ]
+}

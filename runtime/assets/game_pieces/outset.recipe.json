@@ -1,0 +1,362 @@
+{
+  "game_pieces_format": 1,
+  "set": "outset",
+  "label": "Outset Island buildings",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room44.szs",
+    "room": 44
+  },
+  "memory": {
+    "archive_bytes": 5379464,
+    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); each placement adds its instance"
+  },
+  "pieces": [
+    {
+      "id": "outset-house-ladder",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Outset house with a ladder",
+      "description": "a two-storey island house with a balcony, a side ladder and a lit window at night",
+      "volume": [
+        -3543,
+        224,
+        17379,
+        -2045,
+        1935,
+        19052
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 3,
+          "nodes": [
+            "Polygon0"
+          ],
+          "light": "bg3"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "jiji",
+          "jiji_ya",
+          "jiji_yane",
+          "jiji_KAGE",
+          "jiji1_KIRI",
+          "jiji2_KIRI",
+          "hasigo_yokoA"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          989,
+          10
+        ],
+        "collision_triangles": 278,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ],
+          [
+            "Txa_akari_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 53248
+      }
+    },
+    {
+      "id": "outset-house-lookout",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Outset house with a lookout",
+      "description": "a family house on posts with a rooftop lookout, a crawl hole and a lit window at night",
+      "volume": [
+        -6349,
+        -103,
+        15656,
+        -4151,
+        2061,
+        17778
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 3,
+          "nodes": [
+            "Polygon0"
+          ],
+          "light": "bg3"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "link",
+          "link_ya",
+          "linkyoko_ya",
+          "link_yane",
+          "link_KAGE",
+          "link_KIRI",
+          "haihai_kabe_a",
+          "haihai_soko_a",
+          "haihai_KIRI"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          927,
+          10
+        ],
+        "collision_triangles": 247,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ],
+          [
+            "Txa_akari_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 50176
+      }
+    },
+    {
+      "id": "outset-house-terrace",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Outset house on a terrace",
+      "description": "a tall island house with a steep roof and a wooden terrace, lit at night",
+      "volume": [
+        -2879,
+        964,
+        19410,
+        -1075,
+        2659,
+        21691
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 3,
+          "nodes": [
+            "Polygon0"
+          ],
+          "light": "bg3"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "buta",
+          "buta_ya",
+          "buta_b_ya",
+          "buta_yane",
+          "buta_KAGE",
+          "buta_KIRI",
+          "buta_yane_KIRI"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          923,
+          10
+        ],
+        "collision_triangles": 226,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ],
+          [
+            "Txa_akari_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 49152
+      }
+    },
+    {
+      "id": "outset-house-small",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Small Outset house",
+      "description": "a small island house on posts with a pointed roof and a lit window at night",
+      "volume": [
+        6129,
+        462,
+        17693,
+        7583,
+        2009,
+        19201
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 3,
+          "nodes": [
+            "Polygon0"
+          ],
+          "light": "bg3"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "masao",
+          "masao_ya",
+          "masao_yane",
+          "masao_KAGE",
+          "masao_KILI",
+          "haihai_kabe_b",
+          "haihai_soko_b"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          692,
+          10
+        ],
+        "collision_triangles": 213,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ],
+          [
+            "Txa_akari_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 48128
+      }
+    },
+    {
+      "id": "outset-lookout-tower",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Outset lookout tower",
+      "description": "a tall wooden watchtower on a single post with a roofed platform and a boardwalk",
+      "volume": [
+        4126,
+        -76,
+        13055,
+        6220,
+        2847,
+        16086
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "miharidai",
+          "miharidai_yane",
+          "hunedome_C",
+          "hasigo_yokoB",
+          "hasigo_yokoC"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          927
+        ],
+        "collision_triangles": 50,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ie_a",
+            "Txa_ita3mai_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 26624
+      }
+    },
+    {
+      "id": "outset-well-shelter",
+      "since": 2,
+      "category": "Buildings",
+      "label": "Outset well shelter",
+      "description": "a small open wooden shelter with a slanted roof",
+      "volume": [
+        -5866,
+        657,
+        18030,
+        -5013,
+        1190,
+        18611
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "ie"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "mizuba",
+          "mizuba_ya",
+          "mizuba_yanehuti",
+          "mizuba_KAGE"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          158
+        ],
+        "collision_triangles": 58,
+        "textures": [
+          [
+            "Txa_hune_a",
+            "Txa_ita3mai_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 24576
+      }
+    }
+  ]
+}

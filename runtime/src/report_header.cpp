@@ -183,8 +183,9 @@ std::string format(const Info& in) {
     if (!in.gpu.empty()) s += ", " + in.gpu;
     char scale[32];
     snprintf(scale, sizeof scale, "%.1fx", in.scale);
-    s += "\nperformance report: renderer " + in.renderer + ", host " + in.host + ", " + in.fps + ", internal scale " +
-         scale;
+    s += "\nperformance report: renderer " + in.renderer + ", host " + in.host + ", " + in.fps;
+    if (in.keepGameSpeed >= 0) s += in.keepGameSpeed ? ", keep game speed on" : ", keep game speed off";
+    s += std::string(", internal scale ") + scale;
     if (in.bufferCache >= 0) s += in.bufferCache ? ", buffer cache on" : ", buffer cache off";
     if (!in.gyro.empty()) s += ", gyro " + in.gyro;
     for (size_t i = 0; i < in.overrides.size(); i++) s += (i ? ", " : "; overrides: ") + in.overrides[i];

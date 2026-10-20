@@ -44,6 +44,7 @@ void stereo_select_eye(int eye) {
     if (stereoEye == eye) return;
     end_encoder();
     R.surfaces.swap(otherSurfaces);
+    ++g_surface_set_gen;
     R.linearTargets.swap(otherLinearTargets);
     std::swap(R.mainDepthAddr, otherMainDepth);
     stereo_swap_ao();
@@ -61,6 +62,7 @@ void stereo_latch() {
             // pending GPU reads finish before their allocations are freed.
             for (auto& [addr,s]:otherSurfaces) destroy_surface_image(s.get());
             otherSurfaces.clear();
+            ++g_surface_set_gen;
             otherLinearTargets.clear();
             ++g_surface_epoch;
             otherMainDepth=0;

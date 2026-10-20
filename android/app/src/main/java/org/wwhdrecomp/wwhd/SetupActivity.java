@@ -106,7 +106,8 @@ public class SetupActivity extends Activity {
                 if (game == null) android.widget.Toast.makeText(this, R.string.game_icon_none, android.widget.Toast.LENGTH_SHORT).show();
                 else if (widget) android.widget.Toast.makeText(this, R.string.game_icon_present, android.widget.Toast.LENGTH_LONG).show();
                 else if (shortcut) android.widget.Toast.makeText(this, R.string.game_icon_present_shortcut, android.widget.Toast.LENGTH_LONG).show();
-                else GameShortcut.offer(this, game);
+                else if (!GameShortcut.offer(this, game))
+                    android.widget.Toast.makeText(this, R.string.game_icon_unsupported, android.widget.Toast.LENGTH_LONG).show();
             });
         }, "wwhd-game-icon").start();
     }

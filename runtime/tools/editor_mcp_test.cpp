@@ -4,14 +4,18 @@
 #include "editor/commands.h"
 #include "editor/mcp.h"
 #include "editor/mcp_server.h"
+#include "mods/story_mail_book.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #if defined(_WIN32)
@@ -41,6 +45,11 @@ int g_failures = 0;
 Value json(const char* text) { return mods::json::parse(text); }
 
 struct FakeHost : editor::Host {
+    // world objects (island buildings): the game would check the room; here every place is clear
+    bool world_object_query(const std::string&, const story_notebook::ManifestActor& actor, bool, Value& result, std::string&) override {
+        result["clear"] = true, result["id"] = actor.id, result["conflicts"].type = Value::Array;
+        return true;
+    }
     bool apply_actors(const std::string&, const std::vector<story_notebook::ManifestActor>&, const std::vector<std::string>&, std::string& note,
                       std::string&) override {
         note = "";
@@ -62,11 +71,15 @@ struct FakeHost : editor::Host {
     Value fly_state() override { return Value(); }
     bool set_test_mode(bool on, std::string&) override { return testing = on, true; }
     bool test_mode() override { return testing; }
-    bool reset_records(const std::string&, const std::vector<editor::Record>&, const std::vector<editor::Record>&, unsigned& erased,
+    bool reset_records(const std::string&, const std::vector<editor::Record>& own, const std::vector<editor::Record>&, unsigned& erased,
                        std::string&) override {
         erased = 0;
+        reset_own = own;
         return true;
     }
+    bool advance_days(int n, std::string&) override { return days += n, true; }
+    std::vector<editor::Record> reset_own;
+    int days = 0;
     bool test_state(bool, int, const std::string&, const std::vector<editor::Record>&, std::string&) override { return true; }
     bool read_records(const std::vector<editor::Record>& records, std::vector<int>& values, std::string&) override {
         values.assign(records.size(), -1);
@@ -76,6 +89,11 @@ struct FakeHost : editor::Host {
         return true;
     }
     bool testing = false;
+    // new_mod: a folder of its own in the fake mods folder, as the game's mod manager makes it
+    std::string mods_dir;
+    bool create_package(const Value& manifest, std::string& dir, std::string& why) override {
+        return editor::write_package_folder(mods_dir, manifest, dir, why);
+    }
 };
 
 const char* kManifest = R"({
@@ -620,6 +638,88 @@ void quest_tools() {
     CHECK(is_error(v) && text_of(v).find("test mode") != std::string::npos && be.asked == 4);
 }
 
+// Game objects through tools/call: list_game_objects (category, query) and add_actor "game:<id>", nothing
+// else of the game's data (references only), and a refused game object field as a tool error.
+void game_object_tools() {
+    FakeBackend be;
+    be.session.add_package("editor-test", "Editor test", "", json(kManifest));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    bool listed = false;
+    for (const auto& t : r.get("result").get("tools").array)
+        if (t.get("name").string() == "list_game_objects") listed = t.get("inputSchema").get("properties").get("query").type == Value::Object;
+        else if (t.get("name").string() == "add_actor") CHECK(t.get("description").string().find("game") != std::string::npos || t.get("inputSchema").get("properties").get("type").get("description").string().find("game:<id>") != std::string::npos);
+    CHECK(listed);
+    Value v = call(h, "list_game_objects", json(R"({"category":"Furniture"})"));
+    CHECK(!is_error(v) && text_of(v).find("game:table") != std::string::npos && text_of(v).find("game:palm") == std::string::npos);
+    v = call(h, "list_game_objects", json(R"({"query":"palm"})"));
+    CHECK(!is_error(v) && text_of(v).find("game:palm") != std::string::npos && text_of(v).find("Oyashi") == std::string::npos);  // no native names
+    v = call(h, "add_actor", json(R"({"type":"game:palm","id":"palm-1","at":"position","position":{"x":100,"y":1040,"z":-201500},"stage":"sea","room":11,"snap":false})"));
+    CHECK(!is_error(v));
+    v = call(h, "get_actor", json(R"({"id":"palm-1"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"actor\":\"game:palm\"") != std::string::npos);
+    v = call(h, "set_actor", json(R"({"id":"palm-1","property":"params","value":5})"));
+    CHECK(is_error(v) && text_of(v).find("game object") != std::string::npos);
+    v = call(h, "check_package", Value());
+    CHECK(!is_error(v) && text_of(v).find("\"valid\":true") != std::string::npos);
+    // island buildings through the same path: "piece:<id>", no native names (room archive, nodes, groups)
+    v = call(h, "list_game_objects", json(R"({"category":"Buildings"})"));
+    CHECK(!is_error(v) && text_of(v).find("piece:outset-house-small") != std::string::npos && text_of(v).find("sea_Room") == std::string::npos &&
+          text_of(v).find("KIRI") == std::string::npos);
+    v = call(h, "add_actor", json(R"({"type":"piece:outset-well-shelter","id":"well-1","at":"position","position":{"x":100,"y":1040,"z":-201300},"stage":"sea","room":11,"snap":false})"));
+    CHECK(!is_error(v));
+    v = call(h, "get_actor", json(R"({"id":"well-1"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"actor\":\"piece:outset-well-shelter\"") != std::string::npos);
+    v = call(h, "set_actor", json(R"({"id":"well-1","property":"lines","value":"hi"})"));
+    CHECK(is_error(v));
+    v = call(h, "check_package", Value());
+    CHECK(!is_error(v) && text_of(v).find("\"valid\":true") != std::string::npos);
+    CHECK(be.asked == 0);
+}
+
+// The water tool through tools/call: each command listed with its schema; a pond made, read back, changed and
+// taken back; a refused one (crossing outline) as a tool error; nothing asked of the player.
+void water_tools() {
+    FakeBackend be;
+    const auto dir = std::filesystem::temp_directory_path() / ("wwhd-mcp-water-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(dir);
+    be.session.add_package("editor-test", "Editor test", dir.string(), json(kManifest));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    std::set<std::string> found;
+    for (const auto& t : r.get("result").get("tools").array) {
+        const std::string name = t.get("name").string();
+        if (name == "add_pond" || name == "add_river" || name == "add_waterfall" || name == "edit_water" || name == "check_water" || name == "get_water") {
+            found.insert(name);
+            CHECK(t.get("inputSchema").get("properties").type == Value::Object && !t.get("description").string().empty());
+        }
+        if (name == "add_pond") CHECK(t.get("inputSchema").get("properties").get("points").get("type").string() == "array" && t.get("inputSchema").get("properties").get("level").type == Value::Object);
+        if (name == "add_river") CHECK(t.get("inputSchema").get("properties").get("shallow").type == Value::Object && t.get("inputSchema").get("properties").get("width").type == Value::Object);
+    }
+    CHECK(found.size() == 6);
+    Value v = call(h, "check_water", json(R"({"kind":"pond","points":[[100,-201800],[900,-201800],[900,-201100],[100,-201100]],"level":1100})"));
+    CHECK(!is_error(v) && text_of(v).find("\"ok\":true") != std::string::npos && text_of(v).find("\"material\":\"pond\"") != std::string::npos);
+    v = call(h, "add_pond", json(R"({"id":"spring","points":[[100,-201800],[900,-201800],[900,-201100],[100,-201100]],"level":1100,"depth":250,"foam":true})"));
+    CHECK(!is_error(v));
+    v = call(h, "get_water", json(R"({"id":"spring"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"level\":1100") != std::string::npos && text_of(v).find("\"depth\":250") != std::string::npos);
+    v = call(h, "edit_water", json(R"({"id":"spring","level":1050})"));
+    CHECK(!is_error(v));
+    v = call(h, "get_actor", json(R"({"id":"spring"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"y\":1050") != std::string::npos && text_of(v).find("\"material\":\"pond\"") != std::string::npos);
+    v = call(h, "undo", Value());
+    CHECK(!is_error(v));
+    v = call(h, "get_water", json(R"({"id":"spring"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"level\":1100") != std::string::npos);
+    v = call(h, "add_pond", json(R"({"points":[[0,-201000],[800,-200200],[800,-201000],[0,-200200]],"level":1100})"));
+    CHECK(is_error(v) && text_of(v).find("crosses") != std::string::npos);
+    CHECK(be.asked == 0);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 // A small quest of the later forms built through tools/call: a quest with an interior place, a
 // resident with ordered talks (a flag condition, quest_done), a sign gated on two quests.
 void quest_format_tools() {
@@ -660,6 +760,240 @@ void quest_format_tools() {
     CHECK(be.asked == 0);
 }
 
+// A small story package built through tools/call: an item an actor gives, a treasure chart whose chest
+// holds it, a scene its salvage starts, a quest step that finds it and a letter on its own that brings it.
+void story_tools() {
+    FakeBackend be;
+    be.session.add_package("editor-test", "Editor test", "", json(kManifest));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    std::set<std::string> names;
+    std::string all;
+    for (const auto& t : r.get("result").get("tools").array) {
+        const std::string n = t.get("name").string();
+        names.insert(n);
+        all += mods::json::dump(t) + "\n";  // the description and the parameters' (what a client sees)
+        if (n == "remove_letter" || n == "remove_chart" || n == "remove_item") CHECK(t.get("annotations").get("destructiveHint").boolean);
+        if (n == "add_chart" || n == "set_item" || n == "add_letter") CHECK(!t.get("annotations").get("destructiveHint").boolean);
+    }
+    for (const char* kind : {"letter", "chart", "item"})
+        for (const char* verb : {"list_", "add_", "set_", "remove_"})
+            CHECK(names.count(std::string(verb) + kind + (std::string(verb) == "list_" ? "s" : "")) == 1);
+    // the descriptions teach the fields
+    for (const char* form : {"chart:<id>", "game:heart_piece", "{action: quest_step, quest, step}", "icon_file", "Delivery Bag", "Rito postbox"})
+        if (all.find(form) == std::string::npos) {
+            std::fprintf(stderr, "  no %s in the tool descriptions\n", form);
+            CHECK(false);
+        }
+    CHECK(path_params().size() >= 5);
+    Value v = call(h, "add_item", json(R"({"id":"lamp","name":"Storm lamp","description":"Shows the way.","icon":"icons/lamp.png","use":{"action":"show"}})"));
+    CHECK(!is_error(v));
+    v = call(h, "add_chart", json(R"({"id":"old-map","name":"Old map","description":"An X marks the spot.","at":"link","item":"item:lamp"})"));
+    CHECK(!is_error(v) && text_of(v).find("\"z\":-201500") != std::string::npos);
+    CHECK(!is_error(call(h, "add_scene", json(R"({"id":"dive"})"))));
+    CHECK(!is_error(call(h, "set_scene_trigger", json(R"({"scene":"dive","type":"salvage","chart":"old-map"})"))));
+    CHECK(!is_error(call(h, "add_quest", json(R"({"id":"hunt","title":"The old map","text":"Find the treasure."})"))));
+    CHECK(!is_error(call(h, "edit_quest_step", json(R"({"quest":"hunt","step":1,"fields":{"find":"chart:old-map"}})"))));
+    CHECK(!is_error(call(h, "set_then", json(R"({"id":"sign-a","actions":[{"action":"give","id":"item:lamp","count":1}]})"))));
+    v = call(h, "add_letter", json(R"({"id":"bottle","sender":"A sailor","text":"Dear Link,\nI found this map in a bottle.","encloses":["chart:old-map"]})"));
+    CHECK(!is_error(v));
+    // a bad letter comes back as the validator's reason
+    v = call(h, "add_letter", json(R"({"id":"bad","sender":"A sailor","text":"Hi.","encloses":["chart:nowhere"]})"));
+    CHECK(is_error(v) && text_of(v).find("nowhere") != std::string::npos);
+    v = call(h, "list_charts", Value());
+    CHECK(!is_error(v) && text_of(v).find("scene dive > trigger (salvage)") != std::string::npos);
+    CHECK(be.asked == 0);
+    // removing the chart: the player is asked (destructive), then the command lists what still uses it
+    be.allow = true;
+    v = call(h, "remove_chart", json(R"({"id":"old-map","confirm":true})"));
+    CHECK(is_error(v) && be.asked == 1 && text_of(v).find("letter bottle") != std::string::npos);
+    v = call(h, "check_package", Value());
+    CHECK(!is_error(v) && text_of(v).find("\"valid\":true") != std::string::npos);
+    const Value* m = be.session.manifest("editor-test");
+    CHECK(m->get("items").array.size() == 1 && m->get("charts").array.size() == 1 && m->get("letters").array.size() == 1);
+}
+
+// The lighthouse keeper's quest without code, through tools/call: a content package without a content
+// folder (quest, chart, item, letters only besides the keeper), the keeper's dialogue that gives a chart
+// and an item Link holds up, a thank-you letter days after the quest is done, the calendar for testing,
+// and reset_quest covering the chart and the item.
+void story_gap_tools() {
+    FakeBackend be;
+    be.session.add_package("lighthouse", "The lighthouse keeper", "", json(R"({
+      "format_version": 1, "id": "lighthouse", "name": "The lighthouse keeper", "version": "1.0.0", "kind": "content",
+      "models": [{"id": "crystal-model", "source": "models/crystal.glb", "kind": "static"}],
+      "actors": [{"id": "keeper", "actor": "sign", "stage": "sea", "room": 11, "position": {"x": 10, "y": 1040, "z": -201500},
+                  "flag": "keeper-read", "lines": ["The light is back. Take my map."]}]})"));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    std::string all;
+    for (const auto& t : r.get("result").get("tools").array) all += mods::json::dump(t) + "\n";
+    // the descriptions teach the new forms
+    for (const char* form : {"{action: give, id: chart:<id>}", "after_days", "{quest, done: true}", "hold_up", "advance_days", "charts and items Link got"})
+        if (all.find(form) == std::string::npos) {
+            std::fprintf(stderr, "  no %s in the tool descriptions\n", form);
+            CHECK(false);
+        }
+    CHECK(!is_error(call(h, "add_quest", json(R"({"id":"light","title":"The lost light","text":"Bring the crystal back."})"))));
+    CHECK(!is_error(call(h, "add_chart", json(R"({"id":"keeper-map","name":"Keeper's map","place":{"x":1200,"z":-198000}})"))));
+    Value v = call(h, "add_item", json(R"({"id":"crystal","name":"Lamp crystal","description":"It glows.","icon":"icons/crystal.png","hold_up":true})"));
+    CHECK(is_error(v) && text_of(v).find("held_model") != std::string::npos);
+    CHECK(!is_error(call(h, "add_item", json(R"({"id":"crystal","name":"Lamp crystal","description":"It glows.","icon":"icons/crystal.png","held_model":"crystal-model","hold_up":true})"))));
+    v = call(h, "set_then", json(R"({"id":"keeper","actions":[{"action":"give","id":"chart:nowhere"}]})"));
+    CHECK(is_error(v) && text_of(v).find("undeclared mod chart") != std::string::npos);
+    CHECK(!is_error(call(h, "set_then", json(R"({"id":"keeper","actions":[{"action":"give","id":"item:crystal"},{"action":"give","id":"chart:keeper-map"},{"action":"quest_done","id":"light"}]})"))));
+    v = call(h, "add_letter", json(R"({"id":"thanks","sender":"The keeper","text":"Dear Link,\nsince then the ships come safely home.","when":{"quest":"light","done":true},"after_days":2})"));
+    CHECK(!is_error(v));
+    v = call(h, "add_letter", json(R"({"id":"bad","sender":"The keeper","text":"Hi.","when":{"quest":"light"}})"));
+    CHECK(is_error(v) && text_of(v).find("done") != std::string::npos);
+    v = call(h, "check_package", Value());
+    CHECK(!is_error(v) && text_of(v).find("\"valid\":true") != std::string::npos);
+    v = call(h, "quest_graph", json(R"({"quest":"light"})"));
+    CHECK(!is_error(v) && text_of(v).find("gives chart:keeper-map") != std::string::npos);
+    // test mode: the calendar moves on, reset_quest clears the chart and the item with the quest
+    CHECK(is_error(call(h, "advance_days", json(R"({"days":2})"))));
+    CHECK(!is_error(call(h, "test_mode", json(R"({"on":true})"))));
+    CHECK(!is_error(call(h, "advance_days", json(R"({"days":2})"))) && be.host.days == 2);
+    be.allow = true;
+    CHECK(!is_error(call(h, "reset_quest", json(R"({"confirm":true})"))));
+    auto has = [&](uint8_t kind, const std::string& id) {
+        return std::find(be.host.reset_own.begin(), be.host.reset_own.end(), editor::Record{kind, story_mail::letter_key("lighthouse", id)}) != be.host.reset_own.end();
+    };
+    CHECK(has(story_mail::kRecordMarker, "keeper-map") && has(10, "crystal") && has(story_mail::kRecordLetterDayLow, "thanks") && has(story_mail::kRecordQuest, "light"));
+    const Value* m = be.session.manifest("lighthouse");
+    CHECK(m->get("content_dir").type == Value::Null && m->get("letters").array.size() == 1 && m->get("items").array[0].get("hold_up").boolean);
+}
+
+// A placed chest's contents through tools/call: the description teaches the values; a red rupee, one of the
+// mod's items, a value the format doesn't have
+void chest_tools() {
+    FakeBackend be;
+    be.session.add_package("editor-test", "Editor test", "", json(R"({"format_version": 1, "id": "editor-test", "name": "Editor test", "version": "1.0.0", "kind": "content",
+      "items": [{"id": "crystal", "name": "Lamp crystal", "description": "It glows.", "icon": "icons/crystal.png"}],
+      "actors": [{"id": "box", "actor": "chest", "stage": "sea", "room": 11, "position": {"x": 0, "y": 1040, "z": -201000}, "flag": "box-open"}]})"));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    std::string set_actor;
+    for (const auto& t : r.get("result").get("tools").array)
+        if (t.get("name").string() == "set_actor") set_actor = mods::json::dump(t);
+    for (const char* form : {"rupee_red (20)", "heart_piece", "item:<id>"}) CHECK(set_actor.find(form) != std::string::npos);
+    CHECK(!is_error(call(h, "set_actor", json(R"({"id":"box","property":"parameters","value":{"item":"rupee_red"}})"))));
+    CHECK(!is_error(call(h, "set_actor", json(R"({"id":"box","property":"parameters","value":{"item":"item:crystal"}})"))));
+    Value v = call(h, "set_actor", json(R"({"id":"box","property":"parameters","value":{"item":"master_sword"}})"));
+    CHECK(is_error(v) && text_of(v).find("chest item must be") != std::string::npos);
+    CHECK(be.session.manifest("editor-test")->get("actors").array[0].get("parameters").get("item").string() == "item:crystal");
+}
+
+// new_mod over MCP: listed as destructive, asks the player, creates and opens the mod; an actor goes into it
+void new_mod_tools() {
+    FakeBackend be;
+    const fs::path root = fs::temp_directory_path() / ("wwhd-mcp-new-mod-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(root / "Mods");
+    be.host.mods_dir = (root / "Mods").string();
+    be.session.add_package("editor-test", "Editor test", "", json(kManifest));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    bool listed = false;
+    for (const auto& t : r.get("result").get("tools").array)
+        if (t.get("name").string() == "new_mod") {
+            listed = true;
+            CHECK(t.get("annotations").get("destructiveHint").boolean);
+            const Value& req = t.get("inputSchema").get("required");
+            auto has = [&](const char* k) {
+                for (const auto& v : req.array)
+                    if (v.string() == k) return true;
+                return false;
+            };
+            CHECK(has("id") && has("name") && has("confirm") && !has("author"));
+        }
+    CHECK(listed && needs_allow("new_mod", Value()));
+    // without confirm: refused, nobody asked; Deny: nothing written
+    Value v = call(h, "new_mod", json(R"({"id":"mcp-mod","name":"MCP mod"})"));
+    CHECK(is_error(v) && text_of(v).find("confirm") != std::string::npos && be.asked == 0);
+    be.allow = false;
+    v = call(h, "new_mod", json(R"({"id":"mcp-mod","name":"MCP mod","confirm":true})"));
+    CHECK(is_error(v) && be.asked == 1 && be.last_question.find("mcp-mod") != std::string::npos && !fs::exists(root / "Mods" / "mcp-mod"));
+    // Allow: created and opened; then an actor goes into it without "mod"
+    be.allow = true;
+    v = call(h, "new_mod", json(R"({"id":"mcp-mod","name":"MCP mod","author":"Claude","confirm":true})"));
+    CHECK(!is_error(v) && be.asked == 2 && be.session.open_mod() == "mcp-mod" && fs::exists(root / "Mods" / "mcp-mod" / "manifest.json"));
+    v = call(h, "add_actor", json(R"({"type":"resident","id":"greeter","at":"position","position":{"x":0,"y":1040,"z":-201000},"stage":"sea","room":11,"snap":false})"));
+    CHECK(!is_error(v) && be.session.manifest("mcp-mod")->get("actors").array.size() == 1);
+    CHECK(be.session.manifest("editor-test")->get("actors").array.size() == 2);
+    v = call(h, "save_package", json(R"({"confirm":true})"));
+    CHECK(!is_error(v) && be.asked == 3);
+    std::ifstream f(root / "Mods" / "mcp-mod" / "manifest.json", std::ios::binary);
+    std::stringstream text;
+    text << f.rdbuf();
+    CHECK(text.str().find("\"greeter\"") != std::string::npos);
+    // a game villager's quest talk in the new mod: no question, one undo step
+    CHECK(!needs_allow("add_villager_talk", Value()) && !needs_allow("list_villagers", Value()) && !needs_allow("pick_villager", Value()));
+    const int asked_before = be.asked;
+    v = call(h, "add_villager_talk", json(R"({"who":"windfall-um1","lines":"Up here!","title":"The windmill"})"));
+    CHECK(!is_error(v) && be.asked == asked_before && be.session.manifest("mcp-mod")->get("quests").array.size() == 1);
+    v = call(h, "list_villagers", Value());
+    CHECK(is_error(v));  // the fake game has no villagers to list
+    // a duplicate is an error
+    v = call(h, "new_mod", json(R"({"id":"mcp-mod","name":"Again","confirm":true})"));
+    CHECK(is_error(v) && text_of(v).find("exists") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(root, ec);  // this test's own folder
+}
+
+// A demo step built through tools/call, as the Scenes timeline does it: the step, an actor, a flight
+// (position keys, a curve), the camera, a message and rain; the lanes and the pose at a frame; what the
+// game refuses comes back as a tool error and changes nothing; undo takes back one key.
+void demo_tools() {
+    FakeBackend be;
+    be.session.add_package("editor-test", "Editor test", "", json(kManifest));
+    Handler h(be, kToken, 47615);
+    bool reply = false;
+    Value r = h.message(json(R"({"jsonrpc":"2.0","id":3,"method":"tools/list"})"), reply);
+    std::set<std::string> names;
+    for (const auto& t : r.get("result").get("tools").array) names.insert(t.get("name").string());
+    for (const char* n : {"demo_lanes", "demo_pose", "set_demo_key", "move_demo_key", "remove_demo_key", "set_demo_curve", "add_demo_event", "edit_demo_event",
+                          "remove_demo_event", "add_demo_actor", "remove_demo_actor"})
+        CHECK(names.count(n) == 1);
+    CHECK(!is_error(call(h, "add_scene", json(R"({"id":"flight"})"))));
+    Value v = call(h, "add_scene_step", json(R"({"scene":"flight","type":"demo","fields":{"frames":90}})"));
+    CHECK(!is_error(v));
+    CHECK(!is_error(call(h, "add_demo_actor", json(R"({"scene":"flight","step":1,"actor":{"id":"bird","actor":"Dk"}})"))));
+    for (const char* key : {R"({"scene":"flight","step":1,"lane":"bird.position","frame":0,"value":{"x":-800,"y":600,"z":900}})",
+                            R"({"scene":"flight","step":1,"lane":"bird.position","frame":45,"value":{"x":0,"y":800,"z":1100}})",
+                            R"({"scene":"flight","step":1,"lane":"bird.position","frame":90,"value":{"x":800,"y":600,"z":900},"curve":"smooth"})",
+                            R"({"scene":"flight","step":1,"lane":"camera.eye","frame":0,"value":{"x":0,"y":300,"z":-600}})",
+                            R"({"scene":"flight","step":1,"lane":"camera.target","frame":0,"value":{"x":0,"y":700,"z":1000}})"}) {
+        v = call(h, "set_demo_key", json(key));
+        if (is_error(v)) std::fprintf(stderr, "  %s\n", text_of(v).c_str());
+        CHECK(!is_error(v));
+    }
+    CHECK(!is_error(call(h, "add_demo_event", json(R"({"scene":"flight","step":1,"list":"messages","event":{"frame":40,"text":"Up there!"}})"))));
+    CHECK(!is_error(call(h, "add_demo_event", json(R"({"scene":"flight","step":1,"list":"weather","event":{"frame":10,"rain":1}})"))));
+    // refused by the game's check: a key past the end, rain above 1; the tool says why
+    v = call(h, "set_demo_key", json(R"({"scene":"flight","step":1,"lane":"bird.position","frame":91,"value":{"x":0,"y":0,"z":0}})"));
+    CHECK(is_error(v) && !text_of(v).empty());
+    v = call(h, "add_demo_event", json(R"({"scene":"flight","step":1,"list":"weather","event":{"frame":20,"rain":3}})"));
+    CHECK(is_error(v) && !text_of(v).empty());
+    // the lanes and the pose
+    v = call(h, "demo_lanes", json(R"({"scene":"flight","step":1})"));
+    const std::string lanes = text_of(v);
+    CHECK(!is_error(v) && lanes.find("\"bird.position\"") != std::string::npos && lanes.find("Up there!") != std::string::npos && lanes.find("problem") == std::string::npos);
+    v = call(h, "demo_pose", json(R"({"scene":"flight","step":1,"frame":45,"move":false})"));
+    CHECK(!is_error(v) && text_of(v).find("\"y\":800") != std::string::npos);
+    // one key edit, one undo step
+    CHECK(!is_error(call(h, "remove_demo_key", json(R"({"scene":"flight","step":1,"lane":"bird.position","frame":45})"))));
+    CHECK(text_of(call(h, "demo_lanes", json(R"({"scene":"flight","step":1})"))).find("\"keys\":[0,90]") != std::string::npos);
+    CHECK(!is_error(call(h, "undo", Value())));
+    CHECK(text_of(call(h, "demo_lanes", json(R"({"scene":"flight","step":1})"))).find("\"keys\":[0,45,90]") != std::string::npos);
+    v = call(h, "check_package", Value());
+    CHECK(!is_error(v) && text_of(v).find("\"valid\":true") != std::string::npos);
+    CHECK(be.asked == 0);
+}
+
 int main() {
     http_parsing();
     checks();
@@ -668,6 +1002,13 @@ int main() {
     safety();
     quest_tools();
     quest_format_tools();
+    story_tools();
+    story_gap_tools();
+    chest_tools();
+    new_mod_tools();
+    game_object_tools();
+    water_tools();
+    demo_tools();
     listener();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <type_traits>
 namespace mod_actor::motion {
 inline constexpr double Pi=3.14159265358979323846;
@@ -37,8 +38,9 @@ inline Sweep sweep(Point from,Point to,float radius,float height,const Blocker&b
     const double discriminant=dot*dot-a*c;if(discriminant<0)return {to,false,true};const double hit=(-dot-std::sqrt(discriminant))/a;
     if(hit<0||hit>1)return {to,false,true};const double fraction=std::max(0.0,hit-0.01/std::sqrt(a));return {{float(from.x+vx*fraction),float(from.y+(to.y-from.y)*fraction),float(from.z+vz*fraction)},true,true};
 }
-struct Path {std::array<Point,16> points{};unsigned count=0;bool loop=false;float speed=100,arrival=1,height_tolerance=30;};
-struct PathState {unsigned next=0;bool finished=false;};
+// bounce: back and forth (it turns at the last point and walks back to the first, and again)
+struct Path {std::array<Point,16> points{};unsigned count=0;bool loop=false;float speed=100,arrival=1,height_tolerance=30;bool bounce=false;};
+struct PathState {unsigned next=0;bool finished=false;bool reverse=false;};
 enum class Status {Moving,Blocked,Finished,Invalid,SubstepLimit};
 struct Move {Point position;float yaw=0,traveled=0;unsigned substeps=0;Status status=Status::Invalid;bool has_direction=false;};
 inline double horizontal(Point a,Point b){return std::hypot(double(a.x)-b.x,double(a.z)-b.z);}
@@ -54,7 +56,8 @@ template<class Apply> Move advance(const Path&path,PathState&state,Point positio
     if(state.finished){result.status=Status::Finished;return result;}result.status=Status::Moving;if(dt==0)return result;double budget=double(path.speed)*dt;
     for(unsigned step=0;step<16;++step){result.substeps=step+1;const Point target=path.points[state.next];const double remaining=horizontal(result.position,target);
         if(remaining<=path.arrival){if(std::fabs(result.position.y-target.y)>path.height_tolerance){result.status=Status::Blocked;return result;}
-            if(state.next+1==path.count){if(!path.loop){state.finished=true;result.status=Status::Finished;return result;}state.next=0;}else ++state.next;continue;}
+            if(state.reverse){if(state.next==0){state.reverse=false;state.next=1;}else --state.next;continue;}
+            if(state.next+1==path.count){if(path.bounce){state.reverse=true;state.next=path.count-2;continue;}if(!path.loop){state.finished=true;result.status=Status::Finished;return result;}state.next=0;}else ++state.next;continue;}
         if(budget<=1e-4)return result;const double distance=std::min(budget,remaining),fraction=distance/remaining;const Point from=result.position,proposal{float(from.x+(target.x-from.x)*fraction),from.y,float(from.z+(target.z-from.z)*fraction)};
         result.yaw=float(std::atan2(double(target.x)-from.x,double(target.z)-from.z));result.has_direction=true;const auto clipped=sweep(from,proposal,radius,height,blocker);if(!clipped.valid){result.status=Status::Invalid;return result;}
         const Point accepted=apply(from,clipped.position);const double traveled=horizontal(from,accepted);
@@ -62,6 +65,16 @@ template<class Apply> Move advance(const Path&path,PathState&state,Point positio
         if(clipped.blocked||horizontal(accepted,clipped.position)>0.02||traveled<1e-6){result.status=Status::Blocked;return result;}
     }
     result.status=Status::SubstepLimit;return result;
+}
+// Strolling pauses (a path's "pauses"): walk 200..300 logic steps, then stand 60..90, from a seed the
+// restorable state carries. step() advances one logic step: true while it walks.
+struct Pauses {bool waiting=false;unsigned timer=0;uint32_t seed=1;};
+inline uint32_t pause_random(uint32_t& seed){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;if(!seed)seed=1;return seed;}
+inline bool pause_step(Pauses& p){
+    if(p.timer==0){p.timer=p.waiting?60+pause_random(p.seed)%31:200+pause_random(p.seed)%101;}
+    const bool walking=!p.waiting;
+    if(--p.timer==0)p.waiting=!p.waiting;
+    return walking;
 }
 static_assert(std::is_trivially_copyable_v<LookState>&&std::is_trivially_copyable_v<PathState>);
 }

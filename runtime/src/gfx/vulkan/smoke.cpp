@@ -1237,7 +1237,7 @@ int renderer_smoke_test() {
     auto peek=std::make_unique<Surface>();
     peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);
     peek->addr=mem::host_alloc(256,256);create_surface_image(peek.get(),true,VkExtent3D{16,16,1});
-    auto* surface=peek.get();auto entry=R.surfaces.emplace(peek->addr,std::move(peek));
+    auto* surface=peek.get();auto entry=R.surfaces.emplace(peek->addr,std::move(peek));++g_surface_set_gen;
     uint32_t previousDepth=R.mainDepthAddr;R.mainDepthAddr=surface->addr;
     uint32_t result=mem::host_alloc(256,256);uint32_t cells[]={320,240,result,0,0,result+4};
     for(float z:{0.25f,1.0f}) {
@@ -1253,7 +1253,7 @@ int renderer_smoke_test() {
      peek_z(cells,6);flush_async();
     }
     flush();require(ld32(result)==0xFFFFFFu&&ld32(result+4)==0xFFFFFFu,"older GPU depth answer replaced newer answer");
-    R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);
+    R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);++g_surface_set_gen;
     fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
    }
    stereo_geometry_check();

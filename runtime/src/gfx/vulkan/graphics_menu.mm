@@ -119,6 +119,7 @@ void install_graphics_menu(SDL_Window* window) {
     add(@"Scaling: Sharp",@selector(filter:),1);
     add(@"Scaling: Integer",@selector(filter:),2);
     [menu addItem:NSMenuItem.separatorItem];
+    add(@"40 FPS interpolation",@selector(interpolation:),40);
     add(@"60 FPS interpolation — 6",@selector(interpolation:),60);
     add(@"120 FPS interpolation",@selector(interpolation:),120);
     add(@"240 FPS interpolation",@selector(interpolation:),240);

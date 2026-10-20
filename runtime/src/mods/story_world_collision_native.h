@@ -8,9 +8,17 @@ inline constexpr uint32_t State=0x1040,Magic=0x57434C31,Matrix=0x1050,Identity=0
 inline bool stored(uint32_t actor,const story_actors::identity::Fingerprint& identity){
     return proof::address(actor,0x10C0)&&ld32(actor+State)==Magic&&ld32(actor+State+8)==ld32(actor+4)&&proof::address(ld32(actor+State+4),0xBC)&&story_actors::identity::matches(mem::ptr(actor+Identity),identity);
 }
+// The identity an actor's stored collision is checked against: the current one, or, when the actor holds a body
+// built with the first native layout (a full save state made before water and the later surfaces), that layout's
+// identity; such a body keeps working until the room loads again and builds it anew.
+inline const story_actors::identity::Fingerprint& accepted(uint32_t actor,const story_actors::identity::Fingerprint& current,const story_actors::identity::Fingerprint* first_layout){
+    if(!first_layout||stored(actor,current)||!stored(actor,*first_layout))return current;
+    return *first_layout;
+}
 template<class Call> bool heap_create(Cpu*c,uint32_t actor,const mesh::Mesh& geometry,const story_actors::identity::Fingerprint& identity,Call call){
-    std::array<uint8_t,9> raw{};
-    for(size_t i=0;i<raw.size();++i){bool found=false;for(unsigned code=0;code<32;++code)if(ld32(GD(0x101D51CC)+code*4)==mesh::NativeResultIds[i]){raw[i]=uint8_t(code);found=true;break;}if(!found)return false;}
+    std::array<uint8_t,mesh::NativeResultIds.size()> raw{};uint32_t conversion[32];
+    for(unsigned code=0;code<32;++code)conversion[code]=ld32(GD(0x101D51CC)+code*4);
+    if(!mesh::native_attributes(conversion,mesh::NativeResultIds,raw))return false;
     std::string why;std::vector<uint8_t> bytes;
     if(!mesh::build_native(geometry,raw,uint16_t(ld8(actor+0x326)),bytes,why))return false;
     const uint32_t heap=call(c,GC(0x027EC230),{});if(!proof::address(heap,0x10))return false;

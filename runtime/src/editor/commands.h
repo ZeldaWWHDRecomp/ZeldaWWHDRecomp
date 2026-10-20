@@ -13,6 +13,7 @@
 //
 // This file has no game dependencies: plain C++ on the mod JSON helpers and the manifest parsers.
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "../mods/mod_json.h"
+#include "../mods/story_world_collision_mesh.h"
 #include "../mods/story_world_manifest.h"
 
 namespace story_mail { class Book; }
@@ -86,6 +88,30 @@ public:
     virtual bool reload_room(std::string& why) = 0;
     // Stages and the rooms each has, from the game's own files (sorted). Empty without game files.
     virtual std::vector<std::pair<std::string, std::vector<int>>> stage_rooms() = 0;
+    // The installed packages' mod stages (mod_stages.h): the package, its id for the stage, the game name and the
+    // rooms. Warp destinations ("Mod stages") and the warp command's "stage:<mod>/<id>".
+    struct ModStage {
+        std::string mod, id, name;
+        std::vector<int> rooms;
+    };
+    virtual std::vector<ModStage> mod_stages() { return {}; }
+    // The open mod's stages built again from `manifest` and its files in `dir` (only the stage `only` when given):
+    // [{id, name, ok, error, rooms}]; `why` set when nothing could run. A stage Link is in loads again.
+    virtual Value rebuild_stages(const std::string& mod, const Value& manifest, const std::string& dir, const std::string& only, std::string& why) {
+        (void)mod, (void)manifest, (void)dir, (void)only;
+        why = "mod stages can't be built here";
+        return {};
+    }
+    // The player's stages a mod stage can take as its template: [{stage, rooms, sky, doors, music}].
+    virtual Value stage_templates(std::string& why) {
+        why = "the game's stages can't be listed here";
+        return {};
+    }
+    // Test mode: the save group's stage record erased from the loaded Quest Log (and the working one).
+    virtual bool reset_stage_save(const std::string& mod, const std::string& group, std::string& why) {
+        (void)mod, (void)group;
+        return why = "mod stages can't be reset here", false;
+    }
     virtual bool warp(const Location& to, std::string& why) = 0;
     virtual Place link() = 0;
     // A cutscene, event, dialogue, menu or stage change is running: no warp, no fly camera.
@@ -100,17 +126,58 @@ public:
     // Test mode only: the editor's own state slots (1..kTestSlots); a test state keeps the mod's records.
     virtual bool test_state(bool save, int slot, const std::string& mod, const std::vector<Record>& own, std::string& why) = 0;
 
+    virtual bool test_state_format(bool save,int slot,const std::string&mod,const std::vector<Record>&own,bool full,std::string&why){
+        if(full)return why="full test states are unavailable",false;
+        return test_state(save,slot,mod,own,why);
+    }
+
+    // Latest asynchronous test-load result, including request ID and refusal reason.
+    virtual Value load_state_result() { return Value(); }
+
     // ---- building new content (each optional: the defaults say the game is not there) ----
     // The ground under `above` (the game's own collision check): its height. False: no ground below.
     virtual bool ground(const WorldPoint& above, float& height, std::string& why) { return why = "the game is not running", false; }
+    // The height range of a room's own collision (world space): the game looks for a body of water only within it.
+    virtual bool room_height(const std::string& stage, int room, float& low, float& high, std::string& why) {
+        (void)stage, (void)room, (void)low, (void)high;
+        return why = "the game is not running", false;
+    }
+    // The ground under each of `above` at once (heights[i] valid where found[i]); false: no game.
+    virtual bool grounds(const std::vector<WorldPoint>& above, std::vector<float>& heights, std::vector<bool>& found, std::string& why) {
+        heights.assign(above.size(), 0);
+        found.assign(above.size(), false);
+        for (size_t i = 0; i < above.size(); i++) {
+            float h = 0;
+            std::string w;
+            if (ground(above[i], h, w)) heights[i] = h, found[i] = true;
+            else if (w == "the game is not running") return why = w, false;
+        }
+        return true;
+    }
     // The first ground the ray from `from` along `direction` (unit length) meets within `range` units.
     virtual bool ray(const WorldPoint& from, const WorldPoint& direction, float range, WorldPoint& hit, std::string& why) {
         return why = "the game is not running", false;
     }
     // The fly camera's place: its position, heading and the room under it (invalid while it is off).
     virtual Place camera() { return {}; }
+    // A placed actor's route in the game: {"declared", "live", "status"} for a walking resident (its copy
+    // follows its route; walking, skipped a blocked point, stopped, finished); null when the game has none.
+    virtual Value route_state(const std::string& mod, const std::string& id) { (void)mod, (void)id; return Value(); }
+    // The mod's room paths changed (`paths` all of them, parsed): the game writes their records again (a
+    // kept path keeps its place, so an actor on it sees the change at once). False: after a restart.
+    virtual bool apply_paths(const std::string& mod, const std::vector<story_room_path::Path>& paths, std::string& why) {
+        (void)mod, (void)paths;
+        return why = "the game is not running", false;
+    }
+    // The mod paths in the game: [{"mod", "id", "stage", "room", "number", "points", "closed", "valid"}]; null without a game.
+    virtual Value path_state() { return Value(); }
     // Points the fly camera at `target` from a short distance (turns it on first if needed).
     virtual bool focus(const WorldPoint& target, std::string& why) { return why = "the game is not running", false; }
+    // The same from `distance` units back (and half as high), looking along `yaw_degrees` (NaN: its own direction).
+    virtual bool focus_view(const WorldPoint& target, float distance, float yaw_degrees, std::string& why) {
+        (void)distance, (void)yaw_degrees;
+        return focus(target, why);
+    }
     // A model of `mod` was added or changed (its manifest entry; the file is in the package `dir`):
     // convert and prepare it for the game, so actors can use it without a restart where possible.
     virtual bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) {
@@ -122,6 +189,13 @@ public:
     virtual bool world_object_query(const std::string& mod, const story_notebook::ManifestActor& actor,
                                     bool wireframe, Value& result, std::string& why) {
         return why = "the game is not running", false;
+    }
+    // The same for an object whose collision is not in the game yet (the water tool's body before it is made):
+    // `collision` is its collision, local to the actor (without it the actor's own shape is checked).
+    virtual bool world_object_query_with(const std::string& mod, const story_notebook::ManifestActor& actor,
+                                         const story_world_collision::mesh::Mesh& collision, Value& result, std::string& why) {
+        (void)collision;
+        return world_object_query(mod, actor, false, result, why);
     }
     // Shows `text` in the game's own message box (close: hides it again).
     virtual bool preview_text(const std::string& text, bool close, std::string& why) { return why = "the game is not running", false; }
@@ -142,6 +216,12 @@ public:
     virtual bool write_records(const std::string& mod, const std::vector<RecordValue>& values, std::string& why) {
         return why = "the game is not running", false;
     }
+    // Test mode only: moves the game's calendar (the save file's day counter, as the clock passing midnight
+    // does) on by `days`, for letters that wait some days ("after_days").
+    virtual bool advance_days(int days, std::string& why) {
+        (void)days;
+        return why = "the game is not running", false;
+    }
     // Start a quest at a step (test mode, turned on first as Play does): erases `erase` (the mod's own
     // records), writes `values`, gives or takes the mod's items to the `items` counts, warps to `to` when it
     // names a place, then plays from Link when `play`.
@@ -153,6 +233,58 @@ public:
     // Whether actors of a list_actor_types type appear while the game runs (`fallback`: the type's own
     // default, when the game doesn't know). Native props, switches, doors and enemies do in --editor.
     virtual bool live_kind(const std::string& type, bool fallback) { return fallback; }
+    // where the player's game has an object archive (stage_files.h game_archive); "" none, "?" unknown (no game)
+    virtual std::string game_archive(const std::string& archive) { return "?"; }
+    // The demo step's pickers (command demo_choices): the stage actor names in the game's object name table;
+    // the files of an object archive (the game's resource id table: "dk.bdl", "fly1.bck"); the bones of the
+    // models in an archive (its BFRES in the player's game files); the object archives the player's game
+    // has; more named actors (the NPC catalogue's residents, the game objects). And a sound effect played
+    // with the game's own sound playback (the Play button of the sound picker).
+    virtual bool stage_actor_names(std::vector<std::string>& out, std::string& why) { return out.clear(), why = "the game is not running", false; }
+    virtual bool archive_files(const std::string& archive, std::vector<std::string>& out, std::string& why) { return out.clear(), why = "the game is not running", false; }
+    virtual bool archive_joints(const std::string& archive, std::vector<std::string>& out, std::string& why) { return out.clear(), why = "the game is not running", false; }
+    virtual std::vector<std::string> game_archives() { return {}; }
+    struct NamedActor {
+        std::string actor, label, archive, id, group;
+    };
+    virtual std::vector<NamedActor> more_actor_names() { return {}; }
+    virtual bool play_sound(uint32_t id, std::string& why) { return why = "the game is not running", false; }
+    // Game pieces (story_game_pieces.h): building piece `id` for `mod` from the player's room archive (the
+    // converter runs on a thread of its own; placements appear once it is ready). The state is "" (not
+    // prepared), "preparing", "ready" or "failed: <reason>".
+    virtual bool prepare_piece(const std::string& mod, const std::string& id, std::string& note, std::string& why) {
+        return why = "the game is not running", false;
+    }
+    virtual std::string piece_state(const std::string& mod, const std::string& id) { return ""; }
+
+    // ---- the story tables (optional) ----
+    // The mod's quests, quest talks, letters, charts or items changed (`manifest` the whole new manifest,
+    // `started` the one the game started with, `dir` the package folder): the game takes the new tables
+    // at its next calm moment (story_reload.h; no quest talk, letter, scene, menu or stage change running).
+    // `note` says what waits for a restart. False (why): no story change shows before a restart.
+    virtual bool apply_story(const std::string& mod, const std::string& name, const std::string& dir, const Value& started,
+                             const Value& manifest, std::string& note, std::string& why) {
+        (void)mod, (void)name, (void)dir, (void)started, (void)manifest, (void)note;
+        return why = "the game is not running", false;
+    }
+
+    // ---- the game's own villagers (optional) ----
+    // The game's residents the NPC catalogue knows that are loaded now, read-only: [{"id" (catalogue id),
+    // "name", "description", "where", "stage", "room", "position", "talks"}].
+    virtual bool villagers(Value& out, std::string& why) {
+        (void)out;
+        return why = "the game is not running", false;
+    }
+
+    // ---- new mods (optional) ----
+    // A new, empty mod package (new_mod): the mod manager installs `manifest` as a new package in its
+    // mods folder (refused when a package or folder of that id exists) and turns it on in the current
+    // profile, so it also loads at the next start. `dir` gets the package folder. Nothing else changes;
+    // on a refusal nothing is left behind.
+    virtual bool create_package(const Value& manifest, std::string& dir, std::string& why) {
+        (void)manifest, (void)dir;
+        return why = "the game is not running", false;
+    }
 
     // ---- scenes (each optional) ----
     // The fly camera looks from `eye` at `target` (scrubbing a scene's camera; turns it on if needed).
@@ -267,6 +399,8 @@ private:
                 std::string& why);
     bool restore(const std::string& mod, const Value& manifest, Value& result, std::string& why);
     void apply_live(const Package& p, const Value& before, Value& result);
+    void apply_story(const Package& p, Value& result);  // the story tables in the game (Host::apply_story)
+    void apply_paths(const Package& p, Value& result);  // the mod's room paths in the game (Host::apply_paths)
     std::vector<std::pair<std::string, Value>> all_manifests() const;
     std::vector<Location> locations() const;
     bool warp_to(const Location& to, std::string& why);
@@ -278,24 +412,49 @@ private:
     Value dispatch_quest(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
     bool change_layout(Package& p, const std::string& label, const Value& layout, Value& result);
     Value clipboard_;  // copy / paste: {"kind": "actors" | "quest_steps" | "scenes" | "scene_steps", "items": [...]}
+    // the game objects palette (commands_game_objects.cpp)
+    Value dispatch_game_objects(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
     // scenes: steps, camera keys, timeline, preview (commands_scene.cpp)
     Value dispatch_scene(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    // letters on their own, charts and items (commands_story.cpp)
+    Value dispatch_story(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    // an actor's route: points, settings, ground check, live state (commands_route.cpp)
+    Value dispatch_route(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    // the mod's room paths: lines and areas its actors name (commands_paths.cpp)
+    Value dispatch_paths(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    // the water tool: ponds, rivers, waterfalls (commands_water.cpp)
+    Value dispatch_water(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
+    // the mod's stages: list, add, set, check, rebuild (commands_stages.cpp)
+    Value dispatch_stages(const std::string& command, const Value& params, std::string& why, bool& ok, bool& handled);
 };
 
 // One problem of a package, with what it is about (for the editor's problem list: a click selects it).
 struct Problem {
     std::string message;
-    std::string kind;   // "actor", "model", "scene", "quest", "item", "file" or "package"
+    std::string kind;   // "actor", "model", "scene", "quest", "item", "chart", "letter", "file" or "package"
     std::string id;     // the actor's (model's...) id; empty for the whole package
     std::string field;  // the field when known ("position", "model", ...)
     std::string severity;  // "" an error (the mod manager refuses the package), "warning" or "info" (the editor's own checks)
 };
 
 // ---- pure helpers (unit-tested) ----
+// A placed resident's own walking pace (game units per second; 0: it does not walk) and why an actor
+// can't have a route (empty: it can) (commands_route.cpp).
+double resident_pace(const Value& actor);
+std::string route_refusal(const Value& actor);
+// What a placed actor uses one of the mod's room paths for (the Inspector's Path section; empty: it uses
+// none) (commands_paths.cpp).
+std::string room_path_use(const Value& actor);
 // Every problem of the package: each actor, model, scene and quest checked on its own (as the mod
 // manager checks the whole), the model files, then the whole package. Empty: it is valid.
 std::vector<Problem> package_problems(const std::string& mod, const Value& manifest, const std::vector<std::pair<std::string, Value>>& all,
                                       const std::string& dir);
+// One placement finding in words: its message, the game's own name and where it is ("a cutscene area of the island
+// [TagEv] at x -671, y 115, z -198464"), so the maker can tell which of the island's places is meant.
+std::string conflict_words(const Value& conflict);
+// World objects and island buildings placed where they can't stand ("house-a can't stand here: in the way: ..."),
+// checked against the running game's placement index (commands.cpp); empty without a game.
+std::vector<Problem> placement_problems(Host* host, const std::string& mod, const Value& manifest);
 // The types `add_actor` places, with what each needs.
 struct ActorType {
     std::string type, label, group, help;
@@ -304,10 +463,31 @@ struct ActorType {
     bool live = true;          // appears without a restart (where the game has the kind already)
 };
 const std::vector<ActorType>& actor_types();
+// The declared choices of a type (list_actor_types "variants"): the add_actor option that takes them
+// ("resident") and each choice's value, the editor's name for it and plain help. Empty: no choices.
+struct TypeVariant {
+    std::string option, value, label, help;
+};
+std::vector<TypeVariant> type_variants(const std::string& type);
 // A new placed actor of `type` (actor_types) with id `id` at `place`, valid on its own: the flags it
 // needs get ids of its own. `model` for model types; `options` may name "resident", "switch", "lines".
 bool new_actor(const std::string& type, const std::string& id, const Place& place, const std::string& model, const Value& manifest,
                const Value& options, Value& out, std::string& why);
+// Game objects (commands_game_objects.cpp): one catalogue entry as list_game_objects shows it; a new
+// placed game object of `type` ("game:palm", options.variant) at `place`; the manifest's
+// "requires": {"game_objects": N} raised to what `type` needs.
+Value game_object_info(const story_game_objects::Entry& e);
+bool new_game_object(const std::string& type, const std::string& id, const Place& place, const Value& options, Value& out, std::string& why);
+void require_game_objects(Value& manifest, const std::string& type);
+// Game pieces (commands_game_pieces.cpp): one catalogue piece as list_game_objects shows it (type
+// "piece:<id>", categories Buildings, Island parts and Islands); a new placed piece at `place` (yaw only, scale 1;
+// an island ground at the sea's level); the manifest's
+// "requires" raised to what it needs.
+Value game_piece_info(const story_game_pieces::Piece& p);
+bool new_game_piece(const std::string& type, const std::string& id, const Place& place, Value& out, std::string& why);
+// An island ground on the sea: it always stands at the sea's level (y 0), wherever it is moved to.
+bool sea_level_piece(const Value& actor);
+void require_game_piece(Value& manifest, const std::string& type);
 // A free actor id from `base` ("sign", "sign-2", ...).
 std::string free_id(const Value& list, const std::string& base);
 // A copy of the actor `a` under id `id`, with its own flags (each flag id gets the new id).
@@ -330,11 +510,35 @@ const char* island_name(int room);  // "Windfall Island"; nullptr outside 1..49
 // Warp destinations: the 49 sea squares, the stages and rooms in `stage_rooms` (the game's files), and
 // for each package its placed actors and quest step places.
 std::vector<Location> build_locations(const std::vector<std::pair<std::string, std::vector<int>>>& stage_rooms,
-                                      const std::vector<std::pair<std::string, Value>>& packages);
-// The story records that hold a mod's progress (its actor and scene flags, quests and letters).
+                                      const std::vector<std::pair<std::string, Value>>& packages,
+                                      const std::vector<Host::ModStage>& mod_stages = {});
+// The story records that hold a mod's progress (its actor and scene flags, quests, letters, and the charts and
+// items Link got from it).
 std::vector<Record> mod_records(const std::string& mod, const Value& manifest);
 // Erases `own` from a story area, except records that another mod's names also map to (`shared`).
 unsigned reset_records(story_mail::Book& book, const std::vector<Record>& own, const std::vector<Record>& shared, unsigned& skipped);
+// Where the package names one of its charts, items or letters (`kind`: "chart", "item" or "letter"),
+// each said for people ("actor keeper > then > 1", "scene treasure > trigger (salvage)"). The entry
+// itself is left out. Empty: nothing names it. (A letter on its own is named by nothing in the
+// manifest; only the mod's code may ask for it.)
+std::vector<std::string> story_references(const Value& manifest, const std::string& kind, const std::string& id);
+// A PNG an item can use as its icon: the file's signature and size (1..2048 pixels a side, up to 16 MiB),
+// as the game reads it. `width` / `height` get its size.
+bool check_icon_file(const std::string& path, unsigned& width, unsigned& height, std::string& why);
+// The villager of `villagers` (list_villagers) that a ray from `origin` along `direction` (unit length)
+// meets first within `range`: the one whose body (a 70-unit cylinder, 160 high, at its position) it
+// passes through nearest. -1: none.
+int pick_villager(const Value& villagers, const WorldPoint& origin, const WorldPoint& direction, float range);
+// A mod id as the mod manager takes it: 1..64 of a-z, 0-9, '_', '-' and '.', not starting with '.'.
+bool package_id_valid(const std::string& id);
+// The manifest of a new, empty mod (new_mod's parameters: id, name, author?, description?): a content
+// package with an empty actor list and the Story Notebook dependency the story content needs, in the
+// current manifest format. False with `why` for an invalid id, a missing name or text that is too long.
+bool new_package_manifest(const Value& params, Value& out, std::string& why);
+// Writes `manifest` as a new package folder `parent`/<id> with its manifest.json. Refused when that
+// folder exists (it is created first, so two callers can't both get it); on a failure nothing is left.
+// `dir` gets the folder.
+bool write_package_folder(const std::string& parent, const Value& manifest, std::string& dir, std::string& why);
 // The manifest as package text: two-space indent, numbers in their shortest exact form.
 std::string pretty(const Value& v);
 // A point object {"x","y","z"}.

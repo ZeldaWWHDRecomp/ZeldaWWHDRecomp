@@ -14,7 +14,7 @@
 #include <string>
 
 namespace {
-bool state[6]{};
+bool state[7]{};
 float speed = 1, sensitivity = .15f;
 std::map<std::string,std::string> preferences;
 int reads = 0, writes = 0;
@@ -65,12 +65,18 @@ uint32_t move_speed_button() { return move_button; } void set_move_speed_button(
 static bool move_bar = true;
 bool move_speed_bar() { return move_bar; } void set_move_speed_bar(bool on) { move_bar = on; }
 
+static bool camera_items = false;
+bool camera_directed_items() { return camera_items; } void set_camera_directed_items(bool b) { camera_items=b; }
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
+bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
+static float quick_speed = 1.f;
+float quick_use_speed() { return quick_speed; }
+void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) quick_speed = f; }
 float camera_speed() { return speed; }
 void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }

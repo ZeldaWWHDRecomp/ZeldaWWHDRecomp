@@ -2,9 +2,14 @@
 // dependencies: the loaded game's records, test mode and start-at-step go through Host.
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <functional>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "../mods/story_mail_book.h"
+#include "../mods/story_npc_catalogue.h"
 #include "commands.h"
 #include "quests.h"
 
@@ -78,6 +83,29 @@ const std::set<std::string> kQuestFields = {"title", "journal", "start", "reward
 
 }  // namespace
 
+int pick_villager(const Value& villagers, const WorldPoint& o, const WorldPoint& d, float range) {
+    constexpr float kRadius = 70, kHeight = 160;
+    int best = -1;
+    float best_t = range;
+    for (size_t i = 0; i < villagers.array.size(); i++) {
+        WorldPoint at;
+        if (!point_of(villagers.array[i].get("position"), at)) continue;
+        // the ray's closest approach to the body's axis (a vertical segment), sampled along its height
+        for (float h = 0; h <= kHeight; h += kHeight / 8) {
+            const float cx = at.x - o.x, cy = at.y + h - o.y, cz = at.z - o.z;
+            const float t = cx * d.x + cy * d.y + cz * d.z;
+            if (t < 0 || t > best_t) continue;
+            const float px = o.x + d.x * t - at.x, pz = o.z + d.z * t - at.z, py = o.y + d.y * t - (at.y + h);
+            if (px * px + pz * pz <= kRadius * kRadius && std::fabs(py) <= kHeight / 8) {
+                best_t = t;
+                best = int(i);
+                break;
+            }
+        }
+    }
+    return best;
+}
+
 bool Session::change_layout(Package& p, const std::string& label, const Value& layout, Value& result) {
     if (layout == p.layout) {
         result["changed"] = false;
@@ -115,6 +143,103 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
         return true;
     };
 
+    // ---- the game's own villagers: list, pick, a quest talk (the villager itself is never changed)
+    if (command == "list_villagers" || command == "pick_villager") {
+        if (!host_) return why = "the game is not running", r;
+        Value list;
+        if (!host_->villagers(list, why)) return r;
+        if (command == "list_villagers") {
+            ok = true;
+            return list;
+        }
+        WorldPoint origin, direction;
+        if (!point_of(p.get("origin"), origin) || !point_of(p.get("direction"), direction)) return why = "origin and direction are points", r;
+        const float len = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+        if (!(len > 1e-6f)) return why = "the direction has no length", r;
+        direction = {direction.x / len, direction.y / len, direction.z / len};
+        const float range = p.get("range").type == Value::Number ? float(p.get("range").number) : 20000.0f;
+        const int i = pick_villager(list, origin, direction, range);
+        if (i < 0) return why = "no villager the NPC catalogue knows there", r;
+        ok = true;
+        return list.array[size_t(i)];
+    }
+    if (command == "add_villager_talk") {
+        Package* pkg = package(p, why);
+        if (!pkg) return r;
+        const std::string who = text(p, "who");
+        const story_notebook::NpcCatalogue& catalogue = story_notebook::npc_catalogue();
+        const story_notebook::NpcEntry* e = catalogue.entry(catalogue.find(who));
+        if (!e) return why = "the NPC catalogue has no villager \"" + who + "\" (list_villagers)", r;
+        if (!e->talks()) return why = e->name + " can't speak a quest's lines yet (only townspeople can)", r;
+        Value lines = arr();
+        if (p.get("lines").type == Value::String) lines.array.push_back(p.get("lines"));
+        else if (p.get("lines").type == Value::Array) lines = p.get("lines");
+        if (lines.array.empty() || lines.array.size() > 3) return why = "lines: one to three lines", r;
+        for (const auto& l : lines.array)
+            if (l.type != Value::String || l.text.empty()) return why = "lines: each line is text", r;
+        Value npc;
+        npc["who"] = who;
+        npc["lines"] = lines;
+        const std::string step_text = p.get("text").type == Value::String ? p.get("text").text : "Talk to " + e->display() + ".";
+        std::string id = quest;
+        const bool fresh = quest.empty();
+        if (fresh) {
+            if (text(p, "title").empty()) return why = "a new quest needs a title (or name an existing quest)", r;
+            id = p.get("id").type == Value::String ? p.get("id").text : slug(text(p, "title"));
+            if (p.get("id").type != Value::String && by_id(pkg->manifest.get("quests"), id))
+                for (int n = 2;; n++)
+                    if (!by_id(pkg->manifest.get("quests"), id + "-" + std::to_string(n))) {
+                        id += "-" + std::to_string(n);
+                        break;
+                    }
+            if (by_id(pkg->manifest.get("quests"), id)) return why = "the mod has a quest \"" + id + "\" already", r;
+        } else if (p.get("title").type != Value::Null || p.get("id").type != Value::Null)
+            return why = "title and id are for a new quest: leave out quest", r;
+        unsigned at = 0;
+        const std::string label = fresh ? "New quest " + id + " with a talk for " + who : "Quest " + id + ": a talk for " + who;
+        ok = change(*pkg, label, [&](Value& m, std::string& w) {
+            if (fresh) {
+                if (m.get("quests").type != Value::Array) m["quests"] = arr();
+                if (m.get("quests_format").type == Value::Null) m["quests_format"] = 1;
+                Value q, step;
+                q["id"] = id;
+                q["title"] = text(p, "title");
+                step["n"] = 1;
+                step["text"] = step_text;
+                step["npc"] = npc;
+                q["steps"] = arr();
+                q["steps"].array.push_back(step);
+                m["quests"].array.push_back(q);
+                at = 1;
+                return true;
+            }
+            Value* q = by_id(m["quests"], id);
+            if (!q) return w = "no quest \"" + id + "\" in " + pkg->mod, false;
+            if (p.get("step").type == Value::Number) {
+                at = unsigned(p.get("step").number);
+                Value* s = step_of(*q, at);
+                if (!s) return w = "quest " + id + " has no step " + std::to_string(at), false;
+                (*s)["npc"] = npc;
+                return true;
+            }
+            const auto numbers = numbers_of(*q);
+            at = (numbers.empty() ? 0 : numbers.back()) + 1;
+            if (at > 254) return w = "a quest has steps 1..254", false;
+            Value step;
+            step["n"] = int(at);
+            step["text"] = step_text;
+            step["npc"] = npc;
+            (*q)["steps"].array.push_back(step);
+            return true;
+        }, r, why);
+        if (ok) {
+            r["quest"] = id;
+            r["step"] = int(at);
+            r["who"] = who;
+            r["name"] = e->display();
+        }
+        return r;
+    }
     if (command == "get_quest") {
         Package* pkg = package(p, why);
         if (!pkg) return r;
@@ -167,6 +292,8 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
         quest_change("Remove quest " + quest, [&](Value& m, Value&, std::string& w) {
             for (const auto& it : m.get("items").array)
                 if (it.get("use").get("quest").string() == quest) return w = "item " + it.get("id").string() + " sets a step of " + quest + " when used: change the item first", false;
+            for (const auto& l : m.get("letters").array)
+                if (letter_waits_for(l, quest, 0)) return w = "letter " + l.get("id").string() + " waits for " + quest + " (its \"when\"): change the letter first", false;
             for (const auto& sc : m.get("scenes").array) {
                 bool names = sc.get("trigger").get("quest").string() == quest;
                 for (const auto& st : sc.get("steps").array) {
@@ -496,6 +623,17 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
             }
         return why = "\"" + id + "\" is not a flag of " + pkg->mod + " the editor sets (list_flags)", r;
     }
+    if (command == "advance_days") {
+        if (!test_only()) return r;
+        const Value& n = p.get("days");
+        if (n.type != Value::Number || !std::isfinite(n.number) || n.number < 1 || n.number > 255 || std::floor(n.number) != n.number)
+            return why = "\"days\" is a whole number, 1..255", r;
+        if (!host_->advance_days(int(n.number), why)) return r;
+        r["days"] = int(n.number);
+        r["requested"] = true;
+        ok = true;
+        return r;
+    }
     if (command == "search") {
         Package* pkg = package(p, why);
         if (!pkg) return r;
@@ -565,11 +703,13 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
                 const std::string id = free_id(list, a.get("id").string());
                 Value copy = duplicate_actor(a, id);
                 WorldPoint pos;
-                if (point_of(copy.get("position"), pos)) copy["position"] = rounded({pos.x + offset.x, pos.y + offset.y, pos.z + offset.z});
+                const bool has_position = point_of(copy.get("position"), pos);
                 if (place.valid) {  // into the room Link (or the camera) is in
                     copy["stage"] = place.stage;
                     copy["room"] = place.stage == "sea" ? sea_room(pos.x + offset.x, pos.z + offset.z) : place.room;
                 }
+                // an island ground on the sea stays at the sea's level
+                if (has_position) copy["position"] = rounded({pos.x + offset.x, sea_level_piece(copy) ? 0.0f : pos.y + offset.y, pos.z + offset.z});
                 list.array.push_back(copy);
                 added.push_back(copy);
                 r["ids"].array.push_back(Value(id));
@@ -621,7 +761,7 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
             for (auto& a : list) {
                 WorldPoint pos;
                 if (std::find(ids.begin(), ids.end(), a.get("id").string()) == ids.end() || !point_of(a.get("position"), pos)) continue;
-                a["position"] = rounded({pos.x + offset.x, pos.y + offset.y, pos.z + offset.z});
+                a["position"] = rounded({pos.x + offset.x, sea_level_piece(a) ? 0.0f : pos.y + offset.y, pos.z + offset.z});
             }
             return true;
         }, r, why);

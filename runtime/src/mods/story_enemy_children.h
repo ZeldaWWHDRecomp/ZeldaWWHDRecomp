@@ -19,6 +19,11 @@ bool configure(void(*original)(Cpu*,uint32_t),uint32_t(*invoke)(Cpu*,uint32_t,st
 bool available(const std::function<std::string(uint32_t)>& owner);
 bool install(const std::function<std::string(uint32_t)>& owner,const std::function<void(uint32_t,void(*)(Cpu*))>& replace);
 void state_loaded();
+// Actor creation (fopAcM_create) refused while an owned enemy runs, e.g. the Boko Baba's head and stem actors:
+// `deny(profile, parameters)` true makes the create fail as the game's own full-heap case does. Set before install.
+void set_create_filter(std::function<bool(uint32_t profile,uint32_t parameters)> deny);
+// A fopAcM_create a Wizzrobe summoner's door makes: the hook asks `summon(cpu)` first (true: handled there)
+void set_summon_filter(std::function<bool(Cpu*)> summon);
 // Exact admitted child validation, also usable by the shared carry guard.
 bool owned(uint32_t actor);
 }

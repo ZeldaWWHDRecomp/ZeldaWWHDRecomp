@@ -1,0 +1,249 @@
+{
+  "game_objects_format": 1,
+  "group": "grass",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files. Grass, flowers and small trees are the game's shared batches: they have no drops here (item field below 0x20) and go when their room unloads.",
+  "objects": [
+    {
+      "id": "grass",
+      "since": 1,
+      "category": "Grass and flowers",
+      "label": "Grass",
+      "description": "a tuft or a patch of grass Link can cut; it drops nothing",
+      "native": {
+        "name": "kusax1",
+        "process": "GRASS",
+        "source": "d_a_grass",
+        "subtype": 255,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "grass-1",
+          "label": "One tuft",
+          "params": "0x00000000",
+          "units": 1
+        },
+        {
+          "id": "grass-7",
+          "label": "Patch of 7",
+          "params": "0x00000001",
+          "units": 7
+        },
+        {
+          "id": "grass-21",
+          "label": "Patch of 21",
+          "params": "0x00000002",
+          "units": 21
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 64,
+        "archive_bytes": 0
+      },
+      "notes": "bits 0-3 the pattern, 4-5 kind 0 (grass), 6-11 item 0 (none)",
+      "packet": {
+        "kind": "grass",
+        "capacity": 1500,
+        "mod_share": 300
+      }
+    },
+    {
+      "id": "flower-white",
+      "since": 1,
+      "category": "Grass and flowers",
+      "label": "White flowers",
+      "description": "small white flowers; they drop nothing",
+      "native": {
+        "name": "flower",
+        "process": "GRASS",
+        "source": "d_a_grass",
+        "subtype": 255,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "flowers-1",
+          "label": "One flower",
+          "params": "0x00000020",
+          "units": 1
+        },
+        {
+          "id": "flowers-7",
+          "label": "Patch of 7",
+          "params": "0x00000024",
+          "units": 7
+        },
+        {
+          "id": "flowers-17",
+          "label": "Patch of 17",
+          "params": "0x00000025",
+          "units": 17
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 64,
+        "archive_bytes": 0
+      },
+      "notes": "kind 2 (white flower), item 0 (none)",
+      "packet": {
+        "kind": "flower",
+        "capacity": 200,
+        "mod_share": 60
+      }
+    },
+    {
+      "id": "flower-pink",
+      "since": 1,
+      "category": "Grass and flowers",
+      "label": "Pink flowers",
+      "description": "small pink flowers; they drop nothing",
+      "native": {
+        "name": "pflower",
+        "process": "GRASS",
+        "source": "d_a_grass",
+        "subtype": 255,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "flowers-1",
+          "label": "One flower",
+          "params": "0x00000030",
+          "units": 1
+        },
+        {
+          "id": "flowers-7",
+          "label": "Patch of 7",
+          "params": "0x00000036",
+          "units": 7
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 64,
+        "archive_bytes": 0
+      },
+      "notes": "kind 3 (pink flower), item 0 (none)",
+      "packet": {
+        "kind": "flower",
+        "capacity": 200,
+        "mod_share": 60
+      }
+    },
+    {
+      "id": "tree-small",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Small tree",
+      "description": "a small tree or a little group of them",
+      "native": {
+        "name": "swood",
+        "process": "GRASS",
+        "source": "d_a_grass",
+        "subtype": 255,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "trees-1",
+          "label": "One tree",
+          "params": "0x00000010",
+          "units": 1
+        },
+        {
+          "id": "trees-3",
+          "label": "Group of 3",
+          "params": "0x00000013",
+          "units": 3
+        },
+        {
+          "id": "trees-5",
+          "label": "Group of 5",
+          "params": "0x00000017",
+          "units": 5
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 64,
+        "archive_bytes": 0
+      },
+      "notes": "kind 1 (tree); the group turns with the placement",
+      "packet": {
+        "kind": "tree",
+        "capacity": 64,
+        "mod_share": 16
+      }
+    },
+    {
+      "id": "tree-bushy",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Bushy tree",
+      "description": "a round bushy tree",
+      "native": {
+        "name": "woodb",
+        "process": "Obj_Wood",
+        "source": "d_a_obj_wood",
+        "subtype": 255,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "tree-bushy",
+          "label": "Bushy tree",
+          "params": "0x00000000",
+          "units": 1
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 64,
+        "archive_bytes": 0
+      },
+      "notes": "no parameters are read",
+      "packet": {
+        "kind": "wood",
+        "capacity": 200,
+        "mod_share": 40
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 struct Cpu;
 namespace input {struct PadState;}
 namespace story_native_scene_playback {class Activation;}
+namespace demo_scene {struct Demo;}
 namespace story_scenes {
 inline constexpr uint32_t kScratchBytes = 1024;
 using Resolve = std::function<uint32_t(Cpu*,const std::string&,const std::string&)>;
@@ -26,7 +27,31 @@ void set_place_resolver(ResolvePlace);
 void set_particle_resolver(ResolveParticle);
 using Actions = std::function<bool(const std::string&,const std::vector<story_notebook::StoryAction>&)>;
 void set_game_calls(uint32_t (*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>));
+bool has_demo_steps();
+bool any_demo_step(const std::function<bool(const demo_scene::Demo&)>& test);  // a declared demo step passes the test  // a declared scene has a "demo" step (story_demo.h installs only then)
+// The demo-step backend (story_demo.cpp registers itself at startup), so targets that link the scene
+// player without it still build: a demo step then refuses to start.
+struct DemoBackend {
+    uint32_t arena_bytes = 0;
+    void (*configure)(uint32_t arena, uint32_t (*call)(Cpu*, uint32_t, std::initializer_list<uint32_t>), void (*original)(Cpu*, uint32_t)) = nullptr;
+    bool (*configured)() = nullptr;
+    void (*install)(const std::function<std::string(uint32_t)>&, const std::function<void(uint32_t, void (*)(Cpu*))>&) = nullptr;
+    bool (*start)(Cpu*, const demo_scene::Demo&, bool camera_stopped, std::function<uint32_t(const std::string&)> characters, std::string& why) = nullptr;
+    int (*poll)(Cpu*, std::string& why) = nullptr;  // 0 idle, 1 running, 2 done, 3 failed
+    void (*release)(Cpu*, const char* reason) = nullptr;
+    void (*tick)(Cpu*) = nullptr;
+};
+void register_demo_backend(const DemoBackend& backend);
+uint32_t demo_arena_bytes();  // 0 without a backend
+void configure_demo(uint32_t arena, uint32_t (*call)(Cpu*, uint32_t, std::initializer_list<uint32_t>), void (*original)(Cpu*, uint32_t));
+void demo_tick(Cpu* c);       // once per logic step
 void set_scratch_memory(uint32_t guest);
+bool scratch_memory();  // set_scratch_memory was called
+// The world editor (--editor, before install): the scene player, its camera trim, choice and demo hooks
+// are installed even when no package declares a scene at start-up, so a new, unsaved scene plays as a
+// preview at once (editor_preview). The caller provides the scratch and demo memory as for declared scenes.
+void enable_editor_previews();
+bool editor_previews();
 void set_callbacks(Resolve resolve, Actions actions);
 // False with a precise reason when a scene uses a currently unsupported effect.
 bool validate(const std::vector<story_notebook::ManifestScene>& scenes,std::string& why);
@@ -58,8 +83,8 @@ size_t current_step();
 // World editor (main game thread, outside tick): plays `scene` of `mod` as a preview. `declared`: the
 // declared scene of that id is requested (its native version may play). Otherwise the steps play from an
 // editor-only entry "editor-preview" (no trigger, never native) that replaces the mod's previous one.
-// False with why when no scene can start (none declared at start-up, a scene running, a choice without
-// the choice hooks).
+// False with why when no scene can start (scene support not installed at start-up: no declared scene
+// and not the editor's enable_editor_previews, a scene running, a choice without the choice hooks).
 bool editor_preview(const std::string& mod,const story_notebook::ManifestScene& scene,bool declared,std::string& why);
 // The next tick skips the current scene (as Plus/Start does).
 void editor_skip();

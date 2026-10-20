@@ -34,8 +34,13 @@ namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
 namespace true60_test { void set_origin_step(uint64_t){} void tick(double,bool){} }
-static int lockOnResets=0;
-namespace mods { void fast_forward_reset(){} void lock_on_reset(){++lockOnResets;} }  // mods: release required on focus loss
+static int lockOnResets=0,quickUseResets=0,quickUseFilters=0;static bool quickUsePending=false;
+static input::PadState quickUseSample{};
+namespace mods {
+ void lock_on_reset(){++lockOnResets;}
+ void quick_use_reset(){++quickUseResets;quickUsePending=false;}
+ void quick_use_filter_pad(input::PadState& s){++quickUseFilters;quickUseSample=s;if(quickUsePending){s.buttons|=input::kX;quickUsePending=false;}}
+ void fast_forward_reset(){} }  // mods: release required on focus loss
 void log_msg(const char*,...){}
 // settings overlay: closed (keys reach the game and its shortcuts as before); the game's text prompt
 // (overlay/text_entry.h) shows while promptShown: overlay::key takes every key then, as the real one does
@@ -170,14 +175,27 @@ int main(int argc,char** argv){
  key(SDL_SCANCODE_D,true);assert(input::read().lx>0.7f&&input::read().lx<0.71f);
  key(SDL_SCANCODE_LSHIFT,true);assert(input::read().buttons&input::kZL);
  const int resetsBeforeFocus=lockOnResets;
+ quickUsePending=true;const int focusResets=quickUseResets;
  SDL_Event focus{};focus.type=SDL_EVENT_WINDOW_FOCUS_LOST;input::handle_event(focus);assert(input::read().buttons==0&&input::read().lx==0);
  assert(lockOnResets==resetsBeforeFocus+1);
+ assert(quickUseResets>focusResets&&!quickUsePending);
  auto map=input_map::Mapping::defaults();map.keys[input_map::kA]={input_map::key_from_id("J"),input_map::kNoKey};map.keys[input_map::kB]={input_map::kNoKey,input_map::kNoKey};input_map::set_current(map,false);
  key(SDL_SCANCODE_J,true);assert(input::read().buttons==input::kA);
  input::set_touch(true,0.25f,0.75f);auto pad=input::read();assert(pad.touch&&pad.tx==0.25f&&pad.ty==0.75f);
  input::set_pro_controller(true);assert(input::pro_controller());input::set_pro_controller(false);
  bool held[256];input::held_keys(held);assert(held[input_map::key_from_id("J")]);
+ quickUsePending=true;const int releaseResets=quickUseResets;
  input::release_keys();input::held_keys(held);assert(!held[input_map::key_from_id("J")]);
+ assert(quickUseResets>releaseResets&&!quickUsePending);
+ // The quick-use filter sees the final mapped pad and can synthesize a button only for gameplay.
+ key(SDL_SCANCODE_J,true);quickUsePending=true;auto quickPad=input::read();
+ assert(quickUseSample.buttons==input::kA&&(quickPad.buttons&(input::kA|input::kX))==(input::kA|input::kX));
+ int filters=quickUseFilters,resets=quickUseResets;quickUsePending=true;overlayOpen=true;
+ assert(input::read().buttons==0&&quickUseFilters==filters&&quickUseResets>resets&&!quickUsePending);
+ overlayOpen=false;assert(!(input::read().buttons&input::kX));
+ quickUsePending=true;filters=quickUseFilters;resets=quickUseResets;promptShown=true;
+ assert(input::read().buttons==0&&quickUseFilters==filters&&quickUseResets>resets&&!quickUsePending);
+ promptShown=false;assert(!(input::read().buttons&input::kX));input::release_keys();
  input::update();float values[input_map::kPadCount];input::controller_values(values);assert(values[input_map::kPadA]==0);
  // Hidden dummy-driver windows exercise routing without a renderer or GPU.
  auto* game=SDL_CreateWindow("Game",32,32,SDL_WINDOW_HIDDEN);
@@ -299,7 +317,10 @@ int main(int argc,char** argv){
   SDL_HideWindow(game);for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
   if(!SDL_GetKeyboardFocus()){input::update();assert(motorLow==0);SDL_ShowWindow(game);for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);}
   input::update();assert(motorLow==0xFFFF);
-  SDL_Delay(600);assert(motorLow==0);  // no update for a while (main loop stalled): the watchdog stops it
+  // no update for a while (main loop stalled): the watchdog stops it, after kRumbleStallMs (300 ms) on its
+  // 100 ms tick; waited for with a bound, not a fixed sleep, so a busy runner that delays the thread can't fail it
+  {const Uint64 stalled=SDL_GetTicks();while(motorLow!=0&&SDL_GetTicks()-stalled<5000)SDL_Delay(10);
+   assert(motorLow==0&&SDL_GetTicks()-stalled>=250);}
   rumble::pro_motor(0,true);input::update();assert(motorLow==0xFFFF);  // (the game sends it every frame)
   SDL_Event quit{};quit.type=SDL_EVENT_QUIT;SDL_PushEvent(&quit);assert(motorLow==0);  // the app ends now
   input::update();assert(motorLow==0);

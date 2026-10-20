@@ -1,0 +1,149 @@
+{
+  "game_objects_format": 1,
+  "group": "trees",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files; tools/story_mods/game_objects.py --game <dir> --list shows which ones the player's game has.",
+  "objects": [
+    {
+      "id": "palm",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Palm tree",
+      "description": "a tall palm tree whose leaves sway in the wind; Link and the boat bump into its trunk",
+      "native": {
+        "name": "Oyashi",
+        "process": "Obj_Lpalm",
+        "source": "d_a_obj_lpalm",
+        "subtype": 255,
+        "archive": "Oyashi"
+      },
+      "variants": [
+        {
+          "id": "palm",
+          "label": "Palm tree",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled trunk"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 19456,
+        "archive_bytes": 0,
+        "measured": "solid heap 17060 bytes and about 1 KiB more (WWHD_MOD_ACTOR_HEAPS=1); the archive is in a permanent pack, already in memory"
+      },
+      "notes": "no parameters are read; the wind sway is the game's own (dKyw wind)"
+    },
+    {
+      "id": "tree-large",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Large tree",
+      "description": "a large leafy tree whose crown moves gently in the wind; its trunk is solid",
+      "native": {
+        "name": "lwood",
+        "process": "Lwood",
+        "source": "d_a_lwood",
+        "subtype": 255,
+        "archive": "Lwood"
+      },
+      "variants": [
+        {
+          "id": "tree",
+          "label": "Large tree",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          0.5,
+          1.5
+        ],
+        "why": "the collision follows the scale; the game culls it by an unscaled box, so it stays below 1.5"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 19456,
+        "archive_bytes": 0,
+        "measured": "solid heap 16764-16880 bytes and about 1 KiB more; the archive is in a permanent pack, already in memory"
+      },
+      "notes": "no parameters are read"
+    },
+    {
+      "id": "plant-pot",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Potted plant",
+      "description": "a leafy plant that sways when Link brushes past it",
+      "native": {
+        "name": "Plant",
+        "process": "Obj_Plant",
+        "source": "d_a_obj_plant",
+        "subtype": 255,
+        "archive": "Plant"
+      },
+      "variants": [
+        {
+          "id": "plant-pot",
+          "label": "Potted plant",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          0.5,
+          1.5
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 17408,
+        "archive_bytes": 0,
+        "measured": "own heap 15516 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "no parameters are read; a small body Link bumps into"
+    },
+    {
+      "id": "flower-red",
+      "since": 1,
+      "category": "Trees and plants",
+      "label": "Red flower",
+      "description": "a tall red flower that sways when Link brushes past it; it drops nothing",
+      "native": {
+        "name": "Rflw",
+        "process": "Obj_Rflw",
+        "source": "d_a_obj_rflw",
+        "subtype": 255,
+        "archive": "Rflw"
+      },
+      "variants": [
+        {
+          "id": "flower-red",
+          "label": "Red flower",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          0.5,
+          1.5
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 17408,
+        "archive_bytes": 0,
+        "measured": "own heap 15600 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "no parameters are read; no drops"
+    }
+  ]
+}

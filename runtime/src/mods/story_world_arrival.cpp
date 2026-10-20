@@ -2,13 +2,15 @@
 #include "story_world_arrival.h"
 #include "story_mail_book.h"
 #include "overlay/extensions.h"
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <mutex>
 namespace story_world_arrival { namespace {
 std::mutex mutex;
 Queue queue;
-bool registered=false;
+bool registered_layer=false;
+std::atomic<bool> any_declared{false};
 double now(){return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 }
 bool Queue::push(const std::string& text,float seconds){
@@ -27,10 +29,13 @@ std::string Queue::current(double time){
 void Queue::clear(){pending_.clear();active_.clear();expires_=0;}
 bool show(const std::string& text,float seconds){std::lock_guard lock(mutex);return queue.push(text,seconds);}
 void state_loaded(){std::lock_guard lock(mutex);queue.clear();}
+void note_declared(){any_declared.store(true,std::memory_order_release);}
+bool declared(){return any_declared.load(std::memory_order_acquire);}
+bool registered(){return registered_layer;}
 void register_overlay(){
-    if(registered)return;
+    if(registered_layer)return;
     if(overlay::ext::sealed())return;
     overlay::ext::add_frame_layer({[](std::string& toast){std::lock_guard lock(mutex);auto text=queue.current(now());if(!text.empty())toast=std::move(text);return false;},[](float,float){return false;}});
-    registered=true;
+    registered_layer=true;
 }
 }

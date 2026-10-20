@@ -55,6 +55,9 @@ TOOL_FILES = [
     "tools/story_mods/collision_mesh.py",  # original static collision geometry
     "tools/story_mods/shoreline_model.py",  # player-local animated coast material
     "tools/story_mods/actor_model.py",  # original static GLB models using the player's own materials
+    "tools/story_mods/multi_material.py",  # several materials and cut-outs for original static GLB models
+    "tools/story_mods/game_piece_model.py",  # island buildings from the player's own room archives (material copier)
+    "tools/story_mods/island_texture.py",  # a water body's banks painted with the island's own ground texture
     "tools/story_mods/skinned_actor_model.py",  # original rigged GLB and player-local skin material
     "tools/story_mods/actor_animation.py",  # original skeletal clips in the native format
     "tools/savegame/gc2hd.py",

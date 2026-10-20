@@ -358,10 +358,68 @@ class _Reporter:
             self.log(text)
 
 
+MOD_TEMPLATE_MAX = 4 * 1024 * 1024
+
+
+def package_templates(cache_root):
+    """The code-free shader templates the mod manager's enabled packages ship with their stages
+    (docs/mod-stages.md, "Shaders": a stage's "shaders" file): paths inside each package, by package id.
+    The mod manager lives next to this cache root (the game's user folder: ModManager/)."""
+    manager = Path(cache_root).parent / 'ModManager'
+    try:
+        profiles = json.loads((manager / 'profiles.json').read_text(encoding='utf-8'))
+        enabled = profiles['profiles'][profiles['active']]['enabled']
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    out = []
+    for ident in sorted(k for k, on in enabled.items() if on is True and isinstance(k, str)):
+        folder = manager / 'Mods' / ident
+        if Path(ident).name != ident or not folder.is_dir() or folder.is_symlink():
+            continue
+        try:
+            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        stages = manifest.get('stages') if isinstance(manifest, dict) else None
+        for stage in stages if isinstance(stages, list) else []:
+            rel = stage.get('shaders') if isinstance(stage, dict) else None
+            if not isinstance(rel, str) or not rel.endswith('.wwht'):
+                continue
+            path = (folder / rel).resolve()
+            try:
+                inside = path.relative_to(folder.resolve())
+            except ValueError:
+                continue
+            if inside.parts and path.is_file() and not path.is_symlink() and path.stat().st_size <= MOD_TEMPLATE_MAX and path not in out:
+                out.append(path)
+    return out
+
+
+def merge_templates(package, base, extras, out, message):
+    """The base template and the packages' templates (each passing the release guard's code-free check,
+    or left out with a message) as one template at `out`; returns the extras used."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('shaderprep_for_mods', str(Path(package) / 'tools/shaderprep.py'))
+    shaderprep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shaderprep)
+    builder = shaderprep.TemplateBuilder()
+    builder.add_template(str(base))
+    used = []
+    for path in extras:
+        try:
+            shaderprep.guard_template(Path(path).read_bytes())
+            builder.add_template(str(path), allow_legacy=False)
+            used.append(path)
+        except (OSError, ValueError) as error:
+            message('A mod\'s shader template is left out (%s): %s' % (Path(path).name, error))
+    shaderprep.write_template(builder.document(), str(out))
+    return used
+
+
 def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             progress=lambda text: None, cancel=lambda: False, skip=False,
             runner=run_process, python=None, builder=None, runtime_identity=None, log=None,
-            renderers=None):
+            renderers=None, extra_templates=None):
     """Return a nonfatal status. executable=None assembles Android's pending warm.
 
     renderers: the renderers the native warm runs for, one after the other, on one shared head
@@ -375,6 +433,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
     progress(text) gets the phase messages; a progress that takes a fraction keyword also gets
     progress(text, fraction=0..1) as the work advances (assembly, then the native warm).
     log(line) receives the helpers' raw output (default: progress).
+    extra_templates: the mods' stage templates prepared with the game's own (default: the enabled packages'
+    of the mod manager next to cache_root, package_templates); the identity names them, so a change of mods
+    makes a new generation, while the launch record keeps the release template the game checks.
     builder(game, output, template[, progress=callback(done, total, detail)]) assembles in-process.
     Paths are private local output only. No caller-supplied source is removed.
     """
@@ -421,8 +482,11 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                                  'Preparing shaders for %s failed (%s); they compile during play' % (label, error))
         return states
 
+    extras = package_templates(cache_root) if extra_templates is None else [Path(p) for p in extra_templates]
     try:
         wanted = identity(game, template, package, renderer)
+        if extras:
+            wanted['mod_templates'] = sorted(file_hash(p) for p in extras)
         runtime = runtime_identity or executable
         if runtime and Path(runtime).is_file():
             wanted['runtime'] = file_hash(runtime)
@@ -468,9 +532,15 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         staging = Path(tempfile.mkdtemp(prefix='generation-', dir=root))
         assembly = (ASSEMBLY_SHARE if len(renderers) == 1 else ASSEMBLY_SHARE_SEVERAL) if executable else 1.0
         reporter.begin('Resolving shaders from your game files', 0.0, assembly)
+        assembled = template
+        if extras:
+            # the mods' stages: their render states join the release template's for this generation only
+            assembled = staging / 'template.bin'
+            used = merge_templates(package, template, extras, assembled, reporter.message)
+            reporter.message('Including the shaders of %d mod stage template(s)' % len(used))
         import sys
         command = [python or sys.executable, str(Path(package) / 'tools/shaderprep.py'),
-                   'build', str(staging / 'headstart.bin'), '--game', str(game), '--template', str(template),
+                   'build', str(staging / 'headstart.bin'), '--game', str(game), '--template', str(assembled),
                    '--max', '0', '--progress']
         env = os.environ.copy()
         for key in list(env):
@@ -478,9 +548,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                 env.pop(key)
         if builder:
             if _accepts_keyword(builder, 'progress'):
-                builder(game, staging / 'headstart.bin', template, progress=reporter.update)
+                builder(game, staging / 'headstart.bin', assembled, progress=reporter.update)
             else:
-                builder(game, staging / 'headstart.bin', template)
+                builder(game, staging / 'headstart.bin', assembled)
         else:
             runner(command, env, cancel, reporter.line)
         if cancel():

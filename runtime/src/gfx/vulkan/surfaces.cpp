@@ -15,6 +15,7 @@
 #include "shaders.h"
 #include "sparse_hash_memo.h"
 #include "write_watch.h"
+#include "interval_index.h"
 #define XXH_INLINE_ALL
 #include "../../../third_party/xxhash/xxhash.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
@@ -1109,7 +1110,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     s->format=d.format;s->dim=d.dim;s->tileMode=d.tileMode;s->swizzle=d.swizzle;s->isDepth=d.isDepth;
     s->fmt=d.isDepth&&!forRendering?comparison_format_info(d.format):format_info(d.format,d.isDepth);
     create_surface_image(s.get(),forRendering);
-    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;
+    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;++g_surface_set_gen;
     // format views of one guest surface (adopt_newer_alias): flag them once, so lookups stay cheap
     if(!raw->isDepth&&!raw->fmt.compressed&&raw->fmt.convert==Convert::NONE) {
         auto views=cache.equal_range(d.addr);
@@ -1420,49 +1421,114 @@ void invalidate(uint32_t flags,uint32_t addr,uint32_t size) {
     buffer_cache_guest_invalidate(flags,addr,size);
     invalidate_surface_cache(R.surfaces,flags,addr,size);
 }
+// One cached surface against an invalidated range [addr, end): whether the range reaches the
+// surface's base bytes or one of its mip levels. Fills the surface's cached mip ranges as it goes.
+static bool invalidation_hits(Surface* s,uint32_t base,uint32_t addr,uint64_t end) {
+    if(s->gpuWritten||(base>=0xF4000000&&base<0xF6000000))return false;
+    // Already pending a fresh upload/check: another write cannot further
+    // invalidate it. Count only range checks that actually reset state.
+    if(s->dirty&&s->lastCheckedFrame==~0ull)return false;
+    uint64_t bytes=std::max<uint64_t>(s->dataSize,uint64_t(s->pitch)*s->height*s->fmt.bytesPerBlock);
+    bool baseHit=uint64_t(base)<end&&uint64_t(addr)<uint64_t(base)+bytes;
+    bool mipHit=false;
+    if(!baseHit&&s->mipAddr&&s->mips>1) {
+        // Validate all guest geometry before reading shared cached ranges.
+        // Base bytes stay dynamic: dataSize and pitch can change separately.
+        guest_level(s,0);
+        auto& layout=*s->guestLayout;
+        if(layout.mipRangesComplete) {
+            if(layout.mipRangeBegin<end&&uint64_t(addr)<layout.mipRangeEnd)
+                for(uint32_t level=1;level<s->mips&&!mipHit;++level) {
+                    const auto& range=layout.levels[level];
+                    mipHit=range.rangeBegin<end&&uint64_t(addr)<range.rangeEnd;
+                }
+        } else {
+            // Preserve the old early-hit loop while ranges are incomplete.
+            // A full traversal publishes the coarse interval atomically.
+            for(uint32_t level=1;level<s->mips&&!mipHit;++level) {
+                const auto& info=guest_info(s,level);
+                uint64_t mip=mip_base(s,level);
+                auto& range=layout.levels[level];
+                if(!range.rangeValid) {
+                    range.rangeBegin=mip;range.rangeEnd=mip+info.surfSize;
+                    range.rangeValid=true;++layout.mipRangesCached;
+                    layout.mipRangeBegin=std::min(layout.mipRangeBegin,range.rangeBegin);
+                    layout.mipRangeEnd=std::max(layout.mipRangeEnd,range.rangeEnd);
+                }
+                mipHit=mip<end&&uint64_t(addr)<mip+info.surfSize;
+            }
+            layout.mipRangesComplete=layout.mipRangesCached==s->mips-1;
+        }
+    }
+    return baseHit||mipHit;
+}
+// Every guest byte invalidation_hits can test for a surface: its base bytes at their largest (the
+// level-0 size before the first upload sets dataSize) and all mip levels. The geometry of a cached
+// surface never changes after find_or_create_surface made it, so the footprint stays valid while the
+// surface set is the same. Anything unexpected gives the whole address space (always checked).
+static void invalidation_footprint(Surface* s,uint32_t base,uint64_t& lo,uint64_t& hi) {
+    lo=0;hi=~uint64_t{0};
+    try {
+        uint64_t bytes=std::max<uint64_t>(s->dataSize,uint64_t(s->pitch)*s->height*s->fmt.bytesPerBlock);
+        bytes=std::max<uint64_t>(bytes,guest_info(s,0).surfSize);
+        uint64_t l=base,h=uint64_t(base)+bytes;
+        if(s->mipAddr&&s->mips>1)
+            for(uint32_t level=1;level<s->mips;++level) {
+                const uint64_t mip=mip_base(s,level);
+                l=std::min(l,mip);h=std::max(h,mip+guest_info(s,level).surfSize);
+            }
+        lo=l;hi=h;
+    } catch(...) {}
+}
+uint64_t g_surface_set_gen=0;
 void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
                               uint32_t flags,uint32_t addr,uint32_t size) {
     if(!(flags&2)||size>=0x10000000)return;
     uint64_t end=uint64_t(addr)+size;
-    for(auto& [base,s]:surfaces) {
-        if(s->gpuWritten||(base>=0xF4000000&&base<0xF6000000))continue;
-        // Already pending a fresh upload/check: another write cannot further
-        // invalidate it. Count only range checks that actually reset state.
-        if(s->dirty&&s->lastCheckedFrame==~0ull)continue;
-        uint64_t bytes=std::max<uint64_t>(s->dataSize,uint64_t(s->pitch)*s->height*s->fmt.bytesPerBlock);
-        bool baseHit=uint64_t(base)<end&&uint64_t(addr)<uint64_t(base)+bytes;
-        bool mipHit=false;
-        if(!baseHit&&s->mipAddr&&s->mips>1) {
-            // Validate all guest geometry before reading shared cached ranges.
-            // Base bytes stay dynamic: dataSize and pitch can change separately.
-            guest_level(s.get(),0);
-            auto& layout=*s->guestLayout;
-            if(layout.mipRangesComplete) {
-                if(layout.mipRangeBegin<end&&uint64_t(addr)<layout.mipRangeEnd)
-                    for(uint32_t level=1;level<s->mips&&!mipHit;++level) {
-                        const auto& range=layout.levels[level];
-                        mipHit=range.rangeBegin<end&&uint64_t(addr)<range.rangeEnd;
-                    }
-            } else {
-                // Preserve the old early-hit loop while ranges are incomplete.
-                // A full traversal publishes the coarse interval atomically.
-                for(uint32_t level=1;level<s->mips&&!mipHit;++level) {
-                    const auto& info=guest_info(s.get(),level);
-                    uint64_t mip=mip_base(s.get(),level);
-                    auto& range=layout.levels[level];
-                    if(!range.rangeValid) {
-                        range.rangeBegin=mip;range.rangeEnd=mip+info.surfSize;
-                        range.rangeValid=true;++layout.mipRangesCached;
-                        layout.mipRangeBegin=std::min(layout.mipRangeBegin,range.rangeBegin);
-                        layout.mipRangeEnd=std::max(layout.mipRangeEnd,range.rangeEnd);
-                    }
-                    mipHit=mip<end&&uint64_t(addr)<mip+info.surfSize;
-                }
-                layout.mipRangesComplete=layout.mipRangesCached==s->mips-1;
+    auto mark=[](Surface* s){s->dirty=true;s->lastCheckedFrame=~0ull;++g_stat_invalidated_surfaces;};
+    // WWHD_VK_INVALIDATE_INDEX=0: walk every surface (the previous way)
+    static const bool indexed=[]{const char* e=getenv("WWHD_VK_INVALIDATE_INDEX");return !e||strcmp(e,"0")!=0;}();
+    if(!indexed) {
+        for(auto& [base,s]:surfaces) if(invalidation_hits(s.get(),base,addr,end)) mark(s.get());
+        return;
+    }
+    // footprint index per surface cache (the eye-0 and eye-1 caches), rebuilt when the set changes
+    struct Index { const void* map=nullptr; uint64_t gen=~uint64_t{0}; size_t size=0;
+                   IntervalIndex<std::pair<Surface*,uint32_t>> index; };
+    static Index indexes[2];
+    Index* x=indexes[0].map==&surfaces?&indexes[0]:indexes[1].map==&surfaces?&indexes[1]:nullptr;
+    if(!x) { x=indexes[0].map&&!indexes[1].map?&indexes[1]:&indexes[0]; x->map=&surfaces; x->gen=~uint64_t{0}; }
+    if(x->gen!=g_surface_set_gen||x->size!=surfaces.size()) {
+        std::vector<IntervalIndex<std::pair<Surface*,uint32_t>>::Entry> entries;
+        entries.reserve(surfaces.size());
+        for(auto& [base,s]:surfaces) {
+            uint64_t lo,hi;invalidation_footprint(s.get(),base,lo,hi);
+            entries.push_back({lo,hi,{s.get(),base}});
+        }
+        x->index.build(std::move(entries));
+        x->gen=g_surface_set_gen;x->size=surfaces.size();
+    }
+    // WWHD_VK_INVALIDATE_VERIFY=1 (diagnostics): every surface the full walk would reset must be in the
+    // index's answer
+    static const bool verify=getenv("WWHD_VK_INVALIDATE_VERIFY")!=nullptr;
+    if(verify) {
+        static uint64_t checks=0,misses=0;
+        std::vector<Surface*> found;
+        x->index.query(addr,end,[&](const std::pair<Surface*,uint32_t>& p){found.push_back(p.first);});
+        for(auto& [base,s]:surfaces) {
+            ++checks;
+            if(invalidation_hits(s.get(),base,addr,end)&&std::find(found.begin(),found.end(),s.get())==found.end()) {
+                if(misses++<20) LOG("[vulkan invalidate] VERIFY MISS: surface %08X (%ux%u, %u mips) not in the index for %08X+%u",
+                                    base,s->width,s->height,s->mips,addr,size);
             }
         }
-        if(baseHit||mipHit) {s->dirty=true;s->lastCheckedFrame=~0ull;++g_stat_invalidated_surfaces;}
+        static uint64_t reported=0;
+        if(R.frame>=reported+600) { reported=R.frame; LOG("[vulkan invalidate] verify: %llu surface checks, %llu misses",
+                                                         (unsigned long long)checks,(unsigned long long)misses); }
     }
+    x->index.query(addr,end,[&](const std::pair<Surface*,uint32_t>& p) {
+        if(invalidation_hits(p.first,p.second,addr,end)) mark(p.first);
+    });
 }
 void ss_reset_surfaces() {
     R.mainDepthAddr = 0;

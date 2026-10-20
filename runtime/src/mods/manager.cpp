@@ -16,6 +16,10 @@ const Entry catalogue[] = {
     {"direct-camera", "Direct right-stick camera", "Camera",
      "Turn the camera immediately with the right stick, without the original easing.",
      "WWHD_MOD_DIRECT_CAMERA", direct_camera, set_direct_camera},
+    {"camera-directed-items", "Camera-directed items (prototype)", "Gameplay",
+     "Experimental initial horizontal facing for supported grounded item actions; Leaf gust also follows camera pitch. "
+     "Lock-on, ongoing first-person aim and other projectile pitch stay native. New item coverage needs gameplay validation.",
+     "WWHD_MOD_CAMERA_DIRECTED_ITEMS", camera_directed_items, set_camera_directed_items},
     {"mouse-camera", "Mouse camera", "Camera",
      "Click the game picture to capture the mouse. Move it to look around on foot or while sailing; Esc releases it.",
      "WWHD_MOD_MOUSE_CAMERA", mouse_camera, set_mouse_camera},
@@ -29,6 +33,11 @@ const Entry catalogue[] = {
     {"wall-climb", "Climb any wall", "Gameplay",
      "Grab and climb walls using a stamina wheel. A or B lets go.",
      "WWHD_CLIMB", climb_enabled, set_climb_enabled},
+    {"quick-use", "Quick-use locked items", "Gameplay",
+     "One press completes item preparation and use against a locked enemy. Items that already use "
+     "one press keep their native action; menus and contextual interactions stay native. "
+     "Outside enemy lock, native aiming is unchanged.",
+     "WWHD_MOD_QUICK_USE", quick_use, set_quick_use},
     {"quick-doors", "Quick doors", "Gameplay",
      "Run door-opening and closing events at four times their normal speed.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
@@ -138,6 +147,16 @@ void load_saved() {
         std::string v;
         if (hostui::get("mod.lock-on.cycling", v) && (v == "0" || v == "1"))
             set_lock_on_cycling(v == "1");
+    }
+    if (!std::getenv("WWHD_MOD_QUICK_USE_SPEED")) {
+        std::string value;
+        if (hostui::get("mod.quick-use.speed", value) && !value.empty()) {
+            char* end = nullptr;
+            const double parsed = std::strtod(value.c_str(), &end);
+            if (end != value.c_str() && *end == '\0' &&
+                (parsed == 1.0 || parsed == 1.25 || parsed == 1.5))
+                set_quick_use_speed(float(parsed));
+        }
     }
     number("mod.move-speed.land", "WWHD_MOD_MOVE_FACTOR", 1.f, 4.f, set_move_speed_land_factor);
     number("mod.move-speed.swim", "WWHD_MOD_MOVE_SWIM", 1.f, 4.f, set_move_speed_swim_factor);

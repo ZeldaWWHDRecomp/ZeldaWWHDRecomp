@@ -22,11 +22,14 @@ struct Limits {
 };
 
 // Phones and unknown devices: 0.72 / 0.60. Tuned on fanless phones (a Galaxy S25 Ultra already
-// halved its clocks at 0.76). Actively cooled handhelds: 0.90 / 0.80 (an AYANEO Pocket S2 Pro with its
-// fan running and CPU/GPU at 45-50 C forecast 0.73 within a minute, and the phone limit never resumed).
+// halved its clocks at 0.76). Actively cooled handhelds: 1.00 / 0.90. An AYANEO Pocket S2 Pro with its
+// fan forecast 0.73 within a minute; an AYANEO EVO and a KONKR Pocket FIT Elite played at 0.90-0.96
+// (the EVO up to 1.13) at about 70 C with 60 fps running well (#247). Relaxed is one step above the
+// device's normal limits: 0.90 / 0.80 on phones, 1.10 / 1.00 on handhelds.
 inline Limits limits(DeviceClass device, Setting setting) {
     if (setting == kOff) return {false, 0.0f, 0.0f};
-    if (setting == kRelaxed || device == kFanHandheld) return {true, 0.90f, 0.80f};
+    if (device == kFanHandheld) return setting == kRelaxed ? Limits{true, 1.10f, 1.00f} : Limits{true, 1.00f, 0.90f};
+    if (setting == kRelaxed) return {true, 0.90f, 0.80f};
     return {true, 0.72f, 0.60f};
 }
 

@@ -39,8 +39,9 @@ the windows' views through a `CAMetalLayer` and `VK_EXT_metal_surface`; `display
 same layout as the Metal composition (picture rectangle, GamePad overlay with frame and opacity,
 filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with the renderer in use.
 
-Settings → Display includes exact PiP size/opacity percentages, nine positions and a draggable
-placement diagram; the outlined game preview can also be dragged while placement is open.
+Settings → Display has PiP size (5–100 %) and opacity (10–100 %) sliders, nine positions and a
+placement diagram (drag freely, click a circle to snap to a position); the outlined game preview
+can also be dragged while placement is open. See [GamePad screen modes](gamepad-display.md).
 
 | Feature (macOS app) | Metal | Vulkan |
 | --- | --- | --- |
@@ -1012,3 +1013,23 @@ The old launch-option workaround to hide the GamePad and force full screen is no
 needed for a fresh configuration. Remove those launch options to use picture-in-picture;
 existing launch overrides still take precedence. The aspect default is unchanged: choose
 **Match window** or **16:10** to use the Deck screen's shape.
+
+### 40 fps on the Steam Deck
+
+**Settings → Graphics → Frame rate → 40 fps** draws 4 frames for every 3 game steps: smoother than
+30 fps, and much lighter than 60 fps, so the battery lasts longer. The game itself keeps its speed
+(30 steps a second).
+
+40 fps only looks even when the screen's refresh rate is a whole multiple of 40. Set it in the
+quick access menu (**...** button → Performance → Refresh Rate):
+
+- **Steam Deck LCD:** 40 Hz. Every frame stays on screen for one refresh.
+- **Steam Deck OLED:** 80 Hz. Every frame stays on screen for two refreshes.
+
+At 60 Hz, 40 fps can't be even: frames alternate between one and two refreshes, which looks like a
+slight judder. The game still runs it, but Settings shows a note under the frame rate, and the log
+says so. In that case choose 30 or 60 fps, or change the refresh rate. Leave the Framerate Limit in the
+same menu off (or at 40) so it doesn't hold frames back.
+
+Keep game speed works at 40 fps as at 60 fps: if the Deck can't draw 40 frames a second, it skips
+some in-between frames, never the game's speed.

@@ -1,0 +1,78 @@
+{
+  "game_objects_format": 1,
+  "group": "lights",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files.",
+  "objects": [
+    {
+      "id": "lamp-cafe",
+      "since": 1,
+      "category": "Lights",
+      "label": "Caf\u00e9 lamp",
+      "description": "a lamp that hangs from the ceiling and turns slowly",
+      "native": {
+        "name": "Cafelmp",
+        "process": "Obj_Cafelmp",
+        "source": "d_a_obj_cafelmp",
+        "subtype": 255,
+        "archive": "Cafelmp"
+      },
+      "variants": [
+        {
+          "id": "lamp-cafe",
+          "label": "Caf\u00e9 lamp",
+          "params": "0xFFFFFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          0.5,
+          2
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 12800,
+        "archive_bytes": 0,
+        "measured": "own heap 11244 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "no parameters are read; no collision"
+    },
+    {
+      "id": "lamp",
+      "since": 1,
+      "category": "Lights",
+      "label": "Wall lamp",
+      "description": "a small lamp with a burning flame that lights its surroundings",
+      "native": {
+        "name": "Lamp",
+        "process": "LAMP",
+        "source": "d_a_lamp",
+        "subtype": 255,
+        "archive": "Lamp"
+      },
+      "variants": [
+        {
+          "id": "lamp",
+          "label": "Wall lamp",
+          "params": "0xFFFFFF00"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "the game draws it at its own fixed size"
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 13312,
+        "archive_bytes": 0,
+        "measured": "own heap 11504 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "parameter 0: the lamp does not swing; it lights a point light while it is there"
+    }
+  ]
+}

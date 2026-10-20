@@ -37,6 +37,7 @@ struct Item {
     unsigned use_step = 0;
     std::string held_model;
     unsigned held_frames = 90;
+    bool hold_up = false;  // a give shows the game's item-get pose with held_model (story_item_models::hold_up)
     bool usable() const { return use != story_notebook::ManifestItem::Use::None; }
 };
 
@@ -44,6 +45,14 @@ struct Item {
 // when the item can't be used: a bad icon, or its key is another item's.
 bool define(const std::string& mod, const std::string& package_dir, const story_notebook::ManifestItem& m, std::string& why);
 void set_model_presenter(std::function<void(uint16_t)> presenter);
+// Items with "hold_up": a give hands the item to the item-get presenter (story_item_models::hold_up) instead
+// of the light caption; false from it (no model): the caption. The presenter arms the get message through
+// arm_get_text, which the letter service replaces (story_mail::item_get_text).
+// `chest`: a treasure chest's own get-item demo shows the model (on) until its item is given (off).
+void set_hold_up_presenter(bool (*presenter)(uint16_t key), void (*chest)(uint16_t key, bool on));
+void chest_hold_up(uint16_t key, bool on);  // story_treasure_chest: only for an item with "hold_up"
+void set_get_text(bool (*item_get_text)(uint32_t number, const std::u16string* text));
+bool arm_get_text(uint16_t key, bool on);  // the stand-in's get message says the item's name and description
 std::vector<Item> installed();  // in declaration order (mod by mod)
 std::optional<Item> find(uint16_t key);
 std::optional<Item> find(const std::string& mod, const std::string& id);

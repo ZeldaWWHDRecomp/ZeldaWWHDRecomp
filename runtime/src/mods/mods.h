@@ -17,6 +17,9 @@ namespace input { struct PadState; }
 namespace mods {
 
 // ---- switches (menu + env) ----
+// Experimental partial coverage: Leaf gust yaw/pitch plus supported initial item facing.
+bool camera_directed_items();
+void set_camera_directed_items(bool on);
 bool direct_camera();
 bool letterbox_while_targeting();
 void set_letterbox_while_targeting(bool on);
@@ -29,6 +32,16 @@ float mouse_sensitivity();  // degrees per mouse point
 void set_mouse_sensitivity(float s);
 bool first_person_wheel();
 void set_first_person_wheel(bool on);
+// One press readies and automatically uses an item against a locked enemy.
+bool quick_use();
+void set_quick_use(bool on);
+float quick_use_speed();  // scoped equip/boomerang wind-up only; 1, 1.25 or 1.5 (default 1)
+void set_quick_use_speed(float factor);
+// Emulation-thread seam: accelerate update, or observe native key crossings (advance=false).
+// Authored rates are restored before returning; crossing predicates are never altered.
+void quick_use_animation_call(Cpu* c, void (*native)(Cpu*), bool advance = true);
+void quick_use_filter_pad(input::PadState& s);
+void quick_use_reset();  // drop transient/pending input on capture, focus loss and savestates
 bool quick_doors();
 void set_quick_doors(bool on);
 bool fast_scenes();

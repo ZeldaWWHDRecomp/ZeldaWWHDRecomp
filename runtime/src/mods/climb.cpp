@@ -30,6 +30,7 @@
 //   stay at 30 Hz; stamina is counted per original step (true60::dt()).
 #include "guest_addr.h"
 #include "mods/climb.h"
+#include "mods/mod_stages.h"
 
 #include <algorithm>
 #include <atomic>
@@ -251,6 +252,7 @@ extern "C" void hook_0240CDD0(Cpu* c) {
     uint32_t self = c->r[3];
     mods::moon_jump_step(c, self, true);
     mods::jump_step(c, self, true);
+    mod_stages::link_step(c, self, true);
     f_0240CDD0_orig(c);
     mods::jump_step(c, self, false);
     mods::moon_jump_step(c, self, false);

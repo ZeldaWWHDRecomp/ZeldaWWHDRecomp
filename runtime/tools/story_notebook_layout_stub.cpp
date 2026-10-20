@@ -1,5 +1,8 @@
 // story_notebook_test: the notebook without its page layout (story_notebook_layout.h): the page is drawn
 // on the HUD, as in a session without a layout. The layout itself is tested in game runs.
+#include <cstdint>
+#include <string>
+
 #include "mods/story_notebook_layout.h"
 
 namespace story_notebook {
@@ -24,5 +27,6 @@ namespace story_actors {
 bool people_message(Cpu*) { return false; }
 bool people_next_message(Cpu*) { return false; }
 bool people_execute(Cpu*,bool) { return false; }
+bool owns_resident(uint32_t) { return false; }
 }
 namespace story_scenes { void trigger(const std::string&,const std::string&,const std::string&,unsigned) {} }

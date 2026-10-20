@@ -155,4 +155,30 @@ load, Link is on the boat and the boat at its place and heading; with gametest `
 save while the King of Red Lions talks is refused and writes nothing, a full save at the same
 moment works, a portable save after the dialogue works. Last, full save states still save and load.
 
+## Repeatable comparison runs
+
+Two runs of the same build do not end up in the same game state, even from the same save state:
+the game's two random generators (`cM_rnd`'s seeds and the particle system's emitter seed) carry
+over from before a load, and `g_Counter.mCounter0`, which also counts loading-screen frames and
+which the game reads (wind lines, tree sway), depends on how many frames the boot took on that
+computer. Scripted input timed in TV frames also lands at other game moments when the boot is
+shorter or longer, and what happened before a load (wind lines in the sky, for example) carries
+into the new stage. Clouds, wind and other random effects then differ, as they would on the console.
+
+For side-by-side tests (renderer against renderer, build A against build B), set
+`WWHD_TEST_FIXED_SEED=1`:
+
+- the seeds are set to fixed values and `mCounter0` to `mTimer` plus a fixed offset at the first
+  gameplay frame after boot, right after a full state load, and twice for a portable state (when the
+  old stage is gone and the new one is about to be created, and at the new stage's first frame);
+- the TV-frame test aids (`WWHD_PRESS`, `WWHD_KEYS`, `WWHD_STICK`, `WWHD_RSTICK`, `WWHD_TEST_ORIGIN`,
+  `WWHD_STATE_SAVE_AT`/`LOAD_AT`, `WWHD_PORTABLE_SAVE_AT`/`LOAD_AT`, `WWHD_DUMP_FRAMES`) count from
+  the first gameplay frame, which counts as frame 96; `WWHD_EXIT_AT_FRAME` stays a TV frame.
+
+The log says `[test] WWHD_TEST_FIXED_SEED: ...` each time (`runtime/src/fixed_seed.h`). Unset, the
+game and the test aids are untouched. `WWHD_DTRACE=<file>` writes one line per frame with both
+counters, the seeds, the time of day, the wind lines, the particle count and a digest of the sky
+clouds, to find the first frame where two runs differ. `runtime/tools/fixed_seed_test.cpp` tests
+what is written and when.
+
 Controller metadata: format 1 accepts optional `controller = 1` (GamePad) or `controller = 2` (Pro Controller). It is shown in the slot label only: loading never changes the controller the player has chosen (Input menu / Controls). After any load, full or progress, the game itself is switched to that controller if it is in the other mode, through its own Options controller change (see `runtime/src/controller_reapply.h`). Missing metadata or `0` is accepted. Unknown values are refused; the existing field and total-size guards still apply.

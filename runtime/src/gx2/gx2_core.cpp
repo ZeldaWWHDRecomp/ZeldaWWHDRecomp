@@ -678,13 +678,14 @@ using namespace gx2;
 // flip executes on the first vsync that is at least `swap interval` vsyncs after the previous flip.
 // Games pace themselves by waiting for vsync until their flips have executed.
 // 120/240 fps frame interpolation needs 4/8 flips per logic step: the virtual vsync then ticks 2/4
-// times per 59.94 Hz vsync (interp::vsync_rate()). The clock counts quarter vsyncs ("ticks"); a
-// vsync at the current rate is a granule of 4/rate ticks, and every vsync count below is in ticks,
-// rounded to granules, so at 30/60 fps (granule 4) the timing is the 59.94 Hz one exactly.
+// times per 59.94 Hz vsync, and 40 fps (4 flips per 3 steps) every 1.5 vsyncs. The clock counts
+// quarter vsyncs ("ticks"); a vsync at the current rate is a granule of ticks (interp::
+// vsync_granule_ticks: 4, 2, 1; 6 at 40 fps), and every vsync count below is in ticks, rounded to
+// granules, so at 30/60 fps (granule 4) the timing is the 59.94 Hz one exactly.
 static uint64_t g_swap_count = 0, g_flip_count = 0;
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); int vsync_rate(); int frames_per_step(); bool paced_interpolation(); int64_t frame_interval_ns(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); }
 static std::mutex g_flip_mutex;
 static const auto g_vsync_epoch = std::chrono::steady_clock::now();
 static constexpr std::chrono::nanoseconds kVsyncPeriod(16683333);  // 59.94 Hz
@@ -709,9 +710,8 @@ static int64_t vsync_clock_now() {  // ns since the epoch on the vsync's clock (
 static uint64_t vsync_index() {  // in ticks
     return kVsyncClock.index(vsync_clock_now(), g_vsync_shift.load(std::memory_order_relaxed));
 }
-static uint64_t vsync_granule() {  // ticks per vsync at the current rate: 4 (30/60 fps), 2 (120), 1 (240)
-    const int rate = interp::vsync_rate();
-    return rate >= 4 ? 1 : rate >= 2 ? 2 : kTicksPerVsync;
+static uint64_t vsync_granule() {  // ticks per vsync at the current rate: 4 (30/60 fps), 6 (40), 2 (120), 1 (240)
+    return interp::vsync_granule_ticks();
 }
 static std::chrono::steady_clock::time_point tick_time(uint64_t tick) {
     const auto at = std::chrono::nanoseconds(kVsyncClock.time(tick, g_vsync_shift.load(std::memory_order_relaxed)));
@@ -722,13 +722,13 @@ static std::chrono::steady_clock::time_point tick_time(uint64_t tick) {
     const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(target.time_since_epoch()).count() - sample.guest;
     return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(sample.host + std::max<int64_t>(0, (left + sample.rate - 1) / sample.rate)));
 }
-// Step slots (vsync_pacing.h): with paced frame interpolation at 120/240 fps a logic step's first
-// frame is due on its step's slot (ns on the vsync's clock, -1: none), two vsyncs after the previous
-// step's
+// Step slots (vsync_pacing.h): with paced frame interpolation (60, 120 and 240 fps) a logic step's
+// first frame is due on its step's slot (ns on the vsync's clock, -1: none), two vsyncs after the
+// previous step's
 static int64_t g_step_slot = -1;  // g_flip_mutex held
-static bool step_slots() { return interp::frames_per_step() > 2 && interp::paced_interpolation(); }
+static bool step_slots() { return interp::paced_step_schedule(); }
 static int64_t step_ns() {  // the frames of a step, one (virtual) vsync each: the game's swap interval, two vsyncs
-    return kVsyncClock.granule_ns(uint64_t(interp::frames_per_step()) * interp::effective_swap_interval(g_swap_interval) * vsync_granule());
+    return kVsyncClock.granule_ns(interp::step_ticks(g_swap_interval));
 }
 // the first tick at which this flip may execute: `swap interval` vsyncs after the previous flip, and
 // a step's first frame not before its step's slot. (On hardware also the vsync after its swap, which
@@ -752,6 +752,13 @@ bool gx2::next_step_time(std::chrono::steady_clock::time_point& at) {
     if (g_step_slot < 0 || !step_slots()) return false;
     at = tick_time(vsync_pacing::slot_tick(kVsyncClock, g_step_slot, g_vsync_shift.load(std::memory_order_relaxed), vsync_granule()));
     return true;
+}
+// paced interpolation at 40 fps (interp.cpp): the frames the next logic step has before the step
+// after it is due (1 or 2), 0 without a slot
+int gx2::step_frames() {
+    std::lock_guard<std::mutex> lk(g_flip_mutex);
+    if (g_step_slot < 0 || !step_slots()) return 0;
+    return vsync_pacing::step_frames(kVsyncClock, g_step_slot, step_ns(), g_vsync_shift.load(std::memory_order_relaxed), vsync_granule());
 }
 // Uncapped (gx2.h): debug, to see how fast the renderer can go; GPU completion ordering is kept
 static std::atomic<int> g_uncapped{-1};  // -1: not read from the environment yet
@@ -1016,6 +1023,7 @@ HLE(gx2, GX2DrawDone) {
     render_sync(kSyncDrawDone);
     ret(c, 1);
 }
+namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
     // debug: WWHD_TRACE_SWAP=n logs the guest call chain of the first n swaps
     static int trace = getenv("WWHD_TRACE_SWAP") ? atoi(getenv("WWHD_TRACE_SWAP")) : 0;
@@ -1090,6 +1098,7 @@ HLE(gx2, GX2SwapScanBuffers) {
             present_observer::fail("diagnostic swap ID ordering/reset mismatch");
         g_pending_flips.push_back({g_swap_count, std::chrono::steady_clock::now(), !hold});
     }
+    dtrace::on_swap(g_swap_count, steps);
     // debug: WWHD_LOG_SLOW_SWAP=ms logs swaps that came more than ms after the previous one
     static const double slow_ms = getenv("WWHD_LOG_SLOW_SWAP") ? atof(getenv("WWHD_LOG_SLOW_SWAP")) : 0;
     if (slow_ms > 0) {

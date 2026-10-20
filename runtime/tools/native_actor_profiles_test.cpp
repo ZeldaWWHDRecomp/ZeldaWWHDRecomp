@@ -64,7 +64,9 @@ for(unsigned i=0;i<10;++i){
  c.r[3]=ids[i];expected=c;expected.r[3]=0x12345678;hooks.at(0x025DD414)(&c);assert(std::memcmp(&expected,&c,sizeof c)==0);
 }
 assert(originals==10);
-for(unsigned id:{0x1C5u,0x7FF4u,0x7FFFu}){Cpu c{};c.r[3]=id;hooks.at(0x025E10E0)(&c);assert(c.r[3]==0x12345678);}
+for(unsigned id:{0x1C5u,0x7FCFu,0x7FFFu}){Cpu c{};c.r[3]=id;hooks.at(0x025E10E0)(&c);assert(c.r[3]==0x12345678);}
+// the IDs kept for later enemy kinds (7FD0..7FF3) fail closed until registered
+for(unsigned id:{0x7FD0u,0x7FDFu,0x7FE0u,0x7FE9u,0x7FF0u,0x7FF1u,0x7FF2u,0x7FF3u}){Cpu c{};c.r[3]=id;hooks.at(0x025E10E0)(&c);assert(c.r[3]==0);}
 for(unsigned fn:{0x025DD414u,0x025D4B4Cu}){Cpu c{};c.r[3]=0x1C5;c.r[4]=0x87654321;c.f[1].ps0=3.25;Cpu expected=c;expected.r[3]=0x12345678;hooks.at(fn)(&c);assert(std::memcmp(&expected,&c,sizeof c)==0);}
 assert(originals==15);
 assert(add_before_delete_listener("retire",before_delete));

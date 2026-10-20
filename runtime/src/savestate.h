@@ -1,13 +1,14 @@
 // Save states: snapshot the whole running game (guest memory, guest threads, HLE state) into one
 // of 5 slots and restore it later, also in a fresh process. See savestate.cpp for the design.
 #pragma once
-#include "save_path.h"
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "save_path.h"
 
 #include "ppc.h"
 
@@ -90,6 +91,10 @@ void request_save_portable(int slot);
 void request_save_full(int slot);
 bool in_gameplay();                     // a save file is being played (quit_prompt.h: gameplay_stage)
 void request_load(int slot);
+// Completion runs once on refusal or after restore/portable arrival, outside
+// the request mutex. Parsing failures may complete synchronously.
+void request_load(int slot, std::function<void(bool,const std::string&)> done);
+void request_load_portable_file(const std::string& path, std::function<void(bool,const std::string&)> done);
 void request_load_portable_file(const std::string& path);  // a .wwstate anywhere (WWHD_PORTABLE_LOAD)
 bool full_states();                     // save button / shortcuts make full states
 void set_full_states(bool on);          // the setting (kept in the states folder)
@@ -140,6 +145,11 @@ struct LinkPlace {
 LinkPlace link_place();  // any thread (a snapshot of the game's memory)
 // a portable state to any path (the editor's test slots); `done` as request_save's
 void request_save_portable_file(const std::string& path, std::function<void(bool ok, const std::string& why)> done);
+
+// Full states for isolated editor test files. Same full-state validators and
+// native gates as numbered slots; no regular slot path is changed.
+void request_save_full_file(const std::string&,std::function<void(bool,const std::string&)>);
+void request_load_full_file(const std::string&,std::function<void(bool,const std::string&)>);
 
 // ---- game thread: call at the frame boundary (top of the per-frame function) ----
 void service(Cpu* c);

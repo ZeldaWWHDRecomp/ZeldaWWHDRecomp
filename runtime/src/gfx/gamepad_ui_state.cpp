@@ -33,15 +33,23 @@ void display_read_gamepad_ui() {
             const uint32_t items = ld32(scene + 0x17c);
             const bool bag = object(items, 0x58) && ld32(items + 0x54) < 3;
             state.menu = gamepad_menu_state(descriptor, routing, controller, bag);
+            // dComIfGp_setMetronomeOn/Off (play +5BD1): daPy_lk_c::procTactWait_init (023E92A0)
+            // sets it while Link conducts with the Wind Waker; the song's end, a cancel and
+            // dProcTalk_init clear it. The play object is the function-local static behind
+            // dComIfGp_get (025200D4); before its first use the bytes are still zero.
+            const uint32_t metronome = ld8(GD(0x1046F0B0) + 0x5BD1);
+            state.baton = gamepad_baton_state(descriptor, metronome != 0, controller);
             // Opt-in evidence for scripted menu/cutscene captures; no image measurements.
             static const bool trace = getenv("WWHD_TEST_GAMEPAD_UI_TRACE") != nullptr;
             if (trace) {
                 static uint32_t previous = ~0u, previousRouting = ~0u, previousController = ~0u;
-                static bool previousMenu = false;
-                if (descriptor != previous || routing != previousRouting || controller != previousController || state.menu != previousMenu) {
-                    LOG("[display] GamePad UI: state=%08X routing=%u controller=%u menu=%d off-tv=%d switching=%d",
-                        descriptor, routing, controller, state.menu, state.off_tv, state.switching);
+                static bool previousMenu = false, previousBaton = false;
+                if (descriptor != previous || routing != previousRouting || controller != previousController || state.menu != previousMenu ||
+                    state.baton != previousBaton) {
+                    LOG("[display] GamePad UI: state=%08X routing=%u controller=%u menu=%d baton=%d off-tv=%d switching=%d",
+                        descriptor, routing, controller, state.menu, state.baton, state.off_tv, state.switching);
                     previous = descriptor; previousRouting = routing; previousController = controller; previousMenu = state.menu;
+                    previousBaton = state.baton;
                 }
             }
         }

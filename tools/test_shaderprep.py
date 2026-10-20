@@ -416,6 +416,23 @@ class PlayerCaches(unittest.TestCase):
         with patch('sys.stdout'):self.assertEqual(prep.cmd_merge(str(self.root/'bad.bin'),[str(first),str(live/'shaders.bin')]),1)
         self.assertFalse((self.root/'bad.bin').exists())
 
+    def test_stage_template_keeps_only_what_the_base_lacks(self):
+        # a mod stage's template (docs/mod-stages.md, "Shaders"): the caches' states beyond the base template
+        live=self.player_folder(self.root/'a')
+        base=self.root/'base.bin';self.assertEqual(self.export(live,base),0)
+        other=self.root/'b'/'shader-prebuild'/'live';other.mkdir(parents=True)
+        self.stream('s',[(1,prep.shader_record(0,b'stage pixel',b'',[(0xa214,9)]))]).replace(other/'shaders.bin')
+        out=self.root/'stage.wwht'
+        with patch('sys.stdout'):self.assertEqual(prep.cmd_stage_template(str(out),str(other/'shaders.bin'),str(base)),0)
+        data=out.read_bytes();prep.guard_template(data)
+        doc=fmt.decode(data)
+        self.assertEqual((len(doc['states']),len(doc['pipelines'])),(1,0))
+        self.assertNotIn(b'stage pixel',zlib.decompress(data[8:]))
+        # nothing beyond the base: an empty template; no base: refused
+        with patch('sys.stdout'):self.assertEqual(prep.cmd_stage_template(str(self.root/'none.wwht'),str(live/'shaders.bin'),str(base)),0)
+        self.assertEqual(len(fmt.decode((self.root/'none.wwht').read_bytes())['states']),0)
+        with patch('sys.stdout'):self.assertEqual(prep.cmd_stage_template(str(self.root/'x.wwht'),str(other/'shaders.bin'),str(self.root/'missing.bin')),1)
+
     def test_export_writes_nothing_the_guard_rejects(self):
         live=self.player_folder(self.root/'a');out=self.root/'out.bin'
         with patch.object(prep,'guard_template',side_effect=ValueError('rejected')):

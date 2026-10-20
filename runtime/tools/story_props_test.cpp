@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Synthetic native actor lifecycle/collision contracts; no game data.
+#include "mods/native_actor_refusal.h"
 #include "mods/story_props.h"
 #include "mods/native_actor_profiles.h"
 #include "mods/story_items.h"
@@ -25,6 +26,7 @@ assert(VirtualAlloc(mem::ptr(a),size,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
 assert(mmap(mem::ptr(a),size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
 #endif
 }
+unsigned base_constructs=0;
 void original(Cpu*c,uint32_t f){++originals;const uint32_t a=c->r[3];
 if(f==0x024D09B8){heap_charge+=1000;st32(a+0xF4,Solid);assert(!(ld32(a+0x2E0)&0x400));st32(a+0x790,ld32(a+0xB0)>>24);st32(a+0x794,2);st32(a+0x2E0,ld32(a+0x2E0)|0x400|0x80000);st32(a+0x39C,0x90);st32(a+0x624,0xA5);st32(a+0x624+0x18,3);st32(a+0x624+0x2C,5);st32(a+0x624+0x44,a+0x754);st32(a+0x754+0xC,a);st32(a+0x754+0x10,ld32(a+4));c->r[3]=fail_create?5:4;}
 else if(f==0x024D09C0){assert(!(ld32(a+0x2E0)&0x280400));st32(a+0x624,ld32(a+0x624)|1);Cpu reg=*c;reg.r[3]=Play+0x26A4;reg.r[4]=a+0x624;hooks.at(0x0200E240)(&reg);st32(a+0x39C,ld32(a+0x39C)|0x10);st32(a+0x2E0,ld32(a+0x2E0)|0x280400);c->r[3]=1;}
@@ -38,7 +40,7 @@ else if(f==0x025D4B4C){Cpu native=*c;hooks.at(0x024D09BC)(&native);heap_charge-=
 else if(f==0x025E10E0)c->r[3]=0xDEAD;
 else assert(false);
 }
-uint32_t call(Cpu*c,uint32_t f,std::initializer_list<uint32_t>args){c->r[4]=0xBAD;if(f==0x025200D4)return Play;if(f==0x025E3268||f==0x025E2FBC||f==0x025EE048||f==0x025EE060){++heap_reads;return Heap;}if(f==0xF2000000){++heap_reads;return *args.begin()==Solid?512:16*1024*1024-heap_charge;}if(f==0xF2000004)return 8192;assert(false);return 0;}
+uint32_t call(Cpu*c,uint32_t f,std::initializer_list<uint32_t>args){c->r[4]=0xBAD;if(f==0x025200D4)return Play;if(f==0x025E3268||f==0x025E2FBC||f==0x025EE048||f==0x025EE060){++heap_reads;return Heap;}if(f==0xF2000000){++heap_reads;return *args.begin()==Solid?512:16*1024*1024-heap_charge;}if(f==0xF2000004)return 8192;if(f==0x025D4ED0){const uint32_t a=*args.begin();assert(ld8(a+0x3AA)==0);st8(a+0x3AA,1);st32(a+0xB4,0x10057138);++base_constructs;return a;}assert(false);return 0;}
 void setup(uint32_t a,uint32_t token,unsigned type){st32(a+4,100+token);st16(a+0xE,story_props::kProfile);st8(a+0x2DD,0xFF);st32(a+0xB0,(type<<24)|0x007FFF3F);story_props::bind(token,100+token);Cpu c{};c.r[3]=a;hooks.at(0x024D09B8)(&c);assert(c.r[3]==4&&!(ld32(a+0x2E0)&0x280400)&&ld32(a+0x39C)==0x80);}
 }
 namespace story_items {
@@ -66,6 +68,10 @@ st32(Play+0x5B34,Link);st32(Link+0x65B8,Actor);c={};c.r[3]=Link;c.r[4]=123;c.f[2
 // Reserved private-profile corruption cannot fall into retail item/attack behavior.
 st32(Actor+0xB0,0);c={};c.r[3]=Actor;unsigned calls_before=originals;hooks.at(0x024CC004)(&c);assert(originals==calls_before&&claims==0&&effects==0);hooks.at(0x024D09C0)(&c);assert(originals==calls_before&&c.r[3]==1);st32(Actor+0xB0,0x007FFF3F);
 const uint32_t unknown=Arena+0x8000;st16(unknown+0xE,story_props::kProfile);st32(unknown+4,999);c.r[3]=unknown;hooks.at(0x024D09B8)(&c);assert(c.r[3]==5&&originals==calls_before);
+// a refused create leaves an actor fopAc_Delete can take (retail creates construct before they fail): the base
+// constructor ran once, and its delete skips the object's own (never built) delete
+assert(base_constructs==1&&ld8(unknown+0x3AA)==1&&native_actor_refusal::base_only(unknown));c.r[3]=unknown;hooks.at(0x024D09B8)(&c);assert(c.r[3]==5&&base_constructs==1);
+c.r[3]=unknown;hooks.at(0x024D09BC)(&c);assert(c.r[3]==1&&originals==calls_before);
 c={};c.r[3]=Actor;nested=true;hooks.at(0x024CC004)(&c);hooks.at(0x024CC004)(&c);assert(claims==1&&effects==1&&!story_props::available(pot));c.r[3]=Actor;hooks.at(0x024D09BC)(&c);assert(deletes==1&&claims==1);assert(retired[pot]==101);c.r[3]=Actor+0x2000;hooks.at(0x024D09BC)(&c);assert(retired[crate]==103);const auto old_claims=claims,old_effects=effects;c.r[3]=Actor+0x2000;hooks.at(0x024CC004)(&c);assert(claims==old_claims&&effects==old_effects);
 outcome=story_items::PropClaimStatus::StackFull;c.r[3]=Actor+0x1000;hooks.at(0x024CC004)(&c);assert(claims==2&&effects==2&&!story_props::available(barrel)&&!markers[2]);story_props::retry(barrel);assert(story_props::available(barrel));
 // Restore clears host admission map/latches and rebind requires the restored native identity.

@@ -160,8 +160,8 @@ static void load_options() {
     if (NSNumber* n = g_settings[@"pipX"]) g_pip_x = pip_clamp(n.floatValue, 0, 1, 0.5f);
     if (NSNumber* n = g_settings[@"pipY"]) g_pip_y = pip_clamp(n.floatValue, 0, 1, 0.5f);
     g_filter = find_name(kFilterNames, 3, g_settings[@"scaleFilter"], kSmooth);
-    if (NSNumber* n = g_settings[@"pipSize"]) g_pip_size = pip_clamp(n.floatValue, 0.1f, 0.5f, 0.25f);
-    if (NSNumber* n = g_settings[@"pipOpacity"]) g_pip_opacity = pip_clamp(n.floatValue, 0.2f, 1.0f, 1.0f);
+    if (NSNumber* n = g_settings[@"pipSize"]) g_pip_size = pip_clamp_size(n.floatValue);
+    if (NSNumber* n = g_settings[@"pipOpacity"]) g_pip_opacity = pip_clamp_opacity(n.floatValue);
     display_env_overrides();  // start-up overrides for tests (not saved)
 }
 
@@ -975,8 +975,8 @@ int display_drc_mode() { return g_mode; }
 // settings overlay: the Display menu's picture-in-picture choices
 void display_set_pip(int anchor, float size, float opacity) {
     g_pip_anchor = std::clamp(anchor, 0, int(kPipCustom));
-    g_pip_size = pip_clamp(size, 0.1f, 0.5f, 0.25f);
-    g_pip_opacity = pip_clamp(opacity, 0.2f, 1.0f, 1.0f);
+    g_pip_size = pip_clamp_size(size);
+    g_pip_opacity = pip_clamp_opacity(opacity);
     save_options();
 }
 void display_set_tv_fullscreen(bool on) {
@@ -1006,8 +1006,8 @@ bool drc_overlay_hit(void* window, double wx, double wy) {
 - (void)setMode:(NSMenuItem*)item { gfx::set_drc_mode((int)item.tag); }
 - (void)toggleDrc:(NSMenuItem*)item { gfx::toggle_drc_screen(); }
 - (void)setAnchor:(NSMenuItem*)item { gfx::g_pip_anchor = (int)item.tag; gfx::save_options(); }
-- (void)setSize:(NSMenuItem*)item { gfx::g_pip_size = item.tag / 100.0f; gfx::save_options(); }
-- (void)setOpacity:(NSMenuItem*)item { gfx::g_pip_opacity = item.tag / 100.0f; gfx::save_options(); }
+- (void)setSize:(NSMenuItem*)item { gfx::g_pip_size = gfx::pip_clamp_size(item.tag / 100.0f); gfx::save_options(); }
+- (void)setOpacity:(NSMenuItem*)item { gfx::g_pip_opacity = gfx::pip_clamp_opacity(item.tag / 100.0f); gfx::save_options(); }
 - (void)drcScreen:(NSMenuItem*)item {
     NSArray<NSScreen*>* s = NSScreen.screens;
     if (item.tag < 0 || item.tag >= (NSInteger)s.count) return;
@@ -1095,7 +1095,7 @@ void install_display_menu(NSMenu* bar) {
     add(m, @"    Separate window", @selector(setMode:), kDrcWindow);
     add(m, @"    Picture-in-picture in the TV window", @selector(setMode:), kDrcPip).toolTip = @"Click the overlay to touch";
     add(m, @"    Automatic picture-in-picture", @selector(setMode:), kDrcAuto).toolTip =
-        @"Shows GamePad menus while open; follows Off-TV Play. Cmd+G pins the overlay";
+        @"Shows GamePad menus and the Wind Waker song list while open; follows Off-TV Play. Cmd+G pins the overlay";
     add(m, @"    Off", @selector(setMode:), kDrcOff).toolTip = @"Not shown; the game keeps drawing it";
     add(m, @"    GamePad only", @selector(setMode:), kDrcGamePad).toolTip =
         @"Only the GamePad picture in the TV window (click it to touch); in the game, Minus switches to Off-TV Play";

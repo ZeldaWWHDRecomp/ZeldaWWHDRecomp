@@ -88,6 +88,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "../platform/heat_guard.h"
 #endif
 #include "../interp.h"
+#include "../interp_pacing.h"
 #include "../runtime.h"
 #include "../savestate.h"
 #include "../save_convenience.h"
@@ -127,6 +128,8 @@ const bool g_no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;  // test runs ig
 // ... except keys a test posts itself (WWHD_TEST_POST_KEYS, gfx/input.mm; the hidden test window never
 // has the user's keyboard)
 const bool g_no_host_keys = g_no_host && !getenv("WWHD_TEST_POST_KEYS");
+// ... and the mouse events a test posts (WWHD_TEST_POST_MOUSE, gfx/overlay_appkit.mm: only those reach here then)
+const bool g_no_host_mouse = g_no_host && !getenv("WWHD_TEST_POST_MOUSE");
 bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also close the menu
 // a dialog (or a list) is open in Settings: Esc and Android's Back close it, not the menu (popup.h)
 std::atomic<bool> g_dialog_open{false};
@@ -772,7 +775,8 @@ std::string performance_report() {
     h.gpu = performance_device();
     h.renderer = render::api_name(render::active());
     h.host = hostui::name();
-    h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? "60 fps interpolation" : "30 fps";
+    h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
+    if (interp::mode() == 1) h.keepGameSpeed = interp::paced_interpolation();  // at that rate
     h.scale = hostui::res_scale();
 #ifdef WWHD_HAS_VULKAN
     if (render::vulkan()) {
@@ -849,21 +853,27 @@ void tab_graphics() {
     heading("Frame rate");
     int m = interp::mode(), f = interp::fps();
     if (radio("30 fps (original)", m == 0)) post_changed([] { interp::set_mode(0); });
-    for (int r : {60, 120, 240}) {
+    for (int r : {40, 60, 120, 240}) {
         ImGui::SameLine();
         char label[16];
         snprintf(label, sizeof label, "%d fps", r);
         if (radio(label, m == 1 && f == r)) post_changed([r] { interp::set_fps(r); interp::set_mode(1); });
     }
-    help("60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
+    help("40, 60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
          "frames in between are drawn blended (1 in-between frame per step at 60 fps, 3 at 120 fps,\n"
-         "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.");
+         "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.\n"
+         "40 fps draws 4 frames for every 3 steps (1 in-between frame per 3 steps), for 40, 80 and\n"
+         "120 Hz screens (a Steam Deck set to 40 Hz or 80 Hz, phones with a 120 Hz panel).");
     if (radio("True 60 (experimental)", m == 2)) post_changed([] { interp::set_mode(2); });
     help("True 60 runs the game logic at 60 steps per second");
     // the display's refresh rate, and what the chosen rate draws on it (interp::output_fps)
     if (const int hz = interp::display_hz(); hz > 0) {
         const int out = interp::output_fps();
-        if (m == 1 && out < f)
+        if (m == 1 && f == 40 && !interp::pacing::even_on_display(40, hz))
+            note("Your display: %d Hz. 40 fps needs a 40, 80 or 120 Hz screen: here each frame stays on\n"
+                 "screen for 1 or 2 refreshes in turn (uneven motion). Choose 30 or 60 fps, or set the\n"
+                 "screen to 40, 80 or 120 Hz.", hz);
+        else if (m == 1 && out < f)
             note("Your display: %d Hz. %d fps needs a %d Hz display; %d fps are drawn (the display cannot show more).", hz, f, f, out);
         else if (m == 1 && f > hz + 2)
             note("Your display: %d Hz. Frames beyond %d a second are drawn but not shown (presentation without vsync).", hz, hz);
@@ -880,7 +890,7 @@ void tab_graphics() {
              "whole game down. The performance overlay shows how many are drawn.\n"
              "Off: every logic step waits for all of its frames, so if the frame target is not reached\n"
              "(e.g. 120/240 fps at a high internal resolution) the whole game runs in slow motion.\n"
-             "Saved separately for 60 fps (off by default; on by default on Android and Windows on ARM)\n"
+             "Saved separately for 40/60 fps (off by default; on by default on Android and Windows on ARM)\n"
              "and 120/240 fps (on by default).");
         if (!interp::paced_interpolation())
             note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
@@ -1215,30 +1225,51 @@ static gfx::Box pip_tv_box() {
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
     return {x * ds.x, y * ds.y, w * ds.x, h * ds.y};
 }
-static void pip_move(gfx::Box tv, float x, float y, bool snap = true) {
-    auto p = gfx::pip_place(tv, gfx::g_drc_aspect, gfx::g_pip_size, x, y, snap);
-    gfx::pip_set_position(p);
+// Dragging and the D-pad place the picture freely (#221): passing over a preset never catches it.
+static void pip_move(gfx::Box tv, float x, float y) {
+    gfx::pip_set_position(gfx::pip_place(tv, gfx::g_drc_aspect, gfx::g_pip_size, x, y));
 }
+// The nine preset targets in the diagram: large enough to see and to hit with a finger.
+static float pip_target_radius() { return std::max(7.0f, ImGui::GetFontSize() * 0.5f); }
 static void pip_diagram() {
     const gfx::Box screen = pip_tv_box();
-    const float w = std::min(240.0f, ImGui::GetContentRegionAvail().x);
+    const float w = std::min(320.0f, ImGui::GetContentRegionAvail().x);
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const gfx::Box tv{origin.x, origin.y, w, w * screen.h / screen.w};
     ImGui::InvisibleButton("Placement diagram", ImVec2(tv.w, tv.h), ImGuiButtonFlags_EnableNav);
     const bool active = ImGui::IsItemActive(), focused = ImGui::IsItemFocused();
     auto b = gfx::pip_box(tv, gfx::g_drc_aspect, gfx::g_pip_size, gfx::pip_position());
+    const float radius = pip_target_radius();
+    // A press only becomes a drag once the pointer moves past ImGui's drag threshold. A press that is
+    // released without dragging is a click/tap: on a preset target it snaps there, elsewhere outside the
+    // picture it moves the picture's centre to that point.
     static ImVec2 offset;
+    static bool pointer = false, dragged = false, grabbed = false;
     if (ImGui::IsItemActivated()) {
+        pointer = ImGui::GetCurrentContext()->ActiveIdSource == ImGuiInputSource_Mouse;
+        dragged = false;
         const ImVec2 m = ImGui::GetIO().MousePos;
-        const bool inside = m.x >= b.x && m.x <= b.x + b.w && m.y >= b.y && m.y <= b.y + b.h;
-        offset = inside ? ImVec2(m.x - b.x - b.w / 2, m.y - b.y - b.h / 2) : ImVec2(0, 0);
+        grabbed = m.x >= b.x && m.x <= b.x + b.w && m.y >= b.y && m.y <= b.y + b.h;
+        offset = grabbed ? ImVec2(m.x - b.x - b.w / 2, m.y - b.y - b.h / 2) : ImVec2(0, 0);
     }
-    if (active && ImGui::IsMouseDown(0)) {
+    if (active && pointer && ImGui::IsMouseDown(0) && ImGui::IsMouseDragging(0))
+        dragged = true;
+    if (active && pointer && dragged) {
         const auto m = ImGui::GetIO().MousePos;
         pip_move(tv, (m.x - offset.x - tv.x) / tv.w, (m.y - offset.y - tv.y) / tv.h);
     }
-    if (ImGui::IsItemDeactivated())
+    if (ImGui::IsItemDeactivated()) {
+        if (pointer && !dragged) {
+            const ImVec2 m = ImGui::GetIO().MouseClickedPos[0];
+            const int a = gfx::pip_target_at(tv, m.x, m.y, radius * 1.5f);
+            if (a >= 0)
+                gfx::pip_set_position({a, gfx::g_pip_x, gfx::g_pip_y});
+            else if (!grabbed)
+                pip_move(tv, (m.x - tv.x) / tv.w, (m.y - tv.y) / tv.h);
+        }
+        pointer = dragged = false;
         hostui::post([] { hostui::save_pip_position(); });
+    }
     if (focused) {
         for (auto key :
              {ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown,
@@ -1256,10 +1287,8 @@ static void pip_diagram() {
             dy = -0.01f;
         if (pressed(ImGuiKey_GamepadDpadDown) || pressed(ImGuiKey_DownArrow))
             dy = 0.01f;
-        // Do not snap each step: otherwise a 1% step would stick at a preset
-        // forever.
         if (dx || dy) {
-            pip_move(tv, (b.x - tv.x + b.w / 2) / tv.w + dx, (b.y - tv.y + b.h / 2) / tv.h + dy, false);
+            pip_move(tv, (b.x - tv.x + b.w / 2) / tv.w + dx, (b.y - tv.y + b.h / 2) / tv.h + dy);
             hostui::post([] { hostui::save_pip_position(); });
         }
     }
@@ -1268,14 +1297,20 @@ static void pip_diagram() {
     d->AddRectFilled(origin, ImVec2(tv.x + tv.w, tv.y + tv.h), IM_COL32(18, 28, 36, 255));
     d->AddRect(origin, ImVec2(tv.x + tv.w, tv.y + tv.h),
                focused ? IM_COL32(255, 210, 80, 255) : IM_COL32(180, 190, 200, 255));
-    for (int a = 0; a < 9; ++a) {
-        const auto q = gfx::pip_box(tv, gfx::g_drc_aspect, gfx::g_pip_size, {a, 0, 0});
-        d->AddCircleFilled(ImVec2(q.x + q.w / 2, q.y + q.h / 2), 2, IM_COL32(180, 190, 200, 110));
-    }
     d->AddRectFilled(ImVec2(b.x, b.y), ImVec2(b.x + b.w, b.y + b.h),
                      IM_COL32(75, 180, 220, int(255 * gfx::g_pip_opacity)));
     d->AddRect(ImVec2(b.x, b.y), ImVec2(b.x + b.w, b.y + b.h), IM_COL32(235, 245, 255, 255));
-    note("Tap or drag to place. Focus the diagram and use the D-pad to move.");
+    // Targets on top of the picture, so they stay visible at large sizes; the chosen preset is filled.
+    const int anchor = gfx::g_pip_anchor;
+    for (int a = 0; a < gfx::kPipCustom; ++a) {
+        ImVec2 c;
+        gfx::pip_target_centre(tv, a, &c.x, &c.y);
+        d->AddCircleFilled(c, radius, a == anchor ? IM_COL32(255, 210, 80, 235) : IM_COL32(18, 28, 36, 170));
+        d->AddCircle(c, radius, a == anchor ? IM_COL32(255, 240, 200, 255) : IM_COL32(220, 230, 240, 230), 0,
+                     std::max(1.5f, radius * 0.22f));
+    }
+    note("Drag to place the picture anywhere. Click or tap a circle to snap it to that spot. "
+         "Focus the diagram and use the D-pad to move.");
 }
 static void pip_live_drag() {
     if (!gfx::g_pip_preview)
@@ -1306,18 +1341,12 @@ static void pip_live_drag() {
     ImGui::PopStyleVar();
 }
 
-// Integer widgets share the same bounds for mouse, touch, typed and controller input.
-static void pip_percent(const char* label, const char* exactLabel, float value, int minimum, int maximum,
-                        void (*save)(float)) {
-    int percent = int(std::round(value * 100));
-    if (ImGui::SliderInt(label, &percent, minimum, maximum, "%d%%", ImGuiSliderFlags_AlwaysClamp))
+// One slider per value; the bounds hold for mouse, touch, controller and ImGui's Ctrl+click typing.
+static void pip_percent(const char* label, float value, float minimum, float maximum, void (*save)(float)) {
+    const int lo = int(std::lround(minimum * 100)), hi = int(std::lround(maximum * 100));
+    int percent = std::clamp(int(std::lround(value * 100)), lo, hi);
+    if (ImGui::SliderInt(label, &percent, lo, hi, "%d%%", ImGuiSliderFlags_AlwaysClamp))
         hostui::post([percent, save] { save(percent / 100.0f); });
-    // Android's taller +/- buttons need room without squeezing the number field.
-    ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetFrameHeight() * 4));
-    if (ImGui::InputInt(exactLabel, &percent, 1, 5)) {
-        percent = std::clamp(percent, minimum, maximum);
-        hostui::post([percent, save] { save(percent / 100.0f); });
-    }
 }
 
 void tab_display() {
@@ -1342,7 +1371,7 @@ void tab_display() {
         if (mode == 0)
             note("Gaming Mode shows one window at a time. A separate GamePad window may make the game picture blurry.");
         if (mode == 2)
-            note("Shows GamePad menus while open and follows Off-TV Play.");
+            note("Shows GamePad menus and the Wind Waker song list while open and follows Off-TV Play.");
         if (mode == 4)
             note("Only the GamePad picture. In the game, Minus switches to Off-TV "
                  "Play (the game on the GamePad).");
@@ -1368,18 +1397,10 @@ void tab_display() {
                 ImGui::EndCombo();
             }
             pip_diagram();
-            pip_percent("Size (%)", "Exact size (%)", hostui::pip_size(), 10, 50, hostui::set_pip_size);
-            for (int v : {20, 25, 33, 40}) {
-                if (v != 20)
-                    ImGui::SameLine();
-                char label[24];
-                snprintf(label, sizeof label, "%d%%##pipSize", v);
-                if (ImGui::Button(label))
-                    hostui::post([v] { hostui::set_pip_size(v / 100.0f); });
-            }
-            pip_percent("Opacity (%)", "Exact opacity (%)", hostui::pip_opacity(), 20, 100, hostui::set_pip_opacity);
-            note("Ctrl+click a slider to type an exact percentage. The game picture "
-                 "previews changes while this section is open.");
+            pip_percent("Size (%)", hostui::pip_size(), gfx::kPipSizeMin, gfx::kPipSizeMax, hostui::set_pip_size);
+            pip_percent("Opacity (%)", hostui::pip_opacity(), gfx::kPipOpacityMin, gfx::kPipOpacityMax,
+                        hostui::set_pip_opacity);
+            note("The game picture previews changes while this section is open.");
         }
     }
     heading("Window");
@@ -1560,6 +1581,19 @@ void builtin_options(const std::string& id) {
         if (ImGui::Checkbox("No automatic jumps off ledges", &no_auto))
             hostui::post([no_auto] { mods::set_no_auto_jump(no_auto); hostui::set("mod.jump-anywhere.no-auto", no_auto ? "1" : "0"); mods::packages::remember_option("jump-anywhere.no-auto", no_auto); });
         help("The button also keeps its normal use. Link drops off ledges instead of jumping when automatic ledge jumps are off; press the button just after leaving the edge to jump. The moon jump cheat takes L while it is on.");
+    } else if (id == "quick-use") {
+        ImGui::TextUnformatted("Quick-use animation speed");
+        for (float speed : {1.f, 1.25f, 1.5f}) {
+            const char* label = speed == 1.f ? "1x (vanilla)" : speed == 1.25f ? "1.25x" : "1.5x";
+            if (speed != 1.f) flow::next(flow::check(label));
+            if (radio(label, mods::quick_use_speed() == speed))
+                hostui::post([speed] { mods::set_quick_use_speed(speed); hostui::set("mod.quick-use.speed", std::to_string(speed)); mods::packages::remember_option("quick-use.speed", speed); });
+        }
+        help("Only accelerates supported upper-body equip and boomerang wind-up for enemy-locked quick use. "
+             "Does not bypass native readiness or ammo, or change projectile speed or flight/return. "
+             "Default: vanilla 1x, with quick use off.");
+        if (const char* override = std::getenv("WWHD_MOD_QUICK_USE_SPEED"))
+            note("WWHD_MOD_QUICK_USE_SPEED=%s overrides the saved speed at startup.", override);
     } else if (id == "fast-forward") {
         for (unsigned rate : {2u, 3u, 4u}) {
             if (rate != 2) flow::next(flow::check(rate == 2 ? "2x" : rate == 3 ? "3x" : "4x"));
@@ -2300,11 +2334,20 @@ void perf_window(bool menu_open) {
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
         {
             // slow motion: frame interpolation without Keep game speed below its frame target
+            // Shown from the second 2-second window in a row below 29 logic steps/s (the game's rate is
+            // 29.97; a single hitch or load does not show it), hidden again from a window at 29.5: a game
+            // a few percent slow is noticeable over time, and the gap keeps it from flickering.
             static double t0 = 0; static uint64_t s0 = 0; static double rate = 30;
+            static int slowWindows = 0;
+            static bool slow = false;
             if (t0 == 0 || t - t0 < 0) { t0 = t; s0 = interp::executed_steps(); }
-            else if (t - t0 >= 2.0) { rate = (double)(interp::executed_steps() - s0) / (t - t0); t0 = t; s0 = interp::executed_steps(); }
-            if (interp::mode() == 1 && !interp::paced_interpolation() && rate > 1 && rate < 26)
-                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Slow motion: %.0f of 30 logic steps/s. Turn on Keep game speed", rate);
+            else if (t - t0 >= 2.0) {
+                rate = (double)(interp::executed_steps() - s0) / (t - t0); t0 = t; s0 = interp::executed_steps();
+                slowWindows = rate > 1 && rate < 29.0 ? slowWindows + 1 : 0;
+                slow = slow ? rate > 1 && rate < 29.5 : slowWindows >= 2;
+            }
+            if (slow && interp::mode() == 1 && !interp::paced_interpolation())
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Slow motion: %.1f of 30 logic steps/s. Turn on Keep game speed", rate);
         }
 #ifdef __ANDROID__
         ImGui::TextUnformatted(android_telemetry().c_str());
@@ -2603,6 +2646,7 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
     if (open) {
         mods::fast_forward_reset();
         mods::lock_on_reset();
+        mods::quick_use_reset();
         mods::mouse_release();
         U.just_opened = true;
         U.slots_time = -1;
@@ -2727,7 +2771,7 @@ bool wants_text() { return (is_open() || layer_mode() != 0) && g_wants_text.load
 void set_stereo_pointer_visible(bool visible) { g_stereo_pointer_visible=visible; }
 bool mouse_move(float nx, float ny, bool touch) {
     const int layer = layer_mode();
-    if (g_no_host || (!captures() && stereo::requestedMode==stereo::Off && !layer)) return false;
+    if (g_no_host_mouse || (!captures() && stereo::requestedMode==stereo::Off && !layer)) return false;
     push({Event::MousePos, 0, false, nx, ny, 0, touch});
     return captures() || layer_takes_pointer();
 }
@@ -2748,18 +2792,18 @@ void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
     U.gamepad_navigation.feed(io, U.nav_values.data(), U.nav_prev.data(), open && U.cap_action < 0 && !capturing_at_start, mouse_used, face);  // the text prompt reads the controller itself
 }
 bool pointer_shortcut(int code, bool down) {
-    if (g_no_host || captures()) return false;
+    if (g_no_host_mouse || captures()) return false;
     const int action = input_map::shortcut_for_key(input_map::current(), code, 0);
     if (action < 0) return false;
     if (down) activate_shortcut(action);
     return true;
 }
 bool mouse_button(int button, bool down, bool touch) {
-    if (!captures() && layer_takes_pointer() && !g_no_host) {
+    if (!captures() && layer_takes_pointer() && !g_no_host_mouse) {
         if (button >= 0 && button < 5) push({Event::MouseButton, button, down, 0, 0, 0, touch});
         return true;
     }
-    if (!captures() || g_no_host) return false;
+    if (!captures() || g_no_host_mouse) return false;
     if (button < 0 || button >= 5) return true;
     if (!touch && g_capturing_keys.load() && down) {
         g_capture_mods = 0; g_capture_key = input_map::kMouse1 + button;
@@ -2769,11 +2813,11 @@ bool mouse_button(int button, bool down, bool touch) {
     return true;
 }
 bool mouse_wheel(float dx, float dy) {
-    if (!captures() && layer_takes_pointer() && !g_no_host) {
+    if (!captures() && layer_takes_pointer() && !g_no_host_mouse) {
         push({Event::Wheel, 0, false, dx, dy, 0});
         return true;
     }
-    if (!captures() || g_no_host) return false;
+    if (!captures() || g_no_host_mouse) return false;
     if (g_capturing_keys.load() && dy != 0) {
         g_capture_mods = 0; g_capture_key = dy > 0 ? input_map::kWheelUp : input_map::kWheelDown;
         return true;
@@ -2997,6 +3041,25 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         ImGui::End();
     }
     g_layer_mouse = !open && layer && io.WantCaptureMouse;
+    // test aid: WWHD_TEST_LOG_HOVER=1 logs the window under the pointer when it changes, and each click
+    static const bool log_hover = getenv("WWHD_TEST_LOG_HOVER") != nullptr;
+    if (log_hover) {
+        static std::string last;
+        const ImGuiWindow* hw = ImGui::GetCurrentContext()->HoveredWindow;
+        std::string now = hw ? hw->Name : "(none)";
+        const ImGuiID hid = ImGui::GetHoveredID();
+        if (now != last || io.MouseClicked[0] || io.MouseClicked[1])
+            LOG("[overlay] hover: %s id %08x at %.0f %.0f (layer %d, clicked %d/%d, open %d)", now.c_str(), hid, io.MousePos.x,
+                io.MousePos.y, layer, io.MouseClicked[0], io.MouseClicked[1], open);
+        if (io.MouseClicked[0]) {  // the windows under the pointer's reach, back to front
+            std::string order;
+            for (ImGuiWindow* w : ImGui::GetCurrentContext()->Windows)
+                if (w->Active && (!(w->Flags & ImGuiWindowFlags_ChildWindow) || w->DockNode))
+                    order += std::string(w->Name) + (w->DockNode ? " (docked)" : "") + " | ";
+            LOG("[overlay] windows back to front: %s", order.c_str());
+        }
+        last = std::move(now);
+    }
     ImGui::Render();
     overlay_trace::state();
     return ImGui::GetDrawData();

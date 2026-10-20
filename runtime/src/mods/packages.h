@@ -43,8 +43,14 @@ bool needs_code_mod_support(const std::string& id); // includes package dependen
 void initialize(); // metadata only; before the game starts
 std::string directory();
 std::string package_data_directory(const std::string& id); // configured manager Data/id, empty for unknown packages
+// The configured manager's story/ folder (WWHD_MOD_MANAGER_DIR, else the user folder's ModManager): what the
+// story packages build from the player's game files (the NPC catalogue). Empty before initialize().
+std::string story_cache_directory();
 std::vector<View> list();
 bool install(const std::string& source,std::string& error,std::string* installed_id=nullptr); // directory or ZIP/.wwhdmod
+// install() for a new package only (the world editor's new mod): refused when a package of that ID is
+// installed or its folder exists, so an existing package is never replaced.
+bool install_new(const std::string& source,std::string& error,std::string* installed_id=nullptr);
 bool remove(const std::string& id,std::string& error); // also deletes the files its setup prepared
 // Bytes on disk: the package and the files its setup prepared (what Remove frees).
 uint64_t disk_use(const std::string& id);

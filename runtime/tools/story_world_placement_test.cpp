@@ -31,14 +31,44 @@ int main(){
  Index i;assert(check("test",0,local,i).front().kind=="coverage");i.coverage.push_back({"test",0,true,true,true,{}});assert(check("test",0,local,i).empty());
  i.regions.push_back({"test",0,{{-10,-10,-10},{10,10,10}}});assert(check("test",0,{{-11,0,0},{0,1,1}},i,0).front().kind=="coverage");i.regions.clear();
  i.bounds.push_back({"test",0,"event","a",{{101,-1,-1},{102,1,1}}});assert(check("test",0,local,i,99).empty());assert(check("test",0,local,i,100).size()==1);assert(check("test",1,local,i,0).front().kind=="coverage");
- i.routes.push_back({"test",0,"cross",{{-100,10000,0},{100,10000,0}},0,false});assert(check("test",0,local,i,0).front().kind=="route");i.routes[0].points={{-100,0,50},{100,0,50}};assert(check("test",0,local,i,0).empty());i.routes[0].radius=50;assert(check("test",0,local,i,0).size()==1);
+ i.bounds.clear();
+ // a route 100 m above is not in the way (a cliff path); one through the body is; a corridor by its radius
+ i.routes.push_back({"test",0,"cross",{{-100,10000,0},{100,10000,0}},0,false});assert(check("test",0,local,i,0).empty());i.routes[0].points={{-100,0,0},{100,0,0}};assert(check("test",0,local,i,0).front().kind=="route");i.routes[0].points={{-100,0,50},{100,0,50}};assert(check("test",0,local,i,0).empty());i.routes[0].radius=50;assert(check("test",0,local,i,0).size()==1);i.routes[0].id="RPAT:0";assert(check("test",0,local,i,0).front().kind=="villager route");
  Index ground;ground.coverage.push_back({"test",0,true,true,true,{}});ground.bounds.push_back({"test",0,"collision","floor",{{-100,0,-100},{100,0,100}}});
  assert(check("test",0,{{-1,0,-1},{1,2,1}},ground).empty()); // Floor contact is intentional.
  assert(!check("test",0,{{-1,-.05f,-1},{1,2,1}},ground).empty()); // Penetration remains invalid.
  ground.bounds[0].bounds.maximum.y=10;assert(!check("test",0,{{-1,0,-1},{1,2,1}},ground).empty()); // Sloping walls are protected.
- Index parsed;std::string why;assert(add_native_collision(parsed,"test",0,mesh(),{100,20,0},90,&why));assert(parsed.bounds.size()==1);assert(near(parsed.bounds[0].bounds.minimum.x,90));auto bad=mesh();u16(bad,0x34+36,3);size_t count=parsed.bounds.size();assert(!add_native_collision(parsed,"test",0,bad,{},0,&why));assert(parsed.bounds.size()==count);
- assert(add_native_layout(parsed,"test",0,layout(),{},0,&why));assert(parsed.routes.size()==1&&parsed.routes[0].points.size()==2);assert(near(parsed.routes[0].points[0].x,-100));assert(check("test",0,local,parsed,0).size()==1);
- bad=layout();u32(bad,80,1);assert(!add_native_layout(parsed,"test",0,bad,{},0,&why));assert(parsed.routes.size()==1);
+ Index parsed;std::string why;assert(add_native_collision(parsed,"test",0,mesh(),&why));assert(parsed.bounds.size()==1);assert(near(parsed.bounds[0].bounds.minimum.x,-10)); /* world space as stored */auto bad=mesh();u16(bad,0x34+36,3);size_t count=parsed.bounds.size();assert(!add_native_collision(parsed,"test",0,bad,&why));assert(parsed.bounds.size()==count);
+ assert(add_native_layout(parsed,"test",0,layout(),&why));assert(parsed.routes.size()==1&&parsed.routes[0].points.size()==2&&parsed.routes[0].radius==kRouteHalfWidth);assert(near(parsed.routes[0].points[0].x,-100));assert(parsed.layout.size()==1&&parsed.layout[0].name=="orig"&&near(parsed.layout[0].position.x,30000));
+ {auto c=check("test",0,local,parsed,0);assert(c.size()==1&&c[0].kind=="collision"&&c[0].message=="the island's walls or ground (1 triangle)");} // the floor triangle it goes into
+ bad=layout();u32(bad,80,1);assert(!add_native_layout(parsed,"test",0,bad,&why));assert(parsed.routes.size()==1);
+ { // a water (or lava) group's triangles are not ground or walls: the sea plane every island square carries
+  Bytes water=mesh();const size_t groups=water.size();water.resize(groups+0x34);u32(water,0x20,1);u32(water,0x24,uint32_t(groups));u32(water,groups+0x30,0x12C);u16(water,0x34+36+8,0);
+  Index sea;assert(add_native_collision(sea,"test",0,water,&why)&&sea.bounds.empty());
+  u32(water,groups+0x30,0x02C);Index ground;assert(add_native_collision(ground,"test",0,water,&why)&&ground.bounds.size()==1);
+  u32(water,groups+0x30,0x22C);Index lava;assert(add_native_collision(lava,"test",0,water,&why)&&lava.bounds.empty());
+ }
+ // the table strides of the game's chunk handlers (dStage: actor 0x20, tgsc and door 0x24, treasure 0x20)
+ for(const char*t:{"ACTR","ACT0","ACT9","ACTa","ACTb","TGOB","TRES","TRE3","PLYR"})assert(table_stride(t)==32);
+ for(const char*t:{"SCOB","SCO0","SCOb","TGSC","TGDR","DOOR"})assert(table_stride(t)==36);
+ for(const char*t:{"RPAT","MULT","ACTc","SCOx","ACT","FILI"})assert(table_stride(t)==0);
+ { // a door table of two 36-byte entries: the second door is read at 36, with its scale; a 32-byte chest table after it
+  Bytes b(4+3*12+2*36+32);u32(b,0,3);tag(b,4,"TGDR");u32(b,8,2);u32(b,12,40);tag(b,16,"TRES");u32(b,20,1);u32(b,24,112);tag(b,28,"PLYR");u32(b,32,0);u32(b,36,144);
+  tag(b,40,"KNOB");tag(b,44,"00D\0");xyz(b,52,{100,0,0});b[72]=10;tag(b,76,"KNOB");tag(b,80,"01D\0");xyz(b,88,{200,0,0});b[108]=20;b[109]=21;b[110]=22;
+  tag(b,112,"taka");tag(b,116,"ra3\0");xyz(b,124,{300,0,0});
+  Index doors;assert(add_native_layout(doors,"test",0,b,&why));assert(doors.layout.size()==3);
+  assert(doors.layout[1].name=="KNOB01D"&&near(doors.layout[1].position.x,200)&&doors.layout[1].scaled&&doors.layout[1].scale[0]==20&&doors.layout[1].scale[2]==22);
+  assert(doors.layout[2].name=="takara3"&&near(doors.layout[2].position.x,300)&&!doors.layout[2].scaled);
+  doors.coverage[0].collision=true; // the layout gave routes and events; no collision in this test
+  // world bounds next to the second door are refused with it; open ground 1000 units away is clear
+  auto c=check("test",0,{{150,0,-50},{250,100,50}},doors);assert(c.size()==3&&c[1].kind=="door"&&c[1].native=="KNOB01D"&&c[1].message=="a door of the island"&&c[2].kind=="chest");
+  assert(check("test",0,{{1200,0,-50},{1300,100,50}},doors).empty());
+  // a raft drifting toward the doors stops short of the nearer door's reach (radius 250 plus the clearance)
+  auto drift=sweep("test",0,{{900,0,-10},{920,10,10}},{-1000,0,0},doors);assert(drift.blocked&&drift.conflicts[0].kind=="door"&&drift.allowed_delta.x<-399&&drift.allowed_delta.x>-401);
+  // a route far below the raft does not stop it
+  doors.layout.clear();doors.routes.push_back({"test",0,"RPAT:0",{{0,-5000,-100},{0,-5000,100}},kRouteHalfWidth,false});assert(!sweep("test",0,{{900,0,-10},{920,10,10}},{-1000,0,0},doors).blocked);
+  doors.routes[0].points={{0,0,-100},{0,0,100}};assert(sweep("test",0,{{900,0,-10},{920,10,10}},{-1000,0,0},doors).conflicts[0].kind=="villager route");
+ }
  { // Continuous drift cannot tunnel through thin walls or a moving ship footprint.
   Index motion;motion.coverage.push_back({"test",0,true,true,true,{}});const Bounds body{{-1,0,-1},{1,2,1}};
   auto free=sweep("test",0,body,{1000,0,400},motion,0);assert(!free.blocked&&free.allowed_delta.x==1000&&free.allowed_delta.z==400);
@@ -58,6 +88,72 @@ int main(){
  // Only original synthetic archives; no native resource fixtures are redistributed.
  const auto temporary=std::filesystem::temp_directory_path()/("world-placement-"+std::to_string(reinterpret_cast<uintptr_t>(&i)));std::filesystem::create_directories(temporary/"content/Common/Stage");auto write_fixture=[&](const char*name,const Bytes&b){std::ofstream f(temporary/"content/Common/Stage"/name,std::ios::binary);f.write(reinterpret_cast<const char*>(b.data()),std::streamsize(b.size()));};
  Bytes stage(4+12+12);u32(stage,0,1);tag(stage,4,"MULT");u32(stage,8,1);u32(stage,12,16);f32(stage,16,100);f32(stage,20,200);stage[26]=0;
- write_fixture("test_Stage.szs",sarc({{"stage.dzs",stage}}));write_fixture("test_Room0.szs",sarc({{"Room0.bfres",bfres({{"room.dzb",mesh()},{"room.dzr",layout()}})}}));auto loaded=load_native_room(temporary.string(),"test",0);bool complete=false;for(auto&c:loaded.coverage)if(c.room==0)complete=c.collision&&c.routes&&c.events;assert(complete);assert(loaded.bounds.size()==2);assert(near(loaded.bounds.back().bounds.minimum.x,20100));assert(check("test",0,{{-5000,0,-5000},{-4999,1,-4999}},loaded,0).empty());
+ write_fixture("test_Stage.szs",sarc({{"stage.dzs",stage}}));write_fixture("test_Room0.szs",sarc({{"Room0.bfres",bfres({{"room.dzb",mesh()},{"room.dzr",layout()}})}}));auto loaded=load_native_room(temporary.string(),"test",0);bool complete=false;for(auto&c:loaded.coverage)if(c.room==0)complete=c.collision&&c.routes&&c.events;assert(complete);
+ // a stage room: its MULT entry (100, 200) moves nothing: collision, layout and routes stay where they are stored
+ assert(loaded.bounds.size()==1&&near(loaded.bounds[0].bounds.minimum.x,-10)&&loaded.layout.size()==1&&near(loaded.layout[0].position.x,30000)&&near(loaded.routes[0].points[0].x,-100));assert(loaded.regions.empty());assert(check("test",0,{{-5000,0,-5000},{-4999,1,-4999}},loaded,0).empty());
+ { // a sea room: the MULT grid gives its square; its own data stays in world space (room 2 at x 100000)
+  Bytes grid(4+12+3*12);u32(grid,0,1);tag(grid,4,"MULT");u32(grid,8,3);u32(grid,12,16);f32(grid,16,0);f32(grid,20,0);grid[26]=1;f32(grid,28,100000);f32(grid,32,0);grid[38]=2;f32(grid,40,100000);f32(grid,44,100000);grid[50]=3;
+  Bytes room=layout();xyz(room,52,{100500,0,200});
+  write_fixture("sea_Stage.szs",sarc({{"stage.dzs",grid}}));write_fixture("sea_Room2.szs",sarc({{"Room2.bfres",bfres({{"room.dzb",mesh()},{"room.dzr",room}})}}));
+  auto sea=load_native_room(temporary.string(),"sea",2);assert(sea.regions.size()==1&&near(sea.regions[0].bounds.minimum.x,50000)&&near(sea.regions[0].bounds.maximum.x,150000));
+  assert(sea.layout.size()==1&&near(sea.layout[0].position.x,100500)&&near(sea.bounds[0].bounds.minimum.x,-10));
+  // next to the object at 100500 (an unknown object: radius 150) is refused, open sea in its square is not
+  assert(check("sea",2,{{100600,0,150},{100700,100,250}},sea).front().kind=="object");assert(check("sea",2,{{110000,0,0},{110100,100,100}},sea).empty());
+  assert(check("sea",2,{{149000,0,0},{151000,100,100}},sea).front().id=="room-boundary");
+ }
  write_fixture("test_Room0.szs",{0,1,2});loaded=load_native_room(temporary.string(),"test",0);assert(check("test",0,local,loaded,0).front().kind=="coverage");assert(check("../test",0,local,load_native_room(temporary.string(),"../test",0)).front().kind=="coverage");std::filesystem::remove_all(temporary);
+ // ---- solids: an island ground (a sloped hill with a cliff wall) and houses (closed boxes) on and against it
+ {
+  auto box=[](Point lo,Point hi){std::vector<Point> v{{lo.x,lo.y,lo.z},{hi.x,lo.y,lo.z},{hi.x,lo.y,hi.z},{lo.x,lo.y,hi.z},{lo.x,hi.y,lo.z},{hi.x,hi.y,lo.z},{hi.x,hi.y,hi.z},{lo.x,hi.y,hi.z}};
+   std::vector<std::array<uint16_t,3>> t{{0,1,2},{0,2,3},{4,6,5},{4,7,6},{0,5,1},{0,4,5},{1,6,2},{1,5,6},{2,7,3},{2,6,7},{3,4,0},{3,7,4}};return std::make_pair(v,t);};
+  // the hill: its top rises 100 units over 2000 (a slope), a cliff stands at x 1500..1600 up to 900
+  std::vector<Point> hv{{-2000,0,-2000},{2000,100,-2000},{2000,100,2000},{-2000,0,2000},{1500,100,-500},{1600,100,-500},{1600,900,-500},{1500,900,-500},{1500,100,500},{1600,100,500},{1600,900,500},{1500,900,500},{-2000,-1000,-2000},{2000,-1000,-2000},{2000,-1000,2000},{-2000,-1000,2000}};
+  std::vector<std::array<uint16_t,3>> ht{{0,2,1},{0,3,2},{4,7,11},{4,11,8},{5,9,10},{5,10,6},{4,5,6},{4,6,7},{8,10,9},{8,11,10},{7,6,10},{7,10,11},{12,13,14},{12,14,15}};  // and its base under the sea, as an island's
+  const Solid hill=place_solid(hv,ht,{0,0,0},{0,0,0},{1,1,1});
+  auto [bv,bt]=box({-200,0,-200},{200,500,200});
+  assert(!solids_overlap(hill,place_solid(bv,bt,{0,60,0},{0,222.5f,0},{1,1,1})));     // on the slope, its floor a little in it
+  assert(!solids_overlap(hill,place_solid(bv,bt,{-1000,10,0},{0,0,0},{1,1,1})));     // a house on the low side
+  assert(solids_overlap(hill,place_solid(bv,bt,{0,-300,0},{0,0,0},{1,1,1})));        // sunk 300: the top goes through its walls
+  assert(solids_overlap(hill,place_solid(bv,bt,{1500,100,0},{0,0,0},{1,1,1})));      // into the cliff
+  assert(!solids_overlap(hill,place_solid(bv,bt,{1250,100,0},{0,0,0},{1,1,1})));     // right beside the cliff (its bounds touch, the solids don't)
+  // two houses: apart, touching corners after a turn, overlapping
+  const Solid a=place_solid(bv,bt,{0,100,0},{0,0,0},{1,1,1});
+  assert(!solids_overlap(a,place_solid(bv,bt,{450,100,0},{0,0,0},{1,1,1})));
+  assert(!solids_overlap(a,place_solid(bv,bt,{520,100,0},{0,45,0},{1,1,1})));        // its turned bounds overlap, it doesn't
+  assert(solids_overlap(a,place_solid(bv,bt,{300,100,100},{0,30,0},{1,1,1})));
+  assert(!solids_overlap(a,Solid{}));
+ }
+ // ---- a route in the way says where: its point nearest the bounds, not its start
+ {
+  Index idx;idx.coverage.push_back({"sea",12,true,true,true,{}});idx.routes.push_back({"sea",12,"RPAT:3",{{0,100,0},{1000,100,0},{2000,100,0},{3000,100,0}},kRouteHalfWidth,false});
+  const auto found=check_building("sea",12,{{1900,50,-100},{2100,300,100}},idx);
+  assert(found.size()==1&&found[0].kind=="villager route"&&found[0].at.x==2000&&found[0].path.size()==4);
+ }
+ // ---- a body of water on a terraced island ground (the mod's own world object): three square terraces, each a closed
+ // block from the sea floor (-1000) up to its top (200, 400, 600; 3000, 2000 and 1000 wide), a pillar on the top one
+ {
+  std::vector<Point> v;std::vector<std::array<uint16_t,3>> t;
+  auto block=[&](Point lo,Point hi){const auto b=uint16_t(v.size());
+   for(Point p:std::initializer_list<Point>{{lo.x,lo.y,lo.z},{hi.x,lo.y,lo.z},{hi.x,lo.y,hi.z},{lo.x,lo.y,hi.z},{lo.x,hi.y,lo.z},{hi.x,hi.y,lo.z},{hi.x,hi.y,hi.z},{lo.x,hi.y,hi.z}})v.push_back(p);
+   for(auto f:std::initializer_list<std::array<uint16_t,3>>{{0,1,2},{0,2,3},{4,6,5},{4,7,6},{0,5,1},{0,4,5},{1,6,2},{1,5,6},{2,7,3},{2,6,7},{3,4,0},{3,7,4}})t.push_back({uint16_t(b+f[0]),uint16_t(b+f[1]),uint16_t(b+f[2])});};
+  block({-1500,-1000,-1500},{1500,200,1500});block({-1000,-1000,-1000},{1000,400,1000});block({-500,-1000,-500},{500,600,500});
+  const Solid isle=place_solid(v,t,{0,0,0},{0,0,0},{1,1,1});
+  block({200,600,-50},{300,900,50});const Solid pillared=place_solid(v,t,{0,0,0},{0,0,0},{1,1,1});
+  // the ground under a point: the top terrace, the middle one, the lowest, nothing beside the island; from below a top
+  float h=0;
+  assert(ground_under(isle,{0,5000,0},h)&&h==600);assert(ground_under(isle,{800,5000,-300},h)&&h==400);assert(ground_under(isle,{1300,5000,1300},h)&&h==200);
+  assert(!ground_under(isle,{1600,5000,0},h));assert(ground_under(isle,{0,500,0},h)&&h==400);assert(ground_under(isle,{500,5000,0},h)&&h==600);  // an edge is the top's
+  assert(ground_under(isle,{0,600,0},h)&&h==600);  // standing on it
+  // a pond's open water: a square (two triangles) at its level
+  auto water=[](float x0,float z0,float x1,float z1,float y){return place_solid({{x0,y,z0},{x1,y,z0},{x1,y,z1},{x0,y,z1}},{{0,2,1},{0,3,2}},{0,0,0},{0,0,0},{1,1,1});};
+  assert(!water_blocked(water(-300,-300,300,300,600),isle));   // on the top terrace, at its height (its floor dug into it)
+  assert(!water_blocked(water(-300,-300,300,300,800),isle));   // raised above it (its banks a mound on it)
+  assert(!water_blocked(water(-300,-300,300,300,630),isle));   // a little over it
+  assert(!water_blocked(water(100,-300,700,300,600),isle));    // over the edge of the top: the terrace below is lower
+  assert(water_blocked(water(100,-300,700,300,400),isle));     // on the middle terrace, cutting into the top one's wall
+  assert(!water_blocked(water(550,-300,900,300,400),isle));    // on the middle terrace, beside the wall
+  assert(water_blocked(water(-300,-300,300,300,600),pillared)); // a pillar standing in it
+  assert(!water_blocked(water(-300,-300,100,300,600),pillared)); // the pillar beside it
+  assert(!water_blocked(Solid{},isle)&&!water_blocked(water(-300,-300,300,300,600),Solid{}));
+ }
 }

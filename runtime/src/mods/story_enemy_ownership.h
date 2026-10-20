@@ -7,7 +7,14 @@
 #include <string>
 struct Cpu;
 namespace story_enemy_ownership {
-enum class Kind:uint32_t { ChuChu,Bokoblin,Moblin,Keese };
+enum class Kind:uint32_t { ChuChu,Bokoblin,Moblin,Keese,Miniblin,Peahat,Rat,Darknut,RatHole,BokoBaba,Bubble,Octorok,
+ // the table-driven kinds (story_enemies_more.h) from 24, so kinds added before them keep their numbers
+ Stalfos=24,Redead,Mothula,Morth,Magtail,Poe,Armos,ArmosKnight,
+ Kargaroc=32,Wizzrobe,Warship,Gyorg,Floormaster,BigOcto,WallCannon };
+inline constexpr unsigned kKindCount=40;
+// The Darknut's owned children: its sword (daBoko type 3, profile 0x1CF) and, for the caped variants,
+// its cape (d_a_mant type 0, profile 0xC0, 0x4288 bytes).
+inline constexpr uint16_t kCapeProfile=0xC0;inline constexpr uint32_t kCapeBytes=0x4288;
 struct Collider {uint32_t object,stts,helper;};
 struct Descriptor {uint16_t profile,native_profile;uint32_t bytes;const Collider* colliders;size_t collider_count;};
 const Descriptor& descriptor(Kind);
@@ -26,6 +33,8 @@ size_t checkpoint();void rollback(size_t) noexcept;
 // World editor: a declaration's spec changed (or its copy moved in place): its fingerprint follows, and
 // its record keeps its state (active, pending, retired) with the new fingerprint.
 bool editor_refingerprint(Token,const Fingerprint&);
+// World editor: a declaration's variant changed while no copy of it exists: its parameters follow.
+bool editor_reparameter(Token,uint32_t parameters);
 enum class BindingState { Uninitialized,Fresh,Queued,Active,Retired,Quarantined };
 struct Binding {BindingState state=BindingState::Uninitialized;uint32_t pid=0,actor=0,epoch=0;};
 bool binding_state(Token,Binding&);

@@ -13,12 +13,17 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../editor/editor_game.h"
 #include "../editor/mcp_game.h"
+#include "editor_live_kinds.h"
+#include "editor_resident.h"
+#include "../mods/story_enemy_variants.h"
 #include "editor_shell.h"
 #include "extensions.h"
+#include "game_objects_palette.h"
 #include "hostui.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -154,7 +159,7 @@ void mark(const char* field) {
 }
 
 // What an actor is, for the list and the inspector.
-bool is_enemy(const std::string& actor) { return actor == "chuchu" || actor == "bokoblin" || actor == "moblin" || actor == "keese"; }
+bool is_enemy(const std::string& actor) { return actor == "chuchu" || actor == "bokoblin" || actor == "moblin" || actor == "keese" || actor == "miniblin" || actor == "peahat" || actor == "darknut" || actor == "rat_hole" || actor == "bokobaba" || actor == "bubble" || actor == "octorok" || story_enemy_variants::more_enemy(actor); }
 bool is_prop(const std::string& actor) { return actor == "pot" || actor == "barrel" || actor == "crate"; }
 std::string kind_label(const Value& a) {
     const std::string actor = a.get("actor").string();
@@ -168,21 +173,21 @@ std::string kind_label(const Value& a) {
     if (is_prop(actor)) return actor + " (prop)";
     return actor;
 }
-// whether the running game shows changes to this actor's kind at once (list_actor_types, asked once)
+// whether the running game shows changes to this actor's kind at once (list_actor_types, asked again now
+// and then: the game installs its kinds after the overlay starts; while the session is busy the next
+// frame asks again, so an early or missed answer never sticks)
 bool restart_only(const Value& a) {
-    static std::map<std::string, bool> live;
+    static editor_live_kinds::Live live;
     static int asked = -1000;
     const int frame = ImGui::GetFrameCount();
-    if (live.empty() || frame - asked > 120)  // the game installs its kinds after the overlay starts: asked again now and then
-        asked = frame, editor::try_with_session([&](editor::Session& s) {
-            for (const auto& t : s.run("list_actor_types", Value(), false).get("result").array) live[t.get("type").string()] = t.get("live").boolean;
-        });
+    if (live.empty() || frame - asked > 120)
+        if (editor::try_with_session([&](editor::Session& s) {
+                const Value reply = s.run("list_actor_types", Value(), false);  // kept: the answers live in it
+                live = editor_live_kinds::read(reply);
+            }))
+            asked = frame;
     const std::string actor = a.get("actor").string();
-    std::string type = actor;
-    if (a.get("kind").string() == "mod") type = a.get("combat").type != Value::Null ? "model_enemy" : a.get("carry").type != Value::Null ? "model_carry" : "model";
-    const auto it = live.find(type);
-    if (it != live.end()) return !it->second;
-    return is_enemy(actor) || is_prop(actor) || actor == "switch" || actor == "door" || type == "model_enemy" || type == "model_carry";
+    return editor_live_kinds::restart_only(a, live, is_enemy(actor), is_prop(actor));
 }
 // a text field for one string property (empty removes it)
 void edit_property(const Value& p, const Value& a, const char* label, const char* property, size_t max = 32) {
@@ -213,19 +218,22 @@ bool confirm_popup(const char* id, const std::string& question, const char* yes)
 
 // ---------------------------------------------------------------- the "then" actions form
 struct ActionRow {
-    int kind = 0;  // give, take, quest_step, flag, scene
+    int kind = 0;  // give, take, quest_step, flag, scene, give a chart, quest_done
     char id[64] = {};
     int value = 1;  // count, step, flag value (1 set, 0 clear)
 };
-const char* const kActionKinds[] = {"give an item", "take an item", "set a quest step", "set a flag", "start a scene"};
-const char* const kActionNames[] = {"give", "take", "quest_step", "flag", "scene"};
+constexpr int kActionCount = 7, kGiveChart = 5, kQuestDone = 6;
+const char* const kActionKinds[kActionCount] = {"give an item", "take an item", "set a quest step", "set a flag", "start a scene", "give a chart",
+                                                "finish a quest"};
+const char* const kActionNames[kActionCount] = {"give", "take", "quest_step", "flag", "scene", "give", "quest_done"};
 std::vector<ActionRow> rows_of(const Value& then) {
     std::vector<ActionRow> rows;
     for (const auto& a : then.array) {
         ActionRow r;
         const std::string k = a.get("action").string();
-        for (int i = 0; i < 5; i++)
-            if (k == kActionNames[i]) r.kind = i;
+        for (int i = kActionCount - 1; i >= 0; i--)
+            if (k == kActionNames[i] && i != kGiveChart) r.kind = i;
+        if (k == "give" && a.get("id").string().rfind("chart:", 0) == 0) r.kind = kGiveChart;
         std::snprintf(r.id, sizeof r.id, "%s", a.get("id").string().c_str());
         if (r.kind <= 1) r.value = int(num(a, "count", 1));
         else if (r.kind == 2) r.value = int(num(a, "step", 1));
@@ -256,6 +264,10 @@ std::vector<std::string> choices(const Value& m, int kind) {
         for (const auto& q : m.get("quests").array) out.push_back(q.get("id").string());
     else if (kind == 4)
         for (const auto& s : m.get("scenes").array) out.push_back(s.get("id").string());
+    else if (kind == kGiveChart)
+        for (const auto& c : m.get("charts").array) out.push_back("chart:" + c.get("id").string());
+    else if (kind == kQuestDone)
+        for (const auto& q : m.get("quests").array) out.push_back(q.get("id").string());
     return out;
 }
 void then_form(const Value& m, const Value& a, const Value& p) {
@@ -275,7 +287,7 @@ void then_form(const Value& m, const Value& a, const Value& p) {
         ImGui::PushID(int(i));
         const float avail = ImGui::GetContentRegionAvail().x;
         ImGui::SetNextItemWidth(avail * 0.42f);
-        ImGui::Combo("##kind", &r.kind, kActionKinds, 5);
+        ImGui::Combo("##kind", &r.kind, kActionKinds, kActionCount);
         ImGui::SameLine();
         const auto ids = choices(m, r.kind);
         ImGui::SetNextItemWidth(avail * (r.kind == 4 ? 0.48f : 0.32f));
@@ -311,6 +323,35 @@ void then_form(const Value& m, const Value& a, const Value& p) {
         command("set_then", q);
     }
     if (a.get("lines").type == Value::Null && !rows.empty()) muted("Actions run after dialogue: give the actor lines first.");
+}
+// what a placed chest holds (parameters.item: story_world_manifest.h chest_game_item, or item:<id>)
+void chest_form(const Value& m, const Value& a, const Value& p) {
+    static const std::pair<const char*, const char*> kGame[] = {
+        {"rupee_green", "Green rupee (1)"},   {"rupee_blue", "Blue rupee (5)"},       {"rupee_yellow", "Yellow rupee (10)"},
+        {"rupee_red", "Red rupee (20)"},      {"rupee_purple", "Purple rupee (50)"},  {"rupee_orange", "Orange rupee (100)"},
+        {"rupee_silver", "Silver rupee (200)"}, {"heart_piece", "Piece of heart"},    {"heart_container", "Heart container"}};
+    std::vector<std::pair<std::string, std::string>> choices;
+    for (const auto& [v, label] : kGame) choices.push_back({v, label});
+    for (const auto& i : m.get("items").array) choices.push_back({"item:" + i.get("id").string(), i.get("name").string(i.get("id").string()) + " (your item)"});
+    const std::string now = a.get("parameters").get("item").string();
+    std::string shown = "Orange rupee (100), the default";
+    for (const auto& [v, label] : choices)
+        if (v == now) shown = label;
+    ImGui::TextColored(kHead, "Chest holds");
+    mark("parameters");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##chest_item", shown.c_str())) {
+        for (const auto& [v, label] : choices)
+            if (ImGui::Selectable(label.c_str(), v == now)) {
+                Value params = a.get("parameters").type == Value::Object ? a.get("parameters") : Value();
+                params["item"] = v;
+                Value q = p;
+                q["property"] = "parameters";
+                q["value"] = params;
+                command("set_actor", q);
+            }
+        ImGui::EndCombo();
+    }
 }
 // drops of props and enemies
 void drops_form(const Value& m, const Value& a, const Value& p) {
@@ -375,7 +416,7 @@ void refresh() {
     static int frame = -1;
     if (frame == ImGui::GetFrameCount()) return;
     frame = ImGui::GetFrameCount();
-    static int locations_at = -100;
+    static int locations_at = -100, villagers_at = -100;
     const bool want_locations = frame - locations_at >= 60;
     editor::try_with_session([&](editor::Session& s) {
         g_snap.valid = true;
@@ -390,6 +431,11 @@ void refresh() {
         if (want_locations) {
             g_snap.locations = s.run("list_locations", Value(), false).get("result");
             locations_at = frame;
+            g_snap.stages = m && m->get("stages").type == Value::Array ? s.run("list_stages", Value(), false).get("result") : Value();
+        }
+        if (frame - villagers_at >= 30) {
+            g_snap.villagers = s.run("list_villagers", Value(), false).get("result");
+            villagers_at = frame;
         }
         g_snap.log.assign(s.log().begin(), s.log().end());
     });
@@ -399,6 +445,11 @@ void refresh() {
         done.swap(g_done);
     }
     for (auto& d : done) {
+        // the pickers' lookups say nothing in the status bar when they work
+        if (d.command == "demo_choices" && d.result.get("ok").boolean) {
+            if (d.then) d.then(d.result);
+            continue;
+        }
         U.message_ok = d.result.get("ok").boolean;
         if (!U.message_ok) U.message = d.result.get("error").string();
         else if (d.result.get("result").get("note").type == Value::String) U.message = d.result.get("result").get("note").text;
@@ -510,6 +561,18 @@ void actor_inspector(const Value& m) {
         p["position"] = point(v);
         command("move_actor", p);
     }
+    if (actor.rfind("game:", 0) == 0) {  // a game object: its variant, turn and scale within the catalogue's limits
+        static Value catalogue;
+        static overlay::game_objects::Picker picker;
+        if (catalogue.type == Value::Null)
+            editor::try_with_session([&](editor::Session& s) { catalogue = s.run("list_game_objects", Value(), false).get("result"); });
+        const Value* info = nullptr;
+        for (const auto& o : catalogue.get("objects").array)
+            if (o.get("type").string() == actor) info = &o;
+        if (!info) return muted("\"" + actor + "\" is not in this port's game objects catalogue.");
+        for (auto& [name, params] : overlay::game_objects::inspector(picker, *a, *info)) command(name, params);
+        return;
+    }
     ImGui::TextUnformatted("Rotation (degrees)");
     mark("rotation");
     if (edit_point("##rotation", a->get("rotation"), 0, v)) {
@@ -565,12 +628,84 @@ void actor_inspector(const Value& m) {
             command("set_actor", s);
         }
     }
+    if (actor == "resident") {  // its type (parameters.resident): changing it creates it again in its room
+        ImGui::TextUnformatted("Type");
+        mark("parameters");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        std::string code;
+        if (editor_resident::combo("##resident_type", editor_resident::code_of(*a), code)) {
+            Value params = a->get("parameters").type == Value::Object ? a->get("parameters") : Value();
+            params["resident"] = code;
+            Value s = p;
+            s["property"] = "parameters";
+            s["value"] = params;
+            command("set_actor", s);
+        }
+    }
+    if (story_enemy_variants::has_variants(actor)) {  // its declared variant (parameters.variant): changing it creates it again
+        ImGui::TextUnformatted("Variant");
+        mark("parameters");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const std::string current = a->get("parameters").get("variant").string();
+        const auto* shown = story_enemy_variants::find(actor, current);
+        if (ImGui::BeginCombo("##enemy_variant", shown ? shown->label : current.c_str())) {
+            for (const auto& v : story_enemy_variants::kVariants) {
+                if (actor != v.kind) continue;
+                const bool selected = shown == &v;
+                if (ImGui::Selectable(v.label, selected) && !selected) {
+                    Value s = p;
+                    s["property"] = "parameters";
+                    if (&v == story_enemy_variants::find(actor, "")) s["value"] = Value();  // the ordinary one: no parameter
+                    else {
+                        Value params;
+                        params["variant"] = std::string(v.name);
+                        s["value"] = params;
+                    }
+                    command("set_actor", s);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", v.help);
+            }
+            ImGui::EndCombo();
+        }
+    }
+    if (actor == "resident" || ((actor == "bokoblin" || actor == "moblin") && !is_mod) || (is_mod && !combat && !carry && a->get("behaviour").type == Value::Null)) route_section(m, *a);
+    path_section(m, *a);  // only for an actor that uses one of the mod's room paths
+    water_section(m, *a);
     if (is_enemy(actor) || combat) edit_property(p, *a, "Defeated flag (set when it is beaten)", "defeated_flag");
+    if (is_enemy(actor) || combat) {  // a mod switch set when every enemy naming it is defeated (doors follow it)
+        ImGui::TextUnformatted("Sets switch when defeated");
+        mark("defeat_switch");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const std::string current = a->get("defeat_switch").string();
+        if (ImGui::BeginCombo("##defeat_switch", current.empty() ? "(none)" : current.c_str())) {
+            auto pick = [&](const std::string& id) {
+                Value s = p;
+                s["property"] = "defeat_switch";
+                s["value"] = id.empty() ? Value() : Value(id);
+                command("set_actor", s);
+            };
+            if (ImGui::Selectable("(none)", current.empty()) && !current.empty()) pick("");
+            for (const auto& other : m.get("actors").array)
+                if (other.get("actor").string() == "switch") {
+                    const std::string id = other.get("id").string();
+                    if (ImGui::Selectable(id.c_str(), id == current) && id != current) pick(id);
+                }
+            ImGui::EndCombo();
+        }
+    }
+    if (actor == "switch" || actor == "door") {  // the enemies whose defeat sets this switch (or the door's)
+        const std::string sw = actor == "switch" ? U.actor : a->get("switch").string();
+        std::string who;
+        for (const auto& other : m.get("actors").array)
+            if (!sw.empty() && other.get("defeat_switch").string() == sw) who += (who.empty() ? "" : ", ") + other.get("id").string();
+        if (!who.empty()) wrapped(kMuted, ("Set when all of these are defeated: " + who).c_str());
+    }
     if (is_prop(actor) || (carry && a->get("carry").get("break_on_impact").boolean)) edit_property(p, *a, "Broken flag (set when it breaks)", "broken_flag");
     if (is_prop(actor)) edit_property(p, *a, "Texture (a PNG in textures/ or assets/, empty: the game's)", "texture", 120);
     if (actor == "switch") edit_property(p, *a, "Switch flag (set when pressed)", "switch_flag");
     if (actor == "door") edit_property(p, *a, "Switch (the id of the switch that opens it)", "switch");
     if (is_enemy(actor) || is_prop(actor) || combat || (carry && a->get("carry").get("break_on_impact").boolean)) drops_form(m, *a, p);
+    if (actor == "chest") chest_form(m, *a, p);
     const bool talks = actor == "sign" || actor == "chest" || actor == "resident" || (is_mod && !combat && !carry);
     if (!talks) return;
     ImGui::Separator();
@@ -850,7 +985,7 @@ void problems_area() {
             U.message = U.message_ok ? "No problems: the package is valid." : std::to_string(U.problems.array.size()) + " problem(s)";
         });
     if (U.problems.type != Value::Array) {
-        muted("Checks every actor, model, scene and quest as the mod manager does.");
+        muted("Checks every actor, model, scene, quest, letter, chart and item as the mod manager does.");
         return;
     }
     if (U.problems.array.empty()) ImGui::TextColored(kGood, "No problems.");
@@ -881,6 +1016,10 @@ void problems_area() {
                 show_quest(U.quest, pr.get("field").string());
             } else if (pr.get("kind").string() == "model")
                 U.select_area = 1;
+            else if (pr.get("kind").string() == "item" || pr.get("kind").string() == "chart" || pr.get("kind").string() == "letter") {
+                U.select_area = 4;
+                show_story(pr.get("kind").string(), pr.get("id").string());
+            }
         }
         ImGui::PopStyleColor();
         ImGui::PopID();
@@ -918,6 +1057,79 @@ void export_area() {
     }
 }
 
+namespace {
+// "New mod...": a small form (id, name, author), the error under it, Create runs new_mod
+struct NewModForm {
+    char id[65] = {}, name[129] = {}, author[257] = {};
+    std::string error;
+    bool running = false, open = false;
+} g_new_mod;
+void new_mod_button() {
+    if (ImGui::Button("New mod...")) {
+        g_new_mod = NewModForm();
+        g_new_mod.open = true;
+        ImGui::OpenPopup("New mod");
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Start a new, empty mod of your own");
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(460.0f, vp->WorkSize.x - 32), 0));
+    if (!ImGui::BeginPopupModal("New mod", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
+    muted("A new, empty mod: its own package in the mod manager, turned on in your current mod profile. "
+          "Add actors, quests or story items, then Save.");
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Id");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    text_entry::field("##new_mod_id", g_new_mod.id, sizeof g_new_mod.id, 0, "my-first-mod");
+    ImGui::TextDisabled("lower-case letters, digits, '-', '_' and '.'; it can't be changed later");
+    ImGui::TextUnformatted("Name");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    text_entry::field("##new_mod_name", g_new_mod.name, sizeof g_new_mod.name, 0, "My first mod");
+    ImGui::TextUnformatted("Author (optional)");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    text_entry::field("##new_mod_author", g_new_mod.author, sizeof g_new_mod.author);
+    // the same checks as the command, at once (the command checks again, and the mod manager after it)
+    std::string hint;
+    const std::string id = g_new_mod.id;
+    if (!id.empty() && !editor::package_id_valid(id)) hint = "The id may only use a-z, 0-9, '-', '_' and '.' (not starting with '.').";
+    else
+        for (const auto& m : snapshot().mods)
+            if (m == id) hint = "A mod with this id is open in the editor already.";
+    if (!hint.empty()) wrapped(kBad, hint);
+    else if (!g_new_mod.error.empty()) wrapped(kBad, g_new_mod.error);
+    ImGui::Spacing();
+    const bool ready = !g_new_mod.running && !id.empty() && hint.empty() && std::string(g_new_mod.name).find_first_not_of(' ') != std::string::npos;
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button(g_new_mod.running ? "Creating..." : "Create")) {
+        Value p;
+        p["id"] = id;
+        p["name"] = std::string(g_new_mod.name);
+        if (g_new_mod.author[0]) p["author"] = std::string(g_new_mod.author);
+        p["confirm"] = true;
+        g_new_mod.running = true;
+        g_new_mod.error.clear();
+        command("new_mod", p, [](const Value& r) {
+            g_new_mod.running = false;
+            if (!r.get("ok").boolean) {
+                g_new_mod.error = r.get("error").string();
+                return;
+            }
+            g_new_mod.open = false;  // closes on the next frame
+            U.actor.clear(), U.scene.clear(), U.quest.clear();
+            U.problems = Value();
+        });
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(g_new_mod.running);
+    if (ImGui::Button("Cancel")) g_new_mod.open = false;
+    ImGui::EndDisabled();
+    if (!g_new_mod.open) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+}  // namespace
+
 void mod_bar() {
     const Snapshot& s = snapshot();
     ImGui::SetNextItemWidth(200);
@@ -932,6 +1144,8 @@ void mod_bar() {
             }
         ImGui::EndCombo();
     }
+    ImGui::SameLine();
+    new_mod_button();
     ImGui::SameLine();
     ImGui::BeginDisabled(s.undo.empty());
     if (ImGui::Button("Undo")) command("undo");
@@ -1012,7 +1226,7 @@ void mcp_area() {
     ImGui::Spacing();
     muted("The token is new each time you turn this on and is never saved. After a restart, run "
           "\"claude mcp remove wwhd-editor\" and add it again with the new command.");
-    muted("Removing actors, reverting, saving, exporting, resetting a quest and loading a test state ask you first "
+    muted("Creating a mod, removing actors, reverting, saving, exporting, resetting a quest and loading a test state ask you first "
           "(Allow / Deny). Claude reads files only inside the open package or ones you picked here; anything else asks "
           "you. Every call shows in the Log, marked [MCP].");
 }
@@ -1052,7 +1266,7 @@ void register_tab() {
 }
 
 void draw() {
-    // test aids: WWHD_TEST_EDITOR_AREA=<0..8> and WWHD_TEST_EDITOR_ACTOR=<id> preselect (screenshots)
+    // test aids: WWHD_TEST_EDITOR_AREA=<0..10> and WWHD_TEST_EDITOR_ACTOR=<id> preselect (screenshots)
     static bool test_aids = [] {
         if (const char* a = std::getenv("WWHD_TEST_EDITOR_AREA")) U.select_area = std::atoi(a);
         if (const char* a = std::getenv("WWHD_TEST_EDITOR_ACTOR")) U.actor = a;
@@ -1064,8 +1278,10 @@ void draw() {
     refresh();
     const Snapshot& s = snapshot();
     if (s.valid && s.mods.empty()) {
-        wrapped(kMuted, "None of the active mods places actors, has models, scenes or quests. Turn on a mod that does "
-                        "(for example the SDK v3 examples) and start the game again.");
+        wrapped(kMuted, "None of the active mods places actors, has models, scenes or quests. Start a new mod of your own, "
+                        "or turn on a mod that does (for example the SDK v3 examples) and start the game again.");
+        new_mod_button();
+        if (!U.message.empty()) wrapped(U.message_ok ? kGood : kBad, U.message);
         return;
     }
     mod_bar();
@@ -1073,7 +1289,7 @@ void draw() {
     if (!U.message.empty()) wrapped(U.message_ok ? kGood : kBad, U.message);
     if (!status.empty()) wrapped(kMuted, status);
     mcp_prompt();
-    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Warp", "Camera & test", "Problems", "Export", "Log", "Claude / MCP"};
+    static const char* const kAreas[] = {"Actors", "Models", "Scenes", "Quests", "Story", "Warp", "Camera & test", "Problems", "Export", "Log", "Stages", "Claude / MCP"};
     const int areas = int(sizeof kAreas / sizeof kAreas[0]) - (editor_mcp::available() ? 0 : 1);
     if (ImGui::BeginTabBar("editor_areas", ImGuiTabBarFlags_FittingPolicyShrink)) {
         for (int i = 0; i < areas; i++) {
@@ -1103,11 +1319,13 @@ void draw() {
     case 1: models_area(m); break;
     case 2: scenes_area(m); break;
     case 3: quests_area(m); break;
-    case 4: warp_area(); break;
-    case 5: camera_test_area(); break;
-    case 6: problems_area(); break;
-    case 7: export_area(); break;
-    case 9: mcp_area(); break;
+    case 4: story_area(m); break;
+    case 5: warp_area(); break;
+    case 6: camera_test_area(); break;
+    case 7: problems_area(); break;
+    case 8: export_area(); break;
+    case 10: stages_area(m); break;
+    case 11: mcp_area(); break;
     default: log_area(); break;
     }
     ImGui::EndChild();

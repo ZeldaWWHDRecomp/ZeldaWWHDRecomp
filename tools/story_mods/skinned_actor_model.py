@@ -17,6 +17,11 @@ BuildError = static.BuildError
 require = static.require
 VERSION = 2
 ARCHIVE = 'content/Common/Object/Fobj00.szs'
+# Several materials or a cut-out: a sibling of the single-material template from the same family (the
+# same skinned vertex layout and toon ramp) whose one material is alpha-tested, so its shader writes the
+# colour texture's alpha. Every output material copies it; opaque ones turn the alpha test off.
+PARTS_ARCHIVE = 'content/Common/Object/Fobj01.szs'
+TEMPLATES = {ARCHIVE: 'fobj00', PARTS_ARCHIVE: 'fobj01'}
 MAX_JOINTS = 32
 
 
@@ -115,18 +120,12 @@ def read_glb(path):
     require(len(mesh_nodes) == 1, 'one skinned mesh instance required')
     mi, mesh_node = mesh_nodes[0]
     require(mi not in parents and mesh_node.get('skin') == 0 and mesh_node.get('mesh') == 0 and static.node_matrix(mesh_node) == static.node_matrix({}), 'mesh must be identity scene root with skin 0')
-    primitive = doc['meshes'][0]['primitives'][0]; attrs = primitive['attributes']
+    primitives = doc['meshes'][0]['primitives']
+    if not plain_single(doc):
+        return read_parts(doc, binary, bones)
+    primitive = primitives[0]; attrs = primitive['attributes']
     require(set(attrs) == {'POSITION','NORMAL','TEXCOORD_0','JOINTS_0','WEIGHTS_0'}, 'skinned attributes required')
-    indices = accessor(doc, binary, attrs['JOINTS_0'], 'VEC4', (5121, 5123))
-    weights = accessor(doc, binary, attrs['WEIGHTS_0'], 'VEC4', (5126,))
-    influences = []
-    require(len(indices) == len(weights), 'skin attribute counts differ')
-    for js, ws in zip(indices, weights):
-        require(all(j < len(bones) for j in js) and all(w >= 0 for w in ws) and abs(sum(ws)-1) < 1e-4, 'invalid skin weights/joints')
-        used = [(j, w) for j, w in zip(js, ws) if w > 0]
-        require(1 <= len(used) <= 2 and len(set(j for j, _ in used)) == len(used), 'at most two distinct influences required')
-        if len(used) == 1: used.append((used[0][0], 0.))
-        influences.append(used)
+    influences = skin_influences(doc, binary, attrs, len(bones))
     # Reuse the strict static geometry/material/PNG/span validator on a sanitized
     # projection; skin data is independently validated above, never ignored.
     clean = copy.deepcopy(doc); clean.pop('skins'); clean.pop('animations', None)
@@ -140,6 +139,61 @@ def read_glb(path):
     require(len(geometry[0]) == len(influences), 'skin vertex count mismatch')
     info.update(kind='skinned', bones=len(bones), weights_per_vertex=2, bounds_min=[min(p[k] for p in geometry[0]) for k in range(3)], bounds_max=[max(p[k] for p in geometry[0]) for k in range(3)])
     model = dict(geometry=geometry, bones=bones, influences=influences, document=doc, binary=binary)
+    return finish(model, info)
+
+
+def plain_single(doc):
+    """One primitive with one opaque, single-sided material: the original single-material output."""
+    meshes = doc.get('meshes')
+    require(isinstance(meshes, list) and len(meshes) == 1 and isinstance(meshes[0], dict), 'one skinned mesh required')
+    primitives = meshes[0].get('primitives')
+    require(isinstance(primitives, list) and primitives, 'the skinned mesh needs a triangle primitive')
+    materials = doc.get('materials')
+    return len(primitives) == 1 and isinstance(materials, list) and len(materials) == 1 and static.plain_material(materials[0])
+
+
+def skin_influences(doc, binary, attrs, bone_count, label=''):
+    indices = accessor(doc, binary, attrs['JOINTS_0'], 'VEC4', (5121, 5123))
+    weights = accessor(doc, binary, attrs['WEIGHTS_0'], 'VEC4', (5126,))
+    influences = []
+    require(len(indices) == len(weights), label + 'skin attribute counts differ')
+    for js, ws in zip(indices, weights):
+        require(all(j < bone_count for j in js) and all(w >= 0 for w in ws) and abs(sum(ws)-1) < 1e-4, label + 'invalid skin weights/joints')
+        used = [(j, w) for j, w in zip(js, ws) if w > 0]
+        require(1 <= len(used) <= 2 and len(set(j for j, _ in used)) == len(used), label + 'at most two distinct influences required')
+        if len(used) == 1: used.append((used[0][0], 0.))
+        influences.append(used)
+    return influences
+
+
+def read_parts(doc, binary, bones):
+    """Several materials (or one cut-out or double-sided material): every triangle primitive is skinned
+    to the same skeleton; the geometry, materials, textures and limits are those of a rigid model with
+    several materials (actor_model.read_parts)."""
+    primitives = doc['meshes'][0]['primitives']
+    require(len(primitives) <= static.MAX_PRIMITIVES, 'the visible mesh needs 1 to %d triangle primitives' % static.MAX_PRIMITIVES)
+    influences = []
+    for pi, primitive in enumerate(primitives):
+        attrs = primitive.get('attributes') if isinstance(primitive, dict) else None
+        require(isinstance(attrs, dict) and set(attrs) == {'POSITION','NORMAL','TEXCOORD_0','JOINTS_0','WEIGHTS_0'},
+                'primitive %d: POSITION, NORMAL, TEXCOORD_0, JOINTS_0 and WEIGHTS_0 required' % pi)
+        influences.append(skin_influences(doc, binary, attrs, len(bones), 'primitive %d: ' % pi))
+    clean = copy.deepcopy(doc); clean.pop('skins'); clean.pop('animations', None)
+    for n in clean['nodes']: n.pop('skin', None)
+    for primitive in clean['meshes'][0]['primitives']:
+        for k in ('JOINTS_0','WEIGHTS_0'): primitive['attributes'].pop(k)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, 'geometry.glb')
+        with open(path, 'wb') as tmp: tmp.write(pack_glb(clean, binary))
+        parts, info = static.read_parts(path)
+    require(len(parts.parts) == len(influences) and all(len(p.pos) == len(i) for p, i in zip(parts.parts, influences)), 'skin vertex count mismatch')
+    positions = [p for part in parts.parts for p in part.pos]
+    info.update(kind='skinned', bones=len(bones), weights_per_vertex=2, bounds_min=[min(p[k] for p in positions) for k in range(3)], bounds_max=[max(p[k] for p in positions) for k in range(3)])
+    model = dict(parts=parts, bones=bones, influences=influences, document=doc, binary=binary)
+    return finish(model, info)
+
+
+def finish(model, info):
     import actor_animation
     info['clips'] = actor_animation.inspect_clips(model)
     radius = animation_envelope(model)
@@ -147,6 +201,13 @@ def read_glb(path):
     info['bounds_min'], info['bounds_max'] = [-radius]*3, [radius]*3
     info['animation_radius'] = radius
     return model, info
+
+
+def skinned_vertices(model):
+    """(position, influences) of every vertex: one list for one material, each part's in turn for several."""
+    if 'parts' in model:
+        return [(p, i) for part, influences in zip(model['parts'].parts, model['influences']) for p, i in zip(part.pos, influences)]
+    return list(zip(model['geometry'][0], model['influences']))
 
 
 def animation_envelope(model):
@@ -171,7 +232,7 @@ def animation_envelope(model):
     chain=[]
     for i,bone in enumerate(bones):chain.append(maximum[i]+(chain[bone['parent']] if bone['parent']>=0 else 0))
     radius=0.
-    for vertex,influences in zip(model['geometry'][0],model['influences']):
+    for vertex,influences in skinned_vertices(model):
         for joint,weight in influences:
             if weight<=0:continue
             inverse=bones[joint]['inverse']
@@ -217,16 +278,21 @@ def append_dictionary(f, entries):
     return at
 
 
-def build_bfres(template, model, identity):
-    require(re.fullmatch(r'[a-z][a-z0-9_]{0,30}', identity), 'invalid identity')
-    f = base.Bfres(template); models = f.dict(f.rel(0x20)); require(len(models) == 1 and models[0][0] == 'fobj00', 'wrong skin template')
+def template_parts(f, name='fobj00'):
+    """The skinned template: one model with one shape, one material and the 64-byte skinned vertex layout."""
+    models = f.dict(f.rel(0x20)); require(len(models) == 1 and models[0][0] == name, 'wrong skin template')
     fm = models[0][1]; fv = f.rel(fm+16); sk = f.rel(fm+12); shapes = f.dict(f.rel(fm+20))
     require(len(shapes) == 1 and len(f.dict(f.rel(fm+24))) == 1, 'one mesh/material template required')
     shape = shapes[0][1]; mesh = f.rel(shape+0x24); vb = f.rel(fv+24); ib = f.rel(mesh+20)
     expected = [('_p0',0,0,0x811),('_n0',0,16,0x811),('_u0',0,32,0x80d),('_i0',0,40,0x10c),('_w0',0,48,0x80d)]
     aa = f.rel(fv+16); actual = [(f.cstr(f.rel(aa+i*12)),f.b[aa+i*12+4],f.u16(aa+i*12+6),f.u32(aa+i*12+8)) for i in range(f.b[fv+4])]
     require(actual == expected and f.u16(vb+12) == 64 and f.b[fv+12] == 2, 'unexpected skinned template vertex layout')
-    bones = model['bones']; count = len(bones); ba = f.append(b'\0'*(64*count), 4)
+    return fm, fv, sk, shape, mesh, vb, ib
+
+
+def write_skeleton(f, sk, bones):
+    """The authored bones, their names, one smooth skin matrix per bone and the inverse binds; returns the palette."""
+    count = len(bones); ba = f.append(b'\0'*(64*count), 4)
     for i, bone in enumerate(bones):
         p = ba+i*64; f.set_rel(p, append_string(f,bone['name'])); f.put('HhhhHHI',p+4,i,bone['parent'],i,-1,0xffff,0,0x1001)
         f.put('3f',p+20,1,1,1); f.put('4f',p+32,*bone['rotation'],1); f.put('3f',p+48,*bone['translation'])
@@ -236,14 +302,40 @@ def build_bfres(template, model, identity):
     f.put('IHHHH',sk+4,0x1200,count,count,0,0)
     for off,target in [(16,dictionary),(20,ba),(24,palette),(28,inverse)]:f.set_rel(sk+off,target)
     f.put('I',sk+32,0)
-    pos,normals,uv,indices,png = model['geometry']; data = bytearray()
-    for p,n,t,influences in zip(pos,normals,uv,model['influences']):
-        data += struct.pack('>3f4x3f4x2f2I2f8x',*p,*n,*t,*(v[0] for v in influences),*(v[1] for v in influences))
+    return palette
+
+
+def skinned_vertex_data(pos, normals, uv, influences):
+    """64-byte records: position, normal, UV, two skin matrix indices and their weights."""
+    data = bytearray()
+    for p,n,t,used in zip(pos,normals,uv,influences):
+        data += struct.pack('>3f4x3f4x2f2I2f8x',*p,*n,*t,*(v[0] for v in used),*(v[1] for v in used))
+    return data
+
+
+def finish_bfres(f, fm, identity, model):
+    f.set_rel(fm+4,append_string(f,identity));f.set_rel(0x20,append_dictionary(f,[(identity,fm)]))
+    # No retail clips are reachable; the independent clip writer replaces this.
+    f.put('I',0x28,0);f.put('H',0x54,0)
+    f.append(b'',0x1000);f.put('I',12,len(f.b))
+    import actor_animation
+    return actor_animation.append_clips(bytes(f.b), model)
+
+
+def build_bfres(template, model, identity):
+    require(re.fullmatch(r'[a-z][a-z0-9_]{0,30}', identity), 'invalid identity')
+    if 'parts' in model:
+        return build_bfres_parts(template, model, identity)
+    f = base.Bfres(template)
+    fm, fv, sk, shape, mesh, vb, ib = template_parts(f)
+    bones = model['bones']; count = len(bones)
+    palette = write_skeleton(f, sk, bones)
+    pos,normals,uv,indices,png = model['geometry']
+    data = skinned_vertex_data(pos, normals, uv, model['influences'])
     at=f.append(data,0x1000);f.put('I',vb+4,len(data));f.set_rel(vb+20,at);f.put('I',fv+8,len(pos));f.put('I',fm+40,len(pos))
     data=struct.pack('>'+str(len(indices))+'I',*indices);at=f.append(data,0x1000);f.put('I',ib+4,len(data));f.set_rel(ib+20,at)
     f.put('IIIH',mesh,4,9,len(indices),1);f.put('II',f.rel(mesh+16),0,len(indices));f.put('I',mesh+24,0)
     f.put('HHH',shape+16,0,0,count);f.b[shape+22]=2;f.set_rel(shape+40,palette)
-    low=[min(p[k] for p in pos) for k in range(3)];high=[max(p[k] for p in pos) for k in range(3)];center=[(a+b)/2 for a,b in zip(low,high)];extent=[(b-a)/2 for a,b in zip(low,high)]
     require(f.u16(shape+0x1a)==1, 'one native submesh bounding node required')
     radius=animation_envelope(model)
     box=f.rel(shape+52);f.put('6f',box,0,0,0,radius,radius,radius);f.put('f',shape+28,radius)
@@ -253,21 +345,182 @@ def build_bfres(template, model, identity):
     f.put('I',tex+0x7c,1)
     for k in range(5):f.put('I',tex+0x8c+4*k,0)
     f.set_rel(tex+0xb0,at);f.put('i',tex+0xb4,0)
-    f.set_rel(fm+4,append_string(f,identity));f.set_rel(0x20,append_dictionary(f,[(identity,fm)]))
-    # No retail clips are reachable; the independent clip writer replaces this.
-    f.put('I',0x28,0);f.put('H',0x54,0)
-    f.append(b'',0x1000);f.put('I',12,len(f.b))
-    import actor_animation
-    return actor_animation.append_clips(bytes(f.b), model)
+    return finish_bfres(f, fm, identity, model)
+
+
+class SkinnedPart:
+    def __init__(self, pos, nrm, uv, indices, material, influences):
+        self.pos, self.nrm, self.uv, self.indices, self.material, self.influences = pos, nrm, uv, indices, material, influences
+
+
+def drawn_parts(model):
+    """The parts as drawn, each with its vertices' skin influences. A double-sided material's part gets a
+    mirrored back copy (reversed winding, negated normals, the same influences) in its own lists."""
+    out = []
+    parts = model['parts']
+    for part, influences in zip(parts.parts, model['influences']):
+        pos, nrm, uv, indices, used = list(part.pos), list(part.nrm), list(part.uv), list(part.indices), list(influences)
+        if parts.materials[part.material].double_sided:
+            n = len(pos)
+            indices += [i + n for t in range(0, len(part.indices), 3) for i in (part.indices[t], part.indices[t + 2], part.indices[t + 1])]
+            pos += part.pos; nrm += [tuple(-v for v in x) for x in part.nrm]; uv += part.uv; used += influences
+        out.append(SkinnedPart(pos, nrm, uv, indices, part.material, used))
+    return out
+
+
+def build_bfres_parts(template, model, identity):
+    """Several materials: one shape per primitive, all skinned to the one skeleton through the same
+    smooth-skin matrix palette (every shape lists every bone, and its vertices keep their joint indices
+    and weights), so the joints' draw matrices are shared and the parts deform together across material
+    borders. Every material is a copy of the template's alpha-tested skinned material with its own colour
+    texture: a cut-out (MASK) material keeps the alpha test with the author's alphaCutoff, an opaque one
+    turns it off; a double-sided one culls back faces (its mirrored back copy shows the other side)."""
+    import game_piece_model as gp
+    import multi_material as mm
+    parts = model['parts']
+    require(1 <= len(parts.parts) and 1 <= len(parts.materials) and 1 <= len(parts.images), 'empty model')
+    f = base.Bfres(template); w = gp.Writer(template, f)
+    fm, fv, sk, shape, mesh, vb, ib = template_parts(f, 'fobj01')
+    material = f.dict(f.rel(fm+24))[0][1]
+    words = struct.unpack_from('>12I', f.b, f.rel(material + 0x20))
+    require((words[mm.RS_FLAGS] & 3) == mm.MODE_ALPHA_MASK and words[mm.RS_ALPHA] & mm.ALPHA_TEST_ENABLE, 'the skinned template material is not a cut-out')
+    textures = dict(f.dict(f.rel(0x24)))
+    refs = f.rel(material+0x28); ref_names = [f.cstr(f.rel(refs+8*i)) for i in range(f.b[material+0x10])]
+    require(ref_names and ref_names[0] == 'Fobj01' and all(n in textures for n in ref_names), 'unexpected skinned template textures')
+    bones = model['bones']; count = len(bones)
+    palette = write_skeleton(f, sk, bones)
+    # textures: the template material's other textures (its toon ramp), then one colour texture per image
+    entries = [(n, textures[n]) for n in ref_names[1:]]
+    colour = []
+    for i, png in enumerate(parts.images):
+        width, height, rgba = static.png(png)
+        name = 'mm_colour%02d' % i
+        entries.append((name, mm.rgba_texture(w, textures['Fobj01'], name, width, height, rgba)))
+        colour.append(name)
+    texture_at = dict(entries)
+    f.set_rel(0x24, append_dictionary(f, entries)); f.put('H', 0x52, len(entries))
+    # materials
+    materials = []
+    for i, m in enumerate(parts.materials):
+        refs_at = dict(texture_at); refs_at['Fobj01'] = texture_at[colour[m.image]]
+        name = 'mm_material%02d' % i
+        dst = gp.copy_material(w, material, i, name, None, refs_at)
+        f.set_rel(f.rel(dst + 0x28), append_string(f, colour[m.image]))
+        state = f.rel(dst + 0x20); words = list(struct.unpack_from('>12I', f.b, state))
+        if m.kind == 'mask':  # the template's own alpha test, with the author's cutoff
+            words[mm.RS_ALPHA] = mm.ALPHA_TEST_ENABLE | mm.ALPHA_FUNC_GEQUAL
+            words[mm.RS_ALPHA_REF] = struct.unpack('>I', struct.pack('>f', m.cutoff))[0]
+        else:  # opaque: no alpha test (the opaque state of the single-material template)
+            words[mm.RS_FLAGS] = (words[mm.RS_FLAGS] & ~3) | mm.MODE_OPAQUE
+            words[mm.RS_ALPHA] = OPAQUE_ALPHA
+            words[mm.RS_ALPHA_REF] = 0x3F800000
+        if m.double_sided:
+            words[mm.RS_POLYGON] |= CULL_BACK
+        struct.pack_into('>12I', f.b, state, *words)
+        materials.append((name, dst))
+    f.set_rel(fm + 0x18, append_dictionary(f, materials))
+    # shapes, each with its own vertex buffer and index buffer
+    drawn = drawn_parts(model)
+    radius = animation_envelope(model)
+    vertex_array = f.append(bytes(0x20 * len(drawn)), 4)
+    attributes = f.rel(fv + 0x10); nattr = f.b[fv + 4]
+    shapes, vertices = [], 0
+    for index, part in enumerate(drawn):
+        dst_vertex = vertex_array + 0x20 * index
+        f.b[dst_vertex:dst_vertex + 0x20] = template[fv:fv + 0x20]
+        f.put('H', dst_vertex + 6, index); f.put('I', dst_vertex + 8, len(part.pos))
+        dst_attributes = w.block(attributes, 12 * nattr); names = []
+        for a in range(nattr):
+            aname = f.cstr(f.rel(attributes + 12 * a))
+            f.set_rel(dst_attributes + 12 * a, append_string(f, aname)); names.append((aname, dst_attributes + 12 * a))
+        f.set_rel(dst_vertex + 0x10, dst_attributes); f.set_rel(dst_vertex + 0x14, append_dictionary(f, names))
+        f.put('I', dst_vertex + 0x1C, 0)
+        data = skinned_vertex_data(part.pos, part.nrm, part.uv, part.influences)
+        dst_buffer = w.block(vb, 24)
+        f.put('I', dst_buffer + 4, len(data)); f.set_rel(dst_buffer + 0x14, f.append(bytes(data), 0x1000))
+        f.set_rel(dst_vertex + 0x18, dst_buffer)
+        dst_shape = w.block(shape, 0x40)
+        sname = 'shape%d' % index
+        f.set_rel(dst_shape + 4, append_string(f, sname))
+        f.put('HHHHH', dst_shape + 0xC, index, part.material, 0, index, count)
+        f.b[dst_shape + 0x16] = 2; f.b[dst_shape + 0x17] = 1
+        f.put('H', dst_shape + 0x1A, 1); f.put('f', dst_shape + 0x1C, radius)
+        f.set_rel(dst_shape + 0x20, dst_vertex)
+        dst_mesh = w.block(mesh, 28)
+        index_bytes = struct.pack('>%dI' % len(part.indices), *part.indices)
+        f.put('IIIH', dst_mesh, 4, 9, len(part.indices), 1); f.put('I', dst_mesh + 0x18, 0)
+        f.set_rel(dst_mesh + 0x10, f.append(struct.pack('>II', 0, len(part.indices)), 4))
+        dst_index = w.block(ib, 24)
+        f.put('I', dst_index + 4, len(index_bytes)); f.set_rel(dst_index + 0x14, f.append(index_bytes, 0x1000))
+        f.set_rel(dst_mesh + 0x14, dst_index)
+        f.set_rel(dst_shape + 0x24, dst_mesh)
+        f.set_rel(dst_shape + 0x28, palette)  # every shape: the whole smooth-skin palette, one matrix per bone
+        f.put('i', dst_shape + 0x2C, 0)
+        f.set_rel(dst_shape + 0x30, f.append(struct.pack('>6H', 0, 0, 0, 0, 0, 1), 4))
+        f.set_rel(dst_shape + 0x34, f.append(struct.pack('>6f', 0, 0, 0, radius, radius, radius), 4))
+        f.set_rel(dst_shape + 0x38, f.append(struct.pack('>H', 0), 4))
+        f.put('I', dst_shape + 0x3C, 0)
+        shapes.append((sname, dst_shape))
+        vertices += len(part.pos)
+    f.set_rel(fm + 0x10, vertex_array)
+    f.set_rel(fm + 0x14, append_dictionary(f, shapes))
+    f.put('HHH', fm + 0x20, len(drawn), len(drawn), len(materials))
+    f.put('I', fm + 0x28, vertices)
+    result = finish_bfres(f, fm, identity, model)
+    validate_parts(result, identity, model)
+    return result
+
+
+CULL_BACK = 2  # GX2 polygon control: cull back faces
+OPAQUE_ALPHA = 3  # GX2 alpha test control: compare function, test off
+
+
+def validate_parts(data, identity, model):
+    """Read the output back: shapes, skin palettes, vertex and index spans, materials and textures."""
+    import multi_material as mm
+    f = base.Bfres(data)
+    require(f.u32(0xC) == len(data) and len(data) % 0x1000 == 0, 'invalid output BFRES size')
+    models = f.dict(f.rel(0x20))
+    require(len(models) == 1 and models[0][0] == identity and f.cstr(f.rel(models[0][1] + 4)) == identity, 'output identity mismatch')
+    fm = models[0][1]; sk = f.rel(fm + 12); count = len(model['bones'])
+    require((f.u16(sk + 8), f.u16(sk + 10)) == (count, count), 'output skeleton mismatch')
+    palette = f.rel(sk + 24)
+    shapes = f.dict(f.rel(fm + 0x14)); materials = f.dict(f.rel(fm + 0x18)); parts = model['parts']
+    drawn = drawn_parts(model)
+    require(len(shapes) == len(drawn) and len(materials) == len(parts.materials), 'output shape or material count mismatch')
+    textures = dict(f.dict(f.rel(0x24)))
+    for (_, shape), part in zip(shapes, drawn):
+        require(f.u16(shape + 0xE) == part.material and f.u16(shape + 0x14) == count and f.b[shape + 0x16] == 2 and f.rel(shape + 0x28) == palette,
+                'output shape skin mismatch')
+        fvtx = f.rel(shape + 0x20); vbuf = f.rel(fvtx + 0x18)
+        require(f.u32(fvtx + 8) == len(part.pos) and f.b[fvtx + 12] == 2 and f.u32(vbuf + 4) == len(part.pos) * 64 and
+                0 < f.rel(vbuf + 0x14) <= len(data) - len(part.pos) * 64, 'output vertex span invalid')
+        at = f.rel(vbuf + 0x14)
+        for v, used in enumerate(part.influences):
+            require(struct.unpack_from('>2I', data, at + 64 * v + 40) == tuple(j for j, _ in used) and max(j for j, _ in used) < count, 'output skin indices mismatch')
+        mesh = f.rel(shape + 0x24); ibuf = f.rel(mesh + 0x14)
+        require(f.u32(mesh + 8) == len(part.indices) and f.u32(ibuf + 4) == len(part.indices) * 4 and
+                0 < f.rel(ibuf + 0x14) <= len(data) - len(part.indices) * 4, 'output index span invalid')
+    for (_, at), m in zip(materials, parts.materials):
+        refs = f.rel(at + 0x28); texture = f.rel(refs + 4)
+        require(textures.get(f.cstr(f.rel(refs))) == texture, 'output material texture mismatch')
+        surface = texture + 4; width, height = f.u32(surface + 4), f.u32(surface + 8)
+        require(f.u32(surface + 0x14) == base.FMT_RGBA8_SRGB and f.u32(surface + 0x20) == width * height * 4 and
+                0 < f.rel(texture + 0xB0) <= len(data) - width * height * 4, 'output texture span invalid')
+        state = f.rel(at + 0x20); flags, polygon, alpha = f.u32(state), f.u32(state + 4), f.u32(state + 12)
+        require(bool(alpha & mm.ALPHA_TEST_ENABLE) == (m.kind == 'mask') and ((flags & 3) == mm.MODE_ALPHA_MASK) == (m.kind == 'mask'), 'output material kind mismatch')
+        require(not m.double_sided or polygon & CULL_BACK, 'output double-sided material mismatch')
 
 
 def converter_sources():
     """Named code fingerprints, independent of the installation directory."""
     import actor_animation
     result = {}
+    import multi_material, game_piece_model
     for name, path in (('skinned_actor_model', __file__), ('actor_model', static.__file__),
                        ('notebook_model', base.__file__), ('shaderprep', base.shaderprep.__file__),
-                       ('actor_animation', actor_animation.__file__)):
+                       ('actor_animation', actor_animation.__file__), ('multi_material', multi_material.__file__),
+                       ('game_piece_model', game_piece_model.__file__)):
         with open(path, 'rb') as source:
             result[name] = hashlib.sha256(source.read()).hexdigest()
     return result
@@ -275,17 +528,19 @@ def converter_sources():
 
 def build(game, path, identity, out):
     model,info=read_glb(path)
-    with open(os.path.join(game,ARCHIVE),'rb') as source: template_bytes=source.read()
+    archive=PARTS_ARCHIVE if 'parts' in model else ARCHIVE
+    name=TEMPLATES[archive];names=(name.capitalize()+'.bfres',name+'.sharcfb')
+    with open(os.path.join(game,archive),'rb') as source: template_bytes=source.read()
     files=dict(base.shaderprep.sarc(base.shaderprep.yaz0(template_bytes)))
-    require(set(files)=={'Fobj00.bfres','fobj00.sharcfb'},'unexpected skin archive')
-    bfres=build_bfres(files['Fobj00.bfres'],model,identity)
-    packed=base.yaz0_stored(base.sarc({identity+'.bfres':bfres,identity+'.sharcfb':files['fobj00.sharcfb']}))
+    require(set(files)==set(names),'unexpected skin archive')
+    bfres=build_bfres(files[names[0]],model,identity)
+    packed=base.yaz0_stored(base.sarc({identity+'.bfres':bfres,identity+'.sharcfb':files[names[1]]}))
     import actor_animation
     source_hashes = converter_sources()
     code_digest = json.dumps(source_hashes, sort_keys=True, separators=(',', ':')).encode()
     digest=hashlib.sha256()
     with open(path,'rb') as source: source_bytes=source.read(static.MAX_SOURCE+1)
-    for data in (b'skinned',str(VERSION).encode(),str(actor_animation.VERSION).encode(),code_digest,identity.encode(),source_bytes,files['Fobj00.bfres'],files['fobj00.sharcfb']):digest.update(struct.pack('>I',len(data)));digest.update(data)
+    for data in (b'skinned',str(VERSION).encode(),str(actor_animation.VERSION).encode(),code_digest,identity.encode(),source_bytes,files[names[0]],files[names[1]]):digest.update(struct.pack('>I',len(data)));digest.update(data)
     info.update(identity=identity,converter_version=VERSION,animation_converter_version=actor_animation.VERSION,converter_sources=source_hashes,cache_key=digest.hexdigest(),archive_bytes=len(packed),archive_sha256=hashlib.sha256(packed).hexdigest())
     os.makedirs(os.path.dirname(os.path.abspath(out)),exist_ok=True)
     with open(out+'.tmp','wb') as target:target.write(packed)

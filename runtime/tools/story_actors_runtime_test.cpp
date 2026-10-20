@@ -20,6 +20,7 @@
 #include "mods/story_world_arrival.h"
 #include "mods/mod_actor.h"
 #include "mods/story_props.h"
+#include "mods/story_game_objects.h"
 #include "mods/story_switches.h"
 #include "mods/story_enemies.h"
 #include "mods/story_enemy_children.h"
@@ -30,6 +31,7 @@
 #include "mods/story_items.h"
 #include "mods/story_notebook.h"
 #include "mods/story_treasure.h"
+#include "mods/story_resident_routes.h"
 #include "runtime.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -37,11 +39,16 @@
 #include <sys/mman.h>
 #endif
 namespace story_chart {
+// a dialogue's chart give: the chart's record, owned once (as story_chart.cpp gives it)
+std::map<std::string,int32_t> given_charts;
+int32_t give(const std::string& mod,const std::string& chart){auto& v=given_charts[mod+":"+chart];if(!v)v=kResultOwned;return v;}
 void note_import(){} bool installed(){return true;}
 bool publish_world_markers(const std::string&,std::span<const WorldMarker>){return true;}
 SquarePlace square_place(float x,float z){const int col=int(std::floor((x+50000)/100000)),row=int(std::floor((z+50000)/100000));return {col,row,x-col*100000.f,z-row*100000.f};}
 }
-namespace story_world_arrival {bool show(const std::string&,float){return true;}void state_loaded(){}}
+// placed chests of mod items: the chest item hook is the treasure chests' (story_treasure_chest_test)
+namespace story_treasure_chest {bool placed_noted=false,hook_ready=false;void note_placed_chests(){placed_noted=true;}bool item_hook_ready(){return hook_ready;}}
+namespace story_world_arrival {bool show(const std::string&,float){return true;}void state_loaded(){}void note_declared(){}}
 std::vector<std::string> native_trace_records;
 void log_msg(const char* format,...){if(std::strncmp(format,"[native_actor]",14)!=0)return;char line[1024];va_list args;va_start(args,format);std::vsnprintf(line,sizeof(line),format,args);va_end(args);native_trace_records.emplace_back(line);}
 namespace {
@@ -50,10 +57,17 @@ std::array<uint8_t,1024> extension{};
 std::map<uint32_t,void(*)(Cpu*)> hooks;
 uint32_t created=0,actor_id=100;unsigned originals=0,says=0,unsays=0,talk_finishes=0;
 uint32_t current_layer=kArena+0x6800;bool room_available=true;
+uint32_t expect_people_subtype=1,expect_people_params=0x00FF0000,expect_people_yaw=0x4000;
 bool sign_native_fixture=false,sign_a_pressed=false;unsigned sign_end_transitions=0;uint32_t sign_status=14;
 uint32_t ym1_partner=0,ym1_message_status=6;unsigned seated_actions=0,seated_bases=0;
 bool prop_broken_fixture=false;unsigned prop_claim_calls=0,enemy_claim_calls=0;bool enemy_terminal=false,refuse_enemy_request=false,enemy_four_mode=false,mo_disarm_fixture=false;
-bool pending=false,nested_chest=false,throw_search=false;int32_t quest_state=1,item_count=1;unsigned deleted=0,native_calls=0;
+bool pending=false,nested_chest=false,throw_search=false;
+// game objects: the object name table knows these stage actor names (process, subtype); a made object's
+// parameter word can be falsified (read-back) and its create phase can fail (the game gives up)
+std::map<std::string,std::pair<uint16_t,uint8_t>> object_names={{"takara",{0x125,0xFF}},{"Oyashi",{0x49,0xFF}},{"Table",{0x116,0xFF}},{"kusax1",{0x1B3,0xFF}}};
+// the stage's grass batch (dGrass_packet_c: 1500 units of 0x44 bytes from +0x9C, a unit is taken while its first byte is set)
+constexpr uint32_t kGrassPacket=kArena+0xA0000;unsigned grass_plants=0;
+bool game_object_falsify=false,game_object_fail=false;std::vector<std::array<uint32_t,8>> game_object_creates;int32_t quest_state=1,item_count=1;unsigned deleted=0,native_calls=0;
 std::map<uint32_t,uint32_t> live;
 
 void map_guest(uint32_t at,uint32_t size) {
@@ -69,8 +83,9 @@ void map_guest(uint32_t at,uint32_t size) {
 #endif
 }
 uint32_t enemy_address(unsigned kind){return kActor+0x20000+kind*0x4000;}
-void enemy_fixture(story_enemies::Kind kind,uint32_t a,uint32_t pid){const auto&d=story_enemy_ownership::descriptor(kind);std::memset(mem::ptr(a),0,d.bytes);st32(a+4,pid);st16(a+0xE,d.profile);st32(a+0xB0,story_enemies::parameters(kind));st32(a+0xB4,kind==story_enemies::Kind::ChuChu?0x1000C5A0:kind==story_enemies::Kind::Bokoblin?0x1000957C:kind==story_enemies::Kind::Moblin?0x10014E9C:0x10012C24);st8(a+0x2DD,0xFF);st16(a+0x2D8,0xFFFF);st16(a+0x2FC,story_enemies::home_z(kind));
- if(kind==story_enemies::Kind::ChuChu)st8(a+0x3FB,0xFF);else if(kind==story_enemies::Kind::Keese){st8(a+0x486,0xFF);st8(a+0x487,0xFF);}else if(kind==story_enemies::Kind::Bokoblin){st8(a+0x3D0,4);st8(a+0x3D2,0xFF);st8(a+0x3D3,0xFF);st32(a+0x49C,a);st16(a+0x49C+8,2);}else{st8(a+0x3DA,0xFF);st8(a+0x3DB,0xFF);st32(a+0x8BC,a);st16(a+0x8BC+8,1);st8(a+0x10B0,1);}
+uint32_t chuchu_params=0xFF000000u;  // the ChuChu variant the fixture creates
+void enemy_fixture(story_enemies::Kind kind,uint32_t a,uint32_t pid){const auto&d=story_enemy_ownership::descriptor(kind);std::memset(mem::ptr(a),0,d.bytes);st32(a+4,pid);st16(a+0xE,d.profile);st32(a+0xB0,kind==story_enemies::Kind::ChuChu?chuchu_params:story_enemies::parameters(kind));st32(a+0xB4,kind==story_enemies::Kind::ChuChu?0x1000C5A0:kind==story_enemies::Kind::Bokoblin?0x1000957C:kind==story_enemies::Kind::Moblin?0x10014E9C:0x10012C24);st8(a+0x2DD,0xFF);st16(a+0x2D8,0xFFFF);st16(a+0x2FC,story_enemies::home_z(kind));
+ if(kind==story_enemies::Kind::ChuChu){st8(a+0x3F9,uint8_t(chuchu_params>>8));st8(a+0x3FB,0xFF);}else if(kind==story_enemies::Kind::Keese){st8(a+0x486,0xFF);st8(a+0x487,0xFF);}else if(kind==story_enemies::Kind::Bokoblin){st8(a+0x3D0,4);st8(a+0x3D1,0xFF);st8(a+0x3D2,0xFF);st8(a+0x3D3,0xFF);st32(a+0x49C,a);st16(a+0x49C+8,2);}else{st8(a+0x3DA,0xFF);st8(a+0x3DB,0xFF);st32(a+0x8BC,a);st16(a+0x8BC+8,1);st8(a+0x10B0,1);}
  for(size_t n=0;n<d.collider_count;++n){auto&x=d.colliders[n];st32(a+x.object+0x44,a+x.stts);st32(a+x.stts+0xC,a);st32(a+x.stts+0x10,pid);if(x.helper)st32(a+x.helper,a);}
 }
 uint32_t child_address(uint32_t params){return kArena+0x60000+(params==4?0x2000:0);}
@@ -109,6 +124,7 @@ void original(Cpu* c,uint32_t fn) {
     }
     if(fn==0x025B8C0C)st32(c->r[3],ld32(c->r[3])|1);
 }
+uint32_t move_approval=1;unsigned held_executes=0;float held_drawn_x=0;
 uint32_t call(Cpu*,uint32_t fn,std::initializer_list<uint32_t> args) {
     ++native_calls;const auto* a=args.begin();
     if(sign_native_fixture&&fn==0x025F795C)return sign_status;
@@ -117,13 +133,21 @@ uint32_t call(Cpu*,uint32_t fn,std::initializer_list<uint32_t> args) {
     if(fn==0x025DC80C){assert((a[0]>=1000&&a[0]<=1003)||(a[0]>=2000&&a[0]<=2003));return room_available?kArena+0x6000+(a[0]%1000)*0x200:0;}
     if(fn==0x025DED64)return current_layer;
     if(fn==0x025DEAB4){current_layer=a[0];return 0;}
-    if(fn==0x025D57E0){++deleted;assert(a[0]>=kActor&&a[0]<=kActor+0x40000);st8(a[0]+0xC,3);return 1;}
-    if(fn==0x025C109C){assert(std::strcmp(reinterpret_cast<char*>(mem::ptr(a[0])),"takara")==0);st16(kArena+8,0x125);return kArena;}
+    if(fn==0x025D57E0){++deleted;assert(a[0]>=kActor&&a[0]<=kActor+0x40000);st8(a[0]+0xC,3);if(a[0]>=kActor+0x30000)live.erase(ld32(a[0]+4));return 1;}
+    if(fn==0x025C109C){const auto found=object_names.find(reinterpret_cast<char*>(mem::ptr(a[0])));if(found==object_names.end())return 0;const uint32_t entry=kArena+0x10*uint32_t(std::distance(object_names.begin(),found));st16(entry+8,found->second.first);st8(entry+0xA,found->second.second);return entry;}
     if(fn==0x025D5834){++created;assert(args.size()==8);assert(current_layer==kArena+0x6000+a[3]*0x200+0xC0);
-        if(a[0]>=0x7FF7&&a[0]<=0x7FFA){if(refuse_enemy_request)return 0xFFFFFFFFu;const auto kind=story_enemies::Kind(0x7FFA-a[0]);const uint32_t address=enemy_address(unsigned(kind)),id=actor_id+40+unsigned(kind);assert(a[1]==story_enemies::parameters(kind)&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==story_enemies::home_z(kind));enemy_fixture(kind,address,id);st32(address+0x2C,current_layer);live[id]=address;return id;}
+        if(a[0]==0x1B3){  // the grass placement actor: adds its units to the batch and is gone (never live)
+            assert(a[1]==2&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==0);++grass_plants;unsigned left=21;
+            for(uint32_t i=0;i<1500&&left;++i)if(!ld8(kGrassPacket+0x9C+i*0x44)){st8(kGrassPacket+0x9C+i*0x44,1);--left;}
+            return actor_id+900+grass_plants;}
+        if(a[0]==0x49||a[0]==0x116){std::array<uint32_t,8> args_copy{};std::copy(args.begin(),args.end(),args_copy.begin());args_copy[4]=ld16(a[4]+2)|(uint32_t(ld16(a[4]+4))<<16);assert(ld16(a[4])==0);game_object_creates.push_back(args_copy);
+            const uint32_t id=actor_id+60+uint32_t(game_object_creates.size()),address=kActor+0x30000+uint32_t(game_object_creates.size())*0x800;std::memset(mem::ptr(address),0,0x800);
+            if(game_object_fail)return id;  // the request was taken; the game gives up in the create phase (never live)
+            st32(address+4,id);st16(address+0xE,uint16_t(a[0]));st32(address+0xB0,game_object_falsify?a[1]^1:a[1]);st8(address+0x2DD,uint8_t(a[6]));st32(address+0xF4,kArena+0x9000);st32(address+0x2C,current_layer);live[id]=address;return id;}
+        if(a[0]>=0x7FF7&&a[0]<=0x7FFA){if(refuse_enemy_request)return 0xFFFFFFFFu;const auto kind=story_enemies::Kind(0x7FFA-a[0]);const uint32_t address=enemy_address(unsigned(kind)),id=actor_id+40+unsigned(kind);assert(a[1]==(kind==story_enemies::Kind::ChuChu?chuchu_params:story_enemies::parameters(kind))&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==story_enemies::home_z(kind));enemy_fixture(kind,address,id);st32(address+0x2C,current_layer);live[id]=address;return id;}
         uint32_t address=kActor+((a[0]==0x175||a[0]==0x13B)?0x1000:a[0]==story_switches::kDoorProfile?0x1000:a[0]==0xB6?0x2000:a[0]==mod_actor::kProfile?0x3000:0);uint32_t id=actor_id+(address-kActor)/0x1000;
         if(a[0]==0x125){assert(a[1]==0);assert(a[3]==0);assert(ld16(a[4]+4)==0x06FF);}
-        else if(a[0]==0x175){assert(a[1]==0x00FF0000);assert(a[3]==1);assert(a[6]==1);assert(ld16(a[4]+2)==0x4000);}
+        else if(a[0]==0x175){assert(a[1]==expect_people_params);assert(a[3]==1);assert(a[6]==expect_people_subtype);assert(ld16(a[4]+2)==expect_people_yaw);}
         else if(a[0]==0x13B){assert(a[1]==1&&a[3]==1&&a[6]==0xFFFFFFFFu);}
         else if(a[0]==story_props::kProfile){assert(a[1]==0x007FFF3F&&a[3]==0&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==255);assert(u32_as_f32(ld32(a[5]))==2&&ld32(a[5])==ld32(a[5]+4)&&ld32(a[5])==ld32(a[5]+8));}
         else if(a[0]==story_switches::kSwitchProfile||a[0]==story_switches::kDoorProfile){assert(a[1]==story_switches::parameters(a[0]==story_switches::kSwitchProfile?story_switches::Kind::Switch:story_switches::Kind::Door)&&a[3]==0&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==255);}
@@ -140,6 +164,8 @@ uint32_t call(Cpu*,uint32_t fn,std::initializer_list<uint32_t> args) {
     if(fn==0x025E1A40)return 0;
     if(fn==0x022F7388){assert(a[1]==0x10023418&&a[2]==0);++seated_actions;st32(a[0]+0x86C,ld32(a[1]));st32(a[0]+0x870,ld32(a[1]+4));st8(a[0]+0xA1D,11);st8(a[0]+0xA22,1);return 1;}
     if(fn==0x0253EE04){assert(a[0]==0x1046F0B0+0x51D0);return ym1_partner;}
+    if(fn==0x02540158){assert(a[0]==0x1046F0B0+0x51D0);return move_approval;}  // dEvt_control_c::moveApproval
+    if(fn==0x025DFCC4){++held_executes;st32(a[1]+0x400,0xDEAD);st32(a[1]+0x314,0);held_drawn_x=500;return 1;}  // fpcMtd_Execute: AI state and place change, matrices built
     if(fn==0x025F795C)return ym1_message_status;
     if(fn==0x022F9B64)return 1;
     if(fn==0x025A11EC){++seated_bases;assert(a[1]==1);if(ym1_message_status==0x13)st32(a[0]+0x7C8,0xFFFFFFFFu);return 0;}
@@ -188,9 +214,28 @@ int main(int argc,char** argv){
     story_actors::set_game_calls(original,call);story_actors::set_scratch_memory(kScratch);
     for(uint32_t i=story_actors::kEnemyProfilesScratchOffset;i<story_actors::kScratchBytes;++i)assert(ld8(kScratch+i)==0);
     assert(ld8(kScratch+story_actors::kScratchBytes)==0x6D);
+    if(argc==2&&std::strcmp(argv[1],"--enemy-variant")==0){
+        // a declared ChuChu colour: created with its own parameter word, owned and verified with its colour;
+        // a copy with another colour is never recognized as the declared enemy
+        map_guest(0x10000000,0x10000);st32(0x100073AC,0x4000);st8(0x100073B0,2);
+        for(unsigned n=0;n<story_enemy_ownership::kKindCount;++n){const auto&d=story_enemy_ownership::descriptor(story_enemies::Kind(n));const uint32_t profile=kArena+0x80000+n*0x100;st32(0x101F3EE0+uint32_t(d.native_profile)*4,profile);st32(profile+0x10,d.bytes);}
+        st32(kArena+0x7004,55);st16(kArena+0x700E,0xA8);
+        story_notebook::ManifestActor cc;cc.id="red";cc.actor="chuchu";cc.defeated_flag="red.dead";cc.stage="sea";cc.variant="purple";std::string why;
+        assert(!story_actors::load("test",{cc},why)&&!story_actors::declared());
+        auto sign=cc;sign.actor="sign";sign.id="board";sign.flag="read";sign.defeated_flag.clear();assert(!story_actors::load("test",{sign},why));
+        cc.variant="red";chuchu_params=0xFF000100u;assert(story_actors::load("test",{cc},why));
+        story_actors::set_scratch_memory(kScratch);story_actors::install([](uint32_t){return std::string();},[](uint32_t f,void(*fn)(Cpu*)){hooks[f]=fn;});
+        Cpu c{};pending=true;story_actors::native_room_loaded(&c,0);pending=false;assert(created==1);
+        const uint32_t a=enemy_address(0);assert(ld32(a+0xB0)==0xFF000100u&&ld8(a+0x3F9)==1);
+        Cpu create{};create.r[3]=a;hooks.at(0x02110D4C)(&create);
+        Cpu exec{};exec.r[3]=a;hooks.at(0x0210DD3C)(&exec);
+        assert(story_enemy_ownership::lookup_actor(a)!=0);
+        st8(a+0x3F9,0);assert(!story_enemies::owns_actor(a));st8(a+0x3F9,1);assert(story_enemies::owns_actor(a));
+        std::puts("enemy variant: declared ChuChu colour created, owned and verified");return 0;
+    }
     if(argc==2&&(std::strcmp(argv[1],"--enemies")==0||std::strcmp(argv[1],"--enemies-four")==0)){
         enemy_four_mode=std::strcmp(argv[1],"--enemies-four")==0;const unsigned enemy_count=enemy_four_mode?4:2;map_guest(0x10000000,0x10000);st32(0x100073AC,0x4000);st8(0x100073B0,2);if(enemy_four_mode){map_guest(0x10190000,0x10000);map_guest(0x101B0000,0x10000);}
-        for(unsigned n=0;n<4;++n){const auto&d=story_enemy_ownership::descriptor(story_enemies::Kind(n));const uint32_t profile=kArena+0x80000+n*0x100;st32(0x101F3EE0+uint32_t(d.native_profile)*4,profile);st32(profile+0x10,d.bytes);}
+        for(unsigned n=0;n<story_enemy_ownership::kKindCount;++n){const auto&d=story_enemy_ownership::descriptor(story_enemies::Kind(n));const uint32_t profile=kArena+0x80000+n*0x100;st32(0x101F3EE0+uint32_t(d.native_profile)*4,profile);st32(profile+0x10,d.bytes);}
         st32(kArena+0x7004,55);st16(kArena+0x700E,0xA8);
         story_notebook::ManifestActor cc;cc.id="cc";cc.actor="chuchu";cc.defeated_flag="cc.dead";cc.stage="sea";cc.quest="quest";cc.quest_step=1;auto ki=cc;ki.id="ki";ki.actor="keese";ki.defeated_flag="ki.dead";ki.quest.clear();std::string why;
         auto invalid=ki;invalid.drops.push_back({"missing",1});assert(!story_actors::load("test",{cc,invalid},why)&&!story_actors::declared()&&story_enemies::checkpoint()==0&&story_enemy_ownership::checkpoint()==0&&story_items::prop_marker_checkpoint()==0);
@@ -231,6 +276,75 @@ int main(int argc,char** argv){
         c.r[3]=kActor;hooks.at(0x02397AD0)(&c);assert(ld32(kScratch+132)==0xFFFFFFFFu&&ld32(row)==0);story_actors::state_loaded();assert(!story_actors::actor_address(&c,"test","button"));
         st32(0x1047E8F0,2000);story_actors::native_room_loaded(&c,0);assert(created==count+1); // actual native room epoch admits fresh switch
         assert(story_actors::flag(story_store::book(),"test","pressed"));assert(std::memcmp(before.data(),mem::ptr(kSave),before.size())==0);return 0;
+    }
+    if(argc==2&&std::strcmp(argv[1],"--game-objects")==0){
+        // the game's own objects by reference: created by name on the retail profile with the fixed parameter
+        // word and a turn only, tracked by process id, read back, quarantined on a mismatch or after three failures
+        story_notebook::ManifestActor palm;palm.id="palm";palm.actor="game:palm";palm.variant="palm";palm.stage="sea";palm.room=0;palm.position={10,20,30};palm.rotation={0,90,0};
+        auto stool=palm;stool.id="stool";stool.actor="game:table";stool.variant="stool";stool.rotation={};
+        auto tree=palm;tree.id="tree";tree.actor="game:tree-large";tree.variant="tree";  // the fixture's game has no "lwood"
+        std::string why;auto bad=palm;bad.id="bad";bad.params=7;assert(!story_actors::load("test",{bad},why)&&!story_actors::declared());
+        bad=palm;bad.id="bad";bad.variant="coconut";assert(!story_actors::load("test",{bad},why));
+        bad=palm;bad.id="bad";bad.scale={1.5f,1.5f,1.5f};assert(!story_actors::load("test",{bad},why));
+        bad=palm;bad.id="bad";bad.rotation={5,0,0};assert(!story_actors::load("test",{bad},why));
+        assert(story_actors::load("test",{palm,stool,tree},why));
+        story_actors::install([](uint32_t){return std::string();},[](uint32_t a,void(*fn)(Cpu*)){hooks[a]=fn;});
+        assert(story_actors::editor_kind_live("game:palm",true)&&!story_actors::editor_restart_only(palm));
+        Cpu c{};story_actors::native_room_loaded(&c,0);
+        // palm and stool made by name into the room layer; the tree's name is unknown to this game: omitted
+        assert(game_object_creates.size()==2&&current_layer==kArena+0x6800);
+        const auto& p=game_object_creates[0];assert(p[0]==0x49&&p[1]==0xFFFFFFFFu&&p[3]==0&&p[6]==0xFFFFFFFFu&&p[7]==0);
+        assert((p[4]&0xFFFF)==0x4000&&(p[4]>>16)==0);  // yaw 90 degrees, no tilt: angle.z stays 0 (no switch or item field)
+        assert(game_object_creates[1][0]==0x116&&game_object_creates[1][1]==0xFFFFFF01);
+        const uint32_t palm_pid=ld32(kScratch+128),stool_pid=ld32(kScratch+132);assert(palm_pid!=0xFFFFFFFFu&&stool_pid!=0xFFFFFFFFu&&palm_pid!=stool_pid&&!story_actors::actor_address(&c,"test","tree"));
+        assert(story_actors::actor_address(&c,"test","palm")==live[palm_pid]);
+        story_actors::service(&c);assert(deleted==0&&game_object_creates.size()==2);  // read back: both match; nothing made again
+        // the saved identity row binds a full state load; a changed row drops the binding
+        story_actors::state_loaded();story_actors::service(&c);assert(story_actors::actor_address(&c,"test","palm")==live[palm_pid]&&game_object_creates.size()==2);
+        const uint32_t row=kScratch+story_actors::kIdentityScratchOffset;st8(row+39,uint8_t(ld8(row+39)^1));story_actors::state_loaded();
+        assert(ld32(kScratch+128)==0xFFFFFFFFu&&!story_actors::actor_address(&c,"test","palm"));
+        story_actors::service(&c);assert(game_object_creates.size()==2);  // quarantined until the room loads again
+        // a new room visit makes it again; the game gives up three times: omitted until the next visit
+        live.clear();game_object_fail=true;const size_t made=game_object_creates.size();
+        st32(0x1047E8F0,2000);story_actors::native_room_loaded(&c,0);
+        for(int i=0;i<6;++i)story_actors::service(&c);
+        assert(game_object_creates.size()==made+6);  // three tries each for palm and stool, then nothing more
+        story_actors::service(&c);assert(game_object_creates.size()==made+6);
+        // the next visit tries again; a parameter word that doesn't read back is deleted and quarantined for good
+        game_object_fail=false;game_object_falsify=true;st32(0x1047E8F0,1000);story_actors::native_room_loaded(&c,0);assert(game_object_creates.size()==made+8);
+        const unsigned before_delete=deleted;story_actors::service(&c);assert(deleted==before_delete+2);
+        game_object_falsify=false;story_actors::service(&c);story_actors::service(&c);assert(game_object_creates.size()==made+8);
+        st32(0x1047E8F0,2000);story_actors::native_room_loaded(&c,0);assert(game_object_creates.size()==made+8);  // a mismatch stays quarantined
+        // the editor: a new game object is made while the game runs; a changed one is made again (never moved in place)
+        auto palm2=palm;palm2.id="palm2";std::vector<std::string> pending_list;
+        assert(story_actors::editor_live_capable("test",palm2,why));
+        assert(story_actors::editor_update("test",{palm,stool,tree,palm2},{"palm2"},why,&pending_list)&&pending_list.empty());
+        story_actors::room_loaded(&c,0);assert(game_object_creates.size()==made+9&&game_object_creates.back()[0]==0x49);
+        assert(!story_actors::editor_pose(&c,"test","palm2",{1,2,3},{0,45,0}));
+        // a shared batch (grass): once per room visit, after the room's own placements, into the stage's own batch with a quarter left
+        auto grass=palm;grass.id="grass";grass.actor="game:grass";grass.variant="grass-21";grass.rotation={};
+        st32(0x1046F0B0+0x5AB8,0);  // the stage has no grass of its own
+        assert(story_actors::editor_update("test",{palm,stool,tree,palm2,grass},{"grass"},why,&pending_list)&&pending_list.empty());
+        for(int i=0;i<40;++i)story_actors::room_loaded(&c,0);
+        assert(grass_plants==0);
+        st32(0x1046F0B0+0x5AB8,kGrassPacket);std::memset(mem::ptr(kGrassPacket),0,0x9C+1500*0x44);
+        for(uint32_t i=0;i<1110;++i)st8(kGrassPacket+0x9C+i*0x44,1);  // the game's own use: 390 free, 375 must stay
+        st32(0x1047E8F0,1000);story_actors::native_room_loaded(&c,0);for(int i=0;i<40;++i)story_actors::room_loaded(&c,0);
+        assert(grass_plants==0);
+        for(uint32_t i=900;i<1110;++i)st8(kGrassPacket+0x9C+i*0x44,0);  // 600 free
+        story_game_objects::forget_resolved();  // the fixture reuses room process ids; the game never does
+        st32(0x1047E8F0,2000);story_actors::native_room_loaded(&c,0);
+        for(int i=0;i<20;++i)story_actors::room_loaded(&c,0);
+        assert(grass_plants==0);  // the room's own placements first
+        for(int i=0;i<20;++i)story_actors::room_loaded(&c,0);
+        assert(grass_plants==1);  // once this visit
+        const uint32_t grass_slot=kScratch+128+4*4;assert((ld32(grass_slot)>>24)==0xFE&&!story_actors::actor_address(&c,"test","grass"));
+        story_actors::state_loaded();for(int i=0;i<40;++i)story_actors::room_loaded(&c,0);assert(grass_plants==1);  // a full state keeps the mark
+        st32(0x1047E8F0,1000);story_actors::native_room_loaded(&c,0);for(int i=0;i<40;++i)story_actors::room_loaded(&c,0);assert(grass_plants==2);  // the next visit plants again
+        // the editor: a removed batch goes when the room loads again (said so), and is not planted again
+        assert(story_actors::editor_update("test",{palm,stool,tree,palm2},{},why,&pending_list)&&pending_list.size()==1&&pending_list[0].find("(Reload room)")!=std::string::npos);
+        st32(0x1047E8F0,2000);story_actors::native_room_loaded(&c,0);for(int i=0;i<40;++i)story_actors::room_loaded(&c,0);assert(grass_plants==2);
+        assert(std::memcmp(before.data(),mem::ptr(kSave),before.size())==0);return 0;
     }
     if(argc==2&&std::strcmp(argv[1],"--props")==0){
         map_guest(0x101D0000,0x10000);st32(0x101D2B1C+0x10,story_props::kClassBytes);
@@ -352,6 +466,95 @@ int main(int argc,char** argv){
         story_actors::native_room_loaded(&c,2);assert(created==3&&story_actors::actor_address(&c,"test","notice"));
         std::puts("editor live creation, pending kinds, refusal and removal passed");return 0;
     }
+    if(argc==2&&std::strcmp(argv[1],"--editor-empty")==0){
+        // --editor with no package declaring actors at start-up: the machinery installs anyway, so
+        // residents, props, switches and doors are live (no "after a restart") and a new resident appears
+        assert(!story_actors::declared());
+        map_guest(0x101D0000,0x10000);st32(0x101D2B1C+0x10,story_props::kClassBytes);  // the native prop and switch/door classes
+        map_guest(0x101C0000,0x10000);map_guest(0x10180000,0x20000);st32(0x101CD034+0x10,story_switches::kSwitchClassBytes);st32(0x1018FFE8+0x10,story_switches::kDoorClassBytes);
+        story_actors::editor_live_kinds();
+        story_actors::install([](uint32_t){return std::string{};},[](uint32_t a,void(*h)(Cpu*)){hooks[a]=h;});
+        assert(!hooks.empty()&&hooks.contains(0x0218B234));
+        for(const char* type:{"resident","pot","barrel","crate","switch","door"})assert(story_actors::editor_kind_live(type,false));
+        assert(story_actors::editor_kind_live("sign",true));
+        story_notebook::ManifestActor resident;resident.id="guide";resident.actor="resident";resident.stage="sea";resident.room=1;resident.resident=1;resident.rotation.y=90;
+        std::string why;assert(story_actors::editor_live_capable("late",resident,why));
+        auto seated=resident;seated.id="seated";seated.resident=19;assert(story_actors::editor_live_capable("late",seated,why));
+        assert(story_actors::editor_update("late",{resident},{"guide"},why));
+        Cpu c{};story_actors::native_room_loaded(&c,1);assert(created==1);
+        // a drag moves it in place only while the game runs its Execute (the editor's event lets it move);
+        // held by the event, it keeps its place and the drag creates it again instead
+        const uint32_t at=story_actors::actor_address(&c,"late","guide");assert(at);
+        const float x0=u32_as_f32(ld32(at+0x314));
+        (void)x0;
+        // running (the event lets it move): moved in place, its own Execute does the rest next step
+        move_approval=1;assert(story_actors::editor_pose(&c,"late","guide",{500,10,600},{0,90,0})&&u32_as_f32(ld32(at+0x314))==500&&u32_as_f32(ld32(at+0x31C))==600&&held_executes==0);
+        // held by the editor's event: its own Execute runs once for its matrices, its record comes back
+        // as it was (AI state untouched) with the new place
+        const uint32_t profile=kArena+0x90000,methods=kArena+0x90100;st32(at+0x10,profile);st32(at+0xF0,methods);st32(profile+0x10,0x1000);st32(profile+0x14,0);
+        st32(at+0x400,7);move_approval=0;
+        // its first held pose keeps that Execute (its one-time start), at the pose's place
+        assert(story_actors::editor_pose(&c,"late","guide",{700,20,800},{0,90,0})&&held_executes==1);
+        assert(ld32(at+0x400)==0xDEAD&&u32_as_f32(ld32(at+0x314))==700&&u32_as_f32(ld32(at+0x31C))==800&&u32_as_f32(ld32(at+0x2EC))==700);
+        // the next ones put its record back (AI state untouched) with the new place
+        st32(at+0x400,7);
+        assert(story_actors::editor_pose(&c,"late","guide",{720,20,820},{0,90,0})&&held_executes==2&&held_drawn_x==500);
+        assert(ld32(at+0x400)==7&&u32_as_f32(ld32(at+0x314))==720&&u32_as_f32(ld32(at+0x31C))==820);
+        // no readable record: refused (the drag then creates it again)
+        st32(at+0x10,0);assert(!story_actors::editor_pose(&c,"late","guide",{710,20,800},{0,90,0})&&held_executes==2);st32(at+0x10,profile);
+        std::puts("editor with no declared actors: live kinds installed, a new resident appears at once");return 0;
+    }
+    if(argc==2&&std::strcmp(argv[1],"--routes")==0){
+        // a walking resident: created with the route marker as its route number and given its record;
+        // the record names its copy; a deleted copy lets go; a restored copy keeps its record; a resident
+        // without a route keeps its fixed parameters
+        constexpr uint32_t kRoutes=0x60100000;map_guest(kRoutes,story_resident_route::kMemoryBytes);
+        story_resident_routes::set_memory(kRoutes);
+        story_notebook::ManifestActor walker;walker.id="walker";walker.actor="resident";walker.stage="sea";walker.room=1;walker.resident=1;walker.position={10,5,20};
+        walker.path.points={{200,5,20},{200,5,200}};walker.path.loop=true;walker.path.speed_given=false;walker.path.speed=0;
+        std::string why;assert(story_actors::resident_routes_declared()==false);
+        assert(story_actors::load("routes",{walker},why));assert(story_actors::resident_routes_declared());
+        story_actors::install([](uint32_t){return std::string{};},[](uint32_t a,void(*h)(Cpu*)){hooks[a]=h;});
+        assert(story_resident_routes::installed()&&hooks.contains(story_resident_routes::set_route_function())&&hooks.contains(story_resident_routes::walk_function())&&hooks.contains(story_resident_routes::turn_function())&&hooks.contains(story_resident_routes::passed_function()));
+        expect_people_subtype=1;expect_people_params=0x00FE0000;expect_people_yaw=0;
+        Cpu c{};story_actors::native_room_loaded(&c,1);assert(created==1);
+        const uint32_t npc=kActor+0x1000;assert(story_actors::actor_address(&c,"routes","walker")==npc);
+        const uint32_t pid=ld32(npc+4);assert(story_resident_routes::owner(0)==pid&&story_resident_routes::slot_of(npc)==0);
+        // its creation asks for the marker: it gets its record
+        Cpu set{};set.r[3]=npc+0x870;set.r[4]=story_resident_route::kRouteMarker;set.r[5]=1;set.r[6]=1;hooks.at(story_resident_routes::set_route_function())(&set);
+        assert(set.r[3]==1&&ld32(npc+0x870)==story_resident_routes::route_address(0)&&ld16(story_resident_routes::route_address(0))==3);
+        story_actors::ResidentRoute state;assert(story_actors::resident_route("routes","walker",state)&&state.declared&&state.live&&state.status=="walking");
+        // a full state: the record keeps its owner; a changed declaration's record is written again
+        story_actors::state_loaded();assert(story_resident_routes::owner(0)==pid&&story_resident_routes::slot_of(npc)==0);
+        // the copy goes (room teardown): the record lets go of it
+        Cpu del{};del.r[3]=npc;hooks.at(0x022BFF00)(&del);assert(story_resident_routes::owner(0)==0&&story_resident_routes::slot_of(npc)==-1);
+        assert(story_actors::resident_route("routes","walker",state)&&state.declared&&!state.live);
+        std::puts("resident routes: marker, record, owner, restore and delete passed");return 0;
+    }
+    if(argc==2&&std::strcmp(argv[1],"--catalogue")==0){
+        // the villager catalogue: a non-uo2/um1 character is created with its own subtype and fixed
+        // parameters and gets every placed-copy guard; refused characters and places never load
+        std::memcpy(mem::ptr(0x1046F0B0+0x5134),"sea",4);
+        std::string why;story_notebook::ManifestActor bad;bad.id="stargazer";bad.actor="resident";bad.stage="sea";bad.room=1;
+        for(unsigned refused:{11u,16u,17u,18u,20u}){bad.resident=refused;assert(!story_actors::load("cat",{bad},why));}
+        bad.resident=6;bad.stage="Ocmera";bad.room=0;assert(!story_actors::load("cat",{bad},why)&&why.find("Ocmera")!=std::string::npos);
+        story_notebook::ManifestActor young;young.id="young";young.actor="resident";young.stage="sea";young.room=1;young.resident=10;young.lines="Mod words";young.flag="young-talked";
+        expect_people_subtype=10;expect_people_params=0x00FF00FF;expect_people_yaw=0;
+        assert(story_actors::load("cat",{young},why));story_actors::set_scratch_memory(kScratch);
+        story_actors::install([](uint32_t){return std::string{};},[](uint32_t a,void(*h)(Cpu*)){hooks[a]=h;});
+        Cpu c{};story_actors::native_room_loaded(&c,1);assert(created==1);
+        const uint32_t npc=kActor+0x1000;assert(ld8(npc+0x905)==10&&ld8(npc+0x2DD)==10&&ld32(npc+0xB0)==0x00FF00FF);
+        assert(story_actors::actor_address(&c,"cat","young")==npc);
+        // never a retail event order, at either time of day
+        st16(npc+0xFC,0x1234);st8(npc+0x910,0);Cpu order{};order.r[3]=npc;hooks.at(0x022C045C)(&order);assert(ld16(npc+0xFC)==0xFFFF&&ld8(npc+0x910)==1);
+        // the message is the mod's text
+        st16(npc+0xF8,1);Cpu talk{};talk.r[3]=npc;hooks.at(0x022C6C68)(&talk);assert(talk.r[3]==0x2CF3);
+        // excluded from retail name searches, photos and event staff
+        const unsigned before=originals;Cpu named{};named.r[3]=npc;hooks.at(0x025D9E64)(&named);assert(named.r[3]==0&&originals==before);
+        Cpu photo{};photo.r[4]=npc;hooks.at(0x025BED80)(&photo);assert(originals==before);
+        Cpu staff{};staff.r[5]=npc;hooks.at(0x02542D88)(&staff);assert(staff.r[3]==0xFFFFFFFFu&&originals==before);
+        std::puts("villager catalogue: subtype, fixed parameters, guards and refusals passed");return 0;
+    }
     if(argc==2&&std::strcmp(argv[1],"--no-resident")==0){
         story_notebook::ManifestActor sign;sign.id="notice";sign.actor="sign";sign.stage="sea";sign.room=2;sign.flag="read";
         std::string why;assert(story_actors::load("sign-only",{sign},why));
@@ -377,7 +580,7 @@ int main(int argc,char** argv){
     assert(story_actors::register_model("test","postmodel","unique_post",1,why));
     assert(!story_actors::register_model("test","othermodel","unique_post",1,why));
     st32(0x101F3EE0+0xB6*4,kArena+0x6000);
-    auto rejected_resident=resident;rejected_resident.resident=10;assert(!story_actors::load("bad",{rejected_resident},why));
+    auto rejected_resident=resident;rejected_resident.resident=11;assert(!story_actors::load("bad",{rejected_resident},why));
     assert(story_actors::load("test",{chest,resident,sign,own},why));const unsigned declaration_calls=native_calls;story_actors::ResidentEventDeclaration declaration;
     assert(story_actors::resident_event_declaration("test","guide",declaration)&&declaration.token&&declaration.stage=="sea"&&declaration.room==1&&declaration.subtype==1&&native_calls==declaration_calls);
     const auto declared_token=declaration.token;const auto declared_hash=declaration.fingerprint;declaration.stage="mutated";declaration.fingerprint.fill(0);assert(story_actors::resident_event_declaration("test","guide",declaration)&&declaration.stage=="sea"&&declaration.fingerprint==declared_hash);
@@ -433,6 +636,18 @@ int main(int argc,char** argv){
         assert(!story_actors::flag(b,"test","retarget"));
 
         assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::QuestDone,"q",1}})&&quest_state==255);
+        // "stage": handed to mod_stages with room and point; without a stage hook (or a refusal) the action fails
+        assert(!story_actors::actions("test",{{story_notebook::StoryAction::Kind::EnterStage,"sky",1u<<8|2u}}));
+        std::string entered;
+        story_actors::set_stage_enter([&](const std::string& mod,const std::string& id,unsigned room,unsigned point){
+            entered=mod+"/"+id+"/"+std::to_string(room)+"/"+std::to_string(point);return id=="sky";});
+        assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::EnterStage,"sky",1u<<8|2u}})&&entered=="test/sky/1/2");
+        assert(!story_actors::actions("test",{{story_notebook::StoryAction::Kind::EnterStage,"cave",0}}));
+        story_actors::set_stage_enter(nullptr);
+        // a chart from dialogue: given once; a second give (or a finished chart) changes nothing
+        assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::GiveChart,"chart:keeper-map",1}})&&story_chart::given_charts.at("test:keeper-map")==story_chart::kResultOwned);
+        story_chart::given_charts["test:keeper-map"]=story_chart::kResultDone;
+        assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::GiveChart,"chart:keeper-map",1}})&&story_chart::given_charts.at("test:keeper-map")==story_chart::kResultDone);
         return 0;
     }
     if(sign_talks_mode){

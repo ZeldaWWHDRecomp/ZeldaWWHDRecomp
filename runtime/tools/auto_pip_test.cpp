@@ -31,6 +31,28 @@ int main() {
     decision.update(menu, 203);
     decision.update({}, 203.1);
     assert(!decision.shown({}, false, 203.1)); // scene destroyed/state load
+    // Wind Waker: the song list is on the GamePad while Link conducts, gone ~250 ms after.
+    GamePadUiState baton{true, false, false, false, true};
+    AutoPipDecision conduct;
+    conduct.update(play, 300);
+    assert(!conduct.shown(play, false, 300));
+    conduct.update(baton, 301);
+    assert(conduct.shown(baton, false, 340)); // the whole song, however long
+    conduct.update(baton, 340);
+    conduct.update(play, 340.1);
+    assert(conduct.shown(play, false, 340.2));
+    assert(!conduct.shown(play, false, 340.3));
+    assert(!conduct.shown({true, false, true, false, true}, false, 341)); // Off-TV shows it full size
+    assert(!conduct.shown({true, false, false, true, true}, false, 341)); // TV/GamePad switch
+    assert(!conduct.shown({false, false, false, false, true}, false, 341)); // no scene yet
+    const uint32_t play_state = GD(0x1049EC00), songs = GD(0x1049EDE4), opening = GD(0x1049EDB8);
+    assert(gamepad_baton_state(play_state, true, 1)); // flag first, before the song list opens
+    assert(gamepad_baton_state(opening, true, 1) && gamepad_baton_state(songs, true, 1));
+    assert(gamepad_baton_state(songs, false, 1)); // song list still closing after the flag
+    assert(!gamepad_baton_state(play_state, false, 1));
+    assert(!gamepad_baton_state(songs, true, 0)); // Pro Controller: no GamePad screen
+    assert(!gamepad_baton_state(songs, true, 2)); // Off-TV
+    assert(!gamepad_menu_state(songs, 0, 1)); // not a menu: the HUD gate keeps mod HUDs
     for (uint32_t state : {GD(0x1049EC84), GD(0x1049ECB0), GD(0x1049ECDC), GD(0x1049ED34),
                             GD(0x1049EE3C), GD(0x1049EF18), GD(0x1049F204), GD(0x1049F338)}) {
         assert(gamepad_menu_state(state, 0, 1));
@@ -65,6 +87,12 @@ int main() {
     display_gamepad_ui(play);
     assert(frame().pip_on);
     display_show_drc(false);
+    assert(!frame().pip_on);
+    display_gamepad_ui(baton);
+    assert(frame().pip_on && !frame().drc_only);
+    display_gamepad_ui(play);
+    assert(frame().pip_on); // closing delay
+    g_auto_until = 0;
     assert(!frame().pip_on);
     for (int mode : {kDrcWindow, kDrcPip, kDrcOff, kDrcGamePad}) {
         display_set_mode(mode);

@@ -1,4 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <thread>
+#include <utility>
+#include <vector>
 #include "story_native_wait_session.h"
 #include "story_native_wait_run_footprint.h"
 #include "native_quiescence.h"
@@ -6,9 +19,6 @@
 #include "story_native_restore_current_owner.h"
 #include "story_native_wait_snapshot_roots.h"
 #include "story_native_wait_snapshot_actor_roots.h"
-#include <thread>
-#include <algorithm>
-#include <cstring>
 namespace story_native_wait_session {
 namespace F=story_native_wait_run_footprint;
 struct PristineCheckpoint::Data {
@@ -38,6 +48,10 @@ bool Session::pristine_shape()const{
  const auto d=std::static_pointer_cast<const PristineCheckpoint::Data>(pristine_lineage_);const auto record=journal();const auto l=arena();
  const auto block=d?std::find_if(d->footprint.begin(),d->footprint.end(),[&](const auto&b){return b.address<=l.allocation.address&&uint64_t(b.address)+b.bytes.size()>=uint64_t(l.allocation.address)+l.allocation.bytes;}):F::Footprint::const_iterator{};
  return d&&d->committed&&d->owner==this&&d->host_identity==host_identity_&&d->layout==l&&record&&*record==d->journal&&generation_==record->generation&&record->phase==story_native_wait_journal::Phase::Unpublished&&record->definition==readiness_.definition_hash()&&story_native_event_arena::owns(l,mem::runtime_alloc_log(),mem::runtime_top())&&block!=d->footprint.end()&&!std::memcmp(mem::ptr(l.allocation.address),block->bytes.data()+(l.allocation.address-block->address),l.allocation.bytes);
+}
+bool Session::preserve_pristine_progress_load(Cpu*c,const threads::QuiescenceWitness&w){
+ if(!c||!fence_held()||!w.current(c)||!pristine_shape()||!clean_progress_roots()||!w.current(c))return false;
+ expected_.reset();canonical_image_.clear();return true;
 }
 std::optional<PristineCapture>Session::begin_pristine_capture(Cpu*c,const threads::QuiescenceWitness&w){try{
  if(!c||!w.current(c)||!pristine_shape())return {};

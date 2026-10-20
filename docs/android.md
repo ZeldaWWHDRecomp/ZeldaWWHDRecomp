@@ -18,13 +18,24 @@ game; this project never provides game files.
 | **GPU recovery** | After a GPU device-lost error, the next start names the driver and offers the system driver, another installed driver, or the existing driver ZIP picker before starting Vulkan. Continuing keeps your current choice; an unfinished first-start probe still falls back to the system driver. |
 | **Saves** | Export and import your save files and keep them in Android's backup. Saves from a real Wii U (USA or Europe) work too. |
 
-Android requests a 60 Hz display mode for 30 fps, interpolated 60 fps and true 60 fps, or the selected 120/240 Hz cadence for faster interpolation. Android may choose another supported rate. The request is reapplied after returning to the game. To leave refresh-rate selection entirely to Android, set `WWHD_NO_60HZ=1` in a developer build (`0` keeps the request enabled).
+Android requests a 60 Hz display mode for 30 fps, interpolated 60 fps and true 60 fps, or the selected 120/240 Hz cadence for faster interpolation. For 40 fps it asks for 120 Hz (a multiple of 40), or 80 Hz if the screen has it. Android may choose another supported rate. The request is reapplied after returning to the game. To leave refresh-rate selection entirely to Android, set `WWHD_NO_60HZ=1` in a developer build (`0` keeps the request enabled).
 
 With 60 fps or faster on, frames are spaced evenly: a frame that is ready early waits a few
 milliseconds so that each one stays on screen for the same time. This matters most with **Record graphics on a second
 thread** on: on a 120 Hz phone screen a third of the frames used to stay for one or three refreshes
 instead of two, which looked like a slight judder; now almost all stay for two. The game itself never waits for this, so its speed does not
 change. To turn it off, set `WWHD_INTERP_EVEN_PACING=0` in a developer build.
+
+### 40 fps
+
+**Settings → Graphics → Frame rate → 40 fps** draws 4 frames for every 3 game steps. It's smoother
+than 30 fps and uses less power and heat than 60 fps. The game keeps its speed either way.
+
+40 fps needs a screen that runs at 40, 80 or 120 Hz, so that every frame stays on screen equally
+long. The game asks the phone for 120 Hz, but some phones decide the refresh rate themselves
+(a Xiaomi 14 with HyperOS sometimes stayed at 60 Hz). If the screen stays at 60 Hz (or 90 or 144 Hz), the frames alternate between one and two refreshes,
+which looks like a slight judder. The game still runs it, but Settings shows a note under the frame
+rate. In that case choose 30 or 60 fps.
 
 ## Tested phones
 

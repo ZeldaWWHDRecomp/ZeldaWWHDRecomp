@@ -37,6 +37,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include <unordered_map>
 #include <vector>
 
+#include "interp_joints.h"
 #include "interp_nodraw.h"
 #include "interp_pacing.h"
 #include "interp_sploosh.h"
@@ -98,8 +99,8 @@ namespace true60_test { void logic_step(uint64_t step); }
 
 namespace interp {
 
-// Output frame rate with interpolation: 60, 120 or 240 (in-between frames per step: fps/30 - 1).
-// WWHD_INTERP_FPS=60|120|240 sets it at start (and switches interpolation on); it wins over the
+// Output frame rate with interpolation: 40, 60, 120 or 240 (in-between frames per step: fps/30 - 1;
+// at 40 fps one per three steps, pacing::is_fps40). WWHD_INTERP_FPS=40|60|120|240 sets it at start (and switches interpolation on); it wins over the
 // saved choice and is not saved.
 using pacing::valid_fps;
 static const int g_env_fps = [] { const char* e = getenv("WWHD_INTERP_FPS"); return e ? valid_fps(atoi(e)) : 0; }();
@@ -127,29 +128,55 @@ static std::atomic<bool> g_present_vsync{true};
 int display_hz() { return g_env_hz >= 0 ? g_env_hz : g_display_hz.load(std::memory_order_relaxed); }
 bool present_vsync() { return g_present_vsync.load(std::memory_order_relaxed); }
 int output_fps() { return pacing::cap_fps(fps(), display_hz(), present_vsync()); }
+static void note_display_40();
 void set_display_hz(int hz) {
     if (hz < 0) hz = 0;
     const int old = g_display_hz.exchange(hz);
     if (old == hz) return;
     if (g_env_hz >= 0) LOG("[interp] display refresh rate %d Hz (WWHD_DISPLAY_HZ=%d is used)", hz, g_env_hz);
     else LOG("[interp] display refresh rate %d Hz: frame interpolation draws up to %d fps", hz, pacing::cap_fps(240, hz, present_vsync()));
+    note_display_40();
 }
 void set_present_vsync(bool on) {
     if (g_present_vsync.exchange(on) != on) LOG("[interp] presentation %s the display's vsync", on ? "waits for" : "does not wait for");
 }
-// in-between frames per logic step of the current mode (true 60: its one half pass)
-int in_between() { return interp_on() ? output_fps() / 30 - 1 : true60::enabled() ? 1 : 0; }
-// frames drawn per logic step: 1 (30 fps), 2 (60 fps, true 60), 4 (120 fps), 8 (240 fps)
+// 40 fps frame interpolation runs (3 steps over 4 frames: pacing::is_fps40)
+bool fps40() { return interp_on() && pacing::is_fps40(output_fps()); }
+// in-between frames per logic step of the current mode (true 60: its one half pass; 40 fps: at most
+// one, in one step of three)
+int in_between() { return interp_on() ? (fps40() ? 1 : output_fps() / 30 - 1) : true60::enabled() ? 1 : 0; }
+// frames drawn per logic step: 1 (30 fps), 2 (60 fps, true 60), 4 (120 fps), 8 (240 fps); at 40 fps
+// the most a step has (2; 4 frames per 3 steps: frame_ns, vsync_granule_ticks)
 int frames_per_step() { return in_between() + 1; }
-static const char* fps_name(int f) { return f == 240 ? "240 fps" : f == 120 ? "120 fps" : "60 fps"; }
+// the drawn frame interval: two 59.94 Hz vsyncs over the frames of a step (16.68 ms at 60 fps), 1.5
+// vsyncs at 40 fps (25.03 ms)
+int64_t frame_ns() { return fps40() ? pacing::frame_40(2 * 16'683'333LL) : 16'683'333LL * 2 / std::max(1, frames_per_step()); }
+// the virtual vsync's ticks (quarter 59.94 Hz vsyncs) per drawn frame: 4 (30/60 fps, true 60), 6 (40),
+// 2 (120), 1 (240)
+uint32_t vsync_granule_ticks() { return fps40() ? 6 : interp_on() ? uint32_t(8 / std::max(2, frames_per_step())) : 4; }
+static const char* fps_name(int f) { return f == 240 ? "240 fps" : f == 120 ? "120 fps" : f == 40 ? "40 fps" : "60 fps"; }
+// 40 fps looks even only on a 40, 80 or 120 Hz display (pacing::even_on_display); elsewhere the
+// frames are shown for 1 and 2 refreshes in turn. They are still drawn (the game logic is the same);
+// the log and the settings say so. Logged once per display rate while 40 fps is chosen.
+static void note_display_40() {
+    static int logged = -1;
+    const int hz = display_hz();
+    if (!interp_on() || !pacing::is_fps40(fps()) || hz <= 0 || pacing::even_on_display(40, hz)) return;
+    if (logged == hz) return;
+    logged = hz;
+    LOG("[interp] 40 fps needs a 40, 80 or 120 Hz display; this one runs at %d Hz, so the frames are shown unevenly "
+        "(for 1 and 2 refreshes in turn). 30 or 60 fps are even here.", hz);
+}
 void set_enabled(bool v) {
     if (v) true60::set_enabled(false);
     g_on = v;
-    LOG("[interp] frame interpolation %s", v ? (fps() == 240 ? "on (240 fps)" : fps() == 120 ? "on (120 fps)" : "on (60 fps)") : "off");
+    LOG("[interp] frame interpolation %s", v ? (fps() == 240 ? "on (240 fps)" : fps() == 120 ? "on (120 fps)" : fps() == 40 ? "on (40 fps)" : "on (60 fps)") : "off");
+    note_display_40();
 }
 void set_fps(int f) {
     f = valid_fps(f);
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
+    note_display_40();
 }
 // the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
 int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
@@ -178,10 +205,14 @@ const char* mode_name() {
 }
 
 // GX2SetSwapInterval: N+1 paints per logic step. At 60 fps the interval is halved; at 120/240 fps
-// the virtual vsync itself ticks 2/4 times as fast (vsync_rate(), gx2_core.cpp) and the interval is
+// the virtual vsync itself ticks 2/4 times as fast (vsync_granule_ticks(), gx2_core.cpp) and the interval is
 // halved in those ticks, so every mode keeps the formula (and 30/60 fps their exact timing).
 uint32_t effective_swap_interval(uint32_t game) { return enabled() ? std::max<uint32_t>(1, game / 2) : game; }
-int vsync_rate() { return interp_on() ? frames_per_step() / 2 : 1; }
+// a logic step on the virtual vsync, in ticks: the frames of a step at their swap interval (8 for the
+// game's swap interval of 2; at 40 fps 8 as well, not frames x granule)
+uint64_t step_ticks(uint32_t game) {
+    return fps40() ? 8ull * effective_swap_interval(game) : uint64_t(frames_per_step()) * effective_swap_interval(game) * vsync_granule_ticks();
+}
 
 namespace {
 constexpr uint32_t kEye = 0xDC, kCenter = 0xE8, kUp = 0xF4, kFovy = 0xD4, kBank = 0x100;
@@ -355,8 +386,11 @@ float pass_t() {
     if (!enabled()) return 1.0f;
     return pacing::pass_fraction(g_hold ? g_phase : 0, g_step_n, g_exact_step);
 }
-// the step's exact state is drawn and recorded (the "before" of the next step's blended frames)
-bool record_pass() { return g_hold && g_phase >= g_step_n; }
+// the step's exact state is drawn and recorded (the "before" of the next step's blended frames): the
+// record pass, or at 40 fps the logic pass of a step without an in-between frame (a record logic pass:
+// logic, then drawn exactly and recorded)
+bool g_record_logic = false;
+bool record_pass() { return (g_hold && g_phase >= g_step_n) || g_record_logic; }
 
 // A sight point follows the camera's draw fraction, including camera cuts. A
 // blend can also snap internally (a >45 degree turn or abrupt collision zoom).
@@ -506,9 +540,25 @@ struct ModelPrev {
     uint32_t mtx = 0;
     uint64_t pass = 0;  // hold pass it was recorded on
     std::vector<uint32_t> w;  // raw guest words, 12 per matrix
+    std::vector<uint8_t> stale;  // per joint: hidden and not updated on that record pass (interp_joints.h)
 };
 std::unordered_map<uint32_t, ModelPrev> g_models;
-struct ModelStats { uint32_t blended = 0, fresh = 0, cut = 0; } g_mstats;
+// shown: joints of blended models drawn at the current step (hidden pose joints coming back)
+struct ModelStats { uint32_t blended = 0, fresh = 0, cut = 0, shown = 0; } g_mstats;
+
+// Does joint `j` of `model` draw nothing? True when the joint has shapes of its own and every one is
+// hidden. HD J3D layout (as in daPy_lk_c::setDrawHandModel): model +0xAC model data; data +4 joint
+// count, +8 joint nodes (0x1C each); node +0x10 the first material of its mesh, material +4 the next
+// one, +8 its shape; shape +4 visible (u8). Joints without shapes (bones) count as drawn.
+bool joint_hidden(uint32_t data, uint32_t j) {
+    uint32_t mat = ld32(ld32(data + 8) + j * 0x1C + 0x10);
+    if (!mat) return false;
+    for (int guard = 0; mat && guard < 256; mat = ld32(mat + 4), guard++) {
+        const uint32_t shape = ld32(mat + 8);
+        if (!shape || ld8(shape + 4)) return false;
+    }
+    return !mat;
+}
 // models whose UBO update of this pass already ran on the main thread (blended), per model: the
 // update_ubo job skips that many of its updates
 std::mutex g_ubo_mu;
@@ -641,7 +691,7 @@ extern "C" void hook_021C4BB4(Cpu* c) {
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
     static const bool off = getenv("WWHD_INTERP_MODELS") && !atoi(getenv("WWHD_INTERP_MODELS"));  // debug
-    if (!enabled() || off || (!g_hold && (true60::drawing_60() || g_exact_step))) {
+    if (!enabled() || off || (!g_hold && !g_record_logic && (true60::drawing_60() || g_exact_step))) {
         f_027F55FC_orig(c);
         return;
     }
@@ -659,6 +709,16 @@ extern "C" void hook_027F55FC(Cpu* c) {
     const uint32_t* cur = (const uint32_t*)ppc_ptr(mtx);  // guest (big-endian) words
     if (record) {  // exact step: remember it for the next step's blended frames
         ModelPrev& p = g_models[jnt];
+        // joints hidden and not written since the last record pass: drawn at the next step instead of
+        // blended from here (interp_joints.h; a model drawn twice in a pass keeps its first decision)
+        if (p.pass != g_record_passes || p.stale.size() != n) {
+            const bool before = p.pass + 1 == g_record_passes && p.mtx == mtx && p.w.size() == words;
+            const uint32_t data = ld32(model + 0xAC);
+            const bool layout = data && ld32(data + 4) == n && ld32(data + 8);
+            p.stale.assign(n, 0);
+            for (uint32_t j = 0; layout && j < n; j++)
+                p.stale[j] = joints::stale(joint_hidden(data, j), cur + 12 * j, before ? p.w.data() + 12 * j : nullptr);
+        }
         p.marker_cell = marker_cell;
         p.mtx = mtx;
         p.pass = g_record_passes;
@@ -692,20 +752,28 @@ extern "C" void hook_027F55FC(Cpu* c) {
     const float t = pass_t();
     std::vector<uint32_t> saved(cur, cur + words);
     std::vector<uint32_t> mid(words);
-    for (uint32_t m = 0; m < n; m++) {
-        float a[12], b[12], o[12];
-        for (int k = 0; k < 12; k++) { a[k] = wf(prev[12 * m + k]); b[k] = wf(saved[12 * m + k]); }
-        float dx = a[3] - b[3], dy = a[7] - b[7], dz = a[11] - b[11];
-        if (!(dx * dx + dy * dy + dz * dz <= kCut * kCut)) {  // teleport (or NaN): show the new step
-            g_mstats.cut++;
-            trace_model("cut", jnt, n, cur);
-            f_027F55FC_orig(c);
-            return;
-        }
-        blend_mtx(a, b, o, t);
-        for (int k = 0; k < 12; k++) mid[12 * m + k] = fw(o[k]);
+    const auto r = joints::blend(prev.data(), saved.data(), it->second.stale.size() == n ? it->second.stale.data() : nullptr, n,
+                                 kCut, t, mid.data(), blend_mtx);
+    if (r.cut) {  // teleport (or NaN): show the new step
+        g_mstats.cut++;
+        trace_model("cut", jnt, n, cur);
+        f_027F55FC_orig(c);
+        return;
     }
     g_mstats.blended++;
+    g_mstats.shown += r.shown;
+    // debug: WWHD_INTERP_JOINT_TRACE=1 logs the hidden joints drawn at the current step (on the logic
+    // pass): how far the blend from their stale matrix would have moved them
+    static const bool joint_trace = getenv("WWHD_INTERP_JOINT_TRACE") != nullptr;
+    if (joint_trace && r.shown && !g_hold)
+        for (uint32_t j = 0; j < n; j++) {
+            const uint32_t* a = prev.data() + 12 * j;
+            const uint32_t* b = saved.data() + 12 * j;
+            if (!it->second.stale[j] || memcmp(a, b, 48) == 0) continue;
+            const float dx = wf(a[3]) - wf(b[3]), dy = wf(a[7]) - wf(b[7]), dz = wf(a[11]) - wf(b[11]);
+            LOG("[interp] step %llu: model %08X joint %u hidden on the last step, shown at %.1f %.1f %.1f (was %.1f away)",
+                (unsigned long long)g_logic_steps, model, j, wf(b[3]), wf(b[7]), wf(b[11]), std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
     trace_model("blended", jnt, n, mid.data());
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
@@ -799,11 +867,39 @@ static std::atomic<bool> g_paced_hi{!g_env_paced || atoi(g_env_paced) != 0};  //
 static std::atomic<bool>& paced_flag(int f) { return f > 60 ? g_paced_hi : g_paced; }
 static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed); }
 bool paced_interpolation() { return paced(); }  // at the current frame rate
+// the step schedule of paced interpolation is in use (gx2_core.cpp step slots): Keep game speed on
+// at the current rate and frame interpolation on (not true 60, whose passes are not dropped)
+bool paced_step_schedule() { return paced() && interp_on(); }
 bool paced_interpolation_at(int f) { return paced_flag(f).load(std::memory_order_relaxed); }
-void set_paced_interpolation_at(int f, bool on) {
-    if (paced_flag(f).exchange(on) != on)
-        LOG("[interp] paced interpolation at %s %s", f > 60 ? "120/240 fps" : "60 fps", on ? "on (keeps the game's speed)" : "off");
+// Where each value came from, for the log (players' logs show which one they play with): the
+// platform's default, WWHD_INTERP_PACED, the saved setting or a change in the settings overlay.
+enum PacedSource : int { kPacedDefault, kPacedEnv, kPacedSaved, kPacedChanged };
+static std::atomic<int> g_paced_src{g_env_paced ? kPacedEnv : kPacedDefault}, g_paced_hi_src{g_env_paced ? kPacedEnv : kPacedDefault};
+static std::atomic<int>& paced_src(int f) { return f > 60 ? g_paced_hi_src : g_paced_src; }
+static const char* paced_src_name(int src) {
+    switch (src) {
+    case kPacedEnv: return "WWHD_INTERP_PACED";
+    case kPacedSaved: return "saved setting";
+    case kPacedChanged: return "changed in the settings";
+    default: return "default on this platform";
+    }
 }
+static std::atomic<bool> g_paced_start_logged{false};
+// the start values, once (the first frame, after the hosts loaded the saved settings)
+static void log_paced_start() {
+    if (g_paced_start_logged.exchange(true)) return;
+    LOG("[interp] keep game speed at 60 fps %s (%s), at 120/240 fps %s (%s)", g_paced.load() ? "on" : "off",
+        paced_src_name(g_paced_src.load()), g_paced_hi.load() ? "on" : "off", paced_src_name(g_paced_hi_src.load()));
+}
+static void set_paced(int f, bool on, int src) {
+    const bool changed = paced_flag(f).exchange(on) != on;
+    paced_src(f) = src;
+    // a saved value that equals the default is logged with the start values; any other change now
+    if (changed || (src != kPacedSaved && g_paced_start_logged.load()))
+        LOG("[interp] keep game speed at %s %s (%s)", f > 60 ? "120/240 fps" : "60 fps", on ? "on" : "off", paced_src_name(src));
+}
+void set_paced_interpolation_at(int f, bool on) { set_paced(f, on, kPacedChanged); }
+void load_paced_interpolation_at(int f, bool on) { set_paced(f, on, kPacedSaved); }
 void set_paced_interpolation(bool on) { set_paced_interpolation_at(fps(), on); }
 // share of in-between frames drawn over the last 60 steps (performance overlay), -1 before any
 static std::atomic<float> g_paced_share{-1};
@@ -820,13 +916,16 @@ static pace_clock::time_point g_last_hold{};  // the last hold pass drawn (probe
 static bool g_probe = false;  // this hold pass re-measures their cost after a long pause
 static pace_clock::time_point g_probe_retry{};  // another probe then (the last one met a hitch)
 constexpr auto kProbeAfter = std::chrono::seconds(10), kProbeRetry = std::chrono::seconds(1);
-// one tick of the virtual vsync at the drawn rate (59.94 Hz x frames per step / 2)
+// one tick of the virtual vsync at the drawn rate (59.94 Hz x frames per step / 2; 40 fps: 25.03 ms)
 static pace_clock::duration vsync_tick() {
-    return std::chrono::nanoseconds(16'683'333LL * 2 / std::max(2, frames_per_step()));
+    return std::chrono::nanoseconds(fps40() ? frame_ns() : 16'683'333LL * 2 / std::max(2, frames_per_step()));
 }
 // (the hold-pass estimate after a pass of the previous kind: logic or hold)
 static bool g_pass_was_hold = false;
 static bool g_wait_step = false;  // the next logic pass waits for its time
+// 60 fps: the step before the next logic pass dropped its in-between frame, and the next logic pass
+// starts at once on the step slots (pacing::wait_after_drop; without a slot it waits as before)
+static bool g_drop_lead = false;
 static uint64_t g_paced_possible = 0, g_paced_holds = 0, g_paced_steps = 0, g_paced_planned = 0;
 // a logic step: two vsyncs of the 59.94 Hz grid (the game's swap interval; 29.97 steps a second, as
 // on the console). (It was 33.333 ms, which drifted against the grid's 33.367 ms: issue #164.)
@@ -858,6 +957,7 @@ int64_t frame_interval_ns() {
     }
     if (!g_even_pacing) return 0;
     if (!enabled() || frames_per_step() < 2) return 0;
+    if (fps40()) return frame_ns();  // every frame 1.5 vsyncs apart, whatever the step's frames
     return int64_t(kPacedStep.count()) / (std::max(1, g_step_n) + 1);
 }
 // debug: WWHD_TRACE_STEPS=file writes a line per paced logic pass at 120/240 fps: its start (steady
@@ -873,10 +973,11 @@ static void trace_step(pace_clock::time_point now, pace_clock::time_point before
 }
 // start of every pass: the last pass's own duration, and the wait before a logic pass that follows
 // a dropped in-between pass (and at 120/240 fps before every logic pass that comes early)
+static bool g_previous_record = false;  // the pass before this one was a record pass (or a record logic pass)
 static void paced_pass_start() {
-    static bool previousRecord = false;
+    bool& previousRecord = g_previous_record;
     if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false;
-        if (mods::fast_forward_active()) { g_wait_step = false; g_last_entry = {}; g_last_logic = {}; }
+        if (mods::fast_forward_active()) { g_wait_step = g_drop_lead = false; g_last_entry = {}; g_last_logic = {}; }
         return; }
     if (!g_hold_next) g_exact_step = !previousRecord;  // this logic pass: blend only after a record pass
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
@@ -903,17 +1004,22 @@ static void paced_pass_start() {
     g_last_entry = now;
     g_slept = {};
     if (g_hold_next) return;
-    // 120/240 fps: the virtual vsync's step slots are the schedule (gx2/vsync_pacing.h): a step's
-    // logic frame is due two vsyncs after the previous one's, so the logic pass starts one drawn frame
-    // before its slot, as it does after a record pass. (Paced on a clock of its own, the logic pass
+    // The virtual vsync's step slots are the schedule (gx2/vsync_pacing.h; at 60, 120 and 240 fps): a
+    // step's logic frame is due two vsyncs after the previous one's, so the logic pass starts one drawn
+    // frame before its slot, as it does after a record pass. (Paced on a clock of its own, the logic pass
     // could sleep past its frame's vsync, which bunched up the step's frames: issue #164.) The slot
     // keeps the schedule for a logic frame that was less than a step late, and the elapsed time
-    // counted from it makes the step after a late one plan fewer in-between frames.
+    // counted from it makes the step after a late one plan fewer in-between frames (at 60 fps: skip
+    // its in-between frame), so the game catches up. (60 fps had no slots and no catch-up before:
+    // a step whose in-between frame was drawn could end up to 2 ms late, a render thread that
+    // delays the flips made it later still, and the lost time was never recovered: 24 logic steps a
+    // second with a 15 ms render load, slow motion with Keep game speed on.)
     pace_clock::time_point slot;
-    if (in_between() > 1 && gx2::next_step_time(slot)) {
+    if (gx2::next_step_time(slot)) {
         using ns = std::chrono::nanoseconds;
         const auto plan = pacing::slot_step_start(ns(now.time_since_epoch()).count(), ns(slot.time_since_epoch()).count(),
-                                                  ns(vsync_tick()).count(), ns(kPacedStep).count(), g_wait_step);
+                                                  ns(vsync_tick()).count(), ns(kPacedStep).count(), g_wait_step,
+                                                  pacing::keep_window(ns(kPacedStep).count(), ns(vsync_tick()).count(), in_between() == 1));
         const auto before = g_last_logic;
         g_last_logic = pace_clock::time_point(std::chrono::duration_cast<pace_clock::duration>(ns(plan.start)));
         if (plan.how == pacing::StepStart::kWait) {
@@ -922,10 +1028,13 @@ static void paced_pass_start() {
         } else if (plan.how == pacing::StepStart::kLate) {
             gx2::drop_step_slot();
         }
-        g_wait_step = false;
+        g_wait_step = g_drop_lead = false;
         trace_step(now, before, plan.how == pacing::StepStart::kWait ? 'W' : plan.how == pacing::StepStart::kKeep ? 'K' : 'N');
         return;
     }
+    // (no slot: a step after a dropped in-between frame waits at 60 fps too)
+    if (g_drop_lead) g_wait_step = true;
+    g_drop_lead = false;
     if (g_wait_step && now < g_last_logic + kPacedStep) {
         const auto due = g_last_logic + kPacedStep;
         threads::park_sleep_until(due);  // the game keeps 30 steps a second
@@ -938,12 +1047,12 @@ static void paced_pass_start() {
         trace_step(now, due - kPacedStep, 'W');
         return;
     }
-    // 120/240 fps before there is a step slot (every step waits for its time): a step that starts
-    // late, because its in-between passes took longer than planned, keeps the schedule if it is less
-    // than a step late, so this step plans fewer in-between frames and the game catches up (counted
-    // from its own start, a late step was lost: 29.4 logic steps a second at 240 fps on a computer
-    // that draws ~150 fps)
-    const bool keep = g_wait_step && in_between() > 1 && g_last_logic != pace_clock::time_point{} &&
+    // Before there is a step slot (every step waits for its time): a step that starts late, because
+    // its in-between passes took longer than planned, keeps the schedule if it is less than a step
+    // late, so this step plans fewer in-between frames and the game catches up (counted from its own
+    // start, a late step was lost: 29.4 logic steps a second at 240 fps on a computer that draws ~150
+    // fps)
+    const bool keep = g_wait_step && g_last_logic != pace_clock::time_point{} &&
                       now - (g_last_logic + kPacedStep) < kPacedStep;
     const auto before = g_last_logic;
     g_wait_step = false;
@@ -953,7 +1062,28 @@ static void paced_pass_start() {
 // logic pass: the in-between frames of this step (pacing::plan_in_between: as many as fit at the
 // recent pass duration)
 static int g_step_holds = 0;  // hold passes drawn in this step (a skip to the record pass leaves some out)
+static int g_step_capacity = 1;  // in-between frames this step could have (40 fps: 1 or 0)
+static uint64_t g_steps40 = 0;  // 40 fps steps without a step slot (one in three gets the in-between frame)
+// 40 fps (pacing::is_fps40): 1 in-between frame for the step whose next step's frame is two frames
+// later on the step slots, 0 (a record logic pass) for the others; an exact step (no record pass
+// before it) is drawn once, as a record logic pass, and its slot's second frame stays empty
+static int plan_step_40() {
+    int frames = gx2::step_frames();
+    if (frames <= 0) frames = 1 + pacing::in_between_40(g_steps40++);
+    else g_steps40 = 0;
+    const int n = std::clamp(frames - 1, 0, 1);
+    g_step_capacity = n;
+    g_step_holds = 0;
+    if (paced()) g_paced_planned += n;
+    if (g_exact_step || n == 0) {
+        g_exact_step = true;  // (also unpaced: drawn exactly, and recorded)
+        return 0;
+    }
+    return n;
+}
 static int plan_step() {
+    if (fps40()) return plan_step_40();
+    g_step_capacity = std::max(1, in_between());
     int n = std::max(1, in_between());
     if (n > 1 && paced() && interp_on()) {
         n = pacing::plan_in_between(n, kPacedBudget.count(), std::chrono::duration_cast<std::chrono::nanoseconds>(g_logic_avg).count(),
@@ -969,23 +1099,23 @@ static int plan_step() {
 }
 // a paced step ended after `holds` in-between frames
 static void paced_step_done(int holds) {
-    const int n = std::max(1, in_between());
+    const int n = g_step_capacity;
     g_paced_holds += holds;
     g_paced_possible += n;
     g_paced_steps++;
     static unsigned recentHolds = 0, recentPossible = 0, recentN = 0;
     recentHolds += holds;
     recentPossible += n;
-    if (++recentN == 60) {
+    if (++recentN == 60 && recentPossible > 0) {
         g_paced_share.store(recentHolds / float(recentPossible), std::memory_order_relaxed);
         recentHolds = recentPossible = recentN = 0;
     }
     if (g_paced_steps >= 300) {
-        if (n > 1)
+        if (g_paced_possible > 0 && n > 1)
             LOG("[interp] paced: %.0f%% of in-between frames drawn (in-between pass %.1f ms; %.2f of %d planned per step)",
                 100.0 * g_paced_holds / double(g_paced_possible), std::chrono::duration<double, std::milli>(g_hold_avg).count(),
                 g_paced_planned / double(g_paced_steps), n);
-        else
+        else if (g_paced_possible > 0)
             LOG("[interp] paced: %.0f%% of in-between frames drawn (in-between pass %.1f ms)", 100.0 * g_paced_holds / double(g_paced_possible),
                 std::chrono::duration<double, std::milli>(g_hold_avg).count());
         g_paced_possible = g_paced_holds = g_paced_steps = g_paced_planned = 0;
@@ -993,8 +1123,8 @@ static void paced_step_done(int holds) {
 }
 // end of every pass with a 60 fps mode on (phase 0: the logic pass): g_hold_next = another hold
 // pass of this step follows (always, unless paced and it does not fit before the next step is due;
-// pacing::next_pass). At 60 fps (one in-between pass, the record pass) it is the original rule:
-// the in-between pass is drawn when it fits, otherwise dropped.
+// pacing::next_pass). At 60 fps (one in-between pass, the record pass) it is drawn when it fits,
+// otherwise dropped.
 static void after_pass(int phase) {
     const bool pacing = paced() && interp_on();
     if (phase > 0) g_step_holds++;
@@ -1002,19 +1132,33 @@ static void after_pass(int phase) {
         g_hold_next = false;
         if (pacing) {
             paced_step_done(g_step_holds);
-            if (in_between() > 1) g_wait_step = true;  // fewer passes than planned would make the step short
+            g_wait_step = true;  // the next step waits for its time (fewer passes than planned would make the step short)
         }
         return;
     }
-    if (!pacing) { g_hold_next = true; g_wait_step = false; return; }
+    if (!pacing) { g_hold_next = true; g_wait_step = g_drop_lead = false; return; }
     if (phase > 0) g_last_hold = pace_clock::now();
     const auto now = pace_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - g_last_logic).count();
+    using ns = std::chrono::nanoseconds;
+    auto elapsed = std::chrono::duration_cast<ns>(now - g_last_logic).count();
+    // 60 fps (one in-between frame, its record pass ends the step): the logic pass is not over at this
+    // point, and the next step may start up to a frame late (pacing::logic_pass_elapsed). (At 120/240
+    // fps the later passes of a step see the time the earlier ones took, and a step planned with one
+    // in-between frame there keeps the rule it was measured with.)
+    auto budget = kPacedBudget.count();
+    // (40 fps: a step with its in-between frame, the rule of 60 fps over its two frames of 25 ms)
+    const bool oneFrame = phase == 0 && g_step_n == 1 && in_between() == 1;
+    if (oneFrame) {
+        elapsed = pacing::logic_pass_elapsed(ns(now.time_since_epoch()).count(), ns((g_last_entry + g_slept).time_since_epoch()).count(),
+                                             ns(g_last_logic.time_since_epoch()).count(), std::chrono::duration_cast<ns>(g_logic_avg).count());
+        budget = fps40() ? pacing::one_frame_budget_40(ns(vsync_tick()).count(), std::chrono::duration_cast<ns>(g_logic_avg).count(), ns(kPacedStep).count())
+                         : pacing::one_frame_budget(ns(kPacedStep).count(), ns(vsync_tick()).count());
+    }
     // After a long time without in-between passes their cost is stale (the scene may be lighter
     // now): one probe, if one vsync tick fits; its duration replaces the estimate.
     const bool probe = phase == 0 && (now - g_last_hold >= kProbeAfter || (g_probe_retry != pace_clock::time_point{} && now >= g_probe_retry));
     const auto pass = std::chrono::duration_cast<std::chrono::nanoseconds>(probe ? vsync_tick() : g_hold_avg).count();
-    switch (pacing::next_pass(phase, g_step_n, elapsed, pass, kPacedBudget.count())) {
+    switch (pacing::next_pass(phase, g_step_n, elapsed, pass, budget)) {
     case pacing::Next::kHold:
         g_hold_next = true;
         g_probe = probe;
@@ -1024,13 +1168,15 @@ static void after_pass(int phase) {
     case pacing::Next::kRecord:  // blended hold passes that do not fit are skipped (the next hold pass increments g_phase)
         trace_step(now, g_last_logic, char('0' + std::min(phase, 9)));
         g_hold_next = true;
-        g_phase = pacing::skip_to(phase, g_step_n, elapsed, pass, kPacedBudget.count());
+        g_phase = pacing::skip_to(phase, g_step_n, elapsed, pass, budget);
         g_last_hold = now;
         break;
     default:  // the rest of the step's in-between passes (and its record pass) are dropped
         trace_step(now, g_last_logic, 'D');
         g_hold_next = false;
-        g_wait_step = true;
+        // (60 fps: the next logic pass starts at once and keeps what the skip saved as a lead)
+        g_wait_step = pacing::wait_after_drop(oneFrame);
+        g_drop_lead = !g_wait_step;
         paced_step_done(g_step_holds);
         break;
     }
@@ -1128,6 +1274,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t at60 = getenv("WWHD_TRUE60_AT_STEP") ? strtoull(getenv("WWHD_TRUE60_AT_STEP"), nullptr, 10) : 0;
     static uint64_t passes60 = 0;
     if (at60 && ++passes60 == at60) set_mode(2);
+    log_paced_start();
     paced_pass_start();
     true60::new_pass();
     true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
@@ -1185,20 +1332,27 @@ extern "C" void hook_0203593C(Cpu* c) {
     }
     g_phase = 0;
     g_step_n = plan_step();
+    // a step without an in-between frame (40 fps): its logic pass is also its record pass
+    g_record_logic = g_step_n == 0;
+    if (g_record_logic) {
+        g_record_passes++;
+        g_previous_record = true;
+    }
     {
         PassTimer timer(0);
         f_0203593C_orig(c);  // logic pass (the loop body hook marks it)
     }
+    g_record_logic = false;
     after_pass(0);  // g_hold_next: an in-between pass follows (always, unless paced)
     static uint64_t n = 0, t0 = timebase::now(), f0 = 0;
     if (++n % 300 == 0) {
         uint64_t t = timebase::now();
-        LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut%s",
+        LOG("[interp] %.1f logic steps/s (%s, %.2f frames per step); models per step: %.1f blended, %.1f new, %.1f cut (%.2f hidden joints shown)%s",
             300.0 * timebase::kTicksPerSec / (double)(t - t0), mode_name(), (frames - f0) / 300.0, g_mstats.blended / 300.0,
-            g_mstats.fresh / 300.0, g_mstats.cut / 300.0, pass_cpu_report().c_str());
+            g_mstats.fresh / 300.0, g_mstats.cut / 300.0, g_mstats.shown / 300.0, pass_cpu_report().c_str());
         t0 = t;
         f0 = frames;
-        g_mstats.blended = g_mstats.fresh = g_mstats.cut = 0;
+        g_mstats.blended = g_mstats.fresh = g_mstats.cut = g_mstats.shown = 0;
         for (auto it = g_models.begin(); it != g_models.end();)  // models no longer drawn
             it = it->second.pass + 2 < g_record_passes ? g_models.erase(it) : std::next(it);
     }

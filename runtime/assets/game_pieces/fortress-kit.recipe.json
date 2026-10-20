@@ -1,0 +1,106 @@
+{
+  "game_pieces_format": 1,
+  "set": "fortress-kit",
+  "label": "Forsaken Fortress parts",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room1.szs",
+    "room": 1
+  },
+  "memory": {
+    "archive_bytes": 2508644,
+    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); each placement adds its instance"
+  },
+  "pieces": [
+    {
+      "id": "shipwreck-hull",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Shipwreck hull",
+      "description": "the hull of a wrecked ship, upright in the sea with its broken mast",
+      "volume": [
+        -12700,
+        -400,
+        -12150,
+        -8250,
+        5350,
+        -8430
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "polySurface910"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "polySurface826",
+          "out_wood2",
+          "iwa_01"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          615
+        ],
+        "collision_triangles": 252,
+        "textures": [
+          [
+            "wood0313_22"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "shipwreck-bow",
+      "since": 3,
+      "category": "Island parts",
+      "label": "Shipwreck bow",
+      "description": "the bow of a wrecked ship lying in the sea",
+      "volume": [
+        6200,
+        -1070,
+        13740,
+        9930,
+        1470,
+        17010
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "polySurface910"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "shape1",
+          "nuke1120_02",
+          "out_wood2"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          608
+        ],
+        "collision_triangles": 236,
+        "textures": [
+          [
+            "wood0313_22"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    }
+  ]
+}

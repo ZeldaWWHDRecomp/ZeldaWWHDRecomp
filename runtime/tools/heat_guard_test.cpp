@@ -36,11 +36,11 @@ int main() {
         Limits l = limits(kPhone, kNormal);
         assert(l.active && l.pause == 0.72f && l.resume == 0.60f);
         l = limits(kFanHandheld, kNormal);
-        assert(l.active && l.pause == 0.90f && l.resume == 0.80f);
+        assert(l.active && l.pause == 1.00f && l.resume == 0.90f);
         l = limits(kPhone, kRelaxed);
         assert(l.active && l.pause == 0.90f && l.resume == 0.80f);
         l = limits(kFanHandheld, kRelaxed);
-        assert(l.active && l.pause == 0.90f && l.resume == 0.80f);
+        assert(l.active && l.pause == 1.10f && l.resume == 1.00f);
         assert(!limits(kPhone, kOff).active && !limits(kFanHandheld, kOff).active);
     }
     // the AYANEO Pocket S2 Pro trace from issue #247: 0.57 -> 0.67 -> 0.73, then it stays warm
@@ -52,12 +52,14 @@ int main() {
 
     // hysteresis, phone: pause at >= 0.72, resume only below 0.60 (0.60 itself stays paused)
     expect(run(kPhone, kNormal, {0.71f, 0.72f, 0.65f, 0.60f, 0.59f, 0.71f, 0.72f}), "-PPP--P", "phone hysteresis");
-    // hysteresis, fan handheld: pause at >= 0.90, resume only below 0.80
-    expect(run(kFanHandheld, kNormal, {0.85f, 0.89f, 0.90f, 0.85f, 0.80f, 0.79f, 0.89f, 0.95f}), "--PPP--P",
+    // hysteresis, fan handheld: pause at >= 1.00, resume only below 0.90
+    expect(run(kFanHandheld, kNormal, {0.95f, 0.99f, 1.00f, 0.95f, 0.90f, 0.89f, 0.99f, 1.05f}), "--PPP--P",
            "handheld hysteresis");
-    // relaxed uses the handheld limits on any device
+    // relaxed: one step above the device's normal limits
     expect(run(kPhone, kRelaxed, {0.89f, 0.90f, 0.81f, 0.79f}), "-PP-", "relaxed phone hysteresis");
-    expect(run(kFanHandheld, kRelaxed, {0.89f, 0.90f, 0.81f, 0.79f}), "-PP-", "relaxed handheld hysteresis");
+    expect(run(kFanHandheld, kRelaxed, {1.09f, 1.10f, 1.01f, 0.99f}), "-PP-", "relaxed handheld hysteresis");
+    // the AYANEO EVO and KONKR Pocket FIT Elite traces from #247 (0.90-0.96 at about 70 C): 60 fps stays on
+    expect(run(kFanHandheld, kNormal, {0.90f, 0.92f, 0.94f, 0.96f, 0.93f, 0.89f}), "------", "handheld keeps 60 fps at 0.90-0.96");
     // off: never paused, even at the limit and beyond
     expect(run(kFanHandheld, kOff, {0.95f, 1.0f, 1.2f}), "---", "off on a handheld");
 
@@ -65,9 +67,9 @@ int main() {
     expect(run(kPhone, kNormal, {NAN, 0.80f, NAN, NAN, 0.50f, NAN}), "-PPP--", "NaN keeps the state");
     // switching to Off while paused resumes at once
     assert(!next_paused(true, 0.95f, limits(kPhone, kOff)));
-    // switching from phone to handheld limits while paused at 0.85: stays paused until below 0.80
-    assert(next_paused(true, 0.85f, limits(kFanHandheld, kNormal)));
-    assert(!next_paused(true, 0.79f, limits(kFanHandheld, kNormal)));
+    // switching from phone to handheld limits while paused at 0.95: stays paused until below 0.90
+    assert(next_paused(true, 0.95f, limits(kFanHandheld, kNormal)));
+    assert(!next_paused(true, 0.89f, limits(kFanHandheld, kNormal)));
 
     // the setting's names (saved value and WWHD_HEAT_GUARD)
     assert(parse(nullptr) == kNormal && parse("normal") == kNormal && parse("0") == kNormal);

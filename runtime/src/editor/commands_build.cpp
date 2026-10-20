@@ -9,10 +9,12 @@
 #include <set>
 #include <system_error>
 
+#include "../mods/mod_stages_manifest.h"
 #include "../mods/skinned_model_validation.h"
 #include "../mods/static_model_validation.h"
 #include "../mods/story_manifest.h"
 #include "commands.h"
+#include "ray_ground.h"
 #include "quests.h"
 
 namespace editor {
@@ -90,8 +92,11 @@ std::string model_message(const std::string& why) {
         {"oversized", "Size: the file is larger than a model may be (8 MB) or is not a GLB 2.0 file."},
         {"texture exceeds", "Texture: the texture is larger than 512 x 512 pixels."},
         {"PNG", "Texture: the texture must be an embedded PNG (RGB or RGBA, not interlaced)."},
-        {"base colour", "Material: the model needs one material with an embedded base colour PNG on UV0."},
-        {"material", "Material: one simple material with a base colour texture, no extensions."},
+        {"1 MiB", "Texture: all textures of one model together take at most 1 MiB (one 512 x 512, four 256 x 256 or sixteen 128 x 128)."},
+        {"alphaMode BLEND", "Material: blended transparency is not supported; use MASK (cut-out) or OPAQUE."},
+        {"base colour", "Material: every material needs an embedded base colour PNG on UV0."},
+        {"material", "Material: up to 16 simple materials, each with one base colour texture (opaque or MASK cut-out), no extensions."},
+        {"primitives", "Mesh: the visible mesh has 1 to 32 triangle primitives."},
         {"skin joints", "Bones: a skinned model has 1 to 32 bones."},
         {"bone", "Bones: bone names are letters, digits and _ (up to 31), each once."},
         {"joint", "Bones: the skeleton must be one connected hierarchy with unit-scale joints."},
@@ -107,7 +112,8 @@ std::string model_message(const std::string& why) {
 }
 bool game_file(const fs::path& p) {
     static const std::set<std::string> kinds = {".szs", ".arc", ".rarc", ".bfres", ".rpx", ".rpl", ".pack", ".bflim", ".bntx", ".sarc",
-                                                ".yaz0", ".wux", ".wud", ".iso", ".rvz", ".gcm", ".bfsar", ".bars", ".bfstm", ".msbt"};
+                                                ".yaz0", ".wux", ".wud", ".iso", ".rvz", ".gcm", ".bfsar", ".bars", ".bfstm", ".msbt",
+                                                ".dzb", ".dzr", ".dzs", ".ftex"};
     std::string ext = p.extension().string();
     for (char& c : ext) c = char(std::tolower((unsigned char)c));
     return kinds.contains(ext);
@@ -118,22 +124,54 @@ bool game_file(const fs::path& p) {
 const std::vector<ActorType>& actor_types() {
     static const std::vector<ActorType> types = {
         {"sign", "Sign", "Game actors", "A sign with up to three lines; its flag is set when read."},
-        {"resident", "Resident", "Game actors", "A villager who talks: uo2, um1 or the seated ym1 (options.resident)."},
+        {"resident", "Resident", "Game actors", "A villager of the game who talks with the mod's lines: options.resident picks who (the variants list them)."},
         {"chest", "Chest", "Game actors", "A treasure chest; its flag is set when opened."},
         {"pot", "Pot", "Props", "A pot to lift and break; its broken flag and drops.", false, false, false},
         {"barrel", "Barrel", "Props", "A barrel to lift and break.", false, false, false},
         {"crate", "Crate", "Props", "A crate to break.", false, false, false},
         {"switch", "Switch", "Switches", "A floor switch; sets its switch flag when pressed.", false, false, false},
         {"door", "Door", "Switches", "A door opened by one of the mod's switches (options.switch).", false, false, false},
-        {"chuchu", "ChuChu", "Enemies", "The game's ChuChu; its defeated flag and drops.", false, false, false},
-        {"bokoblin", "Bokoblin", "Enemies", "The game's Bokoblin.", false, false, false},
+        {"chuchu", "ChuChu", "Enemies", "The game's ChuChu (green, red, blue, yellow or black: options.variant); its defeated flag and drops.", false, false, false},
+        {"bokoblin", "Bokoblin", "Enemies", "The game's Bokoblin (a stick, a shield or a machete: options.variant).", false, false, false},
         {"moblin", "Moblin", "Enemies", "The game's Moblin.", false, false, false},
-        {"keese", "Keese", "Enemies", "The game's Keese.", false, false, false},
+        {"keese", "Keese", "Enemies", "The game's Keese (normal or fire: options.variant).", false, false, false},
+        {"peahat", "Peahat", "Enemies", "The game's Peahat (options.variant seahat: the Seahat over the sea): it flies; knock it down (the boomerang or the Deku Leaf's wind), then strike.", false, false, false},
+        {"bokobaba", "Boko Baba", "Enemies", "The game's Boko Baba: a biting plant rooted in the ground; strike its head, then its stem. It never grabs Link.", false, false, false},
+        {"bubble", "Bubble", "Enemies", "The game's Bubble (red or blue: options.variant): put out its fire, then strike the skull.", false, false, false},
+        {"octorok", "Octorok", "Enemies", "The game's Octorok (the small one): it rises from water and spits rocks; reflect one with the shield, or use arrows or the boomerang.", false, false, false},
+        {"miniblin", "Miniblin", "Enemies", "The game's Miniblin: it pops up when Link comes near and is defeated for good.", false, false, false},
+        {"darknut", "Darknut", "Enemies", "The game's Darknut, with its sword (with a shield, a helmet, or the Mighty Darknut's cape: options.variant).", false, false, false},
+        {"rat_hole", "Rat hole", "Enemies", "A rat hole three rats come out of, one after the other (rats, bomb rats or both: options.variant); each defeated rat drops the hole's drops, and the hole closes when all three are defeated.", false, false, false},
+        {"stalfos", "Stalfos", "Enemies", "The game's Stalfos with its club: break it apart, then strike its head before it pulls itself together.", false, false, false},
+        {"redead", "Redead", "Enemies", "The game's Redead: its scream freezes Link, then it grabs him; light stops it.", false, false, false},
+        {"mothula", "Mothula", "Enemies", "The game's Mothula, on the ground or with wings (options.variant).", false, false, false},
+        {"morth", "Morth", "Enemies", "The game's Morth: it clings to Link and slows him down; a spin attack or a roll throws it off.", false, false, false},
+        {"magtail", "Magtail", "Enemies", "The game's Magtail: strike its head to curl it into a ball, then strike the ball (or lift and throw it).", false, false, false},
+        {"poe", "Poe", "Enemies", "The game's Poe with its lantern: without it, it possesses Link for a while; outdoors only Light Arrows defeat it.", false, false, false},
+        {"armos", "Armos", "Enemies", "The game's Armos statue: it wakes when Link comes near; strike its back.", false, false, false},
+        {"armos_knight", "Armos Knight", "Enemies", "The game's Armos Knight: only a bomb in its open mouth (or a Light Arrow) defeats it.", false, false, false},
+        {"wizzrobe", "Wizzrobe", "Enemies", "The game's red Wizzrobe: it appears and vanishes around where it was placed and casts fire at Link.", false, false, false},
+        {"big_octo", "Big Octo (target)", "Enemies", "The game's Big Octo, as a target only (on the sea): it rises when Link sails near; shoot all its eyes. It never swallows the boat and makes no whirlpool.", false, false, false},
+        {"floormaster", "Floormaster", "Enemies", "The game's Floormaster: a hand that rises from its dark hole and grabs Link for a moment (it never drags him away).", false, false, false},
+        {"gyorg", "Gyorgs", "Enemies", "A group of the game's Gyorgs (on the sea only, once Link has the boomerang): they come out when Link is near and bite him; defeated when every one is.", false, false, false},
+        {"warship", "Warship", "Enemies", "The game's enemy warship (on the sea only): it fires its cannon at Link; three hits from the boat's cannon sink it.", false, false, false},
+        {"wall_cannon", "Wall cannon", "Enemies", "The game's wall cannon: it turns to Link and fires cannonballs while he is inside its firing area (one of the mod's paths, an area; a new one in front is added with it, or options.path names one); a bomb destroys it.", false, false, false},
+        {"kargaroc", "Kargaroc", "Enemies", "The game's Kargaroc: a big bird that circles and swoops at Link (or perches until he comes near).", false, false, false},
         {"model", "Your model", "Your models", "One of the mod's models (static or skinned), with collision.", true, false, true},
         {"model_enemy", "Your enemy", "Your models", "A skinned model that fights (needs flinch, stun, death and idle clips).", true, true, false},
         {"model_carry", "Carried prop", "Your models", "A model Link can lift and carry.", true, false, false},
     };
     return types;
+}
+
+std::vector<TypeVariant> type_variants(const std::string& type) {
+    std::vector<TypeVariant> out;
+    if (type == "resident")
+        for (const auto& t : story_resident_types::kTypes) out.push_back({"resident", t.code, t.label, t.help});
+    else if (story_enemy_variants::has_variants(type))
+        for (const auto& v : story_enemy_variants::kVariants)
+            if (type == v.kind) out.push_back({"variant", v.name, v.label, v.help});
+    return out;
 }
 
 std::string free_id(const Value& list, const std::string& base) {
@@ -198,7 +236,14 @@ bool new_actor(const std::string& type, const std::string& id, const Place& plac
         lines("A new sign.");
     } else if (type == "resident") {
         Value params;
-        params["resident"] = options.get("resident").type == Value::String ? options.get("resident").text : std::string("uo2");
+        const std::string who = options.get("resident").type == Value::String ? options.get("resident").text : std::string("uo2");
+        if (!story_resident_types::find(who)) {
+            if (const char* no = story_resident_types::refused(who)) return why = no, false;
+            return why = "options.resident is one of " + story_resident_types::codes(), false;
+        }
+        if (const char* no = story_resident_types::place_problem(story_resident_types::find(who)->subtype, place.stage, place.position.x, place.position.z))
+            return why = no, false;
+        params["resident"] = who;
         a["parameters"] = params;
         lines("Hello!");
     } else if (type == "chest")
@@ -221,6 +266,23 @@ bool new_actor(const std::string& type, const std::string& id, const Place& plac
     } else {  // the enemies
         a["defeated_flag"] = id + "-defeated";
         a["drops"] = array();
+        if (options.get("path").type == Value::String) {
+            Value probe = a;  // the variant chosen below decides whether it takes a path
+            if (options.get("variant").type == Value::String) probe["parameters"]["variant"] = options.get("variant").text;
+            if (room_path_use(probe).empty()) return why = "a " + t->label + " takes no path", false;
+            a["path"] = options.get("path").text;
+        }
+        if (options.get("variant").type != Value::Null) {
+            const std::string v = options.get("variant").string();
+            if (!story_enemy_variants::has_variants(type)) return why = "a " + t->label + " has no variants", false;
+            if (v.empty() || !story_enemy_variants::find(type, v)) return why = "options.variant is " + story_enemy_variants::names(type), false;
+            const auto* chosen = story_enemy_variants::find(type, v);
+            if (chosen != story_enemy_variants::find(type, "")) {  // the default variant is no parameter at all
+                Value params;
+                params["variant"] = v;
+                a["parameters"] = params;
+            }
+        }
     }
     return true;
 }
@@ -263,6 +325,9 @@ bool check_model_file(const std::string& path, Value& info, std::string& why) {
         info["vertices"] = double(s.vertex_count);
         info["triangles"] = double(s.triangle_count);
         info["texture"] = std::to_string(s.texture_width) + "x" + std::to_string(s.texture_height);
+        info["materials"] = double(s.material_count);
+        info["cutout_materials"] = double(s.cutout_count);
+        info["texture_bytes"] = double(s.texture_bytes);
         info["bones"] = 0;
         info["clips"] = array();
         return true;
@@ -274,6 +339,9 @@ bool check_model_file(const std::string& path, Value& info, std::string& why) {
     info["vertices"] = double(k.vertex_count);
     info["triangles"] = double(k.triangle_count);
     info["texture"] = std::to_string(k.texture_width) + "x" + std::to_string(k.texture_height);
+    info["materials"] = double(k.material_count);
+    info["cutout_materials"] = double(k.cutout_count);
+    info["texture_bytes"] = double(k.texture_bytes);
     info["bones"] = double(k.joints);
     info["clips"] = array();
     for (const auto& c : k.clips) info["clips"].array.push_back(Value(c.name));
@@ -327,7 +395,23 @@ std::vector<Problem> package_problems(const std::string& mod, const Value& manif
         else if (m.get("kind").string("static") != info.get("kind").string())
             add({"model " + id + ": the file is a " + info.get("kind").string() + " model, the package says " + m.get("kind").string("static"), "model", id, "kind"});
     }
+    // the items' icons: a PNG in the package each (the game reads them when it starts)
+    for (const auto& it : manifest.get("items").array) {
+        const std::string id = it.get("id").string(), icon = it.get("icon").string();
+        if (dir.empty() || icon.empty() || icon.find("..") != std::string::npos) continue;
+        const fs::path file = fs::weakly_canonical(utf8_path(dir) / utf8_path(icon), ec);
+        const auto rel = file.lexically_relative(root);
+        unsigned w = 0, h = 0;
+        if (ec || rel.empty() || rel.begin()->string() == "..") add({"item " + id + ": its icon is outside the package", "item", id, "icon"});
+        else if (!fs::is_regular_file(file, ec)) add({"item " + id + ": " + icon + " is not in the package", "item", id, "icon"});
+        else if (!check_icon_file(file.string(), w, h, why)) add({"item " + id + ": " + icon + ": " + why, "item", id, "icon"});
+    }
     why.clear();
+    {  // a stage's room nothing leads to (kept while editing, validate_package)
+        std::vector<mod_stages::Stage> stages;
+        if (validate_package(mod, manifest, all, why) && !mod_stages::parse(manifest, stages, why)) add({"stages: " + why, "package", "", "stages"});
+        why.clear();
+    }
     if (validate_package(mod, manifest, all, why)) return out;
     const std::string whole = why;
     const size_t before = out.size();
@@ -335,8 +419,24 @@ std::vector<Problem> package_problems(const std::string& mod, const Value& manif
     auto known = [&](const std::string& message) {
         return std::any_of(out.begin(), out.end(), [&](const Problem& p) { return p.message == message; });
     };
-    // the package is refused: find what it is about. Each actor on its own (with the switch a door
+    // the package is refused: find what it is about. The items, charts and letters each on their own
+    // (with the items a chart or letter names), then each actor on its own (with the switch a door
     // names, without scenes), each scene with the actors, each quest on its own.
+    for (const char* section : {"items", "charts", "letters"})
+        for (const auto& e : manifest.get(section).array) {
+            Value one = manifest;
+            one[section] = array();
+            one[section].array.push_back(e);
+            why.clear();
+            std::vector<story_notebook::ManifestItem> items;
+            std::vector<story_notebook::ManifestChart> charts;
+            std::vector<story_notebook::ManifestLetter> letters;
+            const bool fine = std::string(section) == "items" ? story_notebook::parse_items(one, items, why)
+                              : std::string(section) == "charts" ? story_notebook::parse_charts(one, charts, why)
+                                                                 : story_notebook::parse_letters(one, letters, why);
+            const std::string kind = std::string(section).substr(0, std::string(section).size() - 1);
+            if (!fine && !known(why)) add({why, kind, e.get("id").string(), ""});
+        }
     for (const auto& a : manifest.get("actors").array) {
         Value one = manifest;
         one.object.erase("scenes");
@@ -456,8 +556,13 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         if (!host_) return;
         float h = 0;
         std::string w;
+        // on the sea nothing goes below the water's surface: a point on the open sea stays at sea level (y 0)
+        const bool sea = p.get("stage").string(host_->link().stage) == "sea" && pos.y >= 0;
         if (host_->ground({pos.x, pos.y + 50, pos.z}, h, w)) {
-            pos.y = h;
+            pos.y = sea ? std::max(h, 0.0f) : h;
+            result["snapped"] = true;
+        } else if (sea) {
+            pos.y = 0;
             result["snapped"] = true;
         } else
             result["snap_note"] = "not on the ground: " + w;
@@ -485,6 +590,18 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
             v["needs_model"] = t.needs_model;
             if (t.skinned) v["skinned"] = true;
             v["live"] = host_ ? host_->live_kind(t.type, t.live) : t.live;
+            const auto variants = type_variants(t.type);
+            if (!variants.empty()) {
+                v["option"] = variants.front().option;
+                v["variants"] = array();
+                for (const auto& x : variants) {
+                    Value e;
+                    e["value"] = x.value;
+                    e["label"] = x.label;
+                    e["help"] = x.help;
+                    v["variants"].array.push_back(e);
+                }
+            }
             r.array.push_back(v);
         }
         ok = true;
@@ -537,6 +654,14 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         if (!story_notebook::parse_actors(pkg->manifest, actors, why)) return r;
         const auto found = std::find_if(actors.begin(), actors.end(), [&](const auto& actor) { return actor.id == text(p, "id"); });
         if (found == actors.end() || !found->world_object()) return why = "no placed world object with that id", r;
+        // a trial pose (the editor's handle drag): where it would be, before anything changes
+        if (p.get("position").type == Value::Object) {
+            const Value& q = p.get("position");
+            for (const char* k : {"x", "y", "z"})
+                if (q.get(k).type != Value::Number || !std::isfinite(q.get(k).number)) return why = "invalid position", r;
+            found->position = {float(q.get("x").number), float(q.get("y").number), float(q.get("z").number)};
+        }
+        if (p.get("yaw").type == Value::Number && std::isfinite(p.get("yaw").number)) found->rotation.y = float(p.get("yaw").number);
         ok = host_->world_object_query(pkg->mod, *found, command == "preview_collision", r, why);
         return r;
     }
@@ -561,11 +686,49 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         Value info;
         snap(place.position, info);
         const std::string type = text(p, "type");
-        const std::string id = p.get("id").type == Value::String ? p.get("id").text : free_id(pkg->manifest.get("actors"), type == "model" || type == "model_enemy" || type == "model_carry" ? text(p, "model").empty() ? type : text(p, "model") : type);
+        const bool game = story_game_objects::is_reference(type);
+        const bool piece = story_game_pieces::is_reference(type);  // an island building (commands_game_pieces.cpp)
+        const std::string id = p.get("id").type == Value::String ? p.get("id").text : free_id(pkg->manifest.get("actors"), game ? story_game_objects::reference(type) : piece ? story_game_pieces::reference(type) : type == "model" || type == "model_enemy" || type == "model_carry" ? text(p, "model").empty() ? type : text(p, "model") : type);
         Value a;
-        if (!new_actor(type, id, place, text(p, "model"), pkg->manifest, p.get("options"), a, why)) return r;
+        if ((game || piece) && !id_ok(id)) return why = "an actor id is 1 to 32 lower-case letters, digits, '-', '_' or '.'", r;
+        if (piece ? !new_game_piece(type, id, place, a, why) : game ? !new_game_object(type, id, place, p.get("options"), a, why) : !new_actor(type, id, place, text(p, "model"), pkg->manifest, p.get("options"), a, why)) return r;
         if (by_id(pkg->manifest.get("actors"), id)) return why = "the mod has an actor \"" + id + "\" already", r;
-        ok = change(*pkg, "Add " + id, [&](Value& m, std::string&) {
+        ok = change(*pkg, "Add " + id, [&](Value& m, std::string& w) {
+            // an actor that needs one of the mod's room paths (a wall cannon's firing area): the one
+            // options.path names, or a new square area of 1600 units in front of it
+            if (!room_path_use(a).empty() && a.get("path").type == Value::Null) {
+                const std::string base = id + (type == "wall_cannon" ? "-area" : "-route");
+                std::string pid = base;
+                for (int n = 2; [&] { for (const auto& v : m.get("paths").array) if (v.get("id").string() == pid) return true; return false; }(); n++) pid = base + "-" + std::to_string(n);
+                // a cannon's firing area in front of it; a route around the place (a warship's wider)
+                const bool cannon = type == "wall_cannon";
+                const double yaw = place.angle * 3.14159265358979323846 / 32768.0, ahead = cannon ? 1200 : 0, half = cannon ? 800 : type == "warship" ? 1500 : type == "kargaroc" ? 1000 : type == "wizzrobe" ? 600 : 400;
+                const double cx = place.position.x + std::sin(yaw) * ahead, cz = place.position.z + std::cos(yaw) * ahead;
+                Value path;
+                path["id"] = pid;
+                path["stage"] = place.stage;
+                path["room"] = double(place.room);
+                path["closed"] = true;
+                path["points"] = array();
+                for (const auto& c : {std::pair{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}) path["points"].array.push_back(rounded({float(cx + c.first * half), place.position.y, float(cz + c.second * half)}));
+                // a Kargaroc with a rider lets it go at the third point
+                if (!story_enemy_variants::rider_kind(type, a.get("parameters").get("variant").string()).empty()) path["points"].array[2]["release"] = true;
+                if (m.get("paths").type != Value::Array) m["paths"] = array();
+                // a Wizzrobe summoner summons at the points of its path's next path: a smaller square inside
+                if (story_enemy_variants::summoner(type, a.get("parameters").get("variant").string())) {
+                    Value spots = path;
+                    spots["id"] = pid + "-spots";
+                    spots["points"] = array();
+                    for (const auto& c : {std::pair{-1, -1}, {1, -1}, {1, 1}, {-1, 1}}) spots["points"].array.push_back(rounded({float(cx + c.first * half / 2), place.position.y, float(cz + c.second * half / 2)}));
+                    m["paths"].array.push_back(spots);
+                    path["next"] = pid + "-spots";
+                }
+                m["paths"].array.push_back(path);
+                a["path"] = pid;
+            }
+            (void)w;
+            if (game) require_game_objects(m, type);  // "requires": {"game_objects": N}
+            if (piece) require_game_piece(m, type);
             if (m.get("actors").type != Value::Array) m["actors"] = array();
             m["actors"].array.push_back(a);
             return true;
@@ -574,6 +737,15 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         r["id"] = id;
         r["actor"] = a;
         for (const auto& [k, v] : info.object) r[k] = v;
+        if (piece && host_) {
+            // the piece's set is built from the player's room archive if this mod has no copy yet
+            const std::string ref = story_game_pieces::reference(type), state = host_->piece_state(pkg->mod, ref);
+            std::string note, w;
+            if (state != "ready" && state != "preparing" && !host_->prepare_piece(pkg->mod, ref, note, w)) note = "the building could not be prepared: " + w;
+            if (state == "preparing") note = "preparing... the building appears when it is ready";
+            if (!note.empty()) r["note"] = note;
+            r["state"] = host_->piece_state(pkg->mod, ref);
+        }
         return r;
     }
     if (command == "remove_actor") {
@@ -585,6 +757,19 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
             const auto it = std::find_if(list.begin(), list.end(), [&](const Value& a) { return a.get("id").string() == id; });
             if (it == list.end()) return w = "no placed actor \"" + id + "\" in " + pkg->mod, false;
             list.erase(it);
+            // a body of water's generated models (the water tool, models/water/) go with it once nothing uses them
+            if (m.get("models").type == Value::Array) {
+                auto& models = m["models"].array;
+                models.erase(std::remove_if(models.begin(), models.end(), [&](const Value& e) {
+                                 if (e.get("source").string().rfind("models/water/", 0) != 0) return false;
+                                 const std::string mid = e.get("id").string();
+                                 return std::none_of(list.begin(), list.end(), [&](const Value& a) {
+                                     return a.get("model").string() == mid || a.get("collision").get("mesh").string() == mid || a.get("shoreline").get("model").string() == mid ||
+                                            a.get("distant").get("model").string() == mid;
+                                 });
+                             }),
+                             models.end());
+            }
             return true;
         }, r, why);
         if (ok) r["id"] = id;
@@ -658,9 +843,15 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         if (!(len > 1e-6)) return why = "the direction has no length", r;
         dir = {float(dir.x / len), float(dir.y / len), float(dir.z / len)};
         const float range = p.get("range").type == Value::Number ? float(std::clamp(p.get("range").number, 1.0, 200000.0)) : 20000.0f;
-        if (!host_->ray(from, dir, range, hit, why)) return r;
+        const bool ground_hit = host_->ray(from, dir, range, hit, why);
+        // on the sea the water's surface is a place too: an island ground or a buoy goes onto the open sea
+        const Place here = host_->link();
+        const bool sea = here.valid && here.stage == "sea" && sea_pick(from, dir, range, ground_hit, hit);
+        if (!ground_hit && !sea) return r;
+        why.clear();
+        if (sea) r["surface"] = "sea";
         r["position"] = rounded(hit);
-        if (const Place link = host_->link(); link.valid) {
+        if (const Place link = here; link.valid) {
             r["stage"] = link.stage;
             r["room"] = link.stage == "sea" ? sea_room(hit.x, hit.z) : link.room;
         }
@@ -706,6 +897,20 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
     }
     if (command == "check_model") {
         if (!check_model_file(text(p, "file"), r, why)) return r;
+        ok = true;
+        return r;
+    }
+    if (command == "model_clips") {
+        // a model of the open mod: its animation clips (the Inspector's walk and idle pickers)
+        Package* pkg = package(p, why);
+        if (!pkg) return r;
+        const Value* md = by_id(pkg->manifest.get("models"), text(p, "model"));
+        if (!md) return why = "no model \"" + text(p, "model") + "\"", r;
+        if (pkg->dir.empty()) return why = "the mod has no package folder", r;
+        Value info;
+        if (!check_model_file((fs::path(utf8_path(pkg->dir)) / utf8_path(md->get("source").string())).string(), info, why)) return r;
+        r["clips"] = info.get("clips");
+        r["skinned"] = info.get("kind").string() == "skinned";
         ok = true;
         return r;
     }
@@ -760,7 +965,9 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         Package* pkg = package(p, why);
         if (!pkg) return r;
         r["problems"] = array();
-        for (const auto& pr : package_problems(pkg->mod, pkg->manifest, all_manifests(), pkg->dir)) {
+        auto problems = package_problems(pkg->mod, pkg->manifest, all_manifests(), pkg->dir);
+        for (auto& pr : placement_problems(host_, pkg->mod, pkg->manifest)) problems.push_back(std::move(pr));
+        for (const auto& pr : problems) {
             Value v;
             v["message"] = pr.message;
             v["kind"] = pr.kind;
@@ -785,7 +992,8 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
     if (command == "export_package") {
         Package* pkg = package(p, why);
         if (!pkg) return r;
-        const auto problems = package_problems(pkg->mod, pkg->manifest, all_manifests(), pkg->dir);
+        auto problems = package_problems(pkg->mod, pkg->manifest, all_manifests(), pkg->dir);
+        for (auto& pr : placement_problems(host_, pkg->mod, pkg->manifest)) problems.push_back(std::move(pr));
         if (!problems.empty()) {
             why = "not exported: " + std::to_string(problems.size()) + " problem(s), the first: " + problems.front().message + " (check_package lists them)";
             return r;
@@ -803,9 +1011,26 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
         if (!pkg) return r;
         const Value* a = by_id(pkg->manifest.get("actors"), text(p, "id"));
         WorldPoint at;
-        if (!a || !read_point(a->get("position"), at)) return why = "no placed actor \"" + text(p, "id") + "\"", r;
+        const bool place = p.get("id").type == Value::Null && read_point(p.get("position"), at);  // a place instead of an actor
+        if (!place && (!a || !read_point(a->get("position"), at))) return why = "no placed actor \"" + text(p, "id") + "\"", r;
         if (!host_) return why = "the game is not running", r;
-        if (!host_->focus(at, why)) return r;
+        // a world object (a building, a pond, a river): its whole extent in the picture, from its middle
+        float distance = 700;
+        std::vector<story_notebook::ManifestActor> actors;
+        std::string w;
+        if (story_notebook::parse_actors(pkg->manifest, actors, w))
+            for (const auto& actor : actors)
+                if (actor.id == text(p, "id") && actor.world_object()) {
+                    Value q;
+                    if (!host_->world_object_query(pkg->mod, actor, false, q, w)) break;
+                    WorldPoint lo, hi;
+                    if (!read_point(q.get("minimum"), lo) || !read_point(q.get("maximum"), hi)) break;
+                    at = {(lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2};
+                    distance = std::clamp(std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z}) * 0.9f, 700.0f, 12000.0f);
+                }
+        if (p.get("distance").type == Value::Number) distance = float(std::clamp(p.get("distance").number, 200.0, 20000.0));
+        const float yaw = p.get("yaw").type == Value::Number ? float(p.get("yaw").number) : std::nanf("");
+        if (!host_->focus_view(at, distance, yaw, why)) return r;
         r["requested"] = true;
         ok = true;
         return r;
