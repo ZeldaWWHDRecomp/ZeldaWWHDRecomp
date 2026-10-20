@@ -856,6 +856,9 @@ static bool g_draw_must_run = false;  // the current draw writes a target that i
 static std::unordered_map<uint32_t, gfx::TargetDrawHistory> g_target_drawn;
 static uint64_t g_must_run_waits = 0;
 static double g_must_run_wait_ms = 0;
+// every wait for a compile (budgeted and must-run) and the budgeted ones that ran out (the draw is skipped)
+static uint64_t g_compile_waits = 0, g_compile_wait_timeouts = 0;
+static double g_compile_wait_ms = 0;
 static bool wait_compiled(const std::atomic<int>& st) {
     static const double budgetMs = getenv("WWHD_COMPILE_WAIT_MS") ? atof(getenv("WWHD_COMPILE_WAIT_MS")) : 25.0;
     if (g_building_ahead) return st.load(std::memory_order_acquire) == CS_READY;
@@ -873,19 +876,25 @@ static bool wait_compiled(const std::atomic<int>& st) {
         spent += dt;
         g_must_run_waits++;
         g_must_run_wait_ms += dt;
+        g_compile_waits++;
+        g_compile_wait_ms += dt;
         static int logged = 0;
         if (dt >= 30 && logged++ < 50)
             LOG("[gfx] frame %llu: waited %.0f ms for a compile (draw into a target not redrawn every frame)", (unsigned long long)R.frame, dt);
         return st.load(std::memory_order_acquire) == CS_READY;
     }
-    if (spent >= budgetMs) return false;
+    if (spent >= budgetMs) { g_compile_wait_timeouts++; return false; }
     double t0 = now_ms();
     {
         std::unique_lock<std::mutex> lk(g_compile_mu);
         g_compile_cv.wait_for(lk, std::chrono::duration<double, std::milli>(budgetMs - spent),
                               [&] { return st.load(std::memory_order_acquire) != CS_PENDING; });
     }
-    spent += now_ms() - t0;
+    const double dt = now_ms() - t0;
+    spent += dt;
+    g_compile_waits++;
+    g_compile_wait_ms += dt;
+    if (st.load(std::memory_order_acquire) == CS_PENDING) g_compile_wait_timeouts++;
     return st.load(std::memory_order_acquire) == CS_READY;
 }
 
@@ -1801,6 +1810,12 @@ void report_skips() {
     if (g_key_checks)
         LOG("[gfx shader key] %llu wide keys verified, %llu violations", (unsigned long long)g_key_checks,
             (unsigned long long)g_key_violations);
+    // since the start: compile waits of draws (the frame's budget, WWHD_COMPILE_WAIT_MS, or without one for
+    // targets not redrawn every frame), budgeted waits that ran out, and draws skipped while compiling
+    LOG("[gfx] compile waits: %llu (%.0f ms in all), %llu ran out of the frame's budget; draws skipped while compiling: "
+        "%llu shader, %llu pipeline", (unsigned long long)g_compile_waits, g_compile_wait_ms,
+        (unsigned long long)g_compile_wait_timeouts, (unsigned long long)g_skip[SK_COMPILING],
+        (unsigned long long)g_skip[SK_PIPE_COMPILING]);
     if (g_must_run_waits)
         LOG("[gfx] draws that waited for their compile (targets not redrawn every frame): %llu, %.0f ms in all",
             (unsigned long long)g_must_run_waits, g_must_run_wait_ms);
