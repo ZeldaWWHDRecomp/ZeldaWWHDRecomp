@@ -22,7 +22,8 @@ UploadSlice buffer_cache_slice(const bufcache::Entry& entry, uint64_t size);
 
 // Raw guest bytes [addr, addr + size) (vertex arrays, uniform blocks): true and out set, or false (dynamic
 // range, too large, no memory): copy through the upload arena. uploadKind: rprof::Upload.
-bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlice& out);
+bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlice& out,
+                         bufcache::Entry** retained = nullptr);
 // Native (little-endian) index data: like cached_guest_range, plus the entry, whose shadow holds the
 // same bytes on the CPU (extent scans never read GPU memory).
 bool cached_native_indices(uint32_t addr, uint32_t size, UploadSlice& out, bufcache::Entry*& entry);

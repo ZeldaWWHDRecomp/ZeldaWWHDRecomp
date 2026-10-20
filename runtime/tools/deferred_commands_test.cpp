@@ -364,6 +364,49 @@ void stereo_pod_tail_ownership() {
     assert(calls==std::vector<int>{1} && eye.command_count()==0); calls.clear();
     eye.reset();
 }
+void draw_batch_flush_order() {
+    gfxvk::DeferredCommands renderer;
+    renderer.start_capture();
+    gfxvk::before_record_command = [] {
+        gfxvk::before_record_command = nullptr;
+        gfxvk::record::vkCmdDraw(cmd,3,1,0,0);
+    };
+    // A separate WSI/recording thread cannot flush a producer's batch.
+    std::thread([] { assert(gfxvk::before_record_command == nullptr); }).join();
+    {
+        gfxvk::IsolatedCommandDispatch isolated;
+        assert(gfxvk::dispatch_recorder() == nullptr);
+        assert(gfxvk::before_record_command != nullptr);
+    }
+    gfxvk::record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle<VkPipeline>(2));
+    assert(gfxvk::before_record_command == nullptr);
+    assert(renderer.command_count() == 2 && calls.empty());
+    renderer.finish_exact();
+    assert((calls == std::vector<int>{1,2}));
+    calls.clear();
+}
+
+void pending_pipeline_precedes_unrecorded_batch() {
+    for (bool direct : {false, true}) {
+        gfxvk::DeferredCommands renderer;
+        renderer.start_capture();
+        // A pending pipeline binds during replay. A later producer batch must
+        // be appended to the captured tail before replay starts, never flushed
+        // by that older bind's nested record:: call.
+        renderer.emit_owned([] {
+            gfxvk::record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,handle<VkPipeline>(2));
+        });
+        renderer.vkCmdDraw(cmd,3,1,0,0);
+        gfxvk::before_record_command = [] {
+            gfxvk::before_record_command = nullptr;
+            gfxvk::record::vkCmdDraw(cmd,3,1,0,0);
+        };
+        if (direct) renderer.emit_exact(); else renderer.finish_exact();
+        assert((calls == std::vector<int>{2,1,1}));
+        assert(gfxvk::before_record_command == nullptr);
+        calls.clear();
+    }
+}
 
 }
-int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();stereo_eye_stream();guest_thread_exit_retains_global_recorder();stereo_pod_tail_ownership(); }
+int main() { initialize();inline_dispatch();ownership_and_order();fallback_and_bounds();allocation_failure_falls_back();callback_failure_preserves_tail();owned_submission_boundaries();owned_pending_emission();cross_thread_checkpoint_and_isolated_dispatch();stereo_eye_stream();guest_thread_exit_retains_global_recorder();stereo_pod_tail_ownership();draw_batch_flush_order();pending_pipeline_precedes_unrecorded_batch(); }

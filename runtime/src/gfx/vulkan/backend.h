@@ -216,6 +216,8 @@ struct Renderer {
  };
  std::deque<Submission> submissions=std::deque<Submission>(4);
  size_t activeSubmission=0;
+ // A submitted slot remains sealed until work actually needs the next slot.
+ bool submissionNeeded=false;
  Screen tv,drc;
  std::unordered_multimap<uint32_t,std::unique_ptr<Surface>> surfaces;
  std::vector<Surface*> linearTargets; // linear-aligned colour surfaces (never removed, like surfaces): GX2DrawDone write-back
@@ -227,8 +229,8 @@ void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
 void save_pipeline_cache(bool shutdown = true);
 void present_completed_frame_while_pipeline_pending();
 void begin_pipeline_pending_frame();
-// Only guest GX2Flush uses this asynchronous path. flush() remains a drain for
-// readbacks and renderer tools; final presentation also waits synchronously.
+// Guest flushes and asynchronous presentation seal work without acquiring the
+// next recording slot. flush() remains a drain for readbacks and renderer tools.
 void flush_async();
 void reset_pipeline_lookup_cache();
 uint64_t draw_batch_submissions();
@@ -242,11 +244,14 @@ Buffer create_buffer(VkDeviceSize size,VkBufferUsageFlags usage,VkMemoryProperty
 // host-visible TRANSFER_DST buffer the CPU reads back, host-cached where available
 Buffer create_readback_buffer(VkDeviceSize size);
 UploadSlice allocate_upload(VkDeviceSize size,VkDeviceSize alignment);
+void ensure_submission();
+VkDescriptorPool descriptor_pool();
 // Renderer smoke tests exercise the production snapshot helper with host data.
 UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
     uint32_t reservation,uint32_t windowOffset,uint32_t windowLength,
     const void* data,bool poisonUnused);
 // Synthetic shader metadata drives the production texture-binding path.
+void stage_input_smoke_check();
 VkDescriptorSet texture_stage_smoke_bind(const uint32_t* registers,
     VkDescriptorSetLayout layout, uint32_t textureCount);
 void defer_buffer(Buffer buffer);

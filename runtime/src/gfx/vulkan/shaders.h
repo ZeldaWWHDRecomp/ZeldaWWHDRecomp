@@ -25,6 +25,17 @@ DescriptorRankPlan make_descriptor_rank_plan(const LatteDecompilerShaderResource
 // Vertex descriptors occupy set 0, pixel descriptors set 1. Device modules are
 // created by the draw backend; this cache owns only translation and SPIR-V.
 struct ShaderBinary;
+// CPU execution plan for a shader's uniform inputs. Built with the translation,
+// so a continued draw does not walk decompiler lists or rediscover copy ranges.
+struct UniformInputSpan {
+    uint32_t reg = 0, source = 0, destination = 0, bytes = 0;
+    bool indirect = false;
+};
+struct UniformInputPlan {
+    std::vector<UniformInputSpan> spans;
+    size_t bytes = 0;
+    bool ready = false, readsGuestMemory = false;
+};
 bool shader_binary_ready(const std::shared_ptr<ShaderBinary>& binary);
 std::vector<uint32_t> shader_binary_words(const std::shared_ptr<ShaderBinary>& binary);
 std::vector<uint32_t> shader_binary_words_exact(const std::shared_ptr<ShaderBinary>& binary, uint64_t frame);
@@ -37,6 +48,12 @@ struct Shader {
     LatteDecompilerShaderResourceMapping mapping;
     DescriptorRankPlan descriptorRanks;
     LatteDecompilerOutputUniformOffsets uniforms;
+    UniformInputPlan uniformInputs;
+    // Optional mono variant: one uniform descriptor contains several draws.
+    // Guest instance ID remains zero; the native instance index selects data.
+    std::shared_ptr<Shader> drawArrayVariant;
+    Shader* drawArrayBase = nullptr;
+    uint32_t drawArrayCount = 0;
     SpirvWords spirvWords; // shared with the SPIR-V disk cache entry
     std::shared_ptr<ShaderBinary> binary; // CPU result; immutable metadata is already published
     std::string glsl; // Mutable translation scratch, released once the compile is requested.
@@ -56,8 +73,11 @@ struct Shader {
     }
     bool ready() const { return dec && (!spirv().empty() || binary) && error.empty(); }
 };
+UniformInputPlan make_uniform_input_plan(const Shader& shader);
 // Render-thread-only lookup; recorded pipeline identity, never program hash.
 const Shader* find_pipeline_shader(uint64_t pipelineId, bool vertex);
+// Resolve the optional batching binary only for an eligible mono draw.
+Shader* draw_array_variant(Shader& shader, uint64_t frame);
 void select_renderer();
 // Pass the renderer frame to revalidate program bytes once per frame. Omitting
 // it keeps immediate revalidation for standalone callers and shader tools.
@@ -102,10 +122,18 @@ bool save_shader_cache();
 std::vector<uint32_t> compile_compute(const std::string& source, std::string* error = nullptr);
 std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::string* error = nullptr);
 // Caller-owned CPU scratch; all active bytes are freshly zeroed and packed.
-// eyeRows: receives the rows the eye offset shifted (stereo_projection.h)
+// Optional immutable guest inputs for comparing packers against the same bytes.
+struct UniformReader {
+    void* context;
+    const void* (*read)(void*, uint32_t, size_t);
+};
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     std::vector<uint8_t>& data, float scaleX = 1.0f, float scaleY = 1.0f,
-    float eyeOffset = 0, float convergence = 600, stereo::EyeRows* eyeRows = nullptr);
+    float eyeOffset = 0, float convergence = 600, stereo::EyeRows* eyeRows = nullptr, const UniformReader* reader = nullptr, bool useInputPlan = true);
+// Updates an already initialized mono payload; padding and texture scales are
+// retained from its resolved stage. Guest inputs and dynamic fields stay fresh.
+bool update_prepared_uniforms(const uint32_t* regs, const Shader& shader,
+    std::vector<uint8_t>& data, float scaleX, float scaleY, const UniformReader* reader = nullptr);
 std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
     float scaleX = 1.0f, float scaleY = 1.0f);
 // After guest memory replacement and render drain; compiled variants stay alive.

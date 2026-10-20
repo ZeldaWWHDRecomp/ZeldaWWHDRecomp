@@ -35,8 +35,11 @@ public:
     commands_ = 0;
   }
   std::vector<std::byte> snapshot() const { return bytes_; }
-  std::vector<std::byte> take() {
+  // The consumer may return an empty reusable allocation. Queued commands own
+  // the outgoing bytes; the producer writes only into the replacement storage.
+  std::vector<std::byte> take(std::vector<std::byte> replacement = {}) {
     auto result = std::move(bytes_);
+    bytes_ = std::move(replacement);
     bytes_.clear();
     commands_ = 0;
     return result;

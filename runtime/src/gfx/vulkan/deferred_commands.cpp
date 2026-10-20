@@ -88,6 +88,9 @@ bool DeferredCommands::publish_held() {
     return true;
 }
 void DeferredCommands::force_exact() {
+    // A producer batch has not reached this stream yet. Append it while capture
+    // is still active, before an older pending-pipeline bind can invoke dispatch.
+    if(active_deferred_commands==this && before_record_command)before_record_command();
     if (pod_) { drain_record_commands(); return; }
     capturing_=false;
     if(active_deferred_commands==this)active_deferred_commands=nullptr;
@@ -97,6 +100,7 @@ void DeferredCommands::force_exact() {
     emit_exact();
 }
 void DeferredCommands::emit_exact() {
+    if(active_deferred_commands==this && before_record_command)before_record_command();
     if (pod_) { drain_record_commands(); return; }
     seal_held();
     capturing_=false;
@@ -108,6 +112,12 @@ void DeferredCommands::emit_exact() {
         EyeDispatch() { eye_deferred_commands=nullptr; }
         ~EyeDispatch() { eye_deferred_commands=eye; }
     } eyeDispatch;
+    // Nested dispatch must not flush a later producer batch during replay.
+    struct BatchDispatch {
+        void (*saved)() = before_record_command;
+        BatchDispatch() { before_record_command = nullptr; }
+        ~BatchDispatch() { before_record_command = saved; }
+    } batchDispatch;
     while(emitted_<commands_.size()) { commands_[emitted_]();++emitted_; }
     commands_.clear();payloadBytes_=0;emitted_=0;beforeExact_={};
 }

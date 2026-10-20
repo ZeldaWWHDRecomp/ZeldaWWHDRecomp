@@ -65,7 +65,7 @@ Buffer dispatch(const std::vector<uint8_t>& blocks,uint32_t w,uint32_t h,uint32_
         readback?VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT:VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if(!input.mapped)exception_report::raise("BC input buffer not mapped");
     std::memcpy(input.mapped,blocks.data(),blocks.size());
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=R.descriptorPool;ai.descriptorSetCount=1;ai.pSetLayouts=&descriptors;
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};ai.descriptorPool=descriptor_pool();ai.descriptorSetCount=1;ai.pSetLayouts=&descriptors;
     VkDescriptorSet set=VK_NULL_HANDLE;vk_check(vkAllocateDescriptorSets(R.device,&ai,&set),"BC descriptor set");
     VkDescriptorBufferInfo buffers[2]={{input.buffer,0,blocks.size()},{output.buffer,0,pixels*4}};
     VkWriteDescriptorSet writes[2]{};

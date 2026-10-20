@@ -45,6 +45,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <regex>
 
 LatteDecompilerShader* FinishDecompiledShader(LatteDecompilerOutput_t& output);
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash hash,
@@ -53,6 +54,47 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 void log_msg(const char* fmt, ...);  // runtime.h (not included here: the Cemu headers)
 namespace gfxvk::vk {
 using Latte::REGADDR;
+UniformInputPlan make_uniform_input_plan(const Shader& shader) {
+    UniformInputPlan plan;
+    const auto& offsets = shader.uniforms;
+    plan.bytes = (std::max(offsets.offset_endOfBlock, 16) + 15) & ~15;
+    if (!shader.dec) return plan;
+    auto add = [&](uint32_t reg, uint32_t source, int destination, size_t bytes, bool indirect) {
+        if (destination < 0 || size_t(destination) + bytes > plan.bytes || !bytes) return;
+        plan.readsGuestMemory |= indirect;
+        if (!plan.spans.empty()) {
+            auto& last = plan.spans.back();
+            if (last.indirect == indirect && last.reg == reg &&
+                last.source + last.bytes == source && last.destination + last.bytes == uint32_t(destination)) {
+                last.bytes += uint32_t(bytes);
+                return;
+            }
+        }
+        plan.spans.push_back({reg, source, uint32_t(destination), uint32_t(bytes), indirect});
+    };
+    const uint32_t alu = mmSQ_ALU_CONSTANT0_0 + (shader.vertex ? 0x400 : 0);
+    const uint32_t block = shader.vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
+    if (offsets.offset_remapped >= 0) {
+        for (const auto& entry : shader.dec->list_remappedUniformEntries_register)
+            add(alu, (entry.indexOffset / 4) * 4, offsets.offset_remapped + entry.mappedIndexOffset, 16, false);
+        for (const auto& group : shader.dec->list_remappedUniformEntries_bufferGroups)
+            for (const auto& entry : group.entries)
+                add(block + group.kcacheBankIdOffset / 4, entry.indexOffset,
+                    offsets.offset_remapped + entry.mappedIndexOffset, 16, true);
+    }
+    add(alu, 0, offsets.offset_uniformRegister, size_t(offsets.count_uniformRegister) * 16, false);
+    // Missing guest blocks were zero in the original fresh payload. Preserve
+    // that behavior without assuming malformed/overlapping metadata is safe.
+    for (size_t i = 0; i < plan.spans.size(); ++i)
+        for (size_t j = 0; j < i; ++j) {
+            const auto& a = plan.spans[i];
+            const auto& b = plan.spans[j];
+            if (a.destination < b.destination + b.bytes && b.destination < a.destination + a.bytes)
+                return plan;
+        }
+    plan.ready = true;
+    return plan;
+}
 // Only this detached CPU result is shared with pipeline workers. Shader objects,
 // cache maps, counters and disk-cache publication stay on the render thread.
 bool shader_binary_ready(const std::shared_ptr<ShaderBinary>& binary) {
@@ -679,6 +721,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     shader.mapping = output.resourceMappingVK;
     shader.descriptorRanks = make_descriptor_rank_plan(shader.mapping, *shader.dec);
     shader.uniforms = output.uniformOffsetsVK;
+    shader.uniformInputs = make_uniform_input_plan(shader);
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
     if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: upscaling fix not applied\n", address);
@@ -1022,6 +1065,137 @@ void poll_shader_binaries(uint64_t frame, bool drain = false) {
     pendingShaderRecords.resize(retained);
 }
 }
+// Both guest shaders and draw-array variants use the same cache and owned
+// asynchronous compiler jobs. No variant may bypass persistence or wait on a
+// utility compile from the render thread.
+static bool request_cached_binary(Shader& shader, uint64_t frame, bool required = true) {
+    initialize_disk_cache();
+    // Guest variants retain distinct metadata, but identical final GLSL shares
+    // compilation even with persistence disabled. The source identity (XXH3-128
+    // + length, besides the FNV key) decides sharing; the text is not kept.
+    const uint64_t spirvKey = shader.spirvKey;
+    auto cached=diskShaders.find(spirvKey);
+    if(cached!=diskShaders.end() && cached->second.vertex==shader.vertex && cached->second.source==shader.sourceId) {
+        shader.spirvWords=cached->second.words;
+        // the cached words are shared with the disk cache: strip a private copy
+        if(full_precision_enabled() && shader.spirvWords) {
+            auto words=std::make_shared<std::vector<uint32_t>>(*shader.spirvWords);
+            note_relaxed_precision_stripped(strip_relaxed_precision(*words));
+            shader.spirvWords=std::move(words);
+        }
+        if(cached->second.fromDisk) ++stats.diskHits;
+        else ++stats.spirvReuseHits;
+        if (shader.drawArrayCount && stutter::trace().enabled()) {
+            const auto now = stutter::now();
+            stutter::trace().add("draw_array_cache_hit", frame, spirvKey, now, now, 0);
+        }
+    } else {
+        auto pending = pendingBinarySources.find(spirvKey);
+        if (pending != pendingBinarySources.end() && pending->second.first == shader.sourceId)
+            shader.binary = pending->second.second.lock();
+        if (shader.binary) ++stats.spirvReuseHits;
+        else {
+            std::optional<ShaderCompileTicket> ticket;
+            while (!(ticket = request_shader_compile(shader.glsl,
+                shader.vertex ? ShaderStage::Vertex : ShaderStage::Fragment, frame, shader.key,
+                async_shaders_enabled()))) {
+                // Optional batching must not hold up a drawable base shader when
+                // the compiler queue is full. Keep its GLSL and retry later.
+                if (!required) return false;
+                if (frame != ~uint64_t{0}) {
+                    begin_pipeline_pending_frame();
+                    present_completed_frame_while_pipeline_pending();
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            shader.binary = std::make_shared<ShaderBinary>(std::move(*ticket));
+            pendingBinarySources.insert_or_assign(spirvKey,
+                std::make_pair(shader.sourceId, std::weak_ptr<ShaderBinary>(shader.binary)));
+        }
+        if (frame == ~uint64_t{0} || !async_shaders_enabled()) {
+            (void)shader_binary_words_exact(shader.binary, frame);
+            publish_shader_binary(shader, frame);
+        } else pendingShaderRecords.push_back(&shader);
+    }
+    return true;
+}
+
+// A native instance index selects a draw's constants from one immutable upload
+// reservation. Only single-instance, per-vertex-fetch draws select this variant;
+// the guest's instance-ID input consequently remains zero.
+// Opt-in (WWHD_VK_DRAW_ARRAYS=1): the variant is a second compiled shader, which
+// drivers need not rasterize bit for bit like the guest's (edge pixels can differ),
+// and it adds pipelines that existing caches and the prebuilt set do not cover.
+static void make_draw_array_variant(Shader& shader) {
+    static const bool enabled = [] {
+        const char* e = std::getenv("WWHD_VK_DRAW_ARRAYS");
+        return e && std::strcmp(e, "0");
+    }();
+    constexpr uint32_t count = 16;
+    if (!enabled || !shader.vertex || mods::cemu::has_shaders() ||
+        shader.mapping.uniformVarsBufferBindingPoint < 0 || shader.mapping.tfStorageBindingPoint >= 0 ||
+        shader.uniformInputs.bytes * count > R.properties.limits.maxUniformBufferRange)
+        return;
+    for (int binding : shader.mapping.uniformBuffersBindingPoint) if (binding >= 0) return;
+    const auto marker = shader.glsl.find("uniform ufBlock");
+    if (marker == std::string::npos) return;
+    const auto begin = shader.glsl.rfind('\n', marker);
+    const auto open = shader.glsl.find('{', marker);
+    const auto end = shader.glsl.find("};", open);
+    if (begin == std::string::npos || open == std::string::npos || end == std::string::npos) return;
+    auto members = shader.glsl.substr(open + 1, end - open - 1);
+    std::vector<std::string> names;
+    const std::regex declaration(R"(uniform\s+\w+\s+(\w+))");
+    for (std::sregex_iterator i(members.begin(), members.end(), declaration), last; i != last; ++i)
+        names.push_back((*i)[1].str());
+    if (names.empty()) return;
+    members = std::regex_replace(members, std::regex(R"(\buniform\s+)"), "");
+    std::string block = "\nstruct WWHD_DrawUniforms {" + members + "};\nlayout(std140, set = 0, binding = " +
+        std::to_string(shader.mapping.uniformVarsBufferBindingPoint) +
+        ") uniform ufBlock { WWHD_DrawUniforms wwhdDrawUniforms[" + std::to_string(count) + "]; };\n";
+    for (const auto& name : names)
+        block += "#define " + name + " (wwhdDrawUniforms[gl_InstanceIndex]." + name + ")\n";
+    auto source = shader.glsl;
+    source.replace(begin, end + 2 - begin, block);
+    const std::string instanceDefine = "#define gl_InstanceID gl_InstanceIndex";
+    const auto instance = source.find(instanceDefine);
+    if (instance == std::string::npos) return;
+    source.replace(instance, instanceDefine.size(), "#define gl_InstanceID 0");
+    auto variant = std::make_shared<Shader>(shader);
+    variant->glsl = std::move(source);
+    variant->retainedSource.reset();
+    variant->sourceId = shader_source_id(variant->glsl);
+    variant->spirvKey = source_cache_key(variant->glsl, true);
+    variant->key = variant->spirvKey;
+    variant->pipelineId = portable_output_identity(*variant);
+    variant->binary.reset();
+    variant->spirvWords.reset();
+    variant->error.clear();
+    variant->drawArrayCount = count;
+    variant->drawArrayBase = &shader;
+    shader.drawArrayVariant = std::move(variant);
+}
+
+// Stereo and ineligible draws never need this binary. Keep its source until the
+// first eligible mono draw (including a later stereo -> mono switch), then hand
+// it to the compiler without blocking the base draw. Select it only after the
+// render-thread poll has published its completed binary (ready() alone also
+// accepts pending jobs, which would stall the draw's pipeline prerequisites).
+Shader* draw_array_variant(Shader& shader, uint64_t frame) {
+    auto* variant = shader.drawArrayVariant.get();
+    if (!variant) return &shader;
+    if (!variant->glsl.empty()) {
+        const auto started = stutter::trace().enabled() ? stutter::now() : 0;
+        if (!request_cached_binary(*variant, frame, frame == ~uint64_t{0})) return &shader;
+        if (started) stutter::trace().add("draw_array_request", frame, variant->spirvKey,
+                                        started, stutter::now(), 0);
+        if (retain_shader_source())
+            variant->retainedSource = std::make_shared<const std::string>(std::move(variant->glsl));
+        std::string{}.swap(variant->glsl);
+    }
+    return variant->ready() && !variant->binary ? variant : &shader;
+}
+
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
                   uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs) {
     poll_shader_binaries(frame);
@@ -1146,52 +1320,13 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     variants.emplace(key, shader);
     shadersByOutput.emplace(output, shader);
     remember(shader);
-    initialize_disk_cache();
-    // Guest variants retain distinct metadata, but identical final GLSL shares
-    // compilation even with persistence disabled. The source identity (XXH3-128
-    // + length, besides the FNV key) decides sharing; the text is not kept.
-    const uint64_t spirvKey = shader->spirvKey;
-    auto cached=diskShaders.find(spirvKey);
-    if(cached!=diskShaders.end() && cached->second.vertex==vertex && cached->second.source==shader->sourceId) {
-        shader->spirvWords=cached->second.words;
-        // the cached words are shared with the disk cache: strip a private copy
-        if(full_precision_enabled() && shader->spirvWords) {
-            auto words=std::make_shared<std::vector<uint32_t>>(*shader->spirvWords);
-            note_relaxed_precision_stripped(strip_relaxed_precision(*words));
-            shader->spirvWords=std::move(words);
-        }
-        if(cached->second.fromDisk) ++stats.diskHits;
-        else ++stats.spirvReuseHits;
-    } else {
-        auto pending = pendingBinarySources.find(spirvKey);
-        if (pending != pendingBinarySources.end() && pending->second.first == shader->sourceId)
-            shader->binary = pending->second.second.lock();
-        if (shader->binary) ++stats.spirvReuseHits;
-        else {
-            std::optional<ShaderCompileTicket> ticket;
-            while (!(ticket = request_shader_compile(shader->glsl,
-                vertex ? ShaderStage::Vertex : ShaderStage::Fragment, frame, key,
-                async_shaders_enabled()))) {
-                if (frame != ~uint64_t{0}) {
-                    begin_pipeline_pending_frame();
-                    present_completed_frame_while_pipeline_pending();
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            shader->binary = std::make_shared<ShaderBinary>(std::move(*ticket));
-            pendingBinarySources.insert_or_assign(spirvKey,
-                std::make_pair(shader->sourceId, std::weak_ptr<ShaderBinary>(shader->binary)));
-        }
-        if (frame == ~uint64_t{0} || !async_shaders_enabled()) {
-            (void)shader_binary_words_exact(shader->binary, frame);
-            publish_shader_binary(*shader, frame);
-        } else pendingShaderRecords.push_back(shader);
-    }
+    request_cached_binary(*shader, frame);
     // Stable before SPIR-V publication, and identical on cold/warm runs. Never
     // mutate a pipeline key when a pending compiler result becomes available.
     // Exact GLSL+metadata aliases above still share the same Shader object.
     // Computed from the full text, so the recorded identity is unchanged.
     shader->pipelineId = portable_output_identity(*shader);
+    make_draw_array_variant(*shader);
     // The compiler job owns its own copy of the text; keep it here only for
     // the verification modes.
     if (retain_shader_source())
@@ -1202,8 +1337,14 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
 }
 
 const Shader* find_pipeline_shader(uint64_t pipelineId, bool vertex) {
-    return resolve_pipeline_shader_identity(pipelineId, vertex, shaders, variants,
-        [](const Shader& a, const Shader& b) { return same_output(a, b); });
+    if (const auto* found = resolve_pipeline_shader_identity(pipelineId, vertex, shaders, variants,
+        [](const Shader& a, const Shader& b) { return same_output(a, b); })) return found;
+    for (const auto& [key, shader] : shaders)
+        if (shader->drawArrayVariant && shader->drawArrayVariant->pipelineId == pipelineId && vertex)
+            // Explicit head-start preparation needs the same lazy binary as a
+            // draw. Complete it here, before gameplay, for recorded recipes.
+            return draw_array_variant(*shader, ~uint64_t{0});
+    return nullptr;
 }
 
 namespace {
@@ -1317,6 +1458,13 @@ ShaderMemoryStats shader_memory_stats() {
         result.verifyCapacity += shader->translatedGlsl.capacity();
         if (shader->spirvWords && spirv.insert(shader->spirvWords.get()).second)
             result.spirvCapacity += shader->spirvWords->capacity() * sizeof(uint32_t);
+        if (const auto& variant = shader->drawArrayVariant) {
+            result.glslCapacity += variant->glsl.capacity();
+            if (variant->retainedSource)
+                result.retainedSourceCapacity += variant->retainedSource->capacity();
+            if (variant->spirvWords && spirv.insert(variant->spirvWords.get()).second)
+                result.spirvCapacity += variant->spirvWords->capacity() * sizeof(uint32_t);
+        }
     }
     result.diskEntries = diskShaders.size();
     for (const auto& [key, shader] : diskShaders)
@@ -1326,9 +1474,45 @@ ShaderMemoryStats shader_memory_stats() {
     return result;
 }
 
+bool update_prepared_uniforms(const uint32_t* regs, const Shader& shader,
+                              std::vector<uint8_t>& data, float scaleX, float scaleY, const UniformReader* reader) {
+    const auto& plan = shader.uniformInputs;
+    if (!plan.ready || data.size() != plan.bytes) return false;
+    for (const auto& span : plan.spans) {
+        auto* destination = data.data() + span.destination;
+        if (span.indirect) {
+            const uint32_t address = regs[span.reg];
+            if (address) memcpy(destination, reader ? reader->read(reader->context, address + span.source, span.bytes)
+                                                   : ppc_ptr(address + span.source), span.bytes);
+            else memset(destination, 0, span.bytes);
+        } else memcpy(destination, reinterpret_cast<const uint8_t*>(regs + span.reg) + span.source, span.bytes);
+    }
+    const auto& offsets = shader.uniforms;
+    auto copy = [&](int offset, const void* source, size_t bytes) {
+        if (offset >= 0 && size_t(offset) + bytes <= data.size()) memcpy(data.data() + offset, source, bytes);
+    };
+    auto put = [&](int offset, float value) { copy(offset, &value, 4); };
+    auto bitsf = [](uint32_t bits) { float value; memcpy(&value, &bits, 4); return value; };
+    copy(offsets.offset_alphaTestRef, regs + REGADDR::SX_ALPHA_REF, 4);
+    const float point = float(regs[REGADDR::PA_SU_POINT_SIZE] & 0xFFFF) / 8.0f;
+    put(offsets.offset_pointSize, (point == 0 ? 0.125f : point) * scaleX);
+    if (offsets.offset_windowSpaceToClipSpaceTransform >= 0) {
+        const float width = 2 * bitsf(regs[REGADDR::PA_CL_VPORT_XSCALE]);
+        const float height = -2 * bitsf(regs[REGADDR::PA_CL_VPORT_YSCALE]);
+        put(offsets.offset_windowSpaceToClipSpaceTransform, width != 0 ? 2 / width : 0);
+        put(offsets.offset_windowSpaceToClipSpaceTransform + 4, height != 0 ? 2 / height : 0);
+    }
+    if (offsets.offset_fragCoordScale >= 0) {
+        const float scale[] = {scaleX != 0 ? 1 / scaleX : 1, scaleY != 0 ? 1 / scaleY : 1, 0, 0};
+        copy(offsets.offset_fragCoordScale, scale, sizeof scale);
+    }
+    return true;
+}
+
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
                         std::vector<uint8_t>& data, float scaleX, float scaleY,
-                        float eyeOffset, float convergence, stereo::EyeRows* eyeRows) {
+                        float eyeOffset, float convergence, stereo::EyeRows* eyeRows,
+                        const UniformReader* reader, bool useInputPlan) {
     if (stereo::layoutDrawDepth) eyeOffset = 0;
     const auto& offsets = shader.uniforms;
     data.resize((std::max(offsets.offset_endOfBlock, 16) + 15) & ~15);
@@ -1336,6 +1520,19 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     // including gaps, padding, and remapped blocks with missing guest addresses.
     std::fill(data.begin(), data.end(), uint8_t{0});
     if (!shader.dec) return;
+    // Full draws need the same input copies as continued draws. Execute the
+    // translation-time, coalesced plan in mono and for unprojected stereo
+    // stages instead of walking each decompiler register/block entry again.
+    // Projected vertex stages retain the independent row-discovery path below.
+    if (useInputPlan && (!shader.vertex || eyeOffset == 0) &&
+        update_prepared_uniforms(regs, shader, data, scaleX, scaleY, reader)) {
+        for (int offset : offsets.offset_texScale) {
+            if (offset < 0 || size_t(offset) + 8 > data.size()) continue;
+            const float scale[] = {1, 1};
+            memcpy(data.data() + offset, scale, sizeof scale);
+        }
+        return;
+    }
     auto copy = [&](int offset, const void* src, size_t size) {
         if (offset >= 0 && size_t(offset) + size <= data.size()) memcpy(data.data() + offset, src, size);
     };
@@ -1364,7 +1561,9 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
             if (!address) continue;
             const size_t blockSize = std::min<uint32_t>(regs[blockBase+group.kcacheBankIdOffset/4+1]+1,0x10000);
             for (const auto& entry : group.entries) {
-                copy(offsets.offset_remapped + entry.mappedIndexOffset, ppc_ptr(address + entry.indexOffset), 16);
+                copy(offsets.offset_remapped + entry.mappedIndexOffset,
+                    reader ? reader->read(reader->context, address + entry.indexOffset, 16)
+                           : ppc_ptr(address + entry.indexOffset), 16);
                 if (entry.indexOffset < blockSize)
                     projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                         ppc_ptr(address+entry.indexOffset),blockSize-entry.indexOffset);
