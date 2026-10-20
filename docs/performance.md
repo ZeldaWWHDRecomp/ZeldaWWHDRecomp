@@ -604,6 +604,35 @@ and vertex and pixel shaders share it). Each lookup hashed all of them in a seri
 last gathered words and result are now kept per stage (two buffers, swapped on a change); an identical
 gather returns the previous result after a `memcmp`. Same input, same key, by construction.
 
+### Metal: narrow shader keys (2026-10-20)
+
+The Metal renderer translated a shader once per `stage_state_hash`: ~380 register words per stage,
+including all 18 texture units and 54 samplers, every render-target word and, for vertex shaders, the
+pixel-shader state. It now uses the two-level key of the Vulkan renderer (docs/vulkan.md, "Shader
+keys"; the linkage words are shared, `gfx/shader_linkage.h`) plus what the MSL translation reads
+beyond the GLSL one: for vertex shaders the whole PS input table (MSL declares every PS input in the
+vertex output, written or not), whether rasterization is enabled and rect emulation; for pixel
+shaders whether the depth buffer is active, the data type of each colour target the shader writes
+and, per sampled unit, the colour target it reads through framebuffer fetch. A shader keeps its wide
+key as its name in the recipe files (user cache, head start, template); replaying a record maps the
+wide key it names to the shared shader, so existing caches and templates keep resolving their
+pipelines. `WWHD_MTL_SHADER_KEY_VERIFY=1` translates again once per new wide key that the narrow key
+gives an existing shader and compares the MSL and the binding metadata (`[gfx shader key] VIOLATION`);
+`WWHD_MTL_WIDE_SHADER_KEYS=1` brings back the wide key for comparisons.
+
+Outset route (60 s from save state slot 3, empty caches, `WWHD_SYNC_SHADERS=1`, fixed seed):
+
+| Metal | wide key | narrow key |
+|---|---|---|
+| translations | 5,782 | 572 |
+| pipelines | 3,050 | 337 |
+| decompile time (ms) | 1,051 | 108 |
+| `shaders.bin` | 6.8 MB | 0.69 MB |
+
+The verify mode checked 5,210 wide keys on that route: no violations. Captured frames at Outset
++400 and +1,500 logic steps and Windfall +600 (TV, present and GamePad pictures and the target of
+every draw of the frame: 441, 395 and 127 images) are byte-identical to the wide key's.
+
 ### Metal: index conversion (`build_indices`)
 
 Indices were converted with a switch on the index format for every index and `insert` calls for every
@@ -631,8 +660,9 @@ Ranked by expected payoff. Sample counts are from the 20 s run above.
    - spread the decompiles across worker threads (the decompiler would need to be checked for
      shared state first);
    - store the translated MSL, so replay skips the decompile;
-   - narrow the key. That is a correctness risk: every register in it changes the generated code
-     somewhere.
+   - narrow the key: done (2026-10-20, "Metal: narrow shader keys" above). A replayed record whose
+     narrow key is known is mapped to that shader without a decompile, and new caches hold one
+     record per narrow key.
 2. **`OSSendMessage` (~300 samples, measured, not worth changing).** One job queue carries ~26,000
    messages a second (sender `0276035C`, one worker receiving). The `notify_all` almost always wakes
    a worker that is really waiting, which is necessary; macOS already skips the kernel call when no

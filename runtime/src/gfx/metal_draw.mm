@@ -8,6 +8,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 // MSL the decompiler emits (as used by Cemu's Metal renderer).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gfx/area_sample.h"
+#include "gfx/shader_linkage.h"
 #include "gfx/shader_identity.h"
 #include "gfx/target_draw_history.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -35,6 +36,8 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include <zlib.h>
 
 LatteDecompilerShader* FinishDecompiledShader(LatteDecompilerOutput_t& decompilerOutput);
+Latte::E_GX2SURFFMT LatteTexture_ReconstructGX2Format(const Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N& texUnitWord1,
+                                                      const Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N& texUnitWord4);
 LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::CacheHash fsHash, uint32* contextRegister,
                                                            uint32* fsProgramCode, uint32 fsProgramSize);
 
@@ -468,13 +471,15 @@ static uint64_t stage_state_hash(const uint32_t* regs, uint64_t h, uint32_t texB
 static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey);
 
 static Shader* get_shader(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
-    // nothing shader-relevant changed since the previous draw: same shader
-    struct Last { uint64_t gen = 0, frame = ~0ull, fsKey = 0; Shader* s = nullptr; };
+    // nothing shader-relevant changed since the previous draw: same shader. The draw sets the
+    // primitive type without a register write (no generation bump); vertex keys read it (points, rects)
+    struct Last { uint64_t gen = 0, frame = ~0ull, fsKey = 0; uint32_t prim = 0; Shader* s = nullptr; };
     static Last last[2];
     Last& L = last[vertex ? 0 : 1];
-    if (L.gen == g_shader_state_gen && L.frame == R.frame && (!vertex || L.fsKey == fsKey)) return L.s;
+    const uint32_t prim = vertex ? regs[REGADDR::VGT_PRIMITIVE_TYPE] & 0x3F : 0;
+    if (L.gen == g_shader_state_gen && L.frame == R.frame && (!vertex || (L.fsKey == fsKey && L.prim == prim))) return L.s;
     Shader* s = get_shader_uncached(regs, vertex, fs, fsKey);
-    L = Last{g_shader_state_gen, R.frame, fsKey, s};
+    L = Last{g_shader_state_gen, R.frame, fsKey, prim, s};
     return s;
 }
 
@@ -497,22 +502,135 @@ static void retry_failed_compile(Shader* s, bool now = false) {
     compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
 }
 
-static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
-    uint32_t addr = regs[vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS] << 8;
-    uint32_t size = regs[(vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS) + 1] << 3;
-    if (!addr || !size) return nullptr;
-    uint64_t key = program_hash(addr, size) ^ (vertex ? 0x1111 : 0x2222);
-    uint64_t base = key;
-    key = stage_state_hash(regs, key, vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS);
-    if (vertex) key ^= fsKey * 31;
-    auto it = g_shaders.find(key);
-    if (it != g_shaders.end()) return it->second;
+// ---------------------------------------------------------------- shader keys
+// Two levels, as the Vulkan renderer's (gfx/vulkan/shaders.cpp; docs/vulkan.md, "Shader keys"), plus
+// what the MSL translation reads beyond the GLSL one:
+// - linkage: the program, the fetch shader (its key has the vertex strides, which choose between
+//   vertex-descriptor and manual fetch) and gfx::gather_shader_linkage; for vertex shaders also the
+//   whole PS input table (VertexOut declares every PS input, written or not), whether rasterization
+//   is enabled (LatteContextRegister::IsRasterizationEnabled) and rect emulation; for pixel shaders
+//   whether the depth buffer is active (the analyzer drops a depth export without it).
+// - variant: per used texture unit its dimension and integer format; for vertex shaders, per export
+//   its semantic id and the PS input it lands in, and streamout strides when it writes streamout; for
+//   pixel shaders, per colour output its target's data type (float4/int4/uint4 outputs) and, per used
+//   unit, the colour target it reads through framebuffer fetch (found as the analyzer finds it) with
+//   that target's data type. Units, exports and colour outputs come from the program's first
+//   translation.
+// Render-target formats of targets the shader doesn't write or read, samplers and units it doesn't
+// sample are not in the key. Shader::key stays the wide key (stage_state_hash) of the state the shader
+// was translated with: recipe files (the user cache, the head start and its template) name shaders by
+// it, and replaying a record maps the wide key it names to the shared shader.
+// WWHD_MTL_SHADER_KEY_VERIFY=1 translates again once per new wide key the narrow key gives an existing
+// shader, and compares the MSL and the binding metadata ("[gfx shader key] VIOLATION").
+struct ProgramUse {
+    bool known = false;
+    uint8_t unitCount = 0;
+    std::array<uint8_t, LATTE_NUM_MAX_TEX_UNITS> units{};
+    uint32_t exports = 0;
+    bool streamout = false;
+    const LatteDecompilerShader* dec = nullptr;  // the first translation: its colour outputs
+    Shader* failed = nullptr;
+};
+namespace { extern bool g_cache_replaying; }  // persistent shader cache (below)
+static std::unordered_map<uint64_t, ProgramUse> g_program_uses;  // linkage key -> use
+static std::unordered_map<uint64_t, Shader*> g_variants;         // narrow key -> shader
+static size_t g_translations = 0;
+static uint64_t g_key_checks = 0, g_key_violations = 0;
+static std::unordered_set<uint64_t> g_verified_wide;
 
-    auto* s = new Shader();
-    s->kind = gfx::program_kind(mem::ptr(addr), size, vertex);
-    s->key = key;
-    g_shaders[key] = s;
-    double t0 = now_ms();
+static bool key_verify() {
+    static const bool on = [] { const char* e = getenv("WWHD_MTL_SHADER_KEY_VERIFY"); return e && *e && strcmp(e, "0"); }();
+    return on;
+}
+
+static uint64_t wide_key(const uint32_t* regs, bool vertex, uint64_t base, uint64_t fsKey) {
+    uint64_t key = stage_state_hash(regs, base, vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS);
+    return vertex ? key ^ fsKey * 31 : key;
+}
+
+static uint64_t linkage_key(const uint32_t* regs, bool vertex, const LatteFetchShader* fs, uint64_t seed) {
+    std::array<uint32_t, gfx::kShaderLinkageWords + 1 + GPU7_PS_MAX_INPUTS + 1> words;
+    size_t n = gfx::gather_shader_linkage(regs, vertex, fs, false, words.data());
+    const auto& lcr = *(const LatteContextRegister*)regs;
+    if (vertex) {
+        n += gfx::gather_ps_input_table(regs, words.data() + n);
+        words[n++] = (lcr.IsRasterizationEnabled() ? 1u : 0u) | (UseRectEmulation(lcr) ? 2u : 0u);
+    } else {
+        words[n++] = LatteMRT::GetActiveDepthBufferMask(lcr) ? 1u : 0u;
+    }
+    return hash_bytes(words.data(), n * 4, seed);
+}
+
+// the colour target a pixel shader's texture unit reads through framebuffer fetch, 255 for none
+// (LatteDecompilerAnalyzer.cpp, "check if textures are used as render targets")
+static uint32_t fetched_target(const LatteContextRegister& lcr, const uint32_t* regs, uint8_t colorMask, uint32_t unit) {
+    const auto& tex = lcr.SQ_TEX_START_PS[unit];
+    const uint32_t physAddr = tex.word2.get_BASE_ADDRESS() << 8;
+    if (!physAddr || tex.word0.get_DIM() != Latte::E_DIM::DIM_2D || tex.word5.get_LAST_LEVEL() != 0) return 255;
+    const auto format = LatteTexture_ReconstructGX2Format(tex.word1, tex.word4);
+    const uint32_t tileMode = (uint32_t)tex.word0.get_TILE_MODE();
+    for (uint32_t i = 0; i < 8; i++) {
+        if (!(colorMask & (1u << i))) continue;
+        if ((regs[mmCB_COLOR0_BASE + i] & 0xFFFFFF00) == physAddr && LatteMRT::GetColorBufferFormat(i, lcr) == format &&
+            ((regs[mmCB_COLOR0_INFO + i] >> 8) & 0xF) == tileMode)
+            return i;
+    }
+    return 255;
+}
+
+static uint64_t variant_key(const uint32_t* regs, bool vertex, const ProgramUse& use, uint64_t linkage) {
+    std::array<uint32_t, 2 * LATTE_NUM_MAX_TEX_UNITS + 32 + 4 + 1> words;
+    size_t n = 0;
+    const uint32_t base = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+    for (uint32_t i = 0; i < use.unitCount; ++i) {
+        const uint32_t* w = regs + base + use.units[i] * 7;
+        // dimension (sampler type) and NUM_FORMAT_ALL == INT (integer sampler); analyzer.cpp
+        words[n++] = (w[0] & 7) | (((w[4] >> 8) & 3) == 1 ? 8u : 0u);
+    }
+    if (vertex) {
+        // per exported parameter its semantic id and the PS input it lands in (location, flat,
+        // noperspective), as _emitVSOutputs resolves it against the PS input table
+        if (use.exports) {
+            const uint32_t control0 = regs[mmSPI_PS_IN_CONTROL_0];
+            const uint32_t inputs = std::min<uint32_t>(control0 & 0x3F, GPU7_PS_MAX_INPUTS);
+            const uint32_t position = (control0 >> 8) & 1 ? (control0 >> 10) & 0x1F : 0xFFFFFFFFu;
+            for (uint32_t i = 0; i < 32; ++i) {
+                if (!(use.exports & (1u << i))) continue;
+                const uint32_t semantic = (regs[mmSPI_VS_OUT_ID_0 + i / 4] >> (8 * (i % 4))) & 0xFF;
+                uint32_t word = 0x7F000000u | semantic;  // no PS input (the export still names its semantic)
+                for (uint32_t f = 0; f < inputs; ++f) {
+                    if (f == position) continue;
+                    const uint32_t control = regs[mmSPI_PS_INPUT_CNTL_0 + f];
+                    if ((control & 0xFF) != semantic) continue;
+                    word = 0x80000000u | semantic | (f << 8) | (control & (1u << 10) ? 1u << 16 : 0) |
+                           (control & (1u << 12) ? 1u << 17 : 0);
+                    break;
+                }
+                words[n++] = word;
+            }
+        }
+        if (use.streamout)
+            for (uint32_t buffer = 0; buffer < 4; ++buffer) words[n++] = regs[mmVGT_STRMOUT_VTX_STRIDE_0 + buffer * 4];
+    } else {
+        const auto& lcr = *(const LatteContextRegister*)regs;
+        uint32_t types = 0;
+        for (uint32_t i = 0; i < 8; i++)
+            if (use.dec->pixelColorOutputMask & (1u << i)) types |= (uint32_t)GetColorBufferDataType(i, lcr) << (2 * i);
+        words[n++] = types;
+        if (use.unitCount) {
+            const uint8_t mask = LatteMRT::GetActiveColorBufferMask(use.dec, lcr);
+            for (uint32_t i = 0; i < use.unitCount; ++i) {
+                const uint32_t target = fetched_target(lcr, regs, mask, use.units[i]);
+                words[n++] = target == 255 ? 255 : target | (uint32_t)GetColorBufferDataType(target, lcr) << 8;
+            }
+        }
+    }
+    return hash_bytes(words.data(), n * 4, linkage ^ 0xC2B2AE3D27D4EB4Full);
+}
+
+// GX2 program -> MSL (with the upscaling fix); nullptr if the translation failed
+static LatteDecompilerShader* translate_msl(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint32_t addr, uint32_t size,
+                                            uint64_t base) {
     LatteShader_UpdatePSInputs((uint32*)regs);
     LatteDecompilerOptions opt;
     const auto fixes = vertex ? gfx::area_sample::Program{} : gfx::area_sample::pixel_program(mem::ptr(addr), size);
@@ -526,24 +644,114 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         LatteDecompiler_DecompileVertexShader(base, (uint32*)regs, mem::ptr(addr), size, fs, opt, &out);
     else
         LatteDecompiler_DecompilePixelShader(base, (uint32*)regs, mem::ptr(addr), size, opt, &out);
-    if (!out.shader || out.shader->hasError || !out.shader->strBuf_shaderSource) {
-        LOG("[gfx] %s shader %08X failed to translate", vertex ? "vertex" : "pixel", addr);
-        s->state = CS_FAILED;
-        return s;
-    }
-    s->dec = FinishDecompiledShader(out);
+    if (!out.shader || out.shader->hasError || !out.shader->strBuf_shaderSource) return nullptr;
+    LatteDecompilerShader* dec = FinishDecompiledShader(out);
     if (opt.areaSampledTextures) {
-        std::string src = s->dec->strBuf_shaderSource->c_str();
+        std::string src = dec->strBuf_shaderSource->c_str();
         if (gfx::area_sample::rewrite(src, fixes, true) > 0) {
-            s->dec->strBuf_shaderSource->reset();
-            s->dec->strBuf_shaderSource->add(std::string_view(src));
+            dec->strBuf_shaderSource->reset();
+            dec->strBuf_shaderSource->add(std::string_view(src));
         } else {
             LOG("[gfx] pixel shader %08X: upscaling fix not applied", addr);
         }
     }
+    return dec;
+}
+
+// verify mode: the shared shader against a translation under the current registers
+static void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint32_t addr, uint32_t size, uint64_t base,
+                       uint64_t wide, const Shader* shared) {
+    if (!shared->dec || !g_verified_wide.insert(wide).second) return;
+    g_key_checks++;
+    LatteDecompilerShader* ref = translate_msl(regs, vertex, fs, addr, size, base);
+    const LatteDecompilerShader* a = shared->dec;
+    const char* why = nullptr;
+    if (!ref) why = "translation failed now";
+    else if (strcmp(ref->strBuf_shaderSource->c_str(), a->strBuf_shaderSource->c_str())) why = "MSL differs";
+    else if (memcmp(&ref->resourceMapping, &a->resourceMapping, sizeof a->resourceMapping)) why = "resource mapping differs";
+    else if (memcmp(ref->textureRenderTargetIndex, a->textureRenderTargetIndex, sizeof a->textureRenderTargetIndex) ||
+             memcmp(ref->textureUnitDim, a->textureUnitDim, sizeof a->textureUnitDim) ||
+             memcmp(ref->textureIsIntegerFormat, a->textureIsIntegerFormat, sizeof a->textureIsIntegerFormat) ||
+             memcmp(ref->textureUsesDepthCompare, a->textureUsesDepthCompare, sizeof a->textureUsesDepthCompare) ||
+             memcmp(ref->textureUnitSamplerAssignment, a->textureUnitSamplerAssignment, sizeof a->textureUnitSamplerAssignment) ||
+             ref->textureUnitListCount != a->textureUnitListCount ||
+             memcmp(ref->textureUnitList, a->textureUnitList, sizeof a->textureUnitList))
+        why = "texture metadata differs";
+    else if (ref->pixelColorOutputMask != a->pixelColorOutputMask || ref->depthMask != a->depthMask ||
+             ref->outputParameterMask != a->outputParameterMask)
+        why = "output metadata differs";
+    else {
+        const auto &u = ref->uniform, &v = a->uniform;
+        if (u.loc_remapped != v.loc_remapped || u.loc_uniformRegister != v.loc_uniformRegister ||
+            u.count_uniformRegister != v.count_uniformRegister || u.loc_windowSpaceToClipSpaceTransform != v.loc_windowSpaceToClipSpaceTransform ||
+            u.loc_alphaTestRef != v.loc_alphaTestRef || u.loc_pointSize != v.loc_pointSize || u.loc_fragCoordScale != v.loc_fragCoordScale ||
+            memcmp(u.loc_framebufferFetchSize, v.loc_framebufferFetchSize, sizeof u.loc_framebufferFetchSize) ||
+            u.uniformRangeSize != v.uniformRangeSize || u.list_ufTexRescale.size() != v.list_ufTexRescale.size() ||
+            ref->list_remappedUniformEntries_register.size() != a->list_remappedUniformEntries_register.size() ||
+            ref->list_remappedUniformEntries_bufferGroups.size() != a->list_remappedUniformEntries_bufferGroups.size())
+            why = "uniform layout differs";
+    }
+    if (why) {
+        g_key_violations++;
+        LOG("[gfx shader key] VIOLATION %s %08X wide %016llx (shared from %016llx): %s", vertex ? "vs" : "ps", addr,
+            (unsigned long long)wide, (unsigned long long)shared->key, why);
+    }
+    if (ref) {
+        delete ref->strBuf_shaderSource;
+        delete ref;
+    }
+}
+
+static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
+    uint32_t addr = regs[vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS] << 8;
+    uint32_t size = regs[(vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS) + 1] << 3;
+    if (!addr || !size) return nullptr;
+    const uint64_t base = program_hash(addr, size) ^ (vertex ? 0x1111 : 0x2222);
+    // the old, wide keys (WWHD_MTL_WIDE_SHADER_KEYS=1): one translation per wide key, for comparisons
+    static const bool wideKeys = getenv("WWHD_MTL_WIDE_SHADER_KEYS") && strcmp(getenv("WWHD_MTL_WIDE_SHADER_KEYS"), "0");
+    const uint64_t linkage = wideKeys ? wide_key(regs, vertex, base, fsKey)
+                                      : linkage_key(regs, vertex, fs, base ^ (vertex ? fsKey * 31 : 0));
+    ProgramUse& use = g_program_uses[linkage];
+    // replayed records name shaders by their wide key: map it to the shader this state shares
+    auto alias = [&](Shader* s) {
+        if (!g_cache_replaying && !key_verify()) return s;
+        const uint64_t wide = wide_key(regs, vertex, base, fsKey);
+        if (g_shaders.emplace(wide, s).second && key_verify() && s->key != wide) verify_key(regs, vertex, fs, addr, size, base, wide, s);
+        return s;
+    };
+    if (use.failed) return alias(use.failed);
+    if (use.known) {
+        auto it = g_variants.find(wideKeys ? linkage : variant_key(regs, vertex, use, linkage));
+        if (it != g_variants.end()) return alias(it->second);
+    }
+
+    auto* s = new Shader();
+    s->kind = gfx::program_kind(mem::ptr(addr), size, vertex);
+    s->key = wide_key(regs, vertex, base, fsKey);
+    g_shaders.emplace(s->key, s);
+    g_translations++;
+    double t0 = now_ms();
+    s->dec = translate_msl(regs, vertex, fs, addr, size, base);
+    if (!s->dec) {
+        LOG("[gfx] %s shader %08X failed to translate", vertex ? "vertex" : "pixel", addr);
+        s->state = CS_FAILED;
+        use.failed = s;  // per linkage: the variant words need the program's analysis
+        return s;
+    }
+    if (!use.known) {
+        const auto& dec = *s->dec;
+        use.unitCount = (uint8_t)std::clamp((int)dec.textureUnitListCount, 0, (int)LATTE_NUM_MAX_TEX_UNITS);
+        for (uint32_t i = 0; i < use.unitCount; ++i) use.units[i] = std::min<uint8_t>(dec.textureUnitList[i], LATTE_NUM_MAX_TEX_UNITS - 1);
+        use.exports = vertex ? dec.outputParameterMask : 0;
+        use.streamout = vertex && dec.hasStreamoutBufferWrite;
+        use.dec = s->dec;
+        use.known = true;
+    }
+    g_variants.emplace(wideKeys ? linkage : variant_key(regs, vertex, use, linkage), s);
     cache_record_shader(regs, vertex);
     double t1 = now_ms();
     g_t_decompile += t1 - t0;
+    const uint64_t key = s->key;
     if (getenv("WWHD_DUMP_SHADERS")) {
         mkdir("shaders", 0755);
         char name[96];
@@ -1585,8 +1793,11 @@ void report_skips() {
     for (int i = 0; i < SK_COUNT; i++)
         if (g_skip[i]) n += snprintf(buf + n, sizeof buf - n, " %s=%llu", kSkipNames[i], (unsigned long long)g_skip[i]);
     if (n) LOG("[gfx] skipped draws:%s", buf);
-    LOG("[gfx] %zu shaders, %zu pipelines; ms decompile %.0f, msl %.0f, pipeline %.0f", g_shaders.size(), g_pipelines.size(),
-        g_t_decompile, g_t_msl, g_t_pipeline);
+    LOG("[gfx] %zu shaders (%zu wide keys known), %zu pipelines; ms decompile %.0f, msl %.0f, pipeline %.0f", g_translations,
+        g_shaders.size(), g_pipelines.size(), g_t_decompile, g_t_msl, g_t_pipeline);
+    if (g_key_checks)
+        LOG("[gfx shader key] %llu wide keys verified, %llu violations", (unsigned long long)g_key_checks,
+            (unsigned long long)g_key_violations);
     if (g_must_run_waits)
         LOG("[gfx] draws that waited for their compile (targets not redrawn every frame): %llu, %.0f ms in all",
             (unsigned long long)g_must_run_waits, g_must_run_wait_ms);
@@ -1989,7 +2200,9 @@ size_t headstart_compiling() { return std::max(0, g_compiles_in_flight.load()); 
 // final state before decrementing it, so setup can report actual compile failures.
 size_t headstart_failures() {
     size_t failed = 0;
-    for (const auto& [key, shader] : g_shaders) failed += shader->state.load(std::memory_order_acquire) == CS_FAILED;
+    std::unordered_set<const Shader*> seen;  // g_shaders maps several wide keys to a shared shader
+    for (const auto& [key, shader] : g_shaders)
+        if (seen.insert(shader).second) failed += shader->state.load(std::memory_order_acquire) == CS_FAILED;
     for (const auto& [key, pipeline] : g_pipelines) failed += pipeline->status.load(std::memory_order_acquire) == CS_FAILED;
     return failed;
 }
