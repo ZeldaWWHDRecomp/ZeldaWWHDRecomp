@@ -851,15 +851,23 @@ private; they contain game imagery.
 
 ## Render-thread profiler
 
-`runtime/src/render_prof.h` (both renderers) is on by default and cheap (`WWHD_PROFILE=0` turns it
-off). Every 120 frames it builds a report that `WWHD_PROFILE=1`, `WWHD_VK_STATS` or
+`runtime/src/render_prof.h` (both renderers) is **off by default**. Set `WWHD_PROFILE=1` to enable
+collection; `WWHD_PROFILE=0` explicitly disables it. When enabled, every 120 frames it builds a report that `WWHD_PROFILE=1`, `WWHD_VK_STATS` or
 `WWHD_VK_CPU_ONLY_STATS=1` log as `[prof]` lines, and that the settings overlay's
 **Copy performance report** button (Graphics tab) puts on the clipboard. Its two header lines
 (`runtime/src/report_header.h`) say where the report comes from: the version and commit (release
 builds: the tag; others `git describe`, e.g. `v0.2.5+3`), the OS and version, the GPU with its driver
 version (decoded as vulkaninfo does) and Vulkan version, or the Metal device; then the renderer, host,
 frame mode, internal scale, buffer cache on/off, the gyro source when not off, and as `overrides:` the
-CPU paths not set to `1` and lazy DrawDone / async present when turned off. The report itself:
+CPU paths not set to `1` and lazy DrawDone / async present when turned off. Without profiling,
+**Copy performance report** omits the detailed timing/upload/draw-class sections below; the overlay
+labels detailed profiling as disabled. `WWHD_VK_STATS` alone does not enable profiler collection.
+
+Periodic interpolation, swap-rate and continued-draw logging is also opt-in. `WWHD_LOG_FLIP_PACING=1`
+restores interpolation and swap-rate lines; `WWHD_INTERP_PASS_STATS=1` adds interpolation pass CPU
+timing. `WWHD_VK_STATS=1` enables continued-draw statistics and the periodic interpolation/swap lines
+(and additional Vulkan diagnostics). For a detailed shared report, enable `WWHD_PROFILE=1` before
+starting the game. The enabled profiler report contains:
 
 - frame time, swaps/s, logic steps/s, render-thread CPU, time in GX2 ops and idle;
 - ms per frame per op and, sampled on one draw in 64, per draw phase (shader lookup, index
