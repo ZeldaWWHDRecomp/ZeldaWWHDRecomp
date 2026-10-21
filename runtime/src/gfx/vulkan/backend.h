@@ -233,6 +233,7 @@ void begin_pipeline_pending_frame();
 // next recording slot. flush() remains a drain for readbacks and renderer tools.
 void flush_async();
 void reset_pipeline_lookup_cache();
+void destroy_shared_resource_layouts();
 uint64_t draw_batch_submissions();
 void vk_check(VkResult result,const char* operation);
 // Immutable physical-device capabilities, cached on the renderer thread.

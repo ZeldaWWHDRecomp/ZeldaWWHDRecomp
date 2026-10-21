@@ -4617,6 +4617,7 @@ void shutdown_renderer_caches() {
   destroy_gpu_timestamp_queries();
   vk::save_shader_cache();
   save_pipeline_cache();
+  destroy_shared_resource_layouts();
   reset_pass_caches();
 }
 #ifdef WWHD_SDL_HOST

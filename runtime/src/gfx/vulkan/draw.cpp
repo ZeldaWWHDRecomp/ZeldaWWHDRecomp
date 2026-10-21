@@ -666,26 +666,12 @@ struct PipelineKeyHash {
 static_assert(sizeof(PipelineKey) % 8 == 0);
 static_assert(sizeof(PipelineKey) == 208, "update the persisted pipeline recipe schema");
 std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
-// Pipelines own their set layouts (prewarmed pipelines included). Descriptor
-// sets are allocated from one layout per binding definition instead, created
-// and owned here for the device's lifetime, independent of any pipeline: a set
-// may be bound with any identically defined layout. The key names every
-// binding field; these layouts have no flags or immutable samplers.
-VkDescriptorSetLayout canonical_resource_layout(VkDescriptorSetLayout layout,
-                                                const vk::Shader& shader, bool dynamic) {
-  static const bool enabled = [] {
-    const char* e = std::getenv("WWHD_VK_SHARED_STAGE_LAYOUTS");
-    return !e || std::strcmp(e, "0");
-  }();
-  if (!enabled) return layout;
-  using Key = std::vector<std::array<uint32_t, 4>>;
-  static std::map<Key, VkDescriptorSetLayout> layouts;
-  static VkDevice device = VK_NULL_HANDLE;
-  if (device != R.device) { layouts.clear(); device = R.device; }
-  Key key;
+// One binding definition feeds both pipeline-owned and shared allocation layouts.
+std::vector<VkDescriptorSetLayoutBinding> stage_layout_bindings(const vk::Shader& shader, bool dynamic) {
+  std::vector<VkDescriptorSetLayoutBinding> bindings;
   auto add = [&](int binding, VkDescriptorType type) {
-    if (binding >= 0) key.push_back({uint32_t(binding), uint32_t(type), 1,
-        uint32_t(shader.vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT)});
+    if (binding >= 0) bindings.push_back({uint32_t(binding), type, 1,
+        VkShaderStageFlags(shader.vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT), nullptr});
   };
   const auto& m = shader.mapping;
   const auto uniformType = dynamic ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -693,17 +679,37 @@ VkDescriptorSetLayout canonical_resource_layout(VkDescriptorSetLayout layout,
   for (int binding : m.uniformBuffersBindingPoint) add(binding, uniformType);
   for (int i = 0; i < m.textureUnitCount; ++i)
     add(m.textureUnitBaseBindingPoint + i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+  if (m.tfStorageBindingPoint >= 0)
+    exception_report::raise("Vulkan transform feedback unsupported");
+  return bindings;
+}
+using ResourceLayoutKey = std::vector<std::array<uint32_t, 4>>;
+std::map<ResourceLayoutKey, VkDescriptorSetLayout> resourceLayouts;
+VkDevice resourceLayoutDevice = VK_NULL_HANDLE;
+// Pipelines own their set layouts. Shared allocation layouts have a separate
+// owner, retired after the submission/worker drain in shutdown_renderer_caches.
+VkDescriptorSetLayout canonical_resource_layout(VkDescriptorSetLayout layout,
+                                                const vk::Shader& shader, bool dynamic) {
+  static const bool enabled = [] {
+    const char* e = std::getenv("WWHD_VK_SHARED_STAGE_LAYOUTS");
+    return !e || std::strcmp(e, "0");
+  }();
+  if (!enabled) return layout;
+  if (!resourceLayouts.empty() && resourceLayoutDevice != R.device)
+    exception_report::raise("shared descriptor layouts outlived their device");
+  resourceLayoutDevice = R.device;
+  const auto bindings = stage_layout_bindings(shader, dynamic);
+  ResourceLayoutKey key;
+  for (const auto& b : bindings)
+    key.push_back({b.binding, uint32_t(b.descriptorType), b.descriptorCount, b.stageFlags});
   std::sort(key.begin(), key.end());
-  auto [found, inserted] = layouts.try_emplace(std::move(key), VK_NULL_HANDLE);
+  auto [found, inserted] = resourceLayouts.try_emplace(std::move(key), VK_NULL_HANDLE);
   if (inserted) {
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
-    for (const auto& b : found->first)
-      bindings.push_back({b[0], VkDescriptorType(b[1]), b[2], VkShaderStageFlags(b[3]), nullptr});
     VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     ci.bindingCount = uint32_t(bindings.size());
     ci.pBindings = bindings.data();
     try { vk_check(vkCreateDescriptorSetLayout(R.device, &ci, nullptr, &found->second), "shared stage descriptor layout"); }
-    catch (...) { layouts.erase(found); throw; }
+    catch (...) { resourceLayouts.erase(found); throw; }
   }
   return found->second;
 }
@@ -901,29 +907,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   // both stages on the existing regular path if the complete layout exceeds it.
   p.dynamicUniforms = uniformBindings <=
       R.properties.limits.maxDescriptorSetUniformBuffersDynamic;
-  const auto uniformType = p.dynamicUniforms
-      ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
-      : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   std::array<std::vector<VkDescriptorSetLayoutBinding>, 2> descriptorBindings;
-  for (int st = 0; st < 2; st++) {
-    auto &m = shaders[st]->mapping;
-    auto& b = descriptorBindings[st];
-    auto add = [&](int i, VkDescriptorType t) {
-      if (i >= 0)
-        b.push_back(
-            {uint32_t(i), t, 1,
-             VkShaderStageFlags(st ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT),
-             nullptr});
-    };
-    add(m.uniformVarsBufferBindingPoint, uniformType);
-    for (auto i : m.uniformBuffersBindingPoint)
-      add(i, uniformType);
-    for (int i = 0; i < m.textureUnitCount; i++)
-      add(m.textureUnitBaseBindingPoint + i,
-          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    if (m.tfStorageBindingPoint >= 0)
-      exception_report::raise("Vulkan transform feedback unsupported");
-  }
+  for (int st = 0; st < 2; ++st)
+    descriptorBindings[st] = stage_layout_bindings(*shaders[st], p.dynamicUniforms);
   auto portableKey = key;
   portableKey.vs = vs->pipelineId; portableKey.ps = ps->pipelineId;
   const auto* keyBytes = reinterpret_cast<const uint8_t*>(&portableKey);
@@ -2995,6 +2981,17 @@ ContinuedReason continued_reason(uint32_t prim) {
   return kContinued;
 }
 } // namespace
+// The caller has drained submissions and joined recording/pipeline workers.
+// Clear aliases as well, so repeated shutdown or a later initialization is safe.
+void destroy_shared_resource_layouts() {
+  for (const auto& [key, layout] : resourceLayouts)
+    vkDestroyDescriptorSetLayout(resourceLayoutDevice, layout, nullptr);
+  resourceLayouts.clear();
+  resourceLayoutDevice = VK_NULL_HANDLE;
+  for (auto& [key, pipeline] : pipelines)
+    pipeline.resourceSets[0] = pipeline.resourceSets[1] = VK_NULL_HANDLE;
+  reset_pipeline_lookup_cache();
+}
 void stage_input_smoke_check() {
   std::vector<uint32_t> r(0x10000);
   for (bool vertex : {false, true}) {
