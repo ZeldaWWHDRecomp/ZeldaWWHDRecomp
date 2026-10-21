@@ -863,11 +863,14 @@ CPU paths not set to `1` and lazy DrawDone / async present when turned off. With
 **Copy performance report** omits the detailed timing/upload/draw-class sections below; the overlay
 labels detailed profiling as disabled. `WWHD_VK_STATS` alone does not enable profiler collection.
 
-Periodic interpolation, swap-rate and continued-draw logging is also opt-in. `WWHD_LOG_FLIP_PACING=1`
-restores interpolation and swap-rate lines; `WWHD_INTERP_PASS_STATS=1` adds interpolation pass CPU
-timing. `WWHD_VK_STATS=1` enables continued-draw statistics and the periodic interpolation/swap lines
-(and additional Vulkan diagnostics). For a detailed shared report, enable `WWHD_PROFILE=1` before
-starting the game. The enabled profiler report contains:
+Periodic interpolation, swap-rate and continued-draw logging is also opt-in. Set
+`WWHD_LOG_FLIP_PACING` to restore interpolation and swap-rate lines; set
+`WWHD_INTERP_PASS_STATS` to add interpolation pass CPU timing. Set `WWHD_VK_STATS` to enable
+continued-draw statistics and the periodic interpolation/swap lines (and additional Vulkan
+diagnostics). `WWHD_SCHED_STATS` also restores the swap-rate line and enables scheduler statistics;
+setting it to `2` additionally enables timed scheduler statistics. These logging switches check
+whether the variable is set, so even a value of `0` enables them. For a detailed shared report,
+enable `WWHD_PROFILE=1` before starting the game. The enabled profiler report contains:
 
 - frame time, swaps/s, logic steps/s, render-thread CPU, time in GX2 ops and idle;
 - ms per frame per op and, sampled on one draw in 64, per draw phase (shader lookup, index
