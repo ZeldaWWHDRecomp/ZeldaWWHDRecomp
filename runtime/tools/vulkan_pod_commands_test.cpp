@@ -303,6 +303,26 @@ int main() {
   vkEndCommandBuffer = end;
   vkResetFences = reset;
   vkQueueSubmit = submit;
+  {
+    PodCommands stream;
+    std::vector<std::byte> spare;
+    spare.reserve(4096);
+    const auto* allocation = spare.data();
+    assert(stream.take(std::move(spare)).empty());
+    assert(stream.vkCmdDraw(cmd, 3, 1, 2, 0));
+    auto first = stream.take();
+    assert(first.data() == allocation && stream.empty());
+    const auto saved = first;
+    assert(stream.vkCmdDraw(cmd, 3, 1, 2, 0));
+    assert(first == saved); // producer never modifies the consumer's storage
+    auto second = stream.take(std::move(first));
+    assert(stream.empty() && stream.command_count() == 0);
+    assert(stream.vkCmdDraw(cmd, 3, 1, 2, 0));
+    auto third = stream.take();
+    assert(third.data() == allocation && third == second);
+    calls.clear(); PodCommands::replay(third);
+    assert(calls == std::vector<int>{1}); calls.clear();
+  }
   PodCommands p;
   assert(p.vkCmdDraw(cmd, 3, 1, 2, 0));
   {

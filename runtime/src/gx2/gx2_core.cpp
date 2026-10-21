@@ -83,10 +83,13 @@ static ShaderKeyDirtyStats shaderKeyDirtyStats;
 
 // register state groups (state_groups.h): the continued-draw fast path of the Vulkan renderer
 uint64_t g_full_state_version = 1;
+uint64_t g_uniform_state_version[2] = {1, 1};
 uint32_t g_dirty_groups = 0;
 static inline void note_full_state_change() {
     g_dirty_groups |= 1u << kSgOther;
     ++g_full_state_version;
+    ++g_uniform_state_version[0];
+    ++g_uniform_state_version[1];
 }
 ShaderKeyDirtyStats shader_key_dirty_stats() { return shaderKeyDirtyStats; }
 
@@ -130,10 +133,18 @@ static inline void ensure_reg_tables() {
     if (__builtin_expect(!g_reg_tables_ready, 0)) build_reg_tables();
 }
 
-static inline void note_state_change(uint8 cls, uint32 old, uint32 value) {
+static inline void note_state_change(uint8 cls, uint32 reg, uint32 old, uint32 value) {
     const uint32 g = state_group_change(cls & kRcGroup, old, value);
     g_dirty_groups |= 1u << g;
     g_full_state_version += !((kSgContinuedMask >> g) & 1);
+    if (g == kSgAluConst) {
+        const uint32 word = reg - mmSQ_ALU_CONSTANT0_0;
+        if (word < 0x400) ++g_uniform_state_version[0];
+        else if (word < 0x800) ++g_uniform_state_version[1];
+    } else if (g == kSgDynamic) {
+        ++g_uniform_state_version[0];
+        ++g_uniform_state_version[1];
+    }
 }
 static inline void classify_reg(uint8 cls, uint32 reg) {  // render-thread profiler's draw classifier
     if (cls & kRcProfFast) rprof::g_reg_dirty |= 1;
@@ -160,7 +171,7 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
         if (old != value) {
             const uint8 cls = g_reg_class[reg];
             changed = true;
-            note_state_change(cls, old, value);
+            note_state_change(cls, reg, old, value);
             if (classify) classify_reg(cls, reg);
             if ((collectStats || !actualBump) && !(cls & kRcShaderIrrelevant)) {
                 baselineBump = true;
@@ -196,6 +207,9 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
         uint32* d = &g_regs[first];
         if (memcmp(d, v, n * 4) != 0) {
             g_dirty_groups |= 1u << kSgAluConst;
+            const uint32 begin = first - mmSQ_ALU_CONSTANT0_0;
+            if (n && begin < 0x400) ++g_uniform_state_version[0];
+            if (n && begin < 0x800 && begin + n > 0x400) ++g_uniform_state_version[1];
             if (g_classify) rprof::g_reg_dirty |= 1;
             copy_words(d, v, n);
         }
@@ -214,7 +228,7 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
         for (uint32 i = 0; i < n; i++)
             if (g_regs[first + i] != v[i]) {
                 const uint8 cls = g_reg_class[first + i];
-                note_state_change(cls, g_regs[first + i], v[i]);
+                note_state_change(cls, first + i, g_regs[first + i], v[i]);
                 if (classify) classify_reg(cls, first + i);
             }
         const bool collectStats = g_collect_stats;

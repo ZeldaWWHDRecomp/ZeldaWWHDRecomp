@@ -3,6 +3,7 @@
 #include "handoff_trace.h"
 #include "fallback_stats.h"
 #include <condition_variable>
+#include <array>
 #include <deque>
 #include <exception>
 #include <mutex>
@@ -29,6 +30,11 @@ private:
     std::mutex mutex_;
     std::condition_variable changed_;
     std::deque<Job> jobs_;
+    // Return consumed byte storage to the producer instead of reallocating and
+    // growing a new command stream after every publication. Bounded by queue
+    // depth; these buffers contain no live Vulkan commands or resource owners.
+    std::array<std::vector<std::byte>, maxQueued + 1> recycled_;
+    size_t recycledCount_ = 0;
     uint64_t published_ = 0, completed_ = 0;
     bool stopping_ = false;
     std::exception_ptr error_;

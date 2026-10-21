@@ -20,6 +20,10 @@ inline DeferredCommands* eye_deferred_commands=nullptr;
 // Isolated presentation owns a separate command pool/queue outside that mutex.
 // Bypass before reading the global pointer, avoiding both capture and a data race.
 inline thread_local bool isolated_command_dispatch=false;
+// Producer-only deferred draw batches must precede the next command that can
+// change their state, end a pass, or transfer a resource. Worker/WSI threads have
+// their own null hook and never inspect producer batching state.
+inline thread_local void (*before_record_command)() = nullptr;
 struct IsolatedCommandDispatch {
     bool previous=isolated_command_dispatch;
     IsolatedCommandDispatch() { isolated_command_dispatch=true; }
@@ -27,6 +31,7 @@ struct IsolatedCommandDispatch {
 };
 inline DeferredCommands* dispatch_recorder() {
     if (isolated_command_dispatch) return nullptr;
+    if (before_record_command) before_record_command();
     return eye_deferred_commands ? eye_deferred_commands : active_deferred_commands;
 }
 // Owns CPU command arguments, not Vulkan handles or pointed-to GPU resources.

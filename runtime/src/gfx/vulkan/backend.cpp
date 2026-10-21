@@ -693,6 +693,7 @@ void note_upload_block(const Buffer& buffer) {
 }
 }  // namespace
 UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
+  ensure_submission();
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
   auto slice = [&](Renderer::UploadBlock& block) {
@@ -963,6 +964,7 @@ static void report_gpu_timestamps() {
   previousFrame = R.frame;
 }
 VkCommandBuffer command_buffer() {
+  ensure_submission();
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (!R.recording) {
@@ -1134,7 +1136,9 @@ static void destroy_unsubmitted_slot(Renderer::Submission& slot) {
 static VkResult try_initialize_submission(Renderer::Submission& slot) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex=R.queueFamily;
-  pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  // Slots are recycled as whole pools after their fences, never by resetting
+  // individual buffers. Let the driver allocate/reset command storage in bulk.
+  pool.flags=0;
   VkResult result=vkCreateCommandPool(R.device,&pool,nullptr,&slot.commandPool);
   if(result!=VK_SUCCESS)return result;
   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -1238,11 +1242,11 @@ static void activate_submission(size_t index) {
   R.commandPool=slot.commandPool;R.cmd=slot.cmd;R.fence=slot.fence;
   R.descriptorPool=slot.descriptorPool;
   R.uploadBlocks=std::move(slot.uploadBlocks);
-  R.garbageBuffers=std::move(slot.garbageBuffers);
-  R.garbageImages=std::move(slot.garbageImages);
-  R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
-  R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
+  // retire_submission has emptied the slot's garbage. Keep objects deferred
+  // since the preceding submit (screenshots and cache eviction can do this
+  // without recording commands); the next submission will own their lifetime.
   R.recording=false;R.rendering=false;R.passTracked=false;
+  R.submissionNeeded=false;
 }
 static void drain_submissions() {
   if(active_deferred_commands)active_deferred_commands->finish_exact();
@@ -1279,6 +1283,13 @@ static size_t next_submission_slot() {
   }
   resolve_retained_submission(R.submissions[next]);
   return next;
+}
+void ensure_submission() {
+  if (R.submissionNeeded) activate_submission(next_submission_slot());
+}
+VkDescriptorPool descriptor_pool() {
+  ensure_submission();
+  return R.descriptorPool;
 }
 // Resolved once from the selected driver, only when the worker is requested.
 // Unknown drivers conservatively retain producer presentation on every OS.
@@ -1389,7 +1400,18 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     }
   } else if(owner) owner->owned_boundary(seal,execute);
   else { seal();execute(); }
-  if(asynchronous)activate_submission(next_submission_slot());
+  if(asynchronous) {
+    // Do not put the next slot's fence wait/pool reset ahead of this frame's
+    // present and GX2 queue fence. The game can produce its next work while
+    // the GPU consumes this submission. Acquire storage at its first use.
+    R.submissionNeeded=true;
+    R.recording=false;R.rendering=false;R.passTracked=false;
+    R.commandPool=VK_NULL_HANDLE;R.cmd=VK_NULL_HANDLE;
+    R.fence=VK_NULL_HANDLE;R.descriptorPool=VK_NULL_HANDLE;
+    // Invalidate prepared descriptors/uploads immediately, including paths
+    // that inspect cache generations before allocating their first resource.
+    ++R.submissionGeneration;
+  }
   else {
     retire_submission(slot,wait ? presentSubmitWait : submitWait);
     activate_submission(R.activeSubmission);
@@ -1408,6 +1430,7 @@ void flush() {
                        !R.garbageCacheRegions.empty())) command_buffer();
   submit();
   drain_submissions();
+  ensure_submission();
 }
 #ifdef __ANDROID__
 static void wait_secondary_present();
@@ -4336,7 +4359,7 @@ static void init_device(std::vector<const char *> extensions,
   for (auto& slot:R.submissions) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex = R.queueFamily;
-  pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool.flags = 0; // whole-pool reset after the slot fence (cleanup_submission)
   vk_check(vkCreateCommandPool(R.device, &pool, nullptr, &slot.commandPool),
            "create command pool");
   VkCommandBufferAllocateInfo ca{
@@ -4594,6 +4617,7 @@ void shutdown_renderer_caches() {
   destroy_gpu_timestamp_queries();
   vk::save_shader_cache();
   save_pipeline_cache();
+  destroy_shared_resource_layouts();
   reset_pass_caches();
 }
 #ifdef WWHD_SDL_HOST
