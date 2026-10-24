@@ -203,8 +203,8 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     if (save_folder::writes_through_temporary() && mode.find_first_of("wa+") != std::string::npos && gpath.rfind("/vol/save/", 0) == 0) {
         final_host = hp;
         hp += ".wwhd-part";
-        std::error_code ec;
-        if (mode[0] != 'w') std::filesystem::copy_file(final_host, hp, std::filesystem::copy_options::overwrite_existing, ec);  // updates keep the contents
+        // updates and appends start from the save's contents; a failed copy fails the open
+        if (!save_folder::prepare_written(final_host, mode[0] != 'w')) return FS_ACCESS_ERROR;
     }
     FILE* f = fopen(hp.c_str(), m.c_str());
     TRACE("[fs] open %s (%s) -> %s", gpath.c_str(), mode.c_str(), f ? "ok" : "not found");
@@ -270,21 +270,25 @@ HLE(coreinit, FSOpenFile) {
 }
 
 HLE(coreinit, FSCloseFile) {
-    std::string written_guest, written_host;
+    std::string written_guest, written_host, final_host;
+    bool written = false;
     {
         std::lock_guard<std::mutex> lk(g_fs_mutex);
         auto it = g_files.find(arg(c, 2));
         if (it != g_files.end()) {
             fclose(it->second.f);
-            if (!it->second.final_host.empty()) {
-                if (save_folder::replace_written(it->second.host, it->second.final_host)) it->second.host = it->second.final_host;
-                else LOG("[save-folder] %s could not replace %s", it->second.host.c_str(), it->second.final_host.c_str());
-            }
-            if (it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos)
-                written_guest = it->second.path, written_host = it->second.host;
+            written = it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos;
+            written_guest = it->second.path, written_host = it->second.host, final_host = it->second.final_host;
             g_files.erase(it);
         }
     }
+    // a chosen save folder: the temporary file becomes the save (retried while a cloud app holds it;
+    // kept for the next start if that never works), outside the lock
+    if (!final_host.empty()) {
+        BlockingScope b;
+        if (save_folder::commit_written(final_host)) written_host = final_host;
+    }
+    if (!written) written_guest.clear();
     // a save file the game wrote: the story block goes after it again (story_store.h)
     if (!written_guest.empty()) {
         BlockingScope b;

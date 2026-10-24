@@ -129,6 +129,45 @@ int main() {
     assert(!s.quit && read_lock(lock_file(cloud))->machine == machine_name());
     release();
 
+    // review of #238: nothing is replaced or removed without a backup
+    write(cloud / "user/cking-DESKTOP.sav", "desktop save");
+    fs::rename(backups, root / "data" / "backups-moved");
+    write(backups, "a file where the backups folder should be");  // the backup fails
+    Asked pick_desktop{{}, {0}};  // the only question: "nothing was changed"
+    s = startup(def, config, pick_desktop.fn(), {});
+    assert(read(cloud / "user/cking.sav") == "laptop save" && fs::exists(cloud / "user/cking-DESKTOP.sav"));  // untouched
+    assert(!pick_desktop.titles.empty());  // told
+    release();
+    fs::remove(backups);
+    fs::rename(root / "data" / "backups-moved", backups);
+    fs::remove(cloud / "user/cking-DESKTOP.sav");
+
+    // the temporary file: a leftover older than the save goes; a newer one (a failed rename) stays
+    const fs::path sav = cloud / "user/cking.sav";
+    write(part_of(sav), "stale part");
+    fs::last_write_time(part_of(sav), fs::last_write_time(sav) - std::chrono::hours(1));
+    std::string error;
+    assert(prepare_part(sav, true, error) && read(part_of(sav)) == "laptop save");  // rebuilt from the save
+    assert(prepare_part(sav, false, error));  // a full write: the copy isn't needed
+    write(part_of(sav), "newer unsaved write");
+    fs::last_write_time(part_of(sav), fs::last_write_time(sav) + std::chrono::hours(1));
+    assert(prepare_part(sav, true, error) && read(part_of(sav)) == "newer unsaved write");  // kept
+    assert(commit_part(sav, 1, 0) && read(sav) == "newer unsaved write" && !fs::exists(part_of(sav)));
+
+    // a write that could not be finished is offered at the next start
+    write(part_of(sav), "finished later");
+    fs::last_write_time(part_of(sav), fs::last_write_time(sav) + std::chrono::hours(1));
+    assert(pending_parts(cloud / "user") == std::vector<std::string>{"cking.sav.wwhd-part"});
+    Asked use_part{{}, {1}};
+    s = startup(def, config, use_part.fn(), {});
+    assert(use_part.titles.size() == 1 && read(sav) == "finished later" && !fs::exists(part_of(sav)));
+    release();
+
+    // nested folders are refused
+    assert(!choose((cloud / "inner").string()) && !choose(cloud.parent_path().string()));
+    assert(view().notice.find("inside") != std::string::npos);
+    assert(choose(cloud.string()));  // the same folder is fine
+
     fs::remove_all(root);
     std::puts("save_folder_test: ok");
     return 0;
