@@ -623,7 +623,7 @@ class ModStageTemplateTests(unittest.TestCase):
         return result, messages
 
     def test_enabled_packages_stage_templates_join_the_generation(self):
-        sky = self.package('sky-island', 'assets/sky.wwht', hashes=[2])
+        sky = self.package('high-place', 'assets/sky.wwht', hashes=[2])
         self.package('turned-off', 'assets/off.wwht', enabled=False, hashes=[3])
         self.package('outside', '../escape.wwht', hashes=[4])
         self.assertEqual(prebuild.package_templates(self.cache), [sky.resolve()])

@@ -133,8 +133,8 @@ namespace mods {
 void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex) {
     // both step aside (fade out) while a game menu, an event or a message is up (hud_gate.cpp)
     const float shown = game_ui_hud_alpha();
-    ClimbHud wheel = climb_hud();
-    MoveHud bar = move_hud();
+    ClimbHud wheel = climb_hud_drawn();
+    MoveHud bar = move_hud_drawn();
     wheel.alpha *= shown;
     bar.alpha *= shown;
     const bool drawWheel = climb_enabled() && wheel.alpha > 0.0f, drawBar = bar.alpha > 0.0f;

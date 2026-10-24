@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Player-local coast material and animation on original mod geometry.
 
-Island materials serve as templates: "foam", Outset's animated coast foam; "water", the spring pool's surface of
+Island materials serve as templates (and Fire Mountain's lava): "foam", Outset's animated coast foam; "water", the spring pool's surface of
 Mother & Child Isles with its moving ripples (a pond standing above the sea); "river", the flowing water of the same
 island's spring outflow (its texture scrolls along V: V grows downstream); "waterfall", Forest Haven's falling water
-(the same flow texture, scrolling three times as fast; V grows downwards). A water or river surface fades out towards
+(the same flow texture, scrolling three times as fast; V grows downwards); "lava", the moving lava of Fire Mountain
+(the volcano object's own lava material and its texture animation). A water or river surface fades out towards
 its open edges (vertex alpha 0 on the mesh's boundary, 1 inside), as the island's own water does; a waterfall gets
 the vertex colours Forest Haven's falls give that material (its blue channel from 1 at the top to 0.3 at the foot).
 
@@ -19,11 +20,16 @@ import re
 import struct
 import tempfile
 
-import notebook_model as base
+import sys
+# Windows' embeddable Python runs isolated: the script's own folder is not on sys.path, so the
+# sibling modules are found through it explicitly (issue #280).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import notebook_model as base  # noqa: E402
 from skinned_actor_model import append_dictionary, append_string
 
 VERSION = 4
-# Each kind: the island room whose water model (model1) holds its template materials, and the material of each part:
+# Each kind: the island room whose water model (model1) holds its template materials (or a room of another stage and
+# its model: stage, room, model), and the material of each part:
 # "surface" the water itself, "waves" lines on it, "edge" the foam along a shore or a lip, "splash" where water lands
 # (the falls' sibuki). One room per kind: its model1 shader archive serves every part.
 KINDS = {
@@ -34,8 +40,16 @@ KINDS = {
     'pond': (44, {'surface': 'SC_01_mizu_v_3_', 'waves': 'SC_01_mizuB_v_x', 'edge': 'SC_01_mizu_v_x'}),
     'river': (41, {'surface': 'SC_00_m_v_x', 'edge': 'SC_00_m', 'splash': 'SC_00_m_2_'}),
     'waterfall': (41, {'surface': 'SC_00_m_v_x', 'edge': 'SC_00_m', 'splash': 'SC_00_m_2_'}),
+    # lava: Fire Mountain's own (the volcano's object, Ykzyg: the lava flowing from its crater, model qkzyg), its lava
+    # layers and glowing grains moving with the object's texture animation, as on the mountain at sea
+    'lava': (('object', 'Ykzyg', 'qkzyg'), {'surface': 'Qkzyg_yougn_only_b_yougan_v'}),
 }
 ROLES = ('surface', 'waves', 'edge', 'splash')
+# Fire Mountain's lava runs in streams down the mountain: its first texture (Txy_yougan2) is a mask of vertical bands
+# laid by the texture coordinates: the molten lava glows bright where it is 1, between the streams it is a dull crust
+# (0). A pool is molten lava all over, so the mask is one value there: 255 (the converter fills that texture with it;
+# its point colours black, as most of the mountain's).
+FILLED_TEXTURES = {'lava': [('Txy_yougan2', 255)]}
 MATERIALS = {kind: parts['surface'] for kind, (_, parts) in KINDS.items()}
 MATERIAL = MATERIALS['foam']
 # the room archive whose water model (model1) holds each template material
@@ -114,19 +128,49 @@ def part_colours(kind, role, positions, indices):
         return [(0.5 if e else 0.0, 0.0, 1.0, 1.0) for e in edge]
     if kind in ('river', 'waterfall') and role == 'splash':
         return [(0.0, 0.0, 0.0, 1.0)] * len(positions)
+    if kind == 'lava':
+        # Fire Mountain's lava is black in most of its points (its molten cells; lighter where it thins out)
+        return [(0.0, 0.0, 0.0, 1.0)] * len(positions)
     alpha = edge_alpha(positions, indices) if (kind == 'water' and role == 'surface') or (kind == 'pond' and role == 'waves') else [1.0] * len(positions)
     return [(1.0, 1.0, 1.0, a) for a in alpha]
 
 
-def build_parts(template, parts, identity):
+def template_model(kind):
+    """the name of the template room's (or object's) model a kind's materials are in"""
+    room = TEMPLATE_ROOMS[kind]
+    return room[2] if isinstance(room, tuple) else 'model1'
+
+
+def object_archive(game, name):
+    """the files of an object archive of the player's game (Object/<name>.szs, or one in the permanent packs)"""
+    archive = name + '.szs'
+    raw = None
+    loose = os.path.join(game, 'content/Common/Object', archive)
+    if os.path.isfile(loose):
+        with open(loose, 'rb') as source:
+            raw = source.read()
+    for pack in PACKS if raw is None else ():
+        path = os.path.join(game, 'content/Common/Pack', pack)
+        if not os.path.isfile(path):
+            continue
+        with open(path, 'rb') as source:
+            packed = dict(base.shaderprep.sarc(source.read()))
+        if archive in packed:
+            raw = packed[archive]
+            break
+    require(raw is not None, 'player coast template unavailable')
+    return dict(base.shaderprep.sarc(base.shaderprep.yaz0(raw)))
+
+
+def build_parts(template, parts, identity, model_name='model1'):
     """parts: [(template material, (positions, normals, uv, indices, ...), colours or None)], each drawn with its own copy
     of the shape that material has in the player's island model1 (one shape and vertex buffer per part)."""
     require(re.fullmatch(r'[a-z][a-z0-9_]{0,30}', identity) is not None, 'invalid coast identity')
     require(1 <= len(parts) <= len(ROLES), 'a shoreline has 1 to 4 parts')
     f = base.Bfres(template)
     models = dict(f.dict(f.rel(0x20)))
-    require('model1' in models, 'player coast model unavailable')
-    model = models['model1']
+    require(model_name in models, 'player coast model unavailable')
+    model = models[model_name]
     materials = f.dict(f.rel(model + 0x18))
     names = [name for name, _ in materials]
     shapes = f.dict(f.rel(model + 0x14))
@@ -206,9 +250,9 @@ def build_parts(template, parts, identity):
         f.put('3f', bone + 0x14, 1,1,1)
         f.put('4f', bone + 0x20, 0,0,0,1)
         f.put('3f', bone + 0x30, 0,0,0)
-    animation_entries = f.dict(f.rel(0x34))
-    require(len(animation_entries) == 1 and animation_entries[0][0] == 'model1', 'player coast animation unavailable')
-    animation = animation_entries[0][1]
+    animation_entries = dict(f.dict(f.rel(0x34)))
+    require(model_name in animation_entries and (model_name != 'model1' or len(animation_entries) == 1), 'player coast animation unavailable')
+    animation = animation_entries[model_name]
     require(f.b[animation:animation+4] == b'FSHU' and 1 < f.u32(animation + 0x10) <= 1000, 'unsupported player coast animation')
     f.append(b'',0x1000)
     f.put('I', 0xC, len(f.b))
@@ -434,23 +478,59 @@ def compact(data, identity, model, shapes, materials, animation):
     return bytes(out.b)
 
 
-def player_template(game, kind='foam'):
-    room = TEMPLATE_ROOMS[kind]
-    archive = 'sea_Room%d.szs' % room
+def room_archive(game, stage, room):
+    """the files of a room archive of the player's game: a loose stage file, or one in the permanent packs"""
+    archive = '%s_Room%d.szs' % (stage, room)
     raw = None
-    for pack in PACKS:
+    loose = os.path.join(game, 'content/Common/Stage', archive)
+    if os.path.isfile(loose):
+        with open(loose, 'rb') as source:
+            raw = source.read()
+    for pack in PACKS if raw is None else ():
         path = os.path.join(game, 'content/Common/Pack', pack)
         if not os.path.isfile(path):
             continue
-        with open(path,'rb') as source:
+        with open(path, 'rb') as source:
             packed = dict(base.shaderprep.sarc(source.read()))
         if archive in packed:
             raw = packed[archive]
             break
     require(raw is not None, 'player coast template unavailable')
-    files = dict(base.shaderprep.sarc(base.shaderprep.yaz0(raw)))
-    require('Room%d.bfres' % room in files and 'model1.sharcfb' in files, 'player coast template unavailable')
-    return files['Room%d.bfres' % room], files['model1.sharcfb']
+    return dict(base.shaderprep.sarc(base.shaderprep.yaz0(raw)))
+
+
+def player_template(game, kind='foam'):
+    room = TEMPLATE_ROOMS[kind]
+    model = template_model(kind)
+    if isinstance(room, tuple) and room[0] == 'object':
+        files = object_archive(game, room[1])
+        bfres = room[1] + '.bfres'
+    else:
+        stage, room = (room[0], room[1]) if isinstance(room, tuple) else ('sea', room)
+        files = room_archive(game, stage, room)
+        bfres = 'Room%d.bfres' % room
+    require(bfres in files and model + '.sharcfb' in files, 'player coast template unavailable')
+    template = files[bfres]
+    for texture, value in FILLED_TEXTURES.get(kind, ()):
+        template = fill_texture(template, texture, value)
+    return template, files[model + '.sharcfb']
+
+
+def fill_texture(template, name, value):
+    """the template with a one-channel (BC4) texture filled with one value (0..255) in its image and all its levels:
+    our own constant, nothing of the texture's own picture stays"""
+    f = base.Bfres(template)
+    textures = dict(f.dict(f.rel(0x24)))
+    require(name in textures, 'player coast texture unavailable')
+    texture = textures[name]
+    surface = texture + 4
+    require(f.u32(surface + 0x14) == 0x34, 'player coast texture of another format')
+    block = bytes((value, value, 0, 0, 0, 0, 0, 0))
+    for data, size in ((f.rel(texture + 0xB0), f.u32(surface + 0x20)), (f.rel(texture + 0xB4), f.u32(surface + 0x28))):
+        if data and size:
+            require(size % 8 == 0 and data + size <= len(f.b), 'player coast texture data outside the file')
+            f.b[data:data + size] = block * (size // 8)
+    return bytes(f.b)
 
 
 def shoreline_parts(geometry, kind):
@@ -486,7 +566,8 @@ def build(game, glb_path, identity, out, kind='foam'):
     parts = shoreline_parts(geometry, kind)
     require(kind != 'foam' or len(parts) == 1, 'a coast foam shoreline has one opaque material (the game supplies the foam)')
     template, shader = player_template(game, kind)
-    result = build_parts(template, [(KINDS[kind][1][role], g, part_colours(kind, role, g[0], g[3])) for role, g in parts], identity)
+    result = build_parts(template, [(KINDS[kind][1][role], g, part_colours(kind, role, g[0], g[3])) for role, g in parts], identity,
+                         template_model(kind))
     packed = base.yaz0_stored(base.sarc({identity+'.bfres':result,identity+'.sharcfb':shader}))
     digest = hashlib.sha256()
     for path in (__file__, collision_mesh.__file__, base.__file__, os.path.join(os.path.dirname(__file__),'actor_model.py'), os.path.join(os.path.dirname(__file__),'skinned_actor_model.py')):

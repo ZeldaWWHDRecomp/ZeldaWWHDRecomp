@@ -40,6 +40,17 @@ public:
             return status | kNoDraw;
         return status;
     }
+    // The draw hook's order on a pass (interp.cpp, fopAc_Draw): an actor the step's logic pass did not
+    // draw is saved first (`keep`, when `kept`: actor_keep, put back after the pass has been painted),
+    // then the step's request is made again (when `active`). Saved after it, the put-back handed the
+    // request on to the next logic pass as if that step's logic had made it: the next hold passes
+    // made it again, were put back with it again, and so on, so an actor the logic hid once stayed
+    // hidden (issue #283: Link after a conversation). Returns the status the draw must see.
+    template <class Keep>
+    uint32_t before_draw(uint32_t actor, uint32_t status, bool hold, uint64_t step, bool active, bool kept, Keep&& keep) {
+        if (kept) keep();
+        return active ? on_draw(actor, status, hold, step) : status;
+    }
     // nothing recorded is valid any more (a save state was loaded, interpolation was switched)
     void reset() {
         step_ = ~0ull;

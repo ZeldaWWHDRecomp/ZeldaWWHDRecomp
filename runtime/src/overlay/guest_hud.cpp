@@ -1,4 +1,5 @@
 #include "guest_hud.h"
+#include "../file_select_quit.h"
 #include "../mods/guest_hud.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -63,14 +64,17 @@ void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* outp
 void blend_callback(const ImDrawList*,const ImDrawCmd*) {}
 bool image_texture(uint64_t id) {
     if(id==uint64_t(ImTextureID_Invalid))return false;
+    if(file_select_quit::image_texture(id))return true;
     for(const auto& [image,texture]:textures)if(uint64_t(texture->data.GetTexID())==id)return true;
     return false;
 }
 void set_tv_region(float x,float y,float width,float height,bool visible) {
     tv_x=x;tv_y=y;tv_width=width;tv_height=height;tv_visible=visible;
-    if(visible&&height>0)store().note_pixels(0,height/720.f);
+    file_select_quit::set_tv_region(x,y,width,height,visible);
+    if(visible&&height>0&&active())store().note_pixels(0,height/720.f);
 }
 void backend_destroyed() {
+    file_select_quit::backend_destroyed();
     if(ImGui::GetCurrentContext())for(auto& [image,texture]:textures) {
         ImGui::GetPlatformIO().Textures.find_erase(&texture->data);
         ImGui::UnregisterUserTexture(&texture->data);

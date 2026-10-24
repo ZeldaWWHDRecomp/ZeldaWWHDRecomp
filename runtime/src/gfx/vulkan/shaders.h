@@ -7,6 +7,7 @@
 #include "../shader_identity.h"
 #include "shader_source.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+namespace stereo { struct EyeRows; }
 
 struct LatteFetchShader;
 namespace gfxvk::vk {
@@ -101,9 +102,10 @@ bool save_shader_cache();
 std::vector<uint32_t> compile_compute(const std::string& source, std::string* error = nullptr);
 std::vector<uint32_t> compile_glsl(const std::string& source, bool vertex, std::string* error = nullptr);
 // Caller-owned CPU scratch; all active bytes are freshly zeroed and packed.
+// eyeRows: receives the rows the eye offset shifted (stereo_projection.h)
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     std::vector<uint8_t>& data, float scaleX = 1.0f, float scaleY = 1.0f,
-    float eyeOffset = 0, float convergence = 600);
+    float eyeOffset = 0, float convergence = 600, stereo::EyeRows* eyeRows = nullptr);
 std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
     float scaleX = 1.0f, float scaleY = 1.0f);
 // After guest memory replacement and render drain; compiled variants stay alive.

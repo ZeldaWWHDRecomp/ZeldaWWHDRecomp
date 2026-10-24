@@ -50,13 +50,14 @@ inline bool hexbytes(const Value& v, std::vector<uint8_t>& out, size_t max) {
     }
     return true;
 }
-// Demo archive names the HD game special-cases by name (manager create/update): never reused.
-inline bool reserved_archive(const std::string& a) { return a == "Demo04" || a == "Demo08" || a == "Demo29" || a == "Demo37" || a == "Demo45" || a == "Demo46"; }
+// Any of the game's archives can lend a file, its demo archives (Demo04, Demo07..) included: the
+// demo itself always plays from the port's virtual archive, so the game's checks of the running
+// demo's archive name (Demo04, Demo08, Demo29, Demo37, Demo45, Demo46) never see these names.
 inline bool resource(const Value& v, const char* ext, Resource& out, std::string& why) {
-    if (!keys_only(v, {"archive", "file"}) && !keys_only(v, {"frame", "archive", "file", "speed"})) return fail(why, "resource needs archive and file");
+    if (!keys_only(v, {"archive", "file"}) && !keys_only(v, {"frame", "archive", "file", "speed", "loop"})) return fail(why, "resource needs archive and file");
     out.archive = v.get("archive").string();
     out.file = v.get("file").string();
-    if (!plain(out.archive, 11) || reserved_archive(out.archive)) return fail(why, "invalid archive name \"" + out.archive + "\"");
+    if (!plain(out.archive, 11)) return fail(why, "invalid archive name \"" + out.archive + "\"");
     if (!plain(out.file, 31, true) || out.file.size() < 5 || out.file.compare(out.file.size() - 4, 4, ext) != 0) return fail(why, std::string("resource file must be a ") + ext + " name");
     return true;
 }
@@ -92,7 +93,7 @@ inline bool attachments(const Value& st, Demo& d, std::string& why) {
     auto actor = [&](const std::string& id) -> const Actor* { for (const auto& a : d.actors) if (a.id == id) return &a; return nullptr; };
     for (const auto& v : attach.array) {
         Attach a;
-        if (!keys_only(v, {"frame", "actor", "to", "joint", "offset", "rotation", "upright"}) || !integer(v.get("frame"), 0, d.frames, a.frame)) return fail(why, "attach needs a frame inside the demo");
+        if (!keys_only(v, {"frame", "actor", "to", "joint", "offset", "rotation", "upright", "blend"}) || !integer(v.get("frame"), 0, d.frames, a.frame)) return fail(why, "attach needs a frame inside the demo");
         a.actor = v.get("actor").string(); a.to = v.get("to").string(); a.joint = v.get("joint").string();
         const Actor* carried = actor(a.actor);
         const Actor* carrier = actor(a.to);
@@ -103,6 +104,7 @@ inline bool attachments(const Value& st, Demo& d, std::string& why) {
         if (v.object.contains("offset") && !vec(v.get("offset"), a.offset)) return fail(why, "attach offset must be {x,y,z}");
         if (v.object.contains("rotation") && !vec(v.get("rotation"), a.rotation)) return fail(why, "attach rotation must be {x,y,z} degrees");
         if (v.object.contains("upright")) { if (v.get("upright").type != Value::Bool) return fail(why, "attach upright must be true or false"); a.upright = v.get("upright").boolean; }
+        if (v.object.contains("blend") && !integer(v.get("blend"), 0, 60, a.blend)) return fail(why, "attach blend must be 0..60 frames");
         d.attach.push_back(a);
     }
     if (!frame_order(d.attach)) return fail(why, "attach entries must be in frame order");
@@ -224,7 +226,12 @@ inline bool parse(const mods::json::Value& st, Demo& d, std::string& why) {
             }
             if (a.object.contains("spawn") || a.object.contains("params")) {
                 if (x.kind != Actor::Kind::Game) return fail(why, "demo actor " + x.id + ": spawn and params are for game actors");
-                if (a.object.contains("spawn")) { if (a.get("spawn").type != Value::Bool) return fail(why, "spawn must be true or false"); x.spawn = a.get("spawn").boolean; }
+                if (a.object.contains("spawn")) {
+                    const auto& v = a.get("spawn");
+                    if (v.type == Value::String && v.text == "always") x.own = true;
+                    else if (v.type != Value::Bool) return fail(why, "spawn must be true, false or \"always\"");
+                    else x.spawn = v.boolean;
+                }
                 if (a.object.contains("params")) {
                     const auto& v = a.get("params");
                     if (v.type == Value::String && v.text.size() > 2 && v.text.size() <= 10 && v.text.compare(0, 2, "0x") == 0 && v.text.find_first_not_of("0123456789abcdefABCDEF", 2) == std::string::npos)
@@ -251,9 +258,10 @@ inline bool parse(const mods::json::Value& st, Demo& d, std::string& why) {
                 }
                 for (const auto& c : x.kind == Actor::Kind::Character ? std::vector<Value>{} : clips.array) {
                     Clip clip;
-                    if (!keys_only(c, {"frame", "archive", "file", "speed"}) || !integer(c.get("frame"), 0, d.frames, clip.frame)) return fail(why, "demo actor " + x.id + ": clip needs a frame");
+                    if (!keys_only(c, {"frame", "archive", "file", "speed", "loop"}) || !integer(c.get("frame"), 0, d.frames, clip.frame)) return fail(why, "demo actor " + x.id + ": clip needs a frame");
                     if (!resource(c, ".bck", clip.resource, why)) return fail(why, "demo actor " + x.id + ": " + why);
                     if (c.object.contains("speed") && !real(c.get("speed"), 0, 8, clip.speed)) return fail(why, "clip speed must be 0..8");
+                    if (c.object.contains("loop")) { if (c.get("loop").type != Value::Bool) return fail(why, "clip loop must be true or false"); clip.loop = c.get("loop").boolean; }
                     x.clips.push_back(clip);
                 }
                 if (!frame_order(x.clips)) return fail(why, "demo clips must be in frame order");
@@ -264,7 +272,7 @@ inline bool parse(const mods::json::Value& st, Demo& d, std::string& why) {
                 if (modes.type != Value::Array || modes.array.size() > kMaxEvents) return fail(why, "Link modes must be a list");
                 for (const auto& m : modes.array) {
                     Mode mode;
-                    if (!keys_only(m, {"frame", "mode", "data", "clip"}) || !integer(m.get("frame"), 0, d.frames, mode.frame)) return fail(why, "Link mode needs a frame");
+                    if (!keys_only(m, {"frame", "mode", "data", "clip", "btp", "btk", "loop", "blend"}) || !integer(m.get("frame"), 0, d.frames, mode.frame)) return fail(why, "Link mode needs a frame");
                     if (m.get("mode").type == Value::String) { mode.mode = link_mode(m.get("mode").text); if (!mode.mode) return fail(why, "unknown Link mode \"" + m.get("mode").text + "\""); }
                     else if (m.object.contains("mode")) { if (!integer(m.get("mode"), 1, 0xFFFF, mode.mode)) return fail(why, "Link mode must be a name or 1..65535"); }
                     else if (m.object.contains("clip")) mode.mode = 512;
@@ -275,6 +283,16 @@ inline bool parse(const mods::json::Value& st, Demo& d, std::string& why) {
                         if (mode.mode != 512 || !mode.data.empty() || !plain(mode.clip, 31, true) || mode.clip.size() < 5 || mode.clip.compare(mode.clip.size() - 4, 4, ".bck") != 0)
                             return fail(why, "a Link clip is a .bck of his demo animations, with mode \"clip\" and no data");
                     }
+                    // a clip's face (btp + btk), loop and blend
+                    const bool face = m.object.contains("btp") || m.object.contains("btk");
+                    if ((face || m.object.contains("loop") || m.object.contains("blend")) && mode.clip.empty()) return fail(why, "btp, btk, loop and blend go with a Link clip");
+                    if (face) {
+                        mode.btp = m.get("btp").string(); mode.btk = m.get("btk").string();
+                        auto named = [](const std::string& f, const char* ext) { return plain(f, 31, true) && f.size() >= 5 && f.compare(f.size() - 4, 4, ext) == 0; };
+                        if (!named(mode.btp, ".btp") || !named(mode.btk, ".btk")) return fail(why, "a Link clip's face needs both btp (a .btp) and btk (a .btk) of his demo animations");
+                    }
+                    if (m.object.contains("loop")) { if (m.get("loop").type != Value::Bool) return fail(why, "Link clip loop must be true or false"); mode.loop = m.get("loop").boolean; }
+                    if (m.object.contains("blend")) { uint32_t b = 0; if (!integer(m.get("blend"), 0, 60, b)) return fail(why, "Link clip blend must be 0..60 frames"); mode.blend = int32_t(b); }
                     x.modes.push_back(mode);
                 }
                 if (!frame_order(x.modes)) return fail(why, "Link modes must be in frame order");

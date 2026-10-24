@@ -10,10 +10,13 @@
 0200E6EC  # cCt_Counter: frame counters
 025D4654  # fopAc_Draw: one-shot no-draw requests of the step's logic hold for its in-between frames
 02715310  # HD UI screens' update after the process executes (end of fpcM_Management): logic, once per step
+025499A0  # Game Over state machine runs from the leaf Draw slot: logic, once per step
 025C5A8C  # shared minigame timer: HD puts its update in the draw slot; logic once per 30 Hz step
+0260C74C  # ResLoadTask::calc (sead task, calc on every frame): archive loads advance once per 30 Hz step
 @026277A8 # Boat-race timer formatting: presentation-only fractional milliseconds
 @026E9C24 # Shared HUD timer formatting: presentation-only fractional milliseconds
 024FFC40  # camera_draw: blended camera on logic passes
+024FD11C  # dCamera_c::bumpCheck: steps where the collision check pulled the eye in (camera distance rule)
 # children of the per-frame function; on hold passes each runs or is skipped (interp.cpp kHoldRun)
 02032FE8  # per-frame child 0
 020357CC  # per-frame child 1
@@ -194,6 +197,7 @@
 025A8148  # dPa_control_c particle calc 7-8 (+ g_Counter.mTimer++ after it): held back on hold passes
 0254C6C4  # dGrass_packet_c::calc: halfway sway on logic passes
 025C9948  # dTree_packet_c::calc: halfway sway on logic passes
+025CA6EC  # dTree_packet_c::update: fallen trees fade out once per logic step (interp_fx.cpp)
 02548370  # dFlower_packet_c::calc: halfway sway on logic passes
 025D0994  # dWood::Packet_c::calc: held back on hold passes
 # effects interpolation, round 3 (runtime/src/interp_fx.cpp)
@@ -218,6 +222,44 @@
 0232B984  # buoy pole: attachment placement at the same fraction as the flag
 021BBC34  # mantles/capes: custom cloth vertices and placement, at upload
 02574144  # dKyr_drawStar: stars placed around the eye the pass was drawn with (interp.cpp)
+0256F1C4  # dKyr_drawSun: sun and moon placed around the eye the pass was drawn with (interp.cpp)
+02570210  # dKyr_drawLenzflare: lens flare from the eye the pass was drawn with (interp.cpp)
+02571B1C  # dKyr_drawSibuki: sea spray in the rain around the eye the pass was drawn with (interp.cpp)
+025F06A8  # mDoGph_calcFade: the screen fade advances once per logic step, shown at the pass fraction (interp.cpp)
+0252F5A0  # GC mDoGph calcFade (snapshot fade, event director fades): advanced once per logic step (interp.cpp)
+025F0840  # mDoGph_calcMonotone: trace only (WWHD_INTERP_FADE_TRACE)
+024142F0  # daPy_swBlur_c::draw: sword trail drawn at the pass fraction (interp_fx.cpp)
+020CDF78  # daBoomerang_blur_c::draw: boomerang trail drawn at the pass fraction (interp_fx.cpp)
+021768B0  # daHookshot_shape_draw: chain from the blended root (interp_fx.cpp)
+025EA548  # mDoExt_3DlineMat0_c::update: line control points blended (interp_fx.cpp)
+025EAF58  # mDoExt_3DlineMat0_c::update (widths): line control points blended (interp_fx.cpp)
+0247255C  # daShip_c::draw: hull texture scroll and cannon sight arc blended (interp_fx.cpp)
+024D1D44  # daVrbox2_Draw: sky back-cloud scroll drawn between the steps (interp_fx.cpp)
+024D1C44  # vrbox2 texScrollCheck: the cloud SRTs the draw scrolls (interp_fx.cpp)
+0258CA60  # dMagma_packet_c::update: lava scroll and lava balls drawn between the steps (interp_fx.cpp)
+025A1D10  # dOvlpFd2_Draw: swirl scene wipe angle and scale drawn between the steps (interp_fx.cpp)
+02413E80  # daPy_matAnm_c::calc: Link's eye offset once per logic step, drawn between the steps (interp_fx.cpp)
+024556E8  # daPz_matAnm_c::calc: Tetra/Zelda eye offset drawn between the steps (interp_fx.cpp)
+02281564  # daNpc_Ls1_matAnm_c::calc: Aryll's eye offset drawn between the steps (interp_fx.cpp)
+023086FC  # daNpc_Zl1_matAnm_c::calc: Zelda's eye offset drawn between the steps (interp_fx.cpp)
+0251AE90  # dChain_packet_c::draw: balance-lift chains between the steps (interp_fx.cpp)
+02732D3C  # HD 3D layer overlay pass: the frame blur's per-frame share of a logic step (interp_fx.cpp)
+025A4204  # dPa_modelEmitterDraw: model particles placed from the blended particles, not blended again (interp.cpp)
+025E535C  # mDoExt_McaMorf::play: from a draw on a pass without logic, held (interp_fx.cpp)
+025E65FC  # mDoExt_McaMorf2::play: from a draw on a pass without logic, held (interp_fx.cpp)
+0252DA64  # dDlst_mirrorPacket::update: light beams (Mirror Shield, Medli's harp) from the blended base matrix (interp_fx.cpp)
+02466578  # daSalvage_c::calcAlpha: treasure light columns fade once per logic step (interp_fx.cpp)
+0238B258  # daObj_Search::Act_c::_draw: searchlight ground spot between the steps (interp_fx.cpp)
+02103B30  # daBwdg_packet_c::prepare: Molgera's sand floor heights between the steps (interp_fx.cpp)
+0239DD2C  # daObjTapestryPacket_c::setup_vtx: tapestry cloth between the steps (interp_fx.cpp)
+0215F9E4  # daGFlag_packet_c::update: boat-race goal flag cloth between the steps (interp_fx.cpp)
+025D39A8  # dWpotWater_c::execute: spilled water mask placement kept for the draw (interp_fx.cpp)
+025D3968  # dWpotWater_c::draw: spilled water mask with the view of the drawn pass (interp_fx.cpp)
+02736C10  # hdLayerShadow drawShadowPass: cascade split distances put back after the pass is painted (interp_fx.cpp)
+@0255F7F8 # fog setter (0255F668): each thread records the fog it sets (fog_pin.cpp)
+@027FDF78 # environment uniforms (027FDA54): the fog copy reads the fog its own thread set last (fog_pin.cpp)
+027987BC  # updateShadowSurface: shadow cascade split distances between the steps (interp_fx.cpp)
+027FB678  # uploadShadowEnvironment: shadow cascade fade ranges between the steps (interp_fx.cpp)
 024EC1C8  # dAttDraw_c::draw: in true 60, the attention arrow is built from halfway values and the current camera
 025615B8  # dScnKy_env_light_c::settingTevStruct_plightcol_plus: candle flicker held on frames without logic (interp_fx.cpp)
 020198D8  # cM_rndF: the flicker random value inside it
@@ -232,7 +274,10 @@
 0255B9C8  # dKy_efplight_set
 0255BA9C  # dKy_efplight_cut
 025626A4  # dScnKy_env_light_c::settingTevStruct (debug trace, true60_test.cpp)
-025D6CE8  # fopAcM_cullingCheck (debug trace, true60_test.cpp)
+025D6CE8  # fopAcM_cullingCheck: exact camera on blended logic passes (interp.cpp); debug trace (true60_test.cpp)
+025D6B70  # fopAcM_checkCullingBox: exact camera on blended logic passes (interp.cpp)
+024FFC18  # dCamera_c::Draw: focus lines, not drawn in the exact camera pre-run (interp.cpp)
+02838148  # J3DUClipper::clip: on j3dSys's view, the exact camera on blended logic passes (interp.cpp)
 02786520  # agl shader program archive setup (debug WWHD_BOOTDBG, true60_test.cpp)
 027B8904  # agl ShaderProgramArchive init (debug WWHD_BOOTDBG, true60_test.cpp)
 027B82B8  # agl ShaderProgramArchive setup from sharc (debug WWHD_BOOTDBG, true60_test.cpp)
@@ -248,3 +293,9 @@
 025F1018 # mDoLib_projectViewport: project scoped interpolated marker points through the drawn camera
 
 023F22FC  # daPy_lk_c::setDemoData: event commands only on full steps (may replace model heaps)
+027C93A8  # shadow cascade setup (worker): the step's exact camera on passes before a logic pass (interp.cpp)
+
+# Shared HUD particle coordinate capture and per-emitter drawing projection (aspect.cpp).
+02704D2C # hdPaneUtil::getGlobalTranslation: remember the source pane without changing guest coordinates
+0282D9C0 # JPA draw: live pane anchor and TV 2D aspect projection; world and DRC untouched
+025A847C # dPa shared emitter factory: bind captured pane anchors and reset pooled emitters

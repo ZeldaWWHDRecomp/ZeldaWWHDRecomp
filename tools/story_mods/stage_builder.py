@@ -52,8 +52,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notebook_model as base  # noqa: E402  (Bfres, sarc, yaz0_stored, BuildError)
 import game_piece_model as gp  # noqa: E402  (room_files, read_model, Writer, write_model, ATTRIBUTE_CLASS)
 from skinned_actor_model import append_dictionary, append_string  # noqa: E402
+import kit_materials as km  # noqa: E402  (the kit materials: shared with world objects, actor_model.py)
+from kit_materials import kit_materials, main_material  # noqa: E402
 
-VERSION = 2
+VERSION = 5
 FORMAT = 1
 BuildError = base.BuildError
 MAX_ROOMS = 16
@@ -72,9 +74,17 @@ STAGE = re.compile(r'[A-Za-z0-9_]{1,7}')
 # The surfaces (world-object collision material names, collision_mesh.SEMANTICS) and the attribute class the
 # game gives each (story_world_collision_mesh.h NativeResultIds; the raw code is found in the game's conversion).
 SURFACES = ('col_stone', 'col_grass', 'col_wood', 'col_sand', 'col_metal', 'col_wall', 'col_objects', 'col_climb',
-            'col_hookshot', 'col_water', 'col_shallow', 'col_waterfall', 'col_ice', 'col_void')
-SURFACE_CLASS = (3, 4, 2, 11, 20, 0, 0, 0, 2, 0, 19, 23, 15, 8)
-WATER, VOID, CLIMB, OBJECTS, HOOKSHOT = 9, 13, 7, 6, 8
+            'col_hookshot', 'col_water', 'col_shallow', 'col_waterfall', 'col_ice', 'col_void', 'col_lava')
+SURFACE_CLASS = (3, 4, 2, 11, 20, 0, 0, 0, 2, 0, 19, 23, 15, 8, 6)
+WATER, VOID, CLIMB, OBJECTS, HOOKSHOT, LAVA = 9, 13, 7, 6, 8, 14
+# Lava as every lava floor of the game is built (Dragon Roost Cavern, the inside of Fire Mountain, the lava caves,
+# Ganon's Tower): its surface in a group of its own with the game's lava bit (only the game's lava checks see it:
+# Link's, a bomb's, a dropped item's) and its bottom below it in the ground group (85 to 500 units down in the game's
+# rooms; things sink to it), both with the info words of the game's lava: no exit, material sound 23, attribute
+# class 6, camera word 0xFFFFFF00 (story_world_collision_mesh.h LavaInfo0, LavaInfo2).
+LAVA_GROUP = 0x200
+LAVA_DEPTH = 100.0
+LAVA_INFO = (0x07FFF7FF, 0xFF | (6 << 16), 0xFFFFFF00, 0)
 NO_EXIT = 0x3F
 DOOR_MODEL = 'door10'
 # the template's Stage.bfres models a door needs: the knob door, the boss door, the small-key lock, the stop bars
@@ -160,15 +170,31 @@ def read_rtbl(dzs, chunk_offset, count):
     return rows
 
 
-def room_entries(room, neighbours):
-    """a room's row: itself (drawn, 0xC0 as the game's rows have it) and the rooms behind its doors"""
-    return [0xC0 | room] + sorted(n for n in set(neighbours) if n != room)
+def room_entries(room, neighbours, drawn=()):
+    """a room's row: itself (drawn, 0xC0 as the game's rows have it), the rooms behind its doors (loaded) and the
+    rooms joined to it by an open passage (loaded and drawn: 0x80, as the sea's rows list the squares round an
+    island)"""
+    return [0xC0 | room] + sorted((0x80 if n in drawn else 0) | n for n in set(neighbours) if n != room)
 
 
 # ---- the stage file (stage.dzs) ----------------------------------------------------------------------------
 
-def build_dzs(template_dzs, recipe):
+LIGHT_CHUNKS = ('Colo', 'Pale', 'Virt', 'LGHT')  # the light: colour sets (one per time of day), palettes, sky colours, lights
+
+
+def build_dzs(template_dzs, recipe, light_dzs=None):
+    """the stage file. With light_dzs (recipe "light": another stage's stage.dzs) the stage's light comes from that stage:
+    its colour sets, palettes and sky colours replace the template's, and every room takes the environment entry of the
+    light stage's room (on the sea: the square's), so the stage is lit as that place, through the day as it is"""
     chunks = read_dz(template_dzs)
+    light_env = None
+    if light_dzs is not None:
+        lchunks = read_dz(light_dzs)
+        le = chunk(lchunks, 'EnvR')
+        require(le and chunk(lchunks, 'Colo') and chunk(lchunks, 'Pale') and chunk(lchunks, 'Virt'), 'the light stage has no light of its own')
+        lroom = recipe['light'].get('room', 0)
+        light_env = le[2][8 * lroom:8 * lroom + 8] if lroom < le[1] else le[2][:8]
+        chunks = [c for c in chunks if c[0] not in LIGHT_CHUNKS] + [c for c in lchunks if c[0] in LIGHT_CHUNKS]
     stag = chunk(chunks, 'STAG')
     require(stag and stag[1] == 1 and len(stag[2]) >= 0x14, 'the template stage has no stage settings')
     s = bytearray(stag[2][:0x14])
@@ -182,20 +208,26 @@ def build_dzs(template_dzs, recipe):
     old_rtbl = chunk(chunks, 'RTBL')
     template_rows = read_rtbl(template_dzs, old_rtbl[3], old_rtbl[1]) if old_rtbl else []
     neighbours = {r['room']: [] for r in rooms}
+    joined = {r['room']: set() for r in rooms}
     for a, b in [d['rooms'] for d in recipe.get('doors', [])] + [tuple(j) for j in recipe.get('joins', [])]:
         neighbours[a].append(b)
         neighbours[b].append(a)
+    for a, b in [tuple(j) for j in recipe.get('joins', [])]:
+        joined[a].add(b)
+        joined[b].add(a)
     rows = []
     for r in rooms:
         kit = r['kit']['room'] if r['kit']['stage'] == recipe['template'] else -1
         reverb, b2, b3 = template_rows[kit][:3] if 0 <= kit < len(template_rows) else template_rows[0][:3] if template_rows else (0, 0, 0)
-        rows.append((reverb, b2, b3, room_entries(r['room'], neighbours[r['room']])))
+        rows.append((reverb, b2, b3, room_entries(r['room'], neighbours[r['room']], joined[r['room']])))
     mult = b''.join(struct.pack('>ffhBB', 0.0, 0.0, 0, r['room'], 0) for r in rooms)
     envr_old = chunk(chunks, 'EnvR')
     envr = b''
     for r in rooms:  # a kit room of another stage is lit by the template's first environment
         kit = r['kit']['room'] if r['kit']['stage'] == recipe['template'] else 0
         e = envr_old[2][8 * kit:8 * kit + 8] if envr_old and kit < envr_old[1] else b''
+        if light_env is not None:
+            e = light_env
         envr += e if len(e) == 8 else bytes(8)
     e = recipe['entrance']
     scls = scls_entry(e['stage'], e['point'], e['room'])
@@ -242,7 +274,7 @@ def build_dzr(kit_dzr, room, recipe_room):
     lgtv = chunk(kit, 'LGTV')
     if lgtv:
         out.append(('LGTV', lgtv[1], lgtv[2][:0x1C * lgtv[1]]))
-    for tag in ('ACTR', 'TRES'):
+    for tag in ('ACTR', 'SCOB', 'TRES'):
         entries = [a for a in recipe_room.get('actors', []) if a['tag'] == tag]
         if entries:
             out.append((tag, len(entries), b''.join(actor_entry(a, room) for a in entries)))
@@ -250,11 +282,22 @@ def build_dzr(kit_dzr, room, recipe_room):
 
 
 def actor_entry(a, room):
-    """an ACTR or TRES entry (0x20 bytes): name, parameters, position, rotation words; a chest's x word is its room"""
+    """an ACTR or TRES entry (0x20 bytes): name, parameters, position, rotation words; a chest's x word is its room.
+    A SCOB entry (0x24 bytes) is an ACTR entry and its size: x, y, z in tenths, and a pad byte. Its `scale` is one
+    number for all three (a large tree: 1.0 is 10 tenths) or three tenths of its own (the game's lava floor, magma, is
+    100 units wide per step)"""
     x, y, z = a['position']
     ax = (a.get('angle_x', 0) & ~0x3F | room) if a['tag'] == 'TRES' else a.get('angle_x', 0)
-    return struct.pack('>8sI3fHhHH', a['name'].encode('ascii'), int(a['params']) & 0xFFFFFFFF, x, y, z, ax & 0xFFFF, angle16(a.get('angle', 0)),
+    body = struct.pack('>8sI3fHhHH', a['name'].encode('ascii'), int(a['params']) & 0xFFFFFFFF, x, y, z, ax & 0xFFFF, angle16(a.get('angle', 0)),
                        a.get('angle_z', 0xFF) & 0xFFFF, 0xFFFF)
+    if a['tag'] == 'SCOB':
+        sc = a.get('scale', 1.0)
+        if isinstance(sc, list):
+            body += bytes(sc) + b'\xff'
+        else:
+            v = max(1, min(255, int(round(sc * 10))))
+            body += bytes((v, v, v, 0xFF))
+    return body
 
 
 # ---- collision (room.dzb) ------------------------------------------------------------------------------------
@@ -274,6 +317,8 @@ def surface_codes():
 def surface_info(surface, exit_id):
     """the four info words of a triangle: as the port's world-object collision writes them, with the exit"""
     code = surface_codes()[surface]
+    if surface == LAVA:
+        return (LAVA_INFO[0], (LAVA_INFO[1] & ~(0x1F << 16)) | (code << 16), LAVA_INFO[2], LAVA_INFO[3])
     w0 = (0x07FFE0FF & ~0x7E000) | ((exit_id & 0x3F) << 13)
     w1 = 0xFF | (0x100 if surface == CLIMB else 0) | (code << 16) | ((4 << 21) if surface == VOID else 0)
     w3 = 0xED if surface == OBJECTS else 0x10 if surface == HOOKSHOT else 0
@@ -284,20 +329,39 @@ LEAF = 32
 
 
 def build_dzb(vertices, triangles, room):
-    """vertices [(x,y,z)], triangles [(a, b, c, surface, exit)] -> room.dzb. Groups: 0 the room (its number),
-    1 the ground (child of 0), 2 the ground triangles (child of 1; group info: the room table row), 3 the
-    swimmable water (a sibling of 2 with the game's water bit). Each triangle group has its own tree."""
-    require(0 < len(triangles) <= MAX_TRIANGLES and len(vertices) <= MAX_VERTICES, 'collision exceeds %d triangles' % MAX_TRIANGLES)
+    """vertices [(x,y,z)], triangles [(a, b, c, surface, exit)] -> room.dzb. Groups, as the game's rooms have them:
+    0 the room (its number), 1 the ground (child of 0), 2 the ground triangles (child of 1; group info: the room table
+    row); then, as the ground's siblings, the swimmable water (3, with the game's water bit, and its triangles, 4) and
+    the lava (with the game's lava bit, and its surface's triangles; its bottom, LAVA_DEPTH lower, is ground). The
+    game's special-group filters look at the room's children (depth two: dBgW::ChkGrpThrough): there the water and
+    lava groups carry their bits, so only water and lava checks see them and ordinary ground checks pass through.
+    Each triangle group has its own tree; a triangle's room is its group's grandparent's."""
+    lava_tris = [t for t in triangles if t[3] == LAVA]
+    lava_points = sorted({v for t in lava_tris for v in t[:3]})
+    require(0 < len(triangles) + len(lava_tris) <= MAX_TRIANGLES, 'collision exceeds %d triangles (lava counts twice)' % MAX_TRIANGLES)
+    require(len(vertices) + len(lava_points) <= MAX_VERTICES, 'collision exceeds %d vertices (lava counts twice)' % MAX_VERTICES)
+    vertices = list(vertices)
+    bottom = {}
+    for v in lava_points:
+        bottom[v] = len(vertices)
+        x, y, z = vertices[v]
+        vertices.append(struct.unpack('>3f', struct.pack('>3f', x, y - LAVA_DEPTH, z)))
+    has_water = any(t[3] == WATER for t in triangles)
+    # the triangle groups: the ground's 2, the water's 4 (under its group 3), the lava's last (under the one before)
+    WATER_G, LAVA_G = 4, 6 if has_water else 4
     infos, info_of = [], {}
     tris = []
     for a, b, c, surface, exit_id in triangles:
-        key = (surface, exit_id)
+        key = (surface, exit_id if surface != LAVA else NO_EXIT)
         if key not in info_of:
             info_of[key] = len(infos)
-            infos.append(surface_info(surface, exit_id))
-        tris.append((a, b, c, info_of[key], 3 if surface == WATER else 2))
-    ordered = [t for t in tris if t[4] == 2] + [t for t in tris if t[4] == 3]
+            infos.append(surface_info(*key))
+        tris.append((a, b, c, info_of[key], WATER_G if surface == WATER else LAVA_G if surface == LAVA else 2))
+        if surface == LAVA:  # the lava's bottom: ground below the surface
+            tris.append((bottom[a], bottom[b], bottom[c], info_of[key], 2))
+    ordered = [t for t in tris if t[4] == 2] + ([t for t in tris if t[4] == WATER_G] if has_water else []) + ([t for t in tris if t[4] == LAVA_G] if lava_tris else [])
     normal = sum(1 for t in tris if t[4] == 2)
+    water_count = sum(1 for t in tris if has_water and t[4] == WATER_G)
     nodes, blocks = [], []
 
     def split(first, end, parent):
@@ -319,8 +383,9 @@ def build_dzb(vertices, triangles, room):
         nodes[nid]['children'][1] = right
         return nid
     ground_tree = split(0, normal, 0xFFFF) if normal else 0xFFFF
-    water_tree = split(normal, len(ordered), 0xFFFF) if normal < len(ordered) else 0xFFFF
-    ngroups = 4 if water_tree != 0xFFFF else 3
+    water_tree = split(normal, normal + water_count, 0xFFFF) if water_count else 0xFFFF
+    lava_tree = split(normal + water_count, len(ordered), 0xFFFF) if lava_tris else 0xFFFF
+    ngroups = 3 + (2 if has_water else 0) + (2 if lava_tris else 0)
     vertex = 0x34
     tri = vertex + len(vertices) * 12
     block = tri + len(ordered) * 10
@@ -328,7 +393,8 @@ def build_dzb(vertices, triangles, room):
     group = node + len(nodes) * 20
     info = group + 52 * ngroups
     name = info + 16 * len(infos)
-    names = [b'R%02d_check\0' % room, b'ground\0', b'floor\0', b'water\0'][:ngroups]
+    names = [b'R%02d_check\0' % room, b'ground\0', b'floor\0'] + ([b'Water\0', b'water\0'] if has_water else []) + \
+        ([b'Yogan\0', b'lava\0'] if lava_tris else [])
     out = bytearray(name + sum(len(x) for x in names))
     out += bytes(-len(out) % 4)
     counts = [len(vertices), len(ordered), len(blocks), len(nodes), ngroups, len(infos)]
@@ -354,14 +420,22 @@ def build_dzb(vertices, triangles, room):
         at += len(names[gi])
         struct.pack_into('>3f', out, g + 4, 1.0, 1.0, 1.0)
         struct.pack_into('>H', out, g + 0x16, 0xFFFF)
+        top_water, top_lava = (3 if has_water else None), (LAVA_G - 1 if lava_tris else None)
         if gi == 0:    # the room: no parent, child 1, the room number
             struct.pack_into('>HHHHHHI', out, g + 0x24, 0xFFFF, 0xFFFF, 1, room, 0, 0xFFFF, 0)
-        elif gi == 1:  # the ground: parent 0, child 2
-            struct.pack_into('>HHHHHHI', out, g + 0x24, 0, 0xFFFF, 2, 0xFFFF, 0, 0xFFFF, 0)
-        elif gi == 2:  # the ground triangles: parent 1, sibling water, the tree, the room table row
-            struct.pack_into('>HHHHHHI', out, g + 0x24, 1, 3 if ngroups == 4 else 0xFFFF, 0xFFFF, 0xFFFF, 0, ground_tree, room)
-        else:          # swimmable water: the game's water bit
-            struct.pack_into('>HHHHHHI', out, g + 0x24, 1, 0xFFFF, 0xFFFF, 0xFFFF, 0, water_tree, room | 0x100)
+        elif gi == 1:  # the ground: parent 0, child 2, sibling the water's group (or the lava's)
+            nxt = top_water if top_water is not None else top_lava if top_lava is not None else 0xFFFF
+            struct.pack_into('>HHHHHHI', out, g + 0x24, 0, nxt, 2, 0xFFFF, 0, 0xFFFF, 0)
+        elif gi == 2:  # the ground triangles: parent 1, the tree, the room table row
+            struct.pack_into('>HHHHHHI', out, g + 0x24, 1, 0xFFFF, 0xFFFF, 0xFFFF, 0, ground_tree, room)
+        elif gi == top_water:  # the water: parent 0 (depth two), the game's water bit; sibling the lava's group
+            struct.pack_into('>HHHHHHI', out, g + 0x24, 0, top_lava if top_lava is not None else 0xFFFF, gi + 1, 0xFFFF, 0, 0xFFFF, room | 0x100)
+        elif gi == WATER_G and has_water:  # the swimmable water's triangles
+            struct.pack_into('>HHHHHHI', out, g + 0x24, gi - 1, 0xFFFF, 0xFFFF, 0xFFFF, 0, water_tree, room | 0x100)
+        elif gi == top_lava:   # the lava: parent 0 (depth two), the game's lava bit
+            struct.pack_into('>HHHHHHI', out, g + 0x24, 0, 0xFFFF, gi + 1, 0xFFFF, 0, 0xFFFF, room | LAVA_GROUP)
+        else:          # the lava's surface
+            struct.pack_into('>HHHHHHI', out, g + 0x24, gi - 1, 0xFFFF, 0xFFFF, 0xFFFF, 0, lava_tree, room | LAVA_GROUP)
     for i, inf in enumerate(infos):
         struct.pack_into('>4I', out, info + 16 * i, *inf)
     return bytes(out)
@@ -546,7 +620,7 @@ def collision_from(prims, exits):
             if ln < 1e-6:
                 continue
             exit_id = NO_EXIT
-            if n[1] / ln > 0.5 and surface != WATER:  # a floor: the exit boxes it lies in
+            if n[1] / ln > 0.5 and surface not in (WATER, LAVA):  # a floor: the exit boxes it lies in
                 centre = [(pa[k] + pb[k] + pc[k]) / 3 for k in range(3)]
                 for k, x in enumerate(exits):
                     if all(x['min'][j] <= centre[j] <= x['max'][j] for j in range(3)):
@@ -634,7 +708,7 @@ def floor_triangles(dzb):
     water = set()
     for i in range(ng):
         inf, = struct.unpack_from('>I', dzb, og + 52 * i + 0x30)
-        if inf & 0x100:
+        if inf & (0x100 | LAVA_GROUP):  # swimmable water and the lava's surface are no floor
             water.add(i)
     out = []
     for i in range(nt):
@@ -756,64 +830,6 @@ def png(width, height, rows):
 
 # ---- the room archive (graft) --------------------------------------------------------------------------------
 
-def mesh_shape(src, template, prim):
-    """a Shape (game_piece_model) with the template shape's vertex layout and the primitive's geometry: each
-    record starts as the template's first record, then position, normal, texture coordinate and colour"""
-    s = gp.Shape()
-    s.at, s.name, s.node, s.material = template.at, 'mesh', 'mesh', template.material
-    s.vertex, s.nattr, s.stride, s.at_p = template.vertex, template.nattr, template.stride, template.at_p
-    attrs = src.rel(s.vertex + 0x10)
-    layout = {src.cstr(src.rel(attrs + i * 12)): (src.u16(attrs + i * 12 + 6), src.u32(attrs + i * 12 + 8)) for i in range(s.nattr)}
-    first = template.records[0]
-    s.records, s.pos = [], []
-    for k, p in enumerate(prim['positions']):
-        r = bytearray(first)
-        struct.pack_into('>3f', r, s.at_p, *p)
-        if '_n0' in layout:
-            put_normal(r, layout['_n0'], prim['normals'][k])
-        if '_u0' in layout:
-            put_uv(r, layout['_u0'], prim['uvs'][k])
-        if '_c0' in layout:
-            put_color(r, layout['_c0'], prim['colors'][k] if prim['colors'] else (1.0, 1.0, 1.0, 1.0))
-        s.records.append(bytes(r))
-        s.pos.append(tuple(p))
-    s.tris = list(prim['triangles'])
-    return s
-
-
-def put_normal(r, spec, n):
-    at, fmt = spec
-    if fmt == 0x811:
-        struct.pack_into('>3f', r, at, *n)
-    elif fmt == 0x20B:  # snorm 10_10_10_2
-        q = [max(-511, min(511, int(round(v * 511)))) & 0x3FF for v in n]
-        struct.pack_into('>I', r, at, q[0] | q[1] << 10 | q[2] << 20)
-    elif fmt == 0x20A:  # snorm 8x4
-        struct.pack_into('>4b', r, at, *[max(-127, min(127, int(round(v * 127)))) for v in n], 0)
-    else:
-        raise BuildError('the kit material\'s normal format is not supported (0x%X)' % fmt)
-
-
-def put_uv(r, spec, uv):
-    at, fmt = spec
-    if fmt == 0x80D:
-        struct.pack_into('>2f', r, at, uv[0], uv[1])
-    elif fmt == 0x808:  # float 16x2
-        struct.pack_into('>2e', r, at, uv[0], uv[1])
-    else:
-        raise BuildError('the kit material\'s texture coordinate format is not supported (0x%X)' % fmt)
-
-
-def put_color(r, spec, c):
-    at, fmt = spec
-    if fmt == 0x813:
-        struct.pack_into('>4f', r, at, *c)
-    elif fmt == 0x00A:
-        struct.pack_into('>4B', r, at, *[max(0, min(255, int(round(v * 255)))) for v in c])
-    elif fmt == 0x80F:
-        struct.pack_into('>4e', r, at, *c)
-
-
 def replace_embedded(bfres, name, body):
     f = base.Bfres(bfres)
     group = f.rel(0x20 + 4 * 11)
@@ -832,16 +848,6 @@ def embedded_files(src):
     out = {}
     for n, at in src.dict(group) if group else []:
         out[n] = bytes(src.b[src.rel(at):src.rel(at) + src.u32(at + 4)])
-    return out
-
-
-def kit_materials(src):
-    """material name -> (kit model name, the first shape drawn with it)"""
-    out = {}
-    for mname, _ in src.dict(src.rel(0x20)):
-        _, shapes, _ = gp.read_model(src, mname)
-        for s in shapes:
-            out.setdefault(s.material, (mname, s))
     return out
 
 
@@ -865,35 +871,15 @@ def build_room_archive(kit_files, kit_room, room, prims, recipe_room, dzb, dzr):
         return base.yaz0_stored(base.sarc(members)), tris
     mats = kit_materials(src)
     require(mats, 'the kit room has no background model')
-    default = recipe_room.get('material') or sorted(mats)[0]
+    default = recipe_room.get('material') or main_material(src)
     require(default in mats, 'the kit room has no material "%s" (it has: %s)' % (default, ', '.join(sorted(mats))))
     mapping = recipe_room.get('materials', {})
     for glb_name, kit_name in mapping.items():
         require(kit_name in mats, 'the kit room has no material "%s" (it has: %s)' % (kit_name, ', '.join(sorted(mats))))
     # visible primitives grouped by the kit model their material comes from: one output model each (the
     # game looks a model's shader archive up by the model's name)
-    # the parts drawn with one kit material become one shape (a model of a hundred parts draws as a few)
-    merged = {}
-    tris = 0
-    for p in prims:
-        if p['collision']:
-            continue
-        kit_name = mapping.get(p['material']) or (p['material'] if p['material'] in mats else default)
-        m = merged.setdefault(kit_name, {'positions': [], 'normals': [], 'uvs': [], 'colors': [], 'triangles': [], 'has_colors': False})
-        base_index = len(m['positions'])
-        m['positions'] += p['positions']
-        m['normals'] += p['normals']
-        m['uvs'] += p['uvs']
-        m['colors'] += p['colors'] if p['colors'] else [(1.0, 1.0, 1.0, 1.0)] * len(p['positions'])
-        m['has_colors'] |= bool(p['colors'])
-        m['triangles'] += [(a + base_index, b + base_index, c + base_index) for a, b, c in p['triangles']]
-        tris += len(p['triangles'])
-    by_model = {}
-    for kit_name, m in sorted(merged.items()):
-        if not m['has_colors']:
-            m['colors'] = None
-        kit_model, template = mats[kit_name]
-        by_model.setdefault(kit_model, []).append(mesh_shape(src, template, m))
+    by_model, tris = km.kit_shapes(src, mats, [p for p in prims if not p['collision']],
+                                   lambda p: mapping.get(p['material']) or (p['material'] if p['material'] in mats else default))
     require(0 < tris <= MAX_TRIANGLES, 'the ground model has more than %d visible triangles' % MAX_TRIANGLES)
     require(len(by_model) <= 4, 'the ground model uses materials of more than four kit models')
     out = base.Bfres(data)
@@ -902,9 +888,8 @@ def build_room_archive(kit_files, kit_room, room, prims, recipe_room, dzb, dzr):
     models = []
     members = {}
     for i, (kit_model, shapes) in enumerate(sorted(by_model.items())):
-        model_at, _, materials = gp.read_model(src, kit_model)
         name = gp.model_name(i)
-        dst, _, _ = gp.write_model(w, model_at, name, shapes, {k: s.tris for k, s in enumerate(shapes)}, materials, textures, (0.0, 0.0, 0.0))
+        dst, _ = km.write_kit_model(w, src, kit_model, name, shapes, textures)
         models.append((name, dst))
         archive = kit_model + '.sharcfb'
         require(archive in kit_files, 'the kit room has no shader archive ' + archive)
@@ -939,6 +924,9 @@ def check_recipe(r):
     require(isinstance(r.get('name'), str) and NAME.fullmatch(r['name']), 'invalid stage name')
     require(isinstance(r.get('template'), str) and STAGE.fullmatch(r['template']), 'invalid template stage')
     require(r.get('kind') in KINDS, 'kind is cave or dungeon')
+    light = r.get('light')
+    require(light is None or (isinstance(light, dict) and isinstance(light.get('stage'), str) and STAGE.fullmatch(light['stage']) and
+                              isinstance(light.get('room', 0), int) and 0 <= light.get('room', 0) <= 63), 'light is a stage of the game and its room')
     require(_place(r.get('entrance'), r['name']) and r['entrance']['stage'] != r['name'], 'the entrance is a stage, room and point of the game')
     rooms = r.get('rooms')
     require(isinstance(rooms, list) and 0 < len(rooms) <= MAX_ROOMS, 'a stage has 1 to %d rooms' % MAX_ROOMS)
@@ -952,8 +940,11 @@ def check_recipe(r):
         actors = x.get('actors', [])
         require(isinstance(actors, list) and len(actors) <= 16, 'room %d: at most 16 actors' % x['room'])
         for a in actors:
-            require(a.get('tag') in ('ACTR', 'TRES') and isinstance(a.get('name'), str) and 0 < len(a['name']) <= 8 and isinstance(a.get('params'), (int, float))
+            require(a.get('tag') in ('ACTR', 'SCOB', 'TRES') and isinstance(a.get('name'), str) and 0 < len(a['name']) <= 8 and isinstance(a.get('params'), (int, float))
                     and _point(a.get('position')), 'room %d: invalid actor' % x['room'])
+            sc = a.get('scale', 1.0)
+            require(a['tag'] != 'SCOB' or (isinstance(sc, list) and len(sc) == 3 and all(isinstance(v, int) and 1 <= v <= 255 for v in sc)) or
+                    (isinstance(sc, (int, float)) and 0.1 <= sc <= 25.5), 'room %d: invalid actor scale' % x['room'])
         spawns = x.get('spawns')
         require(isinstance(spawns, list) and 0 < len(spawns) <= MAX_SPAWNS, 'room %d: 1 to %d spawns' % (x['room'], MAX_SPAWNS))
         for s in spawns:
@@ -1010,12 +1001,13 @@ def build(game, recipe_path, out_dir):
             digest.update(f.read())
     digest.update(recipe_bytes)
     stage_files = gp.room_files(game, '%s_Stage.szs' % recipe['template'])
+    light_files = gp.room_files(game, '%s_Stage.szs' % recipe['light']['stage']) if recipe.get('light') else {}
     kits = {}
     for r in recipe['rooms']:
         k = (r['kit']['stage'], r['kit']['room'])
         if k not in kits:
             kits[k] = gp.room_files(game, '%s_Room%d.szs' % k)
-    for label, files in [('stage', stage_files)] + [('kit/%s/%d' % k, v) for k, v in sorted(kits.items())]:
+    for label, files in [('stage', stage_files), ('light', light_files)] + [('kit/%s/%d' % k, v) for k, v in sorted(kits.items())]:
         for n in sorted(files):
             digest.update(label.encode() + b'/' + n.encode() + b'\0' + hashlib.sha256(files[n]).digest())
     for r in recipe['rooms']:
@@ -1041,7 +1033,13 @@ def build(game, recipe_path, out_dir):
         for m in need:
             require(m in stage_models, 'the template %s has no %s model (%s): pick a template with that kind of door' % (
                 recipe['template'], m, {'door10': 'the knob door', 'door20': 'the boss door', 'key10': 'the small-key lock', 'stop10': 'the shutter bars'}[m]))
-    dzs = build_dzs(stage_embedded['stage.dzs'], recipe)
+    light_dzs = None
+    if light_files:
+        lb = [n for n in light_files if n.endswith('.bfres')]
+        require(len(lb) == 1, 'the light stage archive has no stage model file')
+        light_dzs = embedded_files(base.Bfres(light_files[lb[0]])).get('stage.dzs')
+        require(light_dzs is not None, 'the light stage has no stage.dzs')
+    dzs = build_dzs(stage_embedded['stage.dzs'], recipe, light_dzs)
     check_room_table(dzs, recipe.get('doors', []), recipe.get('joins', []))
     stage_members = dict(stage_files)
     stage_members[stage_bfres[0]] = replace_embedded(stage_files[stage_bfres[0]], 'stage.dzs', dzs)
@@ -1165,10 +1163,16 @@ def templates(game):
     return out
 
 
+def kit_room_materials(game, stage, room):
+    """a kit room's materials (kit_materials.list_materials): names and numbers only"""
+    return km.list_materials(game, stage, room)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--game', required=True)
     parser.add_argument('--templates', action='store_true', help='list the stages a mod stage can take as its template')
+    parser.add_argument('--kit-materials', metavar='STAGE:ROOM', help='list a kit room\'s materials')
     parser.add_argument('--recipe')
     parser.add_argument('--out')
     args = parser.parse_args()
@@ -1176,6 +1180,14 @@ def main():
         try:
             print(json.dumps({'ok': True, 'templates': templates(args.game)}, sort_keys=True))
         except OSError as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}))
+            sys.exit(1)
+        return
+    if args.kit_materials:
+        try:
+            stage, room = args.kit_materials.rsplit(':', 1)
+            print(json.dumps(dict(ok=True, **kit_room_materials(args.game, stage, int(room))), sort_keys=True))
+        except (BuildError, OSError, KeyError, IndexError, struct.error, ValueError) as exc:
             print(json.dumps({'ok': False, 'error': str(exc)}))
             sys.exit(1)
         return

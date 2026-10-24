@@ -40,7 +40,7 @@ struct Rendering {
 };
 }
 void DeferredCommands::set_pod_commands(PodCommands* commands) {
-    if (capturing_ || !commands_.empty()) throw std::logic_error("cannot switch an active deferred tail");
+    if (capturing_ || command_count()) throw std::logic_error("cannot switch an active deferred tail");
     if (active_deferred_commands && active_deferred_commands != this)
         throw std::logic_error("another command recorder is active");
     pod_ = commands;
@@ -49,8 +49,43 @@ void DeferredCommands::set_pod_commands(PodCommands* commands) {
 void DeferredCommands::start_capture(std::function<void()> beforeExact) {
     if (pod_) throw std::logic_error("POD worker does not retain lambda capture");
     if(active_deferred_commands && active_deferred_commands!=this)throw std::logic_error("another deferred command recorder is active");
-    if(capturing_ || !commands_.empty())throw std::logic_error("deferred command tail already active");
+    if(capturing_ || command_count())throw std::logic_error("deferred command tail already active");
     beforeExact_=std::move(beforeExact);capturing_=true;active_deferred_commands=this;
+}
+void DeferredCommands::start_detached_capture(std::function<void()> beforeExact) {
+    if (pod_) throw std::logic_error("POD worker does not retain lambda capture");
+    if(capturing_ || command_count())throw std::logic_error("deferred command tail already active");
+    beforeExact_=std::move(beforeExact);capturing_=true;
+}
+void DeferredCommands::hold_in(PodCommands* held) {
+    if (pod_) throw std::logic_error("POD worker holds no detached tail");
+    if (command_count()) throw std::logic_error("cannot switch an unemitted tail");
+    held_ = held;
+}
+template<class Encode, class... Args> bool DeferredCommands::hold(Encode encode, Args&&... args) {
+    return held_ && capturing_ && (held_->*encode)(std::forward<Args>(args)...);
+}
+size_t DeferredCommands::held_command_count() const { return held_ ? held_->command_count() : 0; }
+void DeferredCommands::seal_held() {
+    if (!held_ || held_->empty()) return;
+    commands_.reserve(commands_.size()+1);
+    commands_.emplace_back([bytes = held_->take()] { PodCommands::replay(bytes); });
+}
+std::vector<std::function<void()>> DeferredCommands::take() {
+    if (pod_) throw std::logic_error("POD worker owns no lambda tail");
+    seal_held();
+    std::vector<std::function<void()>> tail;
+    tail.reserve(commands_.size()-emitted_);
+    for(size_t i=emitted_;i<commands_.size();++i)tail.emplace_back(std::move(commands_[i]));
+    commands_.clear();payloadBytes_=0;emitted_=0;
+    return tail;
+}
+bool DeferredCommands::publish_held() {
+    if (!capturing_ || !held_ || commands_.size() != emitted_ ||
+        !active_deferred_commands || !active_deferred_commands->pod_mode()) return false;
+    if (!publish_held_record_commands(*held_)) return false;
+    commands_.clear();payloadBytes_=0;emitted_=0;
+    return true;
 }
 void DeferredCommands::force_exact() {
     if (pod_) { drain_record_commands(); return; }
@@ -63,14 +98,22 @@ void DeferredCommands::force_exact() {
 }
 void DeferredCommands::emit_exact() {
     if (pod_) { drain_record_commands(); return; }
+    seal_held();
     capturing_=false;
     if(active_deferred_commands==this)active_deferred_commands=nullptr;
+    // Emitted commands reach the API now; a nested record:: call (a deferred pipeline
+    // bind) must not be held by the stereo eye stream if the second eye is selected.
+    struct EyeDispatch {
+        DeferredCommands* eye=eye_deferred_commands;
+        EyeDispatch() { eye_deferred_commands=nullptr; }
+        ~EyeDispatch() { eye_deferred_commands=eye; }
+    } eyeDispatch;
     while(emitted_<commands_.size()) { commands_[emitted_]();++emitted_; }
     commands_.clear();payloadBytes_=0;emitted_=0;beforeExact_={};
 }
 void DeferredCommands::reset() {
     if (pod_) { drain_record_commands(); return; }
-    if(!commands_.empty())throw std::logic_error("cannot discard deferred commands");
+    if(command_count())throw std::logic_error("cannot discard deferred commands");
     capturing_=false;
     if(active_deferred_commands==this)active_deferred_commands=nullptr;
     payloadBytes_=0;beforeExact_={};
@@ -78,6 +121,7 @@ void DeferredCommands::reset() {
 DeferredCommands& deferred_commands() { static DeferredCommands value;return value; }
 void DeferredCommands::vkCmdBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint point, VkPipeline pipeline) {
     if(!pipeline)throw std::invalid_argument("cannot bind a null Vulkan pipeline");
+    if (hold(&PodCommands::vkCmdBindPipeline, cmd, point, pipeline)) return;
     if (pod_) {
         if (!pod_->vkCmdBindPipeline(cmd, point, pipeline)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 1, pod_->failure_reason());
@@ -89,6 +133,7 @@ void DeferredCommands::vkCmdBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoin
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type) {
+    if (hold(&PodCommands::vkCmdBindIndexBuffer, cmd, buffer, offset, type)) return;
     if (pod_) {
         if (!pod_->vkCmdBindIndexBuffer(cmd, buffer, offset, type)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 2, pod_->failure_reason());
@@ -100,6 +145,7 @@ void DeferredCommands::vkCmdBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices, uint32_t instances, uint32_t firstVertex, uint32_t firstInstance) {
+    if (hold(&PodCommands::vkCmdDraw, cmd, vertices, instances, firstVertex, firstInstance)) return;
     if (pod_) {
         if (!pod_->vkCmdDraw(cmd, vertices, instances, firstVertex, firstInstance)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 3, pod_->failure_reason());
@@ -111,6 +157,7 @@ void DeferredCommands::vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices, uint32_
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices, uint32_t instances, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
+    if (hold(&PodCommands::vkCmdDrawIndexed, cmd, indices, instances, firstIndex, vertexOffset, firstInstance)) return;
     if (pod_) {
         if (!pod_->vkCmdDrawIndexed(cmd, indices, instances, firstIndex, vertexOffset, firstInstance)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 4, pod_->failure_reason());
@@ -122,6 +169,7 @@ void DeferredCommands::vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices, u
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z) {
+    if (hold(&PodCommands::vkCmdDispatch, cmd, x, y, z)) return;
     if (pod_) {
         if (!pod_->vkCmdDispatch(cmd, x, y, z)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 5, pod_->failure_reason());
@@ -133,6 +181,7 @@ void DeferredCommands::vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdEndRendering(VkCommandBuffer cmd) {
+    if (hold(&PodCommands::vkCmdEndRendering, cmd)) return;
     if (pod_) {
         if (!pod_->vkCmdEndRendering(cmd)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 6, pod_->failure_reason());
@@ -144,6 +193,7 @@ void DeferredCommands::vkCmdEndRendering(VkCommandBuffer cmd) {
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdSetStencilReference(VkCommandBuffer cmd, VkStencilFaceFlags faces, uint32_t reference) {
+    if (hold(&PodCommands::vkCmdSetStencilReference, cmd, faces, reference)) return;
     if (pod_) {
         if (!pod_->vkCmdSetStencilReference(cmd, faces, reference)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 7, pod_->failure_reason());
@@ -155,6 +205,7 @@ void DeferredCommands::vkCmdSetStencilReference(VkCommandBuffer cmd, VkStencilFa
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdSetStencilWriteMask(VkCommandBuffer cmd, VkStencilFaceFlags faces, uint32_t mask) {
+    if (hold(&PodCommands::vkCmdSetStencilWriteMask, cmd, faces, mask)) return;
     if (pod_) {
         if (!pod_->vkCmdSetStencilWriteMask(cmd, faces, mask)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 8, pod_->failure_reason());
@@ -166,6 +217,7 @@ void DeferredCommands::vkCmdSetStencilWriteMask(VkCommandBuffer cmd, VkStencilFa
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdResetQueryPool(VkCommandBuffer cmd, VkQueryPool pool, uint32_t first, uint32_t count) {
+    if (hold(&PodCommands::vkCmdResetQueryPool, cmd, pool, first, count)) return;
     if (pod_) {
         if (!pod_->vkCmdResetQueryPool(cmd, pool, first, count)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 9, pod_->failure_reason());
@@ -177,6 +229,7 @@ void DeferredCommands::vkCmdResetQueryPool(VkCommandBuffer cmd, VkQueryPool pool
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdWriteTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, VkQueryPool pool, uint32_t query) {
+    if (hold(&PodCommands::vkCmdWriteTimestamp, cmd, stage, pool, query)) return;
     if (pod_) {
         if (!pod_->vkCmdWriteTimestamp(cmd, stage, pool, query)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 10, pod_->failure_reason());
@@ -188,6 +241,7 @@ void DeferredCommands::vkCmdWriteTimestamp(VkCommandBuffer cmd, VkPipelineStageF
     record(0,true,[=] { return immediate; },immediate);
 }
 void DeferredCommands::vkCmdSetViewport(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkViewport* values) {
+    if (hold(&PodCommands::vkCmdSetViewport, cmd, first, count, values)) return;
     if (pod_) {
         if (!pod_->vkCmdSetViewport(cmd, first, count, values)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 11, pod_->failure_reason());
@@ -200,6 +254,7 @@ void DeferredCommands::vkCmdSetViewport(VkCommandBuffer cmd, uint32_t first, uin
     },[=] { gfxvk::vkCmdSetViewport(cmd, first, count, values); });
 }
 void DeferredCommands::vkCmdSetScissor(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkRect2D* values) {
+    if (hold(&PodCommands::vkCmdSetScissor, cmd, first, count, values)) return;
     if (pod_) {
         if (!pod_->vkCmdSetScissor(cmd, first, count, values)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 12, pod_->failure_reason());
@@ -212,6 +267,7 @@ void DeferredCommands::vkCmdSetScissor(VkCommandBuffer cmd, uint32_t first, uint
     },[=] { gfxvk::vkCmdSetScissor(cmd, first, count, values); });
 }
 void DeferredCommands::vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer source, VkBuffer destination, uint32_t count, const VkBufferCopy* regions) {
+    if (hold(&PodCommands::vkCmdCopyBuffer, cmd, source, destination, count, regions)) return;
     if (pod_) {
         if (!pod_->vkCmdCopyBuffer(cmd, source, destination, count, regions)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 13, pod_->failure_reason());
@@ -224,6 +280,7 @@ void DeferredCommands::vkCmdCopyBuffer(VkCommandBuffer cmd, VkBuffer source, VkB
     },[=] { gfxvk::vkCmdCopyBuffer(cmd, source, destination, count, regions); });
 }
 void DeferredCommands::vkCmdCopyBufferToImage(VkCommandBuffer cmd, VkBuffer source, VkImage destination, VkImageLayout layout, uint32_t count, const VkBufferImageCopy* regions) {
+    if (hold(&PodCommands::vkCmdCopyBufferToImage, cmd, source, destination, layout, count, regions)) return;
     if (pod_) {
         if (!pod_->vkCmdCopyBufferToImage(cmd, source, destination, layout, count, regions)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 14, pod_->failure_reason());
@@ -236,6 +293,7 @@ void DeferredCommands::vkCmdCopyBufferToImage(VkCommandBuffer cmd, VkBuffer sour
     },[=] { gfxvk::vkCmdCopyBufferToImage(cmd, source, destination, layout, count, regions); });
 }
 void DeferredCommands::vkCmdCopyImageToBuffer(VkCommandBuffer cmd, VkImage source, VkImageLayout layout, VkBuffer destination, uint32_t count, const VkBufferImageCopy* regions) {
+    if (hold(&PodCommands::vkCmdCopyImageToBuffer, cmd, source, layout, destination, count, regions)) return;
     if (pod_) {
         if (!pod_->vkCmdCopyImageToBuffer(cmd, source, layout, destination, count, regions)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 15, pod_->failure_reason());
@@ -248,6 +306,7 @@ void DeferredCommands::vkCmdCopyImageToBuffer(VkCommandBuffer cmd, VkImage sourc
     },[=] { gfxvk::vkCmdCopyImageToBuffer(cmd, source, layout, destination, count, regions); });
 }
 void DeferredCommands::vkCmdCopyImage(VkCommandBuffer cmd, VkImage source, VkImageLayout sourceLayout, VkImage destination, VkImageLayout destinationLayout, uint32_t count, const VkImageCopy* regions) {
+    if (hold(&PodCommands::vkCmdCopyImage, cmd, source, sourceLayout, destination, destinationLayout, count, regions)) return;
     if (pod_) {
         if (!pod_->vkCmdCopyImage(cmd, source, sourceLayout, destination, destinationLayout, count, regions)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 16, pod_->failure_reason());
@@ -260,6 +319,7 @@ void DeferredCommands::vkCmdCopyImage(VkCommandBuffer cmd, VkImage source, VkIma
     },[=] { gfxvk::vkCmdCopyImage(cmd, source, sourceLayout, destination, destinationLayout, count, regions); });
 }
 void DeferredCommands::vkCmdBlitImage(VkCommandBuffer cmd, VkImage source, VkImageLayout sourceLayout, VkImage destination, VkImageLayout destinationLayout, uint32_t count, const VkImageBlit* regions, VkFilter filter) {
+    if (hold(&PodCommands::vkCmdBlitImage, cmd, source, sourceLayout, destination, destinationLayout, count, regions, filter)) return;
     if (pod_) {
         if (!pod_->vkCmdBlitImage(cmd, source, sourceLayout, destination, destinationLayout, count, regions, filter)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 17, pod_->failure_reason());
@@ -272,6 +332,7 @@ void DeferredCommands::vkCmdBlitImage(VkCommandBuffer cmd, VkImage source, VkIma
     },[=] { gfxvk::vkCmdBlitImage(cmd, source, sourceLayout, destination, destinationLayout, count, regions, filter); });
 }
 void DeferredCommands::vkCmdBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkBuffer* buffers, const VkDeviceSize* offsets) {
+    if (hold(&PodCommands::vkCmdBindVertexBuffers, cmd, first, count, buffers, offsets)) return;
     if (pod_) {
         if (!pod_->vkCmdBindVertexBuffers(cmd, first, count, buffers, offsets)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 18, pod_->failure_reason());
@@ -284,6 +345,7 @@ void DeferredCommands::vkCmdBindVertexBuffers(VkCommandBuffer cmd, uint32_t firs
     },[=] { gfxvk::vkCmdBindVertexBuffers(cmd, first, count, buffers, offsets); });
 }
 void DeferredCommands::vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBindPoint point, VkPipelineLayout layout, uint32_t first, uint32_t count, const VkDescriptorSet* sets, uint32_t offsetCount, const uint32_t* offsets) {
+    if (hold(&PodCommands::vkCmdBindDescriptorSets, cmd, point, layout, first, count, sets, offsetCount, offsets)) return;
     if (pod_) {
         if (!pod_->vkCmdBindDescriptorSets(cmd, point, layout, first, count, sets, offsetCount, offsets)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 19, pod_->failure_reason());
@@ -296,6 +358,7 @@ void DeferredCommands::vkCmdBindDescriptorSets(VkCommandBuffer cmd, VkPipelineBi
     },[=] { gfxvk::vkCmdBindDescriptorSets(cmd, point, layout, first, count, sets, offsetCount, offsets); });
 }
 void DeferredCommands::vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout layout, VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void* values) {
+    if (hold(&PodCommands::vkCmdPushConstants, cmd, layout, stages, offset, size, values)) return;
     if (pod_) {
         if (!pod_->vkCmdPushConstants(cmd, layout, stages, offset, size, values)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 20, pod_->failure_reason());
@@ -308,6 +371,7 @@ void DeferredCommands::vkCmdPushConstants(VkCommandBuffer cmd, VkPipelineLayout 
     },[=] { gfxvk::vkCmdPushConstants(cmd, layout, stages, offset, size, values); });
 }
 void DeferredCommands::vkCmdSetBlendConstants(VkCommandBuffer cmd, const float values[4]) {
+    if (hold(&PodCommands::vkCmdSetBlendConstants, cmd, values)) return;
     if (pod_) {
         if (!pod_->vkCmdSetBlendConstants(cmd, values)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 21, pod_->failure_reason());
@@ -320,6 +384,7 @@ void DeferredCommands::vkCmdSetBlendConstants(VkCommandBuffer cmd, const float v
     },[=] { gfxvk::vkCmdSetBlendConstants(cmd, values); });
 }
 void DeferredCommands::vkCmdClearColorImage(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, const VkClearColorValue* value, uint32_t count, const VkImageSubresourceRange* ranges) {
+    if (hold(&PodCommands::vkCmdClearColorImage, cmd, image, layout, value, count, ranges)) return;
     if (pod_) {
         if (!pod_->vkCmdClearColorImage(cmd, image, layout, value, count, ranges)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 22, pod_->failure_reason());
@@ -332,6 +397,7 @@ void DeferredCommands::vkCmdClearColorImage(VkCommandBuffer cmd, VkImage image, 
     },[=] { gfxvk::vkCmdClearColorImage(cmd, image, layout, value, count, ranges); });
 }
 void DeferredCommands::vkCmdClearDepthStencilImage(VkCommandBuffer cmd, VkImage image, VkImageLayout layout, const VkClearDepthStencilValue* value, uint32_t count, const VkImageSubresourceRange* ranges) {
+    if (hold(&PodCommands::vkCmdClearDepthStencilImage, cmd, image, layout, value, count, ranges)) return;
     if (pod_) {
         if (!pod_->vkCmdClearDepthStencilImage(cmd, image, layout, value, count, ranges)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 23, pod_->failure_reason());
@@ -344,6 +410,7 @@ void DeferredCommands::vkCmdClearDepthStencilImage(VkCommandBuffer cmd, VkImage 
     },[=] { gfxvk::vkCmdClearDepthStencilImage(cmd, image, layout, value, count, ranges); });
 }
 void DeferredCommands::vkCmdBeginRendering(VkCommandBuffer cmd, const VkRenderingInfo* info) {
+    if (hold(&PodCommands::vkCmdBeginRendering, cmd, info)) return;
     if (pod_) {
         if (!pod_->vkCmdBeginRendering(cmd, info)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 24, pod_->failure_reason());
@@ -356,6 +423,7 @@ void DeferredCommands::vkCmdBeginRendering(VkCommandBuffer cmd, const VkRenderin
     },[=] { gfxvk::vkCmdBeginRendering(cmd, info); });
 }
 void DeferredCommands::vkCmdPipelineBarrier(VkCommandBuffer cmd, VkPipelineStageFlags source, VkPipelineStageFlags destination, VkDependencyFlags flags, uint32_t memoryCount, const VkMemoryBarrier* memory, uint32_t bufferCount, const VkBufferMemoryBarrier* buffers, uint32_t imageCount, const VkImageMemoryBarrier* images) {
+    if (hold(&PodCommands::vkCmdPipelineBarrier, cmd, source, destination, flags, memoryCount, memory, bufferCount, buffers, imageCount, images)) return;
     if (pod_) {
         if (!pod_->vkCmdPipelineBarrier(cmd, source, destination, flags, memoryCount, memory, bufferCount, buffers, imageCount, images)) {
             drain_record_commands(fallback_stats::Boundary::EncoderFallback, 25, pod_->failure_reason());
@@ -372,6 +440,7 @@ void DeferredCommands::vkCmdPipelineBarrier(VkCommandBuffer cmd, VkPipelineStage
 
 namespace gfxvk {
 void DeferredCommands::vkCmdBeginRenderPass(VkCommandBuffer cmd, const VkRenderPassBeginInfo* info, VkSubpassContents contents) {
+    if (hold(&PodCommands::vkCmdBeginRenderPass, cmd, info, contents)) return;
     if (pod_) {
         if (pod_->vkCmdBeginRenderPass(cmd, info, contents)) return;
         drain_record_commands(fallback_stats::Boundary::EncoderFallback, 26, pod_->failure_reason());
@@ -379,6 +448,7 @@ void DeferredCommands::vkCmdBeginRenderPass(VkCommandBuffer cmd, const VkRenderP
     gfxvk::vkCmdBeginRenderPass(cmd, info, contents);
 }
 void DeferredCommands::vkCmdEndRenderPass(VkCommandBuffer cmd) {
+    if (hold(&PodCommands::vkCmdEndRenderPass, cmd)) return;
     if (pod_) {
         if (pod_->vkCmdEndRenderPass(cmd)) return;
         drain_record_commands(fallback_stats::Boundary::EncoderFallback, 27, pod_->failure_reason());

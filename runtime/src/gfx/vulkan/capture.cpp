@@ -1,3 +1,4 @@
+#include "background_shaders.h"
 #include "deferred_dispatch.h"
 #include "../../exception_report.h"
 #include "gfx/depth_peek.h"
@@ -17,7 +18,10 @@
 
 namespace gfxvk {
 // Adapted from the fork's peek_z readback; answers retire with the GPU submission.
+void peek_submitted();  // backend.cpp: the submission that carries this copy, for peek_retire
 void peek_z(const uint32_t* cells, uint32_t n) {
+    ::gfx::depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
+    const uint64_t ticket = ::gfx::depth_peek::next_ticket();  // one per request, in request order
     Surface* depth = nullptr;
     auto range = R.surfaces.equal_range(R.mainDepthAddr);
     for (auto it = range.first; it != range.second; ++it) {
@@ -27,6 +31,11 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     }
     uint32_t points = std::min(n / 3, 64u);
     if (!depth || !points) return;
+    // Shader compile Fast: the game reads this depth buffer back, so draws into it keep the exact
+    // wait from now on; if one was left out in this frame already, the frame answers no peek and the
+    // game keeps its previous answers, from a complete frame
+    if (bgshaders::enabled()) bgshaders::tracker().peeked(depth->addr, R.frame);
+    if (bgshaders::tracker().left_out_in(depth->addr, R.frame)) { bgshaders::peek_withheld(); return; }
     VkFormat format = depth->fmt.pixel;
     if (format != VK_FORMAT_D32_SFLOAT && format != VK_FORMAT_D32_SFLOAT_S8_UINT &&
         format != VK_FORMAT_D16_UNORM) return;
@@ -46,7 +55,6 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     record::vkCmdCopyImageToBuffer(command_buffer(),depth->image,depth->layout,staging.buffer,points,regions.data());
     derive_dependency(staging.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     transition_buffer(staging,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
-    uint64_t ticket = ::gfx::depth_peek::next_ticket();
     R.completions.push_back([staging, destinations, points, format, ticket] {
         const auto* raw = static_cast<const uint8_t*>(staging.mapped);
         std::vector<uint32_t> depths(points);
@@ -60,8 +68,14 @@ void peek_z(const uint32_t* cells, uint32_t n) {
             }
         }
         ::gfx::depth_peek::publish(ticket,destinations,depths);
+        ::gfx::depth_peek::answered();
     });
+    guard.handed = true;
     defer_buffer(staging);
+    // the game reads the answers at its next step: submit this copy now; the render thread retires
+    // it while the game waits for it at its swap (peek_retire, depth_peek.h)
+    if (::gfx::depth_peek::mode() == 2) flush();  // test: the former synchronous copy
+    else if (::gfx::depth_peek::synchronous()) { flush_async(); peek_submitted(); }
 }
 
 uint64_t frame_count();

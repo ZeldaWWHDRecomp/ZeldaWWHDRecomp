@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Gradle dependency verification for the Quest theater's OpenXR loader (app/build.gradle), as the
+     OpenXR headers are pinned in cmake/OpenXR.cmake. Every other dependency is trusted below, so it
+     resolves as before. Hashes: Maven Central's published .sha256 files, matching the downloads. -->
+<verification-metadata xmlns="https://schema.gradle.org/dependency-verification"
+                       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                       xsi:schemaLocation="https://schema.gradle.org/dependency-verification https://schema.gradle.org/dependency-verification/dependency-verification-1.3.xsd">
+   <configuration>
+      <verify-metadata>true</verify-metadata>
+      <verify-signatures>false</verify-signatures>
+      <trusted-artifacts>
+         <trust group="^(?!org\.khronos\.openxr$).*$" regex="true"/>
+      </trusted-artifacts>
+   </configuration>
+   <components>
+      <component group="org.khronos.openxr" name="openxr_loader_for_android" version="1.1.63">
+         <artifact name="openxr_loader_for_android-1.1.63.aar">
+            <sha256 value="622419d2f6741c3443a3beb4779af0764318edd01830de967f24c741ebcded73" origin="Maven Central"/>
+         </artifact>
+         <artifact name="openxr_loader_for_android-1.1.63.pom">
+            <sha256 value="c98f38fa8acf4cf1bd8bcb40774f9815ae6ed9da94c8a7be2ed9db7815c85404" origin="Maven Central"/>
+         </artifact>
+      </component>
+   </components>
+</verification-metadata>

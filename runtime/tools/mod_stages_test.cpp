@@ -1,3 +1,4 @@
+#include "../src/mods/mod_stages_corner.h"
 // SPDX-License-Identifier: MPL-2.0
 // Mod stages: the manifest's "stages" section, the stage names and the builder's recipe (mod_stages_manifest.h).
 #include <cassert>
@@ -58,6 +59,22 @@ bool fails(const std::string& from, const std::string& to, const std::string& re
 }  // namespace
 
 int main() {
+    {
+        Stage stage;
+        Room room; room.room = 0;
+        RoomActor chest; chest.actor = "chest"; chest.flag = 31;
+        chest.position.x = 10; chest.position.z = 20;
+        room.actors.push_back(chest); stage.rooms.push_back(room);
+        Door door; door.a = 0; door.b = 1; door.lock = "boss";
+        stage.doors.push_back(door);
+        assert(corner_markers(stage, 0, false, 0).empty());
+        const auto markers = corner_markers(stage, 0, true, 0);
+        assert(markers.size() == 2 && markers[0].kind == 1 && markers[0].x == 10 && markers[0].z == 20);
+        assert(corner_markers(stage, 0, true, 1u << 31).size() == 1);
+        assert(corner_markers(stage, 1, true, 0).size() == 1);
+        assert(corner_markers(stage, 2, true, 0).empty());
+    }
+
     std::vector<Stage> stages;
     std::string why;
     assert(parse(parse_json(kValid), stages, why) && why.empty());
@@ -138,7 +155,9 @@ int main() {
              "spawns": [{"point": 0, "position": {"x": 0, "y": 0, "z": 0}}],
              "actors": [{"id": "key", "actor": "chest", "item": "small_key", "position": {"x": 1, "y": 0, "z": 2}, "angle": 90},
                         {"id": "boko", "actor": "bokoblin", "variant": "shield", "position": {"x": 3, "y": 0, "z": 0}},
-                        {"id": "pot", "actor": "pot", "position": {"x": 5, "y": 0, "z": 0}}]},
+                        {"id": "pot", "actor": "pot", "position": {"x": 5, "y": 0, "z": 0}},
+                        {"id": "lava", "actor": "lava", "position": {"x": 0, "y": -50, "z": 400}, "size": {"x": 2000, "z": 1240}, "angle": 90},
+                        {"id": "heat", "actor": "heat_shimmer", "position": {"x": 0, "y": 0, "z": 0}}]},
             {"room": 1, "ground": "assets/b.glb", "spawns": [{"point": 1, "position": {"x": 0, "y": 0, "z": 0}}],
              "actors": [{"id": "big", "actor": "chest", "item": "boss_key", "position": {"x": 0, "y": 0, "z": 0}}]},
             {"room": 2, "ground": "assets/c.glb", "spawns": [{"point": 2, "position": {"x": 0, "y": 0, "z": 0}}]},
@@ -162,7 +181,15 @@ int main() {
         const auto& r0 = kr.get("rooms").array[0];
         assert(r0.get("kit_ground").boolean && r0.get("ground").string().empty() && r0.get("kit").get("stage").string() == "M_NewD2");
         const auto& acts = r0.get("actors").array;
-        assert(acts.size() == 3 && acts[0].get("tag").string() == "TRES" && acts[0].get("name").string() == "takara2");
+        assert(acts.size() == 5 && acts[0].get("tag").string() == "TRES" && acts[0].get("name").string() == "takara2");
+        // the game's lava floor (magma: no bubbles, its size in scale steps of 100 units) and Dragon Roost's heat haze
+        assert(acts[3].get("tag").string() == "SCOB" && acts[3].get("name").string() == "magma" && uint32_t(acts[3].get("params").number) == 0xFFFFFF00u);
+        assert(acts[3].get("scale").array.size() == 3 && acts[3].get("scale").array[0].number == 20 && acts[3].get("scale").array[1].number == 10 &&
+               acts[3].get("scale").array[2].number == 12 && acts[3].get("angle").number == 90 && acts[3].get("position").array[1].number == -50);
+        assert(acts[4].get("tag").string() == "ACTR" && acts[4].get("name").string() == "YkgrON" && uint32_t(acts[4].get("params").number) == 0x0010FF00u &&
+               acts[4].get("scale").type == Value::Null);
+        {NativeActor n;std::string w2;assert(!native_actor("lava", "", "", 0, n, w2) && w2.find("size") != std::string::npos);
+         assert(native_actor("lava", "", "", 0, n, w2, 99999, 50) && n.scale[0] == 255 && n.scale[2] == 1);}
         assert(uint32_t(acts[0].get("params").number) == 0xFF000000u && uint32_t(acts[0].get("angle_z").number) == 0x15FF);
         assert(acts[1].get("tag").string() == "ACTR" && acts[1].get("name").string() == "Bk" && uint32_t(acts[1].get("params").number) == 0xFFFFFF24u);
         assert(acts[2].get("name").string() == "kotubo");
@@ -198,6 +225,9 @@ int main() {
         bad2 += !refuse("\"lock\": \"shutter\", \"switch\": 5", "\"lock\": \"shutter\", \"switch\": 100", "shutter opens on a switch");
         bad2 += !refuse("\"lock\": \"boss\"}", "\"lock\": \"golden\"}", "lock is none");
         bad2 += !refuse("\"joins\": [[2, 3]]", "\"joins\": []", "room 3 can't be reached");
+        bad2 += !refuse(", \"size\": {\"x\": 2000, \"z\": 1240}", "", "lava needs its size");
+        bad2 += !refuse("\"size\": {\"x\": 2000, \"z\": 1240}", "\"size\": {\"x\": 50, \"z\": 1240}", "lava's size is");
+        bad2 += !refuse("\"actor\": \"heat_shimmer\", \"position\"", "\"actor\": \"heat_shimmer\", \"size\": {\"x\": 500, \"z\": 500}, \"position\"", "only lava has a size");
         {  // while editing (the editor's validation) a room nothing leads to yet is kept; the game's parse refuses it
             std::string text = dungeon;
             text.replace(text.find("\"joins\": [[2, 3]]"), std::strlen("\"joins\": [[2, 3]]"), "\"joins\": []");
@@ -211,6 +241,48 @@ int main() {
         bad2 += !refuse("\"id\": \"pot\", \"actor\": \"pot\"", "\"id\": \"pot\", \"actor\": \"pot\", \"item\": \"map\"", "only a chest holds an item");
         bad2 += !refuse("\"id\": \"pot\"", "\"id\": \"key\"", "duplicate actor id");
         assert(!bad2);
+    }
+
+    // the stage's light from another stage ("light"): parsed, into the recipe, and refused when malformed
+    {
+        std::string text = kValid;
+        text.replace(text.find("\"music_like\": \"Cave01\","), 0, "\"light\": {\"stage\": \"sea\", \"room\": 44}, ");
+        std::vector<Stage> m;
+        assert(parse(parse_json(text), m, why) && m[0].light_stage == "sea" && m[0].light_room == 44);
+        const Value lr = recipe(m[0], "Zaaaaaa", {{"chamber", "Zaaaaaa"}, {"other", "Zbbbbbb"}}, [](const std::string& p) { return p; });
+        assert(lr.get("light").get("stage").string() == "sea" && lr.get("light").get("room").number == 44);
+        assert(recipe(s, "Zaaaaaa", names, [](const std::string& p) { return p; }).get("light").type == Value::Null);  // the template's light
+        for (const char* bad : {"\"light\": {\"stage\": \"sea\", \"room\": 64}, ", "\"light\": {\"stage\": \"\"}, ", "\"light\": \"sea\", ",
+                                "\"light\": {\"stage\": \"sea\", \"hour\": 12}, "}) {
+            std::string t = kValid;
+            t.replace(t.find("\"music_like\": \"Cave01\","), 0, bad);
+            assert(!parse(parse_json(t), m, why) && why.find("light") != std::string::npos);
+        }
+    }
+
+    // the game's trees: variants, a large tree's size (into the scaled-actor table), refusals
+    {
+        mod_stages::NativeActor n;
+        std::string w;
+        assert(mod_stages::native_actor("tree", "", "", 0, n, w) && n.name == "swood" && n.params == 0x10 && !n.scalable);
+        assert(mod_stages::native_actor("tree", "small_3", "", 0, n, w) && n.params == 0x13);
+        assert(mod_stages::native_actor("tree", "large", "", 0, n, w) && n.name == "lwood" && n.scalable);
+        assert(mod_stages::native_actor("tree", "palm", "", 0, n, w) && n.name == "Oyashi");
+        assert(!mod_stages::native_actor("tree", "oak", "", 0, n, w) && w.find("small_3") != std::string::npos);
+        std::string text = kValid;
+        const std::string tree = "{\"id\": \"t1\", \"actor\": \"tree\", \"variant\": \"large\", \"scale\": 1.3, \"position\": {\"x\": 0, \"y\": 0, \"z\": 0}}";
+        text.replace(text.find("\"spawns\""), 0, "\"actors\": [" + tree + "], ");
+        std::vector<Stage> m;
+        assert(parse(parse_json(text), m, why) && m[0].rooms[0].actors.size() == 1 && m[0].rooms[0].actors[0].scale == 1.3);
+        const Value tr = recipe(m[0], "Zaaaaaa", {{"chamber", "Zaaaaaa"}, {"other", "Zbbbbbb"}}, [](const std::string& p) { return p; });
+        const Value& e = tr.get("rooms").array[0].get("actors").array[0];
+        assert(e.get("tag").string() == "SCOB" && e.get("name").string() == "lwood" && e.get("scale").number == 1.3);
+        for (const char* bad : {"\"scale\": 1.3", "\"scale\": 2"}) {
+            std::string t = text;
+            if (std::string(bad) == "\"scale\": 1.3") t.replace(t.find("\"large\""), 7, "\"small\"");  // a small tree has no size
+            else t.replace(t.find("\"scale\": 1.3"), 12, bad);
+            assert(!parse(parse_json(t), m, why) && why.find("scale") != std::string::npos);
+        }
     }
 
     // phase 3: the dungeon map's title and the rooms' floors
@@ -312,7 +384,7 @@ int main() {
         };
         int bad = 0;
         bad += !refuse("\"after\": \"heart\"", "\"after\": \"boss-key-x\"", "names a chest of the stage");
-        bad += !refuse("\"style\": \"updraft\"", "\"style\": \"geyser\"", "style is walk or updraft");
+        bad += !refuse("\"style\": \"updraft\"", "\"style\": \"geyser\"", "style is walk, updraft or hole");
         bad += !refuse("\"height\": 1500", "\"height\": 9000", "height is 200..5000");
         bad += !refuse("\"style\": \"updraft\", \"height\": 1500", "\"height\": 1500", "only an updraft has a height");
         bad += !refuse("\"shaders\": \"assets/sky.wwht\"", "\"shaders\": \"../sky.wwht\"", "is a .wwht file in the package");
@@ -324,6 +396,68 @@ int main() {
         pot.replace(pot.find("\"actor\": \"chest\", \"item\": \"heart_container\""), std::strlen("\"actor\": \"chest\", \"item\": \"heart_container\""), "\"actor\": \"pot\"");
         std::vector<Stage> o;
         assert(!parse(parse_json(pot), o, w) && w.find("names a chest") != std::string::npos);
+    }
+
+    // a hole into the stage: Link falls into the shaft under an opening and arrives falling ("fall" spawn only)
+    {
+        const std::string hole = R"({"stages": [{"id": "depths", "template": "GTower", "kind": "dungeon", "entrance": {"stage": "sea", "room": 44, "point": 0},
+          "rooms": [{"room": 0, "ground": "assets/hall.glb", "spawns": [{"point": 0, "position": {"x": 0, "y": 200, "z": 1600}, "start": "fall"},
+                                                                        {"point": 1, "position": {"x": 0, "y": 200, "z": 800}}]}],
+          "entries": [{"id": "hole", "stage": "sea", "room": 44, "style": "hole", "position": {"x": -200400, "y": 6700, "z": 302000},
+                       "size": {"x": 140, "y": 250, "z": 140}, "to": {"room": 0, "point": 0}}]}]})";
+        std::vector<Stage> o;
+        std::string why2;
+        assert(parse(parse_json(hole), o, why2) && o[0].entries[0].style == "hole");
+        std::string stand = hole;
+        stand.replace(stand.find("\"to\": {\"room\": 0, \"point\": 0}"), std::strlen("\"to\": {\"room\": 0, \"point\": 0}"), "\"to\": {\"room\": 0, \"point\": 1}");
+        assert(!parse(parse_json(stand), o, why2) && why2.find("isn't a \"fall\" spawn") != std::string::npos);
+        std::string high = hole;
+        high.replace(high.find("\"style\": \"hole\""), std::strlen("\"style\": \"hole\""), "\"style\": \"hole\", \"height\": 1500");
+        assert(!parse(parse_json(high), o, why2) && why2.find("only an updraft has a height") != std::string::npos);
+    }
+
+    // the quest of a sky stage: a chest opened, a darknut defeated, an entry and a warp taken run the package's story
+    // actions; the darknut gets a defeat switch of its own (from the locked doors' numbers, below them)
+    {
+        const std::string sky = R"({"quests": [{"id": "sky", "title": "Sky", "steps": [{"n": 1, "text": "a"}, {"n": 2, "text": "b"}, {"n": 3, "text": "c"}]}],
+          "stages": [{"id": "sky", "template": "GTower", "kind": "dungeon", "entrance": {"stage": "sea", "room": 44, "point": 0},
+          "rooms": [
+            {"room": 0, "ground": "assets/island.glb", "spawns": [{"point": 0, "position": {"x": 0, "y": 30, "z": -1500}}],
+             "actors": [{"id": "key", "actor": "chest", "item": "boss_key", "position": {"x": -900, "y": 30, "z": 300}, "then": [{"action": "quest_step", "id": "sky", "step": 2}]},
+                        {"id": "guard", "actor": "darknut", "position": {"x": 0, "y": 0, "z": 0}, "then": [{"action": "quest_step", "id": "sky", "step": 3}]}]},
+            {"room": 1, "ground": "assets/arena.glb", "spawns": [{"point": 1, "position": {"x": 0, "y": 200, "z": 2650}}]}],
+          "doors": [{"position": {"x": 0, "y": 200, "z": 2400}, "angle": 180, "rooms": [0, 1], "lock": "boss"}],
+          "warps": [{"id": "home", "room": 1, "position": {"x": 600, "y": 200, "z": 4300}, "size": {"x": 250, "y": 250, "z": 250}, "then": [{"action": "quest_done", "id": "sky"}]}],
+          "entries": [{"id": "in", "stage": "sea", "room": 44, "position": {"x": 0, "y": 0, "z": 0}, "size": {"x": 400, "y": 800, "z": 400}, "to": {"room": 0, "point": 0},
+                       "then": [{"action": "quest_step", "id": "sky", "step": 1}]}]}]})";
+        std::vector<Stage> out;
+        std::string w;
+        if (!parse(parse_json(sky), out, w)) fprintf(stderr, "%s\n", w.c_str());
+        assert(parse(parse_json(sky), out, w));
+        const Stage& st = out[0];
+        assert(!st.rooms[0].actors[0].then.empty() && st.rooms[0].actors[0].defeat_switch == 0);
+        assert(st.doors[0].switch_no == kFirstDoorSwitch && st.rooms[0].actors[1].defeat_switch == kFirstDoorSwitch - 1);
+        assert(!st.warps[0].then.empty() && !st.entries[0].then.empty());
+        auto bad_then = [&](const std::string& from, const std::string& to, const std::string& part) {
+            std::string text = sky;
+            text.replace(text.find(from), from.size(), to);
+            std::vector<Stage> o;
+            std::string why2;
+            const bool ok = parse(parse_json(text), o, why2);
+            if (ok || why2.find(part) == std::string::npos) fprintf(stderr, "expected \"%s\", got %s \"%s\"\n", part.c_str(), ok ? "success" : "failure", why2.c_str());
+            return !ok && why2.find(part) != std::string::npos;
+        };
+        int bad = 0;
+        bad += !bad_then("\"step\": 2}]", "\"step\": 9}]", "undeclared quest step");
+        bad += !bad_then("\"id\": \"guard\", \"actor\": \"darknut\"", "\"id\": \"guard\", \"actor\": \"pot\"", "a chest (when it is opened) or a darknut");
+        bad += !bad_then("{\"action\": \"quest_done\", \"id\": \"sky\"}", "{\"action\": \"quest_done\", \"id\": \"other\"}", "undeclared");
+        assert(!bad);
+        // the darknut's defeat switch is in the recipe (its angle z, the game's own defeat switch)
+        const Value r = recipe(st, "Zsky0001", {}, [](const std::string& g) { return g; });
+        uint32_t z = 0;
+        for (const auto& a : r.get("rooms").array[0].get("actors").array)
+            if (a.get("name").string() == "Tn") z = uint32_t(a.get("angle_z").number);
+        assert((z & 0xFF) == kFirstDoorSwitch - 1);
     }
 
     printf("mod_stages_test: ok\n");

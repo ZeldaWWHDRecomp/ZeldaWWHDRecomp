@@ -110,6 +110,26 @@ inline void boost_thread_priority() {
  }
 #endif
 }
+// Background compile and prefetch threads: below the game, so its own threads always win. macOS: QoS utility.
+// Windows: below-normal priority. Linux and Android: nice +10 for this thread (raising nice needs no privilege).
+// WWHD_NO_QOS=1 leaves the thread untouched on every platform.
+inline void lower_thread_priority() {
+ if(getenv("WWHD_NO_QOS")) return;
+#ifdef __APPLE__
+ const int error = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY,0);
+ if(error) std::fprintf(stderr,"[thread priority] thread=%s operation=lower_qos error=%d\n",thread_label.c_str(),error);
+#elif defined(_WIN32)
+ if(!SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_BELOW_NORMAL)) {
+  const DWORD error=GetLastError();
+  std::fprintf(stderr,"[thread priority] thread=%s operation=lower_priority error=%lu\n",thread_label.c_str(),(unsigned long)error);
+ }
+#else
+ if(setpriority(PRIO_PROCESS,(id_t)syscall(SYS_gettid),10)==-1) {
+  const int error=errno;
+  std::fprintf(stderr,"[thread priority] thread=%s operation=lower_setpriority error=%d\n",thread_label.c_str(),error);
+ }
+#endif
+}
 inline void get_thread_name(char* out,size_t size) {
  if(!size)return;
 #ifdef __APPLE__

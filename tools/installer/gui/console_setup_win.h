@@ -10,6 +10,9 @@
 std::string bundled_python(const std::string& pkg);
 bool have_bundled_python(const std::string& pkg);
 
+// one argument for CreateProcess's command line (the rules CommandLineToArgvW and the C runtime parse)
+std::wstring quote_arg(const std::wstring& a);
+
 // "Wind Waker HD.exe --console-setup ARGS" (tools\Setup in a console window.bat): runs setup.py ARGS with the
 // bundled Python in the console the program was started from and returns setup.py's exit code (1 when the
 // release folder or its Python is missing).

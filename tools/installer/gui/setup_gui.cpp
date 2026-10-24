@@ -15,7 +15,8 @@
 // Keys: a pasted Wii U common key is sent once over the stdin pipe and the buffer is cleared;
 // it is never shown, logged, stored or put on a command line.
 //
-// Options (any other arguments are passed on to setup.py, e.g. --data-dir DIR --app-dir DIR):
+// Options (any other arguments are passed on to setup.py, e.g. --data-dir DIR --app-dir DIR; game options such
+// as --editor and everything after "--" also go to the game when this program or setup.py starts it, game_args.h):
 //   --automate FILE      scripted run for tests (see run_automation below)
 //   --screenshots DIR    where --automate / --self-test write PNG screenshots
 //   --self-test          start setup.py, wait for its hello, render the welcome screen, exit 0
@@ -53,6 +54,7 @@
 #endif
 
 #include "../../../runtime/src/platform/appimage_notice.h"  // the v0.2.13 .data hint (issue #55)
+#include "game_args.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
@@ -352,11 +354,14 @@ static bool run_quick(const std::vector<std::string>& args) { return run_code(ar
 static std::string g_exe, g_game_dir, g_data_dir;  // set when the game is ready to start
 static std::string g_exe_normal_path;                // the normal game (g_exe may be the decomp version)
 static std::string g_exe_normal() { return g_exe_normal_path; }
+static std::vector<std::string> g_game_args;         // game options from this program's command line (game_args.h)
 
 // Replaces this process with the game (macOS, Linux; the Dock keeps showing "Wind Waker HD") or starts
 // it and returns (Windows). The game runs in the data folder (its crash logs go to data/captures).
 static bool launch_game() {
     std::string save = g_data_dir + "/save";
+    std::vector<std::string> args = {g_exe, "--game", g_game_dir, "--save", save};
+    args.insert(args.end(), g_game_args.begin(), g_game_args.end());
 #ifdef _WIN32
     auto wide = [](const std::string& u) {
         int n = MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, nullptr, 0);
@@ -364,7 +369,8 @@ static bool launch_game() {
         if (n > 1) MultiByteToWideChar(CP_UTF8, 0, u.c_str(), -1, w.data(), n);
         return w;
     };
-    std::wstring cmd = L"\"" + wide(g_exe) + L"\" --game \"" + wide(g_game_dir) + L"\" --save \"" + wide(save) + L"\"";
+    std::wstring cmd;
+    for (auto& a : args) cmd += (cmd.empty() ? L"" : L" ") + quote_arg(wide(a));
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi = {};
     std::wstring cwd = wide(g_data_dir);
@@ -375,8 +381,10 @@ static bool launch_game() {
     return true;
 #else
     if (chdir(g_data_dir.c_str()) != 0) return false;
-    const char* argv[] = {g_exe.c_str(), "--game", g_game_dir.c_str(), "--save", save.c_str(), nullptr};
-    execv(g_exe.c_str(), (char* const*)argv);
+    std::vector<char*> argv;
+    for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    execv(g_exe.c_str(), argv.data());
     return false;  // only reached when exec failed
 #endif
 }
@@ -468,6 +476,8 @@ struct App {
     bool decomp_offered = false, decomp = false, start_decomp = false;
     std::string decomp_text, decomp_docs, decomp_exe, decomp_error;
     bool prepare_shaders = true;
+    bool model_sweep = false;  // "Preparing shaders: models (experimental)": opt-in, off by default
+    std::string model_sweep_text;
     bool shader_skip_requested = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
@@ -831,6 +841,7 @@ static void start_install(const std::string& source) {
     if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp ? "true" : "false");
     if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
+    f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
     f += ",\"shader_prebuild_cancel\":" + jstr(A.data_dir + "/shader-prebuild-cancel");
     request("install", f);
     go(Screen::Installing);
@@ -938,6 +949,8 @@ static void handle_event(const J& ev) {
         A.log_path = ev.str("log");
         A.platform = ev.str("platform");
         A.code_mods = ev.boolean("code_mods");
+        A.model_sweep = ev.boolean("model_sweep");
+        A.model_sweep_text = ev.str("model_sweep_text");
         A.decomp_offered = ev.boolean("decomp_offered");
         A.decomp = ev.boolean("decomp");
         A.decomp_text = ev.str("decomp_text");
@@ -1204,6 +1217,10 @@ static void screen_welcome() {
 static void code_mods_choice() {
     checkbox("Prepare shaders now (recommended)", &A.prepare_shaders);
     muted("You can skip this and rebuild the shader cache later in Graphics settings.");
+    if (!A.prepare_shaders) ImGui::BeginDisabled();
+    checkbox("Also prepare model shaders (experimental)", &A.model_sweep);
+    if (!A.prepare_shaders) ImGui::EndDisabled();
+    muted(A.model_sweep_text);
     checkbox("Build with code-mod support", &A.code_mods);
     muted("For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
           "content mods do not need this. The game code gets a small check in every function, which can "
@@ -1752,6 +1769,7 @@ static bool pkg_is_portable(const std::string& pkg) {
 static std::string data_dir_of(const std::string& pkg, const std::vector<std::string>& passthru) {
     for (size_t i = 0; i < passthru.size(); i++) {
         const std::string& s = passthru[i];
+        if (s == "--") break;  // game options
         if (s == "--data-dir" && i + 1 < passthru.size() && !passthru[i + 1].empty()) return passthru[i + 1];
         if (s.rfind("--data-dir=", 0) == 0 && s.size() > strlen("--data-dir=")) return s.substr(strlen("--data-dir="));
     }
@@ -1897,7 +1915,7 @@ static void start_child() {
 // automation (tests): a JSON array of steps, each run when its screen is showing:
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
-// "set" fields: code_mods (boolean), decomp (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
+// "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
 // (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
@@ -1936,6 +1954,7 @@ static void automation_frame() {
             else if (k == "save_path") set_save_path(v);
             else if (k == "code_mods") A.code_mods = kv.second.t == J::Bool && kv.second.b;
             else if (k == "decomp") A.decomp = kv.second.t == J::Bool && kv.second.b;
+            else if (k == "model_sweep") A.model_sweep = kv.second.t == J::Bool && kv.second.b;
             else if (k == "open_details") details_open = true;
         }
     }
@@ -2019,7 +2038,18 @@ int main(int argc, char** argv) {
         else if (a == "--setup") want_setup = true;
         else if (a == "--decomp") want_decomp = true;  // start the decomp version (setup.py's --decomp builds it)
         else if (a.rfind("-psn_", 0) == 0) continue;  // macOS Finder's process serial number
-        else A.passthru.push_back(a);
+        else if (a == "--") {  // the rest is for the game, as it is
+            A.passthru.insert(A.passthru.end(), argv + i, argv + argc);
+            break;
+        } else A.passthru.push_back(a);
+    }
+    // game options (--editor, ...; game_args.h) go to the game when this program starts it; setup.py gets
+    // them with the other arguments and passes them on itself when it starts the game (launch request)
+    g_game_args = game_args::of(A.passthru);
+    if (!g_game_args.empty()) {
+        std::string list;
+        for (auto& a : g_game_args) list += " " + a;
+        SDL_Log("game options:%s", list.c_str());
     }
     if (!automate.empty()) {
         std::string text = read_file(automate);

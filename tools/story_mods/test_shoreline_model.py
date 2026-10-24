@@ -174,6 +174,32 @@ class ShorelineTests(unittest.TestCase):
             alphas = [struct.unpack_from('>f', data, start + i * stride + 12)[0] for i in range(9)]
             self.assertEqual(alphas, [1] * 9 if kind in ('foam', 'waterfall') else [0, 0, 0, 0, 1, 0, 0, 0, 0])
 
+    @unittest.skipUnless(__import__('os').environ.get('WWHD_GAME_DIR'), 'set WWHD_GAME_DIR to read the templates from a game folder')
+    def test_lava_template_from_the_players_game(self):
+        import os
+        # lava: Fire Mountain's (the volcano object Ykzyg, its model qkzyg), with its own texture animation
+        self.assertEqual(coast.template_model('lava'), 'qkzyg')
+        pts = [(x * 100.0, 5.0, z * 100.0) for z in range(3) for x in range(3)]
+        idx = [0, 3, 1, 1, 3, 4, 1, 4, 2, 2, 4, 5, 3, 6, 4, 4, 6, 7, 4, 7, 5, 5, 7, 8]
+        geometry = (pts, [(0, 1, 0)] * 9, [(p[0] / 220, p[2] / 220) for p in pts], idx, b'')
+        tpl, shader = coast.player_template(os.environ['WWHD_GAME_DIR'], 'lava')
+        data = coast.build_parts(tpl, [(coast.MATERIALS['lava'], geometry, coast.part_colours('lava', 'surface', pts, idx))], 'mod_lava', 'qkzyg')
+        f = coast.base.Bfres(data)
+        self.assertEqual(f.u16(0x52), 3)  # its lava layers and grains
+        self.assertEqual(f.dict(f.rel(0x34))[0][0], 'mod_lava')
+        model = f.dict(f.rel(0x20))[0][1]
+        self.assertEqual(f.dict(f.rel(model + 0x18))[0][0], 'Qkzyg_yougn_only_b_yougan_v')
+        animation = f.dict(f.rel(0x34))[0][1]
+        rows = f.rel(animation + 0x2C)
+        self.assertEqual(f.cstr(f.rel(rows + 0x10)), 'Qkzyg_yougn_only_b_yougan_v')  # its scroll moves with it
+        self.assertLess(len(data), 1024 * 1024)
+        # the streams' mask is one value all over (the pool glows everywhere): our own constant, none of its picture
+        textures = dict(f.dict(f.rel(0x24)))
+        mask = textures['Txy_yougan2']
+        image = f.rel(mask + 0xB0)
+        size = f.u32(mask + 4 + 0x20)
+        self.assertEqual(bytes(f.b[image:image + size]), bytes((255, 255, 0, 0, 0, 0, 0, 0)) * (size // 8))
+
     def test_missing_or_unsupported_player_template_refused(self):
         source,_,animation=template()
         f=coast.base.Bfres(source)

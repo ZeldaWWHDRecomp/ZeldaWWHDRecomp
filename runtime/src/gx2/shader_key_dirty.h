@@ -28,7 +28,8 @@ inline bool vulkan_shader_key_mask(uint32_t reg, uint32_t& mask) {
     if(reg == REGADDR::VGT_PRIMITIVE_TYPE) { mask = 0x3F; return true; }
     if(reg == mmSPI_INTERP_CONTROL_0) { mask = 1u << 1; return true; }
     if(reg == REGADDR::PA_CL_VTE_CNTL) { mask = 0x3F; return true; }
-    if(reg == REGADDR::PA_CL_CLIP_CNTL) { mask = 1u << 19; return true; }
+    // DX clip space; ZCLIP_FAR_DISABLE picks the vertex shader variant without device depth clamp
+    if(reg == REGADDR::PA_CL_CLIP_CNTL) { mask = 1u << 19 | 1u << 27; return true; }
     if(reg == REGADDR::DB_DEPTH_CONTROL) { mask = 0x83; return true; }
     if((reg >= REGADDR::PA_CL_VPORT_XSCALE && reg <= REGADDR::PA_CL_VPORT_ZOFFSET) ||
        (reg >= REGADDR::CB_BLEND_RED && reg <= REGADDR::CB_BLEND_ALPHA) ||

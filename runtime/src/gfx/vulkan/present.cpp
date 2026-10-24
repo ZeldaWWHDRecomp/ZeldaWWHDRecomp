@@ -453,7 +453,15 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   // sRGB texture views decode on sampling; the scan flag also identifies linear
   // scan values held in a UNORM image. sRGB targets encode shader linear output.
   const bool sourceLinear=q.sourceLinear||srgb_format(q.image->fmt.pixel);
-  auto params=present_params(fxaa&&linear,filter,scale,sourceLinear,targetLinear);params.alpha=q.alpha;
+  // dynamic resolution (dynres.h): a picture below the internal resolution is always scaled filtered.
+  // Integer scaling would show its pixels as blocks (it can't be a whole multiple any more): smooth;
+  // sharp scaling takes its sharpness from the picture's full size, so the extra upscale is bilinear.
+  int qfilter=filter;float qscale=scale;
+  if(q.image->dyn<1.0f) {
+   if(qfilter==2)qfilter=0;
+   else if(qfilter==1)qscale=std::min(q.box.w/nominal_width(q.image),q.box.h/nominal_height(q.image));
+  }
+  auto params=present_params(fxaa&&linear,qfilter,qscale,sourceLinear,targetLinear);params.alpha=q.alpha;
   if(hdrOutput) {
    const auto h=hdr::parameters();params.hdrWhite=h.paper;params.hdrPeak=h.peak;
    params.hdrExposure=h.exposure;params.hdrHighlights=h.highlights;
@@ -535,7 +543,8 @@ std::vector<ComposeQuad> screen_quads_mono(Screen& screen,VkExtent2D target,int&
 #ifdef __ANDROID__
  if(gfx::g_has_drc_window) {
   ComposeQuad q;q.image=source.scan.get();q.sourceLinear=source.scanSrgb;
-  q.box=gfx::display_layout(float(target.width),float(target.height),float(q.image->extent.width),float(q.image->extent.height));
+  const auto display=scan_display_extent(source);
+  q.box=gfx::display_layout(float(target.width),float(target.height),float(display.width),float(display.height));
   quads.push_back(q);return quads;
  }
 #endif
@@ -544,14 +553,14 @@ std::vector<ComposeQuad> screen_quads_mono(Screen& screen,VkExtent2D target,int&
   filter=currentPlan->filter;
   if(&screen==&R.drc) {
    ComposeQuad q;q.image=R.drc.scan.get();q.sourceLinear=R.drc.scanSrgb;
-   q.box=gfx::display_layout(float(target.width),float(target.height),float(q.image->extent.width),float(q.image->extent.height));
+   q.box=gfx::display_layout(float(target.width),float(target.height),nominal_width(q.image),nominal_height(q.image));
    quads.push_back(q);return quads;
   }
   gfx::PresentPlan p=*currentPlan;
   Surface* drc=R.drc.scan&&R.drc.scan->image?R.drc.scan.get():nullptr;
   if(p.dw!=float(target.width)||p.dh!=float(target.height))
-   p=gfx::display_plan_for(p,float(target.width),float(target.height),float(screen.scan->extent.width),float(screen.scan->extent.height),
-                          drc?float(drc->extent.width):0,drc?float(drc->extent.height):0);
+   p=gfx::display_plan_for(p,float(target.width),float(target.height),float(scan_display_extent(screen).width),float(scan_display_extent(screen).height),
+                          nominal_width(drc),nominal_height(drc));
   ComposeQuad tv;tv.image=screen.scan.get();tv.sourceLinear=screen.scanSrgb;tv.box=p.tv;quads.push_back(tv);
   if(p.pip_on&&drc) {
    const float op=p.pip_opacity,bw=std::max(1.0f,std::round(p.pip.w/200.0f));
@@ -577,7 +586,7 @@ std::vector<ComposeQuad> screen_quads_mono(Screen& screen,VkExtent2D target,int&
   return quads;
  }
  // no plan (outside swap): the picture scaled to fit (Codex's presentation)
- const auto rect=present_rect(screen.scan->extent,target,filter);
+ const auto rect=present_rect(scan_display_extent(screen),target,filter);
  ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.scanSrgb;q.box={rect.x,rect.y,rect.width,rect.height};quads.push_back(q);
  return quads;
 }
@@ -805,7 +814,9 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
 
 bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& height,bool& bgra) {
  if(!screen.scan||!screen.scan->image||!sampleable(*screen.scan))return false;
- width=screen.scan->extent.width;height=screen.scan->extent.height;
+ const auto display=scan_display_extent(screen);
+ width=display.width;height=display.height;
+ if(&screen==&R.tv&&stereo::frame.mode==stereo::FullSBS)width*=2;
  if(!width||!height)return false;
  const bool srgb=screen.scanSrgb;
  Surface target;target.width=width;target.height=height;target.format=srgb?0x41a:0x1a;target.fmt=format_info(target.format,false);
@@ -816,8 +827,11 @@ bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& h
  bgra=target.fmt.pixel==VK_FORMAT_B8G8R8A8_UNORM||target.fmt.pixel==VK_FORMAT_B8G8R8A8_SRGB;
  create_surface_image(&target,true,VkExtent3D{width,height,1});
  try {
+  int filter=0;
   ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.scanSrgb;q.box={0,0,float(width),float(height)};
-  compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,{q},
+  auto quads=&screen==&R.tv&&stereo::frame.mode!=stereo::Off
+      ? screen_quads(screen,{width,height},filter) : std::vector<ComposeQuad>{q};
+  compose(target.image,target.view,target.layout,VkExtent2D{width,height},target.fmt.pixel,quads,
           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,fxaa_enabled(),nullptr,&target.use);
   buffer=create_readback_buffer(VkDeviceSize(width)*height*4);
   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
@@ -834,11 +848,11 @@ bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& h
 // ---------------------------------------------------------------- gameplay mod HUDs
 // The climb mod's stamina wheel and the run/swim boost's bar, drawn into the TV scan image (the same
 // two the Metal renderer draws in mods/mod_hud.mm).
-void draw_mod_overlay(Surface& scan) {
+void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent) {
  // both step aside (fade out) while a game menu, an event or a message is up (mods/hud_gate.cpp)
  const float shown=mods::game_ui_hud_alpha();
- mods::ClimbHud climb=mods::climb_hud();climb.alpha*=shown;
- mods::MoveHud move=mods::move_hud();move.alpha*=shown;
+ mods::ClimbHud climb=mods::climb_hud_drawn();climb.alpha*=shown;
+ mods::MoveHud move=mods::move_hud_drawn();move.alpha*=shown;
  const bool wheel=mods::climb_enabled()&&climb.alpha>0.0f, bar=move.alpha>0.0f;
  if((!wheel&&!bar)||!scan.image||!scan.view||!(scan.usage&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))return;
  transition_image(&scan,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -850,11 +864,13 @@ void draw_mod_overlay(Surface& scan) {
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
  begin_pass(cmd,rendering,[&] { return color_pass(scan.fmt.pixel,scan.layout); });R.rendering=true;R.passTracked=false;
  const float w=float(extent.width),h=float(extent.height);
+ const float xRatio=displayExtent.width&&displayExtent.height
+     ? (w/h)/(float(displayExtent.width)/displayExtent.height) : 1.0f;
  VkRect2D scissor{{0,0},extent};
  if(wheel) {
   // upper right of the screen centre, where the follow camera keeps Link (mod_hud.mm)
   const float cx=0.60f*w,cy=0.38f*h,rad=0.05f*h;
-  VkViewport viewport{cx-rad,cy-rad,2*rad,2*rad,0,1};
+  VkViewport viewport{cx-rad*xRatio,cy-rad,2*rad*xRatio,2*rad,0,1};
   record::vkCmdSetViewport(cmd,0,1,&viewport);record::vkCmdSetScissor(cmd,0,1,&scissor);
   record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(scan.fmt.pixel,kHud));
   PresentParams params{};const float u[4]={climb.stamina,climb.alpha,climb.exhausted?1.0f:0.0f,0};memcpy(&params,u,16);
@@ -863,7 +879,7 @@ void draw_mod_overlay(Surface& scan) {
  if(bar) {
   // a ring under the wheel's spot, same shape; 0 running, 1 swimming, 2 recharging
   const float cx=0.60f*w,cy=0.49f*h,rad=0.042f*h;
-  VkViewport viewport{cx-rad,cy-rad,2*rad,2*rad,0,1};
+  VkViewport viewport{cx-rad*xRatio,cy-rad,2*rad*xRatio,2*rad,0,1};
   record::vkCmdSetViewport(cmd,0,1,&viewport);record::vkCmdSetScissor(cmd,0,1,&scissor);
   record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(scan.fmt.pixel,kMoveHud));
   PresentParams params{};const float u[4]={move.stamina,move.alpha,move.exhausted?2.0f:move.swimming?1.0f:0.0f,0};memcpy(&params,u,16);

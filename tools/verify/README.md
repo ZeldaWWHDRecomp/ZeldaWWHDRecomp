@@ -169,7 +169,10 @@ VERIFY(0x021E01B8, daMtoge_actionUp);
 - Float-to-integer conversion is `gabi::ftoi` (fctiwz: truncating, saturating, NaN → INT_MIN).
   A float passed to an `s16` parameter is `(s16)gabi::ftoi(f)`; C++ conversion is undefined
   out of range.
-- A float loaded into an FPR (lfs) quiets a signalling NaN; `be<f32>` reads model that.
+- Float loads and stores (lfs/stfs, psq_l/psq_st with a float type) move bits like the console:
+  a signalling NaN stays signalling, and stfs of a double that isn't a single truncates (ppc.h
+  `ppc_lfs_value` / `ppc_stfs_bits`). `be<f32>` reads and writes and gabi's f32 arguments and
+  results do the same, so a typed f32 copy matches the original's lfs/stfs pair.
   - GHS copies a `cXyz` struct with integer loads (bit-exact, `cXyz::copy`), but goes through
     FPRs when it computes with it.
   - Matrix copies load all twelve values, then store them (`mtx_copy`); this matters when the
@@ -266,7 +269,7 @@ functions of one actor can be written by different people or agents at once.
 - **Equivalence is to the recompiled code** (the recompiler's model of Espresso), not to the
   console:
   - `fmadds` is double-then-single rounding;
-  - SNaN handling follows host conversions.
+  - arithmetic on a signalling NaN quiets it as the host does (loads and stores keep it, like the console).
 
 ## Pilot results
 

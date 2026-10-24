@@ -78,6 +78,9 @@ struct SceneUi {
     int d_kind_shown = 0;  // the kind the fields below were filled for (a change starts them afresh)
     std::string d_added;  // the actor just added: the hint shows for it
     std::string e_query, e_actor, e_to, e_joint, e_text = "...", e_archive, e_file, e_mode = "walk", e_clip;
+    bool e_once = false, e_face = false;  // a clip played once (held at its end); Link's clip with his face animations
+    int e_blend = -1;                     // Link's clip: blend frames (-1: the game's default)
+    int e_attach_blend = 0;               // attach: frames onto the joint (0: at once)
     uint32_t e_sound = 0, e_particle = 0;
     int e_hour = 12;
     float e_rain = 1;
@@ -409,6 +412,7 @@ void timeline_view(const Value& m, const Value& sc, const Value& timeline) {
     else ImGui::TextColored(kMuted, "click the ruler to put the cursor");
     if (demo) {
         if (lanes.get("problem").type == Value::String) ImGui::TextColored(kBad, "The game would refuse this demo: %s", lanes.get("problem").text.c_str());
+        for (const auto& w : lanes.get("warnings").array) ImGui::TextColored(kHead, "Not in the picture: %s", w.string().c_str());
     }
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float avail = std::max(200.0f, ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize);
@@ -1194,6 +1198,9 @@ void demo_inspector(int n, const Value& m, const Value& st) {
                 }
             }
             p["value"] = v;
+            // an actor's first position key: at Link (in the demo's own coordinates), not at the world's
+            // (0,0,0), far out at sea (the command falls back to the value when the game isn't running)
+            if (!tr && C.d_new_lane.size() > 9 && C.d_new_lane.compare(C.d_new_lane.size() - 9, 9, ".position") == 0) p["from"] = std::string("link");
         }
         command("set_demo_key", p, [lane = C.d_new_lane, at](const Value& r) {
             if (r.get("ok").boolean) demo_select_key(lane, int(at));
@@ -1315,6 +1322,11 @@ void demo_inspector(int n, const Value& m, const Value& st) {
             joint_pick("##attach_joint", C.e_to.empty() ? std::string() : actor_archive(st, C.e_to), C.e_joint, "(choose a joint)");
             ev["to"] = C.e_to;
             ev["joint"] = C.e_joint;
+            field_label("Blend", 70);
+            ImGui::SetNextItemWidth(-help_width());
+            ImGui::SliderInt("##attach_blend", &C.e_attach_blend, 0, 30, C.e_attach_blend ? "%d frames" : "at once");
+            help_mark("Frames over which the carried actor moves from where it is onto the joint (a smooth grab).");
+            if (C.e_attach_blend) ev["blend"] = C.e_attach_blend;
         }
     } else if (list == "clips" && !C.d_new_actor.empty()) {
         // a game actor or model: an animation of an archive (its own first); a mod character: its model's clips
@@ -1365,6 +1377,9 @@ void demo_inspector(int n, const Value& m, const Value& st) {
             if (!C.e_archive.empty()) list_state("files", C.e_archive);
             ev["archive"] = C.e_archive;
             ev["file"] = C.e_file;
+            ImGui::Checkbox("Play once##clip_once", &C.e_once);
+            help_mark("Plays the animation once and holds its last pose (a grab, a landing); otherwise it repeats. Follow it with the next clip.");
+            if (C.e_once) ev["loop"] = false;
         }
     } else if (list == "modes") {
         field_label("Mode", 70);
@@ -1384,6 +1399,34 @@ void demo_inspector(int n, const Value& m, const Value& st) {
             if (i >= 0) C.e_clip = anims[size_t(i)];
             ev["mode"] = std::string("clip");
             ev["clip"] = C.e_clip;
+            ImGui::Checkbox("Play once##link_once", &C.e_once);
+            help_mark("Plays the animation once and holds its last pose; otherwise it repeats.");
+            if (C.e_once) ev["loop"] = false;
+            // his face: the clip's own .btp (eyes and mouth) and a .btk of the same cutscene, when the archive has them
+            std::string btp, btk;
+            if (!C.e_clip.empty()) {
+                const std::string base = C.e_clip.substr(0, C.e_clip.size() - 4);
+                for (const char* archive : {"LkD00", "LkD01"})
+                    for (const auto& f : choices("files", archive).array) {
+                        const std::string n = f.string();
+                        if (btp.empty() && n == base + ".btp") btp = n;
+                        // a btk often covers several cuts (07b_cl_cut4_5_6_7_10.btk): the longest shared prefix wins
+                        if (ends_with(n, ".btk") && n.substr(0, 6) == base.substr(0, 6)) {
+                            auto common = [&](const std::string& x) { size_t k = 0; while (k < x.size() && k < base.size() && x[k] == base[k]) ++k; return k; };
+                            if (btk.empty() || common(n) > common(btk)) btk = n;
+                        }
+                    }
+            }
+            if (!btp.empty() && !btk.empty()) {
+                ImGui::Checkbox("His face too##link_face", &C.e_face);
+                help_mark(("The cutscene's face animations: " + btp + ", " + btk).c_str());
+                if (C.e_face) ev["btp"] = btp, ev["btk"] = btk;
+            }
+            field_label("Blend", 70);
+            ImGui::SetNextItemWidth(-help_width());
+            ImGui::SliderInt("##link_blend", &C.e_blend, -1, 30, C.e_blend < 0 ? "default" : "%d frames");
+            help_mark("Frames to blend from his previous pose into this clip.");
+            if (C.e_blend >= 0) ev["blend"] = C.e_blend;
         } else
             ev["mode"] = C.e_mode;
     } else

@@ -12,6 +12,9 @@ struct WarmPipeline {
 };
 // The worker never accesses guest memory, R, a command buffer, or a render-thread
 // pipeline cache. Ready objects transfer to the render thread exactly once.
+// The device's memory budget in bytes (0: unknown), before start_pipeline_worker: it sizes the pool of unused warm
+// pipelines (the pool exists for memory only)
+void set_memory_budget(uint64_t bytes);
 void start_pipeline_worker(VkDevice device, PipelineRecipeFingerprint fingerprint,
     std::string path, std::vector<uint8_t> cacheSeed, std::string headstartPath);
 bool take_warm_pipeline(const std::vector<uint8_t>& key,
@@ -19,6 +22,11 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
     const std::array<std::vector<VkDescriptorSetLayoutBinding>, 2>& descriptors,
     bool dynamicUniforms, const GraphicsPipelineState& currentState, WarmPipeline& out);
 void remember_pipeline_recipe(std::shared_ptr<PipelineRecipe> recipe);
+// The setup's model sweep drew a model of archive group `group` with this (portable) key: file the recipe under it too.
+void note_pipeline_group(const std::vector<uint8_t>& key, uint32_t group);
+// Steady-clock time (ns) up to which every recipe recorded is on disk: the start of the last snapshot written, now
+// when nothing is unsaved, INT64_MAX without a worker (the setup's model sweep marks work done only once saved).
+int64_t pipeline_recipes_durable_ns();
 // Explicit checkpoint/shutdown only: joins the worker and writes local recipes.
 void save_pipeline_recipes();
 // Save current dirty revision without stopping compiler or periodic persistence.

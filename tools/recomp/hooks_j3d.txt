@@ -1,0 +1,8 @@
+# J3D draw buckets: no packet is entered twice, and a packet list that loops on itself is cut before the game walks it
+# (runtime/src/j3d_draw_guard.cpp; a packet entered twice in one frame closes such a loop)
+027F10CC  # J3DDrawBuffer::drawHead
+027F1174  # J3DDrawBuffer::drawTail
+027F093C  # J3DDrawBuffer::frameInit
+027F0C14  # J3DDrawBuffer::entryZSort: a packet in a bucket already is not entered again
+027F0DA8  # J3DDrawBuffer::entryNonSort
+027F0E04  # J3DDrawBuffer::entryImm

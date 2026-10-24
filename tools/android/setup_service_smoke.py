@@ -119,6 +119,8 @@ def main():
               value.get("updated", 0) > prior_update and
               adb("shell", "pidof", PACKAGE + ":setup", check=False).stdout.decode().strip() not in ("", old_pid), 60)
         no_wake()
+        # SEVERE counts only with a real temperature behind it (#254, #277): a warm battery (40.0 C) confirms it
+        shell("cmd", "battery", "set", "-f", "temp", "400")
         shell("cmd", "thermalservice", "override-status", "3")
         shell("cmd", "battery", "unplug", "-f")
         shell("cmd", "battery", "set", "-f", "level", "10")
@@ -128,6 +130,30 @@ def main():
         shell("cmd", "thermalservice", "override-status", "2")
         time.sleep(1.2)
         until("thermal hysteresis", paused("heat"))
+        # #277: a heat pause never ends by itself; once cooled it offers Continue and keeps waiting
+        if "heat-pause.json" not in shell("run-as", PACKAGE, "ls", job):
+            raise AssertionError("Heat pause was not recorded in the job")
+        shell("cmd", "thermalservice", "override-status", "0")
+        shell("cmd", "battery", "set", "-f", "temp", "250")
+        until("cooled heat pause offers Continue", lambda value: paused("heat")(value) and value.get("cooled") is True)
+        time.sleep(8)
+        until("cooled heat pause keeps waiting", lambda value: paused("heat")(value) and value.get("cooled") is True, 1)
+        # the waiting pause survives a restart of the setup process (screen off, app in the background)
+        old_pid = shell("pidof", PACKAGE + ":setup")
+        prior_update = host().get("updated", 0)
+        killed = control("kill-worker", int(old_pid))
+        if killed.get("terminated") != int(old_pid): raise AssertionError(killed)
+        until("heat pause restored after restart", lambda value: paused("heat")(value) and
+              value.get("updated", 0) > prior_update and value.get("cooled") is True and
+              adb("shell", "pidof", PACKAGE + ":setup", check=False).stdout.decode().strip() not in ("", old_pid), 60)
+        no_wake()
+        control("resume")
+        until("Continue after cooling", paused("battery"))
+        if "heat-pause.json" in shell("run-as", PACKAGE, "ls", job):
+            raise AssertionError("Continue left the heat pause record behind")
+        shell("cmd", "battery", "set", "-f", "temp", "400")
+        shell("cmd", "thermalservice", "override-status", "3")
+        until("later heat pauses again", lambda value: paused("heat")(value) and value.get("cooled") is False)
         shell("cmd", "thermalservice", "override-status", "4")
         until("critical thermal pause", paused("critical"))
         control("continue-heat")
@@ -137,11 +163,14 @@ def main():
         until("continue anyway skips the heat pause", paused("battery"))
         if "continue-heat.json" not in shell("run-as", PACKAGE, "ls", job):
             raise AssertionError("Continue anyway was not persisted in the job")
+        if "heat-pause.json" in shell("run-as", PACKAGE, "ls", job):
+            raise AssertionError("Continue anyway left the heat pause record behind")
         shell("cmd", "battery", "set", "-f", "level", "25")
         time.sleep(1.2)
         until("battery hysteresis", paused("battery"))
         no_wake()
         shell("cmd", "thermalservice", "override-status", "0")
+        shell("cmd", "battery", "set", "-f", "temp", "250")
         shell("cmd", "battery", "set", "-f", "level", "80")
         until("automatic resume", lambda value: value.get("state") == "preparing")
         if not wake_held(): raise AssertionError("Active setup did not acquire its wake lock")

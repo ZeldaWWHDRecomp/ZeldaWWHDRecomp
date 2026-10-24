@@ -1,3 +1,4 @@
+#include "background_shaders.h"
 #include "gfx/render_mips.h"
 #include "mods/cemu_pack.h"
 #include <tuple>
@@ -14,6 +15,7 @@
 #include "gx2_texture_regs.h"
 #include "metal.h"
 #include "runtime.h"
+#include "dynres.h"
 #include "write_watch.h"
 #define XXH_INLINE_ALL
 #include "../../third_party/xxhash/xxhash.h"
@@ -50,6 +52,17 @@ static float parse_scale(const char* e) {
 static std::atomic<float> g_res_requested{parse_scale(getenv("WWHD_RES_SCALE"))};
 static float g_res_frame = g_res_requested.load();
 static void latch_aspect();  // render thread: the factor for this frame
+// dynamic resolution (dynres.h): render thread, the factor of the internal resolution for this frame.
+// Exactly 1 while off, so every size comes out as before.
+static float g_dyn_frame = 1.0f;
+static uint64_t g_spare_textures = 0;  // textures kept in Surface::spares (all surfaces)
+static void latch_dynamic_resolution() {
+    g_dyn_frame = dynres::latch(R.frame, g_res_frame);
+    if (!dynres::on() && g_spare_textures) {  // off: the kept textures go
+        for (auto& [addr, s] : R.surfaces) s->spares.clear();
+        g_spare_textures = 0;
+    }
+}
 float res_scale() { return g_res_frame; }
 void set_res_scale(float f) {
     g_res_requested = std::clamp(f, 1.0f, 4.0f);
@@ -72,6 +85,7 @@ void latch_res_scale() {
         if (R.frame == f) set_res_scale(v);
     g_res_frame = g_res_requested.load(std::memory_order_relaxed);
     latch_aspect();
+    latch_dynamic_resolution();
 }
 
 // ---------------------------------------------------------------- aspect ratio
@@ -118,7 +132,17 @@ static float target_scale(const Surface* s) {
     }();
     (void)shadow_logged;
     if (shadow && s->isDepth && s->slices > 1) return shadow;
-    return res_scale();
+    // dynamic resolution: single-layer targets (the screen's buffers and the GamePad's); the shadow
+    // cascades (arrays) keep the internal resolution
+    if (s->slices > 1) return res_scale();
+    return res_scale() * g_dyn_frame;
+}
+// the dynamic resolution factor in target_scale's result (1 where it does not apply)
+static float target_dyn(const Surface* s) {
+    if (g_dyn_frame == 1.0f || s->fmt.compressed || s->mips > 1 || s->slices > 1) return 1.0f;
+    uint32_t width,height;
+    if(mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
+    return g_dyn_frame;
 }
 bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) {
     Surface s;
@@ -153,6 +177,7 @@ static id<MTLTexture> make_texture(Surface* s, MTLTextureType type, bool forRend
         scale = 1.0f;
         ax = ay = 1.0f;
     }
+    const float dyn = forRendering && !is1D && type != MTLTextureType3D ? target_dyn(s) : 1.0f;
     MTLTextureDescriptor* td = [MTLTextureDescriptor new];
     td.textureType = type;
     td.pixelFormat = s->fmt.pixel;
@@ -168,6 +193,7 @@ static id<MTLTexture> make_texture(Surface* s, MTLTextureType type, bool forRend
     id<MTLTexture> t = [R.device newTextureWithDescriptor:td];
     if (t) {
         s->scale = scale;
+        s->dyn = dyn;
         s->ax = ax;
         s->ay = ay;
         s->sx = (float)pw / s->width;
@@ -178,21 +204,46 @@ static id<MTLTexture> make_texture(Surface* s, MTLTextureType type, bool forRend
 
 // a render target made at another factor (the setting changed, or a CPU texture now rendered to):
 // reallocate it at the current one, keeping its contents (filtered)
+// Dynamic resolution: a render target changing scale keeps its previous texture (two: the levels next to
+// the current one, as the controller steps one level at a time), and a change back to a kept scale takes it again instead of
+// creating a texture: no allocation while the scale moves between recent levels. Off: none are kept.
 static Surface* rescale(Surface* s) {
     float want = target_scale(s), ax, ay;
     target_aspect(s, ax, ay);
     if ((s->scale == want && s->ax == ax && s->ay == ay) || !s->tex || s->tex.textureType == MTLTextureType3D) return s;
     id<MTLTexture> old = s->tex;
-    float osx = s->sx, osy = s->sy, oscale = s->scale, oax = s->ax, oay = s->ay;
-    id<MTLTexture> t = make_texture(s, old.textureType, true, want, ax, ay);
-    if (!t) { s->sx = osx; s->sy = osy; s->scale = oscale; s->ax = oax; s->ay = oay; return s; }
+    float osx = s->sx, osy = s->sy, oscale = s->scale, oax = s->ax, oay = s->ay, odyn = s->dyn;
+    const bool keep = dynres::on();
+    if (!keep && !s->spares.empty()) { g_spare_textures -= s->spares.size(); s->spares.clear(); }
+    id<MTLTexture> t = nil;
+    if (keep)
+        for (size_t i = 0; i < s->spares.size(); i++) {
+            Surface::Kept& k = s->spares[i];
+            if (k.scale != want || k.ax != ax || k.ay != ay || k.tex.textureType != old.textureType) continue;
+            t = k.tex;
+            s->scale = k.scale; s->dyn = k.dyn; s->ax = k.ax; s->ay = k.ay; s->sx = k.sx; s->sy = k.sy;
+            s->spares.erase(s->spares.begin() + i);
+            g_spare_textures--;
+            break;
+        }
+    const bool reused = t != nil;
+    if (!t) {
+        t = make_texture(s, old.textureType, true, want, ax, ay);
+        if (!t) { s->sx = osx; s->sy = osy; s->scale = oscale; s->ax = oax; s->ay = oay; s->dyn = odyn; return s; }
+        if (keep) dynres::count_created();
+    } else dynres::count_reused();
     end_encoder();
     resample(old, t, s->fmt, old.textureType == MTLTextureType2DArray ? (uint32_t)old.arrayLength : 1);
     s->tex = t;
+    if (keep) {
+        s->spares.insert(s->spares.begin(), Surface::Kept{old, oscale, odyn, oax, oay, osx, osy});
+        g_spare_textures++;
+        while (s->spares.size() > size_t(2)) { s->spares.pop_back(); g_spare_textures--; }
+    }
     forget_texture_views();
     if (getenv("WWHD_LOG_RESCALE"))
-        LOG("[gfx] rescaled %08X %ux%u fmt %X to %lux%lu", s->addr, s->width, s->height, s->format, (unsigned long)t.width,
-            (unsigned long)t.height);
+        LOG("[gfx] rescaled %08X %ux%u fmt %X to %lux%lu (%s)", s->addr, s->width, s->height, s->format, (unsigned long)t.width,
+            (unsigned long)t.height, reused ? "kept texture" : "new texture");
     return s;
 }
 
@@ -910,6 +961,7 @@ void write_back_linear_targets() {
         if (!s->gpuWritten || s->writtenBackSeq == s->writeSeq || !s->tex) continue;
         s->writtenBackSeq = s->writeSeq;
         if (s->slices != 1 || !can_write_back(s)) continue;
+        if (bgshaders::enabled()) bgshaders::tracker().read_back(s->addr, R.frame);  // read by the CPU: draws stay exact
         const uint32_t addr = s->addr;
         const uint32_t bytes = s->fmt.bytesPerBlock, pitch = std::max(s->pitch, s->width);
         const uint64_t r0 = rprof::now_ns();
@@ -940,6 +992,8 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
         auto key = [&](Surface* x) { return std::make_pair(x->format == (uint32_t)s->format.value(), x->writeSeq); };
         if (!gpuSrc || key(c) > key(gpuSrc)) gpuSrc = c;
     }
+    // Shader compile (background_shaders.h): a target copied from now and then keeps its draws exact
+    if (gpuSrc && bgshaders::enabled()) bgshaders::tracker().copied(gpuSrc->addr, R.frame);
     if (gpuSrc) {
         Surface* src = adopt_newer_alias(gpuSrc);
         SurfaceDesc dd;
@@ -1011,6 +1065,7 @@ namespace gfx {
 // targets keep their GPU contents; the next frame redraws them)
 void ss_reset_surfaces() {
     R.mainDepthAddr = 0;
+    bgshaders::tracker().forget();
     for (auto& [a, s] : R.surfaces) {
         s->dirty = true;
         s->lastCheckedFrame = ~0ull;

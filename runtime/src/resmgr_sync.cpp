@@ -30,10 +30,12 @@
 
 #include "guest_addr.h"
 #include "runtime.h"
+#include "interp.h"
 
 extern "C" void f_02613394_orig(Cpu* c);
 extern "C" void f_0260C67C_orig(Cpu* c);
 extern "C" void f_0275F808_orig(Cpu* c);
+extern "C" void f_0260C74C_orig(Cpu* c);
 
 namespace {
 constexpr uint32_t kRequestState = 0x11248;  // 1 request, 2 permanent packs, 0 idle
@@ -97,4 +99,17 @@ extern "C" void hook_0275F808(Cpu* c) {
         BlockingScope b;
         std::this_thread::sleep_for(std::chrono::milliseconds(g_mid_delay_ms));
     }
+}
+
+// ResLoadTask::calc (0260C74C): a sead task of its own, calced by the framework on every frame like
+// the game's frame task (the per-frame function 0203593C), and before it. Each calc moves the load
+// queue one step on (startLoad, waitLoad -> finish, next), so with frame interpolation's hold
+// passes an archive (an island's LOD model: lod_bg, a stage's archives on a scene change) was ready
+// one or more logic steps earlier than at 30 fps, and the game's logic took another course. On hold
+// passes the load task waits: it calcs once per 30 Hz step, in the frame of the step's logic, as at
+// 30 fps. debug: WWHD_INTERP_LOAD_STEP=0 calcs it on every frame as before
+extern "C" void hook_0260C74C(Cpu* c) {
+    static const bool every_frame = getenv("WWHD_INTERP_LOAD_STEP") && !atoi(getenv("WWHD_INTERP_LOAD_STEP"));
+    if (!every_frame && interp::frame_is_hold()) return;
+    f_0260C74C_orig(c);
 }

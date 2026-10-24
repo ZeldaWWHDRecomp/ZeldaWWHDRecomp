@@ -1,0 +1,73 @@
+{
+  "game_pieces_format": 1,
+  "set": "cyclops-reef",
+  "label": "Cyclops Reef ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room24.szs",
+    "room": 24
+  },
+  "memory": {
+    "archive_bytes": 2117632,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "cyclops-reef",
+      "since": 5,
+      "category": "Islands",
+      "label": "Cyclops Reef ground",
+      "description": "a ring of stepped orange rock walls around a lagoon with a small islet",
+      "volume": [
+        13926,
+        -1100,
+        13934,
+        26304,
+        1708,
+        26204
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "sotojima7",
+          "suberi",
+          "sotojima1",
+          "soko_stop_A",
+          "soko_stop_B",
+          "sotojima",
+          "nakajima"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD24.szs",
+        "triangles": 1188
+      },
+      "expect": {
+        "triangles": [
+          1188
+        ],
+        "textures": [
+          [
+            "Txa_iwakabe_tisou_orange",
+            "Txq_arukuiwakabe_orange",
+            "Txq_ueiwa_orange"
+          ]
+        ],
+        "collision_triangles": 1122
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

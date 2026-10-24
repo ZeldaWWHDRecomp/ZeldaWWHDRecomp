@@ -16,13 +16,16 @@ to the mod's data folder. It never copies input bytes. Its execution requires
 the same native-code confirmation as executable mods and the player-installed
 Python command from `guest-sdk.json`.
 
-To include the real heart-ticker guest example, first compile it with a PowerPC
-capable clang and lld:
+To include the real heart-ticker guest example (`heart-ticker` in the mod repository,
+ZeldaWWHDMods), first compile it with a PowerPC capable clang and lld:
 
 ```sh
-make -C examples/guest-mods heart-ticker/mod.elf CLANG=clang LLD=ld.lld
+H=../ZeldaWWHDMods/heart-ticker
+clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib \
+  -fno-jump-tables -ffunction-sections -fdata-sections -Iruntime/guest/include -c $H/mod.c -o build/heart-ticker.o
+ld.lld -m elf32ppc -r build/heart-ticker.o -o build/heart-ticker.elf
 python3 tools/catalogue/make_pilots.py --out build/catalogue-pilots \
-  --heart-elf examples/guest-mods/heart-ticker/mod.elf
+  --heart-elf build/heart-ticker.elf --heart-source $H
 ```
 
 The guest package contains the ELF, its authored source and the repository's MPL

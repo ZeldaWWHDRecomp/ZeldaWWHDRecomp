@@ -63,14 +63,19 @@ std::optional<Chest> chest_of(uint32_t save_no) {
     return std::nullopt;
 }
 
+void (*g_icon)(uint16_t, const std::string&, bool) = nullptr;
 void disarm_locked() {
-    if (g_pending.armed) story_mail::item_get_text(0, nullptr);
+    if (g_pending.armed) {
+        story_mail::item_get_text(0, nullptr);
+        if (g_icon) g_icon(0, {}, false);
+    }
     g_pending = {};
 }
 
 }  // namespace
 
 void set_item_get_next(void (*next)(Cpu*), void (*original)(Cpu*, uint32_t)) { g_next = next, g_original = original; }
+void set_icon_presenter(void (*icon)(uint16_t, const std::string&, bool)) { g_icon = icon; }
 void note_placed_chests() { g_placed_chests = true; }
 bool placed_chests() { return g_placed_chests; }
 void set_placed_chest(bool (*placed)(uint32_t, std::string&, std::string&)) { g_placed = placed; }
@@ -126,6 +131,7 @@ void create_item(Cpu* c) {
     LOG("[treasure] %s: chart \"%s\"'s chest holds item \"%s\"%s", chest->mod.c_str(), chest->chart.c_str(), item->id.c_str(),
         caption ? " (the get message can't be replaced now: the item's caption names it)" : "");
     story_items::chest_hold_up(item->key, true);  // "hold_up": the stand-in shows the item's own model
+    if (g_icon) g_icon(item->key, item->icon_path, true);  // otherwise (or until the model is ready): its icon
     c->r[4] = kStandIn;
     story_treasure::original(c, kCreateItemForTrBoxDemo);
 }

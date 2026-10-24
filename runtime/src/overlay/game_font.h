@@ -11,6 +11,11 @@
 
 namespace game_font {
 
+// Nominal dimensions used to scale a text pane's font size. These differ
+// from a glyph bitmap's cell height (which includes the font's border).
+struct Metrics { int width = 0, height = 0; };
+Metrics message_metrics(int language);
+
 using Glyphs = std::unordered_set<uint32_t>;  // code points (the font maps UTF-16 units)
 
 // The font's characters for the swkbd language (0 Japanese, 1 English, 2 French, ...): null when the
@@ -21,10 +26,10 @@ std::shared_ptr<const Glyphs> name_glyphs(int language);
 // The characters of the message font (CKingMsg.bffnt) in a 2D language pack file
 // (permanent_2d_*.pack): null with the reason in `why` when it can't be read. Also used by the
 // right-to-left text support (rtl_text_hooks.cpp) on the pack the game actually opened.
-std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why);
+std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why, Metrics* metrics = nullptr);
 
 // The code points a BFFNT (Wii U / 3DS font, either byte order) maps, from its CMAP blocks; false if
 // the data is no font. Exposed for tests.
-bool parse_bffnt(const uint8_t* data, size_t size, Glyphs& out);
+bool parse_bffnt(const uint8_t* data, size_t size, Glyphs& out, Metrics* metrics = nullptr);
 
 }  // namespace game_font

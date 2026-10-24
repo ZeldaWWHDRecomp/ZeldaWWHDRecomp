@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Statically recompile a Wii U RPX into C.
 
-usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--decomp-hooks FILE]
+usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--decomp-hooks FILE] [--ppc-nan-propagation]
 
 The rpx is identified by its SHA-256 (tools/recomp/builds.py). Functions are named by their
 *canonical* (USA) address, so the runtime refers to the same f_XXXXXXXX whichever build of the game
@@ -20,11 +20,20 @@ listed in g_recomp_decomp_kept (table.c), so the runtime keeps it recompiled. FI
 OUTDIR/decomp_hooks.txt (CMakeLists.txt checks that the build's list matches). USA build only (the
 decompiled code uses the USA build's addresses).
 
+--ppc-nan-propagation (or WWHD_RECOMP_PPC_NAN=1): verification builds only, off for the game port. The
+arithmetic float instructions (fadd fsub fmul fdiv fmadd fmsub fnmadd fnmsub, their single forms and the
+paired-single ps_add ps_sub ps_mul ps_div ps_madd ps_msub ps_nmadd ps_nmsub ps_muls0/1 ps_madds0/1
+ps_sum0/1) return the NaN the PowerPC returns: frA, else frB, else frC (fmadd family: A, B, C), quieted,
+and the default QNaN 0x7FF8000000000000 for an invalid operation (tools/recomp/ppc_nan.h, copied to
+OUTDIR and included by funcs.h). Without it the host compiler's operand order decides which of two NaNs
+survives. Off, the output is byte for byte what it was before the option existed.
+
 Code-quality passes (each on by default; the variable set to 0 when generating turns it off):
   WWHD_RECOMP_CRLIVE       condition-register liveness: compares store only the CR bits read later (crlive.py)
   WWHD_RECOMP_LEAF         leaf functions keep guest registers and CR bits in C locals (leaflocal.py)
   WWHD_RECOMP_NONLEAF      functions with calls keep guest registers in C locals between calls (leaflocal.py)
   WWHD_RECOMP_GQR          paired-single loads/stores through GQRs the game never writes skip the GQR check
+  WWHD_RECOMP_RAWSTORE     an stfs of a register still holding an lfs value stores the loaded word (rawstore.py)
 WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes (the
 plain c->r[N] form that tools/true60 and tools/verify read).
 Checking builds (set to 1): WWHD_RECOMP_CR_CHECK (a dropped CR bit that is read aborts),
@@ -56,6 +65,7 @@ from rpx import R_PPC_ADDR16_HA, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI
 import ppc2c
 import crlive
 import leaflocal
+import rawstore
 
 
 class _Output(io.StringIO):
@@ -92,6 +102,8 @@ NONLEAF = ppc2c.pass_on("WWHD_RECOMP_NONLEAF")
 # paired-single loads and stores through GQRs the game never writes skip the GQR check
 # (static_float_gqrs): on unless WWHD_RECOMP_GQR=0
 GQR_STATIC = ppc2c.pass_on("WWHD_RECOMP_GQR")
+# lfs -> stfs copies store the loaded word, bit-identical (rawstore.py): on unless WWHD_RECOMP_RAWSTORE=0
+RAWSTORE = ppc2c.pass_on("WWHD_RECOMP_RAWSTORE")
 
 
 def unknown_build_message(path):
@@ -120,6 +132,9 @@ DATA_IMPORT_STRIDE = 0x1000
 
 
 class Recompiler:
+    raw_stores = 0     # rawstore.py statistics (report.txt)
+    single_stores = 0
+
     def __init__(self, path, build=None, mod_hooks=False, decomp_hooks=None):
         """`build` is which build of the game `path` is (tools/recomp/builds.py); by default it is
         identified by its SHA-256, and an rpx that is none of them is refused."""
@@ -333,6 +348,11 @@ class Recompiler:
             # checking build: plain functions store every CR bit, but they still check what they read
             # (a bit another function dropped)
             body = [(a, w, crlive.rewrite(s, None, 0, True, a)) for a, w, s in body]
+        raws = set()
+        if RAWSTORE:
+            body, raws = rawstore.transform(body, self.labels, self.sites)
+            self.raw_stores += sum(1 for _, _, s in body if "st32(ea, fw" in s)
+            self.single_stores += sum(1 for _, _, s in body if "st32(ea, f32_as_u32((float)" in s)
         # restrict: guest memory never aliases the register file, so the compiler may keep
         # registers in host registers across guest loads/stores
         name = self.sym(start)
@@ -346,6 +366,8 @@ class Recompiler:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
             # port's own hooks (interpolation, true 60) stay outermost and mods hook the game's code
             out.append("    PPC_MOD_HOOK(%d, 0x%08Xu);" % (self.ordinal[start], start))
+        if raws:
+            out.append("    uint32_t %s;" % ", ".join("fw%d" % n for n in sorted(raws)))
         tail_wb = ""
         stmts = [s for _, _, s in body]
         if LEAF and not plain and leaflocal.eligible(stmts):
@@ -401,6 +423,9 @@ class Recompiler:
                 f.write("\n\n".join(funcs))
                 f.write("\n")
         self.write_headers(outdir)
+        if ppc2c.NAN_PROPAGATION:  # the helpers, next to funcs.h (the decomp's verify build has its own runtime)
+            with _Output(os.path.join(outdir, "ppc_nan.h")) as f:
+                f.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppc_nan.h"), encoding="utf-8").read())
         self.write_report(outdir, len(files))
 
     def static_float_gqrs(self):
@@ -425,6 +450,8 @@ class Recompiler:
             gqr = ("#define PPC_GQR_STATIC_FLOAT 0x%02X\n" % self.static_float_gqrs()
                    if GQR_STATIC and not self.mod_hooks else "")
             f.write('#pragma once\n%s%s#include "ppc.h"\n\n' % ("#define PPC_CR_CHECK 1\n" if CR_CHECK else "", gqr))
+            if ppc2c.NAN_PROPAGATION:  # --ppc-nan-propagation: the helpers the float instructions call
+                f.write('#include "ppc_nan.h"\n\n')
             for e in self.sorted_entries:
                 f.write("void f_%08X(Cpu* __restrict c);\n" % self.sym(e))
             f.write("\n/* hooked functions: hook_X is implemented in the runtime, f_X_orig is the game's code */\n")
@@ -528,6 +555,8 @@ class Recompiler:
                     f.write("  decomp kept: %08X %s\n" % (a, why))
             f.write("functions: %d\nfiles: %d\nfixpoint rounds: %d\n" % (len(self.sorted_entries), nfiles, self.fixpoint_rounds))
             f.write("imports used: %d of %d\n" % (len(self.used_imports), len(self.imports)))
+            if ppc2c.NAN_PROPAGATION:
+                f.write("PowerPC NaN propagation: on (verification build, ppc_nan.h)\n")
             # only with the passes on: with them off (WWHD_RECOMP_PLAIN=1) every output file is the same
             # as without them
             if CRLIVE and not self.mod_hooks:
@@ -536,6 +565,8 @@ class Recompiler:
             if (LEAF or NONLEAF) and not self.mod_hooks:
                 f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
                 f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
+            if RAWSTORE:
+                f.write("raw lfs->stfs copies (rawstore.py): %d, stores of single results: %d\n" % (self.raw_stores, self.single_stores))
             f.write("unhandled instruction kinds:\n")
             for k, v in self.unhandled.most_common():
                 f.write("  %6d  %s\n" % (v, k))
@@ -551,7 +582,10 @@ if __name__ == "__main__":
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
     ap.add_argument("--decomp-hooks", help="the decomp build's function list (tools/decomp_build/gen.py)")
+    ap.add_argument("--ppc-nan-propagation", action="store_true", default=os.environ.get("WWHD_RECOMP_PPC_NAN") == "1",
+                    help="verification builds: float instructions return the NaN operand the PowerPC would (ppc_nan.h)")
     a = ap.parse_args()
+    ppc2c.NAN_PROPAGATION = a.ppc_nan_propagation
     build = None
     if a.build:
         build = game_builds.by_name(a.build)

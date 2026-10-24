@@ -33,7 +33,7 @@ std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t he
 bool record_screenshot(Screen& screen,Buffer& buffer,uint32_t& width,uint32_t& height,bool& bgra);
 // the gameplay mod HUDs (climb's stamina wheel, the run/swim boost's bar), drawn into the TV scan
 // image (as mods/mod_hud.mm does on Metal)
-void draw_mod_overlay(Surface& scan);
+void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent);
 // capture.cpp: a colour surface read back as RGBA8 (encodeSrgb: linear values to display encoding)
 std::vector<uint8_t> read_surface_rgba(Surface& source,bool encodeSrgb);
 // Swapchain replacement calls reset only after the device is idle. Views and

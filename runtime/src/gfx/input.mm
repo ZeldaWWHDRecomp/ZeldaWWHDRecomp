@@ -1,3 +1,4 @@
+#include "file_select_quit.h"
 #include "platform/process_peak_rss.h"
 #include "platform/present_observer.h"
 #include "../mods/fast_forward.h"
@@ -35,6 +36,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
 #include "../fixed_seed.h"
+#include "../dsweep.h"
 
 #include <memory>
 #include <string>
@@ -55,8 +57,23 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256];
-static std::atomic<bool> g_gameplay_focus{false};
+static std::atomic<bool> g_gameplay_focus{false}, g_window_focus{false};
 bool gameplay_focused() { return g_gameplay_focus.load(std::memory_order_relaxed); }
+bool window_focused() { return g_window_focus.load(std::memory_order_relaxed); }
+// ---- controllers in the background (issue #267)
+// GameController.framework stops sending controller input to an app that is not in front unless
+// GCController.shouldMonitorBackgroundEvents is set (macOS 11.3+); Controls > "Controller input when
+// the game isn't focused" sets it. Keyboard and mouse are released on focus loss either way.
+bool background_controllers() { return input_map::background_controllers(); }
+static void apply_background_controllers() {  // main thread
+    static int applied = -1;
+    const bool on = background_controllers();
+    if (applied == (int)on) return;
+    if (@available(macOS 11.3, *)) GCController.shouldMonitorBackgroundEvents = on;
+    else if (on) LOG("[input] controller input in the background needs macOS 11.3 or later");
+    if (applied >= 0 || on) LOG("[input] controller input while the game isn't focused: %s", on ? "on" : "off");
+    applied = on;
+}
 static PadState g_pad;  // controller part, refreshed on the main thread
 static bool g_touch;
 static float g_tx, g_ty;
@@ -436,6 +453,7 @@ void init() {
                                                       object:nil queue:nil usingBlock:^(NSNotification*) {
         release_keys();
     }];
+    apply_background_controllers();  // before discovery; the poll below follows later changes
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
@@ -458,6 +476,8 @@ void init() {
         // one gate per controller as on the SDL host (overlay/release_gate.h, issue #153); the overlay
         // polls the Home / Select shortcut on its frame (and the platform shortcuts: an input one took
         // counts as captured, overlay/extensions.h)
+        g_window_focus.store(NSApp.isActive, std::memory_order_relaxed);
+        apply_background_controllers();
         static overlay::DeviceGates<uintptr_t> gates;
         gates.combine(devices_values(), overlay::captures() || overlay::shortcut_took_input(), v, game);
         input_map::consume_shortcut_buttons(input_map::current(), v, game);
@@ -667,6 +687,10 @@ static void apply_scenario(PadState& s) {
         }
 #endif
         process_peak_rss::write_endpoint(render::frame_count());
+        // The headless harness stops the process as soon as it sees test_done.
+        // Publish complete trace records before that marker, rather than losing
+        // buffered Link/camera records or leaving a partial final line.
+        fflush(nullptr);
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
     // Opt-in raw controller fixture: exercise bindings and the dead zone before guest delivery.
@@ -733,6 +757,7 @@ PadState read() {
     if (no_host) s = PadState{};
     for (auto& p : script)
         if (frame >= p.from && frame <= p.to) s.buttons |= p.bits;
+    s.buttons |= dsweep::pad_buttons(frame);  // a title D-sweep (setup) passes the boot's notice screen
     for (auto& p : sticks)
         if (frame >= p.from && frame <= p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : rsticks)
@@ -759,6 +784,7 @@ PadState read() {
     } else {
         mods::quick_use_filter_pad(s);  // final merged/polled pad, never overlay-owned input
     }
+    file_select_quit::filter(s);
     return s;
 }
 

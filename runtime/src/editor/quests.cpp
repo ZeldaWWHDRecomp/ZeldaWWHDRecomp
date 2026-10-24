@@ -255,12 +255,50 @@ std::vector<Edge> edges_of(const Value& m, const Value& q) {
                 Edge e;
                 e.from = from;
                 e.to = action == "quest_done" ? std::string("end") : node_of(whole(t.get("step")) ? unsigned(t.get("step").number) : 0);
+                // a scene that starts at a place (area or room): it leads on from the step before the one it sets
+                const std::string type = trig.get("type").string();
+                if (from == "start" && (type == "area" || type == "room") && action == "quest_step" && whole(t.get("step"))) {
+                    unsigned before = 0;
+                    for (unsigned n : steps)
+                        if (n < unsigned(t.get("step").number)) before = n;
+                    if (before) e.from = node_of(before);
+                }
                 e.via_kind = "scene";
                 e.via = sc.get("id").string();
                 e.label = (salvage.empty() ? std::string() : "salvage chart " + salvage + ": ") + "scene " + e.via + " ends";
                 actions_of(st.get("then"), quest, e);
                 out.push_back(std::move(e));
             }
+    }
+    // the package's stages (mod_stages.h): a chest opened, a darknut defeated, an entry or a warp taken runs its
+    // "then"; they happen in the stage's own order, so each leads on from the step before the one it sets
+    for (const auto& st : m.get("stages").array) {
+        auto stage_edges = [&](const Value& then, const std::string& kind, const std::string& id, const std::string& label) {
+            for (const auto& t : then.array) {
+                const std::string action = t.get("action").string();
+                if ((action != "quest_step" && action != "quest_done") || t.get("id").string() != quest) continue;
+                Edge e;
+                const unsigned to = whole(t.get("step")) ? unsigned(t.get("step").number) : 0;
+                unsigned before = 0;
+                for (unsigned n : steps)
+                    if (action == "quest_done" ? true : n < to) before = n;
+                e.from = before ? node_of(before) : std::string("start");
+                e.to = action == "quest_done" ? std::string("end") : node_of(to);
+                e.via_kind = kind;
+                e.via = id;
+                e.label = label;
+                actions_of(then, quest, e);
+                if (action == "quest_done") e.rewards.array.push_back(badge("done", "finishes the quest"));
+                out.push_back(std::move(e));
+            }
+        };
+        const std::string sid = st.get("id").string();
+        for (const auto& r : st.get("rooms").array)
+            for (const auto& a : r.get("actors").array)
+                stage_edges(a.get("then"), "stage", a.get("id").string(),
+                            "stage " + sid + ": " + a.get("actor").string() + " " + a.get("id").string() + (a.get("actor").string() == "chest" ? " opened" : " defeated"));
+        for (const auto& en : st.get("entries").array) stage_edges(en.get("then"), "stage", en.get("id").string(), "stage " + sid + ": entry " + en.get("id").string() + " taken");
+        for (const auto& w : st.get("warps").array) stage_edges(w.get("then"), "stage", w.get("id").string(), "stage " + sid + ": warp " + w.get("id").string() + " taken");
     }
     // a step's resident talk finishes the quest
     for (const auto& s : q.get("steps").array) {

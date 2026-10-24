@@ -5,6 +5,7 @@
 #include "mods/demo_stb.h"
 #include "mods/demo_attach_math.h"
 #include "mods/demo_start_gate.h"
+#include "mods/story_scene_needs.h"
 
 #include <cmath>
 
@@ -80,7 +81,9 @@ int main() {
     // refusals with reasons
     assert(has(refused(R"({"type":"demo","frames":0})"), "frames"));
     assert(has(refused(R"({"type":"demo","frames":30,"bogus":1})"), "unknown demo field"));
-    assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","model":{"archive":"Demo04","file":"ka.bdl"}}]})"), "invalid archive name"));
+    assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","model":{"archive":"Demo 4","file":"ka.bdl"}}]})"), "invalid archive name"));
+    // the game's demo archives lend their files too (the demo itself plays from the port's virtual archive)
+    assert(parsed(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Dk","clips":[{"frame":0,"archive":"Demo04","file":"04_dk_cut08_esc.bck"}]}]})").actors[0].clips[0].resource.archive == "Demo04");
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"d_act1"}]})"), "invalid stage actor name"));
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Dk","position":{"keys":[{"frame":20,"value":{"x":0,"y":0,"z":0}},{"frame":10,"value":{"x":0,"y":0,"z":0}}]}}]})"), "key frames must increase"));
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Link","clips":[{"frame":0,"archive":"Link","file":"a.bck"}]}]})"), "Link plays demo modes"));
@@ -106,8 +109,64 @@ int main() {
     assert(has(ct, "== JACT \"MA00\"\n  f0 TXYZ = curves 0,1,2\n"));
     assert(has(ct, "  f45 ANIMATION = u32 512\n  f45 ANIM_MODE = int 1\n  f45 ANIM_FRAME = rate 30\n  f45 reserved 129 000000040000000032008f39020000\n"));
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Link","modes":[{"frame":0,"mode":"fly"}]}]})"), "unknown Link mode"));
+    // a grab: the bird's one-shot clip then its loop; Link's clips with his face, held end, and a blend
+    {
+        const D::Demo g = parsed(R"({"type":"demo","frames":120,
+          "actors":[{"id":"bird","actor":"Dk","clips":[{"frame":0,"archive":"Demo04","file":"04_dk_cut08_hokaku.bck","loop":false},
+                                                     {"frame":30,"archive":"Demo04","file":"04_dk_cut08_esc.bck"}]},
+                    {"id":"hero","actor":"Link","modes":[{"frame":0,"clip":"04_cl_cut7_odoroki.bck","loop":false,"blend":4},
+                                                         {"frame":30,"clip":"07b_cl_cut8_hoba.bck","btp":"07b_cl_cut8_hoba.btp","btk":"07b_cl_cut8.btk"}]}]})");
+        assert(!g.actors[0].clips[0].loop && g.actors[0].clips[1].loop);
+        assert(!g.actors[1].modes[0].loop && g.actors[1].modes[0].blend == 4 && g.actors[1].modes[1].blend == -1 && g.actors[1].modes[1].btk == "07b_cl_cut8.btk");
+        D::Compiled gc;
+        auto ids = [](const D::Resource& r) -> int32_t {
+            if (r.archive == "Demo04") return r.file == "04_dk_cut08_hokaku.bck" ? 0x38 : 0x35;
+            if (r.file == "04_cl_cut7_odoroki.bck") return 0x77;
+            if (r.file == "07b_cl_cut8_hoba.bck") return 0x8a;
+            if (r.file == "07b_cl_cut8_hoba.btp") return 0x67;
+            if (r.file == "07b_cl_cut8.btk") return 0x6a;
+            return -1;
+        };
+        assert(D::compile(g, ids, gc, why));
+        demo_stb::File gf;
+        assert(demo_stb::parse(gc.stb, gf, why));
+        const std::string gt = demo_stb::dump(gf);
+        assert(has(gt, "  f0 ANIMATION = u32 65536\n  f0 ANIM_MODE = int 3\n"));
+        assert(has(gt, "  f30 ANIMATION = u32 65537\n  f30 ANIM_MODE = int 1\n"));
+        // Link: {bck} with hands and a 4-frame blend (the game's 3-byte form); {bck, btp, btk} as data id 1 (the retail layout)
+        assert(has(gt, "  f0 ANIMATION = u32 512\n  f0 ANIM_MODE = int 3\n  f0 ANIM_FRAME = rate 30\n  f0 reserved 129 00000004000000003200773903000004\n"));
+        assert(has(gt, "  f30 reserved 129 00000004000000013a03008a0067006a39020000"));
+        assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Link","modes":[{"frame":0,"clip":"a.bck","btp":"a.btp"}]}]})"), "both btp"));
+        assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Link","modes":[{"frame":0,"mode":"wait","loop":false}]}]})"), "go with a Link clip"));
+        assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Link","modes":[{"frame":0,"clip":"a.bck","blend":61}]}]})"), "blend must be 0..60"));
+        assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Dk","clips":[{"frame":0,"archive":"Dk","file":"fly1.bck","loop":1}]}]})"), "loop must be true or false"));
+        D::Compiled bad;
+        assert(!D::compile(g, [&](const D::Resource& r) { return r.file == "07b_cl_cut8.btk" ? -1 : ids(r); }, bad, why) && has(why, "Link has no demo animation 07b_cl_cut8.btk"));
+    }
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","character":"x","spawn":false}]})"), "spawn and params are for game actors"));
     assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Dk","model":{"archive":"Dk","file":"dk.bdl"}}]})"), "one of actor, model or character"));
+    // a package of stages with a wordless scene stands on its own; text, sounds and story actions need the Story Notebook
+    {
+        namespace N = story_scene_needs;
+        auto needs = [](const char* j) { return N::needs_story(mods::json::parse(j)); };
+        assert(!needs(R"({"stages":[],"scenes":[{"id":"s","trigger":{"type":"area"},"steps":[{"type":"demo","frames":30},{"type":"fade","direction":"out","frames":10},{"type":"end","then":[{"action":"stage","id":"sky"}]}]}]})"));
+        assert(needs(R"({"scenes":[{"id":"s","steps":[{"type":"say","actor":"a","text":"hi","frames":10},{"type":"end"}]}]})"));
+        assert(needs(R"({"scenes":[{"id":"s","steps":[{"type":"demo","frames":30,"messages":[{"frame":1,"text":"hi"}]},{"type":"end"}]}]})"));
+        assert(needs(R"({"scenes":[{"id":"s","steps":[{"type":"end","then":[{"action":"give","id":"x"}]}]}]})"));
+        assert(needs(R"({"scenes":[{"id":"s","trigger":{"type":"talk","actor":"a"},"steps":[{"type":"end"}]}]})"));
+        assert(needs(R"({"actors":[]})") && !needs(R"({"stages":[]})"));
+        // the Story Notebook as an optional dependency
+        assert(N::story_optional(mods::json::parse(R"({"dependencies":[{"id":"story-notebook","optional":true}]})")));
+        assert(!N::story_optional(mods::json::parse(R"({"dependencies":[{"id":"story-notebook"}]})")));
+        assert(!N::story_optional(mods::json::parse(R"({})")));
+    }
+    // "spawn": "always": the demo's own copy even when the room has one (a room's actor may wait for its own event)
+    const D::Demo own = parsed(R"({"type":"demo","frames":30,"actors":[{"id":"bird","actor":"Dk","spawn":"always","params":2}]})");
+    assert(own.actors[0].own && own.actors[0].spawn && own.actors[0].params == 2);
+    D::Compiled oc;
+    assert(D::compile(own, [](const D::Resource&) -> int32_t { return -1; }, oc, why) && oc.cast.size() == 1 && oc.cast[0].own && oc.cast[0].params == 2);
+    assert(!cast.actors[0].own && !cc.cast[0].own);
+    assert(has(refused(R"({"type":"demo","frames":30,"actors":[{"id":"a","actor":"Dk","spawn":"sometimes"}]})"), "spawn must be true, false or \"always\""));
 
     // the event image that plays it: one PACKAGE staff, PLAY cut naming the STB file
     demo_event_image::Spec spec;
@@ -175,6 +234,27 @@ int main() {
         assert(demo_attach_math::pose(rolled, {}, {}, p, r, false) && near(r[2], 90));
         demo_attach_math::M34 broken = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
         assert(!demo_attach_math::pose(broken, {}, {}, p, r));
+        // an attach's blend: eased from where the actor was, angles the short way round (170 -> -170 passes 180)
+        {
+            const float from[3] = {0, 0, 0};
+            const int16_t from_a[3] = {0, int16_t(30947), 0};  // 170 degrees
+            float q[3] = {100, 50, -20};
+            int16_t qa[3] = {0, int16_t(-30947), 0};            // -170 degrees
+            demo_attach_math::blend(from, from_a, 0.5f, q, qa);
+            assert(std::fabs(q[0] - 50) < 1e-3f && std::fabs(q[1] - 25) < 1e-3f && qa[1] == -32768);
+            float z[3] = {100, 50, -20};
+            int16_t za[3] = {0, 0, 0};
+            demo_attach_math::blend(from, from_a, 0.f, z, za);
+            assert(z[0] == 0 && za[1] == 30947);
+            float o[3] = {100, 50, -20};
+            int16_t oa[3] = {0, 0, 0};
+            demo_attach_math::blend(from, from_a, 1.f, o, oa);
+            assert(o[0] == 100 && oa[1] == 0);
+        }
+        assert(parsed(R"({"type":"demo","frames":90,"actors":[{"id":"bird","actor":"Dk"},{"id":"hero","actor":"Link","modes":[{"frame":0,"clip":"a.bck"}]}],
+          "attach":[{"frame":10,"actor":"hero","to":"bird","joint":"j","blend":8}]})").attach[0].blend == 8);
+        assert(has(refused(R"({"type":"demo","frames":90,"actors":[{"id":"bird","actor":"Dk"},{"id":"hero","actor":"Link","modes":[{"frame":0,"clip":"a.bck"}]}],
+          "attach":[{"frame":10,"actor":"hero","to":"bird","joint":"j","blend":61}]})"), "attach blend must be 0..60"));
     }
 
     // phase 5: time and weather through the event's LIGHT staff
@@ -252,6 +332,24 @@ int main() {
         assert(g.step(true, true) == G::Step::GiveUp && !g.armed);  // never cleared: gives up
         g.arm();
         assert(g.step(false, true) == G::Step::GiveUp);  // another demo took over meanwhile
+    }
+    {
+        // issue #285: Link starts a demo at his first position key (world keys: the world; an origin:
+        // turned by the demo's angle around it), facing his first rotation key; without a position
+        // track he stays where he is
+        const D::Demo world = parsed(R"({"type":"demo","frames":120,"actors":[{"id":"link","actor":"Link",
+            "position":{"keys":[{"frame":0,"value":{"x":-1800,"y":95,"z":-199300}},{"frame":41,"value":{"x":-1500,"y":95,"z":-199300}}]}}]})");
+        auto start = D::link_start(world, {}, 0);
+        assert(start && start->position == (D::Vec{-1800, 95, -199300}) && !start->heading);
+        const D::Demo turned = parsed(R"({"type":"demo","frames":120,"origin":"link","angle":90,"actors":[{"id":"link","actor":"Link",
+            "position":{"keys":[{"frame":30,"value":{"x":100,"y":0,"z":0}}]},"rotation":{"keys":[{"frame":0,"value":{"x":0,"y":135,"z":0}}]},
+            "modes":[{"frame":0,"mode":"walk"}]}]})");
+        start = D::link_start(turned, {1000, 50, -2000}, 90);
+        assert(start && std::fabs(start->position.x - 1000) < 0.01f && start->position.y == 50 && std::fabs(start->position.z - (-2100)) < 0.01f);
+        assert(start->heading && std::fabs(*start->heading - (-135)) < 0.01f);  // 135 + 90, as -180..180
+        const D::Demo still = parsed(R"({"type":"demo","frames":120,"actors":[{"id":"link","actor":"Link","modes":[{"frame":0,"mode":"walk"}]},
+            {"id":"bird","actor":"Dk","position":{"keys":[{"frame":0,"value":{"x":1,"y":2,"z":3}}]}}]})");
+        assert(!D::link_start(still, {}, 0));
     }
     std::puts("demo_scene: ok");
     return 0;

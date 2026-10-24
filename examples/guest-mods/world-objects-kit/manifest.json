@@ -1,0 +1,49 @@
+{
+  "format_version": 1,
+  "id": "world-objects-kit",
+  "name": "Game materials island",
+  "version": "0.1.0",
+  "author": "Lukas S",
+  "description": "An original rock island near Dragon Roost Island, drawn with Dragon Roost's own rock, ash and wooden planks from your game files, with a lookout whose roof has a texture of its own.",
+  "game_id": "wwhd",
+  "kind": "content",
+  "content_dir": "content",
+  "experimental": true,
+  "minimum_manager_version": "1.5.0",
+  "dependencies": [
+    {
+      "id": "story-notebook",
+      "minimum_version": "0.0.0"
+    }
+  ],
+  "models": [
+    {"id": "rock", "kind": "kit", "source": "assets/rock.glb", "kit": {"stage": "sea", "room": 13}},
+    {"id": "rock-far", "kind": "kit", "source": "assets/rock-far.glb", "kit": {"stage": "sea", "room": 13}},
+    {"id": "lookout", "kind": "kit", "source": "assets/lookout.glb", "kit": {"stage": "sea", "room": 13}}
+  ],
+  "actors": [
+    {
+      "id": "rock",
+      "kind": "mod",
+      "model": "rock",
+      "behaviour": "static",
+      "group": "rock-isle",
+      "stage": "sea",
+      "room": 13,
+      "position": {"x": 214000, "y": 0, "z": -186000},
+      "collision": {"mesh": "rock"},
+      "distant": {"model": "rock-far"}
+    },
+    {
+      "id": "lookout",
+      "kind": "mod",
+      "model": "lookout",
+      "behaviour": "static",
+      "group": "rock-isle",
+      "stage": "sea",
+      "room": 13,
+      "position": {"x": 214450, "y": 600, "z": -185700},
+      "collision": {"mesh": "lookout"}
+    }
+  ]
+}

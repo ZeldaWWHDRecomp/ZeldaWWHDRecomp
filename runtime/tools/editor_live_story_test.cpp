@@ -69,11 +69,32 @@ void items_and_sections() {
                                    {"id": "map", "name": "Map", "icon": "icons/map.png"}]})");
     auto later = story_reload::restart_items(started, next);
     CHECK(later.size() == 2 && later[0] == "key (its icon)" && later[1] == "map (a new item)");
+    CHECK(story_reload::entry_id(later[1]) == "map" && story_reload::entry_why(later[1]) == "a new item");
     CHECK(story_reload::live_items(started, next) == std::vector<std::string>{"lamp"});
     next = json(R"({"items": [{"id": "key", "name": "Key", "icon": "icons/key.png", "held_model": "key"}]})");
     later = story_reload::restart_items(started, next);
     CHECK(later.size() == 2 && later[0] == "key (its hold_up)" && later[1] == "lamp (removed)");
     CHECK(story_reload::live_items(started, next).empty());
+    // live icon places (the editor's spare frames): a new item takes a spare place while there is one, an
+    // icon change of an item with a place is live; removed items, held models and hold_up still wait
+    {
+        const Value with_new = json(R"({"items": [{"id": "lamp", "name": "Lamp", "icon": "icons/lamp2.png"},
+                                                 {"id": "key", "name": "Key", "icon": "icons/key.png", "held_model": "key", "hold_up": true},
+                                                 {"id": "map", "name": "Map", "icon": "icons/map.png"},
+                                                 {"id": "rope", "name": "Rope", "icon": "icons/rope.png"}]})");
+        story_reload::LiveIcons live;
+        live.placed = [](const std::string& id) { return id == "lamp" || id == "key"; };
+        live.spare = 1;
+        auto l = story_reload::restart_items(started, with_new, live);
+        CHECK(l.size() == 1 && l[0] == "rope (a new item: the spare icon places are all in use)");
+        CHECK((story_reload::live_items(started, with_new, live) == std::vector<std::string>{"lamp", "key", "map"}));
+        // "map" bound since: both new ones fit with one spare left
+        live.placed = [](const std::string& id) { return id != "rope"; };
+        CHECK(story_reload::restart_items(started, with_new, live).empty());
+        const Value removed = json(R"({"items": [{"id": "key", "name": "Key", "icon": "icons/key.png", "held_model": "key2", "hold_up": true}]})");
+        l = story_reload::restart_items(started, removed, live);
+        CHECK(l.size() == 2 && l[0] == "key (its held model)" && l[1] == "lamp (removed)");
+    }
     // the sections
     CHECK(!story_reload::story_changed(json(R"({"actors": [1], "scenes": [1]})"), json(R"({"actors": [2], "scenes": [2]})")));
     for (const char* k : {"quests", "letters", "charts", "items"}) {

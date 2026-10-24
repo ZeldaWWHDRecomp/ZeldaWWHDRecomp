@@ -8,13 +8,16 @@
 namespace story_world_placement {
 struct Point {float x=0,y=0,z=0;};
 struct Bounds {Point minimum,maximum;};
-struct ProtectedBounds {std::string stage;int room=-1;std::string kind,id;Bounds bounds;};
-struct ProtectedRoute {std::string stage;int room=-1;std::string id;std::vector<Point> points;float radius=0;bool closed=false;};
+// a room collision triangle (kind "collision") also keeps its corners (`triangle`), so an object's own mesh can be
+// checked against the triangle itself rather than its bounds
+struct ProtectedBounds {std::string stage;int room=-1;std::string kind,id;Bounds bounds;bool triangle=false;std::array<Point,3> corners{};};
+// user: who follows the route when the layout says so ("boat": a boat of the island sails it, d_a_obj_ikada), else ""
+struct ProtectedRoute {std::string stage;int room=-1;std::string id;std::vector<Point> points;float radius=0;bool closed=false;std::string user;};
 struct Coverage {std::string stage;int room=-1;bool collision=false,routes=false,events=false;std::string reason;};
 struct CoverageRegion {std::string stage;int room=-1;Bounds bounds;};
 // One entry of the room's own layout (add_native_layout): what world objects and island buildings keep clear of
 // (check_building). The position is in world space; scale is the layout's three bytes (scaled tags only).
-struct LayoutEntry {std::string stage;int room=-1;std::string tag,name;Point position;uint8_t scale[3]{};bool scaled=false;unsigned index=0;uint32_t params=0;};
+struct LayoutEntry {std::string stage;int room=-1;std::string tag,name;Point position;uint8_t scale[3]{};bool scaled=false;unsigned index=0;uint32_t params=0;int16_t angle_x=0;};
 // Everything is in world space, as the game stores it: bounds (the room's collision triangles, and what the
 // caller adds: other world objects, the ship), routes (the layout's walking routes, kRouteHalfWidth wide),
 // layout (actors, tags, doors, chests, start points). One index serves world objects and island buildings.
@@ -31,8 +34,14 @@ bool transform_bounds(const Bounds&,Point position,Point rotation,Point scale,Bo
 // Everything in the way of world bounds: coverage and the room's square, the room's walls and ground (one
 // finding; resting on a floor is fine), other bounds the caller added, and what the layout needs kept clear
 // (check_building), each with `clearance` around it.
+// With `solid` (the object's own collision in world space, its bounds the Bounds given; issue #281), what the bounds
+// reach is checked against the object's own triangles: a layout entry's column, a route's corridor and other bounds
+// by their distance to its triangles (the same clearance), the room's walls and ground by a real crossing above the
+// object's base plus kGroundStep, as solids_overlap. An L-shaped object whose box covers a villager it doesn't
+// reach is then clear. Coverage and the room's square stay checked by the bounds.
 inline constexpr float kClearance=50;
-std::vector<Conflict> check(const std::string& stage,int room,const Bounds&,const Index&,float clearance=kClearance);
+struct Solid;
+std::vector<Conflict> check(const std::string& stage,int room,const Bounds&,const Index&,float clearance=kClearance,const Solid* solid=nullptr);
 struct SweepResult {Point allowed_delta;std::vector<Conflict> conflicts;bool blocked=false;};
 // Continuous horizontal motion of a fixed conservative wave/tilt envelope.
 // A nonzero vertical delta is refused. Earliest contact stops the blocked axis;
@@ -89,5 +98,5 @@ const char* keep_words(Keep);
 // words ("villager", "villager route", "chest", "door", "item", "switch", "cutscene area", "start point",
 // "object"), id the layout entry ("TGDR:KNOB00D:3"), message plain words, native the game's name. check()
 // includes these; coverage is checked by check().
-std::vector<Conflict> check_building(const std::string& stage,int room,const Bounds& footprint,const Index&,float margin=kBuildingMargin);
+std::vector<Conflict> check_building(const std::string& stage,int room,const Bounds& footprint,const Index&,float margin=kBuildingMargin,const Solid* solid=nullptr);
 }

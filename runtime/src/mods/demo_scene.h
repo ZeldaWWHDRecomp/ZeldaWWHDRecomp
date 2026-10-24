@@ -8,8 +8,9 @@
 //  "camera":{"eye":TRACK,"target":TRACK,"fovy":TRACK,"roll":TRACK},
 //  "actors":[{"id":"bird","actor":"Dk"|"Link"|"model":{"archive":"Kamome","file":"ka.bdl"},
 //             "position":TRACK,"rotation":TRACK,"scale":TRACK,
-//             "clips":[{"frame":0,"archive":"Dk","file":"fly1.bck","speed":1}],
-//             "modes":[{"frame":0,"mode":2,"data":"hex"}],          (Link: demo modes)
+//             "clips":[{"frame":0,"archive":"Dk","file":"fly1.bck","speed":1,"loop":true}],
+//             "modes":[{"frame":0,"mode":2,"data":"hex"},          (Link: demo modes)
+//                      {"frame":9,"clip":"x.bck","btp":"x.btp","btk":"x.btk","loop":false,"blend":5}],
 //             "data":[{"frame":0,"id":1,"bytes":"hex"}]}],           (raw actor data paragraphs)
 //  "sounds":[{"frame":30,"id":22820,"actor":"bird"|"position":{..},"volume":1,"pan":0.5}],
 //  "particles":[{"frame":50,"id":33059,"actor":"bird","joint":"j_dk_ashi_r3"|"position":{..}}],
@@ -19,6 +20,7 @@
 #pragma once
 #include "mod_json.h"
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -33,8 +35,18 @@ enum class Curve { Linear, Smooth, BSpline, Step };
 struct Key { uint32_t frame = 0; Vec value; bool operator==(const Key&) const = default; };
 struct Track { Curve curve = Curve::Linear; std::vector<Key> keys; bool operator==(const Track&) const = default; };  // scalars use value.x
 struct Resource { std::string archive, file; bool operator==(const Resource&) const = default; };
-struct Clip { uint32_t frame = 0; Resource resource; float speed = 1; bool operator==(const Clip&) const = default; };
-struct Mode { uint32_t frame = 0, mode = 0; std::vector<uint8_t> data; std::string clip; bool operator==(const Mode&) const = default; };  // clip: Link's own demo animation (.bck)
+// loop: the clip repeats (the demo's animation mode 1); false plays it once and holds its last frame (mode 3)
+struct Clip { uint32_t frame = 0; Resource resource; float speed = 1; bool loop = true; bool operator==(const Clip&) const = default; };
+// clip: Link's own demo animation (.bck), with loop as for Clip, his face animations (btp, btk: both or
+// neither, from the same archive) and blend (frames from his previous pose, 0..60; -1: the game's default)
+struct Mode {
+    uint32_t frame = 0, mode = 0;
+    std::vector<uint8_t> data;
+    std::string clip, btp, btk;
+    bool loop = true;
+    int32_t blend = -1;
+    bool operator==(const Mode&) const = default;
+};
 struct NamedClip { uint32_t frame = 0; std::string clip; bool loop = true; bool operator==(const NamedClip&) const = default; };  // a mod character's own clip
 struct Data { uint32_t frame = 0, id = 0; std::vector<uint8_t> bytes; bool operator==(const Data&) const = default; };
 struct Actor {
@@ -43,6 +55,7 @@ struct Actor {
     Resource model;         // Model
     std::string character;  // Character: an actor this mod placed (resident villager, mod actor, enemy) by its id
     bool spawn = true;      // Game: created for the demo when the room doesn't have one (and removed after)
+    bool own = false;       // Game ("spawn": "always"): created for the demo even when the room has one
     uint32_t params = 0;    // Game: the spawned actor's parameters
     std::vector<NamedClip> named_clips;  // Character: the mod actor's own clips
     Track position, rotation, scale;
@@ -62,6 +75,7 @@ struct Attach {
     std::string actor, to, joint;
     Vec offset, rotation;
     bool upright = false;
+    uint32_t blend = 0;    // frames over which the carried actor moves from where it is onto the joint (0: at once)
     bool fall = false;     // detach: the released actor falls to the ground (else it stays where it was let go)  // keep only the joint's heading (the carried actor stays upright, as in the game's Demo07)
     bool operator==(const Attach&) const = default;
 };
@@ -113,7 +127,28 @@ inline uint32_t link_mode(const std::string& name) {
     return 0;
 }
 inline constexpr const char* kLinkClipArchives[] = {"LkD00", "LkD01"};  // Link's demo animations (one is loaded at a time)
-struct Cast { std::string name; bool spawn = true; uint32_t params = 0; bool placed = false; Vec position; };  // a game actor the demo names
+// A point of the demo's own coordinates in the world: turned by the demo's angle (degrees, the game's
+// OffsetAngY) around the origin (OffsetPos), as the game places the tracks.
+inline Vec to_world(const Vec& origin, float angle, const Vec& v) {
+    const float a = angle * 3.14159265f / 180.f, cs = std::cos(a), sn = std::sin(a);
+    return {origin.x + v.x * cs + v.z * sn, origin.y + v.y, origin.z - v.x * sn + v.z * cs};
+}
+// Where Link stands when a demo with his position track starts: its first key, in the world, and his
+// heading (degrees) from the first rotation key (origin and angle as the demo started; none: the
+// world). The game moves Link onto his track only in a few of his demo modes (its own cutscenes start
+// with a placing mode); in wait, walk and the other modes he stays where he stood, or walks there from
+// wherever that is, so the port places him first.
+struct LinkStart { Vec position; std::optional<float> heading; };
+inline std::optional<LinkStart> link_start(const Demo& d, const Vec& origin, float angle) {
+    for (const auto& a : d.actors) {
+        if (a.kind != Actor::Kind::Link || a.position.keys.empty()) continue;
+        LinkStart s{to_world(origin, angle, a.position.keys.front().value), std::nullopt};
+        if (!a.rotation.keys.empty()) s.heading = std::remainder(a.rotation.keys.front().value.y + angle, 360.f);
+        return s;
+    }
+    return std::nullopt;
+}
+struct Cast { std::string name; bool spawn = true; uint32_t params = 0; bool placed = false; Vec position; bool own = false; };  // a game actor the demo names
 struct CharacterRef { std::string name, character; std::vector<NamedClip> clips; };                       // "MA00".. -> a mod-placed actor
 struct Compiled {
     std::vector<uint8_t> stb;

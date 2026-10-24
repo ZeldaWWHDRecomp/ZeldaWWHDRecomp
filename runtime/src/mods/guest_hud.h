@@ -45,8 +45,36 @@ struct List {
     size_t text_bytes=0,vertices=0;
     uint32_t clip_depth=0;
     bool invalid=false;
+    uint64_t step=0;  // the logic step it was committed in (Store::set_step)
     std::vector<Command> commands;
 };
+// Frame interpolation: a list committed once per logic step is drawn between the step before and this
+// one (positions, sizes, thickness, rotation) when both lists have the same elements (kind, anchor,
+// blend, text, picture, colour aside) in the same order; an element that moved more than `kSnap` units
+// is drawn where it is.
+inline constexpr float kSnap=256.f;
+inline bool blendable(const Command& a,const Command& b) {
+    return a.kind==b.kind&&a.anchor==b.anchor&&a.blend==b.blend&&a.text==b.text&&a.image==b.image;
+}
+inline float lerp(float a,float b,float t) {return a+(b-a)*t;}
+// the list drawn at fraction t (0: `before`, 1: `after`); nullptr when they do not match
+inline std::shared_ptr<const List> blend_lists(const List& before,const List& after,float t) {
+    if(before.commands.size()!=after.commands.size()||before.screen!=after.screen)return nullptr;
+    auto out=std::make_shared<List>(after);
+    bool moved=false;
+    for(size_t i=0;i<after.commands.size();++i) {
+        const Command& a=before.commands[i];const Command& b=after.commands[i];
+        if(!blendable(a,b))return nullptr;
+        if(std::abs(b.x-a.x)>kSnap||std::abs(b.y-a.y)>kSnap||std::abs(b.w-a.w)>kSnap||std::abs(b.h-a.h)>kSnap)continue;
+        Command& c=out->commands[i];
+        c.x=lerp(a.x,b.x,t);c.y=lerp(a.y,b.y,t);c.w=lerp(a.w,b.w,t);c.h=lerp(a.h,b.h,t);
+        c.size=lerp(a.size,b.size,t);c.thickness=lerp(a.thickness,b.thickness,t);
+        if(std::abs(b.rotation-a.rotation)<=3.2f)c.rotation=lerp(a.rotation,b.rotation,t);
+        if(c.kind!=Command::Line){c.w=std::max(c.w,0.f);c.h=std::max(c.h,0.f);}
+        moved=moved||c.x!=b.x||c.y!=b.y||c.w!=b.w||c.h!=b.h||c.size!=b.size||c.rotation!=b.rotation;
+    }
+    return moved?std::shared_ptr<const List>(out):nullptr;
+}
 class Store {
     struct OwnedImage { std::string owner; std::shared_ptr<const Image> image; };
     std::mutex mutex;
@@ -57,6 +85,9 @@ class Store {
     std::map<Handle,OwnedImage> images;
     std::map<std::string,std::vector<std::weak_ptr<const Image>>> allocations;
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> published;
+    std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> previous;  // (the one it replaced)
+    std::atomic<uint64_t> step_{0};
+    std::atomic<float> fraction_{1.f};
     std::atomic<bool> visible{false};
     std::atomic<float> pixel_scale[2]{0.f,0.f};
     std::map<std::string,std::string> errors;
@@ -165,8 +196,10 @@ public:
         auto key=std::make_pair(owner,it->second.screen);
         if(it->second.clip_depth){it->second.invalid=true;errors[owner]="HUD draw list dropped: unbalanced clip stack";}
         bool valid=!it->second.invalid;
+        auto old=published.find(key);
+        if(old!=published.end())previous[key]=old->second;else previous.erase(key);
         if(!valid||it->second.commands.empty())published.erase(key);
-        else published[key]=std::make_shared<const List>(std::move(it->second));
+        else {it->second.step=step_.load(std::memory_order_relaxed);published[key]=std::make_shared<const List>(std::move(it->second));}
         visible.store(!published.empty(),std::memory_order_release);
         pending.erase(it);return valid;
     }
@@ -177,15 +210,29 @@ public:
     }
     std::vector<std::shared_ptr<const List>> snapshot(uint32_t screen) {
         std::lock_guard lock(mutex);std::vector<std::shared_ptr<const List>> out;
-        for(const auto& [key,list]:published)if(key.second==screen||key.second==2)out.push_back(list);
+        const float t=fraction_.load(std::memory_order_relaxed);
+        for(const auto& [key,list]:published) {
+            if(key.second!=screen&&key.second!=2)continue;
+            auto before=previous.find(key);
+            std::shared_ptr<const List> blended;
+            if(t<1.f&&before!=previous.end()&&before->second->step+1==list->step&&list->step==step_.load(std::memory_order_relaxed))
+                blended=blend_lists(*before->second,*list,t);
+            out.push_back(blended?blended:list);
+        }
         return out;
     }
+    // frame interpolation (interp.cpp): the logic step lists are committed in, and the fraction between
+    // the step before and this one of the frame being drawn (1: exact, or interpolation off)
+    void set_step(uint64_t step) {step_.store(step,std::memory_order_relaxed);}
+    uint64_t step() const {return step_.load(std::memory_order_relaxed);}
+    void set_fraction(float t) {fraction_.store(std::isfinite(t)?std::clamp(t,0.f,1.f):1.f,std::memory_order_relaxed);}
     void note(const std::string& owner,const std::string& message) {std::lock_guard lock(mutex);errors[owner]=message;}
     std::string error(const std::string& owner) {std::lock_guard lock(mutex);auto it=errors.find(owner);return it==errors.end()?std::string{}:it->second;}
     void drop(const std::string& owner) {
         std::lock_guard lock(mutex);
         std::erase_if(pending,[&](const auto& item){return item.second.owner==owner;});
         std::erase_if(published,[&](const auto& item){return item.first.first==owner;});
+        std::erase_if(previous,[&](const auto& item){return item.first.first==owner;});
         visible.store(!published.empty(),std::memory_order_release);
     }
     uint64_t state_generation() {std::lock_guard lock(mutex);return generation;}
@@ -198,7 +245,7 @@ public:
     float pixels(uint32_t screen) const {return screen<2?pixel_scale[screen].load(std::memory_order_relaxed):0.f;}
     bool active() const {return visible.load(std::memory_order_acquire);}
     void reset() {
-        std::lock_guard lock(mutex);pending.clear();images.clear();published.clear();
+        std::lock_guard lock(mutex);pending.clear();images.clear();published.clear();previous.clear();
         visible.store(false,std::memory_order_release);
         // Old render snapshots may still own pixels: keep their weak quota records.
         if(++generation==0)generation=1;

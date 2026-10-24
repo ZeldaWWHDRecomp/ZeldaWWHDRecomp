@@ -17,6 +17,9 @@
 #include <sys/mman.h>
 #endif
 extern "C" void hook_027F4D5C(Cpu*);
+// model_probe.cpp asks frame interpolation to save a kept actor's model matrices first (interp.cpp)
+namespace interp { void model_calc_before(uint32_t) {} }
+
 namespace {
 std::atomic<unsigned> original_calls{},logs{};
 std::mutex gate;std::condition_variable changed;bool block_log=false,in_log=false,release_log=false;

@@ -1,4 +1,5 @@
 #include "mods/story_game_pieces.h"
+#include "mods/story_kit_models.h"
 #include "mods/mod_stages.h"
 #include <algorithm>
 #include <array>
@@ -199,9 +200,11 @@ bool installed() {return false;}
 namespace story_treasure_chest {
 void state_loaded() {}
 bool placed_chests() {return false;}
+void note_placed_chests() {}
 void set_placed_chest(bool (*)(uint32_t,std::string&,std::string&)) {}
 void set_item_hook_ready(bool) {}
 void set_item_get_next(void (*)(Cpu*),void (*)(Cpu*,uint32_t)) {}
+void set_icon_presenter(void (*)(uint16_t,const std::string&,bool)) {}
 namespace hooks { void exec_item_get(Cpu*) {} }
 }
 // World runtime has its own actor/scene tests; loader tests only exercise registration.
@@ -213,9 +216,10 @@ std::string archive_for(const std::string&){return {};}
 mod_actor::ModelRig rig_for(const std::string&){return {};}
 std::vector<std::string> clips_for(const std::string&){return {};}
 bool bounds_for(const std::string&,story_notebook::WorldPoint&,story_notebook::WorldPoint&){return false;}
-std::string prepare(const std::string&,const story_notebook::ManifestModel&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&,bool,bool,const std::string&){return {}; }
+std::string prepare(const std::string&,const story_notebook::ManifestModel&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&,bool,bool,const std::string&,unsigned){return {}; }
 bool water_for(const std::string&){return false;}
 std::string material_for(const std::string&){return {};}
+void note_failure(const std::string&,const std::string&,const std::string&){}
 }
 #if defined(GUEST_HOOKS_TEST_NO_HOOKS) || defined(GUEST_HOOKS_TEST_EDITOR)
 namespace editor { bool launch_mode(){return true;} }   // --editor (NO_HOOKS: game code built without --mod-hooks)
@@ -226,16 +230,25 @@ namespace story_room_paths { bool declare(const std::string&,const std::vector<s
 // Island buildings: the loader asks for the pieces its actors use (none here) and builds nothing.
 // mod stages (mod_stages.h): none in the loader tests
 namespace mod_stages {
+static bool fixture_has_corner_map = false;
+static CornerMap fixture_corner_map;
+bool corner_map(CornerMap& out) { if (!fixture_has_corner_map) return false; out = fixture_corner_map; return true; }
 void declare(const std::string&,const Value&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&){}
 bool declared(){return false;}
 void logic(Cpu*){}
 bool enter_stage(const std::string&,const std::string&,unsigned,unsigned){return false;}
+void set_story_actions(std::function<bool(const std::string&,const std::vector<story_notebook::StoryAction>&)>){}
 }
 namespace story_game_pieces {
 std::vector<std::string> used(const std::vector<story_notebook::ManifestActor>& actors){std::vector<std::string> out;for(const auto&a:actors)if(a.game_piece())out.push_back(a.piece);return out;}
 std::string cache_directory(const std::string&){return {};}
 std::shared_ptr<const BuiltSet> build(const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&){throw std::runtime_error("no buildings in loader tests");}
 bool register_for_mod(const std::string&,const BuiltSet&,const std::string&,bool,std::string& why){return why="no buildings in loader tests",false;}
+}
+namespace story_kit_models {
+std::string cache_directory(const std::string&){return {};}
+std::shared_ptr<const story_game_pieces::BuiltSet> build(const std::string&,const story_notebook::ManifestModel&,const std::string&,const std::string&,const std::vector<std::string>&,const std::string&,const std::string&,bool){throw std::runtime_error("no kit models in loader tests");}
+bool register_for_mod(const std::string&,const std::string&,const story_game_pieces::BuiltSet&,bool,std::string& why){return why="no kit models in loader tests",false;}
 }
 namespace story_actors {
 bool placed_chest_item(uint32_t,std::string&,std::string&){return false;}
@@ -401,8 +414,26 @@ void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::init
 namespace hooks { void exec_item_get(Cpu*) {} }
 }
 namespace item_icons {
-void set_items(const std::vector<Item>&,const std::filesystem::path&) {}
+void set_items(const std::vector<Item>&,const std::filesystem::path&,unsigned) {}
+void set_game_calls(uint32_t (*)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t) {}
+void service(Cpu*) {}
 int frame(uint16_t) {return -1;}
+Bytes picture(const std::string&) {return {};}
+}
+// the item get's icon (story_item_get_icon_test has its own tests)
+namespace story_item_get_icon {
+void configure(void (*)(Cpu*,uint32_t),Camera (*)(),Picture (*)(const std::string&)) {}
+void show(uint16_t,const std::string&) {}
+void hide() {}
+bool install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void (*)(Cpu*))>&) {return true;}
+void logic(uint64_t) {}
+void state_loaded() {}
+}
+namespace editor { CameraView camera_view() {return {};} }
+namespace game_layouts {
+bool texture(const std::string&,Image&,std::string& error) {error="no game layouts in this test";return false;}
+bool texture_size(const std::string&,uint32_t&,uint32_t&) {return false;}
+bool pane(const std::string&,Pane&) {return false;}
 }
 namespace story_mail { void set_item_get_next(void (*)(Cpu*)) {} }
 namespace story_notebook {
@@ -416,6 +447,7 @@ void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::init
 void install(const std::function<void(uint32_t,void (*)(Cpu*))>&) {}
 }
 namespace story_lyt_screen {
+uint32_t safe_string(const char*) {return 0;}
 void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)) {}
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void (*)(Cpu*))>&) {}
 void state_loaded() {}
@@ -908,6 +940,33 @@ int main() {
     assert(read_setting("input.face_layout",1,data_base+0xFFFF,32)==0);
     assert(read_setting("render.true60",2,target,4)==4&&ld32(target)==1);
     assert(read_setting("display.aspect",4,target,8)==8&&ldf64(target)==21.0/9);
+    // Optional structured map query: exact buffer bounds, ownership, live marker
+    // refresh and image revisions, without importing a new required host service.
+    assert(read_setting("mod-stage.current-room-map",5,0,0)==808);
+    assert(read_setting("mod-stage.current-room-map",4,target,808)==0);
+    assert(read_setting("mod-stage.current-room-map",5,target,808)==0); // no stage map
+    mod_stages::fixture_has_corner_map = true;
+    auto& corner = mod_stages::fixture_corner_map;
+    corner.revision=77;corner.width=corner.height=2;corner.floor=-2;
+    corner.bounds[0]=-10;corner.bounds[1]=-20;corner.bounds[2]=10;corner.bounds[3]=20;
+    corner.rgba=std::make_shared<std::vector<uint8_t>>(16,255);
+    for(unsigned i=0;i<65;++i)corner.markers.push_back({float(i),float(i+1),1});
+    st32(target,0xABCD);st32(target+8,0);st32(target+808,0x12345678);
+    assert(read_setting("mod-stage.current-room-map",5,target,807)==0&&ld32(target)==0xABCD);
+    assert(read_setting("mod-stage.current-room-map",5,data_base+0xFFFF,808)==0);
+    assert(read_setting("mod-stage.current-room-map",5,target,808)==808);
+    const auto first_corner_image=ld32(target+4);
+    assert(ld32(target)==1&&first_corner_image&&ld32(target+8)==77&&int32_t(ld32(target+12))==-2);
+    assert(ldf32(target+16)==-10&&ldf32(target+28)==20&&ld32(target+32)==64);
+    assert(ldf32(target+40+63*12)==63&&ld32(target+36)==0&&ld32(target+808)==0x12345678);
+    assert(!guestmods::hud::store().release("second",first_corner_image));
+    corner.markers.clear();
+    assert(read_setting("mod-stage.current-room-map",5,target,808)==808&&ld32(target+4)==0&&ld32(target+32)==0);
+    ++corner.revision;
+    assert(read_setting("mod-stage.current-room-map",5,target,808)==808&&ld32(target+4)!=first_corner_image);
+    assert(guestmods::hud::store().release("first",first_corner_image));
+    assert(guestmods::hud::store().release("first",ld32(target+4)));
+    mod_stages::fixture_has_corner_map=false;corner={};
     std::strcpy(reinterpret_cast<char*>(mem::ptr(data_base+0x400)),"input.face_layout");
     c.r[3]=data_base+0x400;guestmods::svc_setting_changed(&c);assert(c.r[3]==0&&c.r[4]==7);
     WWHDGuestModuleV1 second{};second.mem_base=0x7F010000;second.mem_size=4096;

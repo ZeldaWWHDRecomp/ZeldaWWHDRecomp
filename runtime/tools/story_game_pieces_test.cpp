@@ -72,22 +72,43 @@ int main() {
         // every island part of the three sets fits one room together
         assert(all_sets < story_game_pieces::kRoomBudgetBytes);
         assert(c.version >= 3);
+        // more of Dragon Roost's sea rocks and Fire Mountain's two volcanic rocks (their own set), since version 6
+        for (const char* id : {"sea-rock-broad", "sea-rock-low", "sea-rock-small", "sea-rock-mid", "fire-mountain-rock", "fire-mountain-rock-small"}) {
+            const auto* p = c.find(id);
+            assert(p && p->category == "Island parts" && p->since == 6 && p->parts.size() == 1 && p->parts[0].light == 1 && p->collision_triangles > 0);
+        }
+        assert(c.find("fire-mountain-rock")->set == "fire-mountain-kit" && c.set("fire-mountain-kit")->room == 20 && c.find("sea-rock-low")->set == "dragon-roost-kit");
+        assert(c.version >= 6);
     }
     assert(story_game_pieces::reference("piece:outset-house-small") == "outset-house-small" && story_game_pieces::reference("game:palm").empty());
     assert(story_game_pieces::model_key("x") == "piece:x");
     assert(story_game_pieces::light_type("bg0") == 1 && story_game_pieces::light_type("bg3") == 4 && !story_game_pieces::light_type("bg4") &&
            !story_game_pieces::light_type("actor"));
 
-    // ---- island grounds: six sets in the Islands category, each with the room's own distant view
+    // ---- island grounds: sets in the Islands category, each with the room's own distant view
     {
         const char* isles[][2] = {{"crescent-moon-island", "5"}, {"triangle-island", "18"}, {"five-star-isles", "49"},
-                                  {"star-island", "2"}, {"bomb-island", "34"}, {"fairy-island", "3"}};
+                                  {"star-island", "2"},           {"bomb-island", "34"},    {"fairy-island", "3"},
+                                  {"shark-island", "38"},         {"horseshoe-island", "43"}, {"rock-spire-isle", "16"},
+                                  {"thorned-fairy-island", "28"}, {"seven-star-isles", "6"}, {"overlook-island", "7"},
+                                  {"stone-watcher-island", "31"}, {"cliff-plateau-isles", "42"}, {"angular-isles", "47"},
+                                  {"boating-course", "48"},       {"gale-isle", "4"},       {"headstone-island", "45"},
+                                  {"greatfish-isle", "23"},       {"cyclops-reef", "24"},   {"two-eye-reef", "46"},
+                                  {"diamond-steppe-island", "36"}, {"mother-and-child-isles", "9"}, {"fire-mountain", "20"}};
+        unsigned islands = 0;
+        for (const auto& p : c.pieces) islands += p.category == "Islands";
+        assert(islands == sizeof isles / sizeof isles[0]);
+        assert(!c.find("birds-peak-rock"));  // its textures are over the 12 MiB archive cap
         for (const auto& [id, room] : isles) {
             const auto* p = c.find(id);
-            assert(p && p->category == "Islands" && p->since >= 4 && p->set == id && p->parts.size() == 1 && p->parts[0].light == 1);
+            assert(p && p->category == "Islands" && p->since >= 4 && p->set == id && !p->parts.empty() && p->parts[0].light == 1);
+            // the islands with water: their water model (model1) as an animated second part with the island's second light
+            const bool water = std::string(id) == "diamond-steppe-island" || std::string(id) == "mother-and-child-isles";
+            assert(p->parts.size() == (water ? 2u : 1u) && !p->parts[0].animated);
+            if (water) assert(p->parts[1].model == 1 && p->parts[1].light == 2 && p->parts[1].animated);
             char lod[16];
             std::snprintf(lod, sizeof lod, "sea_LOD%02d.szs", std::stoi(room));
-            assert(p->distant_triangles > 0 && p->distant_triangles <= 1024 && p->distant_archive == lod && c.set(id)->room == unsigned(std::stoi(room)));
+            assert(p->distant_triangles > 0 && p->distant_triangles <= 2048 && p->distant_archive == lod && c.set(id)->room == unsigned(std::stoi(room)));
             assert(p->collision_triangles > 0 && p->collision_triangles <= 4096 && p->instance_bytes > 0);
             for (unsigned k = 0; k < 3; ++k) assert(p->volume[k + 3] - p->volume[k] <= 20000);
         }
@@ -102,11 +123,28 @@ int main() {
         story_game_pieces::Catalogue t;
         assert(t.add_set(isle, why) && t.find("isle")->distant_triangles == 120);
         for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{{"sea_LOD05.szs", "sea_LOD06.szs"}, {"sea_LOD05.szs", "../LOD05.szs"},
-                                                                                       {R"("triangles": 120)", R"("triangles": 1025)"}, {R"("triangles": 120)", R"("triangles": 0)"}}) {
+                                                                                       {R"("triangles": 120)", R"("triangles": 2049)"}, {R"("triangles": 120)", R"("triangles": 0)"}}) {
             std::string text = isle;
             text.replace(text.find(from), from.size(), to);
             story_game_pieces::Catalogue u;
             assert(!u.add_set(text, why) && u.pieces.empty() && why.find("distant") != std::string::npos);
+        }
+        // only a second part may keep its texture animation (an island's water), and only as true or false
+        {
+            std::string text = isle;
+            const std::string from = R"("parts": [{"model": 0, "nodes": ["a"], "light": "bg0"}])";
+            text.replace(text.find(from), from.size(), R"("parts": [{"model": 0, "nodes": ["a"], "light": "bg0"}, {"model": 1, "nodes": ["w"], "light": "bg1", "animated": true}])");
+            const std::string tris = R"("triangles": [12])";
+            text.replace(text.find(tris), tris.size(), R"("triangles": [12, 6])");
+            story_game_pieces::Catalogue u;
+            assert(u.add_set(text, why) && u.find("isle")->parts[1].animated && !u.find("isle")->parts[0].animated);
+            for (const auto& [a, b] : std::vector<std::pair<std::string, std::string>>{
+                     {R"("light": "bg0"})", R"("light": "bg0", "animated": true})"}, {R"("animated": true)", R"("animated": 1)"}}) {
+                std::string bad = text;
+                bad.replace(bad.find(a), a.size(), b);
+                story_game_pieces::Catalogue v;
+                assert(!v.add_set(bad, why) && why.find("animated") != std::string::npos);
+            }
         }
         // a placed island ground on the sea gets its distant view; elsewhere it has none
         std::vector<ManifestActor> got;
@@ -115,6 +153,10 @@ int main() {
         assert(visual_variant_count(got[0]) == 1);
         assert(!parses(manifest(house("i", "star-island"), R"({"game_objects": 3})"), why) && why.find("version 4") != std::string::npos);
         assert(parses(manifest(house("o", "outset-house-small"), R"({"game_objects": 4})"), why, &got) && got[0].distant.model.empty());
+        // the islands added later need catalogue version 5
+        assert(c.find("gale-isle")->since == 5 && c.version >= 5);
+        assert(!parses(manifest(house("g", "gale-isle"), R"({"game_objects": 4})"), why) && why.find("version 5") != std::string::npos);
+        assert(parses(manifest(house("g", "gale-isle"), R"({"game_objects": 5})"), why, &got) && got[0].distant.model == "piece:gale-isle.distant");
     }
 
     // ---- recipe rules: all or nothing per set

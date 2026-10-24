@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -25,6 +26,7 @@
 #include "mods/fast_forward.h"
 #include "mods/story_store.h"
 #include "mods/mod_stages.h"
+#include "editor/stage_files.h"
 #include "mods/mods.h"
 // Save states: snapshot the whole running game into one of 5 slots and restore it, also in a new
 // process.
@@ -52,6 +54,7 @@
 // runtime allocations) and guest memory (MEM2, runtime objects, fixed slots, foreground bucket,
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
+#include "aspect.h"
 #include "savestate_native_gate.h"
 #include "mods/story_native_restore_resume.h"
 // The issuer exists only in the actual full-load pipeline, never a caller
@@ -149,6 +152,7 @@ enum : uint32_t {
     kSecDispatch = 'DSPT',
     kSecMemory = 'MEM ',
     kSecGuestMods = 'GMOD',
+    kSecAspectParticles = 'APAR',
 };
 
 using Region=MemoryRegion;
@@ -582,6 +586,8 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();aspect::ss_save_particles(w);
+    put_section(*payload,kSecAspectParticles,w);
     // memory last, written straight into the payload
     payload->u32(kSecMemory);
     size_t len_at = payload->b.size();
@@ -701,6 +707,8 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();aspect::ss_save_particles(w);
+    put_section(*payload,kSecAspectParticles,w);
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
@@ -763,7 +771,8 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     std::string busy, why;
     // Structural checks precede targets: that helper changes thread wait state.
     try {
-        if(!gx2_ss_validate(s->section(kSecGx2),why) || !mem_ss_validate(s->section(kSecHeaps),why) ||
+        if(!aspect::ss_validate_particles(s->section(kSecAspectParticles)) ||
+           !gx2_ss_validate(s->section(kSecGx2),why) || !mem_ss_validate(s->section(kSecHeaps),why) ||
            !threads_ss_validate(s->section(kSecThreads),why)) {
             message("%s: invalid state metadata",slot_label(s->slot).c_str());return refused("invalid state metadata");
         }
@@ -830,6 +839,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     gx2_ss_load(r);
     guestmods::state_loaded();
     interp::ss_reset();
+    aspect::ss_load_particles(s->section(kSecAspectParticles));
     aspect::ss_reset();
     button_glyphs::ss_reset();
     rumble::reset();     // an effect running before the load is not the restored game's
@@ -970,9 +980,14 @@ void track_events() {
     if (ld8(kEventRun)) g_event_wait = 5;
     else if (g_event_wait > 0) g_event_wait--;
 }
+// test aid: WWHD_TEST_WARP_FORCE=1 lets WWHD_TEST_WARP_AT warps through cutscenes, events and messages (a scripted
+// tour through many places must not stop at the first event a place starts)
+static bool g_warp_force = false;
 bool player_has_control(Cpu* c, std::string& why) {
-    if (ld8(kEventRun) || g_event_wait > 0) { why = "a cutscene or event is running"; return false; }
-    if (ld8(kMesgStatus) || ld8(kScopeMesgStatus)) { why = "a message or dialogue is open"; return false; }
+    if (!g_warp_force) {
+        if (ld8(kEventRun) || g_event_wait > 0) { why = "a cutscene or event is running"; return false; }
+        if (ld8(kMesgStatus) || ld8(kScopeMesgStatus)) { why = "a message or dialogue is open"; return false; }
+    }
     if (ld8(kMenuFlag)) { why = "a game menu is open"; return false; }
     if (ld8(kNextStage + 12)) { why = "a stage change is in progress"; return false; }
     if (ld32(kPlayerPtr) != ld32(kLinkPtr)) { why = "Link is not the controlled character"; return false; }
@@ -1154,9 +1169,9 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     guest_call(c, fn_eventInit, {info + 0x1158});             // dSv_info_c::mTmp (temporary flags)
     apply_hd_sections(c, s);
     guest_call(c, fn_refreshGame, {0});  // SaveMgr: item buttons and equipment from the loaded data (does not use its object)
-    // Link's place: the void-out restart (dStage_restartRoom / dStage_playerInit point -1), or with the
-    // boat the restart the Song of Passing uses (daPy_lk_c tact, dStage_turnRestart: point -3, the
-    // boat back at its position by dStage_setShipPos, Link on it with start mode 2)
+    // Keep the ordinary restart record coherent, but enter through the independent turn-restart
+    // record below. Leaving the old stage can overwrite the ordinary room restart before the
+    // new Link reads it; that would put a dungeon resume at the previous sea position.
     const uint32_t rs = sv + kRestart;
     st8(rs + 0, (uint8_t)s.room);
     st16(rs + 0x16, (uint16_t)s.angle_y);
@@ -1168,18 +1183,18 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     char name[8] = {};
     memcpy(name, s.stage.data(), std::min<size_t>(s.stage.size(), 7));
     for (int i = 0; i < 8; i++) st8(kNextStage + i, (uint8_t)name[i]);
-    uint16_t point = 0xFFFF;  // point -1: the restart position
-    if (s.has_ship) {
+    const uint16_t point = 0xFFFD;  // dStage_playerInit reads the independent turn-restart record
+    {
         // daPy_lk_c::getDayNightParamData without the Wind Waker parts (event 0xCC, flag 0x40: the
-        // conducting animation): room, start mode 2 on the boat / 0 beside it, no event, boat flag 0x100
-        uint32_t param = (uint32_t)(s.room & 0x3F) | (uint32_t)(s.on_ship ? 2 : 0) << 12 | 0xFF000000u | 0x100u;
+        // conducting animation): standing on foot, or mode 2 on a restored boat; no start event.
+        // A foot-player restore must not create or reposition a boat.
+        uint32_t param = (uint32_t)(s.room & 0x3F) | (uint32_t)(s.has_ship && s.on_ship ? 2 : 0) << 12 | 0xFF000000u | (s.has_ship ? 0x100u : 0u);
         for (int i = 0; i < 3; i++) {
             stf32(buf + 4 * i, s.pos[i]);
             stf32(buf + 0x10 + 4 * i, s.ship_pos[i]);
         }
         guest_call(c, fn_turnRestartSet, {sv + kTurnRestart, buf, (uint32_t)(uint16_t)s.angle_y, (uint32_t)(uint8_t)s.room, param,
-                                          buf + 0x10, (uint32_t)(uint16_t)s.ship_angle_y, 1});
-        point = 0xFFFD;  // -3: the turn restart
+                                          buf + 0x10, (uint32_t)(uint16_t)s.ship_angle_y, (uint32_t)s.has_ship});
     }
     st16(kNextStage + 8, point);
     st8(kNextStage + 10, (uint8_t)s.room);
@@ -1235,6 +1250,10 @@ PendingPortable g_pload;          // under g_mu
 bool g_pload_waiting = false;     // the "waiting for gameplay" message was shown
 std::string g_last_portable;      // newest portable state written or loaded (under g_mu)
 // after a portable load: the old Link's process id (a new Link has a new one), the state for the HD sections
+// TV frame at which the last portable load arrived (Link settled in the restored stage; 0: none). Full
+// loads keep their own marker (g_last_load_frame), which crash recovery reads; test aids that count
+// frames after "a load" take the newer of the two (dynres.cpp).
+std::atomic<uint64_t> g_last_arrival_frame{0};
 struct Arrival { std::string stage; float pos[3]; uint64_t frame = 0; uint32_t link_id = 0; int frames = 0; std::shared_ptr<pstate::State> s; LoadResult result; } g_arrival;
 
 void cancel_portable_arrival(const std::string&why){
@@ -1414,6 +1433,7 @@ void watch_arrival(Cpu* c) {
     }
     auto result=g_arrival.result;
     g_arrival = Arrival{};
+    g_last_arrival_frame = render::frame_count();
     controller_reapply::request("progress load");
     result.complete(true,"");
 }
@@ -1757,6 +1777,7 @@ std::atomic<uint64_t> g_last_load_frame{0}, g_last_load_step{0};
 std::atomic<uint32_t> g_last_load_counter{0};
 uint32_t last_load_counter() { return g_last_load_counter.load(); }
 uint64_t last_load_frame() { return g_last_load_frame.load(); }
+uint64_t last_arrival_frame() { return g_last_arrival_frame.load(); }
 uint64_t last_load_step() { return g_last_load_step.load(); }
 
 std::string states_dir() { return state_dir(); }
@@ -1904,6 +1925,49 @@ void service(Cpu* c) {
     track_events();
     service_at_start();
     service_auto_save();
+    // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[,...] enters that stage (the world editor's warp, the game's
+    // own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is retried
+    // every 30 frames until the next one is due
+    static std::vector<std::pair<uint64_t, Warp>> warps = [] {
+        std::vector<std::pair<uint64_t, Warp>> v;
+        const char* e = getenv("WWHD_TEST_WARP_AT");
+        for (std::string all = e ? e : ""; !all.empty();) {
+            const size_t comma = all.find(',');
+            const std::string item = all.substr(0, comma);
+            all = comma == std::string::npos ? "" : all.substr(comma + 1);
+            unsigned long long frame = 0;
+            char stage[16] = {};
+            int room = 0, point = 0;
+            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
+                Warp w;
+                w.stage = stage, w.room = room, w.point = point;
+                v.push_back({frame, w});
+            }
+        }
+        return v;
+    }();
+    if (!warps.empty()) {
+        static size_t next = 0;
+        static std::atomic<bool> pending{false}, done{false};
+        static uint64_t tried = 0;
+        const uint64_t f = fixed_seed::script_frame(render::frame_count());
+        if (next < warps.size() && f >= warps[next].first) {
+            if (done.exchange(false) || (next + 1 < warps.size() && f >= warps[next + 1].first)) {
+                pending = false;
+                ++next;
+            } else if (!pending && f >= tried + 30) {
+                tried = f;
+                pending = true;
+                static const bool force = getenv("WWHD_TEST_WARP_FORCE") && atoi(getenv("WWHD_TEST_WARP_FORCE"));
+                g_warp_force = force;
+                request_warp(warps[next].second, [](bool ok, const std::string&) {
+                    if (ok) done = true;
+                    pending = false;
+                    g_warp_force = false;
+                });
+            }
+        }
+    }
     service_warp(c);       // world editor
     service_file_save(c);  // world editor test states
     if (int slot = g_psave_req.exchange(0)) do_portable_save(c, slot);
@@ -1960,6 +2024,27 @@ PendingWarp g_warp;  // under g_mu
 struct PendingFileSave { std::string path; std::function<void(bool, const std::string&)> done; bool full=false; };
 PendingFileSave g_file_save;  // under g_mu
 
+bool warp_stage_loadable(const std::string& stage, int room, std::string& why) {
+    if (stage.empty() || stage.size() > 7 || stage.find_first_of(":/") != std::string::npos)
+        return why = "\"" + stage + "\" is not a stage name the game knows", false;
+    if (room < 0 || room > 63) return why = "a room is 0..63", false;
+    mod_stages::Info info;
+    if (mod_stages::find(stage, info)) {
+        if (std::find(info.rooms.begin(), info.rooms.end(), unsigned(room)) != info.rooms.end()) return true;
+        return why = "the stage " + info.id + " (" + info.mod + ") has no room " + std::to_string(room), false;
+    }
+    // the game's stages: its loose Stage files and the packs' (the sea's archives are in a pack); read once
+    static const std::set<std::string> game = [] {
+        std::set<std::string> names;
+        for (const auto& [name, rooms] : editor::game_stage_rooms(config::game_dir)) names.insert(name);
+        return names;
+    }();
+    // a game without a readable list (no files found): only the mod stage names are known to be missing
+    if (game.count(stage) || (game.empty() && !mod_stages::missing(stage))) return true;
+    return why = mod_stages::missing(stage) ? "the stage " + stage + " is a mod stage that no installed package makes"
+                                            : "the game has no stage " + stage, false;
+}
+
 void service_warp(Cpu* c) {
     PendingWarp p;
     {
@@ -1976,6 +2061,9 @@ void service_warp(Cpu* c) {
     };
     std::string why;
     bool retry = false;
+    // the game loads the stage's Stage archive (dStage_infoCreate halts the game without its stage.dzs): only a
+    // stage it can load, an installed mod stage or one of the game's files, is ever written as the next stage
+    if (!warp_stage_loadable(p.w.stage, p.w.room, why)) return finish(false, why);
     if (!gameplay_ready(why, retry) || !player_has_control(c, why)) return finish(false, why);
     const uint32_t sv = ld32(kSaveInfoPtr);
     char name[8] = {};

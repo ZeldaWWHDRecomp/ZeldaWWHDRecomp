@@ -176,6 +176,12 @@ void start_record_worker() {
 uint64_t publish_record_commands() {
     return worker && !pending.empty() ? worker->publish(pending) : 0;
 }
+bool publish_held_record_commands(PodCommands& commands) {
+    if (!worker || producerPresentationRecording) return false;
+    publish_record_commands();
+    if (!commands.empty()) worker->publish(commands);
+    return true;
+}
 void publish_record_commands_at_draw_boundary() {
     // Restore the previous policy: only a complete draw crossing 32 KiB
     // publishes early. No draw-count or pass-end trigger is retained.

@@ -96,6 +96,28 @@ render CPU was 3.41 / 3.25 / 3.31 ms. One shared-machine sample per variant cann
 speedup or a precise steady GPU overhead. Startup/restore costs and the forced allocation traffic
 remain relevant on mobile devices.
 
+## GPUs without depth clamp
+
+The game draws its shadow maps with far-plane clipping off (`PA_CL_CLIP_CNTL` ZCLIP_FAR_DISABLE), which
+the Vulkan renderer turns into depth clamp, so shadow casters in front of a shadow cascade's near plane
+(palm crowns, rocks) still land in the map at its nearest depth. Some GPUs (Mali-G52, for example)
+have no `depthClamp` feature; the renderer used to stop with "device lacks depth clamp requested by
+guest". On such a device the vertex shaders of those draws are now translated in a variant that
+clamps the position's depth at the near plane (`if (gl_Position.w > 0.0) gl_Position.z =
+max(gl_Position.z, 0.0)` after the decompiler's `SET_POSITION`). The variant is part of the vertex
+shader's key, so the shader caches keep both. Per vertex rather than per pixel: exact for casters
+wholly in front of the near plane; a triangle crossing it comes out slightly too deep (at worst a little
+less shadow). The far plane still clips: nothing beyond it shadows anything in range. Writing
+`gl_FragDepth` instead would be exact, but it turns off early depth testing for the shadow pass. A
+graphics-pack vertex shader without `SET_POSITION` is drawn unclamped (logged). The approach comes from
+the GreenNaugahyde Android fork (v0.9.5).
+
+The log says `[vulkan] device has no depth clamp: emulated in vertex shaders`.
+`WWHD_VK_FORCE_DEPTH_CLAMP_EMULATION=1` takes this path on a GPU that has depth clamp (tests).
+Checked that way on MoltenVK (Apple M3 Max; fixed-seed runs, frames 30-240 after a state load, TV and
+GamePad): Outset (32+ vertex shaders in the clamp variant) matched real depth clamp within the scene's
+usual run-to-run variation; Windfall differed in 28 pixels on one shadow edge (by at most 6 of 255), the same in every frame.
+
 ## Custom Android Vulkan drivers
 
 The Graphics settings list installed drivers, show the active name/version, and provide install,

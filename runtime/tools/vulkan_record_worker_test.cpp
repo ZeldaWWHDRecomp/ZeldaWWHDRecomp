@@ -209,6 +209,37 @@ int main(int argc,char** argv) {
         assert(!called && serial==0);
     }
     calls.clear();threads.clear();blockSubmit=false;
+    // Stereo publishes a detached eye behind the producer prefix, with no
+    // synchronous drain. Block eye 0 to prove publication can return before
+    // replay, then verify both eyes and the following draw use one worker.
+    start_record_worker();
+    {
+        DeferredCommands eye;
+        PodCommands eyeBytes;
+        eye.hold_in(&eyeBytes);
+        eye.start_detached_capture([] { throw std::logic_error("unexpected exact fallback"); });
+        blockDraw=true;
+        record::vkCmdDraw(cmd,44,1,0,0);
+        eye.vkCmdDraw(cmd,45,1,0,0);
+        assert(eye.publish_held());
+        assert(!eye.command_count() && eyeBytes.empty());
+        {std::unique_lock lock(mutex);changed.wait(lock,[]{return drawEntered;});}
+        record::vkCmdDraw(cmd,46,1,0,0);
+        {std::lock_guard lock(mutex);assert((calls==std::vector<int>{44}));releaseDraw=true;changed.notify_all();}
+        drain_record_commands();
+        assert((calls==std::vector<int>{44,45,46}));
+        for(auto thread:threads)assert(thread!=producer && thread==threads[0]);
+        // A custom command between POD runs must not be skipped or reordered.
+        eye.vkCmdDraw(cmd,47,1,0,0);
+        eye.emit_owned([] { note(48); });
+        eye.vkCmdDraw(cmd,49,1,0,0);
+        assert(!eye.publish_held() && eye.command_count());
+        for(auto& action:eye.take()) action();
+        assert((calls==std::vector<int>{44,45,46,47,48,49}));
+        eye.reset();
+    }
+    stop_record_worker();blockDraw=false;drawEntered=false;releaseDraw=false;
+    calls.clear();threads.clear();
     start_record_worker();assert(record_worker_active() && dispatch_recorder()->pod_mode());
     // Invalid producer input must fail synchronously without enqueueing a
     // null handle, submitting an older prefix, or invoking raw Vulkan.

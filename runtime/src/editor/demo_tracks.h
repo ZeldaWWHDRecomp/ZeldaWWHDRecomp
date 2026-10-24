@@ -20,7 +20,11 @@ inline constexpr double kDemoFps = 30;  // demo frames are the game's 30 Hz cuts
 // {"frames", "origin": "link"|{x,y,z}|null, "lanes": [{"lane", "actor"?, "kind": "point"|"number",
 //  "curve", "keys": [frame...]}], "events": [{"list", "actor"?, "items": [{"index", "frame", "label"}]}],
 //  "actors": [{"id", "kind": "game"|"link"|"model"|"character", "name"}], "problem"?: why the step is refused}
+//  "warnings"?: what the demo can't show (demo_warnings)
 Value demo_lanes(const Value& manifest, const Value& step);
+// What the step can't show although the game plays it: an actor whose position keys never come into
+// the demo camera's view, Link without a position key (he stays where he stands). One line each.
+std::vector<std::string> demo_warnings(const Value& step);
 
 // The demo at `frame`: {"camera"?: {"eye", "target", "fovy", "roll"}, "actors": [{"id", "position"?,
 // "rotation"?, "scale"?}]} in world coordinates (`origin` and `angle` place an "origin": "link" demo:
@@ -45,6 +49,8 @@ bool demo_remove_event(Value& step, const std::string& list, const std::string& 
 // Actors: add one ({"id", and "actor" | "model" | "character", ...}); remove one (refused while a
 // sound, particle or attachment names it).
 bool demo_add_actor(Value& step, const Value& actor, std::string& why);
+// Sets fields of a demo actor (spawn, params, model, ...; null removes one; not its id).
+bool demo_edit_actor(Value& step, const std::string& id, const Value& fields, std::string& why);
 bool demo_remove_actor(Value& step, const std::string& id, std::string& why);
 
 // A world point as the step's own coordinates (the inverse of the pose's placing): for an "origin":

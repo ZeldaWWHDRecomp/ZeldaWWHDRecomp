@@ -398,6 +398,10 @@ void walking_paths_and_triggers() {
     const Value& t = scene_of(s, "harbor")->get("trigger");
     CHECK(t.get("type").string() == "area" && t.get("stage").string() == "sea" && t.get("room").number == 11 && near(t.get("position").get("x").number, 200) &&
           t.get("radius").number == 300);
+    CHECK(t.get("again").type == Value::Null);
+    CHECK(ok(s.run("set_scene_trigger", params(R"({"scene": "harbor", "type": "area", "radius": 300, "again": true})"))));
+    CHECK(scene_of(s, "harbor")->get("trigger").get("again").boolean);
+    CHECK(!ok(s.run("set_scene_trigger", params(R"({"scene": "harbor", "type": "room", "again": true})"))));
     CHECK(ok(s.run("set_scene_trigger", params(R"({"scene": "harbor", "type": "room", "at": "camera"})"))));
     CHECK(scene_of(s, "harbor")->get("trigger").get("type").string() == "room");
     CHECK(ok(s.run("set_scene_trigger", params(R"({"scene": "harbor", "type": "none"})"))) && !scene_of(s, "harbor")->object.contains("trigger"));
@@ -658,6 +662,55 @@ void demo_steps() {
     CHECK(valid(s));
 }
 
+// Issue #285: a demo with Link whose keys the camera never sees. The editor says so (the lanes'
+// warnings, the preview's status line); the first position key goes to Link, not to the world's
+// (0,0,0); with the game not running it takes the value the editor gives.
+void demo_actor_out_of_view() {
+    FakeHost host;
+    editor::Session s(&host);
+    s.add_package("scene-test", "Scene test", "", json(kManifest));
+    CHECK(ok(s.run("add_scene", params(R"({"id": "intro"})"))));
+    const size_t n = s.run("add_scene_step", params(R"({"scene": "intro", "type": "demo"})")).get("result").get("step").number;
+    const std::string at = std::to_string(n);
+    auto run = [&](const std::string& cmd, const std::string& extra) { return s.run(cmd, params(("{\"scene\": \"intro\", \"step\": " + at + ", " + extra + "}").c_str())); };
+    auto warnings = [&]() { return run("demo_lanes", "\"mod\": \"scene-test\"").get("result").get("warnings").array; };
+    CHECK(ok(run("add_demo_actor", R"("actor": {"id": "link", "actor": "Link"})")));
+    CHECK(ok(run("add_demo_event", R"("list": "modes", "actor": "link", "event": {"frame": 5, "mode": "walk"})")));
+    // no position key: he stays where he stands
+    auto w = warnings();
+    CHECK(w.size() == 1 && w[0].string().find("no position key") != std::string::npos);
+    // the editor's first key (Add key): at Link, although the editor also gives (0,0,0)
+    CHECK(ok(run("set_demo_key", R"("lane": "link.position", "frame": 0, "from": "link", "value": {"x": 0, "y": 0, "z": 0})")));
+    const Value& key = step_at(s, "intro", n).get("actors").array[0].get("position").get("keys").array[0].get("value");
+    CHECK(near(key.get("x").number, 200) && near(key.get("z").number, -201400));
+    CHECK(warnings().empty());  // Link stands where the fly camera looked: in the picture
+    // keys 6000 units away (the fly camera elsewhere when they were made): never in the camera's view
+    CHECK(ok(run("set_demo_key", R"("lane": "link.position", "frame": 0, "value": {"x": 6200, "y": 1040, "z": -201400})")));
+    CHECK(ok(run("set_demo_key", R"("lane": "link.position", "frame": 41, "value": {"x": 6500, "y": 1040, "z": -201400})")));
+    w = warnings();
+    CHECK(w.size() == 1 && w[0].string().find("link is never in the demo camera's view") != std::string::npos);
+    // the preview plays it, and its status line says why Link isn't in the picture
+    Value r = s.run("preview_scene", params(R"({"scene": "intro"})"));
+    CHECK(ok(r) && r.get("result").get("note").string().find("not in the picture: link is never") != std::string::npos);
+    // behind the camera: also not seen; in front of it, within its picture: seen
+    CHECK(ok(run("set_demo_key", R"("lane": "link.position", "frame": 41, "value": {"x": 1700, "y": 1900, "z": -200500})")));
+    CHECK(warnings().size() == 1);
+    CHECK(ok(run("set_demo_key", R"("lane": "link.position", "frame": 41, "value": {"x": 100, "y": 1000, "z": -201700})")));
+    CHECK(warnings().empty());
+    // a game actor and a mod character the same way
+    CHECK(ok(run("add_demo_actor", R"("actor": {"id": "pig", "actor": "Kb"})")));
+    CHECK(ok(run("add_demo_actor", R"("actor": {"id": "guide", "character": "guide"})")));
+    CHECK(ok(run("set_demo_key", R"("lane": "pig.position", "frame": 0, "value": {"x": 9000, "y": 1040, "z": -201400})")));
+    CHECK(ok(run("set_demo_key", R"("lane": "guide.position", "frame": 0, "from": "link")")));
+    w = warnings();
+    CHECK(w.size() == 1 && w[0].string().rfind("pig is never", 0) == 0);
+    // the game not running: "from" falls back to the value given with it, or is refused without one
+    host.link_place.valid = false;
+    CHECK(ok(run("set_demo_key", R"("lane": "pig.position", "frame": 10, "from": "link", "value": {"x": 300, "y": 1100, "z": -201500})")));
+    CHECK(!ok(run("set_demo_key", R"("lane": "pig.position", "frame": 20, "from": "link")")));
+    CHECK(valid(s));
+}
+
 // The demo step's pickers: names for sounds, particles and actors, an archive's files and joints, the
 // suggested ids, the sound preview; and the BFRES bone reader behind the joint lists.
 void demo_pickers() {
@@ -752,6 +805,7 @@ int main(int argc, char** argv) {
     copy_paste_remove();
     drag_is_one_undo_step();
     demo_steps();
+    demo_actor_out_of_view();
     demo_pickers();
     if (argc > 1) docs_table(argv[1]);
     if (g_failures) {

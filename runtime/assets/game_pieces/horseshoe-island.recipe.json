@@ -1,0 +1,75 @@
+{
+  "game_pieces_format": 1,
+  "set": "horseshoe-island",
+  "label": "Horseshoe Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room43.szs",
+    "room": 43
+  },
+  "memory": {
+    "archive_bytes": 2023424,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "horseshoe-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Horseshoe Island ground",
+      "description": "a horseshoe of grassy cliffs around a lagoon, with three small hollows on its ground",
+      "volume": [
+        -22980,
+        -1300,
+        -2658,
+        -17306,
+        1142,
+        2744
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "itemnuke1",
+          "itemnuke2",
+          "itemnuke3",
+          "ana1",
+          "ana3",
+          "sima",
+          "ana2"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD43.szs",
+        "triangles": 579
+      },
+      "expect": {
+        "triangles": [
+          579
+        ],
+        "textures": [
+          [
+            "Txa_jimen_midori",
+            "Txq_ami_mahou",
+            "Txq_hasi_teitetu",
+            "Txq_iwakabe",
+            "Txq_iwakabe_aruki_2b"
+          ]
+        ],
+        "collision_triangles": 527
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

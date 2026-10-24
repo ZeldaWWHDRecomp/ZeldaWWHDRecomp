@@ -1,0 +1,91 @@
+{
+  "game_pieces_format": 1,
+  "set": "overlook-island",
+  "label": "Overlook Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room7.szs",
+    "room": 7
+  },
+  "memory": {
+    "archive_bytes": 3506176,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "overlook-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Overlook Island ground",
+      "description": "a tall pillar of grassy rock with steep walls and a pit on its top that sends Link back",
+      "volume": [
+        -2520,
+        -1100,
+        -3221,
+        2639,
+        2570,
+        2732
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "hasira",
+            "hasiraue",
+            "huti",
+            "iwa_jimen",
+            "iwa_jimen_kusa",
+            "kabe1",
+            "kabekusa",
+            "kusa",
+            "sita1",
+            "kusa_1"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "hole_kabe",
+          "hole_soko",
+          "hole_huti",
+          "sima",
+          "soko_kabe"
+        ],
+        "strip_exits": true,
+        "void": [
+          "hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD07.szs",
+        "triangles": 155
+      },
+      "expect": {
+        "triangles": [
+          2331
+        ],
+        "textures": [
+          [
+            "0x_03",
+            "0x_06",
+            "Txa_jimen_midori",
+            "Txq_ana_hs_sima_kuroiana",
+            "Txq_hasi",
+            "Txq_hs07",
+            "Txq_hs07_jimen",
+            "Txq_hs07_jimen_kusa",
+            "Txq_hs07_kabekeiset",
+            "Txq_hs07_kusaset",
+            "Txq_hs07_sitayou"
+          ]
+        ],
+        "collision_triangles": 759
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

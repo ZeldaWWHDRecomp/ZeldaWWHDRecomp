@@ -31,6 +31,9 @@
 // where f1 holds the value; none of them is a branch target. The mouse camera follows the setting
 // too: in first person it drives the right stick (so CalcSubjectAngle inverts it), in the follow
 // camera it sets the pitch rate itself (mods/camera.cpp, site_0251053C) and uses mouse_pitch_sign.
+// Manual-camera latitude also passes through site_02510DEC: descending style limits must not
+// reverse either input's look direction. This cancels the game's range-order reversal; the
+// user's invert setting is still applied exactly once at the reads/rate above.
 #pragma once
 
 #include <cstdint>
@@ -67,5 +70,14 @@ inline constexpr float stick_y(float y, bool invert_setting, Use use) {
 
 // Mouse camera, follow camera: +1 keeps "mouse down looks down", -1 with the setting on.
 inline constexpr float mouse_pitch_sign(bool invert_setting) { return invert_setting ? -1.0f : 1.0f; }
+
+// limited_range_addition reverses the delta when its endpoints descend. Manual-camera
+// styles use both endpoint orders (Link's house has descending latitude limits).
+// Cancel that input reversal at the latitude call only, for mouse and stick alike.
+// Read the live endpoints each step: no camera-type or setting sign is retained.
+// Preserve idle signed zero so this hook cannot change an idle camera's logic.
+inline constexpr double manual_pitch_delta(double delta, double first, double second) {
+    return delta != 0.0 && first > second ? -delta : delta;
+}
 
 }  // namespace camera_invert

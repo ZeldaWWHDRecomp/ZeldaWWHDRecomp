@@ -1,0 +1,77 @@
+{
+  "game_pieces_format": 1,
+  "set": "boating-course",
+  "label": "Boating Course ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room48.szs",
+    "room": 48
+  },
+  "memory": {
+    "archive_bytes": 1605632,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "boating-course",
+      "since": 5,
+      "category": "Islands",
+      "label": "Boating Course ground",
+      "description": "a small grassy island with two rows of posts and ropes standing in the sea",
+      "volume": [
+        -21473,
+        -1100,
+        -23768,
+        -19109,
+        1823,
+        -17223
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "boA1",
+            "boA3",
+            "sima7"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "soko_stop_B",
+          "soko_stop_C",
+          "soko_stop",
+          "sima",
+          "boA",
+          "boB"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD48.szs",
+        "triangles": 83
+      },
+      "expect": {
+        "triangles": [
+          477
+        ],
+        "textures": [
+          [
+            "Txa_jimen_midori",
+            "Txa_yot_itaba",
+            "Txe_Edanmae_rope",
+            "Txq_hs07_jimen",
+            "Txq_hs07_jimen_kusa",
+            "Txq_jimen_yot_iwaue"
+          ]
+        ],
+        "collision_triangles": 497
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

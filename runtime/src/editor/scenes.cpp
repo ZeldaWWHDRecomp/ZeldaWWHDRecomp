@@ -808,7 +808,9 @@ bool scene_trigger(const std::string& type, const Value& p, const Place& place, 
         if (type == "area") {
             trigger["position"] = pt(at);
             trigger["radius"] = p.get("radius").type == Value::Number ? p.get("radius").number : 500.0;
-        }
+            if (p.get("again").type == Value::Bool && p.get("again").boolean) trigger["again"] = true;  // plays again after Link left the area
+        } else if (p.get("again").type != Value::Null)
+            return why = "\"again\" is for an area trigger", false;
     } else
         return why = "a trigger is none, talk, quest_step, room, area or salvage", false;
     return true;

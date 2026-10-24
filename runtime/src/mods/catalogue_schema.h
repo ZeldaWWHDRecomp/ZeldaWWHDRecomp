@@ -42,7 +42,6 @@ struct Entry {
     bool compatible(const Version& port,const std::string& build,const std::string& platform) const {
         if(port<minimum||(bounded_maximum&&port>=maximum))return false;
         if(!builds.empty()&&std::find(builds.begin(),builds.end(),build)==builds.end())return false;
-        if(platform.starts_with("android")&&kind=="guest")return false;
         return downloads.contains(platform)||downloads.contains("all");
     }
 };

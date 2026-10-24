@@ -157,6 +157,52 @@
         "measured": "own heap 53084 bytes with the ladder and about 1 KiB more; the archive is in a permanent pack"
       },
       "notes": "bit 0 adds the ladder (its own collision, climbable as the game's own); nothing else is read; no switches, save bits or events, and no other code looks for it"
+    },
+    {
+      "id": "stall",
+      "since": 6,
+      "category": "Town and outdoors",
+      "label": "Trading stall",
+      "description": "the posts and awning of a travelling trader's stall, as the one on Windfall's square",
+      "native": {
+        "name": "Roten2",
+        "process": "Obj_Roten",
+        "source": "d_a_obj_roten",
+        "subtype": 0,
+        "archive": "Roten"
+      },
+      "variants": [
+        {
+          "id": "stall-small",
+          "label": "Small stall",
+          "params": "0x00000000"
+        },
+        {
+          "id": "stall",
+          "label": "Stall",
+          "params": "0x01000000"
+        },
+        {
+          "id": "stall-large",
+          "label": "Large stall",
+          "params": "0x02000000"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 27648,
+        "archive_bytes": 0,
+        "measured": "own heap 24480 (small) to 26152 (large) bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's own words for Zunari's three stall sizes (the top byte, 0..2; nothing else is read). For a placed copy the port answers the stall's Delivery Bag check (it is left out until the player holds 3, 6 or 9 bag items) and turns its matrix by the yaw and moves it by its model's place in Windfall (about 1600 units off and 668 up), so the footprint stands at the position; the game's own stalls are untouched"
     }
   ]
 }

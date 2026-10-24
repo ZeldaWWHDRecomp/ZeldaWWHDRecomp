@@ -135,11 +135,17 @@ std::shared_ptr<const Glyphs> load(int language) {
 
 }  // namespace
 
-bool parse_bffnt(const uint8_t* d, size_t n, Glyphs& out) {
+bool parse_bffnt(const uint8_t* d, size_t n, Glyphs& out, Metrics* metrics) {
     if (n < 0x14 || (memcmp(d, "FFNT", 4) && memcmp(d, "CFNT", 4))) return false;
     Reader r{d, n, d[4] == 0xFE};
     const size_t finf = r.u16(6);  // the header's size: FINF follows
     if (!r.ok(finf, 32) || memcmp(d + finf, "FINF", 4)) return false;
+    if (metrics) {
+        *metrics = {};
+        // Wii U FINF keeps nominal height/width beside the font type.
+        // CFNT (3DS) uses a different FINF header; only its CMAP is read here.
+        if (!memcmp(d, "FFNT", 4)) *metrics = {d[finf + 0x0A], d[finf + 0x09]};
+    }
     // FINF: ... +0x14 TGLP, +0x18 CWDH, +0x1C CMAP (pointers to block data, 8 bytes after each block's magic)
     size_t cmap = r.u32(finf + 0x1C);
     for (int guard = 0; cmap >= 8 && guard < 4096; guard++) {
@@ -161,7 +167,7 @@ bool parse_bffnt(const uint8_t* d, size_t n, Glyphs& out) {
     return true;
 }
 
-std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why) {
+std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::string* why, Metrics* metrics) {
     const fs::path pack(pack_path);
     FILE* f = fopen(pack.string().c_str(), "rb");
     if (!f) {
@@ -196,11 +202,19 @@ std::shared_ptr<const Glyphs> pack_font(const std::string& pack_path, std::strin
         return nullptr;
     }
     auto glyphs = std::make_shared<Glyphs>();
-    if (!parse_bffnt(inner.data() + foff, flen, *glyphs) || glyphs->empty()) {
+    if (!parse_bffnt(inner.data() + foff, flen, *glyphs, metrics) || glyphs->empty()) {
         *why = "CKingMsg.bffnt in " + pack.filename().string() + " is no font";
         return nullptr;
     }
     return glyphs;
+}
+
+Metrics message_metrics(int language) {
+    std::string why;
+    Metrics metrics;
+    const auto pack = find_pack(language, &why);
+    if (!pack.empty()) pack_font(pack.string(), &why, &metrics);
+    return metrics;
 }
 
 std::shared_ptr<const Glyphs> name_glyphs(int language) {

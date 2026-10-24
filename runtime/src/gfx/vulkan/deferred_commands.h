@@ -13,6 +13,10 @@ class PodCommands;
 class DeferredCommands;
 // Guest recording and cross-thread checkpoint/quit hold GX2's execution mutex.
 inline DeferredCommands* active_deferred_commands=nullptr;
+// Stereo 3D (stereo.cpp): while the second eye records, its commands are held here and later
+// emitted as one run, so neither eye's render pass ends at every eye switch. Never the active
+// recorder: flushes and submissions still find the renderer's own one above.
+inline DeferredCommands* eye_deferred_commands=nullptr;
 // Isolated presentation owns a separate command pool/queue outside that mutex.
 // Bypass before reading the global pointer, avoiding both capture and a data race.
 inline thread_local bool isolated_command_dispatch=false;
@@ -22,7 +26,8 @@ struct IsolatedCommandDispatch {
     ~IsolatedCommandDispatch() { isolated_command_dispatch=previous; }
 };
 inline DeferredCommands* dispatch_recorder() {
-    return isolated_command_dispatch ? nullptr : active_deferred_commands;
+    if (isolated_command_dispatch) return nullptr;
+    return eye_deferred_commands ? eye_deferred_commands : active_deferred_commands;
 }
 // Owns CPU command arguments, not Vulkan handles or pointed-to GPU resources.
 // Caller retains the active submission pools/uploads/retirement lists until emission.
@@ -37,12 +42,24 @@ public:
     DeferredCommands& operator=(const DeferredCommands&) = delete;
     // Destruction releases CPU copies only. GPU emission must be explicit.
     void start_capture(std::function<void()> beforeExact = {});
+    // Capture without becoming active_deferred_commands (the stereo eye stream). Its
+    // owner emits the tail in order with take(); beforeExact must not return, because a
+    // detached tail cannot be emitted in place of the commands recorded before it.
+    void start_detached_capture(std::function<void()> beforeExact);
+    // The unemitted tail, in order; capture continues with an empty tail.
+    std::vector<std::function<void()>> take();
+    // A wholly POD detached tail can follow the worker's prefix directly.
+    // Mixed/custom commands stay owned here and use take()'s exact fallback.
+    bool publish_held();
+    // Detached capture: hold the commands this POD encoder takes as its bytes, without an
+    // allocation per command; take() returns each run of them as one command, in order.
+    void hold_in(PodCommands* held);
     // Startup/shutdown only: reuse the existing dispatch pointer without adding
     // an extra branch to the default immediate command path.
     void set_pod_commands(PodCommands* commands);
     bool pod_mode() const { return pod_ != nullptr; }
     bool capturing() const { return capturing_; }
-    size_t command_count() const { return commands_.size()-emitted_; }
+    size_t command_count() const { return commands_.size()-emitted_+held_command_count(); }
     size_t payload_bytes() const { return payloadBytes_; }
     void emit_exact();
     void finish_exact() { force_exact(); }
@@ -59,6 +76,7 @@ public:
         }
         std::function<void()> owned;
         try {
+            seal_held();
             owned=action;
             commands_.reserve(commands_.size()+1);
         } catch(const std::bad_alloc&) {
@@ -103,6 +121,10 @@ public:
     void vkCmdEndRenderPass(VkCommandBuffer cmd);
 private:
     PodCommands* pod_ = nullptr;
+    PodCommands* held_ = nullptr;  // hold_in
+    size_t held_command_count() const;
+    template<class Encode, class... Args> bool hold(Encode encode, Args&&... args);
+    void seal_held();  // the held bytes, as one command at the end of the tail
     Limits limits_{};
     bool capturing_=false;
     size_t payloadBytes_=0, emitted_=0;
@@ -117,6 +139,7 @@ private:
             force_exact(); immediate(); return;
         }
         try {
+            seal_held();
             auto command=make();
             commands_.emplace_back(std::move(command));
             payloadBytes_+=payload;

@@ -1,5 +1,7 @@
 // Exercise the actual SDL host's settings migration and writes without game data.
 #include "../src/gfx/vulkan/overlay_sdl.cpp"
+#include "../src/render_prof.h"
+#include "../src/background_shaders.h"
 #include <cassert>
 #include <cstdarg>
 #include <unistd.h>
@@ -71,5 +73,25 @@ int main() {
     assert(!(SDL_GetWindowFlags(gfxvk::R.tv.window) & SDL_WINDOW_FULLSCREEN));
     assert(hostui::g_values.at("tvFullScreen") == "0");
     SDL_DestroyWindow(gfxvk::R.tv.window); gfxvk::R.tv.window = nullptr;
+    // Detailed performance profiling (render_prof.h): never saved means off; the choice survives a restart
+    std::string profiling;
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(!hostui::get(rprof::kSettingKey, profiling));
+    hostui::set(rprof::kSettingKey, "1");
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(hostui::get(rprof::kSettingKey, profiling) && profiling == "1");
+    hostui::set(rprof::kSettingKey, "0");
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(hostui::get(rprof::kSettingKey, profiling) && profiling == "0");
+    // Compile shaders in the background (background_shaders.h): never saved means off; the choice survives a restart
+    std::string background;
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(!hostui::get(bgshaders::kSettingKey, background));
+    hostui::set(bgshaders::kSettingKey, "fast");
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(hostui::get(bgshaders::kSettingKey, background) && background == "fast");
+    hostui::set(bgshaders::kSettingKey, "0");
+    hostui::g_loaded = false; hostui::g_values.clear();
+    assert(hostui::get(bgshaders::kSettingKey, background) && background == "0");
     SDL_Quit(); std::filesystem::remove(file);
 }

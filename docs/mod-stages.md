@@ -80,11 +80,12 @@ A package with stages needs no other package: stages are not story content.
 | `template` | A stage of the game the new stage takes its lighting, sky, camera, door models and room kits from. Its rooms are not part of the new stage. See [Choosing a template](#choosing-a-template). |
 | `kind` | `cave` (the default) or `dungeon`. |
 | `save_group` | Optional: stages with the same `save_group` share their save flags, keys and dungeon items (a dungeon and its boss stage, say). Default: the stage's own id. |
+| `light` | Optional: `{"stage": "sea", "room": 44}` lights the stage as that place of the game is lit: its colours through the day, its sky colours and its lights, following the game's clock (see [Light](#light)). Without it the stage has the template's light. |
 | `music_like` | Optional: a stage of the game whose music and ambient sounds the stage plays. The boss rooms' music follows the story and can't be borrowed. Without it the stage is silent apart from battle music. |
 | `entrance` | A place of the game: `stage`, `room` and spawn `point`. A save made in the stage continues here when the package is not installed (see [Saves](#saves)). Usually the spot in front of the way in. |
 | `rooms` | 1 to 16 rooms, numbered 0, 1, 2, ... in order. |
 | `doors` | Optional, up to 16: the game's doors between two rooms (see [Doors](#doors)). |
-| `joins` | Optional: pairs of rooms joined by an open passage without a door, `[[2, 3]]`. Both rooms are kept loaded while Link is in either. |
+| `joins` | Optional: pairs of rooms joined by an open passage without a door, `[[2, 3]]`. Both rooms are kept loaded and drawn while Link is in either (a room behind a door is loaded but not drawn until the door opens). |
 | `entries` | Optional, up to 4: boxes in rooms of the game that take Link into the stage. |
 | `warps` | Optional, up to 4: return warps (see [Return warps](#return-warps)). |
 | `shaders` | Optional: a shader template (`.wwht`) in the package, so the stage's shaders are prepared before play (see [Shaders](#shaders)). |
@@ -103,12 +104,26 @@ of your own game files: their rooms, whether they have a **sky**, the kinds of d
 open-air ones; `"door": "boss"` the ones with a boss door.
 
 - **A stage in the open** (an island in the sky, a mountain top) needs a template with a sky. Its rooms show
-  the sky wherever the ground model leaves it open. The Tower of the Gods' outside stage (`GTower`) has a day
+  the sky wherever the ground model leaves it open. For the light of a place of the game (the sea's, through
+  the day), add `"light"` (see [Light](#light)). The Tower of the Gods' outside stage (`GTower`) has a day
   sky and the knob and boss doors; Dragon Roost's mountain path (`Adanmae`) follows the time of day; the
   Forsaken Fortress tower (`M2tower`) is always night. Twenty-one stages have both a sky and a boss door.
 - **A cave or dungeon** needs a template with the doors it uses: Cave01, M_NewD2, kindan and Siren have all
   four.
 - A room's `kit` can be a room of any stage; the template's own rooms keep the template's lighting best.
+
+### Light
+
+A stage is lit as its template is: the template's colour sets for each time of day, its palettes and its sky
+colours. Some templates have a light of their own whatever the hour (the Tower of the Gods' outside stage is
+always a dusky blue). `"light"` takes the light from another place of the game instead: the stage's colour sets,
+palettes, sky colours and lights are that stage's, and every room is lit as that stage's room `room` (a square
+of the Great Sea: `{"stage": "sea", "room": 44}` is Outset Island's). The stage then follows the game's clock as
+that place does: bright at noon, golden in the evening, dark at night. The template still gives the sky's models,
+the camera and the doors.
+
+A stage in the open reached from the sea (a hall under an island, a mountain top) can take `"light": {"stage":
+"sea", "room": 44}`, so it has the same light as the sea round Outset that Link came from.
 
 ### Rooms
 
@@ -117,11 +132,11 @@ open-air ones; `"door": "boss"` the ones with a boss door.
 | `room` | The room's number: 0 for the first, then 1, 2, ... |
 | `kit` | A room of the game whose materials, textures and light the room uses: a room number of the template, or `{"stage": "M_NewD2", "room": 3}` for a room of any stage. Default: the template's room of the room's own number. |
 | `ground` | The room's model: a `.glb` file of the package (see [The ground model](#the-ground-model)), or `"kit"`: the kit room itself, its models and its collision, as the game has it. |
-| `material` | Optional: the kit room's material the model is drawn with. Default: the kit room's first. |
+| `material` | Optional: the kit room's material the model is drawn with. Default: the kit room's main material, the one most of its triangles use. |
 | `materials` | Optional: the model's material names mapped to kit materials, for a model with several materials. A model material that is also a kit material's name is drawn with that one. |
 | `spawns` | 1 to 8 spawn points: `point` (0 to 99, unique in the stage), `position`, `angle` in degrees (0 faces +z, 90 faces +x) and `start`: `stand` (the default) or `fall` (Link drops in from above). |
 | `exits` | Up to 8 exits: an `id`, a `box` (`min` and `max` corners) and the place it leads `to`. |
-| `actors` | Up to 16 of the game's actors (see [Actors](#actors)). |
+| `actors` | Up to 16 of the game's actors (see [Actors](#actors)). A chest or darknut can have `then` (see [A quest through the stage](#a-quest-through-the-stage)). |
 | `floor` | Optional: the dungeon map's floor the room is on: 1 (1F, the default) to 5, or -1 (B1) to -5. |
 
 An exit's box marks floor: the ground's floor triangles whose middle lies in the box take Link to the exit's
@@ -135,7 +150,7 @@ A place `to` is:
 - a spawn of the same stage: `{"room": 1, "point": 3}` (no `stage`);
 - a spawn of another of the package's stages: `{"stage": "stage:<id>", "room": 0, "point": 0}`.
 
-A kit room used as it is (`"ground": "kit"`) keeps its floors, walls and its surfaces (lava hurts, water
+A kit room used as it is (`"ground": "kit"`) keeps its floors, walls and its surfaces (lava burns, water
 is swimmable); its own ways out of its stage are removed, and the room's `exits` boxes work on its floor as
 on a model's. Its actors are not taken over: place the ones you want with `actors`. A kit room of another
 stage than the template is lit by the template's first room's light.
@@ -175,6 +190,9 @@ A room's `actors` are the game's own actors, created by the game when the room l
 | `keese` | `variant` `normal` (default) or `fire`. |
 | `darknut` | `variant` `darknut` (default), `shield`, `helmet` or `mighty`. |
 | `pot`, `big_pot` | A pot Link can lift and throw. |
+| `tree` | The game's own trees, with their own collision, sway and cutting: `variant` `small` (default; one small tree), `small_3` or `small_5` (a group), `bushy`, `large` (the big leafy tree; `"scale"` 0.5 to 1.5 sizes it) or `palm`. |
+| `lava` | The game's lava: its glowing, moving surface, drawn at the actor's height over an area `size` (`{"x": ..., "z": ...}`, game units, 100 to 25500 each, centred on its position, turned by `angle`). It is only the picture: give the room's model a `col_lava` surface at the same height (see [Lava](#lava)). |
+| `heat_shimmer` | The heat haze over the game's lava (Dragon Roost's): the picture shimmers while Link is in the room. One per room is enough. |
 
 A heart container from a mod's chest raises Link's maximum hearts in the player's real save file, as the
 game's own do, and turning the mod off does not take it back. Give one deliberately: one per boss room at
@@ -215,13 +233,40 @@ a spot Link can walk or swim into: off an island's shore, at the foot of a water
  "position": {"x": -194845, "y": 0, "z": 315400}, "size": {"x": 400, "y": 800, "z": 400}, "to": {"room": 0, "point": 0}}
 ```
 
+`"style": "hole"` makes the entry a hole Link falls into, as into the game's holes into caves: its box is the
+shaft under an opening in the ground (an opening in a world object's model and its collision, say), below the
+ground Link walks on, so only a fall reaches it. The screen fades as he falls, and he arrives at a spawn with
+`"start": "fall"`, dropping in from above (Check refuses a hole that leads to another spawn). Leave the shaft open
+at the bottom: a fall that doesn't take the hole (the game busy with a scene) goes on through the dark and out
+of the shaft rather than leaving Link stuck in it.
+
+```json
+{"id": "hole", "stage": "sea", "room": 44, "style": "hole", "position": {"x": -200300, "y": 6750, "z": 301900},
+ "size": {"x": 150, "y": 220, "z": 150}, "to": {"room": 0, "point": 0}}
+```
+
 ### Getting there by a scene
 
 A talk's or a scene's `then` can take Link into one of the package's own stages:
 `{"action": "stage", "id": "sky", "room": 0, "point": 0}` (`room` and `point` default to 0). With a scene's
 demo step that carries Link (`attach`, [mod SDK v3](mod-sdk-v3.md)), the Helmaroc King can fly him there:
-the scene's `end.then` holds the stage action. Scenes and talks need the Story Notebook; the stage itself
-does not.
+the scene's `end.then` holds the stage action.
+
+A scene without words needs nothing else: a package of stages with a scene of camera, demo, fade and
+wait steps, an `area` or `room` trigger and only `stage` and `scene` actions stands on its own. Text
+(`say`, `choice`, a demo's `messages`), sounds, music, talks, quests and the other actions are story
+content and need the Story Notebook.
+
+For example, a scene can start when Link walks along a pier: the Helmaroc King swoops down, closes its
+talons around him with the game's own grab animation (the attach's `blend` lifts him off the planks without a
+jump) and climbs with him; the scene's end takes him into a stage spawn with `"start": "fall"`, so he drops
+into it from above. Use `{"actor": "Dk", "spawn": "always", "params": 2}` for such a bird: the demo's own
+Helmaroc King, without ground collision. Outset has a Helmaroc King of its own, waiting hidden for its story
+event; without `"spawn": "always"` the demo would move that one, which doesn't show.
+
+A far-off view of a place, such as an island in the sky, can be a world object of the package
+([world objects](world-objects.md)) shown only until a flag is set (`"when": {"not_flag": "…"}`). World
+objects are story content, so such a package needs the Story Notebook.
 
 ### Boss rooms
 
@@ -233,8 +278,50 @@ A boss room is a room behind the boss door, with something to beat, a reward and
 3. **The reward**: a chest with `heart_container` (see the note under [Actors](#actors)).
 4. **The way out**: a return warp with `"after"` naming that chest, so it opens once the reward is taken.
 
-`examples/guest-mods/sky-island` is such a stage: an island in the sky with the boss key on it and an
-open-air arena behind the boss door.
+Rooms can take materials from different kit rooms: a hall drawn with Hyrule Castle's stone and an open-air
+arena with the Tower of the Gods' paving, say. Two rooms drawn as one place (a ground and the ruins on it, each
+with its own kit) can be joined with `joins`, so both are drawn together; one of them can leave the collision
+to the other (a small floor far below) so Link never leaves the first room there.
+
+### A quest through the stage
+
+A stage's chests, darknuts, entries and warps can move a quest of the package on, with `then`: the same
+story actions as a talk's or a scene's (`quest_step`, `quest_done`, `flag`, `scene`):
+
+| On | `then` runs when |
+|---|---|
+| a chest (`"actor": "chest"`) | Link opens it |
+| a darknut (`"actor": "darknut"`) | it is defeated (by the sword, or falling off the stage) |
+| an entry | Link takes it (an updraft: when the wind starts to lift him) |
+| a return warp | Link steps into it, as the warp light takes him |
+
+```json
+{"id": "heart", "actor": "chest", "item": "heart_container", "position": {"x": 0, "y": 200, "z": 4400},
+ "then": [{"action": "quest_step", "id": "sky", "step": 5}]}
+```
+
+Quest steps only go forward, so a chest opened before the step it belongs to (the heart container before
+the guardian falls) moves the quest past the steps in between, and a step reached twice changes nothing.
+A defeated darknut stays defeated: the port gives it one of the save group's switches, which the game sets
+when it falls; the same numbers as the locked doors are used, up to 64 of both in a save group.
+
+A quest step's `place` can be inside one of the package's own stages: `{"stage": "stage:sky", "room": 1,
+"sea": {"x": -194790, "z": 314530}, "x": 0, "y": 200, "z": 3600}`. The sea chart's ring goes to the `sea`
+place (the way in), and the editor's Quest warp list takes Link into the stage there.
+
+**The Story Notebook as an optional dependency.** A package of stages can bring its quest without needing
+the Story Notebook: `"dependencies": [{"id": "story-notebook", "minimum_version": "0.0.0", "optional": true}]`
+(the editor's `set_package_info` with `"field": "story_notebook", "value": "optional"`). With the
+notebook installed, the quest, its letter and every story action work as in any story package. Without it,
+the package's stages and its wordless scenes play just the same, its quest and letters stay out, and its
+story actions are skipped (a line in the game's log says so); `stage` and `scene` actions still run. Only
+the Story Notebook can be an optional dependency.
+
+A package whose scene or quest uses world objects or story actions needs the Story Notebook (a plain
+dependency, `set_package_info` `"value": "required"`). A quest through a stage might go: a letter sends Link
+to a pier, a scene or a hole takes him into the stage, the boss key's chest moves the quest to the guardian,
+the darknut's defeat to the heart container, the big chest to the way home, and the return warp finishes it
+with its reward, given once.
 
 ## The ground model
 
@@ -248,7 +335,7 @@ want it around the origin, and make the spawns, exits and doors fit it.
 - **Collision**: meshes or nodes whose name ends in `_col` are the room's collision and are not drawn. Their
   material names choose the surface, as for world objects: `col_stone`, `col_grass`, `col_wood`, `col_sand`,
   `col_metal`, `col_wall`, `col_objects`, `col_climb`, `col_hookshot`, `col_water` (swimmable), `col_shallow`,
-  `col_waterfall`, `col_ice`, `col_void`. Without a `_col` mesh, the visible triangles are the collision, on
+  `col_waterfall`, `col_ice`, `col_void`, `col_lava` (see [Lava](#lava)). Without a `_col` mesh, the visible triangles are the collision, on
   stone (or on the surface a `col_` material name gives). Up to 20000 collision triangles per room.
 - Faces are seen from the side their normal points to; for a room seen from inside, the walls and ceiling
   face inwards.
@@ -258,11 +345,71 @@ want it around the origin, and make the spawns, exits and doors fit it.
 - **Unwrap every visible mesh** (UVs; in Blender **UV → Smart UV Project** or **Cube Projection**). A surface
   without texture coordinates shows a single colour of its texture. The editor's `check_stage` reports both.
 
+### Lava
+
+A `col_lava` surface in the room's collision is lava, as in the game's lava rooms: Link burns, jumps out, loses
+half a heart and starts again where he came into the room; a bomb that falls in explodes, a pot breaks, other
+things are gone. Model it as upward-facing faces at the lava's level, lower than the floor around it, so that
+Link walks off the edge into it. The surface is no ground: the lava gets a bottom 1 metre (100 units) below it,
+where things sink to. Keep that space free, and count lava's triangles twice towards the room's 20000.
+
+The game draws its lava with an actor of its own, not with the room's model. Place a `lava` actor at the
+surface's height, as large as the pool (it may be larger: the room's floors and walls hide what reaches under
+them), and add `heat_shimmer` for the heat haze:
+
+```json
+"actors": [
+  {"id": "lava", "actor": "lava", "position": {"x": 0, "y": -50, "z": 400}, "size": {"x": 2000, "z": 1200}},
+  {"id": "heat", "actor": "heat_shimmer", "position": {"x": 0, "y": 0, "z": 0}}
+]
+```
+
+The room's lava faces can also be drawn with a lava material of a kit room (under the `lava` actor's surface, or
+on their own for an even glow). These are the kit materials of the game's lava (the material name, and kit rooms
+that have it):
+
+| Material | Kit rooms | |
+|---|---|---|
+| `E3mYOGAN_v` | `Cave01` rooms 0 and 1 (the lava cave) | the lava cave's lava: an even orange glow |
+| `R00_1015_3_lambert6_v` | `MiniKaz` room 0 (inside Fire Mountain) | Fire Mountain's lava: an even orange glow |
+| `E3mYOGAN_v` | `M_NewD2` rooms 2, 7, 8, 10, 11, 12, 13 and 15 (Dragon Roost Cavern), `Adanmae` room 0 (Dragon Roost's mountain path) | the moving glow along the lava's rocks: the game lights it by where it stands, so on a model of your own it glows only in parts |
+
+Map them with `materials`, for example `"materials": {"col_lava": "E3mYOGAN_v"}` for faces whose material is
+`col_lava` (they are then drawn and are the lava's collision). A kit room used as it is (`"ground": "kit"`) keeps
+its own lava; place `lava` and `heat_shimmer` actors in it as you would in a room of your own (its own are not
+taken over).
+
 ### Kit materials
 
-The materials are the template's own: their names are those of the kit room's model. When a name is wrong,
-the game's log says which ones the kit room has (`the kit room has no material "..." (it has: ...)`), so
-starting with any name and reading the log is a quick way to find them.
+The materials are the kit room's own: their names are those of the kit room's model. The editor's
+`list_kit_materials` command lists them for any room of the game (`{"stage": "sea", "room": 44}` is
+Outset Island): each one's textures, how many of the room's triangles use it and the texture coordinates
+the room gives it. When a name is wrong, the game's log also says which ones the kit room has (`the kit
+room has no material "..." (it has: ...)`).
+
+Pick materials by what their textures show, not by their names: a name like `test_lambert8_v` says nothing,
+and a kit room has backdrop materials (distant mountains, clouds) that look smeared and cut out on the
+ground. Without `material` and `materials`, the model is drawn with the kit room's main material, the one
+most of its triangles use.
+
+**Atlases.** Many of the game's textures hold several surfaces in bands: Outset's ground texture has grass
+at the top, a round clearing, an earth path strip and sand, one under the other. The room's own models
+give such a material texture coordinates that repeat along one axis (`uv_min` and `uv_max` beyond 0..1)
+and stay inside one band along the other (inside 0..1). A ground model that tiles the whole texture shows
+all the bands at once. Keep each surface's coordinates inside its band on that axis, and repeat only along
+the other; where a surface must repeat both ways, walk the band forwards and back (0 to 1 to 0) with
+vertices closer together than one band.
+
+A kit material keeps the game's drawing of it: an opaque one stays opaque, a cut-out stays a cut-out and a blended
+one stays see-through (`list_kit_materials` does not show which is which; the export tool's GLB marks it in each
+material's `alphaMode`). The game's falling water (Forest Haven's, the castle's, the sea's islands') is a cut-out,
+drawn white with moving streaks; for water that shows the sky through it, use a blended water material of the kit,
+such as Forest Haven's spray (`SC_00_m_2_`) or coast foam (`SC_00_m`). A waterfall can be a thin stream of the falling water
+with a curtain of the spray over it.
+
+Give the model **vertex colours** (glTF `COLOR_0`) to shade it as the game's rooms are: the kit materials
+multiply their texture by them, and the game's own rooms darken corners, the foot of cliffs and the
+undersides this way. Without vertex colours every surface is drawn at full brightness.
 
 ## The dungeon map
 
@@ -328,6 +475,11 @@ The editor's **Stages** tab (in the Outliner and under **Settings → Editor**) 
   copies the model into the mod, adds the stage, builds it and takes Link to its first spawn.
 - Each stage's rooms, **Add room** (another model), **Rebuild**, **Warp in** and **Check** (the problems, as
   a list).
+- **Lava**: **Lava floor here** puts the game's lava floor at Link's feet (its size in the fields next to the
+  button) and **Heat shimmer here** the heat haze. In the picture a lava floor shows as an orange outline with
+  two round marks: the middle one moves it, the corner one sizes it (letting go is one undo step). Selecting it
+  shows its size in the Stages tab, and **Remove this lava floor**. Give the room's model a `col_lava` surface at
+  the same height and **Rebuild**.
 - **Where Link stands**: inside the stage, a spawn, a return warp, an exit (to the sea outside the lava cave
   or to a spawn of the stage), a door to another room with its lock, a chest with its item, an enemy or a
   pot. In a room of the game, the stage's entry.
@@ -364,6 +516,11 @@ prepared yet.
 
 - The dungeon map shows only the floor Link is on, and the map can't be zoomed or moved by touch.
 - Only the actors listed under [Actors](#actors); no boss actor yet, and no actors of a kit room's own.
-- The stage's rooms are lit by the template; a sky only comes with a template that has one.
+- The stage's rooms are lit by the template (or by the stage `light` names); a sky only comes with a template that has one.
 - A return warp has no light of its own; mark its spot in the ground model.
 - Ballad of Gales and the blue warp don't lead to or from a mod stage.
+
+Corner-map guest mods can reuse a mod dungeon's current-room image, world bounds
+and compass markers through `wwhd_dungeon_room_get`; see
+[the SDK guide](mod-sdk-v2.md#current-room-maps-for-mod-dungeons). It uses the map
+already supplied by the stage, so stage authors need no additional artwork.

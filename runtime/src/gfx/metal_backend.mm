@@ -8,6 +8,7 @@
 namespace gfx {
 void sky_clouds_begin(const uint32_t* regs, uint32_t seq);  // metal_clouds.mm
 void peek_z(const uint32_t*, uint32_t);
+void peek_retire();
 void request_tv_dump(const std::string& path, int frames_ahead);
 void run_appkit_loop();
 uint64_t frame_count();
@@ -41,6 +42,7 @@ const Backend& metal_backend() {
         b.copy_to_scan = gfx::copy_to_scan;
         b.swap = gfx::swap;
         b.peek_z = gfx::peek_z;
+        b.peek_retire = gfx::peek_retire;
         b.set_frame_aspect = gfx::set_frame_aspect;
         b.target_aspect_factors = gfx::target_aspect_factors;
         b.frames_completed = gfx::frames_completed;

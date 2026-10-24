@@ -389,27 +389,34 @@ Value Session::dispatch_scene(const std::string& command, const Value& p, std::s
         if (command == "set_demo_key") {
             Value value = p.get("value");
             const std::string from = text(p, "from");
-            if (value.type == Value::Null) {
-                if (from.empty()) return why = "give \"value\" or \"from\" (camera or link)", r;
+            // from the fly camera or Link; with a value too, the value is used when that isn't there
+            // (the editor's first position key: at Link, else where it would be)
+            const bool fallback = value.type != Value::Null;
+            if (!from.empty()) {
                 WorldPoint w;
+                std::string missing;
                 if (from == "camera") {
-                    if (!host_) return why = "the game is not running", r;
-                    const Value fly = host_->fly_state();
-                    if (!fly.get("on").boolean) return why = "the fly camera is off", r;
-                    if (lane == "camera.eye") point_of(fly.get("position"), w);
+                    const Value fly = host_ ? host_->fly_state() : Value();
+                    if (!host_) missing = "the game is not running";
+                    else if (!fly.get("on").boolean) missing = "the fly camera is off";
+                    else if (lane == "camera.eye") point_of(fly.get("position"), w);
                     else point_of(fly.get("target"), w);
                 } else if (from == "link") {
-                    if (!link.valid) return why = "the game is not running", r;
-                    w = link.position;
+                    if (!link.valid) missing = "the game is not running";
+                    else w = link.position;
                 } else return why = "\"from\" is camera or link", r;
-                const Value* st = nullptr;
-                if (!demo_step(st)) return r;
-                const WorldPoint l = demo_local(*st, w, link.position);
-                value = Value();
-                value["x"] = std::round(l.x * 10) / 10;
-                value["y"] = std::round(l.y * 10) / 10;
-                value["z"] = std::round(l.z * 10) / 10;
-            }
+                if (!missing.empty() && !fallback) return why = missing, r;
+                if (missing.empty()) {
+                    const Value* st = nullptr;
+                    if (!demo_step(st)) return r;
+                    const WorldPoint l = demo_local(*st, w, link.position);
+                    value = Value();
+                    value["x"] = std::round(l.x * 10) / 10;
+                    value["y"] = std::round(l.y * 10) / 10;
+                    value["z"] = std::round(l.z * 10) / 10;
+                }
+            } else if (value.type == Value::Null)
+                return why = "give \"value\" or \"from\" (camera or link)", r;
             demo_change("Demo key " + lane + " at " + std::to_string(frame), [&](Value& st, std::string& w) {
                 if (!demo_set_key(st, lane, frame, value, w)) return false;
                 return p.get("curve").type != Value::String || demo_set_curve(st, lane, p.get("curve").text, w);
@@ -448,6 +455,10 @@ Value Session::dispatch_scene(const std::string& command, const Value& p, std::s
         }
         if (command == "add_demo_actor") {
             demo_change("Demo actor " + p.get("actor").get("id").string(), [&](Value& st, std::string& w) { return demo_add_actor(st, p.get("actor"), w); });
+            return r;
+        }
+        if (command == "edit_demo_actor") {
+            demo_change("Edit demo actor " + text(p, "id"), [&](Value& st, std::string& w) { return demo_edit_actor(st, text(p, "id"), p.get("fields"), w); });
             return r;
         }
         if (command == "remove_demo_actor") {
@@ -632,6 +643,14 @@ Value Session::dispatch_scene(const std::string& command, const Value& p, std::s
         r["declared"] = declared;
         if (!declared && s->get("native").type != Value::Null)
             r["note"] = "the edited steps play; the native version plays after the package is saved and the game starts again";
+        // what its demo steps can't show (the status line says so while the scene plays)
+        Value warnings = arr();
+        for (const auto& st : play.get("steps").array)
+            for (const auto& w : demo_warnings(st)) warnings.array.push_back(Value(w));
+        if (!warnings.array.empty()) {
+            r["warnings"] = warnings;
+            r["note"] = "Plays, but not in the picture: " + warnings.array.front().text + (warnings.array.size() > 1 ? " (and " + std::to_string(warnings.array.size() - 1) + " more)" : "");
+        }
         ok = true;
         return r;
     }

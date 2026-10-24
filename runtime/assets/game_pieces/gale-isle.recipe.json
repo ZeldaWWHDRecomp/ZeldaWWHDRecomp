@@ -1,0 +1,86 @@
+{
+  "game_pieces_format": 1,
+  "set": "gale-isle",
+  "label": "Gale Isle ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room4.szs",
+    "room": 4
+  },
+  "memory": {
+    "archive_bytes": 3694592,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "gale-isle",
+      "since": 5,
+      "category": "Islands",
+      "label": "Gale Isle ground",
+      "description": "a tall rocky mountain with a sandy beach; its doorway into the rock sends Link back",
+      "volume": [
+        13520,
+        -1100,
+        -22757,
+        26019,
+        5301,
+        -16400
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Modori",
+          "Iriguti_oku",
+          "Ekaze2",
+          "soko_stop_A",
+          "soko_stop_B",
+          "Mountain_A",
+          "Mountain_B",
+          "Mountain_C",
+          "Sunahama",
+          "Jimen",
+          "Iriguti",
+          "Iriguti_kabe"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Ekaze2"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD04.szs",
+        "triangles": 1541
+      },
+      "expect": {
+        "triangles": [
+          1541
+        ],
+        "textures": [
+          [
+            "Txe_Ekaze1_beach.",
+            "Txe_Ekaze1_dai",
+            "Txe_Ekaze1_iriguti_kabe",
+            "Txe_Ekaze1_iriguti_yuka",
+            "Txe_Ekaze1_kaidan",
+            "Txe_Ekaze1_rock_A",
+            "Txe_Ekaze1_rock_B",
+            "Txe_Ekaze1_rock_ue"
+          ]
+        ],
+        "collision_triangles": 889
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

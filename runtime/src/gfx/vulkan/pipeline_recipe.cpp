@@ -20,6 +20,11 @@ struct Writer {
     if (bytes.size() > maxBytes - 4) throw std::runtime_error("pipeline recipe size limit");
     for (int i = 0; i < 4; ++i) bytes.push_back(uint8_t(word >> (8 * i)));
   }
+  void raw(const uint8_t* data, size_t size) {  // padded to whole words
+    if (size > maxBytes - 4 || bytes.size() > maxBytes - 4 - size) throw std::runtime_error("pipeline recipe size limit");
+    bytes.insert(bytes.end(), data, data + size);
+    while (bytes.size() % 4) bytes.push_back(0);
+  }
 };
 struct Reader {
   const std::vector<uint8_t>& bytes;
@@ -41,6 +46,13 @@ struct Reader {
     uint32_t value; scalar(value);
     if (value > max) throw std::runtime_error("pipeline recipe count limit");
     return value;
+  }
+  void raw(uint8_t* data, size_t size) {
+    const size_t padded = (size + 3) & ~size_t(3);
+    if (at > bytes.size() || bytes.size() - at < padded) throw std::runtime_error("truncated pipeline recipe");
+    std::memcpy(data, bytes.data() + at, size);
+    for (size_t i = size; i < padded; ++i) if (bytes[at + i]) throw std::runtime_error("nonzero pipeline recipe padding");
+    at += padded;
   }
 };
 template<class A, class T> void vector(A& archive, std::vector<T>& values, uint32_t limit) {
@@ -194,22 +206,45 @@ struct Parts {
     return std::make_unique<GraphicsPipelineState>(ci);
   }
 };
-template<class A> void recipe_fields(A& a, PipelineRecipe& recipe, Parts& parts, bool codeFree = false) {
-  vector(a, recipe.key, 208);
+// Native: SPIR-V words inline (version 1); CodeFree: empty words (portable state); Indexed (version 2): the key as
+// raw bytes, each stage's shader as an index into the database's shader table, the recipe's groups at the end.
+enum class Layout { Native, CodeFree, Indexed };
+struct ShaderTable {
+  std::vector<std::shared_ptr<const RecipeSpirv>> shaders;             // read
+  std::unordered_map<const RecipeSpirv*, uint32_t> index;              // write
+};
+template<class A> void recipe_fields(A& a, PipelineRecipe& recipe, Parts& parts, Layout layout = Layout::Native,
+                                     ShaderTable* table = nullptr) {
+  if (layout == Layout::Indexed) {
+    if constexpr (std::is_same_v<A, Reader>) recipe.key.resize(208);
+    if (recipe.key.size() != 208) throw std::runtime_error("incompatible pipeline key schema");
+    a.raw(recipe.key.data(), 208);
+  } else vector(a, recipe.key, 208);
   if (recipe.key.size() != 208) throw std::runtime_error("incompatible pipeline key schema");
   uint32_t dynamic = recipe.dynamicUniforms;
   a.scalar(dynamic);
   if (dynamic > 1) throw std::runtime_error("invalid uniform layout flag");
   if constexpr (std::is_same_v<A, Reader>) recipe.dynamicUniforms = dynamic != 0;
   for (size_t stage = 0; stage < 2; ++stage) {
-    if constexpr (std::is_same_v<A, Reader>) vector(a, recipe.spirv[stage], 262144);
+    if (layout == Layout::Indexed) {
+      if constexpr (std::is_same_v<A, Reader>) {
+        uint32_t index = a.count(uint32_t(table->shaders.size()) - 1);
+        if (table->shaders.empty()) throw std::runtime_error("pipeline recipe shader index");
+        recipe.sharedSpirv[stage] = table->shaders[index];
+      } else {
+        auto found = recipe.sharedSpirv[stage] ? table->index.find(recipe.sharedSpirv[stage].get()) : table->index.end();
+        if (found == table->index.end()) throw std::runtime_error("pipeline recipe shader missing from table");
+        a.scalar(found->second);
+      }
+    } else if constexpr (std::is_same_v<A, Reader>) vector(a, recipe.spirv[stage], 262144);
     else {
       const auto& words=recipe.words(stage);
       if(words.size()>262144) throw std::runtime_error("shader word limit");
       a.scalar(uint32_t(words.size()));
       for(auto word:words) a.scalar(word);
     }
-    if (codeFree ? !recipe.words(stage).empty() : !valid_spirv(recipe.words(stage))) throw std::runtime_error("invalid recipe SPIR-V");
+    if (layout == Layout::CodeFree ? !recipe.words(stage).empty() :
+        layout == Layout::Native ? !valid_spirv(recipe.words(stage)) : false) throw std::runtime_error("invalid recipe SPIR-V");
     auto& bindings = recipe.descriptors[stage];
     uint32_t count = bindings.size();
     if constexpr (std::is_same_v<A, Reader>) { count = a.count(128); bindings.resize(count); }
@@ -226,6 +261,13 @@ template<class A> void recipe_fields(A& a, PipelineRecipe& recipe, Parts& parts,
     }
   }
   parts.visit(a); parts.validate();
+  if (layout == Layout::Indexed) {
+    vector(a, recipe.groups, uint32_t(kPipelineRecipeMaxGroups));
+    for (size_t i = 0; i < recipe.groups.size(); ++i) {
+      if (!recipe.groups[i]) throw std::runtime_error("invalid pipeline recipe group");
+      for (size_t j = 0; j < i; ++j) if (recipe.groups[j] == recipe.groups[i]) throw std::runtime_error("duplicate pipeline recipe group");
+    }
+  }
 }
 }
 std::vector<uint8_t> encode_pipeline_fixed_state(const GraphicsPipelineState& state) {
@@ -257,7 +299,7 @@ std::shared_ptr<PipelineRecipe> decode_code_free_pipeline_recipe(const std::vect
       std::memcmp(bytes.data(), "WWVKST01", 8))
     throw std::runtime_error("invalid code-free pipeline state envelope");
   auto recipe = std::make_shared<PipelineRecipe>();
-  Reader in{bytes, 8}; Parts parts; recipe_fields(in, *recipe, parts, true);
+  Reader in{bytes, 8}; Parts parts; recipe_fields(in, *recipe, parts, Layout::CodeFree);
   if (in.at != bytes.size()) throw std::runtime_error("trailing code-free pipeline state");
   recipe->state = parts.snapshot(); return recipe;
 }
@@ -289,19 +331,121 @@ std::vector<uint8_t> encode_pipeline_recipes(const PipelineRecipeFingerprint& fi
   word(60,uint32_t(crc32(0,out.bytes.data()+64,out.bytes.size()-64)));
   return std::move(out.bytes);
 }
+const char* pipeline_recipe_mismatch(const PipelineRecipeFingerprint& current, const uint8_t* stored) {
+  auto differs = [&](size_t at, size_t size) { return std::memcmp(current.data() + at, stored + at, size) != 0; };
+  // Schema first: an older layout may give the other fields another meaning.
+  if (differs(40, 4)) return "they use another recipe format; they will be rebuilt";
+  if (differs(0, 8)) return "they come from another GPU; they will be rebuilt";
+  if (differs(8, 20)) return "they come from another graphics driver version; they will be rebuilt";
+  if (differs(36, 4) || differs(44, 4)) return "they come from other device capabilities or vertex settings; they will be rebuilt";
+  if (differs(28, 8)) return "they come from another runtime build (or other enabled device features); they will be rebuilt";
+  return nullptr;
+}
+namespace {
+constexpr uint32_t kMaxDatabaseShaders = 2 * kPipelineRecipeMaxCount;
+void finish_header(std::vector<uint8_t>& bytes, uint32_t count) {
+  auto word = [&](size_t at, uint32_t value) {
+    for (int i=0;i<4;++i) bytes[at+i]=uint8_t(value>>(8*i));
+  };
+  word(56,count);
+  word(60,uint32_t(crc32(0,bytes.data()+64,bytes.size()-64)));
+}
+}
+std::vector<uint8_t> encode_local_pipeline_recipes(const PipelineRecipeFingerprint& fingerprint,
+    const std::vector<std::shared_ptr<PipelineRecipe>>& recipes) {
+  if (recipes.size() > kPipelineRecipeMaxCount) throw std::runtime_error("pipeline recipe database count limit");
+  // Shaders not packed yet (a recipe that never went through a pool) are packed for this file only.
+  RecipeShaderPool pool;
+  std::vector<std::shared_ptr<PipelineRecipe>> frozen;
+  frozen.reserve(recipes.size());
+  for (const auto& recipe : recipes) {
+    if (recipe->sharedSpirv[0] && recipe->sharedSpirv[1]) { frozen.push_back(recipe); continue; }
+    auto copy = std::make_shared<PipelineRecipe>();
+    copy->key = recipe->key; copy->descriptors = recipe->descriptors; copy->dynamicUniforms = recipe->dynamicUniforms;
+    copy->groups = recipe->groups;
+    if (!recipe->state) throw std::runtime_error("missing pipeline recipe state");
+    copy->state = std::make_unique<GraphicsPipelineState>(*recipe->state);
+    for (size_t stage = 0; stage < 2; ++stage) {
+      if (recipe->sharedSpirv[stage]) copy->sharedSpirv[stage] = recipe->sharedSpirv[stage];
+      else {
+        if (!valid_spirv(recipe->spirv[stage])) throw std::runtime_error("invalid recipe SPIR-V");
+        copy->spirv[stage] = recipe->spirv[stage];
+      }
+    }
+    pool.freeze(*copy);
+    frozen.push_back(std::move(copy));
+  }
+  ShaderTable table;
+  std::vector<const RecipeSpirv*> order;
+  for (const auto& recipe : frozen)
+    for (const auto& shader : recipe->sharedSpirv)
+      if (table.index.emplace(shader.get(), uint32_t(order.size())).second) order.push_back(shader.get());
+  if (order.size() > kMaxDatabaseShaders) throw std::runtime_error("pipeline recipe shader count limit");
+  Writer out;
+  size_t estimate = 64 + 4 + frozen.size() * 2048;
+  for (auto* shader : order) estimate += 16 + shader->packed.size() + 3;
+  out.bytes.reserve(std::min(estimate, maxBytes)); out.bytes.resize(64);
+  std::memcpy(out.bytes.data(), "WWVKPR02", 8);
+  std::memcpy(out.bytes.data()+8, fingerprint.data(), fingerprint.size());
+  out.scalar(uint32_t(order.size()));
+  for (auto* shader : order) {
+    out.scalar(shader->wordCount); out.scalar(uint32_t(shader->packed.size()));
+    out.scalar(uint32_t(shader->hash)); out.scalar(uint32_t(shader->hash >> 32));
+    out.raw(shader->packed.data(), shader->packed.size());
+  }
+  for (auto& recipe : frozen) {
+    if (!recipe->state) throw std::runtime_error("missing pipeline recipe state");
+    auto snapshot = *recipe->state;
+    Parts parts(snapshot.get(), snapshot.rendering_targets());
+    Writer record; recipe_fields(record, *recipe, parts, Layout::Indexed, &table);
+    if (out.bytes.size() + record.bytes.size() + 4 > maxBytes) throw std::runtime_error("pipeline database size limit");
+    out.scalar(uint32_t(record.bytes.size())); out.bytes.insert(out.bytes.end(), record.bytes.begin(), record.bytes.end());
+  }
+  finish_header(out.bytes, uint32_t(frozen.size()));
+  return std::move(out.bytes);
+}
 std::vector<std::shared_ptr<PipelineRecipe>> decode_pipeline_recipes(
     const PipelineRecipeFingerprint& fingerprint, const std::vector<uint8_t>& bytes) {
-  if (bytes.size() < 64 || bytes.size() > maxBytes || std::memcmp(bytes.data(), "WWVKPR01", 8) ||
-      std::memcmp(bytes.data() + 8, fingerprint.data(), fingerprint.size())) throw std::runtime_error("incompatible pipeline recipe database");
+  const bool indexed = bytes.size() >= 8 && !std::memcmp(bytes.data(), "WWVKPR02", 8);
+  if (bytes.size() < 64 || bytes.size() > maxBytes || (!indexed && std::memcmp(bytes.data(), "WWVKPR01", 8)))
+    throw std::runtime_error("incompatible pipeline recipe database: not a recipe file of this format");
+  if (auto reason = pipeline_recipe_mismatch(fingerprint, bytes.data() + 8))
+    throw std::runtime_error(std::string("incompatible pipeline recipe database: ") + reason);
   Reader in{bytes, 56}; uint32_t count = in.count(kPipelineRecipeMaxCount), checksum; in.scalar(checksum);
   if (checksum != crc32(0, bytes.data() + 64, bytes.size() - 64)) throw std::runtime_error("pipeline recipe checksum mismatch");
   std::vector<std::shared_ptr<PipelineRecipe>> recipes;
   std::unordered_set<std::string> keys;
   RecipeShaderPool shaderPool;
+  ShaderTable table;
+  if (indexed) {
+    const uint32_t shaders = in.count(kMaxDatabaseShaders);
+    table.shaders.reserve(shaders);
+    for (uint32_t i = 0; i < shaders; ++i) {
+      auto shader = std::make_shared<RecipeSpirv>();
+      uint32_t low, high, packed;
+      in.scalar(shader->wordCount); in.scalar(packed); in.scalar(low); in.scalar(high);
+      if (shader->wordCount > 262144 || packed > 4 * 1024 * 1024) throw std::runtime_error("pipeline recipe shader bounds");
+      shader->hash = uint64_t(low) | uint64_t(high) << 32;
+      shader->packed.resize(packed);
+      in.raw(shader->packed.data(), packed);
+      // Checked once here: words that do not unpack, match their digest or form a SPIR-V module are rejected.
+      const auto words = shader->words();
+      if (RecipeSpirv::digest(words) != shader->hash || !valid_spirv(words)) throw std::runtime_error("invalid recipe SPIR-V");
+      shaderPool.adopt(shader);
+      table.shaders.push_back(std::move(shader));
+    }
+  }
   for (uint32_t i = 0; i < count; ++i) {
     size_t size = in.count(4 * 1024 * 1024);
     if (size > bytes.size() - in.at) throw std::runtime_error("truncated pipeline database record");
-    auto recipe = decode_pipeline_recipe({bytes.begin() + in.at, bytes.begin() + in.at + size});
+    std::shared_ptr<PipelineRecipe> recipe;
+    if (indexed) {
+      recipe = std::make_shared<PipelineRecipe>();
+      std::vector<uint8_t> record(bytes.begin() + in.at, bytes.begin() + in.at + size);
+      Reader r{record}; Parts parts; recipe_fields(r, *recipe, parts, Layout::Indexed, &table);
+      if (r.at != record.size()) throw std::runtime_error("trailing pipeline recipe bytes");
+      recipe->state = parts.snapshot();
+    } else recipe = decode_pipeline_recipe({bytes.begin() + in.at, bytes.begin() + in.at + size});
     if (!keys.emplace(reinterpret_cast<const char*>(recipe->key.data()), recipe->key.size()).second)
       throw std::runtime_error("duplicate pipeline recipe key");
     shaderPool.freeze(*recipe);
@@ -310,5 +454,36 @@ std::vector<std::shared_ptr<PipelineRecipe>> decode_pipeline_recipes(
   }
   if (in.at != bytes.size()) throw std::runtime_error("trailing pipeline database bytes");
   return recipes;
+}
+namespace {
+uint32_t swap_bytes(uint32_t v) { return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24); }
+}
+std::vector<uint32_t> RecipeSpirv::words() const {
+  std::vector<uint32_t> out(wordCount);
+  uLongf size = uLongf(wordCount) * 4;
+  if (wordCount && (uncompress(reinterpret_cast<Bytef*>(out.data()), &size, packed.data(), uLong(packed.size())) != Z_OK ||
+                    size != uLongf(wordCount) * 4)) throw std::runtime_error("damaged recipe SPIR-V");
+  if constexpr (std::endian::native == std::endian::big)
+    for (auto& word : out) word = swap_bytes(word);
+  return out;
+}
+uint64_t RecipeSpirv::digest(const std::vector<uint32_t>& words) {
+  uint64_t hash=1469598103934665603ull;
+  for(auto word:words) hash=(hash ^ word)*1099511628211ull;
+  return hash;
+}
+std::shared_ptr<const RecipeSpirv> RecipeSpirv::pack(const std::vector<uint32_t>& words) {
+  auto shader = std::make_shared<RecipeSpirv>();
+  shader->hash = digest(words); shader->wordCount = uint32_t(words.size());
+  std::vector<uint32_t> little = words;
+  if constexpr (std::endian::native == std::endian::big)
+    for (auto& word : little) word = swap_bytes(word);
+  uLongf size = compressBound(uLong(little.size() * 4));
+  shader->packed.resize(size);
+  // Level 1: ~0.2 ms per shader on the thread that records a new pipeline; ~3x smaller than the words.
+  if (compress2(shader->packed.data(), &size, reinterpret_cast<const Bytef*>(little.data()), uLong(little.size() * 4), 1) != Z_OK)
+    throw std::runtime_error("recipe SPIR-V compression failed");
+  shader->packed.resize(size); shader->packed.shrink_to_fit();
+  return shader;
 }
 }

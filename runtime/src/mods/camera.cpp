@@ -42,6 +42,9 @@
 //   so first person, aiming and the follow/manual camera invert while the baton does not. The mouse
 //   follows: in first person through the synthetic right stick, in the follow camera through the
 //   sign of its pitch rate (site_0251053C).
+//   Manual styles can have descending latitude limits: limited_range_addition then reverses its
+//   delta. @02510DEC cancels that reversal for both inputs at the latitude call only, without
+//   changing the style's limits or its centre-height, radius and field-of-view input.
 //
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
 // manual and subject modes run at 30 Hz in both 60 fps modes (true60 converts the follow camera only),
@@ -360,6 +363,14 @@ extern "C" void site_02510EA0(Cpu* c) {
 }
 extern "C" void site_02510EE4(Cpu* c) {
     if (mouse_step() || direct_camera()) c->f[1].ps0 = 1.0;
+}
+
+// manualCamera's latitude-only limited_range_addition call. f1 is the pitch delta,
+// f2/f3 are the live style endpoints (after crawling/flying/lock-on adjustments).
+// The game's helper reverses a descending range; cancel that for camera input.
+// Keep the centre-height, radius and FOV calls, first person and aiming unchanged.
+extern "C" void site_02510DEC(Cpu* c) {
+    c->f[1].ps0 = camera_invert::manual_pitch_delta(c->f[1].ps0, c->f[2].ps0, c->f[3].ps0);
 }
 
 // ---- Invert camera up/down: right after the camera's CPad_GET_SUBSTICK_POS_Y calls (f1 = stick y)

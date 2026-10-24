@@ -26,8 +26,11 @@ int main() {
     be16(f, c2 + 20, 0); be16(f, c2 + 22, 0xFFFF); be16(f, c2 + 24, 1);
     cmap(c3, 0, 0xFFFF, 2, 0);                                      // scan: あ 中
     be16(f, c3 + 20, 2); be16(f, c3 + 22, 0x3042); be16(f, c3 + 24, 5); be16(f, c3 + 26, 0x4E2D); be16(f, c3 + 28, 6);
+    f[0x14 + 9] = 64; f[0x14 + 10] = 48;
+    game_font::Metrics metrics;
     game_font::Glyphs g;
-    assert(game_font::parse_bffnt(f.data(), f.size(), g));
+    assert(game_font::parse_bffnt(f.data(), f.size(), g, &metrics));
+    assert(metrics.width == 48 && metrics.height == 64);
     assert(g.size() == 7 && g.count('A') && g.count('C') && g.count('a') && !g.count('b') && g.count('c') && g.count(0x3042) && g.count(0x4E2D));
     f[0] = 'X';
     game_font::Glyphs none;

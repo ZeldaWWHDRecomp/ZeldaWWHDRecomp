@@ -1,4 +1,5 @@
 #include "gfx/vulkan/pipeline_recipe.h"
+#include <string>
 #include "pipeline_state_fixture.h"
 #include <cassert>
 #include <thread>
@@ -6,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <unordered_set>
+#include <zlib.h>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -51,10 +53,11 @@ int main(int argc, char** argv) {
     size_t words=0,uniqueWords=0;
     std::unordered_set<const void*> unique;
     for(const auto& recipe:recipes) for(size_t stage=0;stage<2;++stage) {
-      const auto& code=recipe->words(stage); words+=code.size();
-      if(unique.insert(code.data()).second) uniqueWords+=code.size();
+      const size_t count=recipe->word_count(stage); words+=count;
+      const void* id=recipe->sharedSpirv[stage] ? static_cast<const void*>(recipe->sharedSpirv[stage].get()) : recipe->spirv[stage].data();
+      if(unique.insert(id).second) uniqueWords+=count;
     }
-    auto encoded=std::string(argv[1]) == "--profile-decode" ? std::vector<uint8_t>{} : encode_pipeline_recipes(fingerprint,recipes);
+    auto encoded=std::string(argv[1]) == "--profile-decode" ? std::vector<uint8_t>{} : encode_local_pipeline_recipes(fingerprint,recipes);
     const auto elapsed=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count();
     uint64_t rss=0;
 #ifndef _WIN32
@@ -63,7 +66,7 @@ int main(int argc, char** argv) {
     rss*=1024;
 #endif
 #endif
-    std::printf("recipes=%zu bytes=%zu spirv_bytes=%zu unique_spirv_bytes=%zu decode_encode_us=%lld peak_rss_bytes=%llu\n",recipes.size(),bytes.size(),words*4,uniqueWords*4,(long long)elapsed,(unsigned long long)rss);
+    std::printf("recipes=%zu bytes=%zu local_v2_bytes=%zu spirv_bytes=%zu unique_spirv_bytes=%zu decode_encode_us=%lld peak_rss_bytes=%llu\n",recipes.size(),bytes.size(),encoded.size(),words*4,uniqueWords*4,(long long)elapsed,(unsigned long long)rss);
     return 0;
   }
   auto recipe = std::make_shared<PipelineRecipe>();
@@ -141,6 +144,9 @@ int main(int argc, char** argv) {
   distinct->spirv[0][3]=2; pool.freeze(*distinct);
   assert(distinct->sharedSpirv[0] != sharedA->sharedSpirv[0]);
   assert(distinct->sharedSpirv[1] == sharedA->sharedSpirv[1]);
+  // Packed shaders unpack to the same words and stay shared by recipes with the same code.
+  assert(sharedA->words(0) == codeFree->spirv[0] && sharedA->word_count(1) == codeFree->spirv[1].size());
+  assert(distinct->words(0)[3] == 2);
   auto restored = decode_pipeline_recipe(encoded);
   recipe.reset(); // No pointer in the decoded state may borrow from the original.
   assert(restored->key[207] == 207);
@@ -167,6 +173,35 @@ int main(int argc, char** argv) {
   fingerprint[0] = 1;
   rejects([&] { decode_pipeline_recipes(fingerprint, database); });
   fingerprint[0] = 0;
+  // The log names the part of the fingerprint that changed.
+  {
+    auto reason = [&](size_t at) {
+      PipelineRecipeFingerprint stored = fingerprint;
+      stored[at] ^= 1;
+      const char* text = pipeline_recipe_mismatch(fingerprint, stored.data());
+      return std::string(text ? text : "");
+    };
+    assert(!pipeline_recipe_mismatch(fingerprint, fingerprint.data()));
+    assert(reason(0).find("another GPU") != std::string::npos);
+    assert(reason(4).find("another GPU") != std::string::npos);
+    assert(reason(8).find("driver") != std::string::npos);
+    assert(reason(12).find("driver") != std::string::npos);  // pipeline cache UUID
+    assert(reason(27).find("driver") != std::string::npos);
+    assert(reason(28).find("runtime build") != std::string::npos);
+    assert(reason(35).find("runtime build") != std::string::npos);
+    assert(reason(36).find("capabilities") != std::string::npos);
+    assert(reason(44).find("capabilities") != std::string::npos);
+    assert(reason(40).find("recipe format") != std::string::npos);
+    PipelineRecipeFingerprint rebuilt = fingerprint;  // schema wins over everything else
+    rebuilt[40] ^= 1; rebuilt[0] ^= 1; rebuilt[30] ^= 1;
+    assert(std::string(pipeline_recipe_mismatch(fingerprint, rebuilt.data())).find("recipe format") != std::string::npos);
+    PipelineRecipeFingerprint other = fingerprint;
+    other[29] ^= 0x80;
+    std::string message;
+    try { decode_pipeline_recipes(other, database); }
+    catch (const std::runtime_error& error) { message = error.what(); }
+    assert(message.find("incompatible pipeline recipe database: they come from another runtime build") == 0);
+  }
   for (size_t size : {size_t(0), size_t(63), database.size() - 1}) {
     auto truncated = database; truncated.resize(size);
     rejects([&] { decode_pipeline_recipes(fingerprint, truncated); });
@@ -175,6 +210,51 @@ int main(int argc, char** argv) {
   rejects([&] { decode_pipeline_recipes(fingerprint, corrupt); });
   auto trailing = database; trailing.push_back(0);
   rejects([&] { decode_pipeline_recipes(fingerprint, trailing); });
+  // Version 2 (local database): shaders once, groups kept; version 1 still reads (migration on the next save).
+  {
+    std::vector<std::shared_ptr<PipelineRecipe>> grouped;
+    for (size_t i = 0; i < 300; ++i) {
+      auto entry = decode_pipeline_recipe(encoded);
+      entry->key[0] = uint8_t(i); entry->key[1] = uint8_t(i >> 8);
+      if (i % 3 == 1) entry->spirv[1][3] = 2;  // a second fragment shader
+      if (i % 2) { assert(entry->add_group(0x1234u + uint32_t(i % 5))); assert(!entry->add_group(0x1234u + uint32_t(i % 5))); }
+      if (i == 7) for (uint32_t g = 1; g <= 9; ++g) entry->add_group(0x9000u + g);
+      grouped.push_back(std::move(entry));
+    }
+    assert(grouped[7]->groups.size() == kPipelineRecipeMaxGroups);
+    auto local = encode_local_pipeline_recipes(fingerprint, grouped);
+    assert(std::equal(local.begin(), local.begin() + 8, "WWVKPR02"));
+    auto v1 = encode_pipeline_recipes(fingerprint, grouped);
+    assert(local[64] == 2 && !local[65] && local.size() < v1.size());  // 2 distinct shaders instead of 600 copies
+    auto back = decode_pipeline_recipes(fingerprint, local);
+    assert(back.size() == grouped.size());
+    for (size_t i = 0; i < back.size(); ++i) {
+      assert(back[i]->key == grouped[i]->key && back[i]->groups == grouped[i]->groups);
+      assert(back[i]->words(0) == grouped[i]->spirv[0] && back[i]->words(1) == grouped[i]->spirv[1]);
+      assert(back[i]->sharedSpirv[0] == back[0]->sharedSpirv[0]);
+      assert(encode_pipeline_recipe(*back[i]) == encode_pipeline_recipe(*grouped[i]));
+    }
+    assert(encode_local_pipeline_recipes(fingerprint, back) == local);
+    // an old (version 1) database: read, then written as version 2 without its groups (it had none)
+    auto migrated = decode_pipeline_recipes(fingerprint, v1);
+    assert(migrated.size() == grouped.size() && migrated[1]->groups.empty());
+    assert(decode_pipeline_recipes(fingerprint, encode_local_pipeline_recipes(fingerprint, migrated)).size() == grouped.size());
+    for (size_t size : {size_t(63), size_t(70), local.size() - 1}) {
+      auto truncated = local; truncated.resize(size);
+      rejects([&] { decode_pipeline_recipes(fingerprint, truncated); });
+    }
+    auto bad = local; bad[100] ^= 1;  // inside the first packed shader: checksum
+    rejects([&] { decode_pipeline_recipes(fingerprint, bad); });
+    // a damaged shader with a matching checksum is still rejected (it does not unpack to its digest)
+    auto damaged = local; damaged[90] ^= 0x40;
+    uint32_t crc = uint32_t(crc32(0, damaged.data() + 64, damaged.size() - 64));
+    for (int i = 0; i < 4; ++i) damaged[60 + i] = uint8_t(crc >> (8 * i));
+    rejects([&] { decode_pipeline_recipes(fingerprint, damaged); });
+    auto other = fingerprint; other[3] ^= 1;
+    rejects([&] { decode_pipeline_recipes(other, local); });
+    auto twice = grouped[1]; twice->groups.push_back(twice->groups[0]);
+    rejects([&] { encode_local_pipeline_recipes(fingerprint, {twice}); });
+  }
   auto shortened = encoded; shortened.pop_back();
   rejects([&] { decode_pipeline_recipe(shortened); });
   restored->descriptors[0].push_back(restored->descriptors[0].front());

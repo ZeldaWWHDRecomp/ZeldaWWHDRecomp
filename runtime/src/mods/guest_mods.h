@@ -68,6 +68,9 @@ bool editor_prepare_model(const std::string& mod,const std::string& package_dir,
 // The world editor's island building (any thread but the game's: it runs the building converter): the
 // set of piece `id` built into `cache_dir` (story_game_pieces::build); throws with a player-facing reason.
 std::shared_ptr<const story_game_pieces::BuiltSet> editor_build_piece(const std::string& id,const std::string& cache_dir);
+// The world editor: a kit model (a manifest model entry of kind "kit") built from the player's game files, as load_world builds
+// it; any thread but the game's. Throws std::runtime_error with the converter's reason.
+std::shared_ptr<const story_game_pieces::BuiltSet> editor_build_kit_model(const std::string& mod,const std::string& package_dir,const std::string& data_dir,const mods::json::Value& entry);
 void logic_service(Cpu* cpu); // once per game logic pass, never interpolation-only
 void frame(uint64_t step); // original full-step clock
 void draw_frame(Cpu* cpu,uint64_t executed_step); // once per actual logic pass, including true60

@@ -53,11 +53,10 @@ int main() {
     const uint64_t fp = 0x1234;
     dc::Snapshot snapshot{{1, entry(a, true, 7, 3)}, {2, entry(b, false, 9)}};
     auto file = dc::encode(snapshot, fp);
-    assert(file.size() == dc::kHeaderBytes + 2 * dc::record_bytes(7));
-    assert(!memcmp(file.data(), "WWVKSC03", 8));
+    assert(!memcmp(file.data(), "WWVKSC04", 8));
     dc::Map map;
     auto decoded = dc::decode(file, fp, map);
-    assert(decoded.ok && !decoded.legacy && decoded.bytes == file.size() && map.size() == 2);
+    assert(decoded.ok && !decoded.legacy && decoded.bytes == dc::kHeaderBytes + 8 + 2 * dc::record_bytes(7) && map.size() == 2);
     assert(map.at(1).vertex && map.at(1).source == shader_source_id(a) && map.at(1).usage == 3);
     assert(!map.at(2).vertex && map.at(2).source == shader_source_id(b) && map.at(2).fromDisk);
     assert(*map.at(1).words == module(7) && *map.at(2).words == module(9));
@@ -84,12 +83,53 @@ int main() {
     assert(*migrated.at(1).words == module(7) && migrated.at(1).usage == 0);
     dc::Snapshot again(migrated.begin(), migrated.end());
     auto rewritten = dc::encode(again, fp);
-    assert(rewritten.size() == legacy.bytes && rewritten.size() < old.size());
+    assert(rewritten.size() < old.size());
     dc::Map reloaded;
-    assert(dc::decode(rewritten, fp, reloaded).ok && reloaded.size() == 2 &&
+    const auto reread = dc::decode(rewritten, fp, reloaded);
+    assert(reread.ok && !reread.legacy && reloaded.size() == 2 && reread.bytes == legacy.bytes + 8 &&
            reloaded.at(1).source == migrated.at(1).source);
     auto oldDamaged = old; oldDamaged[60] ^= 1;
     assert(!dc::decode(oldDamaged, fp, reloaded).ok);
+
+    // WWVKSC03 (words per record) still loads, records with the same words share one copy, and the rewrite stores
+    // each module once.
+    {
+        std::vector<uint8_t> payload;
+        for (uint64_t key = 1; key <= 4; ++key) {
+            const auto words = module(key <= 3 ? 7 : 9);
+            dc::put(payload, key, 8); dc::put(payload, key & 1, 4); dc::put(payload, 100 + key, 4);
+            dc::put(payload, key, 8); dc::put(payload, key * 3, 8); dc::put(payload, 0, 4);
+            dc::put(payload, words.size(), 4);
+            for (auto w : words) dc::put(payload, w, 4);
+        }
+        std::vector<uint8_t> v3{'W','W','V','K','S','C','0','3'};
+        dc::put(v3, fp, 8); dc::put(v3, payload.size(), 8);
+        dc::put(v3, dc::checksum(payload.data(), payload.size()), 8); dc::put(v3, 4, 8);
+        v3.insert(v3.end(), payload.begin(), payload.end());
+        dc::Map shared;
+        dc::WordPool pool;
+        const auto loaded = dc::decode(v3, fp, shared, &pool);
+        assert(loaded.ok && loaded.legacy && shared.size() == 4 && pool.size() == 2);
+        assert(shared.at(1).words == shared.at(2).words && shared.at(2).words == shared.at(3).words);
+        assert(shared.at(4).words != shared.at(1).words && *shared.at(4).words == module(9));
+        assert(loaded.bytes == dc::kHeaderBytes + 4 * dc::kRecordBytes + 2 * module(7).size() * 4);
+        dc::Snapshot all(shared.begin(), shared.end());
+        auto v4 = dc::encode(all, fp);
+        dc::Map back;
+        const auto again4 = dc::decode(v4, fp, back);
+        assert(again4.ok && back.size() == 4 && again4.bytes == loaded.bytes + 8);
+        assert(back.at(1).words == back.at(3).words && *back.at(1).words == module(7) && back.at(3).source == shared.at(3).source);
+        // a module index out of range or a module that does not unpack is rejected
+        auto badIndex = v4; badIndex[badIndex.size() - 4] = 9;
+        uint64_t sum = dc::checksum(badIndex.data() + dc::kHeaderBytes, badIndex.size() - dc::kHeaderBytes);
+        for (int i = 0; i < 8; ++i) badIndex[24 + i] = uint8_t(sum >> (8 * i));
+        dc::Map none;
+        assert(!dc::decode(badIndex, fp, none).ok && none.empty());
+        auto badModule = v4; badModule[dc::kHeaderBytes + 8 + 8 + 2] ^= 0x55;
+        sum = dc::checksum(badModule.data() + dc::kHeaderBytes, badModule.size() - dc::kHeaderBytes);
+        for (int i = 0; i < 8; ++i) badModule[24 + i] = uint8_t(sum >> (8 * i));
+        assert(!dc::decode(badModule, fp, none).ok && none.empty());
+    }
 
     // A record without SPIR-V is never written.
     dc::Snapshot invalid{{3, entry(a, true, 1)}};

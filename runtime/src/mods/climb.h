@@ -12,4 +12,5 @@ struct ClimbHud {
     bool exhausted;   // ran out: no climbing until full again
 };
 ClimbHud climb_hud();
+ClimbHud climb_hud_drawn();  // as the frame being shown draws it (hud_gate.cpp)
 }  // namespace mods

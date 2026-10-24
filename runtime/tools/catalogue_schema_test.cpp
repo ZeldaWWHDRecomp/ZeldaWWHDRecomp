@@ -29,7 +29,7 @@ int main() {
     auto good=catalogue::parse(json::dump(fixture()));assert(good.entries.size()==1);
     auto& e=good.entries[0];auto version=catalogue::Version::parse("0.2.10");
     assert(e.compatible(version,"EU","windows-x86_64"));
-    assert(!e.compatible(version,"EU","android-arm64"));
+    assert(e.compatible(version,"EU","android-arm64"));  // code mods run on Android since v0.4.0 (mods issue #6)
     assert(!e.compatible(catalogue::Version::parse("0.2.9"),"USA","linux-x86_64"));
     assert(!e.compatible(catalogue::Version::parse("0.3.0"),"USA","linux-x86_64"));
     refused([](auto& v){v["format_version"]=2;});

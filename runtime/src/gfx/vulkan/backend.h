@@ -28,7 +28,8 @@ struct CachedGuestLayout;
 struct Surface {
  ResourceUse use;
     std::shared_ptr<Surface> mipChain; // sampled companion assembled from GPU-rendered levels
-    uint64_t mipChainSeq = ~0ull;
+    uint64_t mipChainKey[16] = {}; // per level of mipChain: what it was built from (with_mip_chain)
+    uint32_t mipChainLevels = 0;   // ... and how many of its levels are valid
  VkImage image=VK_NULL_HANDLE; VkDeviceMemory memory=VK_NULL_HANDLE; VkImageView view=VK_NULL_HANDLE;
  VkDeviceSize allocationBytes=0; // tracked image allocation, excludes retired/driver memory
  VkImageType imageType=VK_IMAGE_TYPE_2D; VkImageViewType viewType=VK_IMAGE_VIEW_TYPE_2D;
@@ -43,10 +44,16 @@ struct Surface {
  uint64_t writtenBackSeq=0; // writeSeq when last written back to guest memory (linear surfaces, write_back_linear_targets)
  // CPU textures: write stamp (write_watch.h) of all levels' pages at the last full check
  uint64_t watchStamp=0; bool watched=false;
+ // stereo: eye 1's held commands of this flush generation sample this eye 0 texture (stereo.h)
+ uint64_t eyeHeld=0;
  uint32_t dataSize=0; FormatInfo fmt;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
  float ax=1,ay=1; // aspect-ratio factors of screen-shaped targets (surfaces.cpp)
+ // dynamic resolution (dynres.h): the factor of the internal resolution this image was made at (1: off), and
+ // images of other recent scales kept for the next change (only their image fields are used; surfaces.cpp)
+ float dyn=1;
+ std::vector<std::shared_ptr<Surface>> spares;
 };
 struct SurfaceDesc { uint32_t addr=0,mipAddr=0,width=0,height=0,slices=1,pitch=0,mips=1,format=0,dim=1,tileMode=0,swizzle=0; bool isDepth=false; };
 struct Screen {
@@ -65,13 +72,24 @@ struct Screen {
  // Never overwrite the published scan while the next guest frame is being
  // built. Publish at swap; reuse the former published allocation next time.
  std::unique_ptr<Surface> buildingScan;
+ // dynamic resolution: scan images of other sizes, kept for the next change (copy_to_scan)
+ std::vector<std::unique_ptr<Surface>> scanSpares;
  bool buildingScanDirty=false,buildingScanSrgb=false,scanSrgb=false;
+ // Display shape is separate from storage: Half SBS/TAB scans keep eye-sized
+ // pixels until final composition, avoiding an upsample followed by a squeeze.
+ VkExtent2D scanDisplayExtent{},buildingScanDisplayExtent{};
  std::atomic<bool> visible{true},srgb{false},resize{false};
  int presentMode=-1,presentWanted=-1; // present mode of the swapchain, and the setting it was made for
  std::atomic<int> width{1280},height{720};
  uint64_t swapchainGeneration=0; // renderer-thread lifecycle diagnostics
  std::atomic<uint64_t> presented{0}; // successful queue presentations, for display diagnostics
 };
+inline VkExtent3D scan_display_extent(const Screen& screen) {
+ if(!screen.scan)return {};
+ return screen.scanDisplayExtent.width && screen.scanDisplayExtent.height
+     ? VkExtent3D{screen.scanDisplayExtent.width,screen.scanDisplayExtent.height,1}
+     : screen.scan->extent;
+}
 struct GpuScopeMetadata {
  uint32_t kind=0; // 0 render pass, 1 feedback copy.
  std::array<VkFormat,8> colors{};
@@ -185,6 +203,7 @@ struct Renderer {
   VkDescriptorPool descriptorPool=VK_NULL_HANDLE;
   VkQueryPool timestampQueries=VK_NULL_HANDLE;
   bool timestampRecorded=false;
+  bool dynresTiming=false; // the two timestamps were recorded for dynamic resolution (dynres.h)
   uint64_t timestampFrame=0;
   uint32_t perfQuery=UINT32_MAX;
   static constexpr uint32_t maxGpuScopes=256;
@@ -195,6 +214,7 @@ struct Renderer {
   bool retainedUnsubmitted=false;
   DeferredCommands* deferredOwner=nullptr;
   uint64_t serial=0; // Submission order on the single graphics queue.
+  uint64_t recordedFrame=0; // R.frame when sealed: frames in flight (WWHD_VK_STATS)
   uint64_t recordWorkerSerial=0; // CPU acknowledgment before ANY fence query or pool reuse.
   std::vector<UploadBlock> uploadBlocks;
   std::vector<std::function<void()>> completions;
@@ -203,6 +223,7 @@ struct Renderer {
   std::vector<RetiredImage> garbageImages;
   std::vector<bufcache::Region> garbageCacheRegions;
  };
+ // The submission ring (submission_pool.h): sized at device creation, WWHD_VK_SUBMISSION_POOL.
  std::deque<Submission> submissions=std::deque<Submission>(4);
  size_t activeSubmission=0;
  Screen tv,drc;
@@ -257,13 +278,16 @@ void create_surface_image(Surface*,bool forRendering,VkExtent3D explicitExtent =
 void reset_ao_private_cache();
 void destroy_surface_image(Surface*);
 VkImageView layer_view(Surface*,uint32_t slice);
+VkImageView make_sampled_view(Surface*,uint32_t key); // a sampled view by its key (surfaces.cpp sampled_texture_view)
+void touch_image(Surface*); // dynamic resolution: clear an image made ahead once (surfaces.cpp)
 VkImageView sampled_texture_view(Surface*,const uint32_t* texWords);
 Surface* find_or_create_surface(const SurfaceDesc&,bool forRendering);
 Surface* color_target(const uint32_t*,int,uint32_t* slice=nullptr);
 Surface* depth_target(const uint32_t*,uint32_t* slice=nullptr);
 Surface* surface_from_color_buffer(uint32_t,uint32_t* firstSlice=nullptr,uint32_t* numSlices=nullptr);
 Surface* surface_from_depth_buffer(uint32_t,uint32_t* firstSlice=nullptr,uint32_t* numSlices=nullptr);
-Surface* sampled_texture(const uint32_t*,bool);
+// maxLevels: the mip levels the sampler can reach; a rendered picture's mip chain is built that far
+Surface* sampled_texture(const uint32_t*,bool,uint32_t maxLevels=16);
 void upload_surface(Surface*);
 void resample(Surface*,Surface*,uint32_t slices,float uMax=1,float vMax=1,uint32_t dstW=0,uint32_t dstH=0);
 // scaled depth copies: blitted where the device can, else drawn (surfaces.cpp, issue #72);
@@ -271,6 +295,8 @@ void resample(Surface*,Surface*,uint32_t slices,float uMax=1,float vMax=1,uint32
 enum class DepthCopyOverride { None, Draw, Unsupported };
 extern DepthCopyOverride g_depthCopyOverride;
 float res_scale();void set_res_scale(float);void latch_res_scale();
+// dynamic resolution: the picture size the layout uses (the scan at the full internal resolution)
+float nominal_width(const Surface*);float nominal_height(const Surface*);
 uint64_t next_write_seq();
 // Surface epoch (surfaces.cpp): bumped whenever the result of a texture or render-target lookup
 // (find_or_create_surface, sampled views, sampler choice) or the content of a sampled CPU texture can

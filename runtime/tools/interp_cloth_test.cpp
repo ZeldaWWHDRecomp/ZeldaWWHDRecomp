@@ -9,7 +9,7 @@
 #include "../src/interp_fx.cpp"
 
 namespace {
-bool active = false, recording = false, executing = false;
+bool active = false, recording = false, executing = false, blend_rec = false;
 bool true_mode = false;
 uint64_t stamp = 1;
 float fraction = .5f;
@@ -24,6 +24,10 @@ bool in_execute() { return executing; }
 bool blend_draw() { return active && !recording; }
 bool record_pass() { return recording; }
 uint64_t hold_pass_count() { return stamp; }
+bool record_blended() { return blend_rec; }
+uint64_t record_stamp() { return stamp + (blend_rec ? 1 : 0); }
+bool display_record_blended() { return blend_rec; }
+uint64_t display_record_stamp() { return record_stamp(); }
 float pass_t() { return fraction; }
 void blend_world_matrix(const float* a, const float* b, float* out, float t) {
     for (int i = 0; i < 12; i++) out[i] = a[i] + (b[i] - a[i]) * t;
@@ -160,6 +164,27 @@ int main() {
         fill(30.f);
         checked_draw();  // new packet / state-load history reset
         expect_upload(30.f);
+        // 40 fps blended record pass: drawn blended from the record before it (a second draw in the
+        // pass too), and recorded for the next step's frames
+        recording = true;
+        stamp = 1;
+        checked_draw();
+        recording = false;
+        fill(40.f);
+        blend_rec = true;
+        fraction = .75f;
+        checked_draw();
+        expect_upload(37.5f);
+        checked_draw();  // drawn twice in the pass: the same "before"
+        expect_upload(37.5f);
+        blend_rec = false;
+        g_packet_before.clear();  // (fx_pass_start)
+        stamp = 2;
+        fill(50.f);
+        fraction = .5f;
+        checked_draw();  // the next step blends from the step the blended record pass recorded
+        expect_upload(45.f);
+        stamp = 1;
     }
     // Both line upload overloads use the same history and restore all inputs.
     for (auto hook : {hook_025EC62C, hook_025ED1BC}) {

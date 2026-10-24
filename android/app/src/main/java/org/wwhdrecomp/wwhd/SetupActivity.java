@@ -127,7 +127,7 @@ public class SetupActivity extends Activity {
                 !getIntent().getBooleanExtra(EXTRA_SHOW_SETUP, false) && readyToPlay())) {
             launchingGame = true;
             CrashReports.offer(this, () -> {
-                startActivity(new Intent(this, WwhdActivity.class));
+                startActivity(QuestActivity.gameIntent(this));
                 finish();
             });
             return;
@@ -163,7 +163,7 @@ public class SetupActivity extends Activity {
         detail.setPadding(0, gap / 2, 0, gap);
         layout.addView(detail);
         // Play first: once a game is ready it is the main action
-        play = button(layout, getString(R.string.setup_play), () -> startActivity(new Intent(this, WwhdActivity.class)));
+        play = button(layout, getString(R.string.setup_play), () -> startActivity(QuestActivity.gameIntent(this)));
         button(layout, "Share log", () -> LogShare.share(this));
         play.setTextSize(20);
         play.setTextColor(0xFFFFFFFF);
@@ -489,8 +489,14 @@ public class SetupActivity extends Activity {
             }
             case "paused": {
                 String reason = host == null ? "" : host.optString("reason");
-                int text = reason.equals("heat") ? R.string.setup_paused_heat :
-                    reason.equals("battery") || reason.equals("battery_unknown") ? R.string.setup_paused_battery : R.string.setup_paused;
+                if (reason.equals("heat")) {
+                    // A heat pause waits for the user (#277): Continue anyway at any time, Continue once cooled.
+                    boolean cooled = host.optBoolean("cooled");
+                    phase(getString(cooled ? R.string.setup_paused : R.string.setup_paused_heat),
+                        getString(cooled ? R.string.setup_paused_heat_cooled : R.string.setup_paused_heat_detail), -2);
+                    return;
+                }
+                int text = reason.equals("battery") || reason.equals("battery_unknown") ? R.string.setup_paused_battery : R.string.setup_paused;
                 phase(getString(text), getString(reason.equals("manual") || reason.isEmpty() ?
                     R.string.setup_paused_detail : R.string.setup_paused_auto_detail), -2);
                 return;
@@ -570,7 +576,10 @@ public class SetupActivity extends Activity {
                     codeMods.setChecked(!codeMods.isChecked());
                     codeMods.setOnCheckedChangeListener((view, checked) -> chooseCodeMods(checked));
                 }
-                show(resume, phoneSetup && job != null && !working && !hostName.equals("complete"));
+                // a heat pause offers Continue only once the device has cooled down (#277)
+                boolean heatHot = hostName.equals("paused") && hostState != null &&
+                    hostState.optString("reason").equals("heat") && !hostState.optBoolean("cooled");
+                show(resume, phoneSetup && job != null && !working && !hostName.equals("complete") && !heatHot);
                 setTextIfChanged(resume, getString(hostName.equals("selected") ? R.string.setup_start : R.string.setup_continue));
                 show(updateStatus, hostState != null && SetupPresentation.showUpdate(hostState.optBoolean("updating"), hostName));
                 plainPhase(job, hostState, hostName, needsKeys, resume.isEnabled());
@@ -596,12 +605,16 @@ public class SetupActivity extends Activity {
                             .putExtra("result", new File(job, "shader-warm-result.json").getAbsolutePath()));
                     }
                     String reason = value.optString("state").equals("paused") ? value.optString("reason", null) : null;
+                    boolean cooled = "heat".equals(reason) && value.optBoolean("cooled");
                     if (value.has("reason")) {
                         int[] sensors = sensorReadings();
-                        text += "\n" + SetupPolicy.description(value.getString("reason"), sensors[0], sensors[1]);
+                        text += "\n" + SetupPolicy.description(value.getString("reason"), sensors[0], sensors[1],
+                            SetupPolicy.hottestCoreSensor(new File("/sys")), cooled);
                     }
-                    if ("heat".equals(reason))
-                        text += "\nIf the Android device does not feel hot, tap Continue anyway. Setup then ignores heat until this run ends; Android's critical heat level still pauses it.";
+                    if (cooled)
+                        text += "\nTap Continue to go on. Setup pauses again if the Android device gets too warm.";
+                    else if ("heat".equals(reason))
+                        text += "\nSetup waits for you. If the Android device does not feel hot, tap Continue anyway. Setup then ignores heat until this run ends; Android's critical heat level still pauses it.";
                     else if (SetupPolicy.overridable(reason))
                         text += "\nTap Continue anyway to run on battery until this run ends.";
                     continueAction = !SetupPolicy.overridable(reason) ? null :

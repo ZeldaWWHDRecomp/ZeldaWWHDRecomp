@@ -34,5 +34,7 @@ bool page_open();
 // (story_item_buttons::refresh_strip, wired where both are built)
 void set_after_assign(void (*after)(Cpu*));
 void state_loaded();
+// The item's icon changed (the world editor): read it again the next time a page shows it
+void forget_icon(uint16_t key);
 
 }  // namespace story_bag

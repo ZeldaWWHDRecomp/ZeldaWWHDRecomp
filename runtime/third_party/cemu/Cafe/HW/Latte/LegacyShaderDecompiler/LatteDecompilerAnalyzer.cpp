@@ -1190,3 +1190,277 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 	shaderContext->output->resourceMappingMTL.indexBufferBinding = shaderContext->currentBufferBindingPointMTL++;
 	shaderContext->output->resourceMappingMTL.indexTypeBinding = shaderContext->currentBufferBindingPointMTL++;
 }
+
+// WWHD (from GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.5, MPL-2.0): which ALU source operands may be infinite or NaN (srcMayBeNonFinite), so that the strict
+// multiply (0*anything=0) is only needed where an operand can be: only then does it differ from a
+// plain multiply (besides the sign of zero). Values from uniforms, literals, texture/vertex fetches and
+// interpolants count as finite; the results of operations that make infinities or NaNs from finite
+// values (reciprocals, rsqrt, exp, log, sqrt, integer/bit operations, conversions to bits) do not, nor
+// anything computed from those. Finite values overflowing to infinity are not considered.
+// Within an ALU clause the emitted code runs straight through (no in-clause predication), so a read
+// sees the clause's own last write of that channel (PV/PS: the previous group); channels not written
+// yet in the clause take what any write anywhere may leave (flow-insensitive over the whole program,
+// repeated until nothing changes: loops, branches).
+namespace
+{
+	enum class FiniteOut { Propagate, Finite, NonFinite };
+
+	// srcMask: the sources whose values flow into the result
+	FiniteOut _finiteOutput(const LatteDecompilerALUInstruction& inst, uint8& srcMask)
+	{
+		srcMask = 7;
+		if (inst.isOP3)
+		{
+			switch (inst.opcode)
+			{
+			case ALU_OP3_INST_MULADD:
+			case ALU_OP3_INST_MULADD_M2:
+			case ALU_OP3_INST_MULADD_M4:
+			case ALU_OP3_INST_MULADD_D2:
+			case ALU_OP3_INST_MULADD_IEEE:
+				return FiniteOut::Propagate;
+			case ALU_OP3_INST_CMOVE:
+			case ALU_OP3_INST_CMOVGT:
+			case ALU_OP3_INST_CMOVGE:
+			case ALU_OP3_INST_CNDE_INT:
+			case ALU_OP3_INST_CNDGT_INT:
+			case ALU_OP3_INST_CMOVGE_INT:
+				srcMask = 6; // selects source 1 or 2; source 0 is only compared
+				return FiniteOut::Propagate;
+			default:
+				return FiniteOut::NonFinite;
+			}
+		}
+		switch (inst.opcode)
+		{
+		case ALU_OP2_INST_ADD:
+		case ALU_OP2_INST_MUL:
+		case ALU_OP2_INST_MUL_IEEE:
+		case ALU_OP2_INST_MAX:
+		case ALU_OP2_INST_MIN:
+		case ALU_OP2_INST_MAX_DX10:
+		case ALU_OP2_INST_MIN_DX10:
+		case ALU_OP2_INST_FLOOR:
+		case ALU_OP2_INST_FRACT:
+		case ALU_OP2_INST_TRUNC:
+		case ALU_OP2_INST_RNDNE:
+		case ALU_OP2_INST_MOV:
+		case ALU_OP2_INST_NOP:
+		case ALU_OP2_INST_DOT4: // whole group: see below
+		case ALU_OP2_INST_DOT4_IEEE:
+		case ALU_OP2_INST_CUBE:
+		case ALU_OP2_INST_LOG_CLAMPED: // log2(max(0, x)), -inf clamped
+		case ALU_OP2_INST_SIN:
+		case ALU_OP2_INST_COS:
+		case ALU_OP2_INST_RECIP_CLAMPED: // +-inf clamped
+		case ALU_OP2_INST_RECIP_FF: // +-inf -> +-0
+			return FiniteOut::Propagate;
+		case ALU_OP2_INST_SETE: // 1.0 or 0.0
+		case ALU_OP2_INST_SETGT:
+		case ALU_OP2_INST_SETGE:
+		case ALU_OP2_INST_SETNE:
+		case ALU_OP2_INST_PRED_SETE:
+		case ALU_OP2_INST_PRED_SETGT:
+		case ALU_OP2_INST_PRED_SETGE:
+		case ALU_OP2_INST_PRED_SETNE:
+		case ALU_OP2_INST_INT_TO_FLOAT:
+		case ALU_OP2_INST_UINT_TO_FLOAT:
+			return FiniteOut::Finite;
+		default:
+			return FiniteOut::NonFinite;
+		}
+	}
+
+	struct FinitenessState
+	{
+		bool gpr[128][4]{}; // may be non-finite after some write anywhere
+		bool any{};
+		bool changed{};
+
+		void taint(uint32 gpr, uint32 elem)
+		{
+			if (gpr >= 128 || elem >= 4 || this->gpr[gpr][elem])
+				return;
+			this->gpr[gpr][elem] = true;
+			any = changed = true;
+		}
+	};
+
+	struct ClauseLocal
+	{
+		uint8 known[128][4]{}; // 0: not written in this clause yet, 1: finite, 2: may be non-finite
+		bool pv[4] = {true, true, true, true}, ps = true; // not set at the clause start
+	};
+
+	bool _sourceMayBeNonFinite(const LatteDecompilerALUInstruction& inst, int i, const FinitenessState& st, const ClauseLocal& cl)
+	{
+		const auto& op = inst.sourceOperand[i];
+		const uint32 sel = op.sel;
+		if (GPU7_ALU_SRC_IS_GPR(sel))
+		{
+			if (op.rel)
+				return true;
+			const uint8 k = cl.known[sel][op.chan & 3];
+			return k ? k == 2 : st.gpr[sel][op.chan & 3];
+		}
+		if (GPU7_ALU_SRC_IS_PV(sel))
+			return cl.pv[op.chan & 3];
+		if (GPU7_ALU_SRC_IS_PS(sel))
+			return cl.ps;
+		if (GPU7_ALU_SRC_IS_LITERAL(sel))
+			return ((inst.literalData.w[op.chan & 3] >> 23) & 0xFF) == 0xFF;
+		return false; // uniforms, inline constants, unused
+	}
+
+	// one pass over a clause; with store: also sets srcMayBeNonFinite
+	void _finitenessClause(std::vector<LatteDecompilerALUInstruction>& insts, FinitenessState& st, bool store)
+	{
+		ClauseLocal cl;
+		struct Write { uint32 gpr, elem; bool rel, nf; };
+		std::vector<Write> writes;
+		const int numSrc[2] = {2, 3};
+		size_t i = 0;
+		while (i < insts.size())
+		{
+			size_t end = i;
+			while (end < insts.size() && insts[end].instructionGroupIndex == insts[i].instructionGroupIndex)
+				end++;
+			// DOT4 / CUBE: every unit of the group gets the result of all its sources
+			bool dot = false, cube = false;
+			for (size_t k = i; k < end; k++)
+			{
+				auto& inst = insts[k];
+				const bool isDot = !inst.isOP3 && (inst.opcode == ALU_OP2_INST_DOT4 || inst.opcode == ALU_OP2_INST_DOT4_IEEE);
+				const bool isCube = !inst.isOP3 && inst.opcode == ALU_OP2_INST_CUBE;
+				if (!isDot && !isCube)
+					continue;
+				for (int s = 0; s < numSrc[inst.isOP3]; s++)
+					(isDot ? dot : cube) |= _sourceMayBeNonFinite(inst, s, st, cl);
+			}
+			// the group reads before it writes
+			bool newPv[4] = {cl.pv[0], cl.pv[1], cl.pv[2], cl.pv[3]}, newPs = cl.ps;
+			writes.clear();
+			for (size_t k = i; k < end; k++)
+			{
+				auto& inst = insts[k];
+				uint8 srcMask, nfMask = 0;
+				FiniteOut kind = _finiteOutput(inst, srcMask);
+				for (int s = 0; s < numSrc[inst.isOP3]; s++)
+					if (_sourceMayBeNonFinite(inst, s, st, cl))
+						nfMask |= 1 << s;
+				if (store)
+					inst.srcMayBeNonFinite = nfMask;
+				bool res;
+				if (kind == FiniteOut::Finite)
+					res = false;
+				else if (kind == FiniteOut::NonFinite)
+					res = true;
+				else if (!inst.isOP3 && (inst.opcode == ALU_OP2_INST_DOT4 || inst.opcode == ALU_OP2_INST_DOT4_IEEE))
+					res = dot;
+				else if (!inst.isOP3 && inst.opcode == ALU_OP2_INST_CUBE)
+					res = cube;
+				else
+					res = (nfMask & srcMask) != 0;
+				if (inst.aluUnit < 4)
+					newPv[inst.aluUnit] = res;
+				else
+					newPs = res;
+				if (inst.writeMask)
+					writes.push_back({inst.destGpr, inst.destElem, inst.destRel != 0, res});
+			}
+			for (auto& w : writes)
+			{
+				if (w.rel) // any register: what was known is no longer
+				{
+					for (uint32 g = 0; g < 128; g++)
+						for (uint32 e = 0; e < 4; e++)
+						{
+							if (w.nf)
+								st.taint(g, e);
+							if (cl.known[g][e] == 1 && w.nf)
+								cl.known[g][e] = 2;
+						}
+				}
+				else if (w.gpr < 128 && w.elem < 4)
+				{
+					cl.known[w.gpr][w.elem] = w.nf ? 2 : 1;
+					if (w.nf)
+						st.taint(w.gpr, w.elem);
+				}
+			}
+			memcpy(cl.pv, newPv, sizeof newPv);
+			cl.ps = newPs;
+			i = end;
+		}
+	}
+}
+void LatteDecompiler_analyzeFiniteness(LatteDecompilerShaderContext* shaderContext)
+{
+	auto& cfs = shaderContext->cfInstructions;
+	bool calls = !shaderContext->list_subroutines.empty();
+	for (auto& cf : cfs)
+		calls |= cf.type == GPU7_CF_INST_CALL || cf.type == GPU7_CF_INST_CALL_FS;
+	if (calls)
+	{
+		// subroutines: what any write anywhere may leave, repeated until nothing changes
+		FinitenessState st;
+		auto forEachALU = [&](auto&& fn) {
+			for (auto& cf : cfs)
+				if (!cf.instructionsALU.empty())
+					fn(cf.instructionsALU);
+			for (auto& sub : shaderContext->list_subroutines)
+				for (auto& cf : sub.instructions)
+					if (!cf.instructionsALU.empty())
+						fn(cf.instructionsALU);
+		};
+		do // taints only grow: ends after at most 512 rounds
+		{
+			st.changed = false;
+			forEachALU([&](auto& insts) { _finitenessClause(insts, st, false); });
+		} while (st.changed);
+		forEachALU([&](auto& insts) { _finitenessClause(insts, st, true); });
+		return;
+	}
+	// Otherwise in program order: jumps only go forward (if/else of the active mask), so a channel may
+	// hold what any write before it left (the union). Loops: their start also takes what their end
+	// leaves, repeated until that stops growing.
+	std::unordered_map<size_t, FinitenessState> loopEnd; // by the index of the loop's start
+	for (bool store = false;;)
+	{
+		FinitenessState st;
+		std::vector<size_t> loops;
+		bool grew = false;
+		for (size_t i = 0; i < cfs.size(); i++)
+		{
+			auto& cf = cfs[i];
+			if (cf.type == GPU7_CF_INST_LOOP_START_DX10 || cf.type == GPU7_CF_INST_LOOP_START_NO_AL)
+			{
+				loops.push_back(i);
+				auto it = loopEnd.find(i);
+				if (it != loopEnd.end())
+					for (uint32 g = 0; g < 128; g++)
+						for (uint32 e = 0; e < 4; e++)
+							if (it->second.gpr[g][e])
+								st.taint(g, e);
+			}
+			else if (cf.type == GPU7_CF_INST_LOOP_END && !loops.empty())
+			{
+				FinitenessState& end = loopEnd[loops.back()];
+				loops.pop_back();
+				for (uint32 g = 0; g < 128; g++)
+					for (uint32 e = 0; e < 4; e++)
+						if (st.gpr[g][e] && !end.gpr[g][e])
+						{
+							end.gpr[g][e] = true;
+							grew = true;
+						}
+			}
+			else if (!cf.instructionsALU.empty())
+				_finitenessClause(cf.instructionsALU, st, store);
+		}
+		if (store)
+			break;
+		if (!grew)
+			store = true; // one more pass that sets srcMayBeNonFinite
+	}
+}

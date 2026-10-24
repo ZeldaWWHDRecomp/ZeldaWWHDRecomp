@@ -152,6 +152,10 @@ void hud_service();
 // 0..1, multiplies the boost bar's and the climb wheel's own alpha (mod_hud.mm, vulkan/present.cpp):
 // 0 while a game menu, a cutscene/event or a dialogue is shown. Any thread.
 float game_ui_hud_alpha();
+// frame interpolation: after each drawn pass (interp.cpp), its fraction between the logic steps; the
+// HUDs as that frame shows them (render thread; climb.h ClimbHud)
+void hud_drawn(float t, uint64_t step, bool interpolating);
+MoveHud move_hud_drawn();
 
 // ---- input (input.mm) ----
 // called at the end of input::read(): synthetic stick and buttons (mouse camera, R3 pulses)

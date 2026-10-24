@@ -1,6 +1,6 @@
 // Render-thread profiler shared by both renderers (render_prof.cpp).
 //
-// Cheap enough to stay on: every command op is counted; draws and register writes are timed on one
+// Opt-in diagnostics: every command op is counted; draws and register writes are timed on one
 // call in 64 (and the phases inside those sampled draws), rare ops (clears, copies, flushes, swaps)
 // on every call. Upload bytes are split by kind; "unique guest bytes" (the union of the guest ranges
 // that vertex, index and uniform copies read) is measured on one frame in 16. A classifier counts
@@ -9,9 +9,16 @@
 //
 // Every 120 swaps the counters are turned into a text report: logged with WWHD_PROFILE=1,
 // WWHD_VK_STATS or WWHD_VK_CPU_ONLY_STATS=1, and kept for the overlay's "Copy performance report"
-// button (latest_report()). WWHD_PROFILE=0 turns the profiler off.
+// button (latest_report()).
+//
+// Off by default. Settings > Graphics > "Detailed performance profiling" turns it on (saved as
+// detailedProfiling); WWHD_PROFILE=1 forces it on and WWHD_PROFILE=0 off for that start (the setting
+// is then not used). A change takes effect at the next swap, between two frames on the render
+// thread (frame_end): turning it on starts the counters afresh (the first report follows 120 frames
+// later), turning it off drops the last report.
 #pragma once
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 
 namespace rprof {
@@ -26,7 +33,14 @@ enum Upload : int { kUpOther, kUpVertex, kUpIndex, kUpUbo, kUpUniformVars, kUpTe
 enum Wait : int { kWaitGpu, kWaitAcquire, kWaitPresent, kWaits };
 enum Sync : int { kSyncDrawDone, kSyncCopySurface, kSyncFlip, kSyncOther, kSyncs };
 
-bool enabled();
+bool enabled();               // collecting now (any thread)
+constexpr const char* kSettingKey = "detailedProfiling";  // hostui setting: "1" on, "0" off
+const char* env_override();   // WWHD_PROFILE when set (it wins over the setting), else nullptr
+bool requested();             // what is in effect from the next swap on: WWHD_PROFILE, else the setting
+void set_requested(bool on);  // the setting changed (any thread); applied at the next swap
+void start(bool saved);       // start-up, before the first frame: the saved setting; logs the state
+// the performance report's detailed part: the latest report, or one line saying why there is none
+std::string report_section();
 uint64_t now_ns();
 uint64_t thread_cpu_ns();  // CPU time of the calling thread (0: not available)
 
@@ -65,7 +79,15 @@ void add_idle(uint64_t ns);                 // render thread waiting for command
 extern uint32_t g_reg_dirty;  // bit 0: buffer/constant registers changed, bit 1: other registers changed
 void note_other_reg(uint32_t reg);          // a non-buffer register changed value
 void classify_draw();                       // at each draw: count its class, clear g_reg_dirty
-bool fast_class_reg(uint32_t reg);          // ALU constants, uniform-block and vertex-buffer words
+// ALU constants, uniform-block and vertex-buffer words (gx2 looks this up in its register class table)
+inline bool fast_class_reg(uint32_t reg) {
+    // RegDefines.h: mmSQ_ALU_CONSTANT0_0 0xC000; mmSQ_TEX_RESOURCE_WORD0 0xE000 + 0x7E0 (VS uniform
+    // blocks), + 0x250 (PS), + 0xCB0 (GS), + 0x8C0 (vertex attribute buffers), 7 words each
+    if (reg >= 0xC000 && reg < 0xC000 + 0x1000) return true;
+    for (uint32_t base : {0xE7E0u, 0xE250u, 0xECB0u, 0xE8C0u})
+        if (reg >= base && reg < base + 7 * 16) return true;  // includes the vertex stride (pipeline-only)
+    return false;
+}
 
 // shader translations: called by the Vulkan renderer for each new variant (shaders.cpp)
 void shader_variant(bool newProgram, bool onlyUnusedUnits, const char* const* groups, int groupCount);

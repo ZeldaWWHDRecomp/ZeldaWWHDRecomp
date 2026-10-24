@@ -287,7 +287,11 @@ class MultiMaterialTests(unittest.TestCase):
         semantics = [struct.unpack_from('>4H', data, 40 + 12 * v + 8 * i)[3] for i in range(t)]
         self.assertEqual(semantics, [3, 3, 0, 2])
         with self.assertRaises(model.BuildError):
-            self.static(glb([{'name': 'col_lava'}, {}], [(0, 1), (1, 1)]))
+            self.static(glb([{'name': 'col_magma'}, {}], [(0, 1), (1, 1)]))
+        # lava is a surface: its triangle carries the lava surface (14)
+        geometry, info, data = self.static(glb([{'name': 'col_lava'}, {}], [(0, 1), (1, 1)]))
+        v, t = info['collision_vertices'], info['collision_triangles']
+        self.assertEqual([struct.unpack_from('>4H', data, 40 + 12 * v + 8 * i)[3] for i in range(t)], [14, 0])
 
     def test_collision_mesh_alongside_several_materials(self):
         def add_collision(doc):

@@ -42,7 +42,7 @@ default:assert(!"unexpected native ABI");return 0;}}
 namespace dispatch {uint32_t register_host(PpcFunc f,const char*){const uint32_t a=method_id;method_id+=4;methods[a]=f;return a;}}
 namespace native_actor_profiles {
 bool valid_storage(uint32_t a){return a>=mem::kRuntimeStart&&a<=mem::kHostStart-0x30&&!(a&3);}
-bool add(uint16_t id,uint32_t a,BaseAllocated f){assert(id==story_world_grapple::kProfile);profile=a;allocated=f;return true;}
+bool add(uint16_t id,uint32_t a,BaseAllocated f,std::string*){assert(id==story_world_grapple::kProfile);profile=a;allocated=f;return true;}
 }
 int main(){using namespace story_world_grapple;map(Arena,kStorageBytes);map(Base,0x20000);map(0x101F0000,0x10000);st32(0x101F3EE0+0xFA*4,Base);st32(Parent+4,42);st32(Parent+0x2C,123);st32(Play+0x5B34,Link);st32(Rope+4,77);st32(Rope+0x3F8,11);
  story_actors::identity::Fingerprint fp{};fp[0]=42;auto good=[](uint32_t){return std::string();};auto conflict=[](uint32_t f){return f==0x025B8B68?std::string("foreign"):std::string();};

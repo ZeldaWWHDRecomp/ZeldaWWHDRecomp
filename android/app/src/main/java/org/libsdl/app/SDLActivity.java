@@ -226,6 +226,11 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected static Thread mSDLThread;
     private static boolean mRetainedNativeSession;
     private boolean mReusingNativeSession;
+    private boolean mRedirectedActivity;
+
+    /** App routing runs before touching SDL's process-wide native session. */
+    protected boolean redirectActivityBeforeNativeStart() { return false; }
+    protected final boolean isRedirectedActivity() { return mRedirectedActivity; }
 
     /** App opt-in: keep a live native engine when Android replaces only the Activity. */
     protected boolean retainNativeSessionOnRecreation() { return false; }
@@ -355,6 +360,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         Log.v(TAG, "Model: " + Build.MODEL);
         Log.v(TAG, "onCreate()");
         super.onCreate(savedInstanceState);
+        mRedirectedActivity = redirectActivityBeforeNativeStart();
+        if (mRedirectedActivity) return;
         final boolean retaining = mRetainedNativeSession && retainNativeSessionOnRecreation() &&
                 mSDLThread != null && mSDLThread.isAlive() && !mSDLMainFinished;
         mReusingNativeSession = retaining;
@@ -559,6 +566,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onPause() {
         Log.v(TAG, "onPause()");
         super.onPause();
+        if (mRedirectedActivity) return;
 
         if (mHIDDeviceManager != null) {
             mHIDDeviceManager.setFrozen(true);
@@ -573,6 +581,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onResume() {
         Log.v(TAG, "onResume()");
         super.onResume();
+        if (mRedirectedActivity) return;
 
         if (mHIDDeviceManager != null) {
             mHIDDeviceManager.setFrozen(false);
@@ -587,6 +596,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onStop() {
         Log.v(TAG, "onStop()");
         super.onStop();
+        if (mRedirectedActivity) return;
         if (mHasMultiWindow) {
             pauseNativeThread();
         }
@@ -596,6 +606,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     protected void onStart() {
         Log.v(TAG, "onStart()");
         super.onStart();
+        if (mRedirectedActivity) return;
         if (mHasMultiWindow) {
             resumeNativeThread();
         }
@@ -648,6 +659,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (mRedirectedActivity) return;
         Log.v(TAG, "onWindowFocusChanged(): " + hasFocus);
 
         // If we are gaining focus, we can always try to restore our USB devices. If we are losing focus,
@@ -683,6 +695,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public void onTrimMemory(int level) {
         Log.v(TAG, "onTrimMemory()");
         super.onTrimMemory(level);
+        if (mRedirectedActivity) return;
 
         if (SDLActivity.mBrokenLibraries) {
            return;
@@ -695,6 +708,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public void onConfigurationChanged(Configuration newConfig) {
         Log.v(TAG, "onConfigurationChanged()");
         super.onConfigurationChanged(newConfig);
+        if (mRedirectedActivity) return;
 
         if (SDLActivity.mBrokenLibraries) {
            return;
@@ -718,6 +732,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onDestroy() {
         Log.v(TAG, "onDestroy()");
+        // This Activity never acquired SDL resources; the selected game owns them.
+        if (mRedirectedActivity) { super.onDestroy(); return; }
 
         if (mClipboardHandler != null) {
             mClipboardHandler.release();
@@ -768,6 +784,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     @Override
     public void onBackPressed() {
+        if (mRedirectedActivity) { super.onBackPressed(); return; }
         // Check if we want to block the back button in case of mouse right click.
         //
         // If we do, the normal hardware back button will no longer work and people have to use home,
@@ -788,6 +805,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (mRedirectedActivity) return;
 
         if (mFileDialogState != null && mFileDialogState.requestCode == requestCode) {
             /* This is our file dialog */
@@ -846,6 +864,7 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (mRedirectedActivity) return super.dispatchKeyEvent(event);
 
         if (SDLActivity.mBrokenLibraries) {
            return false;

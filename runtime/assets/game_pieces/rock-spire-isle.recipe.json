@@ -1,0 +1,76 @@
+{
+  "game_pieces_format": 1,
+  "set": "rock-spire-isle",
+  "label": "Rock Spire Isle ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room16.szs",
+    "room": 16
+  },
+  "memory": {
+    "archive_bytes": 2416640,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "rock-spire-isle",
+      "since": 5,
+      "category": "Islands",
+      "label": "Rock Spire Isle ground",
+      "description": "a tall spire of rock on a grassy base, with a pit at its foot that sends Link back",
+      "volume": [
+        -22839,
+        -1100,
+        -22804,
+        -17017,
+        1363,
+        -17310
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima1"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "hole_soko",
+          "hole_kabe",
+          "hole_huti",
+          "sima",
+          "soko_stop"
+        ],
+        "strip_exits": true,
+        "void": [
+          "hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD16.szs",
+        "triangles": 228
+      },
+      "expect": {
+        "triangles": [
+          654
+        ],
+        "textures": [
+          [
+            "Txa_jimen_midori",
+            "Txq_hasi_bakudan",
+            "Txq_iwakabe",
+            "Txq_iwakabe_aruki",
+            "Txq_iwakabe_kuroi"
+          ]
+        ],
+        "collision_triangles": 618
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

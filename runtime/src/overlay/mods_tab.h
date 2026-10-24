@@ -23,6 +23,7 @@
 #include "setup_test.h"
 #include "text_entry.h"
 #include "../mods/code_mods.h"
+#include "../mods/compiler_notice.h"
 #include "../mods/manager.h"
 #include "../mods/packages.h"
 #include "imgui.h"
@@ -586,12 +587,37 @@ inline void keep_off_steps(Flow& f, const mods::packages::View& v, double now) {
     j.finished_at = now;
     fprintf(stderr, "[mods] %s updated; it stays off\n", f.id.c_str());
 }
+// Once per start, over the game: the code mods that couldn't start because the mod compiler is missing
+// (mods/compiler_notice.h; the Mods tab says it next to each). Read at the overlay's first frames, after
+// the mods started; pending until shown, so the overlay draws a frame for it.
+struct StartupNotice {
+    bool read = false, shown = false;
+    std::string text;
+};
+inline StartupNotice& startup_notice() {
+    static StartupNotice n;
+    if (!n.read) {
+        n.read = true;
+        n.text = guestmods::compiler_notice_for(mods::packages::list());
+    }
+    return n;
+}
+inline bool startup_notice_pending() {
+    const auto& n = startup_notice();
+    return !n.shown && !n.text.empty();
+}
 inline void tick(const Host& h, bool menu_open) {
     using namespace mods::packages;
     auto& s = state();
     auto& j = s.job;
     auto& f = j.flow;
     const double now = ImGui::GetTime();
+    if (startup_notice_pending() && !menu_open) {
+        auto& n = startup_notice();
+        n.shown = true;
+        s.toast = n.text;
+        s.toast_until = now + 12;  // a long line: read twice
+    }
     adopt_resumed_run(now);
     if (f.phase != Phase::Working) return;
     f.tick(now);

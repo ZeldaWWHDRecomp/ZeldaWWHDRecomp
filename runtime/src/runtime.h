@@ -31,7 +31,7 @@ void init();
 uint32_t runtime_alloc(uint32_t size, uint32_t align = 16);
 uint32_t host_alloc(uint32_t size, uint32_t align = 16);
 // fixed 0x100-byte guest buffer number `id` (lazily used features: same address in every session)
-enum FixedSlot : uint32_t { kFixInterpEye = 0, kFixInterpMtx, kFixFxMidPos, kFixLinkScratch, kFixCount };
+enum FixedSlot : uint32_t { kFixInterpEye = 0, kFixInterpMtx, kFixFxMidPos, kFixLinkScratch, kFixShadowCam, kFixCount };
 inline uint32_t fixed_slot(FixedSlot id) { return kFixedStart + 0x100 * id; }
 uint32_t runtime_top();
 void raise_runtime_top(uint32_t top);

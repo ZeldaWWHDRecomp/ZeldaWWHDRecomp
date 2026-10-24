@@ -23,7 +23,12 @@ blending would need depth sorting the actor draw path doesn't do.
 """
 import struct
 
-import notebook_model as base
+import os
+import sys
+# Windows' embeddable Python runs isolated: the script's own folder is not on sys.path, so the
+# sibling modules are found through it explicitly (issue #280).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import notebook_model as base  # noqa: E402
 
 BuildError = base.BuildError
 
@@ -124,12 +129,29 @@ def build_bfres(template, model, identity, opaque=OPAQUE, mask=MASK):
     import game_piece_model as gp
     from skinned_actor_model import append_dictionary, append_string
     require(1 <= len(model.parts) and 1 <= len(model.materials) and 1 <= len(model.images), 'empty model')
-    src = base.Bfres(template)
-    fm, fvtx, shape, kinds, all_textures = check_template(src, opaque, mask)
     out = base.Bfres(template[:0x70])
     out.b[0x18:0x68] = bytes(0x50)  # no string table, no other resource groups
     w = gp.Writer(template, out)
+    texture_at, texture_names, colour = write_textures(w, model, opaque, mask)
+    out.set_rel(0x24, append_dictionary(out, [(t, texture_at[t]) for t in texture_names]))
+    out.put('H', 0x52, len(texture_names))
+    dst_model = write_model(w, model, identity, texture_at, colour, opaque, mask)
+    out.set_rel(0x20, append_dictionary(out, [(identity, dst_model)]))
+    out.put('H', 0x50, 1)
+    out.set_rel(0x14, append_string(out, identity))
+    out.append(b'', 0x1000)
+    out.put('I', 0xC, len(out.b))
+    result = bytes(out.b)
+    validate_bfres(result, identity, model)
+    return result
 
+
+def write_textures(w, model, opaque=OPAQUE, mask=MASK):
+    """The model's textures into w.out (w: a game_piece_model.Writer of the template): (texture name -> offset,
+    names in order, the colour texture name of each image)."""
+    import game_piece_model as gp
+    src = w.src
+    fm, fvtx, shape, kinds, all_textures = check_template(src, opaque, mask)
     # textures: one per image, plus the template materials' other textures (the toon ramp) once
     texture_at, texture_names = {}, []
     used_kinds = sorted({m.kind for m in model.materials})
@@ -146,8 +168,16 @@ def build_bfres(template, model, identity, opaque=OPAQUE, mask=MASK):
         texture_at[name] = rgba_texture(w, colour_template, name, width, height, rgba)
         texture_names.append(name)
         colour.append(name)
-    out.set_rel(0x24, append_dictionary(out, [(t, texture_at[t]) for t in texture_names]))
-    out.put('H', 0x52, len(texture_names))
+    return texture_at, texture_names, colour
+
+
+def write_model(w, model, identity, texture_at, colour, opaque=OPAQUE, mask=MASK):
+    """The model `identity` (its skeleton, materials and shapes) into w.out; its textures are at texture_at
+    (write_textures). Returns the model's offset."""
+    import game_piece_model as gp
+    from skinned_actor_model import append_dictionary, append_string
+    src, out, template = w.src, w.out, w.data
+    fm, fvtx, shape, kinds, all_textures = check_template(src, opaque, mask)
 
     # the model and its one-root skeleton (identity rest pose: the authored GLB frame)
     dst_model = w.block(fm, 0x30)
@@ -258,14 +288,7 @@ def build_bfres(template, model, identity, opaque=OPAQUE, mask=MASK):
     out.set_rel(dst_model + 0x14, append_dictionary(out, shapes))
     out.put('HHHH', dst_model + 0x20, count, count, len(materials), 0)
     out.put('I', dst_model + 0x28, vertices)
-    out.set_rel(0x20, append_dictionary(out, [(identity, dst_model)]))
-    out.put('H', 0x50, 1)
-    out.set_rel(0x14, append_string(out, identity))
-    out.append(b'', 0x1000)
-    out.put('I', 0xC, len(out.b))
-    result = bytes(out.b)
-    validate_bfres(result, identity, model)
-    return result
+    return dst_model
 
 
 def validate_bfres(data, identity, model):

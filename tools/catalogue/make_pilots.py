@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Create authored local catalogue fixtures; never package game data.
 
-The optional heart-ticker ELF must be compiled from examples/guest-mods/heart-ticker.
+The optional heart-ticker ELF must be compiled from the heart-ticker example of the mod repository
+(ZeldaWWHDMods/heart-ticker); --heart-source names that folder.
 Outputs belong in a build directory, not the source tree.
 """
 import argparse
@@ -24,7 +25,7 @@ print("Synthetic preparation complete")
 '''
 
 
-def generate(output, heart_elf=None):
+def generate(output, heart_elf=None, heart_source=None):
     output.mkdir(parents=True, exist_ok=True)
     entries = []
 
@@ -67,10 +68,11 @@ def generate(output, heart_elf=None):
         if elf[:6] != b"\x7fELF\x01\x02" or len(elf) < 20 or struct.unpack_from(">H", elf, 18)[0] != 20:
             raise ValueError("Heart pilot requires a 32-bit big-endian PowerPC ELF")
         # Preserve the example's actual hook names and options; only add catalogue setup.
-        source = Path(__file__).resolve().parents[2] / "examples/guest-mods/heart-ticker/manifest.json"
+        folder = heart_source or Path(__file__).resolve().parents[3] / "ZeldaWWHDMods/heart-ticker"
+        source = folder / "manifest.json"
         original = json.loads(source.read_text())
-        package("heart-ticker", "Heart ticker guest pilot", "guest", {"mod.elf": elf, "src/mod.c": source.with_name("mod.c").read_bytes(),
-                    "LICENSE.txt": (source.parents[3] / "LICENSE").read_bytes()},
+        package("heart-ticker", "Heart ticker guest pilot", "guest", {"mod.elf": elf, "src/mod.c": (folder / "mod.c").read_bytes(),
+                    "LICENSE.txt": (folder / "LICENSE").read_bytes()},
                 [dict(id="build", type="build_guest_mod", title="Build heart ticker for this install")],
                 licences=["MPL-2.0"], guest=original["guest"], options=original["options"])
     # A minimal synthetic disc header is enough for ID validation; it is not a playable game.
@@ -86,5 +88,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--heart-elf", type=Path)
+    parser.add_argument("--heart-source", type=Path, help="the heart-ticker folder of a ZeldaWWHDMods checkout "
+                        "(default: ../ZeldaWWHDMods/heart-ticker beside this repository)")
     args = parser.parse_args()
-    generate(args.out, args.heart_elf)
+    generate(args.out, args.heart_elf, args.heart_source)

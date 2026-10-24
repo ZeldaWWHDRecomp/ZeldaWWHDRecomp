@@ -213,8 +213,8 @@ class CollisionMeshTests(unittest.TestCase):
     def test_reject_bad_collision_contract(self):
         changes=[lambda d:d['materials'][1].update(name='col_unknown'),
                  lambda d:d['nodes'][1].update(scale=[0,1,1]),
-                 lambda d:d['nodes'][1].update(scale=[1000,1,1]),
-                 lambda d:d['nodes'][1].update(translation=[201,0,0]),
+                 lambda d:d['nodes'][1].update(scale=[1667,1,1]),        # 1000.2 m wide: past one sea square
+                 lambda d:d['nodes'][1].update(translation=[1000,0,0]),  # a coordinate past 100000 units
                  lambda d:d['nodes'][1].update(translation=[float('nan'),0,0]),
                  lambda d:d['meshes'][1]['primitives'][0].update(mode=1),
                  lambda d:d['accessors'][3].update(byteOffset=99999),
@@ -224,8 +224,28 @@ class CollisionMeshTests(unittest.TestCase):
         for change in changes:
             doc,binary=self.original();change(doc)
             with self.subTest(change=change),self.assertRaises(model.BuildError):self.parse(doc,binary)
+        for change in (lambda d:d['nodes'][1].update(scale=[1000,1,1]),lambda d:d['nodes'][1].update(translation=[201,0,0])):  # past the old 200 m
+            doc,binary=self.original();change(doc);self.assertGreater(self.parse(doc,binary)[1]['collision_triangles'],0)
         with self.assertRaises(model.BuildError):collision_mesh.encode([(0,0,0),(1,0,0),(2,0,0)],[(0,1,2,0)],model)
-        with self.assertRaises(model.BuildError):collision_mesh.encode([(0,0,0),(1,0,0),(0,1,0)],[(0,1,2,0)]*4097,model)
+        with self.assertRaises(model.BuildError):collision_mesh.encode([(0,0,0),(1,0,0),(0,1,0)],[(0,1,2,0)]*8193,model)
+
+    def test_collision_extent_is_one_sea_square(self):
+        # story_world_collision_mesh.h MaxExtent: 100000 units (1 km) along each axis, every coordinate within it
+        self.assertEqual(collision_mesh.MAX_EXTENT,100000)
+        above=struct.unpack('>f',struct.pack('>I',struct.unpack('>I',struct.pack('>f',100000.0))[0]+1))[0]  # the next float32
+        h=50000.0
+        square=[(-h,0,-h),(h,0,-h),(h,0,h),(-h,0,h),(0,40000,0)]
+        body,info=collision_mesh.encode(square,[(0,2,1,1),(0,3,2,1),(0,1,4,0)],model)
+        self.assertEqual((info['collision_minimum'],info['collision_maximum']),([-h,0,-h],[h,40000,h]))
+        # the old 200 m mark: a 400 m island is one body
+        collision_mesh.encode([(-20000,0,-20000),(20000,0,-20000),(20000,0,20000)],[(0,2,1,0)],model)
+        collision_mesh.encode([(0,0,0),(100000,0,0),(0,0,100000)],[(0,2,1,0)],model)  # coordinates up to the bound
+        for wide in ([(-h,0,-h),(above-h,0,-h),(h,0,h)],                  # extent just above along x
+                     [(-h,0,-h),(h,0,above-h),(h,0,h)],                  # along z
+                     [(0,-h,0),(1,above-h,0),(0,0,1)],                   # along y
+                     [(0,0,0),(above,0,0),(0,0,1)],                       # a coordinate just above
+                     [(0,0,0),(1,0,0),(0,0,-above)]):
+            with self.subTest(wide=wide),self.assertRaises(model.BuildError):collision_mesh.encode(wide,[(0,2,1,0)],model)
 
     def test_original_island_reproducible_and_known_collision(self):
         path=ROOT/'examples/guest-mods/world-objects-w1/assets/make_fixtures.py'

@@ -39,6 +39,7 @@ void reset();
 // hold_up: queue one (game thread or any thread); false: no model for the key (or not installed).
 bool hold_up(uint16_t key);
 // A chest's own get-item demo (its stand-in) shows the held model instead (on), until its item is given (off).
+// Without a declared held model (nothing installed) both do nothing.
 void chest_hold_up(uint16_t key, bool on);
 // Arms (on) or disarms the stand-in's get message with the item's name and description; false: can't now.
 void set_text(bool (*arm)(uint16_t key, bool on));
@@ -46,5 +47,9 @@ bool demo_active();  // tests and the caller: a hold-up is queued or running
 // the demo's part of the guest record: after the model's (its light settings, a dKy_tevstr_c of 0x1C8
 // bytes, end at 512 + 0x1C8 = 968)
 inline constexpr uint32_t kDemoOffset = 976;
-namespace hooks {void hand(Cpu*);void draw(Cpu*);void demo_item_draw(Cpu*);}
+// daDitem_Draw(item), asked first by the demo item's draw hook (story_item_get_icon.h): the stand-in's demo
+// item while a held model is shown in its place draws that model (or nothing until it is ready) and
+// returns true; false for every other demo item (the caller draws it). Safe without a declared model.
+bool draw_demo_item(Cpu*);
+namespace hooks {void hand(Cpu*);void draw(Cpu*);}
 }

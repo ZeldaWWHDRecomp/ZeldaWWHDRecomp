@@ -22,6 +22,8 @@ bool world_object_query(const std::string& mod,const story_notebook::ManifestAct
                         std::shared_ptr<const story_world_collision::mesh::Mesh> geometry=nullptr);
 // The ground of the declared static world objects of `stage` (their own collision: island grounds, terraces, piers,
 // buildings; not bodies of water) under each of `above`: the highest at or below each point. False: none anywhere.
+// The editor removed (true) or restored (false) the actor of `token`: its own collision is no ground for object_grounds.
+void set_removed(uint32_t token,bool removed);
 bool object_grounds(const std::string& stage,const std::vector<story_notebook::WorldPoint>& above,std::vector<float>& heights,std::vector<bool>& found);
 // The height range of a room's own collision (its triangles' lowest and highest point, world space), from the
 // player's stage files: the game looks for a body of water only within it. False: unknown for that room.
@@ -106,10 +108,14 @@ bool redeclare(uint32_t token,const story_notebook::ManifestActor&,const std::st
 // Internal collision-free distant/coast variants; never exposed as behaviour callbacks.
 bool visual_role(uint32_t token,bool distant);
 // Game pieces (story_game_pieces.h): a set archive holds one model per piece part (resource slot i+1 is
-// models[i]); a piece's declaration names its first model's slot, and its second model and the light set
-// of each part (settingTevStruct BG types 1..4) are registered here. Before install or on the game thread.
-struct PieceDraw {int second_index=-1;int light[2]={1,4};};
-bool register_piece_set(const std::string& archive,std::vector<std::string> models);
+// models[i]) and the texture animations of animated parts (slot models.size()+1+j is animations[j], loaded
+// as <name>.btk); a piece's declaration names its first model's slot, and its second model, the light set
+// of each part (settingTevStruct BG types 1..4) and its second model's animation slot (an island's moving
+// water) are registered here. Before install or on the game thread.
+// light 0: an object's light at the actor's place on the actors' draw lists (a kit model's own-texture part); animated: the
+// part (0, 1) the animation slot plays on.
+struct PieceDraw {int second_index=-1;int light[2]={1,4};int animation=-1;int animated=1;};
+bool register_piece_set(const std::string& archive,std::vector<std::string> models,std::vector<std::string> animations={});
 bool set_piece_draw(const std::string& archive,int index,PieceDraw);
 bool owns_visual(uint32_t actor,uint32_t token);
 // World editor: the profile is installed, so declare() may add actors while the game runs (their

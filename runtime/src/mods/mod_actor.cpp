@@ -1,3 +1,4 @@
+#include <optional>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -41,16 +42,18 @@
 #include <set>
 namespace mod_actor { namespace {
 // The extension is guest memory: model, resource phase and collision survive full states.
-constexpr uint32_t Phase=0x3AC,Model=0x3B4,Stts=0x3B8,Cyl=0x3F4,Name=0x524,Safe=0x564,Matrix=0x56C,Source=0x59C,Talk=0x5E0,TalkStatus=0x5E4,HeapBaseline=0x630,HeapStarted=0x650,Morf=0x654,LookObject=0x658,LookVtable=0x660,LookAngles=0x670,Motion=0x67C,SavedMotion=0x74C,SceneLease=0x81C,SavedClip=0x820,SavedFrame=0x824,SavedLoop=0x828,ClipIndex=0x82C,ClipLoop=0x830,Radius=0x834,Height=0x838,CollisionFlags=0x83C,BehaviorHandle=0x840,Userdata=0x850,HitSequence=0x950,Ground=0x954,GroundReady=0x9A8,BehaviorCreated=0x9AC,HitPacket=0x9B0,PostObject=0x9F0,PostVtable=0x9F8,HeadAnchor=0xA08,UpperAnchor=0xA14,Combat=0xA20,AttackStts=0xA48,AttackCyl=0xA84,AttackSource=0xBB4,Heart=0xBF8,Knockback=0xC18,KnockbackLeft=0xC24,Quarantined=0xC28,CombatIdentity=0xC40,Acch=0xC80,AcchCircles=0xE44,AcchOld=0xF04,AcchSpeed=0xF10,AcchReady=0xF1C,Carry=0xF40,PieceSecond=0xF60,CarryMotion=0xF70,Size=kInstanceBytes; // PieceSecond: a game piece's second model (pieces never carry)
-struct Decl {std::string mod,archive;story_notebook::ManifestActor spec;int index;std::function<void()> talked;story_notebook::WorldPoint minimum,maximum;bool skinned=false;std::vector<std::string> clips;ModelRig rig;int head=-1,upper=-1;bool hits=false;CombatRewardSink reward;story_actors::identity::Fingerprint fingerprint{};std::function<bool()> carry_break;TalkProvider talk_provider;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;unsigned visual_role=0;std::vector<story_actors::identity::Fingerprint> visual_fingerprints;story_actors::identity::Fingerprint first_layout_fingerprint{};bool has_first_layout=false;};
+constexpr uint32_t Phase=0x3AC,Model=0x3B4,Stts=0x3B8,Cyl=0x3F4,Name=0x524,Safe=0x564,Matrix=0x56C,Source=0x59C,Talk=0x5E0,TalkStatus=0x5E4,HeapBaseline=0x630,HeapStarted=0x650,Morf=0x654,LookObject=0x658,LookVtable=0x660,LookAngles=0x670,Motion=0x67C,SavedMotion=0x74C,SceneLease=0x81C,SavedClip=0x820,SavedFrame=0x824,SavedLoop=0x828,ClipIndex=0x82C,ClipLoop=0x830,Radius=0x834,Height=0x838,CollisionFlags=0x83C,BehaviorHandle=0x840,Userdata=0x850,HitSequence=0x950,Ground=0x954,GroundReady=0x9A8,BehaviorCreated=0x9AC,HitPacket=0x9B0,PostObject=0x9F0,PostVtable=0x9F8,HeadAnchor=0xA08,UpperAnchor=0xA14,Combat=0xA20,AttackStts=0xA48,AttackCyl=0xA84,AttackSource=0xBB4,Heart=0xBF8,Knockback=0xC18,KnockbackLeft=0xC24,Quarantined=0xC28,CombatIdentity=0xC40,Acch=0xC80,AcchCircles=0xE44,AcchOld=0xF04,AcchSpeed=0xF10,AcchReady=0xF1C,Carry=0xF40,PieceSecond=0xF60,PieceAnimation=0xF64,CarryMotion=0xF70,Size=kInstanceBytes; // PieceSecond: a game piece's second model, PieceAnimation: its texture animation (pieces never carry)
+struct Decl {std::string mod,archive;story_notebook::ManifestActor spec;int index;std::function<void()> talked;story_notebook::WorldPoint minimum,maximum;bool skinned=false;std::vector<std::string> clips;ModelRig rig;int head=-1,upper=-1;bool hits=false;CombatRewardSink reward;story_actors::identity::Fingerprint fingerprint{};std::function<bool()> carry_break;TalkProvider talk_provider;std::shared_ptr<const story_world_collision::mesh::Mesh> collision;unsigned visual_role=0;std::vector<story_actors::identity::Fingerprint> visual_fingerprints;story_actors::identity::Fingerprint first_layout_fingerprint{};bool has_first_layout=false;bool removed=false;};
 std::recursive_mutex world_mutex;std::string world_game_directory;PlacementProvider placement_provider;
 std::map<std::pair<std::string,int>,story_world_placement::Index> placement_indexes;
 std::vector<Decl> declarations;
 std::map<std::string,std::vector<std::string>> piece_sets; // game piece set archive -> its models (slot i+1 = models[i])
+std::map<std::string,std::vector<std::string>> piece_animations; // game piece set archive -> its texture animations (slot models.size()+1+j)
 std::map<std::pair<std::string,int>,PieceDraw> piece_draws;
 // a placed piece, or the distant view of an island ground (a visual variant whose model is in a piece set)
 const story_actors::identity::Fingerprint& world_identity(uint32_t a,const Decl&d);
-const PieceDraw* piece_draw(const Decl& d){if(!d.spec.game_piece()&&!(d.visual_role==1&&d.spec.model.rfind("piece:",0)==0))return nullptr;auto found=piece_draws.find({d.archive,d.index});return found==piece_draws.end()?nullptr:&found->second;}
+// any declaration whose model is a registered part set: a game piece, an island ground's distant view, a kit model (also as a distant model)
+const PieceDraw* piece_draw(const Decl& d){auto found=piece_draws.find({d.archive,d.index});return found==piece_draws.end()?nullptr:&found->second;}
 std::map<std::pair<std::string,std::string>,std::shared_ptr<const story_world_collision::mesh::Mesh>> collision_models;
 struct ArchiveMeasurement {const Decl* declaration=nullptr;uint32_t heap=0,info=0;};
 thread_local ArchiveMeasurement* archive_measurement=nullptr;
@@ -120,6 +123,10 @@ bool valid_actor(uint32_t a){
     return ld32(record(token-1))==a&&ld32(record(token-1)+4)==ld32(a+4);
 }
 float number(uint32_t at){return u32_as_f32(ld32(at));}
+// Actor cull distances (cullSizeFar, a multiple of the game's own, about 5000 units): an island ground or a kit
+// model is seen from anywhere in its square (up to about 70000 units away), a distant view from the squares
+// around its own (up to about 150000).
+constexpr float kGroundCullFar=16.f,kDistantCullFar=32.f;
 void number(uint32_t at,float value){st32(at,f32_as_u32(value));}
 story_notebook::WorldPoint point(uint32_t at){return {number(at),number(at+4),number(at+8)};}
 void point(uint32_t at,story_notebook::WorldPoint value){number(at,value.x);number(at+4,value.y);number(at+8,value.z);}
@@ -280,7 +287,7 @@ void transform(uint32_t a){
         for(unsigned i=0;i<3;++i){const float scale=u32_as_f32(ld32(a+0x330+i*4));st32(a+0x34C+i*4,f32_as_u32(minimum[i]*scale));st32(a+0x358+i*4,f32_as_u32(maximum[i]*scale));}
     }
     const uint32_t model=ld32(a+Model);
-    for(const uint32_t m:{model,declaration(a)&&declaration(a)->spec.game_piece()?ld32(a+PieceSecond):0u})if(m){for(int i=0;i<3;++i)st32(m+0xBC+i*4,ld32(a+0x330+i*4));for(int i=0;i<12;++i)st32(m+0xC8+i*4,ld32(a+Matrix+i*4));}
+    for(const uint32_t m:{model,declaration(a)&&piece_draw(*declaration(a))?ld32(a+PieceSecond):0u})if(m){for(int i=0;i<3;++i)st32(m+0xBC+i*4,ld32(a+0x330+i*4));for(int i=0;i<12;++i)st32(m+0xC8+i*4,ld32(a+Matrix+i*4));}
 }
 // Native morf evaluation temporarily selects a calculator and frame on shared
 // archive resources. Restore those exact words before another instance can draw.
@@ -368,14 +375,20 @@ bool grapple_update(Cpu*c,uint32_t actor,Decl&d){
     return story_world_grapple::update(c,actor,ld32(actor+4),d.fingerprint,std::span<const story_world_grapple::Target>(targets.data(),d.spec.grapple_points.size()));
 }
 void retire_world(Cpu*c,uint32_t actor){story_world_grapple::destroy(c,actor,ld32(actor+4));story_world_collision::native::destroy(c,actor,call);}
+// A game piece's animated second part (an island's water): its texture animation from resource slot `slot`, bound to the
+// second model's data, looping from its first frame, advanced in execute and set in draw_piece.
+bool piece_animation_create(Cpu*c,uint32_t a,uint32_t data,uint32_t slot){
+    const uint32_t animation=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,slot});const uint32_t btk=animation?call(c,GC(0x025E7C6C),{0}):0;st32(a+PieceAnimation,btk);
+    c->f[1].ps0=1;return btk&&call(c,GC(0x025E7CE0),{btk,data,animation,1,2,0,0xFFFFFFFFu,0});
+}
 void heap(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,0);return;}st32(a+Safe,a+Name);st32(a+Safe+4,GD(0x10012504));const std::string filename=d->archive+".bmd";uint32_t data=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)});LOG("[mod_actor] %s:%s archive=%s named_resource=%s data=%08X",d->mod.c_str(),d->spec.id.c_str(),d->archive.c_str(),filename.c_str(),data);uint32_t current=call(c,GC(0x027EC230),{}),before=heap_free(c,current);uint32_t model=0;
 if(data&&d->skinned){
     auto idle=std::find(d->clips.begin(),d->clips.end(),d->spec.animation.empty()?"idle":d->spec.animation);const size_t clip=idle==d->clips.end()?0:size_t(idle-d->clips.begin());
     const uint32_t animation=d->clips.empty()?0:call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)+1+uint32_t(clip)});
     const uint32_t morf=(animation||d->clips.empty())?create_morf(c,data,animation):0;st32(a+Morf,morf);st32(a+ClipIndex,d->clips.empty()?0xFFFFFFFFu:uint32_t(clip));st32(a+ClipLoop,1);if(morf&&d->head>=0){st32(morf+0xC0,a+LookObject);st32(morf+0xC4,a+PostObject);}
     if(morf&&ld32(morf+0xA8)&&ld32(morf+0xAC)&&!ld32(morf+0xBC))model=ld32(morf+0x90);
-}else if(data)model=call(c,GC(0x025E38E0),{data,0x80000});if(model)if(const auto*piece=piece_draw(*d);piece&&piece->second_index>0){const uint32_t second=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(piece->second_index)});const uint32_t m2=second?call(c,GC(0x025E38E0),{second,0x80000}):0;if(!m2){result(c,0);return;}st32(a+PieceSecond,m2);}uint32_t after=heap_free(c,current);LOG("[mod_actor] %s:%s model heap=%08X free_before=%u free_after=%u model_bytes=%u",d->mod.c_str(),d->spec.model.c_str(),current,before,after,before>=after?before-after:0);st32(a+Model,model);st32(a+0x368,model);st32(a+0x348,model?model+0xC8:0);if(d->visual_role==2&&model){const uint32_t animation=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)+1});const uint32_t btk=animation?call(c,GC(0x025E7C6C),{0}):0;st32(a+0x854,btk);c->f[1].ps0=1;if(!btk||!call(c,GC(0x025E7CE0),{btk,data,animation,1,2,0,0xFFFFFFFFu,0})){result(c,0);return;}const uint32_t play=call(c,GC(0x025200D4),{});number(btk+4,play?float(ld16(play+0x5D00)%100):0.f);}if(d->spec.water_object()&&!water_step(c,a,*d,true)){result(c,0);return;}transform(a);const auto proof_kind=story_world_collision::proof::selected(d->mod,d->spec);const bool proof_ok=model&&story_world_collision::proof::heap_create(c,a,proof_kind,call)&&(!d->spec.world_object()||(d->collision&&story_world_collision::native::heap_create(c,a,*d->collision,d->fingerprint,call)));result(c,proof_ok);}
-void create(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,5);return;}if(!ld8(a+0x3AA)){call(c,GC(0x025D4ED0),{a});std::memset(mem::ptr(a+Phase),0,Size-Phase);if(d->spec.combat_enabled){combat::State state;if(!combat::initialize(state,combat_config(*d))){result(c,5);return;}write_combat(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->spec.carry_enabled){carry::State state;state.pid=ld32(a+4);write_carry(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->visual_role){const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());const float scale[]={d->spec.scale.x,d->spec.scale.y,d->spec.scale.z};for(unsigned i=0;i<3;++i)number(a+0x330+i*4,scale[i]);if(d->visual_role==1)number(a+0x364,10.f);}
+}else if(data)model=call(c,GC(0x025E38E0),{data,0x80000});if(model)if(const auto*piece=piece_draw(*d)){uint32_t second=0;if(piece->second_index>0){second=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(piece->second_index)});const uint32_t m2=second?call(c,GC(0x025E38E0),{second,0x80000}):0;if(!m2){result(c,0);return;}st32(a+PieceSecond,m2);}if(piece->animation>0&&!piece_animation_create(c,a,piece->animated==0?data:second,uint32_t(piece->animation))){result(c,0);return;}}uint32_t after=heap_free(c,current);LOG("[mod_actor] %s:%s model heap=%08X free_before=%u free_after=%u model_bytes=%u",d->mod.c_str(),d->spec.model.c_str(),current,before,after,before>=after?before-after:0);st32(a+Model,model);st32(a+0x368,model);st32(a+0x348,model?model+0xC8:0);if(d->visual_role==2&&model){const uint32_t animation=call(c,GC(0x026066C4),{ld32(GD(0x101F4F28)),a+Safe,uint32_t(d->index)+1});const uint32_t btk=animation?call(c,GC(0x025E7C6C),{0}):0;st32(a+0x854,btk);c->f[1].ps0=1;if(!btk||!call(c,GC(0x025E7CE0),{btk,data,animation,1,2,0,0xFFFFFFFFu,0})){result(c,0);return;}const uint32_t play=call(c,GC(0x025200D4),{});number(btk+4,play?float(ld16(play+0x5D00)%100):0.f);}if(d->spec.water_object()&&!water_step(c,a,*d,true)){result(c,0);return;}transform(a);const auto proof_kind=story_world_collision::proof::selected(d->mod,d->spec);const bool proof_ok=model&&story_world_collision::proof::heap_create(c,a,proof_kind,call)&&(!d->spec.world_object()||(d->collision&&story_world_collision::native::heap_create(c,a,*d->collision,d->fingerprint,call)));result(c,proof_ok);}
+void create(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,5);return;}if(!ld8(a+0x3AA)){call(c,GC(0x025D4ED0),{a});std::memset(mem::ptr(a+Phase),0,Size-Phase);if(d->spec.combat_enabled){combat::State state;if(!combat::initialize(state,combat_config(*d))){result(c,5);return;}write_combat(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->spec.carry_enabled){carry::State state;state.pid=ld32(a+4);write_carry(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->visual_role){const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());const float scale[]={d->spec.scale.x,d->spec.scale.y,d->spec.scale.z};for(unsigned i=0;i<3;++i)number(a+0x330+i*4,scale[i]);if(d->visual_role==1)number(a+0x364,kDistantCullFar);}if(!d->visual_role&&d->spec.background_drawn())number(a+0x364,kGroundCullFar);
 number(a+Radius,d->spec.collision_radius);number(a+Height,d->spec.collision_height);st32(a+CollisionFlags,d->visual_role?0:1|(d->spec.pushable?2:0));st32(a+LookObject,a+LookVtable);st32(a+LookObject+4,a);st32(a+LookVtable+0xC,look_callback);st32(a+PostObject,a+PostVtable);st32(a+PostObject+4,a);st32(a+PostVtable+0xC,post_callback);MotionState motion_;motion_.count=unsigned(d->spec.path.points.size());motion_.speed=d->spec.path.speed;motion_.loop=d->spec.path.loop;motion_.bounce=d->spec.path.back_and_forth;motion_.pauses=d->spec.path.pauses;motion_.enabled=motion_.count>=2;for(unsigned i=0;i<motion_.count;++i)motion_.points[i]=d->spec.path.points[i];write_motion(a+Motion,motion_);std::memcpy(mem::ptr(a+Name),d->archive.c_str(),d->archive.size()+1);call(c,GC(0x0200BD2C),{a+Stts});call(c,GC(0x02515DA0),{a+Stts+0x1C});st32(a+Stts+0x18,GD(0x1004AE88));st32(a+Stts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515FB8),{a+Cyl});st32(a+Cyl+0x114,GD(0x100015A8));st32(a+Cyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+Cyl+0x118});st32(a+Cyl+0x3C,GD(0x1004B108));st32(a+Cyl+0x114,GD(0x1004B160));st32(a+Cyl+0x12C,GD(0x1004B150));}
 if(heap_trace()&&!ld32(a+HeapStarted)){const auto before=heaps(c);for(unsigned i=0;i<4;++i){st32(a+HeapBaseline+i*8,before[i].first);st32(a+HeapBaseline+i*8+4,before[i].second);}st32(a+HeapStarted,1);}
 uint32_t phase=call(c,GC(0x02520460),{a+Phase,a+Name});if(phase!=4){if(phase>=5)fail_create(a);result(c,phase);return;}if(!ld32(a+Model)){
@@ -529,7 +542,7 @@ void execute(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,1);
     for(unsigned i=0;i<3;++i){const float p=number(a+0x314+i*4);unchanged&=std::isfinite(p)&&std::fabs(p-position[i])<=.01f;unchanged&=std::isfinite(angles[i])&&std::fabs(angles[i])<=360.f&&ld16(a+0x328+i*2)==uint16_t(int32_t(angles[i]*32768.f/180.f));unchanged&=number(a+0x330+i*4)==scale[i];}
     unchanged&=!read_motion(a+Motion).enabled&&ld32(a+CollisionFlags)==0;
     if(!unchanged){retire_world(c,a);fail_create(a);result(c,1);return;}
-}if(d->spec.world_object()&&!story_world_collision::native::stored(a,world_identity(a,*d))){retire_world(c,a);fail_create(a);result(c,1);return;}HeadingExecuteScope heading_scope(a);uint32_t play=call(c,GC(0x025200D4),{});if(!play||!ld32(play+0x5B34)){result(c,1);return;}const uint32_t player=ld32(play+0x5B34);if(restored.erase({a,ld32(a+4)})){call(c,GC(0x0251621C),{a+Cyl});if(!emit(c,a,BehaviorEvent::CreateRestored)){result(c,1);return;}}if(!combat_step(c,a)||!emit(c,a,BehaviorEvent::Execute)||!consume_hit(c,a,player)){result(c,1);return;}const bool carry_motion=carry_step(c,a,play,player);knockback_movement(c,a,play,player);if(!carry_motion&&(!d->spec.combat_enabled||read_combat(a).phase==uint32_t(combat::Phase::Alive)))movement(c,a,play,player);look(c,a,player);if(const uint32_t morf=ld32(a+Morf))call(c,GC(0x025E535C),{morf,a+0x314,0,0});if(ld32(a+CollisionFlags)&2)for(unsigned i=0;i<3;++i)st32(a+0x314+i*4,f32_as_u32(u32_as_f32(ld32(a+0x314+i*4))+u32_as_f32(ld32(a+Stts+i*4))));call(c,GC(0x02515E50),{a+Stts+0x1C});for(unsigned i=0;i<3;++i){float v=u32_as_f32(ld32(a+0x314+i*4))+(i==1?(d->spec.carry_enabled?30.f:number(a+Height)*0.7f):0);st32(a+0x37C+i*4,f32_as_u32(v));st32(a+0x390+i*4,f32_as_u32(v));}call(c,GC(0x020182E0),{a+Cyl+0x118,a+0x314});c->f[1].ps0=number(a+Radius);call(c,GC(0x020184DC),{a+Cyl+0x118});c->f[1].ps0=number(a+Height);call(c,GC(0x02018428),{a+Cyl+0x118});st32(a+Cyl+0x18,d->hits?0x1F:0);st32(a+Cyl+0x28,d->spec.combat_enabled?0xFFFFFFFFu:d->hits?2u:0u);st32(a+Cyl+0x94,d->hits?6:0);if(!carry_busy(a)&&(ld32(a+CollisionFlags)&1)&&(!d->spec.combat_enabled||combat::alive(read_combat(a))))call(c,GC(0x0200E240),{play+0x26A4,a+Cyl});attack_collision(c,a,play);
+}if(d->spec.world_object()&&!story_world_collision::native::stored(a,world_identity(a,*d))){retire_world(c,a);fail_create(a);result(c,1);return;}if(piece_draw(*d)&&ld32(a+PieceAnimation))call(c,GC(0x025E742C),{ld32(a+PieceAnimation)});HeadingExecuteScope heading_scope(a);uint32_t play=call(c,GC(0x025200D4),{});if(!play||!ld32(play+0x5B34)){result(c,1);return;}const uint32_t player=ld32(play+0x5B34);if(restored.erase({a,ld32(a+4)})){call(c,GC(0x0251621C),{a+Cyl});if(!emit(c,a,BehaviorEvent::CreateRestored)){result(c,1);return;}}if(!combat_step(c,a)||!emit(c,a,BehaviorEvent::Execute)||!consume_hit(c,a,player)){result(c,1);return;}const bool carry_motion=carry_step(c,a,play,player);knockback_movement(c,a,play,player);if(!carry_motion&&(!d->spec.combat_enabled||read_combat(a).phase==uint32_t(combat::Phase::Alive)))movement(c,a,play,player);look(c,a,player);if(const uint32_t morf=ld32(a+Morf))call(c,GC(0x025E535C),{morf,a+0x314,0,0});if(ld32(a+CollisionFlags)&2)for(unsigned i=0;i<3;++i)st32(a+0x314+i*4,f32_as_u32(u32_as_f32(ld32(a+0x314+i*4))+u32_as_f32(ld32(a+Stts+i*4))));call(c,GC(0x02515E50),{a+Stts+0x1C});for(unsigned i=0;i<3;++i){float v=u32_as_f32(ld32(a+0x314+i*4))+(i==1?(d->spec.carry_enabled?30.f:number(a+Height)*0.7f):0);st32(a+0x37C+i*4,f32_as_u32(v));st32(a+0x390+i*4,f32_as_u32(v));}call(c,GC(0x020182E0),{a+Cyl+0x118,a+0x314});c->f[1].ps0=number(a+Radius);call(c,GC(0x020184DC),{a+Cyl+0x118});c->f[1].ps0=number(a+Height);call(c,GC(0x02018428),{a+Cyl+0x118});st32(a+Cyl+0x18,d->hits?0x1F:0);st32(a+Cyl+0x28,d->spec.combat_enabled?0xFFFFFFFFu:d->hits?2u:0u);st32(a+Cyl+0x94,d->hits?6:0);if(!carry_busy(a)&&(ld32(a+CollisionFlags)&1)&&(!d->spec.combat_enabled||combat::alive(read_combat(a))))call(c,GC(0x0200E240),{play+0x26A4,a+Cyl});attack_collision(c,a,play);
 if(ld16(a+0xF8)==1){
     const uint32_t player=ld32(play+0x5B34);
     if(player){const float dx=u32_as_f32(ld32(player+0x314))-u32_as_f32(ld32(a+0x314)),dz=u32_as_f32(ld32(player+0x31C))-u32_as_f32(ld32(a+0x31C));st16(a+0x32A,uint16_t(int32_t(std::atan2(dx,dz)*32768.0/3.14159265358979323846)));}
@@ -580,6 +593,14 @@ void trace_pose(uint32_t actor,uint32_t model,uint32_t morf){
     for(unsigned j=0;j<count;++j){float m[12];for(unsigned k=0;k<12;++k)m[k]=u32_as_f32(ld32(matrix+j*48+k*4));
         LOG("[mod_actor_pose] actor=%08X model=%08X frame=%.6f joint=%u matrix=%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",actor,model,double(u32_as_f32(ld32(morf+0x9C))),j,double(m[0]),double(m[1]),double(m[2]),double(m[3]),double(m[4]),double(m[5]),double(m[6]),double(m[7]),double(m[8]),double(m[9]),double(m[10]),double(m[11]));}
 }
+// A distant view, an island ground or a kit model (an island, a ruin) is seen from across its square as the
+// game's islands are: it draws with the sea's far distance as the clipper's far plane, and create gives it ten
+// times the cull distance (cullSizeFar); a world object without it is culled about 250 m away. The camera's own
+// far plane and the sea's fog still apply, so far off it is the fogged silhouette the game's islands are.
+// A distant view's fog, as the game's distant islands look (d_a_lod_bg): the room's fog ends a little over 300 m
+// away, where the room's own models give way to the distant views; a distant view begins to haze there and is
+// fully hazed at eight times that, so an island two squares away is a pale shape on the horizon, not gone.
+inline void distant_fog(uint32_t tevstr){const float end=ldf32(tevstr+0xAC);if(!(end>0))return;number(tevstr+0xA8,end);number(tevstr+0xAC,end*8.f);}
 struct DistantClipScope {
  Cpu*c;uint32_t clip=0,previous=0;
  DistantClipScope(Cpu*cpu,bool enabled):c(cpu){if(enabled){clip=GD(0x1048CFF0);previous=ld32(clip+0x54);number(clip+0x54,500000.f);try{call(c,GC(0x0283801C),{clip});}catch(...){st32(clip+0x54,previous);throw;}}}
@@ -599,14 +620,23 @@ struct BackgroundLists {
  uint32_t opa=0,xlu=0;bool active=false;
  BackgroundLists(uint32_t play){if(!play)return;opa=ld32(GD(0x104B4634));xlu=ld32(GD(0x104B4638));st32(GD(0x104B4634),ld32(play+0x5D70));st32(GD(0x104B4638),ld32(play+0x5D74));active=true;}
  ~BackgroundLists(){if(active){st32(GD(0x104B4634),opa);st32(GD(0x104B4638),xlu);}}
+ // the actors' own draw lists while it lives (a part drawn as a model actor's), then the background lists again
+ struct Pause {BackgroundLists& l;uint32_t bo=0,bx=0;Pause(BackgroundLists& lists):l(lists){if(l.active){bo=ld32(GD(0x104B4634));bx=ld32(GD(0x104B4638));st32(GD(0x104B4634),l.opa);st32(GD(0x104B4638),l.xlu);}}
+  ~Pause(){if(l.active){st32(GD(0x104B4634),bo);st32(GD(0x104B4638),bx);}}};
 };
 void draw_piece(Cpu*c,uint32_t a,const PieceDraw&piece){
     const uint32_t env=call(c,GC(0x02555D0C),{});BackgroundLists lists(call(c,GC(0x025200D4),{}));
     const uint32_t models[2]={ld32(a+Model),ld32(a+PieceSecond)};
     if(heap_trace()){static std::set<uint32_t> seen;if(seen.insert(a).second)LOG("[game_pieces] draw actor=%08X models=%08X,%08X lights=%d,%d",a,models[0],models[1],piece.light[0],piece.light[1]);}
-    for(unsigned k=0;k<2;++k){if(!models[k])continue;call(c,GC(0x025626A4),{env,uint32_t(piece.light[k]),0u,a+0x110});call(c,GC(0x02562F5C),{env,models[k],a+0x110});call(c,GC(0x025E2DE0),{models[k],0});}
+    // an animated second part (an island's water): its texture animation at the current frame, as the island's own (daBg_Draw)
+    const unsigned animated=piece.animated==0?0u:1u;
+    if(const uint32_t btk=ld32(a+PieceAnimation);btk&&models[animated]&&piece.animation>0)if(const uint32_t data=ld32(models[animated]+0xAC)){c->f[1].ps0=ldf32(btk+4);call(c,GC(0x025E7FC4),{btk,data});}
+    for(unsigned k=0;k<2;++k){if(!models[k])continue;
+        // light 0: a kit model's own-texture part, lit and listed as a model actor is (draw below)
+        if(piece.light[k]==0){BackgroundLists::Pause pause(lists);call(c,GC(0x025626A4),{env,0u,a+0x314,a+0x110});call(c,GC(0x02562F5C),{env,models[k],a+0x110});call(c,GC(0x025E2DE0),{models[k],0});continue;}
+        call(c,GC(0x025626A4),{env,uint32_t(piece.light[k]),0u,a+0x110});call(c,GC(0x02562F5C),{env,models[k],a+0x110});call(c,GC(0x025E2DE0),{models[k],0});}
 }
-void draw(Cpu*c){uint32_t a=c->r[3];const auto*d=declaration(a);if(!d||!valid_actor(a)){result(c,1);return;}if(d->visual_role||!d->spec.distant.model.empty()){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;const int room=link?int(int8_t(ld8(link+0x326))):-1;const float x=link?ldf32(link+0x314):NAN,z=link?ldf32(link+0x31C):NAN;const int square=std::isfinite(x)&&std::isfinite(z)?1+int(std::clamp(std::lround(z/100000.f),-3L,3L)+3)*7+int(std::clamp(std::lround(x/100000.f),-3L,3L)+3):-1;const bool visible=d->visual_role==1?room==int(int8_t(ld8(a+0x326)))&&square>0&&square!=int(d->spec.room):(!d->visual_role||room==int(int8_t(ld8(a+0x326))))&&square==int(d->spec.room);if(!visible){result(c,1);return;}}const int heading_before=int16_t(ld16(a+0x32A));if(!emit(c,a,BehaviorEvent::Draw)){result(c,1);return;}uint32_t m=ld32(a+Model);if(const auto*piece=piece_draw(*d)){if(m){DistantClipScope far_clip(c,d->visual_role==1);draw_piece(c,a,*piece);}result(c,1);return;}if(m){uint32_t env=call(c,GC(0x02555D0C),{});call(c,GC(0x025626A4),{env,d->visual_role==2?2u:0u,d->visual_role==2?0u:a+0x314,a+0x110});call(c,GC(0x02562F5C),{env,m,a+0x110});DistantClipScope far_clip(c,d->visual_role==1);CoastDrawScope coast_scope(c,a,m,d->visual_role==2);if(d->visual_role==2&&!coast_scope.active){result(c,1);return;}if(d->visual_role){const char*trace=std::getenv("WWHD_WORLD_VISUAL_TRACE");if(trace&&std::strcmp(trace,"1")==0){const uint32_t tick=ld32(a+Userdata)+1;st32(a+Userdata,tick);if(tick==1||tick%300==0)LOG("[world_visual] draw mod=%s id=%s role=%u actor=%08X pid=%u room=%d model=%08X",d->mod.c_str(),d->spec.id.c_str(),d->visual_role,a,ld32(a+4),int(int8_t(ld8(a+0x326))),m);}}mod_actor_shadow_proof::begin_model(m);if(const uint32_t morf=ld32(a+Morf)){PoseScope scope(morf);if(scope.root)call(c,GC(0x025E54D8),{morf});}else call(c,GC(0x025E2DE0),{m,0});trace_pose(a,m,ld32(a+Morf));heading_draw(a,heading_before,m);mod_actor_shadow_proof::end_model();}result(c,1);}
+void draw(Cpu*c){uint32_t a=c->r[3];const auto*d=declaration(a);if(!d||!valid_actor(a)){result(c,1);return;}if(d->visual_role||!d->spec.distant.model.empty()){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;const int room=link?int(int8_t(ld8(link+0x326))):-1;const float x=link?ldf32(link+0x314):NAN,z=link?ldf32(link+0x31C):NAN;const int square=std::isfinite(x)&&std::isfinite(z)?1+int(std::clamp(std::lround(z/100000.f),-3L,3L)+3)*7+int(std::clamp(std::lround(x/100000.f),-3L,3L)+3):-1;const bool visible=d->visual_role==1?room==int(int8_t(ld8(a+0x326)))&&square>0&&square!=int(d->spec.room):(!d->visual_role||room==int(int8_t(ld8(a+0x326))))&&square==int(d->spec.room);if(!visible){result(c,1);return;}}const int heading_before=int16_t(ld16(a+0x32A));if(!emit(c,a,BehaviorEvent::Draw)){result(c,1);return;}uint32_t m=ld32(a+Model);if(const auto*piece=piece_draw(*d)){if(m){DistantClipScope far_clip(c,d->visual_role==1||d->spec.background_drawn());draw_piece(c,a,*piece);}result(c,1);return;}if(m){uint32_t env=call(c,GC(0x02555D0C),{});call(c,GC(0x025626A4),{env,d->visual_role==2?2u:0u,d->visual_role==2?0u:a+0x314,a+0x110});if(d->visual_role==1)distant_fog(a+0x110);call(c,GC(0x02562F5C),{env,m,a+0x110});DistantClipScope far_clip(c,d->visual_role==1);CoastDrawScope coast_scope(c,a,m,d->visual_role==2);if(d->visual_role==2&&!coast_scope.active){result(c,1);return;}if(d->visual_role){const char*trace=std::getenv("WWHD_WORLD_VISUAL_TRACE");if(trace&&std::strcmp(trace,"1")==0){const uint32_t tick=ld32(a+Userdata)+1;st32(a+Userdata,tick);if(tick==1||tick%300==0)LOG("[world_visual] draw mod=%s id=%s role=%u actor=%08X pid=%u room=%d model=%08X",d->mod.c_str(),d->spec.id.c_str(),d->visual_role,a,ld32(a+4),int(int8_t(ld8(a+0x326))),m);}}mod_actor_shadow_proof::begin_model(m);if(const uint32_t morf=ld32(a+Morf)){PoseScope scope(morf);if(scope.root)call(c,GC(0x025E54D8),{morf});}else call(c,GC(0x025E2DE0),{m,0});trace_pose(a,m,ld32(a+Morf));heading_draw(a,heading_before,m);mod_actor_shadow_proof::end_model();}result(c,1);}
 void resource_table(Cpu*c){
     const uint32_t info=c->r[3],key=c->r[4],heap=c->r[5];
     const uint32_t chars=key?ld32(key):0;
@@ -620,8 +650,11 @@ void resource_table(Cpu*c){
     if(const auto set=piece_sets.find(found->archive);set!=piece_sets.end()){
         // a game piece set: every model of the set, slot i+1 = models[i] (scratch+128: 64 bytes)
         st32(scratch+200,scratch+128);st32(scratch+204,GD(0x10012504));
-        const uint32_t count=uint32_t(set->second.size())+1;call(c,GC(0x02604470),{info,count,heap});call(c,GC(0x026044E0),{info,count,heap});
+        const auto anims=piece_animations.find(found->archive);const size_t animation_count=anims==piece_animations.end()?0:anims->second.size();
+        const uint32_t count=uint32_t(set->second.size()+animation_count)+1;call(c,GC(0x02604470),{info,count,heap});call(c,GC(0x026044E0),{info,count,heap});
         for(size_t i=0;i<set->second.size();++i){const std::string name=set->second[i]+".bmd";if(name.size()>=64)continue;std::memcpy(mem::ptr(scratch+128),name.c_str(),name.size()+1);call(c,GC(0x02608308),{info,uint32_t(i+1),uint32_t(i+1),scratch+200,heap});}
+        // the animated parts' texture animations (an island's water), after the models
+        for(size_t j=0;j<animation_count;++j){const std::string name=anims->second[j]+".btk";if(name.size()>=64)continue;std::memcpy(mem::ptr(scratch+128),name.c_str(),name.size()+1);const uint32_t index=uint32_t(set->second.size()+j+1);call(c,GC(0x02608F80),{info,index,index,scratch+200,heap});}
         if(heap_trace()){const uint32_t after=heap_free(c,heap);LOG("[mod_actor_heaps] archive=%s stage=resource_table heap=%08X free_before=%u free_after=%u delta=%lld models=%zu",found->archive.c_str(),heap,before,after,static_cast<long long>(before)-after,set->second.size());}
         *c=incoming;return;
     }
@@ -697,16 +730,20 @@ bool checked(const story_notebook::ManifestActor&spec,const std::string&archive,
     return true;
 }
 }
-bool register_piece_set(const std::string&archive,std::vector<std::string> models){
-    std::lock_guard guard(world_mutex);if(archive.size()!=31||models.empty()||models.size()>16)return false;
+bool register_piece_set(const std::string&archive,std::vector<std::string> models,std::vector<std::string> animations){
+    std::lock_guard guard(world_mutex);if(archive.size()!=31||models.empty()||models.size()>16||animations.size()>16)return false;
     for(const auto&m:models)if(m.empty()||m.size()>31)return false;
-    auto found=piece_sets.find(archive);if(found!=piece_sets.end())return found->second==models;
-    piece_sets.emplace(archive,std::move(models));return true;
+    for(const auto&m:animations)if(m.empty()||m.size()>31||std::find(models.begin(),models.end(),m)==models.end())return false;
+    auto found=piece_sets.find(archive);if(found!=piece_sets.end()){const auto anims=piece_animations.find(archive);return found->second==models&&(anims==piece_animations.end()?animations.empty():anims->second==animations);}
+    piece_sets.emplace(archive,std::move(models));if(!animations.empty())piece_animations.emplace(archive,std::move(animations));return true;
 }
 bool set_piece_draw(const std::string&archive,int index,PieceDraw draw){
     std::lock_guard guard(world_mutex);auto set=piece_sets.find(archive);if(set==piece_sets.end())return false;const int n=int(set->second.size());
     if(index<1||index>n||(draw.second_index!=-1&&(draw.second_index<1||draw.second_index>n||draw.second_index==index)))return false;
-    for(int l:draw.light)if(l<1||l>4)return false;
+    const auto anims=piece_animations.find(archive);const int k=anims==piece_animations.end()?0:int(anims->second.size());
+    if(draw.animation!=-1&&((draw.animated==1&&draw.second_index<1)||draw.animated<0||draw.animated>1||draw.animation<=n||draw.animation>n+k))return false;
+    // 0: an object's light (only a first part: a kit model's own-texture part); 1..4: the background light sets
+    if(draw.light[0]<0||draw.light[0]>4||draw.light[1]<1||draw.light[1]>4)return false;
     piece_draws[{archive,index}]=draw;return true;
 }
 bool register_collision(const std::string&mod,const std::string&model,std::shared_ptr<const story_world_collision::mesh::Mesh> collision){
@@ -725,7 +762,7 @@ bool collision_geometry(const std::string&mod,const story_notebook::ManifestActo
     if(spec.grapple_points.size()>8)return false;
     std::set<std::string> targets;float radius=0;for(const auto&p:geometry.vertices)radius=std::max(radius,std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z));
     for(const auto&target:spec.grapple_points){const auto&p=target.position;const float x=p.x*spec.scale.x,y=p.y*spec.scale.y,z=p.z*spec.scale.z;
-        if(!story_mail::valid_id(target.id)||!targets.insert(target.id).second||!std::isfinite(target.yaw)||std::fabs(target.yaw)>360||std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)})>20000||!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||x<geometry.minimum.x||x>geometry.maximum.x||y<geometry.minimum.y||y>geometry.maximum.y||z<geometry.minimum.z||z>geometry.maximum.z||(spec.water_object()&&std::sqrt(x*x+y*y+z*z)>radius))return false;}
+        if(!story_mail::valid_id(target.id)||!targets.insert(target.id).second||!std::isfinite(target.yaw)||std::fabs(target.yaw)>360||std::max({std::fabs(p.x),std::fabs(p.y),std::fabs(p.z)})>mesh::MaxExtent||!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(z)||x<geometry.minimum.x||x>geometry.maximum.x||y<geometry.minimum.y||y>geometry.maximum.y||z<geometry.minimum.z||z>geometry.maximum.z||(spec.water_object()&&std::sqrt(x*x+y*y+z*z)>radius))return false;}
     out=std::make_shared<const mesh::Mesh>(std::move(geometry));return true;
 }
 story_actors::identity::Fingerprint declaration_fingerprint(const Decl&d,bool first_layout=false,bool*available=nullptr){
@@ -733,7 +770,7 @@ story_actors::identity::Fingerprint declaration_fingerprint(const Decl&d,bool fi
     if(available)*available=!first_layout;
     if(d.collision){std::vector<uint8_t> bytes;std::string why;bool built=false;
         if(first_layout){std::array<uint8_t,9> raw{0,1,2,3,4,5,6,7,8};built=story_world_collision::mesh::build_native_v1(*d.collision,raw,uint16_t(d.spec.room),bytes,why);if(available)*available=built;}
-        else{std::array<uint8_t,story_world_collision::mesh::Surfaces> raw{0,1,2,3,4,5,6,7,8,9,10,11,12,13};built=story_world_collision::mesh::build_native(*d.collision,raw,uint16_t(d.spec.room),bytes,why);}
+        else{std::array<uint8_t,story_world_collision::mesh::Surfaces> raw{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14};built=story_world_collision::mesh::build_native(*d.collision,raw,uint16_t(d.spec.room),bytes,why);}
         if(built)identity+=mods::hash::sha256_text(std::string(bytes.begin(),bytes.end()));}
     return story_actors::identity::fingerprint(identity,d.spec);
 }
@@ -772,17 +809,20 @@ story_world_placement::Solid placed_solid(const story_world_collision::mesh::Mes
     // the geometry is already scaled (collision_geometry): placed with the actor's position and turn only
     return story_world_placement::place_solid(v,t,{a.position.x,a.position.y,a.position.z},{a.rotation.x,a.rotation.y,a.rotation.z},{1,1,1});
 }
-// a body of water's open water: where Link swims, wades or stands under a fall
-bool open_water(uint16_t s){return s==story_world_collision::mesh::SurfaceWater||s==10||s==11;}
-// ground Link and the game's ground check stand on (not water, which he passes through, nor a void)
-bool standing_ground(uint16_t s){return s!=story_world_collision::mesh::SurfaceWater&&s!=story_world_collision::mesh::SurfaceVoid;}
+// a body of water's open water: where Link swims, wades or stands under a fall (a lava pool's lava alike)
+bool open_water(uint16_t s){return s==story_world_collision::mesh::SurfaceWater||s==10||s==11||s==story_world_collision::mesh::SurfaceLava;}
+// ground Link and the game's ground check stand on (not water, which he passes through, nor a void, nor lava's
+// surface: he burns in it, and things placed on it would sink)
+bool standing_ground(uint16_t s){return s!=story_world_collision::mesh::SurfaceWater&&s!=story_world_collision::mesh::SurfaceVoid&&s!=story_world_collision::mesh::SurfaceLava;}
 }
+// an actor the editor removed keeps its declaration (an undo brings it back) but is no ground for the editor's checks
+void set_removed(uint32_t token,bool removed){std::lock_guard guard(world_mutex);if(token&&token<=declarations.size())declarations[token-1].removed=removed;}
 bool object_grounds(const std::string&stage,const std::vector<story_notebook::WorldPoint>&above,std::vector<float>&heights,std::vector<bool>&found){
     std::lock_guard guard(world_mutex);heights.assign(above.size(),0);found.assign(above.size(),false);bool any=false;
     for(const auto&d:declarations){
         // a static object's own collision (an island ground, a terrace, a pier, a house); a body of water is no
         // ground of its own (its banks lie on another's), a floating or drifting object moves
-        if(!d.collision||d.spec.stage!=stage||d.spec.behaviour!="static"||d.spec.water_body())continue;
+        if(d.removed||!d.collision||d.spec.stage!=stage||d.spec.behaviour!="static"||d.spec.water_body())continue;
         // only an object under one of the points is placed (a ray's many steps ask one or two places at a time)
         story_world_placement::Bounds b;if(!world_bounds(d,d.spec.position,b))continue;
         if(std::none_of(above.begin(),above.end(),[&](const story_notebook::WorldPoint&p){return p.x>=b.minimum.x&&p.x<=b.maximum.x&&p.z>=b.minimum.z&&p.z<=b.maximum.z&&p.y>=b.minimum.y;}))continue;
@@ -802,7 +842,10 @@ bool world_object_query(const std::string&mod,const story_notebook::ManifestActo
     if(spec.water_object()){float radius=0;for(const auto&p:geometry->vertices)radius=std::max(radius,std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z));const float y=spec.position.y-spec.buoyancy.draft;bounds={{spec.position.x-radius,y-2048-radius,spec.position.z-radius},{spec.position.x+radius,y+2048+radius,spec.position.z+radius}};}
     const auto key=std::make_pair(spec.stage,int(spec.room));
     auto found=placement_indexes.find(key);if(found==placement_indexes.end())found=placement_indexes.emplace(key,placement_provider?placement_provider(spec.stage,int(spec.room)):load_native_room(world_game_directory,spec.stage,int(spec.room))).first;
-    auto conflicts=check(spec.stage,int(spec.room),bounds,found->second);
+    // a standing object by its own collision (issue #281: an L-shaped extension's box may cover a villager, a route or
+    // a start point that its triangles don't reach); a floating or drifting one by its whole motion envelope
+    std::optional<Solid> own_solid;if(!spec.water_object())own_solid=placed_solid(*geometry,spec);
+    auto conflicts=check(spec.stage,int(spec.room),bounds,found->second,kClearance,own_solid?&*own_solid:nullptr);
     // A game piece is an island's own building: it stands on the island's ground and against its slopes the
     // way its original did, so the room's walls and ground don't count; everything else (the layout's
     // villagers, routes, doors, chests, cutscene areas and start points, the room's square, other world
@@ -817,6 +860,8 @@ bool world_object_query(const std::string&mod,const story_notebook::ManifestActo
         allocation+=story_world_collision::mesh::allocation_bytes(*d.collision)+d.spec.grapple_points.size()*(story_world_grapple::kProxyBytes+64);grapple_count+=d.spec.grapple_points.size();
         // bodies of water of one mod may meet (a waterfall at its river's step, a river running into a pond)
         if(spec.water_body()&&d.spec.water_body()&&d.mod==mod)continue;
+        // parts of one composition (the same mod's static objects with one origin, story_world_manifest.h)
+        if(d.mod==mod&&story_notebook::one_composition(spec,d.spec))continue;
         Bounds other;
         if(!world_bounds(d,d.spec.position,other))return why="invalid existing object bounds",false;
         const std::string other_id=d.mod+":"+d.spec.id;const char* whose=d.mod==mod?"this mod's world object":"another mod's world object";

@@ -8,11 +8,13 @@
 //     A step keeps its number when edited; inserting, moving or removing steps renumbers them in the
 //     editor, and the loaded Quest Log then is at whatever step has its number now, exactly as after a
 //     restart. step_moves() says which saved numbers point to another step now, for the status bar;
-//   - an item's icon, its held model and "hold_up" are built into the game's layouts at start-up, so new
-//     items, removed items and those three fields wait for a restart (restart_items()); its name,
-//     description, stack and use change at once.
+//   - an item's icon is built into the game's icon layout at start-up, its held model and "hold_up" into
+//     its item get: removed items and the held model and "hold_up" wait for a restart (restart_items());
+//     new items and a changed icon too, unless the game has live icon places (LiveIcons: the editor
+//     launch mode's spare places, item_icons.h); its name, description, stack and use change at once.
 #pragma once
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -84,26 +86,44 @@ inline std::vector<StepMove> step_moves(const Value& before, const Value& after)
     return out;
 }
 
-// The items whose change waits for a restart, compared with the manifest the game started with: new
-// and removed items, and a changed icon, held model, held frames or "hold_up". Each entry is
-// "<id> (<why>)".
-inline std::vector<std::string> restart_items(const Value& started, const Value& after) {
+// What the running game can take of items beyond their texts. In the editor launch mode the game starts with
+// spare places in its item icon layout (item_icons.h): a new item takes a free one, and an item's icon is
+// drawn again in its place, while the game runs. Without it (the default) both wait for a restart.
+struct LiveIcons {
+    std::function<bool(const std::string& id)> placed;  // the item has an icon place now (null: no live icons)
+    unsigned spare = 0;                                 // free spare places for the new items without one
+};
+// The items whose change waits for a restart, compared with the manifest the game started with: removed
+// items, a changed held model, held frames or "hold_up", and (without a live icon place, `live`) new items
+// and a changed icon. Each entry is "<id> (<why>)".
+inline std::vector<std::string> restart_items(const Value& started, const Value& after, const LiveIcons& live = {}) {
     std::vector<std::string> out;
     auto find = [](const Value& m, const std::string& id) -> const Value* {
         for (const auto& i : m.get("items").array)
             if (i.get("id").string() == id) return &i;
         return nullptr;
     };
+    unsigned spare = live.placed ? live.spare : 0;
+    auto placed = [&](const std::string& id) { return live.placed && live.placed(id); };
     for (const auto& i : after.get("items").array) {
         const std::string id = i.get("id").string();
         const Value* was = find(started, id);
         if (!was) {
-            out.push_back(id + " (a new item)");
+            if (placed(id)) continue;  // added while the game runs, in a spare place already
+            if (spare) {
+                spare--;
+                continue;
+            }
+            out.push_back(id + (live.placed ? " (a new item: the spare icon places are all in use)" : " (a new item)"));
             continue;
         }
-        for (const char* k : {"icon", "held_model", "held_frames", "hold_up"})
+        if (!(was->get("icon") == i.get("icon")) && !placed(id)) {
+            out.push_back(id + " (its icon)");
+            continue;
+        }
+        for (const char* k : {"held_model", "held_frames", "hold_up"})
             if (!(was->get(k) == i.get(k))) {
-                out.push_back(id + " (its " + std::string(k == std::string("icon") ? "icon" : k == std::string("hold_up") ? "hold_up" : "held model") + ")");
+                out.push_back(id + " (its " + std::string(k == std::string("hold_up") ? "hold_up" : "held model") + ")");
                 break;
             }
     }
@@ -112,10 +132,11 @@ inline std::vector<std::string> restart_items(const Value& started, const Value&
     return out;
 }
 
-// The items that change at once: in both, with the same icon, held model and "hold_up".
-inline std::vector<std::string> live_items(const Value& started, const Value& after) {
+// The items that change at once: in both (or new, in a spare icon place), with the same held model and
+// "hold_up" (and icon, without live icon places).
+inline std::vector<std::string> live_items(const Value& started, const Value& after, const LiveIcons& live = {}) {
     std::vector<std::string> out;
-    const auto later = restart_items(started, after);
+    const auto later = restart_items(started, after, live);
     for (const auto& i : after.get("items").array) {
         const std::string id = i.get("id").string();
         bool waits = false;
@@ -124,6 +145,12 @@ inline std::vector<std::string> live_items(const Value& started, const Value& af
         if (!waits) out.push_back(id);
     }
     return out;
+}
+// The id of a restart_items entry ("<id> (<why>)") and its reason
+inline std::string entry_id(const std::string& entry) { return entry.substr(0, entry.find(" (")); }
+inline std::string entry_why(const std::string& entry) {
+    const size_t a = entry.find(" (");
+    return a == std::string::npos || entry.size() < a + 3 ? std::string() : entry.substr(a + 2, entry.size() - a - 3);
 }
 
 // The letter ids a manifest declares: each quest's letter and the letters on their own.

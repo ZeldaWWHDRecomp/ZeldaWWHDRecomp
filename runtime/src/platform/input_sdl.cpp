@@ -1,9 +1,11 @@
+#include "file_select_quit.h"
 #include "platform/process_peak_rss.h"
 #include "platform/present_observer.h"
 #ifdef __ANDROID__
 #include <jni.h>
 #include "phone_rumble.h"
 #include "overlay/hostui.h"
+#include "quest_theater.h"
 #endif
 #include "gfx/display_modes.h"
 #include "android_controller.h"
@@ -39,6 +41,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../overlay/release_gate.h"
 #include "../overlay/text_entry.h"
 #include "../fixed_seed.h"
+#include "../dsweep.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -67,8 +70,32 @@ void mouse_binding_wheel(float delta, bool eligible) {
     std::lock_guard lk(g_mu); g_mouse_bindings.wheel(delta, eligible);
 }
 static bool g_keys[256]={},g_script_keys[256]={};
-static std::atomic<bool> g_gameplay_focus{false};
+static std::atomic<bool> g_gameplay_focus{false},g_window_focus{false};
 bool gameplay_focused(){return g_gameplay_focus.load(std::memory_order_relaxed);}
+bool window_focused(){return g_window_focus.load(std::memory_order_relaxed);}
+// ---- controllers in the background (issue #267) ---------------------------------------------------
+// SDL drops controller presses and stick moves while it has windows and none of them has the keyboard
+// focus, unless SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS is set. SDL watches that hint (a hint
+// callback), so it applies at once, also after the joystick subsystem started. Controls > "Controller
+// input when the game isn't focused" sets it; keyboard and mouse are released on focus loss either
+// way (handle_event, mouse_sdl.cpp). Android: the app is in front or paused, the option does nothing.
+bool background_controllers(){
+#ifdef __ANDROID__
+ return false;
+#else
+ return input_map::background_controllers();
+#endif
+}
+static void apply_background_hint(){
+ static int applied=-1;
+ const bool on=background_controllers();
+ if(applied==(int)on)return;
+ if(!SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,on?"1":"0"))LOG("[input] background controller hint: %s",SDL_GetError());
+ if(applied>=0||on)LOG("[input] controller input while the game isn't focused: %s",on?"on":"off");
+ applied=on;
+}
+// the controllers reach the game now: a game window has the focus, or the background option is on
+static bool controllers_live(){return SDL_GetKeyboardFocus()!=nullptr||background_controllers();}
 static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
@@ -279,7 +306,8 @@ static PadState keyboard_state(bool host){bool keys[256];for(int i=0;i<256;i++)k
 // requests by more than kRumbleRefreshMs; should the main loop stall (SDL ends a rumble only while
 // it pumps events), a watchdog thread stops the motors after kRumbleStallMs.
 // The motors are still while the option is off, the settings overlay is open (the game sees no
-// input then), no game window has the keyboard (SDL reads no controllers in the background), and
+// input then), no game window has the keyboard (SDL reads no controllers in the background; with
+// "Controller input when the game isn't focused" on they keep running there, as the game plays on), and
 // from the moment the process ends (quit, exit, crash): it ends without SDL_Quit, and XInput and
 // HIDAPI controllers keep the last motor level they were sent after it.
 constexpr Uint32 kRumbleRefreshMs=150,kRumbleStallMs=300;
@@ -332,7 +360,7 @@ static void apply_rumble(){
 #endif
  // the share of "on" over the next host frame (the motor spins up and down slower than that)
  float level=rumble::host_level(1000000/60);
- if(overlay::is_open()||!SDL_GetKeyboardFocus())level=0;  // the game cannot stop it from here
+ if(overlay::is_open()||!controllers_live())level=0;  // the game cannot stop it from here
 #ifdef __ANDROID__
  if(phone)phone_rumble_level((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu));
 #endif
@@ -392,11 +420,11 @@ static void update_sensors(){
  int n=0;for(auto [id,pad]:g_controllers)if(SDL_GamepadConnected(pad)&&has_motion(pad))n++;
  motion::set_gyro_controllers(n);
  static bool focused=true;
- const bool focus=SDL_GetKeyboardFocus()!=nullptr;
+ const bool focus=controllers_live();  // (the background option: SDL keeps sending samples there)
  if(focus!=focused){
   focused=focus;
   if(focus)for(auto& [id,t]:g_sensor_seen)t=SDL_GetTicks();  // events were paused: a fresh start for the watchdog
-  if(g_sensors_on)LOG("[gyro] the game window %s the focus%s",focus?"has":"lost",focus?"":": SDL pauses controller events until it is back");
+  if(g_sensors_on)LOG("[gyro] %s",focus?"controller events reach the game again":"the game window lost the focus: SDL pauses controller events until it is back");
  }
  if(want==g_sensors_on){
   if(!want||!focus||getenv("WWHD_NO_HOST_INPUT"))return;
@@ -607,6 +635,7 @@ void init(){
  wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
  if(!wwhd_trace::handoff()) LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
  input_map::load_startup();
+ apply_background_hint();  // before the controllers open (SDL also follows a later change)
  // WWHD_NO_GAMEPAD only hides the GamePad screen window; WWHD_NO_CONTROLLERS turns off host controllers
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
@@ -711,6 +740,51 @@ static void post_test_keys(){
   else{e.type=p.down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.scancode=p.code;e.key.down=p.down;e.key.mod=p.mods;e.key.windowID=g_prompt_window?SDL_GetWindowID(g_prompt_window):0;}
   LOG("[input] test %s %s%s at frame %llu",p.text.empty()?"key":"text",p.text.empty()?SDL_GetScancodeName(p.code):p.text.c_str(),p.text.empty()?(p.down?" down":" up"):"",(unsigned long long)render::frame_count());
   SDL_PushEvent(&e);
+ }
+}
+// debug: WWHD_TEST_VIRTUAL_PAD=2000-2010:a,2100-2105:start attaches an SDL virtual gamepad and holds its
+// buttons (SDL gamepad button names) during TV frame ranges. Unlike WWHD_PRESS the presses take SDL's own
+// path, focus filter included (issue #267: a hidden run has no focus, so they reach the game only with
+// controller input in the background on). Just before the first range a window focus loss is posted for
+// the TV window, as the window manager sends it. Needs host input (no WWHD_NO_HOST_INPUT); to leave real
+// controllers out, start with SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_MFI=0 SDL_JOYSTICK_IOKIT=0 (macOS).
+static void test_virtual_pad(){
+ struct Hold{uint64_t from,to;SDL_GamepadButton button;};
+ static const std::vector<Hold> holds=[]{
+  std::vector<Hold> v;const char* e=getenv("WWHD_TEST_VIRTUAL_PAD");
+  for(const char* p=e;p&&*p;){
+   char* end;const uint64_t a=strtoull(p,&end,10);if(*end!='-')break;
+   const uint64_t b=strtoull(end+1,&end,10);if(*end!=':')break;p=end+1;
+   const size_t len=strcspn(p,",");const std::string name(p,len);p+=len+(p[len]==',');
+   const SDL_GamepadButton button=SDL_GetGamepadButtonFromString(name.c_str());
+   if(button==SDL_GAMEPAD_BUTTON_INVALID){LOG("[input] WWHD_TEST_VIRTUAL_PAD: unknown button %s",name.c_str());continue;}
+   v.push_back({a,b,button});
+  }
+  return v;
+ }();
+ static SDL_Joystick* pad=nullptr;static bool failed=false;
+ if(holds.empty()||failed||!SDL_WasInit(SDL_INIT_GAMEPAD))return;
+ if(!pad){
+  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;d.name="WWHD test virtual pad";
+  const SDL_JoystickID id=SDL_AttachVirtualJoystick(&d);
+  pad=id?SDL_OpenJoystick(id):nullptr;
+  LOG("[input] test virtual pad %u %s",(unsigned)id,pad?"attached":SDL_GetError());
+  if(!pad){failed=true;return;}
+ }
+ const uint64_t frame=render::frame_count();
+ static bool focusPosted=false;
+ if(!focusPosted&&g_prompt_window&&frame+1>=holds.front().from){
+  focusPosted=true;SDL_Event e{};e.type=SDL_EVENT_WINDOW_FOCUS_LOST;e.window.windowID=SDL_GetWindowID(g_prompt_window);SDL_PushEvent(&e);
+  LOG("[input] test virtual pad: focus loss posted at frame %llu (a window has the keyboard: %s; controller input in the background: %s)",
+      (unsigned long long)frame,SDL_GetKeyboardFocus()?"yes":"no",background_controllers()?"on":"off");
+ }
+ static bool held[SDL_GAMEPAD_BUTTON_COUNT]={};
+ bool want[SDL_GAMEPAD_BUTTON_COUNT]={};
+ for(const Hold& h:holds)if(frame>=h.from&&frame<=h.to)want[h.button]=true;
+ for(int b=0;b<SDL_GAMEPAD_BUTTON_COUNT;b++)if(want[b]!=held[b]){
+  held[b]=want[b];SDL_SetJoystickVirtualButton(pad,b,want[b]);
+  LOG("[input] test virtual pad: %s %s at frame %llu",SDL_GetGamepadStringForButton((SDL_GamepadButton)b),want[b]?"down":"up",(unsigned long long)frame);
  }
 }
 // The overlay's text prompt (overlay/text_entry.h) while the menu is not over it: typed text (SDL text
@@ -834,6 +908,8 @@ void handle_event(const SDL_Event& event){
 void update(){
  update_overlay_window(SDL_GetKeyboardFocus());
  g_gameplay_focus.store(SDL_GetKeyboardFocus()!=nullptr&&!text_prompt_active(),std::memory_order_relaxed);
+ g_window_focus.store(SDL_GetKeyboardFocus()!=nullptr,std::memory_order_relaxed);
+ apply_background_hint();  // the Controls option, applied before this poll reads the controllers
  if(wwhd_trace::enabled()) {
   overlay_trace_sdl::begin(overlay::is_open());
   for(auto [id,pad]:g_controllers) overlay_trace_sdl::pad(id,pad);
@@ -850,8 +926,15 @@ void update(){
  // SDL text input in every game window while the overlay's text prompt shows (typed text, input methods;
  // on Android it brings up the system keyboard); the input method's candidates open over the prompt
  // (also while a text field of the settings overlay has the keyboard)
+ // Not in the Quest theater: an immersive OpenXR session never shows Android's system keyboard, which
+ // would still take every controller press from the on-screen keyboard (the controllers type there).
+#ifdef __ANDROID__
+ const bool system_keyboard=!quest_theater::active();
+#else
+ const bool system_keyboard=true;
+#endif
  static bool entry_text=false;
- if((text_entry::active()||overlay::wants_text())!=entry_text&&!g_done){
+ if(system_keyboard&&(text_entry::active()||overlay::wants_text())!=entry_text&&!g_done){
   entry_text=!entry_text;int n=0;
   if(SDL_Window** ws=SDL_GetWindows(&n)){
    for(int i=0;i<n;i++){
@@ -863,6 +946,7 @@ void update(){
   }
  }
  post_test_keys();
+ test_virtual_pad();
  using namespace input_map;
  // v: every device combined (strongest input wins), as the settings overlay reads it; game: the same with
  // each device's inputs that the overlay or the text prompt had and that are still held left out
@@ -1067,6 +1151,10 @@ static void apply_scenario(PadState& s) {
         }
 #endif
         process_peak_rss::write_endpoint(render::frame_count());
+        // The headless harness stops the process as soon as it sees test_done.
+        // Publish complete trace records before that marker, rather than losing
+        // buffered Link/camera records or leaving a partial final line.
+        fflush(nullptr);
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
     true60_test::tick(t, sc.end > 0 && t >= sc.end);
@@ -1119,6 +1207,7 @@ PadState read() {
     if (no_host) s = PadState{};
     for (auto& p : script)
         if (frame >= p.from && frame <= p.to) s.buttons |= p.bits;
+    s.buttons |= dsweep::pad_buttons(frame);  // a title D-sweep (setup) passes the boot's notice screen
     for (auto& p : sticks)
         if (frame >= p.from && frame <= p.to) { s.lx = p.x; s.ly = p.y; }
     for (auto& p : rsticks)
@@ -1144,6 +1233,7 @@ PadState read() {
     } else {
         mods::quick_use_filter_pad(s);  // final merged/polled pad, never overlay-owned input
     }
+    file_select_quit::filter(s);
     return s;
 }
 

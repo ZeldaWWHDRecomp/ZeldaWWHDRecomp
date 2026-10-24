@@ -20,10 +20,13 @@
 #include "mods/shader_interface.h"
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
+#include "gfx/shader_linkage.h"
+#include "render_objects.h"
 #include "exact_state_memo.h"
 #include "program_hash_cache.h"
 #include "write_watch.h"
 #include "render_prof.h"
+#include "gx2/gx2_cmd.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
@@ -131,6 +134,7 @@ constexpr size_t maxSourceBytes = diskcache::kMaxSourceBytes;
 constexpr size_t maxCacheEntries = diskcache::kMaxEntries;
 using DiskShader = diskcache::Entry;
 std::unordered_map<uint64_t, DiskShader> diskShaders;
+diskcache::WordPool diskWords;  // one copy of each distinct module among diskShaders
 std::string diskPath;
 bool diskInitialized = false, diskDirty = false;
 uint64_t diskChangedFrame = 0, diskAttemptFrame = 0, diskRevision = 0;
@@ -168,7 +172,7 @@ void initialize_disk_cache() {
         bool read=fread(bytes.data(),1,bytes.size(),file)==bytes.size() && fgetc(file)==EOF && !ferror(file);
         fclose(file);
         if(read) {
-            const auto decoded=diskcache::decode(bytes,cache_fingerprint(),diskShaders);
+            const auto decoded=diskcache::decode(bytes,cache_fingerprint(),diskShaders,&diskWords);
             if(decoded.ok) {
                 ++stats.diskLoads; diskBytes=decoded.bytes;
                 // An older file (with GLSL text) is rewritten smaller at the next checkpoint.
@@ -221,60 +225,33 @@ uint64_t program_hash(uint32_t address, uint32_t size, uint64_t frame) {
 // Render-target formats, buffer addresses, samplers and units the program does not sample are not
 // read by the GLSL translation (the Metal-only render-target-texture check is the one that does)
 // and are not in the key; the pipeline key has the attachment formats.
-constexpr size_t kLinkageWords = 3 + GPU7_PS_MAX_INPUTS + 32 + 4;
+constexpr size_t kLinkageWords = ::gfx::kShaderLinkageWords;
+// Depth clamp where the device has none (Mali-G52 and other GPUs without the depthClamp feature, or
+// WWHD_VK_FORCE_DEPTH_CLAMP_EMULATION=1): the game draws its shadow maps with far-plane clipping off
+// (PA_CL_CLIP_CNTL ZCLIP_FAR_DISABLE, which the pipeline turns into depth clamp), so casters in front
+// of a shadow cascade's near plane still land in the map at its nearest depth. Without the feature
+// the pipeline cannot clamp; the vertex shader is translated in a variant that clamps the position's
+// depth at the near plane, per vertex: exact for casters wholly in front of it, a triangle crossing
+// the plane comes out a little too deep (at worst a little less shadow). The far plane still clips:
+// nothing beyond it shadows anything in range, and big ground triangles clamped there per vertex
+// came out too near. The variant is part of the shader key (gather_linkage flag 64), so the shader
+// caches keep both. Approach from the GreenNaugahyde Android fork (v0.9.5, issue #45 there).
+bool depth_clamp_variant_wanted(const uint32_t* regs) {
+    return !R.enabledFeatures.depthClamp && (regs[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27));  // ZCLIP_FAR_DISABLE
+}
+// the vertex shader variant: SET_POSITION (the Vulkan define of the decompiler's header) clamps z
+bool clamp_position_depth(std::string& glsl) {
+    static const std::string def = "#define SET_POSITION(_v) ";
+    const size_t d = glsl.find(def);
+    const size_t eol = d == std::string::npos ? d : glsl.find_first_of("\r\n", d);
+    if (eol == std::string::npos) return false;
+    glsl.insert(eol, "; if (gl_Position.w > 0.0) gl_Position.z = max(gl_Position.z, 0.0)");
+    return true;
+}
 size_t gather_linkage(const uint32_t* regs, bool vertex, const LatteFetchShader* fetch, uint32_t* out) {
-    size_t count = 0;
-    uint32_t flags = (regs[REGADDR::VGT_GS_MODE] & 3) != 0 ? 1u : 0u;
-    if (vertex) {
-        // Each fetch attribute is imported into the register after the first SQ_VTX_SEMANTIC slot
-        // holding its semantic id (LatteDecompiler_emitAttributeImport, analyzer relative reads);
-        // the other slots are never read. One byte per attribute, 0xFF when unmapped.
-        uint32_t attributes = 0;
-        if (fetch)
-            for (const auto& group : fetch->bufferGroups) attributes += group.attribCount;
-        if (attributes <= 4 * 32) {
-            uint32_t packed = 0, bytes = 0;
-            if (fetch)
-                for (const auto& group : fetch->bufferGroups)
-                    for (int i = 0; i < group.attribCount; ++i) {
-                        uint32_t location = 0xFF;
-                        for (uint32_t f = 0; f < 32; ++f)
-                            if (regs[mmSQ_VTX_SEMANTIC_0 + f] == group.attrib[i].semanticId) { location = f; break; }
-                        packed |= location << (8 * (bytes++ & 3));
-                        if ((bytes & 3) == 0) { out[count++] = packed; packed = 0; }
-                    }
-            if (bytes & 3) out[count++] = packed;
-            out[count++] = attributes;
-        } else {
-            std::memcpy(out + count, regs + mmSQ_VTX_SEMANTIC_0, 32 * sizeof(uint32_t));
-            count += 32;
-        }
-        const uint32_t vte = regs[REGADDR::PA_CL_VTE_CNTL];
-        const uint32_t primitive = regs[REGADDR::VGT_PRIMITIVE_TYPE] & 0x3F;
-        flags |= (primitive == 1 ? 2u : 0u) | (regs[mmVGT_STRMOUT_EN] ? 4u : 0u) |
-                 ((vte & 0x15) != 0x15 ? 8u : 0u) |                       // any viewport scale off
-                 (regs[REGADDR::PA_CL_CLIP_CNTL] & (1u << 19) ? 16u : 0u); // DX clip space (half Z)
-        if (mods::cemu::has_shaders()) {
-            // graphics-pack shader names hash the whole VTE word and rect primitives
-            out[count++] = vte;
-            out[count++] = primitive == 0x11 ? 1u : 0u;
-        }
-    } else {
-        // PS input table (latte_support.cpp LatteShader_CreatePSInputTable): input count, position
-        // import, parameter generation, and per input its semantic, flat and noperspective bits;
-        // every input is declared. Vertex shaders only need where their exports land (variant_hash).
-        const uint32_t control0 = regs[mmSPI_PS_IN_CONTROL_0];
-        out[count++] = control0 & 0x03FFFD3Fu;
-        const uint32_t inputs = std::min<uint32_t>(control0 & 0x3F, GPU7_PS_MAX_INPUTS);
-        for (uint32_t i = 0; i < inputs; ++i) out[count++] = regs[mmSPI_PS_INPUT_CNTL_0 + i] & 0x14FFu;
-        out[count++] = regs[mmSPI_PS_IN_CONTROL_1] & 0x1FF00u;  // front-face import
-        out[count++] = regs[mmCB_SHADER_MASK];
-        const uint32_t alpha = regs[REGADDR::SX_ALPHA_TEST_CONTROL];
-        out[count++] = alpha & 8 ? alpha & 0xF : 0;
-        flags |= regs[mmSPI_INTERP_CONTROL_0] & (1u << 1) ? 32u : 0u;  // point sprite
-    }
-    out[count++] = flags;
-    return count;
+    // flag 64: the emulated depth clamp variant (depth_clamp_variant_wanted)
+    return ::gfx::gather_shader_linkage(regs, vertex, fetch, mods::cemu::has_shaders(), out,
+                                        vertex && depth_clamp_variant_wanted(regs) ? 64u : 0u);
 }
 // What the program reads beyond the linkage, recorded from its first translation.
 struct ProgramUse {
@@ -383,7 +360,7 @@ uint64_t legacy_state_hash(const uint32_t* regs, uint64_t hash, bool vertex) {
     put(mmCB_SHADER_CONTROL, 1); put(mmDB_SHADER_CONTROL, 1);
     put(mmSPI_INPUT_Z, 1); put(REGADDR::SX_ALPHA_TEST_CONTROL, 1);
     uint32_t transformState[] = {regs[REGADDR::PA_CL_VTE_CNTL] & 0x3F,
-        regs[REGADDR::PA_CL_CLIP_CNTL] & (1u << 19),
+        regs[REGADDR::PA_CL_CLIP_CNTL] & ((1u << 19) | (depth_clamp_variant_wanted(regs) ? 1u << 27 : 0u)),
         regs[REGADDR::DB_DEPTH_CONTROL] & 0x83};
     append(transformState,3);
     put(REGADDR::CB_COLOR_CONTROL, 1); put(REGADDR::CB_TARGET_MASK, 1);
@@ -701,6 +678,14 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
                 accepted?"applied":"rejected: ",accepted?"":error.c_str());
         }
     }
+    if (vertex && depth_clamp_variant_wanted(regs)) {
+        static int applied = 0, missed = 0;
+        if (clamp_position_depth(shader.glsl)) {
+            if (++applied <= 5 || (applied & (applied - 1)) == 0)
+                fprintf(stderr, "[vulkan] vertex shader %08X: near-plane depth clamp variant (%d so far)\n", address, applied);
+        } else if (missed++ < 10)  // a graphics-pack vertex shader without the decompiler's SET_POSITION: drawn unclamped
+            fprintf(stderr, "[vulkan] vertex shader %08X: depth clamp emulation not applied (no SET_POSITION)\n", address);
+    }
     if (vertex && R.vertexFormats.fallbackMask) {
         uint32_t tailLocation = vertex_tail_location(shader.mapping.attributeMapping);
         // Rewrite the input declaration, leaving every existing endian/sign/
@@ -965,9 +950,11 @@ void publish_shader_binary(Shader& shader, uint64_t frame) {
             std::make_shared<const std::vector<uint32_t>>(std::move(result.words));
         if (shader.spirvWords && shader.sourceId.length <= maxSourceBytes &&
             diskcache::spirv_valid(*shader.spirvWords) && diskShaders.size() < maxCacheEntries) {
-            const size_t oldBytes = cached == diskShaders.end() ? 0 :
-                diskcache::record_bytes(cached->second.words->size());
-            const size_t newBytes = diskcache::record_bytes(shader.spirvWords->size());
+            // Variants with the same final words share one copy (and one module in the file).
+            bool fresh;
+            shader.spirvWords = diskWords.intern(shader.spirvWords, fresh);
+            const size_t oldBytes = cached == diskShaders.end() ? 0 : diskcache::record_bytes(0, false);
+            const size_t newBytes = diskcache::record_bytes(shader.spirvWords->size(), fresh);
             if (newBytes <= maxCacheBytes - (diskBytes - oldBytes)) {
                 DiskShader entry;
                 entry.source = shader.sourceId; entry.words = shader.spirvWords; entry.vertex = shader.vertex;
@@ -1065,6 +1052,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         use.failed = shader;
         std::string{}.swap(shader->glsl);
         shaders.emplace(shader->key, std::move(owned));
+        render_objects::set_shaders(shaders.size());
         fprintf(stderr, "[vulkan] shader %08X: %s\n", address, shader->error.c_str());
         return remember(shader);
     }
@@ -1112,6 +1100,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         }
     shader->key = key;
     shaders.emplace(key, std::move(owned));
+    render_objects::set_shaders(shaders.size());  // crash logs, performance report
     variants.emplace(key, shader);
     shadersByOutput.emplace(output, shader);
     remember(shader);
@@ -1297,7 +1286,8 @@ ShaderMemoryStats shader_memory_stats() {
 
 void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
                         std::vector<uint8_t>& data, float scaleX, float scaleY,
-                        float eyeOffset, float convergence) {
+                        float eyeOffset, float convergence, stereo::EyeRows* eyeRows) {
+    if (stereo::layoutDrawDepth) eyeOffset = 0;
     const auto& offsets = shader.uniforms;
     data.resize((std::max(offsets.offset_endOfBlock, 16) + 15) & ~15);
     // Reused capacity may contain another shader's payload. Define every byte,
@@ -1314,14 +1304,16 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     auto projectionRow = [&](int offset, const void* bytes, size_t available) {
         if (!shader.vertex || eyeOffset == 0 || available < 64) return;
         float p[16]; memcpy(p,bytes,64);
-        if (stereo::project_eye(p,eyeOffset,convergence)) copy(offset,p,16);
+        const float unshifted[4] = {p[0],p[1],p[2],p[3]};
+        if (stereo::project_eye(p,eyeOffset,convergence)) {
+            copy(offset,p,16);
+            if (eyeRows && offset >= 0 && size_t(offset) + 16 <= data.size()) eyeRows->add(size_t(offset),unshifted);
+        }
     };
     if (offsets.offset_remapped >= 0) {
         for (const auto& entry : shader.dec->list_remappedUniformEntries_register) {
             copy(offsets.offset_remapped + entry.mappedIndexOffset, regs + aluBase + entry.indexOffset / 4, 16);
-            const bool layoutRow = eyeOffset != 0 && shader.vertex && stereo::is_layout(regs) &&
-                aluBase+entry.indexOffset/4 == stereo::layoutProjectionStart;
-            if (!layoutRow && entry.indexOffset <= 4096-64)
+            if (entry.indexOffset <= 4096-64)
                 projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                     regs+aluBase+entry.indexOffset/4,4096-entry.indexOffset);
         }
@@ -1329,11 +1321,16 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
             uint32_t address = regs[blockBase + group.kcacheBankIdOffset / 4];
             if (!address) continue;
             const size_t blockSize = std::min<uint32_t>(regs[blockBase+group.kcacheBankIdOffset/4+1]+1,0x10000);
+            // a block of a display list: its bytes as submitted (gx2/submitted_uniforms.h); entries
+            // past the block's end still read guest memory, as before
+            const uint8_t* submitted = gx2::submitted_uniform_block(address, uint32_t(blockSize));
             for (const auto& entry : group.entries) {
-                copy(offsets.offset_remapped + entry.mappedIndexOffset, ppc_ptr(address + entry.indexOffset), 16);
+                const void* src = submitted && entry.indexOffset + 16 <= blockSize
+                    ? static_cast<const void*>(submitted + entry.indexOffset) : ppc_ptr(address + entry.indexOffset);
+                copy(offsets.offset_remapped + entry.mappedIndexOffset, src, 16);
                 if (entry.indexOffset < blockSize)
                     projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
-                        ppc_ptr(address+entry.indexOffset),blockSize-entry.indexOffset);
+                        src,blockSize-entry.indexOffset);
             }
         }
     }
@@ -1342,7 +1339,8 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
         if (shader.vertex && eyeOffset != 0)
             stereo::project_uniform_block(data.data()+offsets.offset_uniformRegister,
                 size_t(offsets.count_uniformRegister)*16,eyeOffset,convergence,
-                stereo::is_layout(regs) ? stereo::layoutProjection.data() : nullptr);
+                nullptr,
+                eyeRows,size_t(offsets.offset_uniformRegister));
     }
     put(offsets.offset_alphaTestRef, bitsf(regs[Latte::REGADDR::SX_ALPHA_REF]));
     float point = float(regs[Latte::REGADDR::PA_SU_POINT_SIZE] & 0xFFFF) / 8.0f;

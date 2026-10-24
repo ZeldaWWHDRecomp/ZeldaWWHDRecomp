@@ -58,6 +58,10 @@ void set_placed_chest(bool (*placed)(uint32_t actor, std::string& mod, std::stri
 // the chest item hook (fopAcM_createItemForTrBoxDemo) is installed: chests of mod items may appear
 void set_item_hook_ready(bool ready);
 bool item_hook_ready();
+// The get moment shows the mod item's icon in the stand-in's place (story_item_get_icon.h): `icon(key, png,
+// true)` when the chest creates its demo item, `icon(0, "", false)` when the item is given or the chest's
+// get is cut off. Without it the stand-in's card shows.
+void set_icon_presenter(void (*icon)(uint16_t key, const std::string& png, bool on));
 void state_loaded();  // a full state was loaded: no chest is pending
 bool pending();       // tests: a mod item's chest waits for its execItemGet
 namespace hooks {

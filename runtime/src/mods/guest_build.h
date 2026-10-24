@@ -2,6 +2,7 @@
 #pragma once
 #include "../exception_report.h"
 #include "mod_json.h"
+#include "compiler_notice.h"
 #include "../platform/process.h"
 #ifdef __ANDROID__
 #include "../platform/android_code_mods.h"
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace guestmods {
 // guest-sdk.json paths inside the release (issue #230). An AppImage is mounted at a new
@@ -96,19 +98,45 @@ struct BuildBridge {
         const char* path=std::getenv("WWHD_GUEST_BUILD_CONFIG");
         return path?path:"guest-sdk.json";
     }
-    static BuildBridge installed(const std::string& cache) {
+    // Which of setup's tools is missing on disk (None: all there). A bare program name ("clang", "python3")
+    // is a PATH lookup and counts as there; the compiler only matters for code mods (`compiler`).
+    enum class Missing { None, Tools, Python, Compiler };
+    Missing missing(bool need_compiler=true) const {
+        namespace fs=std::filesystem;
+        std::error_code error;
+        if(!fs::is_regular_file(builder,error)||!fs::is_directory(include,error))return Missing::Tools;
+        auto absent=[&](const std::vector<std::string>& command) {
+            const fs::path executable(command.front());
+            return executable.has_parent_path()&&!fs::is_regular_file(executable,error);
+        };
+        if(absent(python))return Missing::Python;
+        if(need_compiler&&absent(compiler))return Missing::Compiler;
+        return Missing::None;
+    }
+    // setup's tools from guest-sdk.json, all of them present; `need_compiler`=false for the Python-only tools
+    // (stage, model and catalogue builders), which work without the compiler
+    static BuildBridge installed(const std::string& cache,bool need_compiler=true) {
         auto b=read(config_path(),cache);
-        if(!std::filesystem::is_regular_file(b.builder)||!std::filesystem::is_directory(b.include)) {
+        switch(b.missing(need_compiler)) {
+        case Missing::Tools:
             if(b.builder.rfind(release_marker,0)==0||b.include.rfind(release_marker,0)==0)
                 exception_report::raise("Guest mod build tools come with the AppImage; start the game from the AppImage");
             exception_report::raise("Guest mod build tools are missing; run setup again from a complete release folder");
-        }
-        for(const auto* command:{&b.python,&b.compiler}) {
-            const std::filesystem::path executable(command->front());
-            if(executable.has_parent_path()&&!std::filesystem::is_regular_file(executable))
-                exception_report::raise("Guest mod compiler or Python is missing; run setup again and keep the downloaded compiler");
+        case Missing::Python:exception_report::raise(kPythonMissing);
+        case Missing::Compiler:exception_report::raise(kCompilerMissing);
+        case Missing::None:break;
         }
         return b;
+    }
+    // The interpreter command for a tools/story_mods tool the game starts itself (the model, stage, island
+    // building and catalogue builders): `python -c tool_bootstrap TOOL ARGS...`, so the
+    // tool's own folder is on sys.path under every Python. The Windows release's embeddable Python leaves it
+    // out (its python314._pth lists only its own folders): every own model of the world editor failed there
+    // with "No module named 'notebook_model'" (issue #280), as package tools did before (issue #224).
+    std::vector<std::string> tool_python() const {
+        auto command=python;
+        command.insert(command.end(),{"-c",tool_bootstrap});
+        return command;
     }
     mods::json::Value run(const std::string& package,uint32_t base,bool inspect,const std::string& build="USA") const {
         auto command=python;command.push_back(builder);command.push_back(package);

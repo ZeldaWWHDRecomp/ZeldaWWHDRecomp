@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -107,6 +109,26 @@ public:
         why = "the game's stages can't be listed here";
         return {};
     }
+    // A kit room's materials: {materials: [{material, textures, triangles, uv_min, uv_max}], main}.
+    virtual Value kit_materials(const std::string& stage, unsigned room, std::string& why) {
+        (void)stage, (void)room;
+        why = "the game's rooms can't be read here";
+        return {};
+    }
+    // The Story Notebook's page opened (or closed) over the game, as the player opens it from the bag.
+    virtual bool notebook_page(bool open, bool give, std::string& why) {
+        (void)open, (void)give;
+        why = "the notebook can't be opened here";
+        return false;
+    }
+    // A game room ({stage, room}) or a game piece ({piece}) exported as <name>.glb into the player's exports folder
+    // (<mod manager>/Exports; never a package): the exporter's summary with "file". Request: stage, room, piece,
+    // name, collision, actors, max_texture (checked by the command).
+    virtual Value export_glb(const Value& request, std::string& why) {
+        (void)request;
+        why = "the game's rooms can't be exported here";
+        return {};
+    }
     // Test mode: the save group's stage record erased from the loaded Quest Log (and the working one).
     virtual bool reset_stage_save(const std::string& mod, const std::string& group, std::string& why) {
         (void)mod, (void)group;
@@ -179,9 +201,24 @@ public:
         return focus(target, why);
     }
     // A model of `mod` was added or changed (its manifest entry; the file is in the package `dir`):
-    // convert and prepare it for the game, so actors can use it without a restart where possible.
+    // convert and prepare it for the game, so actors can use it without a restart where possible. With
+    // "replace": true (replace_model, issue #287) the model's file changed under the same id: the actors drawing
+    // it take the new version, its collision included, as soon as it is ready.
     virtual bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) {
         return why = "the game is not running", false;
+    }
+    // Why a model of `mod` could not be prepared for the game on this computer (the converter's reason); empty when it
+    // is prepared, still being prepared or never was asked for. A restart prepares it the same way, so it isn't
+    // "after a restart" (issue #280).
+    virtual std::string model_failure(const std::string& mod, const std::string& model) {
+        (void)mod, (void)model;
+        return {};
+    }
+    // Whether the collision of a model of `mod` is being prepared (prepare_model with "collision"): a world object on it
+    // is placed and the game checks its place when the collision is ready, as for an island building being made.
+    virtual bool collision_preparing(const std::string& mod, const std::string& model) {
+        (void)mod, (void)model;
+        return false;
     }
     // Snapshot query: collision geometry and placement/budget findings for one
     // parsed object, including motion, grapple points and island presentation. The host
@@ -202,6 +239,11 @@ public:
     // Play: the editor hides, Link plays from the camera's place or his own, in test mode; Stop goes back.
     virtual bool play(bool from_camera, bool restore, std::string& why) { return why = "the game is not running", false; }
     virtual bool stop(std::string& why) { return why = "the game is not running", false; }
+    // Restart and return here: the game saves where Link is (a portable state), starts again with the same
+    // arguments and, once the player picks the Quest Log, puts him back there (and back in Play or test
+    // mode). For what the running game can't take (a removed item, a held model). The packages are saved
+    // before (the command does that). False when the game can't start itself here.
+    virtual bool restart_and_return(std::string& why) { return why = "the game is not running", false; }
     virtual bool playing() { return false; }
 
     // ---- quests and flags (each optional) ----
@@ -358,6 +400,7 @@ public:
     const std::deque<LogEntry>& log() const { return log_; }
     std::string open_mod() const { return open_; }
     const Value* manifest(const std::string& mod) const;
+    const Value* started(const std::string& mod) const;  // the manifest the game started with
     std::string package_dir(const std::string& mod) const;  // the package folder ("" unknown)
     bool dirty(const std::string& mod) const;
     std::vector<std::string> mods() const;
@@ -369,6 +412,12 @@ public:
     // The last warp's starting point ("back to last position").
     const Place& last_place() const { return last_place_; }
     static constexpr size_t kLogSize = 64, kUndoSize = 128;
+    // Watched model files (watch_model, issue #287): each {mod, model, file} whose file changed since it was last
+    // imported and has stayed the same for kWatchSettleMs, and is a whole GLB (its header's length is its size: a
+    // file still being written is not); once per change. The caller runs replace_model for them. `now_ms`: a
+    // steady clock in milliseconds.
+    std::vector<Value> watch_due(int64_t now_ms);
+    static constexpr int64_t kWatchSettleMs = 1000;
 
 private:
     struct Package {
@@ -390,6 +439,19 @@ private:
     std::vector<Step> undo_, redo_;
     Place last_place_;
     mutable std::vector<std::pair<std::string, std::vector<int>>> stage_rooms_;  // the game's files, read once
+    // own models' files (issue #287), by "mod/model": the file it was last imported or replaced from, the watched ones
+    struct Watch {
+        std::string file;
+        int64_t mtime = -1, seen_mtime = -1, since = 0;  // the imported version, the last one seen, when that was first seen
+        uint64_t size = 0, seen_size = 0;
+    };
+    std::map<std::string, std::string> model_sources_;
+    std::map<std::string, Watch> watches_;
+    std::set<std::string> removed_models_;  // removed in this session: a new import under the id is prepared afresh
+    std::set<std::string> set_aside_;       // "mod/source": files remove_model put into models/.removed
+    // remove_model's files (`removing`: the models `before` had and the manifest no longer has) into models/.removed
+    // (hidden, never exported); an undo or redo moves those files back and away again
+    void sync_model_files(const Package& p, const Value& before, bool removing = false);
 
     Package* package(const Value& params, std::string& why);
     const Package* find(const std::string& mod) const;
@@ -493,9 +555,41 @@ std::string free_id(const Value& list, const std::string& base);
 // A copy of the actor `a` under id `id`, with its own flags (each flag id gets the new id).
 Value duplicate_actor(const Value& a, const std::string& id);
 // A .glb file checked as the game would take it: {"kind", "size", "vertices", "triangles", "texture",
-// "bones", "clips"} or false with a message that says which limit (size, triangles, texture, bones,
+// "bones", "clips", "minimum", "maximum" (its bounds, game units)} or false with a message that says which limit (size, triangles, texture, bones,
 // clips, material) it breaks.
 bool check_model_file(const std::string& path, Value& info, std::string& why);
+bool check_model_bytes(const std::vector<uint8_t>& bytes, Value& info, std::string& why);
+// A .glb to import: made to fit the game's rules where it can be (model_import.h), then checked as check_model_file
+// does. `bytes` is the file the package keeps; info["import_fixes"] lists what was changed (absent: nothing).
+inline constexpr size_t kMaxImportBytes = 64 * 1024 * 1024;
+bool import_model_file(const std::string& path, std::vector<uint8_t>& bytes, Value& info, std::string& why);
+bool check_kit_model_file(const std::string& path, const Value& declaration, Value& info, std::string& why);
+// A kit model's file as an import keeps it (issue #281): read from `path`, with the textures of its game materials removed
+// (Blender keeps them for its preview; the game draws its own) and checked as check_kit_model_file checks it. Game
+// materials: the declaration's "materials" and "material", an export_glb material's "wwhd" extras, and with `listed` (a kit
+// room's list_kit_materials result; null when it can't be read) the room's material names (a Blender ".001" copy counts)
+// and an image named after one of their textures. info["import_fixes"] says how many were removed and
+// info["preview_textures_removed"] names their materials (absent: none).
+bool prepare_kit_model_file(const std::string& path, const Value& declaration, const Value& listed, std::vector<uint8_t>& bytes, Value& info, std::string& why);
+// A kit model's visible materials against a kit room's (list_kit_materials' result) and the declaration's "materials" and
+// "material", as kit_model.py names them: {materials: [{name, kind: game|own|unknown, game?, default?}], game: [names],
+// own: [names], unknown: [names]}. "unknown": no texture and no material of the room (its build would refuse it).
+Value kit_material_report(const std::vector<uint8_t>& glb, const Value& listed, const Value& declaration);
+// The report in a sentence for the import's note ("Game materials of sea room 11: ... Own textures: ...").
+std::string kit_report_note(const Value& report, const Value& kit);
+// A model's place relative to its own origin (issue #280). Bounds are in game units, the GLB's metres x 100, as
+// check_model_file's "minimum" and "maximum" give them.
+// How far the geometry lies from the origin across the ground (x, z): 0 when the origin is under or inside it.
+float origin_gap(const WorldPoint& minimum, const WorldPoint& maximum);
+// Modelled away from its origin, as a model made on an island export is (the export keeps the room's coordinates):
+// the gap is over 10 m and over a quarter of the model's width.
+bool off_origin(const WorldPoint& minimum, const WorldPoint& maximum);
+// The world box of the model drawn by an actor with this "position", "rotation" (degrees) and "scale"; the game
+// turns a model as mDoMtx_ZXYrotS does (Y, then X, then Z).
+void placed_bounds(const WorldPoint& minimum, const WorldPoint& maximum, const Value& actor, WorldPoint& low, WorldPoint& high);
+// The place an off-origin model goes when it is added at Link or the camera: the origin of the room's coordinates,
+// as the island export has it (a sea square's centre at sea level; a stage's own origin).
+WorldPoint room_origin(const std::string& stage, int room);
 // Writes the package (manifest plus the package's own files, never game files) into `dest`, a new or
 // empty folder. `written`: the files.
 bool export_package(const std::string& dir, const Value& manifest, const std::string& dest, std::vector<std::string>& written, std::string& why);
@@ -512,6 +606,11 @@ const char* island_name(int room);  // "Windfall Island"; nullptr outside 1..49
 std::vector<Location> build_locations(const std::vector<std::pair<std::string, std::vector<int>>>& stage_rooms,
                                       const std::vector<std::pair<std::string, Value>>& packages,
                                       const std::vector<Host::ModStage>& mod_stages = {});
+// A warp destination's stage as the game names it. A package's stage ("stage:<mod>/<id>", or "stage:<id>"
+// when one installed package has that stage) becomes its game name, and a mod stage's room must be one of its
+// rooms. False with `why` (said to the person) when no installed stage matches: the game never gets a stage
+// name it has no archive for.
+bool resolve_warp_stage(Location& to, const std::vector<Host::ModStage>& mod_stages, std::string& why);
 // The story records that hold a mod's progress (its actor and scene flags, quests, letters, and the charts and
 // items Link got from it).
 std::vector<Record> mod_records(const std::string& mod, const Value& manifest);

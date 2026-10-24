@@ -64,7 +64,7 @@ Value water_params() {
     p["floor"] = hex(D.floor);
     if (D.kind == "pond") {
         if (D.level_set) p["level"] = double(std::lround(D.level));
-        p["depth"] = double(D.depth), p["rim"] = double(D.rim), p["foam"] = D.foam;
+        p["depth"] = double(D.depth), p["rim"] = double(D.rim), p["foam"] = D.foam && !D.lava, p["lava"] = D.lava;
     } else if (D.kind == "river") {
         p["width"] = double(D.width), p["depth"] = double(D.depth);
         p["shallow"].type = Value::Array;
@@ -104,7 +104,7 @@ void water_edit(const std::string& id) {
             if (D.kind == "river" && !levels.empty()) py = float(levels[std::min(levels.size() - 1, i * (levels.size() - 1) / std::max<size_t>(1, w.get("points").array.size() - 1))].number);
             D.points.push_back({num(q, "x"), py, num(q, "z")});
         }
-        if (D.kind == "pond") D.level = num(w, "level"), D.level_set = true, D.depth = int(num(w, "depth", 200)), D.rim = int(num(w, "rim")), D.foam = w.get("foam").boolean;
+        if (D.kind == "pond") D.level = num(w, "level"), D.level_set = true, D.depth = int(num(w, "depth", 200)), D.rim = int(num(w, "rim")), D.foam = w.get("foam").boolean, D.lava = w.get("lava").boolean;
         if (D.kind == "river") {
             D.width = int(num(w, "width", 400)), D.depth = int(num(w, "depth", 200));
             for (const auto& b : w.get("shallow").array) D.shallow.push_back(b.boolean);
@@ -233,7 +233,9 @@ void water_window(const Value& m) {
         }
         slider("Depth", D.depth, 20, 480, "The floor below the water");
         slider("Banks above the water", D.rim, 0, 300, "How high the rim rises above the water before it slopes down to the ground");
-        ImGui::Checkbox("Foam at the shore", &D.foam);
+        ImGui::Checkbox("Lava", &D.lava);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A lava pool instead of water: the game's lava (Link burns in it), rock floor and banks");
+        if (!D.lava) ImGui::Checkbox("Foam at the shore", &D.foam);
         ImGui::ColorEdit3("Floor colour", D.floor, ImGuiColorEditFlags_NoInputs);
     } else if (D.kind == "river") {
         slider("Width", D.width, 100, 2000, "The river's width");
@@ -308,7 +310,7 @@ void water_section(const Value& m, const Value& a) {
     ImGui::Separator();
     ImGui::TextColored(kHead, "Water");
     const std::string material = a.get("shoreline").get("material").string();
-    muted(material == "river" ? "A river made with the water tool." : material == "waterfall" ? "A waterfall made with the water tool." : "A pond made with the water tool.");
+    muted(material == "river" ? "A river made with the water tool." : material == "waterfall" ? "A waterfall made with the water tool." : material == "lava" ? "A lava pool made with the water tool." : "A pond made with the water tool.");
     if (ImGui::SmallButton("Edit shape...")) water_edit(a.get("id").string());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Its points, level and settings in the Water window; Apply builds it again (one undo step)");
     ImGui::SameLine();
@@ -345,6 +347,7 @@ void water_test_tick() {
         if (p.get("depth").type == Value::Number) D.depth = int(num(p, "depth"));
         for (const auto& b : p.get("shallow").array) D.shallow.push_back(b.boolean);
         D.foam = p.get("foam").boolean;
+        D.lava = p.get("lava").boolean;
         if (p.get("selected").type == Value::Number) D.selected = int(num(p, "selected"));
     } catch (...) {
         done = true;

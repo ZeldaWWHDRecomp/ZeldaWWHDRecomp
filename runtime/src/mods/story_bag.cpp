@@ -590,6 +590,11 @@ void mute(input::PadState& p) {
 
 bool page_open() { return g_open.load(std::memory_order_relaxed); }
 
+void forget_icon(uint16_t key) {
+    g_icons.erase(key);
+    for (uint16_t& k : g_slot_key)
+        if (k == key) k = 0;
+}
 void state_loaded() {
     g_page.close();
     g_open = false, g_covering = false, g_takes_lr = false;

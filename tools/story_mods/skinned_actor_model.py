@@ -10,7 +10,11 @@ import os
 import re
 import struct
 import tempfile
-import actor_model as static
+import sys
+# Windows' embeddable Python runs isolated: the script's own folder is not on sys.path, so the
+# sibling modules are found through it explicitly (issue #280).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import actor_model as static  # noqa: E402
 
 base = static.base
 BuildError = static.BuildError

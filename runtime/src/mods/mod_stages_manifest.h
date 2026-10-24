@@ -20,6 +20,7 @@
 
 #include "mod_json.h"
 #include "mod_stages_actors.h"
+#include "story_world_manifest.h"
 
 namespace mod_stages {
 
@@ -62,8 +63,12 @@ struct Exit {
 struct RoomActor {
     std::string id, actor, variant, item;
     Point position;
+    Point size;  // lava: the area of its surface (x and z, game units)
     double angle = 0;
+    double scale = 1;   // a large tree's size (0.5 to 1.5)
     unsigned flag = 0;  // a chest's flag (0..31)
+    std::string then;   // story actions (JSON) when the chest is opened or the enemy defeated ("" none)
+    unsigned defeat_switch = 0;  // an enemy with "then": the stage switch its defeat sets (given by parse)
     bool operator==(const RoomActor&) const = default;
 };
 struct Room {
@@ -93,8 +98,11 @@ struct Entry {
     unsigned room = 0;
     Point position, size;  // the box: its centre bottom and full size
     unsigned to_room = 0, to_point = 0;
-    std::string style = "walk";  // "walk": the fade as he steps in; "updraft": the wind lifts him first
+    // "walk": the fade as he steps in; "updraft": the wind lifts him first; "hole": the box is the shaft under an
+    // opening Link falls into (as into the game's holes into caves), and he arrives falling (a "fall" spawn)
+    std::string style = "walk";
     double height = 1500;        // an updraft's lift (units) before the stage takes over
+    std::string then;            // story actions (JSON) when Link takes it ("" none)
     bool operator==(const Entry&) const = default;
 };
 // A return warp: a box in a room of the stage that takes Link to a place (by default the stage's entrance)
@@ -106,10 +114,13 @@ struct Warp {
     Place to;  // the entrance when "to" is left out
     std::string after;    // a chest of the stage (its id) that must be open first ("" always open)
     int after_flag = -1;  // that chest's flag
+    std::string then;     // story actions (JSON) when Link takes it ("" none)
     bool operator==(const Warp&) const = default;
 };
 struct Stage {
     std::string id, template_stage, kind = "cave", music_like;
+    std::string light_stage;  // "light": a stage of the game whose light, sky colours and clock the stage takes ("" the template's)
+    unsigned light_room = 0;  // ... as that stage's room light_room has them
     std::string shaders;  // a code-free shader template (.wwht) in the package: setup prepares its render states
     std::string save_group;  // stages of one group share their save record and dungeon switches (default: the id)
     Place entrance;
@@ -213,6 +224,16 @@ inline bool music_allowed(const std::string& stage) {
 // package's other stages. The builder checks the rest against the player's files (the template, the kit
 // rooms and their materials, each exit box covering floor). Without `require_reachable` a room nothing leads
 // to yet passes (the editor keeps it while a stage is being made; its Check and export list it).
+// a "then" of a stage's chest, enemy, entry or warp: the story actions of the package (quest steps, quest done,
+// flags, a scene; story_world_manifest.h), kept as JSON for the game to run when it happens
+inline bool parse_then(const Value& m, const Value& v, std::string& out, std::string& why) {
+    if (v.type == Value::Null) return true;
+    std::vector<story_notebook::StoryAction> list;
+    if (!story_notebook::world_manifest::actions(m, v, list, why)) return false;
+    if (list.empty()) return true;
+    out = mods::json::dump(v);
+    return true;
+}
 inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, bool require_reachable = true) {
     using namespace detail;
     out.clear();
@@ -221,7 +242,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
     if (list.type != Value::Array || list.array.size() > kMaxStagesPerMod) return why = "stages must be a list of up to " + std::to_string(kMaxStagesPerMod), false;
     for (const auto& v : list.array) {
         Stage s;
-        if (!keys(v, {"id", "template", "kind", "music_like", "save_group", "entrance", "rooms", "doors", "joins", "entries", "warps", "map", "shaders"})) return why = "unknown stage field", false;
+        if (!keys(v, {"id", "template", "kind", "music_like", "light", "save_group", "entrance", "rooms", "doors", "joins", "entries", "warps", "map", "shaders"})) return why = "unknown stage field", false;
         if (!id(v.get("id"))) return why = "invalid stage id", false;
         s.id = v.get("id").text;
         const std::string at = "stage " + s.id + ": ";
@@ -250,6 +271,13 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
             const bool ok = s.shaders.size() > 5 && s.shaders.size() <= 200 && s.shaders.substr(s.shaders.size() - 5) == ".wwht" &&
                             s.shaders.front() != '/' && s.shaders.find('\\') == std::string::npos && s.shaders.find("..") == std::string::npos;
             if (!ok) return why = at + "\"shaders\" is a .wwht file in the package (assets/stage.wwht)", false;
+        }
+        if (v.get("light").type != Value::Null) {
+            const Value& lv = v.get("light");
+            if (!keys(lv, {"stage", "room"}) || lv.get("stage").type != Value::String || !game_stage_name(lv.get("stage").text) ||
+                (lv.get("room").type != Value::Null && !integer(lv.get("room"), 0, 63, s.light_room)))
+                return why = at + "light is {\"stage\": a stage of the game, \"room\": its room (default 0)}", false;
+            s.light_stage = lv.get("stage").text;
         }
         if (v.get("music_like").type != Value::Null) {
             s.music_like = v.get("music_like").string();
@@ -330,7 +358,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                 return why = rat + "actors must be a list of up to " + std::to_string(kMaxRoomActors), false;
             for (const auto& av : actors.array) {
                 RoomActor a;
-                if (!keys(av, {"id", "actor", "variant", "item", "position", "angle"}) || !id(av.get("id")) || av.get("actor").type != Value::String ||
+                if (!keys(av, {"id", "actor", "variant", "item", "position", "angle", "scale", "then", "size"}) || !id(av.get("id")) || av.get("actor").type != Value::String ||
                     !point(av.get("position"), kMaxCoordinate, a.position))
                     return why = rat + "an actor has an id, an actor kind and a position", false;
                 a.id = av.get("id").text;
@@ -346,9 +374,24 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                     a.item = av.get("item").text;
                 }
                 if (av.get("angle").type != Value::Null && !number(av.get("angle"), -360, 360, a.angle)) return why = rat + "actor " + a.id + ": invalid angle", false;
+                if (av.get("size").type != Value::Null) {
+                    const Value& sv = av.get("size");
+                    if (a.actor != "lava") return why = rat + "actor " + a.id + ": only lava has a size", false;
+                    if (!keys(sv, {"x", "z"}) || !number(sv.get("x"), kLavaStep, 255 * kLavaStep, a.size.x) || !number(sv.get("z"), kLavaStep, 255 * kLavaStep, a.size.z))
+                        return why = rat + "actor " + a.id + ": lava's size is {\"x\", \"z\"}, " + std::to_string(int(kLavaStep)) + " to " + std::to_string(int(255 * kLavaStep)) + " game units each", false;
+                }
+                if (av.get("then").type != Value::Null) {
+                    if (a.actor != "chest" && a.actor != "darknut")
+                        return why = rat + "actor " + a.id + ": \"then\" is for a chest (when it is opened) or a darknut (when it is defeated)", false;
+                    std::string w;
+                    if (!parse_then(m, av.get("then"), a.then, w)) return why = rat + "actor " + a.id + ": then: " + w, false;
+                }
                 NativeActor n;
                 std::string reason;
-                if (!native_actor(a.actor, a.variant, a.item, 0, n, reason)) return why = rat + "actor " + a.id + ": " + reason, false;
+                if (!native_actor(a.actor, a.variant, a.item, 0, n, reason, a.size.x, a.size.z)) return why = rat + "actor " + a.id + ": " + reason, false;
+                if (av.get("scale").type != Value::Null &&
+                    (!n.scalable || !number(av.get("scale"), kTreeScaleMin, kTreeScaleMax, a.scale)))
+                    return why = rat + "actor " + a.id + ": \"scale\" (0.5 to 1.5) is for a large tree", false;
                 r.actors.push_back(a);
             }
             s.rooms.push_back(std::move(r));
@@ -379,7 +422,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
         for (const auto& nv : entries.array) {
             Entry n;
             const Value& to = nv.get("to");
-            if (!keys(nv, {"id", "stage", "room", "position", "size", "to", "style", "height"}) || !id(nv.get("id")))
+            if (!keys(nv, {"id", "stage", "room", "position", "size", "to", "style", "height", "then"}) || !id(nv.get("id")))
                 return why = at + "an entry has an id, a place in the game and the spawn it leads to", false;
             n.id = nv.get("id").text;
             if (nv.get("stage").type != Value::String || !game_stage_name(nv.get("stage").text) || !integer(nv.get("room"), 0, 63, n.room))
@@ -391,7 +434,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                 return why = at + "entry " + n.id + ": \"to\" is a room and spawn point of the stage", false;
             if (nv.get("style").type != Value::Null) {
                 n.style = nv.get("style").string();
-                if (n.style != "walk" && n.style != "updraft") return why = at + "entry " + n.id + ": style is walk or updraft", false;
+                if (n.style != "walk" && n.style != "updraft" && n.style != "hole") return why = at + "entry " + n.id + ": style is walk, updraft or hole", false;
             }
             if (nv.get("height").type != Value::Null) {
                 const Value& h = nv.get("height");
@@ -399,6 +442,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                 if (h.type != Value::Number || !(h.number >= 200 && h.number <= 5000)) return why = at + "entry " + n.id + ": height is 200..5000 units", false;
                 n.height = h.number;
             }
+            if (std::string w; !parse_then(m, nv.get("then"), n.then, w)) return why = at + "entry " + n.id + ": then: " + w, false;
             for (const auto& old : s.entries)
                 if (old.id == n.id) return why = at + "duplicate entry id", false;
             s.entries.push_back(n);
@@ -416,7 +460,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
         if (warps.type != Value::Null && (warps.type != Value::Array || warps.array.size() > kMaxWarps)) return why = at + "warps must be a list of up to " + std::to_string(kMaxWarps), false;
         for (const auto& wv : warps.array) {
             Warp w;
-            if (!keys(wv, {"id", "room", "position", "size", "to", "after"}) || !id(wv.get("id")) || !integer(wv.get("room"), 0, 63, w.room) || w.room >= s.rooms.size())
+            if (!keys(wv, {"id", "room", "position", "size", "to", "after", "then"}) || !id(wv.get("id")) || !integer(wv.get("room"), 0, 63, w.room) || w.room >= s.rooms.size())
                 return why = at + "a warp has an id and a room of the stage", false;
             w.id = wv.get("id").text;
             if (!point(wv.get("position"), kMaxCoordinate, w.position) || !point(wv.get("size"), 5000, w.size) || w.size.x < 10 || w.size.y < 10 || w.size.z < 10)
@@ -430,6 +474,7 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                     for (const auto& a : r.actors) chest |= a.id == w.after && a.actor == "chest";
                 if (!chest) return why = at + "warp " + w.id + ": \"after\" names a chest of the stage (its id)", false;
             }
+            if (std::string t; !parse_then(m, wv.get("then"), w.then, t)) return why = at + "warp " + w.id + ": then: " + t, false;
             for (const auto& old : s.warps)
                 if (old.id == w.id) return why = at + "duplicate warp id", false;
             s.warps.push_back(w);
@@ -458,6 +503,14 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                     if (sw < kOwnSwitches) return why = "save group " + s.save_group + ": too many locked doors", false;
                     d.switch_no = sw--;
                 }
+            // an enemy whose defeat runs story actions: the game's own defeat switch (the enemy sets it when it
+            // falls and stays gone afterwards), from the same numbers as the locked doors
+            for (auto& r : s.rooms)
+                for (auto& a : r.actors)
+                    if (a.actor != "chest" && !a.then.empty()) {
+                        if (sw < kOwnSwitches) return why = "save group " + s.save_group + ": too many locked doors and enemies with \"then\"", false;
+                        a.defeat_switch = sw--;
+                    }
         }
     }
     // keys: a small-key door needs a small key, a boss door the boss key, somewhere in the save group
@@ -494,8 +547,13 @@ inline bool parse(const Value& m, std::vector<Stage>& out, std::string& why, boo
                 }
                 if (!spawn_of(*target, e.to.room, e.to.point)) return why = "stage " + s.id + ": exit " + e.id + " leads to a spawn its stage does not have", false;
             }
-        for (const auto& n : s.entries)
+        for (const auto& n : s.entries) {
             if (!spawn_of(s, n.to_room, n.to_point)) return why = "stage " + s.id + ": entry " + n.id + " leads to a spawn the stage does not have", false;
+            // a hole: Link falls in, so he arrives falling from above, as from the game's own holes
+            if (n.style == "hole")
+                for (const auto& sp : s.rooms[n.to_room].spawns)
+                    if (sp.point == n.to_point && sp.start != "fall") return why = "stage " + s.id + ": hole " + n.id + " leads to a spawn that isn't a \"fall\" spawn", false;
+        }
         for (const auto& w : s.warps)
             if (w.to.own) {
                 const Stage* target = &s;
@@ -591,6 +649,10 @@ inline Value recipe(const Stage& s, const std::string& name, const std::map<std:
     r["format"] = Value(1);
     r["name"] = name;
     r["template"] = s.template_stage;
+    if (!s.light_stage.empty()) {
+        r["light"]["stage"] = s.light_stage;
+        r["light"]["room"] = Value(double(s.light_room));
+    }
     r["kind"] = s.kind;
     r["entrance"] = place(s.entrance);
     r["keys"] = Value(s.keys);
@@ -634,7 +696,8 @@ inline Value recipe(const Stage& s, const std::string& name, const std::map<std:
         for (const auto& a : room.actors) {
             NativeActor n;
             std::string why;
-            if (!native_actor(a.actor, a.variant, a.item, a.flag, n, why)) continue;  // parse checked it
+            if (!native_actor(a.actor, a.variant, a.item, a.flag, n, why, a.size.x, a.size.z)) continue;  // parse checked it
+            if (a.defeat_switch) n.angle_z = uint16_t((n.angle_z & 0xFF00u) | a.defeat_switch);  // the darknut's defeat switch
             Value e;
             e["tag"] = n.tag;
             e["name"] = n.name;
@@ -643,6 +706,14 @@ inline Value recipe(const Stage& s, const std::string& name, const std::map<std:
             e["angle"] = Value(a.angle);
             e["angle_x"] = Value(double(n.angle_x));
             e["angle_z"] = Value(double(n.angle_z));
+            if (n.scalable) {  // the scaled-actor table, with its size
+                e["tag"] = "SCOB";
+                e["scale"] = Value(a.scale);
+            } else if (n.scaled) {  // the game's lava floor: its own three scale steps
+                Value& sc = e["scale"];
+                sc.type = Value::Array;
+                for (uint8_t b : n.scale) sc.array.push_back(Value(double(b)));
+            }
             actors.array.push_back(e);
         }
         rooms.array.push_back(v);

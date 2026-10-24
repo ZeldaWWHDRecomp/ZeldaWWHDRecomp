@@ -1281,6 +1281,18 @@ Bytes tile_rgba8(const Bytes& rgba, uint32_t w, uint32_t h, int mode, uint32_t s
     return out;
 }
 
+Bytes untile(const Bytes& surface, uint32_t ew, uint32_t eh, uint32_t bpp, int mode, uint32_t swizzle) {
+    if ((mode != 1 && mode != 2 && mode != 4) || (bpp != 32 && bpp != 64 && bpp != 128) || !ew || !eh || ew > 8192 || eh > 8192)
+        return {};
+    const Surface s = surface_size(ew, eh, bpp, mode);
+    if (surface.size() < s.size) return {};
+    const uint32_t eb = bpp / 8;
+    Bytes out(size_t(ew) * eh * eb);
+    for (uint32_t y = 0; y < eh; y++)
+        for (uint32_t x = 0; x < ew; x++) memcpy(&out[(size_t(y) * ew + x) * eb], &surface[address(x, y, s.pitch, mode, swizzle << 8, bpp)], eb);
+    return out;
+}
+
 std::string layout_name(const std::string& description_json) {
     try {
         const J root = Reader(description_json).parse();

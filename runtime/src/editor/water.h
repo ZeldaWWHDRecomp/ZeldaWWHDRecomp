@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // World editor: the water tool's geometry (docs/mod-editor.md "Water", docs/world-objects.md "Water").
 //
-// A pond (a closed outline at a water level, a floor `depth` below it, banks and an optional foam ring), a river (a
+// A pond (a closed outline at a water level, a floor `depth` below it, banks and an optional foam ring; or with `lava` a
+// lava pool: col_lava at the level, a rock floor and banks, the game's lava as its surface), a river (a
 // centre line with a width that follows the ground and steps down where it drops; the point order is the flow) and a
 // waterfall (a falling sheet from a top edge down to the ground) each become two original models:
 //   - the main model: what is drawn of the water's ground (the pond's floor and banks, the river's bed, the rock
@@ -63,13 +64,20 @@ struct Params {
     int top = 0, bottom = -600;  // waterfall: the top edge's and the ground's height (relative to the origin)
     int side = 1;              // waterfall: +1 the water falls to the right of points[0] -> points[1], -1 to the left
     bool foam = false;         // pond: a foam ring at the shore
+    bool lava = false;         // pond: a lava pool (Link burns in it) instead of water: col_lava, the game's lava
     std::vector<bool> shallow; // river: per section (points[i] -> points[i+1]), wading water instead of swimming water
     Colour floor;
     std::vector<Sample> ground;  // world places and heights asked of the game (river beds, pond banks)
     int room = 0;                // the sea square (not stored: where the banks read the island's ground texture from)
 };
-// the shoreline material of a pond's surface (its kind in the game's own water, tools/story_mods/shoreline_model.py)
+// the shoreline material of a pond's surface (its kind in the game's own water, tools/story_mods/shoreline_model.py),
+// and of a lava pool's (Fire Mountain's lava)
 inline constexpr const char* kPondMaterial = "pond";
+inline constexpr const char* kLavaMaterial = "lava";
+// a lava pool's surface: its texture repeats every this many units (Fire Mountain's lava repeats every 800 to 1100)
+inline constexpr double kLavaRepeat = 1000;
+// a lava pool's floor colour (dark rock) when none is given
+inline constexpr Colour kLavaFloor{0x3a, 0x2c, 0x26};
 // What the tool found wrong (shown red when an error, else yellow).
 struct Problem {
     std::string message, field, severity = "error";  // "error" or "warning"
@@ -84,7 +92,7 @@ struct Step {
 };
 struct Built {
     std::vector<uint8_t> main, surface;  // the GLBs
-    std::string material;                // the surface's shoreline material: "pond", "river" or "waterfall"
+    std::string material;                // the surface's shoreline material: "pond", "lava", "river" or "waterfall"
     unsigned main_vertices = 0, main_triangles = 0, surface_vertices = 0, surface_triangles = 0;
     unsigned collision_vertices = 0, collision_triangles = 0;
     int min[3] = {0, 0, 0}, max[3] = {0, 0, 0};  // the main model's local bounds, whole units (rounded outwards)

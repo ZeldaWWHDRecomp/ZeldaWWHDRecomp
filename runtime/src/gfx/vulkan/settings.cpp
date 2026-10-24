@@ -5,6 +5,7 @@
 #include <cstring>
 #include "../../interp.h"
 #include "gx2/gx2.h"
+#include "mods/fast_forward.h"
 namespace gfxvk {
 namespace {
 int normalize(int v) { return (v % 3 + 3) % 3; }
@@ -41,8 +42,11 @@ bool present_mode_from_env() { return env_present_mode() >= 0; }
 bool present_mode_offered(int m) { return m >= 0 && m < kPresentModes && (g_offered.load() >> m & 1); }
 void set_present_modes_offered(unsigned mask) { g_offered = mask | 1u << kPresentFifo; }
 int effective_present_mode() {
-    if (!gx2::uncapped()) return present_mode();
+    if (!gx2::uncapped() && !mods::fast_forward_active()) return present_mode();
     return present_mode_offered(kPresentImmediate) ? kPresentImmediate : present_mode_offered(kPresentMailbox) ? kPresentMailbox : kPresentFifo;
+}
+uint64_t present_acquire_timeout(bool secondary) {
+    return secondary || mods::fast_forward_active() ? 0 : UINT64_MAX;
 }
 const char* present_mode_name(int m) { return m == kPresentMailbox ? "mailbox" : m == kPresentImmediate ? "immediate" : "fifo"; }
 int ao_mode() { return settings().ao.load(std::memory_order_relaxed); }

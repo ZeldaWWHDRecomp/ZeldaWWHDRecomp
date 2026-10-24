@@ -22,6 +22,7 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "savestate.h"
 #include "gfx/stereo.h"
 #include "button_glyphs.h"
 #include "aspect_panes.h"
@@ -515,10 +516,22 @@ void aspect::ss_reset() {
 
 // Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
 // under the same container, and tabs may have an offscreen origin but visible descendants.
+static thread_local std::vector<bool> t_layoutScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
-    if (original()) return;
+    // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
+    // enabled. Keep their 2D identity in the list, independent of the mode at
+    // recording time. Immediate original-aspect mono still needs no markers.
+    const bool scoped=gx2::recording_display_list()||!original()||stereo::requestedMode!=stereo::Off;
+    // Remember the decision until the matching return, even if the user changes
+    // modes during DrawSelf.
+    if(scoped||!t_layoutScopes.empty())t_layoutScopes.push_back(scoped);
+    if(!scoped)return;
     uint32_t pane = c->r[3];
+    // The Pictobox and album display a captured photograph in this pane.
+    // Its pixels, like the guest's saved photo, belong to one camera.
+    const uint32_t photograph = name_of(pane) == "PF_Pictograph_00";
+    if (original()) { gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,1,photograph}); return; }
     // content unless the pane or one of its parents has a rule (it may reach past the 16:9 region)
     // or the layout is placed at an actor
     bool content = true;
@@ -527,13 +540,209 @@ extern "C" void site_0287714C(Cpu* c) {
                                   : (ldf32(p + kPaneTrans) != 0 || ldf32(p + kPaneTrans + 4) != 0) && has_world_anchor(p))
             content = false;
     }
-    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u});
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1,photograph});
 }
 extern "C" void site_02877150(Cpu*) {
-    if (!aspect::original()) gx2::emit(gx2::OP_LAYOUT_CONTENT, {0});
+    if(t_layoutScopes.empty())return;
+    const bool scoped=t_layoutScopes.back();t_layoutScopes.pop_back();
+    if(!scoped)return;
+    gx2::emit(gx2::OP_LAYOUT_CONTENT, {0,0});
 }
 namespace aspect {
-thread_local bool g_content_clip = false; // consumed only by the render command thread
+// set and read by whichever thread executes GX2 commands (the render thread; inline without it,
+// under the execution lock): a plain variable, no TLS lookup in the draw's scissor path
+static bool g_content_clip = false;
 void set_content_clip(bool clip) { g_content_clip = clip; }
 bool content_clip() { return g_content_clip; }
+}
+
+// HUD particles copy pane coordinates, sometimes only at screen setup. Keep the
+// pane association on the host so their draw projection can follow its live anchor.
+namespace {
+struct ParticlePane { uint32_t pane; std::string name; float dx,dy; };
+std::pair<float,float> particle_pane_offset(uint32_t pane) {
+    float dx=0,dy=0;
+    for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent)) {
+        const auto offset=aspect::offset_of(pane);
+        const uint32_t parent=ld32(pane+aspect::kPaneParent);
+        if(parent) {
+            dx+=float(ldf32(parent+aspect::kPaneGlobal))*offset.first+
+                float(ldf32(parent+aspect::kPaneGlobal+4))*offset.second;
+            dy+=float(ldf32(parent+aspect::kPaneGlobal+16))*offset.first+
+                float(ldf32(parent+aspect::kPaneGlobal+20))*offset.second;
+        } else { dx+=offset.first;dy+=offset.second; }
+    }
+    return {dx,dy};
+}
+bool particle_pane_follows_aspect(uint32_t pane) {
+    for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent)) {
+        if(!ld32(pane+aspect::kPaneParent)) {
+            return (ldf32(pane+aspect::kPaneTrans)!=0 || ldf32(pane+aspect::kPaneTrans+4)!=0) &&
+                aspect::has_world_anchor(pane);
+        }
+        const auto* rule=aspect::rule_of(pane);
+        if(rule && (rule->rule==aspect::panes::Rule::Hud || rule->rule==aspect::panes::Rule::Anchored ||
+                    rule->rule==aspect::panes::Rule::Slide || rule->rule==aspect::panes::Rule::Projected))return true;
+    }
+    return false;
+}
+std::mutex particle_mu;
+constexpr size_t kMaxParticlePanes=16384;
+std::unordered_map<uint64_t, ParticlePane> particle_panes;
+struct ParticleBinding { uint64_t position; ParticlePane source; };
+std::unordered_map<uint32_t,ParticleBinding> particle_bindings;
+uint64_t particle_key(float x, float y) {
+    if(x==0)x=0; if(y==0)y=0; // canonicalise signed zero
+    uint32_t xb, yb;
+    std::memcpy(&xb,&x,4); std::memcpy(&yb,&y,4);
+    return (uint64_t(xb)<<32)|yb;
+}
+}
+extern "C" void f_02704D2C_orig(Cpu*);
+extern "C" void hook_02704D2C(Cpu* c) {
+    const uint32_t out=c->r[3], pane=c->r[4];
+    f_02704D2C_orig(c);
+    if (!pane || !particle_pane_follows_aspect(pane)) return;
+    const float x=ldf32(out), y=ldf32(out+4);
+    if(!std::isfinite(x)||!std::isfinite(y))return;
+    std::lock_guard<std::mutex> lock(particle_mu);
+    if(particle_panes.size()>=kMaxParticlePanes && !particle_panes.count(particle_key(x,-y)))return;
+    const auto offset=particle_pane_offset(pane);
+    particle_panes[particle_key(x,-y)]={pane,std::string(aspect::name_of(pane)),offset.first,offset.second};
+    if (getenv("WWHD_EFFECT_ASPECT_TRACE")) {
+        static std::unordered_map<uint32_t,uint64_t> seen;
+        auto& frame=seen[pane];
+        if (!frame || aspect::game_frame()-frame>=120) {
+            frame=aspect::game_frame();
+            LOG("[effect-pane] frame=%llu aspect=%.6f pane=%08X name=%s position=%.3f/%.3f",(unsigned long long)frame,aspect::game(),pane,particle_panes[particle_key(x,-y)].name.c_str(),x,y);
+        }
+    }
+}
+// The shared 2D/3D particle factory returns pooled emitters. Bind at creation,
+// before later UI queries can reuse the same coordinate for another pane.
+extern "C" void f_025A847C_orig(Cpu*);
+extern "C" void hook_025A847C(Cpu* c) {
+    const uint32_t group=c->r[4],position=c->r[6];
+    ParticlePane source{};bool found=false;
+    if(group>=7 && group<=10 && position) {
+        const auto key=particle_key(ldf32(position),-float(ldf32(position+4)));
+        std::lock_guard<std::mutex> lock(particle_mu);
+        const auto it=particle_panes.find(key);
+        if(it!=particle_panes.end()) { source=it->second;found=true; }
+    }
+    f_025A847C_orig(c);
+    const uint32_t emitter=c->r[3];
+    if(!emitter)return;
+    std::lock_guard<std::mutex> lock(particle_mu);
+    particle_bindings.erase(emitter);
+    if(found && particle_bindings.size()<kMaxParticlePanes) {
+        const auto key=particle_key(ldf32(emitter+0x22c),ldf32(emitter+0x230));
+        particle_bindings.emplace(emitter,ParticleBinding{key,source});
+        if(getenv("WWHD_EFFECT_ASPECT_TRACE"))
+            LOG("[effect-create] frame=%llu aspect=%.6f emitter=%08X group=%u pane=%08X anchor=%.3f/%.3f",(unsigned long long)aspect::game_frame(),aspect::game(),emitter,group,source.pane,source.dx,source.dy);
+    }
+}
+extern "C" void f_0282D9C0_orig(Cpu*);
+extern "C" void hook_0282D9C0(Cpu* c) {
+    const uint32_t emitter=c->r[3]-0x9c, projection=c->r[5];
+    const uint32_t group=ld8(emitter+0x262);
+    if (group<7 || group>10) { f_0282D9C0_orig(c); return; }
+    const float x=ldf32(emitter+0x22c), y=ldf32(emitter+0x230);
+    float dx=0,dy=0;
+    {
+        std::lock_guard<std::mutex> lock(particle_mu);
+        const auto key=particle_key(x,y);
+        auto bound=particle_bindings.find(emitter);
+        if(bound==particle_bindings.end() || bound->second.position!=key) {
+            const auto source=particle_panes.find(key);
+            if(source!=particle_panes.end() && particle_bindings.size()<kMaxParticlePanes)
+                bound=particle_bindings.insert_or_assign(emitter,ParticleBinding{key,source->second}).first;
+            else { particle_bindings.erase(emitter);bound=particle_bindings.end(); }
+        }
+        if(bound!=particle_bindings.end()) {
+            const auto& source=bound->second.source;
+            if(aspect::name_of(source.pane)==source.name) {
+                const auto offset=particle_pane_offset(source.pane);
+                dx=offset.first-source.dx;
+                dy=source.dy-offset.second;
+            }
+        }
+    }
+    float kx,ky; aspect::factors(aspect::game(),kx,ky);
+    if (kx==1 && ky==1 && dx==0 && dy==0) { f_0282D9C0_orig(c); return; }
+    uint32_t saved[8];
+    for (unsigned i=0;i<8;++i) saved[i]=ld32(projection+4*i);
+    stf32(projection+12,float(ldf32(projection+12))+float(ldf32(projection))*dx);
+    stf32(projection+28,float(ldf32(projection+28))+float(ldf32(projection+20))*dy);
+    for (unsigned i=0;i<4;++i) {
+        stf32(projection+4*i,float(ldf32(projection+4*i))/kx);
+        stf32(projection+16+4*i,float(ldf32(projection+16+4*i))/ky);
+    }
+    if (getenv("WWHD_EFFECT_ASPECT_TRACE")) {
+        static std::unordered_map<uint32_t,uint64_t> seen;
+        auto& frame=seen[emitter];
+        if (!frame || aspect::game_frame()-frame>=120) {
+            frame=aspect::game_frame();
+            LOG("[effect-draw] frame=%llu aspect=%.6f emitter=%08X group=%u position=%.3f/%.3f shift=%.3f/%.3f scale=%.6f/%.6f",(unsigned long long)frame,aspect::game(),emitter,group,x,y,dx,dy,kx,ky);
+        }
+    }
+    f_0282D9C0_orig(c);
+    for (unsigned i=0;i<8;++i) st32(projection+4*i,saved[i]);
+}
+
+// Exact full states can be opened in another process. Preserve both cached
+// coordinates and live emitter bindings, independent of the new host's UI history.
+namespace {
+void write_particle_source(ss::Writer& w,const ParticlePane& source) {
+    w.u32(source.pane);w.str(source.name);w.pod(source.dx);w.pod(source.dy);
+}
+ParticlePane read_particle_source(ss::Reader& r) {
+    ParticlePane source;
+    source.pane=r.u32();source.name=r.str();source.dx=r.pod<float>();source.dy=r.pod<float>();
+    return source;
+}
+bool valid_particle_source(const ParticlePane& source) {
+    return source.pane>=mem::kMem2Start && source.pane<=mem::kMem2End-0xa0 && !(source.pane&3) &&
+        source.name.size()<=24 && std::isfinite(source.dx) && std::isfinite(source.dy);
+}
+}
+void aspect::ss_save_particles(ss::Writer& w) {
+    std::lock_guard<std::mutex> lock(particle_mu);
+    w.u32(1);w.u32(uint32_t(particle_panes.size()));
+    for(const auto& entry:particle_panes) { w.u64(entry.first);write_particle_source(w,entry.second); }
+    w.u32(uint32_t(particle_bindings.size()));
+    for(const auto& entry:particle_bindings) {
+        w.u32(entry.first);w.u64(entry.second.position);write_particle_source(w,entry.second.source);
+    }
+}
+bool aspect::ss_validate_particles(ss::Reader r) {
+    if(r.at_end())return true; // older states have no optional presentation metadata
+    if(r.u32()!=1)return false;
+    const auto count=r.u32();if(count>kMaxParticlePanes)return false;
+    for(uint32_t i=0;i<count;++i) {
+        r.u64();const auto source=read_particle_source(r);
+        if(!r.ok || !valid_particle_source(source))return false;
+    }
+    const auto bindings=r.u32();if(bindings>kMaxParticlePanes)return false;
+    for(uint32_t i=0;i<bindings;++i) {
+        const auto emitter=r.u32();r.u64();const auto source=read_particle_source(r);
+        if(!r.ok || !valid_particle_source(source) || emitter<mem::kMem2Start ||
+           emitter>mem::kMem2End-0x3fc || (emitter&3))return false;
+    }
+    return r.ok && r.at_end();
+}
+void aspect::ss_load_particles(ss::Reader r) {
+    if(!ss_validate_particles(r))return;
+    std::lock_guard<std::mutex> lock(particle_mu);
+    particle_panes.clear();particle_bindings.clear();
+    if(r.at_end())return;
+    r.u32();const auto count=r.u32();
+    for(uint32_t i=0;i<count;++i) {
+        const auto key=r.u64();particle_panes.emplace(key,read_particle_source(r));
+    }
+    const auto bindings=r.u32();
+    for(uint32_t i=0;i<bindings;++i) {
+        const auto emitter=r.u32();const auto key=r.u64();
+        particle_bindings.emplace(emitter,ParticleBinding{key,read_particle_source(r)});
+    }
 }

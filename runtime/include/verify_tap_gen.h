@@ -24,9 +24,9 @@ static inline void tap_st8(uint32_t ea, uint8_t v) { st8(ea, v); tap_access(TAP_
 static inline void tap_st16(uint32_t ea, uint16_t v) { st16(ea, v); tap_access(TAP_WRITE, ea, 2, v); }
 static inline void tap_st32(uint32_t ea, uint32_t v) { st32(ea, v); tap_access(TAP_WRITE, ea, 4, v); }
 static inline void tap_st64(uint32_t ea, uint64_t v) { st64(ea, v); tap_access(TAP_WRITE, ea, 8, v); }
-static inline double tap_ldf32(uint32_t ea) { return (double)u32_as_f32(tap_ld32(ea)); }
+static inline double tap_ldf32(uint32_t ea) { return ppc_lfs_value(tap_ld32(ea)); /* lfs: bit-exact, ppc.h */ }
 static inline double tap_ldf64(uint32_t ea) { return u64_as_f64(tap_ld64(ea)); }
-static inline void tap_stf32(uint32_t ea, double d) { tap_st32(ea, f32_as_u32((float)d)); }
+static inline void tap_stf32(uint32_t ea, double d) { tap_st32(ea, ppc_stfs_bits(d)); /* stfs: bit-exact, ppc.h */ }
 static inline void tap_stf64(uint32_t ea, double d) { tap_st64(ea, f64_as_u64(d)); }
 static inline void tap_psq_load(Cpu* c, int fd, uint32_t ea, int w, int i) {
     uint32_t g = c->gqr[i], type = (g >> 16) & 7, scale = (g >> 24) & 0x3F;
@@ -42,10 +42,10 @@ static inline void tap_psq_load(Cpu* c, int fd, uint32_t ea, int w, int i) {
 static inline void tap_psq_store(Cpu* c, int fs, uint32_t ea, int w, int i) {
     uint32_t g = c->gqr[i], type = g & 7, scale = (g >> 8) & 0x3F;
     int sz = (type == 4 || type == 6) ? 1 : (type == 5 || type == 7) ? 2 : 4;
-    uint32_t d0 = psq_quant((float)c->f[fs].ps0, type, scale);
+    uint32_t d0 = psq_quant(c->f[fs].ps0, type, scale);
     if (sz == 1) tap_st8(ea, d0); else if (sz == 2) tap_st16(ea, d0); else tap_st32(ea, d0);
     if (!w) {
-        uint32_t d1 = psq_quant((float)c->f[fs].ps1, type, scale);
+        uint32_t d1 = psq_quant(c->f[fs].ps1, type, scale);
         if (sz == 1) tap_st8(ea + 1, d1); else if (sz == 2) tap_st16(ea + 2, d1); else tap_st32(ea + 4, d1);
     }
 }

@@ -112,8 +112,60 @@ static void test_step_scope() {
     CHECK(book.on_draw(kLink, 0, true, 10) == 0);
 }
 
+// Issue #283: an actor the step's logic pass did not draw is saved before a hold pass draws it and
+// put back at the start of the next pass (interp.cpp actor_keep / actors_put_back). The draw hook
+// makes the step's request again on that pass; saved after that, the put-back handed the request
+// to the next logic pass, which then counted as that step's logic asking, and the actor stayed
+// hidden after the logic stopped hiding it (Link after a conversation). Simulated with the actor's
+// status (the bit) and condition (fopAcCnd_NODRAW: not drawn on the last draw, kept on hold passes).
+static std::vector<std::vector<bool>> run_kept(int in_between, bool save_first) {
+    constexpr uint32_t kNotDrawn = 0x04;
+    OneShotNoDraw book;
+    uint32_t status = 0, condition = 0;
+    bool saved = false;
+    uint32_t saved_status = 0;
+    std::vector<std::vector<bool>> drawn;  // per step, per pass
+    for (uint64_t step = 1; step <= 40; step++) {
+        drawn.emplace_back();
+        for (int pass = 0; pass <= in_between; pass++) {
+            if (saved) status = saved_status, saved = false;  // the put-back at the start of the pass
+            const bool hold = pass > 0;
+            if (!hold && step >= 10 && step < 20) status |= OneShotNoDraw::kNoDraw;  // the talk camera
+            const bool kept = hold && (condition & kNotDrawn);
+            auto keep = [&] { saved = true, saved_status = status; };
+            if (save_first) {
+                status = book.before_draw(kLink, status, hold, step, true, kept, keep);
+            } else {  // the order before the fix: the request first, then the save
+                status = book.on_draw(kLink, status, hold, step);
+                if (kept) keep();
+            }
+            const uint32_t logic_condition = condition;
+            const bool d = !(status & OneShotNoDraw::kNoDraw);  // fopAc_Draw
+            condition = d ? condition & ~kNotDrawn : condition | kNotDrawn;
+            status &= ~OneShotNoDraw::kNoDraw;
+            if (hold) condition = logic_condition;  // (hold passes keep the logic pass's condition)
+            drawn.back().push_back(d);
+        }
+    }
+    return drawn;
+}
+
+static void test_kept_actor_put_back() {
+    for (int n : {0, 1, 3, 7}) {
+        const auto fixed = run_kept(n, true), before = run_kept(n, false);
+        for (size_t i = 0; i < fixed.size(); i++) {
+            const uint64_t step = i + 1;
+            const bool want = !(step >= 10 && step < 20);
+            for (bool d : fixed[i]) CHECK(d == want);
+        }
+        // the order before the fix: hidden for good after the conversation once there are hold passes
+        CHECK(before.back()[0] == (n == 0));
+    }
+}
+
 int main() {
     test_passes_match_logic();
+    test_kept_actor_put_back();
     test_hold_pass_requests();
     test_step_scope();
     if (g_failed) {

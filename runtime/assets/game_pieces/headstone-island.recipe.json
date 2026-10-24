@@ -1,0 +1,88 @@
+{
+  "game_pieces_format": 1,
+  "set": "headstone-island",
+  "label": "Headstone Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room45.szs",
+    "room": 45
+  },
+  "memory": {
+    "archive_bytes": 2215936,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "headstone-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Headstone Island ground",
+      "description": "a great dome of rock with a sandy beach; its doorway into the rock sends Link back",
+      "volume": [
+        14650,
+        -1100,
+        14915,
+        25429,
+        4259,
+        23703
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Modori",
+          "Iriguti_oku",
+          "Kirikae",
+          "soko_stop_A",
+          "soko_stop_B",
+          "Mountain_A",
+          "Mountain_B",
+          "Mountain_C",
+          "Sunahama",
+          "Jimen",
+          "Iriguti_dai",
+          "Rock",
+          "Iriguti_kabe"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Kirikae"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD45.szs",
+        "triangles": 1524
+      },
+      "expect": {
+        "triangles": [
+          1536
+        ],
+        "textures": [
+          [
+            "Txe_Edaich1_beach",
+            "Txe_Edaich1_dai",
+            "Txe_Edaich1_dai2",
+            "Txe_Edaich1_iriguti_yuka",
+            "Txe_Edaich1_rock_1",
+            "Txe_Edaich1_rock_2",
+            "Txe_Edaich1_rock_koke",
+            "Txe_Edaich1_rock_sankaku",
+            "Txe_Edaichi1_iriguti_kabe"
+          ]
+        ],
+        "collision_triangles": 1119
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

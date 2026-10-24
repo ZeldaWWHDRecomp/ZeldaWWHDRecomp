@@ -143,12 +143,18 @@ std::string lane_kind_label(const Value& a) {
     return a.get("actor").string() == "Link" ? "link" : "game";
 }
 std::string event_label(const std::string& list, const Value& e) {
-    if (list == "clips") return e.get("clip").type == Value::String ? e.get("clip").text : e.get("archive").string() + "/" + e.get("file").string();
-    if (list == "modes") return e.get("clip").type == Value::String ? "clip " + e.get("clip").text : e.get("mode").type == Value::String ? e.get("mode").text : "mode " + std::to_string(int(e.get("mode").number));
+    // a clip played once (and held) says so; a Link clip with his face or a blend too
+    const std::string once = e.get("loop").type == Value::Bool && !e.get("loop").boolean ? " (once)" : "";
+    if (list == "clips") return (e.get("clip").type == Value::String ? e.get("clip").text : e.get("archive").string() + "/" + e.get("file").string()) + once;
+    if (list == "modes" && e.get("clip").type == Value::String)
+        return "clip " + e.get("clip").text + once + (e.get("btp").type == Value::String ? " +face" : "") +
+               (e.get("blend").type == Value::Number ? " blend " + std::to_string(int(e.get("blend").number)) : "");
+    if (list == "modes") return e.get("mode").type == Value::String ? e.get("mode").text : "mode " + std::to_string(int(e.get("mode").number));
     if (list == "messages") return e.get("text").string();
     if (list == "sounds") return "sound " + std::to_string(long(e.get("id").number));
     if (list == "particles") return "particle " + std::to_string(long(e.get("id").number));
-    if (list == "attach") return e.get("actor").string() + " on " + e.get("to").string() + (e.get("joint").type == Value::String ? ":" + e.get("joint").text : "");
+    if (list == "attach") return e.get("actor").string() + " on " + e.get("to").string() + (e.get("joint").type == Value::String ? ":" + e.get("joint").text : "") +
+                                 (e.get("blend").type == Value::Number && e.get("blend").number > 0 ? " blend " + std::to_string(int(e.get("blend").number)) : "");
     if (list == "detach") return e.get("actor").string() + " off";
     if (list == "time") { char t[32]; std::snprintf(t, sizeof t, "%.2f h", e.get("hour").number); return t; }
     if (list == "weather") { char t[32]; std::snprintf(t, sizeof t, "rain %.2f", e.get("rain").number); return t; }
@@ -208,6 +214,59 @@ Value demo_lanes(const Value& manifest, const Value& step) {
     out["actors"] = actors;
     std::string why;
     if (!demo_check(manifest, step, why)) out["problem"] = why;
+    const auto notes = demo_warnings(step);
+    if (!notes.empty()) {
+        Value w = arr();
+        for (const auto& n : notes) w.array.push_back(Value(n));
+        out["warnings"] = w;
+    }
+    return out;
+}
+
+std::vector<std::string> demo_warnings(const Value& step) {
+    std::vector<std::string> out;
+    if (step.get("type").string() != "demo") return out;
+    const double frames = std::max(0.0, step.get("frames").number);
+    const bool at_link = step.get("origin").type == Value::String;
+    // the demo's own geometry: an origin "link" demo is placed at Link, which doesn't change what the
+    // camera sees of it
+    const WorldPoint origin{};
+    for (const auto& a : step.get("actors").array) {
+        const std::string id = a.get("id").string();
+        const bool link = a.get("actor").string() == "Link";
+        if (a.get("position").get("keys").array.empty()) {
+            if (link && !at_link)
+                out.push_back(id + " has no position key: he stays where he stands when the demo starts, which may be out of the camera's view "
+                                   "(Add key on " + id + ".position puts one at Link)");
+            continue;
+        }
+        if (step.get("camera").get("eye").get("keys").array.empty() || step.get("camera").get("target").get("keys").array.empty()) continue;
+        // seen at some frame: inside the camera's picture (16:9, its fovy, a margin for the actor's size)
+        // and nearer than the game draws actors
+        double nearest = -1;
+        bool seen = false;
+        for (double f = 0; f <= frames && !seen; f += 5) {
+            Value pose;
+            std::string why;
+            if (!demo_pose(step, f, origin, 0, pose, why)) break;
+            WorldPoint e, t, p;
+            const Value* me = nullptr;
+            for (const auto& x : pose.get("actors").array) if (x.get("id").string() == id) me = &x;
+            if (!me || !point_of(pose.get("camera").get("eye"), e) || !point_of(pose.get("camera").get("target"), t) || !point_of(me->get("position"), p)) continue;
+            const double fx = t.x - e.x, fy = t.y - e.y, fz = t.z - e.z, fl = std::sqrt(fx * fx + fy * fy + fz * fz);
+            const double dx = p.x - e.x, dy = p.y - e.y, dz = p.z - e.z, dl = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const double to_target = std::sqrt((p.x - t.x) * (p.x - t.x) + (p.y - t.y) * (p.y - t.y) + (p.z - t.z) * (p.z - t.z));
+            if (nearest < 0 || to_target < nearest) nearest = to_target;
+            if (dl < 150) { seen = true; break; }
+            if (fl < 1e-3 || dl > 20000) continue;
+            const double half = std::atan(std::tan(pose.get("camera").get("fovy").number * 3.14159265358979 / 360) * 16.0 / 9.0);
+            const double angle = std::acos(std::clamp((fx * dx + fy * dy + fz * dz) / (fl * dl), -1.0, 1.0));
+            seen = angle <= half + std::atan(150 / dl);
+        }
+        if (!seen && nearest >= 0)
+            out.push_back(id + " is never in the demo camera's view: its position keys are " + std::to_string(int(std::lround(nearest))) +
+                          " units from where the camera looks (move its keys, or the camera)");
+    }
     return out;
 }
 
@@ -340,6 +399,17 @@ bool demo_add_actor(Value& step, const Value& actor, std::string& why) {
     if (actor_by_id(step, actor.get("id").text)) return fail(why, "the demo already has an actor \"" + actor.get("id").text + "\"");
     if (step.get("actors").type != Value::Array) step["actors"] = arr();
     step["actors"].array.push_back(actor);
+    return true;
+}
+bool demo_edit_actor(Value& step, const std::string& id, const Value& fields, std::string& why) {
+    Value* a = actor_by_id(step, id);
+    if (!a) return fail(why, "the demo has no actor \"" + id + "\"");
+    if (fields.type != Value::Object) return fail(why, "fields are {name: value} (null removes one)");
+    for (const auto& [k, v] : fields.object) {
+        if (k == "id") return fail(why, "an actor keeps its id (events and attachments name it)");
+        if (v.type == Value::Null) a->object.erase(k);
+        else (*a)[k] = v;
+    }
     return true;
 }
 bool demo_remove_actor(Value& step, const std::string& id, std::string& why) {

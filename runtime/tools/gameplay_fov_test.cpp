@@ -14,10 +14,16 @@
 #endif
 
 void log_msg(const char*, ...) {}
-namespace gx2 { void emit(Op, const uint32_t*, uint32_t) {} }
+namespace gx2 {
+void emit(Op, const uint32_t*, uint32_t) {}
+bool recording_display_list() { return false; }
+}
 namespace mods::cemu { float aspect_ratio() { return 0; } }
 namespace button_glyphs { void calculate_pane(Cpu* c,PpcFunc fn) { fn(c); } }
 extern "C" {
+void f_025A847C_orig(Cpu*) {}
+void f_02704D2C_orig(Cpu*) {}
+void f_0282D9C0_orig(Cpu*) {}
 void f_02874038_orig(Cpu*) {}
 void f_028766CC_orig(Cpu*) {}
 void f_02877100_orig(Cpu*) {}

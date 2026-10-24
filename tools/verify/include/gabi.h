@@ -62,13 +62,30 @@ extern thread_local Cpu* cpu;
 inline u32 ea(const void* p) { return p ? (u32)((const uint8_t*)p - PPC_MEM_BASE) : 0u; }
 template <class T> inline T* at(u32 a) { return a ? (T*)(PPC_MEM_BASE + a) : nullptr; }
 
-/* A float loaded into an FPR (lfs) is converted to double; on the host that conversion quiets a
- * signalling NaN, which the recompiled code then stores back. Model it for every f32 load. */
+/* f32 values move like lfs / stfs on the console: bit for bit, a signalling NaN stays signalling
+ * (ppc.h ppc_lfs_value / ppc_stfs_bits, PowerPC Book I 4.6.2 / 4.6.3). The recompiled reference
+ * (vm_gen.h) does the same, so a typed f32 copy compares equal to the game's lfs/stfs pair. */
 inline f32 f32_from_bits(u32 v) {
-    if ((v & 0x7F800000u) == 0x7F800000u && (v & 0x007FFFFFu) && !(v & 0x00400000u)) v |= 0x00400000u;
     f32 r;
     memcpy(&r, &v, 4);
     return r;
+}
+inline u32 f32_bits(f32 f) {
+    u32 v;
+    memcpy(&v, &f, 4);
+    return v;
+}
+/* f32 <-> FPR (argument and result registers): an f32 in an FPR is the lfs image of its bits; an
+ * FPR read as f32 keeps a NaN's bits as stfs would, other values round like frsp (unchanged). */
+inline f64 fpr_from_f32(f32 f) { return ppc_lfs_value(f32_bits(f)); }
+inline f32 f32_from_fpr(f64 d) { return d != d ? f32_from_bits(ppc_stfs_bits(d)) : (f32)d; }
+template <class T> inline f64 fpr_from(T a) {
+    if constexpr (std::is_same_v<T, f32>) return fpr_from_f32(a);
+    else return (f64)a;
+}
+template <class T> inline T from_fpr(f64 d) {
+    if constexpr (std::is_same_v<T, f32>) return f32_from_fpr(d);
+    else return (T)d;
 }
 
 template <class T> inline T load(u32 a) {
@@ -142,7 +159,7 @@ struct ArgPack {
     }
     template <class A> void put(A a) {
         if constexpr (std::is_floating_point_v<A>) {
-            c->f[fi].ps0 = c->f[fi].ps1 = (double)a;
+            c->f[fi].ps0 = c->f[fi].ps1 = fpr_from(a);
             fi++;
         } else if constexpr (std::is_pointer_v<A>) {
             put_int(ea(a));
@@ -165,7 +182,7 @@ struct ArgPack {
 template <class R> inline R result(Cpu* c) {
     if constexpr (std::is_void_v<R>) return;
     else if constexpr (std::is_same_v<R, bool>) return c->r[3] != 0; /* GHS tests bool results with cmpwi */
-    else if constexpr (std::is_floating_point_v<R>) return (R)c->f[1].ps0;
+    else if constexpr (std::is_floating_point_v<R>) return from_fpr<R>(c->f[1].ps0);
     else if constexpr (std::is_pointer_v<R>) return at<std::remove_pointer_t<R>>(c->r[3]);
     else return (R)c->r[3];
 }
@@ -242,7 +259,7 @@ struct Candidate {
 
 template <class T> struct ArgFrom {
     static T get(Cpu* c, int& gi, int& fi) {
-        if constexpr (std::is_floating_point_v<T>) return (T)c->f[fi++].ps0;
+        if constexpr (std::is_floating_point_v<T>) return from_fpr<T>(c->f[fi++].ps0);
         else if constexpr (std::is_pointer_v<T>) return at<std::remove_pointer_t<T>>(c->r[gi++]);
         else if constexpr (std::is_same_v<T, bool>) return (c->r[gi++] & 0xFF) != 0;
         else return (T)c->r[gi++];
@@ -269,7 +286,7 @@ struct Activation {
 };
 
 template <class R> inline void store_ret(Cpu* c, R r) {
-    if constexpr (std::is_floating_point_v<R>) c->f[1].ps0 = c->f[1].ps1 = (f64)r;
+    if constexpr (std::is_floating_point_v<R>) c->f[1].ps0 = c->f[1].ps1 = fpr_from(r);
     else if constexpr (std::is_pointer_v<R>) c->r[3] = ea(r);
     else if constexpr (std::is_same_v<R, bool>) c->r[3] = r ? 1 : 0;
     else if constexpr (std::is_signed_v<R>) c->r[3] = (u32)(s32)r;

@@ -141,37 +141,37 @@ HLE(gx2, GX2SetGeometrySamplerBorderColor) { set_border(REGADDR::TD_GS_SAMPLER0_
 
 // ---------------------------------------------------------------- shaders
 HLE(gx2, GX2SetVertexShader) {
-    static thread_local uint32 tmp[gx2::kNumRegs];  // only touched regs are forwarded; per thread (display lists are recorded on several cores)
+    gx2::ShaderBindRegs tmp;  // only the registers the bind writes are forwarded
     uint32 vs = arg(c, 0);
     uint32 n = std::min<uint32>(ld32(vs + 0x0C), 10), nsem = std::min<uint32>(ld32(vs + 0x40), 32);
     gx2::bind_vertex_shader_regs(tmp, vs);
     bool gs_mode = ld32(vs + 0xD8) == 2;
     if (gs_mode) {
-        set_regs(mmSQ_PGM_START_ES, &tmp[mmSQ_PGM_START_ES], 2);
+        set_regs(mmSQ_PGM_START_ES, tmp.at(mmSQ_PGM_START_ES), 2);
         set_reg(mmSQ_PGM_RESOURCES_ES, tmp[mmSQ_PGM_RESOURCES_ES]);
     } else {
-        set_regs(mmSQ_PGM_START_VS, &tmp[mmSQ_PGM_START_VS], 2);
+        set_regs(mmSQ_PGM_START_VS, tmp.at(mmSQ_PGM_START_VS), 2);
         set_reg(mmSQ_PGM_RESOURCES_VS, tmp[mmSQ_PGM_RESOURCES_VS]);
         set_reg(mmVGT_PRIMITIVEID_EN, tmp[mmVGT_PRIMITIVEID_EN]);
         set_reg(mmSPI_VS_OUT_CONFIG, tmp[mmSPI_VS_OUT_CONFIG]);
         set_reg(mmPA_CL_VS_OUT_CNTL, tmp[mmPA_CL_VS_OUT_CNTL]);
-        if (n) set_regs(mmSPI_VS_OUT_ID_0, &tmp[mmSPI_VS_OUT_ID_0], n);
+        if (n) set_regs(mmSPI_VS_OUT_ID_0, tmp.at(mmSPI_VS_OUT_ID_0), n);
     }
     if (nsem) {
         set_reg(mmSQ_VTX_SEMANTIC_CLEAR, 0xFFFFFFFF);
-        set_regs(mmSQ_VTX_SEMANTIC_0, &tmp[mmSQ_VTX_SEMANTIC_0], nsem);
+        set_regs(mmSQ_VTX_SEMANTIC_0, tmp.at(mmSQ_VTX_SEMANTIC_0), nsem);
     }
 }
 
 HLE(gx2, GX2SetPixelShader) {
-    static thread_local uint32 tmp[gx2::kNumRegs];
+    gx2::ShaderBindRegs tmp;
     uint32 ps = arg(c, 0);
     uint32 n = std::min<uint32>(ld32(ps + 4 * 4), 0x20);
     gx2::bind_pixel_shader_regs(tmp, ps);
-    set_regs(mmSQ_PGM_START_PS, &tmp[mmSQ_PGM_START_PS], 2);
+    set_regs(mmSQ_PGM_START_PS, tmp.at(mmSQ_PGM_START_PS), 2);
     set_reg(mmSQ_PGM_RESOURCES_PS, tmp[mmSQ_PGM_RESOURCES_PS]);
-    set_regs(mmSPI_PS_IN_CONTROL_0, &tmp[mmSPI_PS_IN_CONTROL_0], 2);
-    if (n) set_regs(mmSPI_PS_INPUT_CNTL_0, &tmp[mmSPI_PS_INPUT_CNTL_0], n);
+    set_regs(mmSPI_PS_IN_CONTROL_0, tmp.at(mmSPI_PS_IN_CONTROL_0), 2);
+    if (n) set_regs(mmSPI_PS_INPUT_CNTL_0, tmp.at(mmSPI_PS_INPUT_CNTL_0), n);
     set_reg(mmCB_SHADER_MASK, tmp[mmCB_SHADER_MASK]);
     set_reg(mmCB_SHADER_CONTROL, tmp[mmCB_SHADER_CONTROL]);
     set_reg(mmDB_SHADER_CONTROL, tmp[mmDB_SHADER_CONTROL]);
@@ -235,6 +235,7 @@ HLE(gx2, GX2SetFetchShader) {
 
 // ---------------------------------------------------------------- uniforms and attribute buffers
 static void uniform_block(uint32 blockStart, uint32 index, uint32 addr, uint32 size) {
+    gx2::note_uniform_block(addr, size);
     uint32 w[7] = {addr, size - 1, 0, 1, 0, 0, 0xC0000000};
     set_regs(blockStart + index * 7, w, 7);
 }
@@ -246,7 +247,7 @@ static void uniform_regs(uint32 stageBase, uint32 offset, uint32 count, uint32 v
     if (offset & 0x8000) return;
     count &= ~3u;
     if (offset + count > 0x400) count = 0x400 - std::min<uint32>(offset, 0x400);
-    static thread_local uint32 tmp[0x400];  // per thread: several cores record display lists at once
+    uint32 tmp[0x400];  // on the stack: several cores record display lists at once
     for (uint32 i = 0; i < count; i++) tmp[i] = ld32(values + 4 * i);
     if (stageBase == 0x400 && count == 16 && aspect::tagged_projection()) {  // a layout projection (aspect.cpp)
         uint32 w[17];

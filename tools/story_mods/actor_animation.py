@@ -8,7 +8,12 @@ import bisect
 import math
 import re
 import struct
-import actor_model as static
+import os
+import sys
+# Windows' embeddable Python runs isolated: the script's own folder is not on sys.path, so the
+# sibling modules are found through it explicitly (issue #280).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import actor_model as static  # noqa: E402
 
 require = static.require
 VERSION = 2

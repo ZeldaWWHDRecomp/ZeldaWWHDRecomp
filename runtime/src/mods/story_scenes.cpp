@@ -189,7 +189,10 @@ void restore(bool loaded,bool immediate=false) {
             if(ld8(g_scratch+64))call(kStartCamera,{camera});
         }
         call(ld8(g_scratch+156)?kShowHud:kHideHud);
-        scalar_call(kFade,-1.0f); // restore visibility even if interrupted after fade-out
+        // restore visibility even if interrupted after fade-out; not when the scene's end sends Link to another stage
+        // (a stage action): the game's own stage change fades in there, and a picture of the old place between the
+        // scene's fade-out and the change would flash up (dComIfGp next stage: play+0x5140, enabled at +12)
+        if(!(play&&ld8(play+0x5140+12)))scalar_call(kFade,-1.0f);
         call(kEnd,{play+kControl});
     }
     st32(g_scratch,0);g_active_input.store(false,std::memory_order_relaxed);
@@ -504,6 +507,9 @@ void tick(Cpu* cpu,bool skip,unsigned frames){
             g_suppress_loaded_room=false;
         }
         for(size_t i=0;i<g_entries.size();++i){const auto& s=g_entries[i].scene;
+            // an area scene with "again" plays again once Link has left its area (not while it is queued or playing)
+            if(s.again&&s.trigger=="area"&&g_fired.count(i)&&!g_pending.count(i)&&s.stage==stage&&s.room==room){const WorldPoint p=position(link);
+                const float dx=p.x-s.position.x,dy=p.y-s.position.y,dz=p.z-s.position.z;if(area_rearmed(dx*dx+dy*dy+dz*dz,s.radius))g_fired.erase(i);}
             if(g_fired.count(i)||s.stage!=stage||s.room!=room)continue;
             bool match=s.trigger=="room";
             if(s.trigger=="area"){const WorldPoint p=position(link);const float dx=p.x-s.position.x,dy=p.y-s.position.y,dz=p.z-s.position.z;match=dx*dx+dy*dy+dz*dz<=s.radius*s.radius;}

@@ -280,16 +280,26 @@ class Words:
         if n>max_count: raise ValueError('recipe count')
         return self.take(n)
 
-def vulkan_recipe(data, codefree=False):
-    w=Words(data);key=w.vec(208)
-    if len(key)!=208 or any(v>255 for v in key): raise ValueError('pipeline key schema')
-    key=bytes(key)
+def vulkan_recipe(data, codefree=False, shaders=None):
+    """One recipe record. shaders: the shader count of a version 2 database ("WWVKPR02"), whose records hold the
+    key as raw bytes, a shader index per stage instead of the SPIR-V, and the recipe's archive groups at the end."""
+    w=Words(data)
+    if shaders is not None:
+        key=struct.pack('<52I',*w.take(52))
+    else:
+        key=w.vec(208)
+        if len(key)!=208 or any(v>255 for v in key): raise ValueError('pipeline key schema')
+        key=bytes(key)
     p={'backend':'vulkan','shader_hashes':list(struct.unpack_from('<3Q',key)),
        'key_words':list(struct.unpack_from('<46I',key,24)), 'dynamic_uniforms':w.scalar()}
     p['descriptors']=[]
     for _ in range(2):
-        code=w.vec(262144)
-        if codefree:
+        if shaders is not None:
+            if w.scalar()>=shaders: raise ValueError('recipe shader index')
+            code=None
+        else: code=w.vec(262144)
+        if code is None: pass
+        elif codefree:
             if code: raise ValueError('code in stripped Vulkan recipe')
         elif len(code)<6 or code[0]!=0x07230203: raise ValueError('invalid local SPIR-V')
         n=w.scalar()
@@ -306,22 +316,37 @@ def vulkan_recipe(data, codefree=False):
     n=w.scalar()
     if n>8: raise ValueError('attachment count')
     p['attachments']=[w.take(8) for _ in range(n)];p['dynamics']=w.vec(4)
+    if shaders is not None: w.vec(8)  # archive groups: local prefetch hints, not part of the pipeline
     if w.at!=len(w.words): raise ValueError('trailing recipe')
     return validate_vulkan(p)
 
 VK_DATABASE_MAX = 16384
 
+def vulkan_database_shaders(data):
+    """(shader count or None, offset of the first recipe) of a Vulkan recipe database: version 2 ("WWVKPR02", the
+    runtime's local database) starts with its shader table (words, packed size, digest, zlib bytes padded to 4)."""
+    if data[:8]==b'WWVKPR01': return None,64
+    if data[:8]!=b'WWVKPR02': raise ValueError('unsupported Vulkan database')
+    if len(data)<68: raise ValueError('truncated database')
+    n=struct.unpack_from('<I',data,64)[0];at=68
+    if n>2*VK_DATABASE_MAX: raise ValueError('shader count')
+    for _ in range(n):
+        if at+16>len(data): raise ValueError('truncated database')
+        size=struct.unpack_from('<I',data,at+4)[0];at+=16+((size+3)&~3)
+        if at>len(data): raise ValueError('truncated database')
+    return n,at
+
 def vulkan_database(data):
-    if len(data)<64 or data[:8]!=b'WWVKPR01': raise ValueError('unsupported Vulkan database')
+    if len(data)<64 or data[:8] not in (b'WWVKPR01',b'WWVKPR02'): raise ValueError('unsupported Vulkan database')
     n,crc=struct.unpack_from('<II',data,56)
     # runtime kPipelineRecipeMaxCount (the first recipe databases allowed 512)
     if n>VK_DATABASE_MAX or zlib.crc32(data[64:])!=crc: raise ValueError('invalid Vulkan database')
-    out=[];at=64
+    shaders,at=vulkan_database_shaders(data);out=[]
     for _ in range(n):
         if at+4>len(data): raise ValueError('truncated database')
         size=struct.unpack_from('<I',data,at)[0];at+=4
         if size>4*1024*1024 or size>len(data)-at: raise ValueError('recipe bounds')
-        out.append(vulkan_recipe(data[at:at+size]));at+=size
+        out.append(vulkan_recipe(data[at:at+size],shaders=shaders));at+=size
     if at!=len(data): raise ValueError('trailing database')
     return out
 

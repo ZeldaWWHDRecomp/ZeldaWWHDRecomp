@@ -1,0 +1,80 @@
+{
+  "game_pieces_format": 1,
+  "set": "angular-isles",
+  "label": "Angular Isles ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room47.szs",
+    "room": 47
+  },
+  "memory": {
+    "archive_bytes": 4313088,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "angular-isles",
+      "since": 5,
+      "category": "Islands",
+      "label": "Angular Isles ground",
+      "description": "two blocky islands of stepped, angular rock",
+      "volume": [
+        -550,
+        -1000,
+        18850,
+        2350,
+        1150,
+        20850
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "shimaA",
+            "shimaB"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "shimaA",
+          "shimaB"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD47.szs",
+        "triangles": 170
+      },
+      "expect": {
+        "triangles": [
+          1626
+        ],
+        "textures": [
+          [
+            "Txe_Ecube_ue_1",
+            "Txe_Ecube_ue_2",
+            "Txe_Ecube_ue_3",
+            "Txe_Ecube_ue_4",
+            "Txe_Ecube_yoko_1",
+            "Txe_Ecube_yoko_10",
+            "Txe_Ecube_yoko_2",
+            "Txe_Ecube_yoko_3",
+            "Txe_Ecube_yoko_4",
+            "Txe_Ecube_yoko_5",
+            "Txe_Ecube_yoko_6",
+            "Txe_Ecube_yoko_7",
+            "Txe_Ecube_yoko_8",
+            "Txe_Ecube_yoko_9"
+          ]
+        ],
+        "collision_triangles": 811
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

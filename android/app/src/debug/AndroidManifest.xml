@@ -7,6 +7,7 @@
                 android:value="Game-free synthetic foreground setup acceptance test." />
         </service>
         <receiver android:name=".PickerSmokeReceiver" android:exported="true" />
+        <activity android:name=".ActivityRoutingSmokeActivity" android:exported="true" />
         <activity android:name=".SetupKeyRecoverySmokeActivity" android:exported="true" />
         <activity android:name=".SetupImportSmokeActivity" android:exported="true" />
         <provider android:name=".ImportDocuments" android:authorities="${applicationId}.import-fixture"

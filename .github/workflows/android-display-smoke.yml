@@ -62,11 +62,13 @@ jobs:
             python3 tools/android/activity_recreation_smoke.py --serial emulator-5554 --output build/activity-recreation-result.json
             python3 tools/android/python_smoke.py --serial emulator-5554 --output build/python-smoke-result.json
             python3 tools/android/setup_update_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/setup-update-result.json
+            python3 tools/android/activity_routing_smoke.py --serial emulator-5554 --apk android/app/build/outputs/apk/debug/app-debug.apk --output build/activity-routing-result.json
       - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: android-display-smoke-${{ github.sha }}
           path: |
+            build/activity-routing-result.json
             build/display-smoke-result.json
             build/display-smoke-result.log
             build/display-smoke-result.displays.txt

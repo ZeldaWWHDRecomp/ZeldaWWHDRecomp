@@ -1,4 +1,6 @@
+#include "background_shaders.h"
 #include "vertex_cpu_policy.h"
+#include "dynres.h"
 #include "platform/keycodes.h"
 #include "input_map.h"
 #include "atomic_temporary.h"
@@ -23,8 +25,10 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <android/native_window_jni.h>
 #include <jni.h>
+#include "platform/quest_theater.h"
 #endif
 #include "backend.h"
+#include "../../dsweep.h"
 #include "pass.h"
 #include "rendering_path.h"
 #include "stereo.h"
@@ -37,6 +41,7 @@
 #include "deferred_commands.h"
 #include "record_worker.h"
 #include "submission_cpu_ack.h"
+#include "submission_pool.h"
 #include "worker_present_policy.h"
 #include "handoff_trace.h"
 #include <optional>
@@ -247,6 +252,12 @@ bool cpu_only_stats_enabled() {
 struct WaitTiming { uint64_t count = 0, ns = 0; };
 struct PresentTiming { WaitTiming acquire, compose, present, idle; };
 WaitTiming submitWait, presentSubmitWait, queueSubmitTiming;
+// activate_submission(): the render thread waits for the next ring slot's fence (submission_pool.h)
+WaitTiming slotReuseWait;
+// sampled at each swap with WWHD_VK_STATS: submissions/frames the GPU has not finished
+struct InFlightStats { uint64_t samples=0,submissions=0,frames=0; unsigned maxSubmissions=0,maxFrames=0; };
+InFlightStats inFlight;
+unsigned submissionPoolSlots=0;
 WaitTiming fenceStatusTiming, fenceResetTiming, retirementCleanupTiming;
 WaitTiming commandEndTiming;
 std::array<WaitTiming,5> swapPhaseTiming;
@@ -305,6 +316,39 @@ bool unpack_pipeline_cache(std::vector<uint8_t>& file) {
   file.erase(file.begin(),file.begin()+pipelineCacheWrapperSize);
   return compatible_pipeline_cache(file);
 }
+
+// The device's memory budget for the warm pipeline pool (pipeline_worker.cpp): VK_EXT_memory_budget's budget of the
+// largest device-local heap when the device has the extension, else that heap's size (MoltenVK: Metal's
+// recommendedMaxWorkingSetSize); 0 when unknown.
+static uint64_t device_memory_budget() {
+  VkPhysicalDeviceMemoryProperties p{};
+  vkGetPhysicalDeviceMemoryProperties(R.physicalDevice, &p);
+  uint32_t heap = UINT32_MAX;
+  for (uint32_t i = 0; i < p.memoryHeapCount; ++i)
+    if ((p.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+        (heap == UINT32_MAX || p.memoryHeaps[i].size > p.memoryHeaps[heap].size)) heap = i;
+  if (heap == UINT32_MAX) return 0;
+  uint64_t budget = p.memoryHeaps[heap].size;
+  uint32_t n = 0;
+  vkEnumerateDeviceExtensionProperties(R.physicalDevice, nullptr, &n, nullptr);
+  std::vector<VkExtensionProperties> extensions(n);
+  if (n) vkEnumerateDeviceExtensionProperties(R.physicalDevice, nullptr, &n, extensions.data());
+  const bool hasBudget = std::any_of(extensions.begin(), extensions.end(), [](const VkExtensionProperties& e) {
+    return !std::strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+  });
+  auto properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+      vkGetInstanceProcAddr(R.instance, "vkGetPhysicalDeviceMemoryProperties2"));
+  if (hasBudget && properties2) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT b{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 q{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
+    q.pNext = &b;
+    properties2(R.physicalDevice, &q);
+    if (b.heapBudget[heap]) budget = b.heapBudget[heap];
+  }
+  LOG("[vulkan warmup] device memory budget %.0f MB (%s)", budget / 1e6, hasBudget && properties2 ? "VK_EXT_memory_budget" : "heap size");
+  return budget;
+}
+
 void init_pipeline_cache() try {
   const auto explicitStorage=path_environment_utf8("WWHD_VK_PIPELINE_CACHE");
   const auto shaderStorage=path_environment_utf8("WWHD_SHADER_CACHE");
@@ -414,6 +458,7 @@ void init_pipeline_cache() try {
     const char* warmup = std::getenv("WWHD_VK_PIPELINE_WARMUP");
     if (!warmup || std::strcmp(warmup, "0")) try {
       const auto headstart=path_environment_utf8("WWHD_HEADSTART");
+      set_memory_budget(device_memory_budget());
       start_pipeline_worker(R.device, fingerprint, pipelineCachePath + ".recipes", bytes,
           headstart ? *headstart : config::game_dir + "/shadercache/headstart.bin");
     } catch (const std::exception& error) {
@@ -872,6 +917,21 @@ static void init_gpu_timestamp_queries() {
 static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   if (!slot.timestampRecorded) return;
   slot.timestampRecorded = false; // Consume this submission exactly once.
+  const bool dynresTiming = slot.dynresTiming;
+  slot.dynresTiming = false;
+  if (dynresTiming && !R.gpuTimestampsEnabled) {
+    // dynamic resolution only: the command buffer's GPU interval, without the diagnostics' statistics
+    struct Result { uint64_t ticks, available; } values[2]{};
+    const VkResult result = vkGetQueryPoolResults(R.device, slot.timestampQueries, 0, 2, sizeof(values), values,
+        sizeof(Result), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS || !values[0].available || !values[1].available) return;
+    const uint64_t elapsed = timestamp_elapsed_ticks(values[0].ticks, values[1].ticks, R.gpuTimestampValidBits);
+    const double period = double(R.properties.limits.timestampPeriod);
+    const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
+    const double start = double(values[0].ticks & mask) * period;
+    dynres::gpu_interval(start, start + double(elapsed) * period);
+    return;
+  }
   if (!R.gpuTimestampsEnabled) return;
   struct Result { uint64_t ticks, available; } values[2]{};
   const VkResult result = vkGetQueryPoolResults(R.device, slot.timestampQueries, 0, 2,
@@ -890,6 +950,11 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   }
   const double ns = double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks,
       R.gpuTimestampValidBits)) * double(R.properties.limits.timestampPeriod);
+  if (dynresTiming) {
+    const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
+    const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
+    dynres::gpu_interval(start, start + ns);
+  }
   // Reporting resets the rolling window. Acceptance measurements need counters
   // that remain monotonic across those reports and across timing phases.
   for (auto* stats : {&R.gpuTimestampStats, &R.gpuTimestampLifetimeStats}) {
@@ -967,6 +1032,7 @@ VkCommandBuffer command_buffer() {
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (!R.recording) {
+    RendererCommands rendererCommands;  // the submission's timestamps open it, never eye 1's commands
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (auto* stream = record_worker_commands()) {
@@ -977,6 +1043,25 @@ VkCommandBuffer command_buffer() {
     } else vk_check(vkBeginCommandBuffer(R.cmd, &bi), "begin command buffer");
     R.recording = true;
     begin_overlay_gpu_queries(R.cmd, R.submissions[R.activeSubmission]);
+    // dynamic resolution (dynres.h) times every command buffer on the GPU while it is on
+    bool dynresTiming = false;
+    if (dynres::on() && timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod)) {
+      auto& slot = R.submissions[R.activeSubmission];
+      if (!slot.timestampQueries) {
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = 2;
+        if (vkCreateQueryPool(R.device, &info, nullptr, &slot.timestampQueries) != VK_SUCCESS) slot.timestampQueries = VK_NULL_HANDLE;
+      }
+      dynresTiming = slot.timestampQueries != VK_NULL_HANDLE;
+      if (dynresTiming && !R.gpuTimestampsEnabled) {
+        record::vkCmdResetQueryPool(R.cmd, slot.timestampQueries, 0, 2);
+        record::vkCmdWriteTimestamp(R.cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, slot.timestampQueries, 0);
+        slot.timestampRecorded = true;
+        slot.timestampFrame = R.frame;
+      }
+      slot.dynresTiming = dynresTiming;
+    }
     if (R.gpuTimestampsEnabled) {
       auto& slot = R.submissions[R.activeSubmission];
       record::vkCmdResetQueryPool(R.cmd, slot.timestampQueries, 0,
@@ -1079,6 +1164,7 @@ void transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
+  if (conservativePassBreak) stereo_release_texture(s);  // a texture both eyes sample
   if (narrow_barriers() && stage == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT &&
       access == (VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT) &&
       layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
@@ -1230,7 +1316,7 @@ static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=sub
 }
 static void activate_submission(size_t index) {
   auto& slot=R.submissions[index];
-  retire_submission(slot);
+  retire_submission(slot,slotReuseWait);
   R.activeSubmission=index;
   slot.gpuScopeCount=0;slot.activeRenderScope=UINT32_MAX;
   ++R.submissionGeneration;
@@ -1243,6 +1329,8 @@ static void activate_submission(size_t index) {
   R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
   R.recording=false;R.rendering=false;R.passTracked=false;
 }
+// depth peeks (depth_peek.h): the submission that carries the latest peek copy; retired on demand
+static uint64_t peekSubmission = 0, lastSubmissionSerial = 0;
 static void drain_submissions() {
   if(active_deferred_commands)active_deferred_commands->finish_exact();
   for(auto& slot:R.submissions)resolve_retained_submission(slot);
@@ -1258,10 +1346,11 @@ static void drain_submissions() {
 // Overflow is allocated only when a captured tail prevents ring reuse. Slot
 // addresses and screenshot indices stay stable; the total is strictly bounded.
 static size_t next_submission_slot() {
+  const auto choice=subpool::next_slot(R.activeSubmission,R.submissions.size(),
+      R.submissions[(R.activeSubmission+1)%R.submissions.size()].retainedUnsubmitted);
   const size_t next=(R.activeSubmission+1)%R.submissions.size();
-  if(!R.submissions[next].retainedUnsubmitted)return next;
-  constexpr size_t maxRetainedSlots=16;
-  if(R.submissions.size()<maxRetainedSlots) {
+  if(choice.step==subpool::Step::Reuse)return choice.index;
+  if(choice.step==subpool::Step::Grow) {
     bool appended=false;
     try {
       R.submissions.emplace_back();appended=true;
@@ -1290,6 +1379,8 @@ static void publish_or_finish_present_prefix(DeferredCommands& owner) {
 static void submit(VkSemaphore wait = VK_NULL_HANDLE,
                    VkSemaphore signal = VK_NULL_HANDLE, bool asynchronous=false) {
   if (!R.recording)return;
+  stereo_flush(); // stereo eye 1's held commands belong to this submission
+  RendererCommands rendererCommands;
   // Presentation owns externally synchronized semaphores: finish the entire
   // ordered CPU tail before handing those semaphores to Vulkan.
   bool externalSync=wait || signal;
@@ -1314,6 +1405,8 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
   static uint64_t nextSubmissionSerial=0;
   const auto seal=[&slot,owner]() noexcept {
     slot.serial=++nextSubmissionSerial;
+    slot.recordedFrame=R.frame;
+    lastSubmissionSerial=slot.serial;
     slot.uploadBlocks=std::move(R.uploadBlocks);
     slot.completions=std::move(R.completions);
     slot.garbageBuffers=std::move(R.garbageBuffers);
@@ -1391,6 +1484,23 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     retire_submission(slot,wait ? presentSubmitWait : submitWait);
     activate_submission(R.activeSubmission);
   }
+}
+unsigned submission_pool_slots() { return submissionPoolSlots; }
+void peek_submitted() { peekSubmission = lastSubmissionSerial; }
+void peek_retire() {
+  if (!peekSubmission) return;
+  // submissions sealed but still held by the ordered command stream are submitted first (as in
+  // drain_submissions), then retired oldest first up to the peek's (its fence covers the earlier ones)
+  for (auto& slot : R.submissions)
+    if (slot.serial <= peekSubmission) resolve_retained_submission(slot);
+  for (;;) {
+    Renderer::Submission* oldest = nullptr;
+    for (auto& slot : R.submissions)
+      if (slot.pending && slot.serial <= peekSubmission && (!oldest || slot.serial < oldest->serial)) oldest = &slot;
+    if (!oldest) break;
+    retire_submission(*oldest);
+  }
+  peekSubmission = 0;
 }
 void flush_async() {
   // Deferred objects may reference earlier queued work even if this slot has
@@ -1593,7 +1703,9 @@ static void make_swapchain(Screen &s) {
   // changes then and the swapchain is made again for the new size.)
   {
     int pw = 0, ph = 0;
-    if (s.window && SDL_GetWindowSizeInPixels(s.window, &pw, &ph) && pw > 0 && ph > 0)
+    if (&s == &R.tv && quest_theater::active())
+      extent = {quest_theater::width,quest_theater::height};
+    else if (s.window && SDL_GetWindowSizeInPixels(s.window, &pw, &ph) && pw > 0 && ph > 0)
       extent = {uint32_t(pw), uint32_t(ph)};
     else if (&s == &R.drc && s.width > 0 && s.height > 0)
       extent = {uint32_t(s.width.load()), uint32_t(s.height.load())};
@@ -1776,7 +1888,7 @@ static bool SDLCALL lifecycle_watch(void *, SDL_Event *event) {
 }
 #endif
 // Asynchronous presentation (the default on every platform since 2026-10-07; WWHD_VK_ASYNC_PRESENT=0
-// restores the waiting path): the presentation submission goes into the four-slot ring like GX2Flush
+// restores the waiting path): the presentation submission goes into the submission ring (submission_pool.h) like GX2Flush
 // work instead of waiting for the GPU, and swap() does not drain the queue, so the render thread
 // records frame N+1 while the GPU draws frame N. Each frame in flight has its own acquire semaphore
 // (reused only after the submission that waited on it retired) and each swapchain image its own
@@ -2353,6 +2465,9 @@ static void present_held(bool forced) {
   trace_even_presented(at);
 }
 static bool present(Screen &s) {
+#ifdef __ANDROID__
+  if (&s == &R.tv && quest_theater::active() && !quest_theater::visible()) return false;
+#endif
   if (&s == &R.tv) present_held(true);  // the previous frame, if it is still held
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if (presentObservation && &s == &R.tv) poll_present_observer();
@@ -2557,7 +2672,7 @@ static bool present(Screen &s) {
     if(secondary && R.secondaryInjectAcquireLoss.exchange(false))return VK_ERROR_SURFACE_LOST_KHR;
 #endif
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireBegin, 0, R.frame, &s == &R.tv ? 1 : 2, acquireIndex);
-    const auto result = vkAcquireNextImageKHR(R.device, s.swapchain, secondary ? 0 : UINT64_MAX,
+    const auto result = vkAcquireNextImageKHR(R.device, s.swapchain, present_acquire_timeout(secondary),
                                 acquireSemaphore, VK_NULL_HANDLE, &index);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireEnd, 0, R.frame, &s == &R.tv ? 1 : 2, uint64_t(int64_t(result)));
     return result;
@@ -2774,6 +2889,9 @@ static bool present(Screen &s) {
   // Even frame delivery (interp_pacing.h EvenSchedule; interp.cpp: on by default on Android): a TV frame of a
   // swap that is ready before its slot is held (its work is submitted; only the present call waits)
   if (&s == &R.tv && async && evenPresentSwap && !secondary && !present_capture_requested() &&
+#ifdef __ANDROID__
+      !quest_theater::active() &&
+#endif
       (evenPresentInterval || even_trace_file())) {
     const int64_t ready = even_now_ns();
     const int64_t due = evenSchedule.plan(ready, evenPresentInterval);
@@ -2799,6 +2917,9 @@ static bool present(Screen &s) {
     return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
   }
   const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, secondary);
+#ifdef __ANDROID__
+  if (&s == &R.tv && (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR)) quest_theater::presented(stereo::frame.mode);
+#endif
   if (!async)
     vk_check(timed_call(timing.idle, [&] { return vkQueueWaitIdle(R.queue); }, rprof::kWaitGpu),
              "present completion");
@@ -2810,23 +2931,81 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
   Screen &s = stereoEye ? stereoRight : (target == 4 ? R.drc : R.tv);
-  if (!s.buildingScan || s.buildingScan->extent.width != src->extent.width ||
-      s.buildingScan->extent.height != src->extent.height ||
-      s.buildingScan->fmt.pixel != src->fmt.pixel) {
+  auto fits = [src](const Surface *d) {
+    return d->extent.width == src->extent.width && d->extent.height == src->extent.height && d->fmt.pixel == src->fmt.pixel;
+  };
+  // the size the picture stands for (the layout): the source at the full internal resolution (dynamic
+  // resolution, dynres.h, renders it smaller; exactly its size while off); an eye-sized target counts twice
+  s.buildingScanDisplayExtent = {uint32_t(std::lround(src->extent.width / src->dyn)), uint32_t(std::lround(src->extent.height / src->dyn))};
+  if (target != 4) {
+    bool halfWidth, halfHeight;  // an eye-sized target (surfaces.cpp), not the full-size fallback
+    stereo_target_halves(src, halfWidth, halfHeight);
+    if (halfWidth) s.buildingScanDisplayExtent.width *= 2;
+    if (halfHeight) s.buildingScanDisplayExtent.height *= 2;
+  }
+  if (!s.buildingScan || !fits(s.buildingScan.get())) {
+    // dynamic resolution (dynres.h): the scan images of the previous sizes are kept for the next change
+    std::unique_ptr<Surface> kept;
+    if (dynres::on()) {
+      for (auto it = s.scanSpares.begin(); it != s.scanSpares.end(); ++it)
+        if (fits(it->get())) { kept = std::move(*it); s.scanSpares.erase(it); break; }
+      if (s.buildingScan) s.scanSpares.insert(s.scanSpares.begin(), std::move(s.buildingScan));
+    }
     if (s.buildingScan)
       destroy_surface_image(s.buildingScan.get());
-    s.buildingScan = std::make_unique<Surface>();
-    auto *d = s.buildingScan.get();
-    d->width = src->extent.width;
-    d->height = src->extent.height;
-    d->format = src->format;
-    d->fmt = src->fmt;
-    d->scale = 1;
-    create_surface_image(d, false);
+    if (kept) {
+      s.buildingScan = std::move(kept);
+    } else {
+      s.buildingScan = std::make_unique<Surface>();
+      auto *d = s.buildingScan.get();
+      d->width = src->extent.width;
+      d->height = src->extent.height;
+      d->format = src->format;
+      d->fmt = src->fmt;
+      d->scale = 1;
+      create_surface_image(d, false);
+    }
   }
+  if (!dynres::on() && !s.scanSpares.empty()) {
+    for (auto &k : s.scanSpares) destroy_surface_image(k.get());
+    s.scanSpares.clear();
+  }
+  if (dynres::on()) {
+    // Scan images for the sizes of the source's kept images (the neighbouring levels: two each, the scan
+    // and the one being published), made ahead one a frame; images of other sizes go.
+    auto neighbour = [src](const Surface *d) {
+      for (auto &k : src->spares)
+        if (k->image && d->extent.width == k->extent.width && d->extent.height == k->extent.height && d->fmt.pixel == src->fmt.pixel)
+          return true;
+      return false;
+    };
+    for (auto it = s.scanSpares.begin(); it != s.scanSpares.end();) {
+      // keep: the neighbours' sizes, and one of the current size (the published scan's partner after a change)
+      if (neighbour(it->get()) || fits(it->get())) ++it;
+      else { destroy_surface_image(it->get()); it = s.scanSpares.erase(it); }
+    }
+    static uint64_t madeFrame = ~0ull;
+    if (madeFrame != R.frame)
+      for (auto &k : src->spares) {
+        if (!k->image) continue;
+        int have = 0;
+        for (auto &d : s.scanSpares)
+          if (d->extent.width == k->extent.width && d->extent.height == k->extent.height && d->fmt.pixel == src->fmt.pixel) have++;
+        if (have >= 2) continue;
+        auto d = std::make_unique<Surface>();
+        d->width = k->extent.width; d->height = k->extent.height; d->format = src->format; d->fmt = src->fmt; d->scale = 1;
+        create_surface_image(d.get(), false);
+        touch_image(d.get());
+        s.scanSpares.push_back(std::move(d));
+        madeFrame = R.frame;
+        break;
+      }
+  }
+  // the size the picture stands for (layout, dynres.h): the scan at the full internal resolution
+  s.buildingScan->dyn = src->dyn;
   resample(src, s.buildingScan.get(), 1);
   if (target & 1)
-    draw_mod_overlay(*s.buildingScan);  // HUD of gameplay mods (stamina wheel), as the Metal renderer
+    draw_mod_overlay(*s.buildingScan,s.buildingScanDisplayExtent);
   mark_gpu_written(s.buildingScan.get());
   s.buildingScanSrgb = s.srgb.load();
   s.buildingScanDirty = true;
@@ -2851,6 +3030,18 @@ void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
   static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
   const uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+  // test aid: WWHD_BG_SHADERS_DUMP=n writes the TV image of the first n frames that left a draw out
+  // (Shader compile Fast) and of the two frames after each, to check what went missing
+  static const uint64_t leftOutDumps = getenv("WWHD_BG_SHADERS_DUMP") ? strtoull(getenv("WWHD_BG_SHADERS_DUMP"), nullptr, 10) : 0;
+  if (leftOutDumps) {
+    static uint64_t until = 0, count = 0;
+    const bool leftOut = bgshaders::skipped_in_frame(frame - 1);  // the frame just drawn
+    if (leftOut && count < leftOutDumps) { until = dumpFrame + 2; ++count; }
+    if (dumpFrame <= until) {
+      LOG("[shaders] dump of %s frame %llu", leftOut ? "a left-out" : "the next", (unsigned long long)dumpFrame);
+      dump_scan(R.tv, "frame_" + std::to_string(dumpFrame) + ".png");
+    }
+  }
   if (gfx::capture_schedule::contains(frames, dumpFrame)) {
     dump_scan(R.tv, "frame_" + std::to_string(dumpFrame) + ".png");
     dump_scan(R.drc, "frame_" + std::to_string(dumpFrame) + "_drc.png");
@@ -3114,6 +3305,7 @@ void swap() {
 #endif
   for (Screen* s : {&R.tv, &R.drc, &stereoRight}) if (s->buildingScanDirty) {
     s->scan.swap(s->buildingScan);
+    std::swap(s->scanDisplayExtent,s->buildingScanDisplayExtent);
     s->scanSrgb = s->buildingScanSrgb;
     s->buildingScanDirty = false;
   }
@@ -3158,15 +3350,17 @@ void swap() {
   // comes from gfx/display_modes.cpp, which both window hosts and the Metal renderer share
   Surface *tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
   Surface *drcScan = R.drc.scan && R.drc.scan->image ? R.drc.scan.get() : nullptr;
+  const auto tvDisplay = scan_display_extent(R.tv);
 #ifdef WWHD_SDL_HOST
   gfx::g_filter = scale_filter();  // the SDL host keeps the scaling filter with the Vulkan settings
   const float layerW = float(R.tv.width.load()), layerH = float(R.tv.height.load());
 #else
   const float layerW = float(R.tv.swapExtent.width), layerH = float(R.tv.swapExtent.height);
 #endif
+  // (sizes at the full internal resolution: dynamic resolution keeps the layout)
   gfx::PresentPlan plan = gfx::display_plan(
-      tvScan, tvScan ? float(tvScan->extent.width) : 0, tvScan ? float(tvScan->extent.height) : 0,
-      drcScan, drcScan ? float(drcScan->extent.width) : 0, drcScan ? float(drcScan->extent.height) : 0,
+      tvScan, float(tvDisplay.width), float(tvDisplay.height),
+      drcScan, nominal_width(drcScan), nominal_height(drcScan),
       layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
 #ifdef __ANDROID__
   // A physical second display owns the GamePad picture. Keep the requested
@@ -3177,13 +3371,13 @@ void swap() {
     plan.pip_wanted = false;
     plan.drc_only = false;
     plan.tv = gfx::display_layout(layerW, layerH,
-        tvScan ? float(tvScan->extent.width) : 1280,
-        tvScan ? float(tvScan->extent.height) : 720);
+        tvScan ? float(tvDisplay.width) : 1280,
+        tvScan ? float(tvDisplay.height) : 720);
     if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
       bool swapped = dual_display::active_swap;
       float w = swapped ? layerW : float(R.drc.width.load());
       float h = swapped ? layerH : float(R.drc.height.load());
-      gfx::Box box = gfx::display_layout(w, h, float(drcScan->extent.width), float(drcScan->extent.height));
+      gfx::Box box = gfx::display_layout(w, h, nominal_width(drcScan), nominal_height(drcScan));
       std::lock_guard<std::mutex> guard(secondaryMutex);
       if (!secondaryChanged) {
         auto& touchBox = swapped ? primaryTouchBox : secondaryTouchBox;
@@ -3201,12 +3395,12 @@ void swap() {
   gfx::PresentPlan inputPlan=plan;
   if(stereo::frame.mode==stereo::FullSBS) {
     inputPlan=gfx::display_plan_for(plan,layerW*.5f,layerH,
-        tvScan?float(tvScan->extent.width):0,tvScan?float(tvScan->extent.height):0,
-        drcScan?float(drcScan->extent.width):0,drcScan?float(drcScan->extent.height):0);
+        float(tvDisplay.width),float(tvDisplay.height),
+        nominal_width(drcScan),nominal_height(drcScan));
     gfx::display_input_plan(inputPlan);
   }
   // Menu and host toasts: built once at the selected window size, including present dumps
-  if(overlay::guesthud::active())overlay::guesthud::set_tv_region(inputPlan.tv.x,inputPlan.tv.y,inputPlan.tv.w,inputPlan.tv.h,!inputPlan.drc_only);
+  overlay::guesthud::set_tv_region(inputPlan.tv.x,inputPlan.tv.y,inputPlan.tv.w,inputPlan.tv.h,!inputPlan.drc_only);
   const float overlayWidth = (plan.dw > 0 ? plan.dw : layerW) /
       (stereo::frame.mode == stereo::FullSBS ? 2.0f : 1.0f);
   using overlay::window_target::Window;
@@ -3280,6 +3474,21 @@ void swap() {
   }
 #endif
   const auto swapBookkeepingStarted=std::chrono::steady_clock::now();
+  if (perf_enabled()) {
+    // Work the GPU has not finished at this swap: a fence query only after the record worker's
+    // CPU acknowledgment (a slot still queued on the worker counts as in flight)
+    unsigned submissions=0;uint64_t oldest=R.frame;
+    for (auto& slot:R.submissions) {
+      if (!slot.pending) continue;
+      const bool queued=slot.recordWorkerSerial && !record_commands_emitted(slot.recordWorkerSerial);
+      if (!queued && vkGetFenceStatus(R.device,slot.fence)!=VK_NOT_READY) continue;
+      ++submissions;oldest=std::min(oldest,slot.recordedFrame);
+    }
+    const unsigned frames=submissions ? unsigned(R.frame-oldest+1) : 0;
+    ++inFlight.samples;inFlight.submissions+=submissions;inFlight.frames+=frames;
+    inFlight.maxSubmissions=std::max(inFlight.maxSubmissions,submissions);
+    inFlight.maxFrames=std::max(inFlight.maxFrames,frames);
+  }
   completedPresentPlan = plan;
   completedPresentPlanValid = tvScan != nullptr;
   lastNewPresentNs = stutter::now();
@@ -3329,10 +3538,13 @@ void swap() {
     uint64_t imageBytes=0,images=0,uploadBytes=0;
     std::unordered_set<VkImage> seenImages;
     auto countImage=[&](const Surface* surface) {
-      for (;surface;surface=surface->mipChain.get())
+      for (;surface;surface=surface->mipChain.get()) {
         if (surface->image && seenImages.insert(surface->image).second) {
           ++images; imageBytes+=surface->allocationBytes;
         }
+        for (const auto& kept:surface->spares)  // dynamic resolution's kept images
+          if (kept->image && seenImages.insert(kept->image).second) { ++images; imageBytes+=kept->allocationBytes; }
+      }
     };
     for (const auto& [address,surface]:R.surfaces) countImage(surface.get());
     std::unordered_set<VkBuffer> seenUploads;
@@ -3562,6 +3774,11 @@ void swap() {
       LOG("[vulkan waits] submit %.2f/frame %.2f ms/frame; present submit %.2f/frame %.2f ms/frame",
           submitWait.count/frames, submitWait.ns/1e6/frames,
           presentSubmitWait.count/frames, presentSubmitWait.ns/1e6/frames);
+      LOG("[vulkan submission ring] %zu slots (%u at start); slot reuse waits %.2f/frame %.3f ms/frame; in flight at swap: submissions %.2f avg %u max, frames %.2f avg %u max",
+          R.submissions.size(),submissionPoolSlots,slotReuseWait.count/frames,slotReuseWait.ns/1e6/frames,
+          inFlight.samples ? double(inFlight.submissions)/inFlight.samples : 0.0,inFlight.maxSubmissions,
+          inFlight.samples ? double(inFlight.frames)/inFlight.samples : 0.0,inFlight.maxFrames);
+      slotReuseWait={};inFlight={};
       LOG("[vulkan queue submit] %.2f/frame %.2f ms/frame",
           queueSubmitTiming.count/frames, queueSubmitTiming.ns/1e6/frames);
       LOG("[vulkan swap phases] setup %.2f ms/frame; primary %.2f; secondary %.2f; flush %.2f; bookkeeping %.2f",
@@ -4000,7 +4217,11 @@ static void init_device(std::vector<const char *> extensions,
   // starts with the device); WWHD_VK_RECORD_WORKER takes precedence (record_worker.cpp)
   {
     std::string value;
-    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : record_worker_default());
+    bool defaultWorker=record_worker_default();
+#ifdef __ANDROID__
+    defaultWorker=defaultWorker||quest_theater::device();
+#endif
+    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : defaultWorker);
   }
   nativeWorkerPresentation = false;
   if (record_worker_requested()) {
@@ -4109,6 +4330,12 @@ static void init_device(std::vector<const char *> extensions,
   enabled.samplerAnisotropy = available.samplerAnisotropy;
   enabled.independentBlend = available.independentBlend;
   enabled.depthClamp = available.depthClamp;
+  // test switch: the path of devices without depth clamp (vertex shaders clamp at the near plane)
+  if (const char* e = getenv("WWHD_VK_FORCE_DEPTH_CLAMP_EMULATION"); e && strcmp(e, "0")) {
+    enabled.depthClamp = VK_FALSE;
+    LOG("[vulkan] WWHD_VK_FORCE_DEPTH_CLAMP_EMULATION: depth clamp emulated in vertex shaders");
+  } else if (!available.depthClamp)
+    LOG("[vulkan] device has no depth clamp: emulated in vertex shaders");
   enabled.depthBiasClamp = available.depthBiasClamp;
   enabled.shaderClipDistance = available.shaderClipDistance;
   enabled.shaderCullDistance = available.shaderCullDistance;
@@ -4314,6 +4541,15 @@ static void init_device(std::vector<const char *> extensions,
       R.queueFamily,R.secondaryQueueFamily);
 #endif
   init_pipeline_cache();
+  {
+    // WWHD_VK_SUBMISSION_POOL (submission_pool.h): slots created now; overflow adds more up to 16 only
+    // while a captured tail holds the next slot
+    const auto pool=subpool::choose(std::getenv("WWHD_VK_SUBMISSION_POOL"),std::getenv("WWHD_VK_SUBMISSION_POOL8"));
+    R.submissions.resize(pool.slots);
+    submissionPoolSlots=pool.slots;
+    LOG("[vulkan] submission pool %u slots (%s%s); overflow up to %u",pool.slots,pool.source,
+        pool.adjusted ? "; invalid or out-of-range value adjusted" : "",subpool::kMaxSlots);
+  }
   for (auto& slot:R.submissions) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex = R.queueFamily;
@@ -4489,6 +4725,7 @@ void init() {
   if (!R.tv.window)
     exception_report::raise(SDL_GetError());
 #ifdef __ANDROID__
+  quest_theater::initialize();
   // one surface: the GamePad picture is drawn into it (display_modes.h: picture-in-picture, GamePad
   // only), never a window of its own
 #else
@@ -4532,6 +4769,9 @@ void init() {
   input::init();
   install_graphics_menu(R.tv.window);
   ::hostui::load_saved_options();  // graphics and GamePad screen options saved by the settings overlay (settings.ini)
+#ifdef __ANDROID__
+  if (quest_theater::active()) stereo::set_mode(stereo::Off); // opt in using the theater's 3D button
+#endif
 }
 #endif
 void save_renderer_caches() {
@@ -4576,6 +4816,9 @@ void shutdown_renderer_caches() {
   vk::save_shader_cache();
   save_pipeline_cache();
   reset_pass_caches();
+  // The SDL quit path uses _Exit, so static destructors never flush this.
+  // Save after compiler/record workers have joined, including their last events.
+  stutter::trace().flush();
 }
 #ifdef WWHD_SDL_HOST
 // GamePad touch screen: the left mouse button on the GamePad picture, in the GamePad window (window
@@ -4589,8 +4832,9 @@ static bool drc_window_point(float x, float y, float &tx, float &ty) {
   int pw = 0, ph = 0;
   SDL_GetWindowSizeInPixels(R.drc.window, &pw, &ph);
   const float density = SDL_GetWindowPixelDensity(R.drc.window);
-  const float sw = R.drc.scan ? float(R.drc.scan->extent.width) : 854.0f;
-  const float sh = R.drc.scan ? float(R.drc.scan->extent.height) : 480.0f;
+  // the picture's size as the layout sees it (full internal resolution: dynamic resolution, dynres.h)
+  const float sw = R.drc.scan ? nominal_width(R.drc.scan.get()) : 854.0f;
+  const float sh = R.drc.scan ? nominal_height(R.drc.scan.get()) : 480.0f;
   const gfx::Box b = gfx::display_layout(float(pw), float(ph), sw, sh);
   if (b.w <= 0 || b.h <= 0) return false;
   tx = (x * density - b.x) / b.w;
@@ -4993,7 +5237,7 @@ void run_main_loop() {
     }
     if (elapsed >= 0.5 && !input::text_prompt_active()) {
       uint64_t frames = gx2::flips_presented();
-      if (exitFrame && frame_count() >= exitFrame) {
+      if ((exitFrame && frame_count() >= exitFrame) || dsweep::exit_requested()) {
         SDL_Event quit{};quit.type=SDL_EVENT_QUIT;SDL_PushEvent(&quit);
       }
       char title[160];

@@ -5,6 +5,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "interp_pacing.h"
+#include "platform/android_display_rate.h"
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -177,6 +180,47 @@ std::vector<std::string> vulkan_overrides(GetEnv env) {
     return out;
 }
 
+// how a frame rate fps looks on a hz display (interp_pacing.h even_on_display): "60 fps even on it",
+// "40 fps uneven on it (frames shown for 1 and 2 refreshes in turn)"
+static std::string evenness(int fps, int hz) {
+    char s[128];
+    if (interp::pacing::even_on_display(fps, hz)) snprintf(s, sizeof s, "%d fps even on it", fps);
+    else if (hz < fps) snprintf(s, sizeof s, "%d fps uneven on it (some frames never shown)", fps);
+    else snprintf(s, sizeof s, "%d fps uneven on it (frames shown for %d and %d refreshes in turn)", fps, hz / fps, hz / fps + 1);
+    return s;
+}
+
+std::string display_line(const Display& d) {
+    if (d.hz <= 0) return "display: refresh rate unknown";
+    char buf[96];
+    snprintf(buf, sizeof buf, "display: %d Hz", d.hz);
+    std::string s = buf;
+    if (d.overridden) s += " (set by WWHD_DISPLAY_HZ)";
+    else if (d.requestedHz == 0) s += " (requested: system choice)";
+    else if (d.requestedHz > 0) {
+        snprintf(buf, sizeof buf, " (requested %d Hz%s)", d.requestedHz,
+                 android_display_rate::reached(d.hz, d.requestedHz) ? "" : ", not reached");
+        s += buf;
+    }
+    const bool changed = !d.overridden && d.seenLo > 0 && d.seenHi > d.seenLo;
+    if (changed) {
+        snprintf(buf, sizeof buf, ", seen %d-%d Hz since start or reset", d.seenLo, d.seenHi);
+        s += buf;
+    }
+    if (d.fps > 0) {
+        s += "; " + evenness(d.fps, d.hz);
+        // the rate dropped (or rose) to one the frames look uneven on, while even now
+        if (changed && interp::pacing::even_on_display(d.fps, d.hz)) {
+            for (int other : {d.seenLo, d.seenHi}) {
+                if (other == d.hz || interp::pacing::even_on_display(d.fps, other)) continue;
+                snprintf(buf, sizeof buf, ", uneven at %d Hz", other);
+                s += buf;
+            }
+        }
+    }
+    return s;
+}
+
 std::string format(const Info& in) {
     std::string s = "Wind Waker HD " + in.version + " (" + in.commit + ")" + (in.variant.empty() ? "" : " " + in.variant) +
                     ", " + in.os;
@@ -187,9 +231,12 @@ std::string format(const Info& in) {
     if (in.keepGameSpeed >= 0) s += in.keepGameSpeed ? ", keep game speed on" : ", keep game speed off";
     s += std::string(", internal scale ") + scale;
     if (in.bufferCache >= 0) s += in.bufferCache ? ", buffer cache on" : ", buffer cache off";
+    if (in.submissionPool > 0) s += ", submission pool " + std::to_string(in.submissionPool);
     if (!in.gyro.empty()) s += ", gyro " + in.gyro;
     for (size_t i = 0; i < in.overrides.size(); i++) s += (i ? ", " : "; overrides: ") + in.overrides[i];
-    return s + "\n";
+    s += "\n";
+    if (!in.display.empty()) s += in.display + "\n";
+    return s;
 }
 
 }  // namespace reporthdr

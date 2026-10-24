@@ -21,6 +21,22 @@ import java.io.File;
 
 // The game: SDL loads libmain.so and runs its SDL_main (runtime/src/main.cpp).
 public class WwhdActivity extends SDLActivity {
+    @Override protected boolean redirectActivityBeforeNativeStart() {
+        // Shader preparation and test activities own separate SDL lifetimes.
+        // Only the two concrete gameplay entry points participate in routing.
+        if (getClass() != WwhdActivity.class && getClass() != QuestActivity.class) return false;
+        Intent selected = QuestActivity.gameIntent(this);
+        if (selected.getComponent().getClassName().equals(getClass().getName())) return false;
+        // Includes explicit intents and shortcuts created before the theater existed.
+        // SDL has not acquired any global state, so finishing this Activity cannot quit it.
+        Log.i("wwhd", "redirecting game activity to " + selected.getComponent().getClassName());
+        startActivity(selected);
+        finish();
+        return true;
+    }
+
+    public boolean useQuestTheater() { return false; }
+    public boolean isQuestDevice() { return QuestActivity.isQuest(this); }
     public static String downloadCatalogue(String url, String destination, long limit) {
         return HttpsDownload.download(url, destination, limit);
     }
@@ -186,6 +202,7 @@ public class WwhdActivity extends SDLActivity {
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (isRedirectedActivity()) return;
         if (hasFocus) applyFullScreen();  // also after a dialog, the file picker or another app had the screen
         if (hasFocus && gamePadDisplay != null) gamePadDisplay.focusChanged();
     }
@@ -194,6 +211,7 @@ public class WwhdActivity extends SDLActivity {
     // this): follow it right away. Bars shown by something else while full screen: hidden again after a moment.
     @Override public void onSystemUiVisibilityChange(int visibility) {
         super.onSystemUiVisibilityChange(visibility);
+        if (isRedirectedActivity()) return;
         final boolean barsShown = (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0;
         View decor = getWindow().getDecorView();
         decor.removeCallbacks(reapplyFullScreen);
@@ -202,6 +220,7 @@ public class WwhdActivity extends SDLActivity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (isRedirectedActivity()) return;
         if (phoneRumble != null) phoneRumble.setActive(true);
         applyFullScreen();
         // Only start after SDL successfully loaded the native game library.
@@ -245,6 +264,7 @@ public class WwhdActivity extends SDLActivity {
             Log.i("wwhd", "game folder: " + new File(files, "game"));
         }
         super.onCreate(savedInstanceState);
+        if (isRedirectedActivity()) return;
         phoneRumble = new PhoneRumble(this);
         // GamePad screen saved Off: known before onResume acquires a second display (AYN Thor, #222)
         if (!mBrokenLibraries && !isReusingNativeSession())

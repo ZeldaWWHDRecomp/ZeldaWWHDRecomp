@@ -34,24 +34,6 @@ std::string error_text(DWORD code) {
     return (s.empty() ? std::string("error") : s) + " (error " + std::to_string(code) + ")";
 }
 
-// one argument for CreateProcess's command line (the rules CommandLineToArgvW and the C runtime parse)
-std::wstring quote_arg(const std::wstring& a) {
-    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) return a;
-    std::wstring q = L"\"";
-    for (size_t i = 0;; i++) {
-        size_t bs = 0;
-        while (i < a.size() && a[i] == L'\\') i++, bs++;
-        if (i == a.size()) {
-            q.append(bs * 2, L'\\');
-            break;
-        }
-        if (a[i] == L'"') q.append(bs * 2 + 1, L'\\');
-        else q.append(bs, L'\\');
-        q += a[i];
-    }
-    return q + L"\"";
-}
-
 HANDLE g_out = INVALID_HANDLE_VALUE;
 
 void print(const std::string& s) {
@@ -85,6 +67,23 @@ HANDLE open_console(const wchar_t* name) {
 }
 
 }  // namespace
+
+std::wstring quote_arg(const std::wstring& a) {
+    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) return a;
+    std::wstring q = L"\"";
+    for (size_t i = 0;; i++) {
+        size_t bs = 0;
+        while (i < a.size() && a[i] == L'\\') i++, bs++;
+        if (i == a.size()) {
+            q.append(bs * 2, L'\\');
+            break;
+        }
+        if (a[i] == L'"') q.append(bs * 2 + 1, L'\\');
+        else q.append(bs, L'\\');
+        q += a[i];
+    }
+    return q + L"\"";
+}
 
 std::string bundled_python(const std::string& pkg) { return pkg + "tools\\python\\python.exe"; }
 

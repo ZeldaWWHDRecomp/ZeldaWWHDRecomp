@@ -156,4 +156,51 @@ int main(){
   assert(!water_blocked(water(-300,-300,100,300,600),pillared)); // the pillar beside it
   assert(!water_blocked(Solid{},isle)&&!water_blocked(water(-300,-300,300,300,600),Solid{}));
  }
+ { // issue #281: an L-shaped extension by its own triangles. Its box (0..2000 x 0..2000) covers its open corner, where a
+  // villager, Link's start point, an object, a route, another bounds entry (an event area) and a wall of the room are;
+  // its arms (300 wide along x and along z, 400 high) reach none of them: clear. Each of them on an arm: in the way.
+  std::vector<Point> v;std::vector<std::array<uint16_t,3>> t;
+  auto box=[&](Point lo,Point hi){const uint16_t o=uint16_t(v.size());for(unsigned k=0;k<8;++k)v.push_back({k&1?hi.x:lo.x,k&2?hi.y:lo.y,k&4?hi.z:lo.z});
+   for(auto f:{std::array<uint16_t,4>{0,1,3,2},{4,6,7,5},{0,4,5,1},{2,3,7,6},{0,2,6,4},{1,5,7,3}}){t.push_back({uint16_t(o+f[0]),uint16_t(o+f[1]),uint16_t(o+f[2])});t.push_back({uint16_t(o+f[0]),uint16_t(o+f[2]),uint16_t(o+f[3])});}};
+  box({0,0,0},{2000,400,300});box({0,0,300},{300,400,2000});
+  const Solid ell=place_solid(v,t,{0,0,0},{0,0,0},{1,1,1});const Bounds b=ell.bounds;
+  Index idx;idx.coverage.push_back({"sea",11,true,true,true,{}});
+  auto entry=[](const char*tag,const char*name,Point at){LayoutEntry e;e.stage="sea";e.room=11;e.tag=tag;e.name=name;e.position=at;return e;};
+  idx.layout.push_back(entry("ACTR","Uo1",{1400,0,1400}));   // a villager
+  idx.layout.push_back(entry("PLYR","Link",{1100,0,1700}));  // a start point
+  idx.layout.push_back(entry("ACTR","Tt",{1700,0,1000}));    // an object of the island (Tott's name isn't a villager's)
+  idx.routes.push_back({"sea",11,"RPAT:40",{{900,0,2100},{2100,0,900}},kRouteHalfWidth,true,"boat"});  // across the corner
+  idx.bounds.push_back({"sea",11,"event","area",{{1200,0,1200},{1300,100,1300}}});
+  // a wall of the room standing in the corner (two triangles up to 600)
+  auto wall=[&](float x0,float z0,float x1,float z1){for(int k=0;k<2;++k){std::array<Point,3> c=k?std::array<Point,3>{Point{x0,-50,z0},Point{x1,600,z1},Point{x0,600,z0}}:std::array<Point,3>{Point{x0,-50,z0},Point{x1,-50,z1},Point{x1,600,z1}};
+   Bounds wb{{std::min(x0,x1),-50,std::min(z0,z1)},{std::max(x0,x1),600,std::max(z0,z1)}};idx.bounds.push_back({"sea",11,"collision","wall-"+std::to_string(idx.bounds.size()),wb,true,c});}};
+  wall(1500,1300,1500,1700);
+  const auto boxed=check("sea",11,b,idx);
+  std::vector<std::string> kinds;for(const auto&c:boxed)kinds.push_back(c.kind);
+  for(const char*k:{"villager","start point","object","boat route","event","collision"})assert(std::find(kinds.begin(),kinds.end(),k)!=kinds.end());
+  assert(check("sea",11,b,idx,kClearance,&ell).empty());
+  // each of them where an arm is: in the way again, one at a time
+  auto only=[&](Index x){const auto c=check("sea",11,b,x,kClearance,&ell);return c.size()==1?c[0].kind:std::to_string(c.size());};
+  {Index x=idx;x.layout[0].position={1400,0,200};assert(only(x)=="villager");}
+  {Index x=idx;x.layout[1].position={150,0,1700};assert(only(x)=="start point");}
+  {Index x=idx;x.layout[2].position={1700,0,380};assert(only(x)=="object");}             // its 120 reach (+50) from the arm's side at 300
+  {Index x=idx;x.routes[0].points={{-100,0,1000},{900,0,1000}};assert(only(x)=="boat route");}  // through the z arm
+  {Index x=idx;x.routes[0].points={{-100,0,1000},{900,0,1000}};x.routes[0].points[0].y=x.routes[0].points[1].y=2000;assert(check("sea",11,b,x,kClearance,&ell).empty());}  // high above it
+  {Index x=idx;x.bounds[0].bounds={{1000,0,100},{1100,100,200}};assert(only(x)=="event");}
+  const Index base=idx;
+  {Index x=idx;x.bounds.resize(1);wall(1000,-100,1000,700);x.bounds.push_back(idx.bounds.back());x.bounds.push_back(idx.bounds[idx.bounds.size()-2]);
+   x.bounds[0].bounds={{5000,0,5000},{5001,1,5001}};const auto c=check("sea",11,b,x,kClearance,&ell);assert(c.size()==1&&c[0].kind=="collision");}  // a wall through the x arm
+  // ground it stands on (a floor under it, and a slope reaching 100 into it) is not in the way
+  {Index x=idx;x.bounds.clear();x.layout.clear();x.routes.clear();
+   x.bounds.push_back({"sea",11,"collision","floor",{{-500,0,-500},{2500,100,2500}},true,{Point{-500,0,-500},Point{2500,100,-500},Point{-500,0,2500}}});
+   assert(check("sea",11,b,x,kClearance,&ell).empty());assert(check("sea",11,b,x).size()==1);}
+  // the boat's route is said as a boat route; a villager's as before
+  {Index x=base;x.routes[0].user.clear();x.routes[0].points={{-100,0,1000},{900,0,1000}};assert(only(x)=="villager route");}
+ }
+ { // a boat of the layout (ikada, d_a_obj_ikada: its path in the home angle's high byte) names its route a boat route
+  Bytes b=layout();tag(b,40,"ikad");tag(b,44,"a_h\0");u32(b,48,0x00080031);u16(b,64,0x0001);xyz(b,88,{-100,0,0});xyz(b,104,{100,0,0});
+  Index x;std::string why;assert(add_native_layout(x,"test",0,b,&why)&&x.routes.size()==1&&x.routes[0].user=="boat");x.coverage[0].collision=true;
+  const auto c=check("test",0,{{-1,-2,-3},{1,2,3}},x,0);assert(c.size()==1&&c[0].kind=="boat route"&&c[0].message=="a boat route of the island");
+  u16(b,64,0x0100);Index y;assert(add_native_layout(y,"test",0,b,&why)&&y.routes[0].user.empty());  // path 1: not this route
+ }
 }

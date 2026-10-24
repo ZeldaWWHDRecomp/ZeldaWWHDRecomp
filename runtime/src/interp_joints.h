@@ -13,6 +13,15 @@
 // before. Such a joint is drawn at the current step on the next step's blended frames instead of
 // blended from the stale matrix. Joints that are drawn, joints without shapes of their own (bones
 // that only move skinned shapes), and hidden joints that are still being animated keep blending.
+//
+// A joint whose matrix is the same, word for word, on the recorded and the current step did not move:
+// it is drawn as it is and takes no part in the teleport cut. Matrices nobody writes can hold anything:
+// the root joint of Link's hands model is never written (setDrawHandModel writes the pose joints only,
+// the model gets no calc), so it keeps whatever the heap held before the model was created. After some
+// scenes (the Triforce cutscene, then Hyrule Castle) that was 0xFFFFFFFF words, a NaN translation, and
+// the NaN made every step a "teleport": the whole hands model was drawn at the current step while the
+// arms blended, and the hands came loose from the arms on every in-between frame (issue #255, second
+// report). A joint that moves to or from a NaN still cuts.
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -40,13 +49,15 @@ inline uint32_t f_word(float f) {
 }
 
 struct Result {
-    bool cut = false;     // a drawn joint moved further than `cut_dist` (teleport, NaN): show the new step
+    bool cut = false;     // a joint moved further than `cut_dist` (teleport, NaN): show the new step
+    uint32_t cut_joint = 0;  // (the joint that made the cut)
     uint32_t shown = 0;   // stale joints drawn at the current step
 };
 
 // blended frame at `t` between the recorded step `prev` and the current one `cur` (n matrices, guest
 // words) into `out`; `stale_flags` (n entries, may be nullptr) marks the joints to draw at `cur`.
-// `blend(a, b, out, t)` blends two 3x4 float matrices. When the result is a cut, `out` is incomplete.
+// Joints that did not move are copied. `blend(a, b, out, t)` blends two 3x4 float matrices. When the
+// result is a cut, `out` is incomplete.
 template <class Blend>
 Result blend(const uint32_t* prev, const uint32_t* cur, const uint8_t* stale_flags, uint32_t n, float cut_dist, float t,
              uint32_t* out, Blend&& blend_mtx) {
@@ -55,8 +66,9 @@ Result blend(const uint32_t* prev, const uint32_t* cur, const uint8_t* stale_fla
         const uint32_t* pa = prev + kWords * m;
         const uint32_t* pb = cur + kWords * m;
         uint32_t* po = out + kWords * m;
-        if (stale_flags && stale_flags[m]) {
-            if (std::memcmp(pa, pb, 4 * kWords) != 0) r.shown++;
+        const bool moved = std::memcmp(pa, pb, 4 * kWords) != 0;
+        if (!moved || (stale_flags && stale_flags[m])) {  // not moving, or stale: the current step
+            if (moved) r.shown++;
             std::memcpy(po, pb, 4 * kWords);
             continue;
         }
@@ -65,6 +77,7 @@ Result blend(const uint32_t* prev, const uint32_t* cur, const uint8_t* stale_fla
         const float dx = a[3] - b[3], dy = a[7] - b[7], dz = a[11] - b[11];
         if (!(dx * dx + dy * dy + dz * dz <= cut_dist * cut_dist)) {
             r.cut = true;
+            r.cut_joint = m;
             return r;
         }
         blend_mtx(a, b, o, t);

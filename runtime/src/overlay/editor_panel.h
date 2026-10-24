@@ -28,6 +28,7 @@ struct Snapshot {
     Value locations;  // list_locations (refreshed every second)
     Value villagers;  // list_villagers: the game's villagers the NPC catalogue knows, loaded now (twice a second)
     Value stages;     // list_stages: the open mod's stages, built or not (once a second, when it has any)
+    Value model_files;  // list_model_files: the open mod's models, the file each came from, which are watched (twice a second)
     std::vector<editor::LogEntry> log;
 };
 void refresh();               // once per frame, before drawing: the snapshot and finished commands
@@ -47,6 +48,7 @@ void models_area(const Value& m);
 void scenes_area(const Value& m);
 void quests_area(const Value& m);
 void warp_area();
+bool stage_item(std::string& stage, std::string& field);  // the stage item whose handle shows in the picture (stage id, its field)
 void stages_area(const Value& m);      // the Stages tab (editor_stages.cpp): new stages, rooms, rebuild, warp, check, place here
 void camera_test_area();
 void log_area();
@@ -109,6 +111,7 @@ struct WaterDraft {
     bool level_set = false;
     int depth = 200, rim = 0, width = 400, top = 0, bottom = 0, side = 0;  // side 0: the lower side
     bool top_set = false, bottom_set = false, foam = false;
+    bool lava = false;  // pond: a lava pool instead of water
     float floor[3] = {0.48f, 0.55f, 0.36f};
     std::vector<bool> shallow;  // river: per section
     std::string editing;        // the body of water being changed ("" a new one)

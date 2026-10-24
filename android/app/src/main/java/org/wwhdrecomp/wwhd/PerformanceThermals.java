@@ -13,25 +13,33 @@ final class PerformanceThermals {
     }
     static String read(android.content.Context context, int api) {
         if (context == null) return "Thermal: n/a; battery: n/a";
-        String thermal = "n/a", battery = "n/a";
+        int status = -1, tenths = Integer.MIN_VALUE;
         try {
             if (api >= 29) {
                 android.os.PowerManager power = (android.os.PowerManager)
                     context.getSystemService(android.content.Context.POWER_SERVICE);
                 if (power != null) {
-                    thermal = statusName(power.getCurrentThermalStatus());
+                    status = power.getCurrentThermalStatus();
                 }
             }
         } catch (RuntimeException ignored) { /* Optional public telemetry may be unavailable. */ }
         try {
             android.content.Intent b = context.registerReceiver(null,
                 new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
-            if (b != null) {
-                int t = b.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-                battery = batteryTemperature(t);
-            }
+            if (b != null) tenths = b.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
         } catch (RuntimeException ignored) { /* A missing value is n/a, never a made-up zero. */ }
-        return "Thermal: " + thermal + "; battery: " + battery;
+        // A SEVERE status no temperature backs up (issue #254) is named as such, logged once.
+        float hottestCore = status == SetupPolicy.THERMAL_SEVERE ?
+            SetupPolicy.hottestCoreSensor(new java.io.File("/sys")) : Float.NaN;
+        boolean unreliable = SetupPolicy.thermalStatusUnreliable(status, tenths, hottestCore);
+        if (unreliable && !loggedUnreliable) {
+            loggedUnreliable = true;
+            android.util.Log.i("wwhd", "thermal status " + statusName(status) + " looks unreliable (battery " +
+                batteryTemperature(tenths) + ", CPU/GPU " + SetupPolicy.coreText(hottestCore) + ")");
+        }
+        return "Thermal: " + SetupPolicy.reportThermal(status, tenths, hottestCore) + "; battery: " + batteryTemperature(tenths);
     }
+
+    private static boolean loggedUnreliable;
 
 }

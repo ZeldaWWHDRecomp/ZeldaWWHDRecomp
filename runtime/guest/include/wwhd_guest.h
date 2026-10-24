@@ -218,7 +218,7 @@ enum { WWHD_HUD_RECT=0,WWHD_HUD_TEXT=1,WWHD_HUD_IMAGE=2,WWHD_HUD_RECT_OUTLINE=3,
 enum { WWHD_HUD_CENTER=0,WWHD_HUD_TOP_LEFT=1,WWHD_HUD_TOP=2,WWHD_HUD_TOP_RIGHT=3,
        WWHD_HUD_LEFT=4,WWHD_HUD_RIGHT=5,WWHD_HUD_BOTTOM_LEFT=6,WWHD_HUD_BOTTOM=7,WWHD_HUD_BOTTOM_RIGHT=8 };
 enum { WWHD_HUD_ALPHA=0,WWHD_HUD_ADDITIVE=1 };
-enum { WWHD_HUD_PACKAGE=0,WWHD_HUD_DATA=1 };
+enum { WWHD_HUD_PACKAGE=0,WWHD_HUD_DATA=1,WWHD_HUD_GAME=2 };
 typedef struct {
     u32 kind,anchor,blend;
     f32 x,y,w,h,size,thickness,rotation;
@@ -239,6 +239,10 @@ u32 wwhd_hud_emit(u32 list,const wwhd_hud_element* element);
  * refuse the module at load, rather than silently drawing without clipping. */
 u32 wwhd_hud_clip(u32 list,const wwhd_hud_element* element);
 /* PNG path relative to this package's assets/ or textures/, or this mod's Data folder.
+ * WWHD_HUD_GAME: a texture of the game's own layout art, read from the player's installed 2D pack of
+ * the running language: "<Layout>/<texture>" (e.g. "Map_00/MapShip_00^t"), optionally "#<material>" to
+ * colour it with that material's black/white colours as the game does, and "@2".."@4" at the end to get it
+ * enlarged that many times (Lanczos-3, sharpened; for small art drawn large). Older hosts return zero.
  * Returns an owned handle, zero on failure. Reuse handles between logic steps. */
 u32 wwhd_hud_texture(u32 source,const char* path);
 u32 wwhd_hud_release(u32 image);
@@ -359,3 +363,49 @@ s32 wwhd_item_count(const char* item_id);
 /* An item with "use": {"action": "event"}: how often the player used it (X, Y or R, or the bag) since
  * the last call (the count is read and cleared; at most 255). */
 s32 wwhd_item_used(const char* item_id);
+
+/* A pane of the game's own layout art (see WWHD_HUD_GAME): centre and size in the layout's root
+ * coordinates (+y up; parents' translation and scale applied, rotation not), its own Z rotation in
+ * degrees, alpha, and for a picture pane its first texture's name (without ".bflim").
+ * Returns 1 when found; 0 for a missing pane or an older host. Read it once, it doesn't change. */
+typedef struct {
+    u32 version, flags; /* flags: 1 visible (with its parents), 2 picture pane */
+    f32 x, y, w, h, rotation;
+    u32 alpha;
+    char texture[32];
+} wwhd_game_pane;
+#ifdef __cplusplus
+static_assert(sizeof(wwhd_game_pane) == 64, "wwhd_game_pane layout");
+#else
+_Static_assert(sizeof(wwhd_game_pane) == 64, "wwhd_game_pane layout");
+#endif
+/* Structured query type 6: key "layout-pane:<Layout>/<pane>" (at most 63 bytes). The key
+ * "layout-texture:<Layout>/<texture>" instead checks that a texture exists without loading it:
+ * flags 4, w/h its size. */
+static inline u32 wwhd_game_pane_get(const char* key, wwhd_game_pane* pane) {
+    return wwhd_setting_get(key, 6, pane, sizeof(*pane)) == sizeof(*pane);
+}
+
+/* Optional current-room map from a mod stage. Returns 1 with a 808-byte output,
+ * 0 for no map or an older host. Call in a HUD callback. cached_revision is zero
+ * after an epoch change or release. A changed revision creates an owned HUD image;
+ * release the old one. Otherwise image is zero and the caller keeps its image.
+ * Markers are already compass/chest filtered. No game-owned pointers are exposed. */
+typedef struct {
+    u32 version, image, revision;
+    s32 floor;
+    f32 bounds[4];
+    u32 marker_count, reserved;
+    struct { f32 x, z; u32 kind; } markers[64]; /* 1 chest, 2 boss door */
+} wwhd_dungeon_room;
+#ifdef __cplusplus
+static_assert(sizeof(wwhd_dungeon_room) == 808, "wwhd_dungeon_room layout");
+#else
+_Static_assert(sizeof(wwhd_dungeon_room) == 808, "wwhd_dungeon_room layout");
+#endif
+/* Structured query type 5 on the existing optional settings/query transport.
+ * Hosts predating this key/type return zero without touching the output. */
+static inline u32 wwhd_dungeon_room_get(wwhd_dungeon_room* room, u32 cached_revision) {
+    room->revision = cached_revision;
+    return wwhd_setting_get("mod-stage.current-room-map", 5, room, sizeof(*room)) == sizeof(*room);
+}

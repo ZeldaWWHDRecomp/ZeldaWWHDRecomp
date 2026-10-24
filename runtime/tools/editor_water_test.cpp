@@ -95,6 +95,42 @@ Params pond_params() {
     p.ground = {{-500 + 1000, -400 + 2000, 90}, {500 + 1000, -400 + 2000, 110}};  // two banks known, three not
     return p;
 }
+// a lava pool: a pond with `lava`: col_lava at the level, the bowl and the banks rock, the game's lava as its one surface
+void lava_pool() {
+    Params p = pond_params();
+    p.foam = false;
+    p.lava = true;
+    Built b;
+    std::vector<Problem> problems;
+    CHECK(build(p, {1000, 2000}, 100, b, problems) && problems.empty());
+    CHECK(b.material == kLavaMaterial && std::string(kLavaMaterial) == "lava");
+    const Value doc = doc_of(b.main);
+    CHECK((material_names(doc) == std::vector<std::string>{"bed", "bank1", "bank2", "bank3", "bank4", "col_lava", "col_stone"}));
+    size_t lava = 0;
+    for (size_t t = 0; t < b.collision_faces.size(); t++) {
+        CHECK(b.collision_materials[t] == "col_lava" || b.collision_materials[t] == "col_stone");
+        if (b.collision_materials[t] != "col_lava") continue;
+        ++lava;
+        for (auto i : b.collision_faces[t]) CHECK(b.collision_points[i][1] == 0);
+    }
+    CHECK(lava > 0);
+    static_models::ModelInfo info;
+    std::string why;
+    CHECK(valid(b.main, true, info, why));
+    CHECK(valid(b.surface, false, info, why) && info.material_count == 1 && (material_names(doc_of(b.surface)) == std::vector<std::string>{"surface"}));
+    // the parameters ride along (with "lava") and come back as they were; a pond without lava keeps its text
+    Params back;
+    CHECK(params_from_glb(b.main, back, why) && back.lava && params_text(back) == params_text(p));
+    CHECK(params_text(p).find("\"lava\":true") != std::string::npos && params_text(pond_params()).find("lava") == std::string::npos);
+    // parse: a lava pool's floor is dark rock unless given; no foam; only a pond
+    Params q;
+    CHECK(parse("pond", json(R"({"points": [[0, 0], [400, 0], [0, 400]], "lava": true})"), {}, 0, q, why) && q.lava && q.floor == kLavaFloor);
+    CHECK(!parse("pond", json(R"({"points": [], "lava": true, "foam": true})"), {}, 0, q, why) && why.find("foam") != std::string::npos);
+    CHECK(!parse("river", json(R"({"points": [], "lava": true})"), {}, 0, q, why) && why.find("pond") != std::string::npos);
+    CHECK(!parse("pond", json(R"({"points": [], "lava": 1})"), {}, 0, q, why));
+    const Value v = to_value(back, {1000, 2000}, 100);
+    CHECK(v.get("lava").boolean);
+}
 Params river_params() {
     Params p;
     p.kind = "river";
@@ -350,6 +386,7 @@ int main(int argc, char** argv) {
     }
     pieces();
     pond();
+    lava_pool();
     river();
     waterfall();
     parameters();

@@ -19,9 +19,9 @@ template<unsigned N> void bounded_listener(uint32_t,uint32_t,uint16_t) noexcept 
 void original(Cpu*c,uint32_t f){assert(f==0x025E10E0||f==0x025DD414||f==0x025D4B4C);if(f==0x025D4B4C&&c->r[3]==0x10000000)assert(retired_actor==c->r[3]);++originals;c->r[3]=0x12345678;}}
 int main(){
 #ifdef _WIN32
-assert(VirtualAlloc(mem::ptr(0x60000000),0x1000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
+assert(VirtualAlloc(mem::ptr(0x60000000),0x4000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
 #else
-assert(mmap(mem::ptr(0x60000000),0x1000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
+assert(mmap(mem::ptr(0x60000000),0x4000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
 #endif
 #ifdef _WIN32
 assert(VirtualAlloc(mem::ptr(0x10000000),0x1000,MEM_COMMIT|MEM_RESERVE,PAGE_READWRITE));
@@ -56,6 +56,12 @@ for(unsigned i=1;i<10;++i)for(unsigned fn:{0x025E10E0u,0x025DD414u}){
 }
 for(unsigned i=1;i<10;++i){const uint32_t at=0x60000000+i*0x100;assert(!add(ids[i],0x60000000));assert(add(ids[i],at)&&add(ids[i],at));}
 assert(!add(0x7FF4,0x60000A00)&&!add(0x7FFF,0x60000A00));
+// refusals name their cause
+{std::string why;assert(!add(0x7FFF,0x60000A00,nullptr,&why)&&why=="profile 7FFF at 60000A00: not a reserved profile ID");
+ assert(!add(0x7FFA,0x60000A00,nullptr,&why)&&why=="profile 7FFA at 60000A00: already registered at another address");
+ assert(!add(0x7FF4,0x60000100,nullptr,&why)&&why=="profile 7FF4 at 60000100: the storage names another profile");}
+// remove undoes one add (same ID and storage only) and the slot can be taken again
+assert(!remove(0x7FFA,0x60000A00)&&remove(0x7FFA,0x60000400)&&!remove(0x7FFA,0x60000400)&&add(0x7FFA,0x60000400));
 assert(!add(0x7FFA,0x60000A00)); // Changed address rejected even with matching native profile ID.
 assert(install(conflict,replace)&&hooks.size()==3);
 for(unsigned i=0;i<10;++i){
@@ -76,4 +82,8 @@ Cpu c{};c.r[3]=0x10000000;c.r[4]=0x87654321;c.f[1].ps0=3.25;
 Cpu expected=c;expected.r[3]=0x12345678;
 hooks.at(0x025D4B4C)(&c);
 assert(notifications==1&&originals==16&&std::memcmp(&expected,&c,sizeof c)==0);
+// every reserved ID (7FD0..7FFE) fits at once: the editor installs all enemy kinds, props, the mod actor,
+// world objects, grapple targets, switches and doors together (a 32-entry table refused the door)
+for(uint16_t id=0x7FD0;id<=0x7FF4;++id){const uint32_t at=0x60001000+uint32_t(id-0x7FD0)*0x40;st16(at+8,id);std::string why;assert(add(id,at,nullptr,&why)&&why.empty());}
+{Cpu c{};c.r[3]=0x7FD0;hooks.at(0x025E10E0)(&c);assert(c.r[3]==0x60001000);}
 }

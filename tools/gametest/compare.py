@@ -20,12 +20,19 @@ import sys
 def origin(run):
     # ALIGN=link: runs are aligned on Link's first execute (profile 00A8 in the digest)
     if os.environ.get("ALIGN") == "link":
+        if not os.path.exists(os.path.join(run, "digest.txt")):
+            print("%s: no digest.txt (the run did not take place)" % run)
+            return None
         for l in open(os.path.join(run, "digest.txt"), errors="replace"):
             p = l.split()
             if len(p) > 2 and p[2] == "00A8":
                 return int(p[0])
         return None
-    for l in open(os.path.join(run, "log"), errors="replace"):
+    log = os.path.join(run, "log")
+    if not os.path.exists(log):  # (no such run: e.g. FPS without 30 compares against new30)
+        print("%s: no log (the run did not take place)" % run)
+        return None
+    for l in open(log, errors="replace"):
         m = re.search(r"\[test\] origin.*logic step (\d+)", l)
         if m:
             return int(m.group(1))
@@ -33,8 +40,15 @@ def origin(run):
 
 
 def lines(run, name):
+    # (a run stopped right after its end may have written its last line only in part: left out)
     p = os.path.join(run, name)
-    return open(p, errors="replace").read().splitlines() if os.path.exists(p) else []
+    if not os.path.exists(p):
+        return []
+    text = open(p, errors="replace").read()
+    out = text.splitlines()
+    if out and not text.endswith("\n"):
+        out.pop()
+    return out
 
 
 def by_step(run, name, stepcol, drop=(), s0=0, end=None):
@@ -54,8 +68,9 @@ def by_step(run, name, stepcol, drop=(), s0=0, end=None):
 
 
 def first_diff(a, b, label, show=2):
-    # a run killed right after the end may not have flushed its last lines: common range only
-    last = min(max(a, default=0), max(b, default=0))
+    # a run killed right after the end may not have flushed its last lines: common range only, without
+    # the last step of the shorter run (a step's lines may have been written in part)
+    last = min(max(a, default=0), max(b, default=0)) - 1
     ks = sorted(k for k in set(a) | set(b) if k <= last)
     nd = [k for k in ks if a.get(k) != b.get(k)]
     res = "%-7s %5d steps, %s" % (label, len(ks), "identical" if not nd else "%d differ, first at step %d (t=%.2f s)" % (len(nd), nd[0], nd[0] / 30))

@@ -1,8 +1,9 @@
 // Signalling-NaN counter (local diagnostic): built only with the CMake option WWHD_SNAN_COUNT=ON, logs
 // only with the environment variable WWHD_SNAN_COUNT=1. ppc.h calls wwhd_snan_hit() when a float load
-// (lfs, psq_l) or store (stfs, psq_st) of the game code meets a signalling-NaN bit pattern, which the
-// host's f32 <-> f64 conversion would turn into a quiet NaN (the original hardware keeps it on a pure
-// load/store). Each call site (the game function and the host offset in it) is counted.
+// (lfs, psq_l) or store (stfs, psq_st) of the game code meets a signalling-NaN bit pattern (ppc.h moves
+// it bit-exactly like the original hardware; a host f32 <-> f64 conversion would quiet it). Each call site
+// (the game function and the host offset in it) is counted. Raw lfs -> stfs copies (tools/recomp/rawstore.py)
+// load and store the word without these checks.
 //
 // captures/snan.log (next to wwhd.log; appended, one block per session):
 //   # session <local time> build <version> <commit> pid <pid>

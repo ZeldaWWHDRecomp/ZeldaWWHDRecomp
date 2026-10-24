@@ -280,6 +280,13 @@ void stage_commands(const fs::path& root) {
     r = s.run("add_room", json(R"({"stage": "keep", "ground": "assets/room.glb"})"));
     CHECK(ok(r));
     CHECK(s.manifest("dun")->get("stages").array[0].get("rooms").array.size() == 2);
+    // "kit" is a room number or {stage, room} (a parameter of two types); other values are refused
+    CHECK(ok(s.run("add_room", json(R"({"stage": "keep", "ground": "assets/room.glb", "kit": {"stage": "Hyroom", "room": 0}})"))));
+    CHECK(s.manifest("dun")->get("stages").array[0].get("rooms").array[2].get("kit").get("stage").string() == "Hyroom");
+    CHECK(ok(s.run("add_room", json(R"({"stage": "keep", "ground": "assets/room.glb", "kit": 0})"))));
+    CHECK(!ok(s.run("add_room", json(R"({"stage": "keep", "ground": "assets/room.glb", "kit": "Hyroom"})"))));
+    CHECK(ok(s.run("undo")) && ok(s.run("undo")));
+    CHECK(s.manifest("dun")->get("stages").array[0].get("rooms").array.size() == 2);
     // Check lists the room nothing leads to; export refuses it; saving keeps the work
     auto reach_problem = [&] {
         const Value checked = s.run("check_package");
@@ -310,12 +317,42 @@ void stage_commands(const fs::path& root) {
     CHECK(!reach_problem());
     const Value check = s.run("check_stage", json(R"({"stage": "keep"})")).get("result");
     CHECK(check.get("errors").number == 0);
+    // the game's lava floor at Link's feet, turned his way, with its size (default 10 m square), and the heat haze;
+    // its size changes with set_stage_field (the picture's corner handle and the Stages panel use it); one undo step each
+    host.where.angle = 0x4000;  // facing +x
+    r = s.run("place_in_stage", json(R"({"stage": "keep", "what": "lava", "size": {"x": 2000, "z": 1200}})"));
+    CHECK(ok(r));
+    {
+        const Value& lava = r.get("result").get("added");
+        CHECK(lava.get("actor").string() == "lava" && lava.get("id").string() == "lava" && lava.get("size").get("x").number == 2000 &&
+              lava.get("size").get("z").number == 1200 && lava.get("angle").number == 90 && lava.get("position").get("x").number == 100 &&
+              lava.get("position").get("z").number == 200);
+    }
+    r = s.run("place_in_stage", json(R"({"stage": "keep", "what": "lava"})"));
+    CHECK(ok(r) && r.get("result").get("added").get("id").string() != "lava" && r.get("result").get("added").get("size").get("x").number == 1000);
+    CHECK(ok(s.run("undo")));
+    r = s.run("place_in_stage", json(R"({"stage": "keep", "what": "lava", "size": {"x": 50, "z": 1200}})"));
+    CHECK(!ok(r) && error_of(r).find("lava's size") != std::string::npos);
+    r = s.run("place_in_stage", json(R"({"stage": "keep", "what": "heat_shimmer"})"));
+    CHECK(ok(r) && r.get("result").get("added").get("actor").string() == "heat_shimmer" && r.get("result").get("added").get("size").type == Value::Null);
+    {
+        const auto& acts = s.manifest("dun")->get("stages").array[0].get("rooms").array[0].get("actors").array;
+        CHECK(acts.size() == 4 && acts[2].get("actor").string() == "lava" && acts[3].get("actor").string() == "heat_shimmer");
+    }
+    r = s.run("set_stage_field", json(R"({"stage": "keep", "field": "rooms/0/actors/2/size", "value": {"x": 3000, "z": 800}})"));
+    CHECK(ok(r) && s.manifest("dun")->get("stages").array[0].get("rooms").array[0].get("actors").array[2].get("size").get("x").number == 3000);
+    // a size the stage can't have is refused (the manifest's own check)
+    r = s.run("set_stage_field", json(R"({"stage": "keep", "field": "rooms/0/actors/2/size", "value": {"x": 30000, "z": 800}})"));
+    CHECK(!ok(r) && s.manifest("dun")->get("stages").array[0].get("rooms").array[0].get("actors").array[2].get("size").get("x").number == 3000);
+    CHECK(ok(s.run("undo")) && s.manifest("dun")->get("stages").array[0].get("rooms").array[0].get("actors").array[2].get("size").get("x").number == 2000);
+    CHECK(ok(s.run("redo")) && s.manifest("dun")->get("stages").array[0].get("rooms").array[0].get("actors").array[2].get("size").get("x").number == 3000);
+    host.where.angle = 0;
     // at = position, in a room of the stage while Link is elsewhere
     host.where.stage = "sea", host.where.room = 34;
     r = s.run("place_in_stage", json(R"({"stage": "keep", "what": "pot", "at": "position", "room": 1, "position": {"x": 10, "y": 0, "z": 10}})"));
     CHECK(ok(r));
     const Value& keep = s.manifest("dun")->get("stages").array[0];
-    CHECK(keep.get("rooms").array[1].get("actors").array.size() == 1 && keep.get("rooms").array[0].get("actors").array.size() == 2);
+    CHECK(keep.get("rooms").array[1].get("actors").array.size() == 1 && keep.get("rooms").array[0].get("actors").array.size() == 4);
     CHECK(keep.get("doors").array.size() == 1);
     // one undo step each
     CHECK(ok(s.run("undo")) && s.manifest("dun")->get("stages").array[0].get("rooms").array[1].get("actors").array.empty());

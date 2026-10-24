@@ -17,10 +17,14 @@
 //   - a game assertion is logged with the stage.
 // Save states made in a mod stage are refused when the package that makes it is not installed.
 #pragma once
+#include "story_world_manifest.h"
+#include <functional>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include <memory>
+#include "mod_stages_corner.h"
 #include "mod_json.h"
 #include "mod_stages_files.h"
 #include "mod_stages_manifest.h"
@@ -75,13 +79,34 @@ bool missing(const std::string& stage);
 // The stages of the player's game files a mod stage can take as its template (the stage builder's --templates:
 // {stage, rooms, sky, doors}), read once; empty with `why` when the builder can't run.
 Value templates(const std::string& game_dir, std::string& why);
+// A kit room's materials (the stage builder's --kit-materials): {materials: [{material, textures, triangles,
+// uv_min, uv_max}], main}, names and numbers only.
+Value kit_materials(const std::string& game_dir, const std::string& stage, unsigned room, std::string& why);
+// A room of the game or a game piece as a GLB file for Blender (tools/story_mods/export_glb.py): `what` is the
+// tool's selection (--stage S --room N, or --piece ID --recipe FILE) and options; the result is the tool's summary
+// {file, bytes, triangles, vertices, materials, textures, texture_names, collision_triangles, surfaces, actors,
+// warnings}. The file is the player's own copy of game content: it goes to their exports folder only.
+Value export_glb(const std::string& game_dir, const std::string& out, const std::vector<std::string>& what, std::string& why);
 // once per game logic pass (guest_mods logic_service): the entries' boxes
 void logic(Cpu* c);
 // The "stage" action of a mod's talk or scene: Link goes into the mod's own stage `id` (room, spawn point) with
 // a fade. False (and logged) when the stage isn't built or has no such spawn.
 bool enter_stage(const std::string& mod, const std::string& id, unsigned room, unsigned point);
+// The package's story actions (story_actors::actions) for a stage's "then": a chest opened, a darknut defeated,
+// an entry or a warp taken.
+void set_story_actions(std::function<bool(const std::string& mod, const std::vector<story_notebook::StoryAction>&)> run);
 // daPy_lk_c::execute, before and after the game's own (climb.cpp's hook): an updraft entry lifting Link
 void link_step(Cpu* c, uint32_t link, bool before);
+// Current room's existing map pixels and world bounds, for read-only corner maps.
+// Called on the game thread; shared pixels survive an editor rebuild.
+struct CornerMap {
+    uint32_t revision = 0, width = 0, height = 0;
+    int floor = 1;
+    float bounds[4] = {};
+    std::shared_ptr<std::vector<uint8_t>> rgba;
+    std::vector<CornerMarker> markers;
+};
+bool corner_map(CornerMap& out);
 // whether the chest with that flag of the stage Link is in is open (its working record)
 bool chest_open(unsigned flag);
 

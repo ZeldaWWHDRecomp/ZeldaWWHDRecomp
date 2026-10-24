@@ -18,7 +18,42 @@ struct NativeActor {
     std::string tag, name;
     uint32_t params = 0;
     uint16_t angle_x = 0, angle_z = 0x00FF;
+    bool scalable = false;  // the game's scaled-actor table (SCOB) can hold it with a size: the large tree
+    // a scaled entry (SCOB, 0x24 bytes): its three scale bytes (tenths)
+    bool scaled = false;
+    uint8_t scale[3] = {10, 10, 10};
 };
+
+// The game's trees: the variants of the stage actor "tree" (their models, collision, sway and cutting are the
+// game's own). "small" and its groups are the islands' small trees, "bushy" a round bushy one, "large" the big
+// leafy tree (it can be scaled 0.5 to 1.5), "palm" the palm tree.
+struct TreeKind {
+    const char* variant;
+    const char* name;
+    uint32_t params;
+    bool scalable;
+};
+inline constexpr TreeKind kTrees[] = {
+    {"small", "swood", 0x00000010u, false},    // one small tree
+    {"small_3", "swood", 0x00000013u, false},  // a group of three
+    {"small_5", "swood", 0x00000017u, false},  // a group of five
+    {"bushy", "woodb", 0x00000000u, false},
+    {"large", "lwood", 0xFFFFFFFFu, true},
+    {"palm", "Oyashi", 0xFFFFFFFFu, false},
+};
+inline constexpr double kTreeScaleMin = 0.5, kTreeScaleMax = 1.5;
+
+// The game's lava and its heat. "lava" is the game's magma floor (the actor the game's lava rooms place, "magma": its
+// glowing, moving lava surface drawn at the actor's height over an area of its scale, as in Dragon Roost Cavern, the
+// lava caves and Fire Mountain); its parameter word 0xFFFFFF00 gives it no rising bubbles (those follow a room path of
+// the game's own rooms). The floor is half 50 units per scale step wide on each axis: a `size` (game units, x and z)
+// takes size / 100 steps. "heat_shimmer" is Dragon Roost's heat haze ("YkgrON", on, no path).
+inline constexpr uint32_t kLavaParams = 0xFFFFFF00u, kHeatShimmerParams = 0x0010FF00u;
+inline constexpr double kLavaStep = 100;  // game units of a lava floor's width per scale step
+inline uint8_t lava_scale(double size) {
+    const double steps = size / kLavaStep;
+    return uint8_t(steps < 1 ? 1 : steps > 255 ? 255 : int(steps + 0.5));
+}
 
 // The chest items: the game's item number and the chest it comes in (the game's small chest for a small key,
 // the larger one for the map and compass, the big one for the boss key).
@@ -42,13 +77,22 @@ inline const ChestItem* chest_item(const std::string& item) {
 }
 
 // the kinds, for messages
-inline constexpr const char* kKinds = "chuchu, bokoblin, keese, darknut, pot, big_pot or chest";
+inline constexpr const char* kKinds = "chuchu, bokoblin, keese, darknut, pot, big_pot, tree, chest, lava or heat_shimmer";
 
 // `actor`/`variant` -> the native entry; a chest's `flag` is its chest bit (0..31). False with a reason.
 inline bool native_actor(const std::string& actor, const std::string& variant, const std::string& item, unsigned flag, NativeActor& out,
-                         std::string& why) {
+                         std::string& why, double size_x = 0, double size_z = 0) {
     out = NativeActor{};
     out.tag = "ACTR";
+    if (actor == "lava" || actor == "heat_shimmer") {
+        if (!variant.empty()) return why = actor + " has no variants", false;
+        if (actor == "heat_shimmer") return out.name = "YkgrON", out.params = kHeatShimmerParams, true;
+        if (!(size_x > 0) || !(size_z > 0)) return why = "lava needs its size (x and z, game units)", false;
+        out.tag = "SCOB", out.name = "magma", out.params = kLavaParams, out.scaled = true;
+        out.scale[0] = lava_scale(size_x), out.scale[1] = 10, out.scale[2] = lava_scale(size_z);
+        out.angle_z = 0;
+        return true;
+    }
     if (actor == "chest") {
         const ChestItem* c = chest_item(item);
         if (!c) return why = "a chest holds small_key, map, compass, boss_key or heart_container", false;
@@ -58,6 +102,12 @@ inline bool native_actor(const std::string& actor, const std::string& variant, c
         out.params = 0xFF000000u | uint32_t(c->shape) << 20 | uint32_t(flag) << 7;  // no switch, the chest's flag
         out.angle_z = uint16_t(c->number << 8 | 0xFF);                                // the item, no opening switch
         return true;
+    }
+    if (actor == "tree") {
+        const std::string v = variant.empty() ? "small" : variant;
+        for (const auto& t : kTrees)
+            if (v == t.variant) return out.name = t.name, out.params = t.params, out.scalable = t.scalable, true;
+        return why = "tree: unknown variant \"" + variant + "\" (small, small_3, small_5, bushy, large, palm)", false;
     }
     if (!variant.empty() && (actor == "pot" || actor == "big_pot")) return why = actor + " has no variants", false;
     if (actor == "pot") return out.name = "kotubo", out.params = 0x707FFF3Fu, true;

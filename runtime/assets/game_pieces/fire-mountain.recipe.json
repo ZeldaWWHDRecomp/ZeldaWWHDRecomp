@@ -1,0 +1,84 @@
+{
+  "game_pieces_format": 1,
+  "set": "fire-mountain",
+  "label": "Fire Mountain ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room20.szs",
+    "room": 20
+  },
+  "memory": {
+    "archive_bytes": 1523712,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "fire-mountain",
+      "since": 5,
+      "category": "Islands",
+      "label": "Fire Mountain ground",
+      "description": "a volcano of dark rock without its lava; its crater is a pit that sends Link back",
+      "volume": [
+        -22756,
+        -615,
+        -21796,
+        -16789,
+        2521,
+        -17685
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "iwa_a",
+            "iwa_b",
+            "mountain"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "harituki",
+          "iwa_1",
+          "iwa_2",
+          "teppen",
+          "iti",
+          "yon",
+          "ni",
+          "san",
+          "noboru_tukamaru",
+          "Water",
+          "Hole_huti",
+          "Hole_kabe",
+          "Hole_soko"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD20.szs",
+        "triangles": 692
+      },
+      "expect": {
+        "triangles": [
+          692
+        ],
+        "textures": [
+          [
+            "Txa_test_kazan_a",
+            "Txa_test_kazan_b",
+            "Txq_hs_iwakabe_kuroana"
+          ]
+        ],
+        "collision_triangles": 644
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include "device_choice.h"
 struct SDL_Window;
 namespace gfxvk {
@@ -29,9 +30,12 @@ bool present_mode_from_env();        // WWHD_VK_PRESENT_MODE chose it (not saved
 bool present_mode_offered(int mode); // the TV window's surface advertises it (known once the swapchain exists)
 void set_present_modes_offered(unsigned mask);
 const char* present_mode_name(int mode);  // "fifo", "mailbox", "immediate"
-// the mode the swapchains use: present_mode(), or while uncapped (gx2::uncapped, debug) immediate
+// the mode the swapchains use: present_mode(), or during Fast Forward / debug uncapped, immediate
 // or mailbox, whichever the surface offers
 int effective_present_mode();
+// Fast Forward may omit host presentations when all swapchain images are busy.
+// GPU completion and the virtual guest-vsync schedule are retained.
+uint64_t present_acquire_timeout(bool secondary);
 // Returns true for reserved graphics keys, including unavailable effects.
 bool graphics_hotkey(char key, bool activate);
 #ifdef __APPLE__

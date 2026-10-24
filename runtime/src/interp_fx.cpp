@@ -31,6 +31,7 @@
 // logs n samples per part; WWHD_INTERP_FX_STATS=1 logs counts every 300 steps.
 // test aids: WWHD_SEA_WAVES=1 (full waves everywhere), WWHD_FORCE_RAIN=n (rain count).
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -38,12 +39,16 @@
 #include <cstdarg>
 #include <cstdio>
 #include <initializer_list>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "guest_addr.h"
 #include "interp_pacing.h"
+#include "interp_fade.h"
+#include "interp_slots.h"
+#include "interp_trail.h"
 #include "runtime.h"
 #include "true60.h"
 
@@ -59,6 +64,16 @@ uint64_t hold_pass_count();  // record passes so far (step stamp of the historie
 uint64_t pass_count();       // every pass
 void blend_world_matrix(const float* a, const float* b, float* out, float t);
 uint64_t logic_steps();   // logic steps run so far
+float display_t();        // blend fraction of the pass being drawn or painted (interp.cpp)
+bool display_record();    // the pass being drawn or painted is the record pass
+// 40 fps blended record pass (interp.cpp): drawn blended (pass_t()) and recorded for the next step;
+// its records are stamped record_stamp() (the hold pass count the next pass sees), and its blends
+// use the records they replace (pacing::replace_record)
+bool record_blended();
+uint64_t record_stamp();
+bool display_record_blended();    // (the pass being drawn or painted)
+uint64_t display_record_stamp();
+void exact_after_pass(uint32_t ea, uint32_t value, int size);  // (blended record pass: put back before the next logic)
 }  // namespace interp
 
 extern "C" {
@@ -105,7 +120,7 @@ using interp::pacing::lerp_s16;
 using interp::pacing::lerp_u8;
 
 int trace_left(int part) {
-    static int left[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    static int left[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     if (left[part] < 0) left[part] = getenv("WWHD_INTERP_FX_TRACE") ? atoi(getenv("WWHD_INTERP_FX_TRACE")) : 0;
     return left[part] > 0 ? left[part]-- : 0;
 }
@@ -265,7 +280,8 @@ struct AnmRec {
     float frame = 0;
     uint64_t pass = 0;
 };
-std::unordered_map<uint32_t, AnmRec> g_anm;
+std::unordered_map<uint32_t, AnmRec> g_anm, g_anm_before;  // (before: blended record pass)
+std::vector<uint32_t> g_anm_blended;  // animators evaluated at a blended frame since the last logic pass
 struct { uint32_t blended = 0, wrapped = 0, jumped = 0; } g_astats;
 
 // frame at t between a (drawn at step S) and b (step S+1); returns b when it is not a small step
@@ -339,6 +355,18 @@ void temp_blend_s16(uint32_t a, int16_t prev, float t) {
     g_temp.push_back(e);
     st32(w, temp_value(e, t));
 }
+// as temp_blend_f32, for a word that may already be blended in this pass: its entry takes the new
+// exact value (a value the game changed twice in one pass is put back to its last exact value)
+void temp_blend_f32_again(uint32_t a, uint32_t prev, float t) {
+    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it)
+        if (it->addr == a && it->kind == kF32) {
+            it->exact = ld32(a);
+            it->prev = prev;
+            st32(a, temp_value(*it, t));
+            return;
+        }
+    temp_blend_f32(a, prev, t);
+}
 void temp_restore() {
     for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it) st32(it->addr, it->exact);
     g_temp_keep.swap(g_temp);
@@ -354,23 +382,42 @@ bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fab
 // ---------------------------------------------------------------------------------------------
 // Grass, trees and flowers (and other drawing effects: cloth, hookshot chain, Link's sparkles) use
 // g_Counter.mTimer (101FF560) as their clock; dScnPly_Draw increments it in its world-system
-// block, which true60.cpp (site_025B00B0) runs on full passes only. The sway of each kind is 8
-// shared animation slots written by its calc (in that block) as a function of mTimer: grass s16 +4
-// (slots at +0x18F0C, 0x38 apart), trees s16 +4/+6 (+0x2A9C, 0x84 apart), flowers s16 +4
-// (+0x35BC, 0x38 apart). On logic passes the slots are drawn blended between the previous step's
-// and this step's values (blended hold passes re-apply them); the exact ones are back for the record
-// pass.
+// block, which true60.cpp (site_025B00B0) runs on full passes only. Each kind keeps animation slots
+// (interp_slots.h) written by its calc (in that block): 8 shared wind sway slots as a function of
+// mTimer, and slots of their own for plants that are hit, cut or walked through (bent grass and
+// flowers, shaking trees, the falling top of a cut tree). Layout per kind: slot array (packet
+// offset, stride, count); the s16 and f32 fields its update/draw reads (shared slots: the sway
+// angles only); the data array (offset, stride, count) with each plant's state byte and slot index.
+//   grass  dGrass_anm_c  +0x18F0C, 0x38 x 104: +2 rot Y, +4 rot X;          data +0x9C, 0x44 x 1500 (+0 state, +2 slot)
+//   tree   dTree_anm_c   +0x2A9C, 0x84 x 72:   +2..+0xA angles, +0x18..+0x20 the cut top's offset;
+//                                                                           data +0x9C, 0xA8 x 64 (+0 state, +2 slot)
+//   flower dFlower_anm_c +0x35BC, 0x38 x 72:   +2 angle Y, +4 bend;         data +0x9C, 0x44 x 200 (+0 flags, +1 slot)
+// On logic passes the slots are drawn blended between the previous step's and this step's values
+// (blended hold passes re-apply them); the exact ones are back for the record pass.
 const uint32_t kCounterTimer = GD(0x101FF560);
 struct SwayKind {
     uint32_t base, stride;
-    int fields;
-    uint32_t field[2];
+    int slots;
+    int shared_fields;  // the first fields of `s16` are the shared slots' sway angles
+    int s16_fields, f32_fields;
+    uint32_t s16[5], f32[3];
+    uint32_t data, data_stride;
+    int data_count;
+    uint32_t data_slot;  // offset of the plant's slot index (s8) in its data entry
 };
-constexpr SwayKind kSway[3] = {{0x18F0C, 0x38, 1, {4, 0}}, {0x2A9C, 0x84, 2, {4, 6}}, {0x35BC, 0x38, 1, {4, 0}}};
+constexpr SwayKind kSway[3] = {
+    {0x18F0C, 0x38, 104, 1, 2, 0, {4, 2}, {}, 0x9C, 0x44, 1500, 2},
+    {0x2A9C, 0x84, 72, 2, 5, 3, {4, 6, 2, 8, 0xA}, {0x18, 0x1C, 0x20}, 0x9C, 0xA8, 64, 2},
+    {0x35BC, 0x38, 72, 1, 2, 0, {4, 2}, {}, 0x9C, 0x44, 200, 1},
+};
+constexpr int kMaxSlots = 104;
 struct SwayRec {
     uint32_t pkt = 0;
     uint64_t step = 0;  // logic pass it was recorded on (hold pass count)
-    int16_t v[8][2];
+    int16_t v[kMaxSlots][5];
+    uint32_t f[kMaxSlots][3];  // host-order float words
+    uint8_t state[kMaxSlots];
+    std::vector<int32_t> owner;
 } g_sway[3];
 
 void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
@@ -379,21 +426,47 @@ void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
     orig(c);
     if (!on(16) || !halfway()) return;
     SwayRec& r = g_sway[k];
-    bool valid = r.pkt == pk && r.step + 1 == interp::hold_pass_count();
+    const bool valid = r.pkt == pk && r.step + 1 == interp::hold_pass_count();
+    std::vector<int32_t> owner;
+    interp::slots::owners(
+        sk.data_count, sk.slots, [&](int i) { return ld8(pk + sk.data + sk.data_stride * i) != 0; },
+        [&](int i) { return (int)(int8_t)ld8(pk + sk.data + sk.data_stride * i + sk.data_slot); }, owner);
     static int tr = trace_left(4);
-    for (int i = 0; i < 8; i++)
-        for (int f = 0; f < sk.fields; f++) {
-            uint32_t a = pk + sk.base + sk.stride * i + sk.field[f];
-            int16_t cur = (int16_t)ld16(a);
-            if (valid) {
-                temp_blend_s16(a, r.v[i][f], interp::pass_t());
+    static int tr_own = trace_left(4);
+    const float t = interp::pass_t();
+    for (int i = 0; i < sk.slots; i++) {
+        const uint32_t slot = pk + sk.base + sk.stride * i;
+        const uint8_t state = ld8(slot);
+        const bool blend = interp::slots::blend_slot(i, valid, r.state[i], state, r.owner.size() == (size_t)sk.slots ? r.owner[i] : -1, owner[i]);
+        const int s16_fields = i < interp::slots::kShared ? sk.shared_fields : sk.s16_fields;
+        const int f32_fields = i < interp::slots::kShared ? 0 : sk.f32_fields;
+        for (int f = 0; f < s16_fields; f++) {
+            const uint32_t a = slot + sk.s16[f];
+            const int16_t cur = (int16_t)ld16(a);
+            if (blend && r.v[i][f] != cur) {
+                temp_blend_s16(a, r.v[i][f], t);
                 if (tr && i == 0 && f == 0) {
                     tr--;
                     LOG("[interp-fx] %s sway slot 0: %d -> %d, drawn %d", k == 0 ? "grass" : k == 1 ? "tree" : "flower", r.v[i][f], cur, (int16_t)ld16(a));
                 }
+                if (tr_own && i >= interp::slots::kShared && f == 0) {
+                    tr_own--;
+                    LOG("[interp-fx] %s slot %d (plant %d): %d -> %d, drawn %d", k == 0 ? "grass" : k == 1 ? "tree" : "flower", i, owner[i], r.v[i][f], cur,
+                        (int16_t)ld16(a));
+                }
             }
             r.v[i][f] = cur;
         }
+        for (int f = 0; f < f32_fields; f++) {
+            const uint32_t a = slot + sk.f32[f];
+            const uint32_t cur = ld32(a);
+            if (blend && r.f[i][f] != cur && plausible(u32_as_f32(r.f[i][f])) && plausible(u32_as_f32(cur)))
+                temp_blend_f32(a, r.f[i][f], t);
+            r.f[i][f] = cur;
+        }
+        r.state[i] = state;
+    }
+    r.owner = std::move(owner);
     r.pkt = pk;
     r.step = interp::hold_pass_count();
 }
@@ -702,6 +775,32 @@ extern "C" void hook_025D0994(Cpu* c) {
     g_wood.step = interp::hold_pass_count();
     g_wood.w = std::move(cur);
 }
+// Fallen trees fade out in dTree_packet_c::update (025CA6EC, from the draw, every pass:
+// chaseAlpha(data +3, 0, 8) for each of the 64 trees whose state has bit 8): 2x/4x/8x too fast with
+// frame interpolation. Advanced once per logic step, shown at the pass's fraction
+// (interp_fade.h bytes_call). Tree data: packet +0x9C, 0xA8 apart, alpha at +3.
+extern "C" void f_025CA6EC_orig(Cpu* c);
+extern "C" void hook_025CA6EC(Cpu* c) {
+    if (!on(8) || true60::enabled() || interp::in_execute()) { f_025CA6EC_orig(c); return; }
+    const uint32_t pk = c->r[3];
+    static interp::fade::BytesGate<64> gate;
+    uint8_t v[64];
+    for (int i = 0; i < 64; i++) v[i] = ld8(pk + 0x9C + 0xA8 * i + 3);
+    interp::fade::bytes_call(gate, pk, interp::logic_steps(), !interp::hold_pass(), interp::pass_t(), v, [&](uint8_t* x) {
+        for (int i = 0; i < 64; i++) st8(pk + 0x9C + 0xA8 * i + 3, x[i]);
+        f_025CA6EC_orig(c);
+        for (int i = 0; i < 64; i++) x[i] = ld8(pk + 0x9C + 0xA8 * i + 3);
+    });
+    static int tr = trace_left(4);
+    for (int i = 0; i < 64; i++) {
+        if (tr && gate.before[i] != gate.after[i]) {
+            tr--;
+            LOG("[interp-fx] fallen tree %d fade t %.3f: %u -> %u, drawn %u", i, interp::pass_t(), gate.before[i], gate.after[i], v[i]);
+        }
+        st8(pk + 0x9C + 0xA8 * i + 3, v[i]);
+        if (v[i] != gate.after[i]) interp::exact_after_pass(pk + 0x9C + 0xA8 * i + 3, gate.after[i], 1);
+    }
+}
 extern "C" void hook_0254C6C4(Cpu* c) { sway_calc(c, 0, f_0254C6C4_orig); }
 extern "C" void hook_025C9948(Cpu* c) { sway_calc(c, 1, f_025C9948_orig); }
 extern "C" void hook_02548370(Cpu* c) { sway_calc(c, 2, f_02548370_orig); }
@@ -781,9 +880,13 @@ extern "C" void hook_0251D864(Cpu* c) {
 // dCloth_packet_c is not its simulation. Never advance or scale a cloth simulation here.
 struct PacketField { uint32_t addr, words; bool matrix = false; };
 struct PacketPose { uint64_t record; std::vector<uint32_t> words; };
-enum ClothPacketKind { kGridSail, kPirateSail, kFortressFlag, kBuoyFlag, kBuoyPole, kMantle, kPirateFlag, kLineMat };
-constexpr const char* kClothPacketNames[] = {"KoRL sail", "pirate sail", "fortress flag", "buoy flag", "buoy pole", "mantle", "pirate flag", "3D lines"};
-std::unordered_map<uint64_t, PacketPose> g_packet_poses;
+enum ClothPacketKind { kGridSail, kPirateSail, kFortressFlag, kBuoyFlag, kBuoyPole, kMantle, kPirateFlag, kLineMat, kLineMat0, kSandFloor, kTapestry,
+                       kGoalFlag, kClothPacketKinds };
+constexpr const char* kClothPacketNames[] = {"KoRL sail", "pirate sail", "fortress flag", "buoy flag", "buoy pole", "mantle", "pirate flag", "3D lines",
+                                             "3D lines (mat0)", "Molgera sand floor", "tapestry", "boat-race goal flag"};
+static_assert(sizeof kClothPacketNames / sizeof kClothPacketNames[0] == kClothPacketKinds);
+constexpr bool is_line(ClothPacketKind k) { return k == kLineMat || k == kLineMat0; }
+std::unordered_map<uint64_t, PacketPose> g_packet_poses, g_packet_before;  // (before: blended record pass)
 template <typename Fields>
 void cloth_packet_fields(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), const Fields& fields) {
     if (!on(16) || interp::in_execute()) { original(c); return; }
@@ -799,15 +902,23 @@ void cloth_packet_fields(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), c
         original(c);
         return;
     }
-    auto it = g_packet_poses.find(key);
-    if (!halfway() || it == g_packet_poses.end() ||
-        (kind == kLineMat ? it->second.record != record : it->second.record + 1 < record) ||
-        it->second.words.size() != exact.size()) { original(c); return; }
-    const auto& before = it->second.words;
+    const PacketPose* from = nullptr;
+    if (interp::record_blended()) {
+        const uint64_t stamp = interp::record_stamp();
+        from = interp::pacing::replace_record(g_packet_poses, g_packet_before, key, PacketPose{stamp, exact}, stamp,
+                                              [](const PacketPose& p) { return p.record; });
+    } else {
+        auto it = g_packet_poses.find(key);
+        if (it != g_packet_poses.end()) from = &it->second;
+    }
+    if (!halfway() || !from ||
+        (is_line(kind) ? from->record != record : from->record + 1 < record) ||
+        from->words.size() != exact.size()) { original(c); return; }
+    const auto& before = from->words;
     // As with J3D models, do not smear a teleport or a non-finite placement matrix.
     uint32_t offset = 0;
     for (const auto& f : fields) {
-        if (f.matrix || kind == kLineMat) {
+        if (f.matrix || is_line(kind)) {
             for (uint32_t j = 0; j < f.words; j++) {
                 if (!std::isfinite(wf(before[offset+j])) || !std::isfinite(wf(exact[offset+j]))) {
                     original(c);
@@ -849,7 +960,7 @@ void cloth_packet_fields(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), c
         offset += f.words;
     }
     static const int trace = getenv("WWHD_INTERP_FX_TRACE") ? atoi(getenv("WWHD_INTERP_FX_TRACE")) : 0;
-    static int traces[] = {trace, trace, trace, trace, trace, trace, trace, trace};
+    static std::array<int, kClothPacketKinds> traces = [] { std::array<int, kClothPacketKinds> a{}; a.fill(trace); return a; }();
     if (traces[kind] > 0) {
         offset = 0;
         for (const auto& f : fields) {
@@ -878,18 +989,24 @@ void cloth_packet(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), std::ini
     cloth_packet_fields(c, kind, original, fields);
 }
 
-// mDoExt_3DlineMat1 generates its GPU vertices here, outside J3DModel::viewCalc.
-// Bridge ropes and held-item ropes must use the same pass fraction as the models.
-// Keep the exact control points in guest memory after the synchronous upload.
-std::unordered_map<uint32_t, std::vector<uint32_t>> g_line_layouts;
-void line_packet(Cpu* c, void (*original)(Cpu*)) {
+// mDoExt_3DlineMat1 (textured: ropes, grapple, bridges) and mDoExt_3DlineMat0 (plain: Ganondorf's
+// hair, Puppet Ganon's strings, Moblin and Stalfos weapon ropes, chained items) generate their GPU
+// vertices in update/updateWidths, outside J3DModel::viewCalc. Their control points (set by the
+// actors' logic) are drawn at the same pass fraction as the models. The exact control points are
+// back in guest memory after the synchronous upload. Layout: line count (u16), points per line
+// (u16), line array (0x10 each, +0 the line's points): Mat1 +0x17C/+0x17E/+0x184, Mat0
+// +0x13C/+0x13E/+0x144.
+struct LineLayout { uint32_t count, points, lines; };
+constexpr LineLayout kLineMat1Layout{0x17C, 0x17E, 0x184}, kLineMat0Layout{0x13C, 0x13E, 0x144};
+std::unordered_map<uint64_t, std::vector<uint32_t>> g_line_layouts;  // (kind << 32 | packet) -> layout seen
+void line_packet(Cpu* c, void (*original)(Cpu*), ClothPacketKind kind, const LineLayout& lay) {
     if (!on(16) || true60::enabled() || interp::in_execute()) { original(c); return; }
     static const bool off = getenv("WWHD_INTERP_LINES") && !atoi(getenv("WWHD_INTERP_LINES")); // diagnostic ablation
     if (off) { original(c); return; }
     const uint32_t packet = c->r[3];
-    const uint32_t count = ld16(packet+0x17C);
-    const uint32_t points = std::min(c->r[4] & 0xFFFFu, uint32_t(ld16(packet+0x17E)));
-    const uint32_t lines = ld32(packet+0x184);
+    const uint32_t count = ld16(packet+lay.count);
+    const uint32_t points = std::min(c->r[4] & 0xFFFFu, uint32_t(ld16(packet+lay.points)));
+    const uint32_t lines = ld32(packet+lay.lines);
     if (!lines || !count || count > 256 || points < 2 || points > 4096) { original(c); return; }
     std::vector<PacketField> fields;
     std::vector<uint32_t> layout{count, points, lines};
@@ -899,17 +1016,23 @@ void line_packet(Cpu* c, void (*original)(Cpu*)) {
         fields.push_back({pos, points*3});
         layout.push_back(pos);
     }
-    auto& old = g_line_layouts[packet];
+    const uint64_t key = (uint64_t(kind)<<32)|packet;
+    auto& old = g_line_layouts[key];
     if (old != layout) {
-        g_packet_poses.erase((uint64_t(kLineMat)<<32)|packet);
+        g_packet_poses.erase(key);
+        g_packet_before.erase(key);
         old = std::move(layout);
     }
-    cloth_packet_fields(c, kLineMat, original, fields);
+    cloth_packet_fields(c, kind, original, fields);
 }
 extern "C" void f_025EC62C_orig(Cpu*);
 extern "C" void f_025ED1BC_orig(Cpu*);
-extern "C" void hook_025EC62C(Cpu* c) { line_packet(c, f_025EC62C_orig); }
-extern "C" void hook_025ED1BC(Cpu* c) { line_packet(c, f_025ED1BC_orig); }
+extern "C" void f_025EA548_orig(Cpu*);
+extern "C" void f_025EAF58_orig(Cpu*);
+extern "C" void hook_025EC62C(Cpu* c) { line_packet(c, f_025EC62C_orig, kLineMat, kLineMat1Layout); }
+extern "C" void hook_025ED1BC(Cpu* c) { line_packet(c, f_025ED1BC_orig, kLineMat, kLineMat1Layout); }
+extern "C" void hook_025EA548(Cpu* c) { line_packet(c, f_025EA548_orig, kLineMat0, kLineMat0Layout); }
+extern "C" void hook_025EAF58(Cpu* c) { line_packet(c, f_025EAF58_orig, kLineMat0, kLineMat0Layout); }
 extern "C" void f_021625DC_orig(Cpu*); // daHo_packet_c upload (KoRL sail)
 extern "C" void hook_021625DC(Cpu* c) {
     const uint32_t p = c->r[3];
@@ -952,6 +1075,33 @@ extern "C" void hook_021BBC34(Cpu* c) {
     cloth_packet(c, kMantle, f_021BBC34_orig,
         {{p+0x98, 12, true}, {p+0xC8, 12, true}, {p+0xFC, 81*3*2}});
 }
+// Molgera's sand floor (daBwdg_packet_c::prepare 02103B30, from its draw): the vertex buffer is filled
+// from the height field (+0xCC positions, +0xC6D8 normals, 0x1081 each) that its execute (wave_cont
+// 02103FA4) moves once per step
+extern "C" void f_02103B30_orig(Cpu*);
+extern "C" void hook_02103B30(Cpu* c) {
+    const uint32_t p = c->r[3];
+    cloth_packet(c, kSandFloor, f_02103B30_orig, {{p+0xCC, 0x1081*3}, {p+0xC6D8, 0x1081*3}});
+}
+// tapestry (daObjTapestryPacket_c::setup_vtx 0239DD2C, from its draw): the cloth's current buffer
+// (+0x106C + 0x6C0 * buffer +0x20BC: 48 positions, normals, back normals; simulated by its execute)
+// and its world matrix (+0x2390)
+extern "C" void f_0239DD2C_orig(Cpu*);
+extern "C" void hook_0239DD2C(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld32(p+0x20BC);
+    if (i > 1 || !on(16)) { f_0239DD2C_orig(c); return; }
+    cloth_packet(c, kTapestry, f_0239DD2C_orig, {{p+0x2390, 12, true}, {p+0x106C+i*0x6C0, 48*3*3}});
+}
+// boat-race goal flag (daGFlag_packet_c::update 0215F9E4, from its draw): the current cloth arrays
+// (+0x2648 index: positions +0x134C, normals +0x1BBC, back normals +0x1FF4; 45 each, 0x21C per array)
+// and the flag's matrix (+0x1318)
+extern "C" void f_0215F9E4_orig(Cpu*);
+extern "C" void hook_0215F9E4(Cpu* c) {
+    const uint32_t p = c->r[3], i = ld8(p+0x2648);
+    if (i > 1 || !on(16)) { f_0215F9E4_orig(c); return; }
+    cloth_packet(c, kGoalFlag, f_0215F9E4_orig, {{p+0x1318, 12, true},
+        {p+0x134C+i*0x21C, 45*3}, {p+0x1BBC+i*0x21C, 45*3}, {p+0x1FF4+i*0x21C, 45*3}});
+}
 
 namespace { void fx_step_stats(); }
 // start of every pass (interp.cpp, per-frame function): the blended values only live until the
@@ -962,6 +1112,8 @@ void light_trace_flush();
 void fx_pass_start() {
     light_trace_flush();
     g_passes++;
+    if (!g_packet_before.empty()) g_packet_before.clear();  // (records a 40 fps blended record pass replaced: its own blends only)
+    if (!g_anm_before.empty()) g_anm_before.clear();
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_keep = std::move(g_ptcl_applied);
     g_ptcl_applied.clear();
@@ -981,10 +1133,31 @@ void fx_hold_blend(float t) {
 }  // namespace interp
 
 // dScnPly_Draw: start of drawing on every pass
+// The grey-scale screen (mDoGph_calcMonotone 025F0840, from the environment's execute: once per
+// step) chases l_graphics (101F4808) +0x18 mMonotoneRate towards its target by a fixed step: drawn
+// between the step's start and end on blended passes (interp.cpp records the step's change).
+namespace {
+struct MonoStep { uint64_t step = ~0ull; int16_t before = 0, after = 0; } g_mono;
+}  // namespace
+namespace interp {
+void fx_monotone_step(int16_t before, int16_t after) {
+    if (g_mono.step != logic_steps()) g_mono = MonoStep{logic_steps(), before, after};
+    else g_mono.after = after;
+}
+}  // namespace interp
 extern "C" void hook_025AF8A0(Cpu* c) {
     // (already done at the pass start; a blended hold pass has its particles re-applied by now)
     if (!(interp::hold_pass() && !interp::record_pass())) ptcl_restore();
     if (interp::logic_pass()) fx_step_stats();
+    if (interp::logic_pass() && on(32) && !true60::enabled() && g_mono.step == interp::logic_steps() && g_mono.before != g_mono.after &&
+        (int16_t)ld16(GD(0x101F4808) + 0x18) == g_mono.after) {
+        temp_blend_s16(GD(0x101F4808) + 0x18, g_mono.before, interp::pass_t());
+        static int tr = trace_left(14);
+        if (tr) {
+            tr--;
+            LOG("[interp-fx] monotone t %.3f: %d -> %d, drawn %d", interp::pass_t(), g_mono.before, g_mono.after, (int16_t)ld16(GD(0x101F4808) + 0x18));
+        }
+    }
     f_025AF8A0_orig(c);
 }
 
@@ -1103,17 +1276,24 @@ extern "C" void hook_027DF40C(Cpu* c) {
         f_027DF40C_orig(c);
         return;
     }
-    auto it = g_anm.end();
-    if (halfway()) it = g_anm.find(anm);
-    if (it == g_anm.end() || it->second.ts != ts || it->second.pass != interp::hold_pass_count() || it->second.frame == cur) {
+    const AnmRec* from = nullptr;
+    if (interp::record_blended() && !interp::in_execute()) {  // (drawn at step S+1, blended from S)
+        const uint64_t stamp = interp::record_stamp();
+        from = interp::pacing::replace_record(g_anm, g_anm_before, anm, AnmRec{ts, cur, stamp}, stamp, [](const AnmRec& r) { return r.pass; });
+        if (!halfway()) from = nullptr;
+    } else if (halfway()) {
+        auto it = g_anm.find(anm);
+        if (it != g_anm.end()) from = &it->second;
+    }
+    if (!from || from->ts != ts || from->pass != interp::hold_pass_count() || from->frame == cur) {
         f_027DF40C_orig(c);
         return;
     }
-    float mid = anm_mid(it->second.frame, cur, (float)ldf32(ts + 4), (float)ldf32(ts + 8), ld32(ts + 0x10) == kLoopFn, interp::pass_t());
+    float mid = anm_mid(from->frame, cur, (float)ldf32(ts + 4), (float)ldf32(ts + 8), ld32(ts + 0x10) == kLoopFn, interp::pass_t());
     static int tr = trace_left(2);
     if (tr) {
         tr--;
-        LOG("[interp-fx] anim %08X frames %.2f -> %.2f, drawn %.2f (%s)", anm, it->second.frame, cur, mid,
+        LOG("[interp-fx] anim %08X frames %.2f -> %.2f, drawn %.2f (%s)", anm, from->frame, cur, mid,
             ld32(ts + 0x10) == kLoopFn ? "loop" : "clamp");
     }
     if (mid == cur) {
@@ -1124,7 +1304,40 @@ extern "C" void hook_027DF40C(Cpu* c) {
     stf32(ts, mid);
     f_027DF40C_orig(c);
     stf32(ts, cur);  // the evaluator's cache (+0x28) keeps mid, so the next exact frame re-evaluates
+    if (g_anm_blended.size() < 4096) g_anm_blended.push_back(anm);
 }
+// Before the next step's logic (interp.cpp, start of a logic pass): animators whose last evaluation
+// in the step was a blended one (no exact evaluation followed: their caller evaluates only when it
+// sees the frame change) are evaluated at the step's exact frame, so their values and their cache
+// (+0x28) are what the 30 fps frame of the step left (the step's actors keep it in their memory).
+// debug: WWHD_INTERP_ANM_SETTLE=0 leaves them as drawn
+namespace interp {
+void fx_anm_settle(Cpu* c) {
+    static const bool off = getenv("WWHD_INTERP_ANM_SETTLE") && !atoi(getenv("WWHD_INTERP_ANM_SETTLE"));
+    if (g_anm_blended.empty()) return;
+    std::vector<uint32_t> list;
+    list.swap(g_anm_blended);
+    if (off || true60::enabled()) return;
+    std::sort(list.begin(), list.end());
+    list.erase(std::unique(list.begin(), list.end()), list.end());
+    const Cpu saved = *c;
+    int settled = 0;
+    for (uint32_t anm : list) {
+        const uint32_t ts = ld32(anm);
+        if (ts < 0x10000000 || ts >= 0x50000000) continue;
+        if (ld32(anm + 0x28) == ld32(ts)) continue;  // (evaluated at the exact frame since)
+        c->r[3] = anm;
+        f_027DF40C_orig(c);
+        settled++;
+    }
+    *c = saved;
+    static int tr = trace_left(14);
+    if (tr && settled) {
+        tr--;
+        LOG("[interp-fx] %d material animations evaluated at the step's exact frame before its logic", settled);
+    }
+}
+}  // namespace interp
 
 // J3DFrameCtrl::update: animation frames advanced from Draw (e.g. daSalvage_c::_draw) are logic too
 // (the hook itself is in true60.cpp, which also scales the step for 60 Hz processes)
@@ -1268,15 +1481,26 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
             c->f[1].ps0 = (float)from_frac(it->second[i]);
             return;
         }
-        // true 60: a draw on a half pass must not consume random numbers either (the full passes
-        // keep the 30 fps sequence: drops, AI choices); it gets the next value without using it
+        // A draw on a pass without logic must not consume random numbers (frame interpolation and
+        // true 60): the logic keeps the 30 fps sequence (drops, AI choices, effects). It gets the next
+        // value without using it. (With frame interpolation this was missing: a draw that called
+        // cM_rnd more often on a hold pass than on its logic pass, or only there, advanced the
+        // game's seeds once per extra drawn frame, and from then on the game drew other random
+        // numbers than at 30 fps: the logic of a 120 fps run left the 30 fps one within seconds.)
+        // debug: WWHD_INTERP_RND_KEEP=0 lets those calls consume the seeds again
+        static const bool consume = getenv("WWHD_INTERP_RND_KEEP") && !atoi(getenv("WWHD_INTERP_RND_KEEP"));
         uint32_t seeds[3];
-        bool keep = true60::enabled();
+        const bool keep = true60::enabled() || !consume;
         if (keep)
             for (int k = 0; k < 3; k++) seeds[k] = ld32(GD(0x101FF9D4) + 4 * k);
         orig(c);
         if (keep)
             for (int k = 0; k < 3; k++) st32(GD(0x101FF9D4) + 4 * k, seeds[k]);
+        static int tr = trace_left(15);
+        if (tr) {
+            tr--;
+            LOG("[interp-fx] cM_rnd%c from %08X on a pass without logic, no logic-pass value: seeds %s", fn, c->lr, keep ? "kept" : "consumed");
+        }
         return;
     }
     RndRec& r = g_rnd_logic;
@@ -1311,24 +1535,36 @@ extern "C" void hook_0246C5E8(Cpu* c) {
         f_0246C5E8_orig(c);
         return;
     }
-    if (!halfway() || g_sea.packet != pk || g_sea.pass != interp::hold_pass_count() || g_sea.h.size() != kSeaCells ||
-        !(std::fabs(min_x - g_sea.min_x) < 2000.0f && std::fabs(min_z - g_sea.min_z) < 2000.0f)) {
+    // 40 fps blended record pass: the step recorded, drawn blended from the record before it
+    static SeaRec before;
+    if (interp::record_blended()) {
+        const uint64_t stamp = interp::record_stamp();
+        if (g_sea.pass != stamp) std::swap(before, g_sea);  // (its first record in this pass)
+        g_sea.packet = pk;
+        g_sea.pass = stamp;
+        g_sea.min_x = min_x;
+        g_sea.min_z = min_z;
+        g_sea.h.assign(h, h + kSeaCells);
+    }
+    const SeaRec& from = interp::record_blended() ? before : g_sea;
+    if (!halfway() || from.packet != pk || from.pass != interp::hold_pass_count() || from.h.size() != kSeaCells ||
+        !(std::fabs(min_x - from.min_x) < 2000.0f && std::fabs(min_z - from.min_z) < 2000.0f)) {
         f_0246C5E8_orig(c);
         return;
     }
     const float t = interp::pass_t();
     std::vector<uint32_t> exact(h, h + kSeaCells);
-    for (int i = 0; i < kSeaCells; i++) h[i] = fw(lerp_f(wf(g_sea.h[i]), wf(exact[i]), t));
-    stf32(pk + kSeaMinX, t == 0.5f ? 0.5f * (min_x + g_sea.min_x) : lerp_f(g_sea.min_x, min_x, t));
-    stf32(pk + kSeaMinZ, t == 0.5f ? 0.5f * (min_z + g_sea.min_z) : lerp_f(g_sea.min_z, min_z, t));
+    for (int i = 0; i < kSeaCells; i++) h[i] = fw(lerp_f(wf(from.h[i]), wf(exact[i]), t));
+    stf32(pk + kSeaMinX, t == 0.5f ? 0.5f * (min_x + from.min_x) : lerp_f(from.min_x, min_x, t));
+    stf32(pk + kSeaMinZ, t == 0.5f ? 0.5f * (min_z + from.min_z) : lerp_f(from.min_z, min_z, t));
     static int tr = trace_left(1);
     if (tr) {
         tr--;
         int k = 0;  // the vertex that moved most
         for (int i = 1; i < kSeaCells; i++)
-            if (std::fabs(wf(exact[i]) - wf(g_sea.h[i])) > std::fabs(wf(exact[k]) - wf(g_sea.h[k]))) k = i;
-        LOG("[interp-fx] sea vertex %d,%d height %.3f -> %.3f, drawn %.3f; origin x %.1f -> %.1f", k % 65, k / 65, wf(g_sea.h[k]), wf(exact[k]),
-            wf(h[k]), g_sea.min_x, min_x);
+            if (std::fabs(wf(exact[i]) - wf(from.h[i])) > std::fabs(wf(exact[k]) - wf(from.h[k]))) k = i;
+        LOG("[interp-fx] sea vertex %d,%d height %.3f -> %.3f, drawn %.3f; origin x %.1f -> %.1f", k % 65, k / 65, wf(from.h[k]), wf(exact[k]),
+            wf(h[k]), from.min_x, min_x);
     }
     f_0246C5E8_orig(c);
     memcpy(h, exact.data(), 4 * kSeaCells);
@@ -1389,7 +1625,7 @@ void fx_step_stats() {
     for (auto it = g_anm.begin(); it != g_anm.end();) it = it->second.pass + 2 < now ? g_anm.erase(it) : std::next(it);
     for (auto it = g_emtr.begin(); it != g_emtr.end();) it = it->second.step + 2 < now ? g_emtr.erase(it) : std::next(it);
     for (auto it = g_line_layouts.begin(); it != g_line_layouts.end();) {
-        auto pose = g_packet_poses.find((uint64_t(kLineMat)<<32)|it->first);
+        auto pose = g_packet_poses.find(it->first);
         if (pose == g_packet_poses.end() || pose->second.record + 2 < now) {
             if (pose != g_packet_poses.end()) g_packet_poses.erase(pose);
             it = g_line_layouts.erase(it);
@@ -1464,6 +1700,783 @@ extern "C" void hook_024EC1C8(Cpu* c) {
     stf32(fc + 4, frame);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Swing trails (interp_trail.h): the sword (daPy_swBlur_c::draw 024142F0: segments +0x9C, blade
+// tips +0xBC and bases +0x38C, 60 points each) and the boomerang (daBoomerang_blur_c::draw
+// 020CDF78: segments +0x98, two rings of tips and roots at +0xA8, +0x378, +0x648, +0x918). Both are
+// J3DPacket draws, painted after the pass: the record pass's history is kept, blended passes draw
+// the history at their fraction (the head following the blended blade), then the exact one is put
+// back.
+namespace {
+struct TrailRec { uint64_t record; interp::trail::Frame f; };
+std::unordered_map<uint32_t, TrailRec> g_trails, g_trails_before;  // (before: blended record pass)
+interp::trail::Frame read_trail(uint32_t pkt, uint32_t count, std::initializer_list<uint32_t> lanes) {
+    interp::trail::Frame f;
+    f.lanes = 0;
+    f.count = (int32_t)ld32(pkt + count);
+    for (uint32_t lane : lanes) {
+        for (int i = 0; i < interp::trail::kPoints; i++)
+            for (int x = 0; x < 3; x++) f.p[f.lanes][i][x] = (float)ldf32(pkt + lane + 12 * i + 4 * x);
+        f.lanes++;
+    }
+    return f;
+}
+void trail_draw(Cpu* c, void (*orig)(Cpu*), uint32_t count, std::initializer_list<uint32_t> lanes) {
+    static const bool off = getenv("WWHD_INTERP_TRAILS") && !atoi(getenv("WWHD_INTERP_TRAILS"));  // diagnostic ablation
+    if (!on(16) || off) { orig(c); return; }
+    const uint32_t pkt = c->r[3];
+    const interp::trail::Frame b = read_trail(pkt, count, lanes);
+    if (interp::display_record()) {
+        if (g_trails.size() > 64) g_trails.clear();
+        g_trails[pkt] = TrailRec{interp::hold_pass_count(), b};
+        orig(c);
+        return;
+    }
+    const float t = interp::display_t();
+    const TrailRec* from = nullptr;
+    if (interp::display_record_blended()) {  // 40 fps: recorded, drawn blended from the record before
+        static uint64_t cleared = ~0ull;  // (painted after the pass: `before` is kept per pass here)
+        if (cleared != interp::pass_count()) g_trails_before.clear(), cleared = interp::pass_count();
+        if (g_trails.size() > 64) g_trails.clear();
+        const uint64_t stamp = interp::display_record_stamp();
+        from = interp::pacing::replace_record(g_trails, g_trails_before, pkt, TrailRec{stamp, b}, stamp, [](const TrailRec& r) { return r.record; });
+    } else {
+        auto it = g_trails.find(pkt);
+        if (it != g_trails.end()) from = &it->second;
+    }
+    static interp::trail::Frame m;
+    if (t >= 1.0f || !from || from->record != interp::hold_pass_count() || !interp::trail::at(from->f, b, t, m)) {
+        orig(c);
+        return;
+    }
+    static int tr = trace_left(7);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] trail %08X t %.3f: %d -> %d segments, head %.1f %.1f %.1f (new %.1f %.1f %.1f), drawn %d", pkt, t, from->f.count, b.count,
+            from->f.p[0][0][0], from->f.p[0][0][1], from->f.p[0][0][2], b.p[0][0][0], b.p[0][0][1], b.p[0][0][2], m.count);
+    }
+    std::vector<uint32_t> saved;
+    saved.push_back(ld32(pkt + count));
+    int l = 0;
+    for (uint32_t lane : lanes) {
+        for (int i = 0; i < interp::trail::kPoints; i++)
+            for (int x = 0; x < 3; x++) {
+                const uint32_t a = pkt + lane + 12 * i + 4 * x;
+                saved.push_back(ld32(a));
+                stf32(a, m.p[l][i][x]);
+            }
+        l++;
+    }
+    st32(pkt + count, (uint32_t)m.count);
+    orig(c);
+    size_t k = 0;
+    st32(pkt + count, saved[k++]);
+    for (uint32_t lane : lanes)
+        for (int i = 0; i < interp::trail::kPoints; i++)
+            for (int x = 0; x < 3; x++) st32(pkt + lane + 12 * i + 4 * x, saved[k++]);
+}
+}  // namespace
+extern "C" void f_024142F0_orig(Cpu*);
+extern "C" void f_020CDF78_orig(Cpu*);
+extern "C" void hook_024142F0(Cpu* c) { trail_draw(c, f_024142F0_orig, 0x9C, {0xBC, 0x38C}); }
+extern "C" void hook_020CDF78(Cpu* c) { trail_draw(c, f_020CDF78_orig, 0x98, {0xA8, 0x378, 0x648, 0x918}); }
+
+// The hookshot's chain (daHookshot_shape_draw 021768B0, from daHookshot_c::draw, every pass) is
+// built from Link's hookshot root (daPy_lk_c +0x72F0), the hookshot's shape angle (+0x328 x,
+// +0x32A y) and link count (+0xD504, |tip - root| / 7 from its execute), all exact, while Link and
+// the hook are drawn blended. On blended passes it is built from the blended root and angles, with
+// the count from the blended root-tip distance (tip: current.pos +0x314).
+namespace {
+struct HookRec { uint64_t record = ~0ull; uint32_t hs = 0; float root[3], tip[3]; int16_t ax, ay; int32_t count = 0; };
+HookRec g_hook;
+}  // namespace
+extern "C" void f_021768B0_orig(Cpu*);
+extern "C" void hook_021768B0(Cpu* c) {
+    const uint32_t hs = ld32(c->r[3] + 0x18);
+    const uint32_t link = ld32(GD(0x1046F0B0) + 0x5B34);
+    if (!on(16) || !hs || !link || true60::enabled()) { f_021768B0_orig(c); return; }
+    const uint32_t root = link + 0x72F0, tip = hs + 0x314, ang = hs + 0x328, cnt = hs + 0xD504;
+    float r[3], p[3];
+    for (int i = 0; i < 3; i++) { r[i] = (float)ldf32(root + 4 * i); p[i] = (float)ldf32(tip + 4 * i); }
+    const int16_t ax = (int16_t)ld16(ang), ay = (int16_t)ld16(ang + 2);
+    // (40 fps blended record pass: recorded, then drawn blended from the record before it)
+    static HookRec before;
+    const bool blendRecord = interp::record_blended();
+    if (interp::record_pass() || blendRecord) {
+        const uint64_t stamp = interp::record_stamp();
+        if (blendRecord && g_hook.record != stamp) before = g_hook;
+        g_hook.record = stamp;
+        g_hook.hs = hs;
+        for (int i = 0; i < 3; i++) { g_hook.root[i] = r[i]; g_hook.tip[i] = p[i]; }
+        g_hook.ax = ax;
+        g_hook.ay = ay;
+        g_hook.count = (int32_t)ld32(cnt);
+        if (!blendRecord) {
+            f_021768B0_orig(c);
+            return;
+        }
+    }
+    const HookRec& from = blendRecord ? before : g_hook;
+    // (no chain on either step: nothing to draw; the hook still in Link's hand)
+    if (!halfway() || from.hs != hs || from.record != interp::hold_pass_count() || (from.count <= 0 && (int32_t)ld32(cnt) <= 0)) {
+        f_021768B0_orig(c);
+        return;
+    }
+    const float t = interp::pass_t();
+    float br[3], bp[3], dr = 0, dp = 0, d = 0;
+    for (int i = 0; i < 3; i++) {
+        br[i] = lerp_f(from.root[i], r[i], t);
+        bp[i] = lerp_f(from.tip[i], p[i], t);
+        dr += (r[i] - from.root[i]) * (r[i] - from.root[i]);
+        dp += (p[i] - from.tip[i]) * (p[i] - from.tip[i]);
+        d += (bp[i] - br[i]) * (bp[i] - br[i]);
+    }
+    if (!(dr < 400.0f * 400.0f) || !(dp < 2000.0f * 2000.0f)) { f_021768B0_orig(c); return; }  // a jump: drawn as it is
+    const uint32_t saved[6] = {ld32(root), ld32(root + 4), ld32(root + 8), ld32(ang), ld32(cnt), 0};
+    for (int i = 0; i < 3; i++) stf32(root + 4 * i, br[i]);
+    st16(ang, (uint16_t)lerp_s16(from.ax, ax, t));
+    st16(ang + 2, (uint16_t)lerp_s16(from.ay, ay, t));
+    int32_t n = (int32_t)(std::sqrt(d) / 7.0f);
+    if (n > 300) n = 300;
+    st32(cnt, (uint32_t)n);
+    static int tr = trace_left(7);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] hookshot chain pass %llu t %.3f: root %.1f %.1f %.1f -> %.1f %.1f %.1f, drawn at %.1f %.1f %.1f, %d links (exact %d)", (unsigned long long)interp::pass_count(), t, from.root[0],
+            from.root[1], from.root[2], r[0], r[1], r[2], br[0], br[1], br[2], n, (int32_t)saved[4]);
+    }
+    f_021768B0_orig(c);
+    st32(root, saved[0]);
+    st32(root + 4, saved[1]);
+    st32(root + 8, saved[2]);
+    st32(ang, saved[3]);
+    st32(cnt, saved[4]);
+}
+
+// The King of Red Lions (daShip_c::draw 0247255C, actor Draw, every pass): the hull's texture
+// scroll (+0x6B8, advanced 0..1 with wrap in the execute, written into the texture SRTs by the
+// draw) is drawn between the steps' values. The cannon sight's arc (25 segments of the sight
+// packet at +0x1B54: +0xA0 the segments, 0xA8 apart, matrix +0x74), placed by the execute along
+// the shot's path every 8 path samples from a phase that advances 0.75 a step (101D0348), is drawn
+// between the steps' positions (painted after the pass: blended on the logic pass, re-applied on the
+// blended hold passes). When the phase wraps, every segment moved one place along the arc: segment i
+// blends from the previous step's segment i - 1, and segment 0 is new. Segments not in use hold the
+// packet's reset matrix (104A03EC).
+namespace {
+struct ShipRec { uint64_t record = ~0ull; uint32_t ship = 0; float scroll = 0, phase = 0; uint32_t seg[25][12]; };
+ShipRec g_ship;
+}  // namespace
+extern "C" void f_0247255C_orig(Cpu*);
+extern "C" void hook_0247255C(Cpu* c) {
+    const uint32_t ship = c->r[3];
+    if (!on(16) || true60::enabled()) { f_0247255C_orig(c); return; }
+    const uint32_t scroll_a = ship + 0x6B8, segs = ld32(ship + 0x1B54 + 0xA0), phase_a = GD(0x101D0348), reset = GD(0x104A03EC);
+    const float scroll = (float)ldf32(scroll_a), phase = (float)ldf32(phase_a);
+    // (40 fps blended record pass: recorded, then drawn blended from the record before it)
+    static ShipRec before;
+    const bool blendRecord = interp::record_blended();
+    if (interp::record_pass() || blendRecord) {
+        const uint64_t stamp = interp::record_stamp();
+        if (blendRecord && g_ship.record != stamp) before = g_ship;
+        g_ship.record = stamp;
+        g_ship.ship = ship;
+        g_ship.scroll = scroll;
+        g_ship.phase = phase;
+        for (int i = 0; i < 25 && segs; i++)
+            for (int k = 0; k < 12; k++) g_ship.seg[i][k] = ld32(segs + 0xA8 * i + 0x74 + 4 * k);
+        if (!blendRecord) {
+            f_0247255C_orig(c);
+            return;
+        }
+    }
+    const ShipRec& from = blendRecord ? before : g_ship;
+    if (!halfway() || from.ship != ship || from.record != interp::hold_pass_count()) { f_0247255C_orig(c); return; }
+    const float t = interp::pass_t();
+    float d = scroll - from.scroll;  // the scroll wraps over 0..1
+    if (d > 0.5f) d -= 1.0f;
+    else if (d < -0.5f) d += 1.0f;
+    float m = from.scroll + t * d;
+    if (m >= 1.0f) m -= 1.0f;
+    else if (m < 0.0f) m += 1.0f;
+    if (d != 0.0f && std::fabs(d) < 0.25f) stf32(scroll_a, m);
+    static int tr_scroll = trace_left(7);
+    if (tr_scroll && d != 0.0f) {
+        tr_scroll--;
+        LOG("[interp-fx] ship hull scroll t %.3f: %.4f -> %.4f, drawn %.4f", t, from.scroll, scroll, (float)ldf32(scroll_a));
+    }
+    if (interp::logic_pass() && segs) {
+        const bool wrapped = phase < from.phase;
+        uint32_t reset_w[12];
+        for (int k = 0; k < 12; k++) reset_w[k] = ld32(reset + 4 * k);
+        auto unused = [&](const uint32_t* w) { return memcmp(w, reset_w, sizeof reset_w) == 0; };
+        int blended = 0;
+        for (int i = 0; i < 25; i++) {
+            const int j = wrapped ? i - 1 : i;
+            if (j < 0) continue;  // a new segment at the start of the arc
+            const uint32_t a = segs + 0xA8 * i + 0x74;
+            uint32_t cur[12];
+            for (int k = 0; k < 12; k++) cur[k] = ld32(a + 4 * k);
+            const uint32_t* prev = from.seg[j];
+            if (unused(cur) || unused(prev) || !memcmp(cur, prev, sizeof cur)) continue;
+            float d2 = 0;
+            for (int k : {3, 7, 11}) d2 += (u32_as_f32(cur[k]) - u32_as_f32(prev[k])) * (u32_as_f32(cur[k]) - u32_as_f32(prev[k]));
+            if (!(d2 < 1000.0f * 1000.0f)) continue;
+            for (int k = 0; k < 12; k++)
+                if (cur[k] != prev[k]) temp_blend_f32(a + 4 * k, prev[k], t);
+            blended++;
+        }
+        static int tr = trace_left(7);
+        if (tr && blended) {
+            tr--;
+            LOG("[interp-fx] cannon sight: %d segments blended, phase %.2f -> %.2f%s", blended, from.phase, phase, wrapped ? " (wrapped)" : "");
+        }
+    }
+    f_0247255C_orig(c);
+    stf32(scroll_a, scroll);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sky back clouds (vrbox2): Execute (024D3248) sets the scroll speed (+0x3C8) from the wind, and Draw
+// (024D1D44, every pass) adds it to the texture SRT translations of the cloud materials
+// (scrollTexSrt, each followed by texScrollCheck 024D1C44, which wraps the value into 0..1) and then
+// sets the speed to 0, so the logic pass's draw moves the clouds by the whole step and the other
+// passes not at all. The translations the game computes stay exact; on the logic pass they are
+// drawn between the record pass's values and the new ones (temp: put back at the next pass start,
+// re-applied by the blended hold passes). One SRT is scrolled twice per draw (lambert122 uses the
+// animation of lambert121): its second scroll starts from the exact value again.
+namespace {
+struct SkyTouch { uint32_t addr; bool blended; float exact; };
+struct SkyDraw { bool active = false; float speed = 0; std::vector<SkyTouch> touched; };
+SkyDraw g_sky;
+struct SkyRec { uint64_t record = ~0ull; float value = 0; };
+std::unordered_map<uint32_t, SkyRec> g_sky_rec;
+}  // namespace
+extern "C" void f_024D1D44_orig(Cpu*);
+extern "C" void f_024D1C44_orig(Cpu*);
+extern "C" void hook_024D1D44(Cpu* c) {
+    if (!on(32) || true60::enabled() || interp::in_execute()) { f_024D1D44_orig(c); return; }
+    g_sky.active = true;
+    g_sky.speed = (float)ldf32(c->r[3] + 0x3C8);
+    g_sky.touched.clear();
+    f_024D1D44_orig(c);
+    g_sky.active = false;
+    // (40 fps blended record pass: drawn blended above, recorded here for the next step)
+    if (interp::record_pass() || interp::record_blended()) {
+        if (g_sky_rec.size() > 64) g_sky_rec.clear();
+        for (const auto& t : g_sky.touched) g_sky_rec[t.addr] = SkyRec{interp::record_stamp(), t.exact};
+    }
+}
+// texScrollCheck(f32* v): the wrap after each scroll
+extern "C" void hook_024D1C44(Cpu* c) {
+    if (!g_sky.active) { f_024D1C44_orig(c); return; }
+    const uint32_t v = c->r[3];
+    SkyTouch* e = nullptr;
+    for (auto& t : g_sky.touched)
+        if (t.addr == v) e = &t;
+    // scrolled a second time in this draw: the game added the speed to the value drawn blended
+    if (e && e->blended) stf32(v, e->exact + g_sky.speed);
+    f_024D1C44_orig(c);
+    if (!e) {
+        g_sky.touched.push_back({v, false, 0.0f});
+        e = &g_sky.touched.back();
+    }
+    e->blended = false;
+    e->exact = (float)ldf32(v);
+    if (!interp::logic_pass() || !halfway()) return;
+    auto it = g_sky_rec.find(v);
+    if (it == g_sky_rec.end() || it->second.record != interp::hold_pass_count()) return;
+    const float cur = e->exact, prev = interp::fade::unwrap_near(it->second.value, cur, 1.0f);
+    if (prev == cur || !(std::fabs(cur - prev) < 0.25f)) return;
+    temp_blend_f32_again(v, f32_as_u32(prev), interp::pass_t());
+    e->blended = true;
+    static int tr = trace_left(8);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] sky cloud scroll %08X t %.3f: %.5f -> %.5f, drawn %.5f", v, interp::pass_t(), prev, cur, (float)ldf32(v));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Magma (Dragon Roost Cavern, Ganon's Tower; d_magma.cpp). MagmaPacket::calc (0258C7C8, world block:
+// full passes only) scrolls the lava texture (l_kuroOrthoMtx [0][3] and [1][3], into magmaKuroMtx
+// 104776E4: its [0][3] +0x0C and [1][3] +0x1C equal the scroll) and moves the lava balls up and down
+// (dMagma_ball_c mPos +0xD50, y +0xD54). MagmaPacket::update (0258CA60, every drawn pass) builds the
+// floors' and balls' render matrices from them (MagmaBallPath::update copies mPos.y into its
+// texture-projection matrix). On blended passes update runs on the scroll and the ball heights
+// between the record pass's and the step's values; the exact values are put back right after it.
+// Packet: floors at +0x98 (8, 0xBE4 apart: balls +0xB30, count +0xB34, next +0xBDC, room +0xBE0).
+namespace {
+struct MagmaRec { uint64_t record = ~0ull; uint32_t pkt = 0; float scroll[2] = {0, 0}; std::unordered_map<uint32_t, std::array<float, 3>> balls; };
+MagmaRec g_magma;
+template <class F>
+void magma_balls(uint32_t pk, F&& f) {
+    for (int i = 0; i < 8; i++) {
+        const uint32_t fl = pk + 0x98 + 0xBE4 * i, balls = ld32(fl + 0xB30);
+        if (!balls || (!ld32(fl + 0xBDC) && !ld32(fl + 0xBE0))) continue;
+        const uint32_t n = ld8(fl + 0xB34);
+        for (uint32_t j = 0; j < n; j++)
+            if (const uint32_t b = ld32(balls + 4 * j)) f(b);
+    }
+}
+}  // namespace
+extern "C" void f_0258CA60_orig(Cpu*);
+extern "C" void hook_0258CA60(Cpu* c) {
+    const uint32_t pk = c->r[3], kuro = GD(0x104776E4);
+    if (!on(16) || true60::enabled()) { f_0258CA60_orig(c); return; }
+    const float scroll[2] = {(float)ldf32(kuro + 0x0C), (float)ldf32(kuro + 0x1C)};
+    if (interp::record_pass()) {
+        g_magma.record = interp::hold_pass_count();
+        g_magma.pkt = pk;
+        g_magma.scroll[0] = scroll[0];
+        g_magma.scroll[1] = scroll[1];
+        g_magma.balls.clear();
+        magma_balls(pk, [&](uint32_t b) { g_magma.balls[b] = {(float)ldf32(b + 0xD50), (float)ldf32(b + 0xD54), (float)ldf32(b + 0xD58)}; });
+        f_0258CA60_orig(c);
+        return;
+    }
+    // (40 fps blended record pass: drawn blended from the last record, then recorded)
+    auto record_blended = [&] {
+        if (!interp::record_blended()) return;
+        g_magma.record = interp::record_stamp();
+        g_magma.pkt = pk;
+        g_magma.scroll[0] = scroll[0];
+        g_magma.scroll[1] = scroll[1];
+        g_magma.balls.clear();
+        magma_balls(pk, [&](uint32_t b) { g_magma.balls[b] = {(float)ldf32(b + 0xD50), (float)ldf32(b + 0xD54), (float)ldf32(b + 0xD58)}; });
+    };
+    if (!halfway() || g_magma.pkt != pk || g_magma.record != interp::hold_pass_count()) { f_0258CA60_orig(c); record_blended(); return; }
+    const float t = interp::pass_t();
+    for (int k = 0; k < 2; k++) {
+        const float prev = interp::fade::unwrap_near(g_magma.scroll[k], scroll[k], 1.0f);
+        if (prev != scroll[k] && std::fabs(scroll[k] - prev) < 0.25f) stf32(kuro + (k ? 0x1C : 0x0C), lerp_f(prev, scroll[k], t));
+    }
+    std::vector<std::pair<uint32_t, float>> moved;
+    magma_balls(pk, [&](uint32_t b) {
+        auto it = g_magma.balls.find(b);
+        if (it == g_magma.balls.end()) return;
+        const float y = (float)ldf32(b + 0xD54);
+        // (a ball placed anew, x/z changed: drawn where it is)
+        if (it->second[1] == y || it->second[0] != (float)ldf32(b + 0xD50) || it->second[2] != (float)ldf32(b + 0xD58)) return;
+        moved.push_back({b, y});
+        stf32(b + 0xD54, lerp_f(it->second[1], y, t));
+    });
+    static int tr = trace_left(9);
+    if (tr && (!moved.empty() || scroll[0] != g_magma.scroll[0])) {
+        tr--;
+        LOG("[interp-fx] magma t %.3f: scroll %.4f -> %.4f, drawn %.4f; %zu balls moving", t, g_magma.scroll[0], scroll[0], (float)ldf32(kuro + 0x0C), moved.size());
+    }
+    f_0258CA60_orig(c);
+    for (const auto& m : moved) stf32(m.first + 0xD54, m.second);
+    stf32(kuro + 0x0C, scroll[0]);
+    stf32(kuro + 0x1C, scroll[1]);
+    record_blended();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The swirl scene wipe (d_ovlp_fade2: the snapshot of the old scene turned and shrunk away, then
+// the new one turned in). Its execute advances the angle (rotZ +0x114) and scale (+0x118) once per
+// step; its draw (dOvlpFd2_Draw 025A1D10, every pass) builds the snapshot's matrix from them. Blended
+// passes build it from the values between the record pass's and the step's.
+namespace {
+struct WipeRec { uint64_t record = ~0ull; uint32_t self = 0; int16_t rot = 0; float scale = 0; };
+WipeRec g_wipe;
+}  // namespace
+extern "C" void f_025A1D10_orig(Cpu*);
+extern "C" void hook_025A1D10(Cpu* c) {
+    const uint32_t self = c->r[3];
+    if (!on(32) || true60::enabled() || !self) { f_025A1D10_orig(c); return; }
+    const int16_t rot = (int16_t)ld16(self + 0x114);
+    const float scale = (float)ldf32(self + 0x118);
+    if (interp::record_pass()) {
+        g_wipe = WipeRec{interp::hold_pass_count(), self, rot, scale};
+        f_025A1D10_orig(c);
+        return;
+    }
+    const WipeRec from = g_wipe;
+    if (interp::record_blended()) g_wipe = WipeRec{interp::record_stamp(), self, rot, scale};  // (40 fps: recorded, drawn blended from the last record)
+    if (!halfway() || from.self != self || from.record != interp::hold_pass_count() || (from.rot == rot && from.scale == scale)) {
+        f_025A1D10_orig(c);
+        return;
+    }
+    const float t = interp::pass_t();
+    st16(self + 0x114, (uint16_t)lerp_s16(from.rot, rot, t));
+    stf32(self + 0x118, lerp_f(from.scale, scale, t));
+    static int tr = trace_left(10);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] swirl wipe t %.3f: angle %d -> %d, scale %.3f -> %.3f", t, from.rot, rot, from.scale, scale);
+    }
+    f_025A1D10_orig(c);
+    st16(self + 0x114, (uint16_t)rot);
+    stf32(self + 0x118, scale);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Eye pupils. Link (daPy_matAnm_c::calc 02413E80, from the material calculation of every drawn
+// pass) writes the eye offset into the "texmtx1" texture SRT of his eye materials: the step's target
+// (mNowOffset +0x74, eased by his execute) or, while m_morf_frame (101CEF1B) runs, a morph from the
+// previous offset (mOldOffset +0x6C, set to the SRT after every call) 1/(n+1) of the way towards the
+// SRT's value: per call, so the morph ran 2x/4x/8x per logic step. The call is gated (interp_fade.h
+// floats_call): it advances once per logic step, and blended passes draw the SRT between the
+// step's start and its new value. SRT: material (r4) +0 resource (+0x34 SRT table, +0x38 name
+// table, relative), entry 0x14 bytes (+2 value offset) into +0x28 the SRT values (offsets +0x10/+0x14).
+// Tetra/Zelda (daPz_matAnm_c 024556E8), Aryll (daNpc_Ls1 02281564) and Zelda (daNpc_Zl1 023086FC) copy
+// their offset (+0x6C/+0x70, while +0x7C is set) into the SRT per call: blended passes copy the
+// offset between the record pass's and the step's.
+namespace {
+// index of `name` in the material resource's name dictionary (NW resource dictionary: +0 size, +4
+// entry count, +8 root node, then one 0x10-byte node per entry: +0 reference bit, +4 left/right,
+// +8 name (offset from this field), +0xC data), or -1
+int name_index(uint32_t dic, const char* name) {
+    if (dic < 0x10000000 || dic >= 0x50000000) return -1;
+    const uint32_t n = ld32(dic + 4);
+    for (uint32_t i = 1; i <= n && i <= 256; i++) {
+        const uint32_t field = dic + 8 + 0x10 * i + 8;
+        const int32_t off = (int32_t)ld32(field);
+        if (!off) continue;
+        const uint32_t str = field + off;
+        uint32_t k = 0;
+        while (name[k] && ld8(str + k) == (uint8_t)name[k]) k++;
+        if (!name[k] && !ld8(str + k)) return (int)i - 1;
+    }
+    return -1;
+}
+uint32_t link_eye_srt(uint32_t mat) {
+    const uint32_t md = ld32(mat);
+    if (md < 0x10000000 || md >= 0x50000000) return 0;
+    const int32_t names = (int32_t)ld32(md + 0x38), table = (int32_t)ld32(md + 0x34);
+    if (!names || !table) return 0;
+    const int idx = name_index(md + 0x38 + names, "texmtx1");
+    if (idx < 0) return 0;
+    const uint32_t e = md + 0x34 + table + 0x14 * idx;
+    return ld32(mat + 0x28) + ld16(e + 2);
+}
+struct EyeRec { uint32_t mat = 0, srt = 0; bool ok = false, wrote = false; float written[2] = {0, 0}; interp::fade::FloatsGate<4> gate; };
+std::unordered_map<uint32_t, EyeRec> g_eyes;
+struct EyeCopyRec { uint64_t record = ~0ull; float off[2] = {0, 0}; };
+std::unordered_map<uint32_t, EyeCopyRec> g_eye_copies;
+}  // namespace
+extern "C" void f_02413E80_orig(Cpu*);
+extern "C" void hook_02413E80(Cpu* c) {
+    const uint32_t self = c->r[3], mat = c->r[4];
+    if (!on(4) || true60::enabled()) { f_02413E80_orig(c); return; }
+    if (g_eyes.size() > 16) g_eyes.clear();
+    EyeRec& r = g_eyes[self];
+    if (r.mat != mat) {
+        r = EyeRec{};
+        r.mat = mat;
+        r.srt = link_eye_srt(mat);
+        r.ok = r.srt != 0;
+        static int found = trace_left(11);
+        if (found) {
+            found--;
+            LOG("[interp-fx] Link eye %08X: material %08X, texmtx1 SRT %s %08X", self, mat, r.ok ? "at" : "not found", r.srt);
+            const uint32_t md = ld32(mat);
+            if (!r.ok && md >= 0x10000000 && md < 0x50000000) {
+                const uint32_t nt = md + 0x38 + ld32(md + 0x38);
+                LOG("[interp-fx]   resource %08X: +34 %08X +38 %08X; names %08X: %08X %08X %08X %08X %08X %08X", md, ld32(md + 0x34), ld32(md + 0x38), nt,
+                    ld32(nt), ld32(nt + 4), ld32(nt + 8), ld32(nt + 12), ld32(nt + 16), ld32(nt + 20));
+            }
+        }
+    }
+    if (!r.ok) { f_02413E80_orig(c); return; }
+    const uint32_t old = self + 0x6C, srt = r.srt + 0x10;
+    float v[4] = {(float)ldf32(old), (float)ldf32(old + 4), (float)ldf32(srt), (float)ldf32(srt + 4)};
+    if (r.wrote && v[2] == r.written[0] && v[3] == r.written[1]) {  // the offset drawn blended: the exact one back
+        v[2] = r.gate.after[2];
+        v[3] = r.gate.after[3];
+    }
+    r.wrote = false;
+    bool valid = true;
+    interp::fade::floats_call(r.gate, self, interp::logic_steps(), !interp::hold_pass(), interp::pass_t(), 0u, v, [&](float* x) {
+        for (int i = 0; i < 2; i++) { stf32(old + 4 * i, x[i]); stf32(srt + 4 * i, x[2 + i]); }
+        f_02413E80_orig(c);
+        for (int i = 0; i < 2; i++) { x[i] = (float)ldf32(old + 4 * i); x[2 + i] = (float)ldf32(srt + 4 * i); }
+        valid = ld32(old) == ld32(srt) && ld32(old + 4) == ld32(srt + 4);  // (the call ends with old = SRT)
+    });
+    for (int i = 0; i < 2; i++) { stf32(old + 4 * i, v[i]); stf32(srt + 4 * i, v[2 + i]); }
+    if (!valid) {  // not the SRT the call wrote: left alone from now on
+        r.ok = false;
+        LOG("[interp-fx] Link's eye material %08X: texmtx1 SRT not found, eye offsets not blended", mat);
+        return;
+    }
+    const float t = interp::pass_t();
+    if (!halfway() || t >= 1.0f) return;
+    // drawn between the offset at the step's start (the previous call's SRT, kept in mOldOffset) and the new one
+    const float d[2] = {lerp_f(r.gate.before[0], r.gate.after[2], t), lerp_f(r.gate.before[1], r.gate.after[3], t)};
+    if (d[0] == v[2] && d[1] == v[3]) return;
+    stf32(srt, d[0]);
+    stf32(srt + 4, d[1]);
+    r.written[0] = (float)ldf32(srt);
+    r.written[1] = (float)ldf32(srt + 4);
+    r.wrote = true;
+    static int tr = trace_left(11);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] Link eye %08X t %.3f: %.4f %.4f -> %.4f %.4f, drawn %.4f %.4f", self, t, r.gate.before[0], r.gate.before[1], r.gate.after[2],
+            r.gate.after[3], d[0], d[1]);
+    }
+}
+static void eye_copy(Cpu* c, void (*orig)(Cpu*)) {
+    const uint32_t self = c->r[3];
+    if (!on(4) || true60::enabled()) { orig(c); return; }
+    const float off[2] = {(float)ldf32(self + 0x6C), (float)ldf32(self + 0x70)};
+    if (interp::record_pass()) {
+        if (g_eye_copies.size() > 32) g_eye_copies.clear();
+        g_eye_copies[self] = EyeCopyRec{interp::hold_pass_count(), {off[0], off[1]}};
+        orig(c);
+        return;
+    }
+    auto it = g_eye_copies.find(self);
+    const EyeCopyRec from = it != g_eye_copies.end() ? it->second : EyeCopyRec{};
+    if (interp::record_blended()) g_eye_copies[self] = EyeCopyRec{interp::record_stamp(), {off[0], off[1]}};  // (40 fps)
+    if (!halfway() || !ld8(self + 0x7C) || from.record != interp::hold_pass_count() || (from.off[0] == off[0] && from.off[1] == off[1])) {
+        orig(c);
+        return;
+    }
+    const float t = interp::pass_t();
+    stf32(self + 0x6C, lerp_f(from.off[0], off[0], t));
+    stf32(self + 0x70, lerp_f(from.off[1], off[1], t));
+    orig(c);
+    stf32(self + 0x6C, off[0]);
+    stf32(self + 0x70, off[1]);
+}
+extern "C" void f_024556E8_orig(Cpu*);
+extern "C" void f_02281564_orig(Cpu*);
+extern "C" void f_023086FC_orig(Cpu*);
+extern "C" void hook_024556E8(Cpu* c) { eye_copy(c, f_024556E8_orig); }
+extern "C" void hook_02281564(Cpu* c) { eye_copy(c, f_02281564_orig); }
+extern "C" void hook_023086FC(Cpu* c) { eye_copy(c, f_023086FC_orig); }
+
+// ---------------------------------------------------------------------------------------------
+// Actor draws that advance their own state (fpcM_Draw, true60.cpp hook_025DF904, calls these around
+// every process draw). At 30 fps an actor's Draw runs once per logic step; with frame interpolation
+// it runs on every drawn pass, so state a Draw advances ran 2x/4x/8x per step. On the passes without
+// logic (hold passes) these fields are put back after the draw, so they advance once per step, as at
+// 30 fps (their execute does not read them; they are drawn as the step left them):
+//   grappling hook (himo2, execute 0216E194): the coil and hand-rope smoothing (+0x21D8 5 floats,
+//     +0x21EC the last hand position, +0x21F8 three angles, +0x2388)
+//   King of Red Lions (daShip, 0247AE78): the HD sea shadow's fade (+0x630, chaseUC by 10 per draw)
+//   Forest Firefly (nh, 021E1338): its light blend (+0x834, chaseF per draw)
+//   Ganondorf (gnd, 02154EE0): the flash colour and fog (+0x1786 s16, +0x1788)
+//   Helmaroc King (bdk, 02066A38): the tail-hide countdown (+0x40A, -1 per tail per draw)
+//   Forsaken Fortress searchlights (obj_search, 0238DB44): the culling results its draw stores
+//     (+0x8D6 the two beams, +0x8D8 the lamp; its execute reads the lamp's)
+// "Replayed" draws (DrawKeepSpec::replay) also draw the hold passes from the values the step's logic
+// pass drew with (its draw advanced them first): every pass of the step shows the 30 fps frame's flash.
+//   Puppet Ganon (bgn, 0207E7B4; its draw daBgn_Draw 0207B2CC also draws the second and third forms,
+//     bgn2/bgn3, found through the statics 10461A38/10461A3C): the arrow-hit fog flash of the body
+//     (+0x4B4 s16, +0x4B8) and of each of the 75 parts (part_draw 0207ACD0: +0x27C s16, +0x280 of each
+//     0x3F0 part from +0x4D0); bgn2 +0x3050/+0x3054; bgn3 +0x11E72/+0x11E74 and its 9 hair parts
+//     (+0x1BE8, 0x19D8 each: +0x27C/+0x280)
+//   Jabun's cave wall (obj_ajav, 02315A54): draw_flashing_normal (02313E0C) counts each part's flash
+//     timer (+0x56 of the 6 parts of 0x90 from +0x9AC) up per draw and switches the part's draw proc
+//     (+0x88, 8 bytes) back to the normal one at the end: 2x/4x/8x as fast
+// Values the logic sets once per step and a draw reads (DrawKeepSpec::blend, f32) are drawn between
+// the previous step's and this one's on blended passes:
+//   Puppet Ganon's fog dim (the arena darkening between the forms: bgn +0x1575C mCC88, bgn2 +0x316C,
+//     bgn3 +0x1213C, eased by their executes; a jump of more than 0.1 in one step is drawn as it is)
+// Morth (ks, 021A7F94) is game logic: its execute calls draw_SUB (the wobble angle +0x576, the
+// burning-enemy update enemy_fire of +0xCDC: fire timers, damage) and sets +0x549, and its Draw calls
+// draw_SUB itself when +0x549 is clear, then clears it: once per step at 30 fps, but every later
+// pass of the step ran it again. On hold passes the draw finds +0x549 set (draw_SUB is not run).
+// debug: WWHD_INTERP_DRAW_KEEP=0 turns this off (WWHD_INTERP_FX bit 8 too); WWHD_INTERP_DRAW_REPLAY=0
+// keeps the replayed draws to "put back" only; WWHD_INTERP_DRAW_BLEND=0 draws the blend fields exactly
+namespace {
+// a field of the process (global 0) or of the object a static pointer (global: its address) points to
+struct DrawField { uint32_t global; uint32_t off; uint16_t len; };
+struct DrawKeepSpec { uint32_t exec; std::vector<DrawField> keep; bool replay = false; std::vector<DrawField> blend = {}; };
+std::vector<DrawField> fields(std::initializer_list<std::pair<uint32_t, uint16_t>> list, uint32_t global = 0) {
+    std::vector<DrawField> v;
+    for (const auto& f : list) v.push_back({global, f.first, f.second});
+    return v;
+}
+// n structures of `stride` from `first`, each with the fields `list`
+void add_parts(std::vector<DrawField>& v, uint32_t global, uint32_t first, uint32_t stride, uint32_t n,
+               std::initializer_list<std::pair<uint32_t, uint16_t>> list) {
+    for (uint32_t i = 0; i < n; i++)
+        for (const auto& f : list) v.push_back({global, first + i * stride + f.first, f.second});
+}
+const std::vector<DrawKeepSpec>& draw_keep_specs() {
+    static const std::vector<DrawKeepSpec> specs = [] {
+        std::vector<DrawKeepSpec> s = {
+            {GC(0x0216E194), fields({{0x21D8, 0x14}, {0x21EC, 0xC}, {0x21F8, 6}, {0x2388, 4}})},
+            {GC(0x0247AE78), fields({{0x630, 1}})},
+            {GC(0x021E1338), fields({{0x834, 4}})},
+            {GC(0x02154EE0), fields({{0x1786, 2}, {0x1788, 4}})},
+            {GC(0x021A7F94), fields({{0x576, 2}})},
+            {GC(0x0238DB44), fields({{0x8D6, 3}})},
+            {GC(0x02066A38), fields({{0x40A, 2}})},
+        };
+        // Puppet Ganon (bgn) and the forms it draws
+        const uint32_t bgn2 = GD(0x10461A38), bgn3 = GD(0x10461A3C);
+        DrawKeepSpec bgn{GC(0x0207E7B4), fields({{0x4B4, 2}, {0x4B8, 4}}), true};
+        add_parts(bgn.keep, 0, 0x4D0, 0x3F0, 75, {{0x27C, 2}, {0x280, 4}});
+        for (const auto& f : fields({{0x3050, 2}, {0x3054, 4}}, bgn2)) bgn.keep.push_back(f);
+        for (const auto& f : fields({{0x11E72, 2}, {0x11E74, 4}}, bgn3)) bgn.keep.push_back(f);
+        add_parts(bgn.keep, bgn3, 0x1BE8, 0x19D8, 9, {{0x27C, 2}, {0x280, 4}});
+        bgn.blend = {{0, 0x1575C, 4}, {bgn2, 0x316C, 4}, {bgn3, 0x1213C, 4}};
+        s.push_back(std::move(bgn));
+        // Jabun's cave wall
+        DrawKeepSpec ajav{GC(0x02315A54), {}, true};
+        add_parts(ajav.keep, 0, 0x9AC, 0x90, 6, {{0x56, 2}, {0x88, 8}});
+        s.push_back(std::move(ajav));
+        return s;
+    }();
+    return specs;
+}
+uint32_t ks_execute() { static const uint32_t a = GC(0x021A7F94); return a; }
+// the field's address (0: its object is not there)
+uint32_t field_addr(uint32_t proc, const DrawField& f) {
+    const uint32_t base = f.global ? ld32(f.global) : proc;
+    if (base < 0x10000000 || base >= 0x50000000 || (base & 3)) return 0;
+    return base + f.off;
+}
+struct DrawKept { uint32_t proc; const DrawKeepSpec* spec; std::vector<uint32_t> addrs; std::vector<uint8_t> bytes;
+                  std::vector<std::pair<uint32_t, uint32_t>> blended; };
+std::vector<DrawKept> g_draw_kept;
+// replayed draws: what the step's logic pass drew with
+struct DrawReplay { uint64_t step = ~0ull; std::vector<uint32_t> addrs; std::vector<uint8_t> bytes; };
+std::unordered_map<uint32_t, DrawReplay> g_draw_replay;
+// blend fields: the value of the step before and of this step
+struct DrawBlendRec { uint64_t step = ~0ull; float before = 0, after = 0; };
+std::unordered_map<uint32_t, DrawBlendRec> g_draw_blend;
+const DrawKeepSpec* draw_keep_spec(uint32_t exec) {
+    for (const auto& k : draw_keep_specs())
+        if (exec && exec == k.exec) return &k;
+    return nullptr;
+}
+std::vector<uint8_t> read_fields(const std::vector<uint32_t>& addrs, const DrawKeepSpec& spec) {
+    std::vector<uint8_t> b;
+    for (size_t j = 0; j < addrs.size(); j++)
+        if (addrs[j])
+            for (uint32_t i = 0; i < spec.keep[j].len; i++) b.push_back(ld8(addrs[j] + i));
+    return b;
+}
+void write_fields(const std::vector<uint32_t>& addrs, const DrawKeepSpec& spec, const std::vector<uint8_t>& b) {
+    size_t n = 0;
+    for (size_t j = 0; j < addrs.size(); j++)
+        if (addrs[j])
+            for (uint32_t i = 0; i < spec.keep[j].len && n < b.size(); i++) st8(addrs[j] + i, b[n++]);
+}
+}  // namespace
+namespace interp {
+void fx_actor_draw(uint32_t proc, uint32_t exec, bool begin) {
+    static const bool off = getenv("WWHD_INTERP_DRAW_KEEP") && !atoi(getenv("WWHD_INTERP_DRAW_KEEP"));
+    static const bool replay_on = !(getenv("WWHD_INTERP_DRAW_REPLAY") && !atoi(getenv("WWHD_INTERP_DRAW_REPLAY")));
+    static const bool blend_on = !(getenv("WWHD_INTERP_DRAW_BLEND") && !atoi(getenv("WWHD_INTERP_DRAW_BLEND")));
+    if (begin) {
+        const DrawKeepSpec* spec = off || !on(8) || true60::enabled() ? nullptr : draw_keep_spec(exec);
+        DrawKept k{proc, spec, {}, {}, {}};
+        if (!spec) { g_draw_kept.push_back(std::move(k)); return; }
+        for (const auto& f : spec->keep) k.addrs.push_back(field_addr(proc, f));
+        const uint64_t step = logic_steps();
+        if (!hold_pass()) {  // the step's logic pass (or a 40 fps one): what its draw starts from
+            if (spec->replay) {
+                if (g_draw_replay.size() > 64) g_draw_replay.clear();
+                g_draw_replay[proc] = {step, k.addrs, read_fields(k.addrs, *spec)};
+            }
+        } else {
+            k.bytes = read_fields(k.addrs, *spec);  // (put back after the draw)
+            auto it = g_draw_replay.find(proc);
+            if (replay_on && spec->replay && it != g_draw_replay.end() && it->second.step == step && it->second.addrs == k.addrs &&
+                it->second.bytes.size() == k.bytes.size()) {
+                static int tr = trace_left(13);
+                if (tr && it->second.bytes != k.bytes) {
+                    tr--;
+                    LOG("[interp-fx] process %08X (execute %08X): hold pass drawn from the logic pass's draw state (step %llu)", proc, exec,
+                        (unsigned long long)step);
+                }
+                write_fields(k.addrs, *spec, it->second.bytes);
+            }
+            if (exec == ks_execute()) {
+                static int tr = trace_left(13);
+                if (tr && !ld8(proc + 0x549)) {
+                    tr--;
+                    LOG("[interp-fx] Morth %08X: draw_SUB kept to the step's logic on a hold pass", proc);
+                }
+                st8(proc + 0x549, 1);  // (draw_SUB ran in this step already)
+            }
+        }
+        for (const auto& f : spec->blend) {
+            const uint32_t a = field_addr(proc, f);
+            if (!a) continue;
+            const float v = (float)ldf32(a);
+            DrawBlendRec& r = g_draw_blend[a];
+            if (r.step != step) {
+                r.before = r.step + 1 == step ? r.after : v;
+                r.after = v;
+                r.step = step;
+            }
+            const float t = pass_t();
+            if (!blend_on || !halfway() || !(t < 1.0f) || r.after != v || r.before == v || !(std::fabs(v - r.before) <= 0.1f)) continue;
+            k.blended.push_back({a, f32_as_u32(v)});
+            stf32(a, lerp_f(r.before, v, t));
+            static int tr = trace_left(13);
+            if (tr) {
+                tr--;
+                LOG("[interp-fx] process %08X field %08X t %.3f: %.4f -> %.4f, drawn %.4f", proc, a, t, r.before, v, (float)ldf32(a));
+            }
+        }
+        if (g_draw_blend.size() > 64) g_draw_blend.clear();
+        g_draw_kept.push_back(std::move(k));
+        return;
+    }
+    if (g_draw_kept.empty()) return;
+    DrawKept k = std::move(g_draw_kept.back());
+    g_draw_kept.pop_back();
+    if (!k.spec || k.proc != proc) return;
+    for (const auto& [a, v] : k.blended) st32(a, v);
+    if (hold_pass()) write_fields(k.addrs, *k.spec, k.bytes);
+}
+}  // namespace interp
+
+// ---------------------------------------------------------------------------------------------
+// Chains of dChain_packet_c (the balance lifts' chains: daBalancelift_c fills the packet's points,
+// +0xAC, +0xA8 of them, from its execute). The packet's draw (0251AE90, a J3DPacket: painted after
+// the pass) builds the links from the exact points while the lift is drawn blended. Blended passes
+// paint them between the record pass's points and the step's.
+namespace {
+struct ChainRec { uint64_t record = ~0ull; std::vector<float> p; };
+std::unordered_map<uint32_t, ChainRec> g_chains;
+}  // namespace
+extern "C" void f_0251AE90_orig(Cpu*);
+extern "C" void hook_0251AE90(Cpu* c) {
+    const uint32_t pk = c->r[3];
+    if (!on(16) || true60::enabled()) { f_0251AE90_orig(c); return; }
+    const uint32_t n = ld32(pk + 0xA8), pt = ld32(pk + 0xAC);
+    if (!n || n > 256 || pt < 0x10000000 || pt >= 0x50000000) { f_0251AE90_orig(c); return; }
+    std::vector<float> cur(3 * n);
+    for (uint32_t i = 0; i < 3 * n; i++) cur[i] = (float)ldf32(pt + 4 * i);
+    if (interp::display_record()) {
+        if (g_chains.size() > 32) g_chains.clear();
+        g_chains[pk] = ChainRec{interp::hold_pass_count(), cur};
+        f_0251AE90_orig(c);
+        return;
+    }
+    const float t = interp::display_t();
+    auto it = g_chains.find(pk);
+    const ChainRec from = it != g_chains.end() ? it->second : ChainRec{};
+    if (interp::display_record_blended()) g_chains[pk] = ChainRec{interp::display_record_stamp(), cur};  // (40 fps)
+    if (t >= 1.0f || from.record != interp::hold_pass_count() || from.p.size() != cur.size() || from.p == cur) {
+        f_0251AE90_orig(c);
+        return;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        float d2 = 0;
+        for (int k = 0; k < 3; k++) d2 += (cur[3 * i + k] - from.p[3 * i + k]) * (cur[3 * i + k] - from.p[3 * i + k]);
+        if (!(d2 < 500.0f * 500.0f)) { f_0251AE90_orig(c); return; }  // a jump: drawn as it is
+    }
+    for (uint32_t i = 0; i < 3 * n; i++) stf32(pt + 4 * i, lerp_f(from.p[i], cur[i], t));
+    static int tr = trace_left(12);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] chain %08X t %.3f: %u points, point 1 y %.2f -> %.2f", pk, t, n, from.p[n > 1 ? 4 : 1], cur[n > 1 ? 4 : 1]);
+    }
+    f_0251AE90_orig(c);
+    for (uint32_t i = 0; i < 3 * n; i++) stf32(pt + 4 * i, cur[i]);
+}
+
 // save state loaded: forget every effect history (the guest state jumped); interp.cpp also bumps the
 // hold pass count, which invalidates the step-stamped records
 namespace interp {
@@ -1473,6 +2486,7 @@ void fx_ss_reset() {
     g_ptcl_keep.clear();
     g_emtr.clear();
     g_anm.clear();
+    g_anm_blended.clear();
     g_temp.clear();
     g_temp_keep.clear();
     g_wave.pkt = 0;
@@ -1482,6 +2496,15 @@ void fx_ss_reset() {
     g_packet_poses.clear();
     g_line_layouts.clear();
     g_att.clear();
+    g_trails.clear();
+    g_hook = HookRec{};
+    g_ship = ShipRec{};
+    g_sky_rec.clear();
+    g_magma = MagmaRec{};
+    g_wipe = WipeRec{};
+    g_eyes.clear();
+    g_chains.clear();
+    g_eye_copies.clear();
     for (auto& s : g_sway) s = SwayRec{};
     g_wood = WoodRec{};
     g_sea.packet = 0;
@@ -1489,3 +2512,349 @@ void fx_ss_reset() {
     g_sea_scroll_half = false;
 }
 }  // namespace interp
+
+// ---------------------------------------------------------------------------------------------
+// The frame blur (Swift Sail, camera shakes with blur, some boss attacks): the HD 3D layer's overlay
+// pass (02732D3C, painted with every drawn frame) lays the previous frame's image over the new one
+// with the alpha the game sets (101F4826, 0..255) through the blur matrix (1048CF84: a slight zoom or
+// turn). It is a feedback effect: with N drawn frames per logic step the trail faded N times per
+// step instead of once and the zoom compounded N times (shorter, stronger-zooming trails at 120 fps).
+// Each frame uses the per-frame share of the step's blur: alpha (a/255)^(1/N) and the matrix 1/N of
+// the way from the identity, N the drawn frames per step (4/3 at 40 fps).
+// debug: WWHD_INTERP_BLUR=0 draws it as the game sets it (WWHD_INTERP_FX bit 32 too)
+namespace interp { int output_fps(); }
+extern "C" void f_02732D3C_orig(Cpu*);
+extern "C" void hook_02732D3C(Cpu* c) {
+    static const bool off = getenv("WWHD_INTERP_BLUR") && !atoi(getenv("WWHD_INTERP_BLUR"));
+    const uint32_t enabled = GD(0x101F4825), alpha_a = GD(0x101F4826), mtx = GD(0x1048CF84);
+    const float n = interp::enabled() && !true60::enabled() ? interp::output_fps() / 30.0f : 1.0f;
+    if (off || !on(32) || !(n > 1.0f) || !ld8(enabled)) { f_02732D3C_orig(c); return; }
+    const uint8_t alpha = ld8(alpha_a);
+    uint32_t saved[12];
+    for (int k = 0; k < 12; k++) saved[k] = ld32(mtx + 4 * k);
+    const uint8_t a = (uint8_t)std::lround(255.0 * std::pow(alpha / 255.0, 1.0 / n));
+    st8(alpha_a, a);
+    for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 4; k++) {
+            const float m = u32_as_f32(saved[4 * r + k]), id = (r == k) ? 1.0f : 0.0f;
+            stf32(mtx + 4 * (4 * r + k), id + (m - id) / n);
+        }
+    static int tr = trace_left(15);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] frame blur at %.2f frames per step: alpha %u -> %u, zoom %.4f -> %.4f", n, alpha, a, u32_as_f32(saved[0]), (float)ldf32(mtx));
+    }
+    f_02732D3C_orig(c);
+    st8(alpha_a, alpha);
+    for (int k = 0; k < 12; k++) st32(mtx + 4 * k, saved[k]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Morph animations played from a draw (mDoExt_McaMorf::play 025E535C, mDoExt_McaMorf2::play 025E65FC;
+// Valoo in the Gohma fight plays his in his draw): the frame update inside is already held on passes
+// without logic (J3DFrameCtrl::update, fx_hold_anim), but the morph between two animations (mCurMorf
+// chased towards 1 by mMorfStep) advanced on every drawn frame: 2x/4x/8x as fast. On those passes
+// play does nothing and answers as the game's would (the animation stopped or its rate 0).
+// debug: WWHD_INTERP_MORF_HOLD=0 lets them play (WWHD_INTERP_FX bit 8 too)
+namespace {
+void morf_play(Cpu* c, void (*orig)(Cpu*), uint32_t frame_ctrl) {
+    static const bool off = getenv("WWHD_INTERP_MORF_HOLD") && !atoi(getenv("WWHD_INTERP_MORF_HOLD"));
+    if (off || !interp::fx_hold_anim()) { orig(c); return; }
+    const uint32_t o = c->r[3];
+    const bool stopped = (ld8(o + frame_ctrl + 0xF) & 1) || ldf32(o + frame_ctrl) == 0.0;  // (mState bit 1, mRate)
+    c->r[3] = stopped ? 1 : 0;
+}
+}  // namespace
+extern "C" void f_025E535C_orig(Cpu*);
+extern "C" void f_025E65FC_orig(Cpu*);
+extern "C" void hook_025E535C(Cpu* c) { morf_play(c, f_025E535C_orig, 0x98); }
+extern "C" void hook_025E65FC(Cpu* c) { morf_play(c, f_025E65FC_orig, 0xA4); }
+
+// ---------------------------------------------------------------------------------------------
+// Light beams (dDlst_mirrorPacket::update 0252DA64: the Mirror Shield's beam from Link's draw, Medli's
+// harp beam from hers): the beam's quad is built on every draw from the matrix the draw passes (the
+// shield's or harp's base matrix, exact), with collision line checks for where it ends, while the
+// shield is drawn blended. Blended passes build it from the matrix between the record pass's and the
+// step's (interp_world blend: rotation slerp, translation lerp); a jump (>400) is drawn as it is.
+namespace {
+struct BeamRec { uint64_t record = ~0ull; float m[12] = {}; };
+std::unordered_map<uint32_t, BeamRec> g_beams;
+}  // namespace
+extern "C" void f_0252DA64_orig(Cpu*);
+extern "C" void hook_0252DA64(Cpu* c) {
+    const uint32_t pkt = c->r[3], mtx = c->r[4];
+    if (!on(16) || true60::enabled() || mtx < 0x10000000 || mtx >= 0x50000000) { f_0252DA64_orig(c); return; }
+    float cur[12];
+    for (int k = 0; k < 12; k++) cur[k] = (float)ldf32(mtx + 4 * k);
+    if (interp::record_pass()) {
+        if (g_beams.size() > 16) g_beams.clear();
+        BeamRec& r = g_beams[pkt];
+        r.record = interp::hold_pass_count();
+        memcpy(r.m, cur, sizeof cur);
+        f_0252DA64_orig(c);
+        return;
+    }
+    auto it = g_beams.find(pkt);
+    const BeamRec from = it != g_beams.end() ? it->second : BeamRec{};
+    if (interp::record_blended()) {  // (40 fps: recorded, drawn blended from the last record)
+        BeamRec& r = g_beams[pkt];
+        r.record = interp::record_stamp();
+        memcpy(r.m, cur, sizeof cur);
+    }
+    const float t = interp::pass_t();
+    bool same = memcmp(from.m, cur, sizeof cur) == 0;
+    const float dx = cur[3] - from.m[3], dy = cur[7] - from.m[7], dz = cur[11] - from.m[11];
+    if (!halfway() || t >= 1.0f || from.record != interp::hold_pass_count() || same || !(dx * dx + dy * dy + dz * dz < 400.0f * 400.0f)) {
+        f_0252DA64_orig(c);
+        return;
+    }
+    float m[12];
+    interp::blend_world_matrix(from.m, cur, m, t);
+    for (int k = 0; k < 12; k++) stf32(mtx + 4 * k, m[k]);
+    static int tr = trace_left(12);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] light beam %08X t %.3f: origin %.1f %.1f %.1f -> %.1f %.1f %.1f", pkt, t, from.m[3], from.m[7], from.m[11], cur[3], cur[7], cur[11]);
+    }
+    f_0252DA64_orig(c);
+    for (int k = 0; k < 12; k++) stf32(mtx + 4 * k, cur[k]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sunken-treasure light columns (daSalvage_c::calcAlpha 02466578, from the actor's draw): fades the
+// columns of the 160 salvage points in and out (cLib_chaseUC by 255/frames per call), counts down a
+// delay and sets their draw modes on every draw: 2x/4x/8x as fast. On passes without logic it does
+// not run: once per logic step, as at 30 fps. debug: WWHD_INTERP_FX bit 8
+extern "C" void f_02466578_orig(Cpu*);
+extern "C" void hook_02466578(Cpu* c) {
+    if (interp::fx_hold_anim() && !true60::enabled()) return;
+    f_02466578_orig(c);
+}
+
+// Forsaken Fortress searchlights (daObj_Search::Act_c::_draw 0238B258): the light spot on the ground
+// is drawn from the beam's start and end (+0x740 / +0x758, two of each, set by the execute) while the
+// lamp and beam models are drawn blended. Blended passes draw it between the record pass's and the
+// step's ends.
+namespace {
+struct SearchRec { uint64_t record = ~0ull; float p[12] = {}; };
+std::unordered_map<uint32_t, SearchRec> g_search;
+}  // namespace
+extern "C" void f_0238B258_orig(Cpu*);
+extern "C" void hook_0238B258(Cpu* c) {
+    const uint32_t a = c->r[3], base = a + 0x740;
+    if (!on(16) || true60::enabled()) { f_0238B258_orig(c); return; }
+    float cur[12];
+    for (int k = 0; k < 12; k++) cur[k] = (float)ldf32(base + 4 * k);
+    if (interp::record_pass()) {
+        if (g_search.size() > 16) g_search.clear();
+        SearchRec& r = g_search[a];
+        r.record = interp::hold_pass_count();
+        memcpy(r.p, cur, sizeof cur);
+        f_0238B258_orig(c);
+        return;
+    }
+    auto it = g_search.find(a);
+    const SearchRec from = it != g_search.end() ? it->second : SearchRec{};
+    if (interp::record_blended()) {  // (40 fps)
+        SearchRec& r = g_search[a];
+        r.record = interp::record_stamp();
+        memcpy(r.p, cur, sizeof cur);
+    }
+    const float t = interp::pass_t();
+    float d2 = 0;
+    for (int k = 0; k < 12; k++) d2 = std::max(d2, std::fabs(cur[k] - from.p[k]));
+    if (!halfway() || t >= 1.0f || from.record != interp::hold_pass_count() || d2 == 0.0f || !(d2 < 2000.0f)) {
+        f_0238B258_orig(c);
+        return;
+    }
+    for (int k = 0; k < 12; k++) stf32(base + 4 * k, lerp_f(from.p[k], cur[k], t));
+    f_0238B258_orig(c);
+    for (int k = 0; k < 12; k++) stf32(base + 4 * k, cur[k]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Spilled water's mask (dWpotWater_c, a kankyo process: execute 025D39A8 bakes the mask's matrix as
+// j3dSys's view at that moment x its placement into its alpha-volume packet, +0x198; draw 025D3968 only
+// enters the packet): every pass painted it with the view of the pass before the step's logic while
+// the scene is drawn with the blended camera. The placement is kept from the execute (the inverse view
+// times the matrix) and the draw bakes it with the view of the pass it is drawn in (once the camera
+// has drawn in it). The execute writes the packet's matrix again before anything reads it.
+// debug: WWHD_INTERP_FX bit 16
+namespace interp { bool view_drawn_this_pass(); }
+namespace {
+// 3x4 affine matrices (row-major, translation in column 3)
+void mtx_concat(const float* a, const float* b, float* out) {
+    for (int r = 0; r < 3; r++)
+        for (int k = 0; k < 4; k++)
+            out[4 * r + k] = a[4 * r] * b[k] + a[4 * r + 1] * b[4 + k] + a[4 * r + 2] * b[8 + k] + (k == 3 ? a[4 * r + 3] : 0.0f);
+}
+bool mtx_inverse(const float* m, float* out) {
+    const float a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (!(std::fabs(det) > 1e-12f)) return false;
+    const float s = 1.0f / det;
+    out[0] = (e * i - f * h) * s; out[1] = (c * h - b * i) * s; out[2] = (b * f - c * e) * s;
+    out[4] = (f * g - d * i) * s; out[5] = (a * i - c * g) * s; out[6] = (c * d - a * f) * s;
+    out[8] = (d * h - e * g) * s; out[9] = (b * g - a * h) * s; out[10] = (a * e - b * d) * s;
+    for (int r = 0; r < 3; r++) out[4 * r + 3] = -(out[4 * r] * m[3] + out[4 * r + 1] * m[7] + out[4 * r + 2] * m[11]);
+    return true;
+}
+struct WpotRec { uint64_t step = ~0ull; float place[12] = {}; };
+std::unordered_map<uint32_t, WpotRec> g_wpot;
+}  // namespace
+extern "C" void f_025D39A8_orig(Cpu*);
+extern "C" void hook_025D39A8(Cpu* c) {
+    const uint32_t self = c->r[3];
+    float view[12], inv[12], m[12];
+    for (int k = 0; k < 12; k++) view[k] = (float)ldf32(GD(0x104B45F8) + 4 * k);
+    f_025D39A8_orig(c);
+    if (!interp::enabled() || true60::enabled()) return;
+    if (g_wpot.size() > 32) g_wpot.clear();
+    for (int k = 0; k < 12; k++) m[k] = (float)ldf32(self + 0x198 + 4 * k);
+    if (!mtx_inverse(view, inv)) { g_wpot.erase(self); return; }
+    WpotRec& r = g_wpot[self];
+    r.step = interp::logic_steps();
+    mtx_concat(inv, m, r.place);
+}
+extern "C" void f_025D3968_orig(Cpu*);
+extern "C" void hook_025D3968(Cpu* c) {
+    const uint32_t self = c->r[3];
+    auto it = g_wpot.find(self);
+    if (!on(16) || true60::enabled() || it == g_wpot.end() || it->second.step != interp::logic_steps() || !interp::view_drawn_this_pass()) {
+        f_025D3968_orig(c);
+        return;
+    }
+    float view[12], m[12];
+    for (int k = 0; k < 12; k++) view[k] = (float)ldf32(GD(0x104B45F8) + 4 * k);
+    mtx_concat(view, it->second.place, m);
+    static int tr = trace_left(13);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] spilled water %08X t %.3f: mask matrix z %.2f -> %.2f (view of this pass)", self, interp::pass_t(),
+            (float)ldf32(self + 0x198 + 44), m[11]);
+    }
+    for (int k = 0; k < 12; k++) stf32(self + 0x198 + 4 * k, m[k]);
+    f_025D3968_orig(c);
+}
+
+// ---------------------------------------------------------------------------------------------
+// HD shadow cascades (hdLayerShadow drawShadowPass 02736C10, painted with every drawn frame): the
+// split distances (surface +0x264 -> mCascadeCount +0x254 + 1 floats, set before updateShadowSurface
+// 027987BC) and the cascade fade ranges (environment +0x1D4: near start, 1/(near end - start), far
+// start, 1/(far end - start), before uploadShadowEnvironment 027FB678) come from the camera's exact eye
+// and target (dCamera_c +0x258/+0x264, with a line check from the eye) once per step: the cascade
+// edges moved in steps while the camera moves smoothly. Frames painted between two steps use the
+// distances between the previous step's and this one's. The split distances are put back after the
+// pass is painted: the culling cascade job (027C93A8) of the next pass reads them (a pass before a
+// logic pass must leave the 30 fps values; the passes painted before such a job are exact or not
+// blended here: the record pass, a 40 fps blended record pass). A change of more than half is
+// drawn as it is (a camera cut, an event's ranges). debug: WWHD_INTERP_SHADOW_SPLIT=0
+namespace interp { float display_t(); bool display_record(); bool display_record_blended(); }
+namespace {
+// (painted on the HD render threads, the TV's and the GamePad's layers each with their own surface:
+// the records are per surface / environment, under a lock)
+struct SplitRec { uint64_t step = ~0ull; std::vector<float> before, after; };
+std::mutex g_split_lock;
+std::unordered_map<uint32_t, SplitRec> g_split_dist, g_split_fade;
+thread_local bool g_in_shadow_pass = false;
+thread_local std::vector<std::pair<uint32_t, uint32_t>> g_split_put_back;
+bool split_blend_on() {
+    static const bool off = getenv("WWHD_INTERP_SHADOW_SPLIT") && !atoi(getenv("WWHD_INTERP_SHADOW_SPLIT"));
+    return !off && on(16) && !true60::enabled() && g_in_shadow_pass;
+}
+// the step's exact values `cur` (recorded); true and `out` the drawn ones when this frame blends
+bool split_blend(SplitRec& r, const std::vector<float>& cur, std::vector<float>& out, bool fade) {
+    const uint64_t step = interp::logic_steps();
+    if (r.step != step) {
+        r.before = r.step + 1 == step ? r.after : std::vector<float>{};
+        r.after = cur;
+        r.step = step;
+    }
+    const float t = interp::display_t();
+    if (!(t < 1.0f) || interp::display_record() || interp::display_record_blended() || r.after != cur || r.before.size() != cur.size() ||
+        r.before == cur)
+        return false;
+    out.resize(cur.size());
+    if (!fade) {
+        for (size_t i = 0; i < cur.size(); i++) {
+            const float a = r.before[i], b = cur[i];
+            if (!std::isfinite(a) || !std::isfinite(b) || std::fabs(b - a) > 0.5f * std::max(std::fabs(a), std::fabs(b))) return false;
+            out[i] = lerp_f(a, b, t);
+        }
+        return true;
+    }
+    for (int k = 0; k < 4; k += 2) {  // (start, 1/(end - start)) pairs: the ends blended
+        const float sa = r.before[k], ia = r.before[k + 1], sb = cur[k], ib = cur[k + 1];
+        if (!(ia > 0.0f) || !(ib > 0.0f) || !std::isfinite(sa) || !std::isfinite(sb)) {
+            if (sa != sb || ia != ib) return false;
+            out[k] = sb; out[k + 1] = ib;
+            continue;
+        }
+        const float ea = sa + 1.0f / ia, eb = sb + 1.0f / ib;
+        if (std::fabs(eb - ea) > 0.5f * std::max(std::fabs(ea), std::fabs(eb)) || std::fabs(sb - sa) > 0.5f * std::max(std::fabs(sa), std::fabs(sb)))
+            return false;
+        const float s = lerp_f(sa, sb, t), e = lerp_f(ea, eb, t);
+        if (!(e > s)) return false;
+        out[k] = s;
+        out[k + 1] = 1.0f / (e - s);
+    }
+    return true;
+}
+}  // namespace
+namespace interp_fx {
+bool in_shadow_pass() { return g_in_shadow_pass; }  // fog_pin.cpp
+}
+extern "C" void f_02736C10_orig(Cpu*);
+extern "C" void hook_02736C10(Cpu* c) {
+    const bool saved = g_in_shadow_pass;
+    g_in_shadow_pass = true;
+    f_02736C10_orig(c);
+    g_in_shadow_pass = saved;
+    for (const auto& [a, v] : g_split_put_back) st32(a, v);
+    g_split_put_back.clear();
+}
+extern "C" void f_027987BC_orig(Cpu*);
+extern "C" void hook_027987BC(Cpu* c) {
+    const uint32_t s = c->r[3], n = ld32(s + 0x254), d = ld32(s + 0x264);
+    if (!split_blend_on() || n == 0 || n > 8 || d < 0x10000000 || d >= 0x50000000) { f_027987BC_orig(c); return; }
+    std::vector<float> cur(n + 1), out, before;
+    for (uint32_t i = 0; i <= n; i++) cur[i] = (float)ldf32(d + 4 * i);
+    bool blend;
+    {
+        std::lock_guard<std::mutex> lock(g_split_lock);
+        if (g_split_dist.size() > 8) g_split_dist.clear();
+        SplitRec& r = g_split_dist[s];
+        blend = split_blend(r, cur, out, false);
+        before = r.before;
+    }
+    if (blend) {
+        static std::atomic<int> tr{trace_left(14)};
+        if (tr.load() > 0 && tr-- > 0)
+            LOG("[interp-fx] shadow split %08X t %.3f: middle %.1f -> %.1f, drawn %.1f; far %.1f -> %.1f, drawn %.1f", s, interp::display_t(),
+                before[std::min(1u, n)], cur[std::min(1u, n)], out[std::min(1u, n)], before[std::min(2u, n)], cur[std::min(2u, n)],
+                out[std::min(2u, n)]);
+        for (uint32_t i = 0; i <= n; i++) {
+            g_split_put_back.push_back({d + 4 * i, ld32(d + 4 * i)});
+            stf32(d + 4 * i, out[i]);
+        }
+    }
+    f_027987BC_orig(c);
+}
+extern "C" void f_027FB678_orig(Cpu*);
+extern "C" void hook_027FB678(Cpu* c) {
+    const uint32_t e = c->r[3];
+    if (!split_blend_on() || e < 0x10000000 || e >= 0x50000000) { f_027FB678_orig(c); return; }
+    std::vector<float> cur(4), out;
+    for (int i = 0; i < 4; i++) cur[i] = (float)ldf32(e + 0x1D4 + 4 * i);
+    bool blend;
+    {
+        std::lock_guard<std::mutex> lock(g_split_lock);
+        if (g_split_fade.size() > 8) g_split_fade.clear();
+        blend = split_blend(g_split_fade[e], cur, out, true);
+    }
+    if (!blend) { f_027FB678_orig(c); return; }
+    uint32_t exact[4];
+    for (int i = 0; i < 4; i++) { exact[i] = ld32(e + 0x1D4 + 4 * i); stf32(e + 0x1D4 + 4 * i, out[i]); }
+    f_027FB678_orig(c);
+    for (int i = 0; i < 4; i++) st32(e + 0x1D4 + 4 * i, exact[i]);
+}

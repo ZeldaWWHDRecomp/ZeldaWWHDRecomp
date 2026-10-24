@@ -213,10 +213,20 @@ class Collision(unittest.TestCase):
                               'collision': {'groups': ['a'], 'void': ['a'], 'strip_exits': True}, 'distant': {'archive': 'sea_LOD05.szs', 'triangles': 120},
                               'expect': {'triangles': [1], 'collision_triangles': 1}}]}
         gp.check_recipe(recipe)
-        for change in (lambda r: r['pieces'][0]['distant'].update(archive='sea_LOD06.szs'), lambda r: r['pieces'][0]['distant'].update(triangles=2000),
+        for change in (lambda r: r['pieces'][0]['distant'].update(archive='sea_LOD06.szs'), lambda r: r['pieces'][0]['distant'].update(triangles=2049),
                        lambda r: r['pieces'][0]['collision'].update(void=['b']), lambda r: r['pieces'][0].update(origin_y=50),
                        lambda r: r['pieces'][0]['collision'].update(strip_exits='yes')):
             bad = json.loads(json.dumps(recipe))
+            change(bad)
+            with self.assertRaises(gp.BuildError):
+                gp.check_recipe(bad)
+        # an island's water: a second part keeps its texture animation; a first part never does
+        water = json.loads(json.dumps(recipe))
+        water['pieces'][0]['parts'].append({'model': 1, 'nodes': ['w'], 'light': 'bg1', 'animated': True})
+        water['pieces'][0]['expect']['triangles'] = [1, 1]
+        gp.check_recipe(water)
+        for change in (lambda r: r['pieces'][0]['parts'][0].update(animated=True), lambda r: r['pieces'][0]['parts'][1].update(animated='yes')):
+            bad = json.loads(json.dumps(water))
             change(bad)
             with self.assertRaises(gp.BuildError):
                 gp.check_recipe(bad)
@@ -235,6 +245,9 @@ class FromGame(unittest.TestCase):
                 again = gp.build(game, path, 'gp' + '0' * 29, os.path.join(d, r['set'] + '.szs'))
                 self.assertEqual(again['archive_sha256'], meta['archive_sha256'])
                 for piece, recipe_piece in zip(meta['pieces'], r['pieces']):
+                    # an animated part (an island's water) brings its texture animation, named as its model
+                    for part, recipe_part in zip(piece['parts'], recipe_piece['parts']):
+                        self.assertEqual(part.get('animation'), part['model'] if recipe_part.get('animated') else None)
                     if 'distant' not in recipe_piece:
                         self.assertNotIn('distant', piece)
                         continue

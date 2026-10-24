@@ -70,9 +70,10 @@ bool declared(){return !declarations.empty();}
 size_t checkpoint(){return declarations.size();}
 void rollback(size_t n) noexcept{if(!installed&&n<=declarations.size())declarations.resize(n);}
 void configure(uint32_t memory,void(*o)(Cpu*,uint32_t),Invoke i){area=memory;original=o;invoke=i;if(trace())LOG("[item_model] scratch=%08X bytes=%u",area,kMemoryBytes);}
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if(declarations.empty())return true;if(!area||area<mem::kRuntimeStart||area>mem::kHostStart-kMemoryBytes||!original||!invoke||!owner(GC(0x02403C24)).empty()||!owner(GC(0x023DBBE4)).empty()||!owner(GC(0x02123B60)).empty())return false;const uint32_t res[]={GC(0x02604550),GC(0x02604EB4),GC(0x02612E64)};unsigned empty=0;for(auto fn:res){const auto who=owner(fn);if(who.empty())++empty;else if(who!="the port's world actors")return false;}if(empty!=0&&empty!=3)return false;std::memset(mem::ptr(area),0,kMemoryBytes);
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if(declarations.empty())return true;if(!area||area<mem::kRuntimeStart||area>mem::kHostStart-kMemoryBytes||!original||!invoke||!owner(GC(0x02403C24)).empty()||!owner(GC(0x023DBBE4)).empty())return false;const uint32_t res[]={GC(0x02604550),GC(0x02604EB4),GC(0x02612E64)};unsigned empty=0;for(auto fn:res){const auto who=owner(fn);if(who.empty())++empty;else if(who!="the port's world actors")return false;}if(empty!=0&&empty!=3)return false;std::memset(mem::ptr(area),0,kMemoryBytes);
  if(empty==3){replace(res[0],table_hook);replace(res[1],archive_hook);replace(res[2],backing_hook);}
- replace(GC(0x02403C24),hooks::hand);replace(GC(0x023DBBE4),hooks::draw);replace(GC(0x02123B60),hooks::demo_item_draw);installed=true;return true;}
+ // the demo item's draw (daDitem_Draw) is story_item_get_icon's hook, which asks draw_demo_item() first
+ replace(GC(0x02403C24),hooks::hand);replace(GC(0x023DBBE4),hooks::draw);installed=true;return true;}
 bool owns_archive(const std::string& name){return std::any_of(declarations.begin(),declarations.end(),[&](const Decl&d){return d.archive==name;});}
 namespace {
 std::string archive_arg(Cpu*c){uint32_t key=c->r[4];if(!span(key,4))return {};uint32_t p=ld32(key);if(!span(p,96))return {};const char* s=reinterpret_cast<const char*>(mem::ptr(p));const void* end=std::memchr(s,0,96);return end?std::string(s,static_cast<const char*>(end)):std::string();}
@@ -90,7 +91,8 @@ void request(uint16_t key){if(installed&&definition(key)){st32(area+8,key);if(tr
 namespace {
 // the get presentation: the model on the demo item (area+36), until end_get
 void request_get(uint16_t key){if(installed&&definition(key)){st32(area+8,key|GetRequest);if(trace())LOG("[item_model] hold-up request key=%u",key);}}
-void end_get(uint16_t key){if(ld32(area+8)==(key|GetRequest))st32(area+8,0);if(valid()&&ld32(area+36)&&ld32(area+4)==key)st32(area+20,0);}
+// (without a declared held model nothing is installed and `area` is 0: nothing to end; #269)
+void end_get(uint16_t key){if(!installed||!area)return;if(ld32(area+8)==(key|GetRequest))st32(area+8,0);if(valid()&&ld32(area+36)&&ld32(area+4)==key)st32(area+20,0);}
 const uint32_t kPresentItem=GC(0x025D7DEC),kSearchById=GC(0x025D54C4),kOrderItemEvent=GC(0x025D7B98),kEndCheck=GC(0x0254457C),kDeleteActor=GC(0x025D57E0);
 uint32_t play(){return GD(0x1046F0B0);}  // g_dComIfG_gameInfo.play
 constexpr uint32_t PlayEventMode=0x5292,PlayItemPartner=0x52A0,PlayEventFlags=0x52B8,PlayEventManager=0x52C4;
@@ -149,19 +151,19 @@ void reset(){declarations.clear();area=0;original=nullptr;invoke=nullptr;install
 namespace hooks {
 void hand(Cpu*c){uint32_t a=c->r[3];original(c,GC(0x02403C24));Keep keep(c);if(!exact(a)||ld32(area+Retiring)||ld32(area+36)||!span(ld32(area+28),0x144))return;st32(area+248,0);uint32_t m=ld32(a+0x448);if(!span(m,0x30))return;uint32_t b=ld32(m+0x2C);if(!span(b,0x14))return;uint32_t mat=ld32(b+0x10)+8*0x30;if(!span(mat,0x30))return;for(unsigned i=0;i<12;++i)if(!std::isfinite(u32_as_f32(ld32(mat+i*4))))return;std::memcpy(mem::ptr(area+Matrix),mem::ptr(mat),0x30);std::memcpy(mem::ptr(ld32(area+28)+0xC8),mem::ptr(mat),0x30);st32(area+248,1);}
 void draw(Cpu*c){uint32_t a=c->r[3];original(c,GC(0x023DBBE4));Keep keep(c);if(!exact(a)||ld32(area+Retiring)||ld32(area+36)||!ld32(area+248)||!span(ld32(area+28),0x144))return;if(invoke(c,GC(0x02444E58),{a}))return;uint32_t m=ld32(area+28);uint32_t env=invoke(c,GC(0x02555D0C),{});invoke(c,GC(0x025626A4),{env,0,a+0x314,area+512});invoke(c,GC(0x02562F5C),{env,m,area+512});invoke(c,GC(0x025E2DE0),{m,0});}
-// daDitem_Draw(item): the stand-in's demo item while a held model is shown in its place: the model with the
+}  // namespace hooks
+// daDitem_Draw(item) (story_item_get_icon's hook asks first): the stand-in's demo item while a held model is shown in its place: the model with the
 // demo item's matrix (set_mtx: over Link's head, turning to the camera), lit at its place. Until the model
-// is ready nothing is drawn (never the stand-in's own card). Any other demo item: the game's.
-void demo_item_draw(Cpu*c){
+// is ready nothing is drawn (never the stand-in's own card). Any other demo item: false (the caller draws it).
+bool draw_demo_item(Cpu*c){
  const uint32_t it=c->r[3];
- if(!valid()||!ld32(area+36)||!span(it,DemoItemBytes)||ld8(it+DemoItemNo)!=story_treasure_chest::kStandIn)return original(c,GC(0x02123B60));
+ if(!installed||!valid()||!ld32(area+36)||!span(it,DemoItemBytes)||ld8(it+DemoItemNo)!=story_treasure_chest::kStandIn)return false;
  {Keep keep(c);const uint32_t m=ld32(area+28),own=ld32(it+DemoItemModel);
   bool finite=span(own,0x144);for(unsigned i=0;finite&&i<12;++i)finite=std::isfinite(u32_as_f32(ld32(own+0xC8+i*4)));
   if(!ld32(area+Retiring)&&span(m,0x144)&&finite){
    std::memcpy(mem::ptr(m+0xC8),mem::ptr(own+0xC8),0x30);
    const uint32_t env=invoke(c,GC(0x02555D0C),{});invoke(c,GC(0x025626A4),{env,0,it+ActorPos,area+512});invoke(c,GC(0x02562F5C),{env,m,area+512});invoke(c,GC(0x025E2DE0),{m,0});
   }}
- c->r[3]=1;
-}
+ c->r[3]=1;return true;
 }
 }

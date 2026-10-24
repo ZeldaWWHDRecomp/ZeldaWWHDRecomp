@@ -29,6 +29,7 @@ void map(uint32_t a) {
     assert(p==mem::ptr(a));
 }
 }
+namespace file_select_quit { void observe(Cpu*) {} }
 namespace input { bool pro_controller(){return pro;} }
 namespace input_map { bool skip_controller_selection(){return enabled;} }
 void log_msg(const char*,...) {}

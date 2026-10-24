@@ -431,6 +431,11 @@ Bytes extend_pack(const Bytes& pack, const std::vector<Bytes>& icons) {
 namespace {
 std::mutex g_mu;
 std::vector<Item> g_items;
+unsigned g_spares = 0;
+std::vector<uint16_t> g_spare_keys;            // the item bound to each spare frame (0: free)
+std::map<int, std::string> g_pending;          // frame -> the picture to write there
+std::map<int, uint64_t> g_written;             // frame -> the picture (hash) written there
+
 std::filesystem::path g_cache;
 std::map<std::string, std::string> g_built;  // input pack path -> extended pack path ("" failed)
 bool g_served = false;                       // the game read an extended pack
@@ -469,9 +474,10 @@ Bytes icon_of(const std::string& png_path) {
 }
 }  // namespace
 
-void set_items(const std::vector<Item>& items, const std::filesystem::path& cache_dir) {
+void set_items(const std::vector<Item>& items, const std::filesystem::path& cache_dir, unsigned spares) {
     std::lock_guard lock(g_mu);
     g_items = items, g_cache = cache_dir, g_built.clear(), g_served = false;
+    g_spares = spares, g_spare_keys.assign(spares, 0), g_pending.clear(), g_written.clear();
 }
 
 std::string pack_for(const std::string& guest, const std::string& host_path) {
@@ -495,6 +501,10 @@ std::string pack_for(const std::string& guest, const std::string& host_path) {
             icons.push_back(icon_of(it.icon_png));
             h = fnv(h, &it.key, sizeof it.key), h = fnv(h, icons.back().data(), icons.back().size());
         }
+        for (unsigned i = 0; i < g_spares; i++) {  // the spare frames: empty until an item takes one
+            icons.push_back(Bytes(size_t(kIconSize) * kIconSize * 4, 0));
+            h = fnv(h, icons.back().data(), icons.back().size());
+        }
         char name[64];
         snprintf(name, sizeof name, "%016llx", (unsigned long long)h);
         const std::filesystem::path out = g_cache / ("item-icons-" + std::string(name) + ".pack");
@@ -510,8 +520,8 @@ std::string pack_for(const std::string& guest, const std::string& host_path) {
             }
             std::filesystem::rename(tmp, out, ec);
             if (ec) fail("can't write the cache (" + ec.message() + ")");
-            LOG("[items] item icons: %zu mod icons added to %s (%.1f MB)", g_items.size(), std::filesystem::path(guest).filename().string().c_str(),
-                built.size() / 1048576.0);
+            LOG("[items] item icons: %zu mod icons and %u spare frames added to %s (%.1f MB)", g_items.size(), g_spares,
+                std::filesystem::path(guest).filename().string().c_str(), built.size() / 1048576.0);
         }
         result = out.string();
         g_served = true;
@@ -522,12 +532,68 @@ std::string pack_for(const std::string& guest, const std::string& host_path) {
     return result;
 }
 
-int frame(uint16_t key) {
-    std::lock_guard lock(g_mu);
+Bytes picture(const std::string& png_path) { return icon_of(png_path); }
+
+namespace {
+int frame_locked(uint16_t key) {
     if (!g_served) return -1;
     for (size_t i = 0; i < g_items.size(); i++)
         if (g_items[i].key == key) return kFirstFrame + int(i);
+    for (size_t i = 0; i < g_spare_keys.size(); i++)
+        if (key && g_spare_keys[i] == key) return kFirstFrame + int(g_items.size() + i);
     return -1;
 }
+}  // namespace
+
+int frame(uint16_t key) {
+    std::lock_guard lock(g_mu);
+    return frame_locked(key);
+}
+bool has_frame(uint16_t key) { return frame(key) >= 0; }
+unsigned free_spares() {
+    std::lock_guard lock(g_mu);
+    if (!g_served) return 0;
+    return unsigned(std::count(g_spare_keys.begin(), g_spare_keys.end(), uint16_t(0)));
+}
+void served_for_tests() {
+    std::lock_guard lock(g_mu);
+    g_served = true;
+}
+bool live_icons() {
+    std::lock_guard lock(g_mu);
+    return g_served && g_spares > 0;
+}
+int live_icon(uint16_t key, const std::string& png) {
+    std::lock_guard lock(g_mu);
+    if (!g_served || !key) return -1;
+    int f = frame_locked(key);
+    if (f < 0) {
+        auto it = std::find(g_spare_keys.begin(), g_spare_keys.end(), uint16_t(0));
+        if (it == g_spare_keys.end()) return -1;
+        *it = key;
+        f = kFirstFrame + int(g_items.size() + size_t(it - g_spare_keys.begin()));
+    }
+    g_pending[f] = png;
+    return f;
+}
+
+std::vector<std::pair<int, std::string>> pending_icons() {
+    std::lock_guard lock(g_mu);
+    return {g_pending.begin(), g_pending.end()};
+}
+bool icon_written(int f, uint64_t hash) {
+    std::lock_guard lock(g_mu);
+    auto it = g_written.find(f);
+    return it != g_written.end() && it->second == hash;
+}
+void icon_done(int f, const std::string& png, uint64_t hash, bool ok) {
+    std::lock_guard lock(g_mu);
+    if (ok) g_written[f] = hash;
+    if (g_pending.count(f) && g_pending[f] == png) g_pending.erase(f);  // done (or refused: logged once)
+}
+uint64_t picture_hash(const Bytes& px) { return fnv(0xCBF29CE484222325ull, px.data(), px.size()); }
+std::string icon_file(int f) { return "timg/" + icon_name(f); }
+std::string glow_file(int f) { return "timg/" + float_name(f); }
+
 
 }  // namespace item_icons

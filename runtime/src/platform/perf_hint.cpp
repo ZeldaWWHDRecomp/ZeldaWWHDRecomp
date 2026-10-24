@@ -22,6 +22,7 @@
 #include "../interp.h"
 #include "../interp_pacing.h"
 #include "heat_guard.h"
+#include "../overlay/android_telemetry.h"
 
 namespace perf_hint {
 namespace {
@@ -76,6 +77,24 @@ heat_guard::Limits heat_guard_limits() {
     return limits;
 }
 
+// The readings for the heat guard's temperature check (heat_guard::Temperatures): the battery from
+// power_supply (tenths of a degree; NaN where Android does not let apps read it) and the hottest
+// CPU/GPU thermal zone (as in the performance report).
+heat_guard::Temperatures heat_guard_temperatures() {
+    heat_guard::Temperatures t;
+    double tenths = 0;
+    if (overlay::AndroidTelemetry::number("/sys/class/power_supply/battery/temp", tenths) &&
+        tenths > -400 && tenths < 1000)
+        t.battery = float(tenths / 10);
+    overlay::AndroidTelemetry sensors;
+    sensors.read();
+    for (const auto& [name, celsius] : sensors.temperatures)
+        if ((name.find("cpu") != std::string::npos || name.find("gpu") != std::string::npos) &&
+            !(t.hottest_core >= celsius))
+            t.hottest_core = float(celsius);
+    return t;
+}
+
 // Automatic 60 fps. Frame interpolation runs the game logic on every other pass, so where the phone
 // draws fewer than 60 frames a second the whole game slows down (measured: 13.6 logic steps per
 // second at 2,100 draws a frame). With 60 fps chosen (long press on the view button), interpolation
@@ -108,16 +127,32 @@ void adapt_60(int64_t now) {
     // dropping below them. The limits (phones 0.72 / 0.60, a Galaxy S25 Ultra already halved its clocks
     // at 0.76; fan-cooled handhelds 1.00 / 0.90) and the player's Heat guard setting: heat_guard.h.
     static bool hot = false;
+    static heat_guard::State heatState;
     {
         const heat_guard::Limits limits = heat_guard_limits();
         static AThermalManager* thermal = AThermal_acquireManager();
         const float headroom = thermal ? AThermal_getThermalHeadroom(thermal, 10) : NAN;
         static int tick = 0;
         if (++tick % 15 == 0) LOG("[perf] thermal headroom %.2f%s", headroom, hot ? " (60 fps paused)" : "");
-        const bool next = heat_guard::next_paused(hot, headroom, limits);
-        if (next && !hot) LOG("[perf] 60 fps paused: thermal headroom %.2f", headroom);
+        // fan handhelds: a headroom pause also needs a real temperature (#254, heat_guard.h); the
+        // sensors are read only when the headroom alone would pause or keep 60 fps paused
+        const auto device = heat_guard::to_device(heat_guard::device.load());
+        heat_guard::Temperatures temps;
+        if (heat_guard::checks_temperatures(device) && heat_guard::next_paused(hot, headroom, limits))
+            temps = heat_guard_temperatures();
+        const bool next = heatState.update(headroom, limits, device, temps, now / 1000000);
+        static bool loggedCool = false;
+        if (!next && !hot && heat_guard::next_paused(hot, headroom, limits)) {
+            if (!loggedCool)
+                LOG("[perf] thermal headroom %.2f ignored: battery %.1f C, CPU/GPU %.1f C (heat guard needs %.0f / %.0f C)",
+                    headroom, temps.battery, temps.hottest_core, heat_guard::kHotBattery, heat_guard::kHotCore);
+            loggedCool = true;
+        }
+        if (next && !hot) LOG("[perf] 60 fps paused: thermal headroom %.2f (battery %.1f C, CPU/GPU %.1f C)", headroom,
+                              temps.battery, temps.hottest_core);
         else if (!next && hot) {
-            if (limits.active) LOG("[perf] 60 fps resumed: thermal headroom %.2f", headroom);
+            if (limits.active) LOG("[perf] 60 fps resumed: thermal headroom %.2f (battery %.1f C, CPU/GPU %.1f C)",
+                                   headroom, temps.battery, temps.hottest_core);
             else LOG("[perf] 60 fps resumed: heat guard off (thermal headroom %.2f)", headroom);
         }
         hot = next;

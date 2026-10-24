@@ -4,16 +4,21 @@
 #include "guest_heap_query.h"
 #include "runtime.h"
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 namespace native_actor_profiles { namespace {
 struct Entry {uint16_t id=0;uint32_t address=0;BaseAllocated allocated=nullptr;};
-std::array<Entry,32> entries{};
+// one entry per reserved ID (7FD0..7FFE), so every port profile fits at once: the --editor launch registers
+// all enemy kinds, props, the mod actor, world objects, grapple targets, switches and doors together (32
+// entries left the door without room, so the editor's switches and doors needed a restart)
+constexpr uint16_t kFirstReserved=0x7FD0,kLastReserved=0x7FFE;
+std::array<Entry,kLastReserved-kFirstReserved+1> entries{};
 struct Listener {std::string name;BeforeDelete callback=nullptr;};
 std::array<Listener,8> listeners{};
 void(*original)(Cpu*,uint32_t)=nullptr;uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;bool installed=false;
 bool tracing(){const char*v=std::getenv("WWHD_MOD_ACTOR_HEAPS");return v&&std::strcmp(v,"1")==0;}
-bool reserved(uint32_t id){return id>=0x7FD0&&id<=0x7FFE;}
+bool reserved(uint32_t id){return id>=kFirstReserved&&id<=kLastReserved;}
 const Entry* entry(uint32_t id){for(const auto&e:entries)if(e.address&&id==e.id)return &e;return nullptr;}
 uint32_t free(Cpu*c,uint32_t heap){return guest_heap::free_size(c,heap,invoke);}
 using Heaps=std::array<std::pair<uint32_t,uint32_t>,4>;
@@ -36,8 +41,15 @@ void destroy(Cpu*c){const uint32_t actor=c->r[3];const bool own=invoke&&tracing(
 std::array<uint32_t,5> heap_free(Cpu*c){std::array<uint32_t,5> out{};if(!c||!invoke)return out;const auto h=heaps(c);for(unsigned i=0;i<4;++i)out[i]=h[i].second;Cpu probe=*c;out[4]=free(&probe,ld32(GD(0x1018CA3C)));return out;}
 void configure(void(*fn)(Cpu*,uint32_t),uint32_t(*calls)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){if(!installed){original=fn;invoke=calls;}}
 bool valid_storage(uint32_t a){return a>=mem::kRuntimeStart&&a<=mem::kHostStart-0x30&&!(a&3);}
-bool available(const Owner&owner){return original&&(installed||(owner(GC(0x025E10E0)).empty()&&owner(GC(0x025DD414)).empty()&&owner(GC(0x025D4B4C)).empty()));}
-bool add(uint16_t id,uint32_t address,BaseAllocated allocated){if(!reserved(id)||!valid_storage(address)||ld16(address+8)!=id)return false;for(auto&e:entries)if(e.id==id&&e.address){if(e.address!=address||(e.allocated&&allocated&&e.allocated!=allocated))return false;if(allocated)e.allocated=allocated;return true;}for(const auto&e:entries)if(e.address==address)return false;for(auto&e:entries)if(!e.address){e={id,address,allocated};return true;}return false;}
+bool available(const Owner&owner,std::string*why){if(!original){if(why)*why="the native actor profiles are not configured";return false;}if(installed)return true;
+    for(const uint32_t a:{GC(0x025E10E0),GC(0x025DD414),GC(0x025D4B4C)}){const std::string by=owner(a);if(by.empty())continue;if(why){char text[160];std::snprintf(text,sizeof text,"hook %08X owned by %s",a,by.c_str());*why=text;}return false;}return true;}
+bool add(uint16_t id,uint32_t address,BaseAllocated allocated,std::string*why){char text[160];const auto refuse=[&](const char*what){if(why){std::snprintf(text,sizeof text,"profile %04X at %08X: %s",id,address,what);*why=text;}return false;};
+    if(!reserved(id))return refuse("not a reserved profile ID");if(!valid_storage(address))return refuse("invalid storage");if(ld16(address+8)!=id)return refuse("the storage names another profile");
+    for(auto&e:entries)if(e.id==id&&e.address){if(e.address!=address)return refuse("already registered at another address");if(e.allocated&&allocated&&e.allocated!=allocated)return refuse("already registered with another heap callback");if(allocated)e.allocated=allocated;return true;}
+    for(const auto&e:entries)if(e.address==address)return refuse("the storage already holds another profile");
+    for(auto&e:entries)if(!e.address){e={id,address,allocated};return true;}
+    return refuse("the profile table is full");}
+bool remove(uint16_t id,uint32_t address){for(auto&e:entries)if(e.address&&e.id==id&&e.address==address){e=Entry{};return true;}return false;}
 bool add_before_delete_listener(const std::string& name,BeforeDelete callback){if(name.empty()||!callback)return false;for(const auto& listener:listeners){if(listener.name==name)return listener.callback==callback;if(listener.callback==callback)return false;}if(installed)return false;for(auto& listener:listeners)if(!listener.callback){listener={name,callback};return true;}return false;}
-bool install(const Owner&owner,const Replace&replace){if(installed)return true;if(!available(owner))return false;bool any=false;for(const auto&e:entries)any|=e.address!=0;if(!any)return false;replace(GC(0x025E10E0),lookup);replace(GC(0x025DD414),base_create);replace(GC(0x025D4B4C),destroy);installed=true;return true;}
+bool install(const Owner&owner,const Replace&replace,std::string*why){if(installed)return true;if(!available(owner,why))return false;bool any=false;for(const auto&e:entries)any|=e.address!=0;if(!any){if(why)*why="no profile registered";return false;}replace(GC(0x025E10E0),lookup);replace(GC(0x025DD414),base_create);replace(GC(0x025D4B4C),destroy);installed=true;return true;}
 }

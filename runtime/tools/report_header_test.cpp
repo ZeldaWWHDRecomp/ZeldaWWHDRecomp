@@ -1,5 +1,5 @@
 // Performance report header (runtime/src/report_header.h): driver version decoding per vendor,
-// Windows and Linux OS names, the overrides list and the two-line format. Prints this build's header
+// Windows and Linux OS names, the overrides list, the display line and the header format. Prints this build's header
 // with this system's OS (and a sample GPU) at the end.
 #include <cassert>
 #include <cstdio>
@@ -133,6 +133,12 @@ int main() {
            "performance report: renderer Vulkan, host SDL, 120 fps interpolation, keep game speed off, internal scale 2.0x, "
            "buffer cache on\n",
            "keep game speed off at 120 fps");
+    in.submissionPool = 8;  // the Vulkan submission ring's size at start (submission_pool.h)
+    expect(format(in).substr(format(in).find('\n') + 1),
+           "performance report: renderer Vulkan, host SDL, 120 fps interpolation, keep game speed off, internal scale 2.0x, "
+           "buffer cache on, submission pool 8\n",
+           "submission pool size");
+    in.submissionPool = -1;
     Info m;
     m.version = "v0.2.5+3";
     m.commit = "abcdef0-dirty";
@@ -149,6 +155,74 @@ int main() {
     m.gpu.clear();
     expect(format(m).substr(0, format(m).find('\n')), "Wind Waker HD v0.2.5+3 (abcdef0-dirty), macOS 15.6.1 (24G90)",
            "header before the renderer started");
+
+    // ---- the display line: actual rate, Android's request, changes during the report, evenness
+    {
+        Display d;
+        expect(display_line(d), "display: refresh rate unknown", "display unknown");
+        d.hz = 120;
+        d.requestedHz = 120;
+        d.seenLo = d.seenHi = 120;
+        d.fps = 40;
+        expect(display_line(d), "display: 120 Hz (requested 120 Hz); 40 fps even on it", "40 fps on the requested 120 Hz");
+        d.hz = 60;
+        d.seenLo = d.seenHi = 60;
+        expect(display_line(d),
+               "display: 60 Hz (requested 120 Hz, not reached); 40 fps uneven on it (frames shown for 1 and 2 refreshes in turn)",
+               "40 fps kept at 60 Hz");
+        d.seenHi = 120;  // the vendor dropped the screen to 60 Hz mid-run
+        expect(display_line(d),
+               "display: 60 Hz (requested 120 Hz, not reached), seen 60-120 Hz since start or reset; 40 fps uneven on it "
+               "(frames shown for 1 and 2 refreshes in turn)",
+               "40 fps dropped to 60 Hz mid-run");
+        d.hz = 120;  // back at 120 Hz, but it was 60 Hz for a while
+        expect(display_line(d),
+               "display: 120 Hz (requested 120 Hz), seen 60-120 Hz since start or reset; 40 fps even on it, uneven at 60 Hz",
+               "40 fps back at 120 Hz after a drop");
+        d.hz = 119;  // 119.88 Hz modes, rounded
+        d.seenLo = d.seenHi = 119;
+        expect(display_line(d), "display: 119 Hz (requested 120 Hz); 40 fps even on it", "119.88 Hz counts as 120");
+        d = Display();
+        d.hz = 60;
+        d.requestedHz = 0;  // WWHD_NO_60HZ: the system's choice
+        d.fps = 30;
+        expect(display_line(d), "display: 60 Hz (requested: system choice); 30 fps even on it", "Android system choice");
+        d.requestedHz = 60;
+        d.fps = 60;
+        expect(display_line(d), "display: 60 Hz (requested 60 Hz); 60 fps even on it", "Android 60 Hz request");
+        // desktop: no request, the actual rate only
+        d = Display();
+        d.hz = 144;
+        d.seenLo = d.seenHi = 144;
+        d.fps = 120;
+        expect(display_line(d), "display: 144 Hz; 120 fps uneven on it (frames shown for 1 and 2 refreshes in turn)",
+               "120 fps on 144 Hz");
+        d.fps = 60;
+        expect(display_line(d), "display: 144 Hz; 60 fps uneven on it (frames shown for 2 and 3 refreshes in turn)",
+               "60 fps on 144 Hz");
+        d.hz = 30;
+        d.seenLo = d.seenHi = 0;
+        expect(display_line(d), "display: 30 Hz; 60 fps uneven on it (some frames never shown)", "60 fps above the display");
+        d.hz = 165;
+        d.fps = 0;
+        expect(display_line(d), "display: 165 Hz", "no evenness without a rate");
+        // WWHD_DISPLAY_HZ: the set rate, no request or range shown
+        d.hz = 120;
+        d.overridden = true;
+        d.requestedHz = 120;
+        d.seenLo = 60;
+        d.seenHi = 120;
+        d.fps = 120;
+        expect(display_line(d), "display: 120 Hz (set by WWHD_DISPLAY_HZ); 120 fps even on it", "WWHD_DISPLAY_HZ");
+        // the third header line
+        Info withDisplay = m;
+        withDisplay.display = "display: 120 Hz";
+        expect(format(withDisplay),
+               "Wind Waker HD v0.2.5+3 (abcdef0-dirty), macOS 15.6.1 (24G90)\n"
+               "performance report: renderer Metal, host AppKit, 30 fps, internal scale 1.5x\n"
+               "display: 120 Hz\n",
+               "header with the display line");
+    }
 
     // ---- this build on this system (the GPU line comes from the running renderer; a sample here)
     expect(std::to_string(build::version()[0] != 0 && build::commit()[0] != 0), "1", "build info present");

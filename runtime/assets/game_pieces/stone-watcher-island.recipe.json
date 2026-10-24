@@ -1,0 +1,85 @@
+{
+  "game_pieces_format": 1,
+  "set": "stone-watcher-island",
+  "label": "Stone Watcher Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room31.szs",
+    "room": 31
+  },
+  "memory": {
+    "archive_bytes": 4136960,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "stone-watcher-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Stone Watcher Island ground",
+      "description": "a grassy island with cracked stone walls and a pit that sends Link back",
+      "volume": [
+        -23342,
+        -1100,
+        -2330,
+        -17813,
+        1752,
+        2717
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "kusa1",
+            "shima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "yanuke",
+          "Hole_soko",
+          "Hole_kabe",
+          "Hole_huti",
+          "soko_kabe",
+          "iwa",
+          "sima"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD31.szs",
+        "triangles": 502
+      },
+      "expect": {
+        "triangles": [
+          943
+        ],
+        "textures": [
+          [
+            "0x_06_anamawari",
+            "Txe_Ebshima_gakeshiba_3",
+            "Txq_ana_hs_sima_kuroiana",
+            "Txq_banker",
+            "Txq_hs07",
+            "Txq_hs07_hutino_kowareta_kabe",
+            "Txq_hs07_kowareme",
+            "Txq_hs07_kusaset",
+            "Txq_hs07_sitayou",
+            "Txq_hs07_sitayou_naname",
+            "Txq_kowareta_hibino_kabe"
+          ]
+        ],
+        "collision_triangles": 607
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

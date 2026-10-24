@@ -20,6 +20,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_RECIPES = os.path.join(HERE, '..', '..', 'runtime', 'assets', 'game_objects')
 NEUTRAL = re.compile(r'^[a-z0-9]+(-[a-z0-9]+)*$')
 NATIVE = re.compile(r'^[A-Za-z0-9_]{1,7}$')
+ARCHIVE = re.compile(r'^[A-Za-z0-9_]{1,15}$')  # an object archive's name (the game's are up to 8 characters, Yfire_00)
 
 
 def load_recipes(files):
@@ -39,7 +40,7 @@ def load_recipes(files):
                 raise ValueError('%s: invalid or duplicate id %r' % (f, i))
             seen.add(i)
             n = o.get('native', {})
-            if not NATIVE.match(n.get('name', '')) or not NATIVE.match(n.get('archive', '')):
+            if not NATIVE.match(n.get('name', '')) or not ARCHIVE.match(n.get('archive', '')):
                 raise ValueError('%s: invalid native reference' % i)
             variants = o.get('variants', [])
             if not variants or any(not re.match(r'^0x[0-9A-Fa-f]{8}$', v.get('params', '')) for v in variants):

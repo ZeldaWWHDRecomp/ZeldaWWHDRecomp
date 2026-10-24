@@ -1,0 +1,124 @@
+{
+  "game_pieces_format": 1,
+  "set": "diamond-steppe-island",
+  "label": "Diamond Steppe Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room36.szs",
+    "room": 36
+  },
+  "memory": {
+    "archive_bytes": 4685824,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "diamond-steppe-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Diamond Steppe Island ground",
+      "description": "grassy terraces with ponds on three levels joined by waterfalls, and a pit on top that sends Link back",
+      "volume": [
+        -2442,
+        -1009,
+        -1355,
+        2655,
+        2237,
+        1355
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "hs_island",
+            "Hole_huti",
+            "Hole_kabe",
+            "Hole_soko",
+            "taki_1",
+            "taki_2",
+            "takiue",
+            "takiue_1",
+            "kirikabu1",
+            "kusatati",
+            "kusatati1",
+            "tuika_kusa_1007",
+            "takisita_1",
+            "takisita_2",
+            "water_1",
+            "water_2",
+            "water_3"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 1,
+          "nodes": [
+            "Polygon0",
+            "Polygon1",
+            "Polygon2",
+            "Polygon3",
+            "Polygon4",
+            "Polygon5"
+          ],
+          "light": "bg1",
+          "animated": true
+        }
+      ],
+      "collision": {
+        "groups": [
+          "water_1",
+          "water_3",
+          "water_2",
+          "takisita_2",
+          "takisita_1",
+          "taki_2",
+          "taki_1",
+          "takiue",
+          "takiue_1",
+          "hs_island",
+          "kirikabu_jmp",
+          "Hole_kabe",
+          "Hole_soko",
+          "Hole_huti",
+          "water_suimen"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD36.szs",
+        "triangles": 121
+      },
+      "expect": {
+        "triangles": [
+          866,
+          190
+        ],
+        "textures": [
+          [
+            "Txa_iwa2_a",
+            "Txq_hs_howahowakusa",
+            "Txq_hs_iwakabe",
+            "Txq_hs_iwakabe_kuroana",
+            "Txq_hs_jimen",
+            "Txq_hs_kusa",
+            "Txq_kirikabu"
+          ],
+          [
+            "Txa_test_kiwa_a",
+            "Txa_test_nagare_j",
+            "Txa_test_sibuki_a",
+            "Txa_umi_kiwa_01"
+          ]
+        ],
+        "collision_triangles": 471
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

@@ -3,6 +3,8 @@
 #include "platform/keycodes.h"
 #include <filesystem>
 #include <chrono>
+#include <barrier>
+#include <thread>
 
 #include <cmath>
 #include <cstdio>
@@ -13,6 +15,7 @@
 #include "mouse_bindings.h"
 #include "camera_invert.h"
 #include "controller_selection.h"
+#include "file_select_quit.h"
 #include "platform/touch_face.h"
 #include "overlay/settings_shortcut.h"
 #include "overlay/binding_capture.h"
@@ -736,6 +739,58 @@ static void test_camera_invert() {
         CHECK(camera_invert::inverts(site.use) == (site.use == Use::kCamera));
     }
     CHECK(camera == 5 && baton == 1);
+    // The guest helper flips its delta for descending endpoints. Both input paths
+    // must have the same final direction, independent of the live style order.
+    const Mapping previous_mapping = current();
+    for (bool inv : {false, true, false, true}) {
+        m.invert_camera_y = inv;
+        set_current(m, false);
+        CHECK(invert_camera_y() == inv);  // Controls changes publish immediately
+        for (double direction : {-1.0, 1.0}) {
+            for (bool descending : {false, true}) {
+                const double first = descending ? 10.0 : -10.0;
+                const double second = -first;
+                const double mouse = direction * camera_invert::mouse_pitch_sign(inv);
+                const double stick = -camera_invert::stick_y(float(-direction), inv, Use::kCamera);
+                for (double input : {mouse, stick}) {
+                    double delta = camera_invert::manual_pitch_delta(input, first, second);
+                    if (descending) delta = -delta;  // guest limited_range_addition
+                    CHECK(delta == direction * (inv ? -1.0 : 1.0));
+                }
+            }
+        }
+    }
+    set_current(previous_mapping, false);
+    CHECK(!std::signbit(camera_invert::manual_pitch_delta(0.0, 10.0, -10.0)));
+    CHECK(std::signbit(camera_invert::manual_pitch_delta(-0.0, 10.0, -10.0)));
+    CHECK(camera_invert::manual_pitch_delta(1.0, 5.0, 5.0) == 1.0);
+}
+
+// Concurrent mapping writers must leave the camera and Controls in agreement.
+// Check only while both workers are parked: a read across an active update may
+// legitimately observe different generations, but a settled disagreement is stale.
+static void test_live_camera_invert_publication() {
+    const Mapping previous = current();
+    auto on = Mapping::defaults(), off = on;
+    on.invert_camera_y = true;
+    constexpr unsigned rounds = 2048;
+    std::barrier phase(3);
+    auto writer = [&](Mapping m) {
+        for (unsigned round = 0; round < rounds; ++round) {
+            phase.arrive_and_wait();
+            for (unsigned update = 0; update < 8; ++update) set_current(m, false);
+            phase.arrive_and_wait();
+        }
+    };
+    std::thread first(writer, on), second(writer, off);
+    for (unsigned round = 0; round < rounds; ++round) {
+        phase.arrive_and_wait();
+        phase.arrive_and_wait();
+        CHECK(current().invert_camera_y == invert_camera_y());
+    }
+    first.join();
+    second.join();
+    set_current(previous, false);
 }
 
 // issue #40: per-stick range, applied radially after the dead zone
@@ -1097,6 +1152,37 @@ static void test_screen_layouts() {
 }
 
 int main() {
+    // Old controls files default to showing Quit; an explicit choice round-trips.
+    {
+        auto mapping = input_map::Mapping::defaults();
+        CHECK(mapping.file_select_quit);
+        mapping.file_select_quit = false;
+        input_map::Mapping loaded;
+        CHECK(input_map::from_json(input_map::to_json(mapping), loaded));
+        CHECK(!loaded.file_select_quit);
+    }
+    // Quit consumes the mapped Wii U X action. Its displayed host identity is
+    // resolved from the same face preset as the game's existing prompt glyphs.
+    for (auto layout : {FaceLayout::kPosition, FaceLayout::kLabels}) {
+        auto mapping = Mapping::defaults();
+        apply_face_layout(mapping, layout);
+        float physical[kPadCount]{};
+        const int button = mapping.pad[kX];
+        physical[button] = 1;
+        const auto delivered = controller_state(mapping, physical);
+        CHECK(delivered.buttons == input::kX);
+        for (bool shown : {false, true}) {
+            file_select_quit::Routing routing;
+            auto filtered = delivered;
+            CHECK(routing.filter(filtered, shown) == shown);
+            CHECK(filtered.buttons == (shown ? 0u : input::kX));
+        }
+        for (auto prompts : {Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation}) {
+            mapping.prompts = prompts;
+            const auto look = prompt_style(mapping, PadFamily::kUnknown);
+            CHECK(look.buttons[2] == button - kPadA);
+        }
+    }
     test_shortcuts();
     for (int mode : {touch_buttons::Automatic, touch_buttons::AlwaysShow, touch_buttons::Hide})
         for (bool controller : {false, true}) {
@@ -1133,6 +1219,7 @@ int main() {
     test_deadzone();
     test_stick_range();
     test_camera_invert();
+    test_live_camera_invert_publication();
     using controller_selection::decision;
     CHECK(decision(true, true, 0, true, true) == 0);
     CHECK(decision(true, true, 1, true, true) == 1);
@@ -1153,6 +1240,19 @@ int main() {
     CHECK(!skip_controller_selection());
     set_current(Mapping::defaults(), false);
     CHECK(skip_controller_selection());
+    // issue #267: controller input in the background, off by default, saved only when on
+    Mapping background = Mapping::defaults();
+    CHECK(!background.background_controllers && !background_controllers());
+    CHECK(to_json(background).find("background_controllers") == std::string::npos);
+    CHECK(from_json("{\"options\":{}}", parsed) && !parsed.background_controllers);
+    background.background_controllers = true;
+    CHECK(to_json(background).find("\"background_controllers\": true") != std::string::npos);
+    CHECK(from_json(to_json(background), parsed));
+    CHECK(parsed == background);
+    set_current(background, false);
+    CHECK(background_controllers());
+    set_current(Mapping::defaults(), false);
+    CHECK(!background_controllers());
     test_files();
     printf("input_map_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

@@ -10,6 +10,7 @@
 #include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
+#include "gfx/depth_peek.h"
 #include "stereo.h"
 #include "../stereo_projection.h"
 #include "android_shared_image.h"
@@ -233,9 +234,11 @@ void buffer_cache_check() {
  fprintf(stderr,"[renderer smoke] buffer cache hit, write fault, GX2Invalidate, reset and index readback passed\n");
 }
 void asynchronous_submission_check() {
- constexpr uint32_t submissions=10, payloadSize=16, regionSize=payloadSize*3;
+ // every ring size (WWHD_VK_SUBMISSION_POOL): each slot is used at least twice
+ const uint32_t ring=uint32_t(R.submissions.size()), submissions=ring+6;
+ constexpr uint32_t payloadSize=16, regionSize=payloadSize*3;
  Buffer out=create_readback_buffer(submissions*regionSize);
- std::array<UploadSlice,4> firstSlices{};
+ std::vector<UploadSlice> firstSlices(ring);
  for(uint32_t submission=0;submission<submissions;++submission) {
   auto a=allocate_upload(payloadSize,256),b=allocate_upload(payloadSize,256);
   require(a.buffer==b.buffer&&a.offset!=b.offset,"async submission slices alias");
@@ -287,7 +290,7 @@ void asynchronous_submission_check() {
  for(const auto& slot:R.submissions)
   require(!slot.pending&&slot.garbageBuffers.empty()&&slot.garbageImages.empty()&&slot.garbageFramebuffers.empty(),"async drain left pending resources");
  defer_buffer(out);flush();
- fprintf(stderr,"[renderer smoke] ten async submissions, immutable snapshots, slot wrap and deferred retirement passed\n");
+ fprintf(stderr,"[renderer smoke] %u async submissions on %u slots, immutable snapshots, slot wrap and deferred retirement passed\n",submissions,ring);
 }
 // The fallback must resolve framebuffer handles before capture, then invalidate
 // them at view deferral even though their native begin commands are not emitted.
@@ -563,8 +566,10 @@ void stereo_geometry_check() {
  std::vector<uint32_t> regs(0x10000);
  const uint32_t base=mmSQ_ALU_CONSTANT0_0+0x400;
  const float camera[16]={2,0,0,0, 0,3,0,0, 0,0,-1.01f,-20, 0,0,-1,0};
+ // An HD layout's projection (fovy 40, near 1, far 10000), its x row narrowed for the TV.
+ const float layout[16]={1.4f,0,0,0, 0,2.74748f,0,0, 0,0,-1.0002f,-2.0002f, 0,0,-1,0};
  memcpy(regs.data()+base,camera,64);
- memcpy(regs.data()+base+32,camera,64);
+ memcpy(regs.data()+base+32,layout,64);
  const auto oldTag=stereo::layoutProjection;
  const auto oldStart=stereo::layoutProjectionStart;
  stereo::tag_layout(base+32,regs.data()+base+32);
@@ -573,12 +578,25 @@ void stereo_geometry_check() {
  vk::Shader shader;shader.vertex=true;shader.dec=&metadata;
  shader.uniforms.offset_remapped=0;shader.uniforms.offset_endOfBlock=80;
  std::vector<uint8_t> leftUniforms,rightUniforms;
- vk::pack_uniforms_into(regs.data(),shader,leftUniforms,1,1,-8,600);
+ stereo::EyeRows replayRows;
+ vk::pack_uniforms_into(regs.data(),shader,leftUniforms,1,1,-8,600,&replayRows);
  vk::pack_uniforms_into(regs.data(),shader,rightUniforms,1,1,8,600);
+ auto replayed=leftUniforms;
+ stereo::apply_eye_rows(replayed.data(),replayRows,8,600);
+ require(replayed==rightUniforms,"second-eye replay differs from independent uniform packing");
  float leftRow[4],rightRow[4];
  memcpy(leftRow,leftUniforms.data()+16,16);memcpy(rightRow,rightUniforms.data()+16,16);
  require(leftRow[3]==16 && rightRow[3]==-16,"stereo remapped world projection not applied");
- require(!memcmp(leftUniforms.data()+64,camera,16)&&!memcmp(rightUniforms.data()+64,camera,16),"stereo moved tagged HUD projection");
+ require(memcmp(leftUniforms.data()+64,rightUniforms.data()+64,16)!=0,"stale layout tag flattened a world camera");
+ stereo::layout_draw(true);
+ vk::pack_uniforms_into(regs.data(),shader,leftUniforms,1,1,-8,600);
+ vk::pack_uniforms_into(regs.data(),shader,rightUniforms,1,1,8,600);
+ stereo::layout_draw(false);
+ require(leftUniforms==rightUniforms&&!memcmp(leftUniforms.data()+64,layout,16),"scoped layout has disparity");
+ // A camera in a raw block must also retain depth despite matching the HUD lens.
+ float block[16];memcpy(block,layout,64);block[0]=1.54546f;
+ stereo::project_uniform_block(reinterpret_cast<unsigned char*>(block),64,8,600);
+ require(block[0]==1.54546f&&block[3]!=0,"HUD lens match flattened a uniform-block camera");
  require(!memcmp(regs.data()+base,camera,64),"stereo modified shared guest uniforms");
  stereo::layoutProjection=oldTag;stereo::layoutProjectionStart=oldStart;
  SurfaceDesc desc;desc.addr=0x3E000000;desc.width=64;desc.height=64;desc.pitch=64;desc.format=0x1a;
@@ -600,10 +618,24 @@ void stereo_geometry_check() {
  require(std::fabs(zeroLeft-zeroRight)<.01f,"convergence plane has disparity");
  require(farRight>farLeft+2,"far geometry has wrong disparity sign");
  require(std::fabs(hudLeft-hudRight)<.01f,"orthographic HUD has disparity");
+ // A captured photograph is canonical even when eye 1 already has a GPU
+ // image at the same guest address. Ordinary scene textures remain per-eye.
+ const auto photoMode=stereo::frame.mode;
+ stereo::frame.mode=stereo::HalfSBS;
+ transition_image(left,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+ stereo_select_eye(1);
+ require(!stereo_eye0_texture(desc),"ordinary GPU scene texture shared between eyes");
+ stereo::layoutPhotograph=true;
+ require(stereo_eye0_texture(desc)==left,"photo preview used the second camera's image");
+ require(left->eyeHeld==stereoFlushGeneration,"photo preview did not retain its source image");
+ stereo::layoutPhotograph=false;
+ require(!stereo_eye0_texture(desc),"photo sampling policy leaked into scene rendering");
+ stereo_select_eye(0);
+ stereo::frame.mode=photoMode;
  std::vector<int> order;
  stereo_pair([&]{order.push_back(stereoEye);},true);
  stereo_pair([&]{order.push_back(stereoEye);},true);
- require(order==std::vector<int>({0,1,1,0}),"stereo eye scheduling changed per-eye order");
+ require(order==std::vector<int>({0,1,0,1}),"stereo eye scheduling changed per-eye order");
  left->gpuWritten=right->gpuWritten=false;
  left->dirty=right->dirty=false;
  left->lastCheckedFrame=right->lastCheckedFrame=R.frame;
@@ -657,6 +689,186 @@ void stereo_geometry_check() {
  flush();
  fprintf(stderr,"[renderer smoke] stereo geometry, convergence, HUD, eye isolation and toggle cleanup PASS\n");
 }
+void stereo_resize_upload_check() {
+ const auto oldFrame=stereo::frame;
+ const int oldMode=stereo::requestedMode.load();
+ const float oldScale=res_scale();
+ set_res_scale(1);set_frame_aspect(16.0f/9.0f);latch_res_scale();
+ SurfaceDesc color;color.addr=mem::host_alloc(65536,256);color.width=color.pitch=64;
+ color.height=36;color.format=0x1a;
+ SurfaceDesc depth=color;depth.addr=mem::host_alloc(65536,256);depth.format=0x11;depth.isDepth=true;
+ require(!R.tv.scan&&!R.tv.buildingScan,"stereo resize test requires unpublished TV scans");
+ const uint32_t cb=mem::host_alloc(0x9c,256);
+ memset(mem::ptr(cb),0,0x9c);
+ st32(cb,1);st32(cb+4,64);st32(cb+8,36);st32(cb+12,1);st32(cb+16,1);
+ st32(cb+20,0x1a);st32(cb+0x24,color.addr);st32(cb+0x3c,64);st32(cb+0x7c,1);
+ const uint8_t rgba[4]={17,93,201,255};
+ const uint32_t packedDepth=0x5a800000;
+ for(uint32_t i=0;i<65536;i+=4) {
+  memcpy(mem::ptr(color.addr)+i,rgba,4);memcpy(mem::ptr(depth.addr)+i,&packedDepth,4);
+ }
+ // Same guest addresses through real mode latching and target lookup: full ->
+ // half width -> half height -> full -> off, including uploads at smaller sizes.
+ for(int mode:{stereo::FullSBS,stereo::HalfSBS,stereo::TAB,stereo::FullSBS,stereo::Off}) {
+  stereo::set_mode(mode);stereo_latch();
+  const uint32_t width=mode==stereo::HalfSBS?32:64,height=mode==stereo::TAB?18:36;
+  for(int eye=0;eye<(mode==stereo::Off?1:2);++eye) {
+   stereo_select_eye(eye);
+   for(const auto& desc:{color,depth}) {
+    auto* surface=find_or_create_surface(desc,true);
+    require(surface->extent.width==width&&surface->extent.height==height,"stereo mode switch kept an old target extent");
+    surface->gpuWritten=false;surface->dirty=true;surface->lastCheckedFrame=~uint64_t{0};
+    upload_surface(surface);
+    if(!desc.isDepth) rgba_is(read_image(*surface,VK_IMAGE_ASPECT_COLOR_BIT,4),rgba,"resampled stereo guest color upload differs");
+    else {
+     const auto values=read_image(*surface,VK_IMAGE_ASPECT_DEPTH_BIT,4);
+     const auto stencil=read_image(*surface,VK_IMAGE_ASPECT_STENCIL_BIT,1);
+     for(size_t i=0;i<stencil.size();++i) {
+      float value;memcpy(&value,values.data()+i*4,4);
+      require(std::abs(value-0.5f)<0.00001f&&stencil[i]==0x5a,"resampled stereo depth/stencil upload differs");
+     }
+    }
+    mark_gpu_written(surface);
+   }
+   const float eyeColor[4]={eye?0.0f:1.0f,0,eye?1.0f:0.0f,1};
+   clear_image(*find_or_create_surface(color,true),eyeColor);
+   copy_to_scan(cb,1);
+   auto& screen=eye?stereoRight:R.tv;
+   require(screen.buildingScan&&screen.buildingScan->extent.width==width&&
+       screen.buildingScan->extent.height==height,"scan expanded an eye-sized target");
+   require(screen.buildingScanDisplayExtent.width==64&&screen.buildingScanDisplayExtent.height==36,
+       "scan lost the eye's display aspect");
+   screen.scan.swap(screen.buildingScan);
+   std::swap(screen.scanDisplayExtent,screen.buildingScanDisplayExtent);
+   screen.scanSrgb=screen.buildingScanSrgb;screen.buildingScanDirty=false;
+  }
+  stereo_select_eye(0);
+  const uint32_t packedWidth=mode==stereo::FullSBS?128:64;
+  stereo_flush(); // swap/copy-to-scan's ordered boundary precedes presentation
+  const auto packed=compose_offscreen(R.tv,packedWidth,36,false);
+  auto pixel=[&](uint32_t x,uint32_t y,int channel) { return packed[(y*packedWidth+x)*4+channel]; };
+  const uint32_t leftX=mode==stereo::TAB?32:packedWidth/4,leftY=mode==stereo::TAB?9:18;
+  const uint32_t rightX=mode==stereo::TAB?32:packedWidth*3/4,rightY=mode==stereo::TAB?27:18;
+  require(pixel(leftX,leftY,0)==255&&pixel(leftX,leftY,2)==0,"left eye placement/capture differs");
+  require(pixel(rightX,rightY,mode==stereo::Off?0:2)==255,"right eye placement/capture differs");
+ }
+ // A device that can neither blit nor draw a screen format (here depth, WWHD_VK_DEPTH_COPY=none):
+ // Half SBS eyes keep the full size, so the upload is copied, never scaled into a cleared target,
+ // and the scan keeps one eye's shape.
+ const auto oldDepthCopy=g_depthCopyOverride;
+ g_depthCopyOverride=DepthCopyOverride::Unsupported;
+ stereo::set_mode(stereo::HalfSBS);stereo_latch();
+ for(int eye=0;eye<2;++eye) {
+  stereo_select_eye(eye);
+  for(const auto& desc:{depth,color}) {
+   auto* surface=find_or_create_surface(desc,true);
+   require(surface->extent.width==64&&surface->extent.height==36,"unscalable format kept an eye-sized target");
+   surface->gpuWritten=false;surface->dirty=true;surface->lastCheckedFrame=~uint64_t{0};
+   upload_surface(surface);
+   if(!desc.isDepth) rgba_is(read_image(*surface,VK_IMAGE_ASPECT_COLOR_BIT,4),rgba,"full-size stereo color upload differs");
+   else {
+    const auto values=read_image(*surface,VK_IMAGE_ASPECT_DEPTH_BIT,4);
+    const auto stencil=read_image(*surface,VK_IMAGE_ASPECT_STENCIL_BIT,1);
+    for(size_t i=0;i<stencil.size();++i) {
+     float value;memcpy(&value,values.data()+i*4,4);
+     require(std::abs(value-0.5f)<0.00001f&&stencil[i]==0x5a,"full-size stereo depth/stencil upload was cleared");
+    }
+   }
+   mark_gpu_written(surface);
+  }
+  const float eyeColor[4]={eye?0.0f:1.0f,0,eye?1.0f:0.0f,1};
+  clear_image(*find_or_create_surface(color,true),eyeColor);
+  copy_to_scan(cb,1);
+  auto& screen=eye?stereoRight:R.tv;
+  require(screen.buildingScan&&screen.buildingScan->extent.width==64&&
+      screen.buildingScanDisplayExtent.width==64&&screen.buildingScanDisplayExtent.height==36,
+      "full-size eye scan lost its shape");
+  screen.scan.swap(screen.buildingScan);
+  std::swap(screen.scanDisplayExtent,screen.buildingScanDisplayExtent);
+  screen.scanSrgb=screen.buildingScanSrgb;screen.buildingScanDirty=false;
+ }
+ stereo_select_eye(0);
+ stereo_flush();
+ {
+  const auto packed=compose_offscreen(R.tv,64,36,false);
+  require(packed[(18*64+16)*4]==255&&packed[(18*64+16)*4+2]==0&&packed[(18*64+48)*4+2]==255,
+      "full-size Half SBS eyes placed wrong");
+ }
+ g_depthCopyOverride=oldDepthCopy;
+ stereo_reset_eye_sized_targets();
+ stereo::set_mode(stereo::Off);stereo_latch();
+ stereo_select_eye(1);
+ require(R.surfaces.empty(),"mode-switch test retained eye 1 targets after switch-off");
+ stereo_select_eye(0);
+ for(uint32_t address:{color.addr,depth.addr}) {
+  auto found=R.surfaces.find(address);
+  require(found!=R.surfaces.end(),"mode-switch test primary target missing");
+  std::erase(R.linearTargets,found->second.get());
+  if(R.mainDepthAddr==address)R.mainDepthAddr=0;
+  destroy_surface_image(found->second.get());R.surfaces.erase(found);
+ }
+ ++g_surface_epoch;
+ destroy_surface_image(R.tv.scan.get());destroy_surface_image(R.tv.buildingScan.get());
+ R.tv.scan.reset();R.tv.buildingScan.reset();R.tv.scanDisplayExtent=R.tv.buildingScanDisplayExtent={};
+ set_res_scale(oldScale);latch_res_scale();
+ stereo::set_mode(oldFrame.mode);stereo_latch();stereo::frame=oldFrame;stereo::requestedMode=oldMode;
+ flush();
+ fprintf(stderr,"[renderer smoke] 1x stereo color/depth uploads, Half SBS/TAB resizes and switch-off PASS\n");
+}
+// Issue #248: switching eyes keeps both render passes open; eye 1's held commands follow eye 0's
+// at the submission, also behind a deferred capture of the renderer's own commands.
+void stereo_stream_check() {
+ const auto oldFrame=stereo::frame;
+ const int oldMode=stereo::requestedMode.load();
+ stereo::frame.mode=stereo::HalfSBS;
+ SurfaceDesc desc;desc.addr=0x3E100000;desc.width=desc.height=desc.pitch=16;desc.format=0x1a;
+ Surface* left=find_or_create_surface(desc,true);
+ stereo_select_eye(1);
+ Surface* right=find_or_create_surface(desc,true);
+ stereo_select_eye(0);
+ auto open=[](Surface* s,float red) {
+  transition_image(s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+  VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(s,0);target.imageLayout=s->layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[0]=red;target.clearValue.color.float32[3]=1;
+  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea={{0,0},{s->extent.width,s->extent.height}};ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
+  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s->fmt.pixel,s->layout); });
+  R.rendering=R.passTracked=true;R.passColors={};R.passColors[0]=s;mark_gpu_written(s);
+ };
+ for(int captured=0;captured<2;++captured) {
+  if(captured) {
+   if(active_deferred_commands) break; // the record worker's stream: no capture to append to
+   deferred_commands().start_capture();
+  }
+  open(left,1);
+  stereo_select_eye(1);
+  require(!R.rendering,"eye 1 inherited eye 0's render pass");
+  open(right,captured?.25f:.5f);
+  require(eye_deferred_commands&&eye_deferred_commands->command_count(),"eye 1 commands were not held");
+  stereo_select_eye(0);
+  require(R.rendering&&R.passColors[0]==left,"eye switch ended eye 0's render pass");
+  stereo_select_eye(1);
+  require(R.rendering&&R.passColors[0]==right,"eye switch ended eye 1's render pass");
+  if(captured) {
+   const size_t before=active_deferred_commands->command_count();
+   stereo_flush();
+   require(active_deferred_commands->command_count()>before,"held eye 1 commands bypassed the renderer's capture");
+  }
+  flush();
+  require(!R.rendering&&!eye_deferred_commands->command_count(),"submission left eye 1's pass open");
+  stereo_select_eye(0);
+  require(!R.rendering,"submission left eye 0's pass open");
+  auto l=read_image(*left,VK_IMAGE_ASPECT_COLOR_BIT,4),r=read_image(*right,VK_IMAGE_ASPECT_COLOR_BIT,4);
+  require(l[0]==255&&std::abs(int(r[0])-(captured?64:128))<=1,"held eye 1 pass rendered the wrong image");
+ }
+ stereo_select_eye(0);
+ stereo::set_mode(stereo::Off);stereo_latch();
+ auto found=R.surfaces.find(desc.addr);
+ require(found!=R.surfaces.end()&&found->second.get()==left,"stream test primary surface missing");
+ std::erase(R.linearTargets,left);
+ destroy_surface_image(left);R.surfaces.erase(found);++g_surface_epoch;
+ stereo::set_mode(oldFrame.mode);stereo_latch();
+ stereo::frame=oldFrame;stereo::requestedMode=oldMode;
+ fprintf(stderr,"[renderer smoke] stereo eye streams keep both passes open PASS\n");
+}
 // Bind a rendered base first, then a mip-chain assembled from that same base.
 // The second resolution must not invalidate the first descriptor's read layout.
 void sampled_mip_order_check(bool bindRenderedLevel = false) {
@@ -673,6 +885,10 @@ void sampled_mip_order_check(bool bindRenderedLevel = false) {
      base.addr>>8,base.mipAddr>>8,(1u<<19)|(2u<<22)|(3u<<25),0,0};
  words[5]=1;
  std::copy(words,words+7,registers.begin()+Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS+7);
+ // unit 1's sampler filters between mips up to LOD 1: the chain is built only as far as its sampler
+ // reaches (with_mip_chain), so a sampler without mips would never assemble the rendered level 1
+ registers[Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0+3]=1u<<17;  // MIP_FILTER point
+ registers[Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0+4]=64u<<10;  // MAX_LOD 1.0
  words[5]=0;
  if(bindRenderedLevel){words[0]=1u|(1u<<3)|(7u<<19);words[1]=7u|(0x1au<<26);words[2]=base.mipAddr>>8;words[3]=0;}
  std::copy(words,words+7,registers.begin()+Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS);
@@ -1234,6 +1450,10 @@ int renderer_smoke_test() {
    depth_copy_check();
    colour_comparison_check();
    {
+    // the peek checks read the answers as soon as each frame's fence retires (mode 0); the default
+    // (answers two game steps later, written at the game's swap) has no swaps here
+    ::gfx::depth_peek::force_mode_for_test(0);
+    struct RestorePeekMode { ~RestorePeekMode() { ::gfx::depth_peek::force_mode_for_test(-1); } } restorePeekMode;
     auto peek=std::make_unique<Surface>();
     peek->width=1280;peek->height=720;peek->pitch=1280;peek->format=0x11;peek->isDepth=true;peek->fmt=format_info(0x11,true);
     peek->addr=mem::host_alloc(256,256);create_surface_image(peek.get(),true,VkExtent3D{16,16,1});
@@ -1256,6 +1476,8 @@ int renderer_smoke_test() {
     R.mainDepthAddr=previousDepth;destroy_surface_image(surface);R.surfaces.erase(entry);++g_surface_set_gen;
     fprintf(stderr,"[renderer smoke] asynchronous GPU depth peeks passed\n");
    }
+   stereo_stream_check();
+   stereo_resize_upload_check();
    stereo_geometry_check();
    Image rendered(64,64,0x1a);dynamic_uniform_check(rendered.s);vertex_window_check(rendered.s);triangle(rendered.s);
    if(R.tv.scan)destroy_surface_image(R.tv.scan.get());R.tv.scan=std::make_unique<Surface>();auto& scan=*R.tv.scan;scan.width=64;scan.height=64;scan.format=0x1a;scan.fmt=format_info(scan.format,false);create_surface_image(&scan,false);resample(&rendered.s,&scan,1);mark_gpu_written(&scan);

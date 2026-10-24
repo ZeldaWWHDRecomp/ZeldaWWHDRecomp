@@ -24,7 +24,9 @@ a void: a hole's floor that led into a cave sends Link back to the restart point
 (any other triangle with an exit is left out) and distant ({"archive": "sea_LODNN.szs", "triangles": n}: the
 island's own distant model from the game's distant-view archive of the same room, drawn in the neighbouring
 squares; written as an archive of its own, <out>.<piece>.distant.szs, so a neighbouring square loads only it). origin_y puts the piece's origin at that room-local height (0: the island's sea level) instead of its
-lowest point. Water groups (the game's water bit) become swimmable water.
+lowest point. Water groups (the game's water bit) become swimmable water. A piece's second part may be
+"animated": true (an island's water model, model1): the room's texture animation rows for that part's materials
+are copied into the set as an animation named like the part's model, which the game plays on it.
 """
 import argparse
 import hashlib
@@ -41,7 +43,7 @@ import notebook_model as base  # noqa: E402
 import collision_mesh  # noqa: E402
 from skinned_actor_model import append_dictionary, append_string  # noqa: E402
 
-VERSION = 2
+VERSION = 3
 FORMAT = 1
 BuildError = base.BuildError
 LIGHTS = {'bg0': 1, 'bg1': 2, 'bg2': 3, 'bg3': 4}
@@ -52,9 +54,10 @@ FORMATS = {0x811: 12, 0x813: 16, 0x80D: 8, 0x00A: 4, 0x80F: 8, 0x808: 4, 0x007: 
 # game treats it as (footsteps, effects, damage). Several raw codes share a class (12, 13, 14, 16 and 26 are wood;
 # 17, 20 and 24 metal); 9 is damage, not metal. A fact about the format, like the runtime's NativeResultIds.
 ATTRIBUTE_CLASS = (0, 1, 2, 3, 4, 5, 6, 1, 8, 9, 10, 11, 2, 2, 2, 15, 2, 20, 1, 19, 20, 21, 22, 23, 20, 10, 2, 0, 0, 0, 0, 0)
-CLASS_SURFACES = {2: 'col_wood', 3: 'col_stone', 4: 'col_grass', 11: 'col_sand', 20: 'col_metal', 15: 'col_ice', 19: 'col_shallow',
-                  23: 'col_waterfall'}
+CLASS_SURFACES = {2: 'col_wood', 3: 'col_stone', 4: 'col_grass', 6: 'col_lava', 11: 'col_sand', 20: 'col_metal', 15: 'col_ice',
+                  19: 'col_shallow', 23: 'col_waterfall'}
 WATER_GROUP = 0x100  # a collision group's info bit: the game's swimmable water
+LAVA_GROUP = 0x200   # and the game's lava (its surface; the lava's bottom below it is a floor of attribute class 6)
 # raw attribute code -> WCOL surface (codes of other classes: stone on floors, a plain wall otherwise)
 SURFACES = {code: CLASS_SURFACES[c] for code, c in enumerate(ATTRIBUTE_CLASS) if c in CLASS_SURFACES}
 MAX_ARCHIVE = 12 * 1024 * 1024
@@ -96,6 +99,8 @@ def check_recipe(r):
             require(type(part.get('model')) is int and 0 <= part['model'] <= 3, p['id'] + ': invalid BG model')
             require(part.get('light') in LIGHTS, p['id'] + ': invalid light')
             require(isinstance(part.get('nodes'), list) and part['nodes'] and all(isinstance(n, str) and n for n in part['nodes']), p['id'] + ': invalid nodes')
+            require(part.get('animated', False) in (True, False) and (not part.get('animated') or parts.index(part) == 1),
+                    p['id'] + ': only a piece\'s second part may be animated')
             without = part.get('without_materials', [])
             require(isinstance(without, list) and all(isinstance(n, str) and n for n in without), p['id'] + ': invalid without_materials')
         groups = p.get('collision', {}).get('groups', [])
@@ -105,15 +110,15 @@ def check_recipe(r):
         require(p.get('collision', {}).get('strip_exits', False) in (True, False), p['id'] + ': invalid collision.strip_exits')
         require('origin_y' not in p or (type(p['origin_y']) in (int, float) and v[1] <= p['origin_y'] <= v[4]), p['id'] + ': origin_y lies in the volume')
         d = p.get('distant')
-        require(d is None or (isinstance(d, dict) and d.get('archive') == 'sea_LOD%02d.szs' % src['room'] and type(d.get('triangles')) is int and 0 < d['triangles'] <= 1024),
-                p['id'] + ': distant names the room\'s own sea_LODNN.szs and its triangle count (1..1024)')
+        require(d is None or (isinstance(d, dict) and d.get('archive') == 'sea_LOD%02d.szs' % src['room'] and type(d.get('triangles')) is int and 0 < d['triangles'] <= 2048),
+                p['id'] + ': distant names the room\'s own sea_LODNN.szs and its triangle count (1..2048)')
         e = p.get('expect', {})
         require(isinstance(e.get('triangles'), list) and len(e['triangles']) == len(parts) and all(type(t) is int and t > 0 for t in e['triangles']),
                 p['id'] + ': expect.triangles must give each part\'s count')
         require(type(e.get('collision_triangles')) is int and e['collision_triangles'] >= 0, p['id'] + ': invalid expect.collision_triangles')
-        # each part's source textures (the room's own texture names its materials sample): pins the look
+        # each part's source textures (the room's own texture names its materials sample, a few end in a dot): pins the look
         t = e.get('textures')
-        require(t is None or (isinstance(t, list) and len(t) == len(parts) and all(isinstance(x, list) and x and all(isinstance(n, str) and re.fullmatch(r'[A-Za-z0-9_]{1,63}', n) for n in x) for x in t)),
+        require(t is None or (isinstance(t, list) and len(t) == len(parts) and all(isinstance(x, list) and x and all(isinstance(n, str) and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.]{0,62}', n) for n in x) for x in t)),
                 p['id'] + ': expect.textures must give each part\'s texture names')
 
 
@@ -151,17 +156,11 @@ class Shape:
     pass
 
 
-def read_model(src, name):
-    """Shapes of one BG model: vertex records (room-local), indices, node, material."""
-    models = dict(src.dict(src.rel(0x20)))
-    require(name in models, 'the room has no BG model ' + name)
-    model = models[name]
-    skeleton = src.rel(model + 0xC)
+def bone_matrices(src, skeleton):
+    """bone index -> (3x3 world matrix incl. scale, world translation) of a BG model's skeleton"""
     bones = src.rel(skeleton + 0x14)
     nbones = src.u16(skeleton + 8)
     euler = (src.u32(skeleton + 4) >> 12) & 7 == 1
-    # each bone's world transform (3x3 and translation); a shape is taken when its bone's world rotation and scale
-    # come out as none (a parent's turn undone by the child's, as Five-Star's pillars): only its position moves
     matrices = {}
     for i in range(nbones):
         b = bones + 0x40 * i
@@ -187,10 +186,22 @@ def read_model(src, name):
             m = [[sum(pm[j][q] * local[q][k] for q in range(3)) for k in range(3)] for j in range(3)]
             t = tuple(pt[j] + sum(pm[j][q] * tr[q] for q in range(3)) for j in range(3))
             matrices[i] = (m, t)
+    return matrices
+
+
+def read_model(src, name):
+    """Shapes of one BG model: vertex records (room-local), indices, node, material."""
+    models = dict(src.dict(src.rel(0x20)))
+    require(name in models, 'the room has no BG model ' + name)
+    model = models[name]
+    # each bone's world transform (3x3 and translation); a shape is taken when its bone's world rotation comes out as
+    # none (a parent's turn undone by the child's, as Five-Star's pillars): its positions are scaled and moved. A scale
+    # that differs between the axes is taken only for shapes without normals (an island's water surfaces)
+    matrices = bone_matrices(src, src.rel(model + 0xC))
     world = {}
     for i, (m, t) in matrices.items():
-        plain = all(abs(m[j][k] - (1 if j == k else 0)) < 1e-5 for j in range(3) for k in range(3))
-        world[i] = tuple(t) if plain else None
+        unturned = all(abs(m[j][k]) < 1e-5 for j in range(3) for k in range(3) if j != k) and all(m[j][j] > 1e-3 for j in range(3))
+        world[i] = (tuple(t), tuple(m[j][j] for j in range(3))) if unturned else None
     materials = src.dict(src.rel(model + 0x18))
     vertex_array = src.rel(model + 0x10)
     out = []
@@ -200,9 +211,10 @@ def read_model(src, name):
         s.node = sname.split('__')[0] if '__' in sname else sname
         s.material = materials[src.u16(at + 0xE)][0]
         require(src.b[at + 0x16] == 0, 'a BG shape is skinned')
-        offset = world.get(src.u16(at + 0x10), (0, 0, 0))
-        if offset is None:  # a shape on a scaled or rotated bone (water, effects): never selectable
+        bone = world.get(src.u16(at + 0x10), ((0, 0, 0), (1, 1, 1)))
+        if bone is None:  # a shape on a turned bone (effects): never selectable
             continue
+        offset, scale = bone
         vertex = vertex_array + 0x20 * src.u16(at + 0x12)
         s.vertex = vertex
         attrs = src.rel(vertex + 0x10)
@@ -213,6 +225,8 @@ def read_model(src, name):
         require(src.b[vertex + 5] == 1 and layout.get('_p0', (None, None, None))[2] == 0x811, 'unsupported BG vertex layout in ' + sname)
         for index, at_attr, fmt in layout.values():
             require(index == 0 and fmt in FORMATS and at_attr + FORMATS[fmt] <= s.stride, 'unsupported BG vertex attribute in ' + sname)
+        if '_n0' in layout and max(scale) - min(scale) > 1e-4 * max(scale):
+            continue  # its normals would need turning as well
         s.at_p = layout['_p0'][1]
         data = src.rel(buffer + 0x14)
         count = src.u32(vertex + 8)
@@ -221,7 +235,7 @@ def read_model(src, name):
         for k in range(count):
             r = bytearray(src.b[data + s.stride * k:data + s.stride * (k + 1)])
             x, y, z = struct.unpack_from('>3f', r, s.at_p)
-            p = (x + offset[0], y + offset[1], z + offset[2])
+            p = (x * scale[0] + offset[0], y * scale[1] + offset[1], z * scale[2] + offset[2])
             struct.pack_into('>3f', r, s.at_p, *p)
             s.records.append(bytes(r))
             s.pos.append(p)
@@ -584,6 +598,67 @@ def write_model(w, model_at, name, shapes, taken, materials, textures, center):
     return dst_model, triangles, used_materials
 
 
+def copy_animation(w, mname, used_materials, name, dst_model):
+    """The room's texture animation of BG model `mname`, its rows for `used_materials` only, as the animation `name`
+    of the output model (an island's water: its ripples and flow). None when none of them moves."""
+    src, out = w.src, w.out
+    entries = dict(src.dict(src.rel(0x34))) if src.rel(0x34) else {}
+    require(mname in entries, 'the room has no texture animation for ' + mname)
+    animation = entries[mname]
+    require(src.b[animation:animation + 4] == b'FSHU' and 1 < src.u32(animation + 0x10) <= 1000, 'unsupported room texture animation')
+    rows = src.rel(animation + 0x2C)
+    row_of = {src.cstr(src.rel(rows + i * 32 + 0x10)): rows + i * 32 for i in range(src.u16(animation + 0x14))}
+    kept = [(m, row_of[m]) for m in used_materials if m in row_of]
+    if not kept:
+        return None
+
+    def pointer(dst, original, offset, size):
+        target = src.rel(original + offset)
+        out.set_rel(dst + offset, w.block(target, size)) if target else out.put('i', dst + offset, 0)
+    dst_animation = w.block(animation, 0x34)
+    out.set_rel(dst_animation + 4, append_string(out, name))
+    out.put('i', dst_animation + 8, 0)
+    out.put('H', dst_animation + 0x14, len(kept))
+    out.put('H', dst_animation + 0x16, 0)
+    out.set_rel(dst_animation + 0x24, dst_model)
+    out.set_rel(dst_animation + 0x28, out.append(struct.pack('>%dH' % len(kept), *([0xFFFF] * len(kept))), 4))
+    out.put('i', dst_animation + 0x30, 0)
+    dst_rows = [w.block(row, 32) for _, row in kept]
+    require(all(dst_rows[i] == dst_rows[0] + 32 * i for i in range(len(kept))), 'room animation rows not contiguous')
+    params_total = curves_total = 0
+    for (material, row), dst_row in zip(kept, dst_rows):
+        # where this row's curves and results begin, after the rows before it (as the game's own animations count them)
+        out.put('II', dst_row + 8, curves_total, params_total * 4)
+        out.set_rel(dst_row + 0x10, append_string(out, material))
+        param_count, curve_count, constant_count = src.u16(row), src.u16(row + 2), src.u16(row + 4)
+        params_total += param_count
+        curves_total += curve_count
+        params = src.rel(row + 0x14)
+        dst_params = w.block(params, param_count * 16)
+        for i in range(param_count):
+            out.set_rel(dst_params + i * 16 + 12, w.text(src.rel(params + i * 16 + 12)))
+        out.set_rel(dst_row + 0x14, dst_params)
+        pointer(dst_row, row, 0x1C, constant_count * 8)
+        curves = src.rel(row + 0x18)
+        if curve_count:
+            dst_curves = w.block(curves, curve_count * 36)
+            for i in range(curve_count):
+                original, dst = curves + i * 36, dst_curves + i * 36
+                require(src.u16(original) == 0, 'unsupported room animation curve encoding')
+                keys = src.u16(original + 2)
+                pointer(dst, original, 28, keys * 4)
+                pointer(dst, original, 32, keys * 16)
+            out.set_rel(dst_row + 0x18, dst_curves)
+        else:
+            out.put('i', dst_row + 0x18, 0)
+    out.put('I', dst_animation + 0x18, params_total * 4)
+    out.put('I', dst_animation + 0x1C, curves_total)
+    # the baked size, as the game's own animations have it: every curve, a value per frame and its header
+    out.put('I', dst_animation + 0x20, curves_total * (src.u32(animation + 0x10) * 4 + 20))
+    out.set_rel(dst_animation + 0x2C, dst_rows[0])
+    return dst_animation
+
+
 # ---- collision --------------------------------------------------------------------------------------
 
 def read_dzb(d):
@@ -598,6 +673,30 @@ def read_dzb(d):
         group_info.append(struct.unpack_from('>I', d, og + 0x34 * i + 0x30)[0])
     infos = [struct.unpack_from('>4I', d, oi + 16 * i) for i in range(ni)]
     return verts, tris, names, infos, group_info
+
+
+def triangle_surface(pts, code, water, void=False, lava=False):
+    """The world-object surface (col_*) of one room collision triangle: its raw attribute code's class on a floor
+    (stone for the other classes), a plain wall (wood stays wood) on a slope steeper than 60 degrees; the group's
+    water bit makes it swimmable water, its lava bit lava's surface and a void group a void floor (a floor of the lava
+    class, the bottom under the game's lava, is lava too). None for a collapsed triangle."""
+    u = [pts[1][k] - pts[0][k] for k in range(3)]
+    v = [pts[2][k] - pts[0][k] for k in range(3)]
+    n = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+    length = sum(x * x for x in n) ** .5
+    if length < 1e-6:
+        return None
+    floor = n[1] / length > 0.5
+    surface = SURFACES.get(code, 'col_stone' if floor else 'col_wall')
+    if not floor and surface != 'col_wall':
+        surface = 'col_wood' if surface == 'col_wood' else 'col_wall'
+    if water:
+        surface = 'col_water'
+    elif lava:
+        surface = 'col_lava' if floor else 'col_wall'
+    elif void:
+        surface = 'col_void' if floor else 'col_wall'
+    return surface
 
 
 def piece_collision(dzb, piece, room_origin, center):
@@ -623,20 +722,9 @@ def piece_collision(dzb, piece, room_origin, center):
         exit_id = (i0 >> 13) & 0x3F
         if strip_exits and exit_id != 0x3F and names[group] not in void:
             continue
-        u = [pts[1][k] - pts[0][k] for k in range(3)]
-        v = [pts[2][k] - pts[0][k] for k in range(3)]
-        n = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
-        length = sum(x * x for x in n) ** .5
-        if length < 1e-6:
+        surface = triangle_surface(pts, code, group_info[group] & WATER_GROUP, names[group] in void, group_info[group] & LAVA_GROUP)
+        if surface is None:
             continue
-        floor = n[1] / length > 0.5
-        surface = SURFACES.get(code, 'col_stone' if floor else 'col_wall')
-        if not floor and surface != 'col_wall':
-            surface = 'col_wood' if surface == 'col_wood' else 'col_wall'
-        if group_info[group] & WATER_GROUP:
-            surface = 'col_water'
-        elif names[group] in void:
-            surface = 'col_void' if floor else 'col_wall'
         row = []
         for k, p in zip((a, b, c), pts):
             if k not in remap:
@@ -714,7 +802,7 @@ def build_set(game, recipe, identity, check_expect=True):
         per_texture[t] = size
     out.set_rel(0x24, append_dictionary(out, [(t, textures[t]) for t in texture_names]))
     out.put('H', 0x52, len(texture_names))
-    models, shaders, pieces_meta, collisions, distant_archives = [], {}, [], {}, {}
+    models, shaders, pieces_meta, collisions, distant_archives, animations = [], {}, [], {}, {}, []
     for pi, (piece, parts) in enumerate(plan):
         body = parts[0]
         # the piece's origin: the middle of its first part, at its lowest point
@@ -743,6 +831,12 @@ def build_set(game, recipe, identity, check_expect=True):
             mat_at = dict(materials)
             sampled = sorted({src.cstr(src.rel(src.rel(mat_at[shapes[si].material] + 0x28) + 8 * i)) for si in taken for i in range(src.b[mat_at[shapes[si].material] + 0x10])})
             meta_parts.append({'model': name, 'light': LIGHTS[part['light']], 'triangles': tris, 'materials': used, 'textures': sampled, 'crossing_left_out': crossing})
+            if part.get('animated'):
+                # the part's texture animation, named as the part's model (the game loads it as <model>.btk)
+                animation = copy_animation(w, mname, used, name, dst)
+                require(animation is not None, piece['id'] + ': none of the animated part\'s materials moves')
+                animations.append((name, animation))
+                meta_parts[-1]['animation'] = name
         expect = piece['expect']
         require(not check_expect or counts == expect['triangles'], '%s: the parts have %s triangles, the recipe expects %s (another game version?)' % (piece['id'], counts, expect['triangles']))
         if check_expect and 'textures' in expect:
@@ -763,6 +857,9 @@ def build_set(game, recipe, identity, check_expect=True):
         pieces_meta.append(entry)
     out.set_rel(0x20, append_dictionary(out, models))
     out.put('H', 0x50, len(models))
+    if animations:
+        out.set_rel(0x34, append_dictionary(out, animations))
+        out.put('H', 0x5A, len(animations))
     out.set_rel(0x14, append_string(out, identity))
     out.append(b'', 0x1000)
     out.put('I', 0xC, len(out.b))

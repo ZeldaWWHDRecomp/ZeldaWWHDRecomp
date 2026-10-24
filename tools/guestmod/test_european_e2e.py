@@ -22,6 +22,9 @@ def main():
     parser.add_argument("--game", type=Path, required=True)
     parser.add_argument("--save", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--heart-ticker", type=Path,
+                        default=Path(os.environ.get("WWHD_HEART_TICKER") or ROOT.parent / "ZeldaWWHDMods/heart-ticker"),
+                        help="the heart-ticker folder of a ZeldaWWHDMods checkout (default: $WWHD_HEART_TICKER, else ../ZeldaWWHDMods/heart-ticker beside this repository)")
     parser.add_argument("--ppc-clang", default=os.environ.get("WWHD_PPC_CLANG", "clang"))
     parser.add_argument("--ppc-lld", default=os.environ.get("WWHD_PPC_LLD", "ld.lld"))
     args = parser.parse_args()
@@ -35,11 +38,11 @@ def main():
         path.chmod(0o755 if path.is_dir() else 0o644)
     package = manager / "Mods/heart-ticker"
     package.mkdir(parents=True)
-    shutil.copy2(ROOT / "examples/guest-mods/heart-ticker/manifest.json", package / "manifest.json")
+    shutil.copy2(args.heart_ticker / "manifest.json", package / "manifest.json")
     subprocess.run([args.ppc_clang, "--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding",
                     "-fno-builtin", "-nostdlib", "-fno-jump-tables", "-ffunction-sections", "-fdata-sections",
                     "-I" + str(ROOT / "runtime/guest/include"), "-c",
-                    str(ROOT / "examples/guest-mods/heart-ticker/mod.c"), "-o", str(package / "mod.o")], check=True)
+                    str(args.heart_ticker / "mod.c"), "-o", str(package / "mod.o")], check=True)
     subprocess.run([args.ppc_lld, "-m", "elf32ppc", "-r", str(package / "mod.o"),
                     "-o", str(package / "mod.elf")], check=True)
     (manager / "profiles.json").write_text(json.dumps({"format_version": 1, "active": "Default",

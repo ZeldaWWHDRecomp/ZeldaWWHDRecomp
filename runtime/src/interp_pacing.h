@@ -49,7 +49,8 @@ inline void slerp_weights(float cosang, float t, float& wa, float& wb) {
 // Blend fraction of a pass. phase 0 = logic pass, k = hold pass k; n = the step's in-between
 // frames; exact = the step is drawn without blending (no record pass before it).
 inline float pass_fraction(int phase, int n, bool exact) {
-    if (phase == 0) return exact ? 1.0f : 1.0f / float(n + 1);
+    if (exact) return 1.0f;
+    if (phase == 0) return 1.0f / float(n + 1);
     return phase < n ? float(phase + 1) / float(n + 1) : 1.0f;
 }
 
@@ -58,14 +59,55 @@ inline float pass_fraction(int phase, int n, bool exact) {
 inline int valid_fps(int f) { return f >= 240 ? 240 : f >= 120 ? 120 : f >= 60 ? 60 : f >= 40 ? 40 : 60; }
 
 // 40 fps: 3 logic steps over 4 frames (a frame every 1.5 vsyncs of 59.94 Hz, 25.03 ms). In each
-// group of 3 steps one step gets an in-between frame (drawn halfway, as at 60 fps: its logic pass
-// blended, its record pass exact) and the other two get one frame each: their logic pass, drawn
-// exactly and recorded as the "before" of the next step's blended frame (a record logic pass).
-// Which step gets the in-between frame follows from the step slots on the virtual vsync (gx2/
-// vsync_pacing.h step_frames: the step whose next step's frame is two frames later). Without a slot
-// (Keep game speed off, or before the first slot) the first step of every three.
+// group of 3 steps one step gets an in-between frame (its logic pass blended, its record pass
+// exact) and the other two get one frame each: their logic pass, blended and also recorded as the
+// "before" of the next step's frames (a blended record pass, Fractions40). Which step gets the
+// in-between frame follows from the step slots on the virtual vsync (gx2/vsync_pacing.h
+// step_frames: the step whose next step's frame is two frames later). Without a slot (Keep game
+// speed off, or before the first slot) the first step of every three.
 inline bool is_fps40(int fps) { return fps == 40; }
 inline int in_between_40(uint64_t step) { return step % 3 == 0 ? 1 : 0; }
+// 40 fps: the fraction each frame is drawn at, so that every frame shows the game at its own time,
+// 3/4 of a step after the previous frame (issue #254). The frames are 1.5 vsyncs apart and the steps
+// 2, so a step's logic frame comes 0, 1 or 0.5 vsyncs after its slot (the step with the in-between
+// frame, the next one, the one after: its slot is a granule boundary plus the grid's phase, the
+// same for all three). Drawn a step late less those offsets: the step with the in-between frame at
+// 1/4 (its record pass, a frame later, exactly at its step), the next step at 3/4, the one after at
+// 1/2, then 1/4 again (game time +0.75 step per frame). Before, the step with the in-between frame
+// was drawn at 1/2 and the others exactly: +0.5, +0.5, +1, +1 step per frame (camera turns sped
+// up and slowed down 10 times a second).
+// A step without an in-between frame is drawn 1/4 step earlier in its step than the frame before it
+// was in its own (3/4 after the record pass's exact frame), at least at 1/4 (the slots' order
+// broken by a late step: two such steps after a record pass, or one after another blended record
+// pass at 1/4, keep 1/4); an exact step (no record pass before it) at 1.
+struct Fractions40 {
+    float last = 1.0f;  // where the last frame was drawn in its step (1: exactly)
+    // the logic pass of a step with n in-between frames (0 or 1); exact: drawn exactly
+    float logic(int n, bool exact) {
+        const float t = exact ? 1.0f : n > 0 ? 0.25f : std::max(0.25f, last - 0.25f);
+        last = t;
+        return t;
+    }
+    void record() { last = 1.0f; }  // the step's record pass drew it exactly
+};
+// A blended record pass (40 fps) records the exact state of its step while it draws the step
+// blended: a record kept per object (a map from key to record) is replaced by the new one, stamped
+// for the next pass, and this pass's blends go on using the one it replaced (kept in `before`,
+// which the caller clears at every pass start: an object drawn twice in the pass blends both draws
+// from the same "before"). Returns the record to blend from (nullptr: none).
+template <class Map, class StampOf>
+const typename Map::mapped_type* replace_record(Map& map, Map& before, const typename Map::key_type& key,
+                                                typename Map::mapped_type rec, uint64_t stamp, StampOf stampOf) {
+    auto it = map.find(key);
+    if (it != map.end()) {
+        if (stampOf(it->second) != stamp) before[key] = std::move(it->second);  // (its first record in this pass)
+        it->second = std::move(rec);
+    } else {
+        map.emplace(key, std::move(rec));
+    }
+    auto b = before.find(key);
+    return b != before.end() ? &b->second : nullptr;
+}
 // the drawn frame interval at 40 fps: 3/4 of a step (1.5 vsyncs), in the step's unit
 inline int64_t frame_40(int64_t step) { return step * 3 / 4; }
 // The display shows a frame rate evenly when its refresh rate is a whole multiple of it (40 fps on
@@ -112,6 +154,14 @@ inline int even_in_between(int n, int refreshes) {
     for (int k = std::max(1, n); k > 1; --k)
         if (refreshes % (k + 1) == 0) return k;
     return 1;
+}
+
+// The first exact step normally needs only its record pass (at 40 fps the
+// logic frame itself records). After Fast Forward, fill the available slots
+// with exact frames instead: omitting them leaves a 50 ms gap at 40 fps or
+// three frame intervals at 120 fps before interpolation has history again.
+inline int exact_step_holds(int planned, bool forty, bool resuming) {
+    return resuming ? planned : forty ? 0 : 1;
 }
 
 // The running average of a pass duration (3/4 old, 1/4 new). A single sample counts at most twice

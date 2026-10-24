@@ -1,0 +1,193 @@
+{
+  "game_objects_format": 1,
+  "group": "volcanic",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word). The objects themselves load from the player's own game files.",
+  "objects": [
+    {
+      "id": "torch",
+      "since": 6,
+      "category": "Fire and lava",
+      "label": "Torch",
+      "description": "a lit standing torch whose flame lights its surroundings and bends in the wind",
+      "native": {
+        "name": "bonbori",
+        "process": "EP",
+        "source": "d_a_ep",
+        "subtype": 255,
+        "archive": "Ep"
+      },
+      "variants": [
+        {
+          "id": "torch",
+          "label": "Torch",
+          "params": "0xFFFFFF03"
+        },
+        {
+          "id": "torch-stand",
+          "label": "Torch (stone stand)",
+          "params": "0xFFFFFF83"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 14336,
+        "archive_bytes": 0,
+        "measured": "own heap 11332-11504 bytes and about 3 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "bits 0-5 type (3 torch without event, 1 flame only), bit 7 the other stand; bits 8-15 burn time, 16-23 and 24-31 switches 0xFF: always lit, no switch"
+    },
+    {
+      "id": "flame",
+      "since": 6,
+      "category": "Fire and lava",
+      "label": "Flame",
+      "description": "a burning flame on its own, with its light (for a brazier or a torch of your own)",
+      "native": {
+        "name": "bonbori",
+        "process": "EP",
+        "source": "d_a_ep",
+        "subtype": 255,
+        "archive": "Ep"
+      },
+      "variants": [
+        {
+          "id": "flame",
+          "label": "Flame",
+          "params": "0xFFFFFF01"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 4096,
+        "archive_bytes": 0,
+        "measured": "no heap of its own; the actor about 2-3 KiB"
+      },
+      "notes": "EP type 1: the flame and its light only, no model and no heap; switches 0xFF: always lit",
+      "own_heap": false
+    },
+    {
+      "id": "fire-jet",
+      "since": 6,
+      "category": "Fire and lava",
+      "label": "Fire jet",
+      "description": "a vent in the ground that shoots up a column of fire every few seconds; it burns Link",
+      "native": {
+        "name": "Yfire00",
+        "process": "Obj_Flame",
+        "source": "d_a_obj_flame",
+        "subtype": 255,
+        "archive": "Yfire_00"
+      },
+      "variants": [
+        {
+          "id": "fire-jet",
+          "label": "Fire jet",
+          "params": "0x00FF1F00"
+        },
+        {
+          "id": "fire-jet-large",
+          "label": "Large fire jet",
+          "params": "0x20FF1F00"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 30720,
+        "archive_bytes": 0,
+        "measured": "own heap 27540 bytes and about 3 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "bits 28-29 size, bits 16-23 switch 0xFF, bits 8-12 0x1F no Keese, bits 0-7 0: its own 120-step cycle, no stage schedule"
+    },
+    {
+      "id": "lava-bubbles",
+      "since": 6,
+      "category": "Fire and lava",
+      "label": "Lava bubbles",
+      "description": "bubbles that rise and burst over a lava lake, scattered in a wide ring around it",
+      "native": {
+        "name": "Yboil00",
+        "process": "Obj_Yboil",
+        "source": "d_a_obj_Yboil",
+        "subtype": 255,
+        "archive": "Yboil"
+      },
+      "variants": [
+        {
+          "id": "lava-bubbles",
+          "label": "Lava bubbles",
+          "params": "0x0000FF00"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": false,
+      "memory": {
+        "instance_bytes": 589824,
+        "archive_bytes": 0,
+        "measured": "own heap 575968 bytes (its 50 bubbles) and about 3 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "bits 8-15 switch 0xFF (bubbles keep coming); 50 bubbles 1300-2700 units around it; the game leaves it out once event bit 0x1902 is set"
+    },
+    {
+      "id": "bomb-flower",
+      "since": 6,
+      "category": "Trees and plants",
+      "label": "Bomb flower",
+      "description": "Dragon Roost's bomb plant: Link picks its bomb, throws it and it blows up; a new bomb grows back",
+      "native": {
+        "name": "BFlower",
+        "process": "BOMB_FLOWER",
+        "source": "d_a_bflower",
+        "subtype": 255,
+        "archive": "VbakH"
+      },
+      "variants": [
+        {
+          "id": "bomb-flower",
+          "label": "Bomb flower",
+          "params": "0x0000FF0F"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ]
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 30720,
+        "archive_bytes": 0,
+        "measured": "own heap 27424 bytes and about 2 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's own word for its bomb flowers (Dragon Roost, caves): bits 4-7 kind 0 (grown), bits 8-15 switch 0xFF; angle x stays 0 (pickable)"
+    }
+  ]
+}

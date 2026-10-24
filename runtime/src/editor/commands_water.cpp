@@ -246,7 +246,8 @@ static bool plan_water(Host* host, const Value& manifest, const std::string& kin
             int level = out.origin_y;
             if (kind == "river")
                 for (int l : out.built.levels) level = std::max(level, l + out.origin_y);
-            if (kind != "waterfall" && level > high)
+            // (lava is found at any height: the game's lava checks look at every ground below)
+            if (kind != "waterfall" && out.built.material != water::kLavaMaterial && level > high)
                 out.problems.push_back({"the water's level (" + std::to_string(level) + ") is above the highest ground of this square (" + std::to_string(int(std::floor(high))) +
                                             "): the game won't find this water there (Link would walk on its floor); lower it below the top of the square's island",
                                         "level"});
@@ -556,7 +557,7 @@ Value Session::dispatch_water(const std::string& command, const Value& p, std::s
         Value world;
         if (!water_of(pkg->dir, pkg->manifest, id, params, world, why)) return r;
         // the changed parameters over the stored ones (a pond's level, a waterfall's top and bottom are world heights)
-        for (const char* key : {"points", "level", "depth", "rim", "foam", "floor", "width", "shallow", "top", "bottom", "side"})
+        for (const char* key : {"points", "level", "depth", "rim", "foam", "lava", "floor", "width", "shallow", "top", "bottom", "side"})
             if (p.get(key).type != Value::Null) world[key] = p.get(key);
         world["mod"] = pkg->mod;
         WaterPlan w;

@@ -60,6 +60,8 @@
     <string name="setup_paused_battery">Pausado: a bateria está fraca</string>
     <string name="setup_paused_detail">Toque em Continuar quando quiser seguir.</string>
     <string name="setup_paused_auto_detail">A instalação continua sozinha quando o dispositivo Android estiver pronto.</string>
+    <string name="setup_paused_heat_detail">A instalação espera por você. Toque em Continuar mesmo assim para seguir agora.</string>
+    <string name="setup_paused_heat_cooled">O dispositivo esfriou. Toque em Continuar para seguir.</string>
     <string name="setup_failed">A instalação parou</string>
     <string name="setup_failed_detail">Toque em Detalhes para ver o motivo. Você pode escolher o jogo de novo ou tocar em Continuar.</string>
     <string name="setup_ready">Seu jogo está pronto</string>

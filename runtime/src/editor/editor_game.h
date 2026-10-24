@@ -15,6 +15,7 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "commands.h"
 
@@ -51,6 +52,11 @@ void drag_actors(const std::string& mod, const Value& poses);
 void end_drag(const std::string& mod, const std::vector<std::string>& ids, bool put_back);
 std::string drag_note();  // what the drag can't move live ("" all of it)
 void note(const std::string& command, const Value& params, const Value& result, const std::string& source);  // a log entry
+
+// The open package's items whose change waits for a restart, as "<id> (<why>)" (story_reload::restart_items
+// with what the running game can take live): for the editor's notice next to each item. Render thread; the
+// last answer while a command holds the session.
+std::vector<std::string> items_after_restart(const std::string& mod);
 
 // The last asynchronous outcome (a warp started, a test state written, a live update refused), for the UI.
 std::string status();

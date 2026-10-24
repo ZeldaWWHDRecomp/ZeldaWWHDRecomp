@@ -299,6 +299,11 @@ uint16_t g_notebook_letter = 0;  // the key of the letter that brings the notebo
 void set_notebook_letter(const std::string& mod, const std::string& letter) { g_notebook_letter = letter_key(mod, letter); }
 
 bool notebook_owned() { return have_save() && book().get(kRecordItem, kItemNotebook) == 1; }
+bool own_notebook_for_test() {
+    if (!have_save() || !book().set(kRecordItem, kItemNotebook, 1)) return false;
+    LOG("[mail] the story notebook is in this save file (the editor's test mode)");
+    return true;
+}
 
 std::u16string notebook_page() {
     std::u16string page = u"Story notebook\n\n";

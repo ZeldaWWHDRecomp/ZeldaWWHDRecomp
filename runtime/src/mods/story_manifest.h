@@ -40,7 +40,15 @@ inline bool parse_quest_destination(const mods::json::Value&v,QuestDestination&o
         const int col=std::clamp(int(std::floor((d.sea_x+350000)/100000)),0,6),row=std::clamp(int(std::floor((d.sea_z+350000)/100000)),0,6);
         d.room=unsigned(row*7+col+1);d.point=-1;d.position={d.sea_x,2000,d.sea_z};
     }else{
-        if(!keys(v,{"stage","room","point","x","y","z","sea"})||!place(v,d.stage,d.room)||d.stage=="sea")return why="interior place requires stage and room 0..63",false;
+        // "stage:<id>": one of the package's own stages (mod_stages.h), by its id in the manifest
+        const std::string own=v.get("stage").string();
+        if(own.rfind("stage:",0)==0){
+            const std::string sid=own.substr(6);
+            bool good=!sid.empty()&&sid.size()<=32&&integer(v.get("room"),0,63);
+            for(char c:sid)good=good&&((c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.');
+            if(!good||!keys(v,{"stage","room","point","x","y","z","sea"}))return why="a place in the package's own stage is {\"stage\": \"stage:<id>\", \"room\": 0..63, \"sea\": {x, z}}",false;
+            d.stage=own;d.room=unsigned(v.get("room").number);
+        }else if(!keys(v,{"stage","room","point","x","y","z","sea"})||!place(v,d.stage,d.room)||d.stage=="sea")return why="interior place requires stage and room 0..63",false;
         const auto&sea=v.get("sea");
         if(!keys(sea,{"x","z"})||!number(sea.get("x"),-350000,350000,d.sea_x)||!number(sea.get("z"),-350000,350000,d.sea_z))return why="interior place requires a sea hint with finite x/z",false;
         const bool at=v.object.contains("x")||v.object.contains("y")||v.object.contains("z");

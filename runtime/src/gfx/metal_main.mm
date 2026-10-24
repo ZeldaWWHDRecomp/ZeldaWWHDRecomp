@@ -1,3 +1,4 @@
+#include "background_shaders.h"
 #include "perf_metrics.h"
 #include "gfx/capture_schedule.h"
 #include "savestate.h"
@@ -9,11 +10,14 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <atomic>
+#include <functional>
+#include <memory>
 
 #include "gx2/gx2.h"
 #include "gx2_texture_regs.h"
 #include "metal.h"
 #include "runtime.h"
+#include "dynres.h"
 #include "input.h"
 #include "../fixed_seed.h"
 
@@ -23,7 +27,21 @@ namespace mods { void draw_overlay(id<MTLCommandBuffer> cmd, id<MTLTexture> tex)
 namespace gfx {
 Renderer R;
 // GPU depth peeks for the game's sun visibility test (fork 73b54e1, Metal adaptation).
+// Peek command buffers committed early, with their answer, for peek_retire (render thread only).
+struct PendingPeek { id<MTLCommandBuffer> cmd; std::function<void(bool)> answer; };
+static std::vector<PendingPeek> g_pending_peeks;
+void flush();
+void peek_retire() {
+    auto pending = std::move(g_pending_peeks);
+    g_pending_peeks.clear();
+    for (auto& p : pending) {
+        [p.cmd waitUntilCompleted];
+        p.answer(p.cmd.status == MTLCommandBufferStatusCompleted);  // once: the handler may have done it
+    }
+}
 void peek_z(const uint32_t* cells, uint32_t n) {
+    depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
+    const uint64_t ticket = depth_peek::next_ticket();  // one per request, in request order
     Surface* depth = nullptr;
     auto range = R.surfaces.equal_range(R.mainDepthAddr);
     for (auto it = range.first; it != range.second; ++it) {
@@ -33,6 +51,11 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     }
     uint32_t points = std::min(n / 3,64u);
     if (!depth || !points) return;
+    // Shader compile Fast: the game reads this depth buffer back, so draws into it keep the exact
+    // wait from now on; if one was left out in this frame already, the frame answers no peek and the
+    // game keeps its previous answers, from a complete frame
+    if (bgshaders::enabled()) bgshaders::tracker().peeked(depth->addr, R.frame);
+    if (bgshaders::tracker().left_out_in(depth->addr, R.frame)) { bgshaders::peek_withheld(); return; }
     auto format = depth->tex.pixelFormat;
     if (format != MTLPixelFormatDepth16Unorm && format != MTLPixelFormatDepth32Float &&
         format != MTLPixelFormatDepth32Float_Stencil8) return;
@@ -51,9 +74,7 @@ void peek_z(const uint32_t* cells, uint32_t n) {
         destinations[i] = cells[i*3+2];
     }
     [b endEncoding];
-    uint64_t ticket = depth_peek::next_ticket();
-    [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        if (cb.status != MTLCommandBufferStatusCompleted) return;
+    auto answer = [staging, destinations, points, format, ticket] {
         const uint8_t* raw = static_cast<const uint8_t*>(staging.contents);
         std::vector<uint32_t> depths(points);
         for (uint32_t i=0; i<points; i++) {
@@ -65,7 +86,27 @@ void peek_z(const uint32_t* cells, uint32_t n) {
             }
         }
         depth_peek::publish(ticket,destinations,depths);
-    }];
+    };
+    // answered once: by the completion handler or by peek_retire, whichever comes first
+    auto once = std::make_shared<std::atomic<bool>>(false);
+    std::function<void(bool)> answerOnce = [answer, once](bool completed) {
+        if (once->exchange(true)) return;
+        if (completed) answer();  // a failed command buffer leaves the previous answers
+        depth_peek::answered();
+    };
+    id<MTLCommandBuffer> cmd = command_buffer();
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) { answerOnce(cb.status == MTLCommandBufferStatusCompleted); }];
+    guard.handed = true;
+    // the game reads the answers at its next step: commit this copy now; the render thread retires
+    // it while the game waits for it at its swap (peek_retire, depth_peek.h)
+    if (depth_peek::mode() == 2) {  // test: the former synchronous copy
+        void wait_idle();
+        wait_idle();
+        answerOnce(cmd.status == MTLCommandBufferStatusCompleted);
+    } else if (depth_peek::synchronous()) {
+        flush();
+        g_pending_peeks.push_back({cmd, answerOnce});
+    }
 }
 
 
@@ -141,7 +182,17 @@ id<MTLCommandBuffer> command_buffer() {
 uint32_t g_draws_since_commit = 0;
 std::atomic<uint64_t> g_gpu_ns{0};  // GPU busy time, for the periodic report
 
+// dynamic resolution (dynres.h): every command buffer's GPU interval while it is on
+static void dynres_time(id<MTLCommandBuffer> cb) {
+    if (!dynres::on()) return;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> b) {
+        if (b.status == MTLCommandBufferStatusCompleted && b.GPUEndTime > b.GPUStartTime)
+            dynres::gpu_interval(b.GPUStartTime * 1e9, b.GPUEndTime * 1e9);
+    }];
+}
+
 static void track_gpu_time(id<MTLCommandBuffer> cb) {
+    dynres_time(cb);
     const uint64_t frame = commandFrame;
     const uint64_t token = commandToken;
     // Keep explicit profiler diagnostics, but add no timing completion handler while hidden.
@@ -199,6 +250,7 @@ void wait_idle() {
     if (R.cmd) {
         id<MTLCommandBuffer> c = R.cmd;
         pool_retire(c);
+        dynres_time(c);
         [c commit];
         R.cmd = nil;
         [c waitUntilCompleted];
@@ -290,15 +342,29 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     end_encoder();
     // the image as rendered (internal resolution); the present pass scales it to the window
     NSUInteger w = s->tex.width, h = s->tex.height;
-    if (!scr.tex || scr.tex.width != w || scr.tex.height != h || scr.tex.pixelFormat != s->tex.pixelFormat) {
-        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:s->tex.pixelFormat
-                                                                                     width:w
-                                                                                    height:h
-                                                                                 mipmapped:NO];
-        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;  // render target: mod overlays
-        d.storageMode = MTLStorageModePrivate;
-        scr.tex = [R.device newTextureWithDescriptor:d];
+    auto fits = [&](id<MTLTexture> t) { return t.width == w && t.height == h && t.pixelFormat == s->tex.pixelFormat; };
+    if (!scr.tex || !fits(scr.tex)) {
+        // dynamic resolution (dynres.h): the scan textures of the previous sizes are kept for the next change
+        id<MTLTexture> kept = nil;
+        if (dynres::on()) {
+            for (auto it = scr.scanSpares.begin(); it != scr.scanSpares.end(); ++it)
+                if (fits(*it)) { kept = *it; scr.scanSpares.erase(it); break; }
+            if (scr.tex) scr.scanSpares.insert(scr.scanSpares.begin(), scr.tex);
+            while (scr.scanSpares.size() > size_t(2)) scr.scanSpares.pop_back();
+        }
+        if (kept) scr.tex = kept;
+        else {
+            MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:s->tex.pixelFormat
+                                                                                         width:w
+                                                                                        height:h
+                                                                                     mipmapped:NO];
+            d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;  // render target: mod overlays
+            d.storageMode = MTLStorageModePrivate;
+            scr.tex = [R.device newTextureWithDescriptor:d];
+        }
     }
+    if (!dynres::on() && !scr.scanSpares.empty()) scr.scanSpares.clear();
+    scr.dyn = s->dyn;  // the layout uses the size at the full internal resolution
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
     [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
             sourceSize:MTLSizeMake(w, h, 1) toTexture:scr.tex destinationSlice:0 destinationLevel:0

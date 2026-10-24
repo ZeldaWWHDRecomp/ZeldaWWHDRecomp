@@ -118,6 +118,13 @@ std::shared_ptr<const BuiltSet> build(const std::string& id, const std::string& 
             else
                 b.second_index = slot;
             b.light[k] = known->parts[k].light;
+            const std::string animation = parts[k].get("animation").string();
+            need(animation.empty() != known->parts[k].animated && (animation.empty() || animation == name), "the built piece has another animation");
+            if (!animation.empty()) {
+                need(result->animations.size() < 16, "the built set has too many animations");
+                result->animations.push_back(animation);
+                b.animation_index = int(result->models.size() + result->animations.size());
+            }
             need(unsigned(parts[k].get("triangles").number) == known->parts[k].triangles, "the built piece has another triangle count");
             b.triangles += known->parts[k].triangles;
         }
@@ -182,9 +189,10 @@ bool register_for_mod(const std::string& mod, const BuiltSet& set, const std::st
     const Built* b = set.piece(id);
     if (!b) return why = "the piece is not in its built set", false;
     if (!actor_model_cache::register_external(set.archive, set.path)) return why = "the set archive could not be registered", false;
-    if (!mod_actor::register_piece_set(set.archive, set.models)) return why = "the set's models could not be registered", false;
+    if (!mod_actor::register_piece_set(set.archive, set.models, set.animations)) return why = "the set's models could not be registered", false;
     mod_actor::PieceDraw draw;
     draw.second_index = b->second_index;
+    draw.animation = b->animation_index;
     draw.light[0] = b->light[0];
     draw.light[1] = b->light[1];
     if (!mod_actor::set_piece_draw(set.archive, b->body_index, draw)) return why = "the piece's parts could not be registered", false;

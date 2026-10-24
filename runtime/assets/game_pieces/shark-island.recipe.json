@@ -1,0 +1,75 @@
+{
+  "game_pieces_format": 1,
+  "set": "shark-island",
+  "label": "Shark Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room38.szs",
+    "room": 38
+  },
+  "memory": {
+    "archive_bytes": 1454080,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "shark-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Shark Island ground",
+      "description": "a rocky island of terraced cliffs with a pit on its top that sends Link back",
+      "volume": [
+        -1976,
+        -1100,
+        19795,
+        2412,
+        1512,
+        24766
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sm"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Hole_huti",
+          "Hole_soko",
+          "Hole_kabe",
+          "soko_stop",
+          "sima"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD38.szs",
+        "triangles": 166
+      },
+      "expect": {
+        "triangles": [
+          431
+        ],
+        "textures": [
+          [
+            "Txa_jimen_midori",
+            "Txq_aruki2_same",
+            "Txq_iwa2_same_gray",
+            "test_iwakabe_gray"
+          ]
+        ],
+        "collision_triangles": 421
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

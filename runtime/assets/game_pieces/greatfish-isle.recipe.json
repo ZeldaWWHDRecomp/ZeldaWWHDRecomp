@@ -1,0 +1,111 @@
+{
+  "game_pieces_format": 1,
+  "set": "greatfish-isle",
+  "label": "Greatfish Isle ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room23.szs",
+    "room": 23
+  },
+  "memory": {
+    "archive_bytes": 5410816,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "greatfish-isle",
+      "since": 5,
+      "category": "Islands",
+      "label": "Greatfish Isle ground",
+      "description": "a broken island of rocky slopes, sandy beaches and the ruins of a house",
+      "volume": [
+        -6978,
+        -1182,
+        -4387,
+        6156,
+        5068,
+        9093
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Modori",
+          "sip_small_jav_jmp",
+          "sip_koware_sunahamajmp",
+          "ya_sasariyou_saku",
+          "saku",
+          "tuika_kagenuke_1012",
+          "soko_kabe_yanuke",
+          "soko_kabe_noborenai",
+          "soko_kabe_noboreru",
+          "shima_kojima_suberu_yanuke",
+          "shima_north_yanuke_suberu",
+          "shima_chuuou_yanuke_suberu",
+          "sunahama_koware_sip_1008",
+          "Alwd4",
+          "Alwd6",
+          "ore_wood_center",
+          "AjavA",
+          "sekiban",
+          "zangai1",
+          "zangai",
+          "zangai2",
+          "shima_east_suberu",
+          "shima_south_suberu",
+          "shima_west_suberu",
+          "shima_kojima_suberu",
+          "shima_north_suberu",
+          "shima_center_suberu",
+          "wood_suberu",
+          "shima_noboru",
+          "shima_goal",
+          "shima_kakera",
+          "shima_south_nomal",
+          "shima_chuuou_ana",
+          "kowareiwa"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD23.szs",
+        "triangles": 1956
+      },
+      "expect": {
+        "triangles": [
+          4437
+        ],
+        "textures": [
+          [
+            "Txa_borosiba",
+            "Txa_jav_a",
+            "Txq_besso_iemae",
+            "Txq_hune_a",
+            "Txq_koware_saku",
+            "Txq_koware_wood",
+            "Txq_kowasare_boro_wd",
+            "Txq_kowasare_jimen_koware_four",
+            "Txq_kowasare_kusa",
+            "Txq_suma",
+            "Txq_wall_kowasare",
+            "Txq_wall_kowasare_kusakiwa",
+            "roup01",
+            "wood01"
+          ]
+        ],
+        "collision_triangles": 2737
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

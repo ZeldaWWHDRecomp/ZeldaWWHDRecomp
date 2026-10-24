@@ -5,6 +5,7 @@
 #include "guest_addr.h"
 #include "runtime.h"
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -23,6 +24,7 @@ const uint32_t SwCreate=GC(0x023975B0),SwDelete=GC(0x02397AD0),SwExecute=GC(0x02
     DemoSwitch=GC(0x02398504),DemoPause=GC(0x023985AC),Ride=GC(0x0239705C),
     DoorCreate=GC(0x02058590),DoorDelete=GC(0x020583D4),DoorExecute=GC(0x0205834C),DoorDraw=GC(0x020582F0),
     DoorClosed=GC(0x02058144),DoorOpen=GC(0x02058230);
+const uint32_t SwitchClass=GD(0x101CD034),DoorClass=GD(0x1018FFE8);
 Declaration* get(uint32_t token){for(auto& d:declarations)if(d.token==token)return &d;return nullptr;}
 bool address(uint32_t a,uint32_t bytes=0x10){return a>=0x10000000u&&a<=0x50000000u-bytes&&!(a&3);}
 bool reserved(uint32_t a){return address(a)&&(ld16(a+0xE)==kSwitchProfile||ld16(a+0xE)==kDoorProfile);}
@@ -115,13 +117,24 @@ void retry(uint32_t token){if(auto*d=get(token)){d->quarantined=false;d->committ
 void quarantine(uint32_t token){if(auto*d=get(token))d->quarantined=true;}
 void state_loaded(){backgrounds.clear();for(auto&d:declarations){d.pid=0xFFFFFFFFu;d.address=0;d.ready=false;d.quarantined=false;d.committing=false;}}
 void configure(void(*o)(Cpu*,uint32_t),uint32_t(*call_fn)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t sw,uint32_t door,ReadFlag read,WriteFlag write,Retired notify){if(installed)return;original=o;invoke=call_fn;sw_profile=sw;door_profile=door;read_flag=std::move(read);write_flag=std::move(write);retired=std::move(notify);native_actor_profiles::configure(o,call_fn);}
-bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;if((declarations.empty()&&!editor_allowed)||!original||!invoke||!read_flag||!write_flag||!native_actor_profiles::available(owner))return false;
+bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace,std::string*why){if(installed)return true;
+    std::string ignored;std::string&reason=why?*why:ignored;char text[160];
+    if(declarations.empty()&&!editor_allowed)return reason="nothing declared",false;
+    if(!original||!invoke||!read_flag||!write_flag)return reason="not configured",false;
+    if(!native_actor_profiles::available(owner,&reason))return false;
     bool sw=editor_allowed,door=editor_allowed;for(const auto&d:declarations){sw|=d.kind==Kind::Switch;door|=d.kind==Kind::Door;}
     const std::pair<uint32_t,void(*)(Cpu*)> sw_hooks[]={{SwCreate,switch_create},{SwDelete,switch_delete},{SwExecute,switch_execute},{SwDraw,switch_draw},{Upper,upper},{Lower,lower},{Lowering,lowering},{Btp,btp},{DemoSwitch,demo_switch},{DemoPause,demo_pause},{Ride,ride}};
     const std::pair<uint32_t,void(*)(Cpu*)> door_hooks[]={{DoorCreate,door_create},{DoorDelete,door_delete},{DoorExecute,door_execute},{DoorDraw,door_draw},{DoorClosed,door_closed},{DoorOpen,door_open}};
-    if(sw)for(const auto&h:sw_hooks)if(!owner(h.first).empty())return false;if(door)for(const auto&h:door_hooks)if(!owner(h.first).empty())return false;
-    if(sw){if(!native_actor_profiles::valid_storage(sw_profile)||ld32(GD(0x101CD034)+0x10)!=kSwitchClassBytes)return false;std::memcpy(mem::ptr(sw_profile),mem::ptr(GD(0x101CD034)),0x30);st16(sw_profile+8,kSwitchProfile);if(!native_actor_profiles::add(kSwitchProfile,sw_profile))return false;}
-    if(door){if(!native_actor_profiles::valid_storage(door_profile)||ld32(GD(0x1018FFE8)+0x10)!=kDoorClassBytes)return false;std::memcpy(mem::ptr(door_profile),mem::ptr(GD(0x1018FFE8)),0x30);st16(door_profile+8,kDoorProfile);if(!native_actor_profiles::add(kDoorProfile,door_profile))return false;}
-    if(!native_actor_profiles::install(owner,replace))return false;if(sw)for(const auto&h:sw_hooks)replace(h.first,h.second);if(door)for(const auto&h:door_hooks)replace(h.first,h.second);installed=true;sw_live=sw;door_live=door;return true;
+    const auto taken=[&](uint32_t a){const std::string by=owner(a);if(by.empty())return false;std::snprintf(text,sizeof text,"hook %08X owned by %s",a,by.c_str());reason=text;return true;};
+    if(sw)for(const auto&h:sw_hooks)if(taken(h.first))return false;if(door)for(const auto&h:door_hooks)if(taken(h.first))return false;
+    // every check before the first registration, so a refusal leaves the profile table as it was
+    const auto fits=[&](const char*name,uint32_t storage,uint32_t retail,uint32_t bytes){
+        if(!native_actor_profiles::valid_storage(storage)){std::snprintf(text,sizeof text,"the %s profile storage %08X is invalid",name,storage);reason=text;return false;}
+        const uint32_t size=ld32(retail+0x10);if(size!=bytes){std::snprintf(text,sizeof text,"the retail %s class is %u bytes (expected %u)",name,size,bytes);reason=text;return false;}return true;};
+    if(sw&&!fits("switch",sw_profile,SwitchClass,kSwitchClassBytes))return false;if(door&&!fits("door",door_profile,DoorClass,kDoorClassBytes))return false;
+    if(sw){std::memcpy(mem::ptr(sw_profile),mem::ptr(SwitchClass),0x30);st16(sw_profile+8,kSwitchProfile);if(!native_actor_profiles::add(kSwitchProfile,sw_profile,nullptr,&reason))return false;}
+    if(door){std::memcpy(mem::ptr(door_profile),mem::ptr(DoorClass),0x30);st16(door_profile+8,kDoorProfile);if(!native_actor_profiles::add(kDoorProfile,door_profile,nullptr,&reason)){if(sw)native_actor_profiles::remove(kSwitchProfile,sw_profile);return false;}}
+    if(!native_actor_profiles::install(owner,replace,&reason)){if(sw)native_actor_profiles::remove(kSwitchProfile,sw_profile);if(door)native_actor_profiles::remove(kDoorProfile,door_profile);return false;}
+    if(sw)for(const auto&h:sw_hooks)replace(h.first,h.second);if(door)for(const auto&h:door_hooks)replace(h.first,h.second);installed=true;sw_live=sw;door_live=door;return true;
 }
 }

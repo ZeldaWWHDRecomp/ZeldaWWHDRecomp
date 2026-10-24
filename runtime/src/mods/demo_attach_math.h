@@ -47,4 +47,16 @@ inline bool pose(const M34 j, const demo_scene::Vec& offset, const demo_scene::V
     return true;
 }
 
+// An attach's blend: the carried actor's place and angles `t` (0..1, eased) of the way from where it
+// was when the attach began to its place on the joint; angles turn the short way round.
+inline float ease(float t) { t = std::fmax(0.f, std::fmin(1.f, t)); return t * t * (3.f - 2.f * t); }
+inline void blend(const float from[3], const int16_t from_angles[3], float t, float position[3], int16_t angles[3]) {
+    const float s = ease(t);
+    for (int i = 0; i < 3; ++i) {
+        position[i] = from[i] + (position[i] - from[i]) * s;
+        const int16_t d = int16_t(uint16_t(angles[i]) - uint16_t(from_angles[i]));
+        angles[i] = int16_t(uint16_t(from_angles[i]) + uint16_t(int16_t(std::lround(float(d) * s))));
+    }
+}
+
 }  // namespace demo_attach_math

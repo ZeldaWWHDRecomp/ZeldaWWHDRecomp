@@ -1050,6 +1050,29 @@ static bool _operandHasModifiers(LatteDecompilerALUInstruction* aluInstruction, 
 	return aluInstruction->sourceOperand[opIndex].abs != 0 || aluInstruction->sourceOperand[opIndex].neg != 0;
 }
 
+// WWHD (from GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.5): the strict multiply of sources 0 and 1 where needed (srcMayBeNonFinite): plain when neither may
+// be infinite/NaN, mul_nonIEEE1(may, finite) with one select when only one may.
+// WWHD_MUL_FINITE=0: mul_nonIEEE everywhere (as before)
+static void _emitStrictMul(LatteDecompilerShaderContext* shaderContext, LatteDecompilerALUInstruction* aluInstruction, const char* sep)
+{
+	static const bool useFiniteness = !getenv("WWHD_MUL_FINITE") || strcmp(getenv("WWHD_MUL_FINITE"), "0");
+	const uint8 nf = useFiniteness ? (aluInstruction->srcMayBeNonFinite & 3) : 3;
+	StringBuf* src = shaderContext->shaderSource;
+	if (nf == 0)
+	{
+		_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
+		src->add(" * ");
+		_emitOperandInputCode(shaderContext, aluInstruction, 1, LATTE_DECOMPILER_DTYPE_FLOAT);
+		return;
+	}
+	const int first = nf == 2 ? 1 : 0;
+	src->add(nf == 3 ? "mul_nonIEEE(" : "mul_nonIEEE1(");
+	_emitOperandInputCode(shaderContext, aluInstruction, first, LATTE_DECOMPILER_DTYPE_FLOAT);
+	src->add(sep);
+	_emitOperandInputCode(shaderContext, aluInstruction, 1 - first, LATTE_DECOMPILER_DTYPE_FLOAT);
+	src->add(")");
+}
+
 void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, LatteDecompilerCFInstruction* cfInstruction, LatteDecompilerALUInstruction* aluInstruction)
 {
 	StringBuf* src = shaderContext->shaderSource;
@@ -1155,13 +1178,7 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 				useDefaultMul = true;
 			}
 			if (shaderContext->options->strictMul && useDefaultMul == false)
-			{
-				src->add("mul_nonIEEE(");
-				_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
-				src->add(", ");
-				_emitOperandInputCode(shaderContext, aluInstruction, 1, LATTE_DECOMPILER_DTYPE_FLOAT);
-				src->add(")");
-			}
+				_emitStrictMul(shaderContext, aluInstruction, ", ");
 			else
 			{
 				_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
@@ -1693,13 +1710,7 @@ void _emitALUOP3InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 			useDefaultMul = true;
 
 		if (shaderContext->options->strictMul && useDefaultMul == false)
-		{
-			src->add("mul_nonIEEE(");
-			_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
-			src->add(",");
-			_emitOperandInputCode(shaderContext, aluInstruction, 1, LATTE_DECOMPILER_DTYPE_FLOAT);
-			src->add(")");
-		}
+			_emitStrictMul(shaderContext, aluInstruction, ",");
 		else
 		{
 			_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
@@ -3747,11 +3758,24 @@ void LatteDecompiler_emitGLSLHelperFunctions(LatteDecompilerShaderContext* shade
 
 		// for "min" it used to be: float mul_nonIEEE(float a, float b){ return min(a*b,min(abs(a)*3.40282347E+38F,abs(b)*3.40282347E+38F)); }
 
-		if( LatteGPUState.glVendor == GLVENDOR_NVIDIA && !ActiveSettings::DumpShadersEnabled())
-			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){return mix(0.0, a*b, (a != 0.0) && (b != 0.0));}" _CRLF); // compiles faster on Nvidia and also results in lower RAM usage (OpenGL)
+		// WWHD: DXVK-like selects on the operands by default: the same results (0*inf/NaN = 0) but the
+		// multiply stays one (fused) multiply-add; Mali-G52: GPU -3 ms of 47 a frame at Windfall 1x (the
+		// branch form below costs ~9 ms there vs a plain multiply). Only a -0 operand gives -0 instead of 0.
+		// WWHD_MUL_FORM (test switch): 0 = Cemu's branch form, 1 = mix, 3 = integer mask, 4 = NaN check
+		static const int mulForm = getenv("WWHD_MUL_FORM") ? atoi(getenv("WWHD_MUL_FORM")) : 2;
+		if (mulForm == 2)
+			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){ return (b==0.0 ? 0.0 : a) * (a==0.0 ? 0.0 : b); }" _CRLF);
+		else if (mulForm == 1)
+			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){return mix(0.0, a*b, (a != 0.0) && (b != 0.0));}" _CRLF);
+		else if (mulForm == 4)
+			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){ float r = a*b; return isnan(r) ? 0.0 : r; }" _CRLF);
+		else if (mulForm == 3)
+			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){float r = a*b;r = intBitsToFloat(floatBitsToInt(r)&(((floatBitsToInt(a) != 0) && (floatBitsToInt(b) != 0))?0xFFFFFFFF:0));return r;}" _CRLF);
 		else
 			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){ if( a == 0.0 || b == 0.0 ) return 0.0; return a*b; }" _CRLF);
 
+		// b finite: 0*b needs no check (and gives +-0)
+		fCStr_shaderSource->add("float mul_nonIEEE1(float a, float b){ return (b==0.0 ? 0.0 : a) * b; }" _CRLF);
 		// DXKV-like: fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){ return (b==0.0 ? 0.0 : a) * (a==0.0 ? 0.0 : b); }" _CRLF);
 	}
 }

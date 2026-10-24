@@ -2,6 +2,14 @@
 #include "overlay.h"
 
 namespace overlay {
+// Issue #267: with controller input in the background on, a controller press while no game window has
+// the focus plays the game but never opens Settings there (the menu would take the controller from a
+// game the player watches on another screen, with no keyboard focus to close it by key). Closing an
+// open menu and the other controller shortcuts work as with the focus. With the option off nothing
+// changes (the host reads no controllers in the background then).
+inline bool controller_may_open_settings(bool window_focused, bool background_controllers) {
+    return window_focused || !background_controllers;
+}
 // Driven by the input pump, not rendered frames. Times are monotonic seconds.
 class SettingsShortcut {
     OpenReason reason_ = OpenReason::View;

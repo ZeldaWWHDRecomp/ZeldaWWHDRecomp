@@ -9,6 +9,10 @@
 #include <optional>
 
 namespace story_scenes {
+// An area trigger with "again" (ManifestScene::again): a scene that fired may fire again once Link is outside
+// its area by this margin, so standing at the edge doesn't start it over and over.
+inline constexpr float kAreaAgainMargin=60.f;
+inline bool area_rearmed(float distance_squared,float radius){const float r=radius+kAreaAgainMargin;return distance_squared>r*r;}
 enum class StopReason { Finished, Skipped, Aborted, StateLoaded, Interrupted, Failed, TimedOut };
 enum class StepResult { Running, Complete, Failed };
 struct Timing { unsigned frames = 0; bool terminal = false; std::vector<size_t> successors{}; };

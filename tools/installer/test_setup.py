@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -350,6 +351,160 @@ class SetupPython(unittest.TestCase):
             with open(path) as f:
                 result = json.load(f)
             self.assertEqual(result, dict(config, python=["new-python"]))
+
+
+class AtomicReplace(unittest.TestCase):
+    """Publishing files the running game polls (issue #282: WinError 5 replacing code-mods-status.json)."""
+    cm = setup.code_mods
+
+    def test_windows_uses_posix_rename_first(self):
+        with mock.patch.object(self.cm.os, 'name', 'nt'), \
+             mock.patch.object(self.cm, '_posix_rename', return_value=True) as posix, \
+             mock.patch.object(self.cm.os, 'replace') as replace:
+            setup.atomic_replace('source', 'destination')
+        posix.assert_called_once_with('source', 'destination')
+        replace.assert_not_called()
+
+    def test_unsupported_posix_rename_falls_back_to_os_replace(self):
+        with mock.patch.object(self.cm.os, 'name', 'nt'), \
+             mock.patch.object(self.cm, '_posix_rename', return_value=False), \
+             mock.patch.object(self.cm.os, 'replace') as replace:
+            setup.atomic_replace('source', 'destination')
+        replace.assert_called_once_with('source', 'destination')
+
+    def test_other_platforms_never_use_the_windows_rename(self):
+        with mock.patch.object(self.cm.os, 'name', 'posix'), \
+             mock.patch.object(self.cm, '_posix_rename') as posix, \
+             mock.patch.object(self.cm.os, 'replace') as replace:
+            setup.atomic_replace('source', 'destination')
+        posix.assert_not_called()
+        replace.assert_called_once_with('source', 'destination')
+
+    def test_transient_windows_readers(self):
+        # a reader without delete sharing (a virus scanner) blocks even the POSIX rename for a moment
+        with mock.patch.object(self.cm.os, 'name', 'nt'), \
+             mock.patch.object(self.cm, '_posix_rename', side_effect=[PermissionError(), False, True]) as posix, \
+             mock.patch.object(self.cm.os, 'replace', side_effect=[PermissionError()]) as replace, \
+             mock.patch.object(self.cm.time, 'sleep') as sleep:
+            setup.atomic_replace('source', 'destination')
+        self.assertEqual(posix.call_count, 3)
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_persistent_denial(self):
+        error = PermissionError('locked')
+        with mock.patch.object(self.cm.os, 'name', 'nt'), \
+             mock.patch.object(self.cm, '_posix_rename', return_value=False), \
+             mock.patch.object(self.cm.os, 'replace', side_effect=error) as replace, \
+             mock.patch.object(self.cm.time, 'monotonic', side_effect=[0, 0, 1, 6]), \
+             mock.patch.object(self.cm.time, 'sleep'):
+            with self.assertRaises(PermissionError) as caught:
+                setup.atomic_replace('source', 'destination')
+        self.assertIs(caught.exception, error)
+        self.assertEqual(replace.call_count, 3)
+
+    def test_other_errors_and_platforms_do_not_retry(self):
+        for platform, error in [('nt', FileNotFoundError()), ('posix', PermissionError())]:
+            with self.subTest(platform=platform, error=error), \
+                 mock.patch.object(self.cm.os, 'name', platform), \
+                 mock.patch.object(self.cm, '_posix_rename', return_value=False), \
+                 mock.patch.object(self.cm.os, 'replace', side_effect=error) as replace:
+                with self.assertRaises(type(error)):
+                    setup.atomic_replace('source', 'destination')
+                replace.assert_called_once()
+
+    def test_windows_errors_map_like_os_replace(self):
+        self.assertIsInstance(self.cm._windows_error(5, 'a', 'b'), PermissionError)
+        self.assertIsInstance(self.cm._windows_error(32, 'a', 'b'), PermissionError)
+        other = self.cm._windows_error(3, 'a', 'b')
+        self.assertNotIsInstance(other, PermissionError)
+        self.assertIsInstance(other, OSError)
+
+    def test_extended_paths(self):
+        if os.name != 'nt':
+            self.skipTest('Windows path forms')
+        self.assertEqual(self.cm._extended_path('C:\\a\\b.json'), '\\\\?\\C:\\a\\b.json')
+        self.assertEqual(self.cm._extended_path('C:/a/b.json'), '\\\\?\\C:\\a\\b.json')
+        self.assertEqual(self.cm._extended_path('\\\\server\\share\\b.json'), '\\\\?\\UNC\\server\\share\\b.json')
+        self.assertEqual(self.cm._extended_path('\\\\?\\C:\\a'), '\\\\?\\C:\\a')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows rename semantics')
+    def test_replaces_a_file_the_game_holds_open(self):
+        """The real Windows behaviour: a reader that allows delete sharing (the game's) blocks os.replace,
+        not the POSIX-semantics rename, and keeps reading the contents it opened."""
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                                      ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        with tempfile.TemporaryDirectory(prefix='wwhd-282, ') as d:
+            target = os.path.join(d, 'code-mods-status.json')
+            with open(target, 'w') as f:
+                f.write('old')
+            # GENERIC_READ, FILE_SHARE_READ|WRITE|DELETE, OPEN_EXISTING: runtime/src/platform/shared_read.h
+            handle = kernel32.CreateFileW(target, 0x80000000, 7, None, 3, 0, None)
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value, ctypes.get_last_error())
+            try:
+                with open(target + '.tmp', 'w') as f:
+                    f.write('new')
+                with self.assertRaises(PermissionError):  # the root cause of #282
+                    os.replace(target + '.tmp', target)
+                self.assertTrue(self.cm._posix_rename(target + '.tmp', target),
+                                'FileRenameInfoEx POSIX rename unavailable on this Windows/volume')
+                with open(target) as f:
+                    self.assertEqual(f.read(), 'new')
+                self.assertFalse(os.path.exists(target + '.tmp'))
+                buffer, count = ctypes.create_string_buffer(16), wintypes.DWORD()
+                self.assertTrue(kernel32.ReadFile(handle, buffer, 16, ctypes.byref(count), None))
+                self.assertEqual(buffer.raw[:count.value], b'old')
+            finally:
+                kernel32.CloseHandle(handle)
+            # and through the public helper, with nothing open
+            with open(target + '.tmp', 'w') as f:
+                f.write('newer')
+            setup.atomic_replace(target + '.tmp', target)
+            with open(target) as f:
+                self.assertEqual(f.read(), 'newer')
+
+    def test_progress_publication_never_fails_the_build(self):
+        """A progress update that still loses to a reader is skipped; the final status is published."""
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "game/code").mkdir(parents=True)
+            (root / "game/code/cking.rpx").write_bytes(b"synthetic input")
+            (root / "sdk").mkdir()
+            data = root / "data"
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(root / "game"),
+                                  manifest={"toolchain": {}, "exe": "fixture"}, args=SimpleNamespace(jobs=1))
+            status = data / "code-mods-status.json"
+            real = self.cm.atomic_json
+
+            def contended(path, value):
+                if Path(path) == status and value.get('state') == 'building':
+                    raise PermissionError(13, 'Access is denied', str(path))
+                real(path, value)
+
+            def compile_code(tc, manifest, gen, obj, jobs, **kwargs):
+                Path(obj).mkdir(); kwargs["progress"](1, 1)
+                return []
+            tc = SimpleNamespace(cc=["fixture compiler"], env={})
+            with mock.patch.multiple(setup, PKG=root, PORTABLE=False), \
+                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                 mock.patch.object(setup, "run_logged", return_value="fixture compiler version"), \
+                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                 mock.patch.object(setup, "recompile", side_effect=lambda game, gen, hooks=False: Path(gen).mkdir()), \
+                 mock.patch.object(setup, "compile_gamecode", side_effect=compile_code), \
+                 mock.patch.object(setup, "link_game", side_effect=lambda *a: Path(a[-1]).write_bytes(b"exe")), \
+                 mock.patch.object(self.cm, "atomic_json", side_effect=contended):
+                result = self.cm.rebuild(setup, ctx, True, status)
+            self.assertEqual(result["state"], "ready")
+            self.assertEqual(json.loads(status.read_text())["state"], "ready")
 
 
 class Keys(unittest.TestCase):
@@ -951,6 +1106,49 @@ class LanguageSources(unittest.TestCase):
         finally:
             setup.run_extract, setup.archive_info = saved
         self.assertEqual(setup.LANGUAGE_SOURCE_FILES, ["content/Common/Pack/permanent_2d_*.pack", "meta/meta.xml"])
+
+
+class ModelSweepOption(unittest.TestCase):
+    """"Preparing shaders: models (experimental)": opt-in, off by default on every platform."""
+
+    def ctx(self, state=None, **args):
+        from types import SimpleNamespace
+        values = dict(model_sweep=None, skip_shader_prebuild=False)
+        values.update(args)
+        return SimpleNamespace(args=SimpleNamespace(**values), state=lambda: dict(state or {}))
+
+    def test_off_by_default_on_every_platform(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            for mac in (False, True):
+                with mock.patch.object(setup, "IS_MAC", mac):
+                    self.assertFalse(setup.model_sweep_wanted(self.ctx()))
+                    self.assertFalse(setup.model_sweep_wanted(self.ctx(), setup.UI(False)))
+
+    def test_question_marked_experimental_defaults_to_the_last_choice(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            ui = mock.Mock(interactive=True)
+            ui.yesno.side_effect = lambda question, default: default
+            self.assertFalse(setup.model_sweep_wanted(self.ctx(), ui))
+            ui.yesno.assert_called_with("Also prepare model shaders (experimental)?", False)
+            self.assertTrue(setup.model_sweep_wanted(self.ctx({"model_sweep": True}), ui))
+            ui.yesno.assert_called_with("Also prepare model shaders (experimental)?", True)
+            ui.reset_mock()
+            self.assertFalse(setup.model_sweep_wanted(self.ctx(skip_shader_prebuild=True), ui))
+            ui.yesno.assert_not_called()
+        self.assertIn("Experimental", setup.MODEL_SWEEP_TEXT)
+        self.assertIn("20 minutes", setup.MODEL_SWEEP_TEXT)
+
+    def test_flag_window_choice_and_environment_override(self):
+        ui = mock.Mock(interactive=True)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(setup.model_sweep_wanted(self.ctx(model_sweep=True), ui))
+            self.assertFalse(setup.model_sweep_wanted(self.ctx({"model_sweep": True}, model_sweep=False), ui))
+            ui.yesno.assert_not_called()
+        with mock.patch.dict(os.environ, {"WWHD_SETUP_MODEL_SWEEP": "1"}):
+            self.assertTrue(setup.model_sweep_wanted(self.ctx(model_sweep=False), ui))
+        with mock.patch.dict(os.environ, {"WWHD_SETUP_MODEL_SWEEP": "0"}):
+            self.assertFalse(setup.model_sweep_wanted(self.ctx({"model_sweep": True}, model_sweep=True), ui))
+        ui.yesno.assert_not_called()
 
 
 class CodeModsBuild(unittest.TestCase):
@@ -1859,6 +2057,95 @@ class DecompOption(unittest.TestCase):
                 os.remove(dexe)
                 setup.launch(dict(st, start_decomp=True), d)  # not built (any more): the normal game
             self.assertEqual(started, [exe, dexe, dexe, exe])
+
+
+class GameOptions(unittest.TestCase):
+    """issue #266: Wind Waker HD.exe --editor (and the other launchers) pass game options on to the game"""
+    SPACED = 'C:\\Users\\Jo Doe\\my "mods" dir\\'
+
+    def test_split(self):
+        own, game = setup.split_game_args(["--yes", "--editor", "--data-dir", "D", "--renderer", "vulkan",
+                                           "--gui-protocol", "--trace", "--renderer=metal", "--decomp"])
+        self.assertEqual(own, ["--yes", "--data-dir", "D", "--gui-protocol", "--decomp"])
+        self.assertEqual(game, ["--editor", "--renderer", "vulkan", "--trace", "--renderer=metal"])
+        # everything after "--" is the game's, as it is (a setup option there too)
+        own, game = setup.split_game_args(["--data-dir", "D", "--", "--user-dir", self.SPACED, "--yes"])
+        self.assertEqual(own, ["--data-dir", "D"])
+        self.assertEqual(game, ["--user-dir", self.SPACED, "--yes"])
+        self.assertEqual(setup.split_game_args(["--yes"]), (["--yes"], []))
+
+    def test_main_parses_with_game_options(self):
+        """setup's argparse never sees game options (it stopped with "unrecognized arguments")"""
+        seen = {}
+
+        def run(args, ui):
+            seen["args"], seen["game"] = args, list(setup.GAME_ARGS)
+            return 0
+        argv = ["setup.py", "--yes", "--editor", "--data-dir", "D", "--", "--user-dir", self.SPACED]
+        try:
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(setup, "run", run):
+                self.assertEqual(setup.main(), 0)
+        finally:
+            setup.GAME_ARGS[:] = []
+        self.assertEqual(seen["args"].data_dir, "D")
+        self.assertTrue(seen["args"].yes)
+        self.assertEqual(seen["game"], ["--editor", "--user-dir", self.SPACED])
+
+    def started(self, state, d, game_args=None, mac=False, win=False):
+        calls = []
+        with mock.patch.object(setup.subprocess, "Popen", lambda args, **kw: calls.append(args)), \
+                mock.patch.object(setup, "say", lambda *a: None), mock.patch.object(setup, "IS_MAC", mac), \
+                mock.patch.object(setup, "IS_WIN", win):
+            setup.launch(state, d, game_args=game_args)
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_launch_on_each_platform(self):
+        with tempfile.TemporaryDirectory() as d:
+            exe, app = os.path.join(d, "wwhd"), os.path.join(d, "Wind Waker HD.app")
+            os.mkdir(app)
+            opts = ["--editor", "--user-dir", self.SPACED]
+            fixed = [exe, "--game", os.path.join(d, "game"), "--save", os.path.join(d, "save")]
+            # Windows and Linux (and macOS without an app): appended to the game's own arguments, one list
+            # item each, so spaces and quotes survive (subprocess quotes them for CreateProcess on Windows)
+            self.assertEqual(self.started({"exe": exe}, d, opts, win=True), fixed + opts)
+            self.assertEqual(self.started({"exe": exe}, d, opts), fixed + opts)
+            self.assertEqual(self.started({"exe": exe, "app": app}, d, opts, mac=False), fixed + opts)
+            # macOS app (non-portable install): open --args; the app's launcher passes "$@" on
+            self.assertEqual(self.started({"exe": exe, "app": app}, d, opts, mac=True), ["open", app, "--args"] + opts)
+            self.assertEqual(self.started({"exe": exe, "app": app}, d, [], mac=True), ["open", app])
+            self.assertEqual(self.started({"exe": exe}, d, []), fixed)
+            # the decomp version gets them too
+            dexe = os.path.join(d, "wwhd-decomp")
+            open(dexe, "w").close()
+            args = self.started({"exe": exe, "decomp_exe": dexe, "start_decomp": True, "app": app}, d, ["--editor"], mac=True)
+            self.assertEqual((args[0], args[-1]), (dexe, "--editor"))
+
+    def test_launch_uses_this_runs_options(self):
+        """the GUI's launch request and the terminal menu call launch(state, data_dir): main's GAME_ARGS"""
+        with tempfile.TemporaryDirectory() as d:
+            own, setup.GAME_ARGS[:] = setup.split_game_args(["--gui-protocol", "--data-dir", d, "--editor"])
+            try:
+                args = self.started({"exe": "wwhd"}, d)
+            finally:
+                setup.GAME_ARGS[:] = []
+            self.assertEqual(args[-1], "--editor")
+            self.assertNotIn("--gui-protocol", args)
+            self.assertNotIn("--data-dir", args)
+
+    def test_windows_quoting(self):
+        # what CreateProcess gets for the list (CommandLineToArgvW / the C runtime read it back as one argument)
+        self.assertEqual(setup.subprocess.list2cmdline(["--user-dir", self.SPACED]),
+                         '--user-dir "C:\\Users\\Jo Doe\\my \\"mods\\" dir\\\\"')
+
+    def test_same_rule_as_the_launcher(self):
+        """tools/installer/gui/game_args.h (the launcher program) lists the same options"""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "gui", "game_args.h")) as f:
+            text = f.read()
+        lists = {m.group(1): re.findall(r'"([^"]+)"', m.group(2))
+                 for m in re.finditer(r"(kGameFlags|kGameValueOptions)\[\] = \{([^}]*)\}", text)}
+        self.assertEqual(tuple(lists["kGameFlags"]), setup.GAME_FLAGS)
+        self.assertEqual(tuple(lists["kGameValueOptions"]), setup.GAME_VALUE_OPTIONS)
 
 
 

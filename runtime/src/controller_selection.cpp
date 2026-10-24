@@ -1,6 +1,7 @@
 // Issue #189: supply an input event, then let the original selection handler do
 // the availability checks, outgoing event, animations and controller-mode change.
 #include "controller_selection.h"
+#include "file_select_quit.h"
 #include "input.h"
 #include "input_map.h"
 #include "runtime.h"
@@ -86,6 +87,8 @@ extern "C" void hook_026D50C4(Cpu* c) {
 extern "C" void f_026F8B54_orig(Cpu*);
 // Parts::draw runs for every HUD part each frame: only the title background pays for a Cpu copy.
 extern "C" void hook_026F8B54(Cpu* c) {
+    uint32_t title = ld32(GD(0x101F82EC));
+    if (object(title) && ld32(title + 0x12C) == c->r[3]) file_select_quit::observe(c);
     if (input_map::skip_controller_selection()) {
         uint32_t owner = ld32(GD(0x101F82EC));
         if (object(owner) && ld32(owner + 0x12C) == c->r[3]) {

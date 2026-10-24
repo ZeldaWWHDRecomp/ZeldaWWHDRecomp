@@ -79,22 +79,29 @@ int32_t joint_index(Cpu* c, const Context& x, uint32_t model, const std::string&
     std::memcpy(mem::ptr(x.scratch), name.c_str(), std::min<size_t>(name.size(), 31));
     return int32_t(x.call(c, kNameIndex, {table, x.scratch}));
 }
-// for the log when a joint name is wrong: the model's joint names (JUTNameTab: u16 count, then
-// {u16 key, u16 offset} entries; offsets from the table)
+// for the log when a joint name is wrong: the model's joint names. HD's table is the BFRES name
+// dictionary: u32 size, u32 count, then a root entry and `count` entries of 16 bytes {u32 bit,
+// u16 left, u16 right, s32 name (from the field), s32 data}.
 std::string joint_names(Cpu* c, const Context& x, uint32_t model) {
     const uint32_t table = name_table(c, x, model);
     if (!table) return "(none)";
-    const uint32_t count = ld16(table);
+    const uint32_t count = ld32(table + 4);
     std::string out;
-    for (uint32_t k = 0; k < count && k < 96; ++k) {
-        const uint32_t at = table + ld16(table + 4 + k * 4 + 2);
+    for (uint32_t k = 1; k <= count && k <= 128; ++k) {
+        const uint32_t field = table + 8 + k * 16 + 8, rel = ld32(field);
+        if (!rel) continue;
+        const uint32_t at = field + rel;
         std::string n;
         for (uint32_t i = 0; i < 32; ++i) { const char ch = char(ld8(at + i)); if (!ch) break; n += ch; }
-        out += (k ? " " : "") + n;
+        out += (out.empty() ? "" : " ") + n;
     }
     return out;
 }
 
+// Where each carried actor was when its attach began (its blend starts there). Host side: a demo
+// never survives a state load.
+struct Start { uint32_t frame = 0; float position[3] = {}; int16_t angles[3] = {}; };
+Start g_start[kMaxEntries];
 using demo_attach_math::M34;
 using demo_attach_math::pose;
 uint32_t entry(const Context& x, size_t i) { return x.record + uint32_t(i) * kEntryBytes; }
@@ -192,6 +199,8 @@ void update(Cpu* c, const Context& x, const demo_scene::Demo& d, uint32_t frame,
             st32(e + Joint, uint32_t(joint));
             st32(e + IsLink, carried == link_actor(c, x) ? 1 : 0);
             st32(e + State, state = Carrying);
+            g_start[i].frame = frame;
+            for (int k = 0; k < 3; ++k) g_start[i].position[k] = fl(carried + 0x314 + uint32_t(k) * 4), g_start[i].angles[k] = int16_t(ld16(carried + 0x328 + uint32_t(k) * 2));
             LOG("[demo] %s carried on %s joint %s (%d) from frame %u", a.actor.c_str(), a.to.c_str(), a.joint.c_str(), joint, frame);
         }
         if (state == Released || state == Falling) {
@@ -222,6 +231,8 @@ void update(Cpu* c, const Context& x, const demo_scene::Demo& d, uint32_t frame,
         float p[3];
         int16_t r[3];
         if (!pose(j, a.offset, a.rotation, p, r, a.upright)) continue;
+        if (a.blend && frame < g_start[i].frame + a.blend)
+            demo_attach_math::blend(g_start[i].position, g_start[i].angles, float(frame - g_start[i].frame + 1) / float(a.blend + 1), p, r);
         for (int k = 0; k < 3; ++k) st32(slot + 8 + uint32_t(k) * 4, f32_as_u32(p[k]));
         for (int k = 0; k < 3; ++k) st16(slot + 0x20 + uint32_t(k) * 2, uint16_t(r[k]));
         st16(slot + 4, uint16_t(ld16(slot + 4) | 0x0A));  // translation and rotation enabled

@@ -47,11 +47,18 @@ struct Surface {
     float scale = 1.0f;        // the resolution factor the texture was made for
     float ax = 1.0f, ay = 1.0f;  // ... and the aspect-ratio factors (screen-shaped targets, metal_surfaces.mm)
     float sx = 1.0f, sy = 1.0f;
+    // dynamic resolution (dynres.h): the factor of the internal resolution the texture was made at (1: off),
+    // and textures of other recent scales kept for the next change (metal_surfaces.mm rescale)
+    float dyn = 1.0f;
+    struct Kept { id<MTLTexture> tex; float scale, dyn, ax, ay, sx, sy; };
+    std::vector<Kept> spares;
 };
 
 // A display output: the TV or the GamePad screen, each in its own window.
 struct Screen {
     id<MTLTexture> tex = nil;          // last image copied to the scan buffer
+    float dyn = 1.0f;                  // dynamic resolution factor of that image (the layout uses tex / dyn)
+    std::vector<id<MTLTexture>> scanSpares;  // dynamic resolution: scan textures of other sizes
     CAMetalLayer* layer = nil;
     std::atomic<bool> srgb{false};     // scan buffer is sRGB: the display applies the encoding
     std::atomic<bool> visible{true};   // nextDrawable blocks while the window is covered

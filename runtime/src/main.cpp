@@ -19,6 +19,7 @@
 #include "mods/code_mods.h"
 #include "platform/host.h"
 #include "platform/appimage_notice.h"
+#include "platform/start_folder.h"
 #include "savestate.h"
 #ifdef _WIN32
 #include <timeapi.h>
@@ -30,10 +31,13 @@
 #include <utility>
 #include <vector>
 #include <algorithm>
+#include <deque>
 
 #include "gfx/renderer.h"
 #include "gfx/shader_prebuild.h"
 #include "overlay/hostui.h"
+#include "render_prof.h"
+#include "background_shaders.h"
 #include "mods/cemu_pack.h"
 #include "mods/content.h"
 #include "gx2/gx2.h"
@@ -392,9 +396,65 @@ static void start_log_file(bool error = false) {
     LOG("[log] writing %s", path.c_str());
 }
 
+// Started outside its data folder (bin/wwhd.exe from another folder, issue #266): the game works in the
+// data folder found from its own location, exactly as when setup's launcher starts it there
+// (platform/start_folder.h). Relative paths in the arguments and in WWHD_ settings keep meaning the
+// folder it was started in. The line for the log (after the version line): empty when nothing changed.
+#ifndef _WIN32
+extern char** environ;
+#endif
+static std::string g_start_folder_note;
+static void enter_data_folder(int argc, char** argv) {
+    namespace fs = std::filesystem;
+    std::string chosen;
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--data-dir")) chosen = argv[i + 1];
+    const char* install = getenv("WWHD_INSTALL_DIR");
+    std::error_code ec;
+    const fs::path here = fs::current_path(ec);
+    if (ec) return;
+    const fs::path data = start_folder::find(start_folder::utf8_path(host::exe_dir()), chosen, install ? install : "");
+    if (!start_folder::needs_change(here, data)) return;
+    static std::deque<std::string> kept;  // argv points into these
+    static const char* const path_args[] = {"--game", "--save", "--user-dir", "--shader-prebuild-root",
+                                            "--shader-prebuild-result", "--shader-prebuild-library"};
+    for (int i = 1; i + 1 < argc; i++)
+        for (const char* name : path_args)
+            if (!strcmp(argv[i], name)) {
+                kept.push_back(start_folder::absolute_from(here, argv[i + 1]));
+                argv[++i] = kept.back().data();
+                break;
+            }
+    std::vector<std::pair<std::string, std::string>> settings;
+#ifdef _WIN32
+    char** env = _environ;
+#else
+    char** env = environ;
+#endif
+    for (char** e = env; e && *e; e++) {
+        const char* eq = strchr(*e, '=');
+        if (!eq || eq == *e) continue;
+        std::string name(*e, eq - *e), value(eq + 1);
+        if (start_folder::path_setting(name, value)) settings.push_back({name, start_folder::absolute_from(here, value)});
+    }
+    for (const auto& [name, value] : settings) {
+#ifdef _WIN32
+        _putenv_s(name.c_str(), value.c_str());
+#else
+        setenv(name.c_str(), value.c_str(), 1);
+#endif
+    }
+    fs::current_path(data, ec);
+    const auto from = here.u8string(), to = data.u8string();
+    g_start_folder_note = ec ? "cannot enter the data folder " + std::string(to.begin(), to.end()) + ": " + ec.message()
+                             : "started in " + std::string(from.begin(), from.end()) + "; working in the data folder " +
+                                   std::string(to.begin(), to.end());
+}
+
 extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
 
 int main(int argc, char** argv) {
+    enter_data_folder(argc, argv);  // before anything reads a relative path
     std::string shader_prebuild_root;
     // Android's isolated preparation activity and normal SDL startup share the
     // same private user directory and verified native library identity.
@@ -484,6 +544,14 @@ int main(int argc, char** argv) {
     index_game_functions();
     install_crash_handler();
     start_log_file();
+    {
+        // Settings > Graphics > Detailed performance profiling (render_prof.h; WWHD_PROFILE wins)
+        std::string saved;
+        rprof::start(hostui::get(rprof::kSettingKey, saved) && saved == "1");
+        // Settings > Graphics > Shader compile: off (default) / fast (background_shaders.h;
+        // WWHD_BG_SHADERS wins)
+        bgshaders::start(bgshaders::parse_level(hostui::get(bgshaders::kSettingKey, saved) ? saved.c_str() : nullptr));
+    }
     exception_report::sink.store(+[](const char* message) noexcept {
         static std::once_flag error_log;
         std::call_once(error_log, [] { if (g_log_fd < 0) start_log_file(true); });
@@ -501,6 +569,7 @@ int main(int argc, char** argv) {
     // which build on which system: also in crash logs (their last log lines)
     LOG("[boot] Wind Waker HD %s (%s)%s%s, %s", build::version(), build::commit(), *build::variant() ? " " : "",
         build::variant(), reporthdr::os_description().c_str());
+    if (!g_start_folder_note.empty()) LOG("[boot] %s", g_start_folder_note.c_str());
 #if defined(__linux__) && !defined(__ANDROID__)
     // a v0.2.13 "<AppImage>.data" folder is no longer used (issue #55): once per start, in the log and
     // as the overlay's short notice

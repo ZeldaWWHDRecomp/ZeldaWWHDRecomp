@@ -48,6 +48,7 @@ TOOL_FILES = [
     "tools/recomp/builds.py",
     "tools/recomp/crlive.py",
     "tools/recomp/leaflocal.py",
+    "tools/recomp/rawstore.py",
     "tools/guestmod/build_guest_mod.py",
     "tools/guestmod/guestmod.py",
     "tools/story_mods/npc_catalogue.py",  # the NPC catalogue from the player's game files (story_npc_catalogue.h)
@@ -58,6 +59,10 @@ TOOL_FILES = [
     "tools/story_mods/multi_material.py",  # several materials and cut-outs for original static GLB models
     "tools/story_mods/game_piece_model.py",  # island buildings from the player's own room archives (material copier)
     "tools/story_mods/island_texture.py",  # a water body's banks painted with the island's own ground texture
+    "tools/story_mods/kit_materials.py",  # kit materials (a game room's materials by name) for mod stages and world objects
+    "tools/story_mods/kit_model.py",  # kit models: own GLBs drawn with a game room's materials (the editor's import_model with kit)
+    "tools/story_mods/stage_builder.py",  # mod stages, list_kit_materials and stage templates from the player's own files
+    "tools/story_mods/export_glb.py",  # the editor's export_glb: a game room or piece as a GLB in the player's own exports folder
     "tools/story_mods/skinned_actor_model.py",  # original rigged GLB and player-local skin material
     "tools/story_mods/actor_animation.py",  # original skeletal clips in the native format
     "tools/savegame/gc2hd.py",
@@ -69,6 +74,9 @@ INSTALLER_FILES = [
     "tools/installer/code_mods.py",
     "tools/installer/decomp_setup.py",
     "tools/installer/shader_prebuild.py",
+    "tools/installer/model_sweep.py",
+    "tools/installer/sweep_merge.py",
+    "tools/installer/model_sweep_skip.txt",
     "tools/installer/toolchains.json",
     "tools/installer/README.md",
 ]

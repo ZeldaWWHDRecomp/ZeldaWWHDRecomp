@@ -32,6 +32,7 @@
 #include "mods/story_notebook.h"
 #include "mods/story_treasure.h"
 #include "mods/story_resident_routes.h"
+#include "mods/story_world_placement.h"
 #include "runtime.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -145,13 +146,14 @@ uint32_t call(Cpu*,uint32_t fn,std::initializer_list<uint32_t> args) {
             if(game_object_fail)return id;  // the request was taken; the game gives up in the create phase (never live)
             st32(address+4,id);st16(address+0xE,uint16_t(a[0]));st32(address+0xB0,game_object_falsify?a[1]^1:a[1]);st8(address+0x2DD,uint8_t(a[6]));st32(address+0xF4,kArena+0x9000);st32(address+0x2C,current_layer);live[id]=address;return id;}
         if(a[0]>=0x7FF7&&a[0]<=0x7FFA){if(refuse_enemy_request)return 0xFFFFFFFFu;const auto kind=story_enemies::Kind(0x7FFA-a[0]);const uint32_t address=enemy_address(unsigned(kind)),id=actor_id+40+unsigned(kind);assert(a[1]==(kind==story_enemies::Kind::ChuChu?chuchu_params:story_enemies::parameters(kind))&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==story_enemies::home_z(kind));enemy_fixture(kind,address,id);st32(address+0x2C,current_layer);live[id]=address;return id;}
-        uint32_t address=kActor+((a[0]==0x175||a[0]==0x13B)?0x1000:a[0]==story_switches::kDoorProfile?0x1000:a[0]==0xB6?0x2000:a[0]==mod_actor::kProfile?0x3000:0);uint32_t id=actor_id+(address-kActor)/0x1000;
+        uint32_t address=kActor+((a[0]==0x175||a[0]==0x13B)?0x1000:a[0]==story_switches::kDoorProfile?0x1000:a[0]==0xB6?0x2000:(a[0]==mod_actor::kProfile||a[0]==mod_actor::kWorldProfile)?0x3000:0);uint32_t id=actor_id+(address-kActor)/0x1000;
         if(a[0]==0x125){assert(a[1]==0);assert(a[3]==0);assert(ld16(a[4]+4)==0x06FF);}
         else if(a[0]==0x175){assert(a[1]==expect_people_params);assert(a[3]==1);assert(a[6]==expect_people_subtype);assert(ld16(a[4]+2)==expect_people_yaw);}
         else if(a[0]==0x13B){assert(a[1]==1&&a[3]==1&&a[6]==0xFFFFFFFFu);}
         else if(a[0]==story_props::kProfile){assert(a[1]==0x007FFF3F&&a[3]==0&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==255);assert(u32_as_f32(ld32(a[5]))==2&&ld32(a[5])==ld32(a[5]+4)&&ld32(a[5])==ld32(a[5]+8));}
         else if(a[0]==story_switches::kSwitchProfile||a[0]==story_switches::kDoorProfile){assert(a[1]==story_switches::parameters(a[0]==story_switches::kSwitchProfile?story_switches::Kind::Switch:story_switches::Kind::Door)&&a[3]==0&&a[6]==0xFFFFFFFFu&&ld16(a[4]+4)==255);}
         else if(a[0]==mod_actor::kProfile){assert(a[1]==1&&a[3]==3);}
+        else if(a[0]==mod_actor::kWorldProfile){assert(a[3]==3);}
         else {assert(a[0]==0xB6&&a[1]==0x2CF3&&a[3]==2);}
         st32(address+4,id);st16(address+0xE,uint16_t(a[0]));if(a[0]==0x175){st8(address+0x2DD,uint8_t(a[6]));st8(address+0x905,uint8_t(a[6]));st32(address+0xB0,a[1]);st32(address+0x10,0x101C4CD0);st32(address+0xB4,0x100209C4);st8(address+0x326,uint8_t(a[3]));}if(a[0]==0x13B){st32(address+0xB0,1);st8(address+0x2DD,0xFF);st8(address+0xA20,1);st8(address+0xA21,1);}if(a[0]==story_props::kProfile){st32(address+0xB0,a[1]);st8(address+0x2DD,0xFF);st32(address+0x790,0);}
         if(a[0]==story_switches::kSwitchProfile||a[0]==story_switches::kDoorProfile){st32(address+0xB0,a[1]);st8(address+0x2DD,0xFF);}
@@ -299,6 +301,11 @@ int main(int argc,char** argv){
         const uint32_t palm_pid=ld32(kScratch+128),stool_pid=ld32(kScratch+132);assert(palm_pid!=0xFFFFFFFFu&&stool_pid!=0xFFFFFFFFu&&palm_pid!=stool_pid&&!story_actors::actor_address(&c,"test","tree"));
         assert(story_actors::actor_address(&c,"test","palm")==live[palm_pid]);
         story_actors::service(&c);assert(deleted==0&&game_object_creates.size()==2);  // read back: both match; nothing made again
+        {   // the game takes the stool away itself (a broken rock, a blown-up boulder): it stays gone this room visit
+            const uint32_t stool=ld32(kScratch+132);const uint32_t at=live[stool];live.erase(stool);
+            story_actors::native_room_loaded(&c,0);story_actors::service(&c);assert(game_object_creates.size()==2&&ld32(kScratch+132)>>24==0xFE);
+            live[stool]=at;st32(kScratch+132,stool);story_actors::state_loaded();story_actors::service(&c);  // (back as it was for the rest)
+        }
         // the saved identity row binds a full state load; a changed row drops the binding
         story_actors::state_loaded();story_actors::service(&c);assert(story_actors::actor_address(&c,"test","palm")==live[palm_pid]&&game_object_creates.size()==2);
         const uint32_t row=kScratch+story_actors::kIdentityScratchOffset;st8(row+39,uint8_t(ld8(row+39)^1));story_actors::state_loaded();
@@ -466,6 +473,40 @@ int main(int argc,char** argv){
         story_actors::native_room_loaded(&c,2);assert(created==3&&story_actors::actor_address(&c,"test","notice"));
         std::puts("editor live creation, pending kinds, refusal and removal passed");return 0;
     }
+    if(argc==2&&std::strcmp(argv[1],"--editor-left-out")==0){
+        // issue #281: a world object the game left out at start-up (its place was not clear: Link's start point) is
+        // declared when the editor moves it where it fits, instead of "the model can't serve this spec"; moved to
+        // another place that isn't clear, the editor is told what is in the way there
+        mod_actor::configure_world_objects("synthetic",[](const std::string&stage,int room){story_world_placement::Index index;index.coverage.push_back({stage,room,true,true,true,{}});
+            index.bounds.push_back({stage,room,"start","PLYR:0",{{-100,-100,-100},{100,300,100}}});return index;});
+        std::string why;assert(story_actors::register_model("test","ext","unique_ext",1,why));
+        st32(0x101F3EE0+0xB6*4,kArena+0x6000);st32(0x101F3EE0+0x44*4,kArena+0x6100);  // the native model actor and raft profiles
+        story_notebook::ManifestActor ext;ext.kind="mod";ext.id="ext";ext.model="ext";ext.stage="sea";ext.room=3;ext.behaviour="static";
+        ext.collision_shape="box";ext.collision_size={200,200,200};ext.collision_surface="stone";ext.position={0,0,0};
+        assert(story_actors::load("test",{ext},why));
+        map_guest(0x101D0000,0x10000);st32(0x101D2B1C+0x10,story_props::kClassBytes);  // --editor: the live kinds' native classes, as --editor-empty
+        map_guest(0x101C0000,0x10000);map_guest(0x10180000,0x20000);st32(0x101CD034+0x10,story_switches::kSwitchClassBytes);st32(0x1018FFE8+0x10,story_switches::kDoorClassBytes);
+        story_actors::editor_live_kinds();
+        auto replaced=[](uint32_t){return std::string{};};auto replace=[](uint32_t a,void(*h)(Cpu*)){hooks[a]=h;};
+        story_actors::install(replaced,replace);
+        Cpu c{};st8(kArena+0x7000+0x326,3);story_actors::native_room_loaded(&c,3);assert(created==0);  // left out at start-up
+        // moved, still over the start point: not in the game, with what is in the way
+        auto blocked=ext;blocked.position={60,0,0};std::vector<std::string> pending;
+        assert(story_actors::editor_update("test",{blocked},{"ext"},why,&pending));
+        for(const auto& p:pending)std::printf("pending: %s\n",p.c_str());
+        assert(pending.size()==1&&pending[0].rfind("ext: can't stand here (",0)==0&&pending[0].find("start")!=std::string::npos);
+        story_actors::native_room_loaded(&c,3);assert(created==0);
+        // moved where it fits (rotation and scale unchanged): declared and created there
+        auto moved=ext;moved.position={3000,0,0};pending.clear();
+        assert(story_actors::editor_update("test",{moved},{"ext"},why,&pending));
+        for(const auto& p:pending)std::printf("pending: %s\n",p.c_str());
+        assert(pending.empty());
+        story_actors::native_room_loaded(&c,3);assert(created==1&&story_actors::actor_address(&c,"test","ext"));
+        // moved again: an ordinary change of a declared object from now on
+        auto again=moved;again.position={3200,0,0};pending.clear();
+        assert(story_actors::editor_update("test",{again},{"ext"},why,&pending)&&pending.empty());
+        std::puts("editor: a world object left out at start-up appears where it is moved to fit");return 0;
+    }
     if(argc==2&&std::strcmp(argv[1],"--editor-empty")==0){
         // --editor with no package declaring actors at start-up: the machinery installs anyway, so
         // residents, props, switches and doors are live (no "after a restart") and a new resident appears
@@ -536,7 +577,7 @@ int main(int argc,char** argv){
         // parameters and gets every placed-copy guard; refused characters and places never load
         std::memcpy(mem::ptr(0x1046F0B0+0x5134),"sea",4);
         std::string why;story_notebook::ManifestActor bad;bad.id="stargazer";bad.actor="resident";bad.stage="sea";bad.room=1;
-        for(unsigned refused:{11u,16u,17u,18u,20u}){bad.resident=refused;assert(!story_actors::load("cat",{bad},why));}
+        for(unsigned refused:{11u,16u,17u,18u,23u}){bad.resident=refused;assert(!story_actors::load("cat",{bad},why));}
         bad.resident=6;bad.stage="Ocmera";bad.room=0;assert(!story_actors::load("cat",{bad},why)&&why.find("Ocmera")!=std::string::npos);
         story_notebook::ManifestActor young;young.id="young";young.actor="resident";young.stage="sea";young.room=1;young.resident=10;young.lines="Mod words";young.flag="young-talked";
         expect_people_subtype=10;expect_people_params=0x00FF00FF;expect_people_yaw=0;

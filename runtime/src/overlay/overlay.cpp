@@ -1,3 +1,4 @@
+#include "render_objects.h"
 #include "tooltip.h"
 #include "controls_options.h"
 #include "gfx/display_modes.h"
@@ -21,6 +22,7 @@
 #include "graphics_switch.h"
 #include "restart_dialog.h"
 #include "quit_dialog.h"
+#include "../file_select_quit.h"
 #include "gyro_popup.h"
 #include "popup.h"
 #include "widgets.h"
@@ -69,7 +71,7 @@
 #endif
 #ifdef WWHD_HAS_VULKAN
 #include "../gfx/vulkan/settings.h"
-namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
+namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots(); }  // buffer_cache.h, submission_pool.h
 #endif
 #include "../input.h"
 #include "../input_map.h"
@@ -97,6 +99,8 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "template_export.h"
 #endif
 #include "../render_prof.h"
+#include "../background_shaders.h"
+#include <cctype>
 #include "../perf_metrics.h"
 #include "../build_info.h"
 #include "settings_shortcut.h"
@@ -107,6 +111,7 @@ namespace gfxvk { bool buffer_cache_enabled(); }  // gfx/vulkan/buffer_cache.h
 #include "binding_capture.h"
 #include "mobile_ui.h"
 #include "../report_header.h"
+#include "../dynres.h"
 
 namespace gx2 { uint64_t flips_presented(); bool uncapped(); void set_uncapped(bool on); }
 
@@ -757,15 +762,17 @@ std::string performance_report() {
     float sum = 0, worst = 0;
     for (float f : U.frame_ms) { sum += f; worst = std::max(worst, f); }
     char frame[180];
-    snprintf(frame, sizeof frame, "FPS %.1f (average %.1f), frame %.2f ms (worst %.2f), average logic steps/s %.1f\n",
+    snprintf(frame, sizeof frame, "Output FPS %.1f (average %.1f), render interval %.2f ms (worst %.2f), average logic steps/s %.1f\n",
              U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
     std::string report = std::string(frame) + perf::summary();
+    report += render_objects::line() + "\n";  // live shaders/pipelines, memory mappings (render_objects.h)
+    report += dynres::status() + "\n";
 #ifdef __ANDROID__
     report += android_telemetry() + "\n";
 #endif
     report += "CPU time is thread running time per output frame. GPU submission intervals may include stalls; not GPU load.\n";
-    const std::string detailed = rprof::latest_report();
-    report += detailed.empty() ? "No detailed report yet: play for a few seconds, then copy again.\n" : detailed;
+    report += bgshaders::report_line();  // Shader compile level: draws left out, waits
+    report += rprof::report_section();  // the detailed sections, or a line on how to turn them on
     // which build, system, GPU and rendering-path switches (report_header.h)
     reporthdr::Info h;
     h.version = build::version();
@@ -781,10 +788,19 @@ std::string performance_report() {
 #ifdef WWHD_HAS_VULKAN
     if (render::vulkan()) {
         h.bufferCache = gfxvk::buffer_cache_enabled();
+        h.submissionPool = int(gfxvk::submission_pool_slots());
         h.overrides = reporthdr::vulkan_overrides([](const char* n) -> const char* { return getenv(n); });
     }
 #endif
     if (const int g = motion::settings().source; g != motion::kOff) h.gyro = motion::source_id(g);
+    reporthdr::Display d;
+    d.hz = interp::display_hz();
+    d.overridden = interp::display_hz_overridden();
+    d.requestedHz = interp::requested_display_hz();
+    interp::display_hz_seen(&d.seenLo, &d.seenHi);
+    // the drawn rate: frame interpolation's (capped to the display), true 60's or the original 30
+    d.fps = interp::mode() == 1 ? interp::output_fps() : interp::mode() == 2 ? 60 : 30;
+    h.display = reporthdr::display_line(d);
     report = reporthdr::format(h) + report;
     return report;
 }
@@ -932,6 +948,24 @@ void tab_graphics() {
         if (radio(names[i], std::fabs(cur - s) < 0.01f)) post_changed([s] { hostui::set_res_scale(s); });
     }
 
+    heading("Dynamic resolution");
+    {
+        static const float mins[] = {0.0f, 0.75f, 0.5f};
+        static const char* const dnames[] = {"Off##dynres", "Down to 75%##dynres", "Down to 50%##dynres"};
+        const float dm = dynres::min_factor();
+        for (int i = 0; i < 3; i++) {
+            if (i) ImGui::SameLine();
+            const float m = mins[i];
+            if (radio(dnames[i], std::fabs(dm - m) < 0.01f, !dynres::min_from_env()))
+                post_changed([m] { dynres::set_min(m); hostui::set("dynResMin", m > 0 ? std::to_string(m) : "0"); });
+        }
+        help("Lowers the internal resolution while the graphics chip cannot keep up with the frame rate, down to\n"
+             "the chosen share of it, and raises it again when there is room. The picture is softer while it is\n"
+             "lower. Helps where the graphics chip is the limit (phones, older computers at a high resolution);\n"
+             "when the processor is the limit, the resolution stays.");
+        if (dynres::on()) note("%s", dynres::status().c_str());
+    }
+
     float fovPercent=aspect::fov_scale()*100.0f;
     if(ImGui::SliderFloat("Gameplay FOV", &fovPercent,75.0f,250.0f,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
         post_changed([fovPercent] { aspect::set_fov_scale(fovPercent/100.0f); hostui::set("gameplayFovScale",std::to_string(fovPercent/100.0f)); });
@@ -1038,6 +1072,27 @@ void tab_graphics() {
     flow::next(flow::check("Edge smoothing (FXAA)"), 30);
     if (check("Edge smoothing (FXAA)", render::fxaa(), &v, render::feature_available(render::kFeatureFXAA)))
         post_changed([v] { render::set_fxaa(v); });
+    // background_shaders.h: what a draw does while its shader compiles (off / fast)
+    {
+        static const char* const names[] = {"Shader compile: Off (exact)", "Fast (not exact)"};
+        static const char* const tips[] = {
+            "Default. Frames wait for their shaders, so pictures are complete, but a first visit to a place can "
+            "stutter. (Metal waits up to 25 ms per frame, then leaves that object out for a moment.)",
+            "Fast: smoother first visits, objects, shadows or effects may be missing for a moment. Anything the "
+            "game reads back or keeps (photos, snapshots) still waits."};
+        const bool env = bgshaders::env_override() != nullptr;
+        const bgshaders::Level shown = env ? bgshaders::level() : bgshaders::requested();
+        for (int i = 0; i < bgshaders::kLevels; i++) {
+            if (i) flow::next(flow::check(names[i]));
+            if (radio(names[i], shown == i, !env)) {
+                const auto l = bgshaders::Level(i);
+                bgshaders::set_level(l);  // applies to the next draw
+                hostui::post([l] { hostui::set(bgshaders::kSettingKey, bgshaders::level_value(l)); });
+            }
+            help(tips[i]);
+        }
+        if (env) note("WWHD_BG_SHADERS=%s is set for this start and takes precedence.", bgshaders::env_override());
+    }
 #if defined(WWHD_HAS_VULKAN) && !defined(__ANDROID__)
     if (render::vulkan()) {
         heading("GPU (Vulkan)");
@@ -1097,7 +1152,16 @@ void tab_graphics() {
 #endif
     heading("Overlay");
     if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
-    if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); }
+    if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); interp::reset_display_hz_seen(); }
+    // the render-thread profiler (render_prof.h): its report is the detailed part of the performance report
+    if (check("Detailed performance profiling", rprof::requested(), &v, !rprof::env_override())) {
+        rprof::set_requested(v);  // applied at the next frame
+        hostui::post([v] { hostui::set(rprof::kSettingKey, v ? "1" : "0"); });
+    }
+    if (rprof::env_override()) note("WWHD_PROFILE=%s is set for this start and takes precedence.", rprof::env_override());
+    else help("Adds timings, uploads and draw classes to Copy performance report. Takes effect at once; the first "
+              "report is ready a few seconds later. Costs a little speed, so leave it off unless you send a "
+              "performance report. Off by default.");
     // the render-thread profiler's latest report (render_prof.h), for performance bug reports
     if (ext::features().clipboard) {
         static double copiedAt = -10;
@@ -1983,11 +2047,27 @@ void tab_controls() {
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - flow::check("List view")));
     ImGui::Checkbox("List view", &U.list_view);
     help("A plain table of all inputs instead of the controller drawing");
+    if (check("File select Quit button", m.file_select_quit, &v)) {
+        m.file_select_quit = v;
+        input_map::set_current(m);
+    }
+    help("Show a controller and mouse Quit button on the file selection screen.");
     if (check("Skip controller selection", m.skip_controller_selection, &v)) {
         m.skip_controller_selection = v;
         input_map::set_current(m);
     }
     help("At the title screen, automatically choose the configured Wii U controller.");
+#ifndef __ANDROID__
+    // issue #267 (not on Android: the app is in front or paused there). Saved with the controls; the host
+    // applies it at once (input_sdl.cpp, gfx/input.mm); beside Skip, or below it in a narrow window
+    flow::next(flow::check("Controller input when the game isn't focused"), 24);
+    if (check("Controller input when the game isn't focused", m.background_controllers, &v)) {
+        m.background_controllers = v;
+        input_map::set_current(m);
+    }
+    help("For a second screen, streaming or remote play. Keyboard and mouse still only work while the "
+         "game is focused.");
+#endif
     // face-button preset (issue #78): which host face buttons drive A/B/X/Y
     const input_map::FaceLayout fl = input_map::face_layout(m);
     ImGui::AlignTextToFramePadding();
@@ -2330,7 +2410,7 @@ void perf_window(bool menu_open) {
     ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##perf", nullptr, fl)) {
-        ImGui::Text("%.0f fps   %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
+        ImGui::Text("%.0f fps   Render interval %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
         {
             // slow motion: frame interpolation without Keep game speed below its frame target
@@ -2357,6 +2437,7 @@ void perf_window(bool menu_open) {
         ImGui::TextUnformatted(perf::summary().c_str());
         ImGui::PlotLines("##ft", U.frame_ms, 120, U.frame_i, nullptr, 0.0f, 50.0f, ImVec2(220, 36));
         ImGui::TextDisabled("%s  %gx  %s", render::api_name(render::active()), hostui::res_scale(), interp::mode_name());
+        if (dynres::on()) ImGui::TextDisabled("%s", dynres::status().c_str());
         if (float share = interp::paced_drawn_share(); share >= 0)
             ImGui::TextDisabled("in-between frames drawn: %.0f%%", share * 100.0f);
     }
@@ -2617,9 +2698,12 @@ void poll_controller_shortcuts(const float* values) {
     const auto m = input_map::current();
     const PadValues available = pad;
     const auto pressed = bindings.poll(m, available.data(), pad.data());
+    // issue #267: a background controller press never opens Settings (settings_shortcut.h)
+    const bool may_open = controller_may_open_settings(input::window_focused(), input::background_controllers());
     auto activate = [&](int a) {
         if (a == input_map::kSettings) {
             const auto& b = m.shortcuts[a];
+            if (!is_open() && !may_open) return;
             set_open(!is_open(), !b.hold && b.button == input_map::kPadHome ? OpenReason::Home : OpenReason::API);
         } else activate_shortcut(a);
     };
@@ -2631,7 +2715,8 @@ void poll_controller_shortcuts(const float* values) {
     const auto action = shortcut.poll(now_s(), !g_capturing_keys.load() && !selectModifier && pad[input_map::kPadOptions] > 0.5f,
                                      false, is_open()); // Home is an ordinary, remappable Settings binding.
 
-    if (action != SettingsShortcut::None) set_open(action == SettingsShortcut::Open, shortcut.reason());
+    if (action == SettingsShortcut::Close || (action == SettingsShortcut::Open && may_open))
+        set_open(action == SettingsShortcut::Open, shortcut.reason());
 }
 bool shortcut_took_input() { return g_shortcut_took.exchange(false); }
 
@@ -2659,6 +2744,7 @@ bool blocks_input() { return captures(); }
 // A platform's input layer (extensions.h, the world editor): its mode while the menu is closed, and
 // whether its overlay windows were under the pointer at the last frame.
 std::atomic<bool> g_layer_mouse{false};
+std::atomic<float> g_quit_pointer_x{-1}, g_quit_pointer_y{-1};
 int layer_mode() {
     if (!ext::sealed() || is_open()) return 0;
     const auto& layer = ext::input_layer();
@@ -2666,9 +2752,9 @@ int layer_mode() {
 }
 bool layer_takes_pointer() {
     const int m = layer_mode();
-    return m == 1 || (m == 2 && g_layer_mouse.load());
+    return file_select_quit::pointer(g_quit_pointer_x.load(), g_quit_pointer_y.load()) || m == 1 || (m == 2 && g_layer_mouse.load());
 }
-bool pointer_layer_active() { return layer_mode() != 0; }
+bool pointer_layer_active() { return file_select_quit::visible() || layer_mode() != 0; }
 bool captures() { return is_open() || text_entry::active(); }
 bool dialog_open() { return is_open() && g_dialog_open.load(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
@@ -2770,12 +2856,14 @@ void set_clipboard_text(const char* utf8) {
 bool wants_text() { return (is_open() || layer_mode() != 0) && g_wants_text.load(); }
 void set_stereo_pointer_visible(bool visible) { g_stereo_pointer_visible=visible; }
 bool mouse_move(float nx, float ny, bool touch) {
+    g_quit_pointer_x = nx; g_quit_pointer_y = ny;
     const int layer = layer_mode();
-    if (g_no_host_mouse || (!captures() && stereo::requestedMode==stereo::Off && !layer)) return false;
+    if (g_no_host_mouse || (!captures() && stereo::requestedMode==stereo::Off && !layer && !file_select_quit::visible())) return false;
     push({Event::MousePos, 0, false, nx, ny, 0, touch});
     return captures() || layer_takes_pointer();
 }
 void test_pointer(float nx, float ny, bool down) {
+    g_quit_pointer_x = nx; g_quit_pointer_y = ny;
     push({Event::MousePos, 0, false, nx, ny, 0, false});
     push({Event::MouseButton, 0, down, 0, 0, 0, false});
 }
@@ -2845,6 +2933,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
 #endif
         // the saved aspect ratio (WWHD_ASPECT wins; issue #108: it was not remembered)
         if(hostui::get("gameplayFovScale",v))aspect::set_fov_scale(strtof(v.c_str(),nullptr));
+        // the saved dynamic resolution (WWHD_DYNRES_MIN wins)
+        if (!dynres::min_from_env() && hostui::get("dynResMin", v)) dynres::set_min(strtof(v.c_str(), nullptr));
         if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {
             const int m = atoi(v.c_str());
             if (m >= aspect::kOriginal && m <= aspect::k32x9) aspect::set_mode(m);
@@ -2875,6 +2965,33 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
     }
 #endif
+    // debug: WWHD_TEST_PROFILING=1@600 (or 0@N) sets Graphics > Detailed performance profiling at TV
+    // frame N, as the checkbox does (saved too)
+    static const char* tprof = getenv("WWHD_TEST_PROFILING");
+    if (tprof) {
+        const char* at = strchr(tprof, '@');
+        if (render::frame_count() + 1 >= (at ? strtoull(at + 1, nullptr, 10) : 1)) {
+            const bool on = tprof[0] == '1';
+            LOG("[overlay] test: detailed performance profiling %s", on ? "on" : "off");
+            rprof::set_requested(on);
+            hostui::post([on] { hostui::set(rprof::kSettingKey, on ? "1" : "0"); });
+            tprof = nullptr;
+        }
+    }
+    // debug: WWHD_TEST_BG_SHADERS=fast@600 (or 0@N) sets Graphics > Shader compile at TV frame N, as the
+    // radio buttons do (saved too)
+    static const char* tbg = getenv("WWHD_TEST_BG_SHADERS");
+    if (tbg) {
+        const char* at = strchr(tbg, '@');
+        if (render::frame_count() + 1 >= (at ? strtoull(at + 1, nullptr, 10) : 1)) {
+            const std::string value(tbg, at ? size_t(at - tbg) : strlen(tbg));
+            const auto l = bgshaders::parse_level(value.c_str());
+            LOG("[overlay] test: shader compile %s", bgshaders::level_name(l));
+            bgshaders::set_level(l);
+            hostui::post([l] { hostui::set(bgshaders::kSettingKey, bgshaders::level_value(l)); });
+            tbg = nullptr;
+        }
+    }
     const double t = now_s();
     if (U.last_present > 0) {
         U.frame_ms[U.frame_i] = (float)((t - U.last_present) * 1000.0);
@@ -2896,17 +3013,32 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     perf::set_demand(perf, open && shown_builtin() == kGraphics);
     // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
-    static const char* testReport = getenv("WWHD_TEST_PERF_REPORT");
-    static const uint64_t reportAt = getenv("WWHD_TEST_PERF_REPORT_AT")
-        ? strtoull(getenv("WWHD_TEST_PERF_REPORT_AT"), nullptr, 10) : 300;
-    static bool reportWritten = false;
-    if (testReport && !reportWritten && gx2::flips_presented() >= reportAt) {
-        if (FILE* f = fopen(testReport, "w")) {
-            const std::string report = performance_report();
-            fwrite(report.data(), 1, report.size(), f); fclose(f);
-            reportWritten = true;
+    // WWHD_TEST_PERF_REPORT=file (at WWHD_TEST_PERF_REPORT_AT presented frames, default 300), or
+    // file@frames,file@frames,... for several reports in one run
+    struct TestReport { std::string path; uint64_t at; bool written; };
+    static std::vector<TestReport> testReports = [] {
+        std::vector<TestReport> list;
+        const char* e = getenv("WWHD_TEST_PERF_REPORT");
+        const char* a = getenv("WWHD_TEST_PERF_REPORT_AT");
+        const uint64_t defaultAt = a ? strtoull(a, nullptr, 10) : 300;
+        for (std::string rest = e ? e : ""; !rest.empty();) {
+            const size_t comma = rest.find(',');
+            std::string item = rest.substr(0, comma);
+            rest = comma == std::string::npos ? "" : rest.substr(comma + 1);
+            const size_t at = item.rfind('@');
+            if (at != std::string::npos && at + 1 < item.size() && isdigit((unsigned char)item[at + 1]))
+                list.push_back({item.substr(0, at), strtoull(item.c_str() + at + 1, nullptr, 10), false});
+            else if (!item.empty()) list.push_back({item, defaultAt, false});
         }
-    }
+        return list;
+    }();
+    for (TestReport& r : testReports)
+        if (!r.written && gx2::flips_presented() >= r.at)
+            if (FILE* f = fopen(r.path.c_str(), "w")) {
+                const std::string report = performance_report();
+                fwrite(report.data(), 1, report.size(), f); fclose(f);
+                r.written = true;
+            }
     // save state notices (saved, refused during a cutscene, loaded into another Quest Log) show over the
     // game for a few seconds while the menu is closed (the window title is not visible everywhere)
     std::string toast = open ? std::string() : ss::last_message();
@@ -2928,9 +3060,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         ;
     U.linearized = false;
     // a mod install keeps running (and shows its progress) while the menu is closed
-    const bool mods_busy = !setup_run.id.empty() || (U.init && modsui::wants_background());
+    const bool mods_busy = !setup_run.id.empty() || (U.init && modsui::wants_background()) || modsui::startup_notice_pending();
     if (!open) gfx::g_pip_preview=false;
-    if (!open && !perf && !text && toast.empty() && !guesthud::active() && !mods_busy && !stereoPointer && drawn_layers.empty()) {
+    if (!open && !perf && !text && toast.empty() && !guesthud::active() && !file_select_quit::visible() && !mods_busy && !stereoPointer && drawn_layers.empty()) {
         if (U.init) {  // forget events and pressed keys while nothing is shown
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
@@ -3010,6 +3142,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     const int layer = open ? 0 : layer_mode();
     g_wants_text = (open || layer) && io.WantTextInput;
     guesthud::frame();
+    if (!open && !text) file_select_quit::frame(io.DisplaySize.x, io.DisplaySize.y);
     gfx::g_pip_preview=false;
     if (open) settings_window();
     else modsui::background(mods_host());

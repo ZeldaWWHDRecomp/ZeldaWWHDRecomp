@@ -1,0 +1,94 @@
+{
+  "game_pieces_format": 1,
+  "set": "cliff-plateau-isles",
+  "label": "Cliff Plateau Isles ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room42.szs",
+    "room": 42
+  },
+  "memory": {
+    "archive_bytes": 1777664,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "cliff-plateau-isles",
+      "since": 5,
+      "category": "Islands",
+      "label": "Cliff Plateau Isles ground",
+      "description": "flat-topped cliffs in a cluster, with a few trees and two pits that send Link back",
+      "volume": [
+        -22543,
+        -1100,
+        -22538,
+        -17674,
+        1375,
+        -17384
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima_a",
+            "sima_b",
+            "sima_c",
+            "sima_d",
+            "sima_e",
+            "tree"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "tree_02",
+          "tree_03",
+          "tree_04",
+          "tree_01",
+          "sima_a",
+          "sima_d",
+          "sima_c",
+          "sima_e",
+          "sima_b",
+          "Hole_soko_B",
+          "Hole_soko_A",
+          "Hole_kabe_B",
+          "Hole_kabe_A",
+          "Hole_huti_A",
+          "Hole_huti_B",
+          "soko_stop",
+          "soko_stopB",
+          "soko_stopC"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko_A",
+          "Hole_soko_B"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD42.szs",
+        "triangles": 124
+      },
+      "expect": {
+        "triangles": [
+          1253
+        ],
+        "textures": [
+          [
+            "Txo_grass",
+            "Txo_stone_mori_2",
+            "Txo_stone_mori_old",
+            "Txo_wall_G"
+          ]
+        ],
+        "collision_triangles": 832
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

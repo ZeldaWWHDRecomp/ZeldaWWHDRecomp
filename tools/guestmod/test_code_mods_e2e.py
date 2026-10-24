@@ -34,6 +34,8 @@ def main():
     parser.add_argument('--renderer', choices=('metal', 'vulkan'), default='metal')
     parser.add_argument('--ppc-clang', default=os.environ.get('WWHD_PPC_CLANG', 'clang'))
     parser.add_argument('--ppc-lld', default=os.environ.get('WWHD_PPC_LLD', 'ld.lld'))
+    parser.add_argument('--heart-ticker', type=Path, default=Path(os.environ.get('WWHD_HEART_TICKER') or REPO.parent / 'ZeldaWWHDMods/heart-ticker'),
+                        help='the heart-ticker folder of a ZeldaWWHDMods checkout (default: $WWHD_HEART_TICKER, else ../ZeldaWWHDMods/heart-ticker beside this repository)')
     parser.add_argument('--out', type=Path, default=REPO / 'build' / ('code-mods-e2e-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
     args = parser.parse_args()
     if not args.boot and args.state_dir is None:
@@ -47,17 +49,18 @@ def main():
     binary = data / 'bin' / manifest['exe']
     manager, package = out / 'manager', out / 'heart-ticker'
     package.mkdir()
-    shutil.copy2(REPO / 'examples/guest-mods/heart-ticker/manifest.json', package / 'manifest.json')
+    shutil.copy2(args.heart_ticker / 'manifest.json', package / 'manifest.json')
     subprocess.run([args.ppc_clang, '--target=powerpc-unknown-eabi', '-mcpu=750', '-O2', '-ffreestanding',
                     '-fno-builtin', '-nostdlib', '-fno-jump-tables', '-ffunction-sections', '-fdata-sections',
-                    '-I' + str(REPO / 'runtime/guest/include'), '-c', str(REPO / 'examples/guest-mods/heart-ticker/mod.c'),
+                    '-I' + str(REPO / 'runtime/guest/include'), '-c', str(args.heart_ticker / 'mod.c'),
                     '-o', str(package / 'mod.o')], check=True)
     subprocess.run([args.ppc_lld, '-m', 'elf32ppc', '-r', str(package / 'mod.o'), '-o', str(package / 'mod.elf')], check=True)
 
     catalogue = out / 'catalogue'
     if args.catalogue:
         subprocess.run([sys.executable, str(REPO / 'tools/catalogue/make_pilots.py'),
-                        '--out', str(catalogue), '--heart-elf', str(package / 'mod.elf')], check=True)
+                        '--out', str(catalogue), '--heart-elf', str(package / 'mod.elf'),
+                        '--heart-source', str(args.heart_ticker)], check=True)
 
     def rebuild(mode, name):
         status = out / (name + '.json')

@@ -327,6 +327,15 @@ int32_t give(const std::string& mod, const std::string& id, uint32_t n, const ch
         }
         // test aid: WWHD_ITEM_TEST_PLACE=mod:item:place puts a new item in one of the game's places (0..7),
         // as the bag page would
+        // test aid: WWHD_ITEM_TEST_BUTTON=mod:item:button puts a new item on an item button (0..4), as the bag page
+        // would (pictures of its icon on the button)
+        static const char* test_button = getenv("WWHD_ITEM_TEST_BUTTON");
+        if (!before && test_button && *test_button) {
+            const std::string spec = test_button, want = mod + ":" + id + ":";
+            if (spec.rfind(want, 0) == 0)
+                LOG("[items] test: %s:%s on button %s: %s", mod.c_str(), id.c_str(), spec.c_str() + want.size(),
+                    act(it->key, Action::Assign, std::atoi(spec.c_str() + want.size())) ? "done" : reason().c_str());
+        }
         static const char* test_place = getenv("WWHD_ITEM_TEST_PLACE");
         if (!before && test_place && *test_place) {
             const std::string spec = test_place, want = mod + ":" + id + ":";

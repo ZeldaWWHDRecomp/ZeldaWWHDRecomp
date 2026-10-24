@@ -45,6 +45,7 @@ struct Part {
     std::vector<std::string> nodes;  // its nodes whose whole components inside the volume are taken
     int light = 1;                   // settingTevStruct type (1..4)
     unsigned triangles = 0;          // what the player's game must give (another version is refused)
+    bool animated = false;           // a second part keeps the room's texture animation (an island's moving water)
 };
 struct Piece {
     std::string id, set, category, label, description;
@@ -165,6 +166,10 @@ inline bool Catalogue::add_set(const std::string& recipe, std::string& why) {
             part.model = unsigned(x.get("model").number);
             part.light = light_type(text(x.get("light")));
             if (!part.light) return why = p.id + ": light must be bg0, bg1, bg2 or bg3", false;
+            const Value& animated = x.get("animated");
+            if (animated.type != Value::Null && (animated.type != Value::Bool || (animated.boolean && i != 1)))
+                return why = p.id + ": only a piece's second part may be animated", false;
+            part.animated = animated.boolean;
             if (x.get("nodes").type != Value::Array || x.get("nodes").array.empty() || x.get("nodes").array.size() > 32)
                 return why = p.id + ": invalid nodes", false;
             for (const Value& n : x.get("nodes").array) {
@@ -189,8 +194,8 @@ inline bool Catalogue::add_set(const std::string& recipe, std::string& why) {
         if (distant.type != Value::Null) {
             char lod[16];
             std::snprintf(lod, sizeof lod, "sea_LOD%02u.szs", s.room);
-            if (text(distant.get("archive")) != lod || !whole(distant.get("triangles"), 1, 1024))
-                return why = p.id + ": distant names the room's own distant-view archive and its 1 to 1024 triangles", false;
+            if (text(distant.get("archive")) != lod || !whole(distant.get("triangles"), 1, 2048))
+                return why = p.id + ": distant names the room's own distant-view archive and its 1 to 2048 triangles", false;
             p.distant_archive = lod;
             p.distant_triangles = unsigned(distant.get("triangles").number);
         }

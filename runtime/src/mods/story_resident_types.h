@@ -9,6 +9,13 @@
 // figurine registration, retail name searches) is intercepted per placed copy in story_actors.cpp,
 // whatever the character, so a placed copy only talks with the mod's text and flags.
 //
+// The three Goron merchants (rotena, rotenb, rotenc) are another class, daNpcRoten_c (profile 0x174, the
+// stage actors RotenA/B/C): the parameter word's top byte picks the merchant (the game's l_npc_no), the
+// rail byte is 0xFF (no rail: a placed copy stands where the mod puts it). Their talk, trade (item show),
+// exchange events, first-talk save bits and the game's "the merchants have appeared" gate are intercepted
+// per placed copy in story_actors.cpp, so a placed copy only talks with the mod's text and flags and the
+// sea's own merchants keep theirs.
+//
 // Characters whose ordinary behaviour itself reads or writes the game's own progress, or moves other
 // retail actors, are refused with the reason (kRefused). Pure data, unit-tested in
 // runtime/tools/story_world_manifest_test.cpp.
@@ -23,6 +30,14 @@ namespace story_resident_types {
 inline constexpr uint8_t kSeatedYm1 = 19;       // ManifestActor::resident for the seated ym1 (another class)
 inline constexpr uint16_t kPeopleProfile = 0x175;
 inline constexpr uint16_t kYm1Profile = 0x13B;
+// the Goron merchants (daNpcRoten_c): ManifestActor::resident 20..22 for the game's merchants 0..2
+inline constexpr uint8_t kGoronA = 20, kGoronB = 21, kGoronC = 22;
+inline constexpr uint16_t kGoronProfile = 0x174;
+inline constexpr const char* kGoronStageName = "RotenA";  // checked against the game's object name table at start
+inline constexpr bool goron(uint8_t subtype) { return subtype >= kGoronA && subtype <= kGoronC; }
+inline constexpr uint8_t goron_number(uint8_t subtype) { return uint8_t(subtype - kGoronA); }
+// the merchant number in the top byte, no rail (0xFF), the unread low half 0xFFFF
+inline constexpr uint32_t goron_params(uint8_t subtype) { return (uint32_t(goron_number(subtype)) << 24) | 0x00FFFFFFu; }
 
 struct Type {
     const char* code;    // the native object code, lower case: what a manifest names
@@ -50,6 +65,9 @@ inline constexpr Type kTypes[] = {
     {"sa3", 14, 0x00FF0000u, "Sailor from the dock", "The sailor on the Windfall stone dock."},
     {"sa4", 15, 0x00FF0000u, "Sailor from the pier", "The sailor at the end of the Windfall wooden pier."},
     {"ym1", kSeatedYm1, 1u, "Seated man", "A seated man; author his height, he doesn't walk or turn in scenes."},
+    {"rotena", kGoronA, goron_params(kGoronA), "Goron merchant (striped hat)", "The Goron merchant in the tall striped hat and white shirt, with a green pack; a placed copy stands and talks with your lines."},
+    {"rotenb", kGoronB, goron_params(kGoronB), "Goron merchant (blue hat)", "The Goron merchant in the blue hat and white shirt, with a brown pack; a placed copy stands and talks with your lines."},
+    {"rotenc", kGoronC, goron_params(kGoronC), "Goron merchant (red vest)", "The Goron merchant in the green hat and red vest, with a pale blue pack; a placed copy stands and talks with your lines."},
 };
 
 struct Refused {const char* code;const char* why;};
@@ -72,8 +90,13 @@ inline const Type* by_subtype(uint8_t subtype) {
     return nullptr;
 }
 inline bool supported(uint8_t subtype) { return by_subtype(subtype) != nullptr; }
-inline bool people(uint8_t subtype) { return supported(subtype) && subtype != kSeatedYm1; }
-inline uint16_t profile(uint8_t subtype) { return subtype == kSeatedYm1 ? kYm1Profile : kPeopleProfile; }
+inline bool people(uint8_t subtype) { return supported(subtype) && subtype != kSeatedYm1 && !goron(subtype); }
+inline uint16_t profile(uint8_t subtype) { return subtype == kSeatedYm1 ? kYm1Profile : goron(subtype) ? kGoronProfile : kPeopleProfile; }
+// the stage argument a placed copy is created with: the People character number, the Goron merchant's
+// number (as the game's RotenA/B/C), none (0xFF..) for the seated ym1
+inline uint32_t create_argument(uint8_t subtype) {
+    return subtype == kSeatedYm1 ? 0xFFFFFFFFu : goron(subtype) ? uint32_t(goron_number(subtype)) : uint32_t(subtype);
+}
 inline uint32_t params(uint8_t subtype) {
     const Type* t = by_subtype(subtype);
     return t ? t->params : 0x00FF0000u;
@@ -148,6 +171,7 @@ inline const BorrowedWalk* borrowed_walk(uint8_t subtype) {
 inline const char* no_walk(uint8_t subtype) {
     if (walker(subtype)) return nullptr;
     if (subtype == kSeatedYm1) return "this villager is seated and does not walk";
+    if (goron(subtype)) return "a Goron merchant stands where it is placed and does not walk a route";
     return "this villager has no walking animation of its own";
 }
 

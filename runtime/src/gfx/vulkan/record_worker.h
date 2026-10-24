@@ -62,6 +62,9 @@ void start_record_worker();
 void stop_record_worker();
 PodCommands* record_worker_commands();
 uint64_t publish_record_commands();
+// Append a detached eye's owned POD stream after the producer prefix without
+// waiting for either stream to finish recording. Submission ownership is unchanged.
+bool publish_held_record_commands(PodCommands& commands);
 void publish_record_commands_at_draw_boundary();
 void wait_record_commands(uint64_t serial, handoff_trace::Reason reason = handoff_trace::Reason::Unspecified);
 bool record_commands_emitted(uint64_t serial);

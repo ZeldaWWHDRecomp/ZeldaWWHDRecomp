@@ -1069,6 +1069,8 @@ void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8
 		LatteDecompiler_analyze(shaderContext, shaderContext->shader);
 	if (shaderContext->shader->hasError == false)
 		LatteDecompiler_analyzeDataTypes(shaderContext);
+	if (shaderContext->shader->hasError == false)
+		LatteDecompiler_analyzeFiniteness(shaderContext);
 	// check for usage errors
 	if ( shaderContext->analyzer.uniformRegisterAccessTracker.HasAccess() && shaderContext->analyzer.uniformBufferAccessTracker->HasAccess() )
 	{

@@ -360,6 +360,7 @@ RECORD_LIMIT = 16 * 1024 * 1024
 # record at a time, so only the file itself is bounded.
 CACHE_FILE_LIMIT = 4 * 1024 * 1024 * 1024
 VULKAN_DATABASE_MAGIC = b"WWVKPR01"
+VULKAN_LOCAL_DATABASE_MAGIC = b"WWVKPR02"  # the runtime's local database: shaders stored once (shaderprep_format)
 
 
 # head-start bounds, as runtime/src/gfx/headstart_limits.h (the game's readers)
@@ -440,7 +441,8 @@ def read_cache_records(path, report=None):
     """Tolerant reader for a player's own caches, any version since shader preparation was added:
       - recipe streams (shaders.bin: Metal type 1 shader + type 2 pipeline records, and head starts
         with types 3 speculative, 4 Vulkan database, 5 code-free Vulkan state, 6 linked shader);
-      - a Vulkan recipe database file (*.bin.recipes, "WWVKPR01"), yielded as one type 4 record.
+      - a Vulkan recipe database file (*.bin.recipes, "WWVKPR01" or the local "WWVKPR02"), yielded as one type 4
+        record (read with vulkan_database_pipelines; never copied into a head start as it is).
     A damaged, partial or unknown record is skipped (counted in report) and reading resumes at the
     next intact record; nothing aborts the whole file."""
     report = report if report is not None else CacheReport()
@@ -450,7 +452,7 @@ def read_cache_records(path, report=None):
         return
     with open(path, "rb") as source:
         d = source.read()
-    if d.startswith(VULKAN_DATABASE_MAGIC):
+    if d.startswith((VULKAN_DATABASE_MAGIC, VULKAN_LOCAL_DATABASE_MAGIC)):
         report.records[REC_VULKAN_PIPELINE] += 1
         yield REC_VULKAN_PIPELINE, d
         return
@@ -591,13 +593,18 @@ def _codefree_pipeline(kind, payload):
 
 def vulkan_database_pipelines(data, report):
     """Code-free pipelines of a local Vulkan recipe database; a damaged recipe is skipped, not fatal."""
-    if len(data) < 64 or not data.startswith(VULKAN_DATABASE_MAGIC):
+    if len(data) < 64 or not data.startswith((VULKAN_DATABASE_MAGIC, VULKAN_LOCAL_DATABASE_MAGIC)):
         report.skip("unreadable Vulkan recipe database")
         return []
     count, crc = struct.unpack_from("<II", data, 56)
     if zlib.crc32(data[64:]) != crc:
         report.skip("Vulkan recipe database with a bad checksum (recipes checked one by one)")
-    out, at = [], 64
+    try:
+        shaders, at = template_format.vulkan_database_shaders(data)
+    except ValueError:
+        report.skip("Vulkan recipes missing from a truncated database", count)
+        return []
+    out = []
     for i in range(count):
         if at + 4 > len(data):
             report.skip("Vulkan recipes missing from a truncated database", count - i)
@@ -608,7 +615,7 @@ def vulkan_database_pipelines(data, report):
             report.skip("Vulkan recipes missing from a truncated database", count - i)
             break
         try:
-            out.append(template_format.vulkan_recipe(data[at:at + size]))
+            out.append(template_format.vulkan_recipe(data[at:at + size], shaders=shaders))
         except ValueError as error:
             report.skip("Vulkan recipe(s) of an unsupported layout (%s)" % error)
         at += size

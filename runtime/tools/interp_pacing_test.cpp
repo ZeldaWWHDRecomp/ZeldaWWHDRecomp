@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
+#include <string>
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
@@ -295,6 +297,16 @@ static void test_simulation() {
 // dropped in-between frame, and a late step is never made up for.
 struct StepSim {
     std::vector<int64_t> flips, steps, holds;  // flip times; logic pass starts; in-between flips (ns)
+    // per flip: the game time it shows, in steps (logic step k - 1 + the pass's blend fraction; its
+    // logic pass's step k: the frames show between the step before and it)
+    std::vector<double> shown;
+    // the game time shown from one frame to the next, for the frames flipped after `from`
+    std::vector<double> shown_steps(int64_t from) const {
+        std::vector<double> v;
+        for (size_t i = 1; i < flips.size(); i++)
+            if (flips[i - 1] >= from) v.push_back(shown[i] - shown[i - 1]);
+        return v;
+    }
     int skips = 0;                       // steps that skipped or dropped in-between frames
     std::vector<int64_t> skipSteps;      // the logic pass starts of those steps
     int waitsAfterDrop = 0;              // logic passes after a dropped step that waited for their time
@@ -377,7 +389,7 @@ struct StepSim {
 // taken at the swap, as in interp.cpp, and so do not see it)
 static StepSim simulate_steps(int fps, const std::function<int64_t(int)>& logicCost, const std::function<int64_t(int)>& holdCost,
                               double seconds, bool slots = true, int64_t render = 0, bool probeRetry = true, bool old60 = false,
-                              bool waitAfterDrop = false, bool oneStepWindow = false) {
+                              bool waitAfterDrop = false, bool oneStepWindow = false, bool old40 = false) {
     using namespace vsync_pacing;
     constexpr Clock kClock{16'683'333, 4};
     const bool f40 = is_fps40(fps);  // 40 fps: 3 steps over 4 frames (granule 1.5 vsyncs)
@@ -396,6 +408,9 @@ static StepSim simulate_steps(int fps, const std::function<int64_t(int)>& logicC
     uint64_t last = 64;
     bool wait = false, haveLogic = false, prevRecord = false, dropLead = false;
     int logicN = 0, holdN = 0;
+    Fractions40 frac40;  // (interp.cpp g_frac40)
+    // old40: the 40 fps fractions before issue #254 (the step with the in-between frame halfway, the
+    // others exactly)
     // the probe of the in-between pass cost (interp.cpp): after 10 s without in-between passes (the
     // first one of all is a probe), or a second after a probe that met a hitch
     constexpr int64_t kProbeAfter = 10'000'000'000, kProbeRetry = 1'000'000'000;
@@ -447,6 +462,11 @@ static StepSim simulate_steps(int fps, const std::function<int64_t(int)>& logicC
             if (!prevRecord) n = 0;  // an exact step: one frame, drawn and recorded (a record logic pass)
             r.capacity += std::clamp(frames - 1, 0, 1);
         }
+        {  // the logic pass's fraction (interp.cpp pass_t)
+            const bool exact = !prevRecord;
+            const float pt = !f40 ? pass_fraction(0, n, exact) : old40 ? (exact || n == 0 ? 1.0f : 0.5f) : frac40.logic(n, exact);
+            r.shown.push_back(logicN - 1 + double(pt));
+        }
         prevRecord = false;
         t = pass(start, logicCost(logicN++), true);
         const int64_t logicEst = logicAvg;  // (interp.cpp updates it when the next pass starts, after the decision)
@@ -481,6 +501,8 @@ static StepSim simulate_steps(int fps, const std::function<int64_t(int)>& logicC
             probe = tryProbe;
             if (probe) retryAt = -1;
             const int64_t holdStart = t;
+            if (phase >= n) frac40.record();  // (the record pass)
+            r.shown.push_back(logicN - 2 + double(pass_fraction(phase, n, false)));  // (logicN: already the next step's)
             t = pass(holdStart, holdCost(holdN++), false);
             r.holds.push_back(t);
             lastHold = t;
@@ -536,6 +558,14 @@ static void test_steps_on_vsync() {
                 a.steps_per_s(from), a.flips_per_s(from), a.skips, old.flips_per_s(from), old.skips);
     CHECK(a.steps_per_s(from) > 29.9);
     CHECK(a.flips_per_s(from) >= old.flips_per_s(from) - 1);
+    // the game time per frame at 60, 120, 240 fps (unchanged by issue #254's 40 fps fractions): 1/2,
+    // 1/4, 1/8 step, every frame
+    for (int fps : {60, 120, 240}) {
+        const StepSim e = simulate_steps(fps, ms(2), ms(1.5), 60);
+        const auto v = e.shown_steps(from);
+        const double each = 30.0 / fps;
+        CHECK(!v.empty() && std::count(v.begin(), v.end(), each) == std::ptrdiff_t(v.size()));
+    }
     // 120 fps, fast: 4 frames a step on their vsyncs
     a = simulate_steps(120, ms(2), ms(1.5), 60);
     old = simulate_steps(120, ms(2), ms(1.5), 60, false);
@@ -960,6 +990,69 @@ static void test_steps_40() {
     CHECK(a.uneven(from, kTick40) == 0);
     CHECK(a.skips == 0);
     CHECK(a.drawn_share_40(from) > 0.99);
+    // issue #254: every frame shows the game 3/4 of a step after the previous one (frames 1.5 vsyncs
+    // apart, steps 2), at any phase of the grid; before, +0.5, +0.5, +1, +1 step in turn
+    {
+        const auto v = a.shown_steps(from);
+        const int off = int(std::count_if(v.begin(), v.end(), [](double d) { return d != 0.75; }));
+        std::printf("40 fps, fast: %zu frames, %d not 0.75 step after the previous one; game time %.3f step per frame\n", v.size(), off,
+                    (a.shown.back() - a.shown.front()) / double(a.shown.size() - 1));
+        CHECK(v.size() > 2000 && off == 0);
+        // linear in the flip time: the game time shown less the flip time (in steps) stays the same
+        double lo = 1e9, hi = -1e9;
+        for (size_t i = 0; i < a.flips.size(); i++) {
+            if (a.flips[i] < from) continue;
+            const double lag = double(a.flips[i]) / (2 * 16'683'333.0) - a.shown[i];
+            lo = std::min(lo, lag), hi = std::max(hi, lag);
+        }
+        std::printf("40 fps, fast: game time shown less flip time varies by %.4f step\n", hi - lo);
+        CHECK(hi - lo < 0.02);  // (the flips' wake-up jitter, 0.3 ms)
+        // the fractions: 1/4 (the step with the in-between frame; its record pass exactly), 3/4, 1/2
+        StepSim o = simulate_steps(40, ms(2), ms(1.5), 60, true, 0, true, false, false, false, true);
+        const auto w = o.shown_steps(from);
+        std::string pattern;
+        for (size_t i = 0; i < 8 && i < w.size(); i++) pattern += (i ? " " : "") + std::to_string(w[i]).substr(0, 4);
+        const int halves = int(std::count(w.begin(), w.end(), 0.5)), ones = int(std::count(w.begin(), w.end(), 1.0));
+        std::printf("40 fps, fast, before #254: game time per frame %s ... (%d of %zu frames +0.5, %d +1)\n", pattern.c_str(), halves, w.size(), ones);
+        CHECK(halves + ones == int(w.size()) && std::abs(halves - ones) <= 2);
+        // the same game, frame for frame: the same steps, flips and in-between frames
+        CHECK(o.steps == a.steps && o.flips == a.flips && o.holds == a.holds);
+        // with a different grid phase (a late first flip), too
+        StepSim b = simulate_steps(40, [](int i) { return int64_t(i == 0 ? 9'000'000 : 2'000'000); }, ms(1.5), 60);
+        const auto u = b.shown_steps(from);
+        CHECK(!u.empty() && std::count(u.begin(), u.end(), 0.75) == std::ptrdiff_t(u.size()));
+    }
+    // Fractions40: the step with the in-between frame at 1/4, the next ones at 3/4 and 1/2; an exact
+    // step at 1; a broken order keeps at least 1/4
+    {
+        Fractions40 f;
+        CHECK(f.logic(1, false) == 0.25f);
+        f.record();
+        CHECK(f.logic(0, false) == 0.75f);
+        CHECK(f.logic(0, false) == 0.5f);
+        CHECK(f.logic(1, false) == 0.25f);
+        f.record();
+        CHECK(f.logic(0, false) == 0.75f);
+        CHECK(f.logic(0, false) == 0.5f);
+        CHECK(f.logic(0, false) == 0.25f);
+        CHECK(f.logic(0, false) == 0.25f);
+        CHECK(f.logic(0, true) == 1.0f);  // an exact step (its hold pass was dropped)
+        CHECK(f.logic(0, false) == 0.75f);
+    }
+    // replace_record: a blended record pass blends from the record it replaced, also for a second
+    // draw in the same pass; the next pass sees the new record
+    {
+        std::map<int, std::pair<uint64_t, int>> map, before;
+        const auto stampOf = [](const std::pair<uint64_t, int>& r) { return r.first; };
+        CHECK(replace_record(map, before, 1, {5, 10}, 5, stampOf) == nullptr);  // (nothing before)
+        const auto* b = replace_record(map, before, 2, {5, 20}, 5, stampOf);
+        CHECK(b == nullptr && map[2].second == 20);
+        before.clear();  // (next pass)
+        b = replace_record(map, before, 1, {6, 11}, 6, stampOf);
+        CHECK(b && b->first == 5 && b->second == 10 && map[1].second == 11);
+        b = replace_record(map, before, 1, {6, 12}, 6, stampOf);  // drawn again: the same before, the last record
+        CHECK(b && b->second == 10 && map[1].second == 12 && map[1].first == 6);
+    }
     // displays: 40, 80, 120 Hz (multiples of the virtual vsync's 39.96 Hz) show every frame for 1,
     // 2, 3 refreshes; 60 Hz (59.94) for 1 and 2 in turn
     for (int k : {1, 2, 3}) {
@@ -1058,7 +1151,33 @@ static void test_steps_40() {
     CHECK(adapt_resume_ms(60) == 14.0 && adapt_resume_ms(40) == 21.0);
 }
 
+static void test_fast_forward_resume() {
+    CHECK(exact_step_holds(0, true, true) == 0);  // no extra slot in this 40 fps step
+    constexpr vsync_pacing::Clock clock{16'683'333, 4};
+    for (int fps : {40, 60, 120, 240}) {
+        const bool forty = fps == 40;
+        const int planned = forty ? 1 : fps / 30 - 1;
+        const uint64_t granule = forty ? 6 : 8 / (planned + 1);
+        const auto frame = clock.time(granule, 0);
+        const auto nextLogic = clock.time((planned + 1) * granule, 0);
+        const int ordinary = exact_step_holds(planned, forty, false);
+        CHECK(ordinary == (forty ? 0 : 1));
+        if (fps != 60) CHECK(nextLogic - clock.time(ordinary * granule, 0) > frame);
+        const int resumed = exact_step_holds(planned, forty, true);
+        int64_t previous = 0;
+        for (int pass = 1; pass <= resumed + 1; ++pass) {
+            const auto at = clock.time(pass * granule, 0);
+            CHECK(at - previous <= frame);
+            previous = at;
+        }
+        CHECK(previous == nextLogic);
+        for (int pass = 0; pass <= resumed; ++pass)
+            CHECK(pass_fraction(pass, resumed, true) == 1.0f);  // no history: repeat exact poses
+    }
+}
+
 int main() {
+    test_fast_forward_resume();
     test_fractions();
     test_blends();
     test_slerp();

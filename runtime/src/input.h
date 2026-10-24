@@ -40,6 +40,12 @@ void init();       // main thread, after NSApplication exists
 PadState read();   // any thread
 // Any thread: main-thread host focus snapshot; false until a game window is focused.
 bool gameplay_focused();
+// Any thread: a game window has the keyboard focus (the app is in front); false until one has.
+bool window_focused();
+// Controls > "Controller input when the game isn't focused" (issue #267) as this host applies it:
+// controllers keep driving the game (and rumble) while no game window has the focus. Keyboard and
+// mouse are released on focus loss either way. Always false on Android (the app is in front or paused).
+bool background_controllers();
 void release_keys();                // forget held keys (another window took the keyboard)
 void controller_values(float* v);   // main thread: input_map::kPadCount host controller inputs, 0..1
 void host_controller_values(float* v);  // any thread: the latest controller_values (settings overlay)

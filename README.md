@@ -20,15 +20,13 @@ The project has three parts:
 
 ## What's new
 
-**v0.3.0: story quests and Mod SDK v2.** The port now has a story system for quest mods, in the game's own style:
-- **Story Notebook:** a quest journal in the Delivery Bag.
-- **Letters:** quest mods send Link letters to the Rito postboxes.
-- **Treasure charts:** new ones that work like the game's own.
-- **First quests:** *Call of the Sky* and *The Old map*, installed from Settings → Mods.
-
-For mod makers, Mod SDK v2 adds quests, items and treasure charts, mostly declared in a manifest; see
-[Mods](#mods) and the [Mod SDK guide](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDMods/tree/main/docs/sdk). Story
-quests run on macOS, Windows and Linux.
+**v0.4.0: the world editor and a big Android update.**
+- **World editor** (a preview for mod makers): start the game with `--editor` to place the game's villagers,
+  enemies, chests, switches, doors and your own models while the game runs, and to build quests, letters, scenes,
+  islands and levels of your own. It also works with AI assistants through MCP (off by default).
+- **Android:** two-screen handhelds, a heat guard for handhelds with a fan, even frame pacing at 60 fps, code mods
+  and dynamic resolution.
+- **Faster on every platform**, a 40 fps mode, toon clouds, more comfort options and many fixes.
 
 The changes in each update are in [CHANGELOG.md](CHANGELOG.md) and in the release notes on the
 [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page.

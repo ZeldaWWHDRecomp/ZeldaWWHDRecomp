@@ -8,6 +8,15 @@
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="false" />
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
+    <uses-feature android:name="com.oculus.feature.RENDER_MODEL" android:required="false" />
+    <uses-permission android:name="com.oculus.permission.RENDER_MODEL" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
+    <queries>
+        <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
+    </queries>
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -32,6 +41,9 @@
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/crash_share_paths" />
         </provider>
+        <!-- Keep the error visible when the failed SDL game process exits. -->
+        <activity android:name=".TheaterErrorActivity" android:process=":theatererror"
+            android:exported="false" android:excludeFromRecents="true" />
         <!-- the app's files folder (saves, config, mods; the game and shader caches read-only) as a root in the
              system file manager; MANAGE_DOCUMENTS: only the system file manager and picker can use it -->
         <provider android:name=".GameFilesProvider"
@@ -87,6 +99,20 @@
             android:exported="false" android:label="Preparing shaders"
             android:screenOrientation="sensorLandscape"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode|density" />
+        <activity android:name=".QuestActivity"
+            android:label="@string/app_name"
+            android:enabled="${questTheaterEnabled}"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
         <activity android:name=".WwhdActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
@@ -95,6 +121,13 @@
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation|density|colorMode"
             android:preferMinimalPostProcessing="true"
             android:exported="true">
+        </activity>
+        <!-- A plugged-in controller starts this device's game activity, never a second one -->
+        <activity android:name=".UsbAttachActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>

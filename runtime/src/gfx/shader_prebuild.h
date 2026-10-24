@@ -4,6 +4,7 @@
 #include "shader_setup_hint.h"
 #include "platform/host.h"
 #include "platform/process.h"
+#include "platform/shared_read.h"
 #include "mods/mod_json.h"
 #include "mods/mod_hash.h"
 #include "gfx/vulkan/atomic_temporary.h"
@@ -76,14 +77,11 @@ public:
 #endif
     }
 };
+// setup's shader_prebuild.py replaces these manifests while the game may read them (issue #282)
 inline mods::json::Value read(const fs::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) throw std::runtime_error("shader preparation manifest unavailable");
-    std::string text; char block[4096];
-    while (file.read(block, sizeof block) || file.gcount()) {
-        text.append(block, size_t(file.gcount()));
-        if (text.size() > 1024 * 1024) throw std::runtime_error("shader preparation manifest too large");
-    }
+    std::string text;
+    if (!host::read_shared(path, text, 1024 * 1024))
+        throw std::runtime_error("shader preparation manifest unavailable or too large");
     return mods::json::parse(text);
 }
 inline bool requested() { return fs::exists(root() / "rebuild.request"); }

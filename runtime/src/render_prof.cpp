@@ -29,12 +29,26 @@ namespace interp { uint64_t logic_steps(); }
 
 namespace rprof {
 
-bool enabled() {
-    static const bool on = [] {
-        const char* e = getenv("WWHD_PROFILE");
-        return !e || strcmp(e, "0") != 0;
-    }();
-    return on;
+namespace {
+std::atomic<bool> g_active{false};     // collecting (written by the render thread at a swap, or start())
+std::atomic<bool> g_requested{false};  // the setting
+}
+const char* env_override() {
+    static const char* const e = getenv("WWHD_PROFILE");
+    return e;
+}
+static bool env_on() { return env_override() && strcmp(env_override(), "0") != 0; }
+bool enabled() { return g_active.load(std::memory_order_relaxed); }
+bool requested() { return env_override() ? env_on() : g_requested.load(std::memory_order_relaxed); }
+static const char* source() { return env_override() ? (env_on() ? "WWHD_PROFILE=1" : "WWHD_PROFILE=0") : "setting"; }
+void set_requested(bool on) {
+    if (g_requested.exchange(on) == on) return;
+    if (env_override()) LOG("[prof] detailed performance profiling setting %s; %s decides for this start", on ? "on" : "off", source());
+}
+void start(bool saved) {
+    g_requested = saved;
+    g_active = requested();
+    LOG("[prof] detailed performance profiling %s (%s)", enabled() ? "on" : "off", source());
 }
 static bool log_reports() {
     static const bool on = [] {
@@ -148,14 +162,6 @@ void add_wait(Wait w, uint64_t ns) {
 }
 void add_idle(uint64_t ns) { W.idleNs += ns; }
 
-bool fast_class_reg(uint32_t reg) {
-    // RegDefines.h: mmSQ_ALU_CONSTANT0_0 0xC000; mmSQ_TEX_RESOURCE_WORD0 0xE000 + 0x7E0 (VS uniform
-    // blocks), + 0x250 (PS), + 0xCB0 (GS), + 0x8C0 (vertex attribute buffers), 7 words each
-    if (reg >= 0xC000 && reg < 0xC000 + 0x1000) return true;
-    for (uint32_t base : {0xE7E0u, 0xE250u, 0xECB0u, 0xE8C0u})
-        if (reg >= base && reg < base + 7 * 16) return true;  // includes the vertex stride (pipeline-only)
-    return false;
-}
 void note_other_reg(uint32_t reg) {
     g_reg_dirty |= 2;
     if (reg < otherRegs.size()) otherRegs[reg]++;
@@ -195,6 +201,40 @@ std::string latest_report() {
     std::lock_guard<std::mutex> lk(reportMutex);
     return report;
 }
+std::string report_section() {
+    std::string r = latest_report();
+    if (!r.empty()) return r;
+    if (enabled() || requested())
+        return "Detailed profiling is on; its first report is ready a few seconds after it was turned on. Copy again then.\n";
+    if (env_override())
+        return "Detailed sections (timings, uploads, draw classes) are off: WWHD_PROFILE=0 is set for this start.\n";
+    return "Detailed sections (timings, uploads, draw classes) are off. Turn on Settings > Graphics > "
+           "Detailed performance profiling, play a few seconds, then copy again.\n";
+}
+
+// a change of the setting, at a swap: no op is being timed and no draw sampled then
+static void apply_requested() {
+    const bool on = requested();
+    if (on == enabled()) return;
+    W = Window{};
+    std::fill(otherRegs.begin(), otherRegs.end(), 0);
+    for (auto& v : frameUpload) v = 0;
+    for (auto& r : reads) r.clear();
+    for (auto& c : sampleCounter) c = 0;
+    for (int i = 0; i < kSyncs; i++) syncNs[i] = 0, syncCount[i] = 0;
+    wbWalkNs = wbWalks = wbCount = wbBytes = wbReadNs = 0;
+    g_draw_sampled = false;
+    g_track_unique = false;
+    g_reg_dirty = 0;
+    windowStart = 0;
+    frameCounter = 0;
+    if (!on) {
+        std::lock_guard<std::mutex> lk(reportMutex);
+        report.clear();
+    }
+    g_active = on;
+    LOG("[prof] detailed performance profiling %s (%s)", on ? "on" : "off", source());
+}
 
 // names of frequently changing context registers (others are printed as hex addresses)
 static std::string reg_name(uint32_t r) {
@@ -227,6 +267,7 @@ void frame_end(bool hold) {
             (unsigned long long)c.timestamp_writes, (unsigned long long)c.query_reads,
             (unsigned long long)c.minimum_query_age, perf::summary().c_str());
     }
+    apply_requested();
     if (!enabled()) return;
     const uint64_t t = now_ns();
     if (!windowStart) {

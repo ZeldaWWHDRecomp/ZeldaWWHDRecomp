@@ -17,6 +17,8 @@ struct Fake final:Driver {
 };
 int main(){
     static_assert(!std::is_copy_constructible_v<Player>);
+    // an area trigger with "again": armed again only once Link is outside the area by the margin
+    assert(!area_rearmed(0,120)&&!area_rearmed(120.f*120.f,120)&&!area_rearmed((120+kAreaAgainMargin)*(120+kAreaAgainMargin),120)&&area_rearmed(200.f*200.f,120));
     {Player p;Fake f;assert(!p.start({},f,1,false));assert(!p.start({{1,false}},f,1,false));assert(!p.start({{1,true},{0,true}},f,1,false));assert(!p.start({{0,false},{0,true}},f,1,false));assert(!p.start({{18001,false},{0,true}},f,1,false));assert(!p.start({{2,false},{0,true}},f,1,true));assert(f.acquired==0);}
     {Player p;Fake f;f.acquire_ok=false;assert(!p.start({{2,false},{0,true}},f,1,false));assert(f.acquired==1&&f.released==0);}
     {Player p;Fake f;assert(p.start({{2,false},{0,true}},f,1,false));assert(!p.start({{2,false},{0,true}},f,1,false));assert(f.acquired==1);p.tick(1);assert(p.step()==0&&p.elapsed()==1);p.tick(1);assert(p.step()==1&&p.active());p.tick(1);assert(!p.active()&&f.finished==1&&f.released==1&&f.reason==StopReason::Finished);p.stop();p.tick(1);assert(f.released==1);}

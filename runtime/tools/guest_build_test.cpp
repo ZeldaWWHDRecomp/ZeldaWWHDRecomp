@@ -110,5 +110,65 @@ int main(int argc,char** argv) {
 #endif
     assert(fs::path(guestmods::release_root())==second);
     assert(fs::path(guestmods::BuildBridge::read((data/"stale.json").string(),"cache").builder)==(second/"tools"/"guestmod"/"build_guest_mod.py").lexically_normal());
+    // issue #266: setup's compiler (toolchain/) deleted. Code mods report it in plain words; the Python-only
+    // tools (stage, model, catalogue builders) don't need it.
+    {
+        const auto rel=fixture/"release";
+        fs::create_directories(rel/"tools"/"guestmod");fs::create_directories(rel/"sdk"/"include");
+        fs::create_directories(rel/"python");fs::create_directories(rel/"toolchain");
+        std::ofstream(rel/"tools"/"guestmod"/"build_guest_mod.py")<<"";
+        std::ofstream(rel/"python"/"python3")<<"";std::ofstream(rel/"toolchain"/"zig")<<"";
+        {std::ofstream out(rel/"guest-sdk.json");
+         out<<R"({"format_version":2,"python":["./python/python3"],"compiler":["./toolchain/zig","cc"],"builder":"./tools/guestmod/build_guest_mod.py","include":"./sdk/include"})";}
+        const auto config=(rel/"guest-sdk.json").string();
+#ifdef _WIN32
+        _putenv_s("WWHD_GUEST_BUILD_CONFIG",config.c_str());
+#else
+        setenv("WWHD_GUEST_BUILD_CONFIG",config.c_str(),1);
+#endif
+        using Missing=guestmods::BuildBridge::Missing;
+        assert(guestmods::BuildBridge::read(config,"cache","").missing()==Missing::None);
+        assert(guestmods::BuildBridge::installed("cache").compiler[1]=="cc");
+        fs::remove(rel/"toolchain"/"zig");
+        const auto bridge=guestmods::BuildBridge::read(config,"cache","");
+        assert(bridge.missing()==Missing::Compiler);
+        assert(bridge.missing(false)==Missing::None);
+        std::string why;
+        try{guestmods::BuildBridge::installed("cache");}catch(const std::exception& e){why=e.what();}
+        assert(why==guestmods::kCompilerMissing);
+        assert(fs::path(guestmods::BuildBridge::installed(std::string(),false).python[0])==rel/"python"/"python3");
+        fs::remove(rel/"python"/"python3");
+        assert(guestmods::BuildBridge::read(config,"cache","").missing(false)==Missing::Python);
+        why.clear();
+        try{guestmods::BuildBridge::installed(std::string(),false);}catch(const std::exception& e){why=e.what();}
+        assert(why==guestmods::kPythonMissing);
+        fs::remove(rel/"tools"/"guestmod"/"build_guest_mod.py");
+        assert(guestmods::BuildBridge::read(config,"cache","").missing()==Missing::Tools);
+        // program names are PATH lookups: not reported missing
+        {std::ofstream out(rel/"names.json");
+         out<<R"({"format_version":1,"python":["python3"],"compiler":["clang"],"builder":")"<<json_path(rel/"sdk"/"include"/"x.py")
+            <<R"(","include":")"<<json_path(rel/"sdk"/"include")<<R"("})";}
+        std::ofstream(rel/"sdk"/"include"/"x.py")<<"";
+        assert(guestmods::BuildBridge::read((rel/"names.json").string(),"cache","").missing()==Missing::None);
+    }
+    // the notice: once per start, naming the mods the missing compiler stops
+    assert(guestmods::compiler_notice({}).empty());
+    assert(guestmods::compiler_notice({"Story Notebook"})==
+           "Story Notebook needs the mod compiler, which is missing. Run setup and choose Repair to install it again.");
+    assert(guestmods::compiler_notice({"Story Notebook","Call of the Sky"})==
+           "Story Notebook and Call of the Sky need the mod compiler, which is missing. Run setup and choose Repair to install it again.");
+    assert(guestmods::compiler_notice({"A","B","C"}).rfind("A and 2 other mods need the mod compiler",0)==0);
+    struct View {std::string id,name,kind,reason;bool enabled=false,active=false;};
+    std::vector<View> views={
+        {"story-notebook","Story Notebook","guest",guestmods::kCompilerMissing,true,false},
+        {"off","Switched off","guest",guestmods::kCompilerMissing,false,false},       // not chosen: not named
+        {"other","Other problem","guest","Package changed; reinstall and confirm it again",true,false},
+        {"running","Running","guest","",true,true},
+        {"textures","Textures","content",guestmods::kCompilerMissing,true,false},     // not a code mod
+        {"no-name","","guest",guestmods::kCompilerMissing,true,false}};
+    assert(guestmods::compiler_notice_for(views)==
+           "Story Notebook and no-name need the mod compiler, which is missing. Run setup and choose Repair to install it again.");
+    views.clear();
+    assert(guestmods::compiler_notice_for(views).empty());
     std::cout<<"guest build argument/result bridge passed\n";
 }

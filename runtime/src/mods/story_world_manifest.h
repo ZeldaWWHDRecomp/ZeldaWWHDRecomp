@@ -1,5 +1,7 @@
 // SDK v3 preview: bounded declarative world content. No game save bits are accepted here.
 #pragma once
+#include "story_world_calm.h"
+#include "story_world_collision_mesh.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -32,7 +34,11 @@ struct StoryAction {
     Kind kind=Kind::Flag; std::string id; unsigned value=1;
     bool operator==(const StoryAction&)const=default;
 };
-struct ManifestModel { std::string id,source,kind="static"; };
+// A model declaration. kind "kit": a rigid model drawn with the materials of a room of the game (`kit`: its stage
+// and room; `material`: the default kit material, `materials`: model material -> kit material), as a mod stage's
+// ground is; built on the player's machine (tools/story_mods/kit_model.py, story_kit_models.h) and drawn like a
+// game piece, with the background light of the room it stands in (docs/world-objects.md, "Kit models").
+struct ManifestModel { std::string id,source,kind="static"; std::string kit_stage; int kit_room=-1; std::string kit_material; std::vector<std::pair<std::string,std::string>> kit_materials; };
 struct ManifestLookAt {
     bool enabled=false;std::string head,upper_bone;
     float yaw_degrees=0,pitch_degrees=0,rate_degrees=0,radius=0,upper_yaw_degrees=0,upper_fraction=0;
@@ -53,9 +59,10 @@ struct ManifestTalk {
 };
 // material (shoreline only): "" (the coast foam, the default; "foam" in a manifest), "water" (a still-water surface: a
 // spring pool), "pond" (an island's calm shore water with its coast foam), "river" (flowing water, scrolling along the
-// model's V) or "waterfall" (falling water)
+// model's V), "waterfall" (falling water) or "lava" (Fire Mountain's moving lava)
 struct ManifestVisualModel {std::string model,material;};
-inline bool water_surface_material(const std::string& m){return m=="water"||m=="pond"||m=="river"||m=="waterfall";}
+// a body of water's (or lava's) surface material: its object is a body (it lies on or in the island's ground)
+inline bool water_surface_material(const std::string& m){return m=="water"||m=="pond"||m=="river"||m=="waterfall"||m=="lava";}
 struct ManifestChartMarker {bool enabled=false;std::string label,when_flag;};
 struct ManifestArrival {bool enabled=false;std::string name,flag;float radius=0;};
 struct ManifestGrapplePoint {std::string id;WorldPoint position;float yaw=0;};
@@ -69,10 +76,11 @@ struct ManifestActor {
     ManifestBuoyancy buoyancy;ManifestDrift drift;ManifestAnchor anchor;
     std::vector<ManifestGrapplePoint> grapple_points;
     ManifestVisualModel distant,shoreline;ManifestChartMarker chart_marker;ManifestArrival arrival;
+    story_world_calm::Settings calm_water;  // still water around a sea island (story_world_calm.h)
     bool world_object()const{return !behaviour.empty();}
     bool water_object()const{return behaviour=="floating"||behaviour=="drifting";}
     // a body of water (the editor's water tool, docs/world-objects.md "Water"): a static object whose shoreline is a
-    // water, river or waterfall surface; it may reach into the island's ground and walls (its floor and banks meet them)
+    // water, river, waterfall or lava surface; it may reach into the island's ground and walls (its floor and banks meet them)
     bool water_body()const{return behaviour=="static"&&water_surface_material(shoreline.material);}
     ManifestLookAt look_at;ManifestPath path;
     bool carry_enabled=false,carry_break_on_impact=false;
@@ -93,8 +101,20 @@ struct ManifestActor {
     // game pieces ("actor": "piece:<id>", story_game_pieces_catalogue.h): the piece's neutral id; the placement
     // is a static world object whose model and collision are the piece's (model and collision_mesh "piece:<id>")
     std::string piece;
+    // a composition (`"group"`): static world objects of one mod made together (an island's ground and the ruins on it)
+    std::string group;
     bool game_piece()const{return !piece.empty();}
+    // a static world object whose model is a kit model (ManifestModel kind "kit"): drawn like a game piece
+    bool kit_model=false;
+    bool background_drawn()const{return game_piece()||kit_model;}
 };
+// Parts of one composition: two static world objects of one mod that name the same "group" (an island's ground and the
+// ruins standing on it, each with materials of its own kit room). Placement never compares their collisions with each
+// other; everything else (the room, other objects, other mods) counts for each as for any world object. The caller
+// checks that both are the same mod's.
+inline bool one_composition(const ManifestActor& a,const ManifestActor& b){
+    return !a.group.empty()&&a.group==b.group&&a.world_object()&&b.world_object()&&a.behaviour=="static"&&b.behaviour=="static"&&a.stage==b.stage&&a.room==b.room;
+}
 template<class Condition,class Quest,class Item,class Flag>
 inline bool condition_matches(const Condition&c,Quest quest,Item item,Flag flag,bool day){
     if(!c.quest.empty()&&quest(c.quest)!=int32_t(c.quest_step))return false;
@@ -123,6 +143,8 @@ struct ManifestScene {
     std::optional<story_native_scene_manifest::Definition> native;
     std::string trigger,stage,actor,quest,chart; unsigned room=0,quest_step=0;
     WorldPoint position; float radius=0;
+    // an area trigger with "again": the scene can play again once Link has left the area (in the same room visit)
+    bool again=false;
     bool operator==(const ManifestScene&)const=default;
 };
 // What a placed chest can hold ("parameters": {"item": ...}): the game items a treasure chart's chest can hold
@@ -383,16 +405,35 @@ inline bool parse_models(const mods::json::Value& m,std::vector<ManifestModel>& 
     if(list.type!=Value::Array||list.array.size()>8)return why="models must be a list of up to 8",false;
     std::vector<ManifestModel> parsed;
     for(const auto& v:list.array){
-        if(!keys(v,{"id","source","kind"})||!id(v.get("id"))||v.get("source").type!=Value::String)return why="invalid model declaration",false;
+        if(!keys(v,{"id","source","kind","kit","material","materials"})||!id(v.get("id"))||v.get("source").type!=Value::String)return why="invalid model declaration",false;
         const std::string kind=v.object.contains("kind")?v.get("kind").string():"static";
-        if(kind!="static"&&kind!="skinned")return why="model kind must be static or skinned",false;
+        if(kind!="static"&&kind!="skinned"&&kind!="kit")return why="model kind must be static, skinned or kit",false;
+        ManifestModel model{v.get("id").text,{},kind};
+        if(kind=="kit"){
+            // a kit room, as a mod stage room's: a stage of the game (up to 7 letters, digits, _) and a room 0..63
+            const auto& kit=v.get("kit");const std::string stage=kit.get("stage").string();
+            if(!keys(kit,{"stage","room"})||stage.empty()||stage.size()>7||stage.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")!=std::string::npos||
+               !integer(kit.get("room"),0,63))return why="model "+model.id+": a kit model's kit is a stage of the game and a room 0..63",false;
+            model.kit_stage=stage;model.kit_room=int(kit.get("room").number);
+            auto material_name=[](const Value& x){return x.type==Value::String&&!x.text.empty()&&x.text.size()<=64&&std::all_of(x.text.begin(),x.text.end(),[](unsigned char c){return c>32&&c<127&&c!='"'&&c!='\\';});};
+            if(v.object.contains("material")){if(!material_name(v.get("material")))return why="model "+model.id+": invalid kit material",false;model.kit_material=v.get("material").text;}
+            if(v.object.contains("materials")){const auto& mm=v.get("materials");if(mm.type!=Value::Object||mm.object.size()>16)return why="model "+model.id+": materials maps up to 16 model materials to kit materials",false;
+                for(const auto&[name,kit_name]:mm.object){if(!material_name(Value(name))||!material_name(kit_name))return why="model "+model.id+": invalid material mapping",false;model.kit_materials.emplace_back(name,kit_name.text);}}
+        }else if(v.object.contains("kit")||v.object.contains("material")||v.object.contains("materials"))return why="model "+model.id+": kit, material and materials are for kind kit",false;
         const auto& source=v.get("source").text;
         if(source.empty()||source.size()>240||source.front()=='/'||source.find('\\')!=std::string::npos||source.find(':')!=std::string::npos||source.size()<5||source.substr(source.size()-4)!=".glb")return why="model source must be a package-relative .glb",false;
         size_t start=0;while(start<=source.size()){const auto end=source.find('/',start);const auto part=source.substr(start,end==std::string::npos?end:end-start);if(part.empty()||part=="."||part=="..")return why="invalid model source path",false;if(end==std::string::npos)break;start=end+1;}
         for(unsigned char c:source)if(c<32||c==127)return why="invalid model source path",false;
         for(const auto& old:parsed)if(old.id==v.get("id").text)return why="duplicate model id",false;
-        parsed.push_back({v.get("id").text,source,kind});
+        model.source=source;parsed.push_back(std::move(model));
     }out=std::move(parsed);return true;
+}
+// A model declaration as a package declares it (parse_models' fields), from an editor request that may carry
+// preparation options too ("replace", "collision", "generation", "shoreline"; issue #281): what parse_models reads.
+inline mods::json::Value model_declaration(const mods::json::Value& request){
+    mods::json::Value out;out.type=mods::json::Value::Object;
+    for(const char* key:{"id","source","kind","kit","material","materials"})if(request.object.contains(key))out[key]=request.get(key);
+    return out;
 }
 // a "path" object (ManifestPath); `resident`: a placed resident's route (1..15 points after its
 // position, optional speed, no clips), else a mod actor's (2..16 points, speed, optional clips)
@@ -454,9 +495,9 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
     if(list.type==Value::Null)return true;
     if(list.type!=Value::Array||list.array.size()>kMaxActorsPerMod)return why="actors must be a list of up to 64",false;
     unsigned need=0;if(m.get("requires").type==Value::Object&&!story_game_objects::required_version(m,std::max(story_game_objects::catalogue().version,story_game_pieces::catalogue().version),need,why))return false;
-    unsigned chart_marker_count=0;
+    unsigned chart_marker_count=0,calm_water_count=0;
     for(const auto& v:list.array){ManifestActor a;
-        if(!keys(v,{"id","actor","kind","model","animation","look_at","path","collision","behaviour","buoyancy","drift","anchor","grapple_points","distant","shoreline","chart_marker","arrival","attention","stage","room","position","rotation","scale","params","parameters","flag","broken_flag","defeated_flag","drops","carry","combat","native_drops","switch_flag","switch","defeat_switch","when","lines","then","texture","talks","variant"}))return why="unknown actor field",false;
+        if(!keys(v,{"id","actor","kind","model","animation","look_at","path","collision","behaviour","group","buoyancy","drift","anchor","grapple_points","distant","shoreline","chart_marker","arrival","calm_water","attention","stage","room","position","rotation","scale","params","parameters","flag","broken_flag","defeated_flag","drops","carry","combat","native_drops","switch_flag","switch","defeat_switch","when","lines","then","texture","talks","variant"}))return why="unknown actor field",false;
         if(!id(v.get("id")))return why="invalid actor id",false;a.id=v.get("id").text;a.actor=v.get("actor").string();
         if(story_game_pieces::is_reference(a.actor)){
             if(!game_piece_fields(v,need,a,why))return false;
@@ -475,7 +516,7 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
             if(v.get("kind").string()!="mod"||v.object.contains("actor"))return why="mod actor kind cannot name a native actor",false;
             a.kind="mod";a.actor="mod";a.model=v.get("model").string();
             if(!declared(m,"models",a.model))return why="mod actor names an undeclared model",false;
-            bool skinned_model=false;for(const auto& model:models)if(model.id==a.model)skinned_model=model.kind=="skinned";
+            bool skinned_model=false;for(const auto& model:models)if(model.id==a.model){skinned_model=model.kind=="skinned";a.kit_model=model.kind=="kit";}
             if(v.object.contains("look_at")){
                 const auto& look=v.get("look_at");if(!skinned_model)return why="look_at requires a skinned model",false;
                 if(!keys(look,{"head","yaw_degrees","pitch_degrees","rate_degrees","radius","upper_body"})||!bone_name(look.get("head"))||!number(look.get("yaw_degrees"),0,180,a.look_at.yaw_degrees)||!number(look.get("pitch_degrees"),0,90,a.look_at.pitch_degrees)||!number(look.get("rate_degrees"),0,1080,a.look_at.rate_degrees,true)||!number(look.get("radius"),0,1000000,a.look_at.radius,true))return why="invalid bounded look_at settings",false;
@@ -512,17 +553,18 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
                     if(!keys(collision,{"mesh"})||!id(collision.get("mesh")))return why="invalid collision mesh reference",false;
                     a.collision_mesh=collision.get("mesh").text;
                     auto source=std::find_if(models.begin(),models.end(),[&](const auto& model){return model.id==a.collision_mesh;});
-                    if(source==models.end()||source->kind!="static")return why="collision mesh must name a declared static model",false;
+                    if(source==models.end()||(source->kind!="static"&&!(source->kind=="kit"&&a.collision_mesh==a.model)))return why="collision mesh must name a declared static model (a kit model's collision is its own model's)",false;
+                    if(a.kit_model&&a.collision_mesh!=a.model)return why="a kit model's collision is its own model's",false;
                 }else{
                     if(!keys(collision,{"shape","size","radius","height","surface"}))return why="invalid simple collision shape",false;
                     a.collision_shape=collision.get("shape").string();a.collision_surface=collision.get("surface").string("stone");
                     if(a.collision_surface!="stone"&&a.collision_surface!="grass"&&a.collision_surface!="wood"&&a.collision_surface!="sand"&&a.collision_surface!="metal"&&a.collision_surface!="wall")return why="unknown collision surface",false;
                     if(a.collision_shape=="box"){
                         const auto& size=collision.get("size");
-                        if(collision.object.contains("radius")||collision.object.contains("height")||!keys(size,{"x","y","z"})||!number(size.get("x"),0,20000,a.collision_size.x,true)||!number(size.get("y"),0,20000,a.collision_size.y,true)||!number(size.get("z"),0,20000,a.collision_size.z,true))return why="box collision needs positive size x/y/z up to 20000",false;
+                        if(collision.object.contains("radius")||collision.object.contains("height")||!keys(size,{"x","y","z"})||!number(size.get("x"),0,double(story_world_collision::mesh::MaxExtent),a.collision_size.x,true)||!number(size.get("y"),0,double(story_world_collision::mesh::MaxExtent),a.collision_size.y,true)||!number(size.get("z"),0,double(story_world_collision::mesh::MaxExtent),a.collision_size.z,true))return why="box collision needs positive size x/y/z up to 100000",false;
                     }else if(a.collision_shape=="cylinder"||a.collision_shape=="sphere"){
-                        if(collision.object.contains("size")||!number(collision.get("radius"),0,10000,a.collision_radius,true))return why="shape radius must be positive and at most 10000",false;
-                        if(a.collision_shape=="cylinder"){if(!number(collision.get("height"),0,20000,a.collision_height,true))return why="cylinder height must be positive and at most 20000",false;}
+                        if(collision.object.contains("size")||!number(collision.get("radius"),0,double(story_world_collision::mesh::MaxExtent)/2,a.collision_radius,true))return why="shape radius must be positive and at most 50000",false;
+                        if(a.collision_shape=="cylinder"){if(!number(collision.get("height"),0,double(story_world_collision::mesh::MaxExtent),a.collision_height,true))return why="cylinder height must be positive and at most 100000",false;}
                         else if(collision.object.contains("height"))return why="sphere collision does not take height",false;
                     }else return why="collision requires mesh or box, cylinder or sphere shape",false;
                 }
@@ -568,23 +610,37 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
         if(!place(v,a.stage,a.room)||!point(v.get("position"),a.position))return why="actor "+a.id+": invalid stage, room or position",false;
         if(v.get("rotation").type!=Value::Null&&!point(v.get("rotation"),a.rotation,360))return why="invalid actor rotation",false;
         if(v.get("scale").type!=Value::Null&&(!point(v.get("scale"),a.scale,10)||a.scale.x<=0||a.scale.y<=0||a.scale.z<=0))return why="invalid actor scale",false;
+        if(v.object.contains("group")){if(!id(v.get("group"))||!a.world_object()||a.behaviour!="static")return why="actor "+a.id+": group names the composition of static world objects it belongs to (an id)",false;a.group=v.get("group").text;}
         if((v.object.contains("buoyancy")||v.object.contains("drift")||v.object.contains("anchor"))&&!a.water_object())return why="motion settings require floating or drifting behaviour",false;
-        const bool island_fields=v.object.contains("distant")||v.object.contains("shoreline")||v.object.contains("chart_marker")||v.object.contains("arrival");
-        if(island_fields&&(!a.world_object()||a.behaviour!="static"||a.stage!="sea"))return why="distant, shoreline, chart_marker and arrival require a static sea world object",false;
+        // a kit model: a static world object turned about the vertical axis only, at its own size (as game pieces)
+        if(a.kit_model&&(a.behaviour!="static"||a.scale.x!=1||a.scale.y!=1||a.scale.z!=1||a.rotation.x!=0||a.rotation.z!=0))return why="actor "+a.id+": a kit model is a static world object, turned about the vertical axis only, at scale 1",false;
+        const bool island_fields=v.object.contains("distant")||v.object.contains("shoreline")||v.object.contains("chart_marker")||v.object.contains("arrival")||v.object.contains("calm_water");
+        if(island_fields&&(!a.world_object()||a.behaviour!="static"||a.stage!="sea"))return why="distant, shoreline, chart_marker, arrival and calm_water require a static sea world object",false;
         auto visual_model=[&](const char*key,ManifestVisualModel&out){
             if(!v.object.contains(key))return true;const auto&value=v.get(key);
             const bool shore=std::string(key)=="shoreline";
             if(!(shore?keys(value,{"model","material"}):keys(value,{"model"}))||!id(value.get("model")))return false;
             if(shore&&value.object.contains("material")){const auto&m=value.get("material");if(m.type!=Value::String||(m.text!="foam"&&!water_surface_material(m.text)))return false;if(m.text!="foam")out.material=m.text;}
             out.model=value.get("model").text;
-            return std::any_of(models.begin(),models.end(),[&](const auto&model){return model.id==out.model&&model.kind=="static";});
+            // a distant model may be a kit model (drawn with game materials, as the island it stands for); a shoreline may not
+            return std::any_of(models.begin(),models.end(),[&](const auto&model){return model.id==out.model&&(model.kind=="static"||(!shore&&model.kind=="kit"));});
         };
-        if(!visual_model("distant",a.distant)||!visual_model("shoreline",a.shoreline))return why="distant and shoreline must name declared same-package rigid static models (a shoreline's material is foam, water, pond, river or waterfall)",false;
+        if(!visual_model("distant",a.distant)||!visual_model("shoreline",a.shoreline))return why="distant and shoreline must name declared same-package rigid static models (a shoreline's material is foam, water, pond, river, waterfall or lava)",false;
         auto island_text=[](const Value&value,std::string&out){std::u16string decoded;if(value.type!=Value::String||value.text.empty()||value.text.size()>96||!story_mail::append_utf16(value.text,false,decoded))return false;out=value.text;return true;};
         if(v.object.contains("arrival")){
             const auto&value=v.get("arrival");
-            if(!keys(value,{"name","radius","flag"})||!island_text(value.get("name"),a.arrival.name)||!number(value.get("radius"),100,20000,a.arrival.radius)||!flag_id(value.get("flag")))return why="arrival requires a single-line name up to 96 bytes, radius 100..20000 and a mod-owned flag",false;
+            if(!keys(value,{"name","radius","flag"})||!island_text(value.get("name"),a.arrival.name)||!number(value.get("radius"),100,double(story_world_collision::mesh::MaxExtent),a.arrival.radius)||!flag_id(value.get("flag")))return why="arrival requires a single-line name up to 96 bytes, radius 100..100000 and a mod-owned flag",false;
             a.arrival.enabled=true;a.arrival.flag=value.get("flag").text;
+        }
+        if(v.object.contains("calm_water")){
+            namespace calm=story_world_calm;const auto&value=v.get("calm_water");auto&c=a.calm_water;
+            if(!keys(value,{"radius","falloff","offset"})||!number(value.get("radius"),calm::kMinRadius,calm::kMaxRadius,c.radius))
+                return why="actor "+a.id+": calm_water requires a radius of 100..100000 (and may give falloff 800..25600 and offset {x, z})",false;
+            if(value.object.contains("falloff")&&!number(value.get("falloff"),calm::kMinFalloff,calm::kMaxFalloff,c.falloff))return why="actor "+a.id+": calm_water falloff must be 800..25600",false;
+            if(value.object.contains("offset")){const auto&o=value.get("offset");
+                if(!keys(o,{"x","z"})||!number(o.get("x"),-calm::kMaxOffset,calm::kMaxOffset,c.offset_x)||!number(o.get("z"),-calm::kMaxOffset,calm::kMaxOffset,c.offset_z))return why="actor "+a.id+": calm_water offset must be {x, z} within 100000",false;}
+            if(++calm_water_count>calm::kMaxPerMod)return why="a mod may declare at most eight calm_water zones",false;
+            c.enabled=true;
         }
         if(v.object.contains("chart_marker")){
             const auto&value=v.get("chart_marker");
@@ -597,7 +653,7 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
             const auto&points=v.get("grapple_points");
             if(!a.world_object()||points.type!=Value::Array||points.array.size()>8)return why="grapple_points requires a world object and at most eight points",false;
             for(const auto&value:points.array){ManifestGrapplePoint p;
-                if(!keys(value,{"id","position","yaw"})||!id(value.get("id"))||!keys(value.get("position"),{"x","y","z"})||!point(value.get("position"),p.position,20000))return why="grapple point needs an id and bounded local position",false;
+                if(!keys(value,{"id","position","yaw"})||!id(value.get("id"))||!keys(value.get("position"),{"x","y","z"})||!point(value.get("position"),p.position,story_world_collision::mesh::MaxExtent))return why="grapple point needs an id and bounded local position",false;
                 p.id=value.get("id").text;
                 if(value.object.contains("yaw")&&!number(value.get("yaw"),-360,360,p.yaw))return why="grapple point yaw must be within -360 to 360 degrees",false;
                 if(std::any_of(a.grapple_points.begin(),a.grapple_points.end(),[&](const auto&old){return old.id==p.id;}))return why="grapple point ids must be unique within an object",false;
@@ -695,6 +751,8 @@ inline bool parse_actors_impl(const mods::json::Value& m,std::vector<ManifestAct
             else return why="unsupported named actor parameter: "+key,false;
         }
         if(a.actor=="resident")if(const char* no=story_resident_types::place_problem(uint8_t(a.resident),a.stage,a.position.x,a.position.z))return why=no,false;
+        if(a.actor=="resident"&&a.resident<256&&story_resident_types::goron(uint8_t(a.resident))&&(a.scale.x!=a.scale.y||a.scale.x!=a.scale.z||a.scale.x<0.5f||a.scale.x>1.5f))
+            return why="a Goron merchant takes a uniform scale from 0.5 to 1.5",false;
         if(a.actor=="resident"&&v.object.contains("path")){
             if(const char* no=story_resident_types::no_walk(uint8_t(a.resident)))return why=no,false;
             if(!parse_path(v.get("path"),a.position,true,a.path,why))return false;
@@ -756,12 +814,13 @@ inline bool parse_scenes_impl(const mods::json::Value& m,std::vector<ManifestSce
         const auto& trigger=v.get("trigger");if(trigger.type!=Value::Null){s.trigger=trigger.get("type").string();
             bool trigger_keys=false;
             if(s.trigger=="room")trigger_keys=keys(trigger,{"type","stage","room"});
-            else if(s.trigger=="area")trigger_keys=keys(trigger,{"type","stage","room","position","radius"});
+            else if(s.trigger=="area")trigger_keys=keys(trigger,{"type","stage","room","position","radius","again"});
             else if(s.trigger=="talk")trigger_keys=keys(trigger,{"type","actor"});
             else if(s.trigger=="quest_step")trigger_keys=keys(trigger,{"type","quest","step"});
             else if(s.trigger=="salvage")trigger_keys=keys(trigger,{"type","chart"});
             if(!trigger_keys)return why="unknown scene trigger or field",false;
-            if(s.trigger=="room"||s.trigger=="area"){if(!place(trigger,s.stage,s.room))return why="invalid scene room trigger",false;if(s.trigger=="area"){if(!point(trigger.get("position"),s.position)||trigger.get("radius").type!=Value::Number||!std::isfinite(trigger.get("radius").number)||trigger.get("radius").number<=0||trigger.get("radius").number>10000)return why="invalid scene area trigger",false;s.radius=float(trigger.get("radius").number);}}
+            if(s.trigger=="room"||s.trigger=="area"){if(!place(trigger,s.stage,s.room))return why="invalid scene room trigger",false;if(s.trigger=="area"){if(!point(trigger.get("position"),s.position)||trigger.get("radius").type!=Value::Number||!std::isfinite(trigger.get("radius").number)||trigger.get("radius").number<=0||trigger.get("radius").number>10000)return why="invalid scene area trigger",false;s.radius=float(trigger.get("radius").number);
+                if(trigger.object.contains("again")){if(trigger.get("again").type!=Value::Bool)return why="a scene area trigger's again is true or false",false;s.again=trigger.get("again").boolean;}}}
             else if(s.trigger=="talk"){s.actor=trigger.get("actor").string();if(!declared(m,"actors",s.actor))return why="unknown trigger actor",false;}
             else if(s.trigger=="quest_step"){s.quest=trigger.get("quest").string();if(!integer(trigger.get("step"),1,254)||!quest_step(m,s.quest,unsigned(trigger.get("step").number)))return why="unknown trigger quest step",false;s.quest_step=unsigned(trigger.get("step").number);}
             else if(s.trigger=="salvage"){s.chart=trigger.get("chart").string();if(!declared(m,"charts",s.chart))return why="unknown trigger chart",false;}

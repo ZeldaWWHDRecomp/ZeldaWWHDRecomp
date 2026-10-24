@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: CLANG64
           update: true
@@ -65,3 +66,17 @@ jobs:
       - name: Installer long path unit tests (python.org Python, as in the release)
         shell: pwsh
         run: python tools/installer/test_setup.py LongPaths
+
+      - name: Shader generation and console setup on local UNC share
+        shell: pwsh
+        env:
+          WWHD_UNC_CONSOLE_FIXTURE: ${{ github.workspace }}/build/windows/unc_console_fixture.exe
+        run: python tools/installer/test_unc_setup.py
+
+      - name: Atomic code-mod status publication (release Python)
+        shell: pwsh
+        run: |
+          python tools/installer/test_setup.py AtomicReplace
+          # the MSYS2 CLANG64 test reader needs its runtime DLLs; appended, so "python" stays python.org's
+          $env:PATH = "$env:PATH;${{ steps.msys2.outputs.msys2-location }}\clang64\bin"
+          python tools/installer/test_code_mods_io.py build/windows/code_mods_io_test.exe

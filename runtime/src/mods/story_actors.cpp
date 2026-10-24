@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 #include "story_actors.h"
+#include "story_scene_needs.h"
 #include "story_world_visuals.h"
 #include "story_world_arrival.h"
 #include "story_chart.h"
@@ -51,7 +52,7 @@ namespace {
 using story_notebook::ManifestActor;
 struct Actor {std::string mod; ManifestActor spec; uint32_t process=0xFFFFFFFFu; bool deleting=false; uint32_t mod_token=0; bool restore_talk=false;uint32_t prop_token=0,switch_token=0,switch_source=0,enemy_token=0;story_items::EnemyMarkerHandle combat_marker{};story_items::PropMarkerHandle carry_marker=0;identity::Fingerprint fingerprint{};bool restore_quarantined=false;bool respawn=false;bool removed=false;uint32_t resident_event_token=0;bool redeclare=false;uint32_t held_started=0xFFFFFFFFu;/* editor: the process whose first Execute a held pose ran */
     // a game object (story_game_objects.h): created on the retail profile, tracked by process id, read back once made
-    bool game=false,game_batch=false,game_checked=false,game_mismatch=false;uint8_t game_attempts=0;uint32_t game_planted=0;story_game_objects::Native game_native{};
+    bool game=false,game_batch=false,game_checked=false,game_mismatch=false;uint8_t game_attempts=0;uint32_t game_planted=0,game_room=0;/* the room process a game object was made in */story_game_objects::Native game_native{};
     int route_slot=-1;/* a walking resident's route record (story_resident_routes) */};
 std::vector<Actor> g_actors;
 void native_redeclare(Actor& a);  // the editor: a changed native declaration, once its old copy is gone
@@ -65,7 +66,7 @@ std::set<std::string> g_island_mods;
 
 void(*g_original)(Cpu*,uint32_t)=nullptr;
 uint32_t(*g_call)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
-uint32_t g_scratch=0; bool g_installed=false,g_resident_hooks=false,g_ym1_hooks=false;
+uint32_t g_scratch=0; bool g_installed=false,g_resident_hooks=false,g_ym1_hooks=false,g_goron_hooks=false;
 std::function<bool(const std::string&,const std::string&)> g_scene;
 std::function<bool(const std::string&,const std::string&,unsigned,unsigned)> g_stage;  // mod_stages::enter_stage
 const uint32_t kRoom=GC(0x025C2E8C),kCreate=GC(0x025D5834),kSearch=GC(0x025D54C4),kSearchName=GC(0x025C109C);
@@ -142,15 +143,19 @@ Actor* find(uint32_t address) {
         if(a.enemy_token){story_enemies::Kind kind;if(!enemy_kind(a.spec,kind)||ld16(address+0xE)!=story_enemy_ownership::descriptor(kind).profile||ld32(address+0xB0)!=story_enemies::parameters(a.enemy_token)||ld8(address+0x2DD)!=0xFF)return nullptr;}
         if(a.switch_token&&(ld16(address+0xE)!=(a.spec.actor=="switch"?story_switches::kSwitchProfile:story_switches::kDoorProfile)||ld32(address+0xB0)!=story_switches::parameters(a.spec.actor=="switch"?story_switches::Kind::Switch:story_switches::Kind::Door)||ld8(address+0x2DD)!=0xFF))return nullptr;
         if(a.game&&story_game_objects::read_back(address,a.game_native)!=story_game_objects::ReadBack::Match)return nullptr;
-        if(a.spec.actor=="resident"){const bool seated=a.spec.resident==kYm1;if(ld16(address+0xE)!=(seated?0x13B:0x175)||ld8(address+0x2DD)!=(seated?0xFF:a.spec.resident))return nullptr;if(seated&&ld32(address+0xB0)!=1)return nullptr;}
+        if(a.spec.actor=="resident"){const uint8_t r=uint8_t(a.spec.resident);if(ld16(address+0xE)!=story_resident_types::profile(r)||ld8(address+0x2DD)!=uint8_t(story_resident_types::create_argument(r)))return nullptr;if(r==kYm1&&ld32(address+0xB0)!=1)return nullptr;if(story_resident_types::goron(r)&&ld32(address+0xB0)!=story_resident_types::goron_params(r))return nullptr;}
         return &a;
     }
     return nullptr;
 }
 Actor* people(uint32_t address) {
     Actor* a=find(address);
-    return a&&a->spec.actor=="resident"&&a->spec.resident!=kYm1&&ld8(address+0x905)==a->spec.resident?a:nullptr;
+    return a&&a->spec.actor=="resident"&&people_type(a->spec.resident)&&ld8(address+0x905)==a->spec.resident?a:nullptr;
 }
+// a placed Goron merchant (daNpcRoten_c): its merchant number (+0xB31, set by its first create phase) is the declared one
+constexpr uint32_t kRotenNpcNo=0xB31,kRotenResFlag=0xB30,kRotenTalking=0xB28,kRotenOrder=0xB2B,kRotenMsgList=0xB00;
+bool goron_type(unsigned resident){return resident<256&&story_resident_types::goron(uint8_t(resident));}
+Actor* goron(uint32_t address){Actor* a=find(address);return a&&a->spec.actor=="resident"&&goron_type(a->spec.resident)&&ld8(address+kRotenNpcNo)==story_resident_types::goron_number(uint8_t(a->spec.resident))?a:nullptr;}
 Actor* ym1(uint32_t address){Actor* a=find(address);return a&&a->spec.actor=="resident"&&a->spec.resident==kYm1&&ld8(address+0xA20)==1&&ld8(address+0xA21)==1?a:nullptr;}
 uint32_t talk_latch_address(const Actor* a){return g_scratch+kTalkLatchOffset+uint32_t(a-g_actors.data());}
 void talk_latch(const Actor* a,uint8_t value){if(a&&g_scratch)st8(talk_latch_address(a),value?uint8_t((ld8(talk_latch_address(a))&0xFC)|value):0);}
@@ -398,6 +403,83 @@ void ym1_execute(Cpu* c){
     g_original(c,kYm1Execute);
     if(g_talk.npc==npc&&ld16(npc+0xF8)==0){if(g_talk.terminal)end_talk();else cancel_talk("ym1-nonterminal-cancel");}
 }
+// ---- the Goron merchants (daNpcRoten_c). A placed copy keeps the class's own wait, look-at, talk
+// animations, attention and collision; what belongs to the sea's merchants is intercepted per copy:
+// the game's gate (they appear once the story has them, event bit 0x1108), their messages (getMsg sets
+// the first-talk save bit and runs the trade's message lists), the item show (the trade: its event
+// condition, callback and exchange/map events) and the retail event cuts. The sea's merchants are untouched.
+const uint32_t kRotenPhase1=GC(0x022D3234),kRotenMsg=GC(0x022D6304),kRotenNext=GC(0x022D60DC),kRotenEventOrder=GC(0x022D4EF0);
+const uint32_t kRotenExecute=GC(0x022D5580),kRotenTalk=GC(0x022D5ABC),kRotenDelete=GC(0x022D3B34);
+void roten_phase1(Cpu* c){
+    const uint32_t npc=c->r[3];g_original(c,kRotenPhase1);
+    if(c->r[3]!=3)return;  // cPhs_STOP_e: the game's merchants aren't out yet
+    Actor* a=goron(npc);if(!a)return;
+    st8(npc+kRotenResFlag,1);c->r[3]=2;native_trace(a,npc,"goron-gate");  // as the game does once they are (cPhs_NEXT_e)
+}
+void roten_message(Cpu* c){
+    const uint32_t npc=c->r[3];Actor* a=goron(npc);if(!a)return g_original(c,kRotenMsg);
+    st32(npc+kRotenMsgList,0);  // no retail message list: next_msgStatus never walks one
+    const uint32_t layer=ld32(npc+0x2C);
+    if((layer&&scene_is_deleting(ld32(layer+0x18)))||!story_mail::can_say()||talk_latch(a)==3||(g_talk.npc&&g_talk.npc!=npc)){c->r[3]=0;return;}
+    if(!bind_talk(a,npc)){c->r[3]=0;return;}
+    a->restore_talk=false;native_trace(a,npc,"goron-text-bind");
+    LOG("[actors] %s:%s native dialogue uses mod text (%zu UTF-16 units)",a->mod.c_str(),a->spec.id.c_str(),g_talk.text.size());
+    c->r[3]=kCarrier;
+}
+void roten_next(Cpu* c){if(goron(c->r[3]))c->r[3]=0x10;else g_original(c,kRotenNext);}
+void roten_event_order(Cpu* c){
+    const uint32_t npc=c->r[3];Actor* a=goron(npc);
+    if(a&&ld8(npc+kRotenOrder)>2)st8(npc+kRotenOrder,0);  // talk orders only: no exchange, item or map event
+    g_original(c,kRotenEventOrder);
+    if(a)st16(npc+0xFA,uint16_t(ld16(npc+0xFA)&~0x0020u));  // no item show (the trade)
+}
+void roten_talk(Cpu* c){
+    const uint32_t npc=c->r[3];Actor* a=goron(npc);const bool talking=a&&ld8(npc+kRotenTalking)==1;
+    g_original(c,kRotenTalk);
+    // executeTalk ends the talk (its flag back to 0) once the message box has closed: the mod text was all said
+    if(a&&talking&&ld8(npc+kRotenTalking)==0&&g_talk.npc==npc&&ld32(npc+0x7C0)==kCarrier){g_talk.terminal=true;native_trace(a,npc,"goron-terminal");}
+}
+void roten_execute(Cpu* c){
+    const uint32_t npc=c->r[3];Actor* a=goron(npc);if(!a)return g_original(c,kRotenExecute);
+    if(!player_present(c)){if(g_talk.npc==npc)cancel_talk("no-player");c->r[3]=0;return;}
+    const uint32_t layer=ld32(npc+0x2C);
+    if(talk_latch(a)==3&&ld16(npc+0xF8)==0){talk_latch(a,0);clear_talk_proof();}
+    if(layer&&scene_is_deleting(ld32(layer+0x18))){if(g_talk.npc==npc)cancel_talk("draining");a->restore_talk=false;}
+    else if(a->restore_talk){
+        a->restore_talk=false;
+        if(!g_talk.actor&&ld16(npc+0xF8)==1&&ld32(npc+0x7C0)==kCarrier&&ld8(npc+0x7CC)<=1&&ld32(npc+0x7C8)!=0xFFFFFFFFu&&story_mail::can_say()){bind_talk(a,npc,false,true);native_trace(a,npc,"goron-restore-text-rebind");}
+    }
+    st16(npc+0xFC,0xFFFF);  // no retail event
+    st32(npc+0x100,0);st32(npc+0x104,0);st32(npc+0x108,0);  // the item-show (trade) callbacks belong to the sea's merchants
+    g_original(c,kRotenExecute);
+    if(g_talk.npc==npc&&ld16(npc+0xF8)==0){if(g_talk.terminal)end_talk();else cancel_talk("goron-nonterminal-cancel");}
+}
+void roten_delete(Cpu* c){Actor* a=find(c->r[3]);if(a&&a->spec.actor=="resident"&&goron_type(a->spec.resident)){if(g_talk.actor==a)cancel_talk("delete");talk_latch(a,0);a->restore_talk=false;native_trace(a,c->r[3],"goron-native-delete");a->process=0xFFFFFFFFu;st32(g_scratch+128+uint32_t(a-g_actors.data())*4,0xFFFFFFFFu);}g_original(c,kRotenDelete);}
+// ---- a placed trading stall (game:stall, Zunari's stall on Windfall, d_a_obj_roten). Its create stops unless
+// the player has gathered enough Delivery Bag items (3, 6 or 9 by its size): for a placed copy only, the bag
+// check answers "reserved" while that copy's create runs. Its matrix takes the position alone (the game's
+// stalls are placed unturned): a placed copy also takes its turn about the vertical axis, so its model and its
+// collision (which follows the model's matrix) face where the mod turns it. The game's own stalls are untouched.
+const uint32_t kStallCreate=GC(0x02388B50),kStallMtx=GC(0x02388A1C),kBagReserve=GC(0x025B7840);
+bool g_owned_stall_create=false;
+bool owned_stall(uint32_t a){Actor* o=find(a);return o&&o->game&&story_game_objects::reference(o->spec.actor)=="stall";}
+void stall_create(Cpu* c){const bool owned=owned_stall(c->r[3]);const bool keep=g_owned_stall_create;g_owned_stall_create=owned;g_original(c,kStallCreate);g_owned_stall_create=keep;}
+void bag_reserve(Cpu* c){if(g_owned_stall_create){c->r[3]=1;return;}g_original(c,kBagReserve);}
+void stall_mtx(Cpu* c){
+    const uint32_t a=c->r[3];g_original(c,kStallMtx);if(!owned_stall(a))return;
+    const uint32_t m=ld32(a+0x3B4);if(m<mem::kMem2Start||m>mem::kMem2End-0x100)return;
+    const double yaw=double(int16_t(ld16(a+0x322)))*3.14159265358979323846/32768.0;const float cs=float(std::cos(yaw)),sn=float(std::sin(yaw));
+    const float r[3][3]={{cs,0,sn},{0,1,0},{-sn,0,cs}};
+    // the three stall models stand where Zunari's stall is on Windfall, about 1600 units off their origin and 668 up (the
+    // game places them at the room's middle): the placed copy's position is the middle of its footprint at its foot
+    static constexpr float kFoot[3][3]={{1595.5f,668,-4126},{1449,668,-4113},{1938,668,-3882.5f}};
+    const unsigned type=std::min(2u,unsigned(ld32(a+0xB0)>>24));const float* o=kFoot[type];
+    const float pos[3]={float(ldf32(a+0x314)),float(ldf32(a+0x318)),float(ldf32(a+0x31C))};
+    for(unsigned i=0;i<3;++i){for(unsigned j=0;j<3;++j)st32(m+0xC8+i*16+j*4,f32_as_u32(r[i][j]));
+        st32(m+0xC8+i*16+12,f32_as_u32(pos[i]-(r[i][0]*o[0]+r[i][1]*o[1]+r[i][2]*o[2])));}
+}
+// the placed copy of `a` at `npc` through the accessor of its class
+Actor* placed_resident(const Actor* a,uint32_t npc){return a->spec.resident==kYm1?ym1(npc):goron_type(a->spec.resident)?goron(npc):people(npc);}
 void ym1_delete(Cpu* c){Actor* a=find(c->r[3]);if(a&&a->spec.resident==kYm1){if(g_talk.actor==a)cancel_talk("delete");talk_latch(a,0);a->restore_talk=false;native_trace(a,c->r[3],"ym1-native-delete");a->process=0xFFFFFFFFu;st32(g_scratch+128+uint32_t(a-g_actors.data())*4,0xFFFFFFFFu);}g_original(c,kYm1Delete);}
 
 // The checks a mod's actor list must pass, shared by start-up loading and the world editor's live
@@ -424,8 +506,15 @@ bool sync_visuals(const std::string&mod,const std::vector<ManifestActor>&actors,
  if(g_installed&&!story_world_visuals::replace(mod,preview,why,false))return false;
  if(!apply)return true;g_visual_bindings.reserve(128);std::vector<story_world_visuals::Spec> specs;
  for(const auto&p:plan){const auto&r=g_models.at({mod,p.spec.model});uint32_t token=p.binding?p.binding->token:mod_actor::declare(mod,p.spec,r.archive,r.index,{},r.minimum,r.maximum);if(!token)return why="cannot reserve visual model declaration",false;if(p.binding&&!mod_actor::redeclare(token,p.spec,r.archive,r.index,r.minimum,r.maximum,false,{}, {},true))return why="cannot update visual model declaration",false;if(!mod_actor::visual_role(token,p.role==story_world_visuals::Role::Distant))return why="cannot make collision-free model variant",false;if(!p.binding)g_visual_bindings.push_back({mod,p.parent->id,p.role,token});specs.push_back({mod,p.parent->id,p.role,token,int(p.parent->room),p.parent->position,p.parent->rotation,p.parent->scale,identity::fingerprint(mod,*p.parent)});}
- if(g_installed&&!story_world_visuals::replace(mod,specs,why))return false;for(const auto&a:actors){if(a.arrival.enabled||a.chart_marker.enabled)g_island_mods.insert(mod);if(a.arrival.enabled)story_world_arrival::note_declared();}return true;
+ if(g_installed&&!story_world_visuals::replace(mod,specs,why))return false;for(const auto&a:actors){if(a.arrival.enabled||a.chart_marker.enabled)g_island_mods.insert(mod);if(a.arrival.enabled)story_world_arrival::note_declared();if(a.calm_water.enabled)story_world_calm::note_declared();}return true;
 }
+}
+size_t calm_zones(story_world_calm::Zone*out,size_t max){
+ size_t n=0;for(const auto&a:g_actors){if(!a.spec.calm_water.enabled||a.spec.stage!="sea"||!a.mod_token||!eligible(a))continue;  // (no token: its island was left out)
+ if(n==max)break;out[n++]=story_world_calm::zone_of(a.spec.calm_water,a.spec.position.x,a.spec.position.z,a.spec.rotation.y);}
+ return n;
+}
+namespace {
 void publish_islands(Cpu*c,uint32_t player){
  const auto book=story_store::book();std::map<std::string,std::vector<story_chart::WorldMarker>> markers;for(const auto&mod:g_island_mods)markers[mod];const bool sea=std::strncmp(reinterpret_cast<const char*>(mem::ptr(kStage)),"sea",8)==0;const int room=int8_t(ld8(player+0x326));
  for(const auto&a:g_actors){if(!a.spec.chart_marker.enabled&&!a.spec.arrival.enabled)continue;auto&own=markers[a.mod];if(!eligible(a))continue;
@@ -566,24 +655,33 @@ bool register_model(const std::string& mod,const std::string& model,const std::s
     g_models.emplace(key,ModelResource{archive,index,minimum,maximum,skinned,std::move(clips),std::move(rig)});return true;
 }
 bool editor_register_model(const std::string& mod,const std::string& model,const std::string& archive,bool skinned,std::string& why){
-    if(g_models.contains({mod,model}))return true;
+    // the same archive again: nothing to do; another one (the editor's replace_model, issue #287): the model's new
+    // version, which its actors take when they are declared again
+    const auto known=g_models.find({mod,model});if(known!=g_models.end()&&known->second.archive==archive)return true;
+    const bool replaced=known!=g_models.end();
     story_notebook::WorldPoint minimum,maximum;
     if(!actor_model_cache::bounds_for(archive,minimum,maximum))return why="the prepared model has no bounds",false;
     for(const auto& entry:g_models)if(entry.second.archive==archive)return why="actor model archive identity collision",false;
     auto clips=actor_model_cache::clips_for(archive);auto rig=actor_model_cache::rig_for(archive);
     if(rig.joint_names.size()!=rig.joint_parents.size()||rig.joint_names.size()>32||clips.size()>8||(!skinned&&(!clips.empty()||!rig.joint_names.empty())))return why="invalid prepared model rig or clips",false;
-    g_models.emplace(std::make_pair(mod,model),ModelResource{archive,1,minimum,maximum,skinned,std::move(clips),std::move(rig)});
-    LOG("[actors] %s:%s model prepared for the editor (%s)",mod.c_str(),model.c_str(),archive.c_str());
+    g_models.insert_or_assign(std::make_pair(mod,model),ModelResource{archive,1,minimum,maximum,skinned,std::move(clips),std::move(rig)});
+    LOG("[actors] %s:%s model %s for the editor (%s)",mod.c_str(),model.c_str(),replaced?"replaced":"prepared",archive.c_str());
     return true;
 }
 bool has_model(const std::string& mod,const std::string& model){return g_models.contains({mod,model});}
 bool register_piece_model(const std::string& mod,const std::string& model,const std::string& archive,int index,story_notebook::WorldPoint minimum,story_notebook::WorldPoint maximum,bool editor,std::string& why){
     if(g_installed&&!editor)return why="actor models must be registered before hooks are installed",false;
-    if(mod.empty()||model.rfind("piece:",0)!=0||archive.size()!=31||index<1||index>16)return why="invalid game piece model resource",false;
+    // a game piece ("piece:<id>", a "gp" set) or a mod's kit model (its own model id, a "gk" archive, story_kit_models.h)
+    if(mod.empty()||(model.rfind("piece:",0)!=0&&archive.rfind("gk",0)!=0)||archive.size()!=31||index<1||index>16)return why="invalid game piece model resource",false;
     const float lo[]={minimum.x,minimum.y,minimum.z},hi[]={maximum.x,maximum.y,maximum.z};for(unsigned i=0;i<3;++i)if(!std::isfinite(lo[i])||!std::isfinite(hi[i])||lo[i]>hi[i])return why="invalid game piece bounds",false;
     // a set's pieces share its archive; no mod model may use it
-    for(const auto& [key,entry]:g_models)if(entry.archive==archive&&key.second.rfind("piece:",0)!=0)return why="actor model archive identity collision",false;
-    if(auto found=g_models.find({mod,model});found!=g_models.end())return found->second.archive==archive&&found->second.index==index?true:(why="the game piece changed; restart",false);
+    for(const auto& [key,entry]:g_models)if(entry.archive==archive&&key.second.rfind("piece:",0)!=0&&archive.rfind("gk",0)!=0)return why="actor model archive identity collision",false;
+    if(auto found=g_models.find({mod,model});found!=g_models.end()){
+        if(found->second.archive==archive&&found->second.index==index)return true;
+        // the editor: a changed kit model is a new archive (its identity follows its content); its actors take it when redeclared
+        if(editor&&archive.rfind("gk",0)==0&&found->second.archive.rfind("gk",0)==0){found->second=ModelResource{archive,index,minimum,maximum,false,{},{}};return true;}
+        return why="the game piece changed; restart",false;
+    }
     g_models.emplace(std::make_pair(mod,model),ModelResource{archive,index,minimum,maximum,false,{},{}});return true;
 }
 void set_game_calls(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){g_original=original;g_call=call;}
@@ -673,7 +771,15 @@ void room_loaded(Cpu* c,int room) {
         if(a.process!=0xFFFFFFFFu) {
             Cpu probe=*c;st32(g_scratch+0x40,0);const uint32_t exists=g_call(&probe,kSearch,{a.process,g_scratch+0x40});
             if(exists)continue;  // also true while asynchronous actor creation is pending
+            // a game object the game itself took away once it was made (a boulder blown up, a rock thrown and broken):
+            // as the game's own without a switch, it is back when its room loads again, not before
+            if(a.game&&!a.game_batch&&a.game_checked&&!a.deleting&&a.game_room==ld32(GD(0x1047E8F0)+uint32_t(room)*0x22C)){
+                a.game_planted=story_game_objects::planted_mark(ld32(GD(0x1047E8F0)+uint32_t(room)*0x22C));a.process=0xFFFFFFFFu;
+                st32(g_scratch+128+uint32_t(&a-g_actors.data())*4,a.game_planted);
+                LOG("[game_objects] %s:%s is gone (the game removed it); back when its room loads again",a.mod.c_str(),a.spec.id.c_str());continue;}
         }
+        if(a.game&&!a.game_batch&&a.game_planted){const uint32_t now=ld32(GD(0x1047E8F0)+uint32_t(room)*0x22C);
+            if(a.game_planted==story_game_objects::planted_mark(now)&&a.game_room==now)continue;a.game_planted=0;}  // gone this visit; a new visit makes it again
         if(++count>story_notebook::kMaxActorsPerRoom)break;
         std::string reserved_flag=a.spec.flag;
         if(a.switch_token){const Actor* source=nullptr;for(const auto& candidate:g_actors)if(candidate.spec.actor=="switch"&&candidate.switch_token==a.switch_source&&candidate.mod==a.mod)source=&candidate;if(!source)continue;reserved_flag=source->spec.switch_flag;}
@@ -711,7 +817,7 @@ void room_loaded(Cpu* c,int room) {
             if(!a.game_batch){++a.game_attempts;a.game_checked=false;story_game_objects::trace_before_create(c,g_call,a.mod,a.spec.id);}
         }
         story_enemies::Kind enemy{};(void)enemy_kind(a.spec,enemy);
-        uint32_t proc=a.game?uint32_t(a.game_native.process):a.enemy_token?story_enemy_ownership::descriptor(enemy).profile:a.switch_token?(a.spec.actor=="switch"?story_switches::kSwitchProfile:story_switches::kDoorProfile):a.prop_token?story_props::kProfile:a.spec.kind=="mod"?(a.spec.world_object()?mod_actor::kWorldProfile:mod_actor::kProfile):a.spec.actor=="sign"?0xB6u:a.spec.resident==kYm1?0x13Bu:0x175u;
+        uint32_t proc=a.game?uint32_t(a.game_native.process):a.enemy_token?story_enemy_ownership::descriptor(enemy).profile:a.switch_token?(a.spec.actor=="switch"?story_switches::kSwitchProfile:story_switches::kDoorProfile):a.prop_token?story_props::kProfile:a.spec.kind=="mod"?(a.spec.world_object()?mod_actor::kWorldProfile:mod_actor::kProfile):a.spec.actor=="sign"?0xB6u:uint32_t(story_resident_types::profile(uint8_t(a.spec.resident)));
         if(a.spec.actor=="chest"&&!a.spec.item_mod.empty()&&!story_treasure_chest::item_hook_ready()){
             static bool told=false;if(!told)LOG("[actors] %s:%s holds a mod item: it appears after a restart",a.mod.c_str(),a.spec.id.c_str());told=true;continue;
         }
@@ -719,6 +825,14 @@ void room_loaded(Cpu* c,int room) {
             std::memcpy(mem::ptr(g_scratch+0x50),"takara",7);Cpu probe=*c;
             const uint32_t entry=g_call(&probe,kSearchName,{g_scratch+0x50});
             if(!entry){LOG("[actors] takara object name unavailable; chest omitted");continue;}proc=ld16(entry+8);
+        }
+        if(a.spec.actor=="resident"&&goron_type(a.spec.resident)){
+            // the Goron merchants' class as the game's object name table knows it (another game version: left out)
+            static int known=-1;
+            if(known<0){std::memset(mem::ptr(g_scratch+0x50),0,16);std::memcpy(mem::ptr(g_scratch+0x50),story_resident_types::kGoronStageName,std::strlen(story_resident_types::kGoronStageName));Cpu probe=*c;
+                const uint32_t entry=g_call(&probe,kSearchName,{g_scratch+0x50});known=entry&&ld16(entry+8)==story_resident_types::kGoronProfile&&ld8(entry+0xA)==0;
+                LOG("[actors] Goron merchants: the game's %s is %s",story_resident_types::kGoronStageName,known?"the merchant class":"another class; placed Goron merchants are left out");}
+            if(!known)continue;
         }
         const float p[]={a.spec.position.x,a.spec.position.y,a.spec.position.z};
         const float s[]={a.spec.scale.x,a.spec.scale.y,a.spec.scale.z};
@@ -728,6 +842,8 @@ void room_loaded(Cpu* c,int room) {
         if(a.enemy_token)st16(g_scratch+0x10,story_enemies::home_z(a.enemy_token));
         if(a.enemy_token&&(enemy==story_enemies::Kind::Darknut||story_enemies::home_x(a.enemy_token)))st16(g_scratch+0xC,story_enemies::home_x(a.enemy_token));  // its equipment; a table kind's home x (the warship's)
         if(a.spec.actor=="chest")st16(g_scratch+0x10,uint16_t((uint32_t(a.spec.item_game)<<8)|255));
+        // a game object variant's fixed home angle z (a block's "no path, no second switch")
+        if(a.game)if(const auto*e=story_game_objects::catalogue().find(story_game_objects::reference(a.spec.actor)))if(const auto*v=e->variant(a.spec.variant);v&&v->angle_z>=0)st16(g_scratch+0x10,uint16_t(v->angle_z));
         uint32_t params=a.game?a.game_native.params:a.enemy_token?story_enemies::parameters(a.enemy_token):a.switch_token?story_switches::parameters(a.spec.actor=="switch"?story_switches::Kind::Switch:story_switches::Kind::Door):a.prop_token?story_props::parameters(a.spec):a.spec.kind=="mod"?a.mod_token:a.spec.actor=="sign"?kCarrier:a.spec.actor=="resident"?story_resident_types::params(uint8_t(a.spec.resident)):0;
         // a walking resident: its route record, and the route marker as its route number; a patrolling
         // Bokoblin's word already names the port's route (it is never created without its record)
@@ -741,7 +857,7 @@ void room_loaded(Cpu* c,int room) {
         Cpu call=*c;a.deleting=false;
         const uint32_t previous_layer=g_call(&call,GC(0x025DED64),{});
         g_call(&call,GC(0x025DEAB4),{room_layer});
-        try{talk_latch(&a,0);a.process=hole_pid!=0xFFFFFFFFu?create_child(call,proc,hole_pid,params,uint32_t(room)):g_call(&call,kCreate,{proc,params,g_scratch,uint32_t(room),g_scratch+0xC,g_scratch+0x14,a.game?(a.game_native.subtype==0xFF?0xFFFFFFFFu:uint32_t(a.game_native.subtype)):a.spec.actor=="resident"&&a.spec.resident!=kYm1?a.spec.resident:0xFFFFFFFFu,0});}
+        try{talk_latch(&a,0);a.process=hole_pid!=0xFFFFFFFFu?create_child(call,proc,hole_pid,params,uint32_t(room)):g_call(&call,kCreate,{proc,params,g_scratch,uint32_t(room),g_scratch+0xC,g_scratch+0x14,a.game?(a.game_native.subtype==0xFF?0xFFFFFFFFu:uint32_t(a.game_native.subtype)):a.spec.actor=="resident"?story_resident_types::create_argument(uint8_t(a.spec.resident)):0xFFFFFFFFu,0});}
         catch(...){g_call(&call,GC(0x025DEAB4),{previous_layer});throw;}
         g_call(&call,GC(0x025DEAB4),{previous_layer});
         if(a.enemy_token&&a.process&&a.process!=0xFFFFFFFFu)story_enemies::bind(a.enemy_token,a.process);
@@ -754,6 +870,7 @@ void room_loaded(Cpu* c,int room) {
             st32(g_scratch+128+uint32_t(&a-g_actors.data())*4,a.game_planted);LOG("[game_objects] %s:%s planted into the stage's batch (%s)",a.mod.c_str(),a.spec.id.c_str(),a.spec.variant.c_str());continue;
         }
         st32(g_scratch+128+uint32_t(&a-g_actors.data())*4,a.process);
+        if(a.game)a.game_room=ld32(GD(0x1047E8F0)+uint32_t(room)*0x22C);
         // Residents reuse their previously unused existing 40-byte identity row.
         // Distinct magic/token format: never interpret this as a prop record.
         if(a.resident_event_token&&a.process&&a.process!=0xFFFFFFFFu){const uint32_t row=g_scratch+kIdentityScratchOffset+uint32_t(&a-g_actors.data())*identity::kRecordBytes;st32(row,0x52455631);st32(row+4,a.resident_event_token);std::memcpy(mem::ptr(row+8),a.fingerprint.data(),a.fingerprint.size());}
@@ -800,7 +917,7 @@ void service(Cpu* c){
         Cpu lookup=*c;st32(g_scratch+0x40,0);g_call(&lookup,kSearch,{g_talk.actor->process,g_scratch+0x40});
         const uint32_t npc=ld32(g_scratch+0x40);
         const uint32_t layer=npc?ld32(npc+0x2C):0;
-        if(!npc||(g_talk.actor->spec.resident==kYm1?ym1(npc):people(npc))!=g_talk.actor)cancel_talk("missing-pid",false);
+        if(!npc||placed_resident(g_talk.actor,npc)!=g_talk.actor)cancel_talk("missing-pid",false);
         else if(layer&&scene_is_deleting(ld32(layer+0x18)))cancel_talk("draining");
     }
     Cpu probe=*c;const uint32_t play=g_call(&probe,kPlay,{});if(!play)return;
@@ -841,7 +958,7 @@ void service(Cpu* c){
             LOG("[game_objects] %s:%s quarantined: the game made process %04X params %08X subtype %u (wanted %04X %08X %u)",a.mod.c_str(),a.spec.id.c_str(),unsigned(ld16(actor+0xE)),ld32(actor+0xB0),unsigned(ld8(actor+0x2DD)),unsigned(a.game_native.process),a.game_native.params,unsigned(a.game_native.subtype));
             probe=*c;if(g_call(&probe,kDelete,{actor}))a.deleting=true;a.restore_quarantined=a.game_mismatch=a.game_checked=true;continue;
         }
-        if(!ld32(actor+0xF4))continue;  // its create phase hasn't made the object's own heap yet
+        if(a.game_native.own_heap&&!ld32(actor+0xF4))continue;  // its create phase hasn't made the object's own heap yet
         a.game_checked=true;
         LOG("[game_objects] %s:%s %s: %s process %04X params %08X at %.1f %.1f %.1f",a.mod.c_str(),a.spec.id.c_str(),a.game_attempts?"made":"read back after a state load",a.spec.actor.c_str(),unsigned(a.game_native.process),a.game_native.params,double(ldf32(actor+0x314)),double(ldf32(actor+0x318)),double(ldf32(actor+0x31C)));
         story_game_objects::trace_created(c,g_call,a.mod,a.spec.id,actor);a.game_attempts=0;
@@ -863,6 +980,8 @@ void state_loaded(){if(combat_declared())story_enemy_ownership::state_loaded();i
         }
         if(a.game_batch){a.game_planted=story_game_objects::is_planted_mark(id)?id:0;a.process=0xFFFFFFFFu;a.restore_quarantined=a.game_mismatch;}
         else if(a.game){
+            if(story_game_objects::is_planted_mark(id)){a.game_planted=id;a.process=0xFFFFFFFFu;if(a.spec.room<64)a.game_room=ld32(GD(0x1047E8F0)+a.spec.room*0x22C);}  // gone this room visit (above)
+            else if(a.process!=0xFFFFFFFFu&&a.spec.room<64)a.game_room=ld32(GD(0x1047E8F0)+a.spec.room*0x22C);  // made in the restored room's visit
             a.game_checked=false;a.restore_quarantined=a.game_mismatch;const bool live=a.process!=0xFFFFFFFFu;
             if(live&&(!g_scratch||!identity::matches(mem::ptr(g_scratch+kIdentityScratchOffset+uint32_t(i)*identity::kRecordBytes),a.fingerprint))){a.process=0xFFFFFFFFu;a.restore_quarantined=true;if(slot)st32(slot,0xFFFFFFFFu);LOG("[game_objects] %s:%s restored declaration fingerprint rejected",a.mod.c_str(),a.spec.id.c_str());}
         }
@@ -889,7 +1008,7 @@ void restore_talk_text(){
     if(!story_mail::restore_say_owner(kCarrier,owner)||owner.token>g_actors.size())return;
     Actor* a=&g_actors[owner.token-1];const uint32_t npc=owner.actor;
     if((a->spec.actor!="resident"&&a->spec.actor!="sign")||a->process!=owner.pid||find(npc)!=a||ld16(npc+0xF8)!=1||ld32(GD(0x1046F0B0)+0x529C)!=owner.partner)return;
-    if(a->spec.actor=="resident"&&((a->spec.resident==kYm1?ym1(npc):people(npc))!=a||ld32(npc+0x7C0)!=kCarrier||ld8(npc+0x7CC)>1))return;
+    if(a->spec.actor=="resident"&&(placed_resident(a,npc)!=a||ld32(npc+0x7C0)!=kCarrier||ld8(npc+0x7CC)>1))return;
     const uint32_t layer=ld32(npc+0x2C);if(layer&&scene_is_deleting(ld32(layer+0x18)))return;
     bool terminal=false;
     if(a->spec.actor=="sign"){}
@@ -897,6 +1016,7 @@ void restore_talk_text(){
         const bool open=talk_latch(a)==1&&ld8(npc+0xA1D)==5&&ld32(npc+0x7C8)!=0xFFFFFFFFu;
         terminal=talk_latch(a)==2&&ld32(npc+0x7C8)==0xFFFFFFFFu&&ld8(npc+0x7CC)==1&&ld8(npc+0xA1D)==11&&ld8(npc+0xA13)==0;
         if(!open&&!terminal)return;
+    }else if(goron_type(a->spec.resident)){if(ld32(npc+0x7C8)==0xFFFFFFFFu)return;  // an open message box only
     }else{terminal=ld16(npc+0x8F0)==0x12&&ld32(npc+0x7C8)==0xFFFFFFFFu;if(ld32(npc+0x7C8)==0xFFFFFFFFu&&!terminal)return;}
     g_talk={};g_talk.npc=npc;g_talk.actor=a;g_talk.started=true;g_talk.terminal=terminal;
     if(!capture_talk(a,true)){g_talk={};talk_latch(a,3);a->restore_talk=false;story_mail::unsay();clear_talk_proof();return;}
@@ -927,10 +1047,15 @@ const char* restart_kind(const ManifestActor& a){
 bool live_capable(const std::string& mod,const ManifestActor& a,std::string& why){
     if(const char* kind=restart_kind(a))return why=std::string(kind)+" appears after a restart",false;
     if(!g_installed)return why="the game had no mod actors at start-up: new actors appear after a restart",false;if(a.chart_marker.enabled&&!story_chart::installed())return why="the first island chart marker appears after a restart",false;
-    if(a.actor=="resident"&&!(a.resident==kYm1?g_ym1_hooks:g_resident_hooks))return why="the first resident of this kind appears after a restart",false;
+    if(a.actor=="resident"&&!(a.resident==kYm1?g_ym1_hooks:goron_type(a.resident)?g_goron_hooks:g_resident_hooks))return why="the first resident of this kind appears after a restart",false;
     if(a.kind=="mod"){
         if(!mod_actor::live_ready())return why="the first mod model actor appears after a restart",false;
-        if(!g_models.contains({mod,a.model}))return why="model "+a.model+" is not prepared yet: it appears after a reload or restart",false;if(!visual_ready(mod,a,why))return false;
+        if(!g_models.contains({mod,a.model})){
+            // a model that failed to prepare fails again after a restart: say why, never "after a restart" (issue #280)
+            if(const auto failed=actor_model_cache::failure_for(mod,a.model);!failed.empty())return why="model "+a.model+" could not be prepared: "+failed,false;
+            if(actor_model_cache::preparing(mod,a.model))return why="model "+a.model+" is being prepared: it appears when it is ready",false;
+            return why="model "+a.model+" is not prepared yet: it appears after a reload or restart",false;
+        }if(!visual_ready(mod,a,why))return false;
     }
     return true;
 }
@@ -963,7 +1088,8 @@ void enemy_epoch(Actor& a){
     if(story_enemies::begin_epoch(a.enemy_token,epoch)){st32(counter,epoch);a.restore_quarantined=false;}
 }
 // After the old copy is gone: the native declaration takes the changed spec (props, enemies, doors).
-void native_redeclare(Actor& a){
+void native_redeclare(Actor& a){if(a.game&&!a.game_batch)a.game_planted=0;  // a changed game object comes back at once
+
     if(!a.redeclare)return;
     a.redeclare=false;std::string why;
     if(a.prop_token&&!story_props::editor_redeclare(a.prop_token,a.mod,a.spec,why)){LOG("[actors] %s:%s: %s (it appears after a restart)",a.mod.c_str(),a.spec.id.c_str(),why.c_str());story_props::quarantine(a.prop_token);return;}
@@ -1053,7 +1179,7 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
     for(const auto& a:actors)if(!a.rider_of.empty()&&std::find(changed.begin(),changed.end(),a.rider_of)!=changed.end())changed.push_back(a.id);  // a changed Kargaroc: its rider too
     for(const auto& a:actors)if(!a.summon_of.empty()&&std::find(changed.begin(),changed.end(),a.summon_of)!=changed.end())changed.push_back(a.id);  // a changed summoner: its pool too
     std::map<std::string,Actor*> own;for(auto& a:g_actors)if(a.mod==mod)own[a.spec.id]=&a;
-    struct Step {const ManifestActor* spec=nullptr;Actor* actor=nullptr;bool create=false,update=false;};
+    struct Step {const ManifestActor* spec=nullptr;Actor* actor=nullptr;bool create=false,update=false,declare=false;};
     std::vector<Step> plan;std::vector<std::string> later;std::vector<Actor*> remove;
     std::vector<ManifestActor> effective;  // what the game will have: checked like a start-up list
     std::set<std::string> listed;
@@ -1082,6 +1208,12 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
             plan.push_back({&spec,nullptr,true,false});effective.push_back(spec);continue;
         }
         Actor* a=it->second;
+        // a world object the game left out (its place was not clear at start-up, or when it was last changed): never
+        // declared, so nothing to change in place; now that its place is clear it is declared there, moved or not
+        // (issue #281: "the model can't serve this spec" for a move to a clear place)
+        if(spec.kind=="mod"&&a->spec.kind=="mod"&&spec.world_object()&&a->spec.world_object()&&!a->mod_token&&!restart_kind(spec)&&
+           !spec.combat_enabled&&!spec.carry_enabled&&g_models.contains({mod,spec.model})){
+            plan.push_back({&spec,a,false,true,true});effective.push_back(spec);continue;}
         if(!a->removed&&!is_changed(spec.id)){effective.push_back(a->spec);continue;}
         if(a->removed&&same_spec(mod,a->spec,spec)){plan.push_back({&spec,a,false,false});effective.push_back(spec);continue;}  // a removal undone
         const char* kind=restart_kind(a->spec);if(!kind)kind=restart_kind(spec);
@@ -1102,7 +1234,7 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
     std::vector<std::string> flags;for(const auto& a:effective){if(!a.when_flag.empty())flags.push_back(a.when_flag);if(!a.when_not_flag.empty())flags.push_back(a.when_not_flag);if(!a.flag.empty())flags.push_back(a.flag);if(!a.switch_flag.empty())flags.push_back(a.switch_flag);if(a.arrival.enabled)flags.push_back(a.arrival.flag);if(a.chart_marker.enabled&&!a.chart_marker.when_flag.empty())flags.push_back(a.chart_marker.when_flag);for(const auto&t:a.talks){if(!t.when_flag.empty())flags.push_back(t.when_flag);if(!t.when_not_flag.empty())flags.push_back(t.when_not_flag);for(const auto&action:t.then)if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);}for(const auto& action:a.then)if(action.kind==story_notebook::StoryAction::Kind::Flag)flags.push_back(action.id);}
     auto saved_flags=g_flag_names;if(!register_flags(mod,flags,why))return false;
     // check every changed mod model first, then apply: a refusal leaves all declarations unchanged
-    for(const bool apply:{false,true})for(const auto& step:plan){if(!step.update||step.spec->kind!="mod")continue;
+    for(const bool apply:{false,true})for(const auto& step:plan){if(!step.update||step.declare||step.spec->kind!="mod")continue;
         const auto& r=g_models.at({mod,step.spec->model});
         if(!step.actor->mod_token||!mod_actor::redeclare(step.actor->mod_token,*step.spec,r.archive,r.index,r.minimum,r.maximum,r.skinned,r.clips,r.rig,apply)){
             g_flag_names=saved_flags;return why="actor "+step.spec->id+": the model can't serve this spec (animation, look_at, rotation or scale)",false;}
@@ -1137,8 +1269,21 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
     for(const auto& step:plan){
         if(step.create)continue;
         Actor* a=step.actor;
+        if(step.declare){
+            // declared now, as start-up would have (story_actors' install); the room creates it when it is ready
+            const auto& r=g_models.at({mod,step.spec->model});
+            const uint32_t token=mod_actor::declare(mod,*step.spec,r.archive,r.index,mod_talked(mod,step.spec->id),r.minimum,r.maximum,r.skinned,r.clips,r.rig);
+            if(!token){later.push_back(step.spec->id+": the game could not add it here (its model can't serve this spec: animation, look_at, rotation or scale); it appears after a restart");
+                if(!a->removed)a->spec=*step.spec;continue;}
+            a->mod_token=token;a->spec=*step.spec;a->removed=false;a->respawn=false;
+            if(!a->spec.talks.empty())mod_actor::set_talk_provider(mod,a->spec.id,mod_talk_provider(mod,a->spec.id));
+            refingerprint(mod,*a);
+            LOG("[actors] %s:%s added by the editor: its place is clear now (it was left out)",mod.c_str(),a->spec.id.c_str());
+            continue;
+        }
         const bool was_removed=a->removed;
         a->removed=false;
+        if(was_removed&&a->mod_token)mod_actor::set_removed(a->mod_token,false);
         if(was_removed&&!step.update){
             // a removal undone: a deleted enemy's next copy needs a new ownership epoch
             if(a->enemy_token&&a->process==0xFFFFFFFFu)enemy_epoch(*a);
@@ -1154,7 +1299,7 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
         }
         LOG("[actors] %s:%s %s by the editor",mod.c_str(),a->spec.id.c_str(),was_removed?"restored":"changed");
     }
-    for(Actor* a:remove){a->removed=true;a->respawn=false;if(a->game_batch&&a->game_planted)later.push_back(a->spec.id+": grass, flowers and small trees go when the room loads again (Reload room)");LOG("[actors] %s:%s removed by the editor",mod.c_str(),a->spec.id.c_str());}
+    for(Actor* a:remove){a->removed=true;a->respawn=false;if(a->mod_token)mod_actor::set_removed(a->mod_token,true);if(a->game_batch&&a->game_planted)later.push_back(a->spec.id+": grass, flowers and small trees go when the room loads again (Reload room)");LOG("[actors] %s:%s removed by the editor",mod.c_str(),a->spec.id.c_str());}
     if(!sync_visuals(mod,effective,true,why))return false;story_world_arrival::state_loaded();
     if(pending)*pending=std::move(later);
     return true;
@@ -1372,7 +1517,10 @@ bool prop_texture_identity(uint32_t actor,uint32_t pid,uint32_t& token,uint32_t&
 }
 bool actions(const std::string& mod,const std::vector<story_notebook::StoryAction>& list) {
     using Kind=story_notebook::StoryAction::Kind;
-    for(const auto& a:list){bool ok=false;switch(a.kind){
+    const bool story_off=story_scene_needs::story_off().count(mod)>0;  // optional story content without the notebook
+    for(const auto& a:list){bool ok=false;
+        if(story_off&&a.kind!=Kind::EnterStage&&a.kind!=Kind::StartScene){LOG("[actors] %s: story action on %s skipped (the Story Notebook isn't installed)",mod.c_str(),a.id.c_str());continue;}
+        switch(a.kind){
         case Kind::Give:ok=story_items::give(mod,a.id.substr(5),a.value,"actor dialogue")>=0;break;
         case Kind::Take:ok=story_items::take(mod,a.id.substr(5),a.value)>=0;break;
         case Kind::GiveChart:ok=story_chart::give(mod,a.id.substr(6))>=story_chart::kResultOwned;break;  // once: a chart Link has stays as it is
@@ -1430,6 +1578,13 @@ void install(const std::function<std::string(uint32_t)>& replaced_by,const std::
         hooks.insert(hooks.end(),std::begin(seated_hooks),std::end(seated_hooks));
         g_ym1_hooks=true;
     }
+    if(g_live_kinds||std::any_of(g_actors.begin(),g_actors.end(),[](const Actor& a){return a.spec.actor=="resident"&&goron_type(a.spec.resident);})){
+        const std::pair<uint32_t,void(*)(Cpu*)> goron_hooks[]={{kRotenPhase1,roten_phase1},{kRotenMsg,roten_message},{kRotenNext,roten_next},{kRotenEventOrder,roten_event_order},{kRotenExecute,roten_execute},{kRotenTalk,roten_talk},{kRotenDelete,roten_delete}};
+        hooks.insert(hooks.end(),std::begin(goron_hooks),std::end(goron_hooks));
+        g_goron_hooks=true;
+    }
+    if(g_live_kinds||std::any_of(g_actors.begin(),g_actors.end(),[](const Actor& a){return story_game_objects::reference(a.spec.actor)=="stall";})){
+        hooks.push_back({kStallCreate,stall_create});hooks.push_back({kStallMtx,stall_mtx});hooks.push_back({kBagReserve,bag_reserve});}
     if(!story_treasure::installed())hooks.push_back({kRoom,room_hook});
     if(replaced_by(kPeopleMsg).empty()) {hooks.push_back({kPeopleMsg,people_msg_hook});hooks.push_back({kPeopleNext,people_next_hook});hooks.push_back({kPeopleExecute,people_execute_hook});}
     for(const auto& h:hooks)if(!replaced_by(h.first).empty()){LOG("[actors] hook conflict %08X; world actors disabled",h.first);return;}
@@ -1490,10 +1645,10 @@ void install(const std::function<std::string(uint32_t)>& replaced_by,const std::
     const bool props=std::any_of(g_actors.begin(),g_actors.end(),[](const Actor&a){return a.prop_token!=0;});
     const bool switches=std::any_of(g_actors.begin(),g_actors.end(),[](const Actor&a){return a.switch_token!=0;});
     if(props&&!story_props::install(replaced_by,replace))exception_report::raise("Cannot install isolated native prop profile");
-    if(switches&&!story_switches::install(replaced_by,replace))exception_report::raise("Cannot install isolated native switch/door profiles");
+    if(switches){std::string why;if(!story_switches::install(replaced_by,replace,&why))exception_report::raise("Cannot install isolated native switch/door profiles: "+why);}
     // --editor: installed without declarations too (live placement); a failure means "after a restart"
     if(g_live_kinds&&!props&&!story_props::install(replaced_by,replace))LOG("[actors] the editor's live props are not available (they appear after a restart)");
-    if(g_live_kinds&&!switches&&!story_switches::install(replaced_by,replace))LOG("[actors] the editor's live switches and doors are not available (they appear after a restart)");
+    if(g_live_kinds&&!switches){std::string why;if(!story_switches::install(replaced_by,replace,&why))LOG("[actors] the editor's live switches and doors are not available (they appear after a restart): %s",why.c_str());}
     if(has_enemies&&!story_enemies::install(replaced_by,replace))exception_report::raise("Cannot install isolated native enemy profiles");
     // walking residents (only with their record memory: a declared route, or the editor)
     const bool patrol=g_live_kinds||std::any_of(g_actors.begin(),g_actors.end(),[](const Actor&a){return patrols(a.spec);});

@@ -16,6 +16,10 @@
 namespace static_models {
 inline constexpr size_t kMaxSourceBytes=8*1024*1024;
 inline constexpr unsigned kMaxVertices=4096,kMaxTriangles=8192,kMaxTextureDimension=512;
+// a collision mesh (story_world_collision_mesh.h MaxVertices/MaxTriangles)
+inline constexpr unsigned kMaxCollisionVertices=8192,kMaxCollisionTriangles=8192;
+// and its size (MaxExtent): every coordinate within +/- this and the extent along each axis at most this
+inline constexpr double kMaxCollisionExtent=100000;
 // Several materials (tools/story_mods/multi_material.py): up to 16 materials with one embedded PNG each and up to 32
 // triangle primitives; vertex and triangle limits count all primitives together; all colour textures of one model
 // take at most 1 MiB decoded (one 512 x 512 RGBA8 texture, the single-material maximum).
@@ -32,7 +36,7 @@ inline uint32_t be32(const uint8_t* p){return uint32_t(p[3])|(uint32_t(p[2])<<8)
 inline int collision_surface(const std::string& name){
     int i=0;
     for(const char* m:{"col_stone","col_grass","col_wood","col_sand","col_metal","col_wall","col_objects","col_climb","col_hookshot",
-                       "col_water","col_shallow","col_waterfall","col_ice","col_void"}){if(name==m)return i;++i;}
+                       "col_water","col_shallow","col_waterfall","col_ice","col_void","col_lava"}){if(name==m)return i;++i;}
     return -1;
 }
 inline bool collision_material(const std::string& name){return collision_surface(name)>=0;}
@@ -86,7 +90,7 @@ inline bool validate_glb_strict(std::span<const uint8_t> b,ModelInfo& info,std::
         size_t sides=1;
         if(const auto& all=doc.get("materials");!collision&&all.type==Value::Array&&!all.array.empty()&&integer(p.get("material"),0,all.array.size()-1)){const auto& d=all.array[size_t(p.get("material").number)].get("doubleSided");if(d.type==Value::Bool&&d.boolean)sides=2;}
         drawn_vertices+=sides*q.pos.count;drawn_triangles+=sides*(q.idx.count/3);
-        if(collision&&(vertices>4096||triangles>4096))return fail("collision exceeds vertex/triangle limits");
+        if(collision&&(vertices>kMaxCollisionVertices||triangles>kMaxCollisionTriangles))return fail("collision exceeds vertex/triangle limits");
         if(!collision&&(drawn_vertices>kMaxVertices||drawn_triangles>kMaxTriangles))return fail("the visible mesh has more than 4096 vertices or 8192 triangles (all primitives together, double-sided faces twice); indices exceed the limit");
         for(const auto& pair:{std::pair{q.pos,size_t(3)},std::pair{q.nrm,size_t(3)},std::pair{q.uv,size_t(2)}})for(size_t i=0;i<pair.first.count;++i)for(size_t k=0;k<pair.second;++k){const auto& a=pair.first;const uint32_t bits=le32(b.data()+a.offset+i*a.stride+k*4);float f;std::memcpy(&f,&bits,4);if(!std::isfinite(f))return fail("nonfinite model coordinate");}
         for(size_t i=0;i<q.idx.count;++i){const auto* r=b.data()+q.idx.offset+i*q.idx.stride;const uint32_t n=q.idx.component==5121?uint32_t(r[0]):q.idx.component==5123?uint32_t(r[0])|(uint32_t(r[1])<<8):le32(r);if(n>=q.pos.count)return fail("model index outside vertex buffer");}
@@ -128,9 +132,9 @@ inline bool validate_glb_strict(std::span<const uint8_t> b,ModelInfo& info,std::
     const double det=world[0]*cof[0]+world[1]*cof[1]+world[2]*cof[2];if(!std::isfinite(det)||std::fabs(det)<=1e-12)return fail("singular model transform");
     auto number=[&](const Access& a,size_t i,size_t k){const uint32_t bits=le32(b.data()+a.offset+i*a.stride+k*4);float f;std::memcpy(&f,&bits,4);return double(f);};
     std::array<float,3> minimum,maximum;minimum.fill(std::numeric_limits<float>::infinity());maximum.fill(-std::numeric_limits<float>::infinity());
-    for(const auto& q:prims)for(size_t v=0;v<q.pos.count;++v){double normal_length=0;for(size_t r=0;r<3;++r){double coordinate=world[r*4+3],normal=0;for(size_t k=0;k<3;++k){coordinate+=world[r*4+k]*number(q.pos,v,k);if(!collision)normal+=cof[r*3+k]*number(q.nrm,v,k)/det;}coordinate*=100;if(!std::isfinite(coordinate)||std::fabs(coordinate)>(collision?20000:1000000))return fail("baked model exceeds coordinate range");minimum[r]=std::min(minimum[r],float(coordinate));maximum[r]=std::max(maximum[r],float(coordinate));normal_length+=normal*normal;}if(!collision&&(!std::isfinite(normal_length)||normal_length<=1e-24))return fail("invalid model normal");}
+    for(const auto& q:prims)for(size_t v=0;v<q.pos.count;++v){double normal_length=0;for(size_t r=0;r<3;++r){double coordinate=world[r*4+3],normal=0;for(size_t k=0;k<3;++k){coordinate+=world[r*4+k]*number(q.pos,v,k);if(!collision)normal+=cof[r*3+k]*number(q.nrm,v,k)/det;}coordinate*=100;if(!std::isfinite(coordinate)||std::fabs(coordinate)>(collision?kMaxCollisionExtent:1000000))return fail("baked model exceeds coordinate range");minimum[r]=std::min(minimum[r],float(coordinate));maximum[r]=std::max(maximum[r],float(coordinate));normal_length+=normal*normal;}if(!collision&&(!std::isfinite(normal_length)||normal_length<=1e-24))return fail("invalid model normal");}
     if(collision){
-        for(size_t k=0;k<3;++k)if(double(maximum[k])-minimum[k]>20000)return fail("collision extent exceeds 20000 game units");
+        for(size_t k=0;k<3;++k)if(double(maximum[k])-minimum[k]>kMaxCollisionExtent)return fail("collision extent exceeds 100000 game units");
         for(const auto& q:prims){
             auto point=[&](size_t i){std::array<float,3> c{};for(size_t r=0;r<3;++r){double value=world[r*4+3];for(size_t k=0;k<3;++k)value+=world[r*4+k]*number(q.pos,i,k);c[r]=float(value*100);}return c;};
             auto index=[&](size_t i){const auto* r=b.data()+q.idx.offset+i*q.idx.stride;return q.idx.component==5121?uint32_t(r[0]):q.idx.component==5123?uint32_t(r[0])|(uint32_t(r[1])<<8):le32(r);};
@@ -193,6 +197,60 @@ inline bool validate_glb_strict(std::span<const uint8_t> b,ModelInfo& info,std::
     info.material_count=unsigned(materials.array.size());info.cutout_count=cutouts;info.double_sided_count=double_sided;info.texture_bytes=texture_bytes;info.images=std::move(found);return true;
 }
 
+// A kit model's GLB (ManifestModel kind "kit", tools/story_mods/kit_model.py): drawn with game materials named after a
+// kit room's materials, and maybe materials with textures of their own. Checked without the game files, for the package
+// and the editor (the converter checks the names against the kit room): no material that names a game material may embed
+// a texture (`game_names`: the manifest's "materials" keys and values and its "material"; a name with Blender's ".001"
+// copy suffix counts as the name; a material of the editor's export_glb, its "wwhd" extras, counts as a game material
+// whatever its name) — a package never carries the game's textures; own textures are embedded PNG, RGB/RGBA8, up to
+// 512 a side (width a multiple of 64, height of 8), 1 MiB decoded together. `own_materials`, `own_texture_bytes` and
+// `triangles` (visible, *_col meshes left out) describe it.
+struct KitInfo {unsigned materials=0,own_materials=0,triangles=0;size_t own_texture_bytes=0;};
+inline bool validate_kit_glb(std::span<const uint8_t> b,const std::vector<std::string>& game_names,KitInfo& info,std::string& why){
+    using mods::json::Value;info={};auto fail=[&](const std::string& s){why=s;return false;};
+    if(b.size()<28||b.size()>16u*1024*1024||std::memcmp(b.data(),"glTF",4)||le32(b.data()+4)!=2)return fail("not a GLB (glTF 2.0) file of up to 16 MiB");
+    const size_t jl=le32(b.data()+12);if(jl>b.size()-20||le32(b.data()+16)!=0x4E4F534A)return fail("invalid GLB JSON chunk");
+    Value doc;try{doc=mods::json::parse(std::string(reinterpret_cast<const char*>(b.data()+20),jl));}catch(...){return fail("invalid GLB JSON");}
+    const size_t base=28+jl;const size_t bin=b.size()>=base?b.size()-base:0;
+    if(b.size()>=base&&(le32(b.data()+20+jl)>bin||le32(b.data()+24+jl)!=0x004E4942))return fail("invalid GLB BIN chunk");
+    auto plain=[](std::string n){const auto dot=n.rfind('.');if(dot!=std::string::npos&&n.size()-dot==4&&std::all_of(n.begin()+long(dot)+1,n.end(),[](unsigned char c){return c>='0'&&c<='9';}))n.resize(dot);return n;};
+    const auto& materials=doc.get("materials");const auto& textures=doc.get("textures");const auto& images=doc.get("images");const auto& views=doc.get("bufferViews");
+    if(materials.type!=Value::Null&&materials.type!=Value::Array)return fail("invalid materials");
+    for(size_t m=0;m<materials.array.size();++m){
+        const auto& mat=materials.array[m];const std::string name=mat.get("name").string();const auto label="material "+std::to_string(m)+(name.empty()?std::string():" ("+name+")")+": ";
+        ++info.materials;const auto& colour=mat.get("pbrMetallicRoughness").get("baseColorTexture");
+        if(colour.type==Value::Null)continue;
+        const bool exported=mat.get("extras").get("wwhd").get("kit_material").type!=Value::Null;
+        const bool named=std::find(game_names.begin(),game_names.end(),name)!=game_names.end()||std::find(game_names.begin(),game_names.end(),plain(name))!=game_names.end();
+        if(exported||named)return fail(label+"a game material with an embedded texture: a package never carries the game's textures. Remove its image (the game draws its own from the player's files), or give the material a name of your own for a texture of your own");
+        if(!integer(colour.get("index"),0,textures.array.empty()?0:textures.array.size()-1)||textures.array.empty())return fail(label+"invalid base colour texture");
+        const auto& source=textures.array[size_t(colour.get("index").number)].get("source");
+        if(!integer(source,0,images.array.empty()?0:images.array.size()-1)||images.array.empty())return fail(label+"invalid texture");
+        const auto& image=images.array[size_t(source.number)];
+        if(image.get("uri").type!=Value::Null||image.get("mimeType").string()!="image/png"||!integer(image.get("bufferView"),0,views.array.empty()?0:views.array.size()-1)||views.array.empty())return fail(label+"its texture must be an embedded PNG");
+        const auto& v=views.array[size_t(image.get("bufferView").number)];
+        const size_t off=v.get("byteOffset").type==Value::Number?size_t(v.get("byteOffset").number):0,len=v.get("byteLength").type==Value::Number?size_t(v.get("byteLength").number):0;
+        if(len<33||off>bin||len>bin-off)return fail(label+"invalid embedded image");
+        const auto* png=b.data()+base+off;
+        if(std::memcmp(png,"\x89PNG\r\n\x1a\n",8)||std::memcmp(png+12,"IHDR",4)||png[24]!=8||(png[25]!=2&&png[25]!=6)||png[28])return fail(label+"texture needs a noninterlaced RGB/RGBA8 PNG");
+        const auto w=be32(png+16),h=be32(png+20);if(!w||!h||w>kMaxTextureDimension||h>kMaxTextureDimension||w%64||h%8)return fail(label+"a texture is at most 512 x 512, its width a multiple of 64 and its height of 8");
+        ++info.own_materials;info.own_texture_bytes+=size_t(w)*h*4;
+    }
+    if(info.own_texture_bytes>kMaxTextureBytes)return fail("the model's own textures take more than 1 MiB (one 512 x 512, four 256 x 256 or sixteen 128 x 128 textures); game materials do not count");
+    const auto& meshes=doc.get("meshes");const auto& accessors=doc.get("accessors");
+    for(const auto& node:doc.get("nodes").array){
+        if(!integer(node.get("mesh"),0,meshes.array.empty()?0:meshes.array.size()-1)||meshes.array.empty())continue;
+        const auto& mesh=meshes.array[size_t(node.get("mesh").number)];
+        if(node.get("name").string().ends_with("_col")||mesh.get("name").string().ends_with("_col"))continue;
+        for(const auto& p:mesh.get("primitives").array){
+            const auto& index=p.get("indices").type!=Value::Null?p.get("indices"):p.get("attributes").get("POSITION");
+            if(integer(index,0,accessors.array.empty()?0:accessors.array.size()-1)&&!accessors.array.empty())info.triangles+=unsigned(accessors.array[size_t(index.number)].get("count").number/3);
+        }
+    }
+    if(!info.triangles)return fail("the model has no visible triangles");
+    return true;
+}
+
 // Partition original collision-only meshes before reusing the strict rendering
 // validator. The projection preserves node transforms and embedded BIN offsets.
 inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string& why,bool collision_requested=false){
@@ -230,8 +288,8 @@ inline bool validate_glb(std::span<const uint8_t> b,ModelInfo& info,std::string&
     size_t vertices=0,triangles=0;std::array<float,3> low,high;low.fill(std::numeric_limits<float>::infinity());high.fill(-std::numeric_limits<float>::infinity());
     for(auto [ni,mi]:collision){const auto& mesh=meshes.array[mi];const auto& ps=mesh.get("primitives");if(mesh.get("weights").type!=Value::Null||ps.type!=Value::Array||ps.array.empty()||ps.array.size()>64)return fail("invalid collision mesh");
         for(const auto& p:ps.array){const auto& material_index=p.get("material");if(!integer(material_index,0,materials.array.size()-1))return fail("collision material outside input");const auto name=materials.array[size_t(material_index.number)].get("name").string();if(!collision_material(name))return fail("unknown or unsupported collision material");
-            auto one=mesh;one["primitives"].array={p};const auto geometry=packed(project(ni,one));ModelInfo part;if(!validate_glb_strict(geometry,part,why,true))return false;vertices+=part.vertex_count;triangles+=part.triangle_count;if(vertices>4096||triangles>4096)return fail("collision exceeds vertex/triangle limits");for(size_t k=0;k<3;++k){low[k]=std::min(low[k],part.minimum[k]);high[k]=std::max(high[k],part.maximum[k]);}}
+            auto one=mesh;one["primitives"].array={p};const auto geometry=packed(project(ni,one));ModelInfo part;if(!validate_glb_strict(geometry,part,why,true))return false;vertices+=part.vertex_count;triangles+=part.triangle_count;if(vertices>kMaxCollisionVertices||triangles>kMaxCollisionTriangles)return fail("collision exceeds vertex/triangle limits");for(size_t k=0;k<3;++k){low[k]=std::min(low[k],part.minimum[k]);high[k]=std::max(high[k],part.maximum[k]);}}
     }
-    for(size_t k=0;k<3;++k)if(double(high[k])-low[k]>20000)return fail("collision extent exceeds 20000 game units");info=result;return true;
+    for(size_t k=0;k<3;++k)if(double(high[k])-low[k]>kMaxCollisionExtent)return fail("collision extent exceeds 100000 game units");info=result;return true;
 }
 }

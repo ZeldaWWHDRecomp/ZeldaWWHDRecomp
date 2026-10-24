@@ -37,6 +37,7 @@ struct Backend {
     void (*copy_to_scan)(uint32_t colorBuffer, uint32_t target);
     void (*swap)();
     void (*peek_z)(const uint32_t* cells, uint32_t words);
+    void (*peek_retire)();         // complete submitted depth-peek copies now (render thread, while idle)
     void (*set_frame_aspect)(float a);
     bool (*target_aspect_factors)(uint32_t w, uint32_t h, float& kx, float& ky);
     uint64_t (*frames_completed)();
@@ -137,6 +138,7 @@ inline void set_present_interval(uint32_t ns, bool hold) { if (g_backend->set_pr
 inline int64_t present_due() { return g_backend->present_due ? g_backend->present_due() : 0; }
 inline void service_present() { if (g_backend->service_present) g_backend->service_present(); }
 inline void peek_z(const uint32_t* cells, uint32_t words) { g_backend->peek_z(cells, words); }
+inline void peek_retire() { if (g_backend->peek_retire) g_backend->peek_retire(); }
 inline void set_frame_aspect(float a) { g_backend->set_frame_aspect(a); }
 inline bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) { return g_backend->target_aspect_factors(w, h, kx, ky); }
 inline uint64_t frames_completed() { return g_backend->frames_completed(); }

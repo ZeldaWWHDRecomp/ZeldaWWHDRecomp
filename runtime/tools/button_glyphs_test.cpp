@@ -5,6 +5,7 @@
 #include "guest_addr.h"
 #include "aspect.h"
 #include "gx2/gx2_cmd.h"
+#include "gfx/stereo.h"
 #include "input_map.h"
 #include "runtime.h"
 
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -25,13 +27,25 @@ void hook_0286E9F0(Cpu* c);
 void hook_028F7C7C(Cpu* c);
 void hook_02874D54(Cpu* c);
 void hook_028766CC(Cpu* c);
+void site_0287714C(Cpu* c);
+void site_02877150(Cpu* c);
 }
 
 // The real aspect hook is included in this test; only GPU emission and guest originals are
 // stubbed. This verifies composition, rather than substituting a fake aspect callback.
 void log_msg(const char*, ...) {}
-namespace gx2 { void emit(Op, const uint32_t*, uint32_t) {} }
+namespace gx2 {
+bool recording = false;
+std::vector<std::vector<uint32_t>> layoutCommands;
+bool recording_display_list() { return recording; }
+void emit(Op op, const uint32_t* words, uint32_t count) {
+    if (op == OP_LAYOUT_CONTENT) layoutCommands.emplace_back(words, words + count);
+}
+}
 namespace mods::cemu { float aspect_ratio() { return 0; } }
+extern "C" void f_025A847C_orig(Cpu*) {}
+extern "C" void f_02704D2C_orig(Cpu*) {}
+extern "C" void f_0282D9C0_orig(Cpu*) {}
 extern "C" void f_02874038_orig(Cpu*) {}
 extern "C" void f_02877100_orig(Cpu*) {}
 extern "C" void f_028F8250_orig(Cpu*) {}
@@ -1010,6 +1024,32 @@ int main() {
     auto memory = mmap(mem::ptr(base), kArena, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 #endif
     assert(memory == mem::ptr(base));
+    // Prompts/dialogue cached before 3D is enabled must still replay as flat
+    // layout draws. Exercise the production scope hooks, including mode changes
+    // between entry and exit; immediate mono must remain marker-free.
+    aspect::set_mode(aspect::kOriginal);
+    for (const char* name : {"P_A_00", "T_A_00", "W_Message_00", "PF_Pictograph_00"}) {
+        std::strcpy(reinterpret_cast<char*>(mem::ptr(picture + 0x80)), name);
+        Cpu scope{};scope.r[3] = picture;
+        stereo::set_mode(stereo::Off);
+        gx2::recording = false;gx2::layoutCommands.clear();
+        site_0287714C(&scope);site_02877150(&scope);
+        assert(gx2::layoutCommands.empty());
+        gx2::recording = true;
+        site_0287714C(&scope);
+        stereo::set_mode(stereo::HalfSBS);
+        site_02877150(&scope);
+        assert(gx2::layoutCommands.size() == 2);
+        assert(gx2::layoutCommands[0] == std::vector<uint32_t>({0,1,uint32_t(!std::strcmp(name,"PF_Pictograph_00"))}));
+        assert(gx2::layoutCommands[1] == std::vector<uint32_t>({0,0}));
+        // A later stereo replay consumes the markers recorded while mono.
+        for (const auto& command : gx2::layoutCommands) {
+            stereo::layout_draw(command[1] != 0);
+            assert(stereo::layoutDrawDepth == command[1]);
+        }
+    }
+    gx2::recording = false;gx2::layoutCommands.clear();stereo::set_mode(stereo::Off);
+    std::memset(mem::ptr(picture),0,0x100);
 #ifdef _WIN32
     auto globals = VirtualAlloc(mem::ptr(0x101F0000), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else

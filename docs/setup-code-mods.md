@@ -15,6 +15,15 @@ installation. The terminal setup (Setup in Terminal, `setup-in-terminal.sh`) ask
   (the command-line option wins). Without a terminal, setup keeps the current choice, or uses off
   for a new installation.
 
+## When the mod compiler is missing
+
+Code mods are built with the compiler that setup downloads into the data folder (`toolchain/`). If it
+was removed (for example by answering yes to setup's "Remove the downloaded compiler?"), the code mods you
+switched on can't start. The game then says so once at start, for example "Story Notebook needs the mod
+compiler, which is missing. Run setup and choose Repair to install it again.", and Settings → Mods shows
+"The mod compiler is missing" next to each of these mods. Run setup and choose **Repair** to download it
+again. Content mods (stages, models) don't need the compiler.
+
 ## Android
 
 The setup app has a **Code mods** switch under the setup buttons. It is off for a new installation.

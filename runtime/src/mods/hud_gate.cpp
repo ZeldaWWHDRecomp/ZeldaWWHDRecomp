@@ -14,6 +14,7 @@
 #include "mods.h"
 #include "climb.h"
 #include "hud_visibility.h"
+#include "guest_hud.h"
 #include "../gfx/auto_pip.h"
 #include "runtime.h"
 #include "guest_addr.h"
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 
 namespace mods {
@@ -78,4 +80,55 @@ void hud_service() {
 }
 
 float game_ui_hud_alpha() { return g_alpha.load(std::memory_order_relaxed); }
+
+// Frame interpolation: the wheel's and the bar's stamina and fade advance once per logic step; the
+// frames between two steps show them between the step before and this one (hud_drawn, called by
+// interp.cpp after each pass is drawn, with its fraction). The guest HUD lists blend their elements
+// the same way (guest_hud.h blend_lists). A value that changed since that pass (or jumped by more than
+// half) is shown as it is. debug: WWHD_INTERP_MOD_HUD=0
+namespace {
+struct HudBlend {
+    uint64_t step = ~0ull;
+    float before = 0, after = 0;
+    std::atomic<float> shown{0}, exact{0};
+    void update(float v, float t, uint64_t step_now, bool blend) {
+        if (step != step_now) {
+            before = step + 1 == step_now ? after : v;
+            after = v;
+            step = step_now;
+        }
+        const float x = blend && after == v && std::fabs(v - before) <= 0.5f ? before + (v - before) * t : v;
+        shown.store(x, std::memory_order_relaxed);
+        exact.store(v, std::memory_order_relaxed);
+    }
+    float get(float v) const {
+        return exact.load(std::memory_order_relaxed) == v ? shown.load(std::memory_order_relaxed) : v;
+    }
+};
+HudBlend g_climb_stamina, g_climb_alpha, g_move_stamina, g_move_alpha;
+}  // namespace
+
+void hud_drawn(float t, uint64_t step, bool interpolating) {
+    static const bool off = getenv("WWHD_INTERP_MOD_HUD") && !atoi(getenv("WWHD_INTERP_MOD_HUD"));
+    const bool blend = interpolating && !off && t < 1.f;
+    guestmods::hud::store().set_fraction(blend ? t : 1.f);
+    const ClimbHud c = climb_hud();
+    const MoveHud m = move_hud();
+    g_climb_stamina.update(c.stamina, t, step, blend);
+    g_climb_alpha.update(c.alpha, t, step, blend);
+    g_move_stamina.update(m.stamina, t, step, blend);
+    g_move_alpha.update(m.alpha, t, step, blend);
+}
+ClimbHud climb_hud_drawn() {
+    ClimbHud c = climb_hud();
+    c.stamina = g_climb_stamina.get(c.stamina);
+    c.alpha = g_climb_alpha.get(c.alpha);
+    return c;
+}
+MoveHud move_hud_drawn() {
+    MoveHud m = move_hud();
+    m.stamina = g_move_stamina.get(m.stamina);
+    m.alpha = g_move_alpha.get(m.alpha);
+    return m;
+}
 }  // namespace mods

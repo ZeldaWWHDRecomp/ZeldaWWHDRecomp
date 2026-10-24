@@ -63,4 +63,23 @@ int main() {
     stereo::set_convergence(0); assert(stereo::requestedConvergence==10);
     stereo::set_mode(stereo::TAB);stereo::latch();
     stereo::set_mode(stereo::Off);assert(stereo::frame.mode==stereo::TAB);
+    // Lens values do not identify a layout. A 3D camera with the same lens must
+    // retain disparity, even after those values have been uploaded by nw::lyt.
+    float layout[16]={1.4f,0,0,0, 0,2.74748f,0,0, 0,0,-1.0002f,-2.0002f, 0,0,-1,0};
+    uint32_t words[16];std::memcpy(words,layout,sizeof words);
+    stereo::tag_layout(0x40,words);
+    layout[0]=1.54546f;
+    float hud[16];std::memcpy(hud,layout,sizeof hud);
+    assert(stereo::project_eye(hud,8,600)&&hud[3]!=0);
+    float camera[16];std::memcpy(camera,original,sizeof camera);
+    assert(stereo::project_eye(camera,8,600));
+    const float n=1,f=10000,t=std::tan(20.0f*3.14159265f/180.0f);
+    float untagged[16]={1/(t*16/9.0f),0,0,0, 0,1/t,0,0, 0,0,-(f+n)/(f-n),-2*f*n/(f-n), 0,0,-1,0};
+    float moved[16];std::memcpy(moved,untagged,sizeof moved);
+    assert(stereo::project_eye(moved,8,600)&&moved[3]!=0);
+    stereo::layout_draw(true);stereo::layout_draw(true);
+    assert(stereo::layoutDrawDepth==2);
+    stereo::layout_draw(false);assert(stereo::layoutDrawDepth==1);
+    stereo::layout_draw(false);stereo::layout_draw(false);
+    assert(stereo::layoutDrawDepth==0);
 }

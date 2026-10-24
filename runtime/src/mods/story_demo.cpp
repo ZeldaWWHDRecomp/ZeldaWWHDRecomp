@@ -29,6 +29,8 @@ const uint32_t kDemoRemove = GC(0x02528AC4), kSearchFromName = GC(0x025D9F38), k
 const uint32_t kManagerCreate = GC(0x02528CEC);  // dDemo_manager_c::create
 const uint32_t kLookupId = GC(0x026067F4), kLookupName = GC(0x02606900), kManagerUpdate = GC(0x025291C8);
 const uint32_t kSearchName = GC(0x025C109C), kActorCreate = GC(0x025D5834), kSearchById = GC(0x025D54C4), kActorDelete = GC(0x025D57E0);
+const uint32_t kCurrentLayer = GC(0x025DED64), kSetCurrentLayer = GC(0x025DEAB4);  // fpcLy_CurrentLayer, fpcLy_SetCurrentLayer
+constexpr uint32_t kProcessLayer = 0x2C;  // base_process_class: the layer the process lives in
 const uint32_t kResidentAnm = GC(0x022BED70), kResidentPlayAnm = GC(0x022C2D6C), kResidentPlayTex = GC(0x022C2CC0);
 const uint32_t kResidentWalk = GD(0x101C31BA), kResidentWait = GD(0x101C31B4);  // daNpcPeople_c walk/wait animation tables (as the routes use)
 const uint32_t kDemoActor = GC(0x02526E70), kDemoPool = GD(0x101D5FFC), kResidentMtx = GC(0x022BF3A0), kDemoFrame = GD(0x101D6008);
@@ -48,6 +50,7 @@ const uint32_t kIdTable = GD(0x100DE8F4), kIdTableCount = GD(0x100C45C0);  // ar
 const uint32_t kMessageResources = GD(0x101F4AE8), kLabelVtable = GD(0x100E0A68);  // message resources; a label string's vtable
 const uint32_t kDemoMessageFlag = GD(0x101F3480);  // fopMsgM_demoMsgFlagCheck's byte
 constexpr uint32_t kManager = 0x52C4, kPlayer = 0x5B34, kFlagBytes = 1280;
+constexpr uint32_t kActorVtable = 0xB4, kSetPlayerPosAndAngle = 0x114;  // daPy_lk_c: its vtable; setPlayerPosAndAngle(cXyz*, s16) in it
 // guest record (arena)
 constexpr uint32_t kMarker = 0x444D4F31;  // 'DMO1'
 constexpr uint32_t kDraining = 9;  // released; archives are given back after a few frames
@@ -163,6 +166,7 @@ void lookup_name(Cpu* c) {
 
 // fopAcM_searchFromName: the stand-in names MA00.. of a running demo are the mod-placed actors it
 // drives (the game's demo system finds its actors by name and gives each a demo slot)
+uint32_t spawned_actor(Cpu* c, const std::string& name);
 uint32_t character(uint32_t index) {
     if (!recorded() || index >= ld32(g_arena + CharacterCount)) return 0;
     const uint32_t entry = g_arena + Characters + index * 8, actor = ld32(entry);
@@ -174,9 +178,17 @@ void search_name(Cpu* c) {
         c->r[3] = character(uint32_t((name[2] - '0') * 10 + (name[3] - '0')));
         return;
     }
+    // the demo's own copy of a game actor (created for it) is the one its demo object binds to
+    if (!name.empty()) {
+        const Cpu saved = *c;
+        const uint32_t own = spawned_actor(c, name);
+        *c = saved;
+        if (own != ~0u) { c->r[3] = own; return; }
+    }
     g_original(c, GC(0x025D9F38));
 }
 void apply_characters(Cpu* c);
+void apply_spawned(Cpu* c);
 // The demo message window's idle execute: the window is noted for a release with a message open.
 void demo_window_wait(Cpu* c) {
     if (recorded()) st32(g_arena + WindowAt, c->r[3]);
@@ -195,6 +207,7 @@ void manager_update(Cpu* c) {
         const Cpu saved = *c;
         parts_update(c);  // carried actors' slots first: mod-placed ones take them in apply_characters
         if (ld32(g_arena + CharacterCount)) apply_characters(c);
+        if (ld32(g_arena + SpawnCount)) apply_spawned(c);
         *c = saved;
     }
     c->r[3] = result;
@@ -272,7 +285,23 @@ std::function<int32_t(const demo_scene::Resource&)> resolver(Cpu* c) {
         return -1;
     };
 }
+// A game actor the port created for the running demo answers to its name before any of the room's
+// (the room's own one may be waiting for an event of its own and not draw, as Outset's Helmaroc King);
+// 0 while its creation is still pending. Not one of ours: ~0u.
+uint32_t spawned_actor(Cpu* c, const std::string& name) {
+    if (!recorded()) return ~0u;
+    const uint32_t count = ld32(g_arena + SpawnCount);
+    for (uint32_t i = 0; i < count && i < 8; ++i) {
+        if (cstr(g_arena + Spawned + i * 16 + 4, 12) != name) continue;
+        const uint32_t out = g_arena + Scratch + 0x74;
+        st32(out, 0);
+        call(c, kSearchById, {ld32(g_arena + Spawned + i * 16), out});
+        return ld32(out);
+    }
+    return ~0u;
+}
 uint32_t find_actor(Cpu* c, const std::string& name) {
+    if (const uint32_t own = spawned_actor(c, name); own != ~0u) return own;
     std::memset(mem::ptr(g_arena + Scratch), 0, 16);
     std::memcpy(mem::ptr(g_arena + Scratch), name.c_str(), std::min<size_t>(name.size(), 15));
     return call(c, kSearchFromName, {g_arena + Scratch, 0, 0});
@@ -291,7 +320,13 @@ bool spawn_missing(Cpu* c, std::string& why) {
     if (!demo_scene::compile(g_demo, resolver(c), compiled, why)) return false;
     uint32_t count = 0;
     for (const auto& cast : compiled.cast) {
-        if (find_actor(c, cast.name)) continue;
+        if (!cast.own) {
+            if (const uint32_t room = find_actor(c, cast.name)) {
+                LOG("[demo] %s: the room's own (params %08X) plays in the demo; its own code decides whether it shows (\"spawn\": \"always\" creates one for the demo)",
+                    cast.name.c_str(), ld32(room + 0xB0));
+                continue;
+            }
+        }
         if (!cast.spawn) return why = "actor " + cast.name + " is not in this room", false;
         if (count >= 8) return why = "a demo creates at most 8 game actors", false;
         const uint32_t name = g_arena + Scratch + 0x60;
@@ -312,8 +347,27 @@ bool spawn_missing(Cpu* c, std::string& why) {
         std::memset(mem::ptr(args + 12), 0, 8);
         for (unsigned i = 0; i < 3; ++i) st32(args + 20 + i * 4, f32_as_u32(1.f));
         const uint32_t sub = ld8(entry + 0xA);
-        const uint32_t pid = call(c, kActorCreate, {ld16(entry + 8), cast.params, args, uint32_t(int8_t(ld8(link + 0x326))), args + 12, args + 20, sub == 0xFF ? 0xFFFFFFFFu : sub, 0});
+        // fopAcM_create puts the actor into the process layer that is current at the call. The scene
+        // player runs between the game's process handlers, where the current layer is whatever the last
+        // one left, often the root layer. An actor in the root layer is drawn twice a frame: by the root
+        // layer's own draw and by the actor draw queue the play scene draws. Its model packets then go
+        // into the same J3D draw bucket twice, the bucket's list loops on itself and
+        // J3DDrawBuffer::drawHead never returns (the scene preview hang). So the demo's actors are made
+        // in Link's layer (the play scene's), where the game keeps its own actors.
+        const uint32_t layer = ld32(link + kProcessLayer);
+        if (!layer) return why = "Link's process layer is unknown", false;
+        const uint32_t previous = call(c, kCurrentLayer, {});
+        uint32_t pid = 0xFFFFFFFFu;
+        call(c, kSetCurrentLayer, {layer});
+        try {
+            pid = call(c, kActorCreate, {ld16(entry + 8), cast.params, args, uint32_t(int8_t(ld8(link + 0x326))), args + 12, args + 20, sub == 0xFF ? 0xFFFFFFFFu : sub, 0});
+        } catch (...) {
+            call(c, kSetCurrentLayer, {previous});
+            throw;
+        }
+        call(c, kSetCurrentLayer, {previous});
         if (pid == 0xFFFFFFFFu) return why = "the game could not create " + cast.name, false;
+        if (previous != layer) LOG("[demo] %s goes into Link's process layer %08X (the current layer was %08X)", cast.name.c_str(), layer, previous);
         const uint32_t slot = g_arena + Spawned + count * 16;
         st32(slot, pid);
         text(slot + 4, cast.name);
@@ -681,6 +735,27 @@ namespace {
 // (0,0,0) instead of the origin, and Link, who takes his slot's place in his demo clips, stood at the
 // world origin and fell out of his room (the scene was interrupted). The game's own values come back
 // once the demo is cleared (tick()).
+// Link with a position track starts the demo at its first key. Of his demo modes, only the placing
+// ones the game's own cutscenes start with (and his clips) move him onto his track: in wait, walk and
+// the others he stayed where he stood, so a demo whose keys are away from him (made with the editor's
+// fly camera somewhere else) played without him in the picture, or with him walking there from afar.
+// daPy_lk_c::setPlayerPosAndAngle(cXyz*, s16), the virtual those placing modes call, places him.
+void place_link(Cpu* c) {
+    const uint32_t play = call(c, kPlay, {}), link = play ? ld32(play + kPlayer) : 0;
+    if (!link) return;
+    const demo_scene::Vec origin{u32_as_f32(ld32(g_arena + Origin)), u32_as_f32(ld32(g_arena + Origin + 4)), u32_as_f32(ld32(g_arena + Origin + 8))};
+    const auto start = demo_scene::link_start(g_demo, origin, u32_as_f32(ld32(g_arena + Origin + 12)));
+    if (!start) return;
+    const uint32_t vtable = ld32(link + kActorVtable), place = vtable ? ld32(vtable + kSetPlayerPosAndAngle) : 0;
+    if (!place) return;
+    const float dx = u32_as_f32(ld32(link + 0x314)) - start->position.x, dy = u32_as_f32(ld32(link + 0x318)) - start->position.y, dz = u32_as_f32(ld32(link + 0x31C)) - start->position.z;
+    const uint32_t at = g_arena + Scratch + 0x50;
+    st32(at, f32_as_u32(start->position.x)); st32(at + 4, f32_as_u32(start->position.y)); st32(at + 8, f32_as_u32(start->position.z));
+    const int16_t heading = start->heading ? int16_t(int32_t(*start->heading * 32768.f / 180.f)) : int16_t(ld16(link + 0x32A));
+    call(c, place, {link, at, uint32_t(int32_t(heading))});
+    LOG("[demo] Link starts at his first position key %.0f,%.0f,%.0f (he stood %.0f units from it)", start->position.x, start->position.y, start->position.z,
+        std::sqrt(dx * dx + dy * dy + dz * dz));
+}
 void manager_create(Cpu* c) {
     if (recorded() && c->r[3] == g_arena + Stb) {
         const uint32_t control = ld32(kDemoControl);
@@ -707,8 +782,9 @@ void manager_create(Cpu* c) {
         const uint32_t slot = pool && id && id <= 32 ? call(c, kDemoActor, {pool, id}) : 0;
         if (slot && (ld16(slot + 4) & 0x0E)) { st16(slot + 4, uint16_t(ld16(slot + 4) & ~0x0Eu)); ++cleared; }
     }
-    *c = saved;
     if (cleared) LOG("[demo] created: %u actor slots wait for the first update", cleared);
+    place_link(c);
+    *c = saved;
 }
 // Phases 3 and 5: carried actors and the demo's time/weather changes, each demo frame
 void parts_update(Cpu* c) {
@@ -731,6 +807,31 @@ void parts_update(Cpu* c) {
         }
         return 0;
     });
+}
+// Game actors the port created for the demo follow their tracks also where their own code doesn't read
+// a demo slot (a pig, an enemy, an object): their slot's values go to their position, angles and scale,
+// as for the mod-placed actors. Without that a created pig stood where its own code put it (at
+// Windfall, on a point of the room's pig path), not in the picture. Actors whose code reads its slot
+// set the same values themselves; the room's own actors are left to their code.
+void apply_spawned(Cpu* c) {
+    const uint32_t pool = ld32(kDemoPool);
+    if (!pool) return;
+    const uint32_t count = std::min<uint32_t>(ld32(g_arena + SpawnCount), 8);
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t out = g_arena + Scratch + 0x74;
+        st32(out, 0);
+        call(c, kSearchById, {ld32(g_arena + Spawned + i * 16), out});
+        const uint32_t actor = ld32(out), slot = actor ? ld8(actor + 0x2DC) : 0;
+        const uint32_t demo = slot && slot <= 32 ? call(c, kDemoActor, {pool, slot}) : 0;
+        if (!demo) continue;
+        const uint16_t flags = ld16(demo + 4);
+        if (flags & 2) for (uint32_t off : {0x314u, 0x300u}) for (unsigned k = 0; k < 12; k += 4) st32(actor + off + k, ld32(demo + 8 + k));
+        if (flags & 8) for (uint32_t off : {0x320u, 0x328u}) for (unsigned k = 0; k < 6; k += 2) st16(actor + off + k, ld16(demo + 0x20 + k));
+        if (flags & 4) for (unsigned k = 0; k < 12; k += 4) st32(actor + 0x330 + k, ld32(demo + 0x14 + k));
+        if (std::getenv("WWHD_DEMO_TRACE") && ld32(kDemoFrame) % 30 == 0)
+            LOG("[demo] %s (created for the demo) at %.0f,%.0f,%.0f (frame %u)", cstr(g_arena + Spawned + i * 16 + 4, 12).c_str(), u32_as_f32(ld32(actor + 0x314)),
+                u32_as_f32(ld32(actor + 0x318)), u32_as_f32(ld32(actor + 0x31C)), ld32(kDemoFrame));
+    }
 }
 // Skip: every participant takes the pose of its tracks' last keys (relative to the demo's origin).
 void end_poses(Cpu* c) {

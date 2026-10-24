@@ -60,13 +60,21 @@ int main(){static_models::ModelInfo info;std::string why;auto doc=document();aut
     doc=with_collision();doc["materials"].array[1]["name"]="col_hookshot";assert(static_models::validate_glb(glb(doc,cube),info,why));
     doc=with_collision();doc["materials"].array[1]["name"]="col_unknown";bad(doc,cube);
     doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[0,1,1]");bad(doc,cube);
-    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[1000,1,1]");bad(doc,cube);
-    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[201,0,0]");bad(doc,cube);
+    // a body's size: one sea square (100000 units = 1 km) along each axis and every coordinate within +/-100000
+    static_assert(static_models::kMaxCollisionExtent==100000);
+    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[1000,1,1]");assert(static_models::validate_glb(glb(doc,cube),info,why));  // exactly 1 km wide
+    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[1000.001,1,1]");bad(doc,cube);  // 0.1 unit wider
+    doc=with_collision();doc["nodes"].array[2]["scale"]=mods::json::parse("[1,1,1000.001]");bad(doc,cube);
+    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[201,0,0]");assert(static_models::validate_glb(glb(doc,cube),info,why));  // past the old 200 m
+    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[997.5,0,0]");assert(static_models::validate_glb(glb(doc,cube),info,why));  // up to 99800 units
+    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[999.501,0,0]");bad(doc,cube);  // a coordinate past 100000
+    doc=with_collision();doc["nodes"].array[1]["translation"]=mods::json::parse("[0,0,-999]");bad(doc,cube);
     doc=with_collision();doc["scenes"].array[0]["nodes"].array.pop_back();bad(doc,cube);
     doc=with_collision();doc["meshes"].array[1]["primitives"].array[0]["mode"]=1;bad(doc,cube);
-    doc=cube_document();assert(static_models::validate_glb(glb(doc,cube),info,why,true));doc["nodes"].array[0]["translation"]=mods::json::parse("[201,0,0]");assert(!static_models::validate_glb(glb(doc,cube),info,why,true)&&info.vertex_count==0);
+    doc=cube_document();assert(static_models::validate_glb(glb(doc,cube),info,why,true));doc["nodes"].array[0]["translation"]=mods::json::parse("[201,0,0]");assert(static_models::validate_glb(glb(doc,cube),info,why,true));doc["nodes"].array[0]["translation"]=mods::json::parse("[1000,0,0]");assert(!static_models::validate_glb(glb(doc,cube),info,why,true)&&info.vertex_count==0);
     doc=with_collision();auto flat=cube;for(size_t n=0;n<96;++n)flat[n]=0;bad(doc,flat);
-    doc=with_collision();auto many=doc["meshes"].array[1]["primitives"].array[0];doc["meshes"].array[1]["primitives"].array.assign(64,many);doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(3);for(unsigned n=0;n<4;++n){doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(int(4+n));}bad(doc,cube);
+    // 11 copies of 64 cube primitives: 8448 collision triangles, past the 8192 of a body
+    doc=with_collision();auto many=doc["meshes"].array[1]["primitives"].array[0];doc["meshes"].array[1]["primitives"].array.assign(64,many);doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(3);for(unsigned n=0;n<9;++n){doc["nodes"].array.push_back(mods::json::parse("{\"mesh\":1}"));doc["scenes"].array[0]["nodes"].array.push_back(int(4+n));}bad(doc,cube);
     // Several materials: one embedded PNG per material, several primitives (tools/story_mods/multi_material.py).
     auto two=[](){auto d=document();auto p=d["meshes"].array[0]["primitives"].array[0];p["material"]=1;d["meshes"].array[0]["primitives"].array.push_back(p);d["materials"].array.push_back(mods::json::parse(R"({"name":"leaves","alphaMode":"MASK","alphaCutoff":0.4,"doubleSided":true,"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}})"));return d;};
     doc=two();assert(static_models::validate_glb(glb(doc,bin),info,why));assert(info.material_count==2&&info.cutout_count==1&&info.double_sided_count==1&&info.images.size()==1&&info.vertex_count==6&&info.triangle_count==2&&info.texture_bytes==64*8*4);
@@ -92,6 +100,17 @@ int main(){static_models::ModelInfo info;std::string why;auto doc=document();aut
     // collision from visible triangles checks every visible material's col_* name
     doc=cube_document();{auto p=doc["meshes"].array[0]["primitives"].array[0];p["material"]=1;doc["meshes"].array[0]["primitives"].array.push_back(p);auto m=doc["materials"].array[0];m["name"]="col_wood";doc["materials"].array.push_back(m);doc["materials"].array[0]["name"]="col_sand";}
     assert(static_models::validate_glb(glb(doc,cube),info,why,true)&&info.material_count==2);
-    doc["materials"].array[1]["name"]="col_lava";assert(!static_models::validate_glb(glb(doc,cube),info,why,true));
+    doc["materials"].array[1]["name"]="col_lava";assert(static_models::validate_glb(glb(doc,cube),info,why,true)&&static_models::collision_surface("col_lava")==14);
+    doc["materials"].array[1]["name"]="col_magma";assert(!static_models::validate_glb(glb(doc,cube),info,why,true));
+    // a kit model's GLB: own textures as above, texture-free game materials, and never a game material with a texture
+    {static_models::KitInfo kit;const std::vector<std::string> names{"rock","Txe_gake_v"};
+        doc=document();doc["materials"].array[0]["name"]="cloth";assert(static_models::validate_kit_glb(glb(doc,bin),names,kit,why)&&kit.own_materials==1&&kit.own_texture_bytes==64*8*4&&kit.triangles==1);
+        doc["materials"].array[0]["pbrMetallicRoughness"].object.erase("baseColorTexture");doc["materials"].array[0]["name"]="Txe_gake_v";
+        assert(static_models::validate_kit_glb(glb(doc,bin),names,kit,why)&&kit.own_materials==0&&kit.materials==1);
+        for(const char* name:{"Txe_gake_v","Txe_gake_v.001","rock","rock.002"}){doc=document();doc["materials"].array[0]["name"]=name;assert(!static_models::validate_kit_glb(glb(doc,bin),names,kit,why)&&why.find("never carries")!=std::string::npos);}
+        doc=document();doc["materials"].array[0]["name"]="renamed";doc["materials"].array[0]["extras"]=mods::json::parse(R"({"wwhd":{"kit_material":"Txe_gake_v"}})");
+        assert(!static_models::validate_kit_glb(glb(doc,bin),names,kit,why));  // a material of the editor's export_glb, renamed
+        doc=document();doc["materials"].array[0]["name"]="cloth";doc["meshes"].array[0]["name"]="model_col";assert(!static_models::validate_kit_glb(glb(doc,bin),names,kit,why));  // nothing visible
+    }
     std::cout<<"static model validation tests passed\n";
 }

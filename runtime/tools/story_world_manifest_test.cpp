@@ -269,13 +269,24 @@ int main() {
     for(const auto& name:{"uo2","um1","ym1"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(parse_actors(v,actors,why));assert(actors[0].resident==(std::string(name)=="uo2"?1u:std::string(name)=="ym1"?19u:9u));}
     for(const auto& name:{"Uo2","ug1","1","","um3x"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(!parse_actors(v,actors,why));}
     // the catalogue of placeable villagers: every declared code parses to its native subtype
-    {const std::pair<const char*,unsigned> codes[]={{"uo1",0},{"uo2",1},{"uo3",2},{"ub1",3},{"ub2",4},{"ub3",5},{"ub4",6},{"uw1",7},{"uw2",8},{"um1",9},{"um2",10},{"sa1",12},{"sa2",13},{"sa3",14},{"sa4",15},{"ym1",19}};
+    {const std::pair<const char*,unsigned> codes[]={{"uo1",0},{"uo2",1},{"uo3",2},{"ub1",3},{"ub2",4},{"ub3",5},{"ub4",6},{"uw1",7},{"uw2",8},{"um1",9},{"um2",10},{"sa1",12},{"sa2",13},{"sa3",14},{"sa4",15},{"ym1",19},{"rotena",20},{"rotenb",21},{"rotenc",22}};
      assert(std::size(codes)==std::size(story_resident_types::kTypes));
      for(const auto&[code,subtype]:codes){v=example();v["actors"].array[0]["parameters"]["resident"]=code;assert(parse_actors(v,actors,why));assert(actors[0].resident==subtype);
       const auto*t=story_resident_types::find(code);assert(t&&t->subtype==subtype&&story_resident_types::by_subtype(uint8_t(subtype))==t&&std::strlen(t->label)&&std::strlen(t->help));
-      assert(story_resident_types::profile(uint8_t(subtype))==(subtype==19?0x13B:0x175));
-      // the story-gated pair skips its gate (stage argument 0xFF); everyone else keeps the ordinary 0
-      assert(story_resident_types::params(uint8_t(subtype))==(subtype==19?1u:(subtype==8||subtype==10)?0x00FF00FFu:0x00FF0000u));}}
+      assert(story_resident_types::profile(uint8_t(subtype))==(subtype==19?0x13B:subtype>=20?0x174:0x175));
+      // the story-gated pair skips its gate (stage argument 0xFF); everyone else keeps the ordinary 0;
+      // a Goron merchant: its number in the top byte and no rail (0xFF)
+      assert(story_resident_types::params(uint8_t(subtype))==(subtype==19?1u:subtype>=20?((subtype-20u)<<24)|0x00FFFFFFu:(subtype==8||subtype==10)?0x00FF00FFu:0x00FF0000u));
+      assert(story_resident_types::create_argument(uint8_t(subtype))==(subtype==19?0xFFFFFFFFu:subtype>=20?subtype-20u:subtype));
+      assert(story_resident_types::people(uint8_t(subtype))==(subtype<19));}}
+    // the Goron merchants stand: a route is refused with the reason; talks and lines are theirs as any resident's
+    for(const auto& name:{"rotena","rotenb","rotenc"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;
+      v["actors"].array[0]["path"]=mods::json::parse(R"({"points":[{"x":300,"y":0,"z":0}]})");
+      assert(!parse_actors(v,actors,why)&&why.find("Goron merchant")!=std::string::npos);}
+    // a young Goron: a uniform scale 0.5..1.5
+    v=example();v["actors"].array[0]["parameters"]["resident"]="rotena";v["actors"].array[0]["scale"]=mods::json::parse(R"({"x":0.7,"y":0.7,"z":0.7})");assert(parse_actors(v,actors,why)&&actors[0].resident==20);
+    v["actors"].array[0]["scale"]=mods::json::parse(R"({"x":0.4,"y":0.4,"z":0.4})");assert(!parse_actors(v,actors,why)&&why.find("0.5 to 1.5")!=std::string::npos);
+    v["actors"].array[0]["scale"]=mods::json::parse(R"({"x":1,"y":0.7,"z":1})");assert(!parse_actors(v,actors,why));
     // unsafe characters are refused with the reason, the rest with the list
     for(const auto& name:{"um3","sa5","ug1","ug2"}){v=example();v["actors"].array[0]["parameters"]["resident"]=name;assert(!parse_actors(v,actors,why)&&actors.empty());assert(why.find("not supported")!=std::string::npos&&why.find(name)!=std::string::npos);}
     v=example();v["actors"].array[0]["parameters"]["resident"]="rsh1";assert(!parse_actors(v,actors,why));assert(why.find("one of uo2, um1")!=std::string::npos&&why.find("ym1")!=std::string::npos);
@@ -416,11 +427,15 @@ int main() {
         {auto bad=island;bad["actors"].array[0].object.erase("behaviour");rejected(bad);}
         {auto bad=island;bad["actors"].array[0].object.erase("collision");rejected(bad);}
         for(const char*shape:{"box","cylinder","sphere"})for(const char*surface:{"stone","grass","wood","sand","metal","wall"}){
-            auto simple=island;auto&c=simple["actors"].array[0]["collision"];c=mods::json::parse(std::string(shape)=="box"?R"({"shape":"box","size":{"x":20000,"y":20,"z":40}})":std::string(shape)=="cylinder"?R"({"shape":"cylinder","radius":10000,"height":20000})":R"({"shape":"sphere","radius":10000})");c["surface"]=surface;
+            auto simple=island;auto&c=simple["actors"].array[0]["collision"];c=mods::json::parse(std::string(shape)=="box"?R"({"shape":"box","size":{"x":100000,"y":20,"z":100000}})":std::string(shape)=="cylinder"?R"({"shape":"cylinder","radius":50000,"height":100000})":R"({"shape":"sphere","radius":50000})");c["surface"]=surface;
             assert(parse_actors(simple,actors,why)&&actors[0].collision_shape==shape&&actors[0].collision_surface==surface&&actors[0].collision_mesh.empty());
             {auto bad=simple;bad["actors"].array[0]["collision"]["surface"]="col_grass";rejected(bad);}
             {auto bad=simple;bad["actors"].array[0]["collision"]["mesh"]="post";rejected(bad);}
-            for(int dimension:{0,-1,20001}){auto bad=simple;auto&bc=bad["actors"].array[0]["collision"];if(std::string(shape)=="box")bc["size"]["x"]=dimension;else bc["radius"]=dimension;rejected(bad);}
+            for(double dimension:{0.,-1.,100000.01}){auto bad=simple;auto&bc=bad["actors"].array[0]["collision"];if(std::string(shape)=="box")bc["size"]["x"]=dimension;else bc["radius"]=dimension/2;rejected(bad);}
+            // one sea square (100000 units) along each axis, the old 20000 no longer a bound
+            if(std::string(shape)=="box")for(const char*axis:{"y","z"}){auto bad=simple;bad["actors"].array[0]["collision"]["size"][axis]=100000.01;rejected(bad);auto good=simple;good["actors"].array[0]["collision"]["size"][axis]=20001;assert(parse_actors(good,actors,why));}
+            if(std::string(shape)=="cylinder"){auto bad=simple;bad["actors"].array[0]["collision"]["height"]=100000.01;rejected(bad);}
+            if(std::string(shape)!="box"){auto good=simple;good["actors"].array[0]["collision"]["radius"]=20001;assert(parse_actors(good,actors,why));}
             {auto bad=simple;auto&bc=bad["actors"].array[0]["collision"];if(std::string(shape)=="box")bc["radius"]=1;else bc["size"]=mods::json::parse(R"({"x":1,"y":1,"z":1})");rejected(bad);}
             if(std::string(shape)=="sphere"){auto bad=simple;bad["actors"].array[0]["collision"]["height"]=1;rejected(bad);}
         }
@@ -460,8 +475,8 @@ int main() {
         auto empty=tower;empty["actors"].array[0]["grapple_points"]=mods::json::parse("[]");assert(parse_actors(empty,actors,why)&&actors[0].grapple_points.empty());assert(story_actors::identity::fingerprint("own",actors[0])==story_actors::identity::fingerprint("own",bare));
         auto eight=tower;auto&points=eight["actors"].array[0]["grapple_points"].array;while(points.size()<8){auto p=points[0];p["id"]="beam"+std::to_string(points.size());points.push_back(p);}assert(parse_actors(eight,actors,why)&&actors[0].grapple_points.size()==8);
         auto ordered=actors[0];const auto ordered_hash=story_actors::identity::fingerprint("own",ordered);std::swap(ordered.grapple_points[0],ordered.grapple_points[1]);assert(story_actors::identity::fingerprint("own",ordered)!=ordered_hash);points.push_back(points.back());rejected(eight);
-        for(const char*definition:{R"([{"id":"beam","position":{"x":-20000,"y":20000,"z":20000},"yaw":-360}])",R"([{"id":"beam","position":{"x":20000,"y":-20000,"z":-20000},"yaw":360}])",R"([{"id":"beam","position":{"x":0,"y":1,"z":0}}])"}){auto data=tower;data["actors"].array[0]["grapple_points"]=mods::json::parse(definition);assert(parse_actors(data,actors,why));}
-        for(const char*definition:{"null","{}",R"([{"id":"beam","position":{"x":0,"y":1,"z":0}},{"id":"beam","position":{"x":1,"y":2,"z":3}}])",R"([{"id":"foreign:beam","position":{"x":0,"y":1,"z":0}}])",R"([{"id":"beam","position":{"x":20001,"y":0,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":-20001,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":20001}}])",R"([{"id":"beam","position":{"x":0,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":361}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":-361}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":"90"}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"native_params":1}])"}){auto data=tower;data["actors"].array[0]["grapple_points"]=mods::json::parse(definition);rejected(data);}
+        for(const char*definition:{R"([{"id":"beam","position":{"x":-100000,"y":100000,"z":100000},"yaw":-360}])",R"([{"id":"beam","position":{"x":100000,"y":-100000,"z":-100000},"yaw":360}])",R"([{"id":"beam","position":{"x":20001,"y":0,"z":-20001}}])",R"([{"id":"beam","position":{"x":0,"y":1,"z":0}}])"}){auto data=tower;data["actors"].array[0]["grapple_points"]=mods::json::parse(definition);assert(parse_actors(data,actors,why));}
+        for(const char*definition:{"null","{}",R"([{"id":"beam","position":{"x":0,"y":1,"z":0}},{"id":"beam","position":{"x":1,"y":2,"z":3}}])",R"([{"id":"foreign:beam","position":{"x":0,"y":1,"z":0}}])",R"([{"id":"beam","position":{"x":100000.01,"y":0,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":-100000.01,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":100000.01}}])",R"([{"id":"beam","position":{"x":0,"z":0}}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":361}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":-361}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"yaw":"90"}])",R"([{"id":"beam","position":{"x":0,"y":0,"z":0},"native_params":1}])"}){auto data=tower;data["actors"].array[0]["grapple_points"]=mods::json::parse(definition);rejected(data);}
         auto floating=tower;floating["actors"].array[0]["behaviour"]="floating";assert(parse_actors(floating,actors,why)&&actors[0].grapple_points.size()==1);
         floating["actors"].array[0]["behaviour"]="drifting";floating["actors"].array[0]["drift"]=mods::json::parse(R"({"current":{"x":1,"z":0}})");assert(parse_actors(floating,actors,why)&&actors[0].grapple_points.size()==1);
         auto ordinary=tower;ordinary["actors"].array[0].object.erase("behaviour");ordinary["actors"].array[0]["collision"]=mods::json::parse(R"({"radius":30,"height":100,"mode":"solid"})");rejected(ordinary);
@@ -486,7 +501,7 @@ int main() {
          // pond, river and waterfall surfaces (the editor's water tool): each its own identity, each a body of water
          for(const char*flowing:{"pond","river","waterfall"}){auto f=island;f["actors"].array[0]["shoreline"]["material"]=flowing;assert(parse_actors(f,actors,why)&&actors[0].shoreline.material==flowing&&actors[0].water_body());assert(story_actors::identity::fingerprint("m",actors[0])!=foam_identity&&story_actors::identity::fingerprint("m",actors[0])!=story_actors::identity::fingerprint("m",water_spec));}
          water["actors"].array[0]["shoreline"]["material"]="foam";assert(parse_actors(water,actors,why)&&actors[0].shoreline.material.empty()&&!actors[0].water_body());
-         for(const char*bad_material:{"lava","Water",""}){auto bad=island;bad["actors"].array[0]["shoreline"]["material"]=bad_material;rejected(bad);}
+         for(const char*bad_material:{"magma","Water",""}){auto bad=island;bad["actors"].array[0]["shoreline"]["material"]=bad_material;rejected(bad);}
          auto bad=island;bad["actors"].array[0]["distant"]["material"]="water";rejected(bad);assert(parse_actors(island,actors,why));}
         for(const char*behaviour:{"floating","drifting"}){auto bad=island;bad["actors"].array[0]["behaviour"]=behaviour;if(std::string(behaviour)=="drifting")bad["actors"].array[0]["drift"]=mods::json::parse(R"({"wind_speed":1})");rejected(bad);}
         {auto bad=island;bad["actors"].array[0]["stage"]="town";rejected(bad);}
@@ -497,8 +512,8 @@ int main() {
             for(const auto&text:{std::string(),std::string(97,'x'),std::string("two\nlines"),std::string(1,char(0xFF))}){auto bad=island;bad["actors"].array[0][block][key]=text;rejected(bad);}
             auto data=island;data["actors"].array[0][block][key]=std::string(96,'x');assert(parse_actors(data,actors,why));data["actors"].array[0][block][key]="Île des étoiles";assert(parse_actors(data,actors,why));
         }
-        for(int radius:{100,20000}){auto data=island;data["actors"].array[0]["arrival"]["radius"]=radius;assert(parse_actors(data,actors,why));}
-        for(int radius:{0,99,20001}){auto data=island;data["actors"].array[0]["arrival"]["radius"]=radius;rejected(data);}
+        for(double radius:{100.,20001.,100000.}){auto data=island;data["actors"].array[0]["arrival"]["radius"]=radius;assert(parse_actors(data,actors,why));}
+        for(double radius:{0.,99.,100000.01}){auto data=island;data["actors"].array[0]["arrival"]["radius"]=radius;rejected(data);}
         for(const char*flag:{"missing","other:island.arrived","0x3510"}){auto bad=island;bad["actors"].array[0]["chart_marker"]["when_flag"]=flag;rejected(bad);}
         for(const char*flag:{"","other:island.arrived","0x3510"}){auto bad=island;bad["actors"].array[0]["arrival"]["flag"]=flag;rejected(bad);}
         {auto data=island;auto&a=data["actors"].array[0];a["chart_marker"].object.erase("when_flag");a.object.erase("arrival");assert(parse_actors(data,actors,why)&&actors[0].chart_marker.enabled&&!actors[0].arrival.enabled);}
@@ -510,11 +525,90 @@ int main() {
         auto extra=many;extra["actors"].array.resize(1);extra["actors"].array[0]["room"]=4;selected.push_back({"fifth",extra});assert(!world_manifest::validate_world_packages(selected,why));
     }
 
+    { // Calm water: a static sea world object's zone, bounded, at most eight per mod, not part of the object's identity.
+        auto island=mods::json::parse(R"({"models":[{"id":"island","source":"assets/island.glb"}],"actors":[{"id":"island","kind":"mod","model":"island","behaviour":"static","stage":"sea","room":18,"position":{"x":100,"y":0,"z":-100000},"rotation":{"x":0,"y":90,"z":0},"collision":{"shape":"box","size":{"x":100,"y":100,"z":100}},"calm_water":{"radius":3000}}]})");
+        auto rejected=[&](Value data){assert(!parse_actors(data,actors,why));};
+        assert(parse_actors(island,actors,why)&&actors[0].calm_water.enabled&&actors[0].calm_water.radius==3000&&actors[0].calm_water.falloff==story_world_calm::kGameFalloff&&actors[0].calm_water.offset_x==0&&actors[0].calm_water.offset_z==0);
+        const auto with=story_actors::identity::fingerprint("own",actors[0]);auto plain=actors[0];plain.calm_water={};assert(story_actors::identity::fingerprint("own",plain)==with);
+        {auto data=island;data["actors"].array[0]["calm_water"]=mods::json::parse(R"({"radius":4500.5,"falloff":2000,"offset":{"x":-1200,"z":300}})");
+         assert(parse_actors(data,actors,why)&&actors[0].calm_water.radius==4500.5f&&actors[0].calm_water.falloff==2000&&actors[0].calm_water.offset_x==-1200&&actors[0].calm_water.offset_z==300);}
+        for(double radius:{100.,100000.}){auto data=island;data["actors"].array[0]["calm_water"]["radius"]=radius;assert(parse_actors(data,actors,why));}
+        for(double radius:{0.,99.9,100000.5,-5.}){auto data=island;data["actors"].array[0]["calm_water"]["radius"]=radius;rejected(data);}
+        for(double falloff:{800.,25600.}){auto data=island;data["actors"].array[0]["calm_water"]["falloff"]=falloff;assert(parse_actors(data,actors,why));}
+        for(double falloff:{0.,799.,25601.}){auto data=island;data["actors"].array[0]["calm_water"]["falloff"]=falloff;rejected(data);}
+        for(const char*text:{R"({})",R"({"falloff":1000})",R"({"radius":"3000"})",R"({"radius":3000,"height":2})",R"({"radius":3000,"offset":{"x":1}})",R"({"radius":3000,"offset":{"x":1,"y":2,"z":3}})",R"({"radius":3000,"offset":{"x":100001,"z":0}})",R"(true)"}){
+            auto data=island;data["actors"].array[0]["calm_water"]=mods::json::parse(text);rejected(data);}
+        {auto data=island;data["actors"].array[0]["calm_water"]=Value{};rejected(data);}
+        // only on a static sea world object
+        {auto bad=island;bad["actors"].array[0]["stage"]="Asoko";rejected(bad);}
+        {auto bad=island;bad["actors"].array[0]["behaviour"]="floating";rejected(bad);}
+        {auto bad=example();bad["actors"].array[0]["calm_water"]=mods::json::parse(R"({"radius":3000})");rejected(bad);}
+        // eight zones per mod
+        auto many=island;auto prototype=many["actors"].array[0];many["actors"].array.clear();
+        for(unsigned n=0;n<8;++n){auto a=prototype;a["id"]="island"+std::to_string(n);a["position"]["x"]=int(1000*n);many["actors"].array.push_back(a);}assert(parse_actors(many,actors,why));
+        auto nine=many;auto ninth=prototype;ninth["id"]="ninth";ninth["position"]["x"]=9000;nine["actors"].array.push_back(ninth);rejected(nine);
+    }
+
     std::vector<ManifestModel> models;assert(parse_models(valid_mod,models,why)&&models[0].kind=="static");
     mod=valid_mod;mod["models"].array[0]["kind"]="skinned";assert(parse_models(mod,models,why)&&models[0].kind=="skinned");
     mod["models"].array[0]["kind"]="static";assert(parse_models(mod,models,why)&&models[0].kind=="static");
     for(const auto& kind:{"animated","", "native"}){mod["models"].array[0]["kind"]=kind;assert(!parse_models(mod,models,why));}
     mod["models"].array[0]["kind"]=mods::json::Value{};assert(!parse_models(mod,models,why));
+    // a scene area trigger may play "again" once Link has left the area
+    {
+        auto v=mods::json::parse(R"({"scenes":[{"id":"bird","trigger":{"type":"area","stage":"sea","room":44,"position":{"x":-194790,"y":136,"z":314530},"radius":120,"again":true},
+            "steps":[{"type":"wait","frames":10},{"type":"end"}]}]})");
+        std::vector<ManifestScene> scenes;assert(parse_scenes(v,scenes,why)&&scenes.size()==1&&scenes[0].again&&scenes[0].trigger=="area");
+        v["scenes"].array[0]["trigger"].object.erase("again");assert(parse_scenes(v,scenes,why)&&!scenes[0].again);
+        v["scenes"].array[0]["trigger"]["again"]="yes";assert(!parse_scenes(v,scenes,why));
+        auto room=mods::json::parse(R"({"scenes":[{"id":"r","trigger":{"type":"room","stage":"sea","room":44,"again":true},"steps":[{"type":"wait","frames":10},{"type":"end"}]}]})");
+        assert(!parse_scenes(room,scenes,why));  // only an area has an "inside" to leave
+    }
+    // parts of one composition: the same mod's static world objects that name one "group"; the same origin alone is not
+    // one, nor another group, room or a floating object; group is for static world objects only
+    {
+        auto pair=mods::json::parse(R"({"actors":[{"id":"ground","kind":"mod","model":"post","behaviour":"static","group":"isle","collision":{"shape":"box","size":{"x":100,"y":100,"z":100}},
+            "stage":"sea","room":44,"position":{"x":-200512,"y":6640,"z":301774},"rotation":{"x":0,"y":198,"z":0}},
+            {"id":"ruin","kind":"mod","model":"post","behaviour":"static","group":"isle","collision":{"shape":"box","size":{"x":100,"y":100,"z":100}},
+            "stage":"sea","room":44,"position":{"x":-200000,"y":6000,"z":301000},"rotation":{"x":0,"y":0,"z":0}}],
+            "models":[{"id":"post","source":"models/post.glb"}]})");
+        assert(parse_actors(pair,actors,why)&&actors.size()==2&&actors[0].group=="isle"&&story_notebook::one_composition(actors[0],actors[1]));
+        auto other=actors[1];other.group="other";assert(!story_notebook::one_composition(actors[0],other));
+        auto none=actors[1];none.group.clear();none.position=actors[0].position;none.rotation=actors[0].rotation;assert(!story_notebook::one_composition(actors[0],none));
+        auto elsewhere=actors[1];elsewhere.room=43;assert(!story_notebook::one_composition(actors[0],elsewhere));
+        auto floating=actors[1];floating.behaviour="floating";assert(!story_notebook::one_composition(actors[0],floating));
+        auto bad=pair;bad["actors"].array[0]["group"]="Not An Id";assert(!parse_actors(bad,actors,why));
+        bad=pair;bad["actors"].array[0]["behaviour"]="floating";assert(!parse_actors(bad,actors,why));
+    }
+    // kit models: a package's model drawn with a kit room's materials, placed only as a static world object at scale 1
+    {
+        auto kit=mods::json::parse(R"({"actors":[{"id":"ground","kind":"mod","model":"island","behaviour":"static","collision":{"mesh":"island"},"stage":"sea","room":44,
+            "position":{"x":-200512,"y":6640,"z":301774},"rotation":{"x":0,"y":198,"z":0}},
+            {"id":"ruins","kind":"mod","model":"ruins","behaviour":"static","collision":{"mesh":"ruins"},"stage":"sea","room":44,
+            "position":{"x":-200512,"y":6640,"z":301774},"rotation":{"x":0,"y":198,"z":0}}],
+            "models":[{"id":"island","kind":"kit","source":"assets/island.glb","kit":{"stage":"sea","room":41},"materials":{"grass":"m_kusa_v","spray":"SC_00_m_2_"}},
+            {"id":"ruins","kind":"kit","source":"assets/ruins.glb","kit":{"stage":"Hyroom","room":0},"material":"lambert9_v"}]})");
+        assert(parse_models(kit,models,why)&&models.size()==2&&models[0].kind=="kit"&&models[0].kit_stage=="sea"&&models[0].kit_room==41&&models[0].kit_materials.size()==2&&
+               models[1].kit_material=="lambert9_v"&&models[1].kit_materials.empty());
+        assert(parse_actors(kit,actors,why)&&actors.size()==2&&actors[0].kit_model&&actors[0].background_drawn()&&!actors[0].game_piece()&&actors[0].collision_mesh=="island");
+        assert(!story_notebook::one_composition(actors[0],actors[1]));  // the same origin alone: two objects
+        auto bad=kit;bad["models"].array[0].object.erase("kit");assert(!parse_models(bad,models,why));
+        for(const char*stage:{"","Stage_Too_Long","sea/41"}){bad=kit;bad["models"].array[0]["kit"]["stage"]=stage;assert(!parse_models(bad,models,why));}
+        for(int room:{-1,64}){bad=kit;bad["models"].array[0]["kit"]["room"]=room;assert(!parse_models(bad,models,why));}
+        bad=kit;bad["models"].array[0]["kit"]["extra"]=1;assert(!parse_models(bad,models,why));
+        bad=kit;bad["models"].array[0]["materials"]["grass"]="has space";assert(!parse_models(bad,models,why));
+        bad=kit;bad["models"].array[0]["materials"]["grass"]=std::string(65,'m');assert(!parse_models(bad,models,why));
+        bad=kit;bad["models"].array[1]["kind"]="static";assert(!parse_models(bad,models,why));  // kit fields belong to kind kit
+        // the placement: static only, its own collision, turned about the vertical axis at scale 1
+        bad=kit;bad["actors"].array[0]["behaviour"]="floating";assert(!parse_actors(bad,actors,why));
+        bad=kit;bad["actors"].array[0]["collision"]["mesh"]="ruins";assert(!parse_actors(bad,actors,why));
+        bad=kit;bad["actors"].array[0]["scale"]=mods::json::parse(R"({"x":2,"y":2,"z":2})");assert(!parse_actors(bad,actors,why));
+        bad=kit;bad["actors"].array[0]["rotation"]["x"]=10;assert(!parse_actors(bad,actors,why));
+        bad=kit;bad["actors"].array[0].object.erase("behaviour");bad["actors"].array[0].object.erase("collision");assert(!parse_actors(bad,actors,why));
+        // a static model's collision can't name a kit model
+        auto other=valid_mod;other["models"].array.push_back(kit["models"].array[0]);other["actors"].array[0]["behaviour"]="static";
+        other["actors"].array[0]["collision"]=mods::json::parse(R"({"mesh":"island"})");assert(!parse_actors(other,actors,why));
+    }
     for(const auto& source:{"../post.glb","/post.glb","models//post.glb","models/./post.glb","models/post.bfres","C:post.glb"}){mod=valid_mod;mod["models"].array[0]["source"]=source;assert(!parse_actors(mod,actors,why));}
     mod=valid_mod;mod["actors"].array[0]["animation"]="wave";assert(!parse_actors(mod,actors,why));mod["models"].array[0]["kind"]="skinned";assert(parse_actors(mod,actors,why)&&actors[0].animation=="wave");mod["actors"].array[0]["animation"]="";assert(!parse_actors(mod,actors,why));
     mod=valid_mod;mod["actors"].array[0]["actor"]="sign";assert(!parse_actors(mod,actors,why));

@@ -6,6 +6,7 @@
 // a change takes effect in the game with the next rebuild.
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -204,7 +205,7 @@ Value Session::dispatch_stages(const std::string& command, const Value& p, std::
                 e["size"] = point_value(200, 200, 200);
                 e["to"]["room"] = p.get("to_room").type == Value::Number ? p.get("to_room").number : 0.0;
                 e["to"]["point"] = p.get("to_point").type == Value::Number ? p.get("to_point").number : 0.0;
-                if (p.get("style").type == Value::String) e["style"] = p.get("style").text;  // walk or updraft
+                if (p.get("style").type == Value::String) e["style"] = p.get("style").text;  // walk, updraft or hole
                 if (p.get("height").type == Value::Number) e["height"] = p.get("height").number;
                 if (p.get("size").type == Value::Object) e["size"] = p.get("size");
                 else if (e.get("style").string() == "updraft") e["size"] = point_value(400, 800, 400);  // a column of wind
@@ -223,8 +224,30 @@ Value Session::dispatch_stages(const std::string& command, const Value& p, std::
                 a["angle"] = std::round(std::fmod(yaw + 180, 360));
                 list(*rv, "actors").array.push_back(a);
                 r["added"] = a;
+            } else if (what == "lava" || what == "heat_shimmer") {
+                // the game's lava floor where Link stands (its surface at his feet: model the room's col_lava there),
+                // turned his way, `size` x and z (default 10 m square); the heat haze over it
+                Value a;
+                a["id"] = p.get("id").type == Value::String ? p.get("id").text : what == "lava" ? std::string("lava") : std::string("heat");
+                for (const auto& v : rv->get("actors").array)
+                    if (v.get("id").string() == a.get("id").string()) a["id"] = a.get("id").string() + "-" + std::to_string(rv->get("actors").array.size() + 1);
+                a["actor"] = what;
+                a["position"] = point_value(place.position.x, place.position.y, place.position.z);
+                if (what == "lava") {
+                    Value size;
+                    size["x"] = p.get("size").get("x").type == Value::Number ? p.get("size").get("x").number : 1000.0;
+                    size["z"] = p.get("size").get("z").type == Value::Number ? p.get("size").get("z").number : 1000.0;
+                    for (const char* k : {"x", "z"})
+                        if (!(size.get(k).number >= mod_stages::kLavaStep && size.get(k).number <= 255 * mod_stages::kLavaStep))
+                            return w = "lava's size is {\"x\", \"z\"}, 100 to 25500 game units each", false;
+                    a["size"] = size;
+                    a["angle"] = std::round(yaw);
+                    r["note"] = "the lava's picture: give the room's model a col_lava surface at this height (its floor around it a little higher) and Rebuild";
+                }
+                list(*rv, "actors").array.push_back(a);
+                r["added"] = a;
             } else
-                return w = "\"what\" is spawn, exit, door, warp, entry, chest, enemy, pot or big_pot", false;
+                return w = "\"what\" is spawn, exit, door, warp, entry, chest, enemy, pot, big_pot, lava or heat_shimmer", false;
             return true;
         });
         return r;
@@ -266,6 +289,113 @@ Value Session::dispatch_stages(const std::string& command, const Value& p, std::
             for (const auto& m : facts.materials) mats.array.push_back(Value(m));
         }
         r["next"] = "add_stage or add_room with \"ground\": \"" + as + "\" (or rebuild_stage when a room uses it already)";
+        ok = true;
+        return r;
+    }
+    if (command == "notebook_page") {
+        if (!host_) return why = "the game is not running", r;
+        const bool open = p.get("open").type == Value::Bool ? p.get("open").boolean : true;
+        const bool give = p.get("give").type == Value::Bool && p.get("give").boolean;
+        if (!host_->notebook_page(open, give, why)) return r;
+        r["requested"] = true;
+        r["open"] = open;
+        if (open) r["next"] = "screenshot shows the page (the game's log says when it can't open: no notebook in this save, say); notebook_page with open false closes it";
+        ok = true;
+        return r;
+    }
+    if (command == "set_package_info") {
+        // the package's own name, description, version or author (shown in the mod manager)
+        const std::string field = text(p, "field");
+        if (field == "story_notebook") {
+            // the package's dependency on the Story Notebook: "required" (its story plays only with the notebook
+            // and the package waits for it), "optional" (the package plays without it; its quests, letters and
+            // story actions come with it) or "none"
+            const std::string how = p.get("value").string();
+            if (how != "required" && how != "optional" && how != "none") return why = "\"value\" for story_notebook is required, optional or none", r;
+            Package* pkg = package(p, why);
+            if (!pkg) return r;
+            ok = change(*pkg, "Story Notebook " + how, [&](Value& m, std::string&) {
+                Value deps;
+                deps.type = Value::Array;
+                for (const auto& d : m.get("dependencies").array)
+                    if (d.get("id").string() != "story-notebook") deps.array.push_back(d);
+                if (how != "none") {
+                    Value d;
+                    d["id"] = std::string("story-notebook");
+                    d["minimum_version"] = std::string("0.0.0");
+                    if (how == "optional") d["optional"] = true;
+                    deps.array.push_back(d);
+                }
+                if (deps.array.empty()) m.object.erase("dependencies");
+                else m["dependencies"] = deps;
+                return true;
+            }, r, why);
+            if (ok) { r["field"] = field; r["next"] = "save_package writes it; the game takes it with its next start"; }
+            return r;
+        }
+        static const std::pair<const char*, size_t> kFields[] = {{"name", 80}, {"description", 1000}, {"version", 32}, {"author", 80}};
+        size_t limit = 0;
+        for (const auto& [f, n] : kFields) if (field == f) limit = n;
+        if (!limit) return why = "\"field\" is name, description, version, author or story_notebook", r;
+        if (p.get("value").type != Value::String || p.get("value").text.empty() || p.get("value").text.size() > limit)
+            return why = "\"value\": the new " + field + ", text of 1 to " + std::to_string(limit) + " bytes", r;
+        if (field == "version") {
+            unsigned a, b, c;
+            char tail;
+            if (std::sscanf(p.get("value").text.c_str(), "%u.%u.%u%c", &a, &b, &c, &tail) != 3) return why = "a version is three numbers: 1.2.0", r;
+        }
+        Package* pkg = package(p, why);
+        if (!pkg) return r;
+        ok = change(*pkg, "Package " + field, [&](Value& m, std::string&) { m[field] = p.get("value").text; return true; }, r, why);
+        if (ok) { r["field"] = field; r["next"] = "save_package writes it"; }
+        return r;
+    }
+    if (command == "list_kit_materials") {
+        if (!host_) return why = "the game is not running", r;
+        if (p.get("room").type != Value::Number) return why = "give the kit room: stage and room", r;
+        Value got = host_->kit_materials(text(p, "stage"), unsigned(std::max(0.0, p.get("room").number)), why);
+        if (!why.empty()) return r;
+        r = got;
+        r["note"] = "a room's \"materials\" maps your model's material names to these; a texture used only inside part of 0..1 on one axis "
+                    "(uv_min, uv_max) is an atlas of several surfaces: keep your texture coordinates inside the surface's band there";
+        ok = true;
+        return r;
+    }
+    if (command == "export_glb") {
+        // a game room or a game piece as a GLB for Blender, into the player's own exports folder (docs/world-objects.md)
+        if (!host_) return why = "the game is not running", r;
+        const std::string stage = text(p, "stage"), piece = text(p, "piece");
+        const bool room_given = p.get("room").type == Value::Number;
+        if (piece.empty() == stage.empty() || (!stage.empty() && !room_given) || (!piece.empty() && room_given))
+            return why = "give a room ({\"stage\": \"sea\", \"room\": 44}) or a game piece ({\"piece\": \"outset-house-ladder\"})", r;
+        const auto plain = [](const std::string& s, size_t longest, const char* extra) {
+            return !s.empty() && s.size() <= longest &&
+                   s.find_first_not_of(std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") + extra) == std::string::npos;
+        };
+        if (!stage.empty() && (!plain(stage, 8, "_") || p.get("room").number < 0 || p.get("room").number > 63 || p.get("room").number != std::floor(p.get("room").number)))
+            return why = "a room is a stage of the game and a room number (0..63)", r;
+        if (!piece.empty() && !plain(piece, 32, "-")) return why = "\"piece\" is a game piece id (list_game_objects)", r;
+        Value request;
+        request["stage"] = stage;
+        if (room_given) request["room"] = p.get("room").number;
+        request["piece"] = piece;
+        std::string name = text(p, "name");
+        if (name.empty()) name = piece.empty() ? stage + "_room" + std::to_string(int(p.get("room").number)) : piece;
+        if (!plain(name, 64, "_-")) return why = "\"name\": the file's name without .glb, letters, digits, _ and - (it goes into your exports folder)", r;
+        request["name"] = name;
+        request["collision"] = p.get("collision").type == Value::Bool && p.get("collision").boolean;
+        request["actors"] = p.get("actors").type == Value::Bool && p.get("actors").boolean;
+        if (request.get("actors").boolean && !piece.empty()) return why = "\"actors\" is for a room", r;
+        if (p.get("max_texture").type == Value::Number) {
+            const double m = p.get("max_texture").number;
+            if (m != 128 && m != 256 && m != 512 && m != 1024 && m != 2048) return why = "\"max_texture\" is 128, 256, 512, 1024 or 2048", r;
+            request["max_texture"] = m;
+        }
+        Value got = host_->export_glb(request, why);
+        if (!why.empty()) return r;
+        r = got;
+        r["note"] = "your own copy of the game's models and textures, for reference in Blender (scale, style, material names): "
+                    "never share it or put it into a mod. Build original geometry; a material's name is the kit material to use.";
         ok = true;
         return r;
     }

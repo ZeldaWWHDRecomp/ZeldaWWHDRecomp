@@ -2,6 +2,7 @@
 // the current step, everything else keeps blending (runtime/src/interp_joints.h, issue #255).
 #include "../src/interp_joints.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -87,6 +88,50 @@ int main() {
         Result r0 = blend(prev.data(), cur.data(), nullptr, 3, 400.0f, 0.5f, ref.data(), lerp);
         assert(!r.cut && r.shown == 0 && !r0.cut && out == ref);
         assert(near(tx(out, 0), 2) && near(word_f(out[12 + 11]), 3));
+    }
+
+    // Link's hands model after the Triforce cutscene (issue #255, second report): the root joint is
+    // never written and holds 0xFFFFFFFF words (NaN) from the heap; the pose joints in use (fist at
+    // joint 2, shield grip at joint 3 here) move with the arms. The root did not move: it takes no
+    // part in the cut, and the hands blend with the arms on every in-between frame.
+    {
+        const std::vector<uint32_t> garbage = {0xFFFFFFFFu, 0, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x345CDD47u, 0x04000000u, 0, 0,
+                                               0xFFFFFFFFu, 0xFFFFFFFFu, 0, 0xFFFFFFFFu};  // as the guest held it
+        auto prev = cat({garbage, at(0, 0, 0), at(-20.6f, -2057.3f, 3651.1f), at(23.9f, -2058.3f, 3674.9f)});
+        auto cur = cat({garbage, at(0, 0, 0), at(-10.5f, -2043.2f, 3617.3f), at(21.3f, -2052.8f, 3662.0f)});
+        assert(std::isnan(word_f(garbage[3])));
+        const uint8_t flags[4] = {0, 1, 0, 0};  // root: a bone (no shapes), joint 1: a hidden pose
+        for (float t : {0.25f, 0.5f, 0.75f}) {
+            std::vector<uint32_t> out(cur.size());
+            Result r = blend(prev.data(), cur.data(), flags, 4, 400.0f, t, out.data(), lerp);
+            assert(!r.cut && r.shown == 0);
+            assert(std::equal(out.begin(), out.begin() + 12, garbage.begin()));  // the root word for word
+            assert(std::fabs(tx(out, 2) - (-20.6f + 10.1f * t)) < 0.01f);           // the fist blends
+            assert(std::fabs(word_f(out[12 * 3 + 11]) - (3674.9f - 12.9f * t)) < 0.01f);  // the grip blends
+        }
+        // a joint that moves to or from a NaN still cuts
+        std::vector<uint32_t> out(cur.size());
+        auto moved = cur;
+        moved[3] = f_word(5);
+        Result r = blend(prev.data(), moved.data(), flags, 4, 400.0f, 0.5f, out.data(), lerp);
+        assert(r.cut && r.cut_joint == 0);
+        // and a moving joint that teleports is the one named
+        auto jump = cur;
+        jump[12 * 2 + 3] = f_word(5000);
+        r = blend(prev.data(), jump.data(), flags, 4, 400.0f, 0.5f, out.data(), lerp);
+        assert(r.cut && r.cut_joint == 2);
+    }
+
+    // a joint that did not move is copied word for word (no blend arithmetic on it)
+    {
+        auto prev = cat({at(1.5f, 2, 3), at(0, 0, 0)});
+        auto cur = cat({at(1.5f, 2, 3), at(8, 0, 0)});
+        std::vector<uint32_t> out(cur.size());
+        int calls = 0;
+        auto counting = [&](const float* a, const float* b, float* o, float t) { calls++; lerp(a, b, o, t); };
+        Result r = blend(prev.data(), cur.data(), nullptr, 2, 400.0f, 0.5f, out.data(), counting);
+        assert(!r.cut && r.shown == 0 && calls == 1);
+        assert(std::equal(out.begin(), out.begin() + 12, cur.begin()) && near(tx(out, 1), 4));
     }
 
     puts("interp_joints_test: ok");

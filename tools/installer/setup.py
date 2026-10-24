@@ -32,6 +32,9 @@ the game itself is still built from the USA game. Its languages then appear in t
 (Language). Tested with the European game; untested with the Japanese game so far.
 Keys can also come from the WIIU_COMMON_KEY environment variable / IMAGE.key next to the image.
 Keys are never printed, logged or stored.
+
+Game options: --editor, --trace, --warm-shaders, --renderer NAME and everything after "--" are not for
+setup. Setup passes them on to the game when it starts it (setup.py --editor, setup.py -- --user-dir DIR).
 """
 import argparse
 import getpass
@@ -58,6 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # directory to sys.path. Resolve shipped sibling modules explicitly.
 sys.path.insert(0, HERE)
 import code_mods  # noqa: E402
+from code_mods import atomic_replace  # noqa: E402
 import decomp_setup  # noqa: E402
 PKG = os.path.normpath(os.path.join(HERE, "..", ".."))
 # Portable release (portable.txt in the release folder): everything setup and the game create stays
@@ -897,7 +901,7 @@ def repair_guest_python(data_dir):
     config["python"] = [executable]
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(config, f)
-    os.replace(path + ".tmp", path)
+    atomic_replace(path + ".tmp", path)
     say("Local mod setup Python is ready (compression.zstd verified).")
 
 
@@ -1902,7 +1906,7 @@ def write_guest_build_config(data_dir, tc):
     path = os.path.join(data_dir, "guest-sdk.json")
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(config, f)
-    os.replace(path + ".tmp", path)
+    atomic_replace(path + ".tmp", path)
 
 
 def game_icon_png(data_dir):
@@ -1975,21 +1979,57 @@ def windows_shortcuts(data_dir, exe):
             LOG.write("shortcut not created (folder 0x%x): %s" % (csidl, e))
 
 
-def launch(state, data_dir, decomp=None):
-    """decomp: start the decomp version (docs/decomp-build.md); None: as chosen in setup (start_decomp)"""
+# Game options (issue #266): the launcher (Wind Waker HD.exe, Wind Waker HD.app, wind-waker-hd) and setup pass
+# them on to the game; setup's own argparse never sees them. The same rule is in tools/installer/gui/game_args.h.
+GAME_FLAGS = ("--editor", "--trace", "--warm-shaders")
+GAME_VALUE_OPTIONS = ("--renderer",)  # --renderer NAME or --renderer=NAME
+GAME_ARGS = []  # this run's game options (main)
+
+
+def split_game_args(argv):
+    """(setup's own arguments, the game options): GAME_FLAGS, GAME_VALUE_OPTIONS with their value and
+    everything after "--" go to the game, in their order"""
+    own, game = [], []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            game += argv[i + 1:]
+            break
+        if a in GAME_FLAGS or any(a.startswith(o + "=") for o in GAME_VALUE_OPTIONS):
+            game.append(a)
+        elif a in GAME_VALUE_OPTIONS and i + 1 < len(argv):
+            game += [a, argv[i + 1]]
+            i += 1
+        else:
+            own.append(a)
+        i += 1
+    return own, game
+
+
+def with_options(game_args):
+    return " with " + " ".join(game_args) if game_args else ""
+
+
+def launch(state, data_dir, decomp=None, game_args=None):
+    """decomp: start the decomp version (docs/decomp-build.md); None: as chosen in setup (start_decomp).
+    game_args: options for the game (None: this run's GAME_ARGS)"""
+    game_args = list(GAME_ARGS if game_args is None else game_args)
     say("")
     if decomp is None:
         decomp = bool(state.get("start_decomp"))
     exe = state["exe"]
     if decomp and state.get("decomp_exe") and os.path.isfile(state["decomp_exe"]):
         exe = state["decomp_exe"]
-        say("Starting the decomp version of the game...")
+        say("Starting the decomp version of the game%s..." % with_options(game_args))
     else:
-        say("Starting the game...")
+        say("Starting the game%s..." % with_options(game_args))
         if IS_MAC and state.get("app") and os.path.isdir(state["app"]):
-            subprocess.Popen(["open", state["app"]])
+            # the app's launcher passes its arguments on ("$@", mac_app)
+            subprocess.Popen(["open", state["app"]] + (["--args"] + game_args if game_args else []))
             return
     args = [exe, "--game", state.get("game_dir") or os.path.join(data_dir, "game"), "--save", os.path.join(data_dir, "save")]
+    args += game_args
     if IS_WIN:
         subprocess.Popen(args, cwd=data_dir, creationflags=0x00000008 | 0x00000200)  # DETACHED_PROCESS | NEW_GROUP
     else:
@@ -2355,6 +2395,29 @@ def decomp_wanted(ctx):
     return bool(ctx.state().get("decomp", False) if choice is None else choice)
 
 
+MODEL_SWEEP_TEXT = (
+    "Experimental: after the shaders, start the game hidden, draw every model, room and placed actor once and "
+    "visit every stage, so their pipelines are ready before they first appear (fewer hitches in play). About 20 "
+    "minutes on a Mac.")
+
+
+def model_sweep_wanted(ctx, ui=None):
+    """Setup's optional, experimental step "Preparing shaders: models (experimental)" (model_sweep.py), off by
+    default everywhere: WWHD_SETUP_MODEL_SWEEP=1/0 overrides; else --model-sweep / --no-model-sweep (or the setup
+    window's choice); else the question (interactive), defaulting to what the last setup did."""
+    env = os.environ.get("WWHD_SETUP_MODEL_SWEEP")
+    if env in ("0", "1"):
+        return env == "1"
+    choice = getattr(ctx.args, "model_sweep", None)
+    if choice is not None:
+        return bool(choice)
+    default = bool(ctx.state().get("model_sweep", False))
+    if ui and ui.interactive and not getattr(ctx.args, "skip_shader_prebuild", False):
+        say(MODEL_SWEEP_TEXT)
+        return ui.yesno("Also prepare model shaders (experimental)?", default)
+    return default
+
+
 CODE_MODS_TEXT = (
     "For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
     "content mods do not need this. The game code gets a small check in every function, which can "
@@ -2398,7 +2461,7 @@ def write_code_mods_setting(data_dir, hooks):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(payload)
-    os.replace(tmp, path)
+    atomic_replace(tmp, path)
 
 
 def shader_progress_callback(progress):
@@ -2448,6 +2511,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     args, manifest, data_dir = ctx.args, ctx.manifest, ctx.data_dir
     args.code_mods = "1" if setup_code_mods(ctx, ui) else "0"
     kind = source[0]
+    want_models = kind != "gen" and model_sweep_wanted(ctx, ui)
     want_decomp = kind != "gen" and decomp_wanted(ctx)
     old_state = ctx.state()
     steps = plan_steps(kind, want_decomp)
@@ -2621,9 +2685,12 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             renderer="metal" if IS_MAC else "vulkan", progress=shader_progress_callback(shader_progress), log=LOG.write,
             # macOS: the player chooses Metal or Vulkan (MoltenVK) in Graphics > Renderer: prepare both
             renderers=["metal", "vulkan"] if IS_MAC else ["vulkan"],
+            # "Preparing shaders: models (experimental)" (model_sweep.py): opt-in, off by default everywhere
+            models=want_models,
             skip=bool(getattr(args, "skip_shader_prebuild", False)),
             cancel=lambda: bool(getattr(args, "shader_prebuild_cancel", None) and
                                 Path(args.shader_prebuild_cancel).exists()))
+        state["model_sweep"] = want_models  # remembered: a repair (Rebuild shader cache) offers it again
         prepared = state["shader_prebuild"]
         states = prepared.get("renderers") or {}
         ready = [name.capitalize() for name, value in sorted(states.items()) if value == "ready"]
@@ -2732,6 +2799,11 @@ def main():
     ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
     ap.add_argument("--shader-template", help="local shader template (or WWHD_SHADER_TEMPLATE); optional")
     ap.add_argument("--skip-shader-prebuild", action="store_true", help="skip optional shader preparation; compile during play")
+    ap.add_argument("--model-sweep", dest="model_sweep", action="store_const", const=True, default=None,
+                    help="experimental: also prepare the shaders of every model (Preparing shaders: models; about "
+                         "20 minutes on a Mac); remembered for repairs (WWHD_SETUP_MODEL_SWEEP=1/0 overrides)")
+    ap.add_argument("--no-model-sweep", dest="model_sweep", action="store_const", const=False,
+                    help="do not prepare model shaders (the default)")
     ap.add_argument("--shader-prebuild-cancel", help="skip shader preparation when this file exists")
     ap.add_argument("--repair", action="store_true", help="rebuild the game code from the installed game files")
     ap.add_argument("--jobs", type=int, help="parallel compiler processes")
@@ -2750,7 +2822,8 @@ def main():
     ap.add_argument("--remove-language-source", metavar="EU|JP", help="remove a language source")
     ap.add_argument("--gui-protocol", action="store_true",
                     help="machine interface for the graphical installer (JSON lines; see tools/installer/README.md)")
-    args = ap.parse_args()
+    own, GAME_ARGS[:] = split_game_args(sys.argv[1:])
+    args = ap.parse_args(own)
     try:
         sys.stdout.reconfigure(errors="replace")
     except AttributeError:
@@ -3071,6 +3144,8 @@ def gui_main(args):
                   "legacy": bool(legacy_save or legacy_items), "free_bytes": free_space(ctx.data_dir),
                   "language_sources": sources_reply(),
                   "code_mods": setup_code_mods(ctx),
+                  # "Preparing shaders: models (experimental)": opt-in, off by default
+                  "model_sweep": model_sweep_wanted(ctx), "model_sweep_text": MODEL_SWEEP_TEXT,
                   # the decomp version (decomp_setup.py): offered on macOS in development builds only
                   "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_wanted(ctx),
                   "decomp_text": decomp_setup.DECOMP_TEXT, "decomp_docs": decomp_setup.DOCS_URL,
@@ -3183,6 +3258,10 @@ def gui_main(args):
             ctx.args.decomp = req["decomp"]
         if "skip_shader_prebuild" in req:
             ctx.args.skip_shader_prebuild = bool(req["skip_shader_prebuild"])
+        if "model_sweep" in req:
+            if not isinstance(req["model_sweep"], bool):
+                return fail(req, "bad_request", "model_sweep must be a boolean")
+            ctx.args.model_sweep = req["model_sweep"]
         if req.get("shader_prebuild_cancel"):
             # GUI marker is confined to this installation, not an arbitrary path.
             ctx.args.shader_prebuild_cancel = str(Path(ctx.data_dir) / "shader-prebuild-cancel")

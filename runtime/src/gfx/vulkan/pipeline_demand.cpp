@@ -177,6 +177,16 @@ std::optional<PipelineBuildResult> PipelineDemandTicket::wait_for(uint64_t budge
     throw;
   }
 }
+void PipelineDemandTicket::prioritize() {
+  if (!state_) return;
+  auto& c = compiler();
+  std::lock_guard lock(c.mutex);
+  for (auto it = c.queue.begin(); it != c.queue.end(); ++it)
+    if (*it == state_) {
+      if (it != c.queue.begin()) { auto job = std::move(*it); c.queue.erase(it); c.queue.push_front(std::move(job)); }
+      return;
+    }
+}
 PipelineBuildResult PipelineDemandTicket::wait(const std::function<void()>& presentWhilePending) {
   if (!state_) throw std::logic_error("empty pipeline demand ticket");
   const auto started = stutter::trace().enabled() ? stutter::now() : 0;

@@ -55,6 +55,9 @@ character's quest or story variants.
 | `sa3` | The sailor on the stone dock | |
 | `sa4` | The sailor at the end of the wooden pier | |
 | `ym1` | A seated man | See below |
+| `rotena` | The Goron merchant in the striped hat (green pack) | See [Goron merchants](#goron-merchants) |
+| `rotenb` | The Goron merchant in the blue hat (brown pack) | |
+| `rotenc` | The Goron merchant in the red vest (pale blue pack) | |
 
 Day and night: a copy looks like the character at the time of day it was created.
 Other names and numeric values are rejected. These Windfall people are not placeable, because
@@ -73,6 +76,39 @@ save flags. Author the seated character's height and location; this adapter does
 not ground-correct, walk, or support scene `move`/`face`. Its narrow native
 relocation area near x=-202066, z=320123 is rejected. Camera following and dialogue
 remain available. Other Ym1/Ym2 staff variants are unsupported.
+
+### Goron merchants
+
+The three travelling Goron merchants of the sea can be placed as residents: `rotena`, `rotenb` and
+`rotenc`. They are the game's own merchants, loaded from the player's game files: three Gorons
+with their big packs, each with a look of his own (his own hat, clothes and pack: the game has three
+merchant models and no other Goron). Place as many as you like (within the actor limits below), for example a family of them:
+
+```json
+{
+  "id": "elder", "actor": "resident", "parameters": {"resident": "rotenb"},
+  "stage": "sea", "room": 44, "position": {"x": -201700, "y": 168, "z": 312050},
+  "rotation": {"x": 0, "y": 20, "z": 0},
+  "talks": [
+    {"when": {"quest": "homeland", "step": 1}, "lines": ["The mountain calls us home, brother."],
+     "then": [{"action": "quest_step", "id": "homeland", "step": 2}]},
+    {"lines": ["Welcome to the island, brother!"]}
+  ]
+}
+```
+
+A placed Goron stands where you put it, turns his head to Link and talks with
+your `lines` or `talks` (with their conditions, quest steps and `then`), as every resident does. He
+appears whatever the player's story: the game's own merchants only come out once the story has them,
+a placed copy is always there. He keeps none of the merchants' trade: showing him an item does
+nothing, he takes no rupees and sets none of the game's flags (his first talk, the exchange counts
+and the map) — the merchants on the sea keep their own talks and trades unchanged. A Goron doesn't
+walk a route (refused with "a Goron merchant stands where it is placed and does not walk a route")
+and doesn't take scene `move` or `face` steps; scene camera and `say` steps work.
+
+`scale` makes a smaller or larger Goron, such as a young one: `"scale": {"x": 0.7, "y": 0.7, "z": 0.7}`
+(uniform, 0.5 to 1.5). His model, pack and hat scale; his talk distance and the circle Link bumps into
+stay the merchant's own size. There is no other colour or model than the three merchants' own.
 
 ### Residents walking a route
 
@@ -149,8 +185,8 @@ change only Link's rupees and hearts. No story or key item can be chosen, and th
 chest never sets one of the game's save bits: whether it is open is its mod `flag`.
 A piece of heart or a heart container changes Link's hearts for good (turning the mod off
 doesn't take them back), as one from a chart's chest does, so use them sparingly. A chest that holds one of your items needs the
-story system's chest hook: one added in the editor while the game runs appears after a
-restart.
+story system's chest hook; in the world editor (`--editor`) it is always there, so such a
+chest added while the game runs appears at once.
 
 `flag` is a symbolic ID in the declaring mod's story records. It is not a game
 save-bit number. Chest opening and sign reading use this namespace. The runtime
@@ -217,6 +253,43 @@ the mod manager refuses it.
 | `game:nest` | A large bird's nest Link can stand in | `nest` | 1 |
 | `game:flag-rito`, `game:flag-sea` | Flags on poles that flutter in the wind | one each | 1 |
 | `game:lookout-tower` | A tall wooden lookout platform that stands in the sea | `tower-ladder` (Link climbs its ladder), `tower` | 1 |
+| `game:stall` | A travelling trader's stall: posts, a counter and a cloth awning, as Zunari's on Windfall (catalogue version 6) | `stall-small`, `stall`, `stall-large` | 1 |
+
+**The volcanic kit** (catalogue version 6, `"requires": {"game_objects": 6}`; the palette's "Fire and
+lava" and "Trees and plants"): torches, flames, fire jets, lava bubbles and Dragon Roost's bomb flowers, the game's own actors with their own effects, sounds and behaviour.
+
+| Id | What it is | Variants | Scale |
+| --- | --- | --- | --- |
+| `game:torch` | A lit standing torch; its flame lights its surroundings and bends in the wind | `torch`, `torch-stand` (another stand) | 1 |
+| `game:flame` | A burning flame on its own with its light (no model, no collision): for a brazier or a torch of your own | `flame` | 1 |
+| `game:fire-jet` | A vent that shoots a column of fire every few seconds; the fire burns Link | `fire-jet`, `fire-jet-large` | 1 |
+| `game:lava-bubbles` | Bubbles that rise and burst over a lava lake, scattered in a wide ring (1300 to 2700 units) around it | `lava-bubbles` | 1 |
+| `game:bomb-flower` | Dragon Roost's bomb plant: Link picks its bomb (A), throws it (or holds it) and it explodes as a bomb does, breaking what a bomb breaks (pots, barrels and boulders, for example) and hurting Link when he is too close; a new bomb grows on the plant after a while | `bomb-flower` | 1 |
+
+The stall is scenery with its own collision; it sells nothing, so a
+Goron or another resident behind it does the talking. On Windfall the game shows its stalls only once the
+player has gathered Delivery Bag items; a placed stall is always there.
+
+**Rocks and blocks** (catalogue version 6, the palette's "Rocks and blocks"):
+
+| Id | What it is | Variants | Scale |
+| --- | --- | --- | --- |
+| `game:push-block` | The dungeons' stone block: Link grabs it (A) and pushes or pulls it | `stone`, `statue` (with a stone statue on top) | 1 |
+| `game:heavy-block` | A block too heavy to move without the Power Bracelets | `heavy-block` | 1 |
+| `game:rock` | A small rock Link lifts, carries and throws; it breaks | `rock` | 1 |
+| `game:boulder`, `game:boulder-small` | Boulders that block the way; a bomb blows them apart | one each | 1 |
+| `game:stone-head` | A heavy stone head; Link lifts it with the Power Bracelets, bombs don't break it | `stone-head` | 1 |
+
+A rock or boulder that is broken stays gone until its room loads again, and a pushed block starts at
+its place again then, as the game's own do when no switch keeps them: none of them uses a switch or a
+save bit.
+
+The torches and flames are always lit: a torch that Link lights with fire is not available (the game keeps
+whether it burns in a switch of the room, which a game object never uses). The bomb flower needs no bomb
+bag. The lava bubbles are left out (with a line in the log) once the player has frozen Fire Mountain with
+an ice arrow: from then on the game leaves out its own too. Fire Mountain's eruption smoke is part of the volcano itself
+(an actor that freezes with an ice arrow and starts the game's events), so it is not offered, and the
+game's steam vents are not either: their steam comes from their own island's effects and shows nowhere else.
 
 Grass, flowers and small trees are the game's shared batches rather than single objects. Each variant
 plants a group of a given size; none of them drops anything when cut.
@@ -237,6 +310,13 @@ moved batch goes from the game only when its room loads again.
 
 Objects whose collision keeps the game's size stay at scale 1, so what you see and what Link
 bumps into always match.
+
+The stone block (`game:push-block`, `"requires": {"game_objects": 6}`) slides on the ground Link pushes it
+over, the islands' or a world object's, and falls when it leaves it. It has no switch, so it starts at its
+placement whenever its room loads again, as the game's own blocks without one do: a block pushed into a
+corner, or off a cliff, is back after the next visit. It stands on its highest ground under it, so it can
+cover a hole narrower than itself (about 140 units across for its 150) and Link pushes it aside to open the
+way; leave room around such a spot, so it can be pushed off in more than one direction.
 
 Game objects count toward the 16 actors per room (all packages together). The game objects of a
 room also share a memory budget of 3 MiB (each object about 15–20 KiB; their archives are already
@@ -301,6 +381,8 @@ room it stands in.
 | `piece:sea-rock-spire` | a tall, slim rock standing in the sea | 1000 units under the sea: place it at y -1000 |
 | `piece:sea-rock-pillar` | a rock pillar rising from the sea | 1000 units under the sea |
 | `piece:sea-rock-stack` | a narrow rock stack in the sea | 1000 units under the sea |
+| `piece:sea-rock-broad`, `piece:sea-rock-low`, `piece:sea-rock-small`, `piece:sea-rock-mid` | more of Dragon Roost's sea rocks: a broad one with a flat top Link can stand on, a low one, a small stack and one half as tall as the spire (catalogue version 6) | 1000 units under the sea |
+| `piece:fire-mountain-rock`, `piece:fire-mountain-rock-small` | the two dark volcanic rocks from beside Fire Mountain (catalogue version 6) | 500 units under the sea: place it at y -500 |
 | `piece:windfall-windmill-cap` | the top of Windfall's windmill: its pointed roof, the gallery ring and posts | at its gallery floor |
 | `piece:shipwreck-hull` | the hull of a wrecked ship, upright in the sea with its broken mast | about 370 units under the sea |
 | `piece:shipwreck-bow` | the bow of a wrecked ship lying in the sea | about 1050 units under the sea |
@@ -335,8 +417,10 @@ rest of the mod works. The package must not contain game files, as for game obje
 
 The ground of some small islands can be placed too, in the palette's **Islands** category: the
 island's rock and turf with its cliffs and its base under the sea, bare (no grass, flowers, trees or
-other objects, which are the game's actors, not part of the ground). Like the buildings, an island is
-built once from the player's own game files; nothing of the game goes into your package.
+other objects, which are the game's actors, not part of the ground). The few trees and rocks that are part
+of an island's ground model itself (Cliff Plateau Isles, Mother & Child Isles) come along. Like the
+buildings, an island is built once from the player's own game files; nothing of the game goes into your
+package.
 
 ```json
 {
@@ -348,7 +432,8 @@ built once from the player's own game files; nothing of the game goes into your 
 }
 ```
 
-Island grounds need catalogue version 4. The position is the island's middle at its sea level: place it
+The first six island grounds need catalogue version 4, the others version 5 (`"requires":
+{"game_objects": 5}`; the editor writes the version an island needs). The position is the island's middle at its sea level: place it
 at `"y": 0` on the sea (the editor does this for you). Like a building, an island takes only `id`,
 `actor`, `stage`, `room`, `position` and `rotation` about the vertical axis.
 
@@ -360,21 +445,65 @@ at `"y": 0` on the sea (the editor does this for you). Like a building, an islan
 | `piece:star-island` | Star Island: star-shaped, with grassy slopes and a pit in the middle |
 | `piece:bomb-island` | Bomb Island: a long island of grassy cliffs with a small pit |
 | `piece:fairy-island` | Northern Fairy Island: a heart-shaped grassy island with the fountain's spiked stone hut; its doorway leads to a hole |
+| `piece:thorned-fairy-island` | Thorned Fairy Island: a fairy island with the fountain's spiked stone hut and a small islet beside it; its doorway leads to a hole |
+| `piece:shark-island` | Shark Island: terraced cliffs with a pit on its top |
+| `piece:horseshoe-island` | Horseshoe Island: a ring of grassy cliffs around a lagoon, with three small hollows |
+| `piece:rock-spire-isle` | Rock Spire Isle: a row of rock arches and spires on a grassy base, with a pit |
+| `piece:seven-star-isles` | Seven-Star Isles: seven rock pillars rising from the sea |
+| `piece:overlook-island` | Overlook Island: tall pillars of grassy rock with steep walls and a pit on top |
+| `piece:stone-watcher-island` | Stone Watcher Island: a grassy island with cracked stone walls and a pit |
+| `piece:cliff-plateau-isles` | Cliff Plateau Isles: flat-topped cliffs in a cluster, with a few trees and two pits |
+| `piece:angular-isles` | Angular Isles: two blocky islands of stepped, angular rock |
+| `piece:boating-course` | Boating Course: two small grassy islets, each with a post |
+| `piece:gale-isle` | Gale Isle: a tall rocky mountain with a sandy beach; its doorway into the rock leads nowhere |
+| `piece:headstone-island` | Headstone Island: a great dome of rock with a sandy beach; its doorway into the rock leads nowhere |
+| `piece:greatfish-isle` | Greatfish Isle: a broken island of rocky slopes, sandy beaches and the ruins of a house |
+| `piece:cyclops-reef` | Cyclops Reef: a ring of stepped orange rock walls around a lagoon with a small islet (no cannons) |
+| `piece:two-eye-reef` | Two-Eye Reef: a ring of stepped grey rock walls around a lagoon with two islets (no cannons) |
+| `piece:diamond-steppe-island` | Diamond Steppe Island: grassy terraces with ponds on three levels, joined by waterfalls, and a pit on top |
+| `piece:mother-and-child-isles` | Mother & Child Isles: a great tree-topped rock with its spring pool, and a small islet beside it |
+| `piece:fire-mountain` | Fire Mountain: a volcano of dark rock, without its eruption; its crater is a pit that can hold a lava pool |
+
+Bird's Peak Rock is not available: its textures alone are larger than the 12 MiB an island's archive may
+have. Islands that exist several times in the game (the Triangle Islands, the fairy islands, the reefs,
+Seven-Star Isles and the Star Belt Archipelago) are offered once or twice.
 
 An island keeps its own collision: the ship stops at its shore, Link gets out and climbs onto it,
 walks its slopes and bumps into its cliffs and walls, as on the island itself. Its paths into
-caves and fountains lead nowhere: the pits of Star and Bomb Island and the hole of the Fairy Island
-are drops that send Link back to the room's restart point, as a bottomless pit does.
+caves and fountains lead nowhere: the pits and holes (Star, Bomb, Shark, Rock Spire, Overlook, Stone
+Watcher, Cliff Plateau and Diamond Steppe's pits, the fairy islands' holes, Fire Mountain's crater) and
+the doorways of Gale Isle and Headstone Island are drops that send Link back to the room's restart point,
+as a bottomless pit does.
+
+Its ground keeps the island's own ground types, the same ones your own models' collision uses
+(world-objects.md, "Author collision in the GLB"):
+
+| Ground | On an island of the game |
+| --- | --- |
+| grass, sand, stone, wood, metal, ice | the island's ground: Link walks (or slides) and his steps sound as on the island |
+| wall | its cliffs and walls |
+| water, shallow water, waterfall | the ponds, pools and falls of the islands that have them |
+| void | the pits, holes and doorways that lead nowhere |
+| lava | (no island has lava of its own: add a lava pool, for example in Fire Mountain's crater) |
+
+Diamond Steppe Island and Mother & Child Isles bring their own water: the ponds, the spring pool and the
+waterfalls with the island's own moving water, and the water's collision, so Link wades and swims in it as
+on the island. The splash and spring effects and the sound of the falls are the game's actors and don't come
+along. Fire Mountain comes without its eruption (an actor and effects of the game, not part of the ground).
+Its crater can be filled with lava: the editor's water tool makes a lava pool there (a pond with **Lava**,
+`add_pond` with `"lava": true`; its outline round the crater's mouth, its level a little below the rim), drawn
+with the mountain's own moving lava and burning Link as the game's lava does (see world-objects.md, "Lava").
 An island also brings its own distant view: from the eight squares around its own, the island's
 low-detail model (the one the game shows for it from afar) stands where you placed it. Only Link's own
 square has the island's collision.
 
-An island is large (up to about 9,400 units across): choose a stretch of open sea in the square, away
+An island is large (up to about 13,000 units across: Greatfish Isle and the reefs): choose a stretch of open sea in the square, away
 from the square's own island and its reefs, routes and objects. The usual placement rules apply
 (world-objects.md): what is in the way is listed in plain words, and an island that doesn't fit is kept
 in the editor but not in the game. The sea's surface around an island is not ground and doesn't count.
-An island costs about 0.5 MiB (Triangle Island) to 2.3 MiB (the Fairy Island) of its room's 24 MiB budget
-for buildings and island grounds, and its distant view about 0.12 MiB in a neighbouring square.
+An island costs about 0.5 MiB (Triangle Island) to 7.2 MiB (Mother & Child Isles; most are 1.2 to 4.3 MiB)
+of its room's 24 MiB budget for buildings and island grounds, and its distant view about 0.05 to 0.2 MiB
+in a neighbouring square.
 
 ## Breakable native props
 
@@ -1048,8 +1177,9 @@ Link's hand when used).
  "icon": "assets/crystal.png", "held_model": "crystal", "hold_up": true}
 ```
 
-Without `hold_up`, a get shows the item's caption with a small jingle, and a chest of
-one of your charts holds up a stand-in of the game's.
+Without `hold_up`, a get shows the item's caption with a small jingle, and a chest (a placed
+one or one of your charts') holds up the item's `icon` over Link's head, with the game's get
+message saying the item's name and description.
 
 ## Static mod actors
 
@@ -1108,6 +1238,30 @@ its own archive and model identity. Generated BFRES and shaders belong in the
 package's local data cache; do not ship them in packages. Editing the model or
 changing the player template invalidates its cache key. Packages and this
 repository must never include game-derived material or shader templates.
+
+### Game materials by name
+
+A static world object's model can use the game's own materials instead of, or next to, its own textures: declare
+it with `"kind": "kit"` and a kit room, and leave the texture out of each material that names a game material.
+Name such a material exactly as the game names it (the editor's `export_glb` and `list_kit_materials` give the
+names):
+
+```json
+"models": [
+  {"id": "rock", "kind": "kit", "source": "assets/rock.glb", "kit": {"stage": "sea", "room": 13}}
+]
+```
+
+The materials `Txe_gake_v`, `Txe_hai_v` and `Txe_ita_v` of `rock.glb` then draw as Dragon Roost Island's rock,
+ash and planks: its textures, toon shading and any texture animation. They are built from the player's own game
+files when the game starts or when the editor imports the model. A misspelt name is refused with the names the
+room has. Materials with an embedded PNG stay your own, with the limits above; game materials don't count toward
+the 1 MiB of textures. A material that is a game material may never embed a texture, because a package never
+carries the game's pictures. The built model counts toward its room's 24 MiB for island buildings and grounds
+(the example's island with three Dragon Roost materials takes about 3.6 MiB, mostly its 2048 × 2048 rock
+texture). A kit model is a static world object at scale 1, turned about the vertical axis. Its distant model may
+be a kit model too. See [Game materials](world-objects.md#game-materials) for the naming rules, the limits, the
+editor commands (`import_model` with `kit`, `reload_model`, `set_model_kit`) and a Blender workflow.
 
 For walkable meshes and solid shapes that also block the ship, see
 [World objects](world-objects.md). The following cylinder form remains
@@ -1362,6 +1516,16 @@ scenes to continue. Already fired room/area triggers do not immediately fire aga
 after an interruption; loading a state also suppresses those triggers in the loaded
 room until the room changes.
 
+A room or area scene plays once per visit of its room. An `area` trigger with `"again": true` plays
+again once Link has left the area (by 60 units past its radius) and walked back in, in the same room
+visit: a way up that can be taken again, such as a Helmaroc King that carries Link up from Outset's
+pier each time he walks out to the lookout after falling into the sea.
+
+```json
+"trigger": {"type": "area", "stage": "sea", "room": 44, "position": {"x": -194790, "y": 136, "z": 314530},
+            "radius": 120, "again": true}
+```
+
 A scene plays on one of two routes. The **fallback route** runs the scene's
 `steps` through native compulsory-event admission, the game's camera and message
 functions, and native event teardown. It does not replace the stage's event-list
@@ -1475,7 +1639,7 @@ the demo and ends it.
             "target": {"curve": "linear", "keys": [{"frame": 0, "value": {"x": -2500, "y": 1800, "z": 3000}},
                                                    {"frame": 240, "value": {"x": 2500, "y": 900, "z": 3000}}]},
             "fovy": {"keys": [{"frame": 0, "value": 55}]}},
- "actors": [{"id": "bird", "model": {"archive": "Dk", "file": "dk.bdl"},
+ "actors": [{"id": "bird", "actor": "Dk", "spawn": "always", "params": 2,
              "position": {"curve": "linear", "keys": [{"frame": 0, "value": {"x": -2500, "y": 1800, "z": 3000}},
                                                       {"frame": 240, "value": {"x": 2500, "y": 900, "z": 3000}}]},
              "rotation": {"keys": [{"frame": 0, "value": {"x": 0, "y": 90, "z": 0}}]},
@@ -1490,17 +1654,20 @@ the demo and ends it.
   - After its last key, a track holds its final value.
 - **Camera.** `eye` and `target` come together. `fovy` and `roll` are optional. Without a camera track, the camera keeps its gameplay view.
 - **Actors.** An actor names one of four things:
-  - a game actor by its stage name, with `"actor": "Dk"`, for example. When the room has none, the port creates one for the demo at the first key of its position track (or beside Link) and removes it afterwards; `"params"` (a number or `"0x..."`) are its creation parameters. `"spawn": false` requires the room's own actor instead; without it the step fails with a reason in the log and the scene ends cleanly.
+  - a game actor by its stage name, with `"actor": "Dk"`, for example. When the room has none, the port creates one for the demo at the first key of its position track (or beside Link), moves it along its tracks also where its own code doesn't know cutscenes (a pig, an enemy), and removes it afterwards; `"params"` (a number or `"0x..."`) are its creation parameters. `"spawn": false` requires the room's own actor instead; without it the step fails with a reason in the log and the scene ends cleanly.
+  - When the room has one, the demo uses the room's own actor, and that actor's own code decides whether it shows: an actor that waits for an event of the game stays hidden (Outset's Helmaroc King waits for its story event). `"spawn": "always"` gives the demo its own one even then, created with `params` and removed afterwards; the room's stays as it is. The game's log names the room's actor when the demo uses it.
   - Link, with `"actor": "Link"`.
   - a model from the player's game, with `"model": {"archive", "file"}`.
   - an actor this mod placed (a resident villager, a mod actor, an enemy), with `"character": "<its id>"`. It follows the tracks even where its own code doesn't know cutscenes; a mod actor plays its own clips by name, as `"clips": [{"frame": 0, "clip": "walk", "loop": true}]`.
 - **Actor tracks.** Every actor can have `position`, `rotation` (degrees) and `scale` tracks.
-- **Clips.** `clips` play a `.bck` from any archive at `speed` (default 1) on game actors whose code supports cutscenes (story characters, the Helmaroc King and other cutscene actors).
-- **Link.** Link takes demo `modes` instead of clips:
+- **Clips.** `clips` play a `.bck` from any archive at `speed` (default 1) on game actors whose code supports cutscenes (story characters, the Helmaroc King and other cutscene actors). A clip repeats until the next clip; `"loop": false` plays it once and holds its last pose, the way the game's own cutscenes play a grab, a landing or a turn before the next loop: `[{"frame": 50, "archive": "Demo04", "file": "04_dk_cut08_hokaku.bck", "loop": false}, {"frame": 81, "archive": "Demo04", "file": "04_dk_cut08_esc.bck"}]`.
+- **Link.** With a `position` track, Link stands at its first key when the demo starts (facing its first `rotation` key, if any); without one he stays where he is. He takes demo `modes` instead of clips:
   - `{"frame": 0, "mode": "walk"}` makes him walk along his position track. The names are `wait`, `walk`, `dash`, `turn`, `talk`, `holdup`, `keep`, `look_around`, `salute`, `surprised`, `lookup`, `nod`, `present` and `smile`; the game's own mode numbers work too.
-  - `{"frame": 60, "clip": "udeage_onetime.bck"}` plays one of his own cutscene animations (from the game's Link demo animation archive that is loaded at the time).
+  - `{"frame": 60, "clip": "udeage_onetime.bck"}` plays one of his own cutscene animations (from the game's Link demo animation archive that is loaded at the time: LkD00 in the early game, which has his Outset and Forsaken Fortress cutscenes). A clip repeats; `"loop": false` plays it once and holds its last pose.
+  - `"btp"` and `"btk"` (both) give him the cutscene's face, his eyes and mouth: `{"frame": 30, "clip": "04_cl_cut7_odoroki.bck", "btp": "04_cl_cut7_odoroki.btp", "btk": "04_cl_cut7_odoroki.btk", "loop": false}`. A clip's `.btk` often covers several cuts (`07b_cl_cut4_5_6_7_10.btk`); the editor's file list shows them.
+  - `"blend"` (0–60 frames) blends from his previous pose into the clip instead of the game's default.
   - `"data"` (hex) passes a raw cutscene data block, for modes the list doesn't cover.
-- **Archives.** Archive and file names refer to the player's own game. The port looks up their ids and loads the archives before the demo starts. Game demo archive names that the game treats specially are refused: Demo04, Demo08, Demo29, Demo37, Demo45 and Demo46.
+- **Archives.** Archive and file names refer to the player's own game. The port looks up their ids and loads the archives before the demo starts. The game's cutscene archives (`Demo02`, `Demo04`, `Demo07`, ...) lend their animations too: the Helmaroc King's Outset grab is in `Demo04`, its Forsaken Fortress beak grab and throw in `Demo07`. The demo itself always plays from the port's own data, so the game's special cases for its cutscenes by name don't apply.
 - **Sounds.** `sounds` play a game sound id at a `position` or following an actor, with `volume` and `pan` (0–1).
 - **Particles.** `particles` start a game particle id at a `position`, or on an actor, optionally on one of its joints (`joint`).
 - **Skip and save states.**
@@ -1542,6 +1709,9 @@ someone in its beak or claws.
   carried actor relative to the joint. A joint's axes rarely point the way the
   world does, so try a few offsets. `"upright": true` keeps only the joint's
   heading, so the carried actor stays upright.
+- `blend` (0–60 frames) moves the carried actor smoothly from where it is onto
+  the joint over that many frames instead of putting it there at once: a grab
+  that lifts Link off the ground without a jump (`"blend": 8`).
 - While it is carried, an actor ignores its own position and rotation tracks.
   After `detach` it stays where it was let go. With `"fall": true` it falls
   from there to the ground below it. It stays there until its next position
@@ -1550,6 +1720,15 @@ someone in its beak or claws.
   goes back to its waiting pose).
 - Link can only be carried while he plays one of his demo animations (`"clip"`),
   from the attach frame until the detach.
+- A grab that looks like one: time a one-shot clip of the carrier (`"loop": false`)
+  so that its claws close at the attach frame, with the carrier's position track
+  bringing the claws down to the actor; then the carrier's loop. The carried
+  actor's own clips do the rest (Link: startled, struggling, then hanging). A scene
+  can do this with the Helmaroc King's `04_dk_cut08_hokaku.bck`, Link's Outset clips and
+  an attach `blend`.
+  When an offset is hard to find, attach to the joint with no offset first and
+  run with `WWHD_DEMO_TRACE=1`: the log gives the carried actor's place, the
+  carrier's and the joint's every second.
 - An actor has one carrier at a time, and a carried actor can't carry another.
   A demo has up to 8 attachments.
 - Villagers only turn around their vertical axis, so they hang upright whatever

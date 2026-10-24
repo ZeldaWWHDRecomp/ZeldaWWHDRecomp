@@ -35,7 +35,8 @@ uint32 pixel_shader_program(uint32 ps, uint32* size) {
     return rbuffer_addr(ps + PS_RBUFFER, size);
 }
 
-void bind_vertex_shader_regs(uint32* regs, uint32 vs) {
+template <class Regs>
+static void bind_vs(Regs& regs, uint32 vs) {
     uint32 size = 0;
     uint32 prog = vertex_shader_program(vs, &size);
     bool gs_mode = ld32(vs + VS_SHADER_MODE) == 2;  // GX2_SHADER_MODE_GEOMETRY_SHADER
@@ -61,7 +62,8 @@ void bind_vertex_shader_regs(uint32* regs, uint32 vs) {
     }
 }
 
-void bind_pixel_shader_regs(uint32* regs, uint32 ps) {
+template <class Regs>
+static void bind_ps(Regs& regs, uint32 ps) {
     uint32 size = 0;
     uint32 prog = pixel_shader_program(ps, &size);
     auto reg = [&](int i) { return ld32(ps + PS_REGS + 4 * i); };
@@ -77,6 +79,11 @@ void bind_pixel_shader_regs(uint32* regs, uint32 ps) {
     regs[mmDB_SHADER_CONTROL] = reg(39);
     regs[mmSPI_INPUT_Z] = reg(40);
 }
+
+void bind_vertex_shader_regs(uint32* regs, uint32 vs) { bind_vs(regs, vs); }
+void bind_vertex_shader_regs(ShaderBindRegs& regs, uint32 vs) { bind_vs(regs, vs); }
+void bind_pixel_shader_regs(uint32* regs, uint32 ps) { bind_ps(regs, ps); }
+void bind_pixel_shader_regs(ShaderBindRegs& regs, uint32 ps) { bind_ps(regs, ps); }
 
 void bind_geometry_shader_regs(uint32* regs, uint32 gs) {
     (void)regs;

@@ -100,7 +100,7 @@ namespace native_actor_profiles {
 void configure(void(*)(Cpu*,uint32_t),uint32_t(*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)){}
 bool valid_storage(uint32_t a){return a>=Arena&&a<Arena+0x20000;}
 std::array<uint32_t,5> heap_free(Cpu*){return {};}
-bool available(const Owner&){return true;}bool add(uint16_t,uint32_t,BaseAllocated){return true;}bool install(const Owner&,const Replace&){return true;}
+bool available(const Owner&,std::string*){return true;}bool add(uint16_t,uint32_t,BaseAllocated,std::string*){return true;}bool install(const Owner&,const Replace&,std::string*){return true;}
 }
 namespace story_items {
 std::optional<Item> find(const std::string&,const std::string&){return std::nullopt;}

@@ -6,6 +6,7 @@
 @02510448 # manualCamera: after cLib_chaseF of the turning speed (this+0x154): direct stick / mouse yaw
 @025104A0 # manualCamera: the same on the other branch
 @0251053C # manualCamera: f28 = vertical stick rate (mouse pitch)
+@02510DEC # manualCamera: latitude delta before limited_range_addition (normalize descending limits)
 @02510EA0 # manualCamera: V smoothing factor (cSAngle * f1)
 @02510EE4 # manualCamera: U smoothing factor (cSAngle * f1)
 025071FC  # dCamera_c::subjectCamera: first person is active
@@ -81,3 +82,5 @@
 @023FB49C # native boomerang launch: optional trace observation only
 023E048C  # daPy_lk_c::getAnmData: the boost can swap ANM_WALK for ANM_DASH (mods.cpp)
 023D6B30  # daPy_lk_c::jointBeforeCB: additive sprint pose, restored by the native jointAfterCB
+# Calm water (mods/story_world_calm.cpp): a mod island's calm_water zone feeds the sea's own flat factor
+0246B848  # daSea_packet_c::CalcFlatInterTarget: min with the mods' calm-water zones around the player

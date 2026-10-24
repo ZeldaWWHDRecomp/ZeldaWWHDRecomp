@@ -1,4 +1,5 @@
 """Transactional game-code variants. No game bytes are stored in metadata."""
+import errno
 import hashlib
 import json
 import os
@@ -7,12 +8,118 @@ import shutil
 import time
 
 
+# Windows renames (issue #282). os.replace is MoveFileExW(MOVEFILE_REPLACE_EXISTING), a FileRenameInformation
+# rename that fails with ERROR_ACCESS_DENIED while any handle to the target is open, even one that allows
+# delete sharing: "A file cannot be renamed if a file with the same name exists and has open handles"
+# (FILE_RENAME_INFORMATION, Microsoft Learn). The running game polls code-mods-status.json while setup
+# publishes it, so a plain replace loses whenever a poll is in flight. FileRenameInfoEx with
+# FILE_RENAME_FLAG_POSIX_SEMANTICS (NTFS, Windows 10 1709 and later) "allow[s] replacing a file even if there are
+# existing handles to it. Existing handles to the replaced file continue to be valid": open readers that allowed
+# FILE_SHARE_DELETE (the game's reader does) keep the old contents, and new opens see the new file.
+_FILE_RENAME_INFO_EX = 22  # FILE_INFO_BY_HANDLE_CLASS FileRenameInfoEx
+_FILE_RENAME_FLAG_REPLACE_IF_EXISTS = 0x1
+_FILE_RENAME_FLAG_POSIX_SEMANTICS = 0x2
+# Older Windows, FAT32/exFAT and some network shares refuse the request itself: fall back to os.replace.
+_POSIX_RENAME_UNSUPPORTED = {1, 50, 87, 124}  # invalid function, not supported, invalid parameter, invalid level
+_SHARING_ERRORS = {5, 32, 33}  # access denied, sharing violation, lock violation
+
+
+def _extended_path(path):
+    """The extended-length absolute form of path for the Windows file APIs (no MAX_PATH limit)."""
+    path = os.fspath(path)
+    if path.startswith('\\\\?\\') or path.startswith('\\\\.\\'):
+        return path
+    # MSYS2's Python joins with "/"; an extended-length path is not normalised, so backslashes only
+    path = os.path.abspath(path).replace('/', '\\')
+    if path.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + path[2:]
+    return '\\\\?\\' + path
+
+
+def _windows_error(code, src, dst, message=None):
+    """OSError for a Windows error code; sharing errors are PermissionError, as from os.replace."""
+    cls = PermissionError if code in _SHARING_ERRORS else OSError
+    return cls(errno.EACCES if cls is PermissionError else errno.EIO,
+               message or 'Windows error %d' % code, os.fspath(src), code, os.fspath(dst))
+
+
+def _posix_rename(src, dst):
+    """Windows: replace dst with src using POSIX semantics. True when done, False when this system or
+    volume does not offer it (the caller falls back to os.replace); OSError otherwise."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return False
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    set_info = kernel32.SetFileInformationByHandle
+    set_info.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    set_info.restype = wintypes.BOOL
+    close = kernel32.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    DELETE, SYNCHRONIZE = 0x00010000, 0x00100000
+    SHARE_ALL = 0x1 | 0x2 | 0x4  # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+    OPEN_EXISTING = 3
+    handle = create(_extended_path(src), DELETE | SYNCHRONIZE, SHARE_ALL, None, OPEN_EXISTING, 0, None)
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        code = ctypes.get_last_error()
+        raise _windows_error(code, src, dst, ctypes.FormatError(code).strip())
+    try:
+        target = _extended_path(dst)
+        units = len(target.encode('utf-16-le')) // 2
+
+        class RenameInfo(ctypes.Structure):  # FILE_RENAME_INFO with the Flags member of the union
+            _fields_ = [('Flags', wintypes.DWORD), ('RootDirectory', wintypes.HANDLE),
+                        ('FileNameLength', wintypes.DWORD), ('FileName', wintypes.WCHAR * (units + 1))]
+        info = RenameInfo(_FILE_RENAME_FLAG_REPLACE_IF_EXISTS | _FILE_RENAME_FLAG_POSIX_SEMANTICS,
+                          None, units * 2, target)
+        if set_info(handle, _FILE_RENAME_INFO_EX, ctypes.byref(info), ctypes.sizeof(info)):
+            return True
+        code = ctypes.get_last_error()
+    finally:
+        close(handle)
+    if code in _POSIX_RENAME_UNSUPPORTED:
+        return False
+    raise _windows_error(code, src, dst, ctypes.FormatError(code).strip())
+
+
+def _replace_once(src, dst):
+    if os.name == 'nt' and _posix_rename(src, dst):
+        return
+    os.replace(src, dst)
+
+
+def atomic_replace(src, dst, timeout=5.0):
+    """Publish src as dst atomically, also while the game reads dst.
+
+    Windows: a POSIX-semantics rename first, which open readers cannot block. Where that is unavailable,
+    or a reader without delete sharing (a virus scanner, an older game) holds the file, sharing errors
+    are retried with backoff for up to `timeout` seconds; a poll lasts microseconds."""
+    deadline = time.monotonic() + timeout
+    delay = 0.01
+    while True:
+        try:
+            _replace_once(src, dst)
+            return
+        except PermissionError:
+            remaining = deadline - time.monotonic()
+            if os.name != 'nt' or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.1)
+
+
 def atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + '.tmp')
     tmp.write_text(json.dumps(value), encoding='utf-8')
-    os.replace(tmp, path)
+    atomic_replace(tmp, path)
 
 
 def file_sha256(stream):
@@ -146,8 +253,13 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
 
     def progress(stage, done=0, total=0):
         if status_file:
-            atomic_json(status_file, {'state': 'building', 'stage': stage,
-                                     'done': done, 'total': total})
+            # Progress is informational: a publication that still loses to a reader after
+            # atomic_replace's retries is skipped (the next one follows), never a failed build.
+            try:
+                atomic_json(status_file, {'state': 'building', 'stage': stage,
+                                         'done': done, 'total': total})
+            except PermissionError:
+                pass
 
     try:
         check()

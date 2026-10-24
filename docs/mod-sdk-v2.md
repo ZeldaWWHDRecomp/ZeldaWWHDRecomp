@@ -139,11 +139,13 @@ disable it, restart and install the new version with the same ID; its settings s
 Distribute only your manifest, your ELF and resources you are allowed to share, never game
 files.
 
+The hooks example [`heart-ticker`](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDMods/tree/main/heart-ticker) is in the
+mod repository: entry and return hooks on Link's per-step function, calling a game function.
+
 The examples in [`examples/guest-mods`](../examples/guest-mods) are complete mods:
 
 | Example | Shows |
 | --- | --- |
-| `heart-ticker` | entry and return hooks on Link's per-step function, calling a game function |
 | `addcalc-replace` | replacing a game function (`cLib_addCalc2`) and calling the original |
 | `hud-demo` | HUD drawing with package artwork and text, texture reload after a state load |
 | `button-icons` | reading port settings, following the game's button panes |
@@ -307,6 +309,57 @@ image, since that changes registration at a map boundary.
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated
 between logic steps.
+
+### Current-room maps for mod dungeons
+
+`wwhd_dungeon_room_get(&room, cached_revision)` returns the current mod-stage
+room's existing map pixels as an owned HUD image and its world X/Z bounds. Call it
+from a HUD callback. It returns 0 when the stage has no map, the room has no image,
+or the host predates this service. Stock dungeon images remain the mod's responsibility.
+
+`wwhd_dungeon_room` is an 808-byte guest structure: version (1), image handle,
+revision, signed floor, four float bounds (min X/Z, max X/Z), marker count, reserved
+zero, then up to 64 `(float x, float z, u32 kind)` markers. Kinds are 1 (unopened
+chest) and 2 (boss door). The port filters markers by current room and compass
+ownership, using the same save record and map pixels as its map page. This does
+not reveal neighboring rooms or change save flags.
+
+Pass cached revision 0 on first use and after `wwhd_hud_epoch()` changes. A new
+revision supplies a new image; release the preceding handle. An unchanged revision
+returns image 0 and the caller retains its existing handle. Geometry and markers
+are refreshed every call, including chest opening; rebuilding a room changes its
+revision. Never pass a nonzero revision after releasing its image.
+
+The helper uses the existing `wwhd_setting_get` query transport with key
+`mod-stage.current-room-map` and structured type 5. Older hosts return 0 for this
+unknown key/type, so the guest keeps working with no new import or translator
+requirement. Querying a null buffer with zero capacity reports 808 on hosts that
+support the query. The guest module ABI remains unchanged.
+
+### The game's layout art
+
+A mod can draw with the game's own 2D art without shipping it. The port reads that art from the
+player's installed 2D pack, in the language the game uses, while the game runs:
+
+- `wwhd_hud_texture(WWHD_HUD_GAME, "<Layout>/<texture>")` loads a texture of one of the game's layout
+  archives as an owned HUD image (for example `"Map_00/MapShip_00^t"`). Add `#<material>`
+  (`"BtnMapBalloon_00/r2c_b^t#P_DummyMapBig_00"`) to colour it with that material's black and white
+  colours, the way the game draws it. End the name with `@2`, `@3` or `@4`
+  (`"BtnMapBalloon_00/r2c_b^t#P_DummyMapBig_00@3"`) to get the picture enlarged that many times with
+  Lanczos-3 resampling (premultiplied alpha) and sharpened (an alpha-weighted unsharp mask on the colour,
+  a steeper alpha ramp at outlines), crisper than the HUD's own scaling when small soft art is drawn
+  large. Images count towards the usual per-mod limits; release them as usual.
+- `wwhd_game_pane_get("layout-pane:<Layout>/<pane>", &pane)` reads a pane of such a layout. It gives
+  the centre and size in the layout's root coordinates, with +y up and the parents' translation and
+  scale applied. It also gives the pane's own rotation and alpha, whether it and its parents are
+  visible, and, for a picture pane, its texture's name. The result is a 64-byte `wwhd_game_pane`.
+  The key `layout-texture:<Layout>/<texture>` checks that a texture exists, without loading it. It
+  sets flag 4 and returns the texture's size in `w` and `h`.
+
+Names may contain letters, digits and `_ ^ + - .` only. A missing layout, texture or pane returns 0,
+with the reason in the Mods tab. Older hosts return 0 for both: the texture source and the query key
+are unknown to them, and nothing new is imported. Only the names belong in your mod; never copy the
+pictures or layout data into a package. The example is `hd-minimap` in the mod repository.
 
 ## Letters
 
@@ -640,7 +693,8 @@ the player's machine), and it holds a first small quest. The mod manager downloa
 catalogue by itself, confirms it like the port's own code and keeps it enabled while the story
 system is on; it can't be switched off or removed on its own. Every story mod depends on it (a
 manifest with `quests`, `charts`, `letters`, `items`, `models`, `actors` or `scenes` gets the
-dependency even if it doesn't declare it). While it
+dependency even if it doesn't declare it; a package of [mod stages](mod-stages.md#a-quest-through-the-stage)
+can declare it `"optional": true` instead and plays without its story content then). While it
 isn't installed (offline, download failed), the story system is inactive: no letters, takeovers,
 chart marks or notebook; quest mods wait with "Needs the Story Notebook quest", the game is untouched
 and no save is changed; the next start tries again.
@@ -844,7 +898,8 @@ cave or dungeon, give its stage and room together with the sea entrance hint:
 
 `room` is 0–63 and `point` is a spawn number from 0–255. Omit `point` to use the room's normal entrance,
 or replace it with all three room coordinates: `"x":10,"y":0,"z":20`.
-Coordinates must be finite and within ±350000. Do not combine `point` and
+For one of the package's own [mod stages](mod-stages.md#a-quest-through-the-stage), `stage` is
+`"stage:<its id>"`. Coordinates must be finite and within ±350000. Do not combine `point` and
 coordinates. The explicit `sea` hint is required:
 a stage can have several entrances, so a stage name does not uniquely identify
 the island to mark. The notebook shows the step's `where` text, and the sea

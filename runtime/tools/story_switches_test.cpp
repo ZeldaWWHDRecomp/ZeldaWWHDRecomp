@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Native hook boundaries with synthetic memory. No native physics/render proof.
 #include "mods/story_switches.h"
+#include "mods/native_actor_profiles.h"
 #include "runtime.h"
 #include <cassert>
 #include <cstring>
@@ -49,7 +50,13 @@ int main(){using namespace story_switches;
  st32(0x101CD034+0x10,kSwitchClassBytes);st32(0x1018FFE8+0x10,kDoorClassBytes);
  std::string why;const auto checkpoint_before=checkpoint();const uint32_t stale=declare_switch("m","provisional",why);rollback(checkpoint_before);const uint32_t sw=declare_switch("m","switch",why);assert(sw&&sw!=stale&&!available(stale));const uint32_t second=declare_switch("m","second",why);assert(!declare_door("foreign","door",sw,why));const uint32_t third=declare_switch("m","invalid.geometry",why);flags[third]=true;const uint32_t door=declare_door("m","door",sw,why);assert(door&&!declare_switch("m","switch",why));flags[sw]=false;flags[second]=true;
  configure(original,invoke,0x60001000,0x60001030,[](uint32_t token,bool&value){auto it=flags.find(token);if(it==flags.end())return false;value=it->second;return true;},[](uint32_t token,bool value){++commits;if(fail_write)return false;flags[token]=value;return true;},[](uint32_t token,uint32_t pid){retired[token]=pid;});
- const auto owner=[](uint32_t){return std::string();};assert(install(owner,[](uint32_t f,void(*fn)(Cpu*)){hooks[f]=fn;}));assert(!declare_switch("m","late",why));
+ const auto owner=[](uint32_t){return std::string();};const auto record=[](uint32_t f,void(*fn)(Cpu*)){hooks[f]=fn;};
+ // A hook another feature owns refuses with its address and owner, before anything is registered.
+ {std::string reason;assert(!install([](uint32_t f){return f==0x02058230?std::string("quick-doors"):std::string();},record,&reason));assert(reason=="hook 02058230 owned by quick-doors"&&hooks.empty());}
+ // The --editor case: every enemy kind, the props, the mod actor, world objects and grapple targets
+ // registered their profiles first; the switch and door profiles still find room (all reserved IDs fit).
+ for(uint16_t id=0x7FD0;id<=0x7FFE;++id){if(id==kSwitchProfile||id==kDoorProfile)continue;const uint32_t at=0x60004000+uint32_t(id-0x7FD0)*0x40;st16(at+8,id);std::string reason;assert(native_actor_profiles::add(id,at,nullptr,&reason)&&reason.empty());}
+ {std::string reason;assert(install(owner,record,&reason)&&reason.empty());}assert(!declare_switch("m","late",why));
  actor(Switch,10);actor(Second,11);actor(Door,12,true);bind(sw,10);bind(second,11);bind(door,12);run(0x023975B0,Switch);run(0x023975B0,Second);run(0x02058590,Door);assert(ld32(Second+0x470)==2&&ldf32(Second+0x490)==0&&ldf32(Second+0x3FC)==1);assert(ld8(Door+0x3BC)==1&&ld16(Door+0x3BE)==0&&moves==2);
  const uint32_t bg=ld32(Second+0x3BC),current=ld32(bg+0x90),source=ld32(ld32(bg+0x94)+4);assert(copies==1&&std::memcmp(immutable_source.data(),mem::ptr(source),immutable_source.size())==0);for(unsigned i=0;i<8;++i)assert(ldf32(current+i*12+4)==(i%2==0?64.5f:100.f));
  actor(Third,13);bind(third,13);invalid_geometry=true;const auto moves_before=moves;run(0x023975B0,Third);assert(!available(third)&&moves==moves_before&&ldf32(ld32(ld32(Third+0x3BC)+0x90)+4)==100.f);invalid_geometry=false;

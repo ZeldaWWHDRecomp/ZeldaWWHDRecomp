@@ -5,6 +5,7 @@
 // the game or a room of the stage), doors with their lock, chests, enemies, return warps, and, in a room of the
 // game, the way in. Every change is a command (editor/commands_stages.cpp): one undo step; Rebuild shows it.
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -31,6 +32,7 @@ struct StagesUi {
     std::string checked;
     Value built;         // the last rebuild's results
     int exit_target = 0, door_room = 1, door_lock = 0, chest_item = 0, enemy = 0;
+    float lava_size[2] = {1000, 1000};
     Value templates;  // list_stage_templates (asked once)
     bool templates_asked = false, sky_only = false, updraft = false;
 } U;
@@ -290,6 +292,60 @@ void stages_area(const Value& m) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Pot ahead")) place("pot", Value());
+    // the game's lava floor at Link's feet (its size: the fields, or the corner handle in the picture) and its heat haze
+    ImGui::SetNextItemWidth(160);
+    ImGui::DragFloat2("Lava size (x, z)", U.lava_size, 10, 100, 25500, "%.0f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The area of the game's lava floor, in game units (100 per metre)");
+    if (ImGui::Button("Lava floor here")) {
+        Value p;
+        p["size"]["x"] = double(int(U.lava_size[0])), p["size"]["z"] = double(int(U.lava_size[1]));
+        place("lava", p);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The game's moving lava, its surface at Link's feet: give the room's model a col_lava surface there");
+    ImGui::SameLine();
+    if (ImGui::Button("Heat shimmer here")) place("heat_shimmer", Value());
+    // the selected lava floor (its handle in the picture): its size
+    {
+        std::string st, field;
+        if (stage_item(st, field) && st == U.stage && field.size() > 9 && field.compare(field.size() - 9, 9, "/position") == 0) {
+            const std::string base = field.substr(0, field.size() - 9);
+            const Value* item = nullptr;
+            for (const auto& ms : m.get("stages").array)
+                if (ms.get("id").string() == st) {
+                    const Value* at = &ms;
+                    size_t from = 0;
+                    while (at && from <= base.size()) {
+                        const size_t end = base.find('/', from);
+                        const std::string k = base.substr(from, end == std::string::npos ? std::string::npos : end - from);
+                        if (at->type == Value::Array) {
+                            const size_t n = size_t(std::atoi(k.c_str()));
+                            at = n < at->array.size() ? &at->array[n] : nullptr;
+                        } else
+                            at = at->get(k).type == Value::Null ? nullptr : &at->get(k);
+                        if (end == std::string::npos) break;
+                        from = end + 1;
+                    }
+                    item = at;
+                }
+            if (item && item->get("actor").string() == "lava") {
+                ImGui::TextColored(kHead, "Lava floor %s", item->get("id").string().c_str());
+                float size[2] = {num(item->get("size"), "x", 1000), num(item->get("size"), "z", 1000)};
+                ImGui::SetNextItemWidth(160);
+                ImGui::DragFloat2("Size (x, z)", size, 10, 100, 25500, "%.0f");
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    Value p;
+                    p["stage"] = st, p["field"] = base + "/size";
+                    p["value"]["x"] = double(int(size[0])), p["value"]["z"] = double(int(size[1]));
+                    command("set_stage_field", p, nullptr);
+                }
+                if (ImGui::Button("Remove this lava floor")) {
+                    Value p;
+                    p["stage"] = st, p["field"] = base, p["value"] = Value();
+                    command("set_stage_field", p, nullptr);
+                }
+            }
+        }
+    }
     muted("An exit's box is 4 m wide around where Link stands: walking onto its floor takes him to the target. The picture shows the stage's spawns (green), exits (blue), doors (orange), chests (yellow) and warps (purple). "
           "Rebuild to see a change in the game.");
 }

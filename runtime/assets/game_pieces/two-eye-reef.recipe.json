@@ -1,0 +1,76 @@
+{
+  "game_pieces_format": 1,
+  "set": "two-eye-reef",
+  "label": "Two-Eye Reef ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room46.szs",
+    "room": 46
+  },
+  "memory": {
+    "archive_bytes": 2158592,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "two-eye-reef",
+      "since": 5,
+      "category": "Islands",
+      "label": "Two-Eye Reef ground",
+      "description": "a ring of stepped brown rock walls around a lagoon with two islets",
+      "volume": [
+        -6019,
+        -1102,
+        -26017,
+        6166,
+        1650,
+        -13931
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "sotojima8",
+          "suberu",
+          "suberu1",
+          "sotojima2",
+          "soko_stop_A",
+          "soko_stop_B",
+          "soko_stop_B1",
+          "sotojima",
+          "nakajima",
+          "nakajima1"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD46.szs",
+        "triangles": 1268
+      },
+      "expect": {
+        "triangles": [
+          1268
+        ],
+        "textures": [
+          [
+            "Txa_iwakabe_tisou_blue",
+            "Txq_arukuiwakabe_blue",
+            "Txq_ueiwa_blue"
+          ]
+        ],
+        "collision_triangles": 1208
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

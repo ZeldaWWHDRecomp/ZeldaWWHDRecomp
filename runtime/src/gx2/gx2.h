@@ -34,6 +34,10 @@ void set_uncapped(bool on);
 bool next_step_time(std::chrono::steady_clock::time_point& at);
 void drop_step_slot();  // a logic pass more than a step late: the schedule starts anew
 int step_frames();      // 40 fps: frames the next logic step has before the one after it (1 or 2; 0: no slot)
+#ifdef __ANDROID__
+// The XR session first gates new presents, then waits for existing surface writes.
+void quiesce_quest_presentation();
+#endif
 }  // namespace gx2
 
 // The renderer backend (Metal). All calls come from the thread executing GX2

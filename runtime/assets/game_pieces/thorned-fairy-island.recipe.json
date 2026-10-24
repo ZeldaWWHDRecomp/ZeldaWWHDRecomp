@@ -1,0 +1,84 @@
+{
+  "game_pieces_format": 1,
+  "set": "thorned-fairy-island",
+  "label": "Thorned Fairy Island ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room28.szs",
+    "room": 28
+  },
+  "memory": {
+    "archive_bytes": 2383872,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "thorned-fairy-island",
+      "since": 5,
+      "category": "Islands",
+      "label": "Thorned Fairy Island ground",
+      "description": "a fairy island with the fountain's spiked stone hut and a small islet beside it; its doorway leads to a hole that sends Link back",
+      "volume": [
+        16497,
+        -1126,
+        17063,
+        23503,
+        3938,
+        23064
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "hontai",
+            "sima"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "irigutihukin",
+          "Hole_soko",
+          "Hole_kabe",
+          "Hole_huti",
+          "hontai",
+          "sima",
+          "kojima",
+          "soko_kabe",
+          "sima_sita"
+        ],
+        "strip_exits": true,
+        "void": [
+          "Hole_soko"
+        ]
+      },
+      "distant": {
+        "archive": "sea_LOD28.szs",
+        "triangles": 198
+      },
+      "expect": {
+        "triangles": [
+          903
+        ],
+        "textures": [
+          [
+            "Txq_0fentranaka_blue",
+            "Txq_enter3_27",
+            "Txq_jimennana",
+            "Txq_moraikusa_1031",
+            "Txq_teppen_1c",
+            "Txq_togepi_27",
+            "Txq_youseimoya",
+            "Txy_kai_27"
+          ]
+        ],
+        "collision_triangles": 796
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

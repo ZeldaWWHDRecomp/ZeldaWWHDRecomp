@@ -11,6 +11,7 @@
 #        ~/Library/Android/sdk, ~/Android/Sdk, C:/Android/Sdk), NDK_VERSION (default 30.0.16248370),
 #        JOBS (default 8), GEN_DIR (default build/gen), OUT (default android/build),
 #        ABI (default arm64-v8a; x86_64 for emulator CI),
+#        QUEST_THEATER (default ON; OFF also needs Gradle -PwwhdQuestTheater=false),
 #        CPU (default generic: any arm64 phone. CPU=oryon-1 tunes for the Snapdragon 8 Elite, e.g.
 #        Galaxy S25, where the port was measured; the APK then runs only on that CPU family)
 # The game code in build/gen is generated from your own game (tools/recomp/recomp.py) and stays on
@@ -51,7 +52,8 @@ mkdir -p "$out"
 "$cmake" -S "$root" -B "$out" -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" \
     "-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake" "-DANDROID_ABI=$abi" \
     "-DANDROID_PLATFORM=android-$api" -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release \
-    -DWWHD_BUNDLED_DEPS=ON "-DGEN_DIR=${GEN_DIR:-$root/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
+    -DWWHD_BUNDLED_DEPS=ON "-DWWHD_QUEST_THEATER=${QUEST_THEATER:-ON}" \
+    "-DGEN_DIR=${GEN_DIR:-$root/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
 "$cmake" --build "$out" -j "$jobs" --target wwhd wwhd_yaz0 >> "$out.log" 2>&1 || { tail -40 "$out.log"; exit 1; }
 libs="$here/app/libs/$abi"
 mkdir -p "$libs"

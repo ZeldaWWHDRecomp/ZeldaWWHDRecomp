@@ -1,0 +1,234 @@
+{
+  "game_objects_format": 1,
+  "group": "blocks",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the stage actor name, its process, the archive it loads, the fixed parameter word and home angle). The objects themselves load from the player's own game files; tools/story_mods/game_objects.py --game <dir> --list shows which ones the player's game has.",
+  "objects": [
+    {
+      "id": "push-block",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Stone block",
+      "description": "a heavy stone block of the dungeons that Link pushes and pulls, plain or with a statue on top; it is back in its place when the room loads again",
+      "native": {
+        "name": "osiBLK0",
+        "process": "Obj_Movebox",
+        "source": "d_a_obj_movebox",
+        "subtype": 0,
+        "archive": "Osiblk"
+      },
+      "variants": [
+        {
+          "id": "stone",
+          "label": "Stone block",
+          "params": "0x8100FF00",
+          "angle_z": "0xFFFF"
+        },
+        {
+          "id": "statue",
+          "label": "Stone block with a statue",
+          "params": "0x8200FF00",
+          "angle_z": "0xFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision and its push steps keep the unscaled block"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 16384,
+        "archive_bytes": 0,
+        "measured": "solid heap 12284 bytes (WWHD_MOD_ACTOR_HEAPS=1, US game, 2026-10-21); the archive is in a permanent pack, already in memory"
+      },
+      "notes": "the game's own stone block word (no switch, no save, no path: 0x8100FF00 is the word of 57 of the game's placements) with home angle z 0xFFFF (no path, no second switch); without a switch the block starts at its placement whenever its room loads; variant statue: the game's osiBLK1 word (type 2, 0x8200FF00: the block with a stone statue on top, own heap 15536 bytes)"
+    },
+    {
+      "id": "heavy-block",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Heavy block",
+      "description": "a block Link can only push with the Power Bracelets",
+      "native": {
+        "name": "MpwrB",
+        "process": "Obj_Movebox",
+        "source": "d_a_obj_movebox",
+        "subtype": 10,
+        "archive": "MpwrB"
+      },
+      "variants": [
+        {
+          "id": "heavy-block",
+          "label": "Heavy block",
+          "params": "0x8300FF00",
+          "angle_z": "0xFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 13312,
+        "archive_bytes": 0,
+        "measured": "own heap 12080 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's Power Bracelet block word (type 3, MpwrB): switch 0xFF, no item, home angle z 0xFFFF (no path, no second switch)"
+    },
+    {
+      "id": "rock",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Rock",
+      "description": "a small rock Link lifts, carries and throws; it breaks",
+      "native": {
+        "name": "koisi1",
+        "process": "STONE",
+        "source": "d_a_stone",
+        "subtype": 0,
+        "archive": "Always"
+      },
+      "variants": [
+        {
+          "id": "rock",
+          "label": "Rock",
+          "params": "0x707FFFFF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 12288,
+        "archive_bytes": 0,
+        "measured": "own heap 11236-11312 bytes and about 1 KiB more; the archive is the always-loaded one"
+      },
+      "notes": "the game's small rock word (type 0, 0x707FFFFF: no item 0x3F, no switch 0xFF, no item save 0x7F); it breaks when thrown; without a switch it is back when its room loads again"
+    },
+    {
+      "id": "boulder",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Boulder",
+      "description": "a big boulder; a bomb blows it apart",
+      "native": {
+        "name": "Ebrock",
+        "process": "Stone2",
+        "source": "d_a_stone2",
+        "subtype": 0,
+        "archive": "Ebrock"
+      },
+      "variants": [
+        {
+          "id": "boulder",
+          "label": "Boulder",
+          "params": "0xF27FFF3F",
+          "angle_z": "0x00FF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 14848,
+        "archive_bytes": 0,
+        "measured": "own heap 13556 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's own Ebrock word (Stone2 type 2, 0xF27FFF3F: shadow, no switch, no item) with its home angle z 0x00FF (no break event), as the game places them; a bomb (type 0x20 attack) blows it apart"
+    },
+    {
+      "id": "boulder-small",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Small boulder",
+      "description": "a smaller boulder; a bomb blows it apart",
+      "native": {
+        "name": "Ebrock2",
+        "process": "Stone2",
+        "source": "d_a_stone2",
+        "subtype": 2,
+        "archive": "Ebrock"
+      },
+      "variants": [
+        {
+          "id": "boulder-small",
+          "label": "Small boulder",
+          "params": "0xF47FFF3F",
+          "angle_z": "0x00FF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 14848,
+        "archive_bytes": 0,
+        "measured": "own heap 13552 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's own Ebrock2 word (Stone2 type 4, 0xF47FFF3F) with home angle z 0x00FF (no break event)"
+    },
+    {
+      "id": "stone-head",
+      "since": 6,
+      "category": "Rocks and blocks",
+      "label": "Stone head",
+      "description": "a heavy stone head",
+      "native": {
+        "name": "Ekao",
+        "process": "Stone2",
+        "source": "d_a_stone2",
+        "subtype": 1,
+        "archive": "Ekao"
+      },
+      "variants": [
+        {
+          "id": "stone-head",
+          "label": "Stone head",
+          "params": "0xF37FFF3F",
+          "angle_z": "0x00FF"
+        }
+      ],
+      "transform": {
+        "rotation": "yaw",
+        "scale": [
+          1,
+          1
+        ],
+        "why": "its collision keeps the unscaled shape"
+      },
+      "collision": true,
+      "memory": {
+        "instance_bytes": 16896,
+        "archive_bytes": 0,
+        "measured": "own heap 15600-15644 bytes and about 1 KiB more; the archive is in a permanent pack"
+      },
+      "notes": "the game's Ekao (Stone2 type 3, 0xF37FFF3F) with home angle z 0x00FF; heavy (the Power Bracelets lift it); bombs don't break it"
+    }
+  ]
+}

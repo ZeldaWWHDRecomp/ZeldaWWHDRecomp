@@ -213,6 +213,29 @@ def vulkan_db(recipes, fingerprint=b'\x11'*48):
     return b'WWVKPR01'+fingerprint+struct.pack('<II',len(recipes),zlib.crc32(body))+body
 
 
+def vulkan_local_v2(p, groups=()):
+    """the runtime's version 2 record of code-free pipeline p: raw key, shader 0 for both stages, archive groups"""
+    raw=fmt.vulkan_payload(p)
+    words=list(struct.unpack('<%dI'%((len(raw)-8)//4),raw[8:]))
+    key=bytes(words[1:209])
+    out=list(struct.unpack('<52I',key))+[words[209]]
+    at=210
+    for _ in range(2):
+        out.append(0)                                # shader index (code-free payload: empty code vector)
+        at+=1
+        n=words[at];out.extend(words[at:at+1+4*n]);at+=1+4*n
+    out.extend(words[at:])
+    out.extend([len(groups),*groups])
+    return struct.pack('<%dI'%len(out),*out)
+
+
+def vulkan_db_v2(recipes, fingerprint=b'\x11'*48):
+    code=struct.pack('<6I',0x07230203,0x00010300,0,1,0,0x00010000);packed=zlib.compress(code,1)
+    table=struct.pack('<I',1)+struct.pack('<IIII',6,len(packed),0,0)+packed+b'\0'*(-len(packed)%4)
+    body=table+b''.join(struct.pack('<I',len(r))+r for r in recipes)
+    return b'WWVKPR02'+fingerprint+struct.pack('<II',len(recipes),zlib.crc32(body))+body
+
+
 def legacy_fetch():
     words=[1|(160<<8),5|(1<<9)|(2<<12)|(3<<15)|(4<<18)|(1<<22),8|(2<<16),0]
     return struct.pack('<4I',*words)
@@ -272,6 +295,23 @@ class PlayerCaches(unittest.TestCase):
         b=prep.TemplateBuilder();b.add_cache(str(path))
         self.assertEqual(len(b.document()['pipelines']),2)
         self.assertEqual(sum(b.report.skipped.values()),2)
+
+    def test_local_database_version_2(self):
+        # the runtime's local database stores each shader once and adds archive groups; templates read it alike
+        recipes=[]
+        for i in range(40):
+            p=vulkan();p['shader_hashes']=[i,i+1,i+2];recipes.append((p,vulkan_local_v2(p,(7,i+1) if i%2 else ())))
+        path=self.root/'vk-0123456789ab.bin.recipes';path.write_bytes(vulkan_db_v2([r for _,r in recipes]))
+        decoded=fmt.vulkan_database(path.read_bytes())
+        self.assertEqual([d['shader_hashes'] for d in decoded],[p['shader_hashes'] for p,_ in recipes])
+        b=prep.TemplateBuilder();b.add_cache(str(path))
+        self.assertEqual(len(b.document()['pipelines']),40)
+        self.assertEqual(sum(b.report.skipped.values()),0)
+        # an index past the shader table is rejected (one recipe), the rest kept
+        bad=bytearray(vulkan_local_v2(recipes[0][0]));bad[4*53:4*54]=struct.pack('<I',5)
+        path.write_bytes(vulkan_db_v2([bytes(bad)]+[r for _,r in recipes[1:]]))
+        b=prep.TemplateBuilder();b.add_cache(str(path))
+        self.assertEqual(len(b.document()['pipelines']),39)
 
     def test_more_records_than_the_old_limit(self):
         # the original #162 failure: the Metal recorder appends forever (real caches: 181,208 records)

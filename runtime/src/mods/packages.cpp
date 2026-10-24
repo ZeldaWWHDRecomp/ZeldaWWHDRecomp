@@ -18,6 +18,7 @@
 #include "../platform/host.h"
 #include "wwhd_mod.h"
 #include "story_manifest.h"
+#include "story_scene_needs.h"
 #include "static_model_validation.h"
 #include "skinned_model_validation.h"
 #include <algorithm>
@@ -47,6 +48,7 @@ struct Manifest {
     Value world; // cached validated manifest for aggregate actor/scene graph checks
     std::string id,name,version,author,description,kind,binary,problem,fingerprint,trust_fingerprint,manifest_fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
     std::vector<Requirement> dependencies;
+    bool story_optional=false;  // {"id": "story-notebook", "optional": true}: its story content plays only with the notebook
     std::vector<std::string> conflicts;
     std::vector<Option> options;
     std::map<std::string,bool> settings;
@@ -176,7 +178,7 @@ Manifest manifest(const fs::path& path){
         else world_declarations = !quests.empty() || !charts.empty() || !letters.empty() ||
                                   !items.empty() || !actors.empty() || !scenes.empty();
         // the game's own objects and island buildings by reference: the package holds no game data (they come from the player's game files)
-        if(m.problem.empty()&&std::any_of(actors.begin(),actors.end(),[](const story_notebook::ManifestActor& a){return a.game_object()||a.game_piece();}))
+        if(m.problem.empty()&&(std::any_of(actors.begin(),actors.end(),[](const story_notebook::ManifestActor& a){return a.game_object()||a.game_piece()||a.kit_model;})))
             if(const auto found=story_game_objects::game_data_file(path);!found.empty())
                 m.problem="Game objects: the package holds game data ("+found+"); game objects and buildings come from the player's own game files";
     }
@@ -197,6 +199,16 @@ Manifest manifest(const fs::path& path){
     }
     for(const auto& model:models){
         auto checked=path;for(const auto& part:fs::path(model.source)){checked/=part;require(!fs::is_symlink(checked),"Model source paths may not use symlinks");}
+        // a kit model (drawn with a kit room's materials, story_kit_models.h) has no pictures of its own and a mod
+        // stage ground's size; its converter checks it when the game starts
+        if(model.kind=="kit"){
+            require(fs::is_regular_file(checked)&&fs::file_size(checked)<=16u*1024*1024,"Missing kit model source or larger than 16 MiB");
+            // no game textures in the package: a material named as a game material carries none (the converter checks the names)
+            std::ifstream input(checked,std::ios::binary);std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
+            std::vector<std::string> names;if(!model.kit_material.empty())names.push_back(model.kit_material);for(const auto&[from,to]:model.kit_materials){names.push_back(from);names.push_back(to);}
+            static_models::KitInfo kit;require(static_models::validate_kit_glb(bytes,names,kit,model_error),"Model "+model.id+": "+model_error);
+            continue;
+        }
         require(fs::is_regular_file(checked)&&fs::file_size(checked)<=static_models::kMaxSourceBytes,"Missing or oversized model source");
         std::ifstream input(checked,std::ios::binary);std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
         static_models::ModelInfo info;
@@ -251,10 +263,17 @@ Manifest manifest(const fs::path& path){
         for(const auto& [id,b]:settings.object){require(manager::find(id)&&b.type==Value::Bool,"Unknown built-in setting: "+id);m.settings[id]=b.boolean;}
     }
     const auto& deps=v.get("dependencies");require(deps.type==Value::Null||deps.type==Value::Array,"Dependencies must be an array");
-    for(const auto& dep:deps.array){Requirement r;r.id=string_field(dep,"id",false,80);r.version=string_field(dep,"minimum_version",true,64);if(r.version.empty())r.version="0.0.0";version(r.version);require(id_ok(r.id)||(r.id.starts_with("builtin:")&&manager::find(r.id.substr(8))),"Invalid dependency ID");m.dependencies.push_back(r);}
+    for(const auto& dep:deps.array){
+        // an optional dependency: only the Story Notebook, for a package that plays without its story content
+        if(dep.get("optional").type!=Value::Null){
+            require(dep.get("optional").type==Value::Bool,"A dependency's \"optional\" is true or false");
+            if(dep.get("optional").boolean){require(dep.get("id").string()==story_notebook::kNotebookPackage,"Only the Story Notebook can be an optional dependency");m.story_optional=true;continue;}
+        }
+        Requirement r;r.id=string_field(dep,"id",false,80);r.version=string_field(dep,"minimum_version",true,64);if(r.version.empty())r.version="0.0.0";version(r.version);require(id_ok(r.id)||(r.id.starts_with("builtin:")&&manager::find(r.id.substr(8))),"Invalid dependency ID");m.dependencies.push_back(r);}
     // every story mod depends on the story system's required package (required.h), declared or not:
-    // without it the story system stays off, and its letters, charts, items, quests and actors with it
-    if(m.id!=story_notebook::kNotebookPackage&&story_sections&&
+    // without it the story system stays off, and its letters, charts, items, quests and actors with it.
+    // Wordless scenes (no text, sounds or story actions) don't need it (story_scene_needs.h).
+    if(m.id!=story_notebook::kNotebookPackage&&!m.story_optional&&story_scene_needs::needs_story(v)&&
        std::none_of(m.dependencies.begin(),m.dependencies.end(),[](const Requirement& r){return r.id==story_notebook::kNotebookPackage;}))
         m.dependencies.push_back({story_notebook::kNotebookPackage,"0.0.0"});
     const auto& conflicts=v.get("conflicts");require(conflicts.type==Value::Null||conflicts.type==Value::Array,"Conflicts must be an array");

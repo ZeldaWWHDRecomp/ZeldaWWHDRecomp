@@ -20,8 +20,10 @@ for attempt in $(seq 1 ${BOOT_TRIES:-3}); do
   cd $out
   # bytes the game never initialises (they differ from run to run): Link, camera, warp actor
   skip=A8:64F0:98,6B:3D0:30,A8:6D9C:6,A8:713C:6,A8:71DC:6,1DC:508:8,A8:48C:168
+  # the player's live shader caches stay untouched: every cache (Metal and Vulkan) points next to the run
   env WWHD_HIDDEN_WINDOWS=1 WWHD_RENDERER_RUNTIME=metal WWHD_NO_HOST_INPUT=1 WWHD_NO_AUDIO=1 WWHD_NO_GAMEPAD=1 \
     WWHD_SHADER_CACHE=${SHADER_CACHE:-$out/../shadercache.bin} WWHD_STATE_DIR=$out/states \
+    WWHD_VK_SHADER_CACHE=${VK_SHADER_CACHE:-$out/../vkshaders.bin} WWHD_VK_PIPELINE_CACHE_DIR=${VK_PIPELINE_CACHE_DIR:-$out/../vkpipelines} \
     WWHD_PRESS=${PRESS:-$press} WWHD_TEST_ORIGIN=$origin WWHD_TEST_END=$end \
     WWHD_LINK_TRACE=trace.txt WWHD_CAM_TRACE=cam.txt WWHD_SAVEINFO_DUMP=si.bin WWHD_SE_TRACE=se.txt WWHD_RNG_TRACE=rng.txt \
     WWHD_PROC_DIGEST=${DIGEST-digest.txt} WWHD_PROC_DIGEST_SKIP=$skip "$@" \

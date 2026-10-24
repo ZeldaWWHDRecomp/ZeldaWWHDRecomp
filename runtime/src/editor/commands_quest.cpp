@@ -526,6 +526,8 @@ Value Session::dispatch_quest(const std::string& command, const Value& p, std::s
         if (!s.location.empty())
             for (const auto& l : locations())
                 if (l.id == s.location) to = l;
+        // a step's place in the package's own stage: the stage's game name (refused before anything changes)
+        if (!to.id.empty() && !resolve_warp_stage(to, host_->mod_stages(), why)) return why = "can't warp to " + to.label + ": " + why, r;
         const bool play = p.get("play").type == Value::Bool ? p.get("play").boolean : true;
         if (!host_->start_at_step(pkg->mod, erase, step_records(pkg->mod, quest, s), s.items, to, play, why)) return r;
         r["requested"] = true;

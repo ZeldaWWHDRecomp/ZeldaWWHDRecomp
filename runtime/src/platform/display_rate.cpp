@@ -68,6 +68,7 @@ void request(SDL_Window* tv, int actualHz) {
     auto* window = tv ? static_cast<ANativeWindow*>(SDL_GetPointerProperty(
         SDL_GetWindowProperties(tv), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr)) : nullptr;
     const int hz = android_display_rate::requested_hz(interp::mode(), interp::fps(), disabled);
+    if (window) interp::set_requested_display_hz(hz);  // for the performance report
     const int64_t now = (int64_t)SDL_GetTicks();
     const bool again = window && resend.due(now, actualHz);
     if (!state.changed(reinterpret_cast<uintptr_t>(window), surfaceRevision.load(), hz) && !again) return;

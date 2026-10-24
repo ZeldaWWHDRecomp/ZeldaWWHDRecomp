@@ -30,6 +30,10 @@ Bytes build(const std::string& description_json, const std::filesystem::path& ar
 // swizzle (0-7) would hold them (the image's size: as the archive's .bflim); for writing a texture of a
 // built layout at run time (story_lyt_screen::set_texture_pixels).
 Bytes tile_rgba8(const Bytes& rgba, uint32_t w, uint32_t h, int tile_mode, uint32_t swizzle);
+// The inverse of the tiling above: a GX2 surface (ew x eh elements of bpp bits; texels, or 4 x 4 blocks
+// for BC) in tile mode 1, 2 or 4 with swizzle 0-7, as row-major elements; empty for an unsupported or short
+// surface. For reading the game's own layout textures (game_layouts.h).
+Bytes untile(const Bytes& surface, uint32_t ew, uint32_t eh, uint32_t bpp, int mode, uint32_t swizzle);
 // A .bflim of RGBA texels (w x h): format rgba8, bc1, bc3 or bc5la (luminance + alpha, for item_icons.h),
 // tile "linear", "1d" or "tiled", swizzle 0-7 (tiled only); as the generator writes it. Throws
 // std::runtime_error on bad input.

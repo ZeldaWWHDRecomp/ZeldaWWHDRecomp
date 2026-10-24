@@ -61,6 +61,8 @@
     <string name="setup_paused_battery">Paused: the battery is low</string>
     <string name="setup_paused_detail">Tap Continue when you want to go on.</string>
     <string name="setup_paused_auto_detail">Setup continues by itself when the Android device is ready.</string>
+    <string name="setup_paused_heat_detail">Setup waits for you. Tap Continue anyway to go on now.</string>
+    <string name="setup_paused_heat_cooled">The device has cooled down. Tap Continue to go on.</string>
     <string name="setup_failed">Setup stopped</string>
     <string name="setup_failed_detail">Tap Details to see why. You can choose your game again or tap Continue.</string>
     <string name="setup_ready">Your game is ready</string>

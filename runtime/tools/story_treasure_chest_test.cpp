@@ -234,6 +234,11 @@ bool placed(uint32_t actor, std::string& mod, std::string& item) {
     mod = "mod", item = "coin";
     return true;
 }
+// the get moment's icon (story_item_get_icon): on with the chest's demo item, off when the item is given
+std::vector<std::string> icons;
+void icon(uint16_t key, const std::string& png, bool on) {
+    icons.push_back(on ? std::to_string(key) + " " + std::filesystem::path(png).filename().string() : "off");
+}
 void test_placed_chest() {
     assert(!placed_chests());
     note_placed_chests();
@@ -244,10 +249,18 @@ void test_placed_chest() {
     const int32_t before = story_items::count("mod", "coin");
     g_placed_actor = kArena + 0x100 - 0x314;
     calls.clear();
+    set_icon_presenter(icon);
     create(kChestMarker);
     assert(calls == std::vector<std::string>{"create " + std::to_string(kStandIn)} && pending());
+    assert(icons == std::vector<std::string>{std::to_string(story_items::item_key("mod", "coin")) + " coin.png"});
     exec(kStandIn);
     assert(!pending() && story_items::count("mod", "coin") == before + 1);
+    assert(icons.size() == 2 && icons[1] == "off");
+    // a chest's get cut off (another chest creates its item): the icon goes too
+    create(kChestMarker);
+    create(0x07);
+    assert(!pending() && icons.size() == 4 && icons[3] == "off");
+    set_icon_presenter(nullptr);
     // another chest with the marker (not ours): the default item, nothing pending
     g_placed_actor = 1;
     calls.clear();

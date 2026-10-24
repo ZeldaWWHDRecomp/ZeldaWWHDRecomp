@@ -35,6 +35,7 @@ struct LatteDecompilerALUInstruction
 	uint8 aluUnit{}; // 0-3 -> ALU.x/y/u/w (PV), 4 -> Trans unit (PS)
 	uint8 indexInGroup{}; // index of instruction within instruction group
 	bool isLastInstructionOfGroup{};
+	uint8 srcMayBeNonFinite{7}; // WWHD: per source operand, may be infinite or NaN (LatteDecompiler_analyzeFiniteness)
 };
 
 struct LatteDecompilerTEXInstruction
@@ -266,6 +267,7 @@ struct LatteDecompilerShaderContext
 
 void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
 void LatteDecompiler_analyzeDataTypes(LatteDecompilerShaderContext* shaderContext);
+void LatteDecompiler_analyzeFiniteness(LatteDecompilerShaderContext* shaderContext);
 void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);
 #ifdef ENABLE_METAL
 void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader);

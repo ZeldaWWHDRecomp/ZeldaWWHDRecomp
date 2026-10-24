@@ -84,7 +84,7 @@ bool compile(const Demo& d, const Resolver& resolve, Compiled& out, std::string&
         } else {
             out.participants.push_back(a.actor);
             if (a.kind == Actor::Kind::Game) {
-                Cast cast{a.actor, a.spawn, a.params, !a.position.keys.empty(), {}};
+                Cast cast{a.actor, a.spawn, a.params, !a.position.keys.empty(), {}, a.own};
                 if (cast.placed) cast.position = a.position.keys.front().value;
                 out.cast.push_back(cast);
             }
@@ -103,18 +103,29 @@ bool compile(const Demo& d, const Resolver& resolve, Compiled& out, std::string&
             uint32_t id;
             if (!virtual_id(c.resource, id)) return false;
             b.value(o, c.frame, S::actor::Animation, id);
-            b.immediate_word(o, c.frame, S::actor::AnimationMode, 1);
+            b.immediate_word(o, c.frame, S::actor::AnimationMode, c.loop ? 1 : 3);  // JStudio: 1 repeat, 3 hold the end
             b.time(o, c.frame, S::actor::AnimationFrame, 30.f * c.speed);
         }
         for (const auto& m : a.modes) {
             b.value(o, m.frame, S::actor::Animation, m.mode);
             if (!m.clip.empty()) {
-                // one of Link's demo animations: data id 0 = {u16 animation id, u8 hands}
-                const int32_t id = resolve ? resolve({"@Link", m.clip}) : -1;
-                if (id < 0) return fail(why, "Link has no demo animation " + m.clip);
-                b.immediate_word(o, m.frame, S::actor::AnimationMode, 1);
+                // one of Link's demo animations (daPy_lk_c::dProcTool): data id 0 = {u16 bck} or, with his
+                // face, id 1 = {u16 bck, btp, btk}; then the hands {u8 left, right} or, with a blend,
+                // {u8 left, right, blend frames}. Tagged as the game's STB data: 0x32 one u16, 0x3A n u16, 0x39 n u8.
+                auto link_id = [&](const std::string& file, int32_t& id) {
+                    id = resolve ? resolve({"@Link", file}) : -1;
+                    return id >= 0 || fail(why, "Link has no demo animation " + file);
+                };
+                int32_t id, btp = 0, btk = 0;
+                if (!link_id(m.clip, id) || (!m.btp.empty() && (!link_id(m.btp, btp) || !link_id(m.btk, btk)))) return false;
+                b.immediate_word(o, m.frame, S::actor::AnimationMode, m.loop ? 1 : 3);
                 b.time(o, m.frame, S::actor::AnimationFrame, 30.f);
-                b.data(o, m.frame, 0, S::Bytes{0x32, uint8_t(id >> 8), uint8_t(id), 0x39, 0x02, 0x00, 0x00});
+                S::Bytes bytes;
+                if (m.btp.empty()) bytes = {0x32, uint8_t(id >> 8), uint8_t(id)};
+                else bytes = {0x3A, 0x03, uint8_t(id >> 8), uint8_t(id), uint8_t(btp >> 8), uint8_t(btp), uint8_t(btk >> 8), uint8_t(btk)};
+                if (m.blend >= 0) bytes.insert(bytes.end(), {0x39, 0x03, 0x00, 0x00, uint8_t(m.blend)});
+                else bytes.insert(bytes.end(), {0x39, 0x02, 0x00, 0x00});
+                b.data(o, m.frame, m.btp.empty() ? 0 : 1, bytes);
             } else if (!m.data.empty()) {
                 b.immediate_word(o, m.frame, S::actor::AnimationMode, 1);
                 b.time(o, m.frame, S::actor::AnimationFrame, 30.f);

@@ -45,6 +45,25 @@ screens have their own controls; follow the game's stick/button prompts. The por
 If down fails, check its binding in Controls and test D-pad down, Left Stick Down
 and Right Stick Down separately.
 
+## Controllers while the game isn't focused
+
+Controls → **Controller input when the game isn't focused** keeps your controllers playing the game
+while another window has the focus, for example with the game on a second screen, while streaming
+or with remote play. It is off by default and saved with your controls. The change takes effect at once.
+
+- Only controllers are affected. Keyboard keys and mouse buttons are still released when the
+  game loses the focus, and they reach the game only while it is focused again.
+- Rumble keeps working in the background on Windows and Linux. The macOS app does not drive
+  controller rumble yet.
+- A controller press in the background never opens Settings. If Settings is already open, the
+  controller can still navigate and close it. Other controller shortcuts work as they do with
+  the focus.
+- On macOS this needs macOS 11.3 or later.
+- With Steam Input turned on for the game, Steam may still send controller input only to the
+  focused window. Turn Steam Input off for the game if background input does not work.
+- Android does not have this option: the app is either in front or paused. Handhelds with a
+  built-in controller are not affected.
+
 ## Mouse and keyboard
 
 On Windows, Linux and macOS, click a key or alternate-key field in **Controls**,

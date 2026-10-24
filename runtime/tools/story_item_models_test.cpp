@@ -34,7 +34,12 @@ case 0x025D57E0:assert(a[0]==demoItem);++actorDeletes;return 1;
 default:assert(false);return 0;}}
 bool arm(uint16_t key,bool on){armed.push_back({key,on});return !on||armOk;}
 }
-int main(){map(A,0x100000);map(S,0x10000);map(0x10000000,0x600000);std::string why;I::reset();assert(!I::declare(1,"../retail",90,why));assert(!I::declare(1,"modown",301,why));assert(I::declare(1,"modown",3,why));assert(!I::declare(1,"other",3,why));I::configure(S,original,call);assert(!I::install([](uint32_t f){return f==0x02403C24?"foreign":"";},[](uint32_t,void(*)(Cpu*)){}));assert(I::install([](uint32_t){return std::string();},[](uint32_t f,void(*h)(Cpu*)){hooks[f]=h;}));assert(hooks.size()==6&&hooks.count(0x02123B60));
+int main(){map(A,0x100000);map(S,0x10000);map(0x10000000,0x600000);std::string why;I::reset();
+// #269: no held model declared (nothing configured or installed, the record's address 0): a chest of a mod
+// item ends its get (chest_hold_up off) and the demo item draws; nothing reads guest memory (address 8 was
+// read before), nothing is drawn by us
+{I::chest_hold_up(7,true);I::chest_hold_up(7,false);assert(!I::demo_active());Cpu z{};z.r[3]=A;assert(!I::draw_demo_item(&z));I::tick(&z);}
+assert(!I::declare(1,"../retail",90,why));assert(!I::declare(1,"modown",301,why));assert(I::declare(1,"modown",3,why));assert(!I::declare(1,"other",3,why));I::configure(S,original,call);assert(!I::install([](uint32_t f){return f==0x02403C24?"foreign":"";},[](uint32_t,void(*)(Cpu*)){}));assert(I::install([](uint32_t){return std::string();},[](uint32_t f,void(*h)(Cpu*)){hooks[f]=h;}));assert(hooks.size()==5&&!hooks.count(0x02123B60));  // daDitem_Draw is story_item_get_icon's hook
 st32(0x20070000+0xC,0x10001000);st32(0x10001000+0x74,0x02001000);st32(0x1046F0B0+0x5B34,A);st32(A+4,10);st16(A+0xE,0xA8);st8(A+0x326,11);st32(A+0x448,CL);st32(CL+0x2C,B);st32(B+0x10,MT);for(unsigned i=0;i<12;++i)st32(MT+8*0x30+i*4,f32_as_u32(float(i)));st32(A+0x4440,0xDEADBEEF);st16(A+0x69B0,0x103);
 Cpu c{};c.r[3]=A;c.r[4]=23;c.pc=44;Cpu before=c;I::request(1);I::tick(&c);assert(std::memcmp(&c,&before,sizeof c)==0&&models==1);I::hooks::hand(&c);assert(c.r[3]==77&&c.pc==1234);assert(std::memcmp(mem::ptr(M+0xC8),mem::ptr(MT+8*0x30),0x30)==0);c.r[3]=A;unsigned ticks=ld32(S+20);I::hooks::draw(&c);c.r[3]=A;I::hooks::draw(&c);assert(draws==2&&ld32(S+20)==ticks);
 // Native Draw returnsTRUE even when Link's own geometry is hidden; separate model must follow visibility.
@@ -85,9 +90,9 @@ for(unsigned i=0;i<12;++i)st32(DM+0xC8+i*4,f32_as_u32(float(100+i)));
 I::tick(&c);assert(orders==1&&(ld16(DI+0xFA)&8));
 st16(DI+0xF8,4);I::tick(&c);assert(ld32(P+0x52A0)==0x4242&&ld32(S+980)==2);
 // the demo item's draw: the held model in its place, never the stand-in's card; Link's hand shows nothing
-unsigned d0=draws;c={};c.r[3]=DI;I::hooks::demo_item_draw(&c);assert(c.r[3]==1&&draws==d0+1&&std::memcmp(mem::ptr(M+0xC8),mem::ptr(DM+0xC8),0x30)==0);
+unsigned d0=draws;c={};c.r[3]=DI;assert(I::draw_demo_item(&c));assert(c.r[3]==1&&draws==d0+1&&std::memcmp(mem::ptr(M+0xC8),mem::ptr(DM+0xC8),0x30)==0);
 c.r[3]=A;I::hooks::draw(&c);assert(draws==d0+1);
-st8(DI+0x74E,0x01);c.r[3]=DI;I::hooks::demo_item_draw(&c);assert(c.r[3]==77&&draws==d0+1);st8(DI+0x74E,0x9D);  // another demo item: the game's
+st8(DI+0x74E,0x01);c.r[3]=DI;assert(!I::draw_demo_item(&c));assert(c.r[3]==DI&&draws==d0+1);st8(DI+0x74E,0x9D);  // another demo item: not ours, untouched
 // a full state taken now brings the demo back with its text
 uint8_t during[I::kMemoryBytes];std::memcpy(during,mem::ptr(S),sizeof during);armed.clear();
 I::state_loaded();std::memcpy(mem::ptr(S),during,sizeof during);I::tick(&c);assert(armed.size()==1&&armed[0].second);

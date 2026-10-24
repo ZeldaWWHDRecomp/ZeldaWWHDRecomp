@@ -67,6 +67,7 @@ bool resolve(Cpu* c, Call call, uint32_t scratch, const Entry& e, const std::str
     out.process = r.process;
     out.subtype = r.subtype;
     out.params = v->params;
+    out.own_heap = e.own_heap;
     return true;
 }
 

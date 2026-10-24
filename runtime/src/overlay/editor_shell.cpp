@@ -10,6 +10,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../editor/demo_tracks.h"
@@ -25,6 +26,7 @@
 #include "editor_resident.h"
 #include "../mods/guest_mods.h"
 #include "../mods/story_enemy_variants.h"
+#include "../mods/story_world_calm.h"
 #include "extensions.h"
 #include "hostui.h"
 #include "imgui.h"
@@ -46,6 +48,7 @@ struct ShellState {
     bool outliner = true, inspector = true, problems = false, test = false, log = false;
     bool story_tab = false;  // show the Outliner's Story tab once
     bool stages_tab = false;  // show the Outliner's Stages tab once
+    bool models_tab = false;  // show the Outliner's Models tab once (test aid)
     bool focus_inspector = false, focus_problems = false;
     bool quests = false, flags = false, search = false, focus_quests = false;  // the quest editor's windows
     bool quests_focused = false;  // Ctrl+C / Ctrl+V are the quest editor's there
@@ -785,6 +788,9 @@ bool stages_overlay(ImDrawList* dl, const View& v, const Value& m, const std::st
         std::string stage, field;  // set_stage_field's
         float p[3];
         Value box;  // an exit's: its box, moved with it
+        bool size = false;  // a lava floor's size: the corner handle; letting go sets {x, z} (its centre and turn)
+        float centre[3] = {0, 0, 0};
+        double angle = 0;
     };
     std::vector<Handle> handles;
     auto handle = [&](const std::string& st, const std::string& field, const float p[3], const Value& box = Value()) {
@@ -835,6 +841,31 @@ bool stages_overlay(ImDrawList* dl, const View& v, const Value& m, const std::st
             for (const auto& a : r.get("actors").array) {
                 float p[3];
                 if (!point3(a.get("position"), p)) continue;
+                const std::string af = rf + "actors/" + std::to_string(&a - r.get("actors").array.data());
+                if (a.get("actor").string() == "lava") {  // the lava floor's area, turned by its angle, and its size handle
+                    const double an = num(a, "angle") * kPi / 180, ca = std::cos(an), sa = std::sin(an);
+                    const float hx = float(num(a.get("size"), "x")) / 2, hz = float(num(a.get("size"), "z")) / 2;
+                    auto corner = [&](float lx, float lz, float out[3]) {
+                        out[0] = p[0] + float(lx * ca + lz * sa), out[1] = p[1], out[2] = p[2] + float(-lx * sa + lz * ca);
+                    };
+                    float c[4][3];
+                    corner(-hx, -hz, c[0]), corner(hx, -hz, c[1]), corner(hx, hz, c[2]), corner(-hx, hz, c[3]);
+                    for (int k = 0; k < 4; ++k) line3(dl, v, c[k], c[(k + 1) % 4], IM_COL32(255, 120, 40, 230), 2.5f);
+                    label3(dl, v, p, IM_COL32(255, 160, 90, 230), a.get("id").string() + " (lava " + std::to_string(int(2 * hx)) + " x " + std::to_string(int(2 * hz)) + ")");
+                    handle(sid, af + "/position", p);
+                    Handle sz{sid, af + "/size", {c[2][0], c[2][1], c[2][2]}, Value()};
+                    sz.size = true, sz.angle = an;
+                    std::memcpy(sz.centre, p, sizeof sz.centre);
+                    handles.push_back(sz);
+                    continue;
+                }
+                if (a.get("actor").string() == "heat_shimmer") {
+                    const float lo[3] = {p[0] - 40, p[1], p[2] - 40}, hi[3] = {p[0] + 40, p[1] + 80, p[2] + 40};
+                    box3(dl, v, lo, hi, IM_COL32(255, 200, 120, 200), 1.5f);
+                    label3(dl, v, hi, IM_COL32(255, 210, 150, 230), a.get("id").string() + " (heat shimmer)");
+                    handle(sid, af + "/position", p);
+                    continue;
+                }
                 const bool chest = a.get("actor").string() == "chest";
                 const float lo[3] = {p[0] - 50, p[1], p[2] - 40}, hi[3] = {p[0] + 50, p[1] + 70, p[2] + 40};
                 box3(dl, v, lo, hi, chest ? IM_COL32(255, 210, 80, 230) : IM_COL32(230, 230, 230, 200), 1.5f);
@@ -907,7 +938,14 @@ bool stages_overlay(ImDrawList* dl, const View& v, const Value& m, const std::st
         Value prm;
         prm["stage"] = chosen->stage;
         prm["field"] = chosen->field;
-        if (chosen->box.type == Value::Object) {  // an exit: its box moves by the handle's way
+        if (chosen->size) {  // a lava floor's corner: its size from the centre, in the floor's own turn
+            const double dx = S.stage_drag[12] - chosen->centre[0], dz = S.stage_drag[14] - chosen->centre[2];
+            const double lx = dx * std::cos(chosen->angle) - dz * std::sin(chosen->angle), lz = dx * std::sin(chosen->angle) + dz * std::cos(chosen->angle);
+            auto side = [](double h) { return std::clamp(std::round(2 * std::fabs(h) / 10) * 10, 100.0, 25500.0); };
+            prm["value"]["x"] = side(lx);
+            prm["value"]["z"] = side(lz);
+            editor_ui::command("set_stage_field", prm);
+        } else if (chosen->box.type == Value::Object) {  // an exit: its box moves by the handle's way
             const float d[3] = {S.stage_drag[12] - chosen->p[0], S.stage_drag[13] - chosen->p[1], S.stage_drag[14] - chosen->p[2]};
             float lo[3], hi[3];
             if (point3(chosen->box.get("min"), lo) && point3(chosen->box.get("max"), hi)) {
@@ -1002,6 +1040,43 @@ bool paths_overlay(ImDrawList* dl, const View& v, const Value& m, const std::str
 // arrows along the flow), a waterfall's edge and sheet. Red where the check found an error. The selected point
 // has the move handle; letting go of a handle checks the draft again. True while the draft shows (the selected
 // actor's handle waits).
+// The open mod's calm-water zones on this stage (docs/world-objects.md "Calm water"), drawn as the water tool draws
+// a pond: at the sea's still level, the still water filled in and outlined, a thinner ring where the waves are back
+// in full. The selected object's zone is the bright one.
+void calm_overlay(ImDrawList* dl, const View& v, const Value& manifest, const std::string& stage, const std::string& selected) {
+    constexpr int kSeg = 64;
+    constexpr float kLevel = 1;  // the sea's still level (the sea actor's height + 1)
+    for (const auto& a : manifest.get("actors").array) {
+        const Value& cw = a.get("calm_water");
+        float p[3];
+        if (cw.type != Value::Object || a.get("stage").string() != stage || !position_of(a, p)) continue;
+        story_world_calm::Settings s;
+        s.radius = num(cw, "radius", 0), s.falloff = num(cw, "falloff", story_world_calm::kGameFalloff);
+        s.offset_x = num(cw.get("offset"), "x", 0), s.offset_z = num(cw.get("offset"), "z", 0);
+        if (!(s.radius > 0)) continue;
+        const auto zone = story_world_calm::zone_of(s, p[0], p[2], num(a.get("rotation"), "y", 0));
+        const bool sel = a.get("id").string() == selected;
+        const ImU32 line = sel ? IM_COL32(90, 200, 255, 240) : IM_COL32(90, 200, 255, 130), fill = sel ? IM_COL32(70, 160, 255, 70) : IM_COL32(70, 160, 255, 30),
+                    ring = sel ? IM_COL32(90, 200, 255, 160) : IM_COL32(90, 200, 255, 70);
+        const float centre[3] = {zone.x, kLevel, zone.z};
+        ImVec2 c2;
+        const bool centre_seen = project(v, centre, c2);
+        for (int i = 0; i < kSeg; i++) {
+            const double t0 = 2 * kPi * i / kSeg, t1 = 2 * kPi * (i + 1) / kSeg;
+            const float a0[3] = {zone.x + float(std::sin(t0)) * zone.radius, kLevel, zone.z + float(std::cos(t0)) * zone.radius};
+            const float a1[3] = {zone.x + float(std::sin(t1)) * zone.radius, kLevel, zone.z + float(std::cos(t1)) * zone.radius};
+            const float r = zone.radius + zone.falloff;
+            const float b0[3] = {zone.x + float(std::sin(t0)) * r, kLevel, zone.z + float(std::cos(t0)) * r};
+            const float b1[3] = {zone.x + float(std::sin(t1)) * r, kLevel, zone.z + float(std::cos(t1)) * r};
+            ImVec2 p0, p1;
+            if (project(v, a0, p0) && project(v, a1, p1)) {
+                if (centre_seen) dl->AddTriangleFilled(c2, p0, p1, fill);
+                dl->AddLine(p0, p1, line, 3);
+            }
+            if (i % 2 == 0) line3(dl, v, b0, b1, ring, 1.5f);  // dashed: the waves are back in full here
+        }
+    }
+}
 bool water_overlay(ImDrawList* dl, const View& v, bool& handle_busy) {
     handle_busy = false;
     auto& d = editor_ui::water_draft();
@@ -1339,6 +1414,8 @@ void world(float w, float h) {
     bool stage_handle_busy = false;
     if (stages_overlay(dl, v, snap.manifest, stage, int(num(snap.state.get("link"), "room", -1)), stage_handle_busy) && !point_handle)
         point_handle = true, point_handle_busy = point_handle_busy || stage_handle_busy;
+    // the open mod's calm-water zones
+    calm_overlay(dl, v, snap.manifest, stage, selected);
     // the selected actor: its cylinder and handles
     float model[16] = {};
     bool gizmo = false;
@@ -1738,6 +1815,13 @@ void status_bar(float w, float h) {
 
 void panels(float w, float h) {
     const editor_ui::Snapshot& snap = editor_ui::snapshot();
+    // test aid: WWHD_TEST_EDITOR_STORY=<kind>:<id> shows that letter, chart or item in the Story tab (screenshots)
+    static const bool story_test = [] {
+        if (const char* e = std::getenv("WWHD_TEST_EDITOR_STORY"); e && std::strchr(e, ':'))
+            editor_ui::show_story(std::string(e, std::strchr(e, ':')), std::strchr(e, ':') + 1);
+        return true;
+    }();
+    (void)story_test;
     if (S.outliner) {
         ImGui::SetNextWindowPos(ImVec2(8, 110), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(300, h * 0.62f), ImGuiCond_FirstUseEver);
@@ -1749,7 +1833,7 @@ void panels(float w, float h) {
                     editor_ui::actor_list(snap.manifest);
                     ImGui::EndTabItem();
                 }
-                if (ImGui::BeginTabItem("Models")) {
+                if (ImGui::BeginTabItem("Models", nullptr, std::exchange(S.models_tab, false) ? ImGuiTabItemFlags_SetSelected : 0)) {
                     editor_ui::models_area(snap.manifest);
                     ImGui::EndTabItem();
                 }
@@ -2074,6 +2158,7 @@ void register_layers() {
         S.reset_layout = w.find("resetlayout") != std::string::npos;  // as Reset layout at the first frame
         if (w.find("nooutliner") != std::string::npos) S.outliner = false;
         S.stages_tab = w.find("stages") != std::string::npos;  // the Outliner's Stages tab
+        S.models_tab = w.find("models") != std::string::npos;  // the Outliner's Models tab
         if (w.find("noinspector") != std::string::npos) S.inspector = false;
     }
     if (const char* e = std::getenv("WWHD_TEST_EDITOR_PLACING")) S.placing = e;
@@ -2111,3 +2196,11 @@ void show_story() {
 }
 
 }  // namespace editor_shell
+
+namespace editor_ui {
+// the stage item whose handle shows in the picture (editor_panel.h)
+bool stage_item(std::string& stage, std::string& field) {
+    stage = editor_shell::S.stage_item_stage, field = editor_shell::S.stage_item_field;
+    return !field.empty();
+}
+}  // namespace editor_ui

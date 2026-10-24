@@ -2,6 +2,8 @@
 #pragma once
 #include <cstdint>
 
+namespace ss { struct Writer; struct Reader; }
+
 namespace aspect {
 enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, kModes };
 int mode();
@@ -24,5 +26,8 @@ bool tagged_projection();                          // gx2: the vertex uniform up
 void layout_root_target(uint32_t root, bool tv);   // render thread (OP_LAYOUT_ROOT)
 void set_content_clip(bool clip);
 bool content_clip();
+void ss_save_particles(ss::Writer&);
+bool ss_validate_particles(ss::Reader);
+void ss_load_particles(ss::Reader);
 void ss_reset();  // save state loaded: every layout recomputes its matrices once
 }  // namespace aspect

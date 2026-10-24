@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <limits>
 #include <map>
+#include <optional>
 namespace story_world_placement { namespace {
 bool finite(Point p){return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z);}
 Point transformed(Point p,Point t,Point r,Point s){
@@ -42,26 +43,60 @@ bool starts(const std::string&v,std::initializer_list<const char*> prefixes){for
 // a walking route of the room's layout: RPAT (the room's) and PATH (the stage's) carry villagers and animals
 constexpr float kSeaLevel=20;
 bool sea_route(const ProtectedRoute&r){for(const auto&p:r.points)if(p.y>kSeaLevel)return false;return !r.points.empty();}
-const char* route_words(const std::string&id){return id.rfind("PATH",0)==0||id.rfind("RPAT",0)==0?"villager route":"route";}
+// an object's own triangles against what is kept clear (issue #281; defined below with the solids)
+// The object's triangles by where they are (a grid over X/Z, at most 64 x 64 cells): a query visits only the triangles
+// whose bounds meet its own, each once, so a model of a few thousand triangles stays cheap against a room's layout.
+struct Near {
+ const Solid&s;std::vector<Bounds> tb;float x0=0,z0=0,cell=1;int nx=1,nz=1;std::vector<std::vector<uint32_t>> cells;mutable std::vector<uint32_t> seen;mutable uint32_t tick=0;
+ explicit Near(const Solid&solid):s(solid){
+  tb.reserve(s.triangles.size());for(const auto&t:s.triangles){Bounds b{s.vertices[t[0]],s.vertices[t[0]]};for(unsigned k=1;k<3;++k){const Point p=s.vertices[t[k]];b.minimum={std::min(b.minimum.x,p.x),std::min(b.minimum.y,p.y),std::min(b.minimum.z,p.z)};b.maximum={std::max(b.maximum.x,p.x),std::max(b.maximum.y,p.y),std::max(b.maximum.z,p.z)};}tb.push_back(b);}
+  x0=s.bounds.minimum.x;z0=s.bounds.minimum.z;const double w=double(s.bounds.maximum.x)-x0,d=double(s.bounds.maximum.z)-z0;
+  cell=float(std::max({w/64,d/64,100.0}));if(!std::isfinite(cell))cell=1e9f;nx=std::clamp(int(w/cell)+1,1,64);nz=std::clamp(int(d/cell)+1,1,64);
+  cells.resize(size_t(nx)*nz);seen.assign(tb.size(),0);
+  for(uint32_t j=0;j<tb.size();++j){int a,b,c,e;range(tb[j],a,b,c,e);for(int z=c;z<=e;++z)for(int x=a;x<=b;++x)cells[size_t(z)*nx+x].push_back(j);}
+ }
+ void range(const Bounds&q,int&a,int&b,int&c,int&e)const{auto ix=[&](double v,int n,double o){return std::clamp(int(std::floor((v-o)/cell)),0,n-1);};a=ix(q.minimum.x,nx,x0);b=ix(q.maximum.x,nx,x0);c=ix(q.minimum.z,nz,z0);e=ix(q.maximum.z,nz,z0);}
+ // f(triangle index) for each triangle whose bounds meet q; true from f stops the visit (and is returned)
+ template<class F> bool visit(const Bounds&q,F&&f)const{
+  if(q.minimum.x>s.bounds.maximum.x||q.maximum.x<s.bounds.minimum.x||q.minimum.y>s.bounds.maximum.y||q.maximum.y<s.bounds.minimum.y||q.minimum.z>s.bounds.maximum.z||q.maximum.z<s.bounds.minimum.z)return false;
+  if(++tick==0){std::fill(seen.begin(),seen.end(),0);tick=1;}
+  int a,b,c,e;range(q,a,b,c,e);
+  for(int z=c;z<=e;++z)for(int x=a;x<=b;++x)for(uint32_t j:cells[size_t(z)*nx+x]){if(seen[j]==tick)continue;seen[j]=tick;const Bounds&t=tb[j];
+   if(t.minimum.x>q.maximum.x||t.maximum.x<q.minimum.x||t.minimum.y>q.maximum.y||t.maximum.y<q.minimum.y||t.minimum.z>q.maximum.z||t.maximum.z<q.minimum.z)continue;
+   if(f(j))return true;}
+  return false;
+ }
+};
+bool solid_touches_box(const Near&,const Bounds&);
+bool solid_in_column(const Near&,Point centre,double reach,double low,double high);
+bool solid_near_segment(const Near&,Point a,Point b,double reach);
+unsigned solid_crossings(const Near&,const std::vector<const ProtectedBounds*>&,std::string&first);
+std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid);
+const char* route_words(const ProtectedRoute&r){if(r.user=="boat")return "boat route";return r.id.rfind("PATH",0)==0||r.id.rfind("RPAT",0)==0?"villager route":"route";}
 bool chunks(const Bytes&b,std::vector<Chunk>&out){if(!range(b,0,4))return false;uint32_t n=u32(b,0);if(!n||n>256||!range(b,4,uint64_t(n)*12))return false;for(unsigned j=0;j<n;++j){size_t p=4+j*12;std::string tag(reinterpret_cast<const char*>(b.data()+p),4);for(unsigned char c:tag)if(!std::isalnum(c))return false;uint32_t at=u32(b,p+8);if(at<4+n*12||at>b.size())return false;out.push_back({tag,u32(b,p+4),at});}return true;}
 }
 bool valid(const Bounds&b){return finite(b.minimum)&&finite(b.maximum)&&b.minimum.x<=b.maximum.x&&b.minimum.y<=b.maximum.y&&b.minimum.z<=b.maximum.z;}
 bool transform_bounds(const Bounds&b,Point t,Point r,Point s,Bounds&out){if(!valid(b)||!finite(t)||!finite(r)||!finite(s)||s.x==0||s.y==0||s.z==0)return false;Bounds result=empty();for(unsigned k=0;k<8;++k)include(result,transformed({k&1?b.maximum.x:b.minimum.x,k&2?b.maximum.y:b.minimum.y,k&4?b.maximum.z:b.minimum.z},t,r,s));if(!valid(result))return false;out=result;return true;}
-std::vector<Conflict> check(const std::string&s,int room,const Bounds&b,const Index&i,float pad){
+std::vector<Conflict> check(const std::string&s,int room,const Bounds&b,const Index&i,float pad,const Solid* own){
+ std::optional<Near> grid;if(own)grid.emplace(*own);const Near* solid=grid?&*grid:nullptr;
  std::vector<Conflict> out;if(s.empty()||room<0||room>63||!valid(b)||!std::isfinite(pad)||pad<0){out.push_back({"invalid","","Invalid world bounds or clearance"});return out;}
  const Coverage*c=nullptr;for(const auto&v:i.coverage)if(v.stage==s&&v.room==room){c=&v;break;}
  if(!c||!c->collision||!c->routes||!c->events)out.push_back({"coverage","",c&&!c->reason.empty()?c->reason:"Native collision, route or event coverage is unavailable for this room"});
  for(const auto&v:i.regions)if(v.stage==s&&v.room==room){if(!valid(v.bounds)||b.minimum.x<v.bounds.minimum.x||b.minimum.y<v.bounds.minimum.y||b.minimum.z<v.bounds.minimum.z||b.maximum.x>v.bounds.maximum.x||b.maximum.y>v.bounds.maximum.y||b.maximum.z>v.bounds.maximum.z)out.push_back({"coverage","room-boundary","Placement extends beyond the indexed room; neighbouring room coverage is required"});}
  // the room's walls and ground: one finding for all the triangles it goes into (resting on a floor is fine)
- unsigned walls=0;std::string first_wall;
+ unsigned walls=0;std::string first_wall;std::vector<const ProtectedBounds*> near_walls;
  for(const auto&v:i.bounds)if(v.stage==s&&(v.room<0||v.room==room)){if(!valid(v.bounds)){out.push_back({"coverage",v.id,"Protected bounds are invalid"});continue;}
   if(v.kind=="collision"&&v.bounds.maximum.y<=b.minimum.y+.01f)continue;
   if(!overlap(b,v.bounds,pad))continue;
+  // with the object's own triangles: the room's triangles near it, checked together below
+  if(v.kind=="collision"&&solid&&v.triangle){near_walls.push_back(&v);continue;}
   if(v.kind=="collision"){if(!walls++)first_wall=v.id;continue;}
+  if(solid){Bounds reach=v.bounds;reach.minimum={reach.minimum.x-pad,reach.minimum.y-pad,reach.minimum.z-pad};reach.maximum={reach.maximum.x+pad,reach.maximum.y+pad,reach.maximum.z+pad};if(!solid_touches_box(*solid,reach))continue;}
   out.push_back({v.kind,v.id,v.kind=="world_object"?"another mod's world object":v.kind=="ship"?"the King of Red Lions":"protected "+v.kind+" bounds",v.kind=="world_object"?v.id:""});}
  // what the room's layout needs: villagers and their routes, chests, doors, items, switches, cutscene areas, start
  // points; then the walls and ground (the layout's reasons say more to a mod maker, so they come first)
- const auto layout=check_building(s,room,b,i,pad);out.insert(out.end(),layout.begin(),layout.end());
+ const auto layout=building_conflicts(s,room,b,i,pad,solid);out.insert(out.end(),layout.begin(),layout.end());
+ if(!near_walls.empty()){std::string first;if(const unsigned n=solid_crossings(*solid,near_walls,first)){if(!walls)first_wall=first;walls+=n;}}
  if(walls)out.push_back({"collision",first_wall,"the island's walls or ground ("+std::to_string(walls)+(walls==1?" triangle)":" triangles)"),""});
  return out;
 }
@@ -117,7 +152,7 @@ SweepResult sweep(const std::string&s,int room,const Bounds&start,Point desired,
    const Point a=v.points[k],e=v.points[(k+1)%v.points.size()];const double reach=double(pad)+v.radius;
    // a route far above or below the body (a cliff path over a raft) is not in its way, as in check()
    if(std::min(a.y,e.y)>current.maximum.y+reach||std::max(a.y,e.y)<current.minimum.y-reach)continue;
-   const char*words=route_words(v.id);
+   const char*words=route_words(v);
    consider(projected_hit(current,remaining,a,e,reach,true,{words,v.id,std::string("Drift reached ")+article(words)+" of the island",v.id}));
   }
   // the layout's own places (story_world_placement.h building_extent), as squares around their columns
@@ -167,7 +202,7 @@ bool add_native_collision(Index&i,const std::string&s,int room,const Bytes&b,std
  // "umi"/"mizuba" under Water_00) are not ground or walls: a floating object or a pier may reach into them
  std::vector<bool> liquid;
  if(range(b,0x20,8)){const uint32_t ng=u32(b,0x20),gp=u32(b,0x24);if(ng&&ng<=65535&&range(b,gp,uint64_t(ng)*0x34)){liquid.resize(ng);for(uint32_t g=0;g<ng;++g)liquid[g]=(u32(b,gp+g*0x34+0x30)&0x300)!=0;}}
- std::vector<ProtectedBounds> added;added.reserve(nt);for(uint32_t j=0;j<nt;++j){const uint16_t group=u16(b,tp+j*10+8);if(group<liquid.size()&&liquid[group])continue;Bounds box=empty();for(unsigned k=0;k<3;++k){uint16_t index=u16(b,tp+j*10+k*2);if(index>=nv)return fail(w,"Invalid native triangle vertex");include(box,vertices[index]);}added.push_back({s,room,"collision","native-triangle-"+std::to_string(j),box});}
+ std::vector<ProtectedBounds> added;added.reserve(nt);for(uint32_t j=0;j<nt;++j){const uint16_t group=u16(b,tp+j*10+8);if(group<liquid.size()&&liquid[group])continue;Bounds box=empty();std::array<Point,3> corners;for(unsigned k=0;k<3;++k){uint16_t index=u16(b,tp+j*10+k*2);if(index>=nv)return fail(w,"Invalid native triangle vertex");include(box,vertices[index]);corners[k]=vertices[index];}added.push_back({s,room,"collision","native-triangle-"+std::to_string(j),box,true,corners});}
  i.bounds.insert(i.bounds.end(),added.begin(),added.end());coverage(i,s,room).collision=true;return true;
 }
 bool add_native_layout(Index&i,const std::string&s,int room,const Bytes&b,std::string*w){
@@ -177,11 +212,16 @@ bool add_native_layout(Index&i,const std::string&s,int room,const Bytes&b,std::s
   if(const unsigned stride=table_stride(c.tag)){
    if(c.count>65535||!range(b,c.offset,uint64_t(c.count)*stride))return fail(w,"Invalid native actor table");
    for(uint32_t j=0;j<c.count;++j){const size_t at=c.offset+j*stride;LayoutEntry e{s,room,c.tag,std::string(reinterpret_cast<const char*>(b.data()+at),strnlen(reinterpret_cast<const char*>(b.data()+at),8)),point(b,at+12),{},stride==36,j};
-    e.params=u32(b,at+8);if(!finite(e.position))return fail(w,"Invalid native layout position");if(e.scaled)for(unsigned k=0;k<3;++k)e.scale[k]=b[at+32+k];layout.push_back(std::move(e));}}
+    e.params=u32(b,at+8);e.angle_x=int16_t(u16(b,at+24));if(!finite(e.position))return fail(w,"Invalid native layout position");if(e.scaled)for(unsigned k=0;k<3;++k)e.scale[k]=b[at+32+k];layout.push_back(std::move(e));}}
   if(c.tag=="RPAT"||c.tag=="PATH"){
    if(c.count>65535||!range(b,c.offset,uint64_t(c.count)*12))return fail(w,"Invalid native path table");for(uint32_t j=0;j<c.count;++j){size_t at=c.offset+j*12;uint16_t count=u16(b,at);uint32_t point_offset=u32(b,at+8),points=0;bool in_points=false;for(const auto& pc:cs)if(((c.tag=="RPAT"&&pc.tag=="RPPN")||(c.tag=="PATH"&&pc.tag=="PPNT"))&&range(b,pc.offset,uint64_t(pc.count)*16)&&point_offset%16==0&&uint64_t(point_offset)+uint64_t(count)*16<=uint64_t(pc.count)*16){points=pc.offset+point_offset;in_points=true;}if(count>4096||!range(b,points,uint64_t(count)*16)||(count&&!in_points))return fail(w,"Invalid native path points");ProtectedRoute route{s,room,c.tag+":"+std::to_string(j),{},kRouteHalfWidth,b[at+5]!=0};for(unsigned k=0;k<count;++k){auto p=point(b,points+k*16+4);if(!finite(p))return fail(w,"Invalid native path coordinate");route.points.push_back(p);}if(!route.points.empty())routes.push_back(std::move(route));}
   }
  }
+ // a boat of the room's layout (d_a_obj_ikada getArg: type params & 15; type 4 names its path in params >> 16, the
+ // others in the high byte of the home angle's x) sails its route: said as a boat route, not a villager's
+ for(const auto&e:layout){if(lower(e.name).rfind("ikada",0)!=0||e.tag=="PLYR")continue;
+  const unsigned path=(e.params&15)==4?unsigned(e.params>>16):unsigned(uint16_t(e.angle_x)>>8);
+  for(auto&r:routes)if(r.id=="RPAT:"+std::to_string(path))r.user="boat";}
  i.layout.insert(i.layout.end(),layout.begin(),layout.end());i.routes.insert(i.routes.end(),routes.begin(),routes.end());auto&c=coverage(i,s,room);c.routes=true;c.events=true;return true;
 }
 namespace {
@@ -264,7 +304,11 @@ Extent building_extent(const LayoutEntry&e){
  return {Keep::Object,120,50,400};
 }
 const char* keep_words(Keep k){switch(k){case Keep::Villager:return "villager";case Keep::Chest:return "chest";case Keep::Door:return "door";case Keep::Item:return "item";case Keep::Switch:return "switch";case Keep::Event:return "cutscene area";case Keep::Object:return "object";case Keep::Start:return "start point";default:return "";}}
-std::vector<Conflict> check_building(const std::string&s,int room,const Bounds&b,const Index&i,float margin){
+std::vector<Conflict> check_building(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Solid* own){
+ std::optional<Near> grid;if(own)grid.emplace(*own);return building_conflicts(s,room,b,i,margin,grid?&*grid:nullptr);
+}
+namespace {
+std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid){
  std::vector<Conflict> out;if(!valid(b)||!std::isfinite(margin)||margin<0){out.push_back({"invalid","","Invalid building bounds"});return out;}
  for(const auto&e:i.layout){if(e.stage!=s||(e.room>=0&&e.room!=room))continue;const Extent x=building_extent(e);if(x.keep==Keep::None)continue;
   const Bounds area{{e.position.x-x.radius,e.position.y-x.below,e.position.z-x.radius},{e.position.x+x.radius,e.position.y+x.above,e.position.z+x.radius}};
@@ -273,6 +317,9 @@ std::vector<Conflict> check_building(const std::string&s,int room,const Bounds&b
   const float cx=std::clamp(e.position.x,b.minimum.x,b.maximum.x),cz=std::clamp(e.position.z,b.minimum.z,b.maximum.z);
   const double distance=std::hypot(double(cx)-e.position.x,double(cz)-e.position.z),reach=double(x.radius)+margin;
   if(distance>reach)continue;
+  // with the object's own triangles: only when one of them comes into the column's reach (an L-shaped object's box
+  // may cover a villager standing in its open corner)
+  if(solid&&!solid_in_column(*solid,e.position,reach,double(e.position.y)-x.below-margin,double(e.position.y)+x.above+margin))continue;
   // how far to move: out of its reach, or (its centre under the bounds) past the nearest side and then its reach
   const double inside=std::min({double(e.position.x)-b.minimum.x,double(b.maximum.x)-e.position.x,double(e.position.z)-b.minimum.z,double(b.maximum.z)-e.position.z});
   const float move=float(std::ceil(distance>0?reach-distance+1:inside+reach+1));
@@ -283,13 +330,18 @@ std::vector<Conflict> check_building(const std::string&s,int room,const Bounds&b
   // a route all at or below sea level (boats, swimmers, seagulls' base line) is the sea's: only what reaches down
   // to the water is in its way, not a building on the island
   if(sea_route(r)&&b.minimum.y>kSeaLevel)continue;
-  const char* words=route_words(r.id);bool hit=false;
-  for(size_t j=0;j<r.points.size()&&!hit;++j){if(j+1<r.points.size())hit=segment_box(r.points[j],r.points[j+1],b,margin+r.radius);else if(r.closed||r.points.size()==1)hit=segment_box(r.points[j],r.points[0],b,margin+r.radius);}
+  const char* words=route_words(r);bool hit=false;
+  // with the object's own triangles: a segment in reach of the bounds is in its way when it is in reach of a triangle
+  for(size_t j=0;j<r.points.size()&&!hit;++j){
+   if(j+1==r.points.size()&&!r.closed&&r.points.size()!=1)break;
+   const Point a=r.points[j],e=j+1<r.points.size()?r.points[j+1]:r.points[0];
+   hit=segment_box(a,e,b,margin+r.radius)&&(!solid||solid_near_segment(*solid,a,e,double(margin)+r.radius));}
   // where it is: the route's point nearest the bounds (the one to keep clear of, not where the route starts)
   Point near=r.points.front();double best=1e300;const Point mid{(b.minimum.x+b.maximum.x)/2,(b.minimum.y+b.maximum.y)/2,(b.minimum.z+b.maximum.z)/2};
   for(auto p:r.points){const double dx=double(p.x)-mid.x,dz=double(p.z)-mid.z,d=dx*dx+dz*dz;if(d<best)best=d,near=p;}
   if(hit)out.push_back({words,r.id,article(words)+" of the island",r.id,0,near,r.radius,r.points});}
  return out;
+}
 }
 // ---- solids against each other
 namespace {
@@ -359,5 +411,89 @@ bool ground_under(const Solid&s,Point above,float&height){
   const double y=a.y+s1*uy+s2*vy;if(y>double(above.y)+1e-3)continue;
   if(!found||y>height)height=float(y),found=true;}
  return found;
+}
+// ---- an object's own triangles against what is kept clear (issue #281): check() and check_building() with a solid
+namespace {
+double axis_of(Point p,int k){return k==0?p.x:k==1?p.y:p.z;}
+// the part of a convex polygon on one side of the plane `axis` = h (Sutherland-Hodgman)
+Poly clip_axis(const Poly&in,int k,double h,bool above){
+ Poly out;const size_t n=in.size();
+ for(size_t j=0;j<n;++j){const Point&a=in[j],&b=in[(j+1)%n];const double va=axis_of(a,k),vb=axis_of(b,k);const bool ia=above?va>=h:va<=h,ib=above?vb>=h:vb<=h;
+  if(ia)out.push_back(a);
+  if(ia!=ib){const double f=(h-va)/(vb-va);Point c{float(a.x+(b.x-a.x)*f),float(a.y+(b.y-a.y)*f),float(a.z+(b.z-a.z)*f)};if(k==0)c.x=float(h);else if(k==1)c.y=float(h);else c.z=float(h);out.push_back(c);}}
+ return out;
+}
+Poly triangle_of(const Solid&s,const std::array<uint16_t,3>&t){return {s.vertices[t[0]],s.vertices[t[1]],s.vertices[t[2]]};}
+Bounds bounds_of(const Poly&p){Bounds b=empty();for(auto q:p)include(b,q);return b;}
+struct V {double x,y,z;};
+V vec(Point p){return {p.x,p.y,p.z};}
+V sub(V a,V b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
+V add_scaled(V a,V d,double t){return {a.x+d.x*t,a.y+d.y*t,a.z+d.z*t};}
+double dot(V a,V b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+double length2(V a){return dot(a,a);}
+// the squared distance of a point to a triangle (Ericson, Real-Time Collision Detection 5.1.5)
+double point_triangle2(V p,V a,V b,V c){
+ const V ab=sub(b,a),ac=sub(c,a),ap=sub(p,a);const double d1=dot(ab,ap),d2=dot(ac,ap);if(d1<=0&&d2<=0)return length2(ap);
+ const V bp=sub(p,b);const double d3=dot(ab,bp),d4=dot(ac,bp);if(d3>=0&&d4<=d3)return length2(bp);
+ const double vc=d1*d4-d3*d2;if(vc<=0&&d1>=0&&d3<=0)return length2(sub(p,add_scaled(a,ab,d1/(d1-d3))));
+ const V cp=sub(p,c);const double d5=dot(ab,cp),d6=dot(ac,cp);if(d6>=0&&d5<=d6)return length2(cp);
+ const double vb=d5*d2-d1*d6;if(vb<=0&&d2>=0&&d6<=0)return length2(sub(p,add_scaled(a,ac,d2/(d2-d6))));
+ const double va=d3*d6-d5*d4;if(va<=0&&(d4-d3)>=0&&(d5-d6)>=0)return length2(sub(p,add_scaled(b,sub(c,b),(d4-d3)/((d4-d3)+(d5-d6)))));
+ const double denom=1/(va+vb+vc);return length2(sub(p,add_scaled(add_scaled(a,ab,vb*denom),ac,vc*denom)));
+}
+// the squared distance between two segments (Ericson 5.1.9)
+double segment_segment2(V p1,V q1,V p2,V q2){
+ const V d1=sub(q1,p1),d2=sub(q2,p2),r=sub(p1,p2);const double a=length2(d1),e=length2(d2),f=dot(d2,r);double s=0,t=0;
+ if(a<=1e-12&&e<=1e-12)return length2(r);
+ if(a<=1e-12)t=std::clamp(f/e,0.0,1.0);
+ else{const double c=dot(d1,r);if(e<=1e-12)s=std::clamp(-c/a,0.0,1.0);
+  else{const double b=dot(d1,d2),den=a*e-b*b;s=den>1e-12?std::clamp((b*f-c*e)/den,0.0,1.0):0;t=(b*s+f)/e;if(t<0){t=0;s=std::clamp(-c/a,0.0,1.0);}else if(t>1){t=1;s=std::clamp((b-c)/a,0.0,1.0);}}}
+ return length2(sub(add_scaled(p1,d1,s),add_scaled(p2,d2,t)));
+}
+// the distance in X/Z of a point to a polygon's outline, 0 inside it
+double outline_distance(const Poly&p,double x,double z){
+ bool inside=false;double best=1e300;const size_t n=p.size();
+ for(size_t j=0,k=n-1;j<n;k=j++){const double xj=p[j].x,zj=p[j].z,xk=p[k].x,zk=p[k].z;
+  if((zj>z)!=(zk>z)&&x<(xk-xj)*(z-zj)/(zk-zj)+xj)inside=!inside;
+  const double ex=xk-xj,ez=zk-zj,l=ex*ex+ez*ez,t=l>0?std::clamp(((x-xj)*ex+(z-zj)*ez)/l,0.0,1.0):0;
+  best=std::min(best,std::hypot(xj+ex*t-x,zj+ez*t-z));}
+ return inside&&n>=3?0:best;
+}
+}
+namespace {
+bool solid_touches_box(const Near&n,const Bounds&box){
+ return n.visit(box,[&](uint32_t j){Poly p=triangle_of(n.s,n.s.triangles[j]);
+  for(int k=0;k<3&&!p.empty();++k){p=clip_axis(p,k,axis_of(box.minimum,k),true);if(!p.empty())p=clip_axis(p,k,axis_of(box.maximum,k),false);}
+  return !p.empty();});
+}
+bool solid_in_column(const Near&n,Point c,double reach,double low,double high){
+ const Bounds column{{float(c.x-reach),float(low),float(c.z-reach)},{float(c.x+reach),float(high),float(c.z+reach)}};
+ return n.visit(column,[&](uint32_t j){Poly p=triangle_of(n.s,n.s.triangles[j]);
+  p=clip_axis(p,1,low,true);if(!p.empty())p=clip_axis(p,1,high,false);
+  return !p.empty()&&outline_distance(p,c.x,c.z)<=reach;});
+}
+bool solid_near_segment(const Near&n,Point a,Point b,double reach){
+ Bounds corridor=empty();include(corridor,a);include(corridor,b);
+ corridor.minimum={float(corridor.minimum.x-reach),float(corridor.minimum.y-reach),float(corridor.minimum.z-reach)};corridor.maximum={float(corridor.maximum.x+reach),float(corridor.maximum.y+reach),float(corridor.maximum.z+reach)};
+ const double r2=reach*reach;const V p=vec(a),q=vec(b);
+ return n.visit(corridor,[&](uint32_t j){const auto&t=n.s.triangles[j];const Point x=n.s.vertices[t[0]],y=n.s.vertices[t[1]],z=n.s.vertices[t[2]];
+  if(segment_triangle(a,b,x,y,z))return true;
+  const V vx=vec(x),vy=vec(y),vz=vec(z);
+  return point_triangle2(p,vx,vy,vz)<=r2||point_triangle2(q,vx,vy,vz)<=r2||segment_segment2(p,q,vx,vy)<=r2||segment_segment2(p,q,vy,vz)<=r2||segment_segment2(p,q,vz,vx)<=r2;});
+}
+// the room's triangles near an object that its own triangles cross above the higher base plus kGroundStep (as
+// solids_overlap: resting on the ground, or reaching a little into a slope under it, doesn't count); how many, the first
+unsigned solid_crossings(const Near&near,const std::vector<const ProtectedBounds*>&walls,std::string&first){
+ const Solid&s=near.s;if(s.triangles.empty()||walls.empty())return 0;
+ float base=std::numeric_limits<float>::infinity();for(const auto*w:walls)base=std::min(base,w->bounds.minimum.y);
+ const double h=double(std::max(s.bounds.minimum.y,base))+kGroundStep;
+ // the object's triangles above h, clipped once when a wall first meets them
+ std::vector<Poly> own(s.triangles.size());std::vector<uint8_t> made(s.triangles.size(),0);
+ unsigned n=0;
+ for(const auto*w:walls){if(w->bounds.maximum.y<h)continue;const Point tri[3]={w->corners[0],w->corners[1],w->corners[2]};const Poly p=clip_above(tri,h);if(p.size()<3)continue;const Bounds pb=bounds_of(p);
+  if(near.visit(pb,[&](uint32_t j){if(!made[j]){const auto&t=s.triangles[j];const Point o[3]={s.vertices[t[0]],s.vertices[t[1]],s.vertices[t[2]]};own[j]=clip_above(o,h);made[j]=1;}
+     return own[j].size()>=3&&overlap(pb,bounds_of(own[j]),0)&&polys_cross(p,own[j]);}))if(!n++)first=w->id;}
+ return n;
+}
 }
 }

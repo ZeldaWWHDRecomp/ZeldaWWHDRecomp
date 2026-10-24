@@ -9,6 +9,7 @@
 #include "story_actors_core.h"
 #include "story_enemy_ownership.h"
 struct Cpu;
+#include "story_world_calm.h"
 namespace story_actors {
 inline constexpr uint32_t kModScratchOffset=1280;
 inline constexpr uint32_t kPropsScratchOffset=5376;
@@ -57,6 +58,9 @@ bool register_model(const std::string& mod,const std::string& model,const std::s
                     bool skinned=false,std::vector<std::string> clips={},mod_actor::ModelRig rig={});
 bool register_flags(const std::string& mod,const std::vector<std::string>& flags,std::string& why);
 void service(Cpu*);
+// the calm-water zones (story_world_calm.h) of the placed sea objects that are in the game now (their
+// conditions hold, not removed by the editor), at most `max`; game thread
+size_t calm_zones(story_world_calm::Zone* out,size_t max);
 void set_game_calls(void (*original)(Cpu*,uint32_t),uint32_t (*call)(Cpu*,uint32_t,std::initializer_list<uint32_t>));
 void set_scratch_memory(uint32_t guest);
 void set_scene_start(std::function<bool(const std::string&,const std::string&)> start);

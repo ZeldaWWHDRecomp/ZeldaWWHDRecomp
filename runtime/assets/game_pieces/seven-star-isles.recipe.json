@@ -1,0 +1,72 @@
+{
+  "game_pieces_format": 1,
+  "set": "seven-star-isles",
+  "label": "Seven-Star Isles ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room6.szs",
+    "room": 6
+  },
+  "memory": {
+    "archive_bytes": 1241088,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "seven-star-isles",
+      "since": 5,
+      "category": "Islands",
+      "label": "Seven-Star Isles ground",
+      "description": "seven rocky pillars in a ring, each with a flat top",
+      "volume": [
+        16133,
+        -1100,
+        -24722,
+        23566,
+        2339,
+        -15191
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "sima",
+            "sima1",
+            "sima2",
+            "sima3",
+            "sima4",
+            "sima5",
+            "sima6"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "sima",
+          "soko_stop"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD06.szs",
+        "triangles": 343
+      },
+      "expect": {
+        "triangles": [
+          343
+        ],
+        "textures": [
+          [
+            "test_iwakabe_b"
+          ]
+        ],
+        "collision_triangles": 343
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

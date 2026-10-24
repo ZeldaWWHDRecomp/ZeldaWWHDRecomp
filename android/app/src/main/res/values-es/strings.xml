@@ -50,6 +50,8 @@
     <string name="setup_paused_battery">En pausa: queda poca batería</string>
     <string name="setup_paused_detail">Pulsa Continuar cuando quieras seguir.</string>
     <string name="setup_paused_auto_detail">La instalación seguirá sola cuando el dispositivo Android esté listo.</string>
+    <string name="setup_paused_heat_detail">La instalación te espera. Pulsa Continuar de todos modos para seguir ya.</string>
+    <string name="setup_paused_heat_cooled">El dispositivo se ha enfriado. Pulsa Continuar para seguir.</string>
     <string name="setup_failed">La instalación se detuvo</string>
     <string name="setup_failed_detail">Pulsa Detalles para ver el motivo. Puedes elegir el juego otra vez o pulsar Continuar.</string>
     <string name="setup_ready">Tu juego está listo</string>

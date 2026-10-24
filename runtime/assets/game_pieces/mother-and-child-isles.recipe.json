@@ -1,0 +1,126 @@
+{
+  "game_pieces_format": 1,
+  "set": "mother-and-child-isles",
+  "label": "Mother & Child Isles ground",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background model and nodes, a room-local volume, the collision group names, the room's distant-view archive). The island is built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room9.szs",
+    "room": 9
+  },
+  "memory": {
+    "archive_bytes": 7561216,
+    "measured": "game heap with one placement, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-20); a placement is counted again on top; the distant view is loaded in the neighbouring squares only"
+  },
+  "pieces": [
+    {
+      "id": "mother-and-child-isles",
+      "since": 5,
+      "category": "Islands",
+      "label": "Mother & Child Isles ground",
+      "description": "a great tree-topped rock with a spring pool on its ledge, and a small islet beside it",
+      "volume": [
+        16621,
+        -1100,
+        -3322,
+        23379,
+        4317,
+        8210
+      ],
+      "origin_y": 0,
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "soto",
+            "tyou"
+          ],
+          "light": "bg0"
+        },
+        {
+          "model": 1,
+          "nodes": [
+            "Polygon0",
+            "Polygon1",
+            "Polygon2",
+            "Polygon3",
+            "Polygon4"
+          ],
+          "light": "bg1",
+          "animated": true
+        }
+      ],
+      "collision": {
+        "groups": [
+          "aruku",
+          "kameranuke",
+          "kameranuke_2",
+          "kameranuke_3",
+          "polySurface20",
+          "ya_kage_nuke",
+          "ki_hikui",
+          "ki_tiisai",
+          "sonotaki",
+          "mizudai",
+          "kirikabu_jmp",
+          "sonotaki1",
+          "ki_eda_tuika",
+          "ki_hutago_two",
+          "dekaiki",
+          "ki_dekaiki",
+          "ki_itiban_hutuuki",
+          "Kabe",
+          "Mizuba_soko",
+          "naka",
+          "dai_jmp",
+          "dai_2_jmp",
+          "Sima_A",
+          "soko_stop_B",
+          "soko_stopA",
+          "Water"
+        ],
+        "strip_exits": true
+      },
+      "distant": {
+        "archive": "sea_LOD09.szs",
+        "triangles": 250
+      },
+      "expect": {
+        "triangles": [
+          3694,
+          289
+        ],
+        "textures": [
+          [
+            "Tqx_tyou_joubu",
+            "Txe_Ebshima_gakeshiba_2",
+            "Txq_kirikabu",
+            "Txq_tyou_eda",
+            "Txq_tyou_happa",
+            "Txq_tyou_jimen_jimennnomi2",
+            "Txq_tyou_ki_2",
+            "Txq_tyou_ki_4",
+            "Txq_tyou_kusaset",
+            "V_ochiba",
+            "kinoko_01"
+          ],
+          [
+            "AK_kaze02",
+            "AK_yusui00",
+            "AK_yusui01",
+            "Txa_jav_mizu_A",
+            "Txa_jav_mizu_B",
+            "Txa_jav_mizu_ami",
+            "Txa_jav_mizu_noize",
+            "Txa_test_kiwa_a",
+            "Txa_test_nagare_j",
+            "Txa_test_sibuki_a"
+          ]
+        ],
+        "collision_triangles": 2075
+      },
+      "memory": {
+        "instance_bytes": 65536
+      }
+    }
+  ]
+}

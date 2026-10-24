@@ -23,6 +23,7 @@ struct Native {
     uint16_t process = 0;
     uint8_t subtype = 0xFF;
     uint32_t params = 0;
+    bool own_heap = true;  // the recipe's: once made, the object has a heap of its own (read back after it)
 };
 // The entry's stage actor name through the game's object name table (dStage_searchName); `scratch`: 16
 // bytes of guest memory for the name. False with a reason when the game doesn't know the name or gives it

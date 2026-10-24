@@ -1,0 +1,102 @@
+{
+  "game_pieces_format": 1,
+  "set": "fire-mountain-kit",
+  "label": "Fire Mountain rocks",
+  "about": "A recipe, not game data: neutral ids, our own words, and references into the game (the room archive, its background models and nodes, a room-local volume, the collision group names). The pieces are built from the player's own game files into the player's model cache.",
+  "source": {
+    "archive": "sea_Room20.szs",
+    "room": 20
+  },
+  "memory": {
+    "archive_bytes": 1284580,
+    "measured": "game heap of the set's archive and its resource table once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-21)"
+  },
+  "pieces": [
+    {
+      "id": "fire-mountain-rock",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Volcanic rock",
+      "description": "a dark volcanic rock in the sea, from beside Fire Mountain",
+      "volume": [
+        -22666,
+        -510,
+        -18757,
+        -21872,
+        476,
+        -17775
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "iwa_b"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "iwa_2"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          48
+        ],
+        "collision_triangles": 28,
+        "textures": [
+          [
+            "Txa_test_kazan_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "fire-mountain-rock-small",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Small volcanic rock",
+      "description": "a small dark volcanic rock in the sea, from beside Fire Mountain",
+      "volume": [
+        -17619,
+        -510,
+        -21007,
+        -16879,
+        445,
+        -20275
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "iwa_a"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "iwa_1"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          24
+        ],
+        "collision_triangles": 14,
+        "textures": [
+          [
+            "Txa_test_kazan_a"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    }
+  ]
+}

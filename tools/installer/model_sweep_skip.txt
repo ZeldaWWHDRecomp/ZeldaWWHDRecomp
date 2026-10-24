@@ -1,0 +1,73 @@
+# Names the model sweep leaves out from the start (names only): actors that stop the game when made outside their
+# room (doors, shutters and others that need their room's data), and archives the title cannot load. Anything else
+# that stops the game is found and skipped by the sweep itself (shader-prebuild/model-sweep/<renderer>/skip.txt).
+# visit-<stage>: stages whose visit (entered from the title, no save loaded) stops the game.
+# <actor>:<parameters>:<angles>: placements that stopped every measured sweep (Bmcon1 and Bmcon2 when made; zouK1 and
+# zouK leave something behind that stalls the next stage change), so no attempt is spent on finding them.
+AND_SW0
+AND_SW2
+Ba1
+BFlower
+BigElf
+Bj8
+Blift
+BLK_CR
+Bm1
+Bm2
+Bm3
+Bm4
+Bm5
+Bms1
+Bst
+CmTrap
+door10
+door20
+doorKD
+doorSH
+Ecube
+Fmastr1
+Gflag
+Gnd
+Hdai3
+Hi
+Humi5z
+ikada_h
+ikada_u
+Kbota_A
+keyshut
+Kkiba
+Klft
+Ko1
+magma
+Mmrr
+Oship
+osiBLK0
+osiBLK1
+Pirates
+Rsh1
+sea
+sea_LODALL
+Search
+spotbx1
+Svsp
+Tc
+VigaH
+visit-ADMumi
+visit-Cave08
+visit-E3ROOP
+visit-ENDumi
+visit-GanonK
+visit-I_SubAN
+visit-M2ganon
+visit-M2tower
+visit-Mjtower
+visit-sea_E
+Yfrlt00
+Zenshut
+zouK2
+zouK3
+zouK4
+Bmcon1:00090000:0:0
+zouK1:00000001:0:0
+Bmcon2:000A0000:0:0
+zouK:00000000:0:0

@@ -8,8 +8,8 @@
     "room": 13
   },
   "memory": {
-    "archive_bytes": 6742032,
-    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-19); each placement adds its instance"
+    "archive_bytes": 9075472,
+    "measured": "game heap of the set archive and its models once a room uses it, measured with WWHD_MOD_ACTOR_HEAPS=1 (US game, 2026-10-21, with the four more sea rocks); each placement adds its instance"
   },
   "textures": {
     "Txe_Edragon_gake": {
@@ -365,6 +365,188 @@
           59
         ],
         "collision_triangles": 41,
+        "textures": [
+          [
+            "Txe_Edragon_gake"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-broad",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Broad sea rock",
+      "description": "a broad, rounded rock standing in the sea",
+      "volume": [
+        8970,
+        -1010,
+        -3471,
+        10293,
+        1910,
+        -2007
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_A",
+          "Yama_B",
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          66
+        ],
+        "collision_triangles": 38,
+        "textures": [
+          [
+            "Txe_Edragon_gake_hai",
+            "Txe_Edragon_hai"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-low",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Low sea rock",
+      "description": "a low, wide rock in the sea",
+      "volume": [
+        8748,
+        -1010,
+        -10878,
+        9749,
+        1310,
+        -9824
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_A",
+          "Yama_B",
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          61
+        ],
+        "collision_triangles": 35,
+        "textures": [
+          [
+            "Txe_Edragon_gake_hai",
+            "Txe_Edragon_hai"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-small",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Small sea rock",
+      "description": "a small rock stack in the sea",
+      "volume": [
+        3970,
+        -1010,
+        -12643,
+        4567,
+        1717,
+        -12047
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_A",
+          "Yama_B",
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          54
+        ],
+        "collision_triangles": 38,
+        "textures": [
+          [
+            "Txe_Edragon_gake"
+          ]
+        ]
+      },
+      "memory": {
+        "instance_bytes": 32768
+      }
+    },
+    {
+      "id": "sea-rock-mid",
+      "since": 6,
+      "category": "Island parts",
+      "label": "Sea rock",
+      "description": "a rock in the sea, about half as tall as the spire",
+      "volume": [
+        4429,
+        -1010,
+        -14743,
+        5379,
+        2366,
+        -13692
+      ],
+      "parts": [
+        {
+          "model": 0,
+          "nodes": [
+            "world_root"
+          ],
+          "light": "bg0"
+        }
+      ],
+      "collision": {
+        "groups": [
+          "Yama_A",
+          "Yama_B",
+          "Yama_C"
+        ]
+      },
+      "expect": {
+        "triangles": [
+          49
+        ],
+        "collision_triangles": 35,
         "textures": [
           [
             "Txe_Edragon_gake"
