@@ -47,7 +47,9 @@ bool draw_present_screen(Screen& screen, uint32_t imageIndex);
 struct PresentImageParams {
  int32_t aa=0,conv=0;
  float sharp=1,foot=1,alpha=1;
- float hdrWhite=0,hdrPeak=0,hdrExposure=0,hdrHighlights=0,pad[3]{};
+ float hdrWhite=0,hdrPeak=0,hdrExposure=0,hdrHighlights=0;
+ int32_t pq=0; // encode linear scRGB input as HDR10 PQ (the final HDR10 pass)
+ float pad[2]{};
 };
 // Prepared on the renderer thread. Recording reads only these copied handles
 // and values; the caller retains all referenced objects through GPU completion.

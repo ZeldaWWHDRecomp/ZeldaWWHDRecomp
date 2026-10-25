@@ -35,7 +35,14 @@ int main() {
  auto p=hdr::Parameters{200,1000,0,0};
  assert(std::abs(hdr::map({.18f,.18f,.18f},p)[0]-.45f)<.00001f);
  assert(hdr::map({1,1,1},{200,1000,0,.5f})[0]>200/80.f);
+ // HDR10: ST 2084 reference points (BT.2100) and the BT.709 -> BT.2020 primaries.
+ assert(hdr::pq(0)<1e-6f&&std::abs(hdr::pq(100)-.5081f)<.0005f);
+ assert(std::abs(hdr::pq(1000)-.7518f)<.0005f&&std::abs(hdr::pq(10000)-1)<1e-5f&&hdr::pq(20000)==hdr::pq(10000));
+ auto white=hdr::encode_pq({1.25f,1.25f,1.25f}); // 100 cd/m^2 white stays neutral
+ for(float v:white)assert(std::abs(v-hdr::pq(100))<.0005f);
+ auto red=hdr::encode_pq({1,0,0});
+ assert(std::abs(red[0]-hdr::pq(80*.627404f))<1e-5f&&std::abs(red[1]-hdr::pq(80*.069097f))<1e-5f);
  auto before=hdr::paperWhite.load();hdr::set(hdr::paperWhite,std::numeric_limits<float>::quiet_NaN(),80,500);
  assert(hdr::paperWhite.load()==before);
- puts("HDR: SDR fallback, black, calibrated grey, monotonicity, peak limit, hue and invalid settings passed.");
+ puts("HDR: SDR fallback, black, calibrated grey, monotonicity, peak limit, hue, HDR10 PQ and invalid settings passed.");
 }

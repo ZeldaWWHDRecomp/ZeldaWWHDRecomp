@@ -1674,21 +1674,29 @@ static void make_swapchain(Screen &s) {
   fs.resize(n);
   if (fs.empty())
     exception_report::raise("No presentation formats");
-  bool wantHdr=false;
+  bool wantHdr=false,wantPq=false;
+  // HDR swapchain candidates: scRGB FP16, else HDR10 PQ (10-bit preferred).
+  auto hdrCandidate=[&](const VkSurfaceFormatKHR& f,bool pq) {
+    if(pq ? f.colorSpace!=VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+              (f.format!=VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.format!=VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
+               f.format!=VK_FORMAT_R16G16B16A16_SFLOAT)
+          : f.format!=VK_FORMAT_R16G16B16A16_SFLOAT || f.colorSpace!=VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+      return false;
+    VkFormatProperties props;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,f.format,&props);
+    return (caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+      (props.optimalTilingFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
+      (props.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT);
+  };
   if(&s==&R.tv) {
-    bool supported=false;
-    for(const auto& f:fs)if(f.format==VK_FORMAT_R16G16B16A16_SFLOAT &&
-        f.colorSpace==VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-      VkFormatProperties props;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,f.format,&props);
-      supported=(caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
-        (props.optimalTilingFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
-        (props.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT);
-    }
-    hdr::formatSupported=supported;
+    bool scrgb=false,pq=false;
+    for(const auto& f:fs){scrgb|=hdrCandidate(f,false);pq|=hdrCandidate(f,true);}
+    hdr::scrgbSupported=scrgb;hdr::pqSupported=pq;
+    hdr::formatSupported=scrgb||pq;
 #if defined(_WIN32) && defined(WWHD_SDL_HOST)
     hdr::displayEnabled=SDL_GetBooleanProperty(SDL_GetWindowProperties(s.window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
 #endif
     wantHdr=hdr::resolve_output();
+    wantPq=wantHdr&&!scrgb;
   }
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
@@ -1705,8 +1713,13 @@ static void make_swapchain(Screen &s) {
 #endif
   for (auto f : fs) {
     if(wantHdr) {
-      if(f.format!=VK_FORMAT_R16G16B16A16_SFLOAT || f.colorSpace!=VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)continue;
-    } else if(f.colorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)continue;
+      // hdrCandidate checks blits too. PQ: a 10-bit format wins over FP16.
+      if(hdrCandidate(f,wantPq) && (!found || format.format==VK_FORMAT_R16G16B16A16_SFLOAT)) {
+        format=f;found=true;
+      }
+      continue;
+    }
+    if(f.colorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)continue;
     VkFormatProperties props;
     vkGetPhysicalDeviceFormatProperties(R.physicalDevice, f.format, &props);
     if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
@@ -1848,7 +1861,13 @@ static void make_swapchain(Screen &s) {
   ++s.swapchainGeneration;
   s.swapFormat = format.format;
   s.hdrOutput = wantHdr;
-  if(&s==&R.tv)LOG("[HDR] output %s; scRGB format %s; Windows HDR %s",wantHdr?"scRGB FP16":"SDR",hdr::formatSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled");
+  s.hdrPq = wantPq;
+  if(&s==&R.tv) {
+    hdr::pqOutput=wantPq;
+    LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
+        wantPq?"HDR10 PQ":wantHdr?"scRGB FP16":"SDR",hdr::scrgbSupported.load()?"supported":"unavailable",
+        hdr::pqSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled");
+  }
   s.swapExtent = extent;
   vkGetSwapchainImagesKHR(R.device, sc, &n, nullptr);
   s.images.resize(n);

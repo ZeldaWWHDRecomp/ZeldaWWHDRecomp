@@ -69,6 +69,7 @@ struct Screen {
  VkSurfaceKHR surface=VK_NULL_HANDLE; VkSwapchainKHR swapchain=VK_NULL_HANDLE;
  VkFormat swapFormat=VK_FORMAT_UNDEFINED; VkExtent2D swapExtent{};
  bool hdrOutput=false;
+ bool hdrPq=false; // hdrOutput as HDR10 PQ: composed in FP16 scRGB, then encoded (present.cpp)
  std::vector<VkImage> images; std::vector<VkImageLayout> layouts;
  std::vector<ResourceUse> imageUses;
  VkSemaphore acquired=VK_NULL_HANDLE,finished=VK_NULL_HANDLE;

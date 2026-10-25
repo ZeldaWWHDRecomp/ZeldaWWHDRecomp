@@ -4,11 +4,15 @@
 #include <atomic>
 #include <cmath>
 
-// Explicit Windows scRGB output. The guest scan is SDR; this is a controlled
-// highlight expansion, not recovery of the game's pre-tonemap lighting.
+// Explicit HDR output: scRGB FP16, or HDR10 PQ (BT.2020 + ST 2084) where the
+// surface offers no scRGB. The guest scan is SDR; this is a controlled highlight
+// expansion, not recovery of the game's pre-tonemap lighting.
 namespace hdr {
 inline std::atomic<bool> enabled{false}, displayEnabled{false}, formatSupported{false};
 inline std::atomic<bool> fellBackToSdr{false};
+// Per-encoding surface support (formatSupported is either); scRGB is preferred.
+inline std::atomic<bool> scrgbSupported{false}, pqSupported{false};
+inline std::atomic<bool> pqOutput{false}; // the TV swapchain presents HDR10 PQ
 // The saved choice stays HDR; this session presents SDR and the overlay says so.
 inline void fall_back_to_sdr() {
     enabled = false;
@@ -44,5 +48,20 @@ inline std::array<float,3> map(std::array<float,3> c, Parameters p) {
     if(n>knee) n=knee+(p.peak-knee)*(1-std::exp(-(n-knee)/(p.peak-knee)));
     for(auto& v:c) v*=n/(m*80.0f); // Windows scRGB: 1.0 = 80 cd/m^2.
     return c;
+}
+// HDR10 from map()'s scRGB values: BT.709 -> BT.2020 primaries, then the
+// ST 2084 inverse EOTF of absolute luminance (1.0 = 10000 cd/m^2).
+inline float pq(float nits) {
+    const float m1=0.1593017578125f, m2=78.84375f, c1=0.8359375f, c2=18.8515625f, c3=18.6875f;
+    const float y=std::pow(std::clamp(nits/10000.0f,0.0f,1.0f),m1);
+    return std::pow((c1+c2*y)/(1+c3*y),m2);
+}
+inline std::array<float,3> encode_pq(std::array<float,3> scrgb) {
+    const auto& c=scrgb;
+    std::array<float,3> bt2020{0.6274040f*c[0]+0.3292820f*c[1]+0.0433136f*c[2],
+                               0.0690970f*c[0]+0.9195400f*c[1]+0.0113612f*c[2],
+                               0.0163916f*c[0]+0.0880132f*c[1]+0.8955950f*c[2]};
+    for(auto& v:bt2020) v=pq(v*80.0f);
+    return bt2020;
 }
 }
