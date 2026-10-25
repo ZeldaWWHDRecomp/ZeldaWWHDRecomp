@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Linux on Mali (panvk): no more flickering shapes in the sky.** Parts of the clouds and haze on the title
+  screen and at sea flickered away in hard-edged chunks as the camera moved. Mali GPUs clip depth by dropping
+  individual pixels, and the sky is drawn right at the far plane, so rounding dropped pixels that should stay. On
+  the panvk driver the game now clamps depth instead (`WWHD_VK_DEPTH_CLAMP_ALL=0` turns this off). See the Vulkan
+  docs.
 - **World editor: island extensions can join an island's ground** (#281, thanks @KelpyCode). New ground that meets an
   island's ground at the same height (up to the 30-unit step Link and villagers walk over) counts as joined instead of
   overlapping, and an extension's sides may go into the cliff under its top; walls, raised parts and roofs still count.
