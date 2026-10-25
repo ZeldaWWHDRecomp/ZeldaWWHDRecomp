@@ -209,8 +209,53 @@ static void load_options() {
     float x, y;
     return [self map:e x:&x y:&y clamp:false];
 }
+// the picture-in-picture GamePad: a right-button or Option drag moves it (from its bottom-right corner:
+// resizes it), the scroll wheel over it resizes it (display_modes.h)
+- (void)point:(NSEvent*)e x:(float*)nx y:(float*)ny {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSSize sz = self.bounds.size;
+    *nx = sz.width > 0 ? p.x / sz.width : 0;
+    *ny = sz.height > 0 ? 1.0f - p.y / sz.height : 0;
+}
+- (bool)pipBegin:(NSEvent*)e {
+    float nx, ny;
+    [self point:e x:&nx y:&ny];
+    if (!gfx::pip_drag_begin(nx, ny)) return false;
+    [NSCursor.closedHandCursor push];
+    return true;
+}
+- (bool)pipMove:(NSEvent*)e {
+    if (!gfx::pip_dragging()) return false;
+    float nx, ny;
+    [self point:e x:&nx y:&ny];
+    gfx::pip_drag_move(nx, ny);
+    return true;
+}
+- (bool)pipEnd {
+    if (!gfx::pip_drag_end()) return false;
+    [NSCursor pop];
+    gfx::save_options();
+    return true;
+}
+- (void)rightMouseDown:(NSEvent*)e {
+    if (![self pipBegin:e]) [super rightMouseDown:e];
+}
+- (void)rightMouseDragged:(NSEvent*)e {
+    if (![self pipMove:e]) [super rightMouseDragged:e];
+}
+- (void)rightMouseUp:(NSEvent*)e {
+    if (![self pipEnd]) [super rightMouseUp:e];
+}
+- (void)scrollWheel:(NSEvent*)e {
+    float nx, ny;
+    [self point:e x:&nx y:&ny];
+    const float steps = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY / 20.0f : e.scrollingDeltaY;
+    if (gfx::pip_wheel(nx, ny, steps)) gfx::save_options();
+    else [super scrollWheel:e];
+}
 - (void)mouseDown:(NSEvent*)e {
     float x, y;
+    if ((e.modifierFlags & NSEventModifierFlagOption) && [self pipBegin:e]) return;
     if ([self map:e x:&x y:&y clamp:false]) {
         self.touching = true;
         input::set_touch(true, x, y);
@@ -220,10 +265,12 @@ static void load_options() {
 }
 - (void)mouseDragged:(NSEvent*)e {
     float x, y;
+    if ([self pipMove:e]) return;
     if (self.touching && [self map:e x:&x y:&y clamp:true]) input::set_touch(true, x, y);
 }
 - (void)mouseUp:(NSEvent*)e {
     float x, y;
+    if ([self pipEnd]) return;
     if (!self.touching) return;
     self.touching = false;
     if (![self map:e x:&x y:&y clamp:true]) x = y = 0;

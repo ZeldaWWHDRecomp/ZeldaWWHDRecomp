@@ -1,4 +1,5 @@
 #include "gfx/display_modes.h"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -129,4 +130,46 @@ int main() {
     assert(p.pip_on && !p.drc_only);
     g_pip_preview = false;
     assert(!display_plan(true, 1280, 720, true, 854, 480, 1920, 1080, 2).pip_on);
+
+    // Moving and resizing the picture with the pointer (macOS TV window: right-button or Option drag,
+    // scroll wheel). The last published layout is a 1280x720 TV picture with a 320x180 GamePad at (900, 500).
+    {
+        PresentPlan plan;
+        plan.dw = 1280, plan.dh = 720;
+        plan.tv = {0, 0, 1280, 720};
+        plan.pip = {900, 500, 320, 180};
+        plan.pip_on = true;
+        display_input_plan(plan);
+        g_pip_anchor = kPipBR;
+        g_pip_size = 0.25f;
+        assert(!pip_drag_begin(0.1f, 0.1f) && !pip_dragging());  // off the picture: not taken
+        assert(!pip_drag_end());
+        // a drag from inside moves the picture by the pointer's motion and makes the placement Custom
+        assert(pip_drag_begin(1000 / 1280.0f, 550 / 720.0f) && pip_dragging());
+        pip_drag_move(600 / 1280.0f, 350 / 720.0f);
+        assert(g_pip_anchor == kPipCustom && near(g_pip_size, 0.25f));
+        assert(near(g_pip_x, (1060 - 400) / 1280.0f) && near(g_pip_y, (590 - 200) / 720.0f));
+        // the picture stays inside the TV picture
+        pip_drag_move(-1, -1);
+        Box b = pip_box(plan.tv, 320.0f / 180, g_pip_size, pip_position());
+        assert(near(b.x, 0) && near(b.y, 0));
+        assert(pip_drag_end() && !pip_dragging());
+        // a drag from the bottom-right corner resizes it; the top-left corner stays
+        assert(pip_drag_begin(1215 / 1280.0f, 675 / 720.0f));
+        pip_drag_move(1220 / 1280.0f, 700 / 720.0f);
+        const float w = std::max(1220.0f - 900, (700.0f - 500) * (320.0f / 180));
+        assert(near(g_pip_size, w / 1280));
+        b = pip_box(plan.tv, 320.0f / 180, g_pip_size, pip_position());
+        assert(std::fabs(b.x - 900) < 0.5f && std::fabs(b.y - 500) < 0.5f && std::fabs(b.w - w) < 0.5f);
+        assert(pip_drag_end());
+        // the wheel resizes the picture under the pointer by 10% a step, within the size limits
+        g_pip_size = 0.25f;
+        assert(pip_wheel(1000 / 1280.0f, 550 / 720.0f, 1) && near(g_pip_size, 0.275f));
+        assert(pip_wheel(1000 / 1280.0f, 550 / 720.0f, -100) && near(g_pip_size, kPipSizeMin));
+        assert(!pip_wheel(0.1f, 0.1f, 1) && !pip_wheel(1000 / 1280.0f, 550 / 720.0f, 0));
+        // GamePad only: the picture fills the window and is not moved
+        plan.drc_only = true;
+        display_input_plan(plan);
+        assert(!pip_drag_begin(1000 / 1280.0f, 550 / 720.0f));
+    }
 }
