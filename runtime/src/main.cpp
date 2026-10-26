@@ -62,6 +62,7 @@
 #include "mods/story_world_arrival.h"
 #include "overlay/editor_panel.h"
 #include "editor/editor_game.h"
+#include "editor/mcp_game.h"
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
@@ -506,6 +507,7 @@ int main(int argc, char** argv) {
 #endif
     bool warm_shaders = false;
     bool install_story_notebook = false;
+    bool start_mcp = false;
 #ifdef WWHD_HAS_VULKAN
     bool renderer_smoke = false;
 #ifdef __ANDROID__
@@ -519,6 +521,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
         else if (!strcmp(argv[i], "--editor")) editor::set_launch_mode(true);  // the world editor (docs/mod-editor.md)
+        else if (!strcmp(argv[i], "--mcp")) start_mcp = true;  // with --editor: Claude / MCP access on at start
 #ifdef WWHD_HAS_VULKAN
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
 #ifdef __ANDROID__
@@ -536,8 +539,17 @@ int main(int argc, char** argv) {
     // (the Vulkan warm's and the model sweep's lines); WWHD_TEST_WARM_SHADERS=1 is --warm-shaders
     if (const char* e = getenv("WWHD_TEST_STDERR"); e && *e && freopen(e, "a", stderr)) setvbuf(stderr, nullptr, _IOLBF, 0);
     if (const char* e = getenv("WWHD_TEST_WARM_SHADERS"); e && !strcmp(e, "1")) warm_shaders = true;
+    // (the Vulkan backend's pipeline cache: WWHD_VK_WARM_PRUNE rebuilds it only in this mode)
+    if (warm_shaders) {
+#ifdef _WIN32
+        _putenv_s("WWHD_WARMING_SHADERS", "1");
+#else
+        setenv("WWHD_WARMING_SHADERS", "1", 1);
+#endif
+    }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
+    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
     index_game_functions();
     install_crash_handler();
     start_log_file();

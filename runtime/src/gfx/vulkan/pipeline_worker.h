@@ -22,6 +22,12 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
     const std::array<std::vector<VkDescriptorSetLayoutBinding>, 2>& descriptors,
     bool dynamicUniforms, const GraphicsPipelineState& currentState, WarmPipeline& out);
 void remember_pipeline_recipe(std::shared_ptr<PipelineRecipe> recipe);
+// Whether the recipe database (local recipes, the head start, recipes recorded since) has this portable key: the
+// coverage counter of pipelines the game asks for (draw.cpp, "[vulkan pipelines]").
+bool pipeline_recipe_known(const std::vector<uint8_t>& key);
+// Demands that waited for the worker's running compile of their pipeline (WWHD_VK_DEMAND_PROMOTE), how many got it,
+// and the time they waited in all.
+void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& waitMs);
 // The setup's model sweep drew a model of archive group `group` with this (portable) key: file the recipe under it too.
 void note_pipeline_group(const std::vector<uint8_t>& key, uint32_t group);
 // Steady-clock time (ns) up to which every recipe recorded is on disk: the start of the last snapshot written, now
@@ -40,6 +46,9 @@ PipelineWarmupResult warm_resolved_pipeline_recipes(std::vector<std::shared_ptr<
     const std::function<void(size_t)>& progress = {});
 // Offline warming only: finish the whole startup queue instead of cancelling it.
 PipelineWarmupResult finish_pipeline_warmup();
+// Offline warming only: compile every recipe of the database not compiled yet (WWHD_VK_WARM_PRUNE: the rebuilt
+// driver cache then holds all of them), in first-seen order.
+PipelineWarmupResult warm_all_recipes();
 // Caller serializes target access; skip active compilation unless wait is true.
 bool merge_pipeline_worker_cache(VkPipelineCache target, bool wait = false);
 }

@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -495,6 +496,141 @@ void safety() {
         if (l.source == "MCP" && !l.result.get("ok").boolean) ++refused;
     CHECK(refused >= 4);
     fs::remove_all(root);
+}
+
+// ---------------------------------------------------------------- issue #296: --mcp, the kept token, Allow for this session
+// a backend whose player answers with `answer`, offered "Allow for this session" or not (`offered`)
+struct SessionBackend : FakeBackend {
+    Answer answer = Answer::Deny;
+    std::vector<bool> offered;
+    Answer ask_choice(const std::string& text, bool session) override {
+        ++asked;
+        last_question = text;
+        offered.push_back(session);
+        return answer == Answer::AllowSession && !session ? Answer::Allow : answer;
+    }
+};
+void kept_token_and_session() {
+    // start options: --editor --mcp on; --editor alone off; --mcp alone needs --editor; nothing where it can't listen
+    CHECK(launch_choice(true, true, true) == LaunchMcp::On);
+    CHECK(launch_choice(true, false, true) == LaunchMcp::Off);
+    CHECK(launch_choice(false, true, true) == LaunchMcp::NeedsEditor);
+    CHECK(launch_choice(true, true, false) == LaunchMcp::Unavailable && launch_choice(false, false, false) == LaunchMcp::Off);
+
+    // the token: made and saved on the first start, the same on the next one (the settings file between them)
+    std::map<std::string, std::string> settings;
+    int saves = 0;
+    auto load = [&](std::string& t) {
+        auto it = settings.find("editorMcpToken");
+        if (it == settings.end()) return false;
+        t = it->second;
+        return true;
+    };
+    auto save = [&](const std::string& t) {
+        settings["editorMcpToken"] = t;
+        ++saves;
+    };
+    const std::string first = saved_or_new_token(load, save);
+    CHECK(valid_token(first) && saves == 1 && settings["editorMcpToken"] == first);
+    const std::string second = saved_or_new_token(load, save);
+    CHECK(second == first && saves == 1);
+    // a damaged saved token is replaced
+    settings["editorMcpToken"] = "not-a-token";
+    const std::string third = saved_or_new_token(load, save);
+    CHECK(valid_token(third) && third != first && saves == 2);
+    CHECK(!valid_token("") && !valid_token(kToken.substr(1)) && !valid_token(std::string(64, 'G')) && valid_token(kToken));
+
+    // New token: the old one is refused at once, the new one passes
+    {
+        FakeBackend be;
+        Handler h(be, kToken, 47615);
+        const std::string init = R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}})";
+        CHECK(h.handle(post(init)).status == 200);
+        const std::string renewed = new_token();
+        CHECK(valid_token(renewed) && renewed != kToken);
+        h.set_token(renewed);
+        CHECK(h.handle(post(init)).status == 401);
+        CHECK(h.handle(post(init, renewed)).status == 200);
+    }
+
+    // Allow for this session: that command runs without asking again; another command and files still ask
+    const fs::path root = fs::temp_directory_path() / ("wwhd-mcp-session-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(root / "pkg");
+    fs::create_directories(root / "elsewhere");
+    std::ofstream(root / "elsewhere" / "b.glb") << "not a model";
+    auto allows = std::make_shared<SessionAllows>();
+    {
+        SessionBackend be;
+        be.dir = (root / "pkg").string();
+        be.session.add_package("editor-test", "Editor test", be.dir, json(kManifest));
+        Handler h(be, kToken, 47615, "1", allows);
+        be.answer = Answer::AllowSession;
+        Value v = call(h, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        CHECK(!is_error(v) && be.asked == 1 && be.offered.back());
+        CHECK(be.session.manifest("editor-test")->get("actors").array.size() == 1);
+        CHECK(allows->has("remove_actor") && !allows->has("revert_package"));
+        // the same kind again: no question, it runs
+        be.answer = Answer::Deny;
+        v = call(h, "undo", Value());
+        v = call(h, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        CHECK(!is_error(v) && be.asked == 1 && be.session.manifest("editor-test")->get("actors").array.size() == 1);
+        // still only with "confirm": true (the command layer refuses it without)
+        v = call(h, "remove_actor", json(R"({"id":"sign-a"})"));
+        CHECK(is_error(v) && be.asked == 1);
+        // another kind of command asks (and Deny refuses it)
+        v = call(h, "revert_package", json(R"({"confirm":true})"));
+        CHECK(is_error(v) && be.asked == 2 && be.offered.back());
+        // a file outside the mod asks every time, without the session choice
+        be.answer = Answer::AllowSession;
+        Value a;
+        a["file"] = (root / "elsewhere" / "b.glb").string();
+        call(h, "check_model", a);
+        call(h, "check_model", a);
+        // (both questions went through ask_choice, without the session choice; check the size before indexing)
+        CHECK(be.asked == 4 && be.offered.size() == 4);
+        if (be.offered.size() == 4) CHECK(!be.offered[2] && !be.offered[3]);
+        // a new token (a new handler of the same game run) keeps the session's answers
+        Handler renewed(be, new_token(), 47615, "1", allows);
+        be.answer = Answer::Deny;
+        v = call(renewed, "undo", Value());
+        v = call(renewed, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        CHECK(!is_error(v) && be.asked == 4);
+        // the token is in no log entry
+        for (const auto& e : be.session.log()) CHECK(mods::json::dump(e.params).find(kToken) == std::string::npos && mods::json::dump(e.result).find(kToken) == std::string::npos);
+    }
+    {
+        // the next start: nothing allowed any more (the answers are never saved)
+        SessionBackend be;
+        be.dir = (root / "pkg").string();
+        be.session.add_package("editor-test", "Editor test", be.dir, json(kManifest));
+        Handler h(be, kToken, 47615);
+        be.answer = Answer::Deny;
+        Value v = call(h, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        CHECK(is_error(v) && be.asked == 1 && be.session.manifest("editor-test")->get("actors").array.size() == 2);
+    }
+    // a backend without the third button (the default ask_choice) answers as Allow / Deny
+    {
+        FakeBackend be;
+        be.session.add_package("editor-test", "Editor test", (root / "pkg").string(), json(kManifest));
+        Handler h(be, kToken, 47615);
+        be.allow = true;
+        call(h, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        call(h, "undo", Value());
+        call(h, "remove_actor", json(R"({"id":"sign-b","confirm":true})"));
+        CHECK(be.asked == 2);
+    }
+    fs::remove_all(root);
+
+    // the client configurations: Claude Code's command, Claude Desktop's config (mcp-remote, the header from env)
+    const std::string token = kToken;
+    CHECK(claude_code_command(47616, token) == "claude mcp add --transport http wwhd-editor http://127.0.0.1:47616/mcp --header \"Authorization: Bearer " + token + "\"");
+    const Value desk = mods::json::parse(claude_desktop_config(47616, token));
+    const Value& server = desk.get("mcpServers").get("wwhd-editor");
+    CHECK(server.get("command").string() == "npx");
+    std::string args;
+    for (const auto& x : server.get("args").array) args += x.string() + "|";
+    CHECK(args == "-y|mcp-remote|http://127.0.0.1:47616/mcp|--transport|http-only|--header|Authorization:${WWHD_EDITOR_AUTH}|");
+    CHECK(server.get("env").get("WWHD_EDITOR_AUTH").string() == "Bearer " + token);
 }
 
 // ---------------------------------------------------------------- the listener (real sockets)
@@ -1009,6 +1145,7 @@ int main() {
     game_object_tools();
     water_tools();
     demo_tools();
+    kept_token_and_session();
     listener();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

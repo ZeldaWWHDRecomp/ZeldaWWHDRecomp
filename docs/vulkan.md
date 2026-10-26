@@ -284,6 +284,21 @@ its cost is recorded as `bc_decode_compute_pipeline` when tracing is enabled.
 `WWHD_VK_ASYNC_PIPELINES=0` selects diagnostic synchronous graphics creation.
 Recipe files contain game-derived shader code and must stay local.
 
+The head start's Metal pipeline recipes (the shaders by the Metal renderer's keys, target formats, blend, write
+mask and vertex strides) are guest-level too. With `WWHD_VK_METAL_RECIPES=1` the setup's Vulkan preparation
+(`--warm-shaders`) rebuilds each one's draw state from its two shaders' recorded registers (the pixel shader's state
+with the vertex stage's programs, fetch shader, resources and primitive type) and makes the Vulkan pipeline through
+the same code a draw uses (`draw.cpp derive_guest_pipeline_recipe`), in the head start's order; the recipes join
+the local database. With the full template: 38,094 Metal recipes give 1,160 distinct Vulkan pipelines beyond the
+template's own Vulkan ones, and in four test scenes the share of pipelines the game asks for that the database
+already has rose from 54–84 % to 66–95 % (`[vulkan pipelines] ... new keys N, K of them in the recipe database`,
+with `WWHD_VK_STATS` or `WWHD_VK_CPU_ONLY_STATS=1`), the same pipelines the Metal head start lacks in those scenes.
+`WWHD_VK_WARM_PRUNE=1` (preparation only) starts the driver pipeline cache empty and compiles every recipe of the
+database into it, so entries no recipe uses any more are not carried over. `WWHD_VK_DEMAND_PROMOTE=1`: a pipeline
+the game needs while the warm-up worker's driver compile of it is running waits for that compile (at most
+`WWHD_VK_DEMAND_PROMOTE_MS`, default 1000) instead of compiling it a second time. `WWHD_VK_RECIPE_KEY_DUMP=file`
+(debug) lists derived keys, missed keys and the head start's shader identities.
+
 Every demanded draw remains Exact. While a pipeline is pending, owned native
 commands can be prepared ahead of it. Ordered emission waits for the exact
 pipeline and emits every command. Boundaries such as readback, presentation and
@@ -554,6 +569,9 @@ wait timers disabled. CPU time excludes sleeping and GPU waits.
 | `WWHD_VK_SHADER_STATE_MEMO` | Retains four exact gathered linkage-key entries per shader stage. Every lookup freshly gathers all linkage words and compares every active byte, count, and program hash seed. Misses use the identical hash mixer; save-state and sentinel calls clear the memo. |
 | `WWHD_VK_SKIP_VERTEX_BINDS` | Omits only identical host vertex buffer/offset bindings after fresh snapshot preparation. Sixteen binding slots are guarded by command buffer, submission generation, and pass resets. Index bindings remain fresh. Combine with exact vertex snapshot reuse to make unchanged slice identities available. |
 | `WWHD_VK_SAMPLER_MEMO` | Reuses immutable sampler handles after exact device, fresh sampler-word, compare/integer, and effective anisotropy matching. Texture preparation still runs before lookup. |
+| `WWHD_VK_TEXTURE_STAGING` | `ring`: texture levels are staged through the recording submission's upload arena (only blocks it already has; at most `WWHD_VK_TEXTURE_STAGING_MB`, default 16, per submission) instead of one staging buffer per level. The texture stats line counts levels and MiB per path. |
+| `WWHD_VK_TEXTURE_BUDGET` | `1`: images of CPU-written textures (never GPU-written surfaces or attachments) are released, least recently looked up first, while they exceed `WWHD_VK_TEXTURE_BUDGET_MB` (default a quarter of the device memory budget); `WWHD_VK_TEXTURE_IDLE_FRAMES=n` also releases those unused for n frames; textures used in the last `WWHD_VK_TEXTURE_PIN_FRAMES` (3) frames stay. A released texture keeps its surface; its next lookup makes the image again and uploads it from guest memory. |
+| `WWHD_ARTISTIC_MIPS` | `1` (Metal and Vulkan): textures whose mip levels are not box downscales of each other (gfx/artistic_mips.h; checked at upload on the first levels of at most 64x64 down to 4x4, mean RMS difference over 15 %) get log2 of the target's internal resolution scale added to their LOD bias and no forced anisotropy. `WWHD_ARTISTIC_MIPS_LOG=1` logs verdict changes (`=2` on Metal: every verdict). |
 | `WWHD_VK_SPARSE_HASH_MEMO` | Only used where page write tracking is unavailable (texture changes are detected by `runtime/src/write_watch.h`; the sparse check is its fallback). Compares all freshly read, ordered sparse texture samples before reusing their hash. Full texture checks, invalidation, and uploads remain unchanged. Retains 64 entries by default; `WWHD_VK_SPARSE_HASH_ENTRIES=256` selects a bounded 16 MiB sample store. Oversized sample sets stream through the original mixer. |
 | `WWHD_VK_SHADER_KEY_DIRTY` | Avoids shader-generation bumps only for explicitly classified register bits absent from the current Vulkan shader key. Program headers, fetch strides, unknown registers, and context/save-state invalidation remain conservative. |
 | `WWHD_VK_VERTEX_HISTORY_REUSE` | Adds a second distinct vertex snapshot key per binding, requiring `WWHD_VK_REUSE_VERTEX_SNAPSHOTS=1`. Every candidate receives a fresh full payload comparison within the same device/submission generation; changed bytes allocate a fresh slice. |
@@ -1006,6 +1024,10 @@ contains:
 - uploads per frame by kind (vertex, index, uniform blocks, packed uniforms, texture staging; logic
   and interpolation hold frames apart) and, on one frame in 16, the unique guest bytes those
   copies read;
+- the texture cache: full checks of CPU textures per frame and the guest bytes they hash, how many were
+  served from the cache and how many uploaded again, and the texture budget's releases and remakes;
+- the GPU timeline: GPU busy time per frame and the idle gaps between command buffers (Metal: each
+  command buffer's GPU start/end; Vulkan: the submission timestamps, when GPU timestamps are on);
 - draw classes: draws with no register change since the previous draw, draws where only ALU
   constants, uniform-block or vertex-buffer words changed (continued-draw candidates), and the most
   written other registers;

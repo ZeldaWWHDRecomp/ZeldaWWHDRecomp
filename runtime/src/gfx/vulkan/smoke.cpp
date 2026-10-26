@@ -118,6 +118,37 @@ void colour_comparison_check() {
  fprintf(stderr,"[renderer smoke] colour comparison conversion, colour tiling and rendered depth alias passed\n");
 }
 
+// Texture upload paths against the guest bytes (the CPU side): a linear and a micro-tiled RGBA8 texture with random
+// texels, staged through own buffers and through the upload arena (WWHD_VK_TEXTURE_STAGING), and once more after the
+// texture budget released its image and the next lookup made it again (WWHD_VK_TEXTURE_BUDGET).
+void texture_path_check() {
+ constexpr uint32_t W=64,H=64;
+ uint32_t seed=0x2545F491u;
+ auto next=[&]{seed=seed*1664525u+1013904223u;return uint8_t(seed>>24);};
+ for(uint32_t tile:{1u,2u}) for(int staging:{0,1}) {
+  const uint32_t addr=mem::host_alloc(W*H*4,256);
+  auto offset=[&](uint32_t x,uint32_t y) {
+   if(tile==1)return (y*W+x)*4;
+   return LatteAddrLib::ComputeSurfaceAddrFromCoordMicroTiled(x,y,0,32,W,H,Latte::E_HWTILEMODE::TM_1D_TILED_THIN1,false);
+  };
+  std::vector<uint8_t> expected(W*H*4);
+  for(uint32_t y=0;y<H;++y)for(uint32_t x=0;x<W;++x)for(uint32_t c=0;c<4;++c){
+   const uint8_t v=next();expected[(y*W+x)*4+c]=v;mem::ptr(addr)[offset(x,y)+c]=v;
+  }
+  SurfaceDesc d;d.addr=addr;d.width=W;d.height=H;d.pitch=W;d.format=0x1a;d.tileMode=tile;d.dim=1;
+  g_texture_staging_override=staging;
+  auto* s=find_or_create_surface(d,false);
+  upload_surface(s);
+  require(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4)==expected,staging?"texture staged through the upload arena differs":"texture staged through its own buffer differs");
+  release_texture_image(s);
+  require(s->evicted&&!s->image,"texture budget did not release the image");
+  require(find_or_create_surface(d,false)==s&&s->image&&!s->evicted,"released texture was not made again by its lookup");
+  upload_surface(s);
+  require(read_image(*s,VK_IMAGE_ASPECT_COLOR_BIT,4)==expected,"texture made again after its release differs");
+ }
+ g_texture_staging_override=-1;
+ fprintf(stderr,"[renderer smoke] texture uploads through own buffers and the upload arena, and after a budget release, match the guest bytes\n");
+}
 void bc_surface_check() {
  for (uint32_t format : {0x31u,0x431u,0x32u,0x432u,0x33u,0x433u,0x34u,0x234u,0x35u,0x235u}) {
   SurfaceDesc d;d.addr=mem::host_alloc(65536,256);d.mipAddr=mem::host_alloc(65536,256);
@@ -1337,7 +1368,7 @@ int renderer_smoke_test() {
     } else fprintf(stderr,"[renderer smoke] %s fallback readback passed; native unsupported\n",vk::vertex_format_name(format));
    }
   }
-  bc_decode_smoke();bc_surface_check();upload_arena_check();asynchronous_submission_check();renderpass_retirement_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
+  bc_decode_smoke();bc_surface_check();texture_path_check();upload_arena_check();asynchronous_submission_check();renderpass_retirement_check();buffer_cache_check();set_res_scale(1);latch_res_scale();
   {
    Image upload(16,16,0x1a,false,2,2);
    upload.s.addr=mem::host_alloc(65536,256);upload.s.mipAddr=mem::host_alloc(65536,256);

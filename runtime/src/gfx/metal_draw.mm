@@ -26,6 +26,9 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include "gx2/gx2_cmd.h"
 #include "write_watch.h"
 #include "metal.h"
+#include "metal_cache_file.h"
+#include "metal_recipe_keys.h"
+#include "gfx/artistic_mips.h"
 #include "cloud_proto.h"
 #include "runtime.h"
 #include "util/helpers/StringBuf.h"
@@ -97,18 +100,9 @@ const char* capture_begin_frame() {
     return g_capture_dir.c_str();
 }
 
-// fast 64-bit hash over 8-byte words (tail handled bytewise)
+// fast 64-bit hash over 8-byte words (shared with the Vulkan setup preparation: metal_recipe_keys.h)
 static uint64_t hash_bytes(const void* data, size_t n, uint64_t h = 0x9E3779B97F4A7C15ull) {
-    const uint8_t* p = (const uint8_t*)data;
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        uint64_t v;
-        memcpy(&v, p + i, 8);
-        h = (h ^ v) * 0xFF51AFD7ED558CCDull;
-        h ^= h >> 32;
-    }
-    for (; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
-    return h ^ (h >> 29);
+    return gfx::mtlkey::hash_bytes(data, n, h);
 }
 
 // shader programs rarely change in place: cache their hash per address, revalidated once per frame
@@ -148,8 +142,8 @@ static uint64_t g_pool_gen = 0;
 static uint32_t g_pool_pos = 0;
 constexpr uint32_t kPoolChunk = 8 << 20;
 
-static Upload upload(const void* data, uint32_t size) {
-    size = (size + 255) & ~255u;
+// room for size bytes (a multiple of 256) in the current chunk, starting a new one when it is full
+static Upload reserve(uint32_t size) {
     if (!g_pool_cur || g_pool_pos + size > g_pool_cur.length) {
         std::lock_guard<std::mutex> lk(g_pool_mutex);
         if (g_pool_cur) g_pool_used.push_back(g_pool_cur);
@@ -166,10 +160,49 @@ static Upload upload(const void* data, uint32_t size) {
         g_pool_pos = 0;
     }
     Upload u{g_pool_cur, g_pool_pos};
-    memcpy((uint8_t*)g_pool_cur.contents + g_pool_pos, data, size);
-    rprof::add_upload(size);
     g_pool_pos += size;
     return u;
+}
+
+static Upload upload(const void* data, uint32_t size) {
+    size = (size + 255) & ~255u;
+    Upload u = reserve(size);
+    memcpy((uint8_t*)u.buf.contents + u.offset, data, size);
+    rprof::add_upload(size);
+    return u;
+}
+
+// Texture staging (WWHD_MTL_TEXTURE_STAGING): "pool" copies each level through the upload pool (recycled
+// when the command buffer completes) while the command buffer's texture staging stays within
+// WWHD_MTL_TEXTURE_STAGING_MB (default 16) and the level fits a pool chunk; anything else, and "buffer" (the
+// default), gets its own buffer (newBufferWithBytes). Idea after aurora's per-frame staging (MIT;
+// lib/gfx/texture.cpp); no code taken.
+static size_t g_texture_staging_bytes;  // in the recording command buffer (pool_retire resets it)
+uint64_t g_stat_staging_pool, g_stat_staging_pool_bytes, g_stat_staging_buffers, g_stat_staging_buffer_bytes;
+bool texture_staging(const void* data, size_t size, id<MTLBuffer>* buf, NSUInteger* offset) {
+    static const bool pool = [] {
+        const char* e = getenv("WWHD_MTL_TEXTURE_STAGING");
+        if (e && *e) LOG("[gfx] texture staging: %s (WWHD_MTL_TEXTURE_STAGING=%s)", strcmp(e, "pool") ? "own buffers" : "upload pool", e);
+        return e && !strcmp(e, "pool");
+    }();
+    static const size_t budget = [] {
+        const char* e = getenv("WWHD_MTL_TEXTURE_STAGING_MB");
+        return size_t(e && *e ? std::max(0, atoi(e)) : 16) << 20;
+    }();
+    if (!pool || !size || size > kPoolChunk || g_texture_staging_bytes + size > budget) {
+        ++g_stat_staging_buffers;
+        g_stat_staging_buffer_bytes += size;
+        return false;
+    }
+    Upload u = reserve(uint32_t((size + 255) & ~size_t(255)));
+    memcpy((uint8_t*)u.buf.contents + u.offset, data, size);
+    rprof::add_upload(rprof::kUpTexture, size);
+    g_texture_staging_bytes += size;
+    ++g_stat_staging_pool;
+    g_stat_staging_pool_bytes += size;
+    *buf = u.buf;
+    *offset = u.offset;
+    return true;
 }
 
 // Submitted uniform blocks (gx2/submitted_uniforms.h): uploaded once per submission and reused by
@@ -245,6 +278,13 @@ static bool rewritten_copy(GuestRangeKind kind, uint32_t addr, uint32_t size, Up
 
 // called before a command buffer commits: buffers used so far are recycled when it completes
 void pool_retire(id<MTLCommandBuffer> cmd) {
+    g_texture_staging_bytes = 0;
+    // the GPU timeline of the performance report (render_prof.h add_gpu_span): this command buffer's GPU interval
+    if (rprof::enabled())
+        [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            if (done.GPUEndTime > done.GPUStartTime && done.GPUStartTime > 0)
+                rprof::add_gpu_span(done.GPUStartTime * 1e9, done.GPUEndTime * 1e9);
+        }];
     std::vector<id<MTLBuffer>> used;
     {
         std::lock_guard<std::mutex> lk(g_pool_mutex);
@@ -278,9 +318,7 @@ static LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut
             uint32_t(q[2]) << 16 | uint32_t(q[3]) << 24; };
         const uint32_t count = word(p + 16);
         if (count > 64) return nullptr;
-        uint64_t h = uint64_t(word(p + 24)) | uint64_t(word(p + 28)) << 32;
-        for (uint32_t b = 0; b < 16; ++b)
-            h = (h ^ ((regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + b * 7 + 2] >> 11) & 0xFFFF)) * 1099511628211ull;
+        const uint64_t h = gfx::mtlkey::mix_strides(regs, uint64_t(word(p + 24)) | uint64_t(word(p + 28)) << 32);
         *keyOut = h;
         if (auto it = g_fetch.find(h); it != g_fetch.end()) return it->second;
         auto* fs = gx2::decode_fetch_attributes(prog, 32 + count * 52, nullptr);
@@ -294,9 +332,8 @@ static LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut
     bool ours = ld32(prog) == 0x57574653;
     uint32_t size = ours ? 16 + ld32(prog + 4) * 16 : regs[mmSQ_PGM_START_FS + 1] << 3;
     if (size > 0x1000) return nullptr;
-    uint64_t h = hash_bytes(mem::ptr(prog), size);
     // strides decide between vertex-descriptor fetch and manual fetch in the shader
-    for (uint32_t b = 0; b < 16; b++) h = (h ^ ((regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + b * 7 + 2] >> 11) & 0xFFFF)) * 1099511628211ull;
+    const uint64_t h = gfx::mtlkey::mix_strides(regs, hash_bytes(mem::ptr(prog), size));
     *keyOut = h;
     auto it = g_fetch.find(h);
     if (it != g_fetch.end()) return it->second;
@@ -500,48 +537,11 @@ static uint64_t stage_state_hash(const uint32_t* regs, uint64_t h, uint32_t texB
     // most lookups gather the same words as the previous one for this stage (the state generation
     // also moves for registers that don't end up here): gather into the spare buffer and compare
     // instead of rehashing. Render thread only.
-    struct Last { uint64_t in = 0, out = 0; uint32_t n = 0, cur = 0; uint32_t buf[2][400]; };
+    struct Last { uint64_t in = 0, out = 0; uint32_t n = 0, cur = 0; uint32_t buf[2][gfx::mtlkey::kStageWords]; };
     static Last last[2];
     Last& L = last[texBase == REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS ? 0 : 1];
     uint32_t* buf = L.buf[L.cur ^ 1];
-    uint32_t n = 0;
-    auto put = [&](uint32_t first, uint32_t count) { memcpy(&buf[n], &regs[first], count * 4); n += count; };
-    put(mmSQ_VTX_SEMANTIC_0, 32);
-    put(mmSPI_VS_OUT_ID_0, 10);
-    put(mmSPI_VS_OUT_CONFIG, 1);
-    put(mmPA_CL_VS_OUT_CNTL, 1);
-    put(mmSPI_PS_IN_CONTROL_0, 2);
-    put(mmSPI_PS_INPUT_CNTL_0, 32);
-    put(REGADDR::SQ_CONFIG, 1);
-    put(mmCB_SHADER_MASK, 1);
-    put(mmCB_SHADER_CONTROL, 1);
-    put(mmDB_SHADER_CONTROL, 1);
-    put(mmSPI_INPUT_Z, 1);
-    put(REGADDR::SX_ALPHA_TEST_CONTROL, 1);
-    put(REGADDR::PA_CL_VTE_CNTL, 1);
-    put(REGADDR::PA_CL_CLIP_CNTL, 1);
-    put(REGADDR::CB_COLOR_CONTROL, 1);
-    put(REGADDR::CB_TARGET_MASK, 1);
-    put(mmCB_COLOR0_INFO, 8);
-    uint32_t cbBase[8];
-    for (int i = 0; i < 8; i++) {
-        cbBase[i] = regs[mmCB_COLOR0_BASE + i] & ~0xFFu;
-        buf[n++] = cbBase[i] != 0;
-    }
-    buf[n++] = regs[REGADDR::DB_DEPTH_CONTROL] & 0x83;
-    // texture types and formats; sampling a bound render target switches to framebuffer fetch
-    for (int t = 0; t < 18; t++) {
-        const uint32_t* w = &regs[texBase + t * 7];
-        buf[n++] = (w[0] & 7) | (w[4] & 0x300);
-        buf[n++] = w[1] & 0x3F00000;
-        uint32_t fb = 0, base = w[2] << 8;
-        if (base)
-            for (int i = 0; i < 8; i++)
-                if (base == cbBase[i]) fb = 1 + i;
-        buf[n++] = fb;
-    }
-    // depth-compare samplers
-    for (int i = 0; i < 18 * 3; i++) buf[n++] = regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + i * 3] & 0xF8000000;
+    const uint32_t n = gfx::mtlkey::stage_words(regs, texBase, buf);  // (metal_recipe_keys.h)
     if (L.n == n && L.in == h && !memcmp(L.buf[L.cur], buf, n * 4)) return L.out;
     L.cur ^= 1;
     L.in = h;
@@ -1396,6 +1396,12 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
     float texScale[18][2];
     for (auto& t : texScale) t[0] = t[1] = 1.0f;
     uint32_t texGuest[18][2] = {};  // guest size per unit, for the half-size light buffer's grid
+    // hand-drawn mip levels (artistic_mips.h): the units sampling such a texture, and what their bias gets at the
+    // target's internal resolution
+    bool artistic[18] = {};
+    float artisticBias = 0.0f;
+    for (int i = 0; i < 8; i++)
+        if (colors && colors[i]) { artisticBias = gfx::artistic_mips::resolution_bias(colors[i]->sx, colors[i]->sy); break; }
     auto& rm = dec->resourceMapping;
     uint32_t texBase = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
     uint32_t samplerBase = vertex ? SAMPLER_BASE_INDEX_VERTEX : SAMPLER_BASE_INDEX_PIXEL;
@@ -1434,7 +1440,9 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             patched[0] = (patched[0] & ~0x7E00u) | (1u << 9) | (1u << 12);  // XY mag/min filter: bilinear
             sw = patched;
         }
-        id<MTLSamplerState> smp = get_sampler(sw, s && !s->gpuWritten && s->mips > 1);
+        // (hand-drawn mip levels: no forced anisotropy, artistic_mips.h)
+        id<MTLSamplerState> smp = get_sampler(sw, s && !s->gpuWritten && s->mips > 1 && !s->artisticMips);
+        if (unit < 18) artistic[unit] = s && s->artisticMips;
         // WWHD_LOD_BIAS_LOG=1: each distinct texture/sampler pair with a LOD bias, once (gfx/sampler_lod_bias.h)
         static const bool logBias = getenv("WWHD_LOD_BIAS_LOG") != nullptr;
         if (logBias && gfx::sampler_lod_bias::raw(sw[1]) != 0) {
@@ -1530,7 +1538,8 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             const uint32_t samplerIdx = dec->textureUnitSamplerAssignment[t];
             const bool add = gfx::sampler_lod_bias::mode() == gfx::sampler_lod_bias::Mode::Shader && samplerIdx < 18;
             *at(dec->uniform.loc_texLodBias[t]) =
-                add ? gfx::sampler_lod_bias::host(regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 1]) : 0.0f;
+                (add ? gfx::sampler_lod_bias::host(regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 1]) : 0.0f) +
+                (artistic[t] ? artisticBias : 0.0f);
         }
         for (int t = 0; t < 18; t++) {
             if (dec->uniform.loc_framebufferFetchSize[t] < 0) continue;
@@ -1734,6 +1743,15 @@ std::vector<PipelineRecipe> g_pending_pipelines;
 // hashes of the pipeline recipes already in the cache file or head start, so a pipeline the game asks
 // for before its queued recipe is built isn't appended again
 std::unordered_set<uint64_t> g_known_pipelines;
+// versioned file (metal_cache_file.h; WWHD_SHADER_CACHE_VERSIONING=0: the unversioned file as before)
+bool cache_versioning() {
+    static const bool on = [] { const char* e = getenv("WWHD_SHADER_CACHE_VERSIONING"); return !e || strcmp(e, "0"); }();
+    return on;
+}
+// recipes of the user's own file, and those of them the background build found unresolvable (their
+// shaders or fetch shader are not in the cache): tombstoned when the build is done
+std::unordered_set<uint64_t> g_user_pipelines;
+std::vector<uint64_t> g_stale_pipelines;
 
 std::string cache_path() {
     if (const char* e = getenv("WWHD_SHADER_CACHE")) return e;
@@ -1814,15 +1832,68 @@ static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, 
     cache_write(kRecPipeline, v);
 }
 
+// the system the cache was written on: compiled Metal code (the OS's own cache) is per macOS and GPU
+static std::string cache_fingerprint() {
+    @autoreleasepool {
+        NSString* os = [[NSProcessInfo processInfo] operatingSystemVersionString];
+        NSString* gpu = R.device ? R.device.name : @"?";
+        return std::string("macOS ") + (os ? os.UTF8String : "?") + " | " + (gpu ? gpu.UTF8String : "?");
+    }
+}
+
+// The versioned file: what its header says, and the tombstones (recipe hash -> index of the last tombstone
+// naming it; a recipe recorded again after its tombstone is kept). Reads record headers only, plus the
+// header and tombstone records.
+struct CacheScan {
+    bool hasHeader = false;
+    mtlcache::Header header;
+    std::unordered_map<uint64_t, size_t> tombstones;
+};
+static CacheScan cache_scan(const std::string& path) {
+    CacheScan scan;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return scan;
+    mtlcache::Record r;
+    std::vector<uint8_t> raw;
+    for (size_t index = 0; mtlcache::read_record(f, r); index++) {
+        if (r.type == mtlcache::kRecHeader && index == 0 && mtlcache::inflate(r, raw))
+            scan.hasHeader = mtlcache::decode_header(raw.data(), raw.size(), scan.header);
+        else if (r.type == mtlcache::kRecTombstone && mtlcache::inflate(r, raw))
+            for (uint64_t h : mtlcache::decode_tombstone(raw)) scan.tombstones[h] = index;
+    }
+    fclose(f);
+    return scan;
+}
+
 // load and replay the recipes; runs once on the render thread before the first draw
 static void cache_load() {
     std::string path = cache_path();
     if (path == "0") { g_cache_disabled = true; return; }
     double t0 = now_ms();
     size_t shaders = 0, pipelines = 0;
+    // the setup's model sweep, record only (WWHD_DSWEEP_RECORD_ONLY=1): known, so not appended again, but never
+    // built. Its processes start from copies of one file and are merged by appended length
+    // (tools/installer/sweep_merge.py), so they never rewrite it.
+    static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
+    const bool versioned = cache_versioning();
+    const mtlcache::Header ours = mtlcache::current(sizeof(PipelineRecipe), versioned ? cache_fingerprint() : std::string());
+    CacheScan scan;
+    mtlcache::Policy policy;
+    if (versioned) {
+        scan = cache_scan(path);
+        policy = mtlcache::policy(scan.hasHeader, scan.header, ours);
+    }
+    // rows the rewrite leaves out besides the policy's: damaged, torn, of the wrong size, tombstoned, repeated
+    size_t staleRows = 0, repeatedRows = 0;
+    bool damaged = false;
+    auto stalePipeline = [&](uint64_t h, size_t index) {
+        auto t = scan.tombstones.find(h);
+        return t != scan.tombstones.end() && t->second > index;
+    };
     if (FILE* f = fopen(path.c_str(), "rb")) {
         static std::vector<uint32_t> regs(0x10000);
         std::unordered_map<std::string, uint32_t> copies;
+        std::unordered_set<uint64_t> rows;
         auto guest_copy = [&](const uint8_t* src, uint32_t size) {
             uint32_t& addr = copies[std::string((const char*)src, size)];
             if (!addr) {
@@ -1834,24 +1905,37 @@ static void cache_load() {
         g_cache_replaying = true;
         g_defer_compiles = true;
         uint32_t hdr[3];
-        while (fread(hdr, sizeof hdr, 1, f) == 1) {
+        for (size_t index = 0;; index++) {
+            if (fread(hdr, sizeof hdr, 1, f) != 1) break;
             std::vector<uint8_t> comp(hdr[2]), raw(hdr[1]);
-            if (fread(comp.data(), 1, hdr[2], f) != hdr[2]) break;
+            if (fread(comp.data(), 1, hdr[2], f) != hdr[2]) { damaged = true; break; }
+            if (versioned && (hdr[0] == mtlcache::kRecHeader || hdr[0] == mtlcache::kRecTombstone)) continue;
             uLongf rsize = hdr[1];
-            if (uncompress(raw.data(), &rsize, comp.data(), hdr[2]) != Z_OK || rsize != hdr[1]) break;
+            if (uncompress(raw.data(), &rsize, comp.data(), hdr[2]) != Z_OK || rsize != hdr[1]) { damaged = true; break; }
+            // a repeated row (after the stale checks: a recipe recorded again after its tombstone is kept)
+            auto repeated = [&] {
+                if (!versioned || rows.insert(mtlcache::fnv(comp.data(), comp.size(), mtlcache::fnv(&hdr[0], 4))).second)
+                    return false;
+                repeatedRows++;
+                return true;
+            };
             const uint8_t* p = raw.data();
             const uint8_t* end = p + raw.size();
             if (hdr[0] == kRecPipeline) {
+                if (!policy.pipelines) continue;
+                if (versioned && raw.size() != sizeof(PipelineRecipe)) { staleRows++; continue; }
+                const uint64_t h = hash_bytes(raw.data(), raw.size());
+                if (versioned && stalePipeline(h, index)) { staleRows++; continue; }
+                if (repeated()) continue;
                 PipelineRecipe r;
-                // (record only: known, so not appended again, but never built)
-                static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
-                if (get(p, end, r) && g_known_pipelines.insert(hash_bytes(raw.data(), raw.size())).second && !recordOnly) {
+                g_user_pipelines.insert(h);
+                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly) {
                     g_pending_pipelines.push_back(r);
                     pipelines++;
                 }
                 continue;
             }
-            if (hdr[0] != kRecShader) continue;
+            if (hdr[0] != kRecShader || !policy.shaders || repeated()) continue;
             uint32_t vertex, size, fsSize, n;
             if (!get(p, end, vertex) || !get(p, end, size) || !get(p, end, fsSize) || !get(p, end, n)) break;
             if (p + size + fsSize + n * 8 > end) break;
@@ -1880,16 +1964,69 @@ static void cache_load() {
             get_shader_uncached(regs.data(), vertex, fs, fsKey);
             shaders++;
         }
+        if (!damaged && fgetc(f) != EOF) damaged = true;  // a torn record header at the end
         fclose(f);
         g_cache_replaying = false;
         g_defer_compiles = false;
     }
     void headstart_load();  // shader_headstart.mm
     headstart_load();
-    g_cache_out = fopen(path.c_str(), "ab");
+    if (versioned && policy.writable && !recordOnly) {
+        struct stat st {};
+        const bool exists = stat(path.c_str(), &st) == 0 && st.st_size > 0;
+        if (exists && (policy.rewrite || staleRows || repeatedRows || damaged || !scan.tombstones.empty())) {
+            // the same decisions as the replay above, applied to the file
+            mtlcache::RewriteStats rs;
+            const double tw = now_ms();
+            std::vector<uint8_t> raw;
+            const bool ok = mtlcache::rewrite(path, ours, [&](const mtlcache::Record& r, size_t index) {
+                if (r.type == kRecShader) return policy.shaders;
+                if (r.type != kRecPipeline) return true;  // other types: kept as they are
+                if (!policy.pipelines || r.raw != sizeof(PipelineRecipe) || !mtlcache::inflate(r, raw)) return false;
+                return !stalePipeline(hash_bytes(raw.data(), raw.size()), index);
+            }, rs);
+            LOG("[gfx] shader cache %s: %s; %zu rows kept, %zu stale and %zu repeated left out%s (%.0f ms)",
+                ok ? "rewritten" : "NOT rewritten (write failed)", policy.reason ? policy.reason : "stale rows",
+                rs.kept, rs.dropped, rs.duplicates, rs.damaged ? ", damaged end cut" : "",
+                now_ms() - tw);
+        } else if (policy.reason) {
+            LOG("[gfx] shader cache: %s", policy.reason);
+        }
+        g_cache_out = fopen(path.c_str(), "ab");
+        if (g_cache_out && !exists) {
+            mtlcache::Record hr;
+            if (mtlcache::make_record(mtlcache::kRecHeader, mtlcache::encode_header(ours), hr)) {
+                mtlcache::write_compressed(g_cache_out, hr);
+                fflush(g_cache_out);
+            }
+        }
+    } else if (!versioned || policy.writable) {
+        g_cache_out = fopen(path.c_str(), "ab");
+    } else {
+        LOG("[gfx] shader cache: %s", policy.reason);
+    }
     if (shaders || pipelines)
         LOG("[gfx] shader cache: replayed %zu shaders, %zu pipelines queued (%.0f ms) from %s", shaders, pipelines,
             now_ms() - t0, path.c_str());
+}
+
+// the background build is done: recipes of the user's file it couldn't resolve get a tombstone, so the next
+// start leaves them out of the file. Not while the head start is switched off (WWHD_HEADSTART=0): the
+// user's recipes may name head-start shaders.
+static void cache_tombstone_stale() {
+    if (g_stale_pipelines.empty()) return;
+    std::vector<uint64_t> stale;
+    stale.swap(g_stale_pipelines);
+    const char* hs = getenv("WWHD_HEADSTART");
+    static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
+    if (!cache_versioning() || !g_cache_out || recordOnly || (hs && !strcmp(hs, "0"))) return;
+    mtlcache::Record r;
+    if (!mtlcache::make_record(mtlcache::kRecTombstone, mtlcache::encode_tombstone(stale), r)) return;
+    mtlcache::write_compressed(g_cache_out, r);
+    fflush(g_cache_out);
+    // a live use of one of them records it again (after the tombstone, so it is kept)
+    for (uint64_t h : stale) g_known_pipelines.erase(h);
+    LOG("[gfx] shader cache: %zu unresolvable pipeline recipes marked stale", stale.size());
 }
 
 // build queued pipelines whose shaders have finished compiling, at most `budget` of them and only
@@ -1910,8 +2047,13 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
         auto vi = g_shaders.find(r.vsKey), pi = g_shaders.find(r.psKey);
         auto fi = g_fetch.find(r.fsKey);
         auto finallyFailed = [](Shader* sh) { return sh->state == CS_FAILED && (!sh->dec || sh->attempts >= kCompileAttempts); };
-        if (vi == g_shaders.end() || pi == g_shaders.end() || fi == g_fetch.end() || !fi->second ||
-            finallyFailed(vi->second) || finallyFailed(pi->second)) {
+        const bool missing = vi == g_shaders.end() || pi == g_shaders.end() || fi == g_fetch.end() || !fi->second;
+        if (missing || finallyFailed(vi->second) || finallyFailed(pi->second)) {
+            // stale only when something it names is gone: a failed compile may work on another macOS
+            if (missing && cache_versioning()) {
+                const uint64_t h = hash_bytes(&r, sizeof r);
+                if (g_user_pipelines.count(h)) g_stale_pipelines.push_back(h);
+            }
             g_pending_pipelines[i] = g_pending_pipelines.back();  // unusable recipe
             g_pending_pipelines.pop_back();
             g_recipes_dropped++;
@@ -1952,6 +2094,7 @@ void cache_warm_step() {
         queued = false;
         LOG("[gfx] background pipelines done by frame %llu: %zu built, %zu unresolved", (unsigned long long)R.frame,
             g_recipes_built, g_recipes_dropped);
+        cache_tombstone_stale();
     }
 }
 
@@ -1986,10 +2129,13 @@ void report_skips() {
     uint64_t faults, protectedPages;
     wwatch::take_stats(faults, protectedPages);
     LOG("[gfx] last 300 frames: %llu full texture checks (%.1f MiB hashed), %llu uploads, %llu invalidates marking %llu surfaces, "
-        "%llu texture page write faults, %llu pages protected",
+        "%llu texture page write faults, %llu pages protected; staging: %llu levels from the upload pool (%.1f MiB), "
+        "%llu own buffers (%.1f MiB)",
         (unsigned long long)g_stat_full_checks, g_stat_hashed_bytes / 1048576.0, (unsigned long long)g_stat_uploads,
         (unsigned long long)g_stat_invalidates, (unsigned long long)g_stat_invalidated_surfaces, (unsigned long long)faults,
-        (unsigned long long)protectedPages);
+        (unsigned long long)protectedPages, (unsigned long long)g_stat_staging_pool, g_stat_staging_pool_bytes / 1048576.0,
+        (unsigned long long)g_stat_staging_buffers, g_stat_staging_buffer_bytes / 1048576.0);
+    g_stat_staging_pool = g_stat_staging_pool_bytes = g_stat_staging_buffers = g_stat_staging_buffer_bytes = 0;
     g_stat_full_checks = g_stat_uploads = g_stat_invalidates = g_stat_invalidated_surfaces = g_stat_hashed_bytes = 0;
     for (int k = 0; k < kRangeKinds; k++) {
         size_t dynamicRanges = 0;

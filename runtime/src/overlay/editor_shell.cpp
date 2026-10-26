@@ -291,6 +291,22 @@ void building_footprint(ImDrawList* dl, const View& v, const std::string& mod, c
     }
     const auto& conflicts = r.get("conflicts").array;
     if (conflicts.empty()) return;
+    // the model's own faces that are in the way (issue #281: what rises into a villager's space or goes into the island's
+    // walls or ground), tinted and outlined, so a modder sees which part to change
+    const ImU32 face_fill = IM_COL32(255, 40, 200, 120), face_line = IM_COL32(255, 120, 230, 255);
+    for (const auto& k : conflicts)
+        for (const auto& f : k.get("faces").array) {
+            if (f.array.size() != 3) continue;
+            ImVec2 t[3];
+            bool in = true;
+            for (int j = 0; j < 3 && in; ++j) {
+                const float q[3] = {float(num(f.array[j], "x")), float(num(f.array[j], "y")), float(num(f.array[j], "z"))};
+                in = project(v, q, t[j]);
+            }
+            if (!in) continue;
+            dl->AddTriangleFilled(t[0], t[1], t[2], face_fill);
+            dl->AddTriangle(t[0], t[1], t[2], face_line, 1.5f);
+        }
     // what is in the way, made visible: a place as a ring of its reach, a route as its line
     const ImU32 marks = IM_COL32(255, 190, 60, 230);
     for (const auto& k : conflicts) {
@@ -339,6 +355,7 @@ void building_footprint(ImDrawList* dl, const View& v, const std::string& mod, c
         std::string all = "In the way here:";
         for (const auto& c : conflicts) {
             all += "\n- " + c.get("message").string();
+            if (c.get("triangle_count").number > 0) all += " [" + std::to_string(int(c.get("triangle_count").number)) + " of the model's faces, marked pink]";
             if (!c.get("native").string().empty()) all += "  (game name: " + c.get("native").string() + ")";
         }
         ImGui::SetTooltip("%s", all.c_str());

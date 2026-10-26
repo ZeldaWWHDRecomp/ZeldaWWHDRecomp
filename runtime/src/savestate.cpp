@@ -1779,6 +1779,11 @@ uint32_t last_load_counter() { return g_last_load_counter.load(); }
 uint64_t last_load_frame() { return g_last_load_frame.load(); }
 uint64_t last_arrival_frame() { return g_last_arrival_frame.load(); }
 uint64_t last_load_step() { return g_last_load_step.load(); }
+std::atomic<uint64_t> g_seeded_arrival_frame{0}, g_seeded_arrival_step{0};
+std::atomic<uint32_t> g_seeded_arrival_counter{0};
+uint64_t seeded_arrival_frame() { return g_seeded_arrival_frame.load(); }
+uint64_t seeded_arrival_step() { return g_seeded_arrival_step.load(); }
+uint32_t seeded_arrival_counter() { return g_seeded_arrival_counter.load(); }
 
 std::string states_dir() { return state_dir(); }
 
@@ -1974,7 +1979,13 @@ void service(Cpu* c) {
     if (g_fixed_seed) {  // (before service_portable_load: a load applied now is followed from the next boundary on)
         switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)))) {
         case fixed_seed::LoadGate::kLoading: apply_fixed_seed("portable state: loading the new stage"); break;
-        case fixed_seed::LoadGate::kArrived: apply_fixed_seed("portable state: first frame in the new stage"); break;
+        case fixed_seed::LoadGate::kArrived:
+            apply_fixed_seed("portable state: first frame in the new stage");
+            // the load-relative capture's start after a portable load (WWHD_TEST_CAPTURE_LOAD_STEP; gx2_core.cpp)
+            g_seeded_arrival_step = interp::logic_steps();
+            g_seeded_arrival_counter = ld32(GD(0x101FF560));
+            g_seeded_arrival_frame = render::frame_count();
+            break;
         case fixed_seed::LoadGate::kTimedOut: LOG("[test] WWHD_TEST_FIXED_SEED: portable state: no stage change seen"); break;
         default: break;
         }

@@ -17,6 +17,7 @@
 #include "stereo.h"
 #include "../stereo_projection.h"
 #include "../sampler_lod_bias.h"
+#include "../artistic_mips.h"
 #include "sampler_filtering.h"
 #include "deferred_dispatch.h"
 #include "buffer_cache.h"
@@ -887,6 +888,9 @@ static bool background_wait(const uint32_t* r, Pipeline& p, const std::array<Sur
   if (depthWritten) t.left_out(depth->addr, R.frame);
   return false;
 }
+// Setup's Vulkan preparation (derive_guest_pipeline_recipe): pipeline() hands the recipe it would compile to this
+// sink instead of compiling it or taking a warmed pipeline. Render thread only.
+std::vector<std::shared_ptr<PipelineRecipe>>* g_recipeSink = nullptr;
 Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
                    LatteFetchShader *fs, VkPrimitiveTopology topology,
                    const std::array<Surface *, 8> &colors, Surface *depth) {
@@ -1346,6 +1350,40 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   ci.layout = p.layout;
   GraphicsPipelineState pipelineState(ci, &rc);
   WarmPipeline warmed;
+  // debug: WWHD_VK_RECIPE_KEY_DUMP=file appends the portable key (hex) of every pipeline derived for the setup's
+  // preparation ("D") and of every pipeline the game asks for that the recipe database does not have ("M")
+  static FILE* keyDump = [] { const char* p = getenv("WWHD_VK_RECIPE_KEY_DUMP"); return p && *p ? std::fopen(p, "a") : nullptr; }();
+  auto dumpKey = [&](char kind) {
+    if (!keyDump) return;
+    std::fputc(kind, keyDump); std::fputc(' ', keyDump);
+    for (uint8_t byte : recipeKey) std::fprintf(keyDump, "%02x", byte);
+    std::fputc('\n', keyDump); std::fflush(keyDump);
+  };
+  if (!g_recipeSink) {
+    ++R.pipelineKeysNew;
+    const bool known = pipeline_recipe_known(recipeKey);
+    R.pipelineKeysKnown += known;
+    if (!known) dumpKey('M');
+  } else dumpKey('D');
+  if (g_recipeSink) {
+    for (size_t i = 0; i < shaderBinaries.size(); ++i)
+      if (recipeSpirv[i].empty() && shaderBinaries[i]) recipeSpirv[i] = vk::shader_binary_words_exact(shaderBinaries[i], R.frame);
+    for (auto module : modules) if (module) vkDestroyShaderModule(R.device, module, nullptr);
+    vkDestroyPipelineLayout(R.device, p.layout, nullptr);
+    for (auto set : p.sets) vkDestroyDescriptorSetLayout(R.device, set, nullptr);
+    if (!recipeSpirv[0].empty() && !recipeSpirv[1].empty()) {
+      auto recipe = std::make_shared<PipelineRecipe>();
+      recipe->key = std::move(recipeKey); recipe->spirv = std::move(recipeSpirv);
+      recipe->descriptors = std::move(descriptorBindings);
+      recipe->dynamicUniforms = p.dynamicUniforms;
+      recipe->state = std::make_unique<GraphicsPipelineState>(std::move(pipelineState));
+      g_recipeSink->push_back(std::move(recipe));
+    }
+    // (not kept in the map: the same key from another recipe is derived again and dropped as a repeat by the caller)
+    static Pipeline none;
+    none = Pipeline{};
+    return none;
+  }
   if (!recipeSpirv[0].empty() && !recipeSpirv[1].empty() &&
       take_warm_pipeline(recipeKey, recipeSpirv, descriptorBindings, p.dynamicUniforms, pipelineState, warmed)) {
     for (auto module : modules) if (module) vkDestroyShaderModule(R.device, module, nullptr);
@@ -1481,7 +1519,11 @@ struct SamplerMemo {
   }
 };
 SamplerMemo samplerMemo;
-VkSampler sampler(const uint32_t *words, bool compare, bool integer, bool allowAniso, bool linearSupported) {
+// what samplers of hand-drawn mip textures add to their LOD bias in the draw being prepared: log2 of its targets'
+// internal resolution scale (gfx/artistic_mips.h; set by draw() before its stages are bound)
+float g_artisticBias = 0;
+VkSampler sampler(const uint32_t *words, bool compare, bool integer, bool allowAniso, bool linearSupported,
+                  float extraBias = 0) {
   const bool nearestOnly = sampler_nearest_only(integer, compare, linearSupported);
   static const bool memo = [] {
     const char* e = std::getenv("WWHD_VK_SAMPLER_MEMO");
@@ -1490,13 +1532,13 @@ VkSampler sampler(const uint32_t *words, bool compare, bool integer, bool allowA
   const bool forceAniso = allowAniso && aniso_enabled();
   const bool stats = preparation_stats_enabled();
   if (stats) ++R.cpuPreparation.samplerRequests;
-  if (memo && samplerMemo.matches(R.device, words, compare, integer, forceAniso, nearestOnly)) {
+  if (memo && extraBias == 0 && samplerMemo.matches(R.device, words, compare, integer, forceAniso, nearestOnly)) {
     if (stats) ++R.cpuPreparation.samplerMemoHits;
     return samplerMemo.value;
   }
   if (stats) ++R.cpuPreparation.samplerMapLookups;
   auto remember = [&](VkSampler value) {
-    if (memo) samplerMemo.remember(R.device, words, compare, integer, forceAniso, nearestOnly, value);
+    if (memo && extraBias == 0) samplerMemo.remember(R.device, words, compare, integer, forceAniso, nearestOnly, value);
     return value;
   };
   std::string key(reinterpret_cast<const char *>(words), 12);
@@ -1504,6 +1546,7 @@ VkSampler sampler(const uint32_t *words, bool compare, bool integer, bool allowA
   key.push_back(integer);
   key.push_back(forceAniso);
   key.push_back(nearestOnly);
+  if (extraBias != 0) key.append(reinterpret_cast<const char*>(&extraBias), sizeof extraBias);
   static std::unordered_map<std::string, VkSampler> cache;
   if (auto it = cache.find(key); it != cache.end())
     return remember(it->second);
@@ -1545,7 +1588,7 @@ VkSampler sampler(const uint32_t *words, bool compare, bool integer, bool allowA
   ci.addressModeU = addr(static_cast<uint32_t>(w.get_CLAMP_X()));
   ci.addressModeV = addr(static_cast<uint32_t>(w.get_CLAMP_Y()));
   ci.addressModeW = addr(static_cast<uint32_t>(w.get_CLAMP_Z()));
-  ci.mipLodBias = std::clamp(::gfx::sampler_lod_bias::levels(words[1]),
+  ci.mipLodBias = std::clamp(::gfx::sampler_lod_bias::levels(words[1]) + extraBias,
                              -R.properties.limits.maxSamplerLodBias,
                              R.properties.limits.maxSamplerLodBias);
   if (!R.samplerMipLodBias && ci.mipLodBias != 0) {
@@ -2357,9 +2400,12 @@ VkSampler resolve_sampler(const uint32_t* r, vk::Shader* sh, uint32_t unit, cons
     patchedSampler[0] = (patchedSampler[0] & ~0x7E00u) | (1u << 9) | (1u << 12);
     samplerWords = patchedSampler;
   }
+  // hand-drawn mip levels (gfx/artistic_mips.h): no forced anisotropy; the resolution-aware bias in the sampler where
+  // the device applies sampler biases (else in the shader's uniform, bind_stage)
   return sampler(samplerWords, sh->dec->textureUsesDepthCompare[unit],
                  s->fmt.kind != FormatInfo::FLOAT,
-                 !s->gpuWritten && s->mips > 1, s->linearFiltering);
+                 !s->gpuWritten && s->mips > 1 && !s->artisticMips, s->linearFiltering,
+                 s->artisticMips && R.samplerMipLodBias ? g_artisticBias : 0.0f);
 }
 StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                           VkDescriptorSetLayout layout, bool dynamicUniforms, float sx, float sy,
@@ -2625,6 +2671,14 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       ::gfx::area_sample::scale_gather_grid(reinterpret_cast<float*>(supportUniforms.data() + sh->uniforms.offset_remapped),
                                             (supportUniforms.size() - sh->uniforms.offset_remapped) / 16, s->width, s->height,
                                             s->sx, s->sy);
+    // hand-drawn mip levels where the shader applies the bias (MoltenVK): the resolution-aware part on top
+    const int biasOffset = sh->uniforms.offset_texLodBias[unit];
+    if (s->artisticMips && !R.samplerMipLodBias && biasOffset >= 0 && size_t(biasOffset) + 4 <= supportUniforms.size()) {
+      float bias;
+      memcpy(&bias, supportUniforms.data() + biasOffset, 4);
+      bias += g_artisticBias;
+      memcpy(supportUniforms.data() + biasOffset, &bias, 4);
+    }
     if (imageCount >= imageInfos.size())
       exception_report::raise("stage image descriptor capacity exceeded");
     auto &info = imageInfos[imageCount++];
@@ -3307,6 +3361,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // eye 1 replays a stage of eye 0's draw at the same scale through the same pipeline
   const bool replayStages = replay && &p == replay->pipeline && replay->sx == sx && replay->sy == sy;
   StageResources vres, pres;
+  g_artisticBias = ::gfx::artistic_mips::resolution_bias(sx, sy);
   if (!replayStages || !replay->stages[0].valid ||
       !replay_stage(replay->stages[0], r, vs, cameraEye, colors, depth, vres))
     vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe, cameraEye, sunShadow,
@@ -3841,5 +3896,59 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ++drawBatchSubmissions;
   }
   rprof::mark(rprof::kSubmit);
+}
+// Setup's Vulkan preparation (headstart.cpp, the head start's Metal pipeline recipes): the recipe of the pipeline a
+// draw with these registers would make, by the live derivation: fetch shader, vertex and pixel translation, active
+// targets, pipeline key and state as draw() finds them. colorFormats/depthFormat: GX2 surface formats of the targets
+// (0: none). nullptr with *why when the state does not make a pipeline here.
+std::shared_ptr<PipelineRecipe> derive_guest_pipeline_recipe(const uint32_t* r, const uint32_t colorFormats[8],
+    uint32_t depthFormat, const char** why) {
+  auto fail = [&](const char* reason) { *why = reason; return std::shared_ptr<PipelineRecipe>{}; };
+  const uint32_t prim = r[REGADDR::VGT_PRIMITIVE_TYPE] & 0x3F;
+  VkPrimitiveTopology topology;
+  switch (prim) {
+  case 1: topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
+  case 2: topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
+  case 3: case 0x12: topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
+  case 4: case 5: case 0x13: case 0x14: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+  case 6: topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+  default: return fail("primitive");
+  }
+  uint64_t fsKey = 0;
+  auto* fs = vk::get_fetch_shader(r, &fsKey, ~uint64_t{0});
+  if (!fs) return fail("fetch shader");
+  vk::Shader* vs = vk::translate(r, true, fs, fsKey, ~uint64_t{0}, ~uint64_t{0});
+  if (!vs || !vs->ready()) return fail("vertex shader");
+  vk::Shader* ps = vk::translate(r, false, fs, fsKey, ~uint64_t{0}, ~uint64_t{0}, vs);
+  if (!ps || !ps->ready()) return fail("pixel shader");
+  const auto& lcr = *reinterpret_cast<const LatteContextRegister*>(r);
+  const auto mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
+  static std::array<Surface, 9> stubs;
+  std::array<Surface*, 8> colors{};
+  for (int i = 0; i < 8; ++i) {
+    if (!(mask & (1u << i))) continue;
+    if (!colorFormats[i]) return fail("targets");  // the draw has a target the recipe does not name
+    stubs[i] = Surface{};
+    stubs[i].format = colorFormats[i]; stubs[i].fmt = format_info(colorFormats[i], false);
+    colors[i] = &stubs[i];
+  }
+  Surface* depth = nullptr;
+  if (LatteMRT::GetActiveDepthBufferMask(lcr) && depthFormat) {
+    stubs[8] = Surface{};
+    stubs[8].format = depthFormat; stubs[8].isDepth = true; stubs[8].fmt = format_info(depthFormat, true);
+    depth = &stubs[8];
+  }
+  if (!colors[0] && !depth) {
+    bool any = false;
+    for (auto* c : colors) any |= c != nullptr;
+    if (!any) return fail("targets");
+  }
+  std::vector<std::shared_ptr<PipelineRecipe>> sink;
+  g_recipeSink = &sink;
+  try { pipeline(r, vs, ps, fs, topology, colors, depth); }
+  catch (...) { g_recipeSink = nullptr; return fail("pipeline state"); }
+  g_recipeSink = nullptr;
+  if (sink.empty()) return fail("shader binaries");
+  return sink.front();
 }
 } // namespace gfxvk

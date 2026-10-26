@@ -437,6 +437,9 @@ add_executable(editor_mcp_test runtime/tools/editor_mcp_test.cpp runtime/src/edi
                runtime/src/editor/commands_quest.cpp runtime/src/editor/commands_story.cpp runtime/src/editor/quests.cpp runtime/src/editor/commands_scene.cpp runtime/src/editor/demo_names.cpp runtime/src/editor/commands_route.cpp runtime/src/editor/commands_paths.cpp runtime/src/editor/commands_water.cpp runtime/src/editor/water.cpp runtime/src/editor/scenes.cpp runtime/src/editor/demo_tracks.cpp runtime/src/mods/story_native_scene_coverage.cpp ${WWHD_NPC_CATALOGUE})
 target_include_directories(editor_mcp_test PRIVATE runtime/src)
 target_compile_options(editor_mcp_test PRIVATE -UNDEBUG)
+# bounds-checked standard containers in this test (libc++ and libstdc++): an index past the end fails on every
+# platform instead of reading whatever is there (#296: a check passed on macOS and failed on Linux that way)
+target_compile_definitions(editor_mcp_test PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG _GLIBCXX_ASSERTIONS)
 if(WIN32)
   target_link_libraries(editor_mcp_test PRIVATE ws2_32 bcrypt)
 endif()
@@ -1291,6 +1294,19 @@ add_test(NAME render_prof_env_on COMMAND render_prof_test env-on)
 add_test(NAME render_prof_env_off COMMAND render_prof_test env-off)
 # Settings > Graphics > Shader compile (off / fast): which draws may be left out, default, switch,
 # WWHD_BG_SHADERS, the wait budget and the report line
+# hand-drawn mip level detection and the texture budget's choice (gfx/artistic_mips.h, gfx/vulkan/texture_budget.h)
+add_executable(artistic_mips_test runtime/tools/artistic_mips_test.cpp)
+target_include_directories(artistic_mips_test PRIVATE runtime/src)
+target_compile_options(artistic_mips_test PRIVATE -UNDEBUG)
+add_test(NAME artistic_mips COMMAND artistic_mips_test)
+# the Metal recipe file's version header, load policy and rewrite (gfx/metal_cache_file.h; POSIX test, the cache is Metal-only)
+if(NOT WIN32)
+  add_executable(metal_cache_file_test runtime/tools/metal_cache_file_test.cpp)
+  target_include_directories(metal_cache_file_test PRIVATE runtime/src)
+  target_link_libraries(metal_cache_file_test PRIVATE ZLIB::ZLIB)
+  target_compile_options(metal_cache_file_test PRIVATE -UNDEBUG)
+  add_test(NAME metal_cache_file COMMAND metal_cache_file_test)
+endif()
 add_executable(background_shaders_test runtime/tools/background_shaders_test.cpp runtime/src/background_shaders.cpp)
 target_include_directories(background_shaders_test PRIVATE runtime/src)
 target_compile_options(background_shaders_test PRIVATE -UNDEBUG)
@@ -1350,6 +1366,13 @@ target_compile_options(exception_report_test PRIVATE -UNDEBUG)
 target_link_libraries(exception_report_test PRIVATE Threads::Threads)
 add_test(NAME exception_report COMMAND exception_report_test)
 if(NOT ANDROID)
+  if(WWHD_HAS_VULKAN)
+    # the Vulkan renderer's GPU self-test (wwhd --renderer-smoke: format, upload, readback and cache checks against
+    # their CPU references); skipped where no Vulkan device starts
+    add_test(NAME renderer_smoke COMMAND wwhd --renderer-smoke)
+    set_tests_properties(renderer_smoke PROPERTIES PASS_REGULAR_EXPRESSION "\\[renderer smoke\\] PASS:"
+                         SKIP_REGULAR_EXPRESSION "Vulkan could not start" TIMEOUT 600)
+  endif()
   add_test(NAME runtime_error_log COMMAND ${CMAKE_COMMAND} -DWWHD=$<TARGET_FILE:wwhd>
            -DWORK=${CMAKE_BINARY_DIR}/runtime_error_test_work -P ${CMAKE_SOURCE_DIR}/runtime/tools/runtime_error_test.cmake)
   # crash logs name the module of a host crash address (main.cpp, crash_addr.cpp)

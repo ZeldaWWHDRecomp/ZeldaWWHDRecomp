@@ -74,6 +74,11 @@ struct Worker {
   std::unordered_set<uint32_t> prefetched;    // groups queued since they became resident
   std::deque<std::string> prefetch;           // keys of newly resident groups, compiled before startup work
   std::unordered_set<std::string> compiling;  // keys a prefetch compiler is building now
+  // keys whose driver compile is running now (a subset of compiling), and the signal when one finishes: a demand for
+  // one of them waits for it instead of compiling the same pipeline again (take_warm_pipeline, WWHD_VK_DEMAND_PROMOTE)
+  std::unordered_set<std::string> inDriver;
+  std::condition_variable driverDone;
+  uint64_t promotions = 0, promotedHits = 0, promotedWaitNs = 0;
   uint64_t residentGeneration = 0, readySequence = 0;
   size_t prefetchedReady = 0;
   bool drainExit = false;                     // finish/offline warming: leave once the queues are empty
@@ -548,22 +553,29 @@ void run(Worker& w, std::vector<uint8_t> seed) {
         }
         WarmPipeline result;
         VkResult compiled;
+        { std::lock_guard lock(w.mutex); w.inDriver.insert(key); }
         {
           std::shared_lock cacheLock(w.cacheMutex);
           compiled = compile(w.device, cache, *recipe, result, ahead ? "prefetch_pipeline" : "startup_pipeline");
           if (compiled == VK_SUCCESS) w.cacheChanged = true;
         }
-        if (compiled != VK_SUCCESS) { finished(); ++failures; continue; }
+        if (compiled != VK_SUCCESS) {
+          { std::lock_guard lock(w.mutex); w.inDriver.erase(key); }
+          w.driverDone.notify_all();
+          finished(); ++failures; continue;
+        }
         bool publish;
         {
           std::lock_guard lock(w.mutex);
           w.compiling.erase(key);
+          w.inDriver.erase(key);
           publish = !w.stopped && !w.consumed.contains(key);
           if (publish) {
             try { retain_ready(w,key,result,recipe); }
-            catch (...) { destroy(w.device,result); throw; }
+            catch (...) { destroy(w.device,result); w.driverDone.notify_all(); throw; }
           }
         }
+        w.driverDone.notify_all();
         if (publish) { ++done; prefetched += ahead; }
         else { destroy(w.device, result); ++cancels; }
       }
@@ -610,8 +622,20 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
   if (!w.device) return false;
   Ready entry;
   {
-    std::lock_guard lock(w.mutex);
+    std::unique_lock lock(w.mutex);
     auto id = identity(key);
+    // Demand promotion (WWHD_VK_DEMAND_PROMOTE=1): the worker's driver compile of this very pipeline is running, so
+    // waiting for it (at most WWHD_VK_DEMAND_PROMOTE_MS, default 1000) is shorter than compiling it again from the
+    // start. Jobs still queued are compiled by the demand path (and dropped from the queue: consumed below).
+    static const bool promote = [] { const char* e = std::getenv("WWHD_VK_DEMAND_PROMOTE"); return e && !std::strcmp(e, "1"); }();
+    if (promote && w.inDriver.contains(id)) {
+      static const int64_t limitMs = [] { const char* e = std::getenv("WWHD_VK_DEMAND_PROMOTE_MS"); return e && *e ? std::max(0, std::atoi(e)) : 1000; }();
+      const auto started = std::chrono::steady_clock::now();
+      ++w.promotions;
+      w.driverDone.wait_for(lock, std::chrono::milliseconds(limitMs), [&] { return w.stopped || !w.inDriver.contains(id); });
+      w.promotedWaitNs += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+      w.promotedHits += w.ready.contains(id);
+    }
     // This also prevents an in-flight startup job from publishing a duplicate
     // after the render thread has already compiled this key.
     if (w.consumed.size() < kPipelineRecipeMaxCount) w.consumed.insert(id);
@@ -632,6 +656,17 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
   record_headstart_pipeline(w.fingerprint, entry.recipe);
   out = entry.handles;
   return true;
+}
+void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& waitMs) {
+  auto& w = worker();
+  std::lock_guard lock(w.mutex);
+  promotions = w.promotions; hits = w.promotedHits; waitMs = w.promotedWaitNs / 1e6;
+}
+bool pipeline_recipe_known(const std::vector<uint8_t>& key) {
+  auto& w = worker();
+  if (!w.device) return false;
+  std::lock_guard lock(w.mutex);
+  return w.recipes.contains(identity(key));
 }
 void remember_pipeline_recipe(std::shared_ptr<PipelineRecipe> recipe) {
   auto& w = worker();
@@ -775,6 +810,24 @@ PipelineWarmupResult warm_resolved_pipeline_recipes(std::vector<std::shared_ptr<
   PipelineWarmupResult batch{ready.load(), failed.load()};
   w.result.ready += batch.ready; w.result.failed += batch.failed;
   return batch;
+}
+PipelineWarmupResult warm_all_recipes() {
+  auto& w = worker();
+  leave_prefetch(w);
+  if (w.thread.joinable()) w.thread.join();
+  std::vector<std::shared_ptr<PipelineRecipe>> rest;
+  {
+    std::lock_guard lock(w.mutex);
+    std::vector<std::pair<uint64_t, std::shared_ptr<PipelineRecipe>>> ordered;
+    for (auto& [key, recipe] : w.recipes)
+      if (!w.ready.contains(key)) {
+        auto at = w.order.find(key);
+        ordered.emplace_back(at == w.order.end() ? UINT64_MAX : at->second, recipe);
+      }
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& entry : ordered) rest.push_back(std::move(entry.second));
+  }
+  return warm_resolved_pipeline_recipes(std::move(rest));
 }
 PipelineWarmupResult finish_pipeline_warmup() {
   auto& w = worker();

@@ -480,7 +480,12 @@ and the villagers walk over (their feet's wall checks start 30 units up). In det
   top;
 - anything standing out of the island's ground (a wall, a raised part, ground more than 30 units higher)
   still counts, as does a crossing more than 150 units above the object's base (resting on the ground, or
-  reaching a little into a slope under it, is fine).
+  reaching a little into a slope under it, is fine);
+- only touching is not crossing: new ground whose join vertices are exactly the island's own vertices, a side
+  lying on the island's cliff, or a part resting on its ground. Up to a quarter of a unit (2.5 mm) counts as
+  touching, more than the rounding of coordinates out at sea and of a model exported in metres, so no offset
+  is needed when you snap your join to the island's vertices. Anything going further into the island counts
+  as above.
 
 **Villagers, start points, doors and routes** count only for what comes into the space they need: within
 their reach (above) and up to their height, more than 30 units above the floor they stand on. Ground at
@@ -488,6 +493,13 @@ their floor's height beside them, or buried in the hill they stand on, is fine: 
 new ground joins can simply walk onto it. A wall, a raised part or a roof within their reach still counts;
 the message says how high it rises. A walking route keeps a villager's height (300) clear above it, 60 units
 to each side.
+
+**What is in the way, marked.** When a placement is refused, the editor tints the model's own faces that cause
+it in pink (with an outline): those going into the island's walls or ground and those rising into a
+villager's, a start point's or a route's space. Hovering the message lists every reason with how many faces
+each one marks. Through the editor's MCP server, `placement_conflicts` returns the same for each conflict:
+`triangles` (indices in the model's collision mesh), `faces` (their corners in the world, the first 512) and
+`triangle_count`.
 
 **The boat's route.** A boat that sails a route (Beedle's shop ship, which circles Windfall at night) follows
 its route through whatever stands there: it has no collision with the ground, so it neither stops nor turns

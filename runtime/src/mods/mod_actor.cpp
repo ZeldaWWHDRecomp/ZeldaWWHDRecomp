@@ -906,7 +906,13 @@ bool world_object_query(const std::string&mod,const story_notebook::ManifestActo
     if(allocation>2*1024*1024)conflicts.push_back({"memory","room","Room collision allocation exceeds 2 MiB"});
     for(const auto&conflict:conflicts){Value item;item["kind"]=conflict.kind;item["id"]=conflict.id;item["message"]=conflict.message;if(!conflict.native.empty())item["native"]=conflict.native;if(conflict.move>0)item["move"]=double(conflict.move);
         if(conflict.reach>0){Value at;at["x"]=double(conflict.at.x);at["y"]=double(conflict.at.y);at["z"]=double(conflict.at.z);item["at"]=at;item["reach"]=double(conflict.reach);}
-        if(!conflict.path.empty()){item["path"].type=Value::Array;for(const auto&p:conflict.path){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);item["path"].array.push_back(v);}}result["conflicts"].array.push_back(std::move(item));}
+        if(!conflict.path.empty()){item["path"].type=Value::Array;for(const auto&p:conflict.path){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);item["path"].array.push_back(v);}}
+        // the model's own triangles in the way (issue #281): their indices in its collision mesh and, for the editor to
+        // tint them, their corners in the world (the first kMarkedFaces)
+        if(own_solid&&!conflict.triangles.empty()){constexpr size_t kMarkedFaces=512;item["triangle_count"]=int(conflict.triangles.size());item["triangles"].type=Value::Array;item["faces"].type=Value::Array;
+            for(size_t k=0;k<conflict.triangles.size()&&k<kMarkedFaces;++k){const uint32_t j=conflict.triangles[k];if(j>=own_solid->triangles.size())continue;item["triangles"].array.push_back(int(j));
+                Value face;face.type=Value::Array;for(uint16_t c:own_solid->triangles[j]){const Point q=own_solid->vertices[c];Value v;v["x"]=double(q.x);v["y"]=double(q.y);v["z"]=double(q.z);face.array.push_back(std::move(v));}item["faces"].array.push_back(std::move(face));}}
+        result["conflicts"].array.push_back(std::move(item));}
     auto point_json=[](Point p){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);return v;};
     result["grapple_target_count"]=int(spec.grapple_points.size());result["room_grapple_target_count"]=int(grapple_count);
     result["minimum"]=point_json(bounds.minimum);result["maximum"]=point_json(bounds.maximum);result["vertices"]=int(geometry->vertices.size());result["triangles"]=int(geometry->triangles.size());result["allocation_bytes"]=double(own_allocation);result["room_allocation_bytes"]=double(allocation);result["clear"]=conflicts.empty();

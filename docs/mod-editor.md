@@ -851,15 +851,17 @@ same with Claude and Blender.
 
 ## Using Claude or another MCP client
 
-Claude Code (or any other program that speaks MCP, the Model Context Protocol) can work the editor for you:
+Claude Code, Claude Desktop (or any other program that speaks MCP, the Model Context Protocol) can work the editor for you:
 warp around, place and move actors, write their dialogue, check the package and look at the result
 through screenshots. It uses the same commands as the editor's panels, so everything it does is checked,
 can be undone and shows in the editor's **Log**.
 
 ### Turning it on
 
-1. Start the game with `--editor` and open **Settings → Editor → Claude / MCP**.
-2. Turn on **Claude / MCP access**. It is off at every start.
+1. Start the game with `--editor --mcp`: Claude / MCP access is on from the start. (With `--editor` alone it is
+   off; turn it on in **Settings → Editor → Claude / MCP** with **Claude / MCP access**. `--mcp` without
+   `--editor` does nothing but say in the game's log that it needs `--editor`.)
+2. Open **Settings → Editor → Claude / MCP**.
 3. Press **Copy command** and run the copied line in a terminal. For Claude Code it looks like this:
 
    ```sh
@@ -869,10 +871,45 @@ can be undone and shows in the editor's **Log**.
 4. Start Claude Code and ask, for example: "Warp to the lantern sign, put a new sign next to Link and let
    it say hello."
 
-The token is a long random password, made new each time you turn the switch on and never saved. After
-you restart the game, run `claude mcp remove wwhd-editor` and add it again with the new command. Other
-MCP clients need the address (`http://127.0.0.1:<port>/mcp`, "Streamable HTTP") and the header
-`Authorization: Bearer <token>`; both are shown in the same place, each with a **Copy** button.
+The token is a long random password. It is made the first time you turn access on and then kept: it is saved
+in the game's settings file, so the command (or the Claude Desktop config below) keeps working after a restart
+and you add the server only once. **New token** next to it replaces it: the old one stops working at once, and
+you copy the command or the config again. Other MCP clients need the address
+(`http://127.0.0.1:<port>/mcp`, "Streamable HTTP") and the header `Authorization: Bearer <token>`; both are
+shown in the same place, each with a **Copy** button. The port is 47615 unless another program uses it (the
+game then takes the next free one, and the copied command and config say which).
+
+### Claude Desktop
+
+The Claude desktop app starts its MCP servers as programs, so it reaches the game through the small
+[mcp-remote](https://www.npmjs.com/package/mcp-remote) bridge, which needs [Node.js](https://nodejs.org/) 18
+or newer.
+
+1. Start the game with `--editor --mcp` and open **Settings → Editor → Claude / MCP**.
+2. Press **Copy config for Claude Desktop**.
+3. In Claude Desktop open **Settings → Developer → Edit Config**. This opens `claude_desktop_config.json`
+   (macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`). Paste the copied text
+   as the whole file, or, if it has other servers already, add the `"wwhd-editor"` entry to its
+   `"mcpServers"`:
+
+   ```json
+   {
+     "mcpServers": {
+       "wwhd-editor": {
+         "command": "npx",
+         "args": ["-y", "mcp-remote", "http://127.0.0.1:47615/mcp", "--transport", "http-only", "--header", "Authorization:${WWHD_EDITOR_AUTH}"],
+         "env": {"WWHD_EDITOR_AUTH": "Bearer <token>"}
+       }
+     }
+   }
+   ```
+
+4. Quit Claude Desktop completely and start it again. The editor's tools appear under its connectors.
+
+The header is written as `Authorization:${WWHD_EDITOR_AUTH}` with the token in `env` on purpose: Claude
+Desktop on Windows doesn't quote arguments with spaces, and the token stays out of the list of running
+programs. Because the token is kept, this config keeps working across restarts until you press **New
+token**.
 
 The editor's status bar shows **MCP: off**, **MCP: on, port N** or **MCP: connected**.
 
@@ -890,15 +927,20 @@ Some commands remove or replace things, or write outside the open mod: `new_mod`
 `revert_package`, `save_package`, `export_package`, `reset_quest`, `load_state`, `remove_model`, and `import_model` when it
 replaces a file (`replace_model` and turning `watch_model` on ask without `"confirm"`). The client
 must ask for them with `"confirm": true`, and then the game asks **you**: a window "Claude wants to: …"
-with **Allow** and **Deny**. Nothing happens until you press **Allow**; without an answer within two
-minutes the request is refused. Undo works for these changes as in the editor.
+with **Allow**, **Allow for this session** and **Deny**. Nothing happens until you press one of the Allow
+buttons; without an answer within two minutes the request is refused. **Allow for this session** allows that
+kind of command (for example every `remove_actor`) without asking again until you close the game; it is never
+saved, and the next start asks again. A file outside the open mod is always asked for, each path on its own,
+with Allow and Deny only. Undo works for these changes as in the editor.
 
 ### Safety rules
 
 - Only programs on your own computer can connect (the game listens on 127.0.0.1 only), and only with
   the token. Web pages cannot use it.
-- It exists only when the game was started with `--editor` and you turned it on. It is not available on
-  Android.
+- It exists only when the game was started with `--editor` and you turned it on (or started it with
+  `--editor --mcp`). It is not available on Android.
+- The token is saved in the game's settings file (so a client's setup survives restarts). Anyone who can read
+  your settings file can use it while the game runs with access on; **New token** revokes it at once.
 - Files: the client can read files inside the open mod's package and files you picked yourself in the
   editor (**Choose…** under Import or Export, or for an item's icon). For any other file (a model to
   import, an icon to copy in) the game asks you first and shows the full path.
@@ -907,6 +949,8 @@ minutes the request is refused. Undo works for these changes as in the editor.
   included.
 - Every call shows in the editor's **Log**, marked **[MCP]**, with its parameters and its result. The
   token never appears there, in the game's log or in crash reports.
+- There is no permanent "allow everything": **Allow for this session** lasts until the game closes, because
+  that window guards deleting and overwriting things.
 
 ## Frame rates
 

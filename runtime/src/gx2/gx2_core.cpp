@@ -1345,12 +1345,14 @@ HLE(gx2, GX2SwapScanBuffers) {
     static const char* captureCounter = getenv("WWHD_TEST_CAPTURE_LOAD_COUNTER");
     static const char* captureStep = getenv("WWHD_TEST_CAPTURE_LOAD_STEP");
     bool capture = false;
-    if ((captureCounter || captureStep) && ss::last_load_frame()) {
+    // the last full-state load; without one, a portable state's first frame in its stage (fixed seed)
+    const bool fullLoad = ss::last_load_frame() != 0;
+    const uint64_t loaded = fullLoad ? ss::last_load_frame() : ss::seeded_arrival_frame();
+    if ((captureCounter || captureStep) && loaded) {
         static uint64_t capturedLoad = 0;
-        const auto loaded = ss::last_load_frame();
         const uint32_t counter = ld32(GD(0x101FF560));
-        const uint64_t offset = captureStep ? steps - ss::last_load_step()
-                                            : uint32_t(counter - ss::last_load_counter());
+        const uint64_t offset = captureStep ? steps - (fullLoad ? ss::last_load_step() : ss::seeded_arrival_step())
+                                            : uint32_t(counter - (fullLoad ? ss::last_load_counter() : ss::seeded_arrival_counter()));
         const uint64_t target = strtoull(captureStep ? captureStep : captureCounter, nullptr, 10);
         if (capturedLoad != loaded && !hold && offset == target) {
             capturedLoad = loaded;

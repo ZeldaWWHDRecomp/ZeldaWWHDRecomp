@@ -4,6 +4,8 @@
 #include "../../exception_report.h"
 #include "gfx/render_mips.h"
 #include "gfx/texture_levels.h"
+#include "gfx/artistic_mips.h"
+#include "texture_budget.h"
 #include "bc_decode.h"
 #include "mods/cemu_pack.h"
 // Guest surfaces backed by Vulkan images. LatteAddrLib supplies guest tiling geometry.
@@ -28,6 +30,7 @@
 #include "runtime.h"
 #include "dynres.h"
 #include <algorithm>
+#include <numeric>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1403,6 +1406,7 @@ static Surface* adopt_newer_alias(Surface* s) {
     mark_gpu_written(s);
     return s;
 }
+static void restore_evicted(Surface* s);  // (texture budget, below)
 Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     if(!d.addr)return nullptr;
     auto& cache=stereo_surface_cache(d);
@@ -1418,6 +1422,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
         if(!rendered||score(s)>score(rendered))rendered=s;};
     for(auto it=range.first;it!=range.second;++it) {
         auto* s=it->second.get();
+        if(s->evicted)restore_evicted(s);  // (texture budget)
         if(!forRendering&&s->isDepth&&!d.isDepth&&s->gpuWritten&&s->width==d.width&&s->height==d.height)consider(s);
         if(s->isDepth!=d.isDepth)continue;
         // a render target is one level: don't adopt a texture made first by sampling the address
@@ -1464,8 +1469,92 @@ static const CachedGuestLevel& level_in_guest(Surface* s,uint32_t level) {
     return cached;
 }
 static uint32_t mip_base(Surface* s,uint32_t level) { return level_in_guest(s,level).address; }
+// Texture staging (WWHD_VK_TEXTURE_STAGING): "ring" copies each level through the recording submission's
+// upload arena (backend.cpp allocate_upload; reused once that submission's fence completes) when it fits in
+// a block the arena already has and the submission's texture staging stays within
+// WWHD_VK_TEXTURE_STAGING_MB (default 16); anything else, and "buffer" (the default), gets its own staging
+// buffer, freed after the submission. Idea after aurora's per-frame staging (MIT; lib/gfx/texture.cpp,
+// recording.cpp); no code taken.
+int g_texture_staging_override=-1;
+uint64_t g_stat_staging_ring, g_stat_staging_ring_bytes, g_stat_staging_buffers, g_stat_staging_buffer_bytes;
+static UploadSlice texture_staging_slice(const Surface* s,size_t size) {
+    static const bool ring=[]{const char* e=getenv("WWHD_VK_TEXTURE_STAGING");
+        if(e&&*e)LOG("[vulkan] texture staging: %s (WWHD_VK_TEXTURE_STAGING=%s)",strcmp(e,"ring")?"own buffers":"upload arena",e);
+        return e&&!strcmp(e,"ring");}();
+    static const VkDeviceSize budget=[]{const char* e=getenv("WWHD_VK_TEXTURE_STAGING_MB");
+        return VkDeviceSize(e&&*e?std::max(0,atoi(e)):16)<<20;}();
+    if(!(g_texture_staging_override<0?ring:g_texture_staging_override==1)||R.textureStagingBytes+size>budget)return UploadSlice{};
+    // copy offsets: a multiple of the texel block size and of 4 (Vulkan's bufferOffset rules)
+    const VkDeviceSize alignment=std::lcm<VkDeviceSize>(16,std::max<VkDeviceSize>(1,s->fmt.hostBytesPerBlock));
+    rprof::UploadKind kind(rprof::kUpTexture);
+    UploadSlice slice=allocate_upload_no_grow(size,alignment);
+    if(slice.buffer){R.textureStagingBytes+=size;++g_stat_staging_ring;g_stat_staging_ring_bytes+=size;}
+    return slice;
+}
+// ---------------------------------------------------------------- texture budget
+// WWHD_VK_TEXTURE_BUDGET=1: the images of textures the CPU wrote at the guest size (never of surfaces the GPU wrote:
+// their only copy is the image) are released, least recently looked up first, while their bytes exceed the budget
+// (WWHD_VK_TEXTURE_BUDGET_MB, default a quarter of the device's memory budget, VK_EXT_memory_budget), and with
+// WWHD_VK_TEXTURE_IDLE_FRAMES=n also once unused for n frames. Textures looked up in the last WWHD_VK_TEXTURE_PIN_FRAMES
+// (default 3) frames are pinned. A released texture keeps its Surface (every pointer to it stays valid); its next
+// lookup makes the image again and uploads it from guest memory. Release goes through destroy_surface_image (the
+// image is freed when the submissions using it have finished). Idea after aurora's byte-budget LRU with pinning and
+// idle sweep (MIT; lib/gfx/lru_cache.hpp, lib/gx/texture.cpp); no code taken.
+uint64_t g_stat_tex_evictions, g_stat_tex_evicted_bytes, g_stat_tex_restores, g_stat_tex_resident_bytes;
+// CPU-written textures at the guest size (a surface the GPU drew into, or one made at an internal resolution for
+// rendering, is never released: the image is its only copy or not the guest's shape)
+static bool evictable(const Surface* s) {
+    return s->image && !s->gpuWritten && !s->evicted && !s->isDepth && s->sx == 1 && s->sy == 1 &&
+           s->extent.width == s->width && (s->imageType == VK_IMAGE_TYPE_1D || s->extent.height == s->height);
+}
+void release_texture_image(Surface* s) {
+    if (!evictable(s)) return;
+    ++g_stat_tex_evictions; g_stat_tex_evicted_bytes += s->allocationBytes;
+    rprof::add_texture_release(s->allocationBytes);
+    destroy_surface_image(s);
+    s->evicted = true;
+}
+static void restore_evicted(Surface* s) {
+    if (!s->evicted) return;
+    s->evicted = false;
+    create_surface_image(s, false);
+    s->dirty = true; s->contentHash = 0; s->watched = false; s->lastCheckedFrame = ~0ull;
+    ++g_surface_epoch; ++g_stat_tex_restores;
+    rprof::add_texture_remake();
+}
+void texture_budget_step() {
+    static const bool on = [] { const char* e = getenv("WWHD_VK_TEXTURE_BUDGET"); return e && !strcmp(e, "1"); }();
+    if (!on || R.frame % 30) return;
+    extern uint64_t vulkan_device_memory_budget();
+    static const uint64_t budget = [] {
+        const char* e = getenv("WWHD_VK_TEXTURE_BUDGET_MB");
+        const uint64_t bytes = e && *e ? uint64_t(std::max(0, atoi(e))) << 20 : vulkan_device_memory_budget() / 4;
+        LOG("[vulkan] texture budget: %.0f MiB (WWHD_VK_TEXTURE_BUDGET_MB=%s)", bytes / 1048576.0, e && *e ? e : "a quarter of the device budget");
+        return bytes;
+    }();
+    static const uint64_t idle = [] { const char* e = getenv("WWHD_VK_TEXTURE_IDLE_FRAMES"); return e && *e ? uint64_t(std::max(0, atoi(e))) : 0; }();
+    static const uint64_t pin = [] { const char* e = getenv("WWHD_VK_TEXTURE_PIN_FRAMES"); return e && *e ? uint64_t(std::max(1, atoi(e))) : 3; }();
+    std::vector<Surface*> surfaces;
+    std::vector<texture_budget::Candidate> candidates;
+    uint64_t total = 0;
+    for (auto& [addr, owned] : R.surfaces) {
+        Surface* s = owned.get();
+        if (!evictable(s)) continue;
+        total += s->allocationBytes;
+        candidates.push_back({s->lastUsedFrame, s->allocationBytes, surfaces.size()});
+        surfaces.push_back(s);
+    }
+    for (size_t i : texture_budget::select(std::move(candidates), total, R.frame, budget, idle, pin)) {
+        total -= std::min<uint64_t>(total, surfaces[i]->allocationBytes);
+        release_texture_image(surfaces[i]);
+    }
+    g_stat_tex_resident_bytes = total;
+}
 void upload_surface(Surface* s) {
-    if(!s||!s->image||s->gpuWritten)return;
+    if(!s)return;
+    s->lastUsedFrame=R.frame;
+    if(s->evicted)restore_evicted(s);
+    if(!s->image||s->gpuWritten)return;
     // All callers, including render attachments, share the once-per-frame
     // check. Invalidation resets lastCheckedFrame for writes within a frame.
     if (s->lastCheckedFrame == R.frame) return;
@@ -1500,10 +1589,13 @@ void upload_surface(Surface* s) {
     }
     s->watched = true;
     ++g_stat_full_checks;
-    uint64_t hash=1469598103934665603ull;
-    for(uint32_t level=0;level<levels;++level)
+    uint64_t hash=1469598103934665603ull,hashedBytes=0;
+    for(uint32_t level=0;level<levels;++level) {
         hash=(hash^content_hash(mem::ptr(ranges[level].first),size_t(ranges[level].second)))*1099511628211ull;
-    if(!s->dirty&&hash==s->contentHash)return;
+        hashedBytes+=ranges[level].second;
+    }
+    if(!s->dirty&&hash==s->contentHash){rprof::add_texture_check(hashedBytes,false);return;}
+    rprof::add_texture_check(hashedBytes,true);
     // A render target at another size than the guest's (stereo renders each eye narrower, stereo.h):
     // upload at the guest size, then scale into it.
     Surface guestSized;
@@ -1521,8 +1613,12 @@ void upload_surface(Surface* s) {
         target=&guestSized;
     }
     end_encoder();transition_image(target,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    // hand-drawn mip levels (gfx/artistic_mips.h): the levels are kept for the check after the upload
+    const bool checkMips=::gfx::artistic_mips::enabled()&&s->mips>1&&::gfx::artistic_mips::supported(s->format);
+    std::vector<std::vector<uint8_t>> levelsForCheck;
     for(uint32_t level=0;level<s->mips;++level) {
         std::vector<uint8_t> data;uint32_t w,h,slices;decode_level(s,level,mip_base(s,level),data,w,h,slices);
+        if(checkMips)levelsForCheck.push_back(data);
         if (s->bcDecoded) { bc_decode_upload(target,level,data,w,h,slices); continue; }
         std::vector<VkBufferImageCopy> copies;std::vector<uint8_t> packed;
         bool threeD=s->imageType==VK_IMAGE_TYPE_3D;
@@ -1538,10 +1634,18 @@ void upload_surface(Surface* s) {
             packed=std::move(data);
             VkBufferImageCopy copy{};copy.imageSubresource={s->aspect,level,0,layers};copy.imageExtent={w,h,threeD?slices:1};copies.push_back(copy);
         }
+        const UploadSlice ring=texture_staging_slice(s,packed.size());
+        if(ring.buffer) {
+            memcpy(ring.mapped,packed.data(),packed.size());
+            for(auto& copy:copies)copy.bufferOffset+=ring.offset;
+            record::vkCmdCopyBufferToImage(command_buffer(),ring.buffer,target->image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(copies.size()),copies.data());
+            continue;
+        }
         Buffer staging=create_buffer(packed.size(),VK_BUFFER_USAGE_TRANSFER_SRC_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         if(!staging.mapped){defer_buffer(staging);exception_report::raise("Vulkan texture staging allocation is not mapped");}
         memcpy(staging.mapped,packed.data(),packed.size());
         rprof::add_upload(rprof::kUpTexture,packed.size());
+        ++g_stat_staging_buffers;g_stat_staging_buffer_bytes+=packed.size();
         record::vkCmdCopyBufferToImage(command_buffer(),staging.buffer,target->image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,uint32_t(copies.size()),copies.data());
         defer_buffer(staging);
     }
@@ -1550,6 +1654,16 @@ void upload_surface(Surface* s) {
         destroy_surface_image(target);
     }
     transition_image(s,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if(checkMips) {
+        const auto v=::gfx::artistic_mips::check(s->format,s->width,s->height,uint32_t(levelsForCheck.size()),
+            [&](uint32_t n,const uint8_t*& p,size_t& size){
+                if(n>=levelsForCheck.size())return false;
+                p=levelsForCheck[n].data();size=levelsForCheck[n].size();return true;});
+        if(::gfx::artistic_mips::log_enabled()&&v.artistic!=s->artisticMips)
+            LOG("[artistic mips] %08X %ux%u fmt %X mips %u: %s",s->addr,s->width,s->height,s->format,s->mips,
+                v.artistic?"hand-drawn":"downscaled");
+        s->artisticMips=v.artistic;
+    }
     s->contentHash=hash;s->writeSeq=next_write_seq();s->dirty=false;++g_stat_uploads;++g_surface_epoch;
 }
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {

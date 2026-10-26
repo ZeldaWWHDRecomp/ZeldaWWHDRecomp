@@ -226,22 +226,27 @@ int main(){
   //    cliff whose top is lower than the plateau's (its sides cut the cliff where no floor of its own meets the island's)
   {Mesh m;m.block({-200,-1000,-300},{2000,1100,300});const auto c=run(m,isle);assert(kinds(c)=="collision");
    assert(c[0].message.find("the model rises out of the ground or goes through a wall there")!=std::string::npos&&c[0].message.find("up to 30 units above it, is fine")!=std::string::npos);}
-  {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-100,1000,-300},{-50,1300,300});assert(kinds(run(m,isle))=="collision");}
+  {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-100,990,-300},{-50,1300,300});const auto c=run(m,isle);assert(kinds(c)=="collision");
+   // the triangles in the way, for the editor to mark: the parapet's (the second block's, from 12), not the new ground's
+   assert(!c[0].triangles.empty()&&std::is_sorted(c[0].triangles.begin(),c[0].triangles.end()));for(uint32_t t:c[0].triangles)assert(t>=12&&t<24);}
+  // (a parapet only resting on the island's ground, touching it, is not in its way: kTouch)
+  {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-100,1000,-300},{-50,1300,300});assert(run(m,isle).empty());}
   {Mesh m;m.block({-100,-1000,-300},{2000,500,300});assert(kinds(run(m,isle))=="collision");}
   // 3. a villager on the plateau 100 from where the new ground joins: flush ground beside him is fine; a step of 100, or
-  //    the parapet, within his reach is in his way (and says how high it rises)
+  //    the parapet (standing 10 into the ground), within his reach is in his way (and says how high it rises)
   Index with=isle;{LayoutEntry e;e.stage="sea";e.room=11;e.tag="ACT0";e.name="Ko1";e.position={-300,1000,0};with.layout.push_back(e);}
   {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});assert(run(m,with).empty());}
   {Mesh m;m.block({-200,-1000,-300},{2000,1100,300});const auto c=run(m,with);assert(kinds(c)=="villager,collision");
    assert(c[0].message=="a villager of the island (the model rises 100 units above its floor within 150 of it; ground flush with its floor, up to 30 above, is fine)");}
-  {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-190,1000,-300},{-170,1300,300});assert(kinds(run(m,with))=="villager,collision");}
+  {Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-190,990,-300},{-170,1300,300});const auto c=run(m,with);assert(kinds(c)=="villager,collision");
+   assert(!c[0].triangles.empty());for(uint32_t t:c[0].triangles)assert(t>=12&&t<24);}
   // a raised block beside him, out of his reach (200 away from the join, past 100 + the clearance)
-  {Index far=with;far.layout[0].position={-400,1000,0};Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-190,1000,-300},{-170,1300,300});assert(kinds(run(m,far))=="collision");}
+  {Index far=with;far.layout[0].position={-400,1000,0};Mesh m;m.block({-200,-1000,-300},{2000,1000,300});m.block({-190,990,-300},{-170,1300,300});assert(kinds(run(m,far))=="collision");}
   // he would be inside it: the block's top over his head
   {Index under=with;under.layout[0].position={-100,1000,0};Mesh m;m.block({-200,-1000,-300},{2000,1100,300});assert(kinds(run(m,under))=="villager,collision");}
   // the same for Link's start point
   {Index start=isle;LayoutEntry e;e.stage="sea";e.room=11;e.tag="PLYR";e.name="Link";e.position={-300,1000,0};start.layout.push_back(e);
-   Mesh m;m.block({-200,-1000,-300},{2000,1000,300});assert(run(m,start).empty());m.block({-190,1000,-300},{-170,1300,300});assert(kinds(run(m,start))=="start point,collision");}
+   Mesh m;m.block({-200,-1000,-300},{2000,1000,300});assert(run(m,start).empty());m.block({-190,990,-300},{-170,1300,300});assert(kinds(run(m,start))=="start point,collision");}
   // 4. on a slope: the plateau rises 0.3 per unit toward -x; a villager 50 from the cliff stands at 1015, the new ground
   //    continues the slope (up to 1060 where it reaches into the hill, 45 above his feet but buried in the hill): fine;
   //    the same 50 higher is in his way
@@ -257,7 +262,7 @@ int main(){
    Mesh m;m.block({-200,-1000,-300},{2000,1000,300});assert(run(m,walk).empty());
    Mesh up;up.block({-200,-1000,-300},{2000,1100,300});const auto c=run(up,walk);assert(kinds(c)=="villager route,collision");
    assert(c[0].message=="a villager route of the island (the model rises 100 units above the route within 110 of it; ground flush with it, up to 30 above, is fine)");
-   Mesh wall;wall.block({-200,-1000,-300},{2000,1000,300});wall.block({-190,1000,-300},{-170,1300,300});assert(kinds(run(wall,walk))=="villager route,collision");}
+   Mesh wall;wall.block({-200,-1000,-300},{2000,1000,300});wall.block({-190,990,-300},{-170,1300,300});assert(kinds(run(wall,walk))=="villager route,collision");}
   // 6. a boat's route at sea, 1000 out: an extension standing in the water across it is in the boat's way; an arch over it
   //    is not when its underside clears the boat's height (kBoatHeight plus the clearance), the boat's width to either side
   {Index sea=isle;sea.routes.push_back({"sea",11,"RPAT:40",{{1000,0,-3000},{1000,0,3000}},kBoatHalfWidth,true,"boat"});
@@ -271,6 +276,49 @@ int main(){
    Index fish=isle;fish.routes.push_back({"sea",11,"RPAT:18",{{1000,-35,-3000},{1000,-35,3000}},kRouteHalfWidth,false});
    Mesh deck;deck.block({-200,-1000,-300},{800,1000,300});deck.block({800,400,-300},{1200,1000,300});deck.block({1200,-1000,-300},{2000,1000,300});assert(run(deck,fish).empty());
    Mesh deep;deep.block({-200,-1000,-300},{800,1000,300});deep.block({800,250,-300},{1200,1000,300});deep.block({1200,-1000,-300},{2000,1000,300});assert(kinds(run(deep,fish))=="villager route");}
+ }
+ { // issue #281: geometry that only touches is not in the way (kTouch). Two blocks side by side: face to face, a little apart
+  // or a little into each other (less than kTouch) don't overlap; a unit into each other does
+  auto box=[](Point lo,Point hi){std::vector<Point> v;std::vector<std::array<uint16_t,3>> t;
+   for(unsigned k=0;k<8;++k)v.push_back({k&1?hi.x:lo.x,k&2?hi.y:lo.y,k&4?hi.z:lo.z});
+   for(auto f:{std::array<uint16_t,4>{0,1,5,4},{2,6,7,3},{0,2,3,1},{4,5,7,6},{0,4,6,2},{1,3,7,5}}){t.push_back({f[0],f[1],f[2]});t.push_back({f[0],f[2],f[3]});}
+   return std::make_pair(v,t);};
+  const float X=-203000;  // out at sea, where a float's rounding is 1/64
+  const auto [av,at]=box({X-500,0,-500},{X,1000,500});const Solid a=place_solid(av,at,{0,0,0},{0,0,0},{1,1,1});
+  for(float d:{0.f,.1f,-.1f,.2f,-.2f}){const auto [bv,bt]=box({X+d,0,-200},{X+400,800,200});assert(!solids_overlap(a,place_solid(bv,bt,{0,0,0},{0,0,0},{1,1,1})));}
+  for(float d:{-1.f,-30.f}){const auto [bv,bt]=box({X+d,0,-200},{X+400,800,200});assert(solids_overlap(a,place_solid(bv,bt,{0,0,0},{0,0,0},{1,1,1})));}
+  // the same block made around its own origin and placed there (float rounding of the placement), and one turned 30
+  // degrees about a's corner edge: touching along it is not overlapping
+  {const auto [bv,bt]=box({-.3f,0,-200.7f},{399.7f,800,199.3f});assert(!solids_overlap(a,place_solid(bv,bt,{X+.3f,0,.7f},{0,0,0},{1,1,1})));}
+  {const auto [bv,bt]=box({0,0,0},{400,800,300});assert(!solids_overlap(a,place_solid(bv,bt,{X,0,500},{0,30,0},{1,1,1})));
+   assert(solids_overlap(a,place_solid(bv,bt,{X-5,0,495},{0,30,0},{1,1,1})));}
+ }
+ { // issue #281: new ground whose join corners are exactly the island's own (a modder's extension snapped to the island's
+  // vertices). The island, far out at sea: a plateau whose edge turns at B; the cliff under its edge A-B leans out (a
+  // little overhang), the next cliff turns away from B. The extension's top joins A-B and reaches out over the cliff, its
+  // sides going down to the sea floor. Its corner B touched the next cliff only there; that counted as a crossing the
+  // flush rule found no point of, and placement was refused unless the model was moved off the island's corners.
+  const float X=-0x1.5d0006p+17f,Z=-0x1.31c3a2p+17f,ang=0x1.e1c274p+0f,len=0x1.05feb8p+9f,turn=0x1.4206dep+0f,lean=0x1.86e674p-3f,h=0x1.dcb77ap+10f,slope=-0x1.a995fp-4f,out=0x1.4bdce8p+8f;
+  auto rot=[&](float x,float z,float y){return Point{X+x*std::cos(ang)-z*std::sin(ang),y,Z+x*std::sin(ang)+z*std::cos(ang)};};
+  const Point A=rot(0,0,h),B=rot(0,len,h+slope*len),Gc=rot(-400,len*.5f,h+slope*len*.5f),C=rot(-300*std::cos(turn),len+300*std::sin(turn),h+slope*len);
+  Index isle;isle.coverage.push_back({"sea",11,true,true,true,{}});
+  auto tri=[&](Point p,Point q,Point r){Bounds wb{{std::min({p.x,q.x,r.x}),std::min({p.y,q.y,r.y}),std::min({p.z,q.z,r.z})},{std::max({p.x,q.x,r.x}),std::max({p.y,q.y,r.y}),std::max({p.z,q.z,r.z})}};
+   isle.bounds.push_back({"sea",11,"collision","t"+std::to_string(isle.bounds.size()),wb,true,{p,q,r}});};
+  auto down=[&](Point p,float ox,float oz){const Point o=rot(ox*lean*h,oz*lean*h,0);return Point{o.x-X+p.x,0,o.z-Z+p.z};};
+  const Point Ad=down(A,1,0),Bd=down(B,1,0),Cd=down(C,std::sin(turn),std::cos(turn));
+  tri(A,Gc,B);tri(B,Gc,C);tri(A,B,Bd);tri(A,Bd,Ad);tri(B,C,Cd);tri(B,Cd,Bd);
+  // the extension, made around a rounded origin as an editor import places it; `in`: moved toward the island, `lift` up
+  auto extension=[&](float in,float lift){const Point Ao=rot(out,0,A.y),Bo=rot(out,len,B.y),m=rot(-in,0,0),u{m.x-X,0,m.z-Z};
+   std::vector<Point> v{A,B,Bo,Ao,{A.x,0,A.z},{B.x,0,B.z},{Bo.x,0,Bo.z},{Ao.x,0,Ao.z}};for(unsigned k=0;k<8;++k){v[k].x+=u.x;v[k].z+=u.z;if(k<4)v[k].y+=lift;}
+   const std::vector<std::array<uint16_t,3>> t{{0,3,2},{0,2,1},{4,5,6},{4,6,7},{3,7,6},{3,6,2},{1,2,6},{1,6,5},{0,4,7},{0,7,3}};
+   const Point at{std::round(A.x),0,std::round(A.z)};for(auto&p:v){p.x-=at.x;p.z-=at.z;}
+   const Solid s=place_solid(v,t,at,{0,0,0},{1,1,1});return check("sea",11,s.bounds,isle,kClearance,&s);};
+  // exactly on the island's corners, and a little off them either way: joined
+  for(float in:{0.f,.05f,-.05f,.2f,-.2f})assert(extension(in,0).empty());
+  // really into the island: 50 into the plateau and 100 above it (a step standing in it), or its top 100 under the
+  // plateau's edge (its sides cut the cliff where no floor of its own meets the island's)
+  assert(extension(50,100).size()==1&&extension(50,100)[0].kind=="collision");
+  assert(extension(0,-100).size()==1&&extension(0,-100)[0].kind=="collision");
  }
  { // characters whose names are not a capital, a small letter and a digit: Windfall's kids and Tott are villagers too
   for(const char*n:{"UkD","UkB2","Mk","Tt","P1a"}){LayoutEntry e;e.tag="ACT0";e.name=n;assert(building_extent(e).keep==Keep::Villager);}

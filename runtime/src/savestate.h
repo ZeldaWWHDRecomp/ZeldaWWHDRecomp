@@ -158,6 +158,11 @@ void service(Cpu* c);
 uint32_t snap_ld32(uint32_t ea);
 
 uint64_t last_load_frame();
+// WWHD_TEST_FIXED_SEED: TV frame, logic step and g_Counter.mTimer of the first frame in a portable state's stage
+// (0: none); the load-relative capture starts from them when no full state was loaded
+uint64_t seeded_arrival_frame();
+uint64_t seeded_arrival_step();
+uint32_t seeded_arrival_counter();
 uint64_t last_arrival_frame();  // TV frame a portable load arrived at (Link settled; 0: none)
 uint64_t last_load_step();
 uint32_t last_load_counter();  // g_Counter.mTimer right after the last load   // logic step (interp::logic_steps) of the last completed load  // TV frame of the last completed load (0: none); test scenarios start from it

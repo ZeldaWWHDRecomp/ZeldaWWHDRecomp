@@ -1317,8 +1317,9 @@ void mcp_area() {
         muted("This build has no MCP interface.");
         return;
     }
-    muted("Lets Claude Code, or another MCP client on this computer, use the editor's commands: warp, place and move "
-          "actors, write dialogue, check the package, take screenshots. Off at every start.");
+    muted("Lets Claude Code, Claude Desktop or another MCP client on this computer use the editor's commands: warp, place and "
+          "move actors, write dialogue, check the package, take screenshots. Off at every start, unless the game was started "
+          "with --editor --mcp.");
     editor_mcp::Status st = editor_mcp::status();
     bool on = st.on;
     if (ImGui::Checkbox("Claude / MCP access", &on)) {
@@ -1340,18 +1341,40 @@ void mcp_area() {
     ImGui::TextUnformatted(st.token.c_str());
     ImGui::SameLine();
     if (ImGui::SmallButton("Copy##mcp_token")) ImGui::SetClipboardText(st.token.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("New token##mcp_new_token")) ImGui::OpenPopup("New MCP token?##mcp_renew");
+    if (ImGui::BeginPopup("New MCP token?##mcp_renew")) {
+        ImGui::TextUnformatted("Replace the token? Clients set up with the old one are refused at once;\ncopy the command or the config again afterwards.");
+        if (ImGui::Button("New token##mcp_renew_yes")) {
+            std::string why;
+            if (!editor_mcp::renew_token(why)) {
+                U.message = why;
+                U.message_ok = false;
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel##mcp_renew_no")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
     ImGui::Spacing();
     ImGui::TextUnformatted("For Claude Code, run this in a terminal:");
     const std::string cmd = editor_mcp::client_command(st);
     wrapped(ImVec4(0.85f, 0.88f, 0.92f, 1), cmd);
     if (ImGui::Button("Copy command##mcp_command")) ImGui::SetClipboardText(cmd.c_str());
+    ImGui::Spacing();
+    ImGui::TextUnformatted("For Claude Desktop (needs Node.js): paste into its claude_desktop_config.json");
+    muted("(Claude Desktop: Settings > Developer > Edit Config), then restart Claude Desktop.");
+    if (ImGui::Button("Copy config for Claude Desktop##mcp_desktop")) ImGui::SetClipboardText(editor_mcp::desktop_config(st).c_str());
     muted("Exports over MCP go into " + editor_mcp::export_folder() + " or a folder you choose under Export.");
     ImGui::Spacing();
-    muted("The token is new each time you turn this on and is never saved. After a restart, run "
-          "\"claude mcp remove wwhd-editor\" and add it again with the new command.");
+    muted("The token stays the same across restarts (it is saved in the game's settings file), so the command and the config "
+          "keep working. New token replaces it; the old one stops working at once. Start the game with --editor --mcp to "
+          "have this on from the start.");
     muted("Creating a mod, removing actors, reverting, saving, exporting, resetting a quest and loading a test state ask you first "
-          "(Allow / Deny). Claude reads files only inside the open package or ones you picked here; anything else asks "
-          "you. Every call shows in the Log, marked [MCP].");
+          "(Allow / Allow for this session / Deny). Allow for this session stops asking for that kind of command until you "
+          "close the game. Claude reads files only inside the open package or ones you picked here; any other file asks "
+          "you each time. Every call shows in the Log, marked [MCP].");
 }
 
 // Claude wants to: ... Allow / Deny (drawn by the editor's overlays and by this tab, once per frame)
@@ -1360,7 +1383,8 @@ void mcp_prompt() {
     if (drawn == ImGui::GetFrameCount()) return;
     uint64_t id = 0;
     std::string text;
-    if (!editor_mcp::prompt(id, text)) return;
+    bool session = false;
+    if (!editor_mcp::prompt(id, text, &session)) return;
     drawn = ImGui::GetFrameCount();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.4f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1374,6 +1398,11 @@ void mcp_prompt() {
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     if (ImGui::Button("Allow")) editor_mcp::answer(id, true);
+    if (session) {
+        // this kind of command (by its name) without asking again until the game closes; never saved
+        ImGui::SameLine();
+        if (ImGui::Button("Allow for this session")) editor_mcp::answer(id, true, true);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Deny")) editor_mcp::answer(id, false);
     ImGui::End();

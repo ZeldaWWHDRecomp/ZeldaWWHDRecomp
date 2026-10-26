@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 
+#include "../runtime.h"
 #include "../savestate.h"
 
 #ifndef WWHD_EDITOR_MCP
@@ -18,7 +19,7 @@
 #if WWHD_EDITOR_MCP && !defined(__ANDROID__)
 #define WWHD_MCP_LISTENS 1
 #include "../build_info.h"
-#include "../runtime.h"
+#include "../overlay/hostui.h"
 #include "../screenshot.h"
 #include "editor_game.h"
 #include "mcp.h"
@@ -39,7 +40,18 @@ constexpr auto kPromptWait = std::chrono::seconds(120);   // the player's answer
 constexpr auto kPictureWait = std::chrono::seconds(5);
 
 std::mutex g_mu;  // everything below
-std::string g_token;
+std::string g_token;  // while listening
+std::shared_ptr<SessionAllows> g_allows = std::make_shared<SessionAllows>();  // until the game closes, never saved
+// the token kept in the player's settings (made on first use; never logged)
+constexpr const char* kTokenSetting = "editorMcpToken";
+void save_token(const std::string& t) {
+    hostui::post([t] { hostui::set(kTokenSetting, t); });  // settings change on the main thread
+}
+std::string g_kept;  // the kept token once read or made (the save reaches the settings file a moment later)
+std::string kept_token() {
+    if (!valid_token(g_kept)) g_kept = saved_or_new_token([](std::string& t) { return hostui::get(kTokenSetting, t); }, save_token);
+    return g_kept;
+}
 std::string g_error;
 std::vector<std::string> g_picked;
 int g_test_answer = 0;  // test runs: 1 allow, -1 deny
@@ -48,7 +60,8 @@ int g_test_answer = 0;  // test runs: 1 allow, -1 deny
 struct Prompt {
     uint64_t id = 0;
     std::string text;
-    int answer = 0;  // 1 allow, -1 deny
+    bool session = false;  // "Allow for this session" is offered
+    int answer = 0;        // 1 allow, 2 allow for this session, -1 deny
 };
 std::condition_variable g_prompt_cv;
 std::deque<std::shared_ptr<Prompt>> g_prompts;
@@ -83,13 +96,16 @@ public:
         }
         return w->result;
     }
-    bool ask(const std::string& text) override {
+    bool ask(const std::string& text) override { return ask_choice(text, false) != Answer::Deny; }
+    Answer ask_choice(const std::string& text, bool session) override {
         auto p = std::make_shared<Prompt>();
         p->text = text;
+        p->session = session;
         std::unique_lock<std::mutex> lk(g_mu);
         if (g_test_answer) {
-            LOG("[editor] MCP prompt answered by the test run: %s", g_test_answer > 0 ? "allow" : "deny");
-            return g_test_answer > 0;
+            const int a = g_test_answer == 2 && !session ? 1 : g_test_answer;
+            LOG("[editor] MCP prompt answered by the test run: %s", a == 2 ? "allow for this session" : a > 0 ? "allow" : "deny");
+            return a == 2 ? Answer::AllowSession : a > 0 ? Answer::Allow : Answer::Deny;
         }
         p->id = ++g_prompt_ids;
         g_prompts.push_back(p);
@@ -99,7 +115,8 @@ public:
                 g_prompts.erase(it);
                 break;
             }
-        return answered && p->answer > 0;
+        if (!answered || p->answer < 0) return Answer::Deny;
+        return p->answer == 2 && p->session ? Answer::AllowSession : Answer::Allow;
     }
     bool screenshot(bool gamepad, std::string& png, uint32_t& width, uint32_t& height, std::string& why) override {
         struct Wait {
@@ -157,7 +174,7 @@ Server g_server;                     // started / stopped under g_mu
 
 bool start(const std::string& token, int port, std::string& why) {
     if (token.size() < 32) return why = "no random token could be made", false;
-    auto h = std::make_shared<Handler>(g_backend, token, port, build::version());
+    auto h = std::make_shared<Handler>(g_backend, token, port, build::version(), g_allows);
     if (!g_server.start(h, port, why)) return false;
     g_handler = h;
     g_token = token;
@@ -182,7 +199,7 @@ bool set_on(bool on, std::string& why) {
     }
     if (!available()) return why = "the MCP interface exists only in the editor launch mode (--editor) of desktop builds", false;
     if (g_server.running()) return true;
-    if (!start(new_token(), kDefaultPort, why)) {
+    if (!start(kept_token(), kDefaultPort, why)) {
         g_error = why;
         return false;
     }
@@ -211,24 +228,53 @@ std::string status_line() {
     if (s.connected) return "MCP: connected";
     return "MCP: on, port " + std::to_string(s.port);
 }
-std::string client_command(const Status& s) {
-    return "claude mcp add --transport http wwhd-editor http://127.0.0.1:" + std::to_string(s.port) + "/mcp --header \"Authorization: Bearer " +
-           s.token + "\"";
+std::string client_command(const Status& s) { return claude_code_command(s.port, s.token); }
+std::string desktop_config(const Status& s) { return claude_desktop_config(s.port, s.token); }
+bool renew_token(std::string& why) {
+    const std::string t = new_token();
+    if (!valid_token(t)) return why = "no random token could be made", false;
+    save_token(t);
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_kept = t;
+    if (g_handler) g_handler->set_token(t);  // the old one is refused from the next request on
+    if (g_server.running()) g_token = t;
+    LOG("[editor] MCP token replaced");  // (never the token)
+    return true;
 }
-bool prompt(uint64_t& id, std::string& text) {
+void launch(bool mcp) {
+    switch (launch_choice(editor::launch_mode(), mcp, true)) {
+    case LaunchMcp::Off:
+        return;
+    case LaunchMcp::NeedsEditor:
+        LOG("[editor] --mcp needs --editor (start with --editor --mcp): Claude / MCP access stays off");
+        return;
+    case LaunchMcp::Unavailable:
+        return;
+    case LaunchMcp::On: {
+        std::string why;
+        if (set_on(true, why))
+            LOG("[editor] Claude / MCP access on at start (--mcp)");
+        else
+            LOG("[editor] --mcp: Claude / MCP access could not start: %s", why.c_str());
+        return;
+    }
+    }
+}
+bool prompt(uint64_t& id, std::string& text, bool* session) {
     std::lock_guard<std::mutex> lk(g_mu);
     for (auto& p : g_prompts)
         if (p->answer == 0) {
             id = p->id;
             text = p->text;
+            if (session) *session = p->session;
             return true;
         }
     return false;
 }
-void answer(uint64_t id, bool allow) {
+void answer(uint64_t id, bool allow, bool session) {
     std::lock_guard<std::mutex> lk(g_mu);
     for (auto& p : g_prompts)
-        if (p->id == id) p->answer = allow ? 1 : -1;
+        if (p->id == id) p->answer = !allow ? -1 : session && p->session ? 2 : 1;
     g_prompt_cv.notify_all();
 }
 bool prompt_waiting() {
@@ -259,7 +305,8 @@ void start_for_tests() {
         LOG("[editor] WWHD_TEST_EDITOR_MCP: WWHD_TEST_EDITOR_MCP_TOKEN must be 64 hex digits; the interface stays off");
         return;
     }
-    if (const char* a = std::getenv("WWHD_TEST_EDITOR_MCP_ANSWER")) g_test_answer = std::string(a) == "allow" ? 1 : std::string(a) == "deny" ? -1 : 0;
+    if (const char* a = std::getenv("WWHD_TEST_EDITOR_MCP_ANSWER"))
+        g_test_answer = std::string(a) == "allow" ? 1 : std::string(a) == "session" ? 2 : std::string(a) == "deny" ? -1 : 0;
     std::string why;
     if (!start(t, std::atoi(port), why)) {
         g_error = why;
@@ -275,8 +322,14 @@ bool set_on(bool on, std::string& why) { return on ? (why = "this build has no M
 Status status() { return {}; }
 std::string status_line() { return "MCP: off"; }
 std::string client_command(const Status&) { return {}; }
-bool prompt(uint64_t&, std::string&) { return false; }
-void answer(uint64_t, bool) {}
+std::string desktop_config(const Status&) { return {}; }
+bool renew_token(std::string& why) { return why = "this build has no MCP interface", false; }
+// --mcp where nothing can listen (Android, or built with -DWWHD_EDITOR_MCP=OFF): it only says so
+void launch(bool mcp) {
+    if (mcp) LOG("[editor] --mcp: this build has no Claude / MCP access (not on Android, or built without it)");
+}
+bool prompt(uint64_t&, std::string&, bool*) { return false; }
+void answer(uint64_t, bool, bool) {}
 bool prompt_waiting() { return false; }
 void user_picked(const std::string&) {}
 void start_for_tests() {}

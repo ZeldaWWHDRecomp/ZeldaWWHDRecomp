@@ -112,6 +112,16 @@ void add_sync(Sync site, uint64_t ns);
 // read them from the GPU (readNs, including the wait for the GPU)
 void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t readNs);
 
+// texture cache (render thread): a full check of a CPU texture's guest bytes (hashedBytes; changed: uploaded again,
+// else the cached image served), and the texture budget's releases and remakes (Vulkan WWHD_VK_TEXTURE_BUDGET)
+void add_texture_check(uint64_t hashedBytes, bool changed);
+void add_texture_release(uint64_t bytes);
+void add_texture_remake();
+// GPU timeline (any thread): one command buffer's / submission's GPU interval in ns on the GPU's clock, in
+// submission order; the gaps between consecutive intervals are reported as GPU idle (Metal: GPUStartTime/
+// GPUEndTime of each command buffer; Vulkan: the submission timestamps when GPU timestamps are on)
+void add_gpu_span(double startNs, double endNs);
+
 // ---- any thread
 std::string latest_report();  // the last complete report ("" before the first one)
 

@@ -28,7 +28,10 @@ struct Index {std::vector<ProtectedBounds> bounds;std::vector<ProtectedRoute> ro
 // 0 when it can't be said (a route crossing it, collision, coverage)
 // at/reach/path: where the thing in the way is, for the editor to draw it (a layout entry: its place and reach;
 // a route: its points)
-struct Conflict {std::string kind,id,message,native;float move=0;Point at{};float reach=0;std::vector<Point> path;};
+// triangles: with an object's own collision (check() with a solid), its triangles that are in the way (indices into the
+// Solid's triangles, ascending): those crossing the island's walls or ground, or rising into a layout entry's or a
+// route's space; the editor tints them on the model (issue #281)
+struct Conflict {std::string kind,id,message,native;float move=0;Point at{};float reach=0;std::vector<Point> path;std::vector<uint32_t> triangles;};
 bool valid(const Bounds&);
 // Degrees, with the native actor's RY * RX * RZ rotation order.
 bool transform_bounds(const Bounds&,Point position,Point rotation,Point scale,Bounds&);
@@ -57,6 +60,13 @@ SweepResult sweep(const std::string& stage,int room,const Bounds& start,Point de
 struct Solid {std::vector<Point> vertices;std::vector<std::array<uint16_t,3>> triangles;Bounds bounds;};
 // how far an object may reach into the ground it stands on (a slope under a house's floor, a step)
 inline constexpr float kGroundStep=150;
+// how far two solids' triangles must go through each other to count as crossing (solids_overlap, water_blocked, and the
+// room's walls and ground in check()): geometry that only touches, as new ground whose corners are exactly the island's
+// own corners (issue #281), is not in the way. A quarter unit (a few millimetres in the game) is 8 float roundings
+// (ulp 1/32) of coordinates out to 262144 and 4 out to 524288, beyond every sea square, so a model placed by its own
+// origin and rotation, or exported with float coordinates, still meets the island's corners within it; real overlaps are
+// tens of units (a wall circle is 30 above the feet, kFlushStep).
+inline constexpr float kTouch=.25f;
 // true when a triangle of one crosses a triangle of the other above the higher of the two bases plus `step`:
 // resting on (or slightly into) the other's top doesn't count, a cliff, pillar, wall or roof through it does.
 // A solid wholly inside the other without any crossing is not found (the caller's bounds rules still apply).

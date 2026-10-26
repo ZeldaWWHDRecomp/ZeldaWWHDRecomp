@@ -237,6 +237,14 @@ const VkFormatProperties& format_properties(VkFormat format) {
   if (inserted) vkGetPhysicalDeviceFormatProperties(R.physicalDevice,format,&entry->second);
   return entry->second;
 }
+bool warm_prune_enabled() {
+  static const bool on = [] {
+    const char* prune = std::getenv("WWHD_VK_WARM_PRUNE");
+    const char* warming = std::getenv("WWHD_WARMING_SHADERS");
+    return prune && !std::strcmp(prune, "1") && warming && !std::strcmp(warming, "1");
+  }();
+  return on;
+}
 namespace {
 bool perf_enabled() {
   static const bool enabled = std::getenv("WWHD_VK_STATS") != nullptr;
@@ -320,6 +328,13 @@ bool unpack_pipeline_cache(std::vector<uint8_t>& file) {
 // The device's memory budget for the warm pipeline pool (pipeline_worker.cpp): VK_EXT_memory_budget's budget of the
 // largest device-local heap when the device has the extension, else that heap's size (MoltenVK: Metal's
 // recommendedMaxWorkingSetSize); 0 when unknown.
+static uint64_t device_memory_budget();
+}  // namespace
+uint64_t vulkan_device_memory_budget() {  // (surfaces.cpp texture budget)
+  static const uint64_t value = device_memory_budget();
+  return value;
+}
+namespace {
 static uint64_t device_memory_budget() {
   VkPhysicalDeviceMemoryProperties p{};
   vkGetPhysicalDeviceMemoryProperties(R.physicalDevice, &p);
@@ -415,6 +430,15 @@ void init_pipeline_cache() try {
         if (!unpack_pipeline_cache(bytes)) bytes.clear();
       } else bytes.clear();
     }
+  }
+  // Pruning (WWHD_VK_WARM_PRUNE=1, setup's preparation only): the driver cache starts empty and the preparation
+  // compiles every recipe of the database into it (headstart.cpp), so entries no recipe uses any more (older builds,
+  // pipelines dropped from the database) are not carried over. Idea after aurora's driver cache pruning (MIT;
+  // lib/webgpu/gpu_cache.cpp); no code taken.
+  if (!bytes.empty() && warm_prune_enabled()) {
+    LOG("[vulkan cache] pruning: %zu bytes of the old driver cache left out; the preparation rebuilds it from the recipes",
+        bytes.size());
+    bytes.clear();
   }
   VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   ci.initialDataSize=bytes.size();ci.pInitialData=bytes.empty()?nullptr:bytes.data();
@@ -738,7 +762,10 @@ void note_upload_block(const Buffer& buffer) {
   R.uploadReadsDirect = direct;
 }
 }  // namespace
-UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
+static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow);
+UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,true); }
+UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,false); }
+static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow) {
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
   auto slice = [&](Renderer::UploadBlock& block) {
@@ -755,6 +782,7 @@ UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
     auto result = slice(block);
     if (result.buffer) return result;
   }
+  if (!grow) return UploadSlice{};
   if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, R.uploadBlocks.size());
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -950,6 +978,11 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   }
   const double ns = double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks,
       R.gpuTimestampValidBits)) * double(R.properties.limits.timestampPeriod);
+  if (rprof::enabled()) {  // the performance report's GPU timeline (busy, idle between submissions)
+    const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
+    const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
+    rprof::add_gpu_span(start, start + ns);
+  }
   if (dynresTiming) {
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
@@ -1323,6 +1356,7 @@ static void activate_submission(size_t index) {
   R.commandPool=slot.commandPool;R.cmd=slot.cmd;R.fence=slot.fence;
   R.descriptorPool=slot.descriptorPool;
   R.uploadBlocks=std::move(slot.uploadBlocks);
+  R.textureStagingBytes=0;
   R.garbageBuffers=std::move(slot.garbageBuffers);
   R.garbageImages=std::move(slot.garbageImages);
   R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
@@ -3295,6 +3329,7 @@ static void attach_gamepad_window() {
 }
 #endif
 void swap() {
+  texture_budget_step();
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if(active_deferred_commands) {
@@ -3654,18 +3689,35 @@ void swap() {
           (unsigned long long)ss.diskHits,(unsigned long long)ss.spirvReuseHits,(unsigned long long)ss.spirvCompiles,ss.spirvCompileNs/1e6,
           ss.decompileNs/1e6,(unsigned long long)ss.diskLoads,ss.diskLoadNs/1e6,
           (unsigned long long)ss.diskSaves,ss.diskSaveNs/1e6,ss.diskSavedBytes/double(1<<20),ss.diskSnapshotNs/1e6);
-      LOG("[vulkan pipelines] creates %llu total %.1f ms",
-          (unsigned long long)R.pipelineCreates,R.pipelineCreateNs/1e6);
+      {
+        uint64_t promotions=0,promotedHits=0; double promotedMs=0;
+        pipeline_promotion_stats(promotions,promotedHits,promotedMs);
+        LOG("[vulkan pipelines] creates %llu total %.1f ms; new keys %llu, %llu of them in the recipe database; "
+            "%llu demands waited for the running warm-up compile (%llu got it, %.1f ms)",
+            (unsigned long long)R.pipelineCreates,R.pipelineCreateNs/1e6,
+            (unsigned long long)R.pipelineKeysNew,(unsigned long long)R.pipelineKeysKnown,
+            (unsigned long long)promotions,(unsigned long long)promotedHits,promotedMs);
+      }
       {
         // texture change detection (surfaces.cpp upload_surface, write_watch.h)
         extern uint64_t g_stat_full_checks, g_stat_uploads;
+        extern uint64_t g_stat_staging_ring, g_stat_staging_ring_bytes, g_stat_staging_buffers, g_stat_staging_buffer_bytes;
+        extern uint64_t g_stat_tex_evictions, g_stat_tex_evicted_bytes, g_stat_tex_restores, g_stat_tex_resident_bytes;
+        LOG("[vulkan textures] budget: %.1f MiB of CPU textures resident; %llu released (%.1f MiB), %llu made again",
+            g_stat_tex_resident_bytes/1048576.0,(unsigned long long)g_stat_tex_evictions,g_stat_tex_evicted_bytes/1048576.0,
+            (unsigned long long)g_stat_tex_restores);
+        g_stat_tex_evictions=g_stat_tex_evicted_bytes=g_stat_tex_restores=0;
         static uint64_t checks=0, uploads=0;
         uint64_t faults, protectedPages;
         wwatch::take_stats(faults, protectedPages);
-        LOG("[vulkan textures] %llu full checks, %llu uploads, %llu page write faults, %llu pages protected",
+        LOG("[vulkan textures] %llu full checks, %llu uploads, %llu page write faults, %llu pages protected; staging: "
+            "%llu levels from the upload arena (%.1f MiB), %llu own buffers (%.1f MiB)",
             (unsigned long long)(g_stat_full_checks-checks),(unsigned long long)(g_stat_uploads-uploads),
-            (unsigned long long)faults,(unsigned long long)protectedPages);
+            (unsigned long long)faults,(unsigned long long)protectedPages,
+            (unsigned long long)g_stat_staging_ring,g_stat_staging_ring_bytes/1048576.0,
+            (unsigned long long)g_stat_staging_buffers,g_stat_staging_buffer_bytes/1048576.0);
         checks=g_stat_full_checks;uploads=g_stat_uploads;
+        g_stat_staging_ring=g_stat_staging_ring_bytes=g_stat_staging_buffers=g_stat_staging_buffer_bytes=0;
       }
       buffer_cache_report(double(R.frame-frame));
       // CPU-only reports leave per-draw counters/comparison clocks disabled.

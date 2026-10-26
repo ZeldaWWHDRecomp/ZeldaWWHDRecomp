@@ -219,6 +219,37 @@ void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t
     wbReadNs.fetch_add(readNs, std::memory_order_relaxed);
 }
 
+std::atomic<uint64_t> texChecks, texChanged, texHashed, texReleases, texReleasedBytes, texRemakes;
+void add_texture_check(uint64_t hashedBytes, bool changed) {
+    if (!enabled()) return;
+    texChecks.fetch_add(1, std::memory_order_relaxed);
+    texChanged.fetch_add(changed, std::memory_order_relaxed);
+    texHashed.fetch_add(hashedBytes, std::memory_order_relaxed);
+}
+void add_texture_release(uint64_t bytes) {
+    if (!enabled()) return;
+    texReleases.fetch_add(1, std::memory_order_relaxed);
+    texReleasedBytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+void add_texture_remake() {
+    if (enabled()) texRemakes.fetch_add(1, std::memory_order_relaxed);
+}
+std::mutex gpuSpanMutex;
+double gpuLastEnd = 0, gpuBusyNs = 0, gpuIdleNs = 0, gpuMaxIdleNs = 0;
+uint64_t gpuSpans = 0;
+void add_gpu_span(double startNs, double endNs) {
+    if (!enabled() || endNs < startNs) return;
+    std::lock_guard<std::mutex> lk(gpuSpanMutex);
+    gpuBusyNs += endNs - startNs;
+    // a gap of more than a second is a pause (loading, a hidden window), not idle time between passes
+    if (gpuLastEnd > 0 && startNs > gpuLastEnd && startNs - gpuLastEnd < 1e9) {
+        gpuIdleNs += startNs - gpuLastEnd;
+        gpuMaxIdleNs = std::max(gpuMaxIdleNs, startNs - gpuLastEnd);
+    }
+    gpuLastEnd = std::max(gpuLastEnd, endNs);
+    ++gpuSpans;
+}
+
 void add_sync(Sync site, uint64_t ns) {
     syncNs[site].fetch_add(ns, std::memory_order_relaxed);
     syncCount[site].fetch_add(1, std::memory_order_relaxed);
@@ -250,6 +281,12 @@ static void apply_requested() {
     for (auto& c : sampleCounter) c = 0;
     for (int i = 0; i < kSyncs; i++) syncNs[i] = 0, syncCount[i] = 0;
     wbWalkNs = wbWalks = wbCount = wbBytes = wbReadNs = 0;
+    texChecks = texChanged = texHashed = texReleases = texReleasedBytes = texRemakes = 0;
+    {
+        std::lock_guard<std::mutex> lk(gpuSpanMutex);
+        gpuLastEnd = gpuBusyNs = gpuIdleNs = gpuMaxIdleNs = 0;
+        gpuSpans = 0;
+    }
     g_draw_sampled = false;
     g_track_unique = false;
     g_reg_dirty = 0;
@@ -388,6 +425,22 @@ void frame_end(bool hold) {
                  readNs = wbReadNs.exchange(0);
         add("[prof] write-back to guest memory: %llu surfaces, %.1f KiB, read %.3f ms; DrawDone checks %.2f/frame, %.2f us each",
             (unsigned long long)n, bytes / 1024.0, readNs / 1e6, walks / frames, walks ? walkNs / 1e3 / walks : 0.0);
+    }
+    {
+        const uint64_t checks = texChecks.exchange(0), changed = texChanged.exchange(0), hashed = texHashed.exchange(0),
+                       releases = texReleases.exchange(0), releasedBytes = texReleasedBytes.exchange(0),
+                       remakes = texRemakes.exchange(0);
+        add("[prof] texture cache: %.2f full checks/frame (%.2f MiB/frame hashed), %llu served from the cache, %llu "
+            "uploaded again; budget: %llu released (%.1f MiB), %llu made again",
+            checks / frames, hashed / frames / 1048576.0, (unsigned long long)(checks - changed), (unsigned long long)changed,
+            (unsigned long long)releases, releasedBytes / 1048576.0, (unsigned long long)remakes);
+        std::lock_guard<std::mutex> lk(gpuSpanMutex);
+        if (gpuSpans)
+            add("[prof] GPU timeline: busy %.2f ms/frame, idle between command buffers %.2f ms/frame (longest gap %.2f ms), "
+                "%.1f command buffers/frame",
+                gpuBusyNs / 1e6 / frames, gpuIdleNs / 1e6 / frames, gpuMaxIdleNs / 1e6, gpuSpans / frames);
+        gpuBusyNs = gpuIdleNs = gpuMaxIdleNs = 0;
+        gpuSpans = 0;
     }
     static const char* upNames[kUploadKinds] = {"other", "vertex", "index", "ubo", "uniforms", "texture"};
     const double logicFrames = std::max(1.0, frames - W.holdFrames), holdFrames = std::max(1.0, (double)W.holdFrames);

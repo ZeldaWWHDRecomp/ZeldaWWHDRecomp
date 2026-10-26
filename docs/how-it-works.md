@@ -93,7 +93,11 @@ packets, rebuilds GPU register state, and translates draws to a host graphics AP
    - renders into Metal textures, including texture-array targets for shadow cascades.
 3. Shaders (Latte microcode) are translated to Metal Shading Language with Cemu's decompiler. Every
    translated shader and pipeline is recorded in `~/Library/Caches/wwhd/shaders.bin`; later launches
-   replay it at startup, compiling in the background and on first use.
+   replay it at startup, compiling in the background and on first use. The file starts with a version
+   header (cache schema, record versions, macOS version and GPU): records of another version are
+   dropped, a newer release's file is left alone, and repeated rows and pipeline recipes whose shaders
+   are gone are left out when the file is rewritten at the next start (`WWHD_SHADER_CACHE_VERSIONING=0`:
+   the unversioned file as before).
 4. Presentation models the display: 60 Hz vsync, the game's swap interval (30 fps), and an sRGB TV
    buffer. The TV and GamePad screens are separate windows.
 

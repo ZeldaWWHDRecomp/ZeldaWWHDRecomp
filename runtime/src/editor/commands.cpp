@@ -212,7 +212,7 @@ const std::vector<CommandInfo> kCommands = {
       {"chart_marker", "object|null", "island marker; null removes it"}, {"arrival", "object|null", "arrival notice; null removes it"}, {"calm_water", "object|null", "{radius, falloff?, offset?}: still sea around it; null removes it"}, {"mod", "string", ""}}, true},
     {"preview_collision", "Returns world-space collision vertices and edges for a wireframe preview, with placement findings.",
      {{"id", "string", "placed world object", true}, {"position", "point", "a trial position (default: its own)"}, {"yaw", "number", "a trial turn in degrees"}, {"mod", "string", ""}}},
-    {"placement_conflicts", "Returns placement conflicts and collision budget findings for a world object.",
+    {"placement_conflicts", "Returns placement conflicts and collision budget findings for a world object; a conflict caused by the model's own faces lists them (triangles: collision mesh indices, faces: their world corners).",
      {{"id", "string", "placed world object", true}, {"position", "point", "a trial position (default: its own)"}, {"yaw", "number", "a trial turn in degrees"}, {"mod", "string", ""}}},
     {"prepare_collision", "Prepares a static model's collision for live world-object placement.",
      {{"model", "string", "declared static model id", true}, {"mod", "string", ""}}},

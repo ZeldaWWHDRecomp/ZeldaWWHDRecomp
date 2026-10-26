@@ -280,6 +280,20 @@ class PlayerCaches(unittest.TestCase):
             self.assertNotIn(code,zlib.decompress(data[8:]))
         prep.guard_template(data)
 
+    def test_versioned_metal_cache_markers_are_skipped(self):
+        # the runtime's versioned shaders.bin starts with a header (type 7) and may hold tombstones (type 8):
+        # neither is a state, a pipeline or damage (runtime/src/gfx/metal_cache_file.h)
+        header=b'WWMTLHDR'+struct.pack('<5I',1,1,1,168,5)+b'macOS'
+        tomb=struct.pack('<2Q',1,2)
+        path=self.stream('shaders.bin',[(7,header)]+self.every_kind()+[(8,tomb)])
+        b=prep.TemplateBuilder();b.add_cache(str(path))
+        doc=b.document()
+        self.assertEqual(len(doc['states']),4)
+        self.assertEqual(len(doc['pipelines']),3)
+        self.assertEqual(sum(b.report.skipped.values()),1)  # the speculative record only
+        self.assertEqual(b.report.ignored_bytes,0)
+        self.assertNotIn(7,b.report.records);self.assertNotIn(8,b.report.records)
+
     def test_vulkan_recipes_file_any_count(self):
         # *.bin.recipes is a whole database (not a record stream); runtime allows 16384 recipes (512 earlier)
         recipes=[]
