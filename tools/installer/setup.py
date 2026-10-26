@@ -1768,7 +1768,7 @@ def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=()):
     for a in (recipe or manifest["link"]):
         args += [fwd(g) for g in glue] if a == "{decomp_glue}" else [sub(a, m)]
     if IS_LINUX:
-        args += ["-Wl,-rpath,$ORIGIN"]
+        args += ["-Wl,-rpath,$ORIGIN,--strip-debug"]
     elif IS_MAC:
         # the runtime libraries the release installs next to the game (manifest runtime_files: the Vulkan
         # loader and MoltenVK) are found there, never in Homebrew or elsewhere on the Mac
