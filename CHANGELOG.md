@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **HDR output on Linux, and HDR10 for displays without scRGB** (Vulkan). Settings → Graphics → HDR output now also
+  works on Linux under Wayland. Where the system offers no scRGB output (Mesa drivers on Wayland), the game presents
+  HDR10 (BT.2020 with the PQ curve) instead, with the same paper white, peak and exposure settings; the overlay shows
+  which one is used. On compositors where SDL picks XWayland (such as sway), choosing HDR makes the game start on
+  Wayland from the next start, since X11 windows can't show HDR. Windows is unchanged.
 - **macOS: move and resize the GamePad picture with the mouse** (#305, thanks @shaneoreilly). In the TV window, drag the
   picture-in-picture GamePad with the right mouse button (or with Option held) to move it, drag from its bottom-right
   corner or use the scroll wheel over it to resize it (5–100%). The placement becomes Custom and is saved. A plain left

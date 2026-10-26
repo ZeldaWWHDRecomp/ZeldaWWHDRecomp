@@ -1639,6 +1639,20 @@ static void retire_secondary_swapchain(bool surface);
 static bool secondary_retirement_available();
 #endif
 static bool async_present();
+#if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+// Whether the display can show HDR. Linux: wlroots compositors (sway) give every surface an
+// sRGB preferred image description even on PQ outputs, so SDL never reports HDR there; Mesa
+// offers the HDR colour spaces only when the compositor accepts them, so those count too.
+// The HDR choice itself stays explicit.
+static bool display_hdr_enabled(SDL_Window* window) {
+  const bool sdl=SDL_GetBooleanProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+#ifdef _WIN32
+  return sdl;
+#else
+  return sdl||hdr::formatSupported.load();
+#endif
+}
+#endif
 static void make_swapchain(Screen &s) {
   if (&s == &R.tv) present_held(true);  // even frame delivery: a held frame goes out first
   if(active_deferred_commands)active_deferred_commands->finish_exact();
@@ -1692,8 +1706,8 @@ static void make_swapchain(Screen &s) {
     for(const auto& f:fs){scrgb|=hdrCandidate(f,false);pq|=hdrCandidate(f,true);}
     hdr::scrgbSupported=scrgb;hdr::pqSupported=pq;
     hdr::formatSupported=scrgb||pq;
-#if defined(_WIN32) && defined(WWHD_SDL_HOST)
-    hdr::displayEnabled=SDL_GetBooleanProperty(SDL_GetWindowProperties(s.window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+#if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+    hdr::displayEnabled=display_hdr_enabled(s.window);
 #endif
     wantHdr=hdr::resolve_output();
     wantPq=wantHdr&&!scrgb;
@@ -4775,8 +4789,25 @@ void init() {
   // hidden test runs: no Dock icon, no activation (the app never takes the focus from the user)
   if (hidden_windows())
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
+#if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
+  // SDL prefers XWayland on compositors without wp_fifo_v1 (sway), and X11 Vulkan surfaces have
+  // no HDR colour spaces. A saved HDR choice asks for Wayland unless the user picked a driver.
+  {
+    std::string saved;
+    if (!getenv("SDL_VIDEO_DRIVER") && getenv("WAYLAND_DISPLAY") && hostui::get("hdrEnabled", saved) &&
+        atoi(saved.c_str()) != 0)
+      SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+  }
+#endif
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     exception_report::raise(SDL_GetError());
+#if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
+  {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    hdr::waylandAfterRestart = driver && !strcmp(driver, "x11") && getenv("WAYLAND_DISPLAY") && !getenv("SDL_VIDEO_DRIVER");
+    LOG("[display] SDL video driver %s", driver ? driver : "none");
+  }
+#endif
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))
@@ -5237,9 +5268,9 @@ void run_main_loop() {
   for (;;) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-#ifdef _WIN32
+#ifdef WWHD_HDR_OUTPUT
       if(event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED && event.window.windowID==SDL_GetWindowID(R.tv.window)) {
-        const bool enabled=SDL_GetBooleanProperty(SDL_GetWindowProperties(R.tv.window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+        const bool enabled=display_hdr_enabled(R.tv.window);
         // SDL also reports white-level/headroom changes after presentation.
         // Our explicit nits controls do not require a new swapchain for those.
         if(hdr::displayEnabled.exchange(enabled)!=enabled)R.tv.resize=true;

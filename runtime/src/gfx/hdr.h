@@ -4,6 +4,11 @@
 #include <atomic>
 #include <cmath>
 
+// Hosts with HDR output (Vulkan, SDL host): Windows and desktop Linux.
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+#define WWHD_HDR_OUTPUT 1
+#endif
+
 // Explicit HDR output: scRGB FP16, or HDR10 PQ (BT.2020 + ST 2084) where the
 // surface offers no scRGB. The guest scan is SDR; this is a controlled highlight
 // expansion, not recovery of the game's pre-tonemap lighting.
@@ -13,6 +18,9 @@ inline std::atomic<bool> fellBackToSdr{false};
 // Per-encoding surface support (formatSupported is either); scRGB is preferred.
 inline std::atomic<bool> scrgbSupported{false}, pqSupported{false};
 inline std::atomic<bool> pqOutput{false}; // the TV swapchain presents HDR10 PQ
+// Linux: SDL chose XWayland in a Wayland session. X11 surfaces are SDR only; a saved
+// HDR choice makes the next start use SDL's Wayland driver (backend.cpp init).
+inline std::atomic<bool> waylandAfterRestart{false};
 // The saved choice stays HDR; this session presents SDR and the overlay says so.
 inline void fall_back_to_sdr() {
     enabled = false;
