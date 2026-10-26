@@ -1161,18 +1161,6 @@ It is **off** by default.
 
 Both renderers (Metal and Vulkan) support it. The idea comes from GreenNaugahyde's Android fork.
 
-## Depth clamp on panvk (Mali)
-
-Mali GPUs have no geometric depth clipper: panvk implements depth clipping by culling each fragment
-whose depth leaves the viewport's depth range. The game draws parts of the sky (the title screen's
-cloud band, a cylinder around the camera) at the far plane; when such triangles pass beside or behind
-the camera, interpolated depth rounds just above 1.0 and pieces of the band are culled along straight
-edges, which flickers as the camera moves. On panvk every pipeline therefore uses depth clamp, so
-those fragments are clamped instead of culled. Geometry in front of the near plane is then not clipped
-either; the game rarely draws any there. `WWHD_VK_DEPTH_CLAMP_ALL=0` restores normal depth clipping,
-`=1` forces depth clamp on other drivers (both need the device's `depthClamp` feature); the log names
-the choice.
-
 ## Choosing the GPU
 
 In Settings → Graphics → GPU (Vulkan), choose Automatic or a graphics card. The choice applies after restarting. Automatic keeps the driver's order, preferring cards with Vulkan 1.3. Unavailable cards show the reason; if a saved card is missing or unusable, the game uses Automatic and shows a notice.
