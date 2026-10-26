@@ -119,6 +119,7 @@ struct Renderer {
  VkPhysicalDeviceFeatures enabledFeatures{};
  bool computeQueue=false;
  bool bcCpuDecode=false; // BC uploads without BC textures: CPU decoder instead of compute (bc_decoder_choice.h)
+ bool clipEmulation=false; // depth clipping in shaders instead of panvk's per-fragment culls (shaders.cpp)
  std::atomic<bool> secondaryPresentHeld{false}; // game-free blocked-present diagnostic
  std::atomic<bool> secondaryInjectAcquireLoss{false},secondaryInjectPresentLoss{false}; // authored WSI diagnostics
  std::atomic<bool> secondaryInjectQueryLoss{false};

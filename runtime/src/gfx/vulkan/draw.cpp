@@ -741,7 +741,8 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
   if (mode & 0x800)
     key.depthBias = {r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE], r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET],
                      r[REGADDR::PA_SU_POLY_OFFSET_CLAMP]};
-  key.clip = r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27);  // depth clamp
+  key.clip = (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27)) |   // depth clamp
+             (vk::clip_emulation_wanted(r) ? 1u : 0u);       // and clipping in shaders (vk::clip_emulation_wanted)
   if (fs->bufferGroups.size() > kMaxPipelineStrides)
     exception_report::raise("fetch shader has more vertex buffers than a pipeline key holds");
   for (auto& g : fs->bufferGroups)
@@ -1171,6 +1172,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   // Far-plane clipping off: depth clamp, or without the device feature the vertex shader's clamp at
   // the near plane (vk::depth_clamp_variant_wanted, part of the vertex shader's key)
   if (pipelineClip.get_ZCLIP_FAR_DISABLE() && R.enabledFeatures.depthClamp)
+    rs.depthClampEnable = VK_TRUE;
+  // panvk: shaders clip this draw, so its depth is clamped instead of culled (vk::clip_emulation_wanted)
+  if (vk::clip_emulation_wanted(r))
     rs.depthClampEnable = VK_TRUE;
   rs.lineWidth = 1;
   rs.cullMode = (pm.get_CULL_FRONT() ? VK_CULL_MODE_FRONT_BIT : 0) |

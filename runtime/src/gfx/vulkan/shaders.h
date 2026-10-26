@@ -115,4 +115,6 @@ std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
 void reset_shader_memoization();
 // Call only after draw code has discarded pipelines and references to Shader.
 void clear_shader_cache();
+// depth clipping in shaders for this draw (panvk; shaders.cpp): its pipeline clamps depth instead
+bool clip_emulation_wanted(const uint32_t* regs);
 } // namespace gfxvk::vk
