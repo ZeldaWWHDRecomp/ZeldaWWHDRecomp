@@ -502,7 +502,9 @@ same factor, so their zoom is weaker above 100%. The setting is saved between la
 enabled and the display supports it. Where the surface has no scRGB (Mesa on Wayland), it
 presents HDR10 (BT.2020, PQ) instead; enable HDR for the output in your compositor. When SDL
 runs the game through XWayland (sway and other compositors without `wp_fifo_v1`), choosing
-HDR starts the game on Wayland from the next launch; `SDL_VIDEO_DRIVER` still overrides this.
+HDR starts the game on Wayland from the next launch; SDL prefers XWayland there for frame
+pacing, so pacing may change. `SDL_VIDEO_DRIVER` still overrides this, and under gamescope
+(Steam Deck), which provides HDR to XWayland itself, the game stays on XWayland.
 Paper white, peak brightness, exposure, highlight expansion and settings-menu brightness are
 adjustable. This expands the game's SDR output into HDR; it does
 not recover already-clipped lighting or provide native pre-tonemap HDR rendering. The in-game

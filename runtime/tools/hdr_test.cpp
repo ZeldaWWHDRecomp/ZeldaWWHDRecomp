@@ -42,6 +42,9 @@ int main() {
  for(float v:white)assert(std::abs(v-hdr::pq(100))<.0005f);
  auto red=hdr::encode_pq({1,0,0});
  assert(std::abs(red[0]-hdr::pq(80*.627404f))<1e-5f&&std::abs(red[1]-hdr::pq(80*.069097f))<1e-5f);
+ // Linux: Wayland for HDR only in a Wayland session, never under gamescope or a chosen SDL driver.
+ assert(hdr::wayland_for_hdr(false,true,false));
+ assert(!hdr::wayland_for_hdr(false,true,true)&&!hdr::wayland_for_hdr(true,true,false)&&!hdr::wayland_for_hdr(false,false,false));
  auto before=hdr::paperWhite.load();hdr::set(hdr::paperWhite,std::numeric_limits<float>::quiet_NaN(),80,500);
  assert(hdr::paperWhite.load()==before);
  puts("HDR: SDR fallback, black, calibrated grey, monotonicity, peak limit, hue, HDR10 PQ and invalid settings passed.");

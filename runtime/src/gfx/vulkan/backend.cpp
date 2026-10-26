@@ -75,6 +75,7 @@
 #include <SDL3/SDL_vulkan.h>
 #endif
 #include "platform/display_rate.h"
+#include "platform/gaming_mode.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
 #include "platform/gamepad_touch.h"
@@ -4791,11 +4792,12 @@ void init() {
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
 #if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
   // SDL prefers XWayland on compositors without wp_fifo_v1 (sway), and X11 Vulkan surfaces have
-  // no HDR colour spaces. A saved HDR choice asks for Wayland unless the user picked a driver.
+  // no HDR colour spaces there. A saved HDR choice asks for Wayland (hdr::wayland_for_hdr).
+  const bool waylandForHdr = hdr::wayland_for_hdr(getenv("SDL_VIDEO_DRIVER") != nullptr,
+                                                  getenv("WAYLAND_DISPLAY") != nullptr, gaming_mode::active());
   {
     std::string saved;
-    if (!getenv("SDL_VIDEO_DRIVER") && getenv("WAYLAND_DISPLAY") && hostui::get("hdrEnabled", saved) &&
-        atoi(saved.c_str()) != 0)
+    if (waylandForHdr && hostui::get("hdrEnabled", saved) && atoi(saved.c_str()) != 0)
       SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
   }
 #endif
@@ -4804,7 +4806,7 @@ void init() {
 #if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
   {
     const char* driver = SDL_GetCurrentVideoDriver();
-    hdr::waylandAfterRestart = driver && !strcmp(driver, "x11") && getenv("WAYLAND_DISPLAY") && !getenv("SDL_VIDEO_DRIVER");
+    hdr::waylandAfterRestart = waylandForHdr && driver && !strcmp(driver, "x11");
     LOG("[display] SDL video driver %s", driver ? driver : "none");
   }
 #endif

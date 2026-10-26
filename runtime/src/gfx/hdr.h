@@ -21,6 +21,12 @@ inline std::atomic<bool> pqOutput{false}; // the TV swapchain presents HDR10 PQ
 // Linux: SDL chose XWayland in a Wayland session. X11 surfaces are SDR only; a saved
 // HDR choice makes the next start use SDL's Wayland driver (backend.cpp init).
 inline std::atomic<bool> waylandAfterRestart{false};
+// Whether HDR needs SDL's Wayland driver instead of XWayland. Not when the user chose a video
+// driver, outside Wayland, or under gamescope (Steam Deck), which gives X11 surfaces HDR itself
+// and whose frame pacing must not change.
+inline bool wayland_for_hdr(bool driverChosen, bool waylandSession, bool gamescope) {
+    return !driverChosen && waylandSession && !gamescope;
+}
 // The saved choice stays HDR; this session presents SDR and the overlay says so.
 inline void fall_back_to_sdr() {
     enabled = false;
