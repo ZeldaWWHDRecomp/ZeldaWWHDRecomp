@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Torchlight on objects is sharp at higher internal resolutions.** Torches and other point lights light the
+  scene through a half-size light buffer that every lit object reads back with a depth-aware upsample. At 2x and
+  3x that upsample still worked on the console's grid, so the light along the edges of lit objects (a distant
+  torch against the wall it lights) came out in blocks the size of console pixels. It now uses the larger buffer's
+  own grid. 1x is unchanged.
 - **World editor: island extensions can join an island's ground** (#281, thanks @KelpyCode). New ground that meets an
   island's ground at the same height (up to the 30-unit step Link and villagers walk over) counts as joined instead of
   overlapping, and an extension's sides may go into the cliff under its top; walls, raised parts and roofs still count.

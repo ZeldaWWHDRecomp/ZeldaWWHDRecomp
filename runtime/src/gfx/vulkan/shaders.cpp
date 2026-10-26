@@ -642,6 +642,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
     if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: upscaling fix not applied\n", address);
+    shader.gatherUnits = vertex ? 0 : ::gfx::area_sample::gathered_units(shader.glsl, false);
     if (vertex) {
         // Depth-only and shaded variants must rasterize identical positions.
         // Match Metal's [[invariant]] position output for multipass depth tests.
@@ -676,7 +677,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
             bool accepted=!replacement.empty()&&!original.empty()&&
                 mods::cemu::compatible_shader_interface(original,replacement,error);
             if(accepted && key_verify_rate()) shader.translatedGlsl=shader.glsl;
-            if(accepted)shader.glsl=std::move(custom);
+            if(accepted) { shader.glsl=std::move(custom); shader.gatherUnits=0; }  // its own uniforms
             if(error.empty()&&!accepted)error=originalError.empty()?"Shader compilation failed":originalError;
             mods::cemu::report_shader(packBase,packAux,vertex,accepted,error);
             fprintf(stderr,"[cemu-pack] %016llx_%016llx_%s %s%s\n",

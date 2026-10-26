@@ -335,6 +335,7 @@ static void compile_done(std::atomic<int>& st, int v) {
 struct Shader {
     uint64_t key = 0;
     gfx::ProgramKind kind = gfx::ProgramKind::Other;
+    uint32_t gatherUnits = 0;                 // pixel: the units it gathers from (area_sample::gathered_units)
     LatteDecompilerShader* dec = nullptr;
     id<MTLFunction> fn = nil;                 // valid once state == CS_READY
     std::atomic<int> state{CS_PENDING};
@@ -820,6 +821,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         use.failed = s;  // per linkage: the variant words need the program's analysis
         return s;
     }
+    if (!vertex) s->gatherUnits = gfx::area_sample::gathered_units(s->dec->strBuf_shaderSource->c_str(), true);
     if (!use.known) {
         const auto& dec = *s->dec;
         use.unitCount = (uint8_t)std::clamp((int)dec.textureUnitListCount, 0, (int)LATTE_NUM_MAX_TEX_UNITS);
@@ -1393,6 +1395,7 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
     LatteDecompilerShader* dec = sh->dec;
     float texScale[18][2];
     for (auto& t : texScale) t[0] = t[1] = 1.0f;
+    uint32_t texGuest[18][2] = {};  // guest size per unit, for the half-size light buffer's grid
     auto& rm = dec->resourceMapping;
     uint32_t texBase = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
     uint32_t samplerBase = vertex ? SAMPLER_BASE_INDEX_VERTEX : SAMPLER_BASE_INDEX_PIXEL;
@@ -1410,7 +1413,10 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             sh->kind == gfx::ProgramKind::OcclusionPixel)
             s = &g_hires_color;
         id<MTLTexture> tex = s && s->tex ? texture_view(s, type, tw[4]) : nil;
-        if (s && unit < 18) { texScale[unit][0] = s->sx; texScale[unit][1] = s->sy; }
+        if (s && unit < 18) {
+            texScale[unit][0] = s->sx; texScale[unit][1] = s->sy;
+            texGuest[unit][0] = s->width; texGuest[unit][1] = s->height;
+        }
         uint32_t samplerIdx = dec->textureUnitSamplerAssignment[unit];
         DLOG("[draw]   %s tex%u %08X %ux%u fmt %X gpu=%d view=%d smp %08X %08X %08X", vertex ? "VS" : "PS", unit, tw[2] << 8,
              s ? s->width : 0, s ? s->height : 0, s ? s->format : 0, s ? s->gpuWritten : -1, tex != nil,
@@ -1492,6 +1498,11 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             // for a 640x360 grid; the pass draws 960x540, so tile the 4x4 noise per output pixel instead
             if (vertex && ao_mode() == 2 && sh->kind == gfx::ProgramKind::OcclusionVertex)
                 ((float*)dst)[3] *= 1.5f;
+            // the half-size light buffer's grid on an upscaled buffer (gfx/area_sample.h)
+            for (uint32_t unit = 0; !vertex && unit < 18; unit++)
+                if (sh->gatherUnits >> unit & 1)
+                    gfx::area_sample::scale_gather_grid((float*)dst, (buf.size() - dec->uniform.loc_remapped) / 16, texGuest[unit][0],
+                                                        texGuest[unit][1], texScale[unit][0], texScale[unit][1]);
         }
         if (dec->uniform.loc_uniformRegister >= 0)
             memcpy(at(dec->uniform.loc_uniformRegister), &regs[aluBase], dec->uniform.count_uniformRegister * 16);

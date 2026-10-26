@@ -38,6 +38,16 @@
 // around Link where the quad straddles his silhouette; at 1x everything matched. The fix moves the
 // two offset rays to host-texel spacing (R0 + (Rn - R0) / scale), so the depths and the rays agree
 // again and the normals come out as on the console, at the higher resolution.
+//
+// Grid of the half-size light buffer. Scenes with point lights (torches) are lit into a 640x360
+// buffer next to a 640x360 copy of the depth, and every lit material reads the light back with a
+// depth-aware upsample: from a uniform (2w, 2h, 1/2w, 1/2h), the screen's size for a w x h buffer,
+// it puts the pixel on the buffer's grid, gathers the four depths around it and nudges one bilinear
+// read of the light towards the texels whose depth matches its own. On upscaled buffers the gather
+// returns texels a fraction of a grid cell apart while the grid stays the console's, so the light
+// along silhouettes (a torch against the wall it lights) came out in console-sized blocks. For the
+// units a shader gathers from, the renderers scale that uniform to the buffer's real size, so the
+// grid is the upscaled buffer's texels (scale_gather_grid).
 #include <bit>
 #include <utility>
 #include <cstdint>
@@ -81,6 +91,35 @@ inline Program pixel_program(const void* bytes, uint32_t size) {
     return {};
 }
 inline uint32_t units_for_pixel_shader(const void* bytes, uint32_t size) { return pixel_program(bytes, size).units; }
+
+// The texture units a decompiled pixel shader (MSL or Vulkan GLSL) gathers from (bit n = unit n).
+inline uint32_t gathered_units(const std::string& src, bool msl) {
+    uint32_t units = 0;
+    for (uint32_t unit = 0; unit < 32; unit++) {
+        const std::string n = std::to_string(unit);
+        if (src.find(msl ? "tex" + n + ".gather(" : "textureGather(textureUnitPS" + n + ",") != std::string::npos)
+            units |= 1u << unit;
+    }
+    return units;
+}
+
+// The half-size light buffer's grid (see above): scales each vec4 of `uniforms` (count vec4s) that is
+// (2w, 2h, 1/2w, 1/2h) for a gathered texture of guest size w x h to the texture's sx/sy texels per
+// guest texel. Returns the number of vec4s scaled.
+inline int scale_gather_grid(float* uniforms, size_t count, uint32_t w, uint32_t h, float sx, float sy) {
+    if (!uniforms || !w || !h || (sx == 1.0f && sy == 1.0f)) return 0;
+    const float gw = 2.0f * float(w), gh = 2.0f * float(h);
+    int scaled = 0;
+    for (size_t i = 0; i < count; i++) {
+        float* v = uniforms + i * 4;
+        if (v[0] != gw || v[1] != gh || v[2] * gw < 0.9999f || v[2] * gw > 1.0001f || v[3] * gh < 0.9999f ||
+            v[3] * gh > 1.0001f)
+            continue;
+        v[0] *= sx; v[1] *= sy; v[2] /= sx; v[3] /= sy;
+        scaled++;
+    }
+    return scaled;
+}
 
 // The shadow mask's offset view rays at host-texel spacing (see above): `scale` is the depth
 // texture's pixels per guest pixel. The same formula is in the shader helpers below.

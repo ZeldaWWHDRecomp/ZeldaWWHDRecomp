@@ -33,6 +33,7 @@ struct Shader {
     gfx::ProgramKind kind = gfx::ProgramKind::Other;
     uint64_t pipelineId = 0;  // portable canonical GLSL+metadata identity, stable before SPIR-V
     bool vertex = false;
+    uint32_t gatherUnits = 0;  // pixel: the units it gathers from (area_sample::gathered_units)
     LatteDecompilerShader* dec = nullptr;
     LatteDecompilerShaderResourceMapping mapping;
     DescriptorRankPlan descriptorRanks;

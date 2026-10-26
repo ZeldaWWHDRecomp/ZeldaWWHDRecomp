@@ -138,6 +138,28 @@ void test_area_taps_still_rewritten() {
     assert(glsl.find("vec2 uv, float lodBias)") < glsl.find("void main("));
 }
 
+// The lit materials' depth-aware upsample of the half-size light buffer: the units they gather from,
+// and their grid uniform scaled to the buffer's real size.
+void test_gather_grid() {
+    assert(gathered_units("R9f = (textureGather(textureUnitPS1, vec2(0.0001) + vec2(R11f.x,R11f.y)).xyzw);\n"
+                          "R4f = texture(textureUnitPS2, vec2(R4f.x,R4f.w));\n", false) == 2u);
+    assert(gathered_units("R9f = tex1.gather(samplr1, float2(R11f.x,R11f.y));\nR2 = tex12.gather(samplr12, uv);\n", true) ==
+           ((1u << 1) | (1u << 12)));
+    assert(gathered_units("R9f = (textureGather(textureUnitPS10, uv));\n", false) == 1u << 10);  // not unit 1
+    assert(gathered_units("R1f = texture(textureUnitPS0, uv);\n", false) == 0);
+
+    // remapped[0] something else, [1] the grid of a 640x360 buffer (the console's 1280x720 screen)
+    float u[8] = {380.0f, 0.005f, 905.0f, 1.0f / 350.0f, 1280.0f, 720.0f, 1.0f / 1280.0f, 1.0f / 720.0f};
+    assert(scale_gather_grid(u, 2, 640, 360, 1.0f, 1.0f) == 0 && u[4] == 1280.0f);  // 1x: unchanged
+    assert(scale_gather_grid(u, 2, 960, 540, 3.0f, 3.0f) == 0 && u[4] == 1280.0f);  // another buffer's size
+    assert(scale_gather_grid(u, 2, 640, 360, 3.0f, 3.0f) == 1);
+    assert(u[0] == 380.0f && u[3] == 1.0f / 350.0f);
+    assert(u[4] == 3840.0f && u[5] == 2160.0f);
+    assert(std::fabs(u[6] * 3840.0f - 1.0f) < 1e-6f && std::fabs(u[7] * 2160.0f - 1.0f) < 1e-6f);
+    assert(scale_gather_grid(u, 2, 640, 360, 3.0f, 3.0f) == 0);  // scaled once
+    assert(scale_gather_grid(nullptr, 2, 640, 360, 3.0f, 3.0f) == 0);
+}
+
 void test_classification() {
     unsigned char zeros[2112] = {};
     assert(pixel_program(zeros, sizeof zeros).fix == Fix::None);
@@ -150,6 +172,7 @@ int main() {
     test_gather_ray_math();
     test_rewrite_gather_rays();
     test_area_taps_still_rewritten();
+    test_gather_grid();
     test_classification();
     std::puts("area_sample: ok");
     return 0;
