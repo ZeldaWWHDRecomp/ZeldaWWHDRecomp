@@ -634,15 +634,6 @@ BindingTrimMetadata binding_trim_metadata(const uint32_t* r, vk::Shader* vs, con
      11) & 0xFFFF;
   return trim;
 }
-// Far-plane clipping off (PA_CL_CLIP_CNTL ZCLIP_FAR_DISABLE) becomes depth clamp where the device has
-// it. panvk (Mali) has no geometric depth clipper: depth clipping culls each fragment whose depth
-// leaves [0,1]. Sky geometry at the far plane (the title screen's cloud band: z = w - 0.0002) that
-// passes beside or behind the camera then loses parts along a straight line where interpolated depth
-// rounds above 1.0, flickering with the camera. There every pipeline clamps depth instead
-// (R.depthClampAll, chosen at device creation); draws in front of the near plane aren't clipped then.
-static bool depth_clamp_wanted(const uint32_t* r) {
-  return R.enabledFeatures.depthClamp && ((r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27)) || R.depthClampAll);
-}
 struct PendingPipeline {
   vk::Shader* shaders[2]{};
   VkDevice device{};
@@ -748,7 +739,7 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
   if (mode & 0x800)
     key.depthBias = {r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE], r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET],
                      r[REGADDR::PA_SU_POLY_OFFSET_CLAMP]};
-  key.clip = depth_clamp_wanted(r) ? 1u << 27 : 0;  // depth clamp
+  key.clip = r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27);  // depth clamp
   if (fs->bufferGroups.size() > kMaxPipelineStrides)
     exception_report::raise("fetch shader has more vertex buffers than a pipeline key holds");
   for (auto& g : fs->bufferGroups)
@@ -1173,9 +1164,11 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   VkPipelineRasterizationStateCreateInfo rs{
       VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
   rs.polygonMode = VK_POLYGON_MODE_FILL;
-  // Far-plane clipping off: depth clamp (depth_clamp_wanted), or without the device feature the vertex
-  // shader's clamp at the near plane (vk::depth_clamp_variant_wanted, part of the vertex shader's key)
-  if (depth_clamp_wanted(r))
+  LATTE_PA_CL_CLIP_CNTL pipelineClip;
+  std::memcpy(&pipelineClip, r + REGADDR::PA_CL_CLIP_CNTL, 4);
+  // Far-plane clipping off: depth clamp, or without the device feature the vertex shader's clamp at
+  // the near plane (vk::depth_clamp_variant_wanted, part of the vertex shader's key)
+  if (pipelineClip.get_ZCLIP_FAR_DISABLE() && R.enabledFeatures.depthClamp)
     rs.depthClampEnable = VK_TRUE;
   rs.lineWidth = 1;
   rs.cullMode = (pm.get_CULL_FRONT() ? VK_CULL_MODE_FRONT_BIT : 0) |

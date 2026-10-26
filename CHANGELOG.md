@@ -15,9 +15,6 @@ what is on `devel` and not released yet (also in the
   point lights are lit through a half-size light buffer that lit objects read back with a depth-aware upsample. At 2x
   and 3x that upsample still worked on the console's grid, so the light along the edges of lit objects came out in
   blocks the size of console pixels. It now uses the larger buffer's own grid. 1x is unchanged.
-- **Linux on Mali (panvk): no more flickering shapes in the sky** (#310, thanks @mkopec). Parts of the clouds and haze on
-  the title screen and at sea flickered away in hard-edged chunks as the camera moved, because Mali drops pixels just
-  past the far plane. On the panvk driver the game now clamps depth instead (`WWHD_VK_DEPTH_CLAMP_ALL=0` turns this off).
 - **Linux: the installed game is about 10× smaller** (#314, thanks @missionfloyd). Setup now builds the game code without
   debug information and strips debug data when linking, so the Linux game shrinks from over 500 MB to well under
   100 MB, and setup compiles faster. Developers can keep debug information with `--debug-info` or

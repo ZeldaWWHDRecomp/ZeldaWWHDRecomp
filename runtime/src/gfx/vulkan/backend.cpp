@@ -4566,17 +4566,6 @@ static void init_device(std::vector<const char *> extensions,
           R.enabledFeatures.textureCompressionBC ? "WWHD_VK_FORCE_BC_DECODE" : "device has no BC texture support",
           R.bcCpuDecode ? "CPU" : "compute", bc.reason);
   }
-  {
-    // panvk has no geometric depth clipper; see depth_clamp_wanted in draw.cpp.
-    const char* forced = getenv("WWHD_VK_DEPTH_CLAMP_ALL");
-    const bool wanted = forced ? strcmp(forced, "0") != 0 : driver.driverID == VK_DRIVER_ID_MESA_PANVK;
-    R.depthClampAll = wanted && R.enabledFeatures.depthClamp;
-    if (R.depthClampAll || forced)
-      LOG("[vulkan] depth clamp for every pipeline %s (%s)", R.depthClampAll ? "on" : "off",
-          forced && !R.enabledFeatures.depthClamp ? "WWHD_VK_DEPTH_CLAMP_ALL, but the device has no depthClamp" :
-          forced ? "set by WWHD_VK_DEPTH_CLAMP_ALL" :
-          "panvk culls fragments for depth clipping; WWHD_VK_DEPTH_CLAMP_ALL=0/1 overrides");
-  }
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
