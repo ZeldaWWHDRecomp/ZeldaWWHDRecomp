@@ -1154,6 +1154,24 @@ It is **off** by default.
 
 Both renderers (Metal and Vulkan) support it. The idea comes from GreenNaugahyde's Android fork.
 
+## Depth clipping in shaders on panvk (Mali)
+
+Mali GPUs have no geometric clipper: panvk clips depth by culling each fragment whose depth leaves the
+viewport's depth range. That cull works on depth interpolated in screen space, which drifts past 1.0 on
+far-plane geometry whose triangles pass beside or behind the camera: the sky's cloud band on the title
+screen and at sea lost pieces along straight edges, flickering as the camera moved. Turning on depth
+clamp avoids the cull but also lets through what only it removes: the game draws primitives on the
+camera plane (w = 0), which clipping discards; with clamp, one of them filled the 16:9 picture with a
+single colour at sea near Outset.
+
+On panvk, draws that don't write depth therefore clamp depth and clip in their shaders: the vertex
+shader passes the clip-space distances to the near and far planes, interpolated like the point on the
+triangle, and the pixel shader discards outside them (and at w = 0). Draws that write depth keep the
+hardware path, so opaque geometry keeps the early depth test; draws whose own state turns off near or
+far clipping are unchanged. `WWHD_VK_CLIP_EMULATION=0` turns this off, `=1` turns it on for other
+drivers with the depthClamp feature; the log names the choice. It is part of the shader key, so shader
+caches keep both variants.
+
 ## Choosing the GPU
 
 In Settings → Graphics → GPU (Vulkan), choose Automatic or a graphics card. The choice applies after restarting. Automatic keeps the driver's order, preferring cards with Vulkan 1.3. Unavailable cards show the reason; if a saved card is missing or unusable, the game uses Automatic and shows a notice.

@@ -249,10 +249,49 @@ bool clamp_position_depth(std::string& glsl) {
     glsl.insert(eol, "; if (gl_Position.w > 0.0) gl_Position.z = max(gl_Position.z, 0.0)");
     return true;
 }
+// Depth clipping in shaders (panvk, R.clipEmulation). Mali has no geometric clipper: panvk clips
+// depth by culling each fragment whose depth leaves [0,1]. Depth that is interpolated in screen space
+// drifts past 1.0 on far-plane geometry whose triangles pass beside or behind the camera (the title
+// screen's cloud band, z = w - 0.0002), and pieces are culled along straight edges, flickering with
+// the camera. Depth clamp avoids that cull but also lets through what only it removes: the game draws
+// primitives on the camera plane (w = 0; at sea near Outset a quad that then fills the 16:9 picture).
+// So pipelines without depth writes clamp depth, and their shaders clip instead: the vertex shader
+// passes (z, w - z, w) of the Vulkan clip position, interpolated perspective-correctly like the point
+// on the triangle, and the pixel shader discards outside 0 <= z <= w (and NaN, as at w = 0). Depth
+// writes stay with the hardware so opaque geometry keeps the early depth test; draws the game itself
+// clamps or doesn't near-clip (PA_CL_CLIP_CNTL ZCLIP_FAR/NEAR_DISABLE) are unchanged. The varying
+// takes location 31, so draws using all 32 pixel shader inputs are left out. Shader key flag 128.
+bool clip_emulation_wanted_regs(const uint32_t* regs) {
+    using Latte::REGADDR;
+    const uint32_t clip = regs[REGADDR::PA_CL_CLIP_CNTL], depth = regs[REGADDR::DB_DEPTH_CONTROL];
+    return R.clipEmulation && !(clip & ((1u << 26) | (1u << 27))) && !((depth & 2) && (depth & 4)) &&
+           (regs[mmSPI_PS_IN_CONTROL_0] & 0x3F) < 32;
+}
+constexpr const char* kClipVarying = "layout(location = 31) ";
+bool emulate_clipping(std::string& glsl, bool vertex) {
+    const size_t main = glsl.find("void main()");
+    if (main == std::string::npos) return false;
+    if (vertex) {
+        static const std::string def = "#define SET_POSITION(_v) ";
+        const size_t d = glsl.find(def);
+        const size_t eol = d == std::string::npos ? d : glsl.find_first_of("\r\n", d);
+        if (eol == std::string::npos || eol > main) return false;
+        glsl.insert(main, std::string(kClipVarying) + "out vec3 wwhdClip;\r\n");
+        glsl.insert(eol, "; wwhdClip = vec3(gl_Position.z, gl_Position.w - gl_Position.z, gl_Position.w)");
+        return true;
+    }
+    const size_t brace = glsl.find('{', main);
+    if (brace == std::string::npos) return false;
+    // a little relative slack: far-plane geometry sits within rounding of z = w
+    glsl.insert(brace + 1, "\r\nif (!(wwhdClip.x >= -1e-6 * wwhdClip.z && wwhdClip.y >= -1e-6 * wwhdClip.z)) discard;");
+    glsl.insert(main, std::string(kClipVarying) + "in vec3 wwhdClip;\r\n");
+    return true;
+}
 size_t gather_linkage(const uint32_t* regs, bool vertex, const LatteFetchShader* fetch, uint32_t* out) {
-    // flag 64: the emulated depth clamp variant (depth_clamp_variant_wanted)
+    // flag 64: the emulated depth clamp variant (depth_clamp_variant_wanted); 128: clipping in shaders
     return ::gfx::gather_shader_linkage(regs, vertex, fetch, mods::cemu::has_shaders(), out,
-                                        vertex && depth_clamp_variant_wanted(regs) ? 64u : 0u);
+                                        (vertex && depth_clamp_variant_wanted(regs) ? 64u : 0u) |
+                                        (clip_emulation_wanted_regs(regs) ? 128u : 0u));
 }
 // What the program reads beyond the linkage, recorded from its first translation.
 struct ProgramUse {
@@ -361,7 +400,8 @@ uint64_t legacy_state_hash(const uint32_t* regs, uint64_t hash, bool vertex) {
     put(mmCB_SHADER_CONTROL, 1); put(mmDB_SHADER_CONTROL, 1);
     put(mmSPI_INPUT_Z, 1); put(REGADDR::SX_ALPHA_TEST_CONTROL, 1);
     uint32_t transformState[] = {regs[REGADDR::PA_CL_VTE_CNTL] & 0x3F,
-        regs[REGADDR::PA_CL_CLIP_CNTL] & ((1u << 19) | (depth_clamp_variant_wanted(regs) ? 1u << 27 : 0u)),
+        (regs[REGADDR::PA_CL_CLIP_CNTL] & ((1u << 19) | (depth_clamp_variant_wanted(regs) ? 1u << 27 : 0u))) |
+            (clip_emulation_wanted_regs(regs) ? 1u << 31 : 0u),
         regs[REGADDR::DB_DEPTH_CONTROL] & 0x83};
     append(transformState,3);
     put(REGADDR::CB_COLOR_CONTROL, 1); put(REGADDR::CB_TARGET_MASK, 1);
@@ -692,6 +732,12 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
                 fprintf(stderr, "[vulkan] vertex shader %08X: near-plane depth clamp variant (%d so far)\n", address, applied);
         } else if (missed++ < 10)  // a graphics-pack vertex shader without the decompiler's SET_POSITION: drawn unclamped
             fprintf(stderr, "[vulkan] vertex shader %08X: depth clamp emulation not applied (no SET_POSITION)\n", address);
+    }
+    // Both stages decide from the same registers; a stage the rewrite can't change (a graphics-pack
+    // shader without the decompiler's SET_POSITION or main) fails rather than mismatch its partner.
+    if (clip_emulation_wanted_regs(regs) && !emulate_clipping(shader.glsl, vertex)) {
+        shader.error = "cannot add depth clipping (WWHD_VK_CLIP_EMULATION=0 turns it off)";
+        return false;
     }
     if (vertex && R.vertexFormats.fallbackMask) {
         uint32_t tailLocation = vertex_tail_location(shader.mapping.attributeMapping);
@@ -1408,4 +1454,5 @@ void clear_shader_cache() {
     // Fetch parsing allocations have shared interior pointers and no owning
     // destructor in the adapted Cemu parser. Keep its process-lifetime cache.
 }
+bool clip_emulation_wanted(const uint32_t* regs) { return clip_emulation_wanted_regs(regs); }
 } // namespace gfxvk::vk

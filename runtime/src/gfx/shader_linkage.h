@@ -25,8 +25,8 @@ inline size_t gather_ps_input_table(const uint32_t* regs, uint32_t* out) {
 }
 
 // packWords: the extra words Cemu graphics-pack shader names hash (whole VTE word, rect primitives).
-// vertexFlags: a renderer's own vertex-shader variant bits, added to the flags word (Vulkan: 64, the
-// emulated depth clamp; bits 1-32 are taken here).
+// vertexFlags: a renderer's own variant bits, added to the flags word (Vulkan: 64, the emulated
+// depth clamp of vertex shaders; 128, depth clipping in shaders, both stages; bits 1-32 are taken here).
 inline size_t gather_shader_linkage(const uint32_t* regs, bool vertex, const LatteFetchShader* fetch, bool packWords,
                                     uint32_t* out, uint32_t vertexFlags = 0) {
     using Latte::REGADDR;

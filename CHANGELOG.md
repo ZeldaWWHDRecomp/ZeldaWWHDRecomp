@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Linux on Mali (panvk): no more flickering shapes in the sky, done right** (#310 follow-up). Parts of the clouds and
+  haze on the title screen and at sea flickered away in hard-edged chunks as the camera moved. The first fix (#310)
+  clamped depth for every draw, which let through something the game draws right at the camera: as soon as gameplay
+  started, the middle of the picture became one solid colour. That fix is reverted; on panvk, draws that don't write
+  depth now clip in their shaders like the Wii U's clipper does (`WWHD_VK_CLIP_EMULATION=0` turns this off). See the
+  Vulkan docs.
 - **macOS: move and resize the GamePad picture with the mouse** (#305, thanks @shaneoreilly). In the TV window, drag the
   picture-in-picture GamePad with the right mouse button (or with Option held) to move it, drag from its bottom-right
   corner or use the scroll wheel over it to resize it (5–100%). The placement becomes Custom and is saved. A plain left
