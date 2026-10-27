@@ -69,6 +69,7 @@ struct OpenFile {
     bool story = false;           // a save file that carries the story block
     std::string host;
     std::string final_host;       // written through `host`, a temporary file renamed over this one when closed
+    bool failed = false;          // a write failed: the temporary file never replaces final_host
 };
 struct OpenDir {
     DIR* d;
@@ -271,12 +272,14 @@ HLE(coreinit, FSOpenFile) {
 
 HLE(coreinit, FSCloseFile) {
     std::string written_guest, written_host, final_host;
-    bool written = false;
+    bool written = false, complete = true;
     {
         std::lock_guard<std::mutex> lk(g_fs_mutex);
         auto it = g_files.find(arg(c, 2));
         if (it != g_files.end()) {
-            fclose(it->second.f);
+            // a temporary file is on the disk, whole, before it can replace the save
+            if (!it->second.final_host.empty()) complete = !it->second.failed && host::flush_file(it->second.f);
+            if (fclose(it->second.f) != 0) complete = false;
             written = it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos;
             written_guest = it->second.path, written_host = it->second.host, final_host = it->second.final_host;
             g_files.erase(it);
@@ -286,7 +289,9 @@ HLE(coreinit, FSCloseFile) {
     // kept for the next start if that never works), outside the lock
     if (!final_host.empty()) {
         BlockingScope b;
-        if (save_folder::commit_written(final_host)) written_host = final_host;
+        if (!complete) save_folder::discard_written(final_host);
+        else if (save_folder::commit_written(final_host)) written_host = final_host;
+        if (!complete) written = false;  // the save is unchanged: its story block stays as it is
     }
     if (!written) written_guest.clear();
     // a save file the game wrote: the story block goes after it again (story_store.h)
@@ -336,7 +341,12 @@ HLE(coreinit, FSWriteFile) {
     {
         BlockingScope b;
         n = fwrite(mem::ptr(src), 1, (size_t)size * count, f);
-        fflush(f);
+        const bool flushed = fflush(f) == 0;
+        if (n != (size_t)size * count || !flushed) {  // a full disk or an I/O error
+            std::lock_guard<std::mutex> lk(g_fs_mutex);
+            auto it = g_files.find(arg(c, 5));
+            if (it != g_files.end()) it->second.failed = true;
+        }
     }
     ret(c, (uint32_t)(n / size));
 }

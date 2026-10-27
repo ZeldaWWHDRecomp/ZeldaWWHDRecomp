@@ -8,5 +8,7 @@ bool writes_through_temporary();  // a chosen save folder is in use: save files 
 bool prepare_written(const std::string& save, bool keep_contents);
 // after the game closed it: the temporary file becomes the save; false: it stays, and the player is told
 bool commit_written(const std::string& save);
+// after the game closed it with a failed write (a full disk, an I/O error): the save stays as it was
+void discard_written(const std::string& save);
 void release_lock();  // the game ends: this computer's lock goes
 }  // namespace save_folder

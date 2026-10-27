@@ -690,13 +690,17 @@ keeps it the same on all your computers. Choose the same folder on each computer
   `cking 2.sav`), the next start backs up the folder and asks which save to play with.
 - While the game runs, a small `wwhd-playing.lock` in the folder names the computer. Another computer
   starting with the same folder warns first. Close the game on one computer before playing on another.
-- If the save can't be read (a cloud file that isn't on this computer yet), the game stops with a
-  message instead of starting without it.
+- If the save can't be read (a cloud file that isn't on this computer yet), the folder is missing
+  (the cloud app signed out, a drive unplugged) or a save that was there is gone, the game asks
+  first (try again, or quit) instead of starting a new, empty save there.
 - The game writes the save to a temporary file next to it and renames it into place, so the cloud app
   never uploads half a save. If the cloud app holds the file and the rename keeps failing, the new save
-  stays next to it (`cking.sav.wwhd-part`) and the next start offers it. Nothing is replaced or removed
-  without a backup first.
-- A folder inside the current save folder (or the other way round) can't be chosen.
+  stays next to it (`cking.sav.wwhd-part`) and the next start offers it. A write that fails (a full
+  disk) never replaces the save. Nothing is replaced or removed without a backup first, and without
+  your answer nothing is removed at all.
+- A folder inside the current save folder (or the other way round) can't be chosen. Choosing a
+  folder that already holds other files (such as the OneDrive folder itself) puts the save in a
+  `Wind Waker HD` folder inside it.
 - `--save DIR` on the command line still wins over the choice.
 
 ## Optional: bring your GameCube save to HD

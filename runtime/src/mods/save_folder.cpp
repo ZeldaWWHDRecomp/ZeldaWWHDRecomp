@@ -17,5 +17,11 @@ bool commit_written(const std::string& save) {
     write_not_finished(fs::path(save));
     return false;
 }
+void discard_written(const std::string& save) {
+    std::error_code ec;
+    fs::remove(part_of(fs::path(save)), ec);
+    LOG("[save-folder] writing %s failed (a full disk or an I/O error); the save is unchanged", save.c_str());
+    write_failed(fs::path(save));
+}
 void release_lock() { release(); }
 }  // namespace save_folder

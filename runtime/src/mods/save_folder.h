@@ -14,6 +14,8 @@
 //   - a lock file names the computer playing; another computer's recent lock gives a warning;
 //   - cking.sav is read once: a file the cloud app can't provide (an online-only placeholder that
 //     fails to download) stops the start with a message, so the game never makes a new, empty save;
+//     the same for a chosen folder that is gone, or a save that was there at an earlier start;
+//   - with no way to ask, nothing is removed and nothing is made anew;
 //   - the game's save files are written to a temporary file and renamed over the old one when
 //     closed (hle/fs.cpp), so the cloud app never uploads half a save. The story block (story_store.h)
 //     is added after that rename, through its own temporary file, as everywhere else.
@@ -50,6 +52,7 @@ namespace fs = std::filesystem;
 struct Choice {
     std::string folder;     // the chosen save folder; empty: the default one
     std::string copy_from;  // a change waiting for the next start: the folder the save comes from
+    bool had_save = false;  // the folder had a save at a start: a missing one is asked about, never made anew
 };
 inline fs::path choice_file(const fs::path& config_dir) { return config_dir / "save-folder.json"; }
 
@@ -63,6 +66,7 @@ inline std::optional<Choice> read_choice(const fs::path& file) {
         Choice c;
         c.folder = v.get("folder").string();
         c.copy_from = v.get("copy_from").string();
+        c.had_save = v.get("had_save").boolean;
         if (c.folder.empty() && c.copy_from.empty()) return std::nullopt;
         return c;
     } catch (const std::exception&) {
@@ -80,6 +84,7 @@ inline bool write_choice(const fs::path& file, const Choice& c) {
     mods::json::Value v;
     v["folder"] = c.folder;
     if (!c.copy_from.empty()) v["copy_from"] = c.copy_from;
+    if (c.had_save) v["had_save"] = true;
     const fs::path temp = file.string() + ".tmp";
     {
         std::ofstream out(temp, std::ios::binary | std::ios::trunc);
@@ -138,7 +143,18 @@ inline bool has_save(const fs::path& save_dir) {
     return fs::is_regular_file(save_dir / "user" / "cking.sav", ec);
 }
 
-// seconds since the epoch of a file's last change (0 if unknown)
+// A file's last change at the file system's full precision, to order a temporary file and its save
+// (a write and the save's rename often land in the same second); the oldest time if unknown.
+inline fs::file_time_type changed(const fs::path& file) {
+    std::error_code ec;
+    const auto t = fs::last_write_time(file, ec);
+    return ec ? fs::file_time_type::min() : t;
+}
+// `a` was not changed before `b`: a temporary file that may hold the newest contents. The same time
+// counts too (coarse file systems, cloud apps that set times), so such a file is offered, not removed.
+inline bool not_older(const fs::path& a, const fs::path& b) { return !(changed(a) < changed(b)); }
+
+// seconds since the epoch of a file's last change (0 if unknown), shown to the player
 inline int64_t modified(const fs::path& file) {
 #ifdef _WIN32
     struct _stat64 st;
@@ -287,16 +303,20 @@ inline bool backup(const fs::path& folder, const fs::path& backups, const std::s
 
 // ---------------------------------------------------------------- safe writes (hle/fs.cpp)
 inline fs::path part_of(const fs::path& save) { return fs::path(save.string() + ".wwhd-part"); }
+// An older temporary file set aside during play (prepare_part); startup() backs it up, then removes it.
+inline fs::path older_of(const fs::path& save) { return fs::path(save.string() + ".wwhd-older"); }
 // Before the game writes `save`: the temporary file it writes instead. For updates and appends it
-// starts as a copy of the save. A part newer than the save is a write whose rename failed
-// (commit_part): it stays, as the newest contents. An older one is left over from a crash and goes.
+// starts as a copy of the save. A part not older than the save is a write whose rename failed
+// (commit_part): it stays, as the newest contents. An older one (a crash, or a part a cloud app
+// brought from another computer) is never deleted here: it is set aside for the next start's backup.
 // False: the game's open fails, and nothing is written.
 inline bool prepare_part(const fs::path& save, bool keep_contents, std::string& error) {
     const fs::path part = part_of(save);
     std::error_code ec;
     const bool has_save = fs::exists(save, ec), has_part = fs::exists(part, ec);
-    if (has_part && (!has_save || modified(part) > modified(save))) return true;
-    if (has_part && !fs::remove(part, ec)) return error = "can't remove the old " + part.string() + ": " + ec.message(), false;
+    if (has_part && (!has_save || not_older(part, save))) return true;
+    if (has_part && !host::replace_file(part.string(), older_of(save).string()))
+        return error = "can't set aside the old " + part.string(), false;
     if (keep_contents && has_save && !fs::copy_file(save, part, fs::copy_options::overwrite_existing, ec))
         return error = "can't copy " + save.string() + ": " + ec.message(), false;
     return true;
@@ -311,15 +331,33 @@ inline bool commit_part(const fs::path& save, int tries = 10, int wait_ms = 100)
     }
     return false;
 }
-// A folder's pending writes (<file>.wwhd-part) that are newer than their file.
+inline bool ends_with(const std::string& s, const std::string& end) {
+    return s.size() > end.size() && s.compare(s.size() - end.size(), end.size(), end) == 0;
+}
+// A folder's pending writes (<file>.wwhd-part) not older than their file.
 inline std::vector<std::string> pending_parts(const fs::path& user_dir) {
     std::vector<std::string> out;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(user_dir, ec)) {
         const std::string name = e.path().filename().string();
-        if (name.size() <= 10 || name.compare(name.size() - 10, 10, ".wwhd-part") != 0) continue;
+        if (!ends_with(name, ".wwhd-part")) continue;
         const fs::path file = user_dir / name.substr(0, name.size() - 10);
-        if (!fs::exists(file, ec) || modified(e.path()) > modified(file)) out.push_back(name);
+        if (!fs::exists(file, ec) || not_older(e.path(), file)) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+// Leftovers removed after a backup: parts older than their file, and parts set aside (.wwhd-older).
+inline std::vector<std::string> stale_parts(const fs::path& user_dir) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(user_dir, ec)) {
+        const std::string name = e.path().filename().string();
+        if (ends_with(name, ".wwhd-older")) out.push_back(name);
+        else if (ends_with(name, ".wwhd-part")) {
+            const fs::path file = user_dir / name.substr(0, name.size() - 10);
+            if (fs::exists(file, ec) && !not_older(e.path(), file)) out.push_back(name);
+        }
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -401,18 +439,62 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
         }
         choice->copy_from.clear();
         write_choice(file, *choice);
+        std::error_code ec;
+        fs::create_directories(target / "user", ec);  // only now, when the player just chose it
     }
     out.save_dir = target;
     s.folder = target;
     if (target == def) return out;  // the default folder: nothing else changes
     s.active = true;
     std::error_code ec;
-    fs::create_directories(target / "user", ec);
+    const fs::path user = target / "user";
+
+    // a chosen folder that is gone (a cloud app signed out, a drive unplugged, a renamed folder) is
+    // never made again here: the game would start a new, empty save that a cloud app could later
+    // prefer over the real one
+    while (!fs::is_directory(target, ec)) {
+        const std::string text = "Your save folder can't be found:\n" + target.string() +
+                                 "\n\nIf it is in a cloud folder or on a removable drive, check that the cloud app is running and "
+                                 "signed in, or that the drive is connected.";
+        const int pick = question("Wind Waker HD: save folder", text, {"Try again", "Use the default save folder this time", "Quit"});
+        if (pick == 0) continue;
+        if (pick == 1) {
+            say(target.string() + " is missing: using the default save folder for this session");
+            s.notice = "Your save folder " + target.string() + " couldn't be found, so the default save folder is used for this session.";
+            out.save_dir = def;
+            s.folder = def;
+            s.active = false;
+            return out;
+        }
+        say(target.string() + " is missing: quitting");  // also when this host can't ask
+        out.quit = true;
+        return out;
+    }
+    // the same for a save that was there and is gone
+    // (cking.sav, its unfinished write or a cloud copy of it all count as the save)
+    while (choice->had_save && !fs::exists(user / "cking.sav", ec) && !fs::exists(part_of(user / "cking.sav"), ec) &&
+           conflict_copies(target).empty()) {
+        const std::string text = "Your save is missing from " + user.string() +
+                                 ".\n\nIf it is in a cloud folder, the cloud app may still be downloading it, or it may have been "
+                                 "moved. Starting without it begins a new game in this folder.";
+        const int pick = question("Wind Waker HD: save folder", text, {"Try again", "Start without a save", "Quit"});
+        if (pick == 0) continue;
+        if (pick == 1) {
+            say("cking.sav is missing: starting without a save");
+            choice->had_save = false;
+            write_choice(file, *choice);
+            break;
+        }
+        say("cking.sav is missing: quitting");
+        out.quit = true;
+        return out;
+    }
+    fs::create_directories(user, ec);
 
     // a save the cloud app can't provide
     for (;;) {
         std::string error;
-        if (read_check(target / "user/cking.sav", &error) != Readable::Failed) break;
+        if (read_check(user / "cking.sav", &error) != Readable::Failed) break;
         const std::string text = "Your save in " + target.string() + " can't be read (" + error + ").\n\n"
                                  "If it is in a cloud folder, check that the cloud app is running and signed in, "
                                  "and that the file is available on this computer.";
@@ -424,12 +506,12 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
         }
     }
 
-    // both sides of a cloud conflict, and writes whose rename failed (commit_part)
-    const fs::path user = target / "user";
+    // both sides of a cloud conflict, writes whose rename failed (commit_part) and leftover parts
     const auto copies = conflict_copies(target);
     const auto parts = pending_parts(user);
+    const auto stale = stale_parts(user);
     const bool main_part = std::find(parts.begin(), parts.end(), "cking.sav.wwhd-part") != parts.end();
-    if (!copies.empty() || !parts.empty()) {
+    if (!copies.empty() || !parts.empty() || !stale.empty()) {
         std::string backup_error;
         if (!backup(target, s.backups, "cloud-conflict", log, backup_error)) {
             // nothing is replaced or removed without a backup
@@ -438,47 +520,73 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
             say(s.notice);
             question("Wind Waker HD: two saves", s.notice, {"OK"});
         } else {
-            // the other files' pending writes are newer than their files: they become the files
+            for (const auto& p : stale)  // older than their file, and in the backup
+                if (fs::remove(user / p, ec)) say("removed the leftover " + p + " (kept in save-backups)");
+            // the other files' pending writes are not older than their files: they become the files
             for (const auto& p : parts) {
                 if (p == "cking.sav.wwhd-part") continue;
                 const std::string file = p.substr(0, p.size() - 10);
                 if (host::replace_file((user / p).string(), (user / file).string())) say("finished an earlier write of " + file);
             }
-            std::vector<std::string> names = {"cking.sav"};
+            // the copies of the main save: cking.sav (if there is one), the unfinished write, then
+            // the cloud copies, newest first; the buttons offer four, the rest wait for the next start
+            std::vector<std::string> names;
+            if (fs::exists(user / "cking.sav", ec)) names.push_back("cking.sav");
             if (main_part) names.push_back("cking.sav.wwhd-part");
-            for (const auto& c : copies) names.push_back(c);
-            if (names.size() > 1) {
+            std::vector<std::string> newest = copies;
+            std::stable_sort(newest.begin(), newest.end(),
+                             [&](const std::string& a, const std::string& b) { return changed(user / fs::path(a)) > changed(user / fs::path(b)); });
+            for (const auto& c : newest) names.push_back(c);
+            if (names.size() > 4) names.resize(4);
+            if (names.size() == 1 && names[0] != "cking.sav") {
+                // no cking.sav: the only copy becomes it, nothing to choose
+                if (host::replace_file((user / fs::path(names[0])).string(), (user / "cking.sav").string()))
+                    say(names[0] + " became cking.sav (the only copy of the save)");
+            } else if (names.size() > 1) {
                 std::string text = "Your save folder has more than one copy of your save:\n\n";
                 std::vector<std::string> buttons;
-                for (size_t i = 0; i < names.size() && buttons.size() < 4; i++) {
-                    const fs::path p = user / fs::path(names[i]);
-                    const char* what = names[i] == "cking.sav.wwhd-part" ? " (a save that could not be finished)" : "";
-                    text += names[i] + what + ": saved " + local_time(modified(p)) + "\n";
-                    buttons.push_back("Use " + names[i]);
+                for (const auto& n : names) {
+                    const char* what = n == "cking.sav.wwhd-part" ? " (a save that could not be finished)" : "";
+                    text += n + what + ": saved " + local_time(modified(user / fs::path(n))) + "\n";
+                    buttons.push_back("Use " + n);
                 }
                 text += "\nWhich one do you want to play with? All of them are kept in save-backups.";
-                int pick = question("Wind Waker HD: two saves", text, buttons);
-                if (pick < 0) pick = 0;  // no way to ask: keep cking.sav
-                const std::string chosen = names[size_t(pick)];
-                bool used = chosen == "cking.sav";
-                if (!used) {
-                    const fs::path temp = user / "cking.sav.wwhd-choice";
-                    fs::copy_file(user / fs::path(chosen), temp, fs::copy_options::overwrite_existing, ec);
-                    used = !ec && host::replace_file(temp.string(), (user / "cking.sav").string());
-                    if (!used) fs::remove(temp, ec);
-                }
-                if (used) {
-                    for (const auto& n : names)  // all in the backup
-                        if (n != "cking.sav") fs::remove(user / fs::path(n), ec);
-                    s.notice = "Your save folder had more than one copy of your save; " + chosen + " is in use. All copies are in save-backups.";
+                const int pick = question("Wind Waker HD: two saves", text, buttons);
+                if (pick < 0 || pick >= int(names.size())) {
+                    // no way to ask: nothing is removed, cking.sav (or the newest copy) is played and
+                    // the choice comes again at the next start
+                    if (names[0] != "cking.sav") {
+                        fs::copy_file(user / fs::path(names[0]), user / "cking.sav", ec);
+                        say("no cking.sav: playing a copy of " + names[0]);
+                    }
+                    s.notice = "Your save folder has more than one copy of your save. Nothing was removed; you'll be asked again at the next start.";
+                    say(s.notice);
                 } else {
-                    s.notice = chosen + " could not be used, so nothing was changed: cking.sav is in use and the other copies are still in " +
-                               user.string() + ".";
-                    question("Wind Waker HD: two saves", s.notice, {"OK"});
+                    const std::string chosen = names[size_t(pick)];
+                    bool used = chosen == "cking.sav";
+                    if (!used) {
+                        const fs::path temp = user / "cking.sav.wwhd-choice";
+                        fs::copy_file(user / fs::path(chosen), temp, fs::copy_options::overwrite_existing, ec);
+                        used = !ec && host::replace_file(temp.string(), (user / "cking.sav").string());
+                        if (!used) fs::remove(temp, ec);
+                    }
+                    if (used) {
+                        for (const auto& n : names)  // the ones offered, all in the backup
+                            if (n != "cking.sav") fs::remove(user / fs::path(n), ec);
+                        s.notice = "Your save folder had more than one copy of your save; " + chosen + " is in use. All copies are in save-backups.";
+                    } else {
+                        s.notice = chosen + " could not be used, so nothing was changed: cking.sav is in use and the other copies are still in " +
+                                   user.string() + ".";
+                        question("Wind Waker HD: two saves", s.notice, {"OK"});
+                    }
+                    say(s.notice);
                 }
-                say(s.notice);
             }
         }
+    }
+    if (!choice->had_save && fs::exists(user / "cking.sav", ec)) {
+        choice->had_save = true;
+        write_choice(file, *choice);
     }
 
     // another computer playing
@@ -530,6 +638,13 @@ inline void write_not_finished(const fs::path& save) {
                " (another program, such as the cloud app, had it open). It is kept next to it and offered at the next start.";
 }
 
+inline void write_failed(const fs::path& save) {
+    auto& s = state();
+    std::lock_guard guard(s.mu);
+    s.notice = "Your last save could not be written to " + save.parent_path().string() +
+               " (the disk may be full). The previous save is unchanged; free some space and save again.";
+}
+
 // ---------------------------------------------------------------- the Saves tab
 struct View {
     std::string folder;      // in use now
@@ -552,15 +667,35 @@ inline View view() {
         }
     return v;
 }
-// `a` is `b` or a folder inside it (case-insensitive on Windows)
+// `a` is `b` or a folder inside it, after following symbolic links (case-insensitive on Windows and
+// macOS, whose usual file systems ignore case)
 inline bool inside(const fs::path& a, const fs::path& b) {
-#ifdef _WIN32
-    const fs::path x(lower(a.lexically_normal().string())), y(lower(b.lexically_normal().string()));
+    std::error_code ec;
+    fs::path x = fs::weakly_canonical(a, ec);
+    if (ec) x = a;
+    fs::path y = fs::weakly_canonical(b, ec);
+    if (ec) y = b;
+#if defined(_WIN32) || defined(__APPLE__)
+    x = fs::path(lower(x.lexically_normal().string()));
+    y = fs::path(lower(y.lexically_normal().string()));
 #else
-    const fs::path x = a.lexically_normal(), y = b.lexically_normal();
+    x = x.lexically_normal();
+    y = y.lexically_normal();
 #endif
     const fs::path rel = x.lexically_relative(y);
     return !rel.empty() && *rel.begin() != "..";
+}
+// A folder that already holds other things (for example the cloud folder itself) gets the save in a
+// "Wind Waker HD" folder inside it, so backups copy only the save. Empty folders and save folders
+// (with a user folder) are used as they are.
+inline fs::path save_folder_in(const fs::path& folder) {
+    std::error_code ec;
+    if (!fs::is_directory(folder, ec) || fs::is_directory(folder / "user", ec)) return folder;
+    for (const auto& e : fs::directory_iterator(folder, ec)) {
+        const std::string name = e.path().filename().string();
+        if (name != "wwhd-playing.lock" && name != ".DS_Store" && lower(name) != "desktop.ini") return folder / "Wind Waker HD";
+    }
+    return folder;
 }
 // Settings > Saves: a new folder (empty: back to the default one) for the next start. A failure is
 // shown as the Saves tab's notice.
@@ -568,15 +703,17 @@ inline bool choose(const std::string& folder) {
     auto& s = state();
     std::lock_guard guard(s.mu);
     if (s.config_dir.empty()) return s.notice = "The save folder can't be changed in this session (--save or a test run).", false;
-    const fs::path next = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
+    const fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
     const fs::path current = s.folder.empty() ? s.default_folder : s.folder;
+    const fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
     Choice c;
     if (next != s.default_folder) c.folder = next.string();
     if (next != current) c.copy_from = current.string();
+    else if (auto old = read_choice(choice_file(s.config_dir))) c.had_save = old->had_save;
     if (!write_choice(choice_file(s.config_dir), c)) return s.notice = "The new save folder could not be remembered.", false;
-    s.notice.clear();
+    s.notice = next != picked ? "That folder already holds other files, so your save goes in " + next.string() + "." : std::string();
     return true;
 }
 }  // namespace save_folder

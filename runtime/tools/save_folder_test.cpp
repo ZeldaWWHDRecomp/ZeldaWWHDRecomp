@@ -5,6 +5,8 @@
 #include <cassert>
 #include <cstdio>
 #include <fstream>
+#include <memory>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace save_folder;
@@ -113,11 +115,13 @@ int main() {
     assert(!fs::exists(cloud / "save-backups"));  // backups stay on this computer
     release();
 
-    // no way to ask: the safe answer keeps cking.sav (and still backs up)
+    // no way to ask: cking.sav is played, nothing is removed (and still backed up)
     write(cloud / "user/cking 2.sav", "other");
     s = startup(def, config, nullptr, {});
     assert(read(cloud / "user/cking.sav") == "laptop save" && backups_with(backups, "cloud-conflict") == 2);
+    assert(read(cloud / "user/cking 2.sav") == "other");
     release();
+    fs::remove(cloud / "user/cking 2.sav");
 
     // another computer playing: warned; "Quit" ends the start
     write_lock(lock_file(cloud), {"SOMEONE-ELSE", now()});
@@ -142,12 +146,18 @@ int main() {
     fs::rename(root / "data" / "backups-moved", backups);
     fs::remove(cloud / "user/cking-DESKTOP.sav");
 
-    // the temporary file: a leftover older than the save goes; a newer one (a failed rename) stays
+    // the temporary file: a leftover older than the save is set aside; a newer one (a failed rename) stays
     const fs::path sav = cloud / "user/cking.sav";
     write(part_of(sav), "stale part");
     fs::last_write_time(part_of(sav), fs::last_write_time(sav) - std::chrono::hours(1));
     std::string error;
     assert(prepare_part(sav, true, error) && read(part_of(sav)) == "laptop save");  // rebuilt from the save
+    assert(read(older_of(sav)) == "stale part");                                     // not deleted
+    // written in the same second as the save, or with the same time: still the newest contents
+    write(part_of(sav), "same time");
+    fs::last_write_time(part_of(sav), fs::last_write_time(sav));
+    assert(prepare_part(sav, true, error) && read(part_of(sav)) == "same time");
+    assert(pending_parts(cloud / "user") == std::vector<std::string>{"cking.sav.wwhd-part"});
     assert(prepare_part(sav, false, error));  // a full write: the copy isn't needed
     write(part_of(sav), "newer unsaved write");
     fs::last_write_time(part_of(sav), fs::last_write_time(sav) + std::chrono::hours(1));
@@ -161,12 +171,121 @@ int main() {
     Asked use_part{{}, {1}};
     s = startup(def, config, use_part.fn(), {});
     assert(use_part.titles.size() == 1 && read(sav) == "finished later" && !fs::exists(part_of(sav)));
+    assert(!fs::exists(older_of(sav)));  // the set-aside part went after the backup
     release();
 
-    // nested folders are refused
-    assert(!choose((cloud / "inner").string()) && !choose(cloud.parent_path().string()));
+    // no way to ask: a newer unfinished write is kept, not deleted
+    write(part_of(sav), "newer, no one to ask");
+    fs::last_write_time(part_of(sav), fs::last_write_time(sav) + std::chrono::hours(1));
+    s = startup(def, config, nullptr, {});
+    assert(read(part_of(sav)) == "newer, no one to ask" && read(sav) == "finished later");
+    release();
+    Asked keep_save{{}, {0}};  // "Use cking.sav": now the part goes (it is in the backup)
+    s = startup(def, config, keep_save.fn(), {});
+    assert(keep_save.titles.size() == 1 && !fs::exists(part_of(sav)));
+    release();
+
+    // the only copy, with no cking.sav, becomes cking.sav without a question
+    fs::rename(sav, part_of(sav));
+    Asked silent;
+    s = startup(def, config, silent.fn(), {});
+    assert(silent.titles.empty() && read(sav) == "finished later" && !fs::exists(part_of(sav)));
+    release();
+
+    // more than four copies: four are offered, only those go, the rest wait for the next start
+    for (int i = 1; i <= 5; i++) {
+        const fs::path copy = cloud / ("user/cking-PC" + std::to_string(i) + ".sav");
+        write(copy, "pc " + std::to_string(i));
+        fs::last_write_time(copy, fs::last_write_time(sav) + std::chrono::minutes(i));  // PC5 newest
+    }
+    Asked pick_newest{{}, {1}};  // after cking.sav: the newest copy
+    s = startup(def, config, pick_newest.fn(), {});
+    assert(read(sav) == "pc 5" && !fs::exists(cloud / "user/cking-PC5.sav") && !fs::exists(cloud / "user/cking-PC3.sav"));
+    assert(fs::exists(cloud / "user/cking-PC2.sav") && fs::exists(cloud / "user/cking-PC1.sav"));
+    release();
+    fs::remove(cloud / "user/cking-PC2.sav");
+    fs::remove(cloud / "user/cking-PC1.sav");
+
+    // a chosen folder that is gone is never made again: try again, the default folder, or quit
+    fs::rename(cloud, root / "OneDrive" / "moved");
+    Asked gone{{}, {2}};
+    s = startup(def, config, gone.fn(), {});
+    assert(s.quit && gone.titles.size() == 1 && !fs::exists(cloud));
+    s = startup(def, config, nullptr, {});
+    assert(s.quit && !fs::exists(cloud));  // no way to ask: quit
+    Asked use_default{{}, {1}};
+    s = startup(def, config, use_default.fn(), {});
+    assert(!s.quit && s.save_dir == def && !safe_writes() && !fs::exists(cloud));
+    fs::rename(root / "OneDrive" / "moved", cloud);
+
+    // a save that was there and is gone: asked too (the choice remembers it had one)
+    assert(read_choice(choice_file(config))->had_save);
+    fs::rename(sav, root / "away.sav");
+    Asked missing{{}, {2}};
+    s = startup(def, config, missing.fn(), {});
+    assert(s.quit && missing.titles.size() == 1 && !fs::exists(sav));
+    Asked fresh{{}, {1}};  // "Start without a save"
+    s = startup(def, config, fresh.fn(), {});
+    assert(!s.quit && !fs::exists(sav) && !read_choice(choice_file(config))->had_save);
+    release();
+    fs::rename(root / "away.sav", sav);
+
+    // the replace path: a backup that fails replaces nothing
+    assert(choose(""));
+    write(def / "user/cking.sav", "local again");
+    s = startup(def, config, none.fn(), {});
+    assert(choose(cloud.string()));
+    fs::rename(backups, root / "data" / "backups-moved");
+    write(backups, "a file where the backups folder should be");
+    Asked replace{{}, {1, 0}};  // "Use the previous folder's save", then "OK"
+    s = startup(def, config, replace.fn(), {});
+    assert(replace.titles.size() == 2 && read(sav) == "pc 5" && read(def / "user/cking.sav") == "local again");
+    assert(fs::path(read_choice(choice_file(config))->copy_from) == def);  // asked again at the next start
+    release();
+    fs::remove(backups);
+    fs::rename(root / "data" / "backups-moved", backups);
+    Asked keep_cloud{{}, {0}};
+    s = startup(def, config, keep_cloud.fn(), {});
+    release();
+
+    // a copy that fails at open fails the open; a rename that fails keeps the part
+    const fs::path not_a_file = cloud / "user/folder.sav";
+    fs::create_directories(not_a_file);
+    assert(!prepare_part(not_a_file, true, error));
+    fs::remove(not_a_file);
+    assert(!commit_part(cloud / "user/no-part.sav", 2, 0));
+#ifdef _WIN32
+    {  // a cloud app holding the save for a moment: the rename is retried until it works
+        write(part_of(sav), "after a wait");
+        auto held = std::make_unique<std::ifstream>(sav, std::ios::binary);
+        assert(!commit_part(sav, 1, 0) && fs::exists(part_of(sav)));
+        std::thread let_go([&] { std::this_thread::sleep_for(std::chrono::milliseconds(150)); held.reset(); });
+        assert(commit_part(sav, 20, 50) && read(sav) == "after a wait");
+        let_go.join();
+    }
+#endif
+
+    // nested folders are refused, also through another case or a symbolic link
+    assert(!choose((cloud / "inner").string()));
     assert(view().notice.find("inside") != std::string::npos);
-    assert(choose(cloud.string()));  // the same folder is fine
+    assert(choose(cloud.string()));                // the same folder is fine
+    assert(choose(cloud.parent_path().string()));  // its parent means the save folder inside it
+    assert(fs::path(read_choice(choice_file(config))->folder) == fs::absolute(cloud).lexically_normal());
+#if defined(_WIN32) || defined(__APPLE__)
+    std::string upper = cloud.string();
+    for (char& ch : upper) ch = char(std::toupper((unsigned char)ch));
+    assert(!choose((fs::path(upper) / "inner").string()));
+#endif
+    std::error_code link_error;
+    fs::create_directory_symlink(cloud, root / "link", link_error);
+    if (!link_error) assert(!choose((root / "link" / "inner").string()));  // (Windows needs developer mode)
+
+    // a folder that holds other things (the cloud folder itself) gets a folder for the save
+    write(root / "Dropbox" / "photo.jpg", "not a save");
+    assert(choose((root / "Dropbox").string()));
+    assert(fs::path(read_choice(choice_file(config))->folder).filename() == "Wind Waker HD");
+    assert(view().notice.find("Wind Waker HD") != std::string::npos);
+    assert(choose(cloud.string()));
 
     fs::remove_all(root);
     std::puts("save_folder_test: ok");

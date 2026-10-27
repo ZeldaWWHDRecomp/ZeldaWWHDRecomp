@@ -6,7 +6,8 @@
 //   save-backups/<YYYY-MM-DD_HH-MM-SS>-<reason>/save/...      the copied files
 // A backup is copied into a hidden temporary folder first and renamed into place when complete;
 // an existing backup is never overwritten (a second one in the same second gets "-2", ...).
-// Automatic backups (before an experimental mod, before a restore) keep the newest kKeepAutomatic;
+// Automatic backups (before an experimental mod, before a restore) keep the newest kKeepAutomatic, and
+// so do, counted separately, the backups made for a chosen save folder (save_folder.h);
 // manual ones ("Back up now") are never deleted. Folders without our backup.json are never touched.
 //
 // Restoring never replaces files the running game may have open: restore() only stages the choice
@@ -325,13 +326,16 @@ public:
         }
     }
 
-    // Keeps the newest kKeepAutomatic automatic backups (and always the one staged for restore).
+    // Keeps the newest kKeepAutomatic automatic backups (and always the one staged for restore). The
+    // backups of a save folder's other copies (save_folder.h) are counted on their own, so a run of
+    // mod backups never removes the only other side of a cloud conflict.
     void prune() {
         auto keep = pending();
-        size_t automatic = 0;
+        size_t automatic = 0, folder = 0;
         for (const auto& info : std::vector<Info>(list())) {
             if (!info.automatic) continue;
-            if (++automatic <= kKeepAutomatic || info.name == keep) continue;
+            const bool folder_copy = info.reason == "save-folder" || info.reason == "cloud-conflict";
+            if (++(folder_copy ? folder : automatic) <= kKeepAutomatic || info.name == keep) continue;
             std::error_code ec;
             fs::remove_all(root_ / info.name, ec);
             log("[save-backup] removed old automatic backup " + info.name + (ec ? " (failed: " + ec.message() + ")" : ""));
