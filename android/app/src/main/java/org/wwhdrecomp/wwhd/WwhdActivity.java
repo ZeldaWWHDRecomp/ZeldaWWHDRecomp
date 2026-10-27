@@ -134,10 +134,12 @@ public class WwhdActivity extends SDLActivity {
         }
         selection = AndroidGame.selected(this);
         onDeviceGame = selection != null ? selection.library : null;
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) gameStarted = true;
         // debug builds: WWHD_* intent extras (benchmark starts over adb), set once SDL's JNI is
         // there but before the game library loads, so its static initializers see them too
         System.loadLibrary("SDL3");
         DebugLaunch.apply(this);
+        applyLaunchEnvironment();
         if (onDeviceGame == null) {
             super.loadLibraries();
         } else {
@@ -148,6 +150,18 @@ public class WwhdActivity extends SDLActivity {
         sessionSelection = selection;
         sessionLibrary = onDeviceGame;
     }
+
+    private static volatile boolean gameStarted;
+    /** The game itself (not setup's preparation activities, which have processes of their own) runs in this
+     *  process: setup's models step must not write the shader caches meanwhile. */
+    public static boolean gameLoaded() { return gameStarted; }
+
+    /** Options for this start of the game, set before its library loads (setup's models step). */
+    protected void applyLaunchEnvironment() { }
+    /** The GamePad picture on a second display (setup's models step: nothing is shown). */
+    protected boolean usesSecondScreen() { return true; }
+    /** The share offer for the last crash report when the game starts. */
+    protected boolean offersCrashReports() { return true; }
 
     @Override protected String getMainSharedObject() {
         return onDeviceGame != null ? onDeviceGame.getAbsolutePath() : super.getMainSharedObject();
@@ -224,7 +238,7 @@ public class WwhdActivity extends SDLActivity {
         if (phoneRumble != null) phoneRumble.setActive(true);
         applyFullScreen();
         // Only start after SDL successfully loaded the native game library.
-        if (!mBrokenLibraries) {
+        if (!mBrokenLibraries && usesSecondScreen()) {
             if (gamePadDisplay == null) gamePadDisplay = new GamePadDisplay(this, mLayout, mSurface);
             gamePadDisplay.start();
         }
@@ -267,7 +281,7 @@ public class WwhdActivity extends SDLActivity {
         if (isRedirectedActivity()) return;
         phoneRumble = new PhoneRumble(this);
         // GamePad screen saved Off: known before onResume acquires a second display (AYN Thor, #222)
-        if (!mBrokenLibraries && !isReusingNativeSession())
+        if (!mBrokenLibraries && !isReusingNativeSession() && usesSecondScreen())
             GamePadDisplay.seedSavedOff(SavedSecondScreen.off(files));
         // heat guard: fan-cooled handhelds pause 60 fps later than phones (#247)
         if (!mBrokenLibraries) {
@@ -285,7 +299,7 @@ public class WwhdActivity extends SDLActivity {
         if (mLayout != null)
             mLayout.addView(new TouchControls(this), new RelativeLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        if (savedInstanceState == null) CrashReports.offer(this);
+        if (savedInstanceState == null && offersCrashReports()) CrashReports.offer(this);
     }
 
     public void shareLog() { runOnUiThread(() -> LogShare.share(this)); }

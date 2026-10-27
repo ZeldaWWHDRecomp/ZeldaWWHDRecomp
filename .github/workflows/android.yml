@@ -61,6 +61,8 @@ jobs:
           build/android-user-directory-test
           javac -d build/setup-policy-test android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPolicy.java tools/android/SetupPolicyTest.java
           java -cp build/setup-policy-test SetupPolicyTest
+          javac -d build/models-step-test android/app/src/main/java/org/wwhdrecomp/wwhd/ModelsStep.java tools/android/ModelsStepTest.java
+          java -cp build/models-step-test ModelsStepTest
           javac -d build/tga-image-test android/app/src/main/java/org/wwhdrecomp/wwhd/TgaImage.java tools/android/TgaImageTest.java
           java -cp build/tga-image-test TgaImageTest
           javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java

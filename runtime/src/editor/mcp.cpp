@@ -381,6 +381,53 @@ const std::vector<PathParam>& path_params() {
     };
     return v;
 }
+bool valid_token(const std::string& token) {
+    return token.size() == 64 && token.find_first_not_of("0123456789abcdef") == std::string::npos;
+}
+std::string saved_or_new_token(const std::function<bool(std::string&)>& load, const std::function<void(const std::string&)>& save) {
+    std::string t;
+    if (load && load(t) && valid_token(t)) return t;
+    t = new_token();
+    if (!valid_token(t)) return {};
+    if (save) save(t);
+    return t;
+}
+LaunchMcp launch_choice(bool editor, bool mcp, bool available_here) {
+    if (!mcp) return LaunchMcp::Off;
+    if (!available_here) return LaunchMcp::Unavailable;
+    return editor ? LaunchMcp::On : LaunchMcp::NeedsEditor;
+}
+std::string claude_code_command(int port, const std::string& token) {
+    return "claude mcp add --transport http wwhd-editor http://127.0.0.1:" + std::to_string(port) + "/mcp --header \"Authorization: Bearer " + token + "\"";
+}
+std::string claude_desktop_config(int port, const std::string& token) {
+    // (the token is 64 hex digits and the port a number: nothing to escape)
+    return "{\n"
+           "  \"mcpServers\": {\n"
+           "    \"wwhd-editor\": {\n"
+           "      \"command\": \"npx\",\n"
+           "      \"args\": [\"-y\", \"mcp-remote\", \"http://127.0.0.1:" + std::to_string(port) + "/mcp\", \"--transport\", \"http-only\", \"--header\", \"Authorization:${WWHD_EDITOR_AUTH}\"],\n"
+           "      \"env\": {\"WWHD_EDITOR_AUTH\": \"Bearer " + token + "\"}\n"
+           "    }\n"
+           "  }\n"
+           "}\n";
+}
+bool SessionAllows::has(const std::string& command) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& c : commands_)
+        if (c == command) return true;
+    return false;
+}
+void SessionAllows::add(const std::string& command) {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& c : commands_)
+        if (c == command) return;
+    commands_.push_back(command);
+}
+void SessionAllows::clear() {
+    std::lock_guard<std::mutex> lk(mu_);
+    commands_.clear();
+}
 bool needs_allow(const std::string& command, const Value& args) {
     const editor::CommandInfo* c = editor::find_command(command);
     if (!c) return false;
@@ -402,8 +449,12 @@ std::string describe(const std::string& command, const Value& args) {
 }
 
 // ---------------------------------------------------------------- the handler
-Handler::Handler(Backend& backend, std::string token, int port, std::string version)
-    : backend_(backend), token_(std::move(token)), version_(std::move(version)), port_(port) {}
+Handler::Handler(Backend& backend, std::string token, int port, std::string version, std::shared_ptr<SessionAllows> allows)
+    : backend_(backend), allows_(allows ? std::move(allows) : std::make_shared<SessionAllows>()), token_(std::move(token)), version_(std::move(version)), port_(port) {}
+void Handler::set_token(const std::string& token) {
+    std::lock_guard<std::mutex> lk(token_mu_);
+    token_ = token;
+}
 
 std::chrono::steady_clock::time_point Handler::last_seen() const {
     std::lock_guard<std::mutex> lk(mu_);
@@ -414,7 +465,12 @@ Response Handler::handle(const Request& r) {
     // DNS rebinding first: a web page that resolved its own name to this address sends its own Host / Origin
     if (!host_allowed(r.header("host"), port_.load())) return error_response(403, "forbidden: Host must be 127.0.0.1, localhost or [::1] with the port");
     if (r.has_header("origin") && !origin_allowed(r.header("origin"))) return error_response(403, "forbidden: Origin is not local");
-    if (!token_matches(r.header("authorization"), token_)) {
+    std::string token;
+    {
+        std::lock_guard<std::mutex> lk(token_mu_);
+        token = token_;
+    }
+    if (!token_matches(r.header("authorization"), token)) {
         Response x = error_response(401, "unauthorized: send \"Authorization: Bearer <token>\" (Settings -> Editor shows it)");
         x.headers.push_back({"WWW-Authenticate", "Bearer realm=\"wwhd-editor\""});
         return x;
@@ -526,6 +582,14 @@ Value Handler::message(const Value& m, bool& reply) {
     }
 }
 
+// a command that needs the player's Allow: asked, unless allowed for this session (by its name)
+bool Handler::allowed(const std::string& name, const Value& args) {
+    if (allows_->has(name)) return true;
+    const Answer a = backend_.ask_choice("Claude wants to: " + describe(name, args), true);
+    if (a == Answer::AllowSession) allows_->add(name);
+    return a != Answer::Deny;
+}
+
 bool Handler::check_paths(const std::string& command, Value& args, std::string& why) {
     for (const auto& pp : path_params()) {
         if (command != pp.command || args.get(pp.param).type != Value::String) continue;
@@ -545,7 +609,8 @@ bool Handler::check_paths(const std::string& command, Value& args, std::string& 
         } else {
             bool ok = inside(full, backend_.package_dir());
             for (const auto& p : backend_.picked()) ok = ok || inside(full, p);
-            if (!ok && !backend_.ask("Claude wants to read a file outside the open package:\n" + full))
+            // asked every time, per path: Allow / Deny only (no "Allow for this session")
+            if (!ok && backend_.ask_choice("Claude wants to read a file outside the open package:\n" + full, false) == Answer::Deny)
                 return why = "the player did not allow reading " + full, false;
         }
         args[pp.param] = full;  // the command uses the path that was checked
@@ -602,7 +667,7 @@ Value Handler::call_tool(const std::string& name, const Value& args_in) {
     std::string why;
     if (info->destructive && !confirmed) {
         // the command layer refuses it (and logs the refusal) without asking anybody
-    } else if (!check_paths(name, args, why) || (needs_allow(name, args) && !backend_.ask("Claude wants to: " + describe(name, args)))) {
+    } else if (!check_paths(name, args, why) || (needs_allow(name, args) && !allowed(name, args))) {
         if (why.empty()) why = "the player chose Deny (or did not answer in time)";
         const Value r = failed(why);
         backend_.note(name, args, r);

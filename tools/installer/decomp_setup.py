@@ -223,8 +223,9 @@ def build(s, ctx, tc, jobs, step=None):
     t0 = time.time()
     m = {"sdk": fwd(os.path.join(s.PKG, "sdk")), "decomp": fwd(src),
          "tools": fwd(os.path.join(s.PKG, "tools")), "out": fwd(out)}
-    unit_flags = [subst(a, m) for a in d["unit_flags"]]
-    hooks_flags = [subst(a, m) for a in d["hooks_flags"]]
+    # debug information as for the game code (setup.debug_info_flags: off unless WWHD_SETUP_DEBUG_INFO)
+    unit_flags = s.debug_info_flags([subst(a, m) for a in d["unit_flags"]])
+    hooks_flags = s.debug_info_flags([subst(a, m) for a in d["hooks_flags"]])
     jobs_list = []  # (unit index, source, object, extra flags)
     for i, u in enumerate(units):
         udir = os.path.join(work, "units", str(i))

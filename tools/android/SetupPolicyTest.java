@@ -162,6 +162,8 @@ public final class SetupPolicyTest {
             throw new AssertionError(critical);
         expect("Waiting for charging or at least 30% battery", SetupPolicy.description("battery", 0, 300));
         expect("Paused by you", SetupPolicy.description("manual", 4, 470));
+        expect("Preparing model shaders goes on when setup is on the screen again", SetupPolicy.description("screen", 0, 300));
+        expect("false", String.valueOf(SetupPolicy.overridable("screen")));  // Continue anyway does not apply
         if (!SetupPolicy.overridable("heat") || !SetupPolicy.overridable("battery") ||
             !SetupPolicy.overridable("battery_unknown") || SetupPolicy.overridable("critical") ||
             SetupPolicy.overridable("manual") || SetupPolicy.overridable(null))

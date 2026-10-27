@@ -374,6 +374,58 @@ void display_input_plan(const PresentPlan& p) {
     g_tv_dw=p.dw;
     g_tv_dh=p.dh;
 }
+// ---- the picture-in-picture GamePad moved and resized with the pointer (display_modes.h)
+static int g_pip_drag = 0;  // 0 none, 1 move, 2 resize
+static float g_pip_grab_x = 0, g_pip_grab_y = 0;  // moving: the pointer minus the picture's centre
+static bool pip_under(const Layout& L, float x, float y) {
+    const Box& P = L.pip;
+    return L.pip_on && !L.drc_only && P.w > 0 && P.h > 0 && L.tv.w > 0 && L.tv.h > 0 && x >= P.x && y >= P.y &&
+        x <= P.x + P.w && y <= P.y + P.h;
+}
+// the picture with its centre at (cx, cy) in display units, `size` of the TV picture's width
+static void pip_put(const Layout& L, float cx, float cy, float size) {
+    g_pip_size = pip_clamp_size(size);
+    pip_set_position(pip_place(L.tv, L.pip.w / L.pip.h, g_pip_size, (cx - L.tv.x) / L.tv.w, (cy - L.tv.y) / L.tv.h));
+}
+bool pip_drag_begin(float nx, float ny) {
+    std::lock_guard<std::mutex> lk(g_layout_mu);
+    const Layout& L = g_tv_layout;
+    const float x = nx * g_tv_dw, y = ny * g_tv_dh;
+    if (!pip_under(L, x, y)) return false;
+    const Box& P = L.pip;
+    const float corner = std::max(12.0f, std::min(P.w, P.h) * 0.2f);
+    g_pip_drag = x > P.x + P.w - corner && y > P.y + P.h - corner ? 2 : 1;
+    g_pip_grab_x = x - (P.x + P.w / 2);
+    g_pip_grab_y = y - (P.y + P.h / 2);
+    return true;
+}
+bool pip_dragging() { return g_pip_drag != 0; }
+void pip_drag_move(float nx, float ny) {
+    std::lock_guard<std::mutex> lk(g_layout_mu);
+    const Layout& L = g_tv_layout;
+    if (!g_pip_drag || L.pip.w <= 0 || L.pip.h <= 0 || L.tv.w <= 0 || L.tv.h <= 0) return;
+    const float x = nx * g_tv_dw, y = ny * g_tv_dh;
+    if (g_pip_drag == 1) {
+        pip_put(L, x - g_pip_grab_x, y - g_pip_grab_y, g_pip_size);
+        return;
+    }
+    // resizing: the top-left corner stays, the bottom-right one follows the pointer
+    const float aspect = L.pip.w / L.pip.h;
+    const float w = pip_clamp_size(std::max({x - L.pip.x, (y - L.pip.y) * aspect, 1.0f}) / L.tv.w) * L.tv.w;
+    pip_put(L, L.pip.x + w / 2, L.pip.y + w / aspect / 2, w / L.tv.w);
+}
+bool pip_drag_end() {
+    const bool was = g_pip_drag != 0;
+    g_pip_drag = 0;
+    return was;
+}
+bool pip_wheel(float nx, float ny, float steps) {
+    std::lock_guard<std::mutex> lk(g_layout_mu);
+    const Layout& L = g_tv_layout;
+    if (!pip_under(L, nx * g_tv_dw, ny * g_tv_dh) || steps == 0) return false;
+    pip_put(L, L.pip.x + L.pip.w / 2, L.pip.y + L.pip.h / 2, g_pip_size * std::pow(1.1f, steps));
+    return true;
+}
 bool overlay_hit(float nx, float ny, float* tx, float* ty, bool clamp_outside) {
     std::lock_guard<std::mutex> lk(g_layout_mu);
     const Layout& L = g_tv_layout;

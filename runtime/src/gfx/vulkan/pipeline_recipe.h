@@ -25,6 +25,12 @@ struct RecipeSpirv {
 // with this pipeline. A grouped recipe is compiled ahead when one of its archives is loaded in play; an ungrouped one
 // at start.
 inline constexpr size_t kPipelineRecipeMaxGroups = 8;
+// The mark of a recipe the setup's preparation derived from the head start's Metal recipes (WWHD_VK_METAL_RECIPES):
+// a pipeline the game may need, not one it has asked for here. Stored as a group (never an archive's: group_of is an
+// FNV-1a hash, and this one value is kept out of the archive index). In play such recipes are compiled ahead only in
+// a throttled background queue (pipeline_worker.cpp), not with the start queue; once the game asks for one it is an
+// ordinary recipe again.
+inline constexpr uint32_t kSpeculativeGroup = 0xFFFFFFFEu;
 struct PipelineRecipe {
   std::vector<uint8_t> key;
   std::array<std::vector<uint32_t>, 2> spirv;  // until frozen into sharedSpirv
@@ -40,6 +46,12 @@ struct PipelineRecipe {
     return sharedSpirv[stage] ? sharedSpirv[stage]->wordCount : spirv[stage].size();
   }
   std::array<std::vector<uint32_t>,2> shader_words() const { return {words(0),words(1)}; }
+  // only the speculative mark: no archive group
+  bool speculative_only() const {
+    if (groups.empty()) return false;
+    for (auto g : groups) if (g != kSpeculativeGroup) return false;
+    return true;
+  }
   bool add_group(uint32_t group) {
     if (!group || groups.size() >= kPipelineRecipeMaxGroups) return false;
     for (auto g : groups) if (g == group) return false;

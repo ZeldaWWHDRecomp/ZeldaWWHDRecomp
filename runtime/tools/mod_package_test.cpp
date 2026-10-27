@@ -571,6 +571,69 @@ int main(int argc, char** argv) {
         fs::remove(module);assert(!setup_steps("prepare-guest")[0].satisfied);
         fs::remove_all(root);std::cout<<"guest preparation preserves assignments/trust/restart gate passed\n";return 0;
     }
+    // One mod whose requirement can't be met (the GameCube game for mods is gone: the play setup's moved .rvz) is
+    // skipped on its own with a message, and the mods that need it with it; every other mod starts (before,
+    // the whole startup threw and no mod started). Cases: missing (the saved path is gone), unset (none
+    // chosen), off (the GameCube mods switched off), met (a GameCube game is there: everything starts).
+    if(argc==3&&std::string(argv[1])=="--startup-skip") {
+        const std::string mode=argv[2];
+        auto root=unique_temp("wwhd-startup-skip-");
+        auto storage=root/"manager";
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS","gc-map,gc-addon,notebook,island");
+        auto package=[&](const std::string& id,const std::string& extra){
+            auto source=storage/"Mods"/id;fs::create_directories(source);
+            std::ofstream(source/"manifest.json")<<R"({"format_version":1,"id":")"+id+R"(","version":"1.0.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1})"+extra+"}";
+            std::ofstream elf(source/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);
+        };
+        package("gc-map",R"(,"name":"GC map","setup":[{"id":"game","type":"game_path","game":"gc_wind_waker","title":"GameCube game"}])");
+        package("gc-addon",R"(,"name":"GC addon","dependencies":[{"id":"gc-map"}])");
+        package("notebook",R"(,"name":"Notebook")");
+        package("island",R"(,"name":"Island","dependencies":[{"id":"notebook"}])");
+        fs::create_directories(storage/"Mods/tweak");
+        std::ofstream(storage/"Mods/tweak/manifest.json")<<R"({"format_version":1,"id":"tweak","name":"Tweak","version":"1.0.0","game_id":"wwhd-usa","kind":"settings","settings":{"quick-doors":true}})";
+        auto disc=root/"synthetic.iso";std::array<unsigned char,32> header{};
+        std::copy_n("GZLE01",6,header.begin());header[28]=0xC2;header[29]=0x33;header[30]=0x9F;header[31]=0x3D;
+        {std::ofstream out(disc,std::ios::binary);out.write(reinterpret_cast<char*>(header.data()),header.size());}
+        const std::string gone=(root/"Wind Waker (USA).rvz").string();
+        mods::json::Value profiles=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"gc-map":true,"gc-addon":true,"notebook":true,"island":true,"tweak":true}}}})");
+        if(mode=="missing")profiles["game_sources"]["gc_wind_waker"]=gone;
+        if(mode=="met"||mode=="off")profiles["game_sources"]["gc_wind_waker"]=fs::canonical(disc).string();
+        if(mode=="off"){profiles["profiles"]["Default"]["enabled"]["gc-map"]=false;profiles["profiles"]["Default"]["enabled"]["gc-addon"]=false;}
+        std::ofstream(storage/"profiles.json")<<mods::json::dump(profiles);
+        set_code_mod_support(true);
+        initialize();
+        std::set<std::string> loaded;
+        start_guests([&](const GuestPackage&){return uint32_t(65536);},[&](const GuestPackage& pkg,uint32_t){loaded.insert(pkg.id);});
+        frame(1);  // settings mods load here
+        assert(view("tweak").active&&view("tweak").reason.empty());
+        assert(view("notebook").active&&view("island").active);
+        const auto problems=startup_problems();
+        if(mode=="met") {
+            assert(loaded==(std::set<std::string>{"gc-map","gc-addon","notebook","island"}));
+            assert(problems.empty()&&view("gc-map").active&&view("gc-addon").active&&view("gc-map").reason.empty());
+        } else if(mode=="off") {
+            assert(loaded==(std::set<std::string>{"notebook","island"}));
+            assert(problems.empty()&&!view("gc-map").active&&view("gc-map").reason.empty());
+        } else {
+            const std::string fix=" Choose it in Settings → Mods → GameCube game for mods, or turn the mod off.";
+            const std::string why=mode=="missing"?"GC map: the GameCube game for mods was not found at "+gone+"."+fix
+                                                 :"GC map needs the GameCube version of the game, and no GameCube game for mods is chosen."+fix;
+            assert(loaded==(std::set<std::string>{"notebook","island"}));
+            assert(!view("gc-map").active&&!view("gc-addon").active);
+            if(view("gc-map").reason!=why){std::cerr<<view("gc-map").reason<<"\n";return 1;}
+            assert(view("gc-addon").reason=="GC addon needs GC map, which could not start: "+why);
+            assert(problems==(std::vector<std::string>{view("gc-addon").reason,why}));
+            // skipped, not switched off: the player's choices stay as they were
+            assert(view("gc-map").enabled&&view("gc-addon").enabled);
+            {std::ifstream in(storage/"profiles.json");auto saved=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+             assert(saved.get("profiles").get("Default").get("enabled")==profiles.get("profiles").get("Default").get("enabled"));
+             assert(saved.get("game_sources")==profiles.get("game_sources"));}
+            // another frame (a re-plan) keeps the reasons and the rest running
+            frame(2);assert(view("gc-map").reason==why&&view("tweak").active);
+        }
+        fs::remove_all(root);std::cout<<"startup skip ("<<mode<<"): the other mods started\n";return 0;
+    }
     if(argc==2&&std::string(argv[1])=="--guest-startup") {
         auto root=unique_temp("wwhd-guest-startup-");
         auto storage=root/"manager";

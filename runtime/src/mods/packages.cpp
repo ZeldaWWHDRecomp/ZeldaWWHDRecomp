@@ -20,6 +20,7 @@
 #include "story_manifest.h"
 #include "story_scene_needs.h"
 #include "static_model_validation.h"
+#include "startup_plan.h"
 #include "skinned_model_validation.h"
 #include <algorithm>
 #include <array>
@@ -79,6 +80,8 @@ GuestBuild guest_build;
 std::set<std::string> validated_guest_cache;
 content::Files startup_content;
 std::string last_problem;
+// The last startup plan's skipped mods: ID -> the message shown next to it in Settings → Mods (Record::error)
+std::map<std::string,std::string> skip_reasons;
 std::vector<std::string> notices;
 std::atomic<bool> dirty{false},running{false},profile_changed{false};
 ReadMemory read_memory=nullptr;WriteMemory write_memory=nullptr;
@@ -527,6 +530,61 @@ std::string source_warning(const Manifest& manifest,std::set<std::string>& seen)
 }
 std::string source_warning(const Manifest& manifest){std::set<std::string> seen;return source_warning(manifest,seen);}
 void require_source(const Manifest& m){auto warning=source_warning(m);require(warning.empty(),warning);}
+// Why `m` can't start because of the GameCube game its setup reads (its own steps; its dependencies say
+// theirs), as a full sentence that names what is missing and how to fix it; empty when the game is there.
+std::string source_problem(const Manifest& m) {
+    if(source_warning(m.setup).empty())return {};
+    const std::string fix=" Choose it in Settings → Mods → GameCube game for mods, or turn the mod off.";
+    const auto path=catalogue::Sources(database.get("game_sources")).stored("gc_wind_waker");
+    if(path.empty())return m.name+" needs the GameCube version of the game, and no GameCube game for mods is chosen."+fix;
+    std::error_code error;
+    if(!fs::exists(path,error))return m.name+": the GameCube game for mods was not found at "+path+"."+fix;
+    return m.name+": the GameCube game for mods at "+path+" is not a GameCube Wind Waker this mod can use."+fix;
+}
+// What stops this package from starting by itself: a broken manifest, a missing GameCube game, a missing,
+// too old or unavailable dependency. Dependencies that are off or skipped are startup_plan's part.
+std::string own_problem(const Record& r) {
+    const auto& m=r.manifest;
+    if(!m.problem.empty())return m.name+": "+m.problem;
+    if(auto problem=source_problem(m);!problem.empty())return problem;
+    for(const auto& dep:m.dependencies) {
+        if(dep.id.starts_with("builtin:")) {
+            auto* e=manager::find(dep.id.substr(8));
+            if(!e||version("1.0.0")<version(dep.version))
+                return m.name+" needs the built-in "+dep.id.substr(8)+" "+dep.version+", which this version of the port doesn't have. Update the port, or turn "+m.name+" off.";
+            continue;
+        }
+        auto d=records.find(dep.id);
+        if(d==records.end())
+            return dep.id==story_notebook::kNotebookPackage?m.name+" needs the Story Notebook quest (downloading\xE2\x80\xA6)"
+                :m.name+" needs "+dep.id+", which is not installed. Install it in Settings → Mods, or turn "+m.name+" off.";
+        if(version(d->second.manifest.version)<version(dep.version))
+            return m.name+" needs "+d->second.manifest.name+" "+dep.version+" or newer ("+d->second.manifest.version+" is installed). Update it in Settings → Mods, or turn "+m.name+" off.";
+    }
+    return {};
+}
+// Which enabled mods start (in dependency order) and why the others don't (startup_plan.h). One mod's
+// unmet requirement skips that mod and the mods that need it, never the rest: before, order() threw on
+// the first one and no mod started at all.
+startup_plan::Plan startup_order(const std::set<std::string>& enabled) {
+    std::map<std::string,startup_plan::Mod> mods;
+    for(const auto& [id,r]:records) {
+        startup_plan::Mod mod;mod.name=r.manifest.name;
+        // a malformed version string throws from version(): that is this mod's problem, shown like the others
+        try{mod.problem=own_problem(r);}catch(const std::exception& e){mod.problem=r.manifest.name+": "+e.what();}
+        for(const auto& dep:r.manifest.dependencies)if(!dep.id.starts_with("builtin:"))mod.dependencies.push_back(dep.id);
+        mods.emplace(id,std::move(mod));
+    }
+    auto plan=startup_plan::plan(mods,enabled);
+    // the reason stays next to the mod in Settings → Mods; one that starts again loses a reason it had from here
+    for(const auto& [id,why]:skip_reasons)if(!plan.skipped.contains(id))if(auto it=records.find(id);it!=records.end()&&it->second.error==why)it->second.error.clear();
+    // a guest, content or Cemu mod that is running stays so until the restart: no reason next to it
+    auto running_until_restart=[](const Record& r){const auto& k=r.manifest.kind;return r.active&&(k=="guest"||k=="content"||k=="cemu");};
+    for(const auto& [id,why]:plan.skipped)if(auto it=records.find(id);it!=records.end()&&!running_until_restart(it->second))it->second.error=why;
+    skip_reasons=plan.skipped;
+    return plan;
+}
+std::set<std::string> started(const startup_plan::Plan& plan){return {plan.order.begin(),plan.order.end()};}
 std::vector<std::string> order(const std::set<std::string>& enabled,bool check_sources=true){
     std::map<std::string,int> mark;std::vector<std::string> result;
     std::function<void(const std::string&)> visit=[&](const std::string& id){require(mark[id]!=1,"Dependency cycle at "+id);if(mark[id]==2)return;mark[id]=1;auto it=records.find(id);require(it!=records.end(),missing(id));const auto& m=it->second.manifest;require(m.problem.empty(),m.name+": "+m.problem);if(check_sources)require_source(m);for(const auto& dep:m.dependencies){if(dep.id.starts_with("builtin:")){auto* e=manager::find(dep.id.substr(8));require(e&&version("1.0.0")>=version(dep.version),"Built-in dependency version is unavailable");continue;}auto d=records.find(dep.id);require(d!=records.end(),missing(dep.id));require(version(d->second.manifest.version)>=version(dep.version),"Dependency "+dep.id+" needs version "+dep.version);require(enabled.contains(dep.id),"Dependency is disabled: "+dep.id);visit(dep.id);}mark[id]=2;result.push_back(id);};
@@ -691,7 +749,7 @@ void initialize(){
             }
         }
         // Next-launch (restart_required) settings must be selected before the game starts.
-        try { auto enabled=enabled_set();auto sequence=order(enabled);validate_conflicts(enabled);
+        try { auto plan=startup_order(enabled_set());auto sequence=plan.order;validate_conflicts(started(plan));
             guest_startup_ids.clear();
             for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest") {
                 guest_startup_ids.push_back(id);records.at(id).startup_config=config(records.at(id).manifest);
@@ -986,7 +1044,7 @@ bool enable(const std::string& id,bool on,std::string& error,bool switch_conflic
     try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();dirty=true;});if(ok)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);return ok;}
 // The guest packages of this start again (required.h installed or enabled one after initialize()),
 // while the guest mods haven't started yet
-void refresh_guest_startup(){std::lock_guard guard(mutex);if(!ready||guests_started)return;try{auto enabled=enabled_set();auto sequence=order(enabled);validate_conflicts(enabled);guest_startup_ids.clear();for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest"){guest_startup_ids.push_back(id);records.at(id).startup_config=config(records.at(id).manifest);}}catch(const std::exception& e){last_problem=e.what();}}
+void refresh_guest_startup(){std::lock_guard guard(mutex);if(!ready||guests_started)return;try{auto plan=startup_order(enabled_set());auto sequence=plan.order;validate_conflicts(started(plan));guest_startup_ids.clear();for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest"){guest_startup_ids.push_back(id);records.at(id).startup_config=config(records.at(id).manifest);}}catch(const std::exception& e){last_problem=e.what();}}
 std::vector<std::pair<std::string,std::string>> unacknowledged_experimental(const std::string& id){
     std::lock_guard guard(mutex);std::vector<std::pair<std::string,std::string>> result;if(!ready)return result;
     for(const auto& current:newly_experimental(id))if(!experimental_acknowledged(current))result.emplace_back(current,records.at(current).manifest.name);
@@ -1022,6 +1080,7 @@ std::vector<std::pair<std::string,std::string>> unconfirmed_native(const std::st
 }
 bool confirm_native(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");const auto& m=it->second.manifest;require((m.kind=="native"||m.kind=="guest"||!m.setup_tools.empty())&&m.problem.empty()&&!trust_fingerprint(m).empty(),"This package has no loadable native code");auto previous=database;database["native_trust"][id]=trust_fingerprint(m);try{save();}catch(...){database=previous;throw;}});}
 bool configure(const std::string& id,const std::string& option_id,const Value& value,std::string& error){return operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for mod preparation to finish before changing options");auto& opts=records.at(id).manifest.options;auto it=std::find_if(opts.begin(),opts.end(),[&](const Option& o){return o.id==option_id;});require(it!=opts.end()&&valid_option(*it,value),"Invalid configuration value");auto previous=database;profile()["config"][id][option_id]=value;try{if(records.at(id).manifest.graphics)cemu::validate({{id,*records.at(id).manifest.graphics,config(records.at(id).manifest)}});bool was_enabled=wanted(id);auto messages=was_enabled?repair_graphics():std::vector<std::string>{};if(was_enabled){order(enabled_set());validate_conflicts(enabled_set());}save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}dirty=true;});}
+std::vector<std::string> startup_problems(){std::lock_guard guard(mutex);std::vector<std::string> out;for(const auto& [id,why]:skip_reasons)out.push_back(why);return out;}
 std::vector<std::string> take_notices(){std::lock_guard guard(mutex);auto result=std::move(notices);notices.clear();return result;}
 void disable_all(){std::string ignored;operation(ignored,[&]{auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;profile()["setup_pending"].object.clear();try{save();}catch(...){database=previous;throw;}dirty=true;});manager::disable_all();}
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
@@ -1100,14 +1159,16 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
         auto it=records.find(id);if(it==records.end())continue;
         auto& r=it->second;
         try {
-            require_source(r.manifest);
+            // the GameCube game can go between the plan and this point (a file moved while it started)
+            if(auto problem=source_problem(r.manifest);!problem.empty())exception_report::raise(problem);
             require(code_mod_support,"Guest mods are disabled: enable code mods, rebuild and restart first");
             require(confirmed(r),kUnconfirmed);
             if(r.manifest.trust_fingerprint!=r.manifest.fingerprint)require(package_fingerprint(r.path)==r.manifest.trust_fingerprint,"Package changed; reinstall and confirm it again");
             for(const auto& dep:r.manifest.dependencies)if(!dep.id.starts_with("builtin:")) {
                 const auto& dependency=records.at(dep.id);
                 require(dependency.active||dependency.manifest.kind=="settings",
-                        "Startup dependency is unavailable: "+dep.id);
+                        r.manifest.name+" needs "+dependency.manifest.name+", which could not start"+
+                        (dependency.error.empty()?std::string("."):": "+dependency.error));
             }
             GuestPackage pkg{id,r.manifest.version,r.path.string(),(root/"Data"/id).string(),r.manifest.fingerprint,r.startup_config,r.manifest.heap_size};pkg.name=r.manifest.name;
             uint32_t bytes=inspect(pkg);
@@ -1128,7 +1189,7 @@ void frame(uint64_t step){
     static uint64_t previous=~uint64_t(0);if(step==previous)return;previous=step;
     if(dirty.exchange(false)){
         std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline;bool switching=false;
-        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto enabled=enabled_set();sequence=order(enabled);validate_conflicts(enabled);std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
+        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
         for(auto it=live_order.rbegin();it!=live_order.rend();++it)if(!desired.contains(*it)||(switching&&live.at(*it).kind=="settings")){auto found=live.find(*it);if(found!=live.end()){unload(found->second);live.erase(found);}std::lock_guard guard(mutex);if(records.contains(*it)){records.at(*it).active=false;records.at(*it).status.clear();}}
         if(switching)for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
         live_order.clear();

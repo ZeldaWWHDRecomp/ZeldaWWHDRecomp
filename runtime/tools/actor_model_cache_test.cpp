@@ -11,6 +11,7 @@
 #include <iostream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 #include "mods/actor_model_cache.h"
 #include "mods/mod_json.h"
@@ -43,6 +44,8 @@ int main(int argc,char** argv){
         // a Python 3.13+ traceback's last line, coloured (issue #280: the Windows release's tools could not import their siblings)
         if(std::string(argv[2])=="fail_colour"){std::cout<<"Traceback (most recent call last):\n  File \"actor_model.py\"\n\x1b[1;35mModuleNotFoundError\x1b[0m: \x1b[35mNo module named 'notebook_model'\x1b[0m\n";return 1;}
         if(std::string(argv[2])=="reuse"&&!fs::is_regular_file(output))return 2;
+        // "slow": a long conversion (a large model); it says it runs and waits to be let go
+        if(std::string(argv[2])=="slow"){{std::ofstream running(output+".running");}for(int i=0;i<1000&&!fs::exists(output+".go");++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));if(!fs::exists(output+".go"))return 3;}
         if(std::string(argv[2])!="missing"&&std::string(argv[2])!="reuse"){std::ofstream file(output,std::ios::binary);file.write("Yaz0synthetic-test",18);}
         mods::json::Value result;
         for(int i=2;i<argc;++i)if(std::string(argv[i])=="--shoreline"&&std::string(argv[2])!="wrong_mode"){result["shoreline"]=true;result["shoreline_material"]="foam";}
@@ -69,6 +72,18 @@ int main(int argc,char** argv){
     assert(!actor_model_cache::bounds_for("missing",minimum,maximum));
     assert(actor_model_cache::triangles_for(first)==12&&actor_model_cache::triangles_for("missing")==0);
     const auto second=prepare("other","ok");assert(second!=first);assert(prepare("owner","reuse")==first);
+    // A prepared archive prepared again (the editor's add_actor asks once more for the collision the import prepared)
+    // stays served while the converter runs: the game's read for an actor created meanwhile gets the archive, never a
+    // missing file (#281: a large model, a longer conversion, lost that race and its actor's teardown crashed).
+    {
+        const auto running=file+".running",go=file+".go";std::error_code e;fs::remove(running,e);fs::remove(go,e);
+        bool rebuilt=false;std::thread rebuild([&]{rebuilt=prepare("owner","slow")==first;});
+        for(int i=0;i<1000&&!fs::exists(running);++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const bool served=fs::exists(running)&&actor_model_cache::preparing("owner","post")&&actor_model_cache::archive_for(guest)==file&&actor_model_cache::triangles_for(first)==12&&actor_model_cache::bounds_for(first,minimum,maximum);
+        {std::ofstream let_go(go);}
+        rebuild.join();fs::remove(running,e);fs::remove(go,e);
+        assert(served&&rebuilt&&actor_model_cache::archive_for(guest)==file&&!actor_model_cache::preparing("owner","post"));
+    }
     for(const auto& path:{first+".szs","/vol/content/Common/Object/../Object/"+first+".szs","/vol/content/Common/object/"+first+".szs",guest+"/tail","/vol/content/Common/Object/"+first+".bfres"})assert(actor_model_cache::archive_for(path).empty());
     auto fails=[&](const std::string& tool){bool threw=false;try{prepare("owner",tool);}catch(const std::exception&){threw=true;}assert(threw&&actor_model_cache::triangles_for(first)==0&&actor_model_cache::archive_for(guest).empty()&&!actor_model_cache::bounds_for(first,minimum,maximum));};
     fails("fail");prepare("owner","ok");fails("wrong");

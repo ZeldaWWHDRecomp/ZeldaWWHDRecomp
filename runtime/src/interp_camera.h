@@ -26,6 +26,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 #include "interp_pacing.h"
@@ -163,6 +164,31 @@ inline CamState add_shake(const CamState& s, const Shake& k) {
 inline CamState blend_shaken(const CamState& a, const Shake& ka, const CamState& b, const Shake& kb, float t, bool dist_rule) {
     if (!ka.on && !kb.on) return blend(a, b, t, dist_rule);
     return add_shake(blend(unshake(a, ka), unshake(b, kb), t, dist_rule), kb);
+}
+
+// The history of each camera process (interp.cpp Prev: the last exact step the blended frames start
+// from, the step's snap decision, the camera's recent motion) lives in a small table of slots. A
+// stage can have more than one camera process drawn on every pass (the Boating Course's stage has
+// two), and camera processes are deleted with their stage without the table hearing of it. The table
+// used to give a camera without a slot the first slot that had not recorded a step yet, else always
+// slot 0: once four cameras had been seen (a few stage changes), the stage's two cameras took slot 0
+// from each other on every draw, so each draw found no history and drew its camera exactly, at 30 Hz,
+// while Link and the boat blended (issue #299). A camera without a slot now takes the slot used
+// longest ago (an unused one first); a camera drawn on every pass keeps its slot. `Slot` needs `cam`
+// and `used` (0 = unused), and value-initialises to an unused slot.
+template <class Slot, size_t N>
+Slot& history_slot(Slot (&slots)[N], uint32_t cam, uint64_t& clock) {
+    Slot* pick = nullptr;
+    for (auto& s : slots)
+        if (s.cam == cam) { pick = &s; break; }
+    if (!pick) {
+        for (auto& s : slots)
+            if (!pick || s.used < pick->used) pick = &s;
+        *pick = Slot{};
+        pick->cam = cam;
+    }
+    pick->used = ++clock;
+    return *pick;
 }
 
 // Letterbox bars (dCamera_c mTrimHeight, the scissor camera_draw sets): CalcTrimSize eases the

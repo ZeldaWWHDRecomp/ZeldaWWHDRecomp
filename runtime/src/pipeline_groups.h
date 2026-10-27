@@ -29,11 +29,15 @@ struct Shared {
     std::atomic<bool> sweepingNewOnly{false};
     std::atomic<uint64_t> created{0};
     std::atomic<bool> playing{false};
+    std::atomic<bool> playingWanted{false};
 };
 inline Shared& shared() { static Shared value; return value; }
 // worker: grouped recipes exist, start publishing
 inline void want() { shared().wanted.store(true, std::memory_order_relaxed); }
 inline bool wanted() { return shared().wanted.load(std::memory_order_relaxed); }
+// worker: only when play begins is wanted (the Metal-derived queue's throttle), not the archive scan
+inline void want_playing() { shared().playingWanted.store(true, std::memory_order_relaxed); }
+inline bool playing_wanted() { return shared().playingWanted.load(std::memory_order_relaxed); }
 // game thread: the current set (any order); a new generation only when it changed
 inline void publish(std::vector<uint32_t> groups) {
     std::sort(groups.begin(), groups.end());

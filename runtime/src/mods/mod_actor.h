@@ -29,6 +29,8 @@ bool object_grounds(const std::string& stage,const std::vector<story_notebook::W
 // player's stage files: the game looks for a body of water only within it. False: unknown for that room.
 bool room_height_range(const std::string& stage,int room,float& low,float& high,std::string& why);
 bool register_collision(const std::string& mod,const std::string& model,std::shared_ptr<const story_world_collision::mesh::Mesh>);
+// whether a model of `mod` has its collision registered (register_collision)
+bool has_collision(const std::string& mod,const std::string& model);
 struct ModelRig {std::vector<std::string> joint_names;std::vector<int> joint_parents;std::vector<bool> joint_look_compatible;};
 struct Identity {std::string mod,id;uint32_t token=0,process_id=0;};
 struct State {
@@ -62,6 +64,10 @@ bool set_combat_reward(const std::string& mod,const std::string& id,CombatReward
 bool set_carry_break(const std::string& mod,const std::string& id,std::function<bool()>);
 using BehaviorSink=std::function<void(Cpu*,uint32_t,BehaviorEvent,const Hit*)>;
 void set_behavior_sink(BehaviorSink);
+// Why an actor could not be created (its archive did not load, the game heap or the mod budget refused its model): the
+// world editor says it, so a placement that is not in the game is never silent. Game thread.
+using CreateFailureSink=std::function<void(const std::string& mod,const std::string& id,const std::string& why)>;
+void set_create_failure_sink(CreateFailureSink);
 uint32_t declaration_token(const std::string& mod,const std::string& id);
 bool identify(Cpu*,uint32_t actor,Identity&);
 uint32_t resolve(Cpu*,const Identity&);

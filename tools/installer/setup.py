@@ -1641,13 +1641,39 @@ def fwd(p):
     return p.replace("\\", "/")
 
 
+# Debug information in the game code. Player installs compile it without (-g0): zig cc, the Linux toolchain,
+# writes DWARF unless told otherwise, which made the Linux game about 500 MB, and nobody debugs the generated
+# code on a player's computer. Function names stay (the symbol table), so crash reports still name functions.
+# Developers get it back with WWHD_SETUP_DEBUG_INFO=1 or setup's --debug-info.
+DEBUG_INFO_FLAG = re.compile(r"-g(|[0-3]|gdb[0-3]?|line-tables-only|line-directives-only|dwarf(-[0-9]+)?|codeview|full)$")
+
+
+def debug_info_wanted():
+    return os.environ.get("WWHD_SETUP_DEBUG_INFO", "") not in ("", "0")
+
+
+def debug_info_flags(flags, debug=None):
+    """`flags` (a compile command's options) with debug information off, or on for developers (`debug`,
+    default: debug_info_wanted())."""
+    if debug is None:
+        debug = debug_info_wanted()
+    if debug:
+        return list(flags) + ([] if any(DEBUG_INFO_FLAG.match(a) for a in flags) else ["-g"])
+    return [a for a in flags if not DEBUG_INFO_FLAG.match(a)] + ["-g0"]
+
+
+def gamecode_compile_flags(manifest):
+    """The options the game code is compiled with: the release's (manifest), debug information as above."""
+    return debug_info_flags(manifest["gamecode_cflags"])
+
+
 def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None):
     os.makedirs(obj_dir, exist_ok=True)
     srcs = sorted(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
     srcs += [os.path.join(gen_dir, f) for f in ("table.c", "imports.c")]
     srcs.sort(key=lambda s: -os.path.getsize(s))  # big files first: better use of the cores
     m = {"sdk": fwd(os.path.join(PKG, "sdk")), "gen": fwd(gen_dir)}
-    flags = [sub(a, m) for a in manifest["gamecode_cflags"]]
+    flags = [sub(a, m) for a in gamecode_compile_flags(manifest)]
     objs = []
     pr = Progress("compiling")
     total = len(srcs)
@@ -1772,7 +1798,7 @@ def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=()):
     for a in (recipe or manifest["link"]):
         args += [fwd(g) for g in glue] if a == "{decomp_glue}" else [sub(a, m)]
     if IS_LINUX:
-        args += ["-Wl,-rpath,$ORIGIN"]
+        args += ["-Wl,-rpath,$ORIGIN,--strip-debug"]
     elif IS_MAC:
         # the runtime libraries the release installs next to the game (manifest runtime_files: the Vulkan
         # loader and MoltenVK) are found there, never in Homebrew or elsewhere on the Mac
@@ -2813,6 +2839,8 @@ def main():
     ap.add_argument("--shortcuts", action="store_true",
                     help="portable release: also add a shortcut (Applications / Start menu / applications menu)")
     ap.add_argument("--keep-work", action="store_true", help="keep the generated code and objects")
+    ap.add_argument("--debug-info", action="store_true",
+                    help="developers: compile the game code with debug information (also WWHD_SETUP_DEBUG_INFO=1)")
     ap.add_argument("--language-source", metavar="PATH",
                     help="experimental: take the language files (text, fonts, 2D layouts) of your European or "
                          "Japanese game (.wux/.wud, .wua or extracted folder) into the installation; the game is "
@@ -2828,6 +2856,8 @@ def main():
         sys.stdout.reconfigure(errors="replace")
     except AttributeError:
         pass
+    if args.debug_info:
+        os.environ["WWHD_SETUP_DEBUG_INFO"] = "1"
     if args.gui_protocol:
         return gui_main(args)
     interactive = not (args.yes or os.environ.get("WWHD_SETUP_NONINTERACTIVE")) and sys.stdin.isatty()

@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <set>
 #include <string>
@@ -12,6 +14,14 @@ inline constexpr uint64_t ModelLimit=2u*1024*1024,ModLimit=8u*1024*1024,RoomLimi
 // room (each set archive once, each placement) stay within it together (the island buildings' budget).
 inline constexpr uint64_t PieceRoomLimit=story_game_pieces::kRoomBudgetBytes;
 inline constexpr uint32_t BackingReserve=8u*1024*1024,SolidReserve=1024*1024;
+// what loading an archive file takes from its heap: its decompressed size (Yaz0 header), rounded as the game's
+// buffer is, plus room for the buffer's alignment and the archive's resource records; 0 without a readable file
+inline uint64_t archive_need(const std::string& path){
+    if(path.empty())return 0;FILE*f=std::fopen(path.c_str(),"rb");if(!f)return 0;
+    unsigned char h[8]{};const size_t got=std::fread(h,1,8,f);std::fseek(f,0,SEEK_END);const long size=std::ftell(f);std::fclose(f);
+    const uint64_t bytes=got==8&&std::memcmp(h,"Yaz0",4)==0?(uint64_t(h[4])<<24|uint64_t(h[5])<<16|uint64_t(h[6])<<8|h[7]):size>0?uint64_t(size):0;
+    return bytes?((bytes+0x1F)&~uint64_t(0x1F))+0x10000:0;
+}
 inline std::string mib(uint64_t bytes){return std::to_string(bytes/(1024*1024))+" MiB";}
 struct Record {std::string mod,archive;int room=0;uint32_t backing=0,resource=0,instance=0,actor=0;bool loaded=false,active=false,piece=false;};
 struct Usage {uint64_t room=0,pieces=0;std::map<std::string,uint64_t> mods;};

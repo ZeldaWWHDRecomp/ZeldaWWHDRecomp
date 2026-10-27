@@ -285,15 +285,13 @@ using pacing::lerp_s16;
 // Blended camera between the last exact step (a) and the new one (b).
 // - Snaps (re-centring behind Link, doors, mode changes, cutscene cuts) are not blended: a step is a
 //   snap when it is far larger than the camera's recent motion, or larger than an absolute limit.
-//   Decided once per step, on the logic pass (cam_snap updates the recent motion); the step's
-//   blended hold passes reuse the decision.
+//   Decided once per step, on the logic pass (cam_snap updates the camera's recent motion, kept per
+//   camera process: Prev::last_step); the step's blended hold passes reuse the decision.
 // - Orbits around the look-at point blend the eye's direction and distance separately, so the
 //   blended eye stays on the arc instead of cutting the corner towards the target.
-float g_last_step = 0;  // camera eye movement over the previous step
-
-bool cam_snap(const CamState& a, const CamState& b) {
+bool step_is_cut(const CamState& a, const CamState& b, float& last_step) {
     static const float kCut = getenv("WWHD_INTERP_CUT") ? (float)atof(getenv("WWHD_INTERP_CUT")) : 800.0f;
-    return camera::cam_snap(a, b, g_last_step, kCut);
+    return camera::cam_snap(a, b, last_step, kCut);
 }
 // the 10 % distance rule (interp_camera.h): debug WWHD_INTERP_CAM_DIST_RULE=0 off, 2 on every step
 int dist_rule_mode() {
@@ -343,8 +341,11 @@ bool g_exact_step = false;
 // this pass is a blended hold pass (no logic, drawn at pass_t())
 bool blended_hold() { return g_hold && g_phase < g_step_n; }
 // last camera state that was drawn normally, per camera process; the snap decision of the step
+// (slots: camera::history_slot, interp_camera.h)
 struct Prev {
     uint32_t cam = 0; CamState s{}; bool valid = false; bool snap = true; uint64_t snap_step = ~0ull;
+    uint64_t used = 0;         // when the slot was last asked for (history_slot; 0 = unused)
+    float last_step = 0;       // the camera's movement over its previous step (cam_snap)
     bool dist_rule = true;     // the step's 10 % distance rule applies (decided with the snap)
     float trim = 0;            // letterbox height (dCamera_c mTrimHeight) at the exact step
     CamState drawn{};          // the camera as camera_draw drew it on pass drawn_pass (blended or exact)
@@ -354,7 +355,9 @@ struct Prev {
     camera::Shake shake;       // the shake offset the exact step was drawn with (interp_camera.h)
     fade::FloatsGate<1> zoom;  // the HD projection zoom camera_draw eases (zoom_ease)
 };
-Prev g_prev[4];
+constexpr int kCamSlots = 4;
+Prev g_prev[kCamSlots];
+uint64_t g_prev_clock = 0;
 
 // The shake offset the camera's store (024F8430) added to the drawn camera (interp_camera.h Shake):
 // dCamera_c (camera +0x248) mCenter +0x10, mEye +0x1C, mCenterShake +0x56C, mEyeShake +0x578,
@@ -390,13 +393,24 @@ void capture_projection(Prev& p) {
     p.projection_pass = g_passes;
 }
 
+// debug: WWHD_INTERP_CAM_SLOT_TRACE=n logs n cameras taking a history slot (and the camera that had it)
 Prev* prev_for(uint32_t cam) {
-    for (auto& p : g_prev)
-        if (p.cam == cam) return &p;
-    for (auto& p : g_prev)
-        if (!p.valid) { p.cam = cam; return &p; }
-    g_prev[0] = Prev{cam};
-    return &g_prev[0];
+    static int trace = getenv("WWHD_INTERP_CAM_SLOT_TRACE") ? atoi(getenv("WWHD_INTERP_CAM_SLOT_TRACE")) : 0;
+    bool known = trace <= 0;
+    uint32_t had = 0;
+    if (!known) {
+        uint64_t oldest = ~0ull;
+        for (const auto& q : g_prev) {
+            known |= q.cam == cam;
+            if (q.used < oldest) oldest = q.used, had = q.cam;
+        }
+    }
+    Prev& p = camera::history_slot(g_prev, cam, g_prev_clock);
+    if (!known) {
+        trace--;
+        LOG("[interp] camera %08X takes a history slot (it had camera %08X)", cam, had);
+    }
+    return &p;
 }
 }  // namespace
 
@@ -898,7 +912,7 @@ static void camera_draw_body(Cpu* c) {
         float trim_drawn = NAN;  // the exact letterbox height, when it was drawn blended
         if (p->valid) {
             if (!g_hold) {  // logic pass: the step's snap decision
-                p->snap = cam_snap(p->s, cur);
+                p->snap = step_is_cut(p->s, cur, p->last_step);
                 p->snap_step = g_logic_steps;
                 p->dist_rule = camera::distance_rule_applies(step_info(cam, g_logic_steps), dist_rule_mode());
                 static int dist_trace = getenv("WWHD_INTERP_CAM_DIST_TRACE") ? atoi(getenv("WWHD_INTERP_CAM_DIST_TRACE")) : 0;
@@ -1448,7 +1462,6 @@ void ss_reset() {
     mods::jump_reset();
     countdown::reset();
     for (auto& p : g_prev) p = Prev{};
-    g_last_step = 0;
     g_models.clear();
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
@@ -1962,7 +1975,6 @@ extern "C" void hook_0203593C(Cpu* c) {
     true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
     if (ff_transition) {
         for (auto& p : g_prev) p = Prev{};
-        g_last_step = 0;
         g_models.clear();
         g_record_passes += 8;
         g_hold_next = false;
@@ -2557,9 +2569,9 @@ static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what) {
     }
     // debug: WWHD_INTERP_SKY_TRACE=n logs n draws whose camera was swapped (eye drawn vs exact)
     static int trace = getenv("WWHD_INTERP_SKY_TRACE") ? atoi(getenv("WWHD_INTERP_SKY_TRACE")) : 0;
-    CamState exact[4];
-    bool swapped[4] = {};
-    for (int i = 0; i < 4; i++) {
+    CamState exact[kCamSlots];
+    bool swapped[kCamSlots] = {};
+    for (int i = 0; i < kCamSlots; i++) {
         Prev& p = g_prev[i];
         if (!p.cam || p.drawn_pass != g_passes) continue;
         exact[i] = read_cam(p.cam);
@@ -2572,7 +2584,7 @@ static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what) {
         }
     }
     orig(c);
-    for (int i = 3; i >= 0; i--)
+    for (int i = kCamSlots - 1; i >= 0; i--)
         if (swapped[i]) write_cam(g_prev[i].cam, exact[i]);
 }
 extern "C" void f_02574144_orig(Cpu* c);

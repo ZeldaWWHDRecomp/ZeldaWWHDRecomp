@@ -1,5 +1,6 @@
 #include "background_shaders.h"
 #include "gfx/render_mips.h"
+#include "gfx/texture_levels.h"
 #include "mods/cemu_pack.h"
 #include <tuple>
 #include <atomic>
@@ -12,6 +13,7 @@
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include "gx2/gx2.h"
 #include "render_prof.h"
+#include "gfx/artistic_mips.h"
 #include "gx2_texture_regs.h"
 #include "metal.h"
 #include "runtime.h"
@@ -122,6 +124,9 @@ static bool screen_shaped(const Surface* s) {
 // shadow-mask softening samples (restored in v0.2.9); since then both sizes give practically the
 // same soft edges, the larger maps only a hair crisper.
 static float target_scale(const Surface* s) {
+    // the bloom chain: at the console's size its blur and the final bilinear upscale blend the glow
+    // smoothly; at the internal resolution the lumps of the blur's sparse taps showed as blocks (#307)
+    if (s->sizeClaim.size == gfx::TargetSize::Console) return 1.0f;
     uint32_t width,height;
     if(!s->fmt.compressed&&s->mips==1&&mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     if (s->fmt.compressed || s->mips > 1) return 1.0f;
@@ -139,7 +144,7 @@ static float target_scale(const Surface* s) {
 }
 // the dynamic resolution factor in target_scale's result (1 where it does not apply)
 static float target_dyn(const Surface* s) {
-    if (g_dyn_frame == 1.0f || s->fmt.compressed || s->mips > 1 || s->slices > 1) return 1.0f;
+    if (g_dyn_frame == 1.0f || s->sizeClaim.size != gfx::TargetSize::Internal || s->fmt.compressed || s->mips > 1 || s->slices > 1) return 1.0f;
     uint32_t width,height;
     if(mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     return g_dyn_frame;
@@ -424,7 +429,10 @@ static Surface* find_surface(const SurfaceDesc& d, bool forRendering) {
         // a volume and a 2D array of the same size are different textures
         if (s->width == d.width && s->height == d.height && s->format == d.format && s->slices == d.slices &&
             volume(s->dim) == volume(d.dim) && (forRendering || s->mips >= d.mips || s->gpuWritten)) {
-            if (forRendering) return adopt_newer_alias(rescale(s));
+            if (forRendering) {
+                s->sizeClaim.request(d.sizeRequest, R.frame);
+                return adopt_newer_alias(rescale(s));
+            }
             if (!exact || s->writeSeq > exact->writeSeq) exact = s;
             continue;
         }
@@ -452,6 +460,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d, bool forRendering) {
     s->swizzle = d.swizzle;
     s->isDepth = d.isDepth;
     s->fmt = format_info(d.format, d.isDepth);
+    if (forRendering) s->sizeClaim.request(d.sizeRequest, R.frame);
     float ax = 1.0f, ay = 1.0f;
     if (forRendering) target_aspect(s.get(), ax, ay);
     s->tex = make_texture(s.get(), texture_type(d.dim, s->slices), forRendering, forRendering ? target_scale(s.get()) : 1.0f, ax, ay);
@@ -483,7 +492,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d, bool forRendering) {
 // CB_COLORn_BASE holds the full guest address; CB_COLORn_TILE/FRAG hold width/height (our convention).
 constexpr uint32_t kDim2D = 1, kDim3D = 2, kDim2DArray = 5;
 
-Surface* color_target(const uint32_t* regs, int i, uint32_t* slice) {
+Surface* color_target(const uint32_t* regs, int i, uint32_t* slice, gfx::SizeRequest claim) {
     uint32_t base = regs[mmCB_COLOR0_BASE + i];
     if (!base) return nullptr;
     uint32_t size = regs[mmCB_COLOR0_SIZE + i], info = regs[mmCB_COLOR0_INFO + i];
@@ -505,6 +514,7 @@ Surface* color_target(const uint32_t* regs, int i, uint32_t* slice) {
     d.tileMode = (info >> 8) & 0xF;
     d.slices = slices;
     d.dim = volume ? kDim3D : slices > 1 ? kDim2DArray : kDim2D;
+    d.sizeRequest = claim;
     return find_or_create_surface(d, true);
 }
 
@@ -697,24 +707,19 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     return s && s->gpuWritten && d.mips > 1 && !isDepthSampler ? with_mip_chain(s, d) : s;
 }
 
+static gfx::texture_levels::Level level_in_guest(const Surface* s, uint32_t level) {
+    return gfx::texture_levels::level(s->addr, s->mipAddr, s->format, s->width, s->height, s->slices, s->dim, s->tileMode,
+                                      s->swizzle, level);
+}
+
 // Guest ranges of every level the upload reads (base first), computed once: a Surface's geometry
 // never changes after creation.
 static const std::vector<std::pair<uint32_t, uint32_t>>& level_ranges(Surface* s) {
     if (!s->levelRanges.empty()) return s->levelRanges;
     for (uint32_t level = 0; level < s->mips; level++) {
-        uint32_t base;
-        if (level == 0) base = s->addr;
-        else if (!s->mipAddr) break;
-        else if (level == 1) base = s->mipAddr;
-        else {
-            // mip offsets relative to the mip chain start
-            uint32_t sliceOffset = 0, sliceSize = 0;
-            sint32 sub = 0;
-            LatteAddrLib::CalculateMipAndSliceAddr(s->addr, s->mipAddr, (Latte::E_GX2SURFFMT)s->format, s->width, s->height,
-                                                   s->slices, (Latte::E_DIM)s->dim, (Latte::E_HWTILEMODE)s->tileMode,
-                                                   s->swizzle, 0, level, 0, &sliceOffset, &sliceSize, &sub);
-            base = sliceOffset;
-        }
+        if (level && !s->mipAddr) break;
+        // level 1 and up from the mip pointer without its swizzle bits (texture_levels.h, issue #297)
+        uint32_t base = level_in_guest(s, level).address;
         LatteAddrLib::AddrSurfaceInfo_OUT info{};
         LatteAddrLib::GX2CalculateSurfaceInfo((Latte::E_GX2SURFFMT)s->format, s->width, s->height, s->slices, (Latte::E_DIM)s->dim,
                                               Latte::MakeGX2TileMode((Latte::E_HWTILEMODE)s->tileMode), 0, level, &info);
@@ -785,8 +790,9 @@ static void decode_level(Surface* s, uint32_t level, uint32_t base, std::vector<
     uint32_t pitch = info.pitch, height = info.height;
     auto tm = (Latte::E_HWTILEMODE)info.hwTileMode;
     uint32_t bpp = f.bytesPerBlock * 8;
-    uint32_t pipeSwizzle = (s->swizzle >> 8) & 1, bankSwizzle = (s->swizzle >> 9) & 3;
-    // small mips of macro-tiled surfaces drop the swizzle
+    // level 0 is tiled with the base pointer's swizzle, the mip chain with the mip pointer's
+    uint32_t swizzle = level_in_guest(s, level).swizzle;
+    uint32_t pipeSwizzle = (swizzle >> 8) & 1, bankSwizzle = (swizzle >> 9) & 3;
     out.assign((size_t)bw * bh * slices * f.hostBytesPerBlock, 0);
     std::vector<uint8_t> row(bw * f.bytesPerBlock);
     const uint8_t* src = mem::ptr(base);
@@ -842,28 +848,39 @@ void upload_surface(Surface* s) {
     if (!s->tex || s->gpuWritten) return;
     const FormatInfo& f = s->fmt;
     const auto& ranges = level_ranges(s);
+    const uint64_t hashedBefore = g_stat_hashed_bytes;
     uint64_t hash = content_hash(s);
-    if (hash == s->contentHash && s->writeSeq) return;
+    const bool changed = !(hash == s->contentHash && s->writeSeq);
+    rprof::add_texture_check(g_stat_hashed_bytes - hashedBefore, changed);
+    if (!changed) return;
     s->contentHash = hash;
     s->writeSeq = next_write_seq();  // fresh CPU data is now the newest version of this memory
     g_stat_uploads++;
 
     std::vector<uint8_t> data;
     id<MTLBuffer> staging = nil;
+    // hand-drawn mip levels (artistic_mips.h): the levels are kept for the check after the upload
+    const bool checkMips = gfx::artistic_mips::enabled() && s->mips > 1 && gfx::artistic_mips::supported(s->format);
+    std::vector<std::vector<uint8_t>> levelsForCheck;
     end_encoder();
     id<MTLBlitCommandEncoder> blit = [command_buffer() blitCommandEncoder];
     for (uint32_t level = 0; level < ranges.size(); level++) {
         uint32_t base = ranges[level].first;
         uint32_t w, h, slices;
         decode_level(s, level, base, data, w, h, slices);
+        if (checkMips) levelsForCheck.push_back(data);
         uint32_t bw = f.compressed ? (w + 3) / 4 : w, bh = f.compressed ? (h + 3) / 4 : h;
-        staging = [R.device newBufferWithBytes:data.data() length:data.size() options:MTLResourceStorageModeShared];
+        NSUInteger stagingOffset = 0;
+        if (!texture_staging(data.data(), data.size(), &staging, &stagingOffset)) {
+            staging = [R.device newBufferWithBytes:data.data() length:data.size() options:MTLResourceStorageModeShared];
+            rprof::add_upload(rprof::kUpTexture, data.size());
+        }
         bool is3D = s->tex.textureType == MTLTextureType3D;
         uint32_t layers = is3D ? 1 : (s->tex.textureType == MTLTextureTypeCube ? 6 : (uint32_t)s->tex.arrayLength);
         uint32_t perSlice = bw * bh * f.hostBytesPerBlock;
         for (uint32_t z = 0; z < (is3D ? 1 : std::min(slices, layers)); z++) {
             [blit copyFromBuffer:staging
-                     sourceOffset:(NSUInteger)z * perSlice
+                     sourceOffset:stagingOffset + (NSUInteger)z * perSlice
                 sourceBytesPerRow:bw * f.hostBytesPerBlock
               sourceBytesPerImage:perSlice
                        sourceSize:MTLSizeMake(f.compressed ? bw * 4 : w, f.compressed ? bh * 4 : h, is3D ? slices : 1)
@@ -874,6 +891,21 @@ void upload_surface(Surface* s) {
         }
     }
     [blit endEncoding];
+    if (checkMips) {
+        const auto v = gfx::artistic_mips::check(s->format, s->width, s->height, (uint32_t)levelsForCheck.size(),
+            [&](uint32_t n, const uint8_t*& p, size_t& size) {
+                if (n >= levelsForCheck.size()) return false;
+                p = levelsForCheck[n].data(); size = levelsForCheck[n].size(); return true; });
+        static const bool logAll = getenv("WWHD_ARTISTIC_MIPS_LOG") && !strcmp(getenv("WWHD_ARTISTIC_MIPS_LOG"), "2");
+        if (gfx::artistic_mips::log_enabled() && v.compared && (logAll || v.artistic || v.artistic != s->artisticMips)) {
+            char diffs[160]; int n = 0;
+            for (uint32_t l = v.firstLevel + 1; l < v.firstLevel + 1 + v.compared && n < (int)sizeof diffs - 8; ++l)
+                n += snprintf(diffs + n, sizeof diffs - n, " %.1f", v.diff[l]);
+            LOG("[artistic mips] %08X %ux%u fmt %X mips %u: %s (levels from %u, diff%s)", s->addr, s->width, s->height,
+                s->format, s->mips, v.artistic ? "hand-drawn" : "downscaled", v.firstLevel, diffs);
+        }
+        s->artisticMips = v.artistic;
+    }
 }
 
 // ---------------------------------------------------------------- GX2CopySurface

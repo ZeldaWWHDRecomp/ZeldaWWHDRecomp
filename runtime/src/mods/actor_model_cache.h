@@ -38,6 +38,10 @@ void note_failure(const std::string& mod,const std::string& model,const std::str
 void clear_failure(const std::string& mod,const std::string& model);
 // prepare is running for this model now (the editor prepares on a thread of its own)
 bool preparing(const std::string& mod,const std::string& model);
+// The editor asked for this model (Host::prepare_model): preparing() holds from the request until its result is in the
+// game (registered or failed), not only while the converter runs, so a placement waiting for it says "being prepared".
+void hold(const std::string& mod,const std::string& model);
+void release(const std::string& mod,const std::string& model);
 // A converter's reason as one plain line: terminal colour sequences (Python 3.13+ colours its tracebacks) and
 // control characters removed, at most 200 characters.
 std::string plain_reason(std::string text);

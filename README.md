@@ -498,9 +498,15 @@ and culling projections, including both stereo eyes; cutscenes, dialogue, menus 
 retain their authored FOV. First-person view, item aiming and the Telescope are widened by the
 same factor, so their zoom is weaker above 100%. The setting is saved between launches.
 
-**HDR output** (Windows/Vulkan-only) offers scRGB presentation when Windows HDR is enabled
-and the display supports it. Paper white, peak brightness, exposure, highlight expansion and
-settings-menu brightness are adjustable. This expands the game's SDR output into HDR; it does
+**HDR output** (Vulkan, Windows and Linux) offers scRGB presentation when Windows HDR is
+enabled and the display supports it. Where the surface has no scRGB (Mesa on Wayland), it
+presents HDR10 (BT.2020, PQ) instead; enable HDR for the output in your compositor. When SDL
+runs the game through XWayland (sway and other compositors without `wp_fifo_v1`), choosing
+HDR starts the game on Wayland from the next launch; SDL prefers XWayland there for frame
+pacing, so pacing may change. `SDL_VIDEO_DRIVER` still overrides this, and under gamescope
+(Steam Deck), which provides HDR to XWayland itself, the game stays on XWayland.
+Paper white, peak brightness, exposure, highlight expansion and settings-menu brightness are
+adjustable. This expands the game's SDR output into HDR; it does
 not recover already-clipped lighting or provide native pre-tonemap HDR rendering. The in-game
 HUD follows paper white, while the settings menu has a separate brightness control. HDR starts
 off and must be enabled explicitly. If HDR is unavailable, output falls back to SDR with a

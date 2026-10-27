@@ -133,6 +133,13 @@ Code mods (for example the story quests) need the game built with code-mod suppo
 **Code mods** in the setup app, before or after the first setup. See
 [Choosing code-mod support](setup-code-mods.md#android).
 
+
+**Prepare model shaders (recommended)** is ticked by default. After setup, the game draws every model, room and
+placed actor once and visits every stage, hidden behind the setup's progress screen, so far fewer stutters happen
+the first time you see a place (on a Xiaomi 14: about 35 shader waits on a 25-place test route instead of about
+1000). It takes about 40 minutes on a recent phone, longer on older ones; keep the screen on. Untick it to skip
+the step. **Cancel** stops it at any time and keeps what was prepared; ticking it again continues.
+
 ### Or: build it on your PC
 
 1. Install the Android SDK and NDK, JDK 17 or newer, CMake, Ninja and Python 3.

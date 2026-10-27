@@ -57,6 +57,12 @@ public final class SetupServiceSmokeActivity extends Activity {
                 SetupStore.remove(new File(job, "pause.json"));
                 startForegroundService(new Intent(this, SyntheticSetupService.class));
             }
+            else if ("synthetic-resume".equals(mode)) {
+                // the player's explicit start (Resume): unlike a start without an action, it runs a complete setup
+                File job = SetupStore.current(this);
+                SetupStore.remove(new File(job, "pause.json"));
+                startForegroundService(new Intent(this, SyntheticSetupService.class).setAction(SetupService.RESUME));
+            }
             else if ("synthetic-recovery".equals(mode)) {
                 File job = SetupStore.current(this);
                 if (job == null) throw new IllegalStateException("No authored job selected");

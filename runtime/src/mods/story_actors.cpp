@@ -1221,6 +1221,8 @@ bool editor_update(const std::string& mod,const std::vector<ManifestActor>& decl
            ((spec.actor=="resident"||!spec.distant.model.empty()||!spec.shoreline.model.empty()||spec.chart_marker.enabled)&&!live_capable(mod,spec,reason))||(native_kind(a->spec)!=native_kind(spec))||(a->spec.game_object()!=spec.game_object())||(story_props::is_prop(spec)&&spec.texture_token!=a->spec.texture_token)){
             if(!kind&&native_kind(a->spec)!=native_kind(spec))reason="switching between a native prop, switch, door or enemy and another kind takes effect after a restart";
             if(!kind&&a->spec.game_object()!=spec.game_object())reason="switching between a game object and another kind takes effect after a restart";
+            // a model not in the game yet: being prepared (it is taken when ready), failed (why), or after a reload
+            if(!kind&&reason.empty()&&spec.kind=="mod"&&a->spec.kind=="mod"&&!g_models.contains({mod,spec.model}))live_capable(mod,spec,reason);
             later.push_back(spec.id+": "+(kind?std::string(kind)+" takes changes after a restart":reason.empty()?std::string("takes this change after a restart"):reason));
             if(!a->removed)effective.push_back(a->spec);
             continue;

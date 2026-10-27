@@ -89,4 +89,24 @@
     <string name="setup_code_mods">Code mods</string>
     <string name="setup_code_mods_detail">Lets you turn on code mods (for example the story quests) in Settings › Mods. The game code is built again with mod support, which takes about as long as the first setup, and the game runs a little slower. You can keep playing the current build meanwhile.</string>
     <string name="game_icon_unsupported">This launcher cannot add app icons.</string>
+    <string name="setup_models">Prepare model shaders (recommended)</string>
+    <string name="setup_models_detail">Far fewer stutters the first time you see a place. Takes about 40 minutes after setup on a recent phone, behind a progress screen; keep the screen on. Untick to skip it; Cancel keeps what was prepared (tick again to continue).</string>
+    <string name="setup_models_running">Preparing shaders: models</string>
+    <string name="setup_models_hidden">The game draws its models behind this screen. Keep the screen on; leaving pauses this step until setup is on the screen again. Cancel stops it and keeps what was prepared.</string>
+    <string name="setup_models_stopping">Stopping… (what was prepared is kept)</string>
+    <string name="setup_models_estimating">\u0020· estimating the time left</string>
+    <string name="setup_models_phase_starting">Starting the game</string>
+    <string name="setup_models_phase_objects">Object models</string>
+    <string name="setup_models_phase_rooms">Rooms</string>
+    <string name="setup_models_phase_environment">Sky and weather</string>
+    <string name="setup_models_phase_actors">Placed actors</string>
+    <string name="setup_models_phase_plants">Plants</string>
+    <string name="setup_models_phase_particles">Effects</string>
+    <string name="setup_models_phase_visits">Stage visits</string>
+    <string name="setup_models_phase_visit">Stage visits: %1$s</string>
+    <string name="setup_models_phase_file_select">File select</string>
+    <string name="setup_cancel">Cancel</string>
+    <string name="setup_paused_screen">Paused: preparing model shaders needs this screen</string>
+    <string name="setup_paused_screen_detail">It goes on by itself while setup is on the screen.</string>
+    <string name="setup_models_game_open">Close the game first (Settings › Quit Game); preparing model shaders then goes on here.</string>
 </resources>

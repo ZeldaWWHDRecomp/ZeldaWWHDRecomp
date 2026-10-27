@@ -26,16 +26,23 @@
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <mutex>
+#include <set>
 #include <thread>
 
 #include "guest_addr.h"
 #include "runtime.h"
 #include "interp.h"
+#include "resmgr_fit.h"
+#include "mods/guest_heap_query.h"
 
 extern "C" void f_02613394_orig(Cpu* c);
 extern "C" void f_0260C67C_orig(Cpu* c);
 extern "C" void f_0275F808_orig(Cpu* c);
 extern "C" void f_0260C74C_orig(Cpu* c);
+extern "C" void f_02612E64_orig(Cpu* c);
+extern "C" void f_02610258_orig(Cpu* c);
+extern "C" void f_02520460_orig(Cpu* c);
 
 namespace {
 constexpr uint32_t kRequestState = 0x11248;  // 1 request, 2 permanent packs, 0 idle
@@ -112,4 +119,149 @@ extern "C" void hook_0260C74C(Cpu* c) {
     static const bool every_frame = getenv("WWHD_INTERP_LOAD_STEP") && !atoi(getenv("WWHD_INTERP_LOAD_STEP"));
     if (!every_frame && interp::frame_is_hold()) return;
     f_0260C74C_orig(c);
+}
+
+// ---------------------------------------------------------------- an archive from a pack fits its heap (resmgr_fit.h)
+// Test only: WWHD_TEST_RESMGR_REFUSE=name[,name...] refuses those archives as if their heap were full (the refusal's
+// path through the game, without filling a heap first).
+namespace {
+// archives the check below refused, until a later load of the same name fits (ResMgrThread writes, the game's
+// actors read: dComIfG_resLoad below)
+std::mutex g_refused_mu;
+std::set<std::string> g_refused;
+bool test_refused(const std::string& name) {
+    static const std::string list = [] { const char* e = getenv("WWHD_TEST_RESMGR_REFUSE"); return e ? "," + std::string(e) + "," : std::string(); }();
+    return !list.empty() && list.find("," + name + ",") != std::string::npos;
+}
+// The game's heaps (sead): the request's heap, or with heap 0 the thread's current heap (HeapMgr::getCurrentHeap
+// 02756140, as the game's operator new takes it). A load task's request heaps are frame (solid) heaps (vtable
+// 10145B38): free is a no-op there, so a probe that allocated and freed kept the archive's whole size taken and the
+// real buffer allocation then failed (the very crash the check exists for). On a frame heap the probe's allocations
+// are undone by putting its head and tail (+0x94, +0x98: everything an allocation changes) back as they were;
+// another heap frees them itself (vtable slot 0x3C, free(heap, address), as the game's operator delete does).
+constexpr uint32_t kFrameHeapHead = 0x94, kFrameHeapTail = 0x98;
+uint32_t probe_heap(Cpu* c, uint32_t heap) { return heap ? heap : guest_call(c, GC(0x02756140), {ld32(GD(0x101F8B4C))}); }
+bool frame_heap(uint32_t heap) { return guest_heap::readable(heap, kFrameHeapTail + 4) && ld32(heap + guest_heap::kVtable) == GD(0x10145B38); }
+void release(Cpu* c, uint32_t heap, uint32_t address) {
+    const uint32_t vt = guest_heap::readable(heap, 0x10) ? ld32(heap + guest_heap::kVtable) : 0;
+    const uint32_t fn = guest_heap::readable(vt, 0x40) ? ld32(vt + 0x3C) : 0;
+    if (fn) guest_call(c, fn, {heap, address});
+}
+// ResMgr_loadArchive / ResMgr_loadFromPack (self, name, path, heap): false when the archive is in a loaded pack, not
+// loaded yet, and the heap can't hold the game's copy of it
+bool pack_archive_fits(Cpu* c, const char* who) {
+    // heap 0: the load task could not make the request's heap (its parent is full); the game's allocations then take
+    // the thread's current heap, and so does the probe
+    const uint32_t self = c->r[3], name = c->r[4], heap = c->r[6];
+    if (!self || !name) return true;  // the game's own path
+    const Cpu keep = *c;
+    // loaded already: the game returns at once
+    if (guest_call(c, GC(0x02613F20), {self + 0x14, ld32(self + 0x14), name})) return *c = keep, true;
+    // the pack entry, found as the game finds it: its name's hash (the C string up to 0x40000 characters)
+    const uint32_t text = ld32(name);
+    if (!text) return *c = keep, true;
+    uint32_t length = 0;
+    while (length <= 0x40000 && ld8(text + length)) ++length;
+    if (length > 0x40000) length = 0;
+    const uint32_t hash = guest_call(c, GC(0x0273B264), {text, length});
+    const uint32_t sp = c->r[1];
+    c->r[1] = sp - 0x20;  // a frame of our own for the key
+    st32(c->r[1], sp);
+    const uint32_t key = c->r[1] + 0x10;
+    st32(key, hash);
+    const uint32_t node = guest_call(c, GC(0x0260ACC8), {self + 0xD228, ld32(self + 0xD228), key});
+    c->r[1] = sp;
+    if (!node) return *c = keep, true;  // not in a pack: the file system path, which checks its allocations
+    const uint32_t holder = ld32(node + 0x18), resource = holder ? ld32(holder + 0x4C) : 0;
+    if (!resource) return *c = keep, true;
+    const uint32_t size = guest_call(c, GC(0x0275F800), {resource});
+    const std::string archive = mem::read_cstr(text);
+    resmgr_fit::Fit fit = resmgr_fit::Fit::NoBuffer;
+    const uint32_t owner = probe_heap(c, heap);
+    if (!test_refused(archive) && owner) {
+        const bool frame = frame_heap(owner);
+        const uint32_t head = frame ? ld32(owner + kFrameHeapHead) : 0, tail = frame ? ld32(owner + kFrameHeapTail) : 0;
+        const uint32_t before = g_log ? guest_heap::free_size(c, owner, guest_call) : 0;
+        fit = resmgr_fit::probe([&](uint32_t bytes, uint32_t, uint32_t align) { return guest_call(c, GC(0x0273B0D4), {bytes, owner, align}); },
+                                [&](uint32_t address) { if (!frame) release(c, owner, address); }, owner, size);
+        if (frame) st32(owner + kFrameHeapHead, head), st32(owner + kFrameHeapTail, tail);
+        if (g_log) LOG("[resmgr] %s %s (%u bytes): heap %08X%s, %u free before the check and %u after (%s)", who, archive.c_str(), size, owner,
+                       frame ? " (frame heap)" : "", before, guest_heap::free_size(c, owner, guest_call), resmgr_fit::name(fit));
+    }
+    *c = keep;
+    std::lock_guard lk(g_refused_mu);
+    if (fit == resmgr_fit::Fit::Fits) {
+        g_refused.erase(archive);
+        return true;
+    }
+    g_refused.insert(archive);
+    static std::set<std::string> said;
+    if (said.insert(archive).second)
+        LOG("[resmgr] %s: archive %s (%u bytes) is not loaded: its heap %08X is full (%s)%s; what uses it is not created", who, archive.c_str(), size,
+            heap, resmgr_fit::name(fit), test_refused(archive) ? " [test]" : "");
+    return false;
+}
+}  // namespace
+
+// ResMgr_loadArchive (self, name, path, heap, compressed, align, buffer align): 0 when it is not loaded
+extern "C" void hook_02612E64(Cpu* c) {
+    if (!pack_archive_fits(c, "load")) {
+        c->r[3] = 0;
+        return;
+    }
+    f_02612E64_orig(c);
+}
+
+// ResMgr_loadFromPack (self, name, path, heap): 0 when it is not loaded
+extern "C" void hook_02610258(Cpu* c) {
+    if (!pack_archive_fits(c, "load from pack")) {
+        c->r[3] = 0;
+        return;
+    }
+    f_02610258_orig(c);
+}
+
+// dComIfG_resLoad (phase, archive name): 4 when the archive is loaded, 5 on an error. The load task's request
+// "completes" also when the check above refused its archive: the phase is then done (id 2) without an archive in
+// the resource table (ResourceControlHD 101F4F28, archives at +0x14), and a game actor went on to its heap and
+// asserted on a missing model ("model_data != 0", OSPanic), and its delete (dComIfG_resDelete -> deleteRes 02607138)
+// would read the missing table node. For an archive refused here, the phase fails instead, as for a missing
+// archive: the request's reference on the load task (ResLoadTask 101F4F54, its reference tree +0xE0, a node's count
+// +0x18) is given back (on the last one the request's id is forgotten, 0260F61C, as deleteRes does), the phase goes
+// back to 0 so dComIfG_resDelete releases nothing, and the actor's create gets 5 and is not made. A later create
+// requests the archive anew.
+extern "C" void hook_02520460(Cpu* c) {
+    const uint32_t phase = c->r[3], name = c->r[4];
+    f_02520460_orig(c);
+    if (c->r[3] != 4 || !phase || !name || ld32(phase + 4) != 2) return;
+    const std::string archive = mem::read_cstr(name);
+    {
+        std::lock_guard lk(g_refused_mu);
+        if (!g_refused.count(archive)) return;
+    }
+    const Cpu keep = *c;
+    const uint32_t hash = guest_call(c, GC(0x0273B264), {name, uint32_t(archive.size())});
+    const uint32_t sp = c->r[1];
+    c->r[1] = sp - 0x20;  // a frame of our own for the key
+    st32(c->r[1], sp);
+    const uint32_t key = c->r[1] + 0x10;
+    st32(key, hash);
+    const uint32_t control = ld32(GD(0x101F4F28));
+    const bool mounted = control && guest_call(c, GC(0x0260ACC8), {control + 0x14, ld32(control + 0x14), key});
+    if (!mounted) {
+        const uint32_t task = ld32(GD(0x101F4F54));
+        if (const uint32_t node = task ? guest_call(c, GC(0x0260ACC8), {task + 0xE0, ld32(task + 0xE0), key}) : 0) {
+            const uint32_t count = ld32(node + 0x18);
+            if (count > 1) st32(node + 0x18, count - 1);
+            else guest_call(c, GC(0x0260F61C), {task, hash});
+        }
+    }
+    c->r[1] = sp;
+    *c = keep;
+    if (mounted) return;
+    st32(phase + 4, 0);
+    c->r[3] = 5;
+    static std::set<std::string> said;
+    std::lock_guard lk(g_refused_mu);
+    if (said.insert(archive).second) LOG("[resmgr] %s was refused: what loads it is not created", archive.c_str());
 }

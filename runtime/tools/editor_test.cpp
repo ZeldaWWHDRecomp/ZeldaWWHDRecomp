@@ -161,6 +161,8 @@ struct FakeHost : editor::Host {
     editor::WorldPoint last_focus;
     bool focus(const editor::WorldPoint& at, std::string&) override { return last_focus = at, ++focused, true; }
     std::map<std::string, std::string> model_failures;  // "mod:model" -> why it could not be prepared
+    std::set<std::string> unready;  // "mod:model" the game started without (no placement used it then)
+    bool model_ready(const std::string& mod, const std::string& model) override { return !unready.contains(mod + ":" + model); }
     std::string model_failure(const std::string& mod, const std::string& model) override {
         const auto it = model_failures.find(mod + ":" + model);
         return it == model_failures.end() ? std::string() : it->second;
@@ -2395,6 +2397,136 @@ void model_replace_remove(const fs::path& examples) {
     fs::remove_all(dir, ec);
 }
 
+
+// A placement changed to a model the game started without (issue #281): no placement used the model at start-up, so the
+// game never prepared it, and the change waited for a restart (the properties' Model list "did nothing"). The change now
+// has the model prepared, with its collision when a world object stands on it; a ready model, or one that failed to
+// prepare, is not asked for again.
+void model_change_prepares(const fs::path& examples) {
+    FakeHost host;
+    const fs::path dir = temp_dir("model-change");
+    fs::copy(examples / "sdk-v3-windfall", dir, fs::copy_options::recursive);
+    std::ifstream in(dir / "manifest.json");
+    std::stringstream text;
+    text << in.rdbuf();
+    in.close();
+    editor::Session w(&host);
+    const std::string mod = "sdk-v3-windfall";
+    w.add_package(mod, "Windfall", dir.string(), mods::json::parse(text.str()));
+    auto write = [&](const fs::path& file, const std::vector<uint8_t>& bytes) {
+        std::ofstream o(file, std::ios::binary);
+        o.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+    };
+    auto cube = [](const char* name, bool collision) {
+        auto doc = static_model_fixture::cube_document();
+        if (collision) {
+            doc["materials"].array.push_back(json(R"({"name": "col_grass"})"));
+            doc["meshes"].array.push_back(doc["meshes"].array[0]);
+            doc["meshes"].array[1]["primitives"].array[0]["material"] = double(doc["materials"].array.size() - 1);
+            doc["meshes"].array[1]["primitives"].array[0]["attributes"].object.erase("TEXCOORD_0");
+            doc["nodes"] = json(("[{\"name\": \"" + std::string(name) + "\", \"mesh\": 0}, {\"name\": \"" + name + "_col\", \"mesh\": 1}]").c_str());
+            doc["scenes"].array[0]["nodes"] = json("[0, 1]");
+        }
+        return static_model_fixture::glb(doc, static_model_fixture::cube_binary());
+    };
+    const fs::path blend = dir / "blender";
+    fs::create_directories(blend);
+    write(blend / "rock.glb", cube("rock", false));
+    write(blend / "box.glb", cube("box", false));
+    write(blend / "hill.glb", cube("hill", true));
+    for (const char* m : {"rock", "box", "hill"}) {
+        Value p;
+        p["file"] = (blend / (std::string(m) + ".glb")).string();
+        CHECK(ok(w.run("import_model", p)));
+    }
+    CHECK(ok(w.run("add_actor", json(R"({"type": "model", "model": "rock", "id": "m1"})"))));
+    // a new session's game: box and hill were never prepared (no placement used them at start-up)
+    host.unready = {mod + ":box", mod + ":hill"};
+    host.prepared.clear();
+    Value r = w.run("set_actor", json(R"({"id": "m1", "property": "model", "value": "box"})"));
+    CHECK(ok(r) && host.prepared == mod + ":box" && !host.prepared_collision && !host.prepared_replace);
+    CHECK(std::find(host.last_changed.begin(), host.last_changed.end(), "m1") != host.last_changed.end());
+    CHECK(r.get("result").get("note").string().find("Model box is being prepared; m1 shows it when it is ready.") != std::string::npos);
+    // ready (prepared meanwhile): a change back to it asks for nothing
+    host.unready.erase(mod + ":box");
+    host.prepared.clear();
+    CHECK(ok(w.run("set_actor", json(R"({"id": "m1", "property": "model", "value": "rock"})"))) && host.prepared.empty());
+    // failed to prepare: not asked for again (the placement says why)
+    host.unready.insert(mod + ":box");
+    host.model_failures[mod + ":box"] = "the converter refused it";
+    CHECK(ok(w.run("set_actor", json(R"({"id": "m1", "property": "model", "value": "box"})"))) && host.prepared.empty());
+    // a world object standing on hill's own collision: hill is prepared with its collision for both
+    CHECK(ok(w.run("add_actor", json(R"({"type": "model", "model": "rock", "id": "m2", "at": "position", "position": {"x": 900, "y": 0, "z": 300000}, "stage": "sea"})"))));
+    host.unready.insert(mod + ":hill");
+    host.prepared.clear();
+    r = w.run("set_actor", json(R"({"id": "m2", "property": "model", "value": "hill"})"));
+    CHECK(ok(r) && host.prepared == mod + ":hill" && !host.prepared_collision);
+    host.prepared.clear();
+    CHECK(ok(w.run("add_actor", json(R"({"type": "model", "model": "hill", "id": "h1", "at": "position", "position": {"x": 1200, "y": 0, "z": 300000}, "stage": "sea"})"))));
+    CHECK(host.prepared == mod + ":hill" && host.prepared_collision);
+    auto actor = [&](const char* id) {
+        for (const auto& a : w.manifest(mod)->get("actors").array)
+            if (a.get("id").string() == id) return a;
+        return Value();
+    };
+    CHECK(actor("h1").get("collision").get("mesh").string() == "hill");
+    // h1 stands on its model's own collision: another model with its own collision takes its place under it
+    write(blend / "hill2.glb", cube("hill2", true));
+    {
+        Value p;
+        p["file"] = (blend / "hill2.glb").string();
+        CHECK(ok(w.run("import_model", p)));
+    }
+    host.unready.insert(mod + ":hill2");
+    host.prepared.clear();
+    r = w.run("set_actor", json(R"({"id": "h1", "property": "model", "value": "hill2"})"));
+    CHECK(ok(r) && actor("h1").get("model").string() == "hill2" && actor("h1").get("collision").get("mesh").string() == "hill2");
+    CHECK(host.prepared == mod + ":hill2" && host.prepared_collision);  // with its collision, before the place is checked
+    CHECK(r.get("result").get("note").string().find("It stands on hill2's own collision now.") != std::string::npos);
+    // a model without collision of its own: the placement keeps standing on hill2's (a static model's collision)
+    host.unready.erase(mod + ":box");
+    host.model_failures.clear();
+    r = w.run("set_actor", json(R"({"id": "h1", "property": "model", "value": "box"})"));
+    CHECK(ok(r) && actor("h1").get("model").string() == "box" && actor("h1").get("collision").get("mesh").string() == "hill2");
+
+    // kit models (the report: a kit placement's model could not be changed, "collision mesh must name a declared static
+    // model"): a kit model's collision is always its own, so it follows the model; one the game started without is
+    // built first
+    {
+        Value m = *w.manifest(mod);
+        for (const char* k : {"k1", "k2"}) {
+            fs::copy_file(blend / "hill.glb", dir / "models" / (std::string(k) + ".glb"), fs::copy_options::overwrite_existing);
+            Value d = json(R"({"kind": "kit", "kit": {"stage": "sea", "room": 11}})");
+            d["id"] = k;
+            d["source"] = "models/" + std::string(k) + ".glb";
+            m["models"].array.push_back(d);
+        }
+        m["models"].array.erase(std::remove_if(m["models"].array.begin(), m["models"].array.end(), [](const Value& x) { return x.get("id").string() == "rock"; }),
+                                m["models"].array.end());
+        m["actors"].array.erase(std::remove_if(m["actors"].array.begin(), m["actors"].array.end(), [](const Value& x) { return x.get("model").string() == "rock"; }),
+                                m["actors"].array.end());
+        Value k = json(R"({"id": "kp", "kind": "mod", "model": "k1", "stage": "sea", "room": 11, "position": {"x": 2000, "y": 0, "z": -200000}, "behaviour": "static", "collision": {"mesh": "k1"}})");
+        m["actors"].array.push_back(k);
+        FakeHost kit_host;
+        editor::Session k2(&kit_host);
+        k2.add_package(mod, "Windfall", dir.string(), m);
+        kit_host.unready = {mod + ":k2"};
+        r = k2.run("set_actor", json(R"({"id": "kp", "property": "model", "value": "k2"})"));
+        const Value* kp = nullptr;
+        for (const auto& a : k2.manifest(mod)->get("actors").array)
+            if (a.get("id").string() == "kp") kp = &a;
+        CHECK(ok(r) && kp && kp->get("model").string() == "k2" && kp->get("collision").get("mesh").string() == "k2");
+        CHECK(kit_host.prepared == mod + ":k2" && kit_host.prepared_request.get("kind").string() == "kit");
+        // a model without collision of its own can't carry a kit placement: said, nothing changed
+        r = k2.run("set_actor", json(R"({"id": "kp", "property": "model", "value": "k1"})"));
+        CHECK(ok(r));
+        r = k2.run("set_actor", json(R"({"id": "kp", "property": "model", "value": "box"})"));
+        CHECK(!ok(r) && r.get("error").string().find("has no collision of its own") != std::string::npos);
+    }
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 int main(int argc, char** argv) {
     // editor_test --game <game dir> [stage room]: what the editor reads from a game folder (manual check)
     if (argc >= 3 && std::string(argv[1]) == "--game") {
@@ -2429,6 +2561,7 @@ int main(int argc, char** argv) {
     kit_import(argv[1]);
     kit_previews_and_replace(argv[1]);
     model_replace_remove(argv[1]);
+    model_change_prepares(argv[1]);
     game_objects();
     route_commands();
     path_commands();

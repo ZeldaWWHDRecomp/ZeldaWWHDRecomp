@@ -1,6 +1,10 @@
 #include "atomic_temporary.h"
 // Offline replay of backend-neutral GX2 shader records from shaderprep.py.
-// Metal pipeline recipes (type 2) are intentionally never interpreted here.
+// Metal pipeline recipes (type 2) are guest-level (the two shaders by the Metal renderer's keys, target formats,
+// blend, write mask, vertex strides): with WWHD_VK_METAL_RECIPES=1 the draw state they describe is rebuilt from
+// their shaders' recorded register states and turned into Vulkan pipelines by the live derivation (draw.cpp
+// derive_guest_pipeline_recipe), in the head start's (first-use) order. Idea after aurora's backend-neutral
+// pipeline cache (MIT; lib/gfx/pipeline_cache.cpp); no code taken.
 #include "shaders.h"
 #include "headstart.h"
 #include "headstart_shader_record.h"
@@ -12,8 +16,10 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "../warm_progress.h"
 #include "../headstart_limits.h"
+#include "../metal_recipe_keys.h"
 #include <zlib.h>
 #include <array>
+#include <atomic>
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
@@ -23,6 +29,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace gfxvk {
 namespace {
@@ -59,6 +66,40 @@ struct ProgramPool {
   }
 };
 }
+
+std::shared_ptr<PipelineRecipe> derive_guest_pipeline_recipe(const uint32_t* r, const uint32_t colorFormats[8],
+    uint32_t depthFormat, const char** why);  // draw.cpp
+
+namespace {
+// a head start record whose shader could not be translated: said for the first few (the rest are counted as failed)
+void note_translation_failure(const std::exception& error) {
+  static std::atomic<int> said{0};
+  if (said.fetch_add(1) < 5) std::fprintf(stderr, "[vulkan headstart] a shader record could not be translated: %s\n", error.what());
+}
+// metal_draw.mm PipelineRecipe (the head start's type 2 payload)
+struct MetalPipelineRecipe {
+  uint64_t vsKey, psKey, fsKey;
+  uint32_t color[8], depth;
+  uint32_t blend[8], colorControl, targetMask, strides[16];
+};
+static_assert(sizeof(MetalPipelineRecipe) == 168);
+bool metal_recipes_enabled() {
+  static const bool on = [] { const char* e = std::getenv("WWHD_VK_METAL_RECIPES"); return e && !std::strcmp(e, "1"); }();
+  return on;
+}
+// The registers of a draw with the recipe's two shaders: the pixel shader's recorded state, with the vertex stage's
+// registers (programs, fetch shader, resources, samplers, vertex attribute blocks, primitive type) from the vertex
+// shader's. The vertex exports and the semantic table stay the pixel shader's (its inputs were translated with them;
+// taking the vertex shader's made no difference in a full-template test).
+void overlay_vertex_stage(std::array<uint32_t, 0x10000>& regs, const std::array<uint32_t, 0x10000>& vertex) {
+  auto take = [&](uint32_t first, uint32_t count) { for (uint32_t i = first; i < first + count; ++i) regs[i] = vertex[i]; };
+  take(mmSQ_PGM_START_VS, 5); take(mmSQ_PGM_CF_OFFSET_VS, 1);
+  take(mmSQ_PGM_START_FS, 5); take(mmSQ_PGM_CF_OFFSET_FS, 1);
+  take(Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS, mmSQ_VTX_ATTRIBUTE_BLOCK_START + 16 * 7 - Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS);
+  take(Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0 + 18 * 3, 18 * 3);
+  take(Latte::REGADDR::VGT_PRIMITIVE_TYPE, 1);
+}
+}  // namespace
 
 void record_headstart_shader(const uint32_t* regs, bool vertex, bool linkedVertex) {
   auto& recorder = recording();
@@ -183,11 +224,16 @@ int warm_headstart_shaders() {
     }
     ProgramPool pool;
     std::array<uint32_t, 0x10000> regs{};
+    // WWHD_VK_METAL_RECIPES: the Metal pipeline recipes in file order, and where each Metal-keyed known shader is
+    const bool metalOn = metal_recipes_enabled();
+    std::vector<MetalPipelineRecipe> metalRecipes;
+    std::unordered_map<uint64_t, long> metalShaders;
     std::vector<std::shared_ptr<PipelineRecipe>> portable;
     size_t known = 0, speculative = 0, failed = 0, metalPipelines = 0, vulkanPipelines = 0, skippedPipelines = 0;
     uint64_t count = 0, rawBytes = 0;
     std::array<uint8_t, 12> header;
     for (;;) {
+      const long recordAt = std::ftell(file.get());
       size_t got = std::fread(header.data(), 1, header.size(), file.get());
       if (!got && !std::ferror(file.get())) break;
       if (got != header.size()) throw std::runtime_error("truncated record header");
@@ -207,7 +253,15 @@ int warm_headstart_shaders() {
         if (portable.size() >= kPipelineRecipeMaxCount) { ++skippedPipelines; continue; }
         portable.push_back(decode_code_free_pipeline_recipe(raw)); ++vulkanPipelines; continue;
       }
-      if (type == 2) { ++metalPipelines; continue; }
+      if (type == 2) {
+        ++metalPipelines;
+        if (metalOn && raw.size() == sizeof(MetalPipelineRecipe)) {
+          MetalPipelineRecipe recipe;
+          std::memcpy(&recipe, raw.data(), sizeof recipe);
+          metalRecipes.push_back(recipe);
+        }
+        continue;
+      }
       if (type == 4) { ++vulkanPipelines; continue; } // Owned startup worker validates/compiles these.
       const auto record = decode_headstart_shader_record(raw, type);
       const bool vertex = record.vertex;
@@ -225,6 +279,14 @@ int warm_headstart_shaders() {
       regs[start + 1] = codeSize >> 3;
       regs[mmSQ_PGM_START_FS] = fetchSize ? pool.copy(record.fetch.data(), fetchSize) >> 8 : 0;
       regs[mmSQ_PGM_START_FS + 1] = fetchSize >> 3;
+      if (metalOn && type == 1) {
+        // the key the Metal renderer names this state's shader by (metal_recipe_keys.h)
+        gfx::mtlkey::FetchProgram program;
+        uint64_t metalFetch = 0;
+        if (!vertex || (gfx::mtlkey::fetch_program(regs.data(), program) && (metalFetch = gfx::mtlkey::fetch_key(regs.data(), program), true)))
+          metalShaders.try_emplace(gfx::mtlkey::wide_key(regs.data(), vertex,
+              gfx::mtlkey::program_seed(record.program.data(), codeSize, vertex), metalFetch), recordAt);
+      }
       uint64_t fetchKey = 0;
       auto* fetch = vk::get_fetch_shader(regs.data(), &fetchKey);
       if (vertex && !fetch) { ++failed; continue; }
@@ -233,10 +295,20 @@ int warm_headstart_shaders() {
         regs[mmSQ_PGM_START_VS] = pool.copy(record.linkedVertex.data(), vsSize) >> 8;
         regs[mmSQ_PGM_START_VS + 1] = vsSize >> 3;
         if (!fetch) { ++failed; continue; }
-        linkedVs = vk::translate(regs.data(), true, fetch, fetchKey);
+        try { linkedVs = vk::translate(regs.data(), true, fetch, fetchKey); }
+        catch (const std::exception& error) { linkedVs = nullptr; note_translation_failure(error); }
         if (!linkedVs || !linkedVs->ready()) { ++failed; continue; }
       }
-      auto* shader = vk::translate(regs.data(), vertex != 0, fetch, fetchKey, ~uint64_t{0}, ~uint64_t{0}, linkedVs);
+      // A shader the translator cannot compile (an exception from the SPIR-V compiler) is one failed record, as in
+      // play; it no longer ends the whole preparation (seen with a speculative record: "'cubeMapArrayIndex0' :
+      // undeclared identifier", every shader after it left unprepared).
+      const vk::Shader* shader = nullptr;
+      try { shader = vk::translate(regs.data(), vertex != 0, fetch, fetchKey, ~uint64_t{0}, ~uint64_t{0}, linkedVs); }
+      catch (const std::exception& error) { note_translation_failure(error); }
+      // debug: WWHD_VK_RECIPE_KEY_DUMP also lists the shader identities the head start's records translate to ("S")
+      static FILE* keyDump = [] { const char* p = std::getenv("WWHD_VK_RECIPE_KEY_DUMP"); return p && *p ? std::fopen(p, "a") : nullptr; }();
+      if (keyDump && shader && shader->ready())
+        std::fprintf(keyDump, "S %u %016llx\n", vertex ? 1u : 0u, (unsigned long long)shader->pipelineId);
       if (!shader || !shader->ready()) ++failed;
       else if (type == 1 || type == 6) ++known;
       else ++speculative;
@@ -308,6 +380,77 @@ int warm_headstart_shaders() {
         warmprogress::report(base + finished, progressTotal, "shaders and pipelines");
       });
       std::fprintf(stderr, "[vulkan state warmup] %zu ready, %zu failed, %zu unresolved identities/layouts (on-demand fallback)\n", batch.ready, batch.failed, unresolved);
+    }
+    if (!metalRecipes.empty()) {
+      // the recorded state of a Metal-keyed shader, programs placed in guest memory
+      std::array<uint32_t, 0x10000> vertexRegs{};
+      auto load = [&](uint64_t key, std::array<uint32_t, 0x10000>& out, bool vertex) {
+        auto at = metalShaders.find(key);
+        if (at == metalShaders.end() || std::fseek(file.get(), at->second, SEEK_SET)) return false;
+        std::array<uint8_t, 12> head;
+        if (std::fread(head.data(), 1, head.size(), file.get()) != head.size()) return false;
+        const uint32_t size = word(head.data() + 4), compressed = word(head.data() + 8);
+        std::vector<uint8_t> encoded(compressed), raw(size);
+        uLongf decoded = size;
+        if (std::fread(encoded.data(), 1, compressed, file.get()) != compressed ||
+            uncompress(raw.data(), &decoded, encoded.data(), compressed) != Z_OK || decoded != size) return false;
+        const auto record = decode_headstart_shader_record(raw, 1);
+        if (record.vertex != vertex) return false;
+        out.fill(0);
+        for (size_t i = 0; i + 8 <= record.registers.size(); i += 8) {
+          const uint32_t index = word(record.registers.data() + i);
+          if (index < out.size()) out[index] = word(record.registers.data() + i + 4);
+        }
+        const uint32_t start = vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS;
+        out[start] = pool.copy(record.program.data(), uint32_t(record.program.size())) >> 8;
+        out[start + 1] = uint32_t(record.program.size()) >> 3;
+        if (vertex) {
+          out[mmSQ_PGM_START_FS] = record.fetch.empty() ? 0 : pool.copy(record.fetch.data(), uint32_t(record.fetch.size())) >> 8;
+          out[mmSQ_PGM_START_FS + 1] = uint32_t(record.fetch.size()) >> 3;
+        }
+        return true;
+      };
+      std::unordered_set<std::string> known;  // (the head start's own Vulkan recipes are skipped when warmed: ready)
+      std::vector<std::shared_ptr<PipelineRecipe>> derived;
+      std::unordered_map<std::string, size_t> reasons;
+      size_t repeats = 0;
+      for (const auto& m : metalRecipes) {
+        const char* why = nullptr;
+        if (!load(m.psKey, regs, false)) why = "pixel shader not in the head start";
+        else if (!load(m.vsKey, vertexRegs, true)) why = "vertex shader not in the head start";
+        if (!why) {
+          overlay_vertex_stage(regs, vertexRegs);
+          for (int i = 0; i < 8; ++i) regs[Latte::REGADDR::CB_BLEND0_CONTROL + i] = m.blend[i];
+          regs[Latte::REGADDR::CB_COLOR_CONTROL] = m.colorControl;
+          regs[Latte::REGADDR::CB_TARGET_MASK] = m.targetMask;
+          for (int i = 0; i < 16; ++i) regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + i * 7 + 2] = m.strides[i];
+          try {
+            if (auto recipe = derive_guest_pipeline_recipe(regs.data(), m.color, m.depth, &why)) {
+              if (known.emplace(recipe->key.begin(), recipe->key.end()).second) {
+                recipe->add_group(kSpeculativeGroup);  // compiled now; in play only in the background queue
+                resolvedShaderPool.freeze(*recipe);
+                derived.push_back(std::move(recipe));
+              } else ++repeats;
+            }
+          } catch (const std::exception& error) { why = "translation"; }
+        }
+        if (why) ++reasons[why];
+      }
+      std::string unresolvedText;
+      for (const auto& [why, n] : reasons) unresolvedText += " " + std::to_string(n) + " " + why + ";";
+      // the local recipe database holds kPipelineRecipeMaxCount: the first ones (first-use order) are kept
+      const size_t room = kPipelineRecipeMaxCount > vulkanPipelines ? kPipelineRecipeMaxCount - vulkanPipelines : 0;
+      const size_t over = derived.size() > room ? derived.size() - room : 0;
+      derived.resize(derived.size() - over);
+      std::fprintf(stderr, "[vulkan metal recipes] %zu Metal pipeline recipes: %zu Vulkan pipelines, %zu repeats;%s %zu over the limit\n",
+          metalRecipes.size(), derived.size(), repeats, unresolvedText.c_str(), over);
+      const auto batch = warm_resolved_pipeline_recipes(std::move(derived));
+      std::fprintf(stderr, "[vulkan metal recipes] %zu ready, %zu failed\n", batch.ready, batch.failed);
+    }
+    if (warm_prune_enabled()) {
+      const auto rest = warm_all_recipes();
+      std::fprintf(stderr, "[vulkan cache] pruning: %zu more recipes of the database compiled into the rebuilt cache, %zu failed\n",
+          rest.ready, rest.failed);
     }
     const auto pipelines = finish_pipeline_warmup();
     warmprogress::report(progressTotal, progressTotal, "shaders and pipelines", true);

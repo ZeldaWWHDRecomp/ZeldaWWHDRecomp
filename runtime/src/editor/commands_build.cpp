@@ -938,31 +938,6 @@ bool model_box(const std::string& dir, const Value& manifest, const std::string&
     return check_model_file((fs::path(utf8_path(dir)) / utf8_path(m->get("source").string())).string(), info, w) &&
            read_point(info.get("minimum"), lo) && read_point(info.get("maximum"), hi);
 }
-// Whether a model's GLB has collision of its own: a mesh, or the node drawing it, named "<name>_col" (static_models::
-// validate_glb: those meshes are collision, not drawn; docs/world-objects.md "Author collision in the GLB").
-bool model_has_collision_mesh(const std::string& dir, const Value& manifest, const std::string& model) {
-    const Value* m = by_id(manifest.get("models"), model);
-    if (!m || dir.empty()) return false;
-    std::ifstream f(fs::path(utf8_path(dir)) / utf8_path(m->get("source").string()), std::ios::binary);
-    const std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    if (b.size() < 28 || std::memcmp(b.data(), "glTF", 4) || static_models::le32(b.data() + 16) != 0x4E4F534A) return false;
-    const size_t length = static_models::le32(b.data() + 12);
-    if (length > b.size() - 20) return false;
-    Value doc;
-    try {
-        doc = mods::json::parse(std::string(reinterpret_cast<const char*>(b.data() + 20), length));
-    } catch (...) {
-        return false;
-    }
-    const auto named = [](const Value& v) { return v.get("name").type == Value::String && v.get("name").text.ends_with("_col"); };
-    const auto& meshes = doc.get("meshes").array;
-    for (const auto& node : doc.get("nodes").array) {
-        const auto& mesh = node.get("mesh");
-        if (mesh.type != Value::Number || mesh.number < 0 || size_t(mesh.number) >= meshes.size()) continue;
-        if (named(node) || named(meshes[size_t(mesh.number)])) return true;
-    }
-    return false;
-}
 std::string metres_text(double units) {
     char text[32];
     std::snprintf(text, sizeof text, "%.0f m", units / 100);
@@ -1903,6 +1878,32 @@ Value Session::dispatch_build(const std::string& command, const Value& p, std::s
     (void)kPi;
     handled = false;
     return r;
+}
+
+// Whether a model's GLB has collision of its own: a mesh, or the node drawing it, named "<name>_col" (static_models::
+// validate_glb: those meshes are collision, not drawn; docs/world-objects.md "Author collision in the GLB").
+bool model_has_collision_mesh(const std::string& dir, const Value& manifest, const std::string& model) {
+    const Value* m = by_id(manifest.get("models"), model);
+    if (!m || dir.empty()) return false;
+    std::ifstream f(fs::path(utf8_path(dir)) / utf8_path(m->get("source").string()), std::ios::binary);
+    const std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    if (b.size() < 28 || std::memcmp(b.data(), "glTF", 4) || static_models::le32(b.data() + 16) != 0x4E4F534A) return false;
+    const size_t length = static_models::le32(b.data() + 12);
+    if (length > b.size() - 20) return false;
+    Value doc;
+    try {
+        doc = mods::json::parse(std::string(reinterpret_cast<const char*>(b.data() + 20), length));
+    } catch (...) {
+        return false;
+    }
+    const auto named = [](const Value& v) { return v.get("name").type == Value::String && v.get("name").text.ends_with("_col"); };
+    const auto& meshes = doc.get("meshes").array;
+    for (const auto& node : doc.get("nodes").array) {
+        const auto& mesh = node.get("mesh");
+        if (mesh.type != Value::Number || mesh.number < 0 || size_t(mesh.number) >= meshes.size()) continue;
+        if (named(node) || named(meshes[size_t(mesh.number)])) return true;
+    }
+    return false;
 }
 
 }  // namespace editor

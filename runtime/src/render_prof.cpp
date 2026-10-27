@@ -78,6 +78,7 @@ uint64_t thread_cpu_ns() {
 
 // ---------------------------------------------------------------- render-thread state
 bool g_draw_sampled = false;
+bool g_sub_sampled = false;
 uint64_t g_mark = 0;
 int g_upload_kind = kUpOther;
 bool g_track_unique = false;
@@ -89,6 +90,7 @@ struct Window {
     uint64_t frames = 0, holdFrames = 0;
     uint64_t opCount[kOps]{}, opTimed[kOps]{}, opNs[kOps]{};
     uint64_t phaseNs[kDrawPhases]{};
+    uint64_t subNs[kSubPhases]{}, subDraws = 0;
     uint64_t upload[kUploadKinds]{}, uploadHold[kUploadKinds]{};
     uint64_t uniqueFrames = 0, unique[kUploadKinds]{}, uniqueAll = 0, uniqueCopied[kUploadKinds]{};
     uint64_t waitNs[kWaits]{}, waitCount[kWaits]{};
@@ -119,13 +121,37 @@ void mark_slow(Phase p) {
     g_mark = t;
 }
 
+// the cost of one now_ns() call, taken off each sub-phase interval (each holds one call's cost: the
+// parts are short, a few tens of ns per stage, so the timer would otherwise be a good part of them)
+static uint64_t timer_cost_ns() {
+    static const uint64_t cost = [] {
+        uint64_t best = ~0ull;
+        for (int round = 0; round < 8; ++round) {
+            const uint64_t t0 = now_ns();
+            for (int i = 0; i < 256; ++i) (void)now_ns();
+            best = std::min(best, (now_ns() - t0) / 257);
+        }
+        return best;
+    }();
+    return cost;
+}
+void sub_end_slow(SubPhase p, uint64_t started) {
+    const uint64_t t = now_ns() - started, cost = timer_cost_ns();
+    W.subNs[p] += t > cost ? t - cost : 0;
+}
+
 uint64_t op_begin(Op op) {
-    if (!enabled()) return 0;
+    if (!enabled()) return g_sub_sampled = false, 0;
     W.opCount[op]++;
     if ((op == kOpDraw || op == kOpRegs) && (++sampleCounter[op] & kSampleMask)) {
-        if (op == kOpDraw) g_draw_sampled = false;  // also after a sampled draw that threw
+        if (op == kOpDraw) {
+            g_draw_sampled = false;  // also after a sampled draw that threw
+            // the sub-phase sample: half way between two timed draws
+            if ((g_sub_sampled = (sampleCounter[op] & kSampleMask) == (kSampleMask + 1) / 2)) W.subDraws++;
+        }
         return 0;
     }
+    if (op == kOpDraw) g_sub_sampled = false;
     uint64_t t = now_ns();
     if (op == kOpDraw) {
         g_draw_sampled = true;
@@ -134,6 +160,7 @@ uint64_t op_begin(Op op) {
     return t;
 }
 void op_end(Op op, uint64_t started) {
+    if (op == kOpDraw) g_sub_sampled = false;
     if (!started) return;
     W.opTimed[op]++;
     W.opNs[op] += now_ns() - started;
@@ -192,6 +219,37 @@ void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t
     wbReadNs.fetch_add(readNs, std::memory_order_relaxed);
 }
 
+std::atomic<uint64_t> texChecks, texChanged, texHashed, texReleases, texReleasedBytes, texRemakes;
+void add_texture_check(uint64_t hashedBytes, bool changed) {
+    if (!enabled()) return;
+    texChecks.fetch_add(1, std::memory_order_relaxed);
+    texChanged.fetch_add(changed, std::memory_order_relaxed);
+    texHashed.fetch_add(hashedBytes, std::memory_order_relaxed);
+}
+void add_texture_release(uint64_t bytes) {
+    if (!enabled()) return;
+    texReleases.fetch_add(1, std::memory_order_relaxed);
+    texReleasedBytes.fetch_add(bytes, std::memory_order_relaxed);
+}
+void add_texture_remake() {
+    if (enabled()) texRemakes.fetch_add(1, std::memory_order_relaxed);
+}
+std::mutex gpuSpanMutex;
+double gpuLastEnd = 0, gpuBusyNs = 0, gpuIdleNs = 0, gpuMaxIdleNs = 0;
+uint64_t gpuSpans = 0;
+void add_gpu_span(double startNs, double endNs) {
+    if (!enabled() || endNs < startNs) return;
+    std::lock_guard<std::mutex> lk(gpuSpanMutex);
+    gpuBusyNs += endNs - startNs;
+    // a gap of more than a second is a pause (loading, a hidden window), not idle time between passes
+    if (gpuLastEnd > 0 && startNs > gpuLastEnd && startNs - gpuLastEnd < 1e9) {
+        gpuIdleNs += startNs - gpuLastEnd;
+        gpuMaxIdleNs = std::max(gpuMaxIdleNs, startNs - gpuLastEnd);
+    }
+    gpuLastEnd = std::max(gpuLastEnd, endNs);
+    ++gpuSpans;
+}
+
 void add_sync(Sync site, uint64_t ns) {
     syncNs[site].fetch_add(ns, std::memory_order_relaxed);
     syncCount[site].fetch_add(1, std::memory_order_relaxed);
@@ -223,6 +281,12 @@ static void apply_requested() {
     for (auto& c : sampleCounter) c = 0;
     for (int i = 0; i < kSyncs; i++) syncNs[i] = 0, syncCount[i] = 0;
     wbWalkNs = wbWalks = wbCount = wbBytes = wbReadNs = 0;
+    texChecks = texChanged = texHashed = texReleases = texReleasedBytes = texRemakes = 0;
+    {
+        std::lock_guard<std::mutex> lk(gpuSpanMutex);
+        gpuLastEnd = gpuBusyNs = gpuIdleNs = gpuMaxIdleNs = 0;
+        gpuSpans = 0;
+    }
     g_draw_sampled = false;
     g_track_unique = false;
     g_reg_dirty = 0;
@@ -336,6 +400,13 @@ void frame_end(bool hold) {
         }
         add("[prof] draw phases ms/frame (1 draw in %u sampled):%s; untracked %.2f; %.2f us/draw", kSampleMask + 1,
             ph.c_str(), std::max(0.0, opMs(kOpDraw) - sum), opMs(kOpDraw) * 1e3 * frames / std::max<uint64_t>(1, W.opCount[kOpDraw]));
+        if (W.subDraws) {
+            const double subScale = (double)W.opCount[kOpDraw] / W.subDraws / frames / 1e6;
+            add("[prof] uniforms parts ms/frame (other 1 draw in %u sampled, timer cost %llu ns taken off): stage setup "
+                "%.2f pack %.2f blocks %.2f support upload %.2f", kSampleMask + 1, (unsigned long long)timer_cost_ns(), W.subNs[kSubUniformSetup] * subScale,
+                W.subNs[kSubUniformPack] * subScale, W.subNs[kSubUniformBlocks] * subScale,
+                W.subNs[kSubUniformSupportUpload] * subScale);
+        }
     }
     static const char* syncNames[kSyncs] = {"DrawDone", "CopySurface", "flip", "other"};
     std::string syncs;
@@ -354,6 +425,22 @@ void frame_end(bool hold) {
                  readNs = wbReadNs.exchange(0);
         add("[prof] write-back to guest memory: %llu surfaces, %.1f KiB, read %.3f ms; DrawDone checks %.2f/frame, %.2f us each",
             (unsigned long long)n, bytes / 1024.0, readNs / 1e6, walks / frames, walks ? walkNs / 1e3 / walks : 0.0);
+    }
+    {
+        const uint64_t checks = texChecks.exchange(0), changed = texChanged.exchange(0), hashed = texHashed.exchange(0),
+                       releases = texReleases.exchange(0), releasedBytes = texReleasedBytes.exchange(0),
+                       remakes = texRemakes.exchange(0);
+        add("[prof] texture cache: %.2f full checks/frame (%.2f MiB/frame hashed), %llu served from the cache, %llu "
+            "uploaded again; budget: %llu released (%.1f MiB), %llu made again",
+            checks / frames, hashed / frames / 1048576.0, (unsigned long long)(checks - changed), (unsigned long long)changed,
+            (unsigned long long)releases, releasedBytes / 1048576.0, (unsigned long long)remakes);
+        std::lock_guard<std::mutex> lk(gpuSpanMutex);
+        if (gpuSpans)
+            add("[prof] GPU timeline: busy %.2f ms/frame, idle between command buffers %.2f ms/frame (longest gap %.2f ms), "
+                "%.1f command buffers/frame",
+                gpuBusyNs / 1e6 / frames, gpuIdleNs / 1e6 / frames, gpuMaxIdleNs / 1e6, gpuSpans / frames);
+        gpuBusyNs = gpuIdleNs = gpuMaxIdleNs = 0;
+        gpuSpans = 0;
     }
     static const char* upNames[kUploadKinds] = {"other", "vertex", "index", "ubo", "uniforms", "texture"};
     const double logicFrames = std::max(1.0, frames - W.holdFrames), holdFrames = std::max(1.0, (double)W.holdFrames);

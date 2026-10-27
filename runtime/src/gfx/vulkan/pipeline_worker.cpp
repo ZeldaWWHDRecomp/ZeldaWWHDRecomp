@@ -74,6 +74,11 @@ struct Worker {
   std::unordered_set<uint32_t> prefetched;    // groups queued since they became resident
   std::deque<std::string> prefetch;           // keys of newly resident groups, compiled before startup work
   std::unordered_set<std::string> compiling;  // keys a prefetch compiler is building now
+  // keys whose driver compile is running now (a subset of compiling), and the signal when one finishes: a demand for
+  // one of them waits for it instead of compiling the same pipeline again (take_warm_pipeline, WWHD_VK_DEMAND_PROMOTE)
+  std::unordered_set<std::string> inDriver;
+  std::condition_variable driverDone;
+  uint64_t promotions = 0, promotedHits = 0, promotedWaitNs = 0;
   uint64_t residentGeneration = 0, readySequence = 0;
   size_t prefetchedReady = 0;
   bool drainExit = false;                     // finish/offline warming: leave once the queues are empty
@@ -150,6 +155,41 @@ bool prefetch_yields() {
   static const bool value = [] { const char* e = std::getenv("WWHD_VK_PREFETCH_YIELD"); return !e || std::strcmp(e, "0"); }();
   return value;
 }
+// Recipes derived from the head start's Metal recipes (only the speculative mark, pipeline_recipe.h) in play:
+// Background (default): a throttled queue after all other work; Start: with the start queue, as before (they made
+// the first visits smoother on the phone, but compiling ~1,000 of them at start took the 1% lows down);
+// Off: never compiled ahead (a demand still finds them in the driver cache the preparation filled).
+// WWHD_VK_METAL_QUEUE=background|start|off; play (measurements): the background queue without its free run before
+// play, as for a save state loaded straight after start. The rest after each compile: WWHD_VK_METAL_QUEUE_REST (a multiple of the
+// compile's time, default 4: at most a fifth of one core) and at least WWHD_VK_METAL_QUEUE_REST_MS (default 8).
+enum class SpeculativeMode { Background, Start, Off, PlayOnly };
+SpeculativeMode speculative_mode() {
+  static const SpeculativeMode value = [] {
+    const char* e = std::getenv("WWHD_VK_METAL_QUEUE");
+    if (e && !std::strcmp(e, "start")) return SpeculativeMode::Start;
+    if (e && !std::strcmp(e, "off")) return SpeculativeMode::Off;
+    if (e && !std::strcmp(e, "play")) return SpeculativeMode::PlayOnly;
+    return SpeculativeMode::Background;
+  }();
+  return value;
+}
+#define speculativeMode speculative_mode()
+const char* speculative_mode_name() {
+  switch (speculative_mode()) {
+  case SpeculativeMode::Start: return "with the start queue (WWHD_VK_METAL_QUEUE=start)";
+  case SpeculativeMode::Off: return "not compiled ahead (WWHD_VK_METAL_QUEUE=off)";
+  case SpeculativeMode::PlayOnly: return "throttled background queue from play on (WWHD_VK_METAL_QUEUE=play)";
+  default: return "throttled background queue";
+  }
+}
+unsigned speculative_rest_factor() {
+  static const unsigned value = [] { const char* e = std::getenv("WWHD_VK_METAL_QUEUE_REST"); return e && *e ? std::clamp<unsigned>(std::strtoul(e, nullptr, 10), 0, 100) : 4u; }();
+  return value;
+}
+unsigned speculative_rest_min_ms() {
+  static const unsigned value = [] { const char* e = std::getenv("WWHD_VK_METAL_QUEUE_REST_MS"); return e && *e ? std::clamp<unsigned>(std::strtoul(e, nullptr, 10), 0, 1000) : 8u; }();
+  return value;
+}
 bool group_resident(const Worker& w, const PipelineRecipe& recipe) {
   for (auto group : recipe.groups) if (w.resident.contains(group)) return true;
   return false;
@@ -190,18 +230,27 @@ size_t footprint(const PipelineRecipe& p) {
   return size;
 }
 void index_groups(Worker& w, const std::string& key, const PipelineRecipe& recipe) {
+  bool archives = false;
   for (auto group : recipe.groups) {
+    if (group == kSpeculativeGroup) continue;  // a mark, not an archive (pipeline_recipe.h)
+    archives = true;
     auto& keys = w.byGroup[group];
     if (std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(key);
   }
-  if (!recipe.groups.empty()) pipeline_groups::want();
+  if (archives) pipeline_groups::want();
 }
 bool insert_recipe(Worker& w, const std::shared_ptr<PipelineRecipe>& recipe) {
   auto key = identity(recipe->key);
   auto found = w.recipes.find(key);
   // A pipeline recorded in play keeps the archive groups the sweep found for it (the new recipe is not shared yet).
-  if (found != w.recipes.end())
-    for (auto group : found->second->groups) recipe->add_group(group);
+  // The speculative mark (a recipe derived from the head start's Metal recipes) stays only while both have it: a
+  // pipeline the game asked for here is an ordinary recipe from then on.
+  if (found != w.recipes.end()) {
+    auto marked = [](const PipelineRecipe& r) { return std::find(r.groups.begin(), r.groups.end(), kSpeculativeGroup) != r.groups.end(); };
+    const bool keepMark = marked(*recipe) && marked(*found->second);
+    for (auto group : found->second->groups) if (group != kSpeculativeGroup) recipe->add_group(group);
+    if (!keepMark) std::erase(recipe->groups, kSpeculativeGroup);
+  }
   const size_t old = found == w.recipes.end() ? 0 : footprint(*found->second);
   const size_t size = footprint(*recipe);
   if ((found == w.recipes.end() && w.recipes.size() >= kPipelineRecipeMaxCount) ||
@@ -401,19 +450,37 @@ void run(Worker& w, std::vector<uint8_t> seed) {
         std::fprintf(stderr, "[vulkan warmup] %s ignored: %s\n", headstart ? "head start" : "local recipes", error.what());
       }
     }
+    // The worker's driver cache exists also without recipes to warm now: setup's warm (a fresh setup has no local
+    // recipes yet) compiles the head start's pipelines into it afterwards (warm_resolved_pipeline_recipes), and only
+    // this cache is merged into the persisted one. Without it they were compiled with no cache and lost on exit.
+    VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    ci.initialDataSize = seed.size(); ci.pInitialData = seed.data();
+    if (vkCreatePipelineCache(w.device, &ci, nullptr, &cache) != VK_SUCCESS) {
+      ci.initialDataSize = 0; ci.pInitialData = nullptr;
+      if (vkCreatePipelineCache(w.device, &ci, nullptr, &cache) != VK_SUCCESS)
+        throw std::runtime_error("worker pipeline cache creation failed");
+    }
+    { std::unique_lock lock(w.cacheMutex); w.cache = cache; }
+    std::vector<uint8_t>().swap(seed); // Vulkan copied initial cache data during creation.
     if (loaded.empty()) { w.result = {0, failed}; return; }
     const double readMs = msSince();
     std::deque<std::shared_ptr<PipelineRecipe>> startup;
+    std::deque<std::string> speculative;  // (under w.mutex) the throttled background queue
     size_t grouped = 0;
     {
       std::lock_guard lock(w.mutex);
       std::erase_if(loaded, [&](const auto& recipe) {
         return w.consumed.contains(identity(recipe->key)) || !insert_recipe(w, recipe);
       });
-      // Grouped recipes wait for their archives; the rest (seen in play, the head start) are warmed now.
+      // Grouped recipes wait for their archives; the rest (seen in play, the head start) are warmed now. Recipes
+      // derived from the head start's Metal recipes (only the speculative mark) go to the throttled background queue.
       for (auto& recipe : loaded) {
         if (recipe->groups.empty()) startup.push_back(recipe);
-        else ++grouped;
+        else if (recipe->speculative_only()) {
+          if (speculativeMode == SpeculativeMode::Start) startup.push_back(recipe);
+          else if (speculativeMode == SpeculativeMode::Background || speculativeMode == SpeculativeMode::PlayOnly)
+            speculative.push_back(identity(recipe->key));
+        } else ++grouped;
       }
     }
     // the setup's model sweep, record only (WWHD_DSWEEP_RECORD_ONLY=1): the recipes are kept (and saved with the new
@@ -424,18 +491,14 @@ void run(Worker& w, std::vector<uint8_t> seed) {
       w.result = {0, failed};
       return;
     }
-    VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    ci.initialDataSize = seed.size(); ci.pInitialData = seed.data();
-    if (vkCreatePipelineCache(w.device, &ci, nullptr, &cache) != VK_SUCCESS) {
-      ci.initialDataSize = 0; ci.pInitialData = nullptr;
-      if (vkCreatePipelineCache(w.device, &ci, nullptr, &cache) != VK_SUCCESS)
-        throw std::runtime_error("worker pipeline cache creation failed");
-    }
-    { std::unique_lock lock(w.cacheMutex); w.cache = cache; }
-    std::vector<uint8_t>().swap(seed); // Vulkan copied initial cache data during creation.
     std::fprintf(stderr, "[vulkan warmup] %zu exact pipeline recipes queued, %zu wait for their object archives "
                  "(pool %zu; process memory %.0f MB; read %.0f ms, ready to compile after %.0f ms)\n", startup.size(),
                  grouped, maxUnusedWarmPipelines, process_memory() / 1e6, readMs, msSince());
+    // (the game's stage scan tells when play begins: pipeline_groups::playing)
+    if (!speculative.empty()) pipeline_groups::want_playing();
+    if (!speculative.empty() || speculativeMode == SpeculativeMode::Start || speculativeMode == SpeculativeMode::Off)
+      std::fprintf(stderr, "[vulkan warmup] Metal-derived recipes: %s (%zu in the background queue)\n",
+                   speculative_mode_name(), speculative.size());
     // Several compilers for archive prefetch (an archive's models are drawn a few frames after it loads); the
     // driver pipeline cache is internally synchronized. Startup work stays one at a time and yields to demand.
     std::atomic<size_t> prefetched{0}, done{0}, failures{0}, cancels{0};
@@ -443,14 +506,16 @@ void run(Worker& w, std::vector<uint8_t> seed) {
     std::deque<std::string> background;
     bool backgroundPlanned = false;
     constexpr size_t kStartHead = 384;
-    std::atomic<size_t> threadCount{0};
+    std::atomic<size_t> threadCount{0}, speculativeDone{0};
+    std::chrono::steady_clock::time_point speculativeNext{};  // (under w.mutex) the throttle
+    bool speculativeInPlay = false;  // (under w.mutex)
     auto loop = [&] {
       const size_t index = threadCount++;  // 0: the first compiler, the only one the background uses until play
       host::set_thread_name("Vulkan warmup");
       host::lower_thread_priority();  // the game's own threads (and its demand compiles) always win
       for (;;) {
         std::shared_ptr<PipelineRecipe> recipe;
-        bool ahead = false, head = false;
+        bool ahead = false, head = false, spec = false, specThrottled = false;
         {
           std::unique_lock lock(w.mutex);
           for (;;) {
@@ -499,7 +564,7 @@ void run(Worker& w, std::vector<uint8_t> seed) {
               if (!off && w.recipes.size() + 64 <= maxUnusedWarmPipelines) {
                 std::vector<std::pair<uint64_t, std::string>> rest;
                 for (const auto& [key, r] : w.recipes)
-                  if (!r->groups.empty()) {
+                  if (!r->groups.empty() && !r->speculative_only()) {
                     auto at = w.order.find(key);
                     rest.emplace_back(at == w.order.end() ? UINT64_MAX : at->second, key);
                   }
@@ -522,8 +587,37 @@ void run(Worker& w, std::vector<uint8_t> seed) {
                              w.ready.size(), process_memory() / 1e6);
             }
             if (recipe) break;
-            if (w.drainExit || w.byGroup.empty()) break;
-            w.workWake.wait_for(lock, std::chrono::milliseconds(50));
+            // Last, the Metal-derived recipes: one thread, only while the pool has room (they never push out a pipeline
+            // compiled at start), waiting while the game's own compiles run (below). Before play (the boot, the title,
+            // the file select, the first loads) back to back; in play throttled: after each compile the queue rests a
+            // multiple of its time, so it takes a small share of one core.
+            if (!speculative.empty() && index == 0 && (speculativeMode != SpeculativeMode::PlayOnly || pipeline_groups::playing())) {
+              const bool playing = pipeline_groups::playing();
+              if (w.ready.size() + 64 >= maxUnusedWarmPipelines) {
+                std::fprintf(stderr, "[vulkan warmup] Metal-derived background queue stopped: the pool is full (%zu "
+                             "compiled, %zu left for demand)\n", speculativeDone.load(), speculative.size());
+                speculative.clear();
+              } else if (!playing || std::chrono::steady_clock::now() >= speculativeNext) {
+                while (!speculative.empty() && !recipe) {
+                  auto key = std::move(speculative.front()); speculative.pop_front();
+                  auto found = w.recipes.find(key);
+                  if (found == w.recipes.end() || w.consumed.contains(key) || w.ready.contains(key) ||
+                      w.compiling.contains(key) || !found->second->speculative_only()) continue;
+                  recipe = found->second; spec = true; specThrottled = playing;
+                  if (playing && !speculativeInPlay) {
+                    speculativeInPlay = true;
+                    std::fprintf(stderr, "[vulkan warmup] play began: %zu Metal-derived recipes compiled before it, %zu "
+                                 "left for the throttled queue\n", speculativeDone.load(), speculative.size() + 1);
+                  }
+                }
+                if (speculative.empty())
+                  std::fprintf(stderr, "[vulkan warmup] Metal-derived background queue taken: %zu compiled\n",
+                               speculativeDone.load() + (recipe ? 1 : 0));
+              }
+            }
+            if (recipe) break;
+            if (w.drainExit || (w.byGroup.empty() && speculative.empty())) break;
+            w.workWake.wait_for(lock, std::chrono::milliseconds(speculative.empty() ? 50 : 10));
           }
           if (recipe) w.compiling.insert(identity(recipe->key));
         }
@@ -545,22 +639,37 @@ void run(Worker& w, std::vector<uint8_t> seed) {
         }
         WarmPipeline result;
         VkResult compiled;
+        { std::lock_guard lock(w.mutex); w.inDriver.insert(key); }
         {
           std::shared_lock cacheLock(w.cacheMutex);
-          compiled = compile(w.device, cache, *recipe, result, ahead ? "prefetch_pipeline" : "startup_pipeline");
+          const auto began = std::chrono::steady_clock::now();
+          compiled = compile(w.device, cache, *recipe, result, ahead ? "prefetch_pipeline" : spec ? "speculative_pipeline" : "startup_pipeline");
           if (compiled == VK_SUCCESS) w.cacheChanged = true;
+          if (spec) {
+            const auto now = std::chrono::steady_clock::now();
+            std::lock_guard lock(w.mutex);
+            if (specThrottled) speculativeNext = now + std::max(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::milliseconds(speculative_rest_min_ms())), (now - began) * speculative_rest_factor());
+            if (compiled == VK_SUCCESS) ++speculativeDone;
+          }
         }
-        if (compiled != VK_SUCCESS) { finished(); ++failures; continue; }
+        if (compiled != VK_SUCCESS) {
+          { std::lock_guard lock(w.mutex); w.inDriver.erase(key); }
+          w.driverDone.notify_all();
+          finished(); ++failures; continue;
+        }
         bool publish;
         {
           std::lock_guard lock(w.mutex);
           w.compiling.erase(key);
+          w.inDriver.erase(key);
           publish = !w.stopped && !w.consumed.contains(key);
           if (publish) {
             try { retain_ready(w,key,result,recipe); }
-            catch (...) { destroy(w.device,result); throw; }
+            catch (...) { destroy(w.device,result); w.driverDone.notify_all(); throw; }
           }
         }
+        w.driverDone.notify_all();
         if (publish) { ++done; prefetched += ahead; }
         else { destroy(w.device, result); ++cancels; }
       }
@@ -574,6 +683,7 @@ void run(Worker& w, std::vector<uint8_t> seed) {
     for (auto& thread : pool) thread.join();
     completed += done; failed += failures; cancelled += cancels;
     if (grouped) std::fprintf(stderr, "[vulkan warmup] %zu compiled ahead for loaded object archives\n", prefetched.load());
+    if (speculativeDone) std::fprintf(stderr, "[vulkan warmup] %zu Metal-derived recipes compiled in the background\n", speculativeDone.load());
     std::fprintf(stderr, "[vulkan warmup] %zu ready, %zu failed, %zu cancelled; %zu evicted from the pool of %zu; process "
                  "memory %.0f MB\n", completed, failed, cancelled, g_evictions.load(), maxUnusedWarmPipelines,
                  process_memory() / 1e6);
@@ -607,8 +717,20 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
   if (!w.device) return false;
   Ready entry;
   {
-    std::lock_guard lock(w.mutex);
+    std::unique_lock lock(w.mutex);
     auto id = identity(key);
+    // Demand promotion (WWHD_VK_DEMAND_PROMOTE=1): the worker's driver compile of this very pipeline is running, so
+    // waiting for it (at most WWHD_VK_DEMAND_PROMOTE_MS, default 1000) is shorter than compiling it again from the
+    // start. Jobs still queued are compiled by the demand path (and dropped from the queue: consumed below).
+    static const bool promote = [] { const char* e = std::getenv("WWHD_VK_DEMAND_PROMOTE"); return e && !std::strcmp(e, "1"); }();
+    if (promote && w.inDriver.contains(id)) {
+      static const int64_t limitMs = [] { const char* e = std::getenv("WWHD_VK_DEMAND_PROMOTE_MS"); return e && *e ? std::max(0, std::atoi(e)) : 1000; }();
+      const auto started = std::chrono::steady_clock::now();
+      ++w.promotions;
+      w.driverDone.wait_for(lock, std::chrono::milliseconds(limitMs), [&] { return w.stopped || !w.inDriver.contains(id); });
+      w.promotedWaitNs += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+      w.promotedHits += w.ready.contains(id);
+    }
     // This also prevents an in-flight startup job from publishing a duplicate
     // after the render thread has already compiled this key.
     if (w.consumed.size() < kPipelineRecipeMaxCount) w.consumed.insert(id);
@@ -629,6 +751,17 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
   record_headstart_pipeline(w.fingerprint, entry.recipe);
   out = entry.handles;
   return true;
+}
+void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& waitMs) {
+  auto& w = worker();
+  std::lock_guard lock(w.mutex);
+  promotions = w.promotions; hits = w.promotedHits; waitMs = w.promotedWaitNs / 1e6;
+}
+bool pipeline_recipe_known(const std::vector<uint8_t>& key) {
+  auto& w = worker();
+  if (!w.device) return false;
+  std::lock_guard lock(w.mutex);
+  return w.recipes.contains(identity(key));
 }
 void remember_pipeline_recipe(std::shared_ptr<PipelineRecipe> recipe) {
   auto& w = worker();
@@ -772,6 +905,24 @@ PipelineWarmupResult warm_resolved_pipeline_recipes(std::vector<std::shared_ptr<
   PipelineWarmupResult batch{ready.load(), failed.load()};
   w.result.ready += batch.ready; w.result.failed += batch.failed;
   return batch;
+}
+PipelineWarmupResult warm_all_recipes() {
+  auto& w = worker();
+  leave_prefetch(w);
+  if (w.thread.joinable()) w.thread.join();
+  std::vector<std::shared_ptr<PipelineRecipe>> rest;
+  {
+    std::lock_guard lock(w.mutex);
+    std::vector<std::pair<uint64_t, std::shared_ptr<PipelineRecipe>>> ordered;
+    for (auto& [key, recipe] : w.recipes)
+      if (!w.ready.contains(key)) {
+        auto at = w.order.find(key);
+        ordered.emplace_back(at == w.order.end() ? UINT64_MAX : at->second, recipe);
+      }
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& entry : ordered) rest.push_back(std::move(entry.second));
+  }
+  return warm_resolved_pipeline_recipes(std::move(rest));
 }
 PipelineWarmupResult finish_pipeline_warmup() {
   auto& w = worker();

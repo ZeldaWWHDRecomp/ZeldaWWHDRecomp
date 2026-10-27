@@ -17,6 +17,7 @@
 #include "formats.h"
 #include "api.h"
 #include "buffer_cache_core.h"
+#include "../target_size.h"
 namespace gfxvk {
 class DeferredCommands;
 bool begin_exact_preparation();
@@ -38,6 +39,7 @@ struct Surface {
  std::unordered_map<uint32_t,VkImageView> sampledViews;
  uint32_t addr=0,mipAddr=0,width=0,height=0,slices=1,pitch=0,mips=1,format=0,dim=1,tileMode=0,swizzle=0;
  bool isDepth=false,gpuWritten=false,dirty=true,bcDecoded=false;
+ gfx::SizeClaim sizeClaim; // a size other than the internal resolution, claimed by a pass (target_scale, gfx/target_size.h)
  bool linearFiltering=false; // device capability for the actual optimal-tiling image format
  uint64_t writeSeq=0,contentHash=0,lastCheckedFrame=~0ull,sparseHash=0;
  bool formatViews=false; // another surface at this address has the same texel bits in another format (adopt_newer_alias)
@@ -46,6 +48,10 @@ struct Surface {
  uint64_t watchStamp=0; bool watched=false;
  // stereo: eye 1's held commands of this flush generation sample this eye 0 texture (stereo.h)
  uint64_t eyeHeld=0;
+ // texture budget (surfaces.cpp texture_budget_step): the frame the texture was last looked up, and whether its image
+ // was released to stay within the budget (made again, and uploaded from guest memory, at its next lookup)
+ uint64_t lastUsedFrame=0; bool evicted=false;
+ bool artisticMips=false; // hand-drawn mip levels (gfx/artistic_mips.h): resolution-aware bias, no forced anisotropy
  uint32_t dataSize=0; FormatInfo fmt;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
@@ -55,7 +61,8 @@ struct Surface {
  float dyn=1;
  std::vector<std::shared_ptr<Surface>> spares;
 };
-struct SurfaceDesc { uint32_t addr=0,mipAddr=0,width=0,height=0,slices=1,pitch=0,mips=1,format=0,dim=1,tileMode=0,swizzle=0; bool isDepth=false; };
+struct SurfaceDesc { uint32_t addr=0,mipAddr=0,width=0,height=0,slices=1,pitch=0,mips=1,format=0,dim=1,tileMode=0,swizzle=0; bool isDepth=false;
+                     gfx::SizeRequest sizeRequest; /* from the drawing pass (Surface::sizeClaim) */ };
 struct Screen {
 #ifdef WWHD_SDL_HOST
  std::atomic<SDL_Window*> window{nullptr};
@@ -65,6 +72,7 @@ struct Screen {
  VkSurfaceKHR surface=VK_NULL_HANDLE; VkSwapchainKHR swapchain=VK_NULL_HANDLE;
  VkFormat swapFormat=VK_FORMAT_UNDEFINED; VkExtent2D swapExtent{};
  bool hdrOutput=false;
+ bool hdrPq=false; // hdrOutput as HDR10 PQ: composed in FP16 scRGB, then encoded (present.cpp)
  std::vector<VkImage> images; std::vector<VkImageLayout> layouts;
  std::vector<ResourceUse> imageUses;
  VkSemaphore acquired=VK_NULL_HANDLE,finished=VK_NULL_HANDLE;
@@ -111,6 +119,7 @@ struct Renderer {
  VkPhysicalDeviceFeatures enabledFeatures{};
  bool computeQueue=false;
  bool bcCpuDecode=false; // BC uploads without BC textures: CPU decoder instead of compute (bc_decoder_choice.h)
+ bool depthClampAll=false; // depth clamp for every pipeline: panvk culls per fragment for depth clipping (draw.cpp)
  std::atomic<bool> secondaryPresentHeld{false}; // game-free blocked-present diagnostic
  std::atomic<bool> secondaryInjectAcquireLoss{false},secondaryInjectPresentLoss{false}; // authored WSI diagnostics
  std::atomic<bool> secondaryInjectQueryLoss{false};
@@ -168,6 +177,8 @@ struct Renderer {
   std::array<uint64_t,2> descriptorStageMatches{};
  } cpuPreparation;
  uint64_t pipelineCreates=0,pipelineCreateNs=0;
+ // pipelines the game asked for that were not made yet this run, and how many of them the recipe database knew
+ uint64_t pipelineKeysNew=0,pipelineKeysKnown=0;
  std::array<Surface*,8> passColors{};
  std::array<uint32_t,8> passSlices{};
  uint32_t mainDepthAddr=0;
@@ -179,6 +190,8 @@ struct Renderer {
  struct UploadBlock { Buffer buffer; VkDeviceSize used=0; };
  std::vector<UploadBlock> uploadBlocks;
  uint64_t uploadAllocations=0,uploadBytes=0;
+ // texture staging taken from the arena in the recording submission (reset when a submission is activated)
+ VkDeviceSize textureStagingBytes=0;
  // Upload arena memory is HOST_CACHED|HOST_COHERENT (every block so far): CPU reads of it are as fast as
  // heap reads (Apple silicon/MoltenVK, many UMA drivers). uploadReadsDirect: the snapshot reuse caches
  // and the native index scan may read mapped upload slices instead of keeping CPU copies (auto: when
@@ -252,6 +265,11 @@ Buffer create_buffer(VkDeviceSize size,VkBufferUsageFlags usage,VkMemoryProperty
 // host-visible TRANSFER_DST buffer the CPU reads back, host-cached where available
 Buffer create_readback_buffer(VkDeviceSize size);
 UploadSlice allocate_upload(VkDeviceSize size,VkDeviceSize alignment);
+// WWHD_VK_WARM_PRUNE=1 during the setup's preparation (--warm-shaders): the driver cache is rebuilt from the recipes
+bool warm_prune_enabled();
+// A slice of the current submission's upload arena only if it fits in a block it already has (no new block);
+// an empty slice otherwise. Texture staging (surfaces.cpp upload_surface, WWHD_VK_TEXTURE_STAGING).
+UploadSlice allocate_upload_no_grow(VkDeviceSize size,VkDeviceSize alignment);
 // Renderer smoke tests exercise the production snapshot helper with host data.
 UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
     uint32_t reservation,uint32_t windowOffset,uint32_t windowLength,
@@ -277,12 +295,18 @@ void create_surface_image(Surface*,bool forRendering,VkExtent3D explicitExtent =
                           uint32_t sharedQueueFamily = VK_QUEUE_FAMILY_IGNORED);
 void reset_ao_private_cache();
 void destroy_surface_image(Surface*);
+// once per frame (swap): the texture budget's sweep (WWHD_VK_TEXTURE_BUDGET)
+void texture_budget_step();
+// releases one texture's image as the budget does (smoke test); its next lookup makes it again
+void release_texture_image(Surface* s);
+// texture staging (surfaces.cpp): -1 as WWHD_VK_TEXTURE_STAGING says, 0 own buffers, 1 the upload arena (smoke test)
+extern int g_texture_staging_override;
 VkImageView layer_view(Surface*,uint32_t slice);
 VkImageView make_sampled_view(Surface*,uint32_t key); // a sampled view by its key (surfaces.cpp sampled_texture_view)
 void touch_image(Surface*); // dynamic resolution: clear an image made ahead once (surfaces.cpp)
 VkImageView sampled_texture_view(Surface*,const uint32_t* texWords);
 Surface* find_or_create_surface(const SurfaceDesc&,bool forRendering);
-Surface* color_target(const uint32_t*,int,uint32_t* slice=nullptr);
+Surface* color_target(const uint32_t*,int,uint32_t* slice=nullptr,gfx::SizeRequest claim={});
 Surface* depth_target(const uint32_t*,uint32_t* slice=nullptr);
 Surface* surface_from_color_buffer(uint32_t,uint32_t* firstSlice=nullptr,uint32_t* numSlices=nullptr);
 Surface* surface_from_depth_buffer(uint32_t,uint32_t* firstSlice=nullptr,uint32_t* numSlices=nullptr);

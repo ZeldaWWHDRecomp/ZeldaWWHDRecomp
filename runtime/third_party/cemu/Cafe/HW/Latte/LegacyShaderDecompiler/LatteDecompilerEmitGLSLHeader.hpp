@@ -153,6 +153,17 @@ namespace LatteDecompilerGLSL
 			}
 		}
 
+		// WWHD: sampler LOD bias the shader adds (gfx/sampler_lod_bias.h); last, so the members above
+		// keep their offsets (std140: a float aligns to 4)
+		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
+		{
+			if (!decompilerContext->analyzer.texUnitUsesLodBias.test(t))
+				continue;
+			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
+			shaderSrc->addFmt("uniform float uf_tex{}LodBias;" _CRLF, t);
+			uniformOffsets.offset_texLodBias[t] = uniformCurrentOffset;
+			uniformCurrentOffset += 4;
+		}
 		uniformOffsets.offset_endOfBlock = uniformCurrentOffset;
 		if (rendererType == RendererAPI::Vulkan)
 		{

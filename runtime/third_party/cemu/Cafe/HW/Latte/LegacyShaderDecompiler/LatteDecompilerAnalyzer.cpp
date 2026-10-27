@@ -335,6 +335,13 @@ void LatteDecompiler_analyzeTEXClause(LatteDecompilerShaderContext* shaderContex
 			{
 				shaderContext->analyzer.texUnitUsesTexelCoordinates.set(texInstruction.textureFetch.textureIndex);
 			}
+			// WWHD: filtered samples with a level of detail add the sampler's LOD bias themselves when the
+			// host can't (compare samples, gathers and texel reads don't; units are pruned after analysis)
+			if (shaderContext->options->emulateSamplerLodBias && !useTexelCoords &&
+				(texInstruction.opcode == GPU7_TEX_INST_SAMPLE || texInstruction.opcode == GPU7_TEX_INST_SAMPLE_L ||
+				 texInstruction.opcode == GPU7_TEX_INST_SAMPLE_LB || texInstruction.opcode == GPU7_TEX_INST_SAMPLE_LZ ||
+				 texInstruction.opcode == GPU7_TEX_INST_SAMPLE_G))
+				shaderContext->analyzer.texUnitUsesLodBias.set(texInstruction.textureFetch.textureIndex);
 		}
 		else if( texInstruction.opcode == GPU7_TEX_INST_GET_COMP_TEX_LOD || texInstruction.opcode == GPU7_TEX_INST_GET_TEXTURE_RESINFO )
 		{
@@ -346,7 +353,10 @@ void LatteDecompiler_analyzeTEXClause(LatteDecompilerShaderContext* shaderContex
 		}
 		else if( texInstruction.opcode == GPU7_TEX_INST_SET_CUBEMAP_INDEX )
 		{
-			// no analysis required
+			// WWHD: the index variable is declared for this unit even when the bound texture is no cube map
+			// (the hardware then ignores the index; a head-start state may pair the program with such a texture)
+			if (texInstruction.textureFetch.textureIndex >= 0 && texInstruction.textureFetch.textureIndex < LATTE_NUM_MAX_TEX_UNITS)
+				shaderContext->analyzer.texUnitSetsCubeMapIndex.set(texInstruction.textureFetch.textureIndex);
 		}
 		else if (texInstruction.opcode == GPU7_TEX_INST_GET_GRADIENTS_H || texInstruction.opcode == GPU7_TEX_INST_GET_GRADIENTS_V)
 		{
@@ -609,6 +619,8 @@ namespace LatteDecompiler
 				decompilerContext->hasUniformVarBlock = true; // uf_tex%dScale
 			}
 		}
+		if (decompilerContext->analyzer.texUnitUsesLodBias.any())
+			decompilerContext->hasUniformVarBlock = true; // WWHD: uf_tex%dLodBias
 		// assign binding point to uniform var block
 		if (decompilerContext->hasUniformVarBlock)
 		{
@@ -1171,6 +1183,16 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS && t < 32; t++)
 			if ((shaderContext->options->areaSampledTextures >> t) & 1 && shaderContext->output->textureUnitMask[t])
 				shaderContext->analyzer.texUnitUsesTexelCoordinates.set(t);
+	}
+	// WWHD: no LOD bias for units that compare depth (sample_compare/shadow lookups take none on every
+	// host) or are one-dimensional (no levels on Metal)
+	for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
+	{
+		if (!shaderContext->analyzer.texUnitUsesLodBias.test(t))
+			continue;
+		const auto dim = shader->textureUnitDim[t];
+		if (shader->textureUsesDepthCompare[t] || dim == Latte::E_DIM::DIM_1D || dim == Latte::E_DIM::DIM_1D_ARRAY)
+			shaderContext->analyzer.texUnitUsesLodBias.reset(t);
 	}
 	// assign binding points
 	if (shaderContext->shaderType == LatteConst::ShaderType::Vertex)

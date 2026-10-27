@@ -91,6 +91,11 @@ std::string game_source_warning(const catalogue::Entry& entry,const catalogue::I
 bool set_game_source(const std::string& game,const std::string& path,std::string& error);
 // Run on a worker thread after native confirmation; never holds the manager lock while running.
 bool run_setup_tool(const std::string& id,const std::string& step,std::string& error,std::string& last_output);
+// The enabled mods that don't start because a requirement can't be met (the GameCube game for mods is gone,
+// a dependency is missing, off or itself skipped), one message each saying what is missing and how to fix
+// it; the rest of the mods start. The same message is each mod's reason in list(). Logged once per start
+// (main.cpp) and shown once over the game (overlay/mods_tab.h startup_notice).
+std::vector<std::string> startup_problems();
 // Notices are consumed once by the Mods tab.
 std::vector<std::string> take_notices();
 void disable_all();

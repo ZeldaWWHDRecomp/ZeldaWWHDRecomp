@@ -132,6 +132,17 @@ namespace LatteDecompiler
 			uniformOffsets.offset_framebufferFetchSize[t] = uniformCurrentOffset;
 			uniformCurrentOffset += 8;
 		}
+		// WWHD: sampler LOD bias the shader adds (gfx/sampler_lod_bias.h); last, so the members above
+		// keep their offsets
+		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
+		{
+			if (!decompilerContext->analyzer.texUnitUsesLodBias.test(t))
+				continue;
+			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
+			src->addFmt("float tex{}LodBias;" _CRLF, t);
+			uniformOffsets.offset_texLodBias[t] = uniformCurrentOffset;
+			uniformCurrentOffset += 4;
+		}
 
 		src->add("};" _CRLF _CRLF);
 

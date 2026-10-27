@@ -36,15 +36,15 @@ This page sets up both connections and then goes through one round of the loop.
 
 ### The game's editor
 
-1. Start the game with `--editor` and open **Settings → Editor → Claude / MCP**.
-2. Turn on **Claude / MCP access**, press **Copy command** and run the copied line in a terminal:
+1. Start the game with `--editor --mcp` (access on from the start) and open **Settings → Editor → Claude / MCP**.
+2. Press **Copy command** and run the copied line in a terminal:
 
    ```sh
    claude mcp add --transport http wwhd-editor http://127.0.0.1:47615/mcp --header "Authorization: Bearer <token>"
    ```
 
-The token is new each time you turn the switch on. After a restart of the game, run
-`claude mcp remove wwhd-editor` and add the new line. For the details, see
+The token is kept across restarts, so you add the server once (until you press **New token** there). For
+Claude Desktop and the details, see
 [Using Claude or another MCP client](mod-editor.md#using-claude-or-another-mcp-client).
 
 Start Claude Code in any folder. `claude mcp list` should show both `blender` and `wwhd-editor` as connected.

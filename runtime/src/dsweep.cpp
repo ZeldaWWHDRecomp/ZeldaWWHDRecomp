@@ -1777,7 +1777,7 @@ void time_of_day(uint32_t actor) {
 void publish_resident() {
     static uint64_t last = ~0ull;
     const uint64_t now = interp::executed_steps();
-    if (!pipeline_groups::wanted() || now == last) return;
+    if (!(pipeline_groups::wanted() || (pipeline_groups::playing_wanted() && !pipeline_groups::playing())) || now == last) return;
     last = now;
     // a play stage drawing for a few seconds (not the boot's, the title's or the file select's): the background
     // compile may use all its threads now (pipeline_groups::playing)
@@ -1788,6 +1788,8 @@ void publish_resident() {
         if (current != stage) stage = current, since = now;
         if (!current.empty() && current != "Name" && current != "sea_T" && now - since >= 90) pipeline_groups::set_playing();
     }
+    // (only the start of play was asked for: no archive scan)
+    if (!pipeline_groups::wanted()) return;
     std::vector<uint32_t> groups;
     const uint32_t control = ld32(GD(0x101F4F28));
     for (unsigned i = 0; i < 128 && mem2(control, 0x28 + 128 * 0x20); ++i) {

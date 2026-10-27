@@ -63,6 +63,7 @@
 #include "mods/story_world_arrival.h"
 #include "overlay/editor_panel.h"
 #include "editor/editor_game.h"
+#include "editor/mcp_game.h"
 #if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
 #endif
@@ -495,6 +496,14 @@ int main(int argc, char** argv) {
         // 60 fps (frame interpolation) is on unless chosen otherwise (settings.ini, read when the
         // renderer starts); platform/perf_hint.cpp pauses it where the phone cannot keep up
         if (!getenv("WWHD_INTERP") && !getenv("WWHD_TRUE60")) interp::set_mode(1);
+        // setup's models step (ModelPrepareActivity, tools/android/android_models.py): the game's output (its
+        // WWHD-PROGRESS lines) goes to WWHD_STDOUT_FILE, which setup reads as the desktop setup reads a game's
+        // output; env.txt then adds options but never replaces one the step set
+        const char* sweep = getenv("WWHD_DSWEEP");
+        if (const char* out = getenv("WWHD_STDOUT_FILE"); out && *out) {
+            if (freopen(out, "a", stdout)) setvbuf(stdout, nullptr, _IOLBF, 0);
+            else fprintf(stderr, "cannot write %s\n", out);
+        }
         // env.txt there: one NAME=value per line (the WWHD_ options of the README); # comments
         if (FILE* f = fopen("env.txt", "r")) {
             char line[512];
@@ -503,16 +512,25 @@ int main(int argc, char** argv) {
                 char* eq = strchr(line, '=');
                 if (line[0] == '#' || !eq || eq == line) continue;
                 *eq = 0;
+                if (sweep && *sweep && getenv(line)) {
+                    LOG("[boot] env.txt: %s left as the models step set it", line);
+                    continue;
+                }
                 setenv(line, eq + 1, 1);
                 LOG("[boot] env.txt: %s=%s", line, eq + 1);
             }
             fclose(f);
         }
+        // the models step's own working folder: an attempt's log and crash reports stay out of the player's
+        // captures/ (a model that stops the game is expected there, not a crash to report)
+        if (const char* cwd = getenv("WWHD_CWD"); cwd && *cwd && chdir(cwd) != 0)
+            fprintf(stderr, "cannot enter %s\n", cwd);
     }
 #endif
     bool warm_shaders = false;
     bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
     bool install_story_notebook = false;
+    bool start_mcp = false;
 #ifdef WWHD_HAS_VULKAN
     bool renderer_smoke = false;
 #ifdef __ANDROID__
@@ -526,6 +544,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
         else if (!strcmp(argv[i], "--editor")) editor::set_launch_mode(true);  // the world editor (docs/mod-editor.md)
+        else if (!strcmp(argv[i], "--mcp")) start_mcp = true;  // with --editor: Claude / MCP access on at start
 #ifdef WWHD_HAS_VULKAN
         else if (!strcmp(argv[i], "--renderer-smoke")) renderer_smoke = true;
 #ifdef __ANDROID__
@@ -539,8 +558,21 @@ int main(int argc, char** argv) {
 #endif
 #endif
     }
+    // test aids (phone runs: no console, no arguments over adb): WWHD_TEST_STDERR=<path> writes stderr to that file
+    // (the Vulkan warm's and the model sweep's lines); WWHD_TEST_WARM_SHADERS=1 is --warm-shaders
+    if (const char* e = getenv("WWHD_TEST_STDERR"); e && *e && freopen(e, "a", stderr)) setvbuf(stderr, nullptr, _IOLBF, 0);
+    if (const char* e = getenv("WWHD_TEST_WARM_SHADERS"); e && !strcmp(e, "1")) warm_shaders = true;
+    // (the Vulkan backend's pipeline cache: WWHD_VK_WARM_PRUNE rebuilds it only in this mode)
+    if (warm_shaders) {
+#ifdef _WIN32
+        _putenv_s("WWHD_WARMING_SHADERS", "1");
+#else
+        setenv("WWHD_WARMING_SHADERS", "1", 1);
+#endif
+    }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
+    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -698,6 +730,8 @@ int main(int argc, char** argv) {
     // into an editor session; set_launch_mode ran in the argument loop above, before any package loads
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
     guestmods::init();  // trusted manager packages, before guest threads start
+    // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
+    for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package
     // declares an arrival, or with --editor (a live edit can add one); the overlay seals at its first
     // frame, after this point

@@ -775,6 +775,14 @@ std::string refused_pieces(const std::string& mod, const std::string& piece);  /
 // thread (villagers_tick), for the host on any thread
 std::mutex g_villagers_mu;
 std::vector<story_notebook::LiveVillager> g_villagers;
+// a model the editor asked for counts as "being prepared" until its result is in the game, registered or failed
+struct Held {
+    std::string mod, model;
+    Held(std::string m, std::string id) : mod(std::move(m)), model(std::move(id)) { actor_model_cache::hold(mod, model); }
+    ~Held() { actor_model_cache::release(mod, model); }
+    Held(const Held&) = delete;
+    Held& operator=(const Held&) = delete;
+};
 class GameHost final : public Host {
 public:
     bool apply_actors(const std::string& mod, const std::vector<story_notebook::ManifestActor>& actors, const std::vector<std::string>& changed,
@@ -1388,7 +1396,24 @@ public:
         if (model.get("kind").string() == "kit") {
             // a kit model: built from the player's game files (kit_model.py), registered like a game piece; a changed
             // model is a new archive (its identity follows its content), so the live actors take it
-            std::thread([mod, dir, model] {
+            // "being prepared" from now until the result is in the game (actor_model_cache::hold); its collision is
+            // the build's too, so a world object changed to it is placed and checked when it is ready (as for a
+            // static model's collision below)
+            auto held = std::make_shared<Held>(mod, model.get("id").string());
+            const std::pair<std::string, std::string> kit_key{mod, model.get("id").string()};
+            {
+                std::lock_guard guard(g_collision_mutex);
+                g_collision_preparing.insert(kit_key);
+            }
+            struct KitDone {
+                std::pair<std::string, std::string> key;
+                ~KitDone() {
+                    std::lock_guard guard(g_collision_mutex);
+                    g_collision_preparing.erase(key);
+                }
+            };
+            auto kit_done = std::make_shared<KitDone>(KitDone{kit_key});
+            std::thread([mod, dir, model, held, kit_done] {
                 std::shared_ptr<const story_game_pieces::BuiltSet> set;
                 try {
                     set = guestmods::editor_build_kit_model(mod, dir, mods::packages::package_data_directory(mod), model);
@@ -1396,7 +1421,7 @@ public:
                     actor_model_cache::note_failure(mod, model.get("id").string(), e.what());
                     return set_status("Model " + model.get("id").string() + " could not be built: " + e.what());
                 }
-                post([mod, model, set](Cpu*) {
+                post([mod, model, set, held, kit_done](Cpu*) {
                     std::string w;
                     if (!story_kit_models::register_for_mod(mod, model.get("id").string(), *set, true, w))
                         return set_status("Model " + model.get("id").string() + ": " + w + " (it is prepared when the game starts)");
@@ -1424,7 +1449,8 @@ public:
             std::lock_guard guard(g_collision_mutex);
             g_collision_preparing.insert(key);
         }
-        std::thread([mod, dir, model = request, collision, key, replace] {
+        auto held = std::make_shared<Held>(mod, key.second);
+        std::thread([mod, dir, model = request, collision, key, replace, held] {
             struct Done {  // no longer "being prepared" once this ends (registered on the game thread, or failed)
                 bool on;
                 std::pair<std::string, std::string> key;
@@ -1441,20 +1467,32 @@ public:
                 actor_model_cache::note_failure(mod, model.get("id").string(), w);
                 return set_status("Model " + model.get("id").string() + " could not be prepared, its actors are not in the game: " + w);
             }
-            post([mod, model, archive, done, replace](Cpu*) {
+            post([mod, model, archive, done, replace, held](Cpu*) {
                 std::string w2;
+                // a model the game started without (no placement used it then), or its collision
+                const bool fresh = !story_actors::has_model(mod, model.get("id").string()) ||
+                                   (model.get("collision").boolean && !mod_actor::has_collision(mod, model.get("id").string()));
                 if (model.get("collision").boolean && !mod_actor::register_collision(mod, model.get("id").string(), actor_model_cache::collision_for(archive)))
                     return set_status("Model " + model.get("id").string() + ": prepared collision could not be registered");
                 if (!story_actors::editor_register_model(mod, model.get("id").string(), archive, model.get("kind").string() == "skinned", w2))
                     return set_status("Model " + model.get("id").string() + ": " + w2 + " (it is prepared when the game starts)");
                 set_status("Model " + model.get("id").string() + (replace ? " is replaced: its placements show the new version" : " is ready: actors can use it now"));
-                // a replaced model: the actors drawing it (or standing on its collision) are declared again with it
-                if (replace) reapply_mod(mod, model.get("id").string());
+                // a replaced model: the actors drawing it (or standing on its collision) are declared again with it; a
+                // fresh one (or its fresh collision): the placements changed to it meanwhile take it (issue #281: their
+                // copy in the game still drew the model before, and the change waited for a restart)
+                if (replace || fresh) reapply_mod(mod, model.get("id").string());
                 else reapply_mod(mod);
             });
         }).detach();
         note = "The model is being prepared for the game; actors using it appear when it is ready.";
         return true;
+    }
+    bool model_ready(const std::string& mod, const std::string& model) override {
+        if (actor_model_cache::preparing(mod, model)) return true;
+        auto ready = std::make_shared<std::atomic<bool>>(true);  // unknown (the game did not answer): never prepared twice
+        std::string w;
+        on_game([ready, mod, model](Cpu*) { *ready = story_actors::has_model(mod, model); }, w);
+        return *ready;
     }
     std::string model_failure(const std::string& mod, const std::string& model) override { return actor_model_cache::failure_for(mod, model); }
     bool collision_preparing(const std::string& mod, const std::string& model) override {
@@ -2223,6 +2261,11 @@ void start_model_watch() {
 void logic_service(Cpu* c) {
     if (!enabled()) return;
     start_model_watch();
+    // a placement the game could not create says why (its archive did not load, the heap or the mod budget refused it)
+    static const bool failures_said = (mod_actor::set_create_failure_sink([](const std::string& mod, const std::string& id, const std::string& why) {
+        set_status("Actor " + id + " (" + mod + ") is not in the game: " + why);
+    }), true);
+    (void)failures_said;
     return_tick();
     t_game = c;
     records_tick();

@@ -355,6 +355,9 @@ def decompress_bounded(data, limit, expected=None):
 
 
 RECORD_TYPES = (1, 2, 3, 4, 5, 6)
+# the runtime's Metal cache (shaders.bin) also holds a version header (7) and tombstones of stale pipeline
+# recipes (8) (runtime/src/gfx/metal_cache_file.h); neither carries a state, so the tolerant reader skips them
+CACHE_MARKER_TYPES = (7, 8)
 RECORD_LIMIT = 16 * 1024 * 1024
 # Player caches grow by appending (the Metal recorder never compacts shaders.bin); they are read one
 # record at a time, so only the file itself is bounded.
@@ -415,7 +418,7 @@ def _record_at(d, o):
         return None
     t, raw, comp = struct.unpack_from("<III", d, o)
     # every record is one zlib stream: CMF says deflate and the header checksum holds
-    if t not in RECORD_TYPES or not 0 < raw <= RECORD_LIMIT or not 2 <= comp <= RECORD_LIMIT or \
+    if t not in RECORD_TYPES + CACHE_MARKER_TYPES or not 0 < raw <= RECORD_LIMIT or not 2 <= comp <= RECORD_LIMIT or \
             comp > len(d) - o - 12 or d[o + 12] & 15 != 8 or int.from_bytes(d[o + 12:o + 14], "big") % 31:
         return None
     try:
@@ -461,9 +464,11 @@ def read_cache_records(path, report=None):
         found = _record_at(d, o)
         if found:
             t, raw, comp, payload = found
+            o += 12 + comp
+            if t in CACHE_MARKER_TYPES:
+                continue
             report.records[t] += 1
             yield t, payload
-            o += 12 + comp
             continue
         resume = _next_record(d, o)
         if resume is None:

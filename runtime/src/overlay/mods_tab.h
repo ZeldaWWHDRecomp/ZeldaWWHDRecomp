@@ -588,7 +588,8 @@ inline void keep_off_steps(Flow& f, const mods::packages::View& v, double now) {
     fprintf(stderr, "[mods] %s updated; it stays off\n", f.id.c_str());
 }
 // Once per start, over the game: the code mods that couldn't start because the mod compiler is missing
-// (mods/compiler_notice.h; the Mods tab says it next to each). Read at the overlay's first frames, after
+// (mods/compiler_notice.h) and the mods skipped because a requirement can't be met (packages.h
+// startup_problems); the Mods tab says each next to its mod. Read at the overlay's first frames, after
 // the mods started; pending until shown, so the overlay draws a frame for it.
 struct StartupNotice {
     bool read = false, shown = false;
@@ -599,6 +600,7 @@ inline StartupNotice& startup_notice() {
     if (!n.read) {
         n.read = true;
         n.text = guestmods::compiler_notice_for(mods::packages::list());
+        for (const auto& line : mods::packages::startup_problems()) n.text += (n.text.empty() ? "" : "\n") + line;
     }
     return n;
 }

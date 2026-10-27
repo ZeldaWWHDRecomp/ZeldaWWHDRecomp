@@ -27,6 +27,7 @@
 #include "native_actor_profiles.h"
 #include "mod_actor_shadow_proof.h"
 #include "mod_actor_budget.h"
+#include "actor_model_cache.h"
 #include "mod_actor_motion.h"
 #include "mod_actor_look_bounds.h"
 #include "story_mail.h"
@@ -57,7 +58,7 @@ const PieceDraw* piece_draw(const Decl& d){auto found=piece_draws.find({d.archiv
 std::map<std::pair<std::string,std::string>,std::shared_ptr<const story_world_collision::mesh::Mesh>> collision_models;
 struct ArchiveMeasurement {const Decl* declaration=nullptr;uint32_t heap=0,info=0;};
 thread_local ArchiveMeasurement* archive_measurement=nullptr;
-uint32_t scratch=0,heap_callback=0,look_callback=0,post_callback=0;BehaviorSink behavior_sink;std::set<std::pair<uint32_t,uint32_t>> restored;bool installed=false,world_profile_ready=false,editor_live=false;uint32_t grapple_storage_address=0;bool grapple_installed=false;
+uint32_t scratch=0,heap_callback=0,look_callback=0,post_callback=0;BehaviorSink behavior_sink;CreateFailureSink create_failure_sink;std::set<std::pair<uint32_t,uint32_t>> restored;bool installed=false,world_profile_ready=false,editor_live=false;uint32_t grapple_storage_address=0;bool grapple_installed=false;
 void(*original)(Cpu*,uint32_t)=nullptr;
 uint32_t(*invoke)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
 uint32_t talk_actor=0;std::u16string text;std::function<void()> talk_completed;bool custom_talk=false;
@@ -271,6 +272,27 @@ void post_joint(Cpu*c){
 }
 void result(Cpu*c,uint32_t r){c->r[3]=r;}
 void fail_create(uint32_t actor){const uint32_t token=ld32(actor+0xB0);if(scratch&&token&&token<=128)st8(scratch+256+token-1,1);if(auto*d=declaration(actor);d&&d->spec.combat_enabled){st32(actor+Quarantined,1);number(actor+Combat+32,0);st32(actor+0x39C,0);}LOG("[mod_actor] create failed actor=%08X token=%u; retry deferred until room reload",actor,token);}
+// A create phase that failed for a reason the editor should say (once per failure; fail_create keeps it from retrying).
+void create_failed(uint32_t a,const std::string& why){const auto*d=declaration(a);fail_create(a);if(!d)return;LOG("[mod_actor] %s:%s is not in the game: %s",d->mod.c_str(),d->spec.id.c_str(),why.c_str());if(create_failure_sink)create_failure_sink(d->mod,d->spec.id,why);}
+// The game's resource table (ResourceControlHD at 101F4F28, its archive pool at +0x14) and its load task (ResLoadTask
+// at 101F4F54: one reference per resLoad request, its reference tree at +0xE0, a reference node's count at +0x18).
+// Both key archives by the CRC of the name (0273B264), and both trees are searched with 0260ACC8.
+uint32_t archive_hash(Cpu*c,uint32_t name){return call(c,GC(0x0273B264),{name,uint32_t(std::strlen(reinterpret_cast<const char*>(mem::ptr(name))))});}
+uint32_t find_node(Cpu*c,uint32_t tree,uint32_t hash){st32(scratch+480,hash);return call(c,GC(0x0260ACC8),{tree,ld32(tree),scratch+480});}
+bool archive_mounted(Cpu*c,uint32_t name){const uint32_t control=ld32(GD(0x101F4F28));return control&&find_node(c,control+0x14,archive_hash(c,name))!=0;}
+// dComIfG_resLoad completes when the load task has run the request, also when the archive could not be mounted (its
+// file could not be read, or the backing heap refused it): the table then has no archive, only the task's reference
+// for this request. The game's release of the last reference ends in deleteRes (02607138), which reads the table's
+// node without a check, so dComIfG_resDelete in the delete phase crashed on such an actor (SIGBUS at 0, #281).
+// Release exactly what the request made: one reference; on the last one, forget the request's id (0260F61C) as
+// deleteRes does after the archive and heaps that were never made here. The phase goes back to 0, as after a load
+// that never completed, so the delete phase's dComIfG_resDelete has nothing to release, like the game's own actors
+// whose resLoad failed; a later create (room reload, the editor) requests the archive anew.
+void release_unmounted(Cpu*c,uint32_t a){
+    const uint32_t task=ld32(GD(0x101F4F54)),hash=archive_hash(c,a+Name);
+    if(const uint32_t node=task?find_node(c,task+0xE0,hash):0){const uint32_t count=ld32(node+0x18);if(count>1)st32(node+0x18,count-1);else call(c,GC(0x0260F61C),{task,hash});}
+    st32(a+Phase+4,0);
+}
 void transform(uint32_t a){
     constexpr float radians=float(3.14159265358979323846/32768.0);
     const float x=float(int16_t(ld16(a+0x328)))*radians;
@@ -391,10 +413,15 @@ if(data&&d->skinned){
 void create(Cpu*c){uint32_t a=c->r[3];auto*d=declaration(a);if(!d){result(c,5);return;}if(!ld8(a+0x3AA)){call(c,GC(0x025D4ED0),{a});std::memset(mem::ptr(a+Phase),0,Size-Phase);if(d->spec.combat_enabled){combat::State state;if(!combat::initialize(state,combat_config(*d))){result(c,5);return;}write_combat(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->spec.carry_enabled){carry::State state;state.pid=ld32(a+4);write_carry(a,state);const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());}if(d->visual_role){const auto captured=story_actors::identity::record(d->fingerprint);std::memcpy(mem::ptr(a+CombatIdentity),captured.data(),captured.size());const float scale[]={d->spec.scale.x,d->spec.scale.y,d->spec.scale.z};for(unsigned i=0;i<3;++i)number(a+0x330+i*4,scale[i]);if(d->visual_role==1)number(a+0x364,kDistantCullFar);}if(!d->visual_role&&d->spec.background_drawn())number(a+0x364,kGroundCullFar);
 number(a+Radius,d->spec.collision_radius);number(a+Height,d->spec.collision_height);st32(a+CollisionFlags,d->visual_role?0:1|(d->spec.pushable?2:0));st32(a+LookObject,a+LookVtable);st32(a+LookObject+4,a);st32(a+LookVtable+0xC,look_callback);st32(a+PostObject,a+PostVtable);st32(a+PostObject+4,a);st32(a+PostVtable+0xC,post_callback);MotionState motion_;motion_.count=unsigned(d->spec.path.points.size());motion_.speed=d->spec.path.speed;motion_.loop=d->spec.path.loop;motion_.bounce=d->spec.path.back_and_forth;motion_.pauses=d->spec.path.pauses;motion_.enabled=motion_.count>=2;for(unsigned i=0;i<motion_.count;++i)motion_.points[i]=d->spec.path.points[i];write_motion(a+Motion,motion_);std::memcpy(mem::ptr(a+Name),d->archive.c_str(),d->archive.size()+1);call(c,GC(0x0200BD2C),{a+Stts});call(c,GC(0x02515DA0),{a+Stts+0x1C});st32(a+Stts+0x18,GD(0x1004AE88));st32(a+Stts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515FB8),{a+Cyl});st32(a+Cyl+0x114,GD(0x100015A8));st32(a+Cyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+Cyl+0x118});st32(a+Cyl+0x3C,GD(0x1004B108));st32(a+Cyl+0x114,GD(0x1004B160));st32(a+Cyl+0x12C,GD(0x1004B150));}
 if(heap_trace()&&!ld32(a+HeapStarted)){const auto before=heaps(c);for(unsigned i=0;i<4;++i){st32(a+HeapBaseline+i*8,before[i].first);st32(a+HeapBaseline+i*8+4,before[i].second);}st32(a+HeapStarted,1);}
-uint32_t phase=call(c,GC(0x02520460),{a+Phase,a+Name});if(phase!=4){if(phase>=5)fail_create(a);result(c,phase);return;}if(!ld32(a+Model)){
+uint32_t phase=call(c,GC(0x02520460),{a+Phase,a+Name});if(phase!=4){if(phase>=5)create_failed(a,"its model archive "+d->archive+" did not load (the file could not be read or the game heap had no room for it)");result(c,phase);return;}if(!ld32(a+Model)){
+    if(!archive_mounted(c,a+Name)){release_unmounted(c,a);create_failed(a,"its model archive "+d->archive+" did not load (the file could not be read or the game heap refused it)");result(c,5);return;}
     if(heap_trace()){HeapSnapshot before{};for(unsigned i=0;i<4;++i)before[i]={ld32(a+HeapBaseline+i*8),ld32(a+HeapBaseline+i*8+4)};report_heaps(a,"archive_load",before,heaps(c));}
     const auto before=heap_trace()?heaps(c):HeapSnapshot{};
-    if(!call(c,GC(0x025D63E8),{a,heap_callback,uint32_t(0x40000+(d->collision?story_world_collision::mesh::allocation_bytes(*d->collision):0))})){fail_create(a);result(c,5);return;}
+    // the editor changed the placement's model while this actor was being made: it loaded the old model's archive (its
+    // name was taken at the start) and the declaration now names the new one. The editor makes it again from the new
+    // spec right away; not said as a failure (it was "its model could not be made in the game heap", issue #281).
+    if(std::strncmp(reinterpret_cast<const char*>(mem::ptr(a+Name)),d->archive.c_str(),64)!=0){LOG("[mod_actor] %s:%s model changed while it was made (%.64s, now %s): made again",d->mod.c_str(),d->spec.id.c_str(),reinterpret_cast<const char*>(mem::ptr(a+Name)),d->archive.c_str());fail_create(a);result(c,5);return;}
+    if(!call(c,GC(0x025D63E8),{a,heap_callback,uint32_t(0x40000+(d->collision?story_world_collision::mesh::allocation_bytes(*d->collision):0))})){create_failed(a,"its model could not be made in the game heap");result(c,5);return;}
     if(heap_trace())report_heaps(a,"model_create",before,heaps(c));
 }
 const uint32_t token=ld32(a+0xB0),account=record(token-1),solid=ld32(a+0xF4),parent=solid?ld32(solid+0x24):0;
@@ -402,7 +429,7 @@ if(heap_trace())LOG("[mod_actor_budget] solid=%08X parent=%08X base_bytes=%u",so
 if(!solid||parent<0x10000000u||parent>=0xC0000000u||!ld32(account+8)||!ld32(account+12)||!ld32(account+24)){fail_create(a);LOG("[mod_actor_budget] missing native allocation measurements");result(c,5);return;}
 st32(account,a);st32(account+4,ld32(a+4));st32(account+16,heap_size(c,solid));st32(account+20,uint32_t(int8_t(ld8(a+0x326))));
 std::string budget_error;
-if(heap_free(c,parent)<budget::SolidReserve||!check_budget(c,a,budget_error)){st32(account,0);fail_create(a);LOG("[mod_actor_budget] rejected %s:%s (%s)",d->mod.c_str(),d->spec.id.c_str(),budget_error.empty()?"solid parent reserve below 1 MiB":budget_error.c_str());result(c,5);return;}
+if(heap_free(c,parent)<budget::SolidReserve||!check_budget(c,a,budget_error)){st32(account,0);LOG("[mod_actor_budget] rejected %s:%s (%s)",d->mod.c_str(),d->spec.id.c_str(),budget_error.empty()?"solid parent reserve below 1 MiB":budget_error.c_str());create_failed(a,budget_error.empty()?"the game heap keeps less than 1 MiB free":budget_error);result(c,5);return;}
 call(c,GC(0x02515F14),{a+Stts,d->spec.pushable?100u:255u,0,a});for(unsigned i=0;i<0x44;i+=4)st32(a+Source+i,0);st32(a+Source+0x18,0x19);if(d->hits){st32(a+Source+0x10,d->spec.combat_enabled?0xFFFFFFFFu:2u);st32(a+Source+0x14,0x1F);st32(a+Source+0x28,6);}call(c,GC(0x02516518),{a+Cyl,a+Source});st32(a+Cyl+0x44,a+Stts);st8(a+0x389,5);st8(a+0x38B,6);st32(a+0x39C,0xA|(d->spec.prompt=="check"?0x20000000u:0u));if(heap_trace())LOG("[mod_actor] ready actor=%08X model=%08X pos=(%.2f,%.2f,%.2f) scale=(%.2f,%.2f,%.2f) cull=%u",a,ld32(a+Model),double(u32_as_f32(ld32(a+0x314))),double(u32_as_f32(ld32(a+0x318))),double(u32_as_f32(ld32(a+0x31C))),double(u32_as_f32(ld32(a+0x330))),double(u32_as_f32(ld32(a+0x334))),double(u32_as_f32(ld32(a+0x338))),unsigned(ld8(a+0x2DB)));if(d->spec.combat_enabled){
     call(c,GC(0x0200BD2C),{a+AttackStts});call(c,GC(0x02515DA0),{a+AttackStts+0x1C});st32(a+AttackStts+0x18,GD(0x1004AE88));st32(a+AttackStts+0x1C,GD(0x1004AEC0));call(c,GC(0x02515F14),{a+AttackStts,255,0,a});
     call(c,GC(0x02515FB8),{a+AttackCyl});st32(a+AttackCyl+0x114,GD(0x100015A8));st32(a+AttackCyl+0x110,GD(0x1001251C));call(c,GC(0x02018590),{a+AttackCyl+0x118});st32(a+AttackCyl+0x3C,GD(0x1004B108));st32(a+AttackCyl+0x114,GD(0x1004B160));st32(a+AttackCyl+0x12C,GD(0x1004B150));
@@ -682,7 +709,17 @@ void backing_archive_wrapper(Cpu*c){
     if(!own){if(!story_item_models::backing_archive_wrapper(c))original(c,GC(0x02612E64));return;}
     const Cpu incoming=*c;const uint32_t before=heap_free(c,allocation_heap);
     const bool cached=call(c,GC(0x02612504),{manager,key})!=0;
-    if(!cached&&before<budget::BackingReserve+(piece_sets.contains(own->archive)?budget::PieceRoomLimit:budget::ModelLimit)){*c=incoming;result(c,0);LOG("[mod_actor_budget] backing heap reserve prevents loading %s",own->archive.c_str());return;}
+    // room for the archive itself and the game's reserve: the archive's own size (its file), or without the file the most
+    // an archive of its kind may take (a game piece or kit model set PieceRoomLimit, a model ModelLimit). The limit is
+    // the room's budget for all its pieces together; as the need of one 3 MB kit model or 5 MB building set it refused
+    // them with up to 32 MiB free (issue #281: a watched kit model's new version, and island buildings, "backing heap
+    // reserve prevents loading" until something else freed room). Test: WWHD_TEST_BACKING_FREE=<bytes> caps the free
+    // space the check sees (a fuller heap).
+    static const uint64_t test_free=[]{const char*e=std::getenv("WWHD_TEST_BACKING_FREE");return e?std::strtoull(e,nullptr,10):0ull;}();
+    const uint64_t seen=test_free?std::min<uint64_t>(before,test_free):before;
+    const uint64_t own_bytes=budget::archive_need(actor_model_cache::archive_for("/vol/content/Common/Object/"+own->archive+".szs"));
+    const uint64_t need=budget::BackingReserve+(own_bytes?own_bytes:piece_sets.contains(own->archive)?budget::PieceRoomLimit:budget::ModelLimit);
+    if(!cached&&seen<need){*c=incoming;result(c,0);LOG("[mod_actor_budget] backing heap reserve prevents loading %s (%llu bytes free, %llu needed: the archive and a reserve of %s)",own->archive.c_str(),static_cast<unsigned long long>(seen),static_cast<unsigned long long>(need),budget::mib(budget::BackingReserve).c_str());return;}
     *c=incoming;
     original(c,GC(0x02612E64));const Cpu returned=*c;
     const uint32_t after=heap_free(c,allocation_heap);
@@ -746,6 +783,7 @@ bool set_piece_draw(const std::string&archive,int index,PieceDraw draw){
     if(draw.light[0]<0||draw.light[0]>4||draw.light[1]<1||draw.light[1]>4)return false;
     piece_draws[{archive,index}]=draw;return true;
 }
+bool has_collision(const std::string&mod,const std::string&model){std::lock_guard guard(world_mutex);return collision_models.contains({mod,model});}
 bool register_collision(const std::string&mod,const std::string&model,std::shared_ptr<const story_world_collision::mesh::Mesh> collision){
     std::lock_guard guard(world_mutex);std::string why;if(!collision||!story_world_collision::mesh::validate(*collision,why))return false;collision_models[{mod,model}]=std::move(collision);return true;
 }
@@ -884,7 +922,13 @@ bool world_object_query(const std::string&mod,const story_notebook::ManifestActo
     if(allocation>2*1024*1024)conflicts.push_back({"memory","room","Room collision allocation exceeds 2 MiB"});
     for(const auto&conflict:conflicts){Value item;item["kind"]=conflict.kind;item["id"]=conflict.id;item["message"]=conflict.message;if(!conflict.native.empty())item["native"]=conflict.native;if(conflict.move>0)item["move"]=double(conflict.move);
         if(conflict.reach>0){Value at;at["x"]=double(conflict.at.x);at["y"]=double(conflict.at.y);at["z"]=double(conflict.at.z);item["at"]=at;item["reach"]=double(conflict.reach);}
-        if(!conflict.path.empty()){item["path"].type=Value::Array;for(const auto&p:conflict.path){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);item["path"].array.push_back(v);}}result["conflicts"].array.push_back(std::move(item));}
+        if(!conflict.path.empty()){item["path"].type=Value::Array;for(const auto&p:conflict.path){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);item["path"].array.push_back(v);}}
+        // the model's own triangles in the way (issue #281): their indices in its collision mesh and, for the editor to
+        // tint them, their corners in the world (the first kMarkedFaces)
+        if(own_solid&&!conflict.triangles.empty()){constexpr size_t kMarkedFaces=512;item["triangle_count"]=int(conflict.triangles.size());item["triangles"].type=Value::Array;item["faces"].type=Value::Array;
+            for(size_t k=0;k<conflict.triangles.size()&&k<kMarkedFaces;++k){const uint32_t j=conflict.triangles[k];if(j>=own_solid->triangles.size())continue;item["triangles"].array.push_back(int(j));
+                Value face;face.type=Value::Array;for(uint16_t c:own_solid->triangles[j]){const Point q=own_solid->vertices[c];Value v;v["x"]=double(q.x);v["y"]=double(q.y);v["z"]=double(q.z);face.array.push_back(std::move(v));}item["faces"].array.push_back(std::move(face));}}
+        result["conflicts"].array.push_back(std::move(item));}
     auto point_json=[](Point p){Value v;v["x"]=double(p.x);v["y"]=double(p.y);v["z"]=double(p.z);return v;};
     result["grapple_target_count"]=int(spec.grapple_points.size());result["room_grapple_target_count"]=int(grapple_count);
     result["minimum"]=point_json(bounds.minimum);result["maximum"]=point_json(bounds.maximum);result["vertices"]=int(geometry->vertices.size());result["triangles"]=int(geometry->triangles.size());result["allocation_bytes"]=double(own_allocation);result["room_allocation_bytes"]=double(allocation);result["clear"]=conflicts.empty();
@@ -941,7 +985,7 @@ void proof_correction(Cpu*c){
 bool install(const std::function<std::string(uint32_t)>&owner,const std::function<void(uint32_t,void(*)(Cpu*))>&replace){if(installed)return true;const bool has_proof=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return story_world_collision::proof::selected(d.mod,d.spec)!=story_world_collision::proof::Kind::None;});if(has_proof&&std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return story_world_collision::proof::selected(d.mod,d.spec)==story_world_collision::proof::Kind::None;})){LOG("[world_w0] proof requires an isolated set of fixture actors");return false;}if(has_proof&&!owner(GC(0x024EE708)).empty())return false;const bool has_carry=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.carry_enabled;});if(has_carry){for(const auto&d:declarations)if(d.spec.carry_break_on_impact&&!d.carry_break)return false;if(!native_actor_carry::configure(original,invoke)||!native_actor_carry::register_guard("mod-actor-carry",deny_carry)||!native_actor_carry::available(owner)||!owner(GC(0x0240A41C)).empty()||!owner(GC(0x023DCF8C)).empty()||!mod_actor_knockback::configure(invoke,knockback_identity))return false;}const bool has_combat=std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.combat_enabled;});if(has_combat&&(!attention::configure(original,combat_priority)||!attention::available(owner)||!mod_actor_native_combat::configure(invoke,source_identity)||!mod_actor_knockback::configure(invoke,knockback_identity)))return false;if((declarations.empty()&&!editor_live)||!scratch||!invoke||!original||!native_actor_profiles::available(owner)||!owner(GC(0x02604550)).empty()||!owner(GC(0x02604EB4)).empty()||!owner(GC(0x02612E64)).empty())return false;std::memset(mem::ptr(scratch+256),0,kScratchBytes-256);uint32_t native=ld32(GD(0x101F3EE0)+0xB6*4);if(!native)return false;for(unsigned i=0;i<0x30;i+=4)st32(scratch+i,ld32(native+i));if(has_proof){const uint32_t raft=ld32(GD(0x101F3EE0)+0x44*4);if(!raft)return false;st32(scratch+4,ld32(raft+4));st16(scratch+0x20,ld16(raft+0x20));LOG("[world_w0] schedule list=%u list_priority=%u priority=%u",unsigned(ld16(scratch+4)),unsigned(ld16(scratch+6)),unsigned(ld16(scratch+0x20)));}st16(scratch+8,kProfile);st32(scratch+0x10,Size);st32(scratch+0x14,0);st32(scratch+0x18,0);st32(scratch+0x24,scratch+0x30);st32(scratch+0x28,0x44100);st8(scratch+0x2C,0);st8(scratch+0x2D,14);void(*methods[])(Cpu*)={create,destroy,execute,is_delete,draw};for(unsigned i=0;i<5;++i)st32(scratch+0x30+i*4,dispatch::register_host(methods[i],"mod_actor_method"));LOG("[mod_actor] profile=%08X execute=%08X class_bytes=%u",scratch,ld32(scratch+0x38),Size);heap_callback=dispatch::register_host(heap,"mod_actor_heap");look_callback=dispatch::register_host(pre_joint,"mod_actor_look_joint");post_callback=dispatch::register_host(post_joint,"mod_actor_look_post_joint");if(!native_actor_profiles::add(kProfile,scratch,base_allocated))return false;{const uint32_t world=scratch+208,raft=ld32(GD(0x101F3EE0)+0x44*4);if(!raft&&std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return d.spec.world_object();}))return false;if(raft){for(unsigned i=0;i<0x30;i+=4)st32(world+i,ld32(scratch+i));st32(world+4,ld32(raft+4));st16(world+0x20,ld16(raft+0x20));st16(world+8,kWorldProfile);if(!native_actor_profiles::add(kWorldProfile,world,base_allocated))return false;world_profile_ready=true;}}if(grapple_storage_address&&world_profile_ready&&story_world_grapple::available(owner)){if(!story_world_grapple::install(owner,replace))return false;grapple_installed=true;}else if(std::any_of(declarations.begin(),declarations.end(),[](const Decl&d){return !d.spec.grapple_points.empty();}))return false;if(!native_actor_profiles::install(owner,replace))return false;replace(GC(0x02604550),resource_table);replace(GC(0x02604EB4),archive_wrapper);replace(GC(0x02612E64),backing_archive_wrapper);if(has_combat){story_enemy_ownership::set_mod_collider_verifier(classify_combat_collider);if(!attention::install(owner,replace))return false;}if(has_carry){if(!native_actor_carry::install(owner,replace))return false;replace(GC(0x0240A41C),carry_attach);replace(GC(0x023DCF8C),carry_release);}if(has_proof)replace(GC(0x024EE708),proof_correction);installed=true;return true;}
 bool set_carry_break(const std::string&mod,const std::string&id,std::function<bool()>cb){if(installed||!cb)return false;for(auto&d:declarations)if(d.mod==mod&&d.spec.id==id&&d.spec.carry_break_on_impact){d.carry_break=std::move(cb);return true;}return false;}
 
-void set_behavior_sink(BehaviorSink sink){behavior_sink=std::move(sink);}
+void set_behavior_sink(BehaviorSink sink){behavior_sink=std::move(sink);}void set_create_failure_sink(CreateFailureSink sink){create_failure_sink=std::move(sink);}
 void quarantine_combat(Cpu*c,const Identity&id){const uint32_t a=resolve(c,id);if(!a)return;if(declaration(a)->spec.combat_enabled)fail_create(a);if(declaration(a)->spec.carry_enabled){const uint32_t play=call(c,GC(0x025200D4),{}),link=play?ld32(play+0x5B34):0;if(carry_link(c,link,a))call(c,GC(0x023DCF8C),{link});carry_quarantine(a);}}
 bool set_combat_reward(const std::string&mod,const std::string&id,CombatRewardSink sink){for(auto&d:declarations)if(d.mod==mod&&d.spec.id==id&&d.spec.combat_enabled&&!d.reward&&sink){d.reward=std::move(sink);return true;}return false;}
 uint32_t declaration_token(const std::string&mod,const std::string&id){for(size_t i=0;i<declarations.size();++i)if(declarations[i].mod==mod&&declarations[i].spec.id==id)return uint32_t(i+1);return 0;}

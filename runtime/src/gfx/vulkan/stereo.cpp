@@ -245,7 +245,7 @@ void load_saved_stereo_hdr() {
     if(auto x=num("stereoDepth"))stereo::set_depth(*x);
     if(auto x=num("stereoConvergence"))stereo::set_convergence(*x);
     if(auto x=num("stereoSwap"))stereo::requestedSwap=*x!=0;
-#ifdef _WIN32
+#ifdef WWHD_HDR_OUTPUT
     if(auto x=num("hdrEnabled"))hdr::enabled=*x!=0;
 #endif
     if(auto x=num("hdrPaperWhite"))hdr::set(hdr::paperWhite,*x,80,500);

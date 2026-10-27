@@ -7,6 +7,110 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Shader translation: cube-map helper shaders translate again** (Vulkan and Metal). Some library shaders set a
+  cube-map layer index on a texture slot that, in some states, holds an ordinary texture; the translator then used an
+  undeclared variable and the shader failed. Shader preparation now finishes with no failed shaders (11 on Vulkan and
+  18 on Metal before).
+- **Vulkan: shader preparation no longer stops at a shader it can't translate.** One untranslatable shader used to
+  end the preparation, leaving every shader and pipeline after it unprepared. Now that shader is skipped and logged,
+  and the rest are prepared.
+- **Vulkan: pipelines made from Metal recipes compile in a low-priority background queue** instead of the start queue.
+  They no longer compete with the game's own compiles during play; pipelines the game actually uses move to the start
+  queue from the next start. On a Snapdragon 8 Gen 3 phone, play and start-up are unchanged, since all of them finish
+  before play. The queue matters with larger recipe sets. `WWHD_VK_METAL_QUEUE=start` restores the old behaviour.
+- **HDR output on Linux, and HDR10 for displays without scRGB** (Vulkan; #311, thanks @mkopec). Settings → Graphics → HDR output now also
+  works on Linux under Wayland. Where the system offers no scRGB output (Mesa drivers on Wayland), the game presents
+  HDR10 (BT.2020 with the PQ curve) instead, with the same paper white, peak and exposure settings; the overlay shows
+  which one is used. On compositors where SDL picks XWayland (such as sway), choosing HDR makes the game start on
+  Wayland from the next start, since X11 windows can't show HDR. Under gamescope (Steam Deck),
+  which gives XWayland HDR itself, the game stays on XWayland. Windows is unchanged.
+- **World editor: fixes for full rooms and model changes** (#281, thanks @KelpyCode). When a room's memory was full,
+  the game could crash while loading a placed object's archive. Now an object whose archive doesn't fit is not created
+  (the editor says why) and is tried again on the next room load. Kit models and island buildings were checked against
+  the whole room budget for buildings (32 MiB free) instead of their own size, so a watched model's new version could be
+  refused until something was moved; the check now asks for the model's own size plus a small reserve, and the new
+  version shows up right away. Changing a placement's kit or static model now also brings that model's own collision,
+  live in the running game.
+- **Bloom is smooth again at higher internal resolutions** (#307, #308, thanks @itsarahtonin). At 2x and 3x the glow around lit windows,
+  doors, torches and Bokoblin eyes broke up into blocks and streaks, and small bright things such as rupees glowed
+  only at some angles. The game makes its bloom from small copies of the picture, which were made at the higher
+  resolution too: the pass that reads the picture skipped pixels, and the blur's lumps, which the console's final
+  upscale blends away, got pixels of their own. The small copies now keep the console's size and read the picture
+  as the Wii U does, so the glow looks as it does at 1x. 1x is unchanged.
+- **macOS: move and resize the GamePad picture with the mouse** (#305, thanks @shaneoreilly). In the TV window, drag the
+  picture-in-picture GamePad with the right mouse button (or with Option held) to move it, drag from its bottom-right
+  corner or use the scroll wheel over it to resize it (5–100%). The placement becomes Custom and is saved. A plain left
+  click on it is still a GamePad touch; menus and the editor keep their own mouse handling.
+- **Torchlight on objects is sharp at higher internal resolutions** (#313, thanks @itsarahtonin). Torches and other
+  point lights are lit through a half-size light buffer that lit objects read back with a depth-aware upsample. At 2x
+  and 3x that upsample still worked on the console's grid, so the light along the edges of lit objects came out in
+  blocks the size of console pixels. It now uses the larger buffer's own grid. 1x is unchanged.
+- **Linux on Mali (panvk): no more flickering shapes in the sky** (#310, thanks @mkopec). Parts of the clouds and haze on
+  the title screen and at sea flickered away in hard-edged chunks as the camera moved, because Mali drops pixels just
+  past the far plane. On the panvk driver the game now clamps depth instead (`WWHD_VK_DEPTH_CLAMP_ALL=0` turns this off).
+- **Linux: the installed game is about 10× smaller** (#314, thanks @missionfloyd). Setup now builds the game code without
+  debug information and strips debug data when linking, so the Linux game shrinks from over 500 MB to well under
+  100 MB, and setup compiles faster. Developers can keep debug information with `--debug-info` or
+  `WWHD_SETUP_DEBUG_INFO=1`.
+- **World editor: easier Claude / MCP setup** (#296, thanks @KelpyCode). `--editor --mcp` turns Claude / MCP access on at
+  start (`--editor` alone keeps it off). The access token is now kept across restarts (Settings → Editor → Claude / MCP
+  shows it, with Copy and New token), the Allow window has **Allow for this session**, and **Copy config for Claude
+  Desktop** gives a ready entry for the Claude desktop app (through the `mcp-remote` bridge, needs Node.js 18+). See the
+  editor docs.
+- **World editor: exact joins and marked faces** (#281, thanks @KelpyCode). New ground whose join vertices sit exactly on
+  an island's own vertices now counts as joined, so no small offset is needed any more (geometry that only touches, within
+  0.25 units, is not overlapping). When a model is refused, the faces that cause the conflict are tinted pink in the editor,
+  and `placement_conflicts` over MCP lists them. A part that only rests on the island's ground no longer counts as a
+  conflict.
+- **Metal: the shader cache keeps track of versions.** Its file now records the cache format, the macOS version and the
+  GPU; entries from another version are dropped and repeated rows are pruned when it is rewritten
+  (`WWHD_SHADER_CACHE_VERSIONING=0` turns this off).
+- **Vulkan: new opt-in switches**, all off by default (ideas from aurora's GX layer, MIT):
+  - `WWHD_VK_TEXTURE_STAGING=ring` (and `WWHD_MTL_TEXTURE_STAGING=pool` on Metal) stage texture uploads through the
+    frame's upload memory; on the test phone this shortens the worst frames at area loads a little.
+  - `WWHD_VK_METAL_RECIPES=1` lets the setup's Vulkan preparation also build pipelines from the head start's Metal
+    recipes: fewer pipelines are compiled during play and first-visit hitches are shorter, but on phones the larger
+    preparation can still be compiling while you play, so it stays opt-in for now.
+  - `WWHD_VK_TEXTURE_BUDGET=1` keeps texture memory within a budget, releasing least-recently-used textures and
+    reloading them when needed (for low-memory devices).
+  - `WWHD_ARTISTIC_MIPS=1` gives textures with hand-drawn mip levels a resolution-aware level-of-detail bias.
+- **Performance report:** new lines for the texture cache and the GPU timeline (GPU busy time per frame and the gaps
+  between command buffers; on Vulkan with `WWHD_VK_GPU_TIMESTAMPS=1`).
+- **World editor: island extensions can join an island's ground** (#281, thanks @KelpyCode). New ground that meets an
+  island's ground at the same height (up to the 30-unit step Link and villagers walk over) counts as joined instead of
+  overlapping, and an extension's sides may go into the cliff under its top; walls, raised parts and roofs still count.
+  Villagers, start points and routes only count what rises into the space they need, and Windfall's kids, Tott and the
+  pirates are recognised as villagers. The boat route around Windfall keeps the shop ship's real size clear.
+- **World editor: placing a large model of your own live no longer crashes the game** (#281). With `add_actor`, a big
+  model could be left out (its archive was being prepared again at that moment) and removing the failed actor then
+  crashed the game. The model now appears as it does from the manifest, and an actor whose model can't be loaded is
+  reported in the editor instead of crashing.
+- **Mac: textures are as sharp as on the Wii U.** The game gives most textures a level-of-detail bias (usually one
+  level sharper); Apple's samplers can't apply it, so on the Mac (Metal and Vulkan) textures were drawn one level
+  blurrier. The bias is now applied in the shaders, so ground, walls and effects such as the glow under the Triforce
+  chests look as intended. Windows, Linux and Android were already correct.
+- **One mod that can't start no longer stops all the others.** A mod whose requirement can't be met (for example a
+  GameCube game for mods that was moved or deleted) is now skipped on its own, along with any mods that need it, with
+  a message in the log, in Settings → Mods and over the game saying what's missing and how to fix it. Before, it
+  stopped every code mod from starting, including the Story Notebook and the sky island.
+- **The glow under Triforce Shard and Chart chests no longer shows a blocky checkerboard** (#297, thanks
+  @aaronlink127). The glow's texture has mipmap levels, and the second level was read from slightly the wrong address,
+  so it showed scrambled blocks once the game sampled it (at high resolutions, where the game sharpens it by one
+  level). Both renderers now find every level the way the Wii U does.
+- **Performance report: the "uniforms" time is split into its parts** (#178): stage setup, packing, the game's
+  own blocks and the support upload, so a report shows where that time goes on your device.
+- **The camera is smooth again in the Boating Course minigame with frame interpolation** (#299, thanks
+  @aaronlink127). The Boating Course draws two cameras at once, and after a few stage changes the two took each
+  other's history slot on every frame, so the camera moved at the game's 30 steps per second while Link and the boat
+  were smoothed, which made them seem to vibrate. Each camera now keeps its own history. This affected 40, 60 and
+  120 fps and true 60; game logic and 30 fps are unchanged.
+- **Android: setup now prepares model shaders by default, for far fewer stutters.** "Prepare model shaders
+  (recommended)" is ticked on Android. After setup, the game draws every model, room and placed character once and
+  visits every stage, hidden behind the setup's progress screen, so the shaders are ready before you play. On a
+  Xiaomi 14 this cut shader waits on a 25-place test route from about 1,000 to about 35. It takes about 40 minutes
+  on a recent phone (longer on older ones); you can untick it, and Cancel keeps what was prepared. Desktop setup is
+  unchanged. Also fixed: on a fresh setup, the shaders prepared during setup's warm-up were not kept (Android and
+  desktop Vulkan), and a chosen step that cannot run now says why instead of being skipped silently.
 - **Mac (Metal): the distant sea at the horizon no longer flickers between runs.** Metal drew some objects straight
   from the game's memory while the game was already writing the next frame's positions into it. Vertex data the game
   rewrites is now copied when a draw is recorded, as on Vulkan. This also fixes a rare case where Metal could reuse

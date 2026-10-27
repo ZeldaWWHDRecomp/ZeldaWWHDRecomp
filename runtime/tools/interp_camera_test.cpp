@@ -161,6 +161,37 @@ int main() {
         const CamState m = blend_shaken(sa, ka, add_shake(c, kb), kb, 0.5f, false), base = blend(a, c, 0.5f, false);
         for (int i = 0; i < 3; i++) assert(std::fabs(m.eye[i] - (base.eye[i] + kb.eye[i])) < 1e-3f);
     }
+    // camera history slots (issue #299): two cameras drawn on every pass keep their history after
+    // more cameras than slots have been seen; stale cameras of earlier stages give way
+    {
+        struct Slot { uint32_t cam = 0; uint64_t used = 0; int steps = 0; };
+        Slot slots[4];
+        uint64_t clock = 0;
+        // cameras of earlier stages, each drawn for a while and then deleted with its stage
+        for (uint32_t cam : {0x1000u, 0x2000u, 0x3000u, 0x4000u, 0x5000u})
+            for (int pass = 0; pass < 3; pass++) history_slot(slots, cam, clock).steps++;
+        // a stage with two camera processes, both drawn on every pass: no draw starts without history
+        for (int pass = 0; pass < 20; pass++)
+            for (uint32_t cam : {0xA000u, 0xB000u}) {
+                Slot& s = history_slot(slots, cam, clock);
+                assert(s.cam == cam);
+                assert(s.steps == pass);  // (the old table gave them slot 0 in turn: always 0)
+                s.steps++;
+            }
+        int live = 0;
+        for (const Slot& s : slots) live += s.cam == 0xA000u || s.cam == 0xB000u;
+        assert(live == 2);
+        // a new camera takes an unused slot before one in use
+        Slot fresh[3];
+        uint64_t c2 = 0;
+        history_slot(fresh, 0x1u, c2).steps = 7;
+        assert(history_slot(fresh, 0x2u, c2).steps == 0 && history_slot(fresh, 0x1u, c2).steps == 7);
+        // as many cameras drawn on every pass as there are slots: none loses its history
+        Slot four[4];
+        uint64_t c4 = 0;
+        for (int pass = 0; pass < 5; pass++)
+            for (uint32_t cam = 1; cam <= 4; cam++) assert(history_slot(four, cam, c4).steps++ == pass);
+    }
     printf("interp_camera: all tests passed\n");
     return 0;
 }

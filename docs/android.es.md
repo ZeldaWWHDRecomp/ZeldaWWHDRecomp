@@ -91,6 +91,13 @@ para mods: activa **Mods de código** en la app de instalación, antes o despué
 La compilación tarda más o menos lo mismo que la primera instalación; mientras tanto puedes seguir
 jugando con la versión actual. Más detalles en [setup-code-mods.md](setup-code-mods.md#android) (en inglés).
 
+
+**Preparar los shaders de los modelos (recomendado)** viene marcado. Tras la instalación, el juego dibuja una vez
+cada modelo, sala y actor colocado y visita cada escenario, oculto tras la pantalla de progreso, así que hay muchos
+menos tirones la primera vez que ves un lugar. Tarda unos 40 minutos en un móvil reciente (más en uno antiguo);
+mantén la pantalla encendida. Desmárcalo para omitirlo. **Cancelar** lo detiene cuando quieras y conserva lo ya
+preparado; al volver a marcarlo, continúa.
+
 ### O bien: prepáralo en tu PC
 
 1. Instala el SDK y el NDK de Android, JDK 17 o posterior, CMake, Ninja y Python 3.

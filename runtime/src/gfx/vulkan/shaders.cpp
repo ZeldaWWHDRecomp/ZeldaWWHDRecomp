@@ -20,6 +20,7 @@
 #include "mods/shader_interface.h"
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
+#include "gfx/sampler_lod_bias.h"
 #include "gfx/shader_linkage.h"
 #include "render_objects.h"
 #include "exact_state_memo.h"
@@ -521,7 +522,7 @@ uint64_t portable_output_identity(const Shader& shader) {
     id.word(uint32_t(u.count_uniformRegister)); id.word(uint32_t(u.offset_alphaTestRef));
     id.word(uint32_t(u.offset_pointSize)); id.word(uint32_t(u.offset_fragCoordScale));
     id.words(u.offset_framebufferFetchSize); id.word(uint32_t(u.offset_windowSpaceToClipSpaceTransform));
-    id.words(u.offset_texScale); id.word(uint32_t(u.offset_verticesPerInstance));
+    id.words(u.offset_texScale); id.words(u.offset_texLodBias); id.word(uint32_t(u.offset_verticesPerInstance));
     id.words(u.offset_streamoutBufferBase); id.word(uint32_t(u.offset_endOfBlock));
     const auto& r=shader.descriptorRanks;
     id.words(r.blocks); id.words(r.textures); id.word(r.support); id.word(r.count); id.word(r.valid ? 1 : 0);
@@ -610,22 +611,27 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     const uint64_t decompilerBase=mods::cemu::has_shaders()?packBase:base;
     const auto fixes = vertex ? ::gfx::area_sample::Program{} : ::gfx::area_sample::pixel_program(program, size);
     options.areaSampledTextures = fixes.units;
+    // MoltenVK can't apply the sampler's mipLodBias: the shader adds it (gfx/sampler_lod_bias.h)
+    options.emulateSamplerLodBias = !R.samplerMipLodBias;
     LatteDecompilerOutput_t output{};
-    if (vertex) LatteDecompiler_DecompileVertexShader(decompilerBase, const_cast<uint32_t*>(regs),
-        program, size, fetch, options, &output);
-    else LatteDecompiler_DecompilePixelShader(decompilerBase, const_cast<uint32_t*>(regs),
-        program, size, options, &output);
-    if (!output.shader || output.shader->hasError || !output.shader->strBuf_shaderSource) {
+    auto translate = [&] {
+        if (vertex) LatteDecompiler_DecompileVertexShader(decompilerBase, const_cast<uint32_t*>(regs),
+            program, size, fetch, options, &output);
+        else LatteDecompiler_DecompilePixelShader(decompilerBase, const_cast<uint32_t*>(regs),
+            program, size, options, &output);
+        return output.shader && !output.shader->hasError && output.shader->strBuf_shaderSource;
+    };
+    if (!translate()) {
         free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
     }
-    if (options.areaSampledTextures && packReplacement && mods::cemu::has_shaders() &&
+    if ((options.areaSampledTextures || options.emulateSamplerLodBias) && packReplacement && mods::cemu::has_shaders() &&
         !mods::cemu::shader_source(packBase, cemu_pack_hash::auxiliary(*output.shader, regs, vertex), vertex).empty()) {
         // a graphics pack replaces this shader: translate it as Cemu does, so its interface matches
         free_decompiler(output.shader);
         options.areaSampledTextures = 0;
+        options.emulateSamplerLodBias = false;
         output = LatteDecompilerOutput_t{};
-        LatteDecompiler_DecompilePixelShader(decompilerBase, const_cast<uint32_t*>(regs), program, size, options, &output);
-        if (!output.shader || output.shader->hasError || !output.shader->strBuf_shaderSource) {
+        if (!translate()) {
             free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
         }
     }
@@ -636,6 +642,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
     if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: upscaling fix not applied\n", address);
+    shader.gatherUnits = vertex ? 0 : ::gfx::area_sample::gathered_units(shader.glsl, false);
     if (vertex) {
         // Depth-only and shaded variants must rasterize identical positions.
         // Match Metal's [[invariant]] position output for multipass depth tests.
@@ -670,7 +677,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
             bool accepted=!replacement.empty()&&!original.empty()&&
                 mods::cemu::compatible_shader_interface(original,replacement,error);
             if(accepted && key_verify_rate()) shader.translatedGlsl=shader.glsl;
-            if(accepted)shader.glsl=std::move(custom);
+            if(accepted) { shader.glsl=std::move(custom); shader.gatherUnits=0; }  // its own uniforms
             if(error.empty()&&!accepted)error=originalError.empty()?"Shader compilation failed":originalError;
             mods::cemu::report_shader(packBase,packAux,vertex,accepted,error);
             fprintf(stderr,"[cemu-pack] %016llx_%016llx_%s %s%s\n",
@@ -1359,6 +1366,15 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
         if (offsets.offset_texScale[unit] < 0) continue;
         float scale[] = {1, 1}; // Surfaces currently preserve the guest texture dimensions.
         copy(offsets.offset_texScale[unit], scale, sizeof scale);
+    }
+    // the sampler's LOD bias where the device can't apply it (MoltenVK; gfx/sampler_lod_bias.h)
+    for (int unit = 0; unit < LATTE_NUM_MAX_TEX_UNITS; ++unit) {
+        if (offsets.offset_texLodBias[unit] < 0) continue;
+        const uint32_t samplerId = shader.dec->textureUnitSamplerAssignment[unit];
+        const bool add = ::gfx::sampler_lod_bias::mode() == ::gfx::sampler_lod_bias::Mode::Shader && samplerId < 18;
+        put(offsets.offset_texLodBias[unit],
+            add ? ::gfx::sampler_lod_bias::host(regs[Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0 + ((shader.vertex ? 18 : 0) + samplerId) * 3 + 1])
+                : 0.0f);
     }
 }
 

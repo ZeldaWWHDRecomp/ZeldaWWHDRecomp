@@ -212,6 +212,10 @@ def parse_prof(lines):
             m = re.search(r"untracked " + NUM + r"; " + NUM + " us/draw", rest)
             if m:
                 cur["phase_untracked_ms"], cur["us_per_draw"] = float(m.group(1)), float(m.group(2))
+        elif body.startswith("uniforms parts"):
+            parts = body.partition("):")[2]
+            for name, ms in re.findall(r" ([a-z ]+?) " + NUM, parts):
+                cur["uniform_" + name.replace(" ", "_") + "_ms"] = float(ms)
         elif body.startswith("render thread waits"):
             m = re.search(r"GPU " + NUM + r" \(" + NUM + r"/frame\) acquire " + NUM + " present " + NUM, body)
             if m:

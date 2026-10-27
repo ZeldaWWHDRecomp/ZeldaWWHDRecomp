@@ -53,6 +53,15 @@ void pip_target_centre(Box tv, int anchor, float* x, float* y);
 int pip_target_at(Box tv, float px, float py, float radius);
 PipPosition pip_position();
 void pip_set_position(PipPosition position);
+// Pointer gestures on the picture-in-picture GamePad in the TV window (0..1 from the top left):
+// begin is true when the point is on the picture (a drag from its bottom-right corner resizes it,
+// any other drag moves it); end is true when a drag ended (the host saves the placement); wheel
+// resizes the picture under the point by 10% per step and is true when it did.
+bool pip_drag_begin(float nx, float ny);
+bool pip_dragging();
+void pip_drag_move(float nx, float ny);
+bool pip_drag_end();
+bool pip_wheel(float nx, float ny, float steps);
 extern const char* const kFilterNames[3];             // smooth, sharp, integer
 
 // the options (read from any thread; changed on the host's main thread)

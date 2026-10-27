@@ -47,32 +47,41 @@ bool sea_route(const ProtectedRoute&r){for(const auto&p:r.points)if(p.y>kSeaLeve
 // The object's triangles by where they are (a grid over X/Z, at most 64 x 64 cells): a query visits only the triangles
 // whose bounds meet its own, each once, so a model of a few thousand triangles stays cheap against a room's layout.
 struct Near {
- const Solid&s;std::vector<Bounds> tb;float x0=0,z0=0,cell=1;int nx=1,nz=1;std::vector<std::vector<uint32_t>> cells;mutable std::vector<uint32_t> seen;mutable uint32_t tick=0;
+ const Solid&s;std::vector<Bounds> tb;float x0=0,z0=0,cell=1;int nx=1,nz=1;std::vector<std::vector<uint32_t>> cells;
  explicit Near(const Solid&solid):s(solid){
   tb.reserve(s.triangles.size());for(const auto&t:s.triangles){Bounds b{s.vertices[t[0]],s.vertices[t[0]]};for(unsigned k=1;k<3;++k){const Point p=s.vertices[t[k]];b.minimum={std::min(b.minimum.x,p.x),std::min(b.minimum.y,p.y),std::min(b.minimum.z,p.z)};b.maximum={std::max(b.maximum.x,p.x),std::max(b.maximum.y,p.y),std::max(b.maximum.z,p.z)};}tb.push_back(b);}
   x0=s.bounds.minimum.x;z0=s.bounds.minimum.z;const double w=double(s.bounds.maximum.x)-x0,d=double(s.bounds.maximum.z)-z0;
   cell=float(std::max({w/64,d/64,100.0}));if(!std::isfinite(cell))cell=1e9f;nx=std::clamp(int(w/cell)+1,1,64);nz=std::clamp(int(d/cell)+1,1,64);
-  cells.resize(size_t(nx)*nz);seen.assign(tb.size(),0);
+  cells.resize(size_t(nx)*nz);
   for(uint32_t j=0;j<tb.size();++j){int a,b,c,e;range(tb[j],a,b,c,e);for(int z=c;z<=e;++z)for(int x=a;x<=b;++x)cells[size_t(z)*nx+x].push_back(j);}
  }
  void range(const Bounds&q,int&a,int&b,int&c,int&e)const{auto ix=[&](double v,int n,double o){return std::clamp(int(std::floor((v-o)/cell)),0,n-1);};a=ix(q.minimum.x,nx,x0);b=ix(q.maximum.x,nx,x0);c=ix(q.minimum.z,nz,z0);e=ix(q.maximum.z,nz,z0);}
- // f(triangle index) for each triangle whose bounds meet q; true from f stops the visit (and is returned)
+ // f(triangle index) for each triangle whose bounds meet q; true from f stops the visit (and is returned). A triangle in
+ // several cells is visited in the first of them the query covers, so f may itself visit (Flush looks up the object's
+ // floor while its walls are visited): a shared "seen" mark let such an inner query hide triangles from the outer one,
+ // and a wall going through the object was then missed.
  template<class F> bool visit(const Bounds&q,F&&f)const{
   if(q.minimum.x>s.bounds.maximum.x||q.maximum.x<s.bounds.minimum.x||q.minimum.y>s.bounds.maximum.y||q.maximum.y<s.bounds.minimum.y||q.minimum.z>s.bounds.maximum.z||q.maximum.z<s.bounds.minimum.z)return false;
-  if(++tick==0){std::fill(seen.begin(),seen.end(),0);tick=1;}
   int a,b,c,e;range(q,a,b,c,e);
-  for(int z=c;z<=e;++z)for(int x=a;x<=b;++x)for(uint32_t j:cells[size_t(z)*nx+x]){if(seen[j]==tick)continue;seen[j]=tick;const Bounds&t=tb[j];
+  for(int z=c;z<=e;++z)for(int x=a;x<=b;++x)for(uint32_t j:cells[size_t(z)*nx+x]){const Bounds&t=tb[j];int ta,tb_,tc,te;range(t,ta,tb_,tc,te);if(x!=std::max(a,ta)||z!=std::max(c,tc))continue;
    if(t.minimum.x>q.maximum.x||t.maximum.x<q.minimum.x||t.minimum.y>q.maximum.y||t.maximum.y<q.minimum.y||t.minimum.z>q.maximum.z||t.maximum.z<q.minimum.z)continue;
    if(f(j))return true;}
   return false;
  }
 };
 bool solid_touches_box(const Near&,const Bounds&);
-bool solid_in_column(const Near&,Point centre,double reach,double low,double high);
-bool solid_near_segment(const Near&,Point a,Point b,double reach);
-unsigned solid_crossings(const Near&,const std::vector<const ProtectedBounds*>&,std::string&first);
-std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid);
-const char* route_words(const ProtectedRoute&r){if(r.user=="boat")return "boat route";return r.id.rfind("PATH",0)==0||r.id.rfind("RPAT",0)==0?"villager route":"route";}
+// an up-facing room triangle (kWalkableFacing): what new geometry may be buried in or meet flush (issue #281)
+struct Ground {std::array<Point,3> corners;Bounds bounds;double gx=0,gz=0,g0=0;double height(double x,double z)const{return g0-gx*x-gz*z;}};
+std::vector<Ground> grounds_under(const std::string&s,int room,const Bounds&b,const Index&i);
+// the space an actor of the layout or a route needs (story_world_placement.h): true when the object's triangles are in
+// it; rise: how high the first part in the way stands above the floor
+// hits: the object's triangles in the way, all of them (the editor marks them); rise then the highest
+bool in_column_space(const Near&,const std::vector<Ground>&,Point centre,double reach,double floor,double top,double below,float&rise,std::vector<uint32_t>* hits=nullptr);
+bool in_route_space(const Near&,const std::vector<Ground>&,Point a,Point e,double reach,double low,double high,double below,float&rise,std::vector<uint32_t>* hits=nullptr);
+unsigned solid_crossings(const Near&,const std::vector<const ProtectedBounds*>&,std::string&first,std::vector<uint32_t>* hits=nullptr);
+std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid,const std::vector<Ground>* grounds);
+bool boat(const ProtectedRoute&r){return r.user=="boat";}
+const char* route_words(const ProtectedRoute&r){if(boat(r))return "boat route";return r.id.rfind("PATH",0)==0||r.id.rfind("RPAT",0)==0?"villager route":"route";}
 bool chunks(const Bytes&b,std::vector<Chunk>&out){if(!range(b,0,4))return false;uint32_t n=u32(b,0);if(!n||n>256||!range(b,4,uint64_t(n)*12))return false;for(unsigned j=0;j<n;++j){size_t p=4+j*12;std::string tag(reinterpret_cast<const char*>(b.data()+p),4);for(unsigned char c:tag)if(!std::isalnum(c))return false;uint32_t at=u32(b,p+8);if(at<4+n*12||at>b.size())return false;out.push_back({tag,u32(b,p+4),at});}return true;}
 }
 bool valid(const Bounds&b){return finite(b.minimum)&&finite(b.maximum)&&b.minimum.x<=b.maximum.x&&b.minimum.y<=b.maximum.y&&b.minimum.z<=b.maximum.z;}
@@ -95,9 +104,11 @@ std::vector<Conflict> check(const std::string&s,int room,const Bounds&b,const In
   out.push_back({v.kind,v.id,v.kind=="world_object"?"another mod's world object":v.kind=="ship"?"the King of Red Lions":"protected "+v.kind+" bounds",v.kind=="world_object"?v.id:""});}
  // what the room's layout needs: villagers and their routes, chests, doors, items, switches, cutscene areas, start
  // points; then the walls and ground (the layout's reasons say more to a mod maker, so they come first)
- const auto layout=building_conflicts(s,room,b,i,pad,solid);out.insert(out.end(),layout.begin(),layout.end());
- if(!near_walls.empty()){std::string first;if(const unsigned n=solid_crossings(*solid,near_walls,first)){if(!walls)first_wall=first;walls+=n;}}
- if(walls)out.push_back({"collision",first_wall,"the island's walls or ground ("+std::to_string(walls)+(walls==1?" triangle)":" triangles)"),""});
+ std::vector<Ground> grounds;if(solid)grounds=grounds_under(s,room,b,i);
+ const auto layout=building_conflicts(s,room,b,i,pad,solid,solid?&grounds:nullptr);out.insert(out.end(),layout.begin(),layout.end());
+ unsigned crossed=0;std::vector<uint32_t> crossing;if(!near_walls.empty()){std::string first;if((crossed=solid_crossings(*solid,near_walls,first,&crossing))){if(!walls)first_wall=first;walls+=crossed;}}
+ if(walls)out.push_back({"collision",first_wall,"the island's walls or ground ("+std::to_string(walls)+(walls==1?" triangle)":" triangles)")+
+  (crossed?": the model rises out of the ground or goes through a wall there (new ground meeting the island's ground at its height, up to "+std::to_string(int(kFlushStep))+" units above it, is fine)":""),"",0,{},0,{},std::move(crossing)});
  return out;
 }
 namespace {
@@ -221,7 +232,7 @@ bool add_native_layout(Index&i,const std::string&s,int room,const Bytes&b,std::s
  // others in the high byte of the home angle's x) sails its route: said as a boat route, not a villager's
  for(const auto&e:layout){if(lower(e.name).rfind("ikada",0)!=0||e.tag=="PLYR")continue;
   const unsigned path=(e.params&15)==4?unsigned(e.params>>16):unsigned(uint16_t(e.angle_x)>>8);
-  for(auto&r:routes)if(r.id=="RPAT:"+std::to_string(path))r.user="boat";}
+  for(auto&r:routes)if(r.id=="RPAT:"+std::to_string(path))r.user="boat",r.radius=kBoatHalfWidth;}
  i.layout.insert(i.layout.end(),layout.begin(),layout.end());i.routes.insert(i.routes.end(),routes.begin(),routes.end());auto&c=coverage(i,s,room);c.routes=true;c.events=true;return true;
 }
 namespace {
@@ -297,6 +308,9 @@ Extent building_extent(const LayoutEntry&e){
  if(starts(n,{"swhit","kbota","osw","hsw","swtact"}))return {Keep::Switch,150,50,250};
  // the game's villagers and other characters: a capital, a small letter and a digit ("Uo1", "Ko1", "Ls1")
  if(e.name.size()==3&&std::isupper((unsigned char)e.name[0])&&std::islower((unsigned char)e.name[1])&&std::isdigit((unsigned char)e.name[2]))return {Keep::Villager,100,50,300};
+ // characters of the game's actor table (dStage's names of NPC processes) whose names have another form: Windfall's kids
+ // (UkB, UkC, UkD and their second forms, Mk), Tott (Tt), the pirates (P1a..P2c), Hr, Ho, Mt, Mn, Ah, Po, Os, Tc
+ for(const char*c:{"UkB","UkC","UkD","UkB2","UkC2","UkD2","Mk","Tt","P1a","P1b","P1c","P2a","P2b","P2c","Hr","Ho","Mt","Mn","Ah","Po","Os","Tc"})if(e.name==c)return {Keep::Villager,100,50,300};
  // small props a building would swallow (pots, barrels, signs, stakes, posts, lanterns, buckets, flags, enemies)
  if(starts(n,{"kui","tpost","bonbori","lamp","okioke","piwa","puti","ksaku","mtflag","trflag","c_green","c_red","c_blue","bbaba","keeth","p_hat","fdai"}))return {Keep::Object,60,50,250};
  // anything else: an object of unknown size (a default; a scaled one by its scale, up to 600)
@@ -305,10 +319,11 @@ Extent building_extent(const LayoutEntry&e){
 }
 const char* keep_words(Keep k){switch(k){case Keep::Villager:return "villager";case Keep::Chest:return "chest";case Keep::Door:return "door";case Keep::Item:return "item";case Keep::Switch:return "switch";case Keep::Event:return "cutscene area";case Keep::Object:return "object";case Keep::Start:return "start point";default:return "";}}
 std::vector<Conflict> check_building(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Solid* own){
- std::optional<Near> grid;if(own)grid.emplace(*own);return building_conflicts(s,room,b,i,margin,grid?&*grid:nullptr);
+ std::optional<Near> grid;std::vector<Ground> grounds;if(own){grid.emplace(*own);grounds=grounds_under(s,room,b,i);}
+ return building_conflicts(s,room,b,i,margin,grid?&*grid:nullptr,own?&grounds:nullptr);
 }
 namespace {
-std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid){
+std::vector<Conflict> building_conflicts(const std::string&s,int room,const Bounds&b,const Index&i,float margin,const Near* solid,const std::vector<Ground>* grounds){
  std::vector<Conflict> out;if(!valid(b)||!std::isfinite(margin)||margin<0){out.push_back({"invalid","","Invalid building bounds"});return out;}
  for(const auto&e:i.layout){if(e.stage!=s||(e.room>=0&&e.room!=room))continue;const Extent x=building_extent(e);if(x.keep==Keep::None)continue;
   const Bounds area{{e.position.x-x.radius,e.position.y-x.below,e.position.z-x.radius},{e.position.x+x.radius,e.position.y+x.above,e.position.z+x.radius}};
@@ -317,29 +332,40 @@ std::vector<Conflict> building_conflicts(const std::string&s,int room,const Boun
   const float cx=std::clamp(e.position.x,b.minimum.x,b.maximum.x),cz=std::clamp(e.position.z,b.minimum.z,b.maximum.z);
   const double distance=std::hypot(double(cx)-e.position.x,double(cz)-e.position.z),reach=double(x.radius)+margin;
   if(distance>reach)continue;
-  // with the object's own triangles: only when one of them comes into the column's reach (an L-shaped object's box
-  // may cover a villager standing in its open corner)
-  if(solid&&!solid_in_column(*solid,e.position,reach,double(e.position.y)-x.below-margin,double(e.position.y)+x.above+margin))continue;
+  // with the object's own triangles: only when they rise into the space it needs above its floor (an L-shaped object's
+  // box may cover a villager standing in its open corner; new ground flush with the hill beside him is not in his way)
+  float rise=0;std::vector<uint32_t> hits;
+  if(solid&&!in_column_space(*solid,*grounds,e.position,reach,e.position.y,double(e.position.y)+x.above+margin,double(x.below)+margin,rise,&hits))continue;
   // how far to move: out of its reach, or (its centre under the bounds) past the nearest side and then its reach
   const double inside=std::min({double(e.position.x)-b.minimum.x,double(b.maximum.x)-e.position.x,double(e.position.z)-b.minimum.z,double(b.maximum.z)-e.position.z});
   const float move=float(std::ceil(distance>0?reach-distance+1:inside+reach+1));
-  out.push_back({keep_words(x.keep),e.tag+":"+e.name+":"+std::to_string(e.index),article(keep_words(x.keep))+" of the island",e.name,move,e.position,float(reach)-margin,{}});}
+  std::string message=article(keep_words(x.keep))+" of the island";
+  if(solid)message+=" (the model rises "+std::to_string(int(std::ceil(rise)))+" units above its floor within "+std::to_string(int(std::ceil(reach)))+" of it; ground flush with its floor, up to "+std::to_string(int(kFlushStep))+" above, is fine)";
+  out.push_back({keep_words(x.keep),e.tag+":"+e.name+":"+std::to_string(e.index),message,e.name,move,e.position,float(reach)-margin,{},std::move(hits)});}
  for(const auto&r:i.routes){if(r.stage!=s||(r.room>=0&&r.room!=room))continue;
   bool invalid=!std::isfinite(r.radius)||r.radius<0||r.points.empty();for(auto p:r.points)invalid|=!finite(p);
   if(invalid){out.push_back({"coverage",r.id,"Protected route data is invalid"});continue;}
   // a route all at or below sea level (boats, swimmers, seagulls' base line) is the sea's: only what reaches down
   // to the water is in its way, not a building on the island
   if(sea_route(r)&&b.minimum.y>kSeaLevel)continue;
-  const char* words=route_words(r);bool hit=false;
-  // with the object's own triangles: a segment in reach of the bounds is in its way when it is in reach of a triangle
-  for(size_t j=0;j<r.points.size()&&!hit;++j){
+  const char* words=route_words(r);bool hit=false;float rise=0;std::vector<uint32_t> hits;
+  // with the object's own triangles: a segment in reach of the bounds is in its way when they come into the space it
+  // needs (a walker's: above its floor, up to a villager's height; a boat's: its hull, under the water line and above)
+  const Extent walker{Keep::Villager,0,50,300};
+  const double low=boat(r)?-double(kBoatDraft)-margin:kFlushStep,high=boat(r)?double(kBoatHeight)+margin:double(walker.above)+margin;
+  // (with the object's triangles every segment, for all of them in the way and how high the highest rises)
+  for(size_t j=0;j<r.points.size()&&(!hit||solid);++j){
    if(j+1==r.points.size()&&!r.closed&&r.points.size()!=1)break;
-   const Point a=r.points[j],e=j+1<r.points.size()?r.points[j+1]:r.points[0];
-   hit=segment_box(a,e,b,margin+r.radius)&&(!solid||solid_near_segment(*solid,a,e,double(margin)+r.radius));}
+   const Point a=r.points[j],e=j+1<r.points.size()?r.points[j+1]:r.points[0];float here=0;
+   if(segment_box(a,e,b,margin+r.radius)&&(!solid||in_route_space(*solid,*grounds,a,e,double(margin)+r.radius,low,high,double(walker.below)+margin,here,&hits))){rise=hit?std::max(rise,here):here;hit=true;}}
+  if(!hits.empty()){std::sort(hits.begin(),hits.end());hits.erase(std::unique(hits.begin(),hits.end()),hits.end());}
   // where it is: the route's point nearest the bounds (the one to keep clear of, not where the route starts)
   Point near=r.points.front();double best=1e300;const Point mid{(b.minimum.x+b.maximum.x)/2,(b.minimum.y+b.maximum.y)/2,(b.minimum.z+b.maximum.z)/2};
   for(auto p:r.points){const double dx=double(p.x)-mid.x,dz=double(p.z)-mid.z,d=dx*dx+dz*dz;if(d<best)best=d,near=p;}
-  if(hit)out.push_back({words,r.id,article(words)+" of the island",r.id,0,near,r.radius,r.points});}
+  std::string message=article(words)+" of the island";
+  if(hit&&solid)message+=boat(r)?" (the model reaches into the boat's way: "+std::to_string(int(r.radius+margin))+" to either side of its route, from "+std::to_string(int(kBoatDraft+margin))+" under the water line to "+std::to_string(int(kBoatHeight+margin))+" above it; the boat sails through whatever stands there)"
+   :" (the model rises "+std::to_string(int(std::ceil(rise)))+" units above the route within "+std::to_string(int(r.radius+margin))+" of it; ground flush with it, up to "+std::to_string(int(kFlushStep))+" above, is fine)";
+  if(hit)out.push_back({words,r.id,message,r.id,0,near,r.radius,r.points,std::move(hits)});}
  return out;
 }
 }
@@ -352,21 +378,31 @@ Poly clip_above(const Point (&t)[3],double h){
   if(ia!=ib){const double f=(h-a.y)/(double(b.y)-a.y);out.push_back({float(a.x+(b.x-a.x)*f),float(h),float(a.z+(b.z-a.z)*f)});}}
  return out;
 }
-// does segment p-q cross triangle (a,b,c) (Moeller-Trumbore with the segment's ends; parallel never counts)
-bool segment_triangle(Point p,Point q,Point a,Point b,Point c){
- const double d[3]={double(q.x)-p.x,double(q.y)-p.y,double(q.z)-p.z},e1[3]={double(b.x)-a.x,double(b.y)-a.y,double(b.z)-a.z},e2[3]={double(c.x)-a.x,double(c.y)-a.y,double(c.z)-a.z};
- const double h[3]={d[1]*e2[2]-d[2]*e2[1],d[2]*e2[0]-d[0]*e2[2],d[0]*e2[1]-d[1]*e2[0]};const double det=e1[0]*h[0]+e1[1]*h[1]+e1[2]*h[2];
- const double scale=std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2])*std::sqrt(e1[0]*e1[0]+e1[1]*e1[1]+e1[2]*e1[2])*std::sqrt(e2[0]*e2[0]+e2[1]*e2[1]+e2[2]*e2[2]);
- if(!(std::fabs(det)>1e-9*scale))return false;const double f=1/det,sv[3]={double(p.x)-a.x,double(p.y)-a.y,double(p.z)-a.z};
- const double u=f*(sv[0]*h[0]+sv[1]*h[1]+sv[2]*h[2]);if(u<0||u>1)return false;
- const double qv[3]={sv[1]*e1[2]-sv[2]*e1[1],sv[2]*e1[0]-sv[0]*e1[2],sv[0]*e1[1]-sv[1]*e1[0]};const double v=f*(d[0]*qv[0]+d[1]*qv[1]+d[2]*qv[2]);if(v<0||u+v>1)return false;
- const double t=f*(e2[0]*qv[0]+e2[1]*qv[1]+e2[2]*qv[2]);return t>=0&&t<=1;
+// does segment p-q go through convex polygon f (a triangle, or one clipped) by more than kTouch: its ends lie on either
+// side of f's plane farther than kTouch, and where it meets the plane lies inside f farther than kTouch from f's sides.
+// Geometry that only touches (a shared corner or side, a face lying on another, an end resting on a face) doesn't go
+// through, with the float rounding of either model (story_world_placement.h, kTouch).
+bool segment_through(Point p,Point q,const Poly&f){
+ if(f.size()<3)return false;
+ const double ax=f[0].x,ay=f[0].y,az=f[0].z;double nx=0,ny=0,nz=0;
+ for(size_t k=1;k+1<f.size();++k){const double ux=double(f[k].x)-ax,uy=double(f[k].y)-ay,uz=double(f[k].z)-az,wx=double(f[k+1].x)-ax,wy=double(f[k+1].y)-ay,wz=double(f[k+1].z)-az;
+  nx+=uy*wz-uz*wy;ny+=uz*wx-ux*wz;nz+=ux*wy-uy*wx;}
+ const double l=std::sqrt(nx*nx+ny*ny+nz*nz);if(!(l>0))return false;nx/=l;ny/=l;nz/=l;
+ const double dp=nx*(p.x-ax)+ny*(p.y-ay)+nz*(p.z-az),dq=nx*(q.x-ax)+ny*(q.y-ay)+nz*(q.z-az);
+ if(!((dp>=kTouch&&dq<=-kTouch)||(dp<=-kTouch&&dq>=kTouch)))return false;
+ const double t=dp/(dp-dq),x=p.x+(double(q.x)-p.x)*t,y=p.y+(double(q.y)-p.y)*t,z=p.z+(double(q.z)-p.z)*t;
+ for(size_t k=0;k<f.size();++k){const Point&e0=f[k],&e1=f[(k+1)%f.size()];const double ex=double(e1.x)-e0.x,ey=double(e1.y)-e0.y,ez=double(e1.z)-e0.z,el=std::sqrt(ex*ex+ey*ey+ez*ez);
+  if(!(el>0))continue;const double vx=x-e0.x,vy=y-e0.y,vz=z-e0.z;
+  // the signed distance in f's plane from this side, positive inside
+  if(((ey*vz-ez*vy)*nx+(ez*vx-ex*vz)*ny+(ex*vy-ey*vx)*nz)/el<kTouch)return false;}
+ return true;
 }
-// do two convex polygons (fans) cross: an edge of one through the other
+bool segment_triangle(Point p,Point q,Point a,Point b,Point c){return segment_through(p,q,Poly{a,b,c});}
+// do two convex polygons cross: a side of one goes through the other (segment_through)
 bool polys_cross(const Poly&a,const Poly&b){
  if(a.size()<3||b.size()<3)return false;
  for(int pass=0;pass<2;++pass){const Poly&e=pass?b:a,&f=pass?a:b;
-  for(size_t i=0;i<e.size();++i){const Point p=e[i],q=e[(i+1)%e.size()];for(size_t k=1;k+1<f.size();++k)if(segment_triangle(p,q,f[0],f[k],f[k+1]))return true;}}
+  for(size_t i=0;i<e.size();++i)if(segment_through(e[i],e[(i+1)%e.size()],f))return true;}
  return false;
 }
 Bounds poly_bounds(const Poly&p){Bounds b=empty();for(auto q:p)include(b,q);return b;}
@@ -428,28 +464,8 @@ Bounds bounds_of(const Poly&p){Bounds b=empty();for(auto q:p)include(b,q);return
 struct V {double x,y,z;};
 V vec(Point p){return {p.x,p.y,p.z};}
 V sub(V a,V b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
-V add_scaled(V a,V d,double t){return {a.x+d.x*t,a.y+d.y*t,a.z+d.z*t};}
 double dot(V a,V b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 double length2(V a){return dot(a,a);}
-// the squared distance of a point to a triangle (Ericson, Real-Time Collision Detection 5.1.5)
-double point_triangle2(V p,V a,V b,V c){
- const V ab=sub(b,a),ac=sub(c,a),ap=sub(p,a);const double d1=dot(ab,ap),d2=dot(ac,ap);if(d1<=0&&d2<=0)return length2(ap);
- const V bp=sub(p,b);const double d3=dot(ab,bp),d4=dot(ac,bp);if(d3>=0&&d4<=d3)return length2(bp);
- const double vc=d1*d4-d3*d2;if(vc<=0&&d1>=0&&d3<=0)return length2(sub(p,add_scaled(a,ab,d1/(d1-d3))));
- const V cp=sub(p,c);const double d5=dot(ab,cp),d6=dot(ac,cp);if(d6>=0&&d5<=d6)return length2(cp);
- const double vb=d5*d2-d1*d6;if(vb<=0&&d2>=0&&d6<=0)return length2(sub(p,add_scaled(a,ac,d2/(d2-d6))));
- const double va=d3*d6-d5*d4;if(va<=0&&(d4-d3)>=0&&(d5-d6)>=0)return length2(sub(p,add_scaled(b,sub(c,b),(d4-d3)/((d4-d3)+(d5-d6)))));
- const double denom=1/(va+vb+vc);return length2(sub(p,add_scaled(add_scaled(a,ab,vb*denom),ac,vc*denom)));
-}
-// the squared distance between two segments (Ericson 5.1.9)
-double segment_segment2(V p1,V q1,V p2,V q2){
- const V d1=sub(q1,p1),d2=sub(q2,p2),r=sub(p1,p2);const double a=length2(d1),e=length2(d2),f=dot(d2,r);double s=0,t=0;
- if(a<=1e-12&&e<=1e-12)return length2(r);
- if(a<=1e-12)t=std::clamp(f/e,0.0,1.0);
- else{const double c=dot(d1,r);if(e<=1e-12)s=std::clamp(-c/a,0.0,1.0);
-  else{const double b=dot(d1,d2),den=a*e-b*b;s=den>1e-12?std::clamp((b*f-c*e)/den,0.0,1.0):0;t=(b*s+f)/e;if(t<0){t=0;s=std::clamp(-c/a,0.0,1.0);}else if(t>1){t=1;s=std::clamp((b-c)/a,0.0,1.0);}}}
- return length2(sub(add_scaled(p1,d1,s),add_scaled(p2,d2,t)));
-}
 // the distance in X/Z of a point to a polygon's outline, 0 inside it
 double outline_distance(const Poly&p,double x,double z){
  bool inside=false;double best=1e300;const size_t n=p.size();
@@ -466,33 +482,193 @@ bool solid_touches_box(const Near&n,const Bounds&box){
   for(int k=0;k<3&&!p.empty();++k){p=clip_axis(p,k,axis_of(box.minimum,k),true);if(!p.empty())p=clip_axis(p,k,axis_of(box.maximum,k),false);}
   return !p.empty();});
 }
-bool solid_in_column(const Near&n,Point c,double reach,double low,double high){
- const Bounds column{{float(c.x-reach),float(low),float(c.z-reach)},{float(c.x+reach),float(high),float(c.z+reach)}};
- return n.visit(column,[&](uint32_t j){Poly p=triangle_of(n.s,n.s.triangles[j]);
-  p=clip_axis(p,1,low,true);if(!p.empty())p=clip_axis(p,1,high,false);
-  return !p.empty()&&outline_distance(p,c.x,c.z)<=reach;});
+// ---- flush ground and the space an actor or a route needs (issue #281)
+// a plane a*x + b*y + c*z + d; clip_plane keeps a convex polygon's part where it is >= 0
+struct Plane {double a=0,b=0,c=0,d=0;double at(Point p)const{return a*p.x+b*p.y+c*p.z+d;}};
+Poly clip_plane(const Poly&in,const Plane&h){
+ Poly out;const size_t n=in.size();
+ for(size_t j=0;j<n;++j){const Point&a=in[j],&b=in[(j+1)%n];const double fa=h.at(a),fb=h.at(b);const bool ia=fa>=0,ib=fb>=0;
+  if(ia)out.push_back(a);
+  if(ia!=ib){const double f=fa/(fa-fb);out.push_back({float(a.x+(b.x-a.x)*f),float(a.y+(b.y-a.y)*f),float(a.z+(b.z-a.z)*f)});}}
+ return out;
 }
-bool solid_near_segment(const Near&n,Point a,Point b,double reach){
- Bounds corridor=empty();include(corridor,a);include(corridor,b);
- corridor.minimum={float(corridor.minimum.x-reach),float(corridor.minimum.y-reach),float(corridor.minimum.z-reach)};corridor.maximum={float(corridor.maximum.x+reach),float(corridor.maximum.y+reach),float(corridor.maximum.z+reach)};
- const double r2=reach*reach;const V p=vec(a),q=vec(b);
- return n.visit(corridor,[&](uint32_t j){const auto&t=n.s.triangles[j];const Point x=n.s.vertices[t[0]],y=n.s.vertices[t[1]],z=n.s.vertices[t[2]];
-  if(segment_triangle(a,b,x,y,z))return true;
-  const V vx=vec(x),vy=vec(y),vz=vec(z);
-  return point_triangle2(p,vx,vy,vz)<=r2||point_triangle2(q,vx,vy,vz)<=r2||segment_segment2(p,q,vx,vy)<=r2||segment_segment2(p,q,vy,vz)<=r2||segment_segment2(p,q,vz,vx)<=r2;});
+// a piece with an area (a tenth of a square unit or more; clipping exactly along a plane leaves flat ones without)
+bool substantial(const Poly&p){
+ if(p.size()<3)return false;V sum{0,0,0};
+ for(size_t j=1;j+1<p.size();++j){const V u=sub(vec(p[j]),vec(p[0])),w=sub(vec(p[j+1]),vec(p[0]));sum={sum.x+u.y*w.z-u.z*w.y,sum.y+u.z*w.x-u.x*w.z,sum.z+u.x*w.y-u.y*w.x};}
+ return std::sqrt(length2(sum))/2>=.1;
 }
+// how much a ground triangle's outline is widened, so that two triangles sharing a side leave no gap between them: the
+// rounding of float coordinates this far out (about 0.016 units at 200000, where the sea's squares are)
+constexpr double kOutlineSlack=.05;
+// the vertical planes of a convex outline's sides seen from above, facing in (widened by kOutlineSlack)
+std::vector<Plane> sides_in(const Poly&p){
+ double turn=0;for(size_t j=0;j<p.size();++j){const Point&a=p[j],&b=p[(j+1)%p.size()];turn+=double(a.x)*b.z-double(b.x)*a.z;}
+ std::vector<Plane> out;if(turn==0)return out;const double k=turn>0?1:-1;
+ for(size_t j=0;j<p.size();++j){const Point&a=p[j],&b=p[(j+1)%p.size()];const double ex=double(b.x)-a.x,ez=double(b.z)-a.z,l=std::sqrt(ex*ex+ez*ez);if(!(l>0))continue;
+  out.push_back({-ez*k/l,0,ex*k/l,(ez*a.x-ex*a.z)*k/l+kOutlineSlack});}
+ return out;
+}
+// the parts of `piece` that are not buried in ground g (inside its outline between `low` and `high`, at most kFlushStep
+// above it): appended to `out`
+void unburied(const Poly&piece,const Ground&g,double low,double high,std::vector<Poly>&out){
+ const Point tri[3]={g.corners[0],g.corners[1],g.corners[2]};Poly band=clip_above(tri,low);band=clip_axis(band,1,high,false);
+ const auto sides=sides_in(band);if(sides.empty()){out.push_back(piece);return;}
+ Poly rest=piece;
+ for(const auto&h:sides){Poly outside=clip_plane(rest,{-h.a,-h.b,-h.c,-h.d});if(substantial(outside))out.push_back(std::move(outside));rest=clip_plane(rest,h);if(rest.size()<3)return;}
+ // over the ground: in the way only above it plus the step (y - height(x, z) - kFlushStep >= 0)
+ Poly above=clip_plane(rest,{g.gx,1,g.gz,-g.g0-kFlushStep});if(substantial(above))out.push_back(std::move(above));
+}
+// what of `p` is in the way: its parts not buried in any ground between `low` and `high`
+std::vector<Poly> in_the_way(Poly p,const std::vector<Ground>&grounds,double low,double high){
+ std::vector<Poly> parts;if(!substantial(p))return parts;parts.push_back(std::move(p));
+ for(const auto&g:grounds){if(parts.empty())break;if(g.bounds.maximum.y<low||g.bounds.minimum.y>high)continue;
+  std::vector<Poly> next;
+  for(auto&q:parts){const Bounds qb=bounds_of(q);
+   if(qb.minimum.x>g.bounds.maximum.x||qb.maximum.x<g.bounds.minimum.x||qb.minimum.z>g.bounds.maximum.z||qb.maximum.z<g.bounds.minimum.z){next.push_back(std::move(q));continue;}
+   unburied(q,g,low,high,next);}
+  parts=std::move(next);}
+ return parts;
+}
+// the distance from above between a point and a segment, and between a polygon and a segment (0 where they meet)
+double point_segment_xz(double x,double z,Point a,Point e){const double dx=double(e.x)-a.x,dz=double(e.z)-a.z,l=dx*dx+dz*dz,t=l>0?std::clamp(((x-a.x)*dx+(z-a.z)*dz)/l,0.0,1.0):0;return std::hypot(a.x+dx*t-x,a.z+dz*t-z);}
+bool segments_cross_xz(Point p,Point q,Point a,Point e){
+ auto side=[](Point o,Point u,Point v){return (double(u.x)-o.x)*(double(v.z)-o.z)-(double(u.z)-o.z)*(double(v.x)-o.x);};
+ const double d1=side(a,e,p),d2=side(a,e,q),d3=side(p,q,a),d4=side(p,q,e);return ((d1>0&&d2<0)||(d1<0&&d2>0))&&((d3>0&&d4<0)||(d3<0&&d4>0));
+}
+double poly_segment_xz(const Poly&p,Point a,Point e){
+ double best=std::min(outline_distance(p,a.x,a.z),outline_distance(p,e.x,e.z));if(best==0)return 0;
+ for(size_t j=0;j<p.size();++j){if(segments_cross_xz(p[j],p[(j+1)%p.size()],a,e))return 0;best=std::min(best,point_segment_xz(p[j].x,p[j].z,a,e));}
+ return best;
+}
+double highest(const Poly&p){double h=-1e300;for(auto q:p)h=std::max(h,double(q.y));return h;}
+}
+namespace {
+std::vector<Ground> grounds_under(const std::string&s,int room,const Bounds&b,const Index&i){
+ std::vector<Ground> out;
+ for(const auto&v:i.bounds){if(v.stage!=s||(v.room>=0&&v.room!=room)||v.kind!="collision"||!v.triangle)continue;
+  if(v.bounds.minimum.x>b.maximum.x||v.bounds.maximum.x<b.minimum.x||v.bounds.minimum.z>b.maximum.z||v.bounds.maximum.z<b.minimum.z)continue;
+  const V a=vec(v.corners[0]),u=sub(vec(v.corners[1]),a),w=sub(vec(v.corners[2]),a);const double nx=u.y*w.z-u.z*w.y,ny=u.z*w.x-u.x*w.z,nz=u.x*w.y-u.y*w.x,len=std::sqrt(nx*nx+ny*ny+nz*nz);
+  if(!(len>0)||ny<kWalkableFacing*len)continue;
+  Ground g;g.corners=v.corners;g.bounds=v.bounds;g.gx=nx/ny;g.gz=nz/ny;g.g0=a.y+g.gx*a.x+g.gz*a.z;out.push_back(g);}
+ return out;
+}
+bool in_column_space(const Near&n,const std::vector<Ground>&grounds,Point c,double reach,double floor,double top,double below,float&rise,std::vector<uint32_t>* hits){
+ const double low=floor+kFlushStep;if(top<=low)return false;
+ const Bounds column{{float(c.x-reach),float(low),float(c.z-reach)},{float(c.x+reach),float(top),float(c.z+reach)}};
+ bool found=false;
+ n.visit(column,[&](uint32_t j){Poly p=triangle_of(n.s,n.s.triangles[j]);
+  p=clip_axis(p,1,low,true);if(!p.empty())p=clip_axis(p,1,top,false);
+  if(p.size()<3||outline_distance(p,c.x,c.z)>reach)return false;
+  bool hit=false;
+  for(const auto&q:in_the_way(std::move(p),grounds,floor-below,floor+kGroundStep))if(outline_distance(q,c.x,c.z)<=reach){const float r=float(highest(q)-floor);rise=found?std::max(rise,r):r;found=hit=true;}
+  if(hit&&hits)hits->push_back(j);
+  return hit&&!hits;});
+ return found;
+}
+bool in_route_space(const Near&n,const std::vector<Ground>&grounds,Point a,Point e,double reach,double low,double high,double below,float&rise,std::vector<uint32_t>* hits){
+ const double dx=double(e.x)-a.x,dz=double(e.z)-a.z,l=dx*dx+dz*dz;
+ if(l<1e-6)return in_column_space(n,grounds,{a.x,std::min(a.y,e.y),a.z},reach,std::min(a.y,e.y)+low-kFlushStep,std::max(a.y,e.y)+high,below,rise,hits);
+ Bounds corridor=empty();include(corridor,a);include(corridor,e);
+ corridor.minimum={float(corridor.minimum.x-reach),float(corridor.minimum.y+low),float(corridor.minimum.z-reach)};corridor.maximum={float(corridor.maximum.x+reach),float(corridor.maximum.y+high),float(corridor.maximum.z+reach)};
+ // the route's height under a point: a's before it, e's after it, between them along it (t = (p - a).d / |d|^2 from above)
+ const double k=(double(e.y)-a.y)/l,along=double(a.x)*dx+double(a.z)*dz;
+ const Plane after_a{dx,0,dz,-along},before_e{-dx,0,-dz,along+l};
+ const double ground_low=std::min(a.y,e.y)-below,ground_high=std::max(a.y,e.y)+kGroundStep;
+ bool found=false;
+ n.visit(corridor,[&](uint32_t j){const Poly t=triangle_of(n.s,n.s.triangles[j]);bool hit=false;
+  const Poly parts[3]={clip_plane(t,{-dx,0,-dz,along}),clip_plane(clip_plane(t,after_a),before_e),clip_plane(t,{dx,0,dz,-along-l})};
+  for(int r=0;r<3;++r){if(parts[r].size()<3)continue;
+   // y - height >= low and height + high - y >= 0, the height a.y + k*((p - a).d) between the ends, constant beyond them
+   const double s=r==1?k:0,h0=r==2?e.y:a.y,o=r==1?along:0;
+   Poly p=clip_plane(parts[r],{-s*dx,1,-s*dz,-h0+s*o-low});if(p.size()>=3)p=clip_plane(p,{s*dx,-1,s*dz,h0-s*o+high});
+   if(p.size()<3||poly_segment_xz(p,a,e)>reach)continue;
+   for(const auto&q:in_the_way(std::move(p),grounds,ground_low,ground_high))if(poly_segment_xz(q,a,e)<=reach){
+    double over=-1e300;for(auto v:q){const double ref=r==1?a.y+k*(double(v.x)*dx+double(v.z)*dz-along):h0;over=std::max(over,double(v.y)-ref);}
+    rise=found?std::max(rise,float(over)):float(over);found=hit=true;}}
+  if(hit&&hits)hits->push_back(j);
+  return hit&&!hits;});
+ return found;
+}
+// where two triangles cross: the points where a side of one goes through the other
+void crossing_points(const Point (&x)[3],const Point (&y)[3],std::vector<Point>&out){
+ for(int pass=0;pass<2;++pass){const Point (&e)[3]=pass?y:x,(&f)[3]=pass?x:y;
+  for(int k=0;k<3;++k){const Point p=e[k],q=e[(k+1)%3];if(!segment_triangle(p,q,f[0],f[1],f[2]))continue;
+   // the plane of f: where p-q meets it
+   const V a=vec(f[0]),u=sub(vec(f[1]),a),w=sub(vec(f[2]),a),n{u.y*w.z-u.z*w.y,u.z*w.x-u.x*w.z,u.x*w.y-u.y*w.x};
+   const V d=sub(vec(q),vec(p));const double den=dot(n,d);if(den==0)continue;const double t=std::clamp(dot(n,sub(a,vec(p)))/den,0.0,1.0);
+   out.push_back({float(p.x+d.x*t),float(p.y+d.y*t),float(p.z+d.z*t)});}}
+}
+double facing(const Point (&t)[3]){const V a=vec(t[0]),u=sub(vec(t[1]),a),w=sub(vec(t[2]),a);const V n{u.y*w.z-u.z*w.y,u.z*w.x-u.x*w.z,u.x*w.y-u.y*w.x};const double l=std::sqrt(length2(n));return l>0?n.y/l:0;}
+// the height of a triangle's plane at (x, z) when the triangle, seen from above, is within `slack` of it
+bool height_at(const Point (&t)[3],double x,double z,double slack,double&y){
+ const V a=vec(t[0]),u=sub(vec(t[1]),a),w=sub(vec(t[2]),a);const double nx=u.y*w.z-u.z*w.y,ny=u.z*w.x-u.x*w.z,nz=u.x*w.y-u.y*w.x;if(ny==0)return false;
+ if(outline_distance(Poly{t[0],t[1],t[2]},x,z)>slack)return false;y=a.y-(nx*(x-a.x)+nz*(z-a.z))/ny;return true;
+}
+// how near (from above) a triangle counts as over a point: a unit, many times the rounding of float coordinates out at
+// sea (about 0.016 at 200000)
+constexpr double kNear=1;
+// how far a wall's top edge may lie to the side of a point lower on it: a wall is steeper than 60 degrees (anything
+// flatter is ground, kWalkableFacing), so it leans at most 30 degrees, tan 30 = 0.577 of the height
+constexpr double kWallLean=.58;
+// the point of a triangle, seen from above, nearest (x, z)
+void nearest_xz(const Point (&t)[3],double&x,double&z){
+ if(outline_distance(Poly{t[0],t[1],t[2]},x,z)==0)return;double best=1e300,bx=x,bz=z;
+ for(int k=0;k<3;++k){const Point a=t[k],e=t[(k+1)%3];const double dx=double(e.x)-a.x,dz=double(e.z)-a.z,l=dx*dx+dz*dz,u=l>0?std::clamp(((x-a.x)*dx+(z-a.z)*dz)/l,0.0,1.0):0;
+  const double px=a.x+dx*u,pz=a.z+dz*u,d=std::hypot(px-x,pz-z);if(d<best)best=d,bx=px,bz=pz;}
+ x=bx;z=bz;
+}
+// new ground meeting the island's ground flush (issue #281), for a room triangle w and an object's triangle o that cross:
+// - w a floor (kWalkableFacing): o, where it is over or under w, nowhere more than kFlushStep above it (a floor at its
+//   height, or a part buried under it);
+// - w a wall: each point where they cross lies under the object's own floor, and that floor meets the island's ground
+//   flush (kFlushStep) where the wall can reach up to it (kWallLean): new ground continuing the island's ground at its
+//   height, its sides going into the island's cliff under it.
+// A roof, and a wall or raised part standing out of the island's ground, still count.
+struct Flush {const Near&own;const std::vector<const ProtectedBounds*>&room;
+ // the object's highest floor over (x, z) (within kNear) not lower than y - kFlushStep
+ bool own_floor(double x,double z,double y,double&f)const{bool found=false;
+  const Bounds q{{float(x-kNear),float(y-kFlushStep),float(z-kNear)},{float(x+kNear),own.s.bounds.maximum.y,float(z+kNear)}};
+  own.visit(q,[&](uint32_t j){const auto&t=own.s.triangles[j];const Point o[3]={own.s.vertices[t[0]],own.s.vertices[t[1]],own.s.vertices[t[2]]};double h;
+   if(std::fabs(facing(o))>=kWalkableFacing&&height_at(o,x,z,kNear,h)&&h>=y-kFlushStep&&(!found||h>f))f=h,found=true;return false;});
+  return found;}
+ // the island's ground within `reach` of (x, z) (from above), not lower than y - kFlushStep, flush with the object's floor
+ // there
+ bool meets_island(double x,double z,double y,double reach)const{
+  for(const auto*r:room){if(x<r->bounds.minimum.x-reach||x>r->bounds.maximum.x+reach||z<r->bounds.minimum.z-reach||z>r->bounds.maximum.z+reach||r->bounds.maximum.y<y-kFlushStep)continue;
+   const Point t[3]={r->corners[0],r->corners[1],r->corners[2]};if(facing(t)<kWalkableFacing)continue;
+   double nx=x,nz=z,g,f;nearest_xz(t,nx,nz);if(std::hypot(nx-x,nz-z)>reach||!height_at(t,nx,nz,kNear,g)||g<y-kFlushStep)continue;
+   if(own_floor(nx,nz,g,f)&&std::fabs(f-g)<=kFlushStep)return true;}
+  return false;}
+ bool operator()(const Point (&w)[3],const Point (&o)[3])const{
+  const double up=facing(w);
+  if(up>=kWalkableFacing){
+   Poly p{o[0],o[1],o[2]};for(const auto&h:sides_in(Poly{w[0],w[1],w[2]})){p=clip_plane(p,h);if(p.empty())return true;}
+   const V a=vec(w[0]),u=sub(vec(w[1]),a),v=sub(vec(w[2]),a);const double nx=u.y*v.z-u.z*v.y,ny=u.z*v.x-u.x*v.z,nz=u.x*v.y-u.y*v.x;
+   for(auto q:p)if(double(q.y)-(a.y-(nx*(q.x-a.x)+nz*(q.z-a.z))/ny)>kFlushStep)return false;
+   return true;}
+  if(up<-.8)return false;
+  std::vector<Point> points;crossing_points(w,o,points);if(points.empty())return false;
+  for(auto q:points){double f;if(!own_floor(q.x,q.z,q.y,f)||!meets_island(q.x,q.z,q.y,std::max(kNear,(f-q.y)*kWallLean)))return false;}
+  return true;}
+};
 // the room's triangles near an object that its own triangles cross above the higher base plus kGroundStep (as
-// solids_overlap: resting on the ground, or reaching a little into a slope under it, doesn't count); how many, the first
-unsigned solid_crossings(const Near&near,const std::vector<const ProtectedBounds*>&walls,std::string&first){
+// solids_overlap: resting on the ground, or reaching a little into a slope under it, doesn't count) and not flush with
+// them (Flush); how many, the first
+unsigned solid_crossings(const Near&near,const std::vector<const ProtectedBounds*>&walls,std::string&first,std::vector<uint32_t>* hits){
  const Solid&s=near.s;if(s.triangles.empty()||walls.empty())return 0;
  float base=std::numeric_limits<float>::infinity();for(const auto*w:walls)base=std::min(base,w->bounds.minimum.y);
  const double h=double(std::max(s.bounds.minimum.y,base))+kGroundStep;
  // the object's triangles above h, clipped once when a wall first meets them
  std::vector<Poly> own(s.triangles.size());std::vector<uint8_t> made(s.triangles.size(),0);
- unsigned n=0;
- for(const auto*w:walls){if(w->bounds.maximum.y<h)continue;const Point tri[3]={w->corners[0],w->corners[1],w->corners[2]};const Poly p=clip_above(tri,h);if(p.size()<3)continue;const Bounds pb=bounds_of(p);
-  if(near.visit(pb,[&](uint32_t j){if(!made[j]){const auto&t=s.triangles[j];const Point o[3]={s.vertices[t[0]],s.vertices[t[1]],s.vertices[t[2]]};own[j]=clip_above(o,h);made[j]=1;}
-     return own[j].size()>=3&&overlap(pb,bounds_of(own[j]),0)&&polys_cross(p,own[j]);}))if(!n++)first=w->id;}
+ unsigned n=0;const Flush flush{near,walls};std::vector<uint8_t> marked(hits?s.triangles.size():0,0);
+ for(const auto*w:walls){if(w->bounds.maximum.y<h)continue;bool hit_here=false;const Point tri[3]={w->corners[0],w->corners[1],w->corners[2]};const Poly p=clip_above(tri,h);if(p.size()<3)continue;const Bounds pb=bounds_of(p);
+  if(near.visit(pb,[&](uint32_t j){const auto&t=s.triangles[j];const Point o[3]={s.vertices[t[0]],s.vertices[t[1]],s.vertices[t[2]]};if(!made[j]){own[j]=clip_above(o,h);made[j]=1;}
+     const bool in=own[j].size()>=3&&overlap(pb,bounds_of(own[j]),0)&&polys_cross(p,own[j])&&!flush(tri,o);
+     // with `hits`, every triangle of the object in the way of this wall, not only the first
+     if(in&&hits){if(!marked[j])marked[j]=1,hits->push_back(j);hit_here=true;return false;}
+     return in;})||hit_here)if(!n++)first=w->id;}
+ if(hits)std::sort(hits->begin(),hits->end());
  return n;
 }
 }

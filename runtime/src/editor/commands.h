@@ -207,6 +207,12 @@ public:
     virtual bool prepare_model(const std::string& mod, const std::string& dir, const Value& model, std::string& note, std::string& why) {
         return why = "the game is not running", false;
     }
+    // Whether a model of `mod` is ready in the game or being prepared for it. A model the game started without (no
+    // placement used it then) is neither: a placement changed to it, or added with it, has it prepared first (issue #281).
+    virtual bool model_ready(const std::string& mod, const std::string& model) {
+        (void)mod, (void)model;
+        return true;
+    }
     // Why a model of `mod` could not be prepared for the game on this computer (the converter's reason); empty when it
     // is prepared, still being prepared or never was asked for. A restart prepares it the same way, so it isn't
     // "after a restart" (issue #280).
@@ -557,6 +563,8 @@ Value duplicate_actor(const Value& a, const std::string& id);
 // A .glb file checked as the game would take it: {"kind", "size", "vertices", "triangles", "texture",
 // "bones", "clips", "minimum", "maximum" (its bounds, game units)} or false with a message that says which limit (size, triangles, texture, bones,
 // clips, material) it breaks.
+// Whether a model's GLB has collision of its own: a mesh, or the node drawing it, named "<name>_col".
+bool model_has_collision_mesh(const std::string& dir, const Value& manifest, const std::string& model);
 bool check_model_file(const std::string& path, Value& info, std::string& why);
 bool check_model_bytes(const std::vector<uint8_t>& bytes, Value& info, std::string& why);
 // A .glb to import: made to fit the game's rules where it can be (model_import.h), then checked as check_model_file

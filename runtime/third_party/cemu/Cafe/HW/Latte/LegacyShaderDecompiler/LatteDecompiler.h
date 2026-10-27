@@ -200,6 +200,7 @@ struct LatteDecompilerShader
 		sint32 loc_pointSize; // uf_pointSize
 		sint32 loc_fragCoordScale;
 		sint32 loc_framebufferFetchSize[LATTE_NUM_MAX_TEX_UNITS];
+		sint32 loc_texLodBias[LATTE_NUM_MAX_TEX_UNITS]; // WWHD: sampler LOD bias added by the shader (gfx/sampler_lod_bias.h), -1 if absent
 		std::vector<LatteUniformTextureScaleEntry_t> list_ufTexRescale; // list of mappings for uf_tex*Scale <-> uniform location
 		float ufCurrentValueAlphaTestRef;
 		float ufCurrentValueFragCoordScale[2];
@@ -232,6 +233,7 @@ struct LatteDecompilerOutputUniformOffsets
 	sint32 offset_framebufferFetchSize[LATTE_NUM_MAX_TEX_UNITS];
 	sint32 offset_windowSpaceToClipSpaceTransform;
 	sint32 offset_texScale[LATTE_NUM_MAX_TEX_UNITS];
+	sint32 offset_texLodBias[LATTE_NUM_MAX_TEX_UNITS]; // WWHD: float, sampler LOD bias the shader adds (emulateSamplerLodBias)
 	sint32 offset_verticesPerInstance{-1};
 	sint32 offset_streamoutBufferBase[LATTE_NUM_STREAMOUT_BUFFER]{ -1, -1, -1, -1 };
 	sint32 offset_endOfBlock; // stores size of uniform variable block
@@ -249,6 +251,7 @@ struct LatteDecompilerOutputUniformOffsets
 		{
 			offset_framebufferFetchSize[i] = -1;
 			offset_texScale[i] = -1;
+			offset_texLodBias[i] = -1;
 		}
 		offset_endOfBlock = 0;
 	}
@@ -258,6 +261,9 @@ struct LatteDecompilerOptions
 {
     bool legacyGraphicPackUniforms{false}; // Optional host adapter: pre-2026 pixel support block
     uint32 areaSampledTextures{0}; // WWHD: pixel-shader units the host reads area-sampled (gfx/area_sample.h); declares their uf_texNScale
+	// WWHD: the host API cannot apply the sampler's LOD bias (Metal, MoltenVK): units that sample with a
+	// level of detail get a uniform texNLodBias that the shader adds (gfx/sampler_lod_bias.h)
+	bool emulateSamplerLodBias{false};
 	bool usesGeometryShader{ false };
 	// floating point math
 	bool strictMul{}; // if true, 0*anything=0 rule is emulated

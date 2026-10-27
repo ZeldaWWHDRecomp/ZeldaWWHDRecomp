@@ -1,6 +1,7 @@
 // Tests for gfx/area_sample.h: the shadow mask's gather spacing on upscaled depth (issue #135) and
 // the source rewrites both renderers apply.
 #include "gfx/area_sample.h"
+#include "gfx/shader_identity.h"
 
 #include <cassert>
 #include <cmath>
@@ -125,13 +126,73 @@ void test_area_taps_still_rewritten() {
                       "R1f = (tex0.sample(samplr0, float2(R0f.w,R0f.x)));\nR2f = (tex0.sample(samplr0, float2(R0f.y,R0f.x)));\n}\n";
     assert(rewrite(msl, Program{1u, Fix::AreaTaps}, true) == 2);
     assert(msl.find("wwhd_area_sample(tex0, samplr0, supportBuffer.tex0Scale, float2(R0f.w,R0f.x))") != std::string::npos);
+    // taps that add the sampler's LOD bias (gfx/sampler_lod_bias.h) go through the overload taking it
+    std::string biased = "fragment FragmentOut main0(FragmentIn in [[stage_in]]) {\n"
+                         "R1f = (tex0.sample(samplr0, float2(R0f.w,R0f.x), bias(supportBuffer.tex0LodBias)));\n}\n";
+    assert(rewrite(biased, Program{1u, Fix::AreaTaps}, true) == 1);
+    assert(biased.find("wwhd_area_sample(tex0, samplr0, supportBuffer.tex0Scale, float2(R0f.w,R0f.x), bias(supportBuffer.tex0LodBias))") !=
+           std::string::npos);
+    assert(biased.find("float2 uv, bias lodBias)") < biased.find("fragment FragmentOut main0"));
+    std::string glsl = "void main() {\nR1f = (texture(textureUnitPS0, vec2(R0f.w,R0f.x),uf_tex0LodBias));\n}\n";
+    assert(rewrite(glsl, Program{1u, Fix::AreaTaps}, false) == 1);
+    assert(glsl.find("wwhdAreaSample(textureUnitPS0, uf_tex0Scale, vec2(R0f.w,R0f.x),uf_tex0LodBias)") != std::string::npos);
+    assert(glsl.find("vec2 uv, float lodBias)") < glsl.find("void main("));
+}
+
+// The bloom extract's taps (issue #307) go through the console-grid helper, on both of its units;
+// the area helper comes along as its fallback at fractional scales.
+void test_guest_taps_rewritten() {
+    const Program extract{3u, Fix::GuestTaps};
+    std::string glsl = "void main() {\nR2f = (texture(textureUnitPS0, vec2(R0f.x,R0f.y)));\n"
+                       "R4f.x = (texture(textureUnitPS1, vec2(R0f.x,R0f.y)).x);\n}\n";
+    assert(rewrite(glsl, extract, false) == 2);
+    assert(glsl.find("wwhdGuestSample(textureUnitPS0, uf_tex0Scale, vec2(R0f.x,R0f.y))") != std::string::npos);
+    assert(glsl.find("wwhdGuestSample(textureUnitPS1, uf_tex1Scale, vec2(R0f.x,R0f.y))") != std::string::npos);
+    assert(glsl.find("vec4 wwhdAreaSample(sampler2D t, vec2 scale, vec2 uv)") < glsl.find("vec4 wwhdGuestSample("));
+    assert(glsl.find("vec4 wwhdGuestSample(sampler2D t, vec2 scale, vec2 uv, float lodBias)") < glsl.find("void main("));
+    assert(glsl.find("textureGrad(t, p, dx, dy)") != std::string::npos);
+    std::string msl = "fragment FragmentOut main0(FragmentIn in [[stage_in]]) {\n"
+                      "R2f = (tex0.sample(samplr0, float2(R0f.x,R0f.y)));\n}\n";
+    assert(rewrite(msl, extract, true) == 1);
+    assert(msl.find("wwhd_guest_sample(tex0, samplr0, supportBuffer.tex0Scale, float2(R0f.x,R0f.y))") != std::string::npos);
+    assert(msl.find("static float4 wwhd_area_sample(") < msl.find("static float4 wwhd_guest_sample("));
+    assert(msl.find("static float4 wwhd_guest_sample(") < msl.find("fragment FragmentOut main0"));
+    assert(msl.find("gradient2d(dx, dy)") != std::string::npos);
+}
+
+// The lit materials' depth-aware upsample of the half-size light buffer: the units they gather from,
+// and their grid uniform scaled to the buffer's real size.
+void test_gather_grid() {
+    assert(gathered_units("R9f = (textureGather(textureUnitPS1, vec2(0.0001) + vec2(R11f.x,R11f.y)).xyzw);\n"
+                          "R4f = texture(textureUnitPS2, vec2(R4f.x,R4f.w));\n", false) == 2u);
+    assert(gathered_units("R9f = tex1.gather(samplr1, float2(R11f.x,R11f.y));\nR2 = tex12.gather(samplr12, uv);\n", true) ==
+           ((1u << 1) | (1u << 12)));
+    assert(gathered_units("R9f = (textureGather(textureUnitPS10, uv));\n", false) == 1u << 10);  // not unit 1
+    assert(gathered_units("R1f = texture(textureUnitPS0, uv);\n", false) == 0);
+
+    // remapped[0] something else, [1] the grid of a 640x360 buffer (the console's 1280x720 screen)
+    float u[8] = {380.0f, 0.005f, 905.0f, 1.0f / 350.0f, 1280.0f, 720.0f, 1.0f / 1280.0f, 1.0f / 720.0f};
+    assert(scale_gather_grid(u, 2, 640, 360, 1.0f, 1.0f) == 0 && u[4] == 1280.0f);  // 1x: unchanged
+    assert(scale_gather_grid(u, 2, 960, 540, 3.0f, 3.0f) == 0 && u[4] == 1280.0f);  // another buffer's size
+    assert(scale_gather_grid(u, 2, 640, 360, 3.0f, 3.0f) == 1);
+    assert(u[0] == 380.0f && u[3] == 1.0f / 350.0f);
+    assert(u[4] == 3840.0f && u[5] == 2160.0f);
+    assert(std::fabs(u[6] * 3840.0f - 1.0f) < 1e-6f && std::fabs(u[7] * 2160.0f - 1.0f) < 1e-6f);
+    assert(scale_gather_grid(u, 2, 640, 360, 3.0f, 3.0f) == 0);  // scaled once
+    assert(scale_gather_grid(nullptr, 2, 640, 360, 3.0f, 3.0f) == 0);
 }
 
 void test_classification() {
     unsigned char zeros[2112] = {};
     assert(pixel_program(zeros, sizeof zeros).fix == Fix::None);
     assert(pixel_program(zeros, 448).fix == Fix::None);
+    assert(pixel_program(zeros, 656).fix == Fix::None);  // the bloom extract's size, another program
     assert(pixel_program(nullptr, 2112).units == 0);
+    assert(gfx::program_kind(zeros, 656, false) == gfx::ProgramKind::Other);  // the bloom chain's sizes
+    assert(gfx::program_kind(zeros, 768, false) == gfx::ProgramKind::Other);
+    assert(gfx::program_kind(zeros, 416, false) == gfx::ProgramKind::Other);  // the chain's helpers' size
+    assert(gfx::program_kind(nullptr, 768, false) == gfx::ProgramKind::Other);
+    assert(gfx::size_request(gfx::ProgramKind::BloomHelper).claim == gfx::TargetSize::Internal);  // never claims
 }
 }  // namespace
 
@@ -139,6 +200,8 @@ int main() {
     test_gather_ray_math();
     test_rewrite_gather_rays();
     test_area_taps_still_rewritten();
+    test_guest_taps_rewritten();
+    test_gather_grid();
     test_classification();
     std::puts("area_sample: ok");
     return 0;

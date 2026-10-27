@@ -146,6 +146,11 @@ as on Android): many arm64 kernels (Raspberry Pi OS and other 4K-page configurat
 only a 39-bit (512 GiB) address space. Plain `char` is built signed there (`-fsigned-char`, also
 for the player-compiled game code), as on x86-64 and Apple arm64.
 
+The game code is compiled without debug information (`-g0`, on every platform): zig writes it by
+default, which made the Linux game about 500 MB. Function names stay in the symbol table, so crash
+reports still name them. Developers keep the debug information with `--debug-info` or
+`WWHD_SETUP_DEBUG_INFO=1` (also for the decomp version's units).
+
 Options: arguments it does not know are passed to `setup.py` (`--data-dir DIR`, `--app-dir DIR`,
 `--jobs N`). For tests: `--self-test` (start setup.py, wait for its hello, render the first screen,
 exit 0), `--automate SCRIPT.json` (scripted clicks, see the comment in `setup_gui.cpp`) and

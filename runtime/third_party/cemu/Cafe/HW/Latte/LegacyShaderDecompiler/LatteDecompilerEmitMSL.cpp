@@ -2251,6 +2251,10 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 	bool isCompare = shaderContext->shader->textureUsesDepthCompare[texInstruction->textureFetch.textureIndex];
 	bool emulateCompare = (isCompare && !IsValidDepthTextureType(texDim));
 	bool isGather = (texOpcode == GPU7_TEX_INST_FETCH4);
+	// WWHD: the sampler's LOD bias when the host can't apply it (gfx/sampler_lod_bias.h); empty: none
+	std::string samplerLodBias;
+	if (shaderContext->analyzer.texUnitUsesLodBias.test(texInstruction->textureFetch.textureIndex) && !isCompare && !isGather)
+		samplerLodBias = fmt::format("supportBuffer.tex{}LodBias", texInstruction->textureFetch.textureIndex);
 
 	bool unnormalizationHandled = false;
 	bool useTexelCoordinates = false;
@@ -2488,6 +2492,8 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
          			{
 					src->add("bias(");
 					_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 3, LATTE_DECOMPILER_DTYPE_FLOAT);
+					if (!samplerLodBias.empty())
+						src->addFmt(" + {}", samplerLodBias);
 					src->add(")");
          			}
          			else
@@ -2495,13 +2501,27 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
          			    // TODO: is this correct?
                         src->add("level(");
         				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 3, LATTE_DECOMPILER_DTYPE_FLOAT);
+					if (!samplerLodBias.empty())
+						src->addFmt(" + {}", samplerLodBias);
         				src->add(")");
          			}
           		}
           		else if (texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ)
           		{
-         			src->add(", level(0.0)");
+					if (!samplerLodBias.empty())
+						src->addFmt(", level({})", samplerLodBias);
+					else
+         				src->add(", level(0.0)");
           		}
+				else if (texOpcode == GPU7_TEX_INST_SAMPLE && !samplerLodBias.empty())
+				{
+					// WWHD: implicit level of detail plus the sampler's bias; vertex functions have no
+					// derivatives (level 0) and take no bias()
+					if (shaderContext->shaderType == LatteConst::ShaderType::Pixel)
+						src->addFmt(", bias({})", samplerLodBias);
+					else
+						src->addFmt(", level({})", samplerLodBias);
+				}
     		}
     	}
     	// gradient parameters
@@ -2510,7 +2530,11 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     		if (texDim == Latte::E_DIM::DIM_2D ||
     			texDim == Latte::E_DIM::DIM_1D)
     		{
-    			src->add(", gradient2d(gradH.xy, gradV.xy)");
+				// WWHD: gradient2d takes no bias; scaling the gradients by 2^bias adds it to log2 of the footprint
+				if (!samplerLodBias.empty())
+					src->addFmt(", gradient2d(gradH.xy * exp2({0}), gradV.xy * exp2({0}))", samplerLodBias);
+				else
+    				src->add(", gradient2d(gradH.xy, gradV.xy)");
     		}
     		else
     		{
@@ -4136,9 +4160,9 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 	}
 	for(sint32 i=0; i<LATTE_NUM_MAX_TEX_UNITS; i++)
 	{
-		if(!shaderContext->output->textureUnitMask[i])
-			continue;
-		if( shader->textureUnitDim[i] != Latte::E_DIM::DIM_CUBEMAP )
+		// WWHD: also for a unit whose index a SET_CUBEMAP_INDEX sets while the bound texture is no cube map
+		const bool sampledCube = shaderContext->output->textureUnitMask[i] && shader->textureUnitDim[i] == Latte::E_DIM::DIM_CUBEMAP;
+		if (!sampledCube && !shaderContext->analyzer.texUnitSetsCubeMapIndex.test(i))
 			continue;
 		src->addFmt("float cubeMapArrayIndex{} = 0.0;" _CRLF, i);
 	}

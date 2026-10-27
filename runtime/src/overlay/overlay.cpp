@@ -1001,16 +1001,29 @@ void tab_graphics() {
         help("Separate geometry rendering for each eye. Half SBS and TAB are anamorphic; Full SBS preserves each eye's pixels. Experimental: scene and effect validation is in progress.");
     }
 #endif
-#if defined(WWHD_HAS_VULKAN) && defined(_WIN32)
+#if defined(WWHD_HAS_VULKAN) && defined(WWHD_HDR_OUTPUT)
     if(render::vulkan()) {
         heading("HDR output");
-        if(radio("SDR",!hdr::enabled.load()))post_changed([] {hdr::enabled=false;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","0");});
+        // On XWayland the saved HDR choice applies from the next start (it falls back to SDR now).
+        const bool restart=hdr::waylandAfterRestart.load();
+        const bool chosen=hdr::enabled.load()||(restart&&hdr::fellBackToSdr.load());
+        if(radio("SDR",!chosen))post_changed([] {hdr::enabled=false;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","0");});
         ImGui::SameLine();
-        if(radio("HDR (scRGB)",hdr::enabled.load(),hdr::displayEnabled.load()&&hdr::formatSupported.load()))
+        // scRGB when the surface offers it, otherwise HDR10 PQ (backend.cpp make_swapchain)
+        const bool pq=hdr::enabled.load()?hdr::pqOutput.load():!hdr::scrgbSupported.load()&&hdr::pqSupported.load();
+        if(radio(restart?"HDR (after restart)":pq?"HDR (HDR10 PQ)":"HDR (scRGB)",chosen,
+                 restart||(hdr::displayEnabled.load()&&hdr::formatSupported.load())))
             post_changed([] {hdr::enabled=true;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","1");});
-        if(hdr::fellBackToSdr.load())note("HDR is unavailable on this display. Using SDR output.");
-        if(!hdr::displayEnabled.load())note("Enable HDR in Windows for the display containing this window.");
-        else if(!hdr::formatSupported.load())note("This Vulkan surface does not support scRGB HDR output.");
+        if(restart)note("The game is running through XWayland, which has no HDR. Choose HDR and restart the game to use Wayland.");
+        else {
+            if(hdr::fellBackToSdr.load())note("HDR is unavailable on this display. Using SDR output.");
+#ifdef _WIN32
+            if(!hdr::displayEnabled.load())note("Enable HDR in Windows for the display containing this window.");
+#else
+            if(!hdr::displayEnabled.load())note("Enable HDR in your compositor for the display containing this window.");
+#endif
+            else if(!hdr::formatSupported.load())note("This Vulkan surface supports neither scRGB nor HDR10 PQ output.");
+        }
         auto slider=[](const char* label,const char* key,std::atomic<float>& setting,float lo,float hi,const char* fmt) {
             float v=setting.load();ImGui::SetNextItemWidth(260);
             if(ImGui::SliderFloat(label,&v,lo,hi,fmt,ImGuiSliderFlags_AlwaysClamp)) {

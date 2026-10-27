@@ -158,6 +158,8 @@ public final class SetupPolicy {
         if ("critical".equals(reason)) return "Paused because Android reports the device as critically hot";
         if ("battery".equals(reason)) return "Waiting for charging or at least 30% battery";
         if ("battery_unknown".equals(reason)) return "Waiting for battery information";
+        // setup's models step (ModelsStep): the game draws only with the setup screen in front
+        if ("screen".equals(reason)) return "Preparing model shaders goes on when setup is on the screen again";
         return "Paused at a safe checkpoint";
     }
 

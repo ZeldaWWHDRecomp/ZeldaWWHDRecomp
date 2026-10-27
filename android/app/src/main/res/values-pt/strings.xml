@@ -88,4 +88,24 @@
     <string name="setup_code_mods">Mods de código</string>
     <string name="setup_code_mods_detail">Permite ativar mods de código (por exemplo as missões de história) em Configurações › Mods. O código do jogo é compilado de novo com suporte a mods, o que leva mais ou menos o mesmo tempo que a primeira instalação, e o jogo fica um pouco mais lento. Enquanto isso, você pode continuar jogando a versão atual.</string>
     <string name="game_icon_unsupported">Este launcher não permite adicionar ícones de apps.</string>
+    <string name="setup_models">Preparar os shaders dos modelos (recomendado)</string>
+    <string name="setup_models_detail">Muito menos travadas na primeira vez que você vê um lugar. Leva cerca de 40 minutos depois da instalação num celular recente, atrás de uma tela de progresso; mantenha a tela ligada. Desmarque para pular; Cancelar mantém o que já foi preparado (marque de novo para continuar).</string>
+    <string name="setup_models_running">Preparando os shaders: modelos</string>
+    <string name="setup_models_hidden">O jogo desenha os modelos atrás desta tela. Mantenha a tela ligada; se você sair, esta etapa pausa até a instalação voltar à tela. Cancelar a interrompe e mantém o que já foi preparado.</string>
+    <string name="setup_models_stopping">Parando… (o que já foi preparado é mantido)</string>
+    <string name="setup_models_estimating">\u0020· calculando o tempo restante</string>
+    <string name="setup_models_phase_starting">Iniciando o jogo</string>
+    <string name="setup_models_phase_objects">Modelos de objetos</string>
+    <string name="setup_models_phase_rooms">Salas</string>
+    <string name="setup_models_phase_environment">Céu e clima</string>
+    <string name="setup_models_phase_actors">Atores posicionados</string>
+    <string name="setup_models_phase_plants">Plantas</string>
+    <string name="setup_models_phase_particles">Efeitos</string>
+    <string name="setup_models_phase_visits">Visitas aos cenários</string>
+    <string name="setup_models_phase_visit">Visitas aos cenários: %1$s</string>
+    <string name="setup_models_phase_file_select">Seleção de arquivo</string>
+    <string name="setup_cancel">Cancelar</string>
+    <string name="setup_paused_screen">Pausado: preparar os shaders dos modelos precisa desta tela</string>
+    <string name="setup_paused_screen_detail">Continua sozinho enquanto a instalação estiver na tela.</string>
+    <string name="setup_models_game_open">Feche o jogo primeiro (Configurações › Quit Game); depois a preparação dos shaders dos modelos continua aqui.</string>
 </resources>

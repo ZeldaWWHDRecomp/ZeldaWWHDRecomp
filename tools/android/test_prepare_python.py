@@ -56,6 +56,14 @@ class ResourceIdentityTests(unittest.TestCase):
         self.assertFalse([name for name in bundled if name.startswith(("tools/guestmod/", "tools/story_mods/")) and
                           (Path(name).name.startswith("test_") or "/tests/" in name)])
 
+    def test_models_step_is_bundled(self):
+        root = Path(__file__).resolve().parents[2]
+        bundled = {path.relative_to(root).as_posix() for path in source_files(root)}
+        for name in ("tools/android/android_models.py", "tools/installer/model_sweep.py",
+                     "tools/installer/model_sweep_skip.txt", "tools/installer/shader_prebuild.py"):
+            self.assertIn(name, bundled)
+            self.assertTrue((root / name).is_file(), name)
+
     def test_installer_sibling_is_bundled_when_present(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

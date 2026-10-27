@@ -212,7 +212,7 @@ const std::vector<CommandInfo> kCommands = {
       {"chart_marker", "object|null", "island marker; null removes it"}, {"arrival", "object|null", "arrival notice; null removes it"}, {"calm_water", "object|null", "{radius, falloff?, offset?}: still sea around it; null removes it"}, {"mod", "string", ""}}, true},
     {"preview_collision", "Returns world-space collision vertices and edges for a wireframe preview, with placement findings.",
      {{"id", "string", "placed world object", true}, {"position", "point", "a trial position (default: its own)"}, {"yaw", "number", "a trial turn in degrees"}, {"mod", "string", ""}}},
-    {"placement_conflicts", "Returns placement conflicts and collision budget findings for a world object.",
+    {"placement_conflicts", "Returns placement conflicts and collision budget findings for a world object; a conflict caused by the model's own faces lists them (triangles: collision mesh indices, faces: their world corners).",
      {{"id", "string", "placed world object", true}, {"position", "point", "a trial position (default: its own)"}, {"yaw", "number", "a trial turn in degrees"}, {"mod", "string", ""}}},
     {"prepare_collision", "Prepares a static model's collision for live world-object placement.",
      {{"model", "string", "declared static model id", true}, {"mod", "string", ""}}},
@@ -1208,10 +1208,32 @@ void Session::apply_live(const Package& p, const Value& before, Value& result) {
         result["live"] = false;
         return;
     }
+    // a changed placement drawing a model the game started without (no placement used it then): the model is prepared
+    // now, and the placement takes it when it is ready (issue #281: a model chosen in the properties waited for a
+    // restart). A model that failed to prepare is not asked for again: its placements say why.
+    std::string preparing;
+    std::set<std::string> asked;
+    for (const auto& a : actors) {
+        if (a.kind != "mod" || a.model.empty() || std::find(changed.begin(), changed.end(), a.id) == changed.end()) continue;
+        if (asked.contains(a.model) || host_->model_ready(p.mod, a.model) || !host_->model_failure(p.mod, a.model).empty()) continue;
+        const Value* model = find_by_id(p.manifest.get("models"), a.model);
+        if (!model) continue;
+        asked.insert(a.model);
+        Value request = *model;
+        // with its collision when a world object stands on it (a preparation option, never a manifest field)
+        if (request.get("kind").string("static") == "static")
+            for (const auto& other : actors)
+                if (other.collision_mesh == a.model) request["collision"] = true;
+        std::string prepared, w;
+        preparing += (preparing.empty() ? "" : " ") +
+                     (host_->prepare_model(p.mod, p.dir, request, prepared, w) ? "Model " + a.model + " is being prepared; " + a.id + " shows it when it is ready."
+                                                                             : "Model " + a.model + " is prepared when the game starts (" + w + ").");
+    }
     const bool live = host_->apply_actors(p.mod, actors, changed, note, why);
     result["live"] = live;
     if (!live) result["note"] = why;
     else if (!note.empty()) result["note"] = note;
+    if (!preparing.empty()) add_note(result, preparing);
 }
 
 void Session::apply_paths(const Package& p, Value& result) {
@@ -1515,6 +1537,45 @@ Value Session::dispatch(const std::string& command, const Value& p, std::string&
                                                       "native_drops", "combat", "carry", "switch_flag", "switch", "defeat_switch", "texture", "variant", "behaviour", "buoyancy", "drift", "anchor", "grapple_points", "distant", "shoreline", "chart_marker", "arrival", "calm_water"};
         const std::string property = text(p, "property");
         if (!allowed.contains(property)) return why = "\"" + property + "\" is not an actor property the editor sets", r;
+        if (property == "model" && p.get("value").type == Value::String) {
+            // A placement standing on its model's own collision (a "<name>_col" mesh, or a kit model, whose collision is
+            // always its own) stands on the new model's when the model changes (issue #281: a kit placement's model
+            // could not be changed at all, "collision mesh must name a declared static model"; a static one kept the
+            // old model's collision under the new model).
+            Package* pkg = package(p, why);
+            if (!pkg) return r;
+            const Value* actor = find_by_id(pkg->manifest.get("actors"), text(p, "id"));
+            const std::string to = p.get("value").text;
+            const Value* model = find_by_id(pkg->manifest.get("models"), to);
+            if (actor && model && actor->get("model").type == Value::String && actor->get("model").text != to &&
+                actor->get("collision").get("mesh").type == Value::String && actor->get("collision").get("mesh").text == actor->get("model").text) {
+                const std::string kind = model->get("kind").string("static"), old = actor->get("model").text;
+                const bool own = kind == "kit" || (kind == "static" && model_has_collision_mesh(pkg->dir, pkg->manifest, to));
+                const Value* before = find_by_id(pkg->manifest.get("models"), old);
+                if (!own && before && before->get("kind").string() == "kit")
+                    return why = text(p, "id") + " stands on its kit model's own collision; model " + to +
+                                 " has no collision of its own (a \"<name>_col\" mesh): give it one in Blender, or place it as a new object", r;
+                if (own) {
+                    // its collision prepared first, as add_actor does: the game checks the place when it is ready
+                    if (host_ && kind == "static") {
+                        Value request = *model;
+                        request["collision"] = true;  // a preparation option, never a manifest field
+                        std::string prepared, w;
+                        host_->prepare_model(pkg->mod, pkg->dir, request, prepared, w);
+                    } else if (host_ && kind == "kit" && !host_->model_ready(pkg->mod, to) && host_->model_failure(pkg->mod, to).empty()) {
+                        std::string prepared, w;  // a kit model the game started without: built (with its collision) first
+                        host_->prepare_model(pkg->mod, pkg->dir, *model, prepared, w);
+                    }
+                    actor_edit("Set model of " + text(p, "id"), [&](Value& a, std::string&) {
+                        a["model"] = p.get("value");
+                        a["collision"]["mesh"] = p.get("value");
+                        return true;
+                    });
+                    if (ok) r["note"] = (r.get("note").string().empty() ? std::string() : r.get("note").string() + " ") + "It stands on " + to + "'s own collision now.";
+                    return r;
+                }
+            }
+        }
         return actor_edit("Set " + property + " of " + text(p, "id"), [&](Value& a, std::string&) {
             if (p.get("value").type == Value::Null) a.object.erase(property);
             else a[property] = p.get("value");

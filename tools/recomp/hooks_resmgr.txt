@@ -3,3 +3,6 @@
 02613394  # ResMgrThread message handler: clears "from pack" once its load returns
 0260C67C  # ResLoadTask::waitLoad: not done while ResMgrThread still has a "from pack" request
 0275F808  # sead archive resource read, test only: WWHD_TEST_RESMGR_MID_DELAY_MS pauses a "from pack" load after it
+02612E64  # ResMgr_loadArchive: an archive from a loaded pack only when its heap holds it (resmgr_fit.h, issue #281)
+02610258  # ResMgr_loadFromPack: the same
+02520460  # dComIfG_resLoad: an archive the check above refused fails the phase (the actor is not created)

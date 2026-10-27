@@ -29,6 +29,7 @@
 #endif
 #include "backend.h"
 #include "../../dsweep.h"
+#include "../hidden_presentation.h"
 #include "pass.h"
 #include "rendering_path.h"
 #include "stereo.h"
@@ -75,6 +76,7 @@
 #include <SDL3/SDL_vulkan.h>
 #endif
 #include "platform/display_rate.h"
+#include "platform/gaming_mode.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
 #include "platform/gamepad_touch.h"
@@ -237,6 +239,14 @@ const VkFormatProperties& format_properties(VkFormat format) {
   if (inserted) vkGetPhysicalDeviceFormatProperties(R.physicalDevice,format,&entry->second);
   return entry->second;
 }
+bool warm_prune_enabled() {
+  static const bool on = [] {
+    const char* prune = std::getenv("WWHD_VK_WARM_PRUNE");
+    const char* warming = std::getenv("WWHD_WARMING_SHADERS");
+    return prune && !std::strcmp(prune, "1") && warming && !std::strcmp(warming, "1");
+  }();
+  return on;
+}
 namespace {
 bool perf_enabled() {
   static const bool enabled = std::getenv("WWHD_VK_STATS") != nullptr;
@@ -320,6 +330,13 @@ bool unpack_pipeline_cache(std::vector<uint8_t>& file) {
 // The device's memory budget for the warm pipeline pool (pipeline_worker.cpp): VK_EXT_memory_budget's budget of the
 // largest device-local heap when the device has the extension, else that heap's size (MoltenVK: Metal's
 // recommendedMaxWorkingSetSize); 0 when unknown.
+static uint64_t device_memory_budget();
+}  // namespace
+uint64_t vulkan_device_memory_budget() {  // (surfaces.cpp texture budget)
+  static const uint64_t value = device_memory_budget();
+  return value;
+}
+namespace {
 static uint64_t device_memory_budget() {
   VkPhysicalDeviceMemoryProperties p{};
   vkGetPhysicalDeviceMemoryProperties(R.physicalDevice, &p);
@@ -415,6 +432,15 @@ void init_pipeline_cache() try {
         if (!unpack_pipeline_cache(bytes)) bytes.clear();
       } else bytes.clear();
     }
+  }
+  // Pruning (WWHD_VK_WARM_PRUNE=1, setup's preparation only): the driver cache starts empty and the preparation
+  // compiles every recipe of the database into it (headstart.cpp), so entries no recipe uses any more (older builds,
+  // pipelines dropped from the database) are not carried over. Idea after aurora's driver cache pruning (MIT;
+  // lib/webgpu/gpu_cache.cpp); no code taken.
+  if (!bytes.empty() && warm_prune_enabled()) {
+    LOG("[vulkan cache] pruning: %zu bytes of the old driver cache left out; the preparation rebuilds it from the recipes",
+        bytes.size());
+    bytes.clear();
   }
   VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
   ci.initialDataSize=bytes.size();ci.pInitialData=bytes.empty()?nullptr:bytes.data();
@@ -738,7 +764,10 @@ void note_upload_block(const Buffer& buffer) {
   R.uploadReadsDirect = direct;
 }
 }  // namespace
-UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
+static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow);
+UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,true); }
+UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,false); }
+static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow) {
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
   auto slice = [&](Renderer::UploadBlock& block) {
@@ -755,6 +784,7 @@ UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) {
     auto result = slice(block);
     if (result.buffer) return result;
   }
+  if (!grow) return UploadSlice{};
   if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, R.uploadBlocks.size());
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -950,6 +980,11 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   }
   const double ns = double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks,
       R.gpuTimestampValidBits)) * double(R.properties.limits.timestampPeriod);
+  if (rprof::enabled()) {  // the performance report's GPU timeline (busy, idle between submissions)
+    const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
+    const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
+    rprof::add_gpu_span(start, start + ns);
+  }
   if (dynresTiming) {
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
@@ -1323,6 +1358,7 @@ static void activate_submission(size_t index) {
   R.commandPool=slot.commandPool;R.cmd=slot.cmd;R.fence=slot.fence;
   R.descriptorPool=slot.descriptorPool;
   R.uploadBlocks=std::move(slot.uploadBlocks);
+  R.textureStagingBytes=0;
   R.garbageBuffers=std::move(slot.garbageBuffers);
   R.garbageImages=std::move(slot.garbageImages);
   R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
@@ -1605,6 +1641,20 @@ static void retire_secondary_swapchain(bool surface);
 static bool secondary_retirement_available();
 #endif
 static bool async_present();
+#if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+// Whether the display can show HDR. Linux: wlroots compositors (sway) give every surface an
+// sRGB preferred image description even on PQ outputs, so SDL never reports HDR there; Mesa
+// offers the HDR colour spaces only when the compositor accepts them, so those count too.
+// The HDR choice itself stays explicit.
+static bool display_hdr_enabled(SDL_Window* window) {
+  const bool sdl=SDL_GetBooleanProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+#ifdef _WIN32
+  return sdl;
+#else
+  return sdl||hdr::formatSupported.load();
+#endif
+}
+#endif
 static void make_swapchain(Screen &s) {
   if (&s == &R.tv) present_held(true);  // even frame delivery: a held frame goes out first
   if(active_deferred_commands)active_deferred_commands->finish_exact();
@@ -1640,21 +1690,29 @@ static void make_swapchain(Screen &s) {
   fs.resize(n);
   if (fs.empty())
     exception_report::raise("No presentation formats");
-  bool wantHdr=false;
+  bool wantHdr=false,wantPq=false;
+  // HDR swapchain candidates: scRGB FP16, else HDR10 PQ (10-bit preferred).
+  auto hdrCandidate=[&](const VkSurfaceFormatKHR& f,bool pq) {
+    if(pq ? f.colorSpace!=VK_COLOR_SPACE_HDR10_ST2084_EXT ||
+              (f.format!=VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.format!=VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
+               f.format!=VK_FORMAT_R16G16B16A16_SFLOAT)
+          : f.format!=VK_FORMAT_R16G16B16A16_SFLOAT || f.colorSpace!=VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+      return false;
+    VkFormatProperties props;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,f.format,&props);
+    return (caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+      (props.optimalTilingFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
+      (props.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT);
+  };
   if(&s==&R.tv) {
-    bool supported=false;
-    for(const auto& f:fs)if(f.format==VK_FORMAT_R16G16B16A16_SFLOAT &&
-        f.colorSpace==VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
-      VkFormatProperties props;vkGetPhysicalDeviceFormatProperties(R.physicalDevice,f.format,&props);
-      supported=(caps.supportedUsageFlags&VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
-        (props.optimalTilingFeatures&VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) &&
-        (props.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT);
-    }
-    hdr::formatSupported=supported;
-#if defined(_WIN32) && defined(WWHD_SDL_HOST)
-    hdr::displayEnabled=SDL_GetBooleanProperty(SDL_GetWindowProperties(s.window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+    bool scrgb=false,pq=false;
+    for(const auto& f:fs){scrgb|=hdrCandidate(f,false);pq|=hdrCandidate(f,true);}
+    hdr::scrgbSupported=scrgb;hdr::pqSupported=pq;
+    hdr::formatSupported=scrgb||pq;
+#if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+    hdr::displayEnabled=display_hdr_enabled(s.window);
 #endif
     wantHdr=hdr::resolve_output();
+    wantPq=wantHdr&&!scrgb;
   }
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
@@ -1671,8 +1729,13 @@ static void make_swapchain(Screen &s) {
 #endif
   for (auto f : fs) {
     if(wantHdr) {
-      if(f.format!=VK_FORMAT_R16G16B16A16_SFLOAT || f.colorSpace!=VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)continue;
-    } else if(f.colorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)continue;
+      // hdrCandidate checks blits too. PQ: a 10-bit format wins over FP16.
+      if(hdrCandidate(f,wantPq) && (!found || format.format==VK_FORMAT_R16G16B16A16_SFLOAT)) {
+        format=f;found=true;
+      }
+      continue;
+    }
+    if(f.colorSpace!=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)continue;
     VkFormatProperties props;
     vkGetPhysicalDeviceFormatProperties(R.physicalDevice, f.format, &props);
     if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
@@ -1814,7 +1877,13 @@ static void make_swapchain(Screen &s) {
   ++s.swapchainGeneration;
   s.swapFormat = format.format;
   s.hdrOutput = wantHdr;
-  if(&s==&R.tv)LOG("[HDR] output %s; scRGB format %s; Windows HDR %s",wantHdr?"scRGB FP16":"SDR",hdr::formatSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled");
+  s.hdrPq = wantPq;
+  if(&s==&R.tv) {
+    hdr::pqOutput=wantPq;
+    LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
+        wantPq?"HDR10 PQ":wantHdr?"scRGB FP16":"SDR",hdr::scrgbSupported.load()?"supported":"unavailable",
+        hdr::pqSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled");
+  }
   s.swapExtent = extent;
   vkGetSwapchainImagesKHR(R.device, sc, &n, nullptr);
   s.images.resize(n);
@@ -1881,7 +1950,9 @@ static bool SDLCALL lifecycle_watch(void *, SDL_Event *event) {
       LOG("[vulkan] app in the background: presentation paused");
   } else if (event->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
     LOG("[vulkan] app in the foreground: new presentation surface");
-    R.tv.visible = true;  // (the window may have reported itself minimized meanwhile)
+    // (the window may have reported itself minimized meanwhile); a hidden run (setup's models step under its
+    // progress screen) stays unpresented (gfx/hidden_presentation.h)
+    R.tv.visible = gfx::hidden::mode().presents();
     surfaceRecreate = true;
   }
   return true;
@@ -3293,6 +3364,7 @@ static void attach_gamepad_window() {
 }
 #endif
 void swap() {
+  texture_budget_step();
   fallback_stats::begin_frame(R.frame);
   if (handoff_trace::enabled()) handoff_trace::set_producer_frame(R.frame);
   if(active_deferred_commands) {
@@ -3652,18 +3724,35 @@ void swap() {
           (unsigned long long)ss.diskHits,(unsigned long long)ss.spirvReuseHits,(unsigned long long)ss.spirvCompiles,ss.spirvCompileNs/1e6,
           ss.decompileNs/1e6,(unsigned long long)ss.diskLoads,ss.diskLoadNs/1e6,
           (unsigned long long)ss.diskSaves,ss.diskSaveNs/1e6,ss.diskSavedBytes/double(1<<20),ss.diskSnapshotNs/1e6);
-      LOG("[vulkan pipelines] creates %llu total %.1f ms",
-          (unsigned long long)R.pipelineCreates,R.pipelineCreateNs/1e6);
+      {
+        uint64_t promotions=0,promotedHits=0; double promotedMs=0;
+        pipeline_promotion_stats(promotions,promotedHits,promotedMs);
+        LOG("[vulkan pipelines] creates %llu total %.1f ms; new keys %llu, %llu of them in the recipe database; "
+            "%llu demands waited for the running warm-up compile (%llu got it, %.1f ms)",
+            (unsigned long long)R.pipelineCreates,R.pipelineCreateNs/1e6,
+            (unsigned long long)R.pipelineKeysNew,(unsigned long long)R.pipelineKeysKnown,
+            (unsigned long long)promotions,(unsigned long long)promotedHits,promotedMs);
+      }
       {
         // texture change detection (surfaces.cpp upload_surface, write_watch.h)
         extern uint64_t g_stat_full_checks, g_stat_uploads;
+        extern uint64_t g_stat_staging_ring, g_stat_staging_ring_bytes, g_stat_staging_buffers, g_stat_staging_buffer_bytes;
+        extern uint64_t g_stat_tex_evictions, g_stat_tex_evicted_bytes, g_stat_tex_restores, g_stat_tex_resident_bytes;
+        LOG("[vulkan textures] budget: %.1f MiB of CPU textures resident; %llu released (%.1f MiB), %llu made again",
+            g_stat_tex_resident_bytes/1048576.0,(unsigned long long)g_stat_tex_evictions,g_stat_tex_evicted_bytes/1048576.0,
+            (unsigned long long)g_stat_tex_restores);
+        g_stat_tex_evictions=g_stat_tex_evicted_bytes=g_stat_tex_restores=0;
         static uint64_t checks=0, uploads=0;
         uint64_t faults, protectedPages;
         wwatch::take_stats(faults, protectedPages);
-        LOG("[vulkan textures] %llu full checks, %llu uploads, %llu page write faults, %llu pages protected",
+        LOG("[vulkan textures] %llu full checks, %llu uploads, %llu page write faults, %llu pages protected; staging: "
+            "%llu levels from the upload arena (%.1f MiB), %llu own buffers (%.1f MiB)",
             (unsigned long long)(g_stat_full_checks-checks),(unsigned long long)(g_stat_uploads-uploads),
-            (unsigned long long)faults,(unsigned long long)protectedPages);
+            (unsigned long long)faults,(unsigned long long)protectedPages,
+            (unsigned long long)g_stat_staging_ring,g_stat_staging_ring_bytes/1048576.0,
+            (unsigned long long)g_stat_staging_buffers,g_stat_staging_buffer_bytes/1048576.0);
         checks=g_stat_full_checks;uploads=g_stat_uploads;
+        g_stat_staging_ring=g_stat_staging_ring_bytes=g_stat_staging_buffers=g_stat_staging_buffer_bytes=0;
       }
       buffer_cache_report(double(R.frame-frame));
       // CPU-only reports leave per-draw counters/comparison clocks disabled.
@@ -4512,6 +4601,17 @@ static void init_device(std::vector<const char *> extensions,
           R.enabledFeatures.textureCompressionBC ? "WWHD_VK_FORCE_BC_DECODE" : "device has no BC texture support",
           R.bcCpuDecode ? "CPU" : "compute", bc.reason);
   }
+  {
+    // panvk has no geometric depth clipper; see depth_clamp_wanted in draw.cpp.
+    const char* forced = getenv("WWHD_VK_DEPTH_CLAMP_ALL");
+    const bool wanted = forced ? strcmp(forced, "0") != 0 : driver.driverID == VK_DRIVER_ID_MESA_PANVK;
+    R.depthClampAll = wanted && R.enabledFeatures.depthClamp;
+    if (R.depthClampAll || forced)
+      LOG("[vulkan] depth clamp for every pipeline %s (%s)", R.depthClampAll ? "on" : "off",
+          forced && !R.enabledFeatures.depthClamp ? "WWHD_VK_DEPTH_CLAMP_ALL, but the device has no depthClamp" :
+          forced ? "set by WWHD_VK_DEPTH_CLAMP_ALL" :
+          "panvk culls fragments for depth clipping; WWHD_VK_DEPTH_CLAMP_ALL=0/1 overrides");
+  }
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
@@ -4691,8 +4791,26 @@ void init() {
   // hidden test runs: no Dock icon, no activation (the app never takes the focus from the user)
   if (hidden_windows())
     SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
+#if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
+  // SDL prefers XWayland on compositors without wp_fifo_v1 (sway), and X11 Vulkan surfaces have
+  // no HDR colour spaces there. A saved HDR choice asks for Wayland (hdr::wayland_for_hdr).
+  const bool waylandForHdr = hdr::wayland_for_hdr(getenv("SDL_VIDEO_DRIVER") != nullptr,
+                                                  getenv("WAYLAND_DISPLAY") != nullptr, gaming_mode::active());
+  {
+    std::string saved;
+    if (waylandForHdr && hostui::get("hdrEnabled", saved) && atoi(saved.c_str()) != 0)
+      SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+  }
+#endif
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     exception_report::raise(SDL_GetError());
+#if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
+  {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    hdr::waylandAfterRestart = waylandForHdr && driver && !strcmp(driver, "x11");
+    LOG("[display] SDL video driver %s", driver ? driver : "none");
+  }
+#endif
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))
@@ -4740,7 +4858,7 @@ void init() {
     gfx::g_has_drc_window = true;
   }
 #endif
-  if (hidden_windows())
+  if (!gfx::hidden::mode().presents())
     R.tv.visible = R.drc.visible = false;  // no drawables: pictures only reach frame / present dumps
   set_window_icons();
   uint32_t n;
@@ -5154,9 +5272,9 @@ void run_main_loop() {
   for (;;) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-#ifdef _WIN32
+#ifdef WWHD_HDR_OUTPUT
       if(event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED && event.window.windowID==SDL_GetWindowID(R.tv.window)) {
-        const bool enabled=SDL_GetBooleanProperty(SDL_GetWindowProperties(R.tv.window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+        const bool enabled=display_hdr_enabled(R.tv.window);
         // SDL also reports white-level/headroom changes after presentation.
         // Our explicit nits controls do not require a new swapchain for those.
         if(hdr::displayEnabled.exchange(enabled)!=enabled)R.tv.resize=true;
@@ -5199,7 +5317,7 @@ void run_main_loop() {
             s->visible = false;
           if (event.type == SDL_EVENT_WINDOW_RESTORED ||
               event.type == SDL_EVENT_WINDOW_SHOWN)
-            s->visible = true;
+            s->visible = gfx::hidden::mode().presents();  // Android shows its surface also in a hidden run
         }
     }
     input::update();

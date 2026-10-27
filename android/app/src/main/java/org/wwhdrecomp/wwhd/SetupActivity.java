@@ -38,6 +38,10 @@ public class SetupActivity extends Activity {
     private Button restore;
     private android.widget.CheckBox codeMods;
     private TextView codeModsDetail;
+    private android.widget.CheckBox models;
+    private TextView modelsDetail;
+    private Button cancelModels;
+    private long screenResumed;
     private final ArrayList<Button> pickers = new ArrayList<>();
     private boolean phoneSetup;
     private boolean launchingGame;
@@ -187,6 +191,9 @@ public class SetupActivity extends Activity {
         pause = button(layout, getString(R.string.setup_pause), () -> control(SetupService.PAUSE));
         continueAnyway = button(layout, getString(R.string.setup_continue_anyway), () -> { if (continueAction != null) control(continueAction); });
         continueAnyway.setVisibility(android.view.View.GONE);
+        // setup's models step: Cancel stops it and keeps what was prepared
+        cancelModels = button(layout, getString(R.string.setup_cancel), this::cancelModels);
+        cancelModels.setVisibility(android.view.View.GONE);
         // the desktop setup's "code mods" choice: the game code with mod support for guest mods
         codeMods = new android.widget.CheckBox(this);
         codeMods.setText(R.string.setup_code_mods);
@@ -198,6 +205,17 @@ public class SetupActivity extends Activity {
         codeModsDetail.setText(R.string.setup_code_mods_detail);
         codeModsDetail.setPadding(0, 0, 0, gap);
         layout.addView(codeModsDetail);
+        // the desktop setup's optional "Preparing shaders: models" step
+        models = new android.widget.CheckBox(this);
+        models.setText(R.string.setup_models);
+        models.setTextSize(16);
+        models.setChecked(AndroidGame.modelsChosen(this));
+        models.setOnCheckedChangeListener((view, checked) -> chooseModels(checked));
+        layout.addView(models);
+        modelsDetail = new TextView(this);
+        modelsDetail.setText(R.string.setup_models_detail);
+        modelsDetail.setPadding(0, 0, 0, gap);
+        layout.addView(modelsDetail);
         details = new Button(this, null, android.R.attr.borderlessButtonStyle);
         details.setText(R.string.setup_details_show);
         layout.addView(details);
@@ -233,6 +251,69 @@ public class SetupActivity extends Activity {
                 runOnUiThread(() -> status.setText("Cannot save the code-mod choice: " + failure.getMessage()));
             }
         }, "wwhd-code-mods").start();
+    }
+
+    /** The models step switch: remembered for the next setup; ticked on a ready game, the step runs now. */
+    private void chooseModels(boolean enabled) {
+        new Thread(() -> {
+            try {
+                AndroidGame.chooseModels(this, enabled);
+                File job = SetupStore.current(this);
+                File host = job == null ? null : new File(job, "host.json");
+                if (enabled && !WwhdActivity.gameLoaded() && host != null && host.isFile() &&
+                        SetupStore.read(host).optString("state").equals("complete") &&
+                        new File(AndroidGame.storage(this), "active.json").isFile() && !AndroidGame.needsRebuild(this))
+                    runOnUiThread(() -> control(SetupService.RUN_MODELS));
+            } catch (Exception failure) {
+                runOnUiThread(() -> status.setText("Cannot save the models choice: " + failure.getMessage()));
+            }
+        }, "wwhd-models-choice").start();
+    }
+
+    /** Cancel of the models step: it stops in order and keeps what was prepared. */
+    private void cancelModels() {
+        cancelModels.setEnabled(false);
+        new Thread(() -> {
+            try {
+                File job = SetupStore.current(this);
+                if (job != null) SetupStore.write(new File(job, ModelsStep.CANCEL), new JSONObject().put("schema", 1));
+            } catch (Exception failure) {
+                runOnUiThread(() -> status.setText("Cannot cancel: " + failure.getMessage()));
+            }
+        }, "wwhd-models-cancel").start();
+    }
+
+    /** The models step's attempts: each requested one is started once, over this screen, without animation. */
+    private void routeModels(File job, String hostName) throws Exception {
+        boolean step = hostName.equals(ModelsStep.STATE);
+        JSONObject host = new File(job, "host.json").isFile() ? SetupStore.read(new File(job, "host.json")) : null;
+        boolean screenPause = hostName.equals("paused") && host != null && ModelsStep.SCREEN_REASON.equals(host.optString("reason"));
+        // the game draws in landscape, as in play: this screen turns with it so the step shows one screen
+        int orientation = step || screenPause ? android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE :
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+        if (getRequestedOrientation() != orientation) setRequestedOrientation(orientation);
+        // the step draws only with the screen on: between two attempts this screen keeps it on too
+        if (step) getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // setup is on the screen again: the step goes on (not while the game itself runs in this app, in the
+        // background: two games must not write the shader caches)
+        if (screenPause && !WwhdActivity.gameLoaded() && android.os.SystemClock.elapsedRealtime() - screenResumed > 5000) {
+            screenResumed = android.os.SystemClock.elapsedRealtime();
+            new Thread(() -> {
+                try {
+                    SetupStore.remove(new File(job, ModelsStep.SCREEN));
+                    runOnUiThread(() -> control(null));
+                } catch (Exception failure) { android.util.Log.w("wwhd-setup", "models step not resumed", failure); }
+            }, "wwhd-models-resume").start();
+        }
+        if (!step) return;
+        File requestFile = new File(job, ModelsStep.ATTEMPT), launchedFile = new File(job, ModelsStep.LAUNCHED);
+        String requested = requestFile.isFile() ? SetupStore.read(requestFile).optString("id") : null;
+        String launched = launchedFile.isFile() ? SetupStore.read(launchedFile).optString("id") : null;
+        if (!ModelsStep.launch(requested, launched) || !hasWindowFocus()) return;
+        SetupStore.write(launchedFile, new JSONObject().put("schema", 1).put("id", requested));
+        startActivity(ModelPrepareActivity.intent(this, job, requested));
+        overridePendingTransition(0, 0);
     }
 
     /** "Choose your game": a folder, a Cemu .wua archive or a .wud/.wux disc image. */
@@ -489,6 +570,11 @@ public class SetupActivity extends Activity {
             }
             case "paused": {
                 String reason = host == null ? "" : host.optString("reason");
+                if (reason.equals(ModelsStep.SCREEN_REASON)) {
+                    phase(getString(R.string.setup_paused_screen), getString(WwhdActivity.gameLoaded() ?
+                        R.string.setup_models_game_open : R.string.setup_paused_screen_detail), -2);
+                    return;
+                }
                 if (reason.equals("heat")) {
                     // A heat pause waits for the user (#277): Continue anyway at any time, Continue once cooled.
                     boolean cooled = host.optBoolean("cooled");
@@ -502,8 +588,19 @@ public class SetupActivity extends Activity {
                 return;
             }
             case "warming shaders": phase(getString(R.string.setup_shaders), getString(R.string.setup_shaders_detail), -1); return;
+            case ModelsStep.STATE: {
+                File record = new File(job, ModelsStep.PROGRESS);
+                JSONObject progress = record.isFile() ? SetupStore.read(record) : new JSONObject();
+                phase(getString(R.string.setup_models_running), ModelPrepareActivity.texts(this, progress)[0],
+                    ModelsStep.bar(progress.optDouble("fraction", Double.NaN)));
+                return;
+            }
             case "failed": phase(getString(R.string.setup_failed), getString(R.string.setup_failed_detail), -2); return;
-            case "complete": phase(getString(R.string.setup_ready), getString(R.string.setup_ready_detail), 1000); return;
+            case "complete": {  // with what setup left out (for example the models step), said plainly
+                String note = host == null ? "" : host.optString("error");
+                phase(getString(R.string.setup_ready), getString(R.string.setup_ready_detail) + (note.isEmpty() ? "" : "\n" + note), 1000);
+                return;
+            }
             default: phase(getString(R.string.setup_working), null, -1);
         }
     }
@@ -560,13 +657,28 @@ public class SetupActivity extends Activity {
                     (external != null && new File(external, "game/code/cking.rpx").isFile()));
                 String hostName = hostState == null ? (job == null ? "" : "selected") : hostState.optString("state");
                 if (!hostName.equals("warming shaders")) shaderWarmJob = null;
+                // the models step waiting for this screen: it goes on here, not while the game plays
+                boolean modelsWaiting = hostName.equals("paused") && hostState != null &&
+                    ModelsStep.SCREEN_REASON.equals(hostState.optString("reason"));
                 boolean working = hostName.equals("activating") || hostName.equals("importing") || hostName.equals("preparing") || hostName.equals("running") ||
-                    hostName.equals("warming shaders");
-                show(play, play.isEnabled() && !working);
+                    hostName.equals("warming shaders") || hostName.equals(ModelsStep.STATE);
+                show(play, play.isEnabled() && !working && !modelsWaiting);
                 show(choose, phoneSetup && !working);
                 show(folderHint, phoneSetup && !working);
                 setTextIfChanged(choose, getString(job == null ? R.string.setup_choose : R.string.setup_choose_other));
-                show(pause, phoneSetup && working);
+                show(pause, phoneSetup && working && !hostName.equals(ModelsStep.STATE));
+                show(cancelModels, phoneSetup && hostName.equals(ModelsStep.STATE));
+                if (!hostName.equals(ModelsStep.STATE)) cancelModels.setEnabled(true);
+                show(models, phoneSetup);
+                show(modelsDetail, phoneSetup);
+                models.setEnabled(!working);
+                if (!working && models.isChecked() != AndroidGame.modelsChosen(SetupActivity.this)) {
+                    // a Cancel turned the step off (ticking it again continues it)
+                    models.setOnCheckedChangeListener(null);
+                    models.setChecked(!models.isChecked());
+                    models.setOnCheckedChangeListener((view, checked) -> chooseModels(checked));
+                }
+                if (phoneSetup && job != null) routeModels(job, hostName);
                 show(codeMods, phoneSetup);
                 show(codeModsDetail, phoneSetup);
                 codeMods.setEnabled(!working);
@@ -579,11 +691,11 @@ public class SetupActivity extends Activity {
                 // a heat pause offers Continue only once the device has cooled down (#277)
                 boolean heatHot = hostName.equals("paused") && hostState != null &&
                     hostState.optString("reason").equals("heat") && !hostState.optBoolean("cooled");
-                show(resume, phoneSetup && job != null && !working && !hostName.equals("complete") && !heatHot);
+                show(resume, phoneSetup && job != null && !working && !hostName.equals("complete") && !heatHot && !modelsWaiting);
                 setTextIfChanged(resume, getString(hostName.equals("selected") ? R.string.setup_start : R.string.setup_continue));
                 show(updateStatus, hostState != null && SetupPresentation.showUpdate(hostState.optBoolean("updating"), hostName));
                 plainPhase(job, hostState, hostName, needsKeys, resume.isEnabled());
-                show(addIcon, play.isEnabled() && !working);
+                show(addIcon, play.isEnabled() && !working && !modelsWaiting);
                 String text;
                 if (!phoneSetup) {
                     text = "This APK supports the PC build route. Android device setup needs an APK containing Python and the compiler.";

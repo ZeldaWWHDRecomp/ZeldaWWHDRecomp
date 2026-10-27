@@ -45,7 +45,7 @@ const char* fragmentSource = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D image;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
-layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; } params;
+layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; } params;
 float luma(vec3 c) { return dot(c,vec3(0.299,0.587,0.114)); }
 vec3 fxaa(vec2 at) {
  vec2 rcp=1.0/vec2(textureSize(image,0));
@@ -93,6 +93,12 @@ void main() {
    if(n>knee)n=knee+(params.hdrPeak-knee)*(1.0-exp(-(n-knee)/(params.hdrPeak-knee)));
    c*=n/(m*80.0);
   }
+ }
+ if(params.pq!=0) {
+  // HDR10 (hdr::encode_pq): scRGB BT.709 -> BT.2020, ST 2084 of cd/m^2 / 10000
+  const mat3 bt2020=mat3(0.6274040,0.0690970,0.0163916,0.3292820,0.9195400,0.0880132,0.0433136,0.0113612,0.8955950);
+  vec3 y=pow(clamp(bt2020*c*(80.0/10000.0),0.0,1.0),vec3(0.1593017578125));
+  c=pow((0.8359375+18.8515625*y)/(1.0+18.6875*y),vec3(78.84375));
  }
  result=vec4(c,params.alpha);
 }
@@ -169,7 +175,10 @@ PresentParams present_params(bool aa,int filter,float scale,bool sourceLinear,bo
 }
 // pipeline kinds: the scaled picture (opaque / with opacity), a filled rectangle, the mod HUD
 enum Kind : uint32_t { kImage, kImageBlend, kSolid, kHud, kMoveHud };
-struct ScreenResources { bool drawable=false,captureTransfer=false; std::vector<VkImageView> views; };
+struct ScreenResources {
+ bool drawable=false,captureTransfer=false; std::vector<VkImageView> views;
+ Surface hdrTarget{}; // HDR10 output: the linear FP16 composition before PQ encoding
+};
 struct PresentCapture {
  std::string path;
  uint64_t frame=0;
@@ -355,6 +364,7 @@ void destroy_resources(PresentResources& resources) {
 }
 std::vector<VkImageView> take_present_screen_views(Screen& screen) {
  auto found=resources.screens.find(&screen);if(found==resources.screens.end())return {};
+ if(found->second.hdrTarget.image)destroy_surface_image(&found->second.hdrTarget);
  auto views=std::move(found->second.views);resources.screens.erase(found);return views;
 }
 void reset_present_screen(Screen& screen) {
@@ -382,6 +392,7 @@ void reset_present_resources() {
  for(auto& [screen,state]:resources.screens) {
   forget_framebuffers(state.views.data(),state.views.size(),false);
   for(auto view:state.views)vkDestroyImageView(resources.device,view,nullptr);
+  if(state.hdrTarget.image)destroy_surface_image(&state.hdrTarget);
  }
  if(resources.diagnosticTarget.image)destroy_surface_image(&resources.diagnosticTarget);
  destroy_resources(resources);
@@ -400,7 +411,8 @@ bool sampleable(const Surface& source) {
 }
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
-             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr,bool hdrOutput=false) {
+             const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr,bool hdrOutput=false,
+             bool pqEncode=false) {
  end_encoder();
  ImDrawData* gamepadOverlay=nullptr;
  // The GamePad scan may also be shown inside the TV composition (PIP or Off-TV).
@@ -427,7 +439,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
  begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });R.rendering=true;R.passTracked=false;
  VkRect2D scissor{{0,0},extent};record::vkCmdSetScissor(cmd,0,1,&scissor);
- const bool targetLinear=srgb_format(format)||hdrOutput;
+ const bool targetLinear=srgb_format(format)||hdrOutput||pqEncode;
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
  for(auto& q:quads) {
   if(q.box.w<=0||q.box.h<=0)continue;
@@ -466,6 +478,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
    const auto h=hdr::parameters();params.hdrWhite=h.paper;params.hdrPeak=h.peak;
    params.hdrExposure=h.exposure;params.hdrHighlights=h.highlights;
   }
+  params.pq=pqEncode;
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
  if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear,-1,whiteScale);
@@ -517,7 +530,25 @@ void test_hdr_presentation() {
     if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
      exception_report::raise("HDR shader readback differs from calibrated scRGB mapping");
   }
-  fprintf(stderr,"[renderer smoke] HDR scRGB black/grey/highlight/hue readback passed\n");
+  // HDR10: the final pass encodes linear scRGB (0, 80, 1000 and 10000+ nits, a hue) to BT.2020 PQ.
+  for(auto c:{std::array<float,3>{0,0,0},{1,1,1},{12.5f,12.5f,12.5f},{200,200,200},{0.05f,0.4f,1}}) {
+   transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+   VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+   record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
+   mark_gpu_written(&source);
+   ComposeQuad q;q.image=&source;q.sourceLinear=true;q.box={0,0,4,4};
+   compose(target.image,target.view,target.layout,{4,4},target.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&target.use,false,true);
+   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+   transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+   VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={4,4,1};
+   record::vkCmdCopyImageToBuffer(command_buffer(),target.image,target.layout,readback.buffer,1,&copy);
+   transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
+   auto expected=hdr::encode_pq(c);auto* pixels=static_cast<const float*>(readback.mapped);
+   for(int i=0;i<16;++i)for(int k=0;k<3;++k)
+    if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
+     exception_report::raise("HDR10 shader readback differs from the PQ encoding");
+  }
+  fprintf(stderr,"[renderer smoke] HDR scRGB black/grey/highlight/hue and HDR10 PQ readback passed\n");
  } catch(...) {
   if(readback.buffer)defer_buffer(readback);
   if(source.image)destroy_surface_image(&source);if(target.image)destroy_surface_image(&target);throw;
@@ -642,8 +673,27 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  }
  if(fxaa_enabled()&&!linear)exception_report::raise("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
+ auto* overlay=screen_overlay(screen,screen.swapExtent.width,screen.swapExtent.height);
+ if(screen.hdrPq) {
+  // HDR10: compose and blend in linear FP16 scRGB exactly as for scRGB output, then
+  // encode the whole picture to PQ (blending PQ-encoded values would not be linear).
+  auto& linear=found->second.hdrTarget;
+  const auto extent=screen.swapExtent;
+  if(linear.image&&(linear.width!=extent.width||linear.height!=extent.height))destroy_surface_image(&linear);
+  if(!linear.image) {
+   linear.width=linear.pitch=extent.width;linear.height=extent.height;linear.slices=linear.mips=1;linear.dim=1;
+   linear.format=0x820;linear.fmt=format_info(0x820,false); // GX2 FLOAT_R16_G16_B16_A16
+   create_surface_image(&linear,true,VkExtent3D{extent.width,extent.height,1});
+  }
+  compose(linear.image,linear.view,linear.layout,extent,linear.fmt.pixel,quads,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+          filter,fxaa_enabled(),overlay,&linear.use,true);
+  ComposeQuad q;q.image=&linear;q.sourceLinear=true;q.box={0,0,float(extent.width),float(extent.height)};
+  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),extent,screen.swapFormat,
+          {q},VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,0,false,nullptr,&screen.imageUses.at(imageIndex),false,true);
+  return true;
+ }
  compose(screen.images.at(imageIndex),found->second.views.at(imageIndex),screen.layouts.at(imageIndex),screen.swapExtent,screen.swapFormat,
-         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),screen_overlay(screen,screen.swapExtent.width,screen.swapExtent.height),&screen.imageUses.at(imageIndex),screen.hdrOutput);
+         quads,VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,filter,fxaa_enabled(),overlay,&screen.imageUses.at(imageIndex),screen.hdrOutput);
  return true;
 }
 

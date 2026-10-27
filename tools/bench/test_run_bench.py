@@ -248,6 +248,15 @@ class BenchmarkStatistics(unittest.TestCase):
         self.assertEqual(result['iqr'], 0)
         self.assertEqual(result['stdev'], 0)
 
+    def test_uniform_parts_are_parsed_into_the_window(self):
+        lines = ['[prof] frame 240: 120 frames (60 hold), 17.75 ms/frame, 56.3 swaps/s, 28.2 logic steps/s; '
+                 'render thread CPU 11.03 ms/frame, in ops 14.92 ms/frame, idle (waiting for commands) 4.81 ms/frame',
+                 '[prof] uniforms parts ms/frame (other 1 draw in 64 sampled, timer cost 22 ns taken off): '
+                 'stage setup 0.18 pack 0.59 blocks 0.25 support upload 0.27']
+        window = bench.parse_prof(lines)[0]
+        self.assertEqual((window['uniform_stage_setup_ms'], window['uniform_pack_ms'], window['uniform_blocks_ms'],
+                          window['uniform_support_upload_ms']), (0.18, 0.59, 0.25, 0.27))
+
     def test_actual_logic_cpu_is_distinct_from_throughput(self):
         lines = ['[interp] 150.0 logic steps/s; main thread CPU per pass: logic 5.25 ms, blended hold 2.00 ms',
                  '[prof] frame 120: 120 frames, 6.00 ms/frame',

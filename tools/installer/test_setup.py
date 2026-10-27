@@ -863,6 +863,50 @@ class Recipe(unittest.TestCase):
         self.assertGreaterEqual(setup.default_jobs(), 1)
 
 
+class DebugInfo(unittest.TestCase):
+    """Player installs compile the game code without debug information; developers can keep it."""
+
+    def test_off_by_default(self):
+        with mock.patch.dict(os.environ, {"WWHD_SETUP_DEBUG_INFO": ""}):
+            flags = setup.gamecode_compile_flags({"gamecode_cflags": ["-O3", "-g", "-I{gen}", "-gline-tables-only"]})
+        self.assertEqual(flags, ["-O3", "-I{gen}", "-g0"])
+        self.assertEqual(setup.debug_info_flags(["-O3", "-ggdb3", "-gdwarf-4"], debug=False), ["-O3", "-g0"])
+        # options that only start like -g stay
+        self.assertEqual(setup.debug_info_flags(["-gsplit-dwarf-not", "-G0"], debug=False),
+                         ["-gsplit-dwarf-not", "-G0", "-g0"])
+
+    def test_developer_switch(self):
+        with mock.patch.dict(os.environ, {"WWHD_SETUP_DEBUG_INFO": "1"}):
+            self.assertEqual(setup.gamecode_compile_flags({"gamecode_cflags": ["-O3"]}), ["-O3", "-g"])
+            self.assertEqual(setup.gamecode_compile_flags({"gamecode_cflags": ["-O3", "-gline-tables-only"]}),
+                             ["-O3", "-gline-tables-only"])
+        with mock.patch.dict(os.environ, {"WWHD_SETUP_DEBUG_INFO": "0"}):
+            self.assertEqual(setup.gamecode_compile_flags({"gamecode_cflags": ["-O3"]}), ["-O3", "-g0"])
+
+    def test_compile_uses_them(self):
+        seen = []
+
+        def run(cmd, **kw):
+            seen.append(cmd)
+            open(cmd[cmd.index("-o") + 1], "wb").close()
+            return mock.Mock(returncode=0, stdout=b"")
+
+        with tempfile.TemporaryDirectory() as d:
+            gen = os.path.join(d, "gen")
+            os.makedirs(gen)
+            for f in ("code_000.c", "table.c", "imports.c"):
+                open(os.path.join(gen, f), "w").close()
+            tc = setup.Toolchain(["cc"], ["c++"], ["ar"])
+            with mock.patch.dict(os.environ, {"WWHD_SETUP_DEBUG_INFO": ""}), \
+                 mock.patch.object(setup.subprocess, "run", side_effect=run):
+                setup.compile_gamecode(tc, {"gamecode_cflags": ["-O3", "-g", "-I{gen}"]}, gen, os.path.join(d, "obj"), 1)
+        self.assertEqual(len(seen), 3)
+        for cmd in seen:
+            self.assertIn("-g0", cmd)
+            self.assertNotIn("-g", cmd)
+            self.assertIn("-I" + setup.fwd(gen), cmd)
+
+
 class Arch(unittest.TestCase):
     def test_normalize(self):
         for a, want in (("x86_64", "x86_64"), ("AMD64", "x86_64"), ("aarch64", "aarch64"), ("arm64", "aarch64")):

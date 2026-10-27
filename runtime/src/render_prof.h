@@ -51,6 +51,16 @@ void mark_slow(Phase p);
 inline void mark(Phase p) {
     if (g_draw_sampled) mark_slow(p);
 }
+// parts of a phase, timed on their own sample of draws (one in 64, never a draw whose phases are
+// timed, so the phase totals do not carry these timers' cost); reported on their own line, scaled
+// like the phases. sub_begin() returns 0 when the draw is not in that sample.
+enum SubPhase : int { kSubUniformSetup, kSubUniformPack, kSubUniformBlocks, kSubUniformSupportUpload, kSubPhases };
+extern bool g_sub_sampled;
+inline uint64_t sub_begin() { return g_sub_sampled ? now_ns() : 0; }
+void sub_end_slow(SubPhase p, uint64_t started);
+inline void sub_end(SubPhase p, uint64_t started) {
+    if (started) sub_end_slow(p, started);
+}
 
 // op timing around execute_one: begin() returns 0 when this call is not timed
 uint64_t op_begin(Op op);
@@ -101,6 +111,16 @@ void add_sync(Sync site, uint64_t ns);
 // GX2DrawDone check spent walking the surfaces (walkNs), and per write-back its bytes and the time to
 // read them from the GPU (readNs, including the wait for the GPU)
 void add_write_back(uint64_t walkNs, uint32_t surfaces, uint64_t bytes, uint64_t readNs);
+
+// texture cache (render thread): a full check of a CPU texture's guest bytes (hashedBytes; changed: uploaded again,
+// else the cached image served), and the texture budget's releases and remakes (Vulkan WWHD_VK_TEXTURE_BUDGET)
+void add_texture_check(uint64_t hashedBytes, bool changed);
+void add_texture_release(uint64_t bytes);
+void add_texture_remake();
+// GPU timeline (any thread): one command buffer's / submission's GPU interval in ns on the GPU's clock, in
+// submission order; the gaps between consecutive intervals are reported as GPU idle (Metal: GPUStartTime/
+// GPUEndTime of each command buffer; Vulkan: the submission timestamps when GPU timestamps are on)
+void add_gpu_span(double startNs, double endNs);
 
 // ---- any thread
 std::string latest_report();  // the last complete report ("" before the first one)

@@ -47,6 +47,24 @@ public final class AndroidGame {
         }
     }
 
+    // ---- setup's optional models step ("Preparing shaders: models", ModelsStep): the player's choice
+    private static AtomicFile modelsChoice(Context context) {
+        return new AtomicFile(new File(storage(context), "models-choice.json"));
+    }
+
+    public static synchronized boolean modelsChosen(Context context) {
+        // no choice yet: the step is recommended (ModelsStep.RECOMMENDED)
+        try {
+            JSONObject choice = read(modelsChoice(context));
+            return ModelsStep.chosen(choice.has("enabled") ? choice.getBoolean("enabled") : null);
+        } catch (Exception missing) { return ModelsStep.chosen(null); }
+    }
+
+    public static synchronized void chooseModels(Context context, boolean enabled) throws Exception {
+        storage(context).mkdirs();
+        write(modelsChoice(context), new JSONObject().put("schema", 1).put("enabled", enabled));
+    }
+
     public static File storage(Context context) {
         return new File(context.getNoBackupFilesDir(), "ondevice");
     }
