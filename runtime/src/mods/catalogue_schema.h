@@ -12,7 +12,14 @@
 namespace mods::catalogue {
 struct Version {
     std::array<uint32_t,3> parts{};
-    auto operator<=>(const Version&) const=default;
+    // Manual, not `= default`: the defaulted form needs std::array's operator<=>, which older libc++
+    // (Apple Command Line Tools 15 / macOS 14 SDK) does not provide, so the build fails there.
+    std::strong_ordering operator<=>(const Version& o) const {
+        for (int i = 0; i < 3; ++i) {
+            if (parts[i] != o.parts[i]) return parts[i] < o.parts[i] ? std::strong_ordering::less : std::strong_ordering::greater;
+        }
+        return std::strong_ordering::equal;
+    }
     static Version parse(const std::string& text) {
         Version v;size_t start=0;
         for(size_t i=0;i<3;++i) {

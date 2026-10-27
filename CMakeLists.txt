@@ -301,6 +301,13 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
   target_link_libraries(wwhd PRIVATE ${CMAKE_DL_LIBS})
 endif()
 target_link_libraries(wwhd PRIVATE gamecode cemu_latte imgui ZLIB::ZLIB Threads::Threads)
+# macOS AppKit host: read generic IOKit HID gamepads (Steam Input's virtual pad and others that
+# GameController.framework does not surface). gfx/input.mm.
+if(APPLE AND NOT WWHD_SDL_HOST)
+  target_compile_definitions(wwhd PRIVATE WWHD_MAC_IOKIT_INPUT=1)
+  target_link_libraries(wwhd PRIVATE "-framework IOKit")
+  message(STATUS "macOS IOKit controller input: on")
+endif()
 if(WWHD_DECOMP)
   wwhd_decomp_link(wwhd)
 endif()

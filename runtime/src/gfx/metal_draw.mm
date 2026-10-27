@@ -488,9 +488,12 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     const int attempt = ++sh->attempts;
     const bool injectFailure = attempt <= g_test_fail_compiles;
     MTLCompileOptions* opt = [MTLCompileOptions new];
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
     if (@available(macOS 15.0, *)) {
         opt.mathMode = MTLMathModeSafe;
-    } else {
+    } else
+#endif
+    {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         opt.fastMathEnabled = NO;  // the pre-15 spelling of MTLMathModeSafe
