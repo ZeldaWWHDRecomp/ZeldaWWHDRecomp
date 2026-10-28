@@ -174,15 +174,17 @@ int main() {
     assert(!fs::exists(older_of(sav)));  // the set-aside part went after the backup
     release();
 
-    // no way to ask: a newer unfinished write is kept, not deleted
+    // no way to ask: a newer unfinished write is kept as a copy of its own (the game's next save
+    // would write into the part), so it is offered again at the next start
     write(part_of(sav), "newer, no one to ask");
     fs::last_write_time(part_of(sav), fs::last_write_time(sav) + std::chrono::hours(1));
     s = startup(def, config, nullptr, {});
-    assert(read(part_of(sav)) == "newer, no one to ask" && read(sav) == "finished later");
+    assert(read(cloud / "user/cking-unfinished.sav") == "newer, no one to ask" && !fs::exists(part_of(sav)));
+    assert(read(sav) == "finished later");
     release();
-    Asked keep_save{{}, {0}};  // "Use cking.sav": now the part goes (it is in the backup)
+    Asked keep_save{{}, {0}};  // "Use cking.sav": now the copy goes (it is in the backup)
     s = startup(def, config, keep_save.fn(), {});
-    assert(keep_save.titles.size() == 1 && !fs::exists(part_of(sav)));
+    assert(keep_save.titles.size() == 1 && !fs::exists(cloud / "user/cking-unfinished.sav"));
     release();
 
     // the only copy, with no cking.sav, becomes cking.sav without a question
@@ -275,6 +277,9 @@ int main() {
     std::string upper = cloud.string();
     for (char& ch : upper) ch = char(std::toupper((unsigned char)ch));
     assert(!choose((fs::path(upper) / "inner").string()));
+    assert(choose(upper));  // the same folder spelled in another case: no change
+    assert(fs::path(read_choice(choice_file(config))->folder) == fs::absolute(cloud).lexically_normal());
+    assert(read_choice(choice_file(config))->copy_from.empty());
 #endif
     std::error_code link_error;
     fs::create_directory_symlink(cloud, root / "link", link_error);

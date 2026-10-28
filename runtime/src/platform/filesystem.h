@@ -40,6 +40,7 @@ inline dirent* readdir(DIR* directory) {
 inline int closedir(DIR* directory) {delete directory;return 0;}
 #else
 #include <dirent.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 namespace host {
@@ -56,6 +57,10 @@ inline bool flush_file(FILE* file) {
  if(std::fflush(file)!=0)return false;
 #ifdef _WIN32
  return _commit(_fileno(file))==0;
+#elif defined(__APPLE__)
+ // fsync leaves the data in the drive's cache on macOS; F_FULLFSYNC flushes it (some file systems,
+ // such as network ones, don't support it: then fsync)
+ return fcntl(fileno(file),F_FULLFSYNC)==0||fsync(fileno(file))==0;
 #else
  return fsync(fileno(file))==0;
 #endif

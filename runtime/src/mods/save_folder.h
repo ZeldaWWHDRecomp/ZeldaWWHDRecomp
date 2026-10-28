@@ -138,6 +138,13 @@ inline std::vector<std::string> conflict_copies(const fs::path& save_dir) {
     std::sort(out.begin(), out.end());
     return out;
 }
+// A name for another copy of the main save that isn't taken: <stem>.sav, <stem>-2.sav, ...
+inline std::string free_copy_name(const fs::path& user_dir, const std::string& stem) {
+    std::error_code ec;
+    std::string name = stem + ".sav";
+    for (int i = 2; fs::exists(user_dir / name, ec); i++) name = stem + "-" + std::to_string(i) + ".sav";
+    return name;
+}
 inline bool has_save(const fs::path& save_dir) {
     std::error_code ec;
     return fs::is_regular_file(save_dir / "user" / "cking.sav", ec);
@@ -554,10 +561,21 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
                 const int pick = question("Wind Waker HD: two saves", text, buttons);
                 if (pick < 0 || pick >= int(names.size())) {
                     // no way to ask: nothing is removed, cking.sav (or the newest copy) is played and
-                    // the choice comes again at the next start
-                    if (names[0] != "cking.sav") {
-                        fs::copy_file(user / fs::path(names[0]), user / "cking.sav", ec);
-                        say("no cking.sav: playing a copy of " + names[0]);
+                    // the choice comes again at the next start. The unfinished write becomes a copy
+                    // of its own, since the game's next save would otherwise write into it.
+                    if (names[0] == "cking.sav.wwhd-part") {
+                        if (host::replace_file((user / names[0]).string(), (user / "cking.sav").string()))
+                            say("no cking.sav: the unfinished write became cking.sav");
+                    } else {
+                        if (names[0] != "cking.sav") {
+                            fs::copy_file(user / fs::path(names[0]), user / "cking.sav", ec);
+                            say("no cking.sav: playing a copy of " + names[0]);
+                        }
+                        if (main_part) {
+                            const std::string copy = free_copy_name(user, "cking-unfinished");
+                            if (host::replace_file((user / "cking.sav.wwhd-part").string(), (user / copy).string()))
+                                say("kept the unfinished write as " + copy);
+                        }
                     }
                     s.notice = "Your save folder has more than one copy of your save. Nothing was removed; you'll be asked again at the next start.";
                     say(s.notice);
@@ -685,6 +703,8 @@ inline bool inside(const fs::path& a, const fs::path& b) {
     const fs::path rel = x.lexically_relative(y);
     return !rel.empty() && *rel.begin() != "..";
 }
+// the same folder, through another case (Windows, macOS) or a symbolic link
+inline bool same_folder(const fs::path& a, const fs::path& b) { return inside(a, b) && inside(b, a); }
 // A folder that already holds other things (for example the cloud folder itself) gets the save in a
 // "Wind Waker HD" folder inside it, so backups copy only the save. Empty folders and save folders
 // (with a user folder) are used as they are.
@@ -703,8 +723,10 @@ inline bool choose(const std::string& folder) {
     auto& s = state();
     std::lock_guard guard(s.mu);
     if (s.config_dir.empty()) return s.notice = "The save folder can't be changed in this session (--save or a test run).", false;
-    const fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
     const fs::path current = s.folder.empty() ? s.default_folder : s.folder;
+    fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
+    if (same_folder(picked, current)) picked = current;  // the same folder, spelled another way
+    else if (same_folder(picked, s.default_folder)) picked = s.default_folder;
     const fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
