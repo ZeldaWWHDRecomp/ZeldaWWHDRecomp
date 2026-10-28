@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 namespace input_map {
 
@@ -35,6 +36,7 @@ const ActionInfo kActions[kActionCount] = {
     {"RightStickUp", "Right stick ↑ (camera)", 0}, {"RightStickDown", "Right stick ↓ (camera)", 0},
     {"RightStickLeft", "Right stick ← (camera)", 0}, {"RightStickRight", "Right stick → (camera)", 0},
     {"Screenshot", "Screenshot (app)", 0},
+    {"Jump", "Jump anywhere (mod)", 0}, {"MoonJump", "Moon jump (cheat)", 0},
 };
 
 struct PadInfo { const char* id; const char* label; };
@@ -107,6 +109,7 @@ const KeyInfo* find_key(int code) {
 const char* action_id(int a) { return a >= 0 && a < kActionCount ? kActions[a].id : ""; }
 const char* action_label(int a) { return a >= 0 && a < kActionCount ? kActions[a].label : ""; }
 uint32_t action_bit(int a) { return a >= 0 && a < kActionCount ? kActions[a].bit : 0; }
+uint32_t action_virtual(int a) { return a == kJump ? input::kVirtJump : a == kMoonJump ? input::kVirtMoonJump : 0; }
 int action_from_id(const std::string& id) {
     for (int a = 0; a < kActionCount; a++)
         if (id == kActions[a].id) return a;
@@ -283,6 +286,9 @@ Mapping Mapping::defaults() {
     key(kLUp, kVK_ANSI_W); key(kLDown, kVK_ANSI_S); key(kLLeft, kVK_ANSI_A); key(kLRight, kVK_ANSI_D);
     key(kRUp, kVK_UpArrow); key(kRDown, kVK_DownArrow); key(kRLeft, kVK_LeftArrow); key(kRRight, kVK_RightArrow);
     key(kScreenshot, kVK_F10);  // free on every host (F11: SDL full screen, F12/P: debug frame capture)
+    // Jump anywhere and the moon jump where they always were, on the L inputs: in play the game gets no
+    // L from them (play_buttons), so L1 / Q jump without turning the GamePad page
+    key(kJump, kVK_ANSI_Q); key(kMoonJump, kVK_ANSI_Q);
     // controllers map by position: the bottom face button (Xbox A) is the Wii U's B (face_layout)
     const int pads[kActionCount] = {
         kPadNone, kPadNone, kPadNone, kPadNone,  // A B X Y: face-layout preset, filled below
@@ -290,6 +296,7 @@ Mapping Mapping::defaults() {
         kPadDUp, kPadDDown, kPadDLeft, kPadDRight, kPadL3, kPadR3,
         kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
         kPadNone,  // Screenshot: no controller input by default (every button already plays)
+        kPadLB, kPadLB,  // Jump, MoonJump: L1 (shared with the Wii U's L, see above)
     };
     for (int a = 0; a < kActionCount; a++) m.pad[a] = pads[a];
     apply_face_layout(m, FaceLayout::kPosition);
@@ -320,7 +327,10 @@ void apply_face_layout(Mapping& m, FaceLayout layout) {
 }
 
 int face_input(int action) {
-    const int p = current().pad[action];
+    std::string guid, name;
+    active_controller(guid, name);
+    const Mapping m = current();
+    const int p = guid.empty() && name.empty() ? m.pad[action] : pads_for(m, guid, name)[action];
     return p != kPadNone ? p : kFaceByPosition[action - kA];
 }
 
@@ -542,22 +552,44 @@ std::vector<int> pad_users(const Mapping& m, int pad, int except) {
     return v;
 }
 
+// Two actions may share an input without it counting as a conflict: virtual actions share with each
+// other (the moon jump wins) and with the game buttons unused in play (L, d-pad down); a game button
+// moved to d-pad down shares it (play_buttons gives it to one of them by the game's state).
+static bool shares_ok(int a, int b) {
+    if (is_virtual(a) && is_virtual(b)) return true;
+    if (is_virtual(a) || is_virtual(b)) return free_in_play(is_virtual(a) ? b : a);
+    if (a == kScreenshot || b == kScreenshot) return false;
+    return (a == kDDown) != (b == kDDown) && !free_in_play(a == kDDown ? b : a);
+}
+
 bool has_conflict(const Mapping& m, int a) {
     if (a < 0 || a >= kActionCount) return false;
     for (int k : m.keys[a])
-        if (k != kNoKey && !key_users(m, k, a).empty()) return true;
+        if (k != kNoKey)
+            for (int b : key_users(m, k, a))
+                if (!shares_ok(a, b)) return true;
     if (a < kScreenshot) for (int k : m.keys[a]) if (k != kNoKey)
         for (const auto& b : m.shortcuts) for (auto key : b.keys)
             if (key.code == k && !(key.mods & (kModCtrl | kModAlt | kModSuper))) return true;
-    return m.pad[a] != kPadNone && !pad_users(m, m.pad[a], a).empty();
+    if (m.pad[a] != kPadNone)
+        for (int b : pad_users(m, m.pad[a], a))
+            if (!shares_ok(a, b)) return true;
+    return false;
+}
+
+static bool users_conflict(const std::vector<int>& users) {
+    for (size_t i = 0; i < users.size(); i++)
+        for (size_t j = i + 1; j < users.size(); j++)
+            if (!shares_ok(users[i], users[j])) return true;
+    return false;
 }
 
 int conflict_count(const Mapping& m) {
     int n = 0;
     for (int code = 0; code < kInputCount; code++)
-        if (key_users(m, code).size() > 1) n++;
+        if (users_conflict(key_users(m, code))) n++;
     for (int p = 1; p < kPadCount; p++)
-        if (pad_users(m, p).size() > 1) n++;
+        if (users_conflict(pad_users(m, p))) n++;
     return n;
 }
 
@@ -604,7 +636,10 @@ input::PadState keyboard_state(const Mapping& m, const bool* keys, int count) {
     }
     input::PadState s;
     for (int a = 0; a < kActionCount; a++)
-        if (v[a] && action_bit(a)) s.buttons |= action_bit(a);
+        if (v[a]) {
+            s.buttons |= action_bit(a);
+            s.virt |= action_virtual(a);
+        }
     s.lx = v[kLRight] - v[kLLeft];
     s.ly = v[kLUp] - v[kLDown];
     s.rx = v[kRRight] - v[kRLeft];
@@ -636,14 +671,21 @@ static void apply_range(float& x, float& y, float range) {
 }
 
 input::PadState controller_state(const Mapping& m, const float values[kPadCount]) {
+    return controller_state(m, values, m.pad);
+}
+
+input::PadState controller_state(const Mapping& m, const float values[kPadCount], const std::array<int, kActionCount>& pad) {
     float v[kActionCount];
     for (int a = 0; a < kActionCount; a++) {
-        int p = m.pad[a];
+        int p = pad[a];
         v[a] = p > kPadNone && p < kPadCount ? values[p] : 0;
     }
     input::PadState s;
     for (int a = 0; a < kActionCount; a++)
-        if (action_bit(a) && v[a] > 0.5f) s.buttons |= action_bit(a);
+        if (v[a] > 0.5f) {
+            s.buttons |= action_bit(a);
+            s.virt |= action_virtual(a);
+        }
     s.lx = v[kLRight] - v[kLLeft];
     s.ly = v[kLUp] - v[kLDown];
     s.rx = v[kRRight] - v[kRLeft];
@@ -654,6 +696,178 @@ input::PadState controller_state(const Mapping& m, const float values[kPadCount]
     apply_range(s.lx, s.ly, m.left_range);
     apply_range(s.rx, s.ry, m.right_range);
     return s;
+}
+
+// ---- per-controller bindings (format 2)
+
+std::string controller_key(const std::string& guid, const std::string& name) { return guid + " " + name; }
+
+int profile_index(const Mapping& m, const std::string& guid, const std::string& name) {
+    const int n = (int)m.controllers.size();
+    for (int i = 0; i < n; i++)
+        if (m.controllers[i].guid == guid && m.controllers[i].name == name) return i;
+    if (!guid.empty())
+        for (int i = 0; i < n; i++)
+            if (m.controllers[i].guid == guid) return i;
+    if (!name.empty())
+        for (int i = 0; i < n; i++)
+            if (m.controllers[i].name == name) return i;
+    return -1;
+}
+
+const std::array<int, kActionCount>& pads_for(const Mapping& m, const std::string& guid, const std::string& name) {
+    const int i = profile_index(m, guid, name);
+    return i >= 0 ? m.controllers[i].pad : m.pad;
+}
+
+int ensure_profile(Mapping& m, const std::string& guid, const std::string& name) {
+    for (int i = 0; i < (int)m.controllers.size(); i++)  // its own (exactly this controller) only
+        if (m.controllers[i].guid == guid && m.controllers[i].name == name) return i;
+    Mapping::Controller c;
+    c.guid = guid;
+    c.name = name;
+    c.pad = pads_for(m, guid, name);  // what it plays with now: a profile of the same model, or the shared
+    m.controllers.push_back(c);
+    std::erase(m.setup_declined, controller_key(guid, name));
+    return (int)m.controllers.size() - 1;
+}
+
+void remove_profile(Mapping& m, int index) {
+    if (index >= 0 && index < (int)m.controllers.size()) m.controllers.erase(m.controllers.begin() + index);
+}
+
+Mapping view_for(const Mapping& m, int index) {
+    Mapping v = m;
+    if (index >= 0 && index < (int)m.controllers.size()) {
+        v.pad = m.controllers[index].pad;
+        v.face_auto = false;  // a controller's own bindings are its own: Automatic is for the shared ones
+    }
+    return v;
+}
+
+void store_view(Mapping& m, const Mapping& view, int index) {
+    if (index < 0 || index >= (int)m.controllers.size()) {
+        auto controllers = m.controllers;
+        auto declined = m.setup_declined;
+        m = view;
+        m.controllers = controllers;
+        m.setup_declined = declined;
+        return;
+    }
+    const auto shared_pad = m.pad;
+    const bool shared_auto = m.face_auto;
+    auto controllers = m.controllers;
+    auto declined = m.setup_declined;
+    m = view;
+    controllers[index].pad = view.pad;
+    m.pad = shared_pad;
+    m.face_auto = shared_auto;
+    m.controllers = controllers;
+    m.setup_declined = declined;
+}
+
+bool setup_offer_due(const Mapping& m, const std::string& guid, const std::string& name, bool is_virtual) {
+    if (is_virtual || (guid.empty() && name.empty())) return false;
+    if (profile_index(m, guid, name) >= 0) return false;
+    const std::string key = controller_key(guid, name);
+    return std::find(m.setup_declined.begin(), m.setup_declined.end(), key) == m.setup_declined.end();
+}
+
+input::PadState combine(const input::PadState& a, const input::PadState& b) {
+    input::PadState s = a;
+    s.buttons |= b.buttons;
+    s.virt |= b.virt;
+    if (b.lx * b.lx + b.ly * b.ly > s.lx * s.lx + s.ly * s.ly) { s.lx = b.lx; s.ly = b.ly; }
+    if (b.rx * b.rx + b.ry * b.ry > s.rx * s.rx + s.ry * s.ry) { s.rx = b.rx; s.ry = b.ry; }
+    return s;
+}
+
+// ---- virtual actions on game buttons
+
+std::vector<int> displaced_by(const Mapping& m, int pad) {
+    std::vector<int> v;
+    if (pad == kPadNone) return v;
+    for (int a = 0; a < kScreenshot; a++)
+        if (m.pad[a] == pad && !free_in_play(a)) v.push_back(a);
+    return v;
+}
+
+// a controller input no game button uses in play: unbound, or only L / d-pad down / virtual actions
+static bool free_input(const Mapping& m, int pad, int except) {
+    for (int a = 0; a < kScreenshot; a++)
+        if (a != except && m.pad[a] == pad && !free_in_play(a)) return false;
+    return true;
+}
+
+int move_target(const Mapping& m, int a) {
+    if (free_input(m, kPadLB, a)) return kPadLB;
+    if (free_input(m, kPadDDown, a)) return kPadDDown;
+    return kPadNone;
+}
+
+bool bind_virtual(Mapping& m, int v, int pad, Displace d) {
+    if (!is_virtual(v) || pad <= kPadNone || pad >= kPadCount) return false;
+    const std::vector<int> users = displaced_by(m, pad);
+    // first check that every displaced button has somewhere to go (nothing changes otherwise)
+    std::vector<int> to;
+    for (int a : users) {
+        int t = kPadNone;
+        if (d == Displace::kMove) {
+            t = move_target(m, a);
+            if (t == kPadNone) return false;
+        } else if (d == Displace::kMoveToL1) {
+            if (!free_input(m, kPadLB, a) || pad == kPadLB) return false;
+            t = kPadLB;
+        } else if (d == Displace::kMoveToDDown) {
+            if (!free_input(m, kPadDDown, a) || pad == kPadDDown) return false;
+            t = kPadDDown;
+        }
+        to.push_back(t);
+    }
+    if (users.size() > 1 && d != Displace::kTakeOff) return false;  // one input, one free place
+    for (size_t i = 0; i < users.size(); i++) {
+        set_pad_binding(m, users[i], to[i]);
+        // on L1 the moved button is the one that counts, in menus too (no page turns with L1)
+        if (to[i] == kPadLB && m.pad[kL] == kPadLB) m.pad[kL] = kPadNone;
+        // the other virtual action there (Jump and the moon jump sit together on L1 by default) comes
+        // along to the new input: on one input the moon jump wins while it is on
+        for (int o = kFirstVirtual; o < kActionCount; o++)
+            if (o != v && to[i] != kPadNone && m.pad[o] == to[i]) m.pad[o] = pad;
+    }
+    m.pad[v] = pad;
+    return true;
+}
+
+uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play) {
+    if (in_play && !m.l_turns_page) b &= ~input::kL;
+    auto shares = [&](int f, int g) {
+        if (m.pad[f] != kPadNone && m.pad[f] == m.pad[g]) return true;
+        for (const auto& c : m.controllers)  // a controller's own bindings count as well
+            if (c.pad[f] != kPadNone && c.pad[f] == c.pad[g]) return true;
+        for (int k : m.keys[f])
+            if (k != kNoKey && (m.keys[g][0] == k || m.keys[g][1] == k)) return true;
+        return false;
+    };
+    for (int f : {(int)kL, (int)kDDown}) {
+        const uint32_t fb = action_bit(f);
+        if (!(b & fb)) continue;
+        for (int g = 0; g < kScreenshot; g++) {
+            const uint32_t gb = action_bit(g);
+            if (!gb || g == f || !(b & gb) || !shares(f, g)) continue;
+            if (in_play) b &= ~fb;
+            else b &= ~gb;
+        }
+    }
+    return b;
+}
+
+void jump_from_legacy(Mapping& m, uint32_t vpad_bit) {
+    for (int a = 0; a < kScreenshot; a++)
+        if (action_bit(a) == vpad_bit) {
+            m.keys[kJump] = m.keys[a];
+            m.pad[kJump] = m.pad[a];
+            return;
+        }
 }
 
 // ---- JSON (just enough for this file: objects, arrays, strings, numbers, booleans, null)
@@ -782,6 +996,12 @@ struct Parser {
 std::string quote(const std::string& s) {
     std::string o = "\"";
     for (char c : s) {
+        if ((unsigned char)c < 0x20) {  // controller names come from devices: no raw control characters
+            char u[8];
+            snprintf(u, sizeof u, "\\u%04x", (unsigned char)c);
+            o += u;
+            continue;
+        }
         if (c == '"' || c == '\\') o += '\\';
         o += c;
     }
@@ -790,7 +1010,7 @@ std::string quote(const std::string& s) {
 }  // namespace
 
 std::string to_json(const Mapping& m) {
-    std::string o = "{\n  \"version\": 1,\n  \"keyboard\": {\n";
+    std::string o = "{\n  \"version\": 2,\n  \"keyboard\": {\n";
     for (int a = 0; a < kActionCount; a++) {
         o += "    " + quote(action_id(a)) + ": [";
         bool first = true;
@@ -817,6 +1037,7 @@ std::string to_json(const Mapping& m) {
     if (!m.prompt_colours) prompts += ",\n    \"button_colours\": false";
     // issue #267: written only when on (files without it stay as they were)
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
+    if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
     char opt[320];
     snprintf(opt, sizeof opt,
              "  },\n  \"options\": {\n    \"format\": 2,\n    \"stick_deadzone\": %.3g,\n"
@@ -824,7 +1045,20 @@ std::string to_json(const Mapping& m) {
              "    \"skip_controller_selection\": %s,\n    \"invert_camera_y\": %s%s",
              m.deadzone, m.left_range, m.right_range, m.skip_controller_selection ? "true" : "false", m.invert_camera_y ? "true" : "false",
              m.face_auto ? ",\n    \"face_layout\": \"auto\"" : "");
-    o += opt + prompts + std::string(",\n    \"file_select_quit\": ") + (m.file_select_quit ? "true" : "false") + "\n  },\n  \"shortcuts_version\": " + std::to_string(kShortcutsVersion) + ",\n  \"shortcuts\": {\n";
+    o += opt + prompts + std::string(",\n    \"file_select_quit\": ") + (m.file_select_quit ? "true" : "false") + "\n  },\n";
+    // per-controller bindings and the controllers that declined the setup (format 2)
+    o += "  \"controllers\": [";
+    for (size_t i = 0; i < m.controllers.size(); i++) {
+        const auto& c = m.controllers[i];
+        o += std::string(i ? ",\n" : "\n") + "    {\"guid\": " + quote(c.guid) + ", \"name\": " + quote(c.name) + ", \"controller\": {";
+        for (int a = 0; a < kActionCount; a++)
+            o += std::string(a ? ", " : "") + quote(action_id(a)) + ": " + (c.pad[a] == kPadNone ? std::string("null") : quote(pad_id(c.pad[a])));
+        o += "}}";
+    }
+    o += m.controllers.empty() ? "],\n" : "\n  ],\n";
+    o += "  \"controller_setup_declined\": [";
+    for (size_t i = 0; i < m.setup_declined.size(); i++) o += (i ? ", " : "") + quote(m.setup_declined[i]);
+    o += "],\n  \"shortcuts_version\": " + std::to_string(kShortcutsVersion) + ",\n  \"shortcuts\": {\n";
     for (int a = 0; a < kShortcutCount; ++a) {
         const auto& b = m.shortcuts[a];
         o += "    " + quote(shortcut_info(a).id) + ": {\"keys\": [";
@@ -884,6 +1118,42 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             m.pad[a] = p;
         }
     }
+    const Json* fileVersion = root.get("version");
+    if (!fileVersion || fileVersion->type != Json::Num || fileVersion->n < 2) {
+        // format 1: Jump anywhere and the moon jump sat on the Wii U's L, whatever pressed it
+        m.keys[kJump] = m.keys[kMoonJump] = m.keys[kL];
+        m.pad[kJump] = m.pad[kMoonJump] = m.pad[kL];
+    }
+    if (const Json* list = root.get("controllers"); list && list->type == Json::Arr) {
+        for (const Json& e : list->arr) {
+            if (e.type != Json::Obj) continue;
+            const Json* guid = e.get("guid");
+            const Json* name = e.get("name");
+            const Json* binds = e.get("controller");
+            if (!guid || guid->type != Json::Str || !name || name->type != Json::Str) { warn += "controller without guid/name; "; continue; }
+            Mapping::Controller c;
+            c.guid = guid->s;
+            c.name = name->s;
+            c.pad = m.pad;  // inputs missing from the profile: the shared binding
+            if (binds && binds->type == Json::Obj)
+                for (auto& [id, v] : binds->obj) {
+                    const int a = action_from_id(id);
+                    if (a < 0) { warn += "unknown input \"" + id + "\"; "; continue; }
+                    if (v.type == Json::Null) { c.pad[a] = kPadNone; continue; }
+                    if (v.type != Json::Str) continue;
+                    const int p = pad_from_id(v.s);
+                    if (p < 0) { warn += "unknown controller input \"" + v.s + "\"; "; continue; }
+                    c.pad[a] = p;
+                }
+            bool dup = false;
+            for (auto& o : m.controllers) dup |= o.guid == c.guid && o.name == c.name;
+            if (!dup) m.controllers.push_back(std::move(c));
+        }
+    }
+    if (const Json* list = root.get("controller_setup_declined"); list && list->type == Json::Arr)
+        for (const Json& e : list->arr)
+            if (e.type == Json::Str && std::find(m.setup_declined.begin(), m.setup_declined.end(), e.s) == m.setup_declined.end())
+                m.setup_declined.push_back(e.s);
     if (const Json* op = root.get("options"); op && op->type == Json::Obj) {
         const Json* format = op->get("format");
         const bool legacy = !format || format->type != Json::Num || format->n < 2;
@@ -902,6 +1172,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* i = op->get("skip_controller_selection"); i && i->type == Json::Bool) m.skip_controller_selection = i->b;
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
         if (const Json* i = op->get("background_controllers"); i && i->type == Json::Bool) m.background_controllers = i->b;
+        if (const Json* i = op->get("l_turns_gamepad_page"); i && i->type == Json::Bool) m.l_turns_page = i->b;
         // only "automatic" is stored: the two manual presets are the shape of the face bindings
         if (const Json* f = op->get("face_layout"); f && f->type == Json::Str) m.face_auto = f->s == "auto";
         // button prompts (#143); an unknown value keeps the default
@@ -966,6 +1237,14 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
     return true;
 }
 
+int json_version(const std::string& text) {
+    Parser ps{text.data(), text.data() + text.size(), {}};
+    Json root;
+    if (!ps.value(root) || root.type != Json::Obj) return 1;
+    const Json* v = root.get("version");
+    return v && v->type == Json::Num && v->n >= 2 ? (int)v->n : 1;
+}
+
 bool load_file(const std::string& path, Mapping& out, std::string* error) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) {
@@ -1013,6 +1292,13 @@ static std::atomic<bool> g_skip_controller_selection{true};
 static std::atomic<bool> g_background_controllers{false};
 static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
+static std::atomic<bool> g_l_turns_page{false};
+// format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
+static std::mutex g_legacy_mu;
+static bool g_loaded = false, g_legacy = true;
+static uint32_t g_legacy_bit = 0;
+static std::mutex g_active_mu;
+static std::string g_active_guid, g_active_name;
 
 // the dominant pad's labels as note_face_labels last reported them (its own lock: set_current
 // takes g_mu)
@@ -1063,13 +1349,58 @@ void load_startup() {
     std::string path = default_path(), err;
     Mapping m;
     struct stat st;
-    if (stat(path.c_str(), &st) != 0) return;  // no file yet: defaults
-    if (load_file(path, m, &err)) {
-        set_current(m, false);
-        fprintf(stderr, "[input] controls loaded from %s%s%s\n", path.c_str(), err.empty() ? "" : ": ", err.c_str());
-    } else {
-        fprintf(stderr, "[input] %s: %s; using default controls\n", path.c_str(), err.c_str());
+    bool legacy = true;
+    if (stat(path.c_str(), &st) == 0) {  // else no file yet: defaults
+        if (load_file(path, m, &err)) {
+            set_current(m, false);
+            fprintf(stderr, "[input] controls loaded from %s%s%s\n", path.c_str(), err.empty() ? "" : ": ", err.c_str());
+            if (FILE* f = fopen(path.c_str(), "rb")) {
+                std::string text;
+                char buf[4096];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+                fclose(f);
+                legacy = json_version(text) < 2;
+            }
+        } else {
+            fprintf(stderr, "[input] %s: %s; using default controls\n", path.c_str(), err.c_str());
+        }
     }
+    uint32_t bit = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_legacy_mu);
+        g_loaded = true;
+        g_legacy = legacy;
+        bit = std::exchange(g_legacy_bit, 0u);
+    }
+    if (bit) adopt_legacy_jump_button(bit);
+}
+
+void adopt_legacy_jump_button(uint32_t vpad_bit) {
+    {
+        std::lock_guard<std::mutex> lk(g_legacy_mu);
+        if (!g_loaded) { g_legacy_bit = vpad_bit; return; }  // load_startup applies it
+        if (!g_legacy) return;
+        g_legacy = false;  // once
+    }
+    if (vpad_bit == input::kL) return;  // where format 1 already put it
+    Mapping m = current();
+    jump_from_legacy(m, vpad_bit);
+    if (!(m == current())) {
+        fprintf(stderr, "[input] Jump anywhere: the old button choice (%04X) became the Jump binding\n", vpad_bit);
+        set_current(m);
+    }
+}
+
+void set_active_controller(const std::string& guid, const std::string& name) {
+    std::lock_guard<std::mutex> lk(g_active_mu);
+    g_active_guid = guid;
+    g_active_name = name;
+}
+void active_controller(std::string& guid, std::string& name) {
+    std::lock_guard<std::mutex> lk(g_active_mu);
+    guid = g_active_guid;
+    name = g_active_name;
 }
 
 Mapping current() {
@@ -1097,6 +1428,7 @@ void set_current(const Mapping& requested, bool save) {
     g_skip_controller_selection = m.skip_controller_selection;
     g_background_controllers = m.background_controllers;
     g_file_select_quit = m.file_select_quit;
+    g_l_turns_page = m.l_turns_page;
     g_gen++;
     if (save && !save_file(default_path(), m))
         fprintf(stderr, "[input] could not save controls to %s\n", default_path().c_str());
@@ -1107,5 +1439,6 @@ bool file_select_quit() { return g_file_select_quit.load(std::memory_order_relax
 bool skip_controller_selection() { return g_skip_controller_selection.load(std::memory_order_relaxed); }
 bool background_controllers() { return g_background_controllers.load(std::memory_order_relaxed); }
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
+bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
 
 }  // namespace input_map

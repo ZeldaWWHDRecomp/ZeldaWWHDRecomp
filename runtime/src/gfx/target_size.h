@@ -4,14 +4,16 @@
 #include <cstdint>
 
 namespace gfx {
-// Console: the bloom chain's levels (issue #307)
-enum class TargetSize : uint8_t { Internal, Console };
+// Console: the bloom chain's levels (issue #307). Light: the half-size point-light buffer and its depth
+// copy, twice the internal resolution with Full-size torchlight (render::full_light, gfx/area_sample.h)
+enum class TargetSize : uint8_t { Internal, Console, Light };
 
 // A draw's request for its target's size: `claim` the size its pass needs, or `renews` a claim of
 // that size that is already there (a helper pass of the claiming one, which never claims by itself)
 struct SizeRequest {
     TargetSize claim = TargetSize::Internal;
     TargetSize renews = TargetSize::Internal;
+    bool keeps = false;  // no pass's draw (a clear, a copy to the screen): leaves the claim as it is
 };
 
 // A render target's size, claimed by the draws of the passes that need it. Other passes draw into
@@ -24,6 +26,7 @@ struct SizeClaim {
     uint64_t frame = 0;  // of the last claim
 
     void request(SizeRequest r, uint64_t now) {
+        if (r.keeps) return;
         if (r.claim != TargetSize::Internal) {
             size = r.claim;
             frame = now;

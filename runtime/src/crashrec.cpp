@@ -33,7 +33,7 @@ namespace {
 constexpr char kMagic[8] = {'W', 'W', 'H', 'D', 'I', 'N', 'P', '1'};
 struct Record {
     uint32_t seq;
-    uint8_t pad, touch, unused[2];
+    uint8_t pad, touch, virt, unused;  // virt: input::kVirt* (Jump, moon jump); 0 in older records
     uint32_t buttons;
     float lx, ly, rx, ry, tx, ty;
 };
@@ -206,6 +206,7 @@ input::PadState read(int pad) {
                     p.buttons = r.buttons;
                     p.lx = r.lx; p.ly = r.ly; p.rx = r.rx; p.ry = r.ry;
                     p.touch = r.touch != 0;
+                    p.virt = r.virt;
                     p.tx = r.tx; p.ty = r.ty;
                     return p;
                 }
@@ -227,6 +228,7 @@ input::PadState read(int pad) {
             r.seq = g_rec_seq++;
             r.pad = (uint8_t)pad;
             r.touch = p.touch;
+            r.virt = (uint8_t)p.virt;
             r.buttons = p.buttons;
             r.lx = p.lx; r.ly = p.ly; r.rx = p.rx; r.ry = p.ry;
             r.tx = p.tx; r.ty = p.ty;

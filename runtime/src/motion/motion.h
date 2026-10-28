@@ -37,7 +37,9 @@
 
 namespace motion {
 
-enum Source : int { kOff, kController, kCemuhook, kMouse, kDevice, kSourceCount };
+// kAuto (P6, idea from the GreenNaugahyde Android fork): the controller's gyro while you play with a
+// controller, this device's while you play by touch (set_touch_play)
+enum Source : int { kOff, kController, kCemuhook, kMouse, kDevice, kAuto, kSourceCount };
 const char* source_id(int s);     // "off", "controller", "cemuhook", "mouse", "device"
 const char* source_label(int s);
 int source_from_id(const std::string& id);  // -1 if unknown
@@ -91,7 +93,12 @@ void device_sample(uint64_t timestamp_ns, const float gyro[3], const float accel
 void device_reset();  // discard pending motion/bias on rotation, background or source shutdown
 bool wants_device_sensors();
 void set_device_sensors_available(bool available);
-bool wants_controller_sensors();  // the hosts enable the sensors only for the controller source
+bool wants_controller_sensors();
+// Android: the player plays by touch now (the on-screen controls were touched last), for kAuto
+void set_touch_play(bool touch);
+bool touch_play();
+// the source in use now: kAuto resolved to kController or kDevice (else the source itself)
+int effective_source();  // the hosts enable the sensors only for the controller source
 void set_gyro_controllers(int n); // hosts: connected controllers that have a gyro and an accelerometer
 int gyro_controllers();
 // mouse movement in the game window (points, dy > 0 = down), captured or not

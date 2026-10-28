@@ -10,6 +10,7 @@
 #include "bc_reference.h"
 // No game assets: assertions inspect data returned by the actual Vulkan device.
 #include "backend.h"
+#include "gfx/renderer.h"
 #include "gfx/depth_peek.h"
 #include "stereo.h"
 #include "../stereo_projection.h"
@@ -496,6 +497,39 @@ void bloom_chain_size_check() {
  require(find_or_create_surface(d,true)==level&&level->image==image,"the helper pass did not renew the chain's claim");
  set_res_scale(1);latch_res_scale();
  fprintf(stderr,"[renderer smoke] bloom chain targets keep the console's size until the chain leaves them\n");
+}
+// Full-size torchlight: the point-light buffer's depth copy gets twice the internal resolution once the
+// lights claim it, keeps it while only its own pass draws it (no light on screen, the pause menu), and
+// returns to the internal resolution once only other passes draw it. A clear of the light buffer
+// leaves its claim alone.
+void light_target_size_check() {
+ const bool fullLight=render::full_light();render::set_full_light(true);
+ set_res_scale(2);latch_res_scale();
+ const gfx::SizeRequest lights=gfx::size_request(gfx::ProgramKind::PointLight),
+                        depthCopy=gfx::size_request(gfx::ProgramKind::DepthDownsample);
+ SurfaceDesc d;d.addr=mem::host_alloc(64*36*4,256);d.width=64;d.height=36;d.pitch=64;d.format=0x1A;d.dim=1;d.slices=1;
+ d.sizeRequest=depthCopy;Surface* copy=find_or_create_surface(d,true);
+ require(copy&&copy->extent.width==128&&copy->extent.height==72,"the depth downsample claimed the light size by itself");
+ copy->sizeClaim.request(lights,R.frame);  // a point-light pass reads it
+ require(find_or_create_surface(d,true)==copy&&copy->extent.width==256&&copy->extent.height==144,
+         "the lights' claim did not double the depth copy");
+ const VkImage image=copy->image;
+ for(int i=0;i<80;++i) {
+  ++R.frame;
+  require(find_or_create_surface(d,true)==copy&&copy->image==image,"the depth copy was resized while no light was drawn");
+ }
+ R.frame+=gfx::SizeClaim::kIdleFrames+1;d.sizeRequest={};
+ require(find_or_create_surface(d,true)==copy&&copy->extent.width==128,"a target at the depth copy's address kept the light size");
+ // the light buffer: the game clears it before the lights draw it, also after the pause menu
+ SurfaceDesc b=d;b.addr=mem::host_alloc(64*36*4,256);b.sizeRequest=lights;Surface* buffer=find_or_create_surface(b,true);
+ require(buffer&&buffer->extent.width==256,"the point lights' draw did not double the light buffer");
+ const VkImage bufferImage=buffer->image;
+ R.frame+=157;b.sizeRequest={};b.sizeRequest.keeps=true;
+ require(find_or_create_surface(b,true)==buffer&&buffer->image==bufferImage,"a clear after the pause menu resized the light buffer");
+ b.sizeRequest=lights;
+ require(find_or_create_surface(b,true)==buffer&&buffer->image==bufferImage,"the lights' draw after the clear resized the light buffer");
+ render::set_full_light(fullLight);set_res_scale(1);latch_res_scale();
+ fprintf(stderr,"[renderer smoke] the point-light depth copy keeps the light size while the lights claim it\n");
 }
 // Volume render targets (issue #53, the Picto Box): the game renders 8x8x8 colour-grading volumes
 // slice by slice (GX2 colour buffers of a 3D surface, the view selecting the slice) and samples them
@@ -1559,6 +1593,7 @@ int renderer_smoke_test() {
    require(R.tv.swapchain!=VK_NULL_HANDLE,"smoke presentation did not create a swapchain");LOG("[renderer smoke] scan-buffer swapchain presentation and PNG readback passed");
    volume_target_check();
    bloom_chain_size_check();
+   light_target_size_check();
    completed_scan_retention_check();
   }
   // Ensure deferred objects left by readback and stack-owned images are actually reclaimed.

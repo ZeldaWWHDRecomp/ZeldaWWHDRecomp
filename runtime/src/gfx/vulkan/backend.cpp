@@ -39,6 +39,7 @@
 #include "attachment_view_usage.h"
 #include "background_cache_readiness.h"
 #include "../../build_info.h"
+#include "../../tv_pointer.h"
 #include "deferred_commands.h"
 #include "record_worker.h"
 #include "submission_cpu_ack.h"
@@ -81,6 +82,7 @@
 #include "platform/perf_hint.h"
 #include "platform/gamepad_touch.h"
 #include "platform/dual_display.h"
+#include "platform/touch_options.h"
 #include "runtime.h"
 #include "screenshot.h"
 #include "shaders.h"
@@ -3639,6 +3641,15 @@ void swap() {
     LOG("[gfx] memory disk %llu unshared-SPIRV-capacity %.2f MiB pending-compiles %llu retained-source-capacity %.2f MiB",
         (unsigned long long)memory.diskEntries,memory.diskSpirvCapacity/mib,
         (unsigned long long)memory.pendingCompiles,memory.retainedSourceCapacity/mib);
+    {
+      size_t total=0,compiling=0,failed=0;
+      guest_pipeline_counts(total,compiling,failed);
+      PipelineWorkerMemory wm;
+      pipeline_worker_memory(wm);
+      LOG("[gfx] memory pipelines: %zu of the game's (%zu compiling, holding <= %zu shader modules; %zu failed); "
+          "unused warm %zu of %zu (%zu dropped); recipe database %zu recipes %.2f MiB",
+          total,compiling,compiling*2,failed,wm.unusedWarm,wm.unusedWarmLimit,wm.evicted,wm.recipes,wm.recipeBytes/mib);
+    }
     LOG("[gfx] memory scope: payload/capacity excludes compiler results, disk snapshots, metadata and allocator overhead");
     LOG("[gfx] memory scope: cached image allocations exclude retired, non-cache and driver images");
     // Excludes map/metadata/allocator overhead, compiler tickets/results,
@@ -4944,7 +4955,7 @@ void shutdown_renderer_caches() {
 // GamePad only: display_modes.cpp maps the point as on macOS), mapped to 0..1 touch coordinates. A
 // press that starts on the picture keeps touching while it is dragged, clamped to the picture's edge.
 // The settings overlay keeps its clicks in the TV window.
-enum class TouchIn { None, DrcWindow, TvWindow };
+enum class TouchIn { None, DrcWindow, TvWindow, TvPicture };  // TvPicture: a port page's pointer (tv_pointer.h)
 static TouchIn touchHeld = TouchIn::None;
 static bool drc_window_point(float x, float y, float &tx, float &ty) {
   int pw = 0, ph = 0;
@@ -5053,6 +5064,24 @@ bool android_display_touch_event(const SDL_Event& event) {
     return false;
   }
 }
+// TouchControls.nativeFreeTouch: a finger landed on no on-screen control at (x, y), 0..1 of the view.
+// The game's own touch areas, exactly as android_display_touch_event above routes a finger
+// (touch_style::game_touch), keep it in every style; elsewhere the touch style decides (a floating
+// stick or the swipe camera in Flexible, the game in Classic).
+extern "C" JNIEXPORT jint JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeFreeTouch(JNIEnv*, jclass, jfloat x, jfloat y) {
+  touch_style::GameTouch g;
+  float tx = 0, ty = 0;
+  g.dual = gfx::g_has_drc_window;
+  g.swapped = dual_display::active_swap;
+  if (g.dual) {
+    std::lock_guard<std::mutex> guard(secondaryMutex);
+    g.primary_gamepad = gamepad_touch::map(primaryTouchBox, x, y, false, tx, ty);
+  } else {
+    g.view_button = gfx::view_button_hit(x, y);
+    g.pip = gfx::overlay_hit(x, y, &tx, &ty, false);
+  }
+  return touch_style::free_touch(touch_options::get(), x, touch_style::game_touch(g));
+}
 #endif
 static bool gamepad_touch(const SDL_Event& event) {
   // In gamescope the GamePad may host the menu. Let SDL overlay input receive its clicks,
@@ -5096,7 +5125,15 @@ static bool gamepad_touch(const SDL_Event& event) {
     } else if (event.button.windowID == tvId && !overlay::captures()) {
       float nx, ny;
       tv_window_point(event.button.x, event.button.y, nx, ny);
-      if (!gfx::overlay_hit(nx, ny, &tx, &ty)) return false;  // the game's window: mouse camera etc.
+      if (!gfx::overlay_hit(nx, ny, &tx, &ty)) {
+        float px, py, aspect;  // a port page on the TV that wants the pointer (tv_pointer.h)
+        if (tv_pointer::wanted() && gfx::tv_picture_hit(nx, ny, &px, &py, &aspect)) {
+          tv_pointer::set(true, px, py, aspect);
+          touchHeld = TouchIn::TvPicture;
+          return true;
+        }
+        return false;  // the game's window: mouse camera etc.
+      }
       touchHeld = TouchIn::TvWindow;
     } else {
       return false;
@@ -5112,6 +5149,14 @@ static bool gamepad_touch(const SDL_Event& event) {
     }
     if (touchHeld == TouchIn::None || (up && event.button.button != SDL_BUTTON_LEFT)) return false;
     const float x = up ? event.button.x : event.motion.x, y = up ? event.button.y : event.motion.y;
+    if (touchHeld == TouchIn::TvPicture) {
+      float nx, ny, px = 0, py = 0, aspect = 16.0f / 9.0f;
+      tv_window_point(x, y, nx, ny);
+      gfx::tv_picture_hit(nx, ny, &px, &py, &aspect, true);
+      if (up) touchHeld = TouchIn::None;
+      tv_pointer::set(!up, px, py, aspect);
+      return true;
+    }
     if (touchHeld == TouchIn::DrcWindow) {
       drc_window_point(x, y, tx, ty);
       tx = std::clamp(tx, 0.0f, 1.0f);
@@ -5126,7 +5171,9 @@ static bool gamepad_touch(const SDL_Event& event) {
     return true;
   }
   case SDL_EVENT_WINDOW_FOCUS_LOST:
-    if (touchHeld != TouchIn::None) { touchHeld = TouchIn::None; input::set_touch(false, 0, 0); }
+    if (touchHeld == TouchIn::TvPicture) tv_pointer::set(false, 0, 0, 16.0f / 9.0f);
+    else if (touchHeld != TouchIn::None) input::set_touch(false, 0, 0);
+    touchHeld = TouchIn::None;
     return false;
   default:
     return false;

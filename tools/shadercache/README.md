@@ -2,7 +2,10 @@
 
 The release template lives in the private `ZeldaWWHDRecomp/shader-template` repository.
 `template.ref` pins its exact commit and the SHA-256 of `template.bin`. Update both after publishing a
-new private template. The public branch must never track `template.bin`, recordings or generated caches.
+new private template.
+Since 2026-10-28 `template.bin` there is distilled (`distill_template.py`: one state per distinct translated
+shader, coverage-checked); the private repo keeps the full template as `template-full.bin`. Merge new
+contributions into the full one, then distill again, and re-distill after any change to shader translation. The public branch must never track `template.bin`, recordings or generated caches.
 
 Release packaging fetches the pinned commit using the read-only `SHADER_TEMPLATE_DEPLOY_KEY` secret,
 verifies the hash, and runs the independent release guard. Fork and pull-request builds without the secret print a notice and package without a template.

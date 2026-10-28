@@ -174,11 +174,12 @@ const std::vector<TestTurn>& test_turns() {
 }  // namespace
 
 const char* source_id(int s) {
-    static const char* ids[] = {"off", "controller", "cemuhook", "mouse", "device"};
+    static const char* ids[] = {"off", "controller", "cemuhook", "mouse", "device", "auto"};
     return s >= 0 && s < kSourceCount ? ids[s] : "off";
 }
 const char* source_label(int s) {
-    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "Device gyro (phone/tablet)"};
+    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
+                                   "Automatic (the controller's, this device's while you play by touch)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
 int source_from_id(const std::string& id) {
@@ -273,7 +274,7 @@ void set_settings(const Settings& in) {
         const bool dsu_changed = s.dsu_host != g_settings.dsu_host || s.dsu_port != g_settings.dsu_port || s.dsu_slot != g_settings.dsu_slot;
         if (s.tuning.axis != g_settings.tuning.axis) log_msg("[gyro] left/right: %s", axis_label(s.tuning.axis));
         g_settings = s;
-        g_wants_device_sensors.store(s.source == kDevice, std::memory_order_relaxed);
+        g_wants_device_sensors.store(s.source == kDevice || s.source == kAuto, std::memory_order_relaxed);
         if (source_changed) {
             log_msg("[gyro] source: %s", source_label(s.source));
             // the virtual GamePad stays where it is (the game would see a jump otherwise)
@@ -296,13 +297,31 @@ void controller_sample(uint64_t device, uint64_t t_ns, const float gyro[3], cons
     from_sdl(gyro, accel, g, a);
     if (!t_ns) t_ns = (uint64_t)Clock::now().time_since_epoch().count();
     std::lock_guard lk(g_mu);
-    if (g_settings.source == kController) feed(device, t_ns, g, a);
+    if (g_settings.source == kController || (g_settings.source == kAuto && !touch_play())) feed(device, t_ns, g, a);
 }
 void device_sample(uint64_t t_ns, const float gyro[3], const float accel[3]) {
     Vec3 g, a;
     from_sdl(gyro, accel, g, a);
     std::lock_guard lk(g_mu);
-    if (g_settings.source == kDevice) feed(kPhoneDevice, t_ns, g, a);
+    if (g_settings.source == kDevice || (g_settings.source == kAuto && touch_play())) feed(kPhoneDevice, t_ns, g, a);
+}
+namespace {
+std::atomic<bool> g_touch_play{false};
+}
+void set_touch_play(bool touch) {
+    if (g_touch_play.exchange(touch) != touch) {
+        std::lock_guard lk(g_mu);
+        if (g_settings.source == kAuto) {  // the other sensors take over: no turn carried across
+            g_active = kNone;
+            g_pending = {};
+            log_msg("[gyro] automatic: %s", touch ? "this device (touch play)" : "the controller");
+        }
+    }
+}
+bool touch_play() { return g_touch_play.load(std::memory_order_relaxed); }
+int effective_source() {
+    const int s = settings().source;
+    return s == kAuto ? (touch_play() ? kDevice : kController) : s;
 }
 void device_reset() {
     std::lock_guard lk(g_mu);
@@ -319,7 +338,7 @@ void set_device_sensors_available(bool available) {
 }
 void controller_gone(uint64_t device) {
     std::lock_guard lk(g_mu);
-    if (g_devices.erase(device) && g_settings.source == kController) log_msg("[gyro] %s disconnected", device_name(device).c_str());
+    if (g_devices.erase(device) && (g_settings.source == kController || g_settings.source == kAuto)) log_msg("[gyro] %s disconnected", device_name(device).c_str());
     if (g_active == device) {
         g_active = kNone;
         g_pending = {};
@@ -327,7 +346,7 @@ void controller_gone(uint64_t device) {
 }
 bool wants_controller_sensors() {
     std::lock_guard lk(g_mu);
-    return g_settings.source == kController;
+    return g_settings.source == kController || g_settings.source == kAuto;
 }
 void set_gyro_controllers(int n) {
     std::lock_guard lk(g_mu);
@@ -429,7 +448,8 @@ VpadMotion vpad(bool repeat) {
         const float k = g_settings.mouse_degrees / kRadToDeg;
         aim = g_settings.tuning.apply({g_mouse_dx * k, -g_mouse_dy * k});
         g_mouse_dx = g_mouse_dy = 0;
-    } else if (g_settings.source == kController || g_settings.source == kCemuhook || g_settings.source == kDevice) {
+    } else if (g_settings.source == kController || g_settings.source == kCemuhook || g_settings.source == kDevice ||
+               g_settings.source == kAuto) {
         aim = g_settings.tuning.apply(g_pending);
         g_pending = {};
         auto it = g_devices.find(g_active);
@@ -464,17 +484,18 @@ std::string status() {
         return (g_dsu ? "Cemuhook: " + g_dsu->status() + "." : "Cemuhook: off.") + stick;
     }
     std::lock_guard lk(g_mu);
-    switch (g_settings.source) {
+    const int source = g_settings.source == kAuto ? (touch_play() ? kDevice : kController) : g_settings.source;
+    switch (source) {
     case kDevice:
     case kController: {
         auto it = g_devices.find(g_active);
         if (it != g_devices.end() && secs(Clock::now() - it->second.seen) < 1.0)
             return (it->second.fusion.calibrated() ? "Receiving motion." :
-                    g_settings.source == kDevice ? "Receiving motion; calibrating (rest the device for a second)."
+                    source == kDevice ? "Receiving motion; calibrating (rest the device for a second)."
                                                  : "Receiving motion; calibrating (rest the controller for a second).") + stick;
-        if (g_settings.source == kDevice && !g_device_sensors_checked)
+        if (source == kDevice && !g_device_sensors_checked)
             return "Close settings to start this device’s motion sensors.";
-        if (g_settings.source == kDevice)
+        if (source == kDevice)
             return g_device_sensors_available ? "Device gyro ready; no motion yet (or app is in the background)."
                                               : "No device gyro and accelerometer available on this host.";
         return g_gyro_controllers ? "A controller with a gyro is connected, no motion yet."

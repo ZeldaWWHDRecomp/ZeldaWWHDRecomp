@@ -419,15 +419,16 @@ def package_templates(cache_root):
     return out
 
 
-def merge_templates(package, base, extras, out, message):
+def merge_templates(package, base, extras, out, message, game=None):
     """The base template and the packages' templates (each passing the release guard's code-free check,
-    or left out with a message) as one template at `out`; returns the extras used."""
+    or left out with a message) as one template at `out`; returns the extras used. game: the game files, which
+    open a sealed base template."""
     import importlib.util
     spec = importlib.util.spec_from_file_location('shaderprep_for_mods', str(Path(package) / 'tools/shaderprep.py'))
     shaderprep = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shaderprep)
     builder = shaderprep.TemplateBuilder()
-    builder.add_template(str(base))
+    builder.add_template(str(base), game=str(game) if game else None)
     used = []
     for path in extras:
         try:
@@ -631,7 +632,7 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         if extras:
             # the mods' stages: their render states join the release template's for this generation only
             assembled = staging / 'template.bin'
-            used = merge_templates(package, template, extras, assembled, reporter.message)
+            used = merge_templates(package, template, extras, assembled, reporter.message, game)
             reporter.message('Including the shaders of %d mod stage template(s)' % len(used))
         import sys
         command = [python or sys.executable, str(Path(package) / 'tools/shaderprep.py'),

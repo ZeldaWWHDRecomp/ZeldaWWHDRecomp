@@ -78,14 +78,49 @@
     <string name="game_icon_present">The icon is already on the home screen. Hold it and open its settings.</string>
     <string name="game_icon_present_shortcut">The icon is already on the home screen. Hold it for the saves and setup.</string>
     <string name="game_icon_none">Set up the game first</string>
-    <string name="controller_settings_hint">Hold Select/− to open Settings</string>
-    <string name="controller_settings_hint_home">Hold Select/− or press Home to open Settings</string>
     <string name="touch_layout_access">Touch controls. Hold the controller button to edit the layout.</string>
     <string name="touch_layout_hint">Drag a control to move it. Select one, then change its size.</string>
     <string name="touch_layout_smaller">Size −</string>
     <string name="touch_layout_larger">Size +</string>
     <string name="touch_layout_reset">Reset</string>
     <string name="touch_layout_done">Done</string>
+    <string name="touch_layout_shape">Shape</string>
+    <string name="touch_layout_opacity">Opacity</string>
+    <string name="touch_layout_fill">Fill</string>
+    <string name="touch_layout_grid">Grid</string>
+    <string name="touch_layout_presets">Layouts…</string>
+    <string name="touch_layout_classic">Classic layout</string>
+    <string name="touch_layout_flexible">Flexible layout: the sticks appear under your thumbs, so only their size and look count here.</string>
+    <string name="touch_layout_flexible_title">Flexible layout</string>
+    <string name="touch_layout_status">%1$s: size %2$d%%, %3$s, opacity %4$d%%, %5$s</string>
+    <string-array name="touch_layout_shapes">
+        <item>circle</item>
+        <item>rounded square</item>
+        <item>square</item>
+        <item>diamond</item>
+        <item>hexagon</item>
+        <item>octagon</item>
+    </string-array>
+    <string name="touch_layout_filled">filled</string>
+    <string name="touch_layout_outline">outline</string>
+    <string name="touch_layout_left_stick">Left stick</string>
+    <string name="touch_layout_right_stick">Right stick</string>
+    <string name="touch_layout_default">Default layout</string>
+    <string name="touch_layout_arc">Arc layout</string>
+    <string name="touch_layout_save">Save this layout…</string>
+    <string name="touch_layout_delete">Delete a saved layout…</string>
+    <string name="touch_layout_export">Export layouts…</string>
+    <string name="touch_layout_import">Import layouts…</string>
+    <string name="touch_layout_name">Name of the layout</string>
+    <string name="touch_layout_saved">Layout saved</string>
+    <string name="touch_layout_save_failed">Not saved: give it a name (at most 16 layouts per style)</string>
+    <string name="touch_layout_exported">Layouts exported</string>
+    <string name="touch_layout_imported">%d saved layouts imported</string>
+    <string name="touch_layout_import_failed">This is not a touch layouts file</string>
+    <string name="touch_layout_file_failed">The file could not be read or written</string>
+    <string name="touch_layout_before_import">Before import</string>
+    <string name="touch_layout_context_shows">Context buttons: in play it shows only when it does something.</string>
+    <string name="touch_layout_context_hidden">Context buttons: hidden in play.</string>
     <string name="setup_code_mods">Code mods</string>
     <string name="setup_code_mods_detail">Lets you turn on code mods (for example the story quests) in Settings › Mods. The game code is built again with mod support, which takes about as long as the first setup, and the game runs a little slower. You can keep playing the current build meanwhile.</string>
     <string name="game_icon_unsupported">This launcher cannot add app icons.</string>

@@ -33,6 +33,10 @@
 //   Left click: while Link aims an item (bow, boomerang, hookshot, rope; procedures 0x76, 0x7D, 0x80-0x81,
 //   0x83-0x84, 0x8A-0x8D, 0x94-0x95) it presses the item's button (daPy_lk_c+0x68D9 mReadyItemBtn: 0 X, 1 Y, 2 R; read
 //   from daPy_lk_c::itemTrigger 023EAB40). Otherwise left click does nothing.
+// Swipe camera (Android touch controls, Flexible style; camera_swipe.h): a finger on the right half
+//   turns the camera through this same path, in degrees from the finger's physical distance, times the
+//   boat factor while Link sails (mModeFlg ModeFlg_IN_SHIP). It needs neither the mouse camera option
+//   nor a captured mouse. Idea from the GreenNaugahyde Android fork (MPL-2.0), reimplemented.
 // First person: R3 already toggles the game's first-person look (measured: R3 at rest -> camera
 //   distance 250 -> 20 in 7 steps, R3 again -> back). The mod adds the mouse wheel: forward enters
 //   first person, backward leaves it, as a one-step R3 press.
@@ -58,6 +62,9 @@
 
 #include "../camera_invert.h"
 #include "camera_mouse.h"
+#include "camera_swipe.h"
+#include "play_context.h"
+#include "../platform/touch_options.h"
 #include "guest_addr.h"
 #include "../input_map.h"
 #include "input.h"
@@ -83,7 +90,9 @@ constexpr uint32_t kReadyItemBtn = 0x68D9;  // daPy_lk_c::mReadyItemBtn
 
 std::mutex g_mu;
 float g_dx = 0, g_dy = 0;       // mouse movement awaiting the next input step (points)
-float g_direct_dx = 0, g_direct_dy = 0;  // this step's movement, reserved for direct camera sites
+float g_swipe_dx = 0, g_swipe_dy = 0;    // swipe movement awaiting the next input step (degrees, before the boat factor)
+uint64_t g_swipe_step = ~0ull;  // logic step of the last swipe movement
+float g_direct_dx = 0, g_direct_dy = 0;  // this step's movement in degrees, reserved for direct camera sites
 float g_mouse_rx = 0, g_mouse_ry = 0;    // proportional fallback, stable across repeated pad reads
 uint64_t g_sample_step = ~0ull;
 uint64_t g_move_step = 0;       // logic step of the last mouse movement
@@ -104,6 +113,10 @@ uint32_t link_proc() {
     return l ? ld32(l + kCurProc) : 0xFFFFFFFFu;
 }
 bool aiming_item(uint32_t p) { return camera_mouse::aiming_item(p); }
+bool link_in_ship() {
+    uint32_t l = g_link.load(std::memory_order_relaxed);
+    return l && (ld32(l + playctx::kLinkModeFlg) & playctx::kModeInShip);
+}
 
 // test aid: WWHD_TEST_MOUSE=2-3:5:0,... moves the mouse by (dx, dy) points per logic step from 2 s
 // to 3 s of game time (full logic steps / 30, from boot);
@@ -198,6 +211,15 @@ void mouse_add(float dx, float dy) {
     g_dy += dy;
     g_move_step = step();
 }
+void swipe_add(float dx_px, float dy_px, float dpi) {
+    const float speed = touch_options::get().swipe_speed;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (g_swipe_step == ~0ull || step() > g_swipe_step + 30)  // a new swipe (the touch smoke test looks for this)
+        LOG("[input] swipe camera: %.1f degrees per inch", camera_swipe::degrees(camera_swipe::display_dpi(dpi), dpi, speed));
+    g_swipe_dx += camera_swipe::degrees(dx_px, dpi, speed);
+    g_swipe_dy += camera_swipe::degrees(dy_px, dpi, speed);
+    g_swipe_step = g_move_step = step();
+}
 void mouse_wheel(float dy) {
     if (editor::take_wheel(dy)) return;  // the fly camera's speed
     std::lock_guard<std::mutex> lk(g_mu);
@@ -216,6 +238,7 @@ void filter_pad(input::PadState& s) {
     std::lock_guard<std::mutex> lk(g_mu);
     // stale movement (the camera never took it, e.g. during an event) is dropped
     if (g_move_step != ~0ull && now > g_move_step + 8) g_dx = g_dy = 0;
+    if (g_swipe_step != ~0ull && now > g_swipe_step + 8) g_swipe_dx = g_swipe_dy = 0;
     // gyro (motion/motion.h): the game turns its first-person (subject) camera with the GamePad's motion,
     // which every item aim uses too
     const bool aim = in_first_person() || aiming_item(link_proc());
@@ -232,21 +255,31 @@ void filter_pad(input::PadState& s) {
     // the mouse as a gyro has the mouse while the game aims: no synthetic right stick then (the game
     // also ignores the gyro while the right stick is pushed)
     if (motion::mouse_drives_gyro()) g_dx = g_dy = 0;
-    // mouse camera
-    bool active = mouse_camera() && (mouse_captured() || test_mouse()) && !motion::mouse_drives_gyro();
+    // mouse camera, swipe camera
+    const bool mouse_active = mouse_camera() && (mouse_captured() || test_mouse()) && !motion::mouse_drives_gyro();
+    const bool swipe = recent(g_swipe_step, 8);
+    if (!mouse_active) g_dx = g_dy = 0;
+    bool active = mouse_active || swipe;
     bool stick_free = std::fabs(s.rx) < 0.2f && std::fabs(s.ry) < 0.2f;
     if (active && stick_free && recent(g_move_step, 8)) {
         // Snapshot once per logic step. Fallback input and direct hooks share the same movement;
         // a fallback pad read must not consume the deltas before manualCamera gets them.
         if (g_sample_step != now) {
             g_sample_step = now;
-            g_direct_dx = g_dx;
-            g_direct_dy = g_dy;
-            g_mouse_rx = camera_mouse::fallback_stick(g_dx);
-            g_mouse_ry = camera_mouse::fallback_stick(-g_dy);
+            const float sens = mouse_sensitivity();
+            const float boat = camera_swipe::step_factor(link_in_ship(), aim, touch_options::get().swipe_boat);
+            // degrees for the direct sites; the fallback stick sees mouse points (the swipe as points at
+            // the nominal sensitivity, so its stick does not depend on the mouse setting)
+            g_direct_dx = g_dx * sens + g_swipe_dx * boat;
+            g_direct_dy = g_dy * sens + g_swipe_dy * boat;
+            const float px = g_dx + g_swipe_dx * boat / camera_swipe::kNominalSensitivity;
+            const float py = g_dy + g_swipe_dy * boat / camera_swipe::kNominalSensitivity;
+            g_mouse_rx = camera_mouse::fallback_stick(px);
+            g_mouse_ry = camera_mouse::fallback_stick(-py);
             g_dx = g_dy = 0;
-            if (trace_on()) trace("mouse input dx=%.3f dy=%.3f rx=%.3f ry=%.3f aim=%d",
-                                  g_direct_dx, g_direct_dy, g_mouse_rx, g_mouse_ry, aim);
+            g_swipe_dx = g_swipe_dy = 0;
+            if (trace_on()) trace("%s input degrees dx=%.3f dy=%.3f rx=%.3f ry=%.3f aim=%d boat=%.2f",
+                                  swipe ? "swipe" : "mouse", g_direct_dx, g_direct_dy, g_mouse_rx, g_mouse_ry, aim, boat);
         }
         s.rx = g_mouse_rx;
         s.ry = g_mouse_ry;
@@ -256,7 +289,7 @@ void filter_pad(input::PadState& s) {
         g_synth = false;
     }
     // left click while aiming an item: that item's button
-    if (active && g_left && input_map::key_users(input_map::current(), input_map::kMouse1).empty()) {
+    if (mouse_active && g_left && input_map::key_users(input_map::current(), input_map::kMouse1).empty()) {
         uint32_t p = link_proc();
         uint32_t l = g_link.load(std::memory_order_relaxed);
         if (l && aiming_item(p)) {
@@ -300,9 +333,9 @@ static void manual_speed(Cpu* c) {
         }
     }
     float speed;
-    if (mouse && mouse_camera()) {
-        // mouse right = stick right = negative speed (the camera stores stick x negated)
-        speed = camera_mouse::yaw_speed(dx, mouse_sensitivity(), c->f[25].ps0);
+    if (mouse) {
+        // mouse right = stick right = negative speed (the camera stores stick x negated); dx in degrees
+        speed = camera_mouse::yaw_speed(dx, 1.0f, c->f[25].ps0);
     } else if (direct_camera()) {
         float x = (float)ldf32(cam + kCamStickX);
         speed = std::fmax(-1.0f, std::fmin(1.0f, x)) * camera_speed();
@@ -317,7 +350,8 @@ static void manual_speed(Cpu* c) {
 extern "C" void site_02510448(Cpu* c) { manual_speed(c); }
 extern "C" void site_025104A0(Cpu* c) { manual_speed(c); }
 
-static bool mouse_step() { return mouse_camera() && g_synth && g_synth_step + 1 >= step(); }
+// the mouse or the swipe camera fed this step (g_synth is only set while one of them is active)
+static bool mouse_step() { return g_synth && g_synth_step + 1 >= step(); }
 
 // The manual-mode wake-up belongs to the camera's decision, never to the pad: modes without
 // direct mouse sites must see the proportional fallback. Let nextMode retain all its native
@@ -355,7 +389,7 @@ extern "C" void site_0251053C(Cpu* c) {
     double per = ldf32(c->r[1] + 0x14);
     if (!(std::fabs(per) > 0.01)) return;
     // mouse down (dy > 0) looks down: V grows, so f28 < 0 (the other way with Invert camera up/down)
-    c->f[28].ps0 = -dy * mouse_sensitivity() / per * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+    c->f[28].ps0 = -dy / per * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
 }
 // V smoothing (cSAngle * f1, f1 = [sp+0x18]) and U smoothing (f1 = [sp+0x1C])
 extern "C" void site_02510EA0(Cpu* c) {

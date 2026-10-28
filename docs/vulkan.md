@@ -725,7 +725,7 @@ Startup overrides match Metal: `WWHD_RES_SCALE` selects the initial internal sca
 (1–4); `WWHD_AO_MODE` selects AO mode 0–2. If `WWHD_AO_MODE` is absent, presence of
 `WWHD_NO_AO_QUIRK` selects mode 0, otherwise mode 2 is the default. The explicit AO
 mode takes precedence over the legacy flag, whose value is ignored.
-`WWHD_AO_HIRES` defaults to on (off on Android, where the phone GPU is the limit in heavy views, issue #56); `0` disables it, `1` enables it. `WWHD_ANISO` defaults to off and a
+`WWHD_AO_HIRES` defaults to on (off on Android, where the phone GPU is the limit in heavy views, issue #56); `0` disables it, `1` enables it. `WWHD_FULL_LIGHT` (Full-size torchlight: the point-light buffer at the screen's resolution) defaults to on (off on Android, like `WWHD_AO_HIRES`); `0` disables it, `1` enables it. `WWHD_ANISO` defaults to off and a
 nonzero value enables it. `WWHD_FXAA` defaults to off and its presence enables it,
 including a value of `0`, matching Metal's existing behavior.
 `WWHD_SCALE_FILTER=smooth|sharp|integer` selects the initial presentation filter;

@@ -27,6 +27,29 @@ def problems(data, name=PATH):
     guard.check_entry(name, data, result)
     return result
 
+class SealedTemplateGuard(unittest.TestCase):
+    """A sealed template (shaderprep_format.seal) passes only when it opens with WWHD_TEMPLATE_KEY and holds a
+    code-free template; sealed with the shaderprep implementation, opened with the guard's own."""
+    def sealed(self, doc, key):
+        import os, sys
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+        import shaderprep_format
+        return shaderprep_format.seal(encode(doc), key)
+
+    def test_sealed_needs_the_key_and_a_code_free_content(self):
+        from unittest.mock import patch
+        key = bytes(range(32))
+        data = self.sealed(fixture(), key)
+        with patch.dict('os.environ', {'WWHD_TEMPLATE_KEY': ''}):
+            self.assertTrue(problems(data))
+        with patch.dict('os.environ', {'WWHD_TEMPLATE_KEY': '11' * 32}):
+            self.assertTrue(problems(data))
+        with patch.dict('os.environ', {'WWHD_TEMPLATE_KEY': key.hex()}):
+            self.assertEqual(problems(data), [])
+            self.assertTrue(problems(data, 'other.bin'))
+            doc = fixture(); doc['states'][0]['code'] = [1]
+            self.assertTrue(problems(self.sealed(doc, key)))
+
 class TemplateGuard(unittest.TestCase):
     def test_synthetic_safe_template_only_at_approved_path(self):
         for name in (PATH, 'Release/'+PATH):

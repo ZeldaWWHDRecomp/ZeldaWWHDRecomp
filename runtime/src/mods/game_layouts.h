@@ -74,5 +74,8 @@ bool texture(const std::string& spec, Image& out, std::string& error);
 bool texture_size(const std::string& spec, uint32_t& width, uint32_t& height);
 // "<Layout>/<pane>". False when the pack, the layout or the pane is missing.
 bool pane(const std::string& spec, Pane& out);
+// A member file of an archive of the pack, e.g. ("CommandGuide_00_msbt", "CommandGuide_00.msbt"): the
+// archive <name>.szs, decoded. False with a short reason (also while the game has not opened its pack).
+bool file(const std::string& archive_name, const std::string& member, Bytes& out, std::string& error);
 
 }  // namespace game_layouts

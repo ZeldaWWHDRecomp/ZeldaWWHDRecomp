@@ -43,6 +43,9 @@ void emit(Op op, const uint32_t* words, uint32_t count) {
 }
 }
 namespace mods::cemu { float aspect_ratio() { return 0; } }
+namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' pane observer (mods/play_context.cpp)
+namespace mods { float hud_fade_alpha_of(uint32_t) { return 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
+namespace mods { bool g_test_item_names = false; bool item_names_on_hud() { return g_test_item_names; } }  // the item ring's names (mods/item_ring.cpp)
 extern "C" void f_025A847C_orig(Cpu*) {}
 extern "C" void f_02704D2C_orig(Cpu*) {}
 extern "C" void f_0282D9C0_orig(Cpu*) {}
@@ -84,7 +87,7 @@ uint32_t atlas = 0;
 bool expect_frame = true;
 bool font_available = true;
 float label_centre = 0;
-std::array<uint32_t,6> font_records{};
+std::array<uint32_t,button_glyphs::kAtlasGlyphs> font_records{};
 unsigned font_queries = 0;
 void layout(input_map::FaceLayout choice);
 
@@ -359,7 +362,7 @@ void shoulders_test() {
     const uint32_t image = ld32(atlas + 0x10 + 0x24);
     // Lettering comes from the queried font masks, including partial edge coverage. Changing
     // those masks changes the composed result: no hard-coded lettering or fallback bitmap.
-    assert(font_queries == 6);
+    assert(font_queries == button_glyphs::kAtlasGlyphs);
     const auto composed = button_glyphs::button_atlas(font_records);
     assert(composed.size() == button_glyphs::kAtlasWidth*button_glyphs::kAtlasHeight*4);
     assert(!std::memcmp(composed.data(),mem::ptr(image),composed.size()));
@@ -893,7 +896,7 @@ uint32_t host_alloc(uint32_t size, uint32_t align) {
 }
 extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
     assert(ld32(c->r[3]) == 5 && ld32(c->r[3] + 12) == 1);
-    assert(ld32(c->r[3] + 4) == 128 && ld32(c->r[3] + 8) == 1024);
+    assert(ld32(c->r[3] + 4) == 128 && ld32(c->r[3] + 8) == 1280);
     assert(ld32(c->r[3] + 0x14) == 0x1A && ld32(c->r[3] + 0x30) == 1);
     assert(ld32(c->r[3] + 0x3C) == 128 && ld32(c->r[3] + 0x84) == 0x00010203);
     atlas = c->r[3] - 16;
@@ -901,10 +904,10 @@ extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
 
 extern "C" void ppc_dispatch(Cpu* c) {
     assert(c->pc == 0x0286F7BC && c->r[3] == base + 0xE100);
-    constexpr uint32_t characters[] = {'L','R','1','2','B','T'};
+    constexpr uint32_t characters[] = {'L','R','1','2','B','T','A','3'};
     uint32_t index = 0;
-    while (index < 6 && characters[index] != c->r[5]) index++;
-    assert(index < 6);
+    while (index < 8 && characters[index] != c->r[5]) index++;
+    assert(index < 8);
     const uint32_t record = c->r[4];
     font_records[index] = record;
     font_queries++;

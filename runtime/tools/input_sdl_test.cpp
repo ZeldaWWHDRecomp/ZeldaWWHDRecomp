@@ -59,7 +59,7 @@ static double shortcutClock=0;
 // press; the overlay keeps the inputs it took from the settings shortcut and reports the poll as taken
 static bool platformShortcut=false,shortcutTook=false;static int platformShortcuts=0;
 namespace screenshot { bool key_down(int); }
-namespace overlay { bool pointer_shortcut(int,bool){return false;} void set_open(bool open,OpenReason,KeyOrigin){overlayOpen=open;} void focus_lost(){}
+namespace overlay { void offer_controller_setup(const std::string&,const std::string&){} bool pointer_shortcut(int,bool){return false;} void set_open(bool open,OpenReason,KeyOrigin){overlayOpen=open;} void focus_lost(){}
  void poll_controller_shortcuts(const float* v){static SettingsShortcut sc;static bool latched=false;
   using namespace input_map;bool select=v[kPadOptions]>0.5f;
   if(platformShortcut&&v[kPadLB]>0.5f&&v[kPadRB]>0.5f&&select){if(!latched){latched=true;shortcutTook=true;++platformShortcuts;}}

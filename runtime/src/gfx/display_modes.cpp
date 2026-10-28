@@ -446,6 +446,20 @@ bool main_picture(float* x, float* y, float* w, float* h) {
     return true;
 }
 
+bool tv_picture_hit(float nx, float ny, float* px, float* py, float* aspect, bool clamp_outside) {
+    std::lock_guard<std::mutex> lk(g_layout_mu);
+    const Layout& L = g_tv_layout;
+    const Box& b = L.tv;
+    if (L.drc_only || g_tv_dw <= 0 || g_tv_dh <= 0 || b.w <= 0 || b.h <= 0) return false;
+    float x = (nx * g_tv_dw - b.x) / b.w, y = (ny * g_tv_dh - b.y) / b.h;
+    if (x < 0 || y < 0 || x > 1 || y > 1) {
+        if (!clamp_outside) return false;
+        x = std::clamp(x, 0.0f, 1.0f), y = std::clamp(y, 0.0f, 1.0f);
+    }
+    *px = x, *py = y, *aspect = b.w / b.h;
+    return true;
+}
+
 // ---------------------------------------------------------------- view button (touch screens)
 std::atomic<int> g_touch_buttons{touch_buttons::Automatic};
 std::atomic<bool> g_touch_controller{false}, g_touch_controls{true};

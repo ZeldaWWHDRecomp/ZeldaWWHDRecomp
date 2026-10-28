@@ -121,7 +121,15 @@ int main() {
     mods::set_infinite(mods::kMoonJump, true);
     mods::moon_jump_step(&cpu, link, true); // consume the switch's reset request
     mods::moon_jump_step(&cpu, link, false);
-    input::PadState pad{}; pad.buttons = input::kL; pad.lx = -1;
+    // the moon jump's own input (input_map kMoonJump), never the game's L
+    input::PadState pad{}; pad.virt = input::kVirtMoonJump; pad.lx = -1;
+    {  // the game's L alone: no moon jump
+        input::PadState l{}; l.buttons = input::kL; mods::moon_jump_input(l);
+        st32(link + 0x65F0, 0x04);
+        mods::moon_jump_step(&cpu, link, true);
+        assert(ld32(link + 0x65F0) == 0x04);
+        mods::moon_jump_step(&cpu, link, false);
+    }
     mods::moon_jump_input(pad);
     stf32(camera + 0xF0, 1); // camera facing +Z
     mods::moon_jump_camera(camera);
@@ -146,7 +154,7 @@ int main() {
     assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 6000);
     mods::moon_jump_step(&cpu, link, false);
     mods::set_infinite(mods::kMoonNoFall, true);
-    pad.buttons = 0; mods::moon_jump_input(pad);
+    pad.virt = 0; mods::moon_jump_input(pad);
     mods::moon_jump_step(&cpu, link, true);
     assert(ldf32(link + 0x6A48) == 100);
     mods::moon_jump_step(&cpu, link, false);
@@ -161,7 +169,7 @@ int main() {
     // Even when the allocator reuses Link's address, a scene change invalidates
     // the old camera until the new scene has drawn one.
     std::memcpy(mem::ptr(0x104741E4), "Other\0\0\0", 8);
-    pad.buttons = input::kL; mods::moon_jump_input(pad);
+    pad.virt = input::kVirtMoonJump; mods::moon_jump_input(pad);
     mods::moon_jump_step(&cpu, link, true);
     assert(mods::moon_jump_move(link, x, z) && x == 0 && z == 0);
     mods::moon_jump_step(&cpu, link, false);

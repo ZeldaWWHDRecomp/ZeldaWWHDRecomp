@@ -83,6 +83,11 @@ jobs:
           java -cp build/guest-tools-config-test org.wwhdrecomp.wwhd.GuestToolsConfigTest
           javac -d build/saved-second-screen-test android/app/src/main/java/org/wwhdrecomp/wwhd/AndroidUserDirectories.java android/app/src/main/java/org/wwhdrecomp/wwhd/SavedSecondScreen.java tools/android/SavedSecondScreenTest.java
           java -cp build/saved-second-screen-test org.wwhdrecomp.wwhd.SavedSecondScreenTest
+          javac -d build/touch-layout-test android/app/src/main/java/org/wwhdrecomp/wwhd/TouchLayout.java android/app/src/main/java/org/wwhdrecomp/wwhd/TouchStick.java android/app/src/main/java/org/wwhdrecomp/wwhd/TouchPresets.java android/app/src/main/java/org/wwhdrecomp/wwhd/ContextPack.java android/app/src/main/java/org/wwhdrecomp/wwhd/GoldenRings.java android/app/src/main/java/org/wwhdrecomp/wwhd/ContextAssets.java tools/android/TouchLayoutTest.java tools/android/TouchStickTest.java tools/android/TouchPresetsTest.java tools/android/ContextButtonsTest.java
+          java -cp build/touch-layout-test org.wwhdrecomp.wwhd.TouchLayoutTest
+          java -cp build/touch-layout-test org.wwhdrecomp.wwhd.TouchStickTest
+          java -cp build/touch-layout-test org.wwhdrecomp.wwhd.TouchPresetsTest
+          java -cp build/touch-layout-test org.wwhdrecomp.wwhd.ContextButtonsTest
           clang++ -std=c++20 -I runtime/src runtime/tools/gamepad_touch_test.cpp -o build/gamepad-touch-test
           build/gamepad-touch-test
           clang++ -std=c++20 -pthread -I runtime/src runtime/tools/present_worker_test.cpp -o build/present-worker-test

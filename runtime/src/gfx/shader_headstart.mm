@@ -25,7 +25,9 @@
 
 namespace gfx {
 
-bool headstart_translate(const uint32_t* regs, bool vertex, bool compileNow);  // metal_draw.mm
+bool headstart_translate(const uint32_t* regs, bool vertex, bool compileNow, uint64_t* sharedKey = nullptr,
+                         uint64_t* wideKey = nullptr);  // metal_draw.mm
+void headstart_counts(size_t& shaders, size_t& pipelines);                     // metal_draw.mm
 size_t headstart_failures();
 size_t headstart_compiling();                                                   // metal_draw.mm
 bool headstart_queue_pipeline(const uint8_t* raw, size_t size);                 // metal_draw.mm
@@ -117,8 +119,15 @@ bool replay(bool speculative, bool compileNow, Stats& st, void (*onShader)(const
         regs[stage + 1] = size >> 3;
         if (fsSize) regs[mmSQ_PGM_START_FS] = guest_copy(fetch, record.fetch.data(), fsSize) >> 8;
         st.records++;
-        if (headstart_translate(regs.data(), vertex != 0, compileNow)) st.translated++;
+        uint64_t shared = 0, wide = 0;
+        const bool ok = headstart_translate(regs.data(), vertex != 0, compileNow, &shared, &wide);
+        if (ok) st.translated++;
         else st.failed++;
+        // debug: WWHD_HEADSTART_MAP=file lists per shader record (in file order) the shader it translates to
+        // ("M <record> <vertex> <shared key or 0 when it failed> <own wide key>"), for template distilling
+        static FILE* map = [] { const char* p = getenv("WWHD_HEADSTART_MAP"); return p && *p ? fopen(p, "w") : nullptr; }();
+        if (map) fprintf(map, "M %zu %u %016llx %016llx\n", st.records - 1, vertex, ok ? (unsigned long long)shared : 0ull,
+                         (unsigned long long)wide);
         // warming: keep the number of Metal compiles in flight bounded
         if (compileNow && st.records % 64 == 0)
             while (headstart_compiling() > 128) {
@@ -197,6 +206,10 @@ int headstart_warm() {
     warmprogress::report(g_warm_total, g_warm_total, "shaders and pipelines", true);
     LOG("[warm] %zu pipelines built (%zu unresolved) in %.1f s", built, dropped, (ms_since(t0) - tShaders) / 1000.0);
     const size_t compileFailures = headstart_failures();
+    size_t distinctShaders = 0, distinctPipelines = 0;
+    headstart_counts(distinctShaders, distinctPipelines);
+    LOG("[warm] distinct: %zu shaders, %zu pipelines (from %zu shader records, %zu pipeline records)", distinctShaders,
+        distinctPipelines, st.records, st.pipelines);
     LOG("[warm] done in %.1f s (%zu failed shader/pipeline compiles)", ms_since(t0) / 1000.0, compileFailures);
     return st.failed || compileFailures ? 1 : 0;
 }

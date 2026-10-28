@@ -757,6 +757,13 @@ void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& wait
   std::lock_guard lock(w.mutex);
   promotions = w.promotions; hits = w.promotedHits; waitMs = w.promotedWaitNs / 1e6;
 }
+void pipeline_worker_memory(PipelineWorkerMemory& out) {
+  auto& w = worker();
+  std::lock_guard lock(w.mutex);
+  out.recipes = w.recipes.size(); out.recipeBytes = w.recipeBytes;
+  out.unusedWarm = w.ready.size(); out.unusedWarmLimit = w.device ? maxUnusedWarmPipelines : 0;
+  out.evicted = g_evictions.load();
+}
 bool pipeline_recipe_known(const std::vector<uint8_t>& key) {
   auto& w = worker();
   if (!w.device) return false;

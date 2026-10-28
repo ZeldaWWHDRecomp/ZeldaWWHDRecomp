@@ -112,12 +112,16 @@ static void test_defaults() {
     CHECK(m.keys[kScreenshot][0] == kVK_F10 && m.pad[kScreenshot] == kPadNone);
     CHECK(press(m, {kVK_F10}).buttons == 0 && press(m, {kVK_F10}).lx == 0);
     CHECK(action_bit(kScreenshot) == 0 && action_from_id("Screenshot") == kScreenshot);
-    // no default key is reserved; no key is used twice
+    // no default key is reserved; no key is used twice, except Q / L1 by L, Jump and the moon jump
+    // (virtual inputs share the Wii U's L: in play L leaves, play_buttons)
     for (int a = 0; a < kActionCount; a++)
         for (int k : m.keys[a]) {
             CHECK(k == kNoKey || !reserved_key(k));
-            CHECK(k == kNoKey || key_users(m, k, a).empty());
+            CHECK(k == kNoKey || key_users(m, k, a).empty() || (k == kVK_ANSI_Q && (a == kL || is_virtual(a))));
+            CHECK(!has_conflict(m, a));
         }
+    CHECK(conflict_count(m) == 0);
+    CHECK(key_users(m, kVK_ANSI_Q).size() == 3 && pad_users(m, kPadLB).size() == 3);
 
     // controllers by position: Xbox A (bottom) = Wii U B, Xbox B (right) = Wii U A
     float v[kPadCount] = {};
@@ -1151,6 +1155,202 @@ static void test_screen_layouts() {
     CHECK(std::fabs(mobile_ui::desktop_scale(1, 2160) - 2160 / 820.0f) < 1e-5f);
 }
 
+
+// ---- P6: virtual inputs, per-controller bindings, the move / take-off rule, L and d-pad down in play
+
+static void test_virtual_actions() {
+    Mapping m = Mapping::defaults();
+    CHECK(is_virtual(kJump) && is_virtual(kMoonJump) && !is_virtual(kL) && !is_virtual(kScreenshot));
+    CHECK(action_bit(kJump) == 0 && action_bit(kMoonJump) == 0);
+    CHECK(action_virtual(kJump) == input::kVirtJump && action_virtual(kMoonJump) == input::kVirtMoonJump);
+    CHECK(action_from_id("Jump") == kJump && action_from_id("MoonJump") == kMoonJump);
+    // Q and L1 press the Wii U's L and both virtual inputs; the virtual ones never set a game button
+    auto k = press(m, {kVK_ANSI_Q});
+    CHECK(k.buttons == input::kL && k.virt == (input::kVirtJump | input::kVirtMoonJump));
+    float v[kPadCount] = {};
+    v[kPadLB] = 1;
+    auto c = controller_state(m, v);
+    CHECK(c.buttons == input::kL && c.virt == (input::kVirtJump | input::kVirtMoonJump));
+    // a virtual action alone on a face button: the game gets nothing from that button
+    CHECK(bind_virtual(m, kJump, kPadR3, Displace::kTakeOff));
+    v[kPadLB] = 0; v[kPadR3] = 1;
+    c = controller_state(m, v);
+    CHECK(c.buttons == 0 && c.virt == input::kVirtJump);
+    // combine: buttons and virtual bits add up, sticks follow the furthest
+    input::PadState a, b;
+    a.buttons = input::kA; a.lx = .2f; b.virt = input::kVirtJump; b.lx = -.9f; b.ry = .5f;
+    auto s = combine(a, b);
+    CHECK(s.buttons == input::kA && s.virt == input::kVirtJump && s.lx == -.9f && s.ry == .5f);
+}
+
+static void test_play_buttons() {
+    Mapping m = Mapping::defaults();
+    // L leaves the game in play (option off), stays in menus; with the option it always reaches it
+    CHECK(play_buttons(m, input::kL | input::kA, true) == input::kA);
+    CHECK(play_buttons(m, input::kL | input::kA, false) == (input::kL | input::kA));
+    m.l_turns_page = true;
+    CHECK(play_buttons(m, input::kL, true) == input::kL);
+    m.l_turns_page = false;
+    // an item button moved to d-pad down: the item in play, d-pad down in menus
+    CHECK(bind_virtual(m, kJump, m.pad[kY], Displace::kMoveToDDown));
+    CHECK(m.pad[kY] == kPadDDown && m.pad[kDDown] == kPadDDown && !has_conflict(m, kY) && !has_conflict(m, kDDown));
+    float v[kPadCount] = {};
+    v[kPadDDown] = 1;
+    const uint32_t both = controller_state(m, v).buttons;
+    CHECK(both == (input::kY | input::kDown));
+    CHECK(play_buttons(m, both, true) == input::kY);
+    CHECK(play_buttons(m, both, false) == input::kDown);
+    // d-pad down pressed on its own (another input of the same bindings is not shared): kept
+    CHECK(play_buttons(m, input::kDown, true) == input::kDown);
+    // unrelated buttons held together are not filtered
+    Mapping d = Mapping::defaults();
+    CHECK(play_buttons(d, input::kDown | input::kY, true) == (input::kDown | input::kY));
+}
+
+static void test_displace_rules() {
+    // Move (L1 first): the face button that was B moves to L1, which then no longer presses L
+    Mapping m = Mapping::defaults();
+    const int bottom = m.pad[kB];  // by position: the bottom face button is the Wii U's B
+    CHECK(displaced_by(m, bottom) == std::vector<int>{kB});
+    CHECK(displaced_by(m, kPadLB).empty());  // L (unused in play) does not count
+    CHECK(move_target(m, kB) == kPadLB);
+    CHECK(bind_virtual(m, kJump, bottom, Displace::kMove));
+    CHECK(m.pad[kJump] == bottom && m.pad[kB] == kPadLB && m.pad[kL] == kPadNone);
+    CHECK(!has_conflict(m, kB) && !has_conflict(m, kJump));
+    // the moon jump, which sat on L1 with Jump, comes along (on one input the moon jump wins)
+    CHECK(m.pad[kMoonJump] == bottom && !has_conflict(m, kMoonJump));
+    // L1 is taken now: the next Move goes to d-pad down
+    CHECK(move_target(m, kX) == kPadDDown);
+    const int left = m.pad[kY];
+    CHECK(bind_virtual(m, kMoonJump, left, Displace::kMove));
+    CHECK(m.pad[kY] == kPadDDown && m.pad[kMoonJump] == left);
+    // nowhere left to move to: Move and Move to L1 / d-pad down refuse and change nothing
+    Mapping before = m;
+    CHECK(move_target(m, kA) == kPadNone);
+    CHECK(!bind_virtual(m, kJump, m.pad[kA], Displace::kMove));
+    CHECK(!bind_virtual(m, kJump, m.pad[kA], Displace::kMoveToL1));
+    CHECK(!bind_virtual(m, kJump, m.pad[kA], Displace::kMoveToDDown));
+    CHECK(m == before);
+    // Take off: the item button can't be pressed from the controller any more
+    Mapping t = Mapping::defaults();
+    const int top = t.pad[kX];
+    CHECK(bind_virtual(t, kJump, top, Displace::kTakeOff));
+    CHECK(t.pad[kX] == kPadNone && t.pad[kJump] == top && t.pad[kL] == kPadLB);
+    float v[kPadCount] = {};
+    v[top] = 1;
+    CHECK(controller_state(t, v).buttons == 0 && controller_state(t, v).virt == input::kVirtJump);
+    // Move to L1 for an item button: its item goes there (by its Wii U button), L leaves L1
+    Mapping l = Mapping::defaults();
+    CHECK(bind_virtual(l, kJump, l.pad[kR], Displace::kMoveToL1));
+    CHECK(l.pad[kR] == kPadLB && l.pad[kL] == kPadNone && l.pad[kJump] == kPadRB);
+    // a free input (L1 / unbound): bound at once, nothing displaced, whatever is chosen
+    Mapping f = Mapping::defaults();
+    CHECK(bind_virtual(f, kJump, kPadLB, Displace::kTakeOff) && f.pad[kL] == kPadLB);
+    CHECK(bind_virtual(f, kJump, kPadMisc2, Displace::kMove) && f.pad[kJump] == kPadMisc2);
+    // only virtual actions and real inputs
+    CHECK(!bind_virtual(f, kA, kPadMisc3, Displace::kMove));
+    CHECK(!bind_virtual(f, kJump, kPadNone, Displace::kMove));
+    // a face button moved by hand is no preset any more
+    Mapping a = Mapping::defaults();
+    a.face_auto = true;
+    CHECK(bind_virtual(a, kJump, a.pad[kA], Displace::kMove) && !a.face_auto);
+}
+
+static void test_profiles() {
+    Mapping m = Mapping::defaults();
+    const std::string xg = "030000005e0400008e02000014010000", xn = "Xbox 360 Controller";
+    const std::string pg = "050000004c050000e60c000000810000", pn = "DualSense Wireless Controller";
+    // no profile: the shared bindings
+    CHECK(profile_index(m, xg, xn) == -1 && &pads_for(m, xg, xn) == &m.pad);
+    CHECK(setup_offer_due(m, xg, xn, false));
+    CHECK(!setup_offer_due(m, xg, xn, true));  // the on-screen controls / a test pad: never offered
+    CHECK(!setup_offer_due(m, "", "", false));
+    // its own bindings: a copy of the shared ones, then by letters for the Xbox pad only
+    const int xi = ensure_profile(m, xg, xn);
+    CHECK(xi == 0 && ensure_profile(m, xg, xn) == 0 && m.controllers.size() == 1);
+    CHECK(m.controllers[0].pad == m.pad && !setup_offer_due(m, xg, xn, false));
+    Mapping view = view_for(m, xi);
+    apply_face_layout(view, FaceLayout::kLabels);
+    store_view(m, view, xi);
+    CHECK(face_layout(m) == FaceLayout::kPosition);  // the shared ones are untouched
+    float v[kPadCount] = {};
+    v[kPadA] = 1;  // the bottom button
+    CHECK(controller_state(m, v, pads_for(m, xg, xn)).buttons == input::kA);  // the Xbox pad: by letters
+    CHECK(controller_state(m, v, pads_for(m, pg, pn)).buttons == input::kB);  // others: by position
+    // the fallbacks: the same GUID with another name, then the same name (another bus, or AppKit)
+    CHECK(profile_index(m, xg, "Xbox Wireless") == xi);
+    CHECK(profile_index(m, "", xn) == xi);
+    CHECK(profile_index(m, "0300000000000000000000000000ffff", xn) == xi);
+    CHECK(profile_index(m, "0300000000000000000000000000ffff", "Other") == -1);
+    // an exact match beats a GUID-only one
+    const int pi = ensure_profile(m, pg, pn);
+    const int pi2 = ensure_profile(m, pg, pn + " (USB)");
+    CHECK(pi == 1 && pi2 == 2);
+    m.controllers[pi2].pad[kZR] = kPadNone;
+    CHECK(profile_index(m, pg, pn + " (USB)") == pi2 && profile_index(m, pg, pn) == pi);
+    // a shared-view edit keeps the profiles; the profile view keeps the keyboard edits shared
+    Mapping sv = view_for(m, -1);
+    sv.keys[kA] = {kVK_ANSI_Z, kNoKey};
+    sv.pad[kZL] = kPadNone;
+    store_view(m, sv, -1);
+    CHECK(m.controllers.size() == 3 && m.pad[kZL] == kPadNone && m.controllers[xi].pad[kZL] == kPadLT);
+    Mapping pv = view_for(m, pi);
+    pv.keys[kB] = {kVK_ANSI_O, kNoKey};
+    pv.pad[kR] = kPadNone;
+    store_view(m, pv, pi);
+    CHECK(m.keys[kB][0] == kVK_ANSI_O && m.pad[kR] == kPadRB && m.controllers[pi].pad[kR] == kPadNone);
+    // "Don't ask again", and a profile clears it
+    m.setup_declined.push_back(controller_key("aa", "Pad"));
+    CHECK(!setup_offer_due(m, "aa", "Pad", false) && setup_offer_due(m, "bb", "Pad", false));
+    // JSON round trip (format 2), names with quotes, backslashes and control characters
+    m.controllers[pi].name = "Odd \"pad\" \\ \x01";
+    m.l_turns_page = true;
+    std::string err;
+    const std::string j = to_json(m);
+    CHECK(j.find("\"version\": 2") != std::string::npos && json_version(j) == 2);
+    CHECK(j.find("\"l_turns_gamepad_page\": true") != std::string::npos);
+    Mapping r;
+    CHECK(from_json(j, r, &err) && err.empty());
+    if (!err.empty()) fprintf(stderr, "%s\n%s\n", err.c_str(), j.c_str());
+    CHECK(r == m);
+    remove_profile(m, xi);
+    CHECK(m.controllers.size() == 2 && profile_index(m, xg, xn) == -1);
+    // the option is written only when on
+    CHECK(to_json(Mapping::defaults()).find("l_turns_gamepad_page") == std::string::npos);
+    // a profile missing inputs takes the shared ones; bad entries are skipped with a warning
+    CHECK(from_json(R"({"version":2,"controller":{"ZR":null},"controllers":[{"guid":"g","name":"n","controller":{"A":"Y","Bogus":"A"}},{"name":"no guid"}]})", r, &err));
+    CHECK(r.controllers.size() == 1 && r.controllers[0].pad[kA] == kPadY && r.controllers[0].pad[kZR] == kPadNone);
+    CHECK(r.controllers[0].pad[kB] == r.pad[kB] && !err.empty());
+}
+
+static void test_v1_migration() {
+    // a format 1 file: no profiles; Jump and the moon jump on whatever pressed the Wii U's L
+    const char* v1 = R"({"version":1,"keyboard":{"L":["U"]},"controller":{"L":"LeftTrigger","ZL":"LeftShoulder"},"options":{"format":2}})";
+    Mapping r;
+    std::string err;
+    CHECK(json_version(v1) == 1 && json_version("{}") == 1 && json_version("nonsense") == 1);
+    CHECK(from_json(v1, r, &err) && err.empty());
+    CHECK(r.controllers.empty() && r.setup_declined.empty() && !r.l_turns_page);
+    CHECK(r.pad[kJump] == kPadLT && r.pad[kMoonJump] == kPadLT);
+    CHECK(r.keys[kJump][0] == kVK_ANSI_U && r.keys[kMoonJump][0] == kVK_ANSI_U);
+    // the default format 1 file reads as today's defaults
+    std::string old = to_json(Mapping::defaults());
+    const size_t at = old.find("\"version\": 2");
+    old.replace(at, 12, "\"version\": 1");
+    CHECK(from_json(old, r, &err) && r == Mapping::defaults());
+    // a format 2 file keeps its own Jump bindings, also where L moved
+    Mapping m = Mapping::defaults();
+    m.pad[kL] = kPadMisc2;
+    CHECK(from_json(to_json(m), r) && r.pad[kJump] == kPadLB);
+    // the old Jump anywhere button choice: Jump on that button's inputs, which keep their own use
+    Mapping j = Mapping::defaults();
+    jump_from_legacy(j, input::kStickR);
+    CHECK(j.pad[kJump] == kPadR3 && j.keys[kJump][0] == kVK_ANSI_V && j.pad[kStickRClick] == kPadR3);
+    CHECK(j.pad[kMoonJump] == kPadLB);
+    jump_from_legacy(j, 0x12345);  // not a button: nothing
+    CHECK(j.pad[kJump] == kPadR3);
+}
+
 int main() {
     // Old controls files default to showing Quit; an explicit choice round-trips.
     {
@@ -1254,6 +1454,11 @@ int main() {
     set_current(Mapping::defaults(), false);
     CHECK(!background_controllers());
     test_files();
+    test_virtual_actions();
+    test_play_buttons();
+    test_displace_rules();
+    test_profiles();
+    test_v1_migration();
     printf("input_map_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

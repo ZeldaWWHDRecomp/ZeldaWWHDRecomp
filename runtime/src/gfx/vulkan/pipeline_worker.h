@@ -27,6 +27,10 @@ void remember_pipeline_recipe(std::shared_ptr<PipelineRecipe> recipe);
 bool pipeline_recipe_known(const std::vector<uint8_t>& key);
 // Demands that waited for the worker's running compile of their pipeline (WWHD_VK_DEMAND_PROMOTE), how many got it,
 // and the time they waited in all.
+// Sizing (WWHD_VK_MEMORY_LOG_FRAMES): the recipe database (packed SPIR-V and state, bytes) and the pool of compiled
+// pipelines no draw has taken yet, its limit and how many it dropped.
+struct PipelineWorkerMemory { size_t recipes = 0, recipeBytes = 0, unusedWarm = 0, unusedWarmLimit = 0, evicted = 0; };
+void pipeline_worker_memory(PipelineWorkerMemory& out);
 void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& waitMs);
 // The setup's model sweep drew a model of archive group `group` with this (portable) key: file the recipe under it too.
 void note_pipeline_group(const std::vector<uint8_t>& key, uint32_t group);

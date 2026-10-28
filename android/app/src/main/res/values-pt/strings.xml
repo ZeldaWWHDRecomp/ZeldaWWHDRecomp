@@ -77,8 +77,6 @@
     <string name="game_icon_present">O ícone já está na tela inicial. Segure-o e abra as configurações dele.</string>
     <string name="game_icon_present_shortcut">O ícone já está na tela inicial. Segure-o para ver os saves e a instalação.</string>
     <string name="game_icon_none">Instale o jogo primeiro</string>
-    <string name="controller_settings_hint">Segure Select/− para abrir Configurações</string>
-    <string name="controller_settings_hint_home">Segure Select/− ou pressione Home para abrir Configurações</string>
     <string name="touch_layout_access">Controles na tela. Segure o botão do controle para editar o layout.</string>
     <string name="touch_layout_hint">Arraste um controle para movê-lo. Selecione-o e altere seu tamanho.</string>
     <string name="touch_layout_smaller">Tamanho −</string>

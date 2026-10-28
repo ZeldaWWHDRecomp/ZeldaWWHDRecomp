@@ -77,8 +77,6 @@
     <string name="save_not_a_save">Este zip no tiene una partida de Wind Waker HD (user/cking.sav)</string>
     <string name="save_imported">Partida importada (la anterior está en %1$s)</string>
     <string name="save_import_failed">No se pudo importar la partida: %1$s</string>
-    <string name="controller_settings_hint">Mantén Select/− para abrir Ajustes</string>
-    <string name="controller_settings_hint_home">Mantén Select/− o pulsa Home para abrir Ajustes</string>
     <string name="touch_layout_access">Controles táctiles. Mantén pulsado el botón del mando para editar la distribución.</string>
     <string name="touch_layout_hint">Arrastra un control para moverlo. Selecciónalo y cambia su tamaño.</string>
     <string name="touch_layout_smaller">Tamaño −</string>

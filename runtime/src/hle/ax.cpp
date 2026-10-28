@@ -23,6 +23,7 @@
 #include "guest_addr.h"
 #include "../audio_out.h"
 #include "../audio_channels.h"
+#include "../dsp_overload_guard.h"
 #include "../runtime.h"
 
 namespace interp { const char* phase_name(); }
@@ -596,6 +597,26 @@ void output_frame(Cpu* c) {
     audio::push(pcm, kSamples48);
 }
 
+// The game's DSP overload check off (dsp_overload_guard.h): looping ambience no longer cuts out
+// after a late audio frame. Checked every frame: a save state load brings the game's value back.
+void keep_dsp_channels() {
+    static const bool game_check = [] {
+        const char* e = getenv("WWHD_DSP_KILL");
+        bool on = e && *e && strcmp(e, "0") != 0;
+        if (on) LOG("[ax] WWHD_DSP_KILL: the game's DSP overload check stays on");
+        return on;
+    }();
+    static const uint32_t addr = GD(0x10170030);  // the 1.1 updateDSP reads (dsp_overload_guard.h)
+    static bool logged = false;
+    uint32_t word;
+    if (!dsp_guard::replacement(ld32(addr), game_check, word)) return;
+    st32(addr, word);
+    if (!logged) {
+        logged = true;
+        LOG("[ax] DSP overload check off (ratio at %08X; WWHD_DSP_KILL=1 keeps it)", addr);
+    }
+}
+
 void frame_thread() {
     Cpu* c = threads::make_service_cpu("AX frame", 0x20000);
     host::set_thread_name("AX frame");
@@ -607,6 +628,7 @@ void frame_thread() {
         double stretch = 1.0 + std::clamp(level * 0.05, -0.05, 0.05);
         next += std::chrono::microseconds((int64_t)(3000 * stretch / game_clock::rate()));
         threads::service_begin();  // a save state waits until the frame is done (voices, callbacks)
+        keep_dsp_channels();
         {
             std::lock_guard<std::mutex> lk(g_ax_mutex);
             process_voices();

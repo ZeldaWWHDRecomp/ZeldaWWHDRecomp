@@ -57,6 +57,48 @@ int main() {
     run(kMove, false);
     for (int i = 0; i < kGraceSteps; i++) run(kProcFall, false);
     assert(run(kProcFall, true) == Action::kNone);
+    // True 60: the controller is read on full and half steps; jump decisions run on full steps only.
+    // A press that begins on a half step is neither lost (also when let go before the next full
+    // step) nor doubled (when held on through several full steps).
+    {
+        constexpr uint32_t kJ = 1;  // input::kVirtJump
+        struct Read { bool full; bool held; };
+        auto jumps = [&](std::initializer_list<Read> reads) {
+            State st;
+            Latch latch;
+            int n = 0;
+            step(st, {kWait, false, false, false, 0});
+            for (const Read& r : reads) {
+                latch.see(r.held ? kJ : 0);
+                if (!r.full) continue;  // a half step: the game only previews it
+                const uint32_t press = latch.take();
+                const Action a = step(st, {kWait, r.held, false, false, (press & kJ) ? 1 : 0});
+                if (a == Action::kJump) {
+                    ++n;
+                    after_step(st, kWait, false);  // landed at once (a test without the game)
+                }
+            }
+            return n;
+        };
+        // pressed on a half step, let go before the next full step: still one jump
+        assert(jumps({{true, false}, {false, true}, {true, false}, {false, false}, {true, false}}) == 1);
+        // pressed on a half step and held through three full steps: one jump
+        assert(jumps({{true, false}, {false, true}, {true, true}, {false, true}, {true, true}, {false, true}, {true, true}}) == 1);
+        // pressed on a full step, held over the half step: one jump
+        assert(jumps({{true, true}, {false, true}, {true, true}, {false, false}, {true, false}}) == 1);
+        // let go on the half step and pressed again on the next full step: a second press, a second jump
+        assert(jumps({{true, true}, {false, false}, {true, true}, {false, true}, {true, false}}) == 2);
+        // two separate half-step taps in two steps: two jumps
+        assert(jumps({{true, false}, {false, true}, {true, false}, {false, true}, {true, false}}) == 2);
+        // nothing pressed: nothing
+        assert(jumps({{true, false}, {false, false}, {true, false}}) == 0);
+        // without the latch (press = -1) the old edge rule still holds
+        State st;
+        assert(step(st, {kWait, true, false, false}) == Action::kJump);
+        Latch l;
+        l.see(kJ); l.see(kJ);
+        assert(l.take() == kJ && l.take() == 0);
+    }
     // the ground jump is a little higher than the game's, at least the minimum
     assert(ground_speed_y(12.5f) == kGroundMin);
     assert(ground_speed_y(23.7f) > 23.7f);

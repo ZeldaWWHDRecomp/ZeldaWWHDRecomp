@@ -646,3 +646,92 @@ class Yaz0Loader(unittest.TestCase):
             self.assertTrue(prep._load_yaz0().endswith('build/libyaz0'+prep.YAZ0_SUFFIX))
 
 if __name__=='__main__':unittest.main()
+
+
+class Distill(unittest.TestCase):
+    """Synthetic: one state per distinct shader, recipes renamed to the kept states' keys."""
+    def state(self, h, vertex, value):
+        return (h, vertex, None, [(0xa214, value)], None)
+
+    def test_one_state_per_shader_and_renamed_recipes(self):
+        states = [self.state(10, 0, v) for v in (1, 2, 3)] + [self.state(20, 1, 1), self.state(20, 1, 2)]
+        record_states = [0, 1, 2, 3, 4]
+        # Metal: records 0, 1 share shader 0xa (wide keys 0xa, 0xb), record 2 is its own; VS records share 0xc
+        metal_map = ({0: ('M', 0, 0xa, 0xa), 1: ('M', 0, 0xa, 0xb), 2: ('M', 0, 0xd, 0xd),
+                      3: ('M', 1, 0xc, 0xc), 4: ('M', 1, 0xc, 0xe)}, {})
+        # Vulkan: all three pixel records give one shader (variant keys 0x100..0x102)
+        vulkan_map = ({0: ('V', 0, 0x55, 0x100), 1: ('V', 0, 0x55, 0x101), 2: ('V', 0, 0x55, 0x102),
+                       3: ('V', 1, 0x66, 0x200), 4: ('V', 1, 0x66, 0x201)}, {})
+        m1 = dict(metal(), shader_hashes=[0xc, 0xa, 3])
+        m2 = dict(metal(), shader_hashes=[0xe, 0xb, 3])  # the same shaders by other states' keys
+        v1 = dict(vulkan(), shader_hashes=[0x201, 0x102, 0])
+        pipelines = [(prep.REC_PIPELINE, m1), (prep.REC_PIPELINE, m2), (5, v1)]
+        kept, kept_pipelines, report = prep.distill(states, pipelines, record_states, [metal_map, vulkan_map])
+        self.assertEqual(kept, [states[0], states[2], states[3]])
+        self.assertEqual([p['shader_hashes'] for _, p in kept_pipelines], [[0xc, 0xa, 3], [0x200, 0x100, 0]])
+        self.assertEqual(report['pipelines merged'], 1)
+
+    def test_derived_pipelines_keep_their_states_and_recipe(self):
+        states = [self.state(10, 0, v) for v in (1, 2)] + [self.state(20, 1, 1)]
+        metal_map = ({0: ('M', 0, 0xa, 0xa), 1: ('M', 0, 0xa, 0xb), 2: ('M', 1, 0xc, 0xc)}, {})
+        # the recipe naming the second pixel state gives its own Vulkan pipeline
+        vulkan_map = ({0: ('V', 0, 0x55, 0x100), 1: ('V', 0, 0x55, 0x101), 2: ('V', 1, 0x66, 0x200)},
+                      {0: (0, 2, 0x777), 1: (1, 2, 0x888)})
+        pipelines = [(prep.REC_PIPELINE, dict(metal(), shader_hashes=[0xc, 0xa, 3])),
+                     (prep.REC_PIPELINE, dict(metal(), shader_hashes=[0xc, 0xb, 3]))]
+        kept, kept_pipelines, _ = prep.distill(states, pipelines, [0, 1, 2], [metal_map, vulkan_map])
+        self.assertEqual(kept, states)
+        self.assertEqual([p['shader_hashes'] for _, p in kept_pipelines], [[0xc, 0xa, 3], [0xc, 0xb, 3]])
+
+    def test_map_must_cover_every_record(self):
+        with self.assertRaises(ValueError):
+            prep.distill([self.state(1, 0, 1)], [], [0, 0], [({0: ('M', 0, 1, 1)}, {})])
+
+
+class Sealed(unittest.TestCase):
+    def game(self, d, salt=b''):
+        for rel in fmt.SEAL_KEY_FILES:
+            path = os.path.join(d, 'content', *rel.split('/'))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            pathlib.Path(path).write_bytes(b'synthetic archive ' + rel.encode() + salt)
+        return d
+
+    def test_seal_open_and_wrong_game(self):
+        plain = fmt.encode({'version': 3, 'states': [], 'pipelines': [metal()]})
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            key = fmt.game_key(self.game(a))
+            self.assertEqual(key, fmt.game_key(os.path.join(a, 'content')))
+            sealed = fmt.seal(plain, key)
+            self.assertEqual(sealed, fmt.seal(plain, key))  # deterministic
+            self.assertTrue(fmt.is_sealed(sealed) and plain not in sealed)
+            self.assertEqual(fmt.open_sealed(sealed, key), plain)
+            with self.assertRaises(ValueError):
+                fmt.open_sealed(sealed, fmt.game_key(self.game(b, b'other')))
+            with self.assertRaises(ValueError):
+                fmt.open_sealed(sealed[:-1] + bytes([sealed[-1] ^ 1]), key)
+            with self.assertRaises(ValueError):
+                fmt.seal(b'not a template', key)
+
+    def test_build_reads_a_sealed_template_with_the_game(self):
+        plain = fmt.encode({'version': 3, 'states': [], 'pipelines': [metal()]})
+        with tempfile.TemporaryDirectory() as d:
+            self.game(d)
+            path = os.path.join(d, 'sealed.bin')
+            pathlib.Path(path).write_bytes(fmt.seal(plain, fmt.game_key(d)))
+            with self.assertRaises(ValueError):
+                prep.read_template(path)
+            self.assertEqual(prep.read_template(path, game=os.path.join(d, 'content')),
+                             prep.read_template(self.plain(d, plain)))
+
+    def plain(self, d, data):
+        path = os.path.join(d, 'plain.bin')
+        pathlib.Path(path).write_bytes(data)
+        return path
+
+    def test_game_bytes_scan(self):
+        program = bytes(range(64))
+        with patch.object(prep, 'game_shaders', return_value={(prep.PS, program): (None, 'x')}), \
+                tempfile.TemporaryDirectory() as d:
+            self.game(d)
+            self.assertEqual(prep.game_bytes_found([b'clean' * 10, bytes(64)], d), 0)
+            self.assertGreater(prep.game_bytes_found([b'xx' + program[5:30] + b'yy'], d), 0)

@@ -59,6 +59,8 @@ struct Shader {
 };
 // Render-thread-only lookup; recorded pipeline identity, never program hash.
 const Shader* find_pipeline_shader(uint64_t pipelineId, bool vertex);
+// the variant key (the identity pipeline recipes name a shader by) of the last translate() on this thread; 0 if none
+uint64_t last_translated_variant_key();
 void select_renderer();
 // Pass the renderer frame to revalidate program bytes once per frame. Omitting
 // it keeps immediate revalidation for standalone callers and shader tools.

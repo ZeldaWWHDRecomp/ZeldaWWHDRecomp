@@ -366,3 +366,58 @@ def vulkan_payload(p):
     for d in p['attachments']: words.extend(d)
     words.extend([len(p['dynamics']),*p['dynamics']])
     return b'WWVKST01'+struct.pack('<%dI'%len(words),*words)
+
+# ---------------------------------------------------------------- sealed template
+# A release template can be sealed with a key only the player's own game files give: SHA-256 over three of the game's
+# shader archives (the same in the USA and European games). Not secrecy against attackers (anyone with the game
+# opens it); the shipped file only means something next to the game it belongs to. Layout: SEAL_MAGIC, a 16-byte
+# nonce, a 32-byte HMAC-SHA256 tag over magic + nonce + ciphertext (a wrong game is reported, not mis-read), the
+# ciphertext (the WWHT0003 bytes XOR a SHAKE-256 keystream of key + nonce). The nonce is derived from the key and
+# the content, so sealing is deterministic. Idea after SwitchWakerHD's sealed shader manifest
+# (thanks @Pulpparty / @depende3000); this is its own design.
+SEAL_MAGIC = b'WWHS0001'
+SEAL_KEY_FILES = ('Common/Shaders/Prim/wii_pipeline.sharcfb', 'Common/Shaders/particle/wii_pipeline.sharcfb',
+                  'Common/Shaders/render_buffer/render_buffer.sharcfb')
+
+def game_key(content):
+    """The sealing key from the game's content folder; ValueError when a key file is missing."""
+    import hashlib, os
+    if os.path.isdir(os.path.join(content, 'content')): content = os.path.join(content, 'content')  # the game folder
+    h = hashlib.sha256(b'WWHD shader template key 1\0')
+    for rel in SEAL_KEY_FILES:
+        path = os.path.join(content, *rel.split('/'))
+        try:
+            with open(path, 'rb') as f: digest = hashlib.sha256(f.read()).digest()
+        except OSError:
+            raise ValueError('game file missing for the shader template key: %s' % rel)
+        h.update(rel.encode('ascii') + b'\0' + digest)
+    return h.digest()
+
+def _keystream(key, nonce, size):
+    import hashlib
+    return hashlib.shake_256(b'WWHD shader template stream 1\0' + key + nonce).digest(size)
+
+def _xor(data, stream):
+    return (int.from_bytes(data, 'little') ^ int.from_bytes(stream, 'little')).to_bytes(len(data), 'little')
+
+def seal(plain, key):
+    import hashlib, hmac
+    if not plain.startswith(MAGIC): raise ValueError('only a code-free template can be sealed')
+    nonce = hmac.new(key, b'nonce\0' + plain, hashlib.sha256).digest()[:16]
+    body = _xor(plain, _keystream(key, nonce, len(plain)))
+    tag = hmac.new(key, SEAL_MAGIC + nonce + body, hashlib.sha256).digest()
+    return SEAL_MAGIC + nonce + tag + body
+
+def is_sealed(data):
+    return data.startswith(SEAL_MAGIC)
+
+def open_sealed(data, key):
+    import hashlib, hmac
+    if not data.startswith(SEAL_MAGIC) or len(data) < 56 or len(data) > MAX_BYTES:
+        raise ValueError('not a sealed shader template')
+    nonce, tag, body = data[8:24], data[24:56], data[56:]
+    if not hmac.compare_digest(tag, hmac.new(key, SEAL_MAGIC + nonce + body, hashlib.sha256).digest()):
+        raise ValueError('the shader template does not belong to these game files')
+    plain = _xor(body, _keystream(key, nonce, len(body)))
+    if not plain.startswith(MAGIC): raise ValueError('sealed shader template holds no code-free template')
+    return plain

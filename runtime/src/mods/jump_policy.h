@@ -55,14 +55,15 @@ struct State {
 
 struct Input {
     uint32_t proc;
-    bool button;      // the jump button is held now
-    bool blocked;     // event, menu, swimming, title screen or the moon jump on the same button
+    bool button;      // the jump input is held now
+    bool blocked;     // event, menu, swimming, title screen or the moon jump held with it
     bool double_jump; // the option
+    int press = -1;   // 1 / 0: a new press since the last full step (Latch::take); -1: from `button`
 };
 
 // One full step, before Link's execute: what to do. Updates the state.
 inline Action step(State& s, const Input& in) {
-    const bool press = in.button && !s.held;
+    const bool press = in.press >= 0 ? in.press != 0 : in.button && !s.held;
     s.held = in.button;
     if (ground_proc(in.proc)) {
         s.doubled = false;
@@ -84,6 +85,24 @@ inline Action step(State& s, const Input& in) {
     }
     return Action::kNone;
 }
+
+// The jump inputs between full steps (input::kVirt* bits). Under true 60 the controller is read on
+// every pass, also on the half steps the game only previews; a full step must see a press that began
+// on a half step (also one already let go again: never lost) exactly once (never doubled). see() takes
+// every read, take() runs once per full step.
+struct Latch {
+    uint32_t last = 0;     // the bits as last read
+    uint32_t pressed = 0;  // off -> on since the last take()
+    void see(uint32_t bits) {
+        pressed |= bits & ~last;
+        last = bits;
+    }
+    uint32_t take() {
+        const uint32_t p = pressed;
+        pressed = 0;
+        return p;
+    }
+};
 
 // After Link's execute (full step): whether the game's own ledge jump just began and should become a
 // plain fall (option "no automatic ledge jumps"). Updates `own` (our jump ended when the proc changed).

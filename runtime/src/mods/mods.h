@@ -7,6 +7,7 @@
 // Test/start-up switches: WWHD_MOD_<NAME>=1 (see mods.cpp).
 #pragma once
 #include <cstdint>
+#include <string>
 
 #include "move_speed.h"  // MoveMode (the run/swim speed mod's public vocabulary)
 #include "fast_forward.h"
@@ -113,15 +114,65 @@ bool double_jump();                       // once more in the air
 void set_double_jump(bool on);
 bool no_auto_jump();                      // the game's own jump off ledges becomes a plain fall
 void set_no_auto_jump(bool on);
-uint32_t jump_button();                   // one of L3, R3, L, R, ZL, ZR (default L)
+// Format 1 controls.json only (input_map::adopt_legacy_jump_button): the Wii U button Jump anywhere
+// used before it had an input of its own (input_map kJump). One of L3, R3, L, R, ZL, ZR (default L).
+uint32_t jump_button();
 void set_jump_button(uint32_t button);
 inline bool valid_jump_button(uint32_t b) {
     constexpr uint32_t allowed = 0x40000 | 0x20000 | 0x20 | 0x10 | 0x80 | 0x40;
     return b && !(b & (b - 1)) && (b & allowed);
 }
-void jump_input(uint32_t buttons);                  // the active controller's buttons (VPAD/KPAD read)
+void jump_input(uint32_t virt);                     // the virtual inputs (input::kVirt*) of every VPAD/KPAD read
 void jump_step(Cpu* c, uint32_t link, bool before); // around daPy_lk_c::execute (climb.cpp)
 void jump_reset();                                  // game thread after a state load
+// controller_play.cpp: L and d-pad down by whether Link plays (VPAD/KPAD full reads), and which
+// on-screen Jump / Moon jump buttons show (input::kVirt* bits)
+void pad_play_rules(input::PadState& p);
+uint32_t jump_touch_buttons();
+// ---- the item ring (item_ring.cpp; rules in item_ring.h) ----
+// the active controller's pad read (VPADRead, or KPADReadEx in Pro Controller mode), after the play rules:
+// X / Y / R held back or opening the ring; `repeat`: true 60's repeated buttons (only the stick is kept)
+void item_ring_pad(input::PadState& p, bool repeat);
+// frame boundary (interp.cpp, every pass): the equip, the pace, the ring drawn. `full`: a full logic step
+// follows; `half60`: true 60's half pass (Link's 60 Hz half step) follows
+void item_ring_service(Cpu* c, bool full, bool half60);
+void item_ring_reset();          // a state load
+bool item_ring_open();
+void item_ring_finger(int button, bool down, float dx, float dy);  // Android: the finger on X / Y / R
+int item_ring_mode();            // item_ring::Mode: 0 off, 1 touch only (default), 2 touch and controllers
+void set_item_ring_mode(int mode);
+int item_ring_pace();            // item_ring::Pace: 0 normal, 1 slow motion (default), 2 paused
+void set_item_ring_pace(int pace);
+int item_button_names();         // item_ring::Names: 0 X Y R, 1 A1 A2 A3, 2 auto (default)
+void set_item_button_names(int names);
+const char* item_button_name(int button);  // as the names are now: "X" or "A1" ...
+bool item_names_on_hud();                  // A1 A2 A3 now: the HUD's X, Y and R show them (button_glyphs.cpp)
+// ---- the context buttons on the touch controls (context_touch.cpp; rules in touch_play.h) ----
+// the active controller's pad read, after the item ring: items by tap, auto put-away, the ZL latch (touch play only)
+void context_touch_pad(input::PadState& p, bool repeat);
+namespace playctx { struct PlayContext; }
+void context_touch_step(const playctx::PlayContext& c);  // each logic step, after the context was read
+void context_touch_service();                            // frame boundary (tests: WWHD_CONTEXT_ASSETS)
+bool context_touch_hide_cluster();  // the game's own button cluster is hidden now (aspect.cpp)
+bool context_touch_aim_latched();   // an item is latched by a tap (no jump buttons then)
+void context_touch_pack(int32_t* out, int n);       // context_touch.h pack (Java)
+int context_touch_assets(const std::string& dir);   // 0 not yet, -1 failed, > 0 generation
+bool context_buttons_on();
+void set_context_buttons_on(bool on);
+bool item_tap_on();
+void set_item_tap_on(bool on);
+bool aim_only_on();
+void set_aim_only_on(bool on);
+bool auto_put_away_on();
+void set_auto_put_away_on(bool on);
+int zl_latch_mode();  // touchplay::ZlLatch: 0 off, 1 let go (default), 2 next target
+void set_zl_latch_mode(int mode);
+// ---- HUD fades (hud_fade.cpp; rules in hud_fade.h): the game's hearts, rupees, magic bar ----
+bool hud_fade_on(int element);  // hudfade::Element
+void set_hud_fade_on(int element, bool on);
+void hud_fade_step(const playctx::PlayContext& c);  // each logic step, after the context was read
+float hud_fade_alpha_of(uint32_t pane);  // Pane::CalculateMtx: the alpha factor of a faded pane (1: none)
+int hud_pane_hide(uint32_t pane);  // Pane::Draw: 0 draw, 1 skip (a faded-out element), 2 skip in TV layouts (the hidden cluster)
 bool story_system();                      // letters, quests, the story notebook, mod charts (mods/required.h)
 void set_story_system(bool on);
 void set_auto_wind(bool on);
@@ -149,6 +200,9 @@ MoveHud move_hud();
 // once per frame on the game thread (interp.cpp, frame start): reads whether a game menu, an event
 // or a message is up and advances the HUDs' fade over it
 void hud_service();
+// what the game shows over gameplay now: an event, a message, a menu (hud_visibility.h GameUi); game thread
+struct GameUi;
+GameUi game_ui_now();
 // 0..1, multiplies the boost bar's and the climb wheel's own alpha (mod_hud.mm, vulkan/present.cpp):
 // 0 while a game menu, a cutscene/event or a dialogue is shown. Any thread.
 float game_ui_hud_alpha();
@@ -166,6 +220,9 @@ bool host_key_down(uint16_t code);
 // ---- mouse (mouse.mm -> camera.cpp) ----
 void mouse_add(float dx, float dy);  // points moved while captured (dy > 0 = down)
 void mouse_wheel(float dy);          // wheel / scroll (dy > 0 = forward)
+// swipe camera (Android touch controls): a finger moved by (dx, dy) pixels on a display of `dpi`
+// (dy > 0 = down); turned into degrees by camera_swipe.h with the touch options' swipe speed
+void swipe_add(float dx_px, float dy_px, float dpi);
 void mouse_button(int button, bool down);  // 0 left, 1 right
 bool mouse_captured();
 void mouse_init(void* tv_window);  // NSWindow* of the TV picture (menu.mm, main thread)

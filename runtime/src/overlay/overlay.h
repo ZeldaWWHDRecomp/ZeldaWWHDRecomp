@@ -31,6 +31,7 @@
 //   WWHD_TEST_BG_SHADERS=fast@<frame> (or 0@)   set Graphics > Shader compile at a TV frame
 #pragma once
 #include <cstdint>
+#include <string>
 
 struct ImDrawData;
 
@@ -41,6 +42,9 @@ namespace overlay {
 void poll_controller_shortcuts(const float* values);
 // Native Controls capture also owns controller presses until they are released.
 void external_binding_capture(bool active);
+// A new controller (no bindings of its own, not declined) was first used: offer the controller setup
+// (controller_setup.h). Opens Settings for the question. Any thread.
+void offer_controller_setup(const std::string& guid, const std::string& name);
 // A platform shortcut took the input since the last call (and clears that). Hosts count such a poll as
 // captured, as the press that opens or closes the menu: the inputs held stay from the game until each one
 // is released (release_gate.h). Always false without platform shortcuts.

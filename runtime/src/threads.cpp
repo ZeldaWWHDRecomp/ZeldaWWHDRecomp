@@ -118,6 +118,7 @@ struct HostThread {
     // statistics
     std::chrono::steady_clock::time_point acquired;
     std::atomic<uint64_t> held_ns{0}, wait_ns{0};
+    bool is_main = false;      // the game's main thread (run_main; main_profile.h)
 #ifdef __APPLE__
     mach_port_t mach = 0;     // for CPU time statistics
     uint64_t last_cpu_us = 0;
@@ -196,6 +197,7 @@ static void mem_watch_thread();
 
 static void core_acquire(HostThread* t) {
     if (!g_sched_on || t->holds_core) return;
+    mainprof::Mark main_mark(&t->cpu, "core wait");
     static std::once_flag tick;
     std::call_once(tick, [] {
         std::thread(sched_tick_thread).detach();
@@ -242,7 +244,9 @@ static void core_release(HostThread* t) {
         std::lock_guard<std::mutex> lk(k.m);
         if (k.owner == t) k.owner = nullptr;
         t->holds_core = false;
-        t->held_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t->acquired).count();
+        const uint64_t held = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t->acquired).count();
+        t->held_ns += held;
+        if (mainprof::on(&t->cpu)) mainprof::note_release(held);
         g_core_preempt[t->held_core] = 0;
     }
     k.cv.notify_all();
@@ -457,6 +461,10 @@ static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable&
         const bool virtual_wait = simulation_deadline && (mods::fast_forward() || game_clock::shifted());
         if (virtual_wait ? timebase::simulation_now() >= *simulation_deadline :
             deadline && std::chrono::steady_clock::now() >= *deadline) return false;
+        static const char* const kWaitNames[] = {"wait", "wait: mutex", "wait: event", "wait: message send",
+                                                 "wait: message receive", "wait: sleep queue", "wait: join", "wait: rendezvous",
+                                                 "wait: sleep", "wait: service", "wait: entry"};
+        mainprof::Mark main_mark(t ? &t->cpu : nullptr, kind < 11 ? kWaitNames[kind] : "wait");
         if (t) {
             t->wait_kind = kind;
             t->wait_obj = obj;
@@ -638,6 +646,7 @@ static void* thread_main(void* p) {
 #ifdef __APPLE__
     ht->mach = pthread_mach_thread_np(pthread_self());
 #endif
+    if (ht->is_main) mainprof::start(&ht->cpu);
     // keep guest threads on performance cores (see host::boost_thread_priority): the default QoS
     // let macOS park them on efficiency cores, which showed up as the main thread holding its core
     // without getting CPU time
@@ -756,6 +765,7 @@ void run_main(const LoadedModule& m, int argc, uint32_t argv) {
     uint32_t stack = mem::runtime_alloc(stack_size, 0x100);
     uint32_t t = mem::runtime_alloc(osthread::kSize, 8);
     HostThread* ht = create_thread(t, m.entry, argc, argv, stack + stack_size, stack_size, 16, 0x2 /* core 1 */);
+    ht->is_main = true;
     mem::write_cstr(mem::runtime_alloc(16), "{ Main thread }", 16);
     ht->suspend = 0;
     ht->started = true;
@@ -1078,9 +1088,17 @@ HLE(coreinit, OSSendMessage) {
     if (g_trace_msg) LOG("[msg] send q=%08X msg=%08X %08X flags=%X lr=%08X", arg(c, 0), msg[0], msg[1], flags, c->lr);
     {
         std::unique_lock<std::mutex> lk(q->m);
+        const bool profiled = mainprof::on(c);
+        if (profiled) mainprof::bump(mainprof::g_sends);
         if (q->msgs.size() >= q->capacity) {
             if (!(flags & 1)) { ret(c, 0); return; }
+            const auto full_since = profiled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             park_wait(lk, q->cv, [&] { return q->msgs.size() < q->capacity; }, W_MSG_SEND, arg(c, 0));
+            if (profiled) {
+                mainprof::bump(mainprof::g_send_full);
+                mainprof::bump(mainprof::g_send_full_ns, (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                             std::chrono::steady_clock::now() - full_since).count());
+            }
         }
         if (flags & 2) q->msgs.push_front(msg); else q->msgs.push_back(msg);  // OS_MESSAGE_FLAG_HIGH_PRIORITY
     }
@@ -1733,6 +1751,7 @@ void threads_ss_load(ss::Reader& r) {
             void* self = t->cpu.thread;
             t->cpu = s.cpu;
             t->cpu.thread = t;
+            t->cpu.main_thread = t->is_main ? 1 : 0;  // (not the saved byte)
             t->cpu.core = t->holds_core ? t->held_core : s.core;
             t->suspend = s.suspend;
             t->prio = s.prio;
@@ -1873,6 +1892,46 @@ void threads_ss_load(ss::Reader& r) {
         t->cv.notify_all();
     }
 }
+
+namespace threads {
+void dump_state() {
+    static const char* kinds[] = {"running", "mutex", "event", "message send", "message receive", "sleep queue",
+                                  "join", "rendezvous", "sleep", "service", "entry"};
+    std::unique_lock<std::mutex> lk(g_threads_mutex, std::defer_lock);
+    for (int i = 0; i < 50 && !lk.try_lock(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    LOG("[watchdog] guest threads%s:", lk.owns_lock() ? "" : " (thread list locked: read anyway)");
+    auto guest_ok = [](uint32_t a) { return a >= 0x01000000u && a < 0xF0000000u && !(a & 3); };
+    for (auto& [g, t] : g_threads) {
+        if (!t->started || t->exited) continue;
+        const Cpu& c = t->cpu;
+        char buf[512];
+        const int w = t->wst.load();
+        int n = snprintf(buf, sizeof buf, "[watchdog]   \"%s\"%s core %u prio %d %s, %s", thread_name(t).c_str(),
+                         t->is_main ? " (main)" : "", t->core, t->prio,
+                         t->holds_core ? "holds its core" : "no core",
+                         w == kParked ? (t->wait_kind < 11 ? kinds[t->wait_kind] : "parked") : w == kRunning ? "running" : "requesting");
+        if (w == kParked && t->wait_obj) n += snprintf(buf + n, sizeof buf - n, " %08X", t->wait_obj);
+        n += snprintf(buf + n, sizeof buf - n, "; lr %08X r1 %08X r3 %08X; stack", c.lr, c.r[1], c.r[3]);
+        uint32_t sp = c.r[1];
+        for (int f = 0; f < 10 && guest_ok(sp) && n < (int)sizeof buf - 12; f++) {
+            uint32_t prev = ld32(sp);
+            if (!guest_ok(prev) || prev <= sp) break;
+            n += snprintf(buf + n, sizeof buf - n, " %08X", ld32(prev + 4));
+            sp = prev;
+        }
+        LOG("%s", buf);
+    }
+    for (int core = 0; core < 3; core++) {
+        CoreSched& k = g_sched[core];
+        std::unique_lock<std::mutex> kl(k.m, std::defer_lock);
+        const bool locked = kl.try_lock();
+        std::string ready;
+        for (HostThread* t : k.ready) ready += " \"" + thread_name(t) + "\"";
+        LOG("[watchdog]   core %d: owner %s, waiting:%s%s", core, k.owner ? ("\"" + thread_name(k.owner) + "\"").c_str() : "none",
+            ready.empty() ? " none" : ready.c_str(), locked ? "" : " (core locked: read anyway)");
+    }
+}
+}  // namespace threads
 
 static void thread_dump_loop(int secs) {
     host::set_thread_name("thread dump");

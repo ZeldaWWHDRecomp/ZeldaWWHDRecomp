@@ -103,6 +103,20 @@ static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
 static overlay::DeviceGates<SDL_JoystickID> g_gates;  // update(): one per device, see overlay/release_gate.h
 static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
+// per-controller bindings (input_map profiles) and Controller details: what identifies each pad
+struct PadIdentity { std::string guid, name; bool is_virtual = false; input::ControllerInfo info; };
+static std::map<SDL_JoystickID,PadIdentity> g_ident;  // under g_pads_mu
+static std::vector<input::ControllerInfo> g_infos;    // the latest poll, under g_mu
+static std::atomic<uint32_t> g_touch_virt{0};         // the on-screen Jump / Moon jump buttons
+static std::set<SDL_JoystickID> g_offer_pending;      // new controllers: the setup is offered on their first press
+#ifdef __ANDROID__
+// Android: TouchControls announced a real game controller (ControllerHintPolicy): only then is a pad
+// offered the setup (a keyboard with d-pad keys that SDL lists as a gamepad never is)
+static std::atomic<bool> g_controller_announced{false};
+extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeControllerSetupOffer(JNIEnv*, jclass) {
+ g_controller_announced=true;
+}
+#endif
 static SDL_Window* g_prompt_window=nullptr;
 static SDL_Window* g_gamepad_window=nullptr;
 static void update_overlay_window(SDL_Window* focus);
@@ -241,6 +255,8 @@ static int keycode(SDL_Scancode code) {
  }
 }
 void set_touch(bool down,float x,float y){std::lock_guard lk(g_mu);g_touch=down;g_tx=x;g_ty=y;}
+void set_touch_virtual(uint32_t bits){g_touch_virt.store(bits,std::memory_order_relaxed);}
+std::vector<ControllerInfo> controllers(){std::lock_guard lk(g_mu);return g_infos;}
 void release_keys(){mods::fast_forward_reset();mods::lock_on_reset();mods::quick_use_reset();std::lock_guard lk(g_mu);g_mouse_bindings.consume();memset(g_keys,0,sizeof g_keys);g_touch=false;}
 void held_keys(bool* keys){std::lock_guard lk(g_mu);for(int i=0;i<256;i++)keys[i]=g_keys[i]||g_script_keys[i];}
 void controller_values(float* out){std::lock_guard lk(g_mu);std::copy(std::begin(g_values),std::end(g_values),out);}
@@ -366,6 +382,9 @@ static void apply_rumble(){
 #endif
  std::lock_guard lk(g_pads_mu);
  g_rumble_update_ms=SDL_GetTicks();  // with the motors, under the lock: the watchdog decides on both at once
+#ifdef __ANDROID__
+ if(!phone_rumble::controller_allowed(mode))level=0;  // Rumble on: This device
+#endif
  rumble_all_locked((Uint16)(std::clamp(level,0.f,1.f)*0xFFFFu),kRumbleRefreshMs);
 }
 static void rumble_watchdog(){
@@ -595,13 +614,45 @@ static void open_controller(SDL_JoystickID id){
 #endif
   // asking for a rumble of zero intensity also tells us whether the controller has a motor
   if(SDL_RumbleGamepad(pad,0,0,0))g_rumble_controllers.insert(id);
-  if(g_sensors_on)set_sensors_locked(pad,true);}
+  if(g_sensors_on)set_sensors_locked(pad,true);
+  PadIdentity& who=g_ident[id];
+  char guid[33]={};SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
+  who.guid=guid;who.name=name?name:"";who.is_virtual=SDL_IsJoystickVirtual(id);
+  input::ControllerInfo& c=who.info;
+  c.id=id;c.guid=who.guid;c.name=who.name;c.is_virtual=who.is_virtual;
+  c.vendor=SDL_GetGamepadVendor(pad);c.product=SDL_GetGamepadProduct(pad);c.version=SDL_GetGamepadProductVersion(pad);
+  if(const char* t=SDL_GetGamepadStringForType(SDL_GetGamepadType(pad)))c.type=t;
+  if(const char* p=SDL_GetGamepadPath(pad))c.path=p;
+  if(const char* sn=SDL_GetGamepadSerial(pad))c.serial=sn;
+  const SDL_PropertiesID props=SDL_GetGamepadProperties(pad);
+  c.rumble=SDL_GetBooleanProperty(props,SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN,false)||g_rumble_controllers.contains(id);
+  c.trigger_rumble=SDL_GetBooleanProperty(props,SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN,false);
+  c.led=SDL_GetBooleanProperty(props,SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN,false)||SDL_GetBooleanProperty(props,SDL_PROP_GAMEPAD_CAP_MONO_LED_BOOLEAN,false);
+  c.gyro=SDL_GamepadHasSensor(pad,SDL_SENSOR_GYRO);c.accel=SDL_GamepadHasSensor(pad,SDL_SENSOR_ACCEL);
+  if(SDL_Joystick* j=SDL_GetGamepadJoystick(pad)){c.buttons=SDL_GetNumJoystickButtons(j);c.axes=SDL_GetNumJoystickAxes(j);c.hats=SDL_GetNumJoystickHats(j);}
+  c.touchpads=SDL_GetNumGamepadTouchpads(pad);
+  auto label=[&](SDL_GamepadButton b)->uint8_t{
+   switch(SDL_GetGamepadButtonLabel(pad,b)){
+   case SDL_GAMEPAD_BUTTON_LABEL_A:return (uint8_t)input_map::FaceLabel::kA;
+   case SDL_GAMEPAD_BUTTON_LABEL_B:return (uint8_t)input_map::FaceLabel::kB;
+   case SDL_GAMEPAD_BUTTON_LABEL_X:return (uint8_t)input_map::FaceLabel::kX;
+   case SDL_GAMEPAD_BUTTON_LABEL_Y:return (uint8_t)input_map::FaceLabel::kY;
+   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return (uint8_t)input_map::FaceLabel::kCross;
+   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return (uint8_t)input_map::FaceLabel::kCircle;
+   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return (uint8_t)input_map::FaceLabel::kSquare;
+   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return (uint8_t)input_map::FaceLabel::kTriangle;
+   default:return 0;}};
+  c.labels[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);c.labels[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+  c.labels[2]=label(SDL_GAMEPAD_BUTTON_WEST);c.labels[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  // a new controller (no bindings of its own, not declined) is offered the setup when it is first used
+  if(!who.is_virtual&&input_map::setup_offer_due(input_map::current(),who.guid,who.name,false))g_offer_pending.insert(id);
+  LOG("[input] controller %s: guid %s%s",who.name.c_str(),guid,input_map::profile_index(input_map::current(),who.guid,who.name)>=0?", its own bindings":"");}
 }
 static void close_controller(SDL_JoystickID id){
  {std::lock_guard lk(g_pads_mu);
   auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
   std::erase(g_order,id);
-  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
   g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
  motion::controller_gone(id);
  note_dominant_labels();  // the dominant pad may have changed
@@ -743,7 +794,8 @@ static void post_test_keys(){
  }
 }
 // debug: WWHD_TEST_VIRTUAL_PAD=2000-2010:a,2100-2105:start attaches an SDL virtual gamepad and holds its
-// buttons (SDL gamepad button names) during TV frame ranges. Unlike WWHD_PRESS the presses take SDL's own
+// buttons (SDL gamepad button names) during TV frame ranges (script frames with WWHD_TEST_FIXED_SEED, as
+// WWHD_PRESS). Unlike WWHD_PRESS the presses take SDL's own
 // path, focus filter included (issue #267: a hidden run has no focus, so they reach the game only with
 // controller input in the background on). Just before the first range a window focus loss is posted for
 // the TV window, as the window manager sends it. Needs host input (no WWHD_NO_HOST_INPUT); to leave real
@@ -772,7 +824,7 @@ static void test_virtual_pad(){
   LOG("[input] test virtual pad %u %s",(unsigned)id,pad?"attached":SDL_GetError());
   if(!pad){failed=true;return;}
  }
- const uint64_t frame=render::frame_count();
+ const uint64_t frame=fixed_seed::script_frame(render::frame_count());  // as WWHD_PRESS (WWHD_TEST_FIXED_SEED: from the boot's anchor)
  static bool focusPosted=false;
  if(!focusPosted&&g_prompt_window&&frame+1>=holds.front().from){
   focusPosted=true;SDL_Event e{};e.type=SDL_EVENT_WINDOW_FOCUS_LOST;e.window.windowID=SDL_GetWindowID(g_prompt_window);SDL_PushEvent(&e);
@@ -976,18 +1028,75 @@ void update(){
   for(int p=0;p<kPadCount;p++)v[p]=std::max(v[p],d[p]);  // the shortcut below reads them ungated
   devices.emplace_back(id,d);
  }
+ // who is who (per-controller bindings, Controller details, the setup offer)
+ std::vector<PadIdentity> idents;
+ {std::lock_guard lk(g_pads_mu);
+  for(auto& [id,d]:devices){auto i=g_ident.find(id);idents.push_back(i!=g_ident.end()?i->second:PadIdentity{});}}
  // Home / Select open and close the menu here (independent of the frame rate): the press that does is
  // the overlay's, so the gates count this poll as captured when the menu was open before or is after;
  // so does a poll whose input a platform shortcut took (overlay/extensions.h)
  overlay::poll_controller_shortcuts(v);
  const bool captured=captured_before||overlay::captures()||overlay::shortcut_took_input();
- g_gates.combine(devices,captured,v,game);  // a reconnected pad (new id) gets a new gate
- input_map::consume_shortcut_buttons(input_map::current(),v,game);
- auto state=input_map::controller_state(input_map::current(),game);
+ std::vector<overlay::PadValues> gated;
+ g_gates.combine(devices,captured,v,game,&gated);  // a reconnected pad (new id) gets a new gate
+ const input_map::Mapping current=input_map::current();
+ input_map::consume_shortcut_buttons(current,v,game);
+ input::PadState state;
+ if(current.controllers.empty()){
+  state=input_map::controller_state(current,game);  // one set of bindings for all: as before
+ }else{
+  // each controller through its own bindings (a profile for its GUID / name, else the shared ones)
+  for(size_t i=0;i<gated.size();i++){
+   input_map::consume_shortcut_buttons(current,v,gated[i].data());
+   state=input_map::combine(state,input_map::controller_state(current,gated[i].data(),input_map::pads_for(current,idents[i].guid,idents[i].name)));
+  }
+ }
+ // the controller in use (the overlay's confirm / back buttons follow its bindings), the setup offer on
+ // a new controller's first press, and the list for Controller details
+ static SDL_JoystickID active=0;
+ std::vector<input::ControllerInfo> infos;
+ for(size_t i=0;i<devices.size();i++){
+  const SDL_JoystickID id=devices[i].first;
+  bool pressed=false;
+  for(int p=1;p<kPadCount;p++)pressed|=devices[i].second[p]>0.6f;
+  if(pressed&&!idents[i].is_virtual&&id!=active){active=id;input_map::set_active_controller(idents[i].guid,idents[i].name);}
+  if(pressed){
+   bool offer=false;
+   {std::lock_guard lk(g_pads_mu);offer=g_offer_pending.erase(id)>0;}
+#ifdef __ANDROID__
+   if(offer&&!g_controller_announced.load())offer=false;
+#endif
+   if(offer&&input_map::setup_offer_due(input_map::current(),idents[i].guid,idents[i].name,idents[i].is_virtual))
+    overlay::offer_controller_setup(idents[i].guid,idents[i].name);
+  }
+  input::ControllerInfo c=idents[i].info;
+  c.active=id==active;
+  c.values.assign(devices[i].second.begin(),devices[i].second.end());
+  {std::lock_guard lk(g_pads_mu);
+   if(auto it=g_controllers.find(id);it!=g_controllers.end()){
+    int pct=-1;
+    switch(SDL_GetGamepadPowerInfo(it->second,&pct)){
+    case SDL_POWERSTATE_ON_BATTERY:c.power="on battery";break;
+    case SDL_POWERSTATE_NO_BATTERY:c.power="wired, no battery";break;
+    case SDL_POWERSTATE_CHARGING:c.power="charging";break;
+    case SDL_POWERSTATE_CHARGED:c.power="charged";break;
+    default:c.power="unknown";break;}
+    c.battery=pct;
+    switch(SDL_GetGamepadConnectionState(it->second)){
+    case SDL_JOYSTICK_CONNECTION_WIRED:c.connection="wired";break;
+    case SDL_JOYSTICK_CONNECTION_WIRELESS:c.connection="wireless";break;
+    default:c.connection="unknown";break;}
+   }}
+  infos.push_back(std::move(c));
+ }
+#ifdef __ANDROID__
+ // Automatic gyro: this device's sensors while the player plays by touch (motion.h)
+ motion::set_touch_play(phone_rumble::last_input_touch.load()&&gfx::g_touch_controls&&gfx::touch_buttons_visible());
+#endif
  // + went down: the view may switch to the GamePad screen while the game is paused
  // (not while the settings overlay or the text prompt takes the buttons: Start acts there)
  {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus&&!overlay::blocks_input())gfx::display_plus_pressed();plus=now;}
- std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;
+ std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;g_infos=std::move(infos);
  if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(game,g_keys);screenshot::poll_controller(game);}
 }
 void prompt_text(const std::u16string& initial,int max_len,std::function<void(bool,std::u16string)> done){std::lock_guard lk(g_mu);g_initial=initial;g_pending_max_len=std::max(0,max_len);if(g_initial.size()>(size_t)g_pending_max_len)g_initial.resize(g_pending_max_len);g_pending=std::move(done);}
@@ -1219,6 +1328,8 @@ PadState read() {
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;
+    s.virt |= g_touch_virt.load(std::memory_order_relaxed);  // the on-screen Jump / Moon jump buttons
+    s.virt |= k.virt;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;
     static uint32_t last_buttons = 0;

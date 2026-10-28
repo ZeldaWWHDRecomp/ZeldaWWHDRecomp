@@ -1,5 +1,6 @@
 #include "background_shaders.h"
 #include "gfx/render_mips.h"
+#include "gfx/renderer.h"
 #include "gfx/texture_levels.h"
 #include "mods/cemu_pack.h"
 #include <tuple>
@@ -130,6 +131,9 @@ static float target_scale(const Surface* s) {
     uint32_t width,height;
     if(!s->fmt.compressed&&s->mips==1&&mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     if (s->fmt.compressed || s->mips > 1) return 1.0f;
+    // the half-size point-light buffer and its depth copy with Full-size torchlight: as many pixels as the
+    // screen, so every pixel gets its own light instead of a neighbour's along silhouettes (gfx/area_sample.h)
+    const float light = s->sizeClaim.size == gfx::TargetSize::Light && render::full_light() ? 2.0f : 1.0f;
     static const float shadow = getenv("WWHD_SHADOW_SCALE") ? parse_scale(getenv("WWHD_SHADOW_SCALE")) : 0.0f;
     static const bool shadow_logged = [] {  // issue #67: show that the switch was picked up
         if (shadow) LOG("[gfx] WWHD_SHADOW_SCALE=%g: shadow maps at %gx the console's 1024x1024", shadow, shadow);
@@ -139,12 +143,12 @@ static float target_scale(const Surface* s) {
     if (shadow && s->isDepth && s->slices > 1) return shadow;
     // dynamic resolution: single-layer targets (the screen's buffers and the GamePad's); the shadow
     // cascades (arrays) keep the internal resolution
-    if (s->slices > 1) return res_scale();
-    return res_scale() * g_dyn_frame;
+    if (s->slices > 1) return res_scale() * light;
+    return res_scale() * g_dyn_frame * light;
 }
 // the dynamic resolution factor in target_scale's result (1 where it does not apply)
 static float target_dyn(const Surface* s) {
-    if (g_dyn_frame == 1.0f || s->sizeClaim.size != gfx::TargetSize::Internal || s->fmt.compressed || s->mips > 1 || s->slices > 1) return 1.0f;
+    if (g_dyn_frame == 1.0f || s->sizeClaim.size == gfx::TargetSize::Console || s->fmt.compressed || s->mips > 1 || s->slices > 1) return 1.0f;
     uint32_t width,height;
     if(mods::cemu::texture_extent(s->width,s->height,s->format,s->slices,s->tileMode,width,height))return 1.0f;
     return g_dyn_frame;
@@ -556,6 +560,9 @@ Surface* surface_from_color_buffer(uint32_t addr, uint32_t* firstSlice, uint32_t
     d.pitch = cb->surface.pitch;
     d.format = (uint32_t)cb->surface.format.value();
     d.tileMode = (uint32_t)cb->surface.tileMode.value();
+    // clears and copies to the screen: the game clears the point-light buffer before its passes draw it,
+    // also after the pause menu, when their claim is old (gfx/target_size.h)
+    d.sizeRequest.keeps = true;
     return find_or_create_surface(d, true);
 }
 

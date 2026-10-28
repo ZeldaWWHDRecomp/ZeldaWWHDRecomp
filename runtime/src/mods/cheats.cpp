@@ -266,7 +266,7 @@ void moon_jump_input(const input::PadState& pad) {
     if (!infinite(kMoonJump)) return;
     moon_stick_x.store(pad.lx, std::memory_order_relaxed);
     moon_stick_y.store(pad.ly, std::memory_order_relaxed);
-    moon_buttons.store(pad.buttons, std::memory_order_release);
+    moon_buttons.store(pad.virt, std::memory_order_release);  // its own input (input_map kMoonJump), never the game's L
 }
 
 void moon_jump_camera(uint32_t camera) {
@@ -305,7 +305,7 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
         }
         if (preview) { preview_saved = flight; preview_saved_valid = true; }
     } else if (flight.link != link) return;
-    const bool held = (moon_buttons.load(std::memory_order_acquire) & input::kL) != 0;
+    const bool held = (moon_buttons.load(std::memory_order_acquire) & input::kVirtMoonJump) != 0;
     if (before && held && !preview) {
         if (ld32(link + moon_proc) != 0x27) {
             const Cpu saved = *cpu;

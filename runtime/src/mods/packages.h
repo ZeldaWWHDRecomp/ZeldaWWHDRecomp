@@ -19,6 +19,12 @@ inline constexpr const char* kNativeHostGameId="wwhd-usa";
 inline constexpr const char* kManagerVersion="1.5.0"; // 1.4: "experimental" flag; 1.5: game_id "wwhd"
 struct Option {
     std::string id,name,description,type;
+    // The item menu's settings page (game_settings.h): "menu": true shows the option there, in the Mods tab
+    // under its mod (and its "section", when it has one); "live": true says the mod follows a change while the
+    // game runs (otherwise the page says it applies at the next start). Optional; provisional until the SDK's
+    // live options and manifest sections land (they replace these if they differ).
+    std::string section;
+    bool menu=false,live=false;
     json::Value value,default_value;
     double minimum=0,maximum=1,step=1;
     std::vector<std::string> choices;

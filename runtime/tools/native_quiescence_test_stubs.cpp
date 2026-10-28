@@ -32,3 +32,7 @@ void add_current_thread() { unreachable("perf_hint::add_current_thread"); }
 namespace thread_sampler {
 void add_current_thread(const char*) { unreachable("thread_sampler::add_current_thread"); }
 }  // namespace thread_sampler
+
+// threads.cpp (included by the test) starts the main-thread profile; the test doesn't need it
+#include "main_profile.h"
+namespace mainprof { void start(Cpu*) {} }

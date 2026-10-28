@@ -8,6 +8,7 @@
 
 #include "ppc.h"
 #include "exception_report.h"
+#include "main_profile.h"
 
 // ---- guest memory layout ----
 namespace mem {
@@ -80,6 +81,9 @@ void release_core();
 void set_service_core(uint32_t core);
 uint32_t diagnostic_count(); // normal-thread numeric summary, no names/CPU contents
 void report_sched();  // log per-thread core usage
+// for a hang (gx2 watchdog): every guest thread's state, wait object, lr and guest call chain, and each
+// core's owner and waiters. Locks are only tried, so the values may be slightly inconsistent.
+void dump_state();
 }  // namespace threads
 struct BlockingScope {
     BlockingScope() { threads::block_begin(); }
@@ -144,6 +148,7 @@ struct GuestExit { uint32_t value; };
 #define HLE(lib, name)                                                        \
     static void hle_impl_##lib##_##name(Cpu* c);                               \
     extern "C" void imp_##lib##_##name(Cpu* c) {                               \
+        mainprof::Mark main_mark_(c, #name);                                  \
         exception_report::boundary<GuestExit>("HLE " #lib "." #name, [&] {      \
             hle_impl_##lib##_##name(c);                                       \
         });                                                                  \

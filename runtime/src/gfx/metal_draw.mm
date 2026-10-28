@@ -1344,8 +1344,10 @@ static Surface g_hires_color, g_hires_depth;
 
 static Surface* hires_surface(Surface& dst, const Surface* like) {
     uint32_t w = like->width * 3 / 2, h = like->height * 3 / 2;
-    // texture: 1.5x the game's buffer as allocated (which may already be scaled for the internal resolution)
-    uint32_t pw = (uint32_t)like->tex.width * 3 / 2, ph = (uint32_t)like->tex.height * 3 / 2;
+    // texture: 1.5x the game's buffer as allocated (which may already be scaled for the internal resolution;
+    // Full-size torchlight doubles the depth copy, target_scale, and the private copy keeps the AO pass's size)
+    const uint32_t light = like->sizeClaim.size == gfx::TargetSize::Light && render::full_light() ? 2 : 1;
+    uint32_t pw = (uint32_t)like->tex.width * 3 / (2 * light), ph = (uint32_t)like->tex.height * 3 / (2 * light);
     if (!dst.tex || dst.width != w || dst.height != h || dst.tex.width != pw || dst.tex.height != ph ||
         dst.fmt.pixel != like->fmt.pixel) {
         MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:like->fmt.pixel width:pw height:ph
@@ -1415,6 +1417,10 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         MTLTextureType type = texture_type_for_dim(dec->textureUnitDim[unit]);
         const uint32_t* tw = &regs[texBase + unit * 7];
         Surface* s = sampled_texture(tw, dec->textureUsesDepthCompare[unit]);
+        // the point-light passes read the buffer's depth copy on unit 0: they claim the buffer's size for it,
+        // which it gets from the next time it is drawn (target_scale)
+        if (!vertex && sh->kind == gfx::ProgramKind::PointLight && unit == 0 && s && s->gpuWritten)
+            s->sizeClaim.request(gfx::size_request(sh->kind), R.frame);
         if (!vertex && s && g_hires_src && s->addr == g_hires_src && g_hires_frame == R.frame && ao_hires_enabled() &&
             sh->kind == gfx::ProgramKind::OcclusionPixel)
             s = &g_hires_color;
@@ -2557,7 +2563,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
 // Translate one program from a head-start record: regs hold its state, with the program (and the
 // fetch shader) already placed in guest memory. Not recorded into the user cache. compileNow starts
 // the Metal compile right away instead of deferring it to first use.
-bool headstart_translate(const uint32_t* regs, bool vertex, bool compileNow) {
+bool headstart_translate(const uint32_t* regs, bool vertex, bool compileNow, uint64_t* sharedKey, uint64_t* wideKey) {
     bool replaying = g_cache_replaying, defer = g_defer_compiles;
     g_cache_replaying = true;
     g_defer_compiles = !compileNow;
@@ -2565,6 +2571,12 @@ bool headstart_translate(const uint32_t* regs, bool vertex, bool compileNow) {
     LatteFetchShader* fs = vertex ? get_fetch_shader(regs, &fsKey) : nullptr;
     Shader* s = (!vertex || fs) ? get_shader_uncached(regs, vertex, fs, fsKey) : nullptr;
     if (s && compileNow) compile_deferred(s);
+    if (sharedKey) *sharedKey = s ? s->key : 0;  // the shader this state shares (its first state's wide key)
+    if (wideKey && (!vertex || fs)) {  // this state's own wide key (pipeline recipes name shaders by it)
+        const uint32_t start = vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS;
+        const uint64_t base = program_hash(regs[start] << 8, regs[start + 1] << 3) ^ (vertex ? 0x1111 : 0x2222);
+        *wideKey = wide_key(regs, vertex, base, fsKey);
+    }
     g_cache_replaying = replaying;
     g_defer_compiles = defer;
     return s && s->state != CS_FAILED;
@@ -2581,6 +2593,13 @@ size_t headstart_failures() {
         if (seen.insert(shader).second) failed += shader->state.load(std::memory_order_acquire) == CS_FAILED;
     for (const auto& [key, pipeline] : g_pipelines) failed += pipeline->status.load(std::memory_order_acquire) == CS_FAILED;
     return failed;
+}
+// distinct shaders (translations) and pipelines the Metal renderer holds
+void headstart_counts(size_t& shaders, size_t& pipelines) {
+    std::unordered_set<const Shader*> seen;
+    for (const auto& [key, shader] : g_shaders) seen.insert(shader);
+    shaders = seen.size();
+    pipelines = g_pipelines.size();
 }
 
 

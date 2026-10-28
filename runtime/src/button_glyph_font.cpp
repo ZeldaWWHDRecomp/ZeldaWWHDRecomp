@@ -95,19 +95,23 @@ bool read_glyph(uint32_t record, Glyph& glyph) {
 
 }  // namespace
 
-std::vector<uint8_t> button_atlas(const std::array<uint32_t,6>& records) {
-    std::array<Glyph,6> glyphs;  // L R 1 2 B T
-    for (int i = 0; i < 6; i++) if (!read_glyph(records[i],glyphs[i])) return {};
+std::vector<uint8_t> button_atlas(const std::array<uint32_t,kAtlasGlyphs>& records) {
+    std::array<Glyph,kAtlasGlyphs> glyphs;  // L R 1 2 B T A 3
+    for (int i = 0; i < kAtlasGlyphs; i++) if (!read_glyph(records[i],glyphs[i])) return {};
     std::vector<uint8_t> atlas(kAtlasWidth*kAtlasHeight*4);
     auto put = [&](int row, int column, int x, int y, uint32_t rgba) {
         const uint32_t offset = ((row*64+y)*kAtlasWidth+column*64+x)*4;
         atlas[offset] = rgba>>24; atlas[offset+1] = rgba>>16; atlas[offset+2] = rgba>>8; atlas[offset+3] = rgba;
     };
-    for (int row = 0; row < 8; row++) {
-        const int shoulder = row & 3;
-        const bool xbox = row >= 4;
-        // L/R, then 1/2 (numbered) or B/T (Xbox: bumper, trigger)
-        const Glyph& letter = glyphs[shoulder&1], &suffix = glyphs[(xbox ? 4 : 2) + (shoulder < 2 ? 0 : 1)];
+    constexpr int kCaptions = 11;  // rows 0-7 the shoulders, then A1 A2 A3 at item_name_row()
+    for (int caption = 0; caption < kCaptions; caption++) {
+        const int row = caption < 8 ? caption : item_name_row(caption - 8);
+        const int shoulder = caption & 3;
+        const bool xbox = caption >= 4 && caption < 8;
+        // L/R, then 1/2 (numbered) or B/T (Xbox: bumper, trigger); the item names: A, then 1/2/3
+        const int digit[3] = {2, 3, 7};
+        const Glyph& letter = caption >= 8 ? glyphs[6] : glyphs[shoulder&1];
+        const Glyph& suffix = caption >= 8 ? glyphs[digit[caption - 8]] : glyphs[(xbox ? 4 : 2) + (shoulder < 2 ? 0 : 1)];
         const int suffix_x = letter.advance;
         int left = 10000, top = 10000, right = -10000, bottom = -10000;
         auto bounds = [&](const Glyph& glyph, int origin) {

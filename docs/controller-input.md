@@ -45,6 +45,94 @@ screens have their own controls; follow the game's stick/button prompts. The por
 If down fails, check its binding in Controls and test D-pad down, Left Stick Down
 and Right Stick Down separately.
 
+## Setting up a controller, and buttons per controller
+
+The first time a new controller is used, Settings opens with **New controller: Set up / Later /
+Don't ask again**. **Controls > Set up controller...** runs the same setup any time:
+
+1. **Face buttons**: *by position*, as on the Wii U GamePad (the bottom button is the sword, the
+   Wii U's B; the right one the action button, A), or *by the letters on the buttons* (the button
+   marked A is the action button).
+2. **Layout**: *Original* (every button as on the Wii U; Jump anywhere and the moon jump on L1);
+   *Jump on an item button* (that item can't be used from the controller, the other two can); or
+   *Jump on any button, its use moved to L1* (what the button did moves to L1, so nothing is lost).
+   Both jump layouts switch Jump anywhere on.
+3. **The jump button** (the two jump layouts): press it on the controller.
+4. **Try it**: every press shows what it does in the game. Hold **Start** to finish, hold
+   **Select** to change the setup, so the setup works without touching the screen.
+
+The controller then keeps **its own buttons**. **Controls > Bindings for** chooses which buttons the
+drawing (or the list) edits: *All controllers* (the shared buttons every other controller uses) or
+one controller, with **Give it its own buttons** / **Use the shared buttons**. The keyboard is always
+shared. A controller is recognised by its SDL GUID and name, then by its GUID alone (the same model
+under another name), then by its name alone (the same model on another connection, and the macOS
+app, which has no GUIDs).
+
+**Controls > Controller details...** lists what the system reports about each connected controller:
+vendor and product IDs, GUID, connection, battery, rumble motors, motion sensors, lights, buttons and
+axes, which buttons it uses, and what is pressed right now. On Android some controllers have motion
+sensors or rumble that apps only get with the right Linux kernel driver: a DualSense or DualShock 4
+needs hid-playstation (Linux 5.12 or newer), Nintendo's Pro Controller and Joy-Cons hid-nintendo
+(5.16 or newer). Without it they work as plain gamepads; the details page and the Controls tab say
+so. No app can get past that; a system update or a kernel with the driver brings them.
+
+**Rumble on** (Android): *Automatic* (default: this device while you play by touch, the controller's
+motors otherwise), *Automatic, this device for a controller without rumble*, *This device*,
+*Controller* or *Both*. The Gyro dialog's **Automatic** source uses the controller's gyro while you
+play with it and this device's while you play by touch.
+
+## Jump anywhere and the moon jump on inputs of their own
+
+Jump anywhere and the moon jump cheat have their own inputs in Controls (the **Jump anywhere** and
+**Moon jump** row): a controller input and a key each, L1 and Q by default. They never press a Wii U
+button themselves. On one input the moon jump wins while it is on. On a touch screen each has a
+button of its own while it is on, hidden in cutscenes, talks, menus, the Picto Box and the telescope
+(and Jump also in water, on ladders and walls, where it does nothing).
+
+Choosing a controller button the game uses asks what happens to that button's own use: **Move** (to
+L1, else d-pad down: the game uses neither while you play), for an item button **Move to L1** or
+**Move to d-pad down** (the item goes there), or **Take off** (no controller button presses it any
+more; for an item button, that item can't be used from the controller). An item button on L1 counts
+in menus too (L1 no longer turns the GamePad page); on d-pad down it is the item button only while
+you play, d-pad down in menus.
+
+**L turns the GamePad page** (Controls, off by default): in play the game reads L only to turn its
+GamePad screen between Items and Map. Off, L reaches the game only outside play, so L1 can jump
+without turning the page. Turn it on for a GamePad picture on a second screen. It applies the same
+way with **Wii U Pro Controller** chosen in Controls.
+
+Controls files from before these options (format 1) keep working: Jump anywhere and the moon jump
+take the inputs that pressed the Wii U's L, and the old Jump anywhere button choice (R, ZL, ZR, L3,
+R3) becomes the Jump input once. Saving writes `"version": 2` with `controllers` (each controller's
+own buttons by `guid` and `name`), `controller_setup_declined`, and `l_turns_gamepad_page` (only
+when on).
+
+## The item ring
+
+Hold **X**, **Y** or **R** while you play and a ring of your items opens. Tilt the left stick towards an
+item (on a touch screen: slide the finger) and let go of the button: the item goes on that button, as
+in the game's item screen. An item already on another button swaps places with the old one.
+
+- **Bags** (spoils, bait, delivery) are not put on a button: rest on one for a moment and it opens as a
+  ring of its contents; rest on the arrow to go back.
+- The **Wind Waker** makes Link conduct at once (the game's d-pad up); it doesn't take the button.
+- On the **boat** the ring also has the cannon (with bombs) and the salvage arm (with the grappling
+  hook).
+- The **empty** entry (a struck-through circle) leaves the button empty.
+- Let go without pointing anywhere and nothing changes.
+- A short press still uses the item, a moment (0.2 s) later, when you let go. While Link aims or uses
+  an item (bow, hookshot, boomerang, telescope, Picto Box, Deku Leaf, conducting, the sail), and outside
+  play, the buttons work at once and the ring doesn't open.
+
+Controls → **Item ring**: **Touch only** (default: the on-screen X, Y and R), **Touch and controllers**,
+or **Off**. It is off for controllers by default because of that short wait on every press.
+
+**While the ring is open** the game runs on, runs in **slow motion** (default: a third of its speed) or
+is **paused** (the game's own short pause, as when a strong hit lands; the music plays on).
+
+**Item button names**: X Y R, A1 A2 A3, or **Automatic** (default: A1, A2, A3 while you play by touch).
+The ring, the game's HUD buttons and the GamePad's item slots show them.
+
 ## Controllers while the game isn't focused
 
 Controls → **Controller input when the game isn't focused** keeps your controllers playing the game

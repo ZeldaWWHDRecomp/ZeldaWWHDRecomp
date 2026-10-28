@@ -73,7 +73,7 @@ constexpr uint8_t rendered(uint8_t flags, bool restyled) { return uint8_t((flags
 // Atlas cell of a composed label/shape, as the quad's texture coordinates (+0x18..+0x24).
 struct Cell { float u0, v0, u1, v1; };
 constexpr Cell atlas_cell(int row, bool frame) {
-    return {frame ? 0.0f : 0.5f, row / 16.0f, frame ? 0.5f : 1.0f, (row + 1) / 16.0f};
+    return {frame ? 0.0f : 0.5f, row / 20.0f, frame ? 0.5f : 1.0f, (row + 1) / 20.0f};  // (button_glyph_font.h kAtlasRows)
 }
 
 // Called before TextBox::DrawSelf checks its cached-vertex valid byte. A live style change must

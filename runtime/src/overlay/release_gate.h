@@ -54,8 +54,12 @@ using PadValues = std::array<float, input_map::kPadCount>;
 template <class Key>
 class DeviceGates {
 public:
+    // gated (optional): each device's own gated values, in the order of `devices` (per-controller
+    // bindings evaluate each device through its own mapping)
     void combine(const std::vector<std::pair<Key, PadValues>>& devices, bool captured,
-                 float raw[input_map::kPadCount], float game[input_map::kPadCount]) {
+                 float raw[input_map::kPadCount], float game[input_map::kPadCount],
+                 std::vector<PadValues>* gated_out = nullptr) {
+        if (gated_out) gated_out->clear();
         std::fill(raw, raw + input_map::kPadCount, 0.0f);
         std::fill(game, game + input_map::kPadCount, 0.0f);
         std::map<Key, ReleaseGate> kept;
@@ -64,6 +68,7 @@ public:
             ReleaseGate& gate = kept[key];
             if (auto old = gates_.find(key); old != gates_.end()) gate = old->second;
             gate.filter(gated.data(), captured);
+            if (gated_out) gated_out->push_back(gated);
             for (int p = 0; p < input_map::kPadCount; p++) {
                 raw[p] = std::max(raw[p], values[p]);
                 game[p] = std::max(game[p], gated[p]);

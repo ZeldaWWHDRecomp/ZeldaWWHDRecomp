@@ -198,14 +198,16 @@ the game runs its original code. These mods work the same at 30 fps, with 60/120
 interpolation and with true 60: they change animation rates and speed targets inside the game's
 own steps, never amounts added per frame.
 
-Jump anywhere makes Link jump from standing or running with a button of your choice (L by
-default; also R, ZL, ZR, L3 or R3), using the game's own jump off a ledge, a little higher. The
-button keeps its normal use. Options on its mod page: **Double jump** allows one more jump in the
-air, and **No automatic jumps off ledges** makes Link drop off an edge instead of jumping by
-himself; press the button just after leaving the edge to jump. It does not work in cutscenes or
-dialogue or while swimming, climbing or on a ladder, and the moon jump cheat keeps L while it is
-on. `WWHD_MOD_JUMP=1` switches it on at startup (`WWHD_MOD_JUMP_DOUBLE`, `WWHD_MOD_JUMP_NO_AUTO`,
-`WWHD_MOD_JUMP_BUTTON`).
+Jump anywhere makes Link jump from standing or running with an input of its own (L1 and Q by
+default; any controller button, key or, on a touch screen, a Jump button: see
+[controller-input.md](controller-input.md#jump-anywhere-and-the-moon-jump-on-inputs-of-their-own)),
+using the game's own jump off a ledge, a little higher. It never presses the game's L. Options on
+its mod page: **Double jump** allows one more jump in the air, and **No automatic jumps off
+ledges** makes Link drop off an edge instead of jumping by himself; press the button just after
+leaving the edge to jump. It does not work in cutscenes or dialogue or while swimming, climbing or
+on a ladder; with the moon jump cheat on the same input, the moon jump wins. `WWHD_MOD_JUMP=1`
+switches it on at startup (`WWHD_MOD_JUMP_DOUBLE`, `WWHD_MOD_JUMP_NO_AUTO`; `WWHD_MOD_JUMP_BUTTON`
+only for a controls file from before the Jump input).
 
 **More > Install from a file or folder** accepts a local folder or `.wwhdmod` ZIP
 from the file/folder picker; the review for switching it on opens right away

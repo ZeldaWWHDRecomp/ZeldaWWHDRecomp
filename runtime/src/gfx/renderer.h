@@ -175,6 +175,11 @@ bool cloud_shadows();
 int cloud_style();
 void set_cloud_style(int style);
 void set_cloud_shadows(bool on);
+// Full-size torchlight: the half-size point-light buffer at the screen's resolution, so lit objects get no
+// blocky, flickering outlines (on by default, off on Android; off: the original game). WWHD_FULL_LIGHT=0|1.
+// gfx/area_sample.h.
+bool full_light();
+void set_full_light(bool on);
 void set_horizon_haze(float haze);
 // The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
 void scale_bloom_uniforms(void* remapped, size_t size);

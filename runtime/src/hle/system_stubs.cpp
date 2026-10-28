@@ -6,6 +6,7 @@
 #include "../input.h"
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
+#include "../mods/game_settings_page.h"
 #include "../mods/story_scenes.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
@@ -105,17 +106,25 @@ HLE(vpad, VPADRead) {
     static input::PadState last_p;
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
+    if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
+    uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
+    bool live = !repeat;
     if (repeat && interp::fresh_sticks()) {  // true 60: sticks every pass, buttons on full passes
         input::PadState f = input::read();
         p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
+        live_virt = f.virt;  // a jump pressed on a half step reaches the next full step (jump_policy::Latch)
+        live = true;
     }
+    if (!input::pro_controller()) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
+    if (!input::pro_controller()) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     last_p = p;
     story_notebook::pad(p, c);  // the story notebook's page takes the controller while it is open
     story_scenes::mute(p);
     story_bag::pad(p, c);       // then the Delivery Bag's extra pages (mod items), while open
+    game_settings_page::pad(p, c);  // the settings page in the item menu (left of the items), while open
     if (!input::pro_controller()) mods::moon_jump_input(p);
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
-    if (!input::pro_controller()) mods::jump_input(p.buttons);
+    if (!input::pro_controller() && live) mods::jump_input(live_virt);
     if (!input::pro_controller()) mods::fast_forward_input(p.buttons);
     if (input::pro_controller()) {  // GamePad on the table: screen and touch only
         p.buttons = 0;

@@ -985,8 +985,11 @@ void poll_shader_binaries(uint64_t frame, bool drain = false) {
     pendingShaderRecords.resize(retained);
 }
 }
+namespace { thread_local uint64_t lastVariantKey = 0; }
+uint64_t last_translated_variant_key() { return lastVariantKey; }
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
                   uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs) {
+    lastVariantKey = 0;
     poll_shader_binaries(frame);
     ++stats.lookups;
     auto& last = lastShaders[vertex ? 0 : 1];
@@ -1031,7 +1034,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     auto& use = programUses[linkage];
     if (use.failed) return remember(use.failed);
     if (use.known) {
-        const uint64_t key = variant_hash(regs, vertex, use, linkage, link);
+        const uint64_t key = lastVariantKey = variant_hash(regs, vertex, use, linkage, link);
         if (auto it = variants.find(key); it != variants.end()) {
             ++stats.variantHits;
             verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *it->second, link);
@@ -1078,7 +1081,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         use.streamout = vertex && dec.hasStreamoutBufferWrite;
         use.known = true;
     }
-    const uint64_t key = variant_hash(regs, vertex, use, linkage, link);
+    const uint64_t key = lastVariantKey = variant_hash(regs, vertex, use, linkage, link);
     if (link.unfed) {
         static int reported = 0;
         if (reported < 20) {

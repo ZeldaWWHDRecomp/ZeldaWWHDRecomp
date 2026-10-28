@@ -7,6 +7,66 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: new Flexible touch controls, now the default.** A stick appears where your thumb lands: the left half
+  of the screen moves Link, the right half turns the camera by swiping (Swipe speed, with its own speed on the boat)
+  or as a camera stick. The buttons stay where your layout puts them. Classic keeps both sticks at fixed places as
+  before, and once you pick it, it stays. New options: Show sticks (invisible floating sticks) and Left stick follows
+  the thumb. The layout editor gains per-control size (75–130 %), shape, opacity and fill, a mirrored grid, and
+  saved layouts with export and import; each touch style keeps its own layout, and a layout you made earlier is used
+  for both. Settings → Display → Touch controls; details in [docs/android.md](docs/android.md). Idea from
+  GreenNaugahyde's Android fork.
+- **Touch: context buttons.** While you play by touch, a button shows only when it does something, with the game's own
+  word or item icon on it (taken from your copy of the game), and golden rings play when A gets a new action. Items by
+  tap: tap the bow, boomerang or hookshot to take it out and aim, tap again to shoot, B to put it away; while aiming
+  only the buttons you need show. The sword goes back on its own a few seconds after the last swing, and the Deku Leaf
+  when Link stands still. A tap on ZL with a target in reach keeps the lock until the next tap (or until the enemy is
+  defeated). Each part has its own option under Touch controls. Idea from GreenNaugahyde's Android fork.
+- **Item wheel.** Hold X, Y or R to pick an item from a ring and put it on that button: bags open as their own ring,
+  the Wind Waker conducts at once, and on the boat the cannon and salvage arm are there too; an empty entry clears the
+  button, and a short tap still uses the item. While the ring is open the game runs in slow motion (or normally, or
+  paused). On by default for touch, and one switch in Controls turns it on for controllers. With touch controls the
+  item buttons are named A1, A2 and A3. Idea from GreenNaugahyde's Android fork.
+- **Controllers: setup, Jump buttons and per-controller buttons.** A new controller gets a short setup (face buttons
+  by position or by label, three layouts, a try-it screen), and each controller can keep its own buttons
+  (Controls → Bindings for). Controller details shows what the system knows about a pad and explains a missing
+  Android driver for DualSense or Nintendo pads. Jump anywhere and the moon jump have buttons of their own (L1 / Q by
+  default; on Android also on-screen Jump and Moon buttons). In play, L no longer turns the GamePad page unless
+  "L turns the GamePad page" is on. Android: Rumble on can also use this device or both, and the gyro has an
+  Automatic source. Idea from GreenNaugahyde's Android fork.
+- **HUD fades (optional).** Display → Screen (HUD) can fade the hearts, rupees and magic meter while nothing changes:
+  hearts come back with the sword out, while locked on, after a life change and when life is low; rupees on a change
+  and in shops; magic after it changes. All off by default.
+- **Graphics: torches no longer have a flickering outline.** Lit objects next to torches and other point lights had
+  a thin edge that lit up and went dark from frame to frame, even when nothing moved, because the game lights them in
+  a half-size buffer. The new Graphics option **Full-size torchlight** gives that buffer full size, so every pixel
+  gets its own light (in the Mac Graphics menu and the settings overlay's Graphics tab; `WWHD_FULL_LIGHT=0|1`). It is
+  on by default, and off on Android, where the phone's GPU is the limit in heavy views; in scenes with point lights
+  it costs about 3% GPU time at 1x and 17% at 3x. Off keeps the original look. (#318, thanks @itsarahtonin)
+- **Faster, lighter shader preparation in setup.** The shader template that ships with the game is now distilled:
+  one entry per distinct shader instead of every recorded state (447 KB instead of 8 MB). Setup's "Resolving
+  shaders from your game files" step takes about 12 seconds instead of a minute on a Mac (more saved on phones)
+  and needs far less memory; the shaders and pipelines it prepares are exactly the same. Idea from SwitchWakerHD
+  (thanks @Pulpparty and @depende3000).
+- **Settings in the game's own pause menu.** The common settings now have a page in the item menu, drawn like the
+  game's own menus (its paper, font, arrows and menu sounds, read from your copy of the game). Open it with the new
+  arrow left of the items, by pressing Left from the leftmost item column, or by swiping. Tabs: Camera, Controls,
+  Screen, Game (the built-in gameplay options, applied at once) and Mods, where a mod can show its own options. It
+  works with a controller, keyboard, mouse (also on the TV picture in Pro Controller mode) and touch, and follows the
+  game's language in English, French, German, Italian and Spanish. The full Settings window (Esc, F1 or holding
+  Select) stays for everything else; both change the same settings. `WWHD_GAME_SETTINGS=0` hides the page. Players'
+  and mod authors' notes: [docs/settings-page.md](docs/settings-page.md). Idea from GreenNaugahyde's Android fork.
+- **Sound: waves, wind and other looping ambience no longer cut out.** The game's sound engine stops a sound channel
+  when its audio work runs late, which on the Wii U meant an overloaded sound chip. On a computer or phone a single
+  slow frame looked like that, so looping sounds went silent until the game started them again. That check is now off
+  (also after loading a save state); `WWHD_DSP_KILL=1` restores the game's own behaviour. In a test with a short stall
+  every two seconds, 33 sounds were cut before and none now. Ideas from GreenNaugahyde's Android fork and SwitchWakerHD
+  (thanks @Pulpparty).
+- **Diagnostics: a hang watchdog and a main-thread profile.** When no new frame arrives for 3 seconds, the log now
+  gets a dump of the render thread and every game thread (what each waits for and where), repeated a few times, and a
+  note when frames resume; `WWHD_NO_WATCHDOG=1` turns it off. `WWHD_MAIN_SAMPLER=1` (also in Android's `env.txt`) logs
+  every 5 seconds where the game's main thread spends its time. The Vulkan memory log (`WWHD_VK_MEMORY_LOG_FRAMES`)
+  now also lists pipeline counts, the warm pool and the recipe database. Idea from SwitchWakerHD (thanks @Pulpparty
+  and @depende3000).
 - **Shader translation: cube-map helper shaders translate again** (Vulkan and Metal). Some library shaders set a
   cube-map layer index on a texture slot that, in some states, holds an ordinary texture; the translator then used an
   undeclared variable and the shader failed. Shader preparation now finishes with no failed shaders (11 on Vulkan and

@@ -314,8 +314,13 @@ public class WwhdActivity extends SDLActivity {
         runOnUiThread(() -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), GPU_DRIVER_REQUEST));
     }
+    TouchControls touchControls;  // set when it is attached (its layouts' export and import files)
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == TouchControls.EXPORT_REQUEST || request == TouchControls.IMPORT_REQUEST) {
+            if (touchControls != null) touchControls.layoutFile(request, result == RESULT_OK && data != null ? data.getData() : null);
+            return;
+        }
         if (request != GPU_DRIVER_REQUEST) return;
         final boolean afterFailure = driverAfterFailure;
         if (result != RESULT_OK || data == null || data.getData() == null) {

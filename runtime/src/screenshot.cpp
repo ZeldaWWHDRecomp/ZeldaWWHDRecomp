@@ -450,6 +450,32 @@ bool encode_png(uint32_t width, uint32_t height, size_t stride, const uint8_t* r
     return true;
 }
 
+bool encode_png_rgba(uint32_t width, uint32_t height, const uint8_t* rgba, std::vector<uint8_t>& out) {
+    out.clear();
+    if (!width || !height || !rgba) return false;
+    const size_t row = size_t(width) * 4;
+    std::vector<uint8_t> filtered((row + 1) * height);
+    for (uint32_t y = 0; y < height; y++) {  // filter Sub: icons have flat areas
+        uint8_t* o = filtered.data() + size_t(y) * (row + 1);
+        const uint8_t* src = rgba + size_t(y) * row;
+        o[0] = 1;
+        for (size_t i = 0; i < row; i++) o[1 + i] = uint8_t(src[i] - (i >= 4 ? src[i - 4] : 0));
+    }
+    uLongf zn = compressBound(uLong(filtered.size()));
+    std::vector<uint8_t> z(zn);
+    if (compress2(z.data(), &zn, filtered.data(), uLong(filtered.size()), 6) != Z_OK) return false;
+    static const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    out.assign(sig, sig + 8);
+    std::vector<uint8_t> ihdr;
+    put_be32(ihdr, width);
+    put_be32(ihdr, height);
+    ihdr.insert(ihdr.end(), {8, 6, 0, 0, 0});  // 8 bit, RGBA, deflate, adaptive filtering, no interlace
+    chunk(out, "IHDR", ihdr.data(), ihdr.size());
+    chunk(out, "IDAT", z.data(), zn);
+    chunk(out, "IEND", nullptr, 0);
+    return true;
+}
+
 bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra) {
     std::vector<uint8_t> png;
     if (!encode_png(width, height, stride, rgba, bgra, png)) return false;

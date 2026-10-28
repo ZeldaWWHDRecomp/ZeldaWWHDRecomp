@@ -39,6 +39,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../dsweep.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,15 @@ void set_touch(bool down, float x, float y) {
     g_touch = down;
     g_tx = x;
     g_ty = y;
+}
+void set_touch_virtual(uint32_t) {}  // no on-screen controls on this host
+
+// Controller details and per-controller bindings (input_map profiles): GameController has no SDL GUID,
+// so a pad is known by its name (input_map falls back to the name)
+static std::vector<ControllerInfo> g_infos;
+std::vector<ControllerInfo> controllers() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_infos;
 }
 
 // keys held by WWHD_KEYS (debug), merged with the real keyboard before the mapping is applied
@@ -136,13 +146,20 @@ static bool device_values(GCController* c, float* v) {
 }
 
 // each connected controller's values, keyed by the controller: a reconnected one is a new object
-static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values() {
+static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std::vector<GCController*>* pads = nullptr) {
     std::vector<std::pair<uintptr_t, overlay::PadValues>> out;
     for (GCController* c in [GCController controllers]) {
         overlay::PadValues d;
-        if (device_values(c, d.data())) out.emplace_back((uintptr_t)(__bridge void*)c, d);
+        if (device_values(c, d.data())) {
+            out.emplace_back((uintptr_t)(__bridge void*)c, d);
+            if (pads) pads->push_back(c);
+        }
     }
     return out;
+}
+static std::string pad_name(GCController* c) {
+    NSString* n = c.vendorName ?: c.productCategory;
+    return n ? std::string(n.UTF8String) : std::string();
 }
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
@@ -479,13 +496,68 @@ void init() {
         g_window_focus.store(NSApp.isActive, std::memory_order_relaxed);
         apply_background_controllers();
         static overlay::DeviceGates<uintptr_t> gates;
-        gates.combine(devices_values(), overlay::captures() || overlay::shortcut_took_input(), v, game);
-        input_map::consume_shortcut_buttons(input_map::current(), v, game);
-        PadState s = input_map::controller_state(input_map::current(), game);
+        std::vector<GCController*> pads;
+        const auto devices = devices_values(&pads);
+        std::vector<overlay::PadValues> gated;
+        gates.combine(devices, overlay::captures() || overlay::shortcut_took_input(), v, game, &gated);
+        const input_map::Mapping current = input_map::current();
+        input_map::consume_shortcut_buttons(current, v, game);
+        PadState s;
+        if (current.controllers.empty()) {
+            s = input_map::controller_state(current, game);
+        } else {  // each controller through its own bindings (by name on this host)
+            for (size_t i = 0; i < gated.size(); i++) {
+                input_map::consume_shortcut_buttons(current, v, gated[i].data());
+                s = input_map::combine(s, input_map::controller_state(current, gated[i].data(), input_map::pads_for(current, "", pad_name(pads[i]))));
+            }
+        }
+        // the one in use, the setup offer on a new controller's first press, Controller details
+        static std::set<uintptr_t> known;
+        static uintptr_t active = 0;
+        std::vector<ControllerInfo> infos;
+        for (size_t i = 0; i < devices.size(); i++) {
+            GCController* c = pads[i];
+            const std::string name = pad_name(c);
+            bool pressed = false;
+            for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
+            if (pressed && devices[i].first != active) {
+                active = devices[i].first;
+                input_map::set_active_controller("", name);
+            }
+            if (pressed && known.insert(devices[i].first).second && input_map::setup_offer_due(current, "", name, false))
+                overlay::offer_controller_setup("", name);
+            ControllerInfo info;
+            info.id = devices[i].first;
+            info.name = name;
+            if (c.productCategory) info.type = c.productCategory.UTF8String;
+            info.active = devices[i].first == active;
+            if (@available(macOS 11.0, *)) {
+                info.rumble = c.haptics != nil;
+                if (c.battery) {
+                    info.battery = int(std::lround(c.battery.batteryLevel * 100));
+                    info.power = c.battery.batteryState == GCDeviceBatteryStateCharging ? "charging"
+                               : c.battery.batteryState == GCDeviceBatteryStateFull     ? "charged"
+                               : c.battery.batteryState == GCDeviceBatteryStateDischarging ? "on battery" : "unknown";
+                }
+                info.led = c.light != nil;
+            }
+            info.gyro = info.accel = c.motion != nil;
+            info.values.assign(devices[i].second.begin(), devices[i].second.end());
+            input_map::FaceLabel labels[4] = {};
+            GCExtendedGamepad* g = c.extendedGamepad;
+            GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};
+            bool any = false;
+            for (int k = 0; k < 4; k++) any |= (labels[k] = button_letter(face[k])) != input_map::FaceLabel::kUnknown;
+            input_map::apple_face_labels(controller_face_layout(c), labels);
+            if (!any) family_letters(c, labels);
+            for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
+            infos.push_back(std::move(info));
+        }
         {
             std::lock_guard<std::mutex> lk(g_mu);
             g_pad = s;
             std::copy(v, v + input_map::kPadCount, g_host_values);
+            g_infos = std::move(infos);
         }
         // gyro: sensors on or off with the source, the recalibrate binding, the mouse gyro's capture
         static int tick = 0;
@@ -764,6 +836,7 @@ PadState read() {
         if (frame >= p.from && frame <= p.to) { s.rx = p.x; s.ry = p.y; }
     apply_scenario(s);
     s.buttons |= k.buttons;
+    s.virt |= k.virt;  // Jump anywhere, the moon jump (keys of their own)
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
     if (k.rx || k.ry) { s.rx = k.rx; s.ry = k.ry; }
     s.touch = g_touch;

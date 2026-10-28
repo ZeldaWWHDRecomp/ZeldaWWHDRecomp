@@ -275,6 +275,8 @@ UploadSlice vertex_window_smoke_snapshot(uint32_t binding,uint32_t address,
     uint32_t reservation,uint32_t windowOffset,uint32_t windowLength,
     const void* data,bool poisonUnused);
 // Synthetic shader metadata drives the production texture-binding path.
+// the game's pipelines, those still compiling and the failed ones (draw.cpp; the memory log)
+void guest_pipeline_counts(size_t& total, size_t& compiling, size_t& failed);
 VkDescriptorSet texture_stage_smoke_bind(const uint32_t* registers,
     VkDescriptorSetLayout layout, uint32_t textureCount);
 void defer_buffer(Buffer buffer);

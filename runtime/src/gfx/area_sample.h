@@ -56,7 +56,12 @@
 // returns texels a fraction of a grid cell apart while the grid stays the console's, so the light
 // along silhouettes (a torch against the wall it lights) came out in console-sized blocks. For the
 // units a shader gathers from, the renderers scale that uniform to the buffer's real size, so the
-// grid is the upscaled buffer's texels (scale_gather_grid).
+// grid is the upscaled buffer's texels (scale_gather_grid). With Full-size torchlight (on by default,
+// off on Android, render::full_light) the buffer and its depth copy also get as many pixels as the screen
+// (a gfx::TargetSize::Light claim by gfx::ProgramKind::PointLight, target_scale in the renderers): at half size a pixel on an object's
+// edge often has no depth texel of its own and takes the light meant for the wall behind it, so with
+// the flame's flicker lit objects had a blocky, flickering outline, at 1x too. Off keeps
+// the console's half size.
 #include <bit>
 #include <utility>
 #include <cstdint>

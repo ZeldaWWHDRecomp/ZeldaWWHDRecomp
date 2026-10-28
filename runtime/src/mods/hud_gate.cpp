@@ -58,6 +58,9 @@ GameUi read_game_ui() {
 }
 }  // namespace
 
+// the same reading for other host features (play_context.cpp), so the signals are read in one place
+GameUi game_ui_now() { return read_game_ui(); }
+
 void hud_service() {
     const auto now = std::chrono::steady_clock::now();
     const float seconds = g_last.time_since_epoch().count() ? std::min(0.25f, std::chrono::duration<float>(now - g_last).count()) : 0.f;

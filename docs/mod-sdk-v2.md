@@ -136,6 +136,25 @@ package's details in the Mods tab.
 Options, dependencies and conflicts use the normal manifest schema
 ([mod-manager.md](mod-manager.md)); read options with `wwhd_config_*`. To update a mod,
 disable it, restart and install the new version with the same ID; its settings stay.
+
+**Options on the item menu's Settings page.** An option with `"menu": true` also shows in the
+**Mods** tab of the Settings page in the game's item menu (press + and go left of the items), so
+players can switch it without leaving the game. Switches (`bool`), choices (`enum`) and numbers
+(`number`, with its `min`, `max` and `step`) are shown; other types stay in the Mods tab of the
+Settings window. Optional fields:
+
+- `"section"`: a group name shown with the option (`"Songs"`); options are listed by section.
+- `"live": true`: your mod follows a change while the game runs. Without it the page says that the
+  change applies at the next start, because `wwhd_config_*` values are read at startup.
+
+The page and the Settings window change the same value, saved in the player's mod profile.
+
+```json
+"options": [
+  {"id": "replay", "type": "enum", "name": "Replay conducted songs", "choices": ["Off", "Once", "Always"],
+   "default": "Off", "menu": true, "section": "Songs"}
+]
+```
 Distribute only your manifest, your ELF and resources you are allowed to share, never game
 files.
 
@@ -241,6 +260,7 @@ settings once per logic step.
 | `display.aspect` | F64 | Aspect ratio of the current frame |
 | `render.interp_fps` | U32 | Frame rate shown: 30, the interpolation rate, or 60 in true 60 mode |
 | `render.true60` | BOOL | 0 or 1 |
+| `settings.<id>` | BOOL, U32 or F64 | A setting of the item menu's Settings page by its ID: switches are BOOL, choices U32 (the choice's index), numbers F64. For example `settings.camera.invert-y`, `settings.direct-camera.speed`, `settings.screen.fov` |
 
 ```c
 static char layout[16];

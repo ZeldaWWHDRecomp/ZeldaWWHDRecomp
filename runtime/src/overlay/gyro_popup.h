@@ -31,7 +31,10 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
          "moving the GamePad. This works with the GamePad and the Pro Controller choice alike. The game's own "
          "Options > Gyro switch still decides whether it uses the motion, and it ignores the motion while the right "
          "stick is pushed.");
-    for (int i = 0; i < motion::kSourceCount; i++)
+    for (int i = 0; i < motion::kSourceCount; i++) {
+#ifndef __ANDROID__
+        if (i == motion::kAuto && g.source != i) continue;  // Automatic picks this device for touch play (Android)
+#endif
         if (radio(motion::source_label(i), g.source == i)) {
             // an untouched sensitivity follows the new source's default (the device's own sensors: 1.0)
             const float was = motion::default_sensitivity(g.source), now = motion::default_sensitivity(i);
@@ -39,9 +42,10 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
             if (g.tuning.sensitivity_y == was) g.tuning.sensitivity_y = now;
             g.source = i;
         }
+    }
     if (motion::env_override()) note("WWHD_GYRO=%s overrides the saved source.", getenv("WWHD_GYRO"));
     if (g.source == motion::kOff && motion::gyro_controllers() > 0) note("A controller with a gyro is connected: choose Controller gyro to use it.");
-    if (g.source == motion::kController || g.source == motion::kCemuhook || g.source == motion::kDevice) {
+    if (g.source == motion::kController || g.source == motion::kCemuhook || g.source == motion::kDevice || g.source == motion::kAuto) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Turn left/right by");
         for (int a = 0; a < motion::kAxisModeCount; a++) {

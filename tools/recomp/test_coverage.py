@@ -22,6 +22,7 @@ NON_ADDRESS = {
     ("hle/system_stubs.cpp", 0x02000000): "executable memory lower bound",
     ("mods/mod_archive.cpp", 0x02014B50): "ZIP central directory signature",
     ("mods/lyt_build.cpp", 0x02020000): "the layout files' format version (BFLYT / BFLAN)",
+    ("mods/item_ring.cpp", 0x10101CC0): "RGBA colour of the item ring's entry discs",
 }
 NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
                     for value in (0x02FB7000, 0x02D26000, 0x02AC0000, 0x02881000,

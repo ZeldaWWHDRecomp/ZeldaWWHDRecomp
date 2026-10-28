@@ -72,6 +72,19 @@ std::atomic<int> g_cloud_style{[] {
 int cloud_style() { return g_cloud_style.load(std::memory_order_relaxed); }
 void set_cloud_style(int style) { g_cloud_style.store(std::clamp(style, 0, 2), std::memory_order_relaxed); }
 bool cloud_shadows() { return g_cloud_shadows.load(std::memory_order_relaxed); }
+// Full-size torchlight: on by default, off on Android like full-size occlusion depth, where the phone GPU is the
+// limit in heavy views (issue #56); a saved choice or WWHD_FULL_LIGHT wins
+std::atomic<bool> g_full_light{[] {
+#ifdef __ANDROID__
+    constexpr bool kDefault = false;
+#else
+    constexpr bool kDefault = true;
+#endif
+    const char* e = std::getenv("WWHD_FULL_LIGHT");
+    return e ? std::strcmp(e, "0") != 0 : kDefault;
+}()};
+bool full_light() { return g_full_light.load(std::memory_order_relaxed); }
+void set_full_light(bool on) { g_full_light.store(on, std::memory_order_relaxed); }
 void set_cloud_shadows(bool on) { g_cloud_shadows.store(on, std::memory_order_relaxed); }
 float horizon_haze() { return g_haze.load(std::memory_order_relaxed); }
 void set_horizon_haze(float v) {

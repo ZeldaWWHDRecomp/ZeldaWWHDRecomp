@@ -26,6 +26,9 @@ typedef struct Cpu {
     uint8_t cr[32];         /* one byte per CR bit; bit 4n+0 = crN.lt, +1 gt, +2 eq, +3 so */
     uint8_t xer_so, xer_ov, xer_ca;
     uint8_t xer_bc;
+    /* the game's main thread (main_profile.h reads it on every runtime call); in what was padding,
+       so sizeof(Cpu) and save states keep their layout */
+    uint8_t main_thread;
     struct { double ps0, ps1; } f[32];
     uint32_t fpscr;
     uint32_t gqr[8];

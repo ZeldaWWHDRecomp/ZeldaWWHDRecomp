@@ -12,17 +12,23 @@
 // procAutoJump_init (GameCube 80115EA4, USA 023F7958) clamps speedF to at least the auto jump's
 // minimum, so from standing he hops forward a little; speed.y comes from speedF. His collision's
 // ground flags are cleared as for the moon jump (cheats.cpp), or the jump would land at once.
-// The moon jump cheat on the same button wins. Off means identical: no guest reads or writes.
+// The jump has its own input (input_map kJump, the virtual input::kVirtJump): it never presses the
+// game's own L, and any controller button, key or the on-screen Jump button can be it (Controls). The
+// moon jump held at the same time wins. Off means identical: no guest reads or writes.
 // True 60: decisions and guest calls happen on full steps only; previews are rolled back by true60.
+// The input is read on every pass (also the half steps): a press that begins on a half step reaches
+// the next full step once (jump_policy::Latch).
 //
 // Idea/code from GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0), mods/jump.cpp.
 // WWHD_JUMP_LOG=1 logs each jump.
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "guest_addr.h"
 #include "input.h"
+#include "input_map.h"
 #include "jump_policy.h"
 #include "mods.h"
 #include "runtime.h"
@@ -40,7 +46,8 @@ const uint32_t kFallInit = GC(0x023F6564);      // daPy_lk_c::procFall_init(int,
 const uint32_t kPlay = GD(0x1046F0B0);
 constexpr uint32_t kStage = 0x5134, kEventMode = 0x5292;  // as in fast_forward.cpp
 
-std::atomic<uint32_t> g_buttons{0};
+std::mutex g_input_mu;
+Latch g_latch;  // input::kVirt* bits between full steps
 State g_state;
 uint32_t g_link = 0;
 
@@ -49,12 +56,12 @@ bool log_on() {
     return on;
 }
 
-bool blocked(uint32_t link) {
+bool blocked(uint32_t link, uint32_t held) {
     const char* stage = reinterpret_cast<const char*>(mem::ptr(kPlay + kStage));
     if (!*stage || !strncmp(stage, "sea_T", 8) || !strncmp(stage, "Name", 8)) return true;  // title, file select
     if (ld8(kPlay + kEventMode) != 0) return true;  // dialogue, cutscenes
     if (ld32(link + kModeFlg) & kModeSwim) return true;
-    return infinite(kMoonJump) && jump_button() == input::kL;  // the moon jump owns L
+    return infinite(kMoonJump) && (held & input::kVirtMoonJump);  // the moon jump on the same input wins
 }
 
 void jump(Cpu* c, uint32_t link, Action a) {
@@ -69,13 +76,17 @@ void jump(Cpu* c, uint32_t link, Action a) {
 }
 }  // namespace
 
-void jump_input(uint32_t buttons) {
-    if (jump_anywhere()) g_buttons.store(buttons, std::memory_order_relaxed);
+void jump_input(uint32_t virt) {
+    if (!jump_anywhere()) return;
+    std::lock_guard<std::mutex> lk(g_input_mu);
+    g_latch.see(virt);
 }
 
 void jump_reset() {
     g_state = {};
     g_link = 0;
+    std::lock_guard<std::mutex> lk(g_input_mu);
+    g_latch = {};
 }
 
 void jump_step(Cpu* c, uint32_t link, bool before) {
@@ -93,8 +104,17 @@ void jump_step(Cpu* c, uint32_t link, bool before) {
     const uint32_t proc = ld32(link + kCurProc);
     if (before) {
         if (preview) return;
-        const bool button = (g_buttons.load(std::memory_order_relaxed) & jump_button()) != 0;
-        const Action a = step(g_state, {proc, button, blocked(link), double_jump()});
+        // the old Jump anywhere button choice becomes the Jump binding of an old controls.json (once)
+        static const bool adopted = (input_map::adopt_legacy_jump_button(jump_button()), true);
+        (void)adopted;
+        uint32_t held, pressed;
+        {
+            std::lock_guard<std::mutex> lk(g_input_mu);
+            held = g_latch.last;
+            pressed = g_latch.take();
+        }
+        const bool button = (held & input::kVirtJump) != 0;
+        const Action a = step(g_state, {proc, button, blocked(link, held), double_jump(), (pressed & input::kVirtJump) ? 1 : 0});
         if (a != Action::kNone) jump(c, link, a);
         return;
     }

@@ -64,5 +64,7 @@ void cancel_capture();
 // PNG (RGB, 8 bit, sRGB chunk) of RGBA8 (BGRA8: bgra) pixels in memory / into a file (false on a write error)
 bool encode_png(uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra, std::vector<uint8_t>& out);
 bool write_png(const std::string& path, uint32_t width, uint32_t height, size_t stride, const uint8_t* rgba, bool bgra = false);
+// PNG with alpha (RGBA, 8 bit, straight alpha) of RGBA8 pixels: icons for the Android side
+bool encode_png_rgba(uint32_t width, uint32_t height, const uint8_t* rgba, std::vector<uint8_t>& out);
 
 }  // namespace screenshot

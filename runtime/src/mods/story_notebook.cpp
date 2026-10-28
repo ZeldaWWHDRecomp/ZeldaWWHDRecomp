@@ -17,6 +17,7 @@
 #include "story_notebook_game.h"
 #include "story_notebook_font.h"
 #include "story_notebook_style.h"
+#include "game_look.h"
 #include "story_notebook_art.h"
 #include "guest_hud.h"
 #include "guest_png.h"
@@ -557,90 +558,27 @@ void bag_icon() {
 // The game's fonts, read glyph by glyph as the page needs them; the line atlas; the menu art and the
 // boxes composed from it. All host-side; a state load keeps them (the game's resources don't change),
 // only the HUD images are created again.
-struct Look {
-    font::Face main, fallback, icons;  // CKingMain, CKingMsg (characters CKingMain lacks), the button icons
-    bool font_failed = false, icons_probed = false;
-    font::Atlas atlas;
-    guestmods::hud::Handle atlas_image = 0;
-    uint64_t atlas_generation = 0, store_generation = 0;
-    style::Art art;
-    bool art_tried = false, art_ok = false;
-    struct Box {
-        guestmods::hud::Handle handle = 0;
-        uint64_t store_generation = 0;
-        std::shared_ptr<guestmods::hud::Image> image;
-    };
-    std::map<std::string, Box> boxes;  // "name:WxH" in page units
-    font::Prompts prompts;
-    uint64_t fonts_key = 0;  // changes when glyphs are added
-} g_look;
+// (game_look.h; shared with the item menu's settings page)
+game_look::Look g_look(kOwner, "notebook");
 constexpr float kBoxResolution = 0.75f;  // composed boxes: pixels per page unit (the GamePad shows 0.67)
-constexpr float kFontScale = 1.05f;
-constexpr float kAtlasScale = 0.62f;     // before the screen's pixels are known: the font's lines at 62 % (46 of its 74 pixels)
 float g_close_time = 1.0f;  // the closing animation: 0..1 after the page closed
 std::vector<Command> g_closing;  // the last page drawn (resolved), faded out while closing
 std::vector<guestmods::hud::Handle> g_closing_images;
 uint32_t g_closing_screen = 1;
 Sound g_pending_sound = Sound::None;  // the page opened from a hook: its sound with the next controller read
 
-float game_measure(const std::string& text, float size) {
-    const int h = g_look.main.cell_height;
-    return h ? float(font::Atlas::line_width(text, g_look.main, &g_look.fallback, h)) * size * kFontScale / float(h) : 0.0f;
-}
+float game_measure(const std::string& text, float size) { return g_look.measure(text, size); }
 
 // the glyphs the page's lines need, from the game's fonts (game thread, with a CPU for the game's calls)
 void load_glyphs(Cpu* c, const std::vector<std::string>& lines) {
-    if (!g_ui || !g_ui->glyphs || !c || g_look.font_failed) return;
-    std::vector<uint32_t> want;
-    for (const std::string& l : lines)
-        for (uint32_t cp : font::codes(l))
-            if (!font::Atlas::button(cp) && !font::style_code(cp) && !g_look.main.glyphs.count(cp) && !g_look.main.missing.count(cp) &&
-                std::find(want.begin(), want.end(), cp) == want.end())
-                want.push_back(cp);
-    if (!g_look.main.cell_height) want.push_back('?');  // the stand-in for characters no font has
-    bool message_wanted = false;
-    for (const std::string& l : lines)
-        if (font::has_style(l, font::kMessage))
-            for (uint32_t cp : font::codes(l)) message_wanted |= !font::style_code(cp) && !font::Atlas::button(cp) && !g_look.fallback.glyphs.count(cp) &&
-                                                                 !g_look.fallback.missing.count(cp);
-    if (!want.empty() || message_wanted) {
-        const size_t before = g_look.main.glyphs.size();
-        if (!g_ui->glyphs(c, 0, want, g_look.main) || !g_look.main.ready()) {
-            g_look.font_failed = true;
-            LOG("[notebook] the game's menu font can't be read: the page uses the overlay font");
-            return;
-        }
-        std::vector<uint32_t> lacking;
-        for (uint32_t cp : want)
-            if (g_look.main.missing.count(cp) && !g_look.fallback.glyphs.count(cp) && !g_look.fallback.missing.count(cp)) lacking.push_back(cp);
-        // the lines in the message font: all their characters from it
-        for (const std::string& l : lines)
-            if (font::has_style(l, font::kMessage))
-                for (uint32_t cp : font::codes(l))
-                    if (!font::Atlas::button(cp) && !font::style_code(cp) && !g_look.fallback.glyphs.count(cp) && !g_look.fallback.missing.count(cp) &&
-                        std::find(lacking.begin(), lacking.end(), cp) == lacking.end())
-                        lacking.push_back(cp);
-        if (!lacking.empty()) g_ui->glyphs(c, 1, lacking, g_look.fallback);
-        if (g_look.main.glyphs.size() != before || !lacking.empty()) g_look.fonts_key++;
-        if (before == 0) {
-            g_text_measure = game_measure;
-            LOG("[notebook] the page uses the game's menu font (cell height %d)", g_look.main.cell_height);
-        }
-    }
-    if (!g_look.icons_probed) {  // the button pictures: the font that has the game's A/B icons
-        g_look.icons_probed = true;
-        for (int slot : {1, 4, 0}) {
-            font::Face f;
-            if (g_ui->glyphs(c, slot, {font::kButtonA, font::kButtonB, font::kButtonA+2, font::kButtonA+3}, f) && f.glyphs.count(font::kButtonA) && f.glyphs.count(font::kButtonB)) {
-                g_look.icons = std::move(f);
-                g_look.fonts_key++;
-                LOG("[notebook] the button pictures come from font slot %d (%s)", slot,
-                    g_look.icons.glyphs[font::kButtonA].colour ? "colour icons" : "coverage");
-                break;
-            }
-        }
-        if (!g_look.icons.ready()) LOG("[notebook] no game font has the A/B icons: the page draws its own");
-    }
+    g_look.ui = g_ui;
+    if (!g_look.trace) g_look.trace = trace;
+    if (!g_look.box_resolution)  // the game's art at 75 %, the painted pieces at full size
+        g_look.box_resolution = [](const std::string& name) {
+            return name == "nb:window" || name == "nb:panel" || name == "nb:info" || name.rfind("nb:plate", 0) == 0 || name.rfind("nb:tab", 0) == 0
+                       ? kBoxResolution : 1.0f;
+        };
+    if (g_look.load_glyphs(c, lines)) g_text_measure = game_measure;
 }
 
 // the menu art, once (it is read from the item menu's layout, open under the page)
@@ -730,72 +668,13 @@ void load_art() {
     else LOG("[notebook] the page uses the menu's window art%s%s", why.empty() ? "" : "; ", why.c_str());
 }
 
-// The page's commands as HUD commands: boxes and text become pictures of their images (handles
-// alongside; 0 for the commands that aren't pictures)
-// `screen`: where the page is drawn; its text is composed at that screen's real pixel size.
+// The page's commands as HUD commands (game_look.h)
 std::vector<Command> render(std::vector<Command> cmds, std::vector<guestmods::hud::Handle>& images, uint32_t screen) {
-    auto& store = guestmods::hud::store();
-    const uint64_t generation = store.state_generation();
-    cmds = style::resolve(cmds, &g_look.art);  // each box uses its art when that piece was read
-    // text: the line atlas, rebuilt when a line is new, the fonts grew or the prompts changed
-    const bool font = g_look.main.ready();
-    // screen pixels per page unit (the page is laid out in TV units; the GamePad shows 854 / 1280 of them)
-    const float pixels = store.pixels(screen) * (screen == 1 ? 854.0f / 1280.0f : 1.0f);
-    static float traced = -1;
-    if (trace() && std::fabs(pixels - traced) > 0.01f) LOG("[notebook] text composed at %.2f screen pixels per page unit (screen %u)", traced = pixels, screen);
-    if (font) {
-        const std::vector<std::string> lines = font::lines_of(cmds, kFontScale, pixels);
-        if (!g_look.atlas.holds(lines, g_look.prompts, g_look.fonts_key)) {
-            g_look.atlas.build(lines, g_look.main, &g_look.fallback, g_look.icons.ready() ? &g_look.icons : nullptr, g_look.prompts, g_look.fonts_key,
-                               kAtlasScale);
-            if (g_look.atlas_image) store.release(kOwner, g_look.atlas_image);
-            g_look.atlas_image = 0;
-        }
-        if (!g_look.atlas_image || g_look.store_generation != generation) {
-            const auto img = g_look.atlas.image();
-            g_look.atlas_image = img ? store.create_image(kOwner, img->width, img->height, img->width * 4, img->rgba.data(), img->rgba.size()) : 0;
-            g_look.store_generation = generation;
-        }
-    }
-    cmds = font::to_pictures(cmds, font && g_look.atlas_image ? &g_look.atlas : nullptr, kFontScale, pixels);
-    images.assign(cmds.size(), 0);
-    for (size_t i = 0; i < cmds.size(); i++) {
-        Command& c = cmds[i];
-        if (c.kind != Command::Picture) continue;
-        if (c.text.rfind("art:", 0) != 0) {  // a line of text
-            images[i] = g_look.atlas_image;
-            c.text.clear();
-            continue;
-        }
-        int bw, bh;  // the size the box was laid out at (the animations scale only the picture)
-        style::box_size(c.text, bw, bh);
-        const std::string name = "nb:" + style::box_name(c.text).substr(4);
-        const float res = name == "nb:window" || name == "nb:panel" || name == "nb:info" || name.rfind("nb:plate", 0) == 0 || name.rfind("nb:tab", 0) == 0
-                              ? kBoxResolution : 1.0f;  // the game's art at 75 %, the painted pieces at full size
-        const int w = int(std::lround(bw * res)), h = int(std::lround(bh * res));
-        const std::string key = name + ":" + std::to_string(w) + "x" + std::to_string(h);
-        Look::Box& box = g_look.boxes[key];
-        if (!box.image) box.image = style::compose(g_look.art, name, w, h);
-        if (box.image && (!box.handle || box.store_generation != generation)) {
-            box.handle = store.create_image(kOwner, box.image->width, box.image->height, box.image->width * 4, box.image->rgba.data(),
-                                            box.image->rgba.size());
-            box.store_generation = generation;
-        }
-        images[i] = box.handle;
-        c.text.clear();
-    }
-    return cmds;
+    if (!g_look.box_resolution) load_glyphs(nullptr, {});  // (the look's settings)
+    return g_look.render(std::move(cmds), images, screen);
 }
-
 void append_all(guestmods::hud::Handle list, std::vector<Command>& cmds, const std::vector<guestmods::hud::Handle>& images) {
-    auto& store = guestmods::hud::store();
-    for (size_t i = 0; i < cmds.size(); i++) {
-        if (cmds[i].kind == Command::Picture) {
-            if (images[i]) store.picture(kOwner, list, images[i], std::move(cmds[i]));
-            continue;
-        }
-        store.append(kOwner, list, std::move(cmds[i]));
-    }
+    g_look.append(list, cmds, images);
 }
 
 void publish(const std::vector<Row>& all, const std::vector<Command>* caption = nullptr) {
@@ -1623,6 +1502,12 @@ void pad(input::PadState& p, Cpu* c) {
     if (++ticks % 15 == 0) declared_tick();
     action_rewards(c);
     chart_test_open(ticks);
+    // test aid WWHD_NOTEBOOK_TEST_OPEN=<read>: the page opens at that controller read (visual checks)
+    // (a save without the notebook gets it first, as the world editor's test mode does: test runs use a copy)
+    if (static const long at = getenv("WWHD_NOTEBOOK_TEST_OPEN") ? atol(getenv("WWHD_NOTEBOOK_TEST_OPEN")) : -1; at >= 0 && ticks == uint32_t(at)) {
+        if (!notebook_owned()) story_mail::own_notebook_for_test();
+        open_page("WWHD_NOTEBOOK_TEST_OPEN");
+    }
     bag_icon();
     story_item_buttons::test_assign();
     story_item_buttons::tick();  // ours on X/Y/R: the item number the game reads this frame

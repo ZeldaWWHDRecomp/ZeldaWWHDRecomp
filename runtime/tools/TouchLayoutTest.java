@@ -26,9 +26,9 @@ public final class TouchLayoutTest {
         }
         copy.decode("1;1:0=NaN,0.5,0.1;unknown=0.5,0.5,0.1;4:0=0.7,0.8,0.06;0:6=oops;");
         check(copy.get("1:0")==null && copy.get("unknown")==null && copy.get("4:0")!=null && copy.get("0:6")==null,"corrupt entry isolation");
-        copy.decode("2;4:0=0.1,0.1,0.1;");check(copy.encode().equals("1;"),"unsupported schema");
-        copy.decode("1;"+"x".repeat(4096));check(copy.encode().equals("1;"),"bounded stored input");
-        layout.reset();check(layout.encode().equals("1;") && layout.get("1:0")==null,"reset restores exact defaults");
+        copy.decode("3;4:0=0.1,0.1,0.1;");check(copy.encode().equals("2;"),"unsupported schema");  // format 2 since the Flexible style (P2)
+        copy.decode("1;"+"x".repeat(4096));check(copy.encode().equals("2;"),"bounded stored input");
+        layout.reset();check(layout.encode().equals("2;") && layout.get("1:0")==null,"reset restores exact defaults");
         TouchLayout.Placement tiny=TouchLayout.fit(new TouchLayout.Placement(0,0,.001f),1080,1920);inside(tiny,1080,1920);check(tiny.radius==TouchLayout.MIN_RADIUS,"minimum radius must be clamped before fitting");
         TouchLayout.EditSession edit=new TouchLayout.EditSession();int[] releases={0};
         edit.pointers(2);edit.setEditing(true,()->releases[0]++);check(edit.editing() && releases[0]==1,"enter releases held pad/touches");

@@ -476,7 +476,7 @@ The **Graphics** menu in the menu bar switches fixes and enhancements while play
 window title shows what is active and the current frame rate): 60 fps by frame interpolation
 (**6**; 120 and 240 fps in the menu and the settings overlay), true 60 fps (**7**, experimental), internal resolution 1x / 1.5x / 2x / 3x (**R**
 cycles; the game renders at 1280x720, 2x renders at 2560x1440), edge smoothing (FXAA, **8**),
-ambient-occlusion mode (**O** cycles), full-size occlusion depth (**M**), 16x anisotropic
+ambient-occlusion mode (**O** cycles), full-size occlusion depth (**M**), full-size torchlight, 16x anisotropic
 filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), **Take Screenshot** (**F10**,
 rebindable in Controls: the TV picture as a PNG at the internal resolution, without the settings
 overlay, in `~/Library/Application Support/wwhd/screenshots`; also *Open Screenshots Folder* and an
@@ -651,7 +651,7 @@ The SDK reference is [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md), the mod manager i
 - Useful environment variables: `WWHD_NO_AUDIO=1`, `WWHD_NO_GAMEPAD=1` (no second window), `WWHD_NO_CONTROLLERS=1` (SDL builds: ignore host game controllers), `WWHD_LANGUAGE=<code>` (console language: 1 English, 2 French, 5 Spanish, … — the USA/Asia disc carries English, French and Spanish; a language the game doesn't contain starts in English; with `WWHD_LANGUAGE_REGION=eu` or `jp` from a language source, docs/language-packs.md), `WWHD_RTL=0` / `1` (right-to-left text for Arabic and Hebrew packs off / forced on, docs/rtl-text.md),
   `WWHD_DRC_MODE=window|pip|auto|off|gamepad`, `WWHD_FULLSCREEN=0|1` (the TV window starts windowed / in
   full screen this time instead of as it was left; that session's full screen is not remembered), `WWHD_ASPECT=16:9|window|16:10|21:9|32:9|<w:h>`,
-  `WWHD_AUDIO_VOLUME=0..1` (the master volume the session starts at, whatever the Audio slider saved), `WWHD_AUDIO_OUTPUT=auto|tv|gamepad` (the host plays the TV's sound, plus the GamePad's in Off-TV Play: auto; or only one of them), `WWHD_SHADER_CACHE=<file>|0`, `WWHD_AO_MODE=0..2`, `WWHD_AO_HIRES=0|1`, `WWHD_ANISO=0|1`, `WWHD_RES_SCALE=1|1.5|2|3`,
+  `WWHD_AUDIO_VOLUME=0..1` (the master volume the session starts at, whatever the Audio slider saved), `WWHD_AUDIO_OUTPUT=auto|tv|gamepad` (the host plays the TV's sound, plus the GamePad's in Off-TV Play: auto; or only one of them), `WWHD_SHADER_CACHE=<file>|0`, `WWHD_AO_MODE=0..2`, `WWHD_AO_HIRES=0|1`, `WWHD_FULL_LIGHT=0|1`, `WWHD_ANISO=0|1`, `WWHD_RES_SCALE=1|1.5|2|3`,
   `WWHD_FXAA=0|1`, `WWHD_QUIT_PROMPT=0` (macOS: quit without asking, also during a game), `WWHD_INTERP=1`, `WWHD_INTERP_FPS=60|120|240` (frame interpolation at that rate),
   `WWHD_INTERP_PACED=0|1`, `WWHD_TRUE60=1` (start values for the Graphics menu; they
   override the remembered choices); `WWHD_DISPLAY_HZ=n` replaces the detected display refresh rate

@@ -14,7 +14,7 @@ struct Values {
     float deadzone = 0.15f;  // 0..0.9
     bool invert_camera_y = false;
     bool rumble = true, rumble_available = true;
-    int phone_vibration = -1;  // 0..2; -1: no phone vibration option (not Android)
+    int phone_vibration = -1;  // phone_rumble::Mode 0..4; -1: no "Rumble on" choice (not Android)
     const char* gyro_label = "Gyro: off...";
     float range[2] = {1.0f, 1.0f};
     float range_min = 0.5f, range_max = 1.5f;
@@ -66,13 +66,16 @@ inline unsigned draw(Values& v, Layout* layout = nullptr) {
                            : "Controller vibration: this host does not drive controller motors yet.");
     if (v.phone_vibration >= 0) {
         const float combo = 210;
-        flow::next(flow::labeled(combo, "Phone vibration"), gap);
-        ImGui::SetNextItemWidth(flow::item_width(combo, "Phone vibration", least));
-        if (ImGui::Combo("Phone vibration", &v.phone_vibration, "Off\0Touch only\0Touch or no rumble controller\0"))
+        flow::next(flow::labeled(combo, "Rumble on"), gap);
+        ImGui::SetNextItemWidth(flow::item_width(combo, "Rumble on", least));
+        // the order of phone_rumble::Mode, as saved
+        if (ImGui::Combo("Rumble on", &v.phone_vibration,
+                         "Controller\0Automatic\0Automatic, this device for a controller without rumble\0This device\0Both\0"))
             changed |= kPhone;
         mark(kItemPhone);
-        tip("Touch only is the default. Phone vibration follows game rumble while using touch controls. "
-            "The fallback also works with controllers without rumble. Rumble above and Android's vibration settings apply.");
+        tip("Automatic (default): this device vibrates while you play by touch, the controller's motors otherwise. "
+            "This device, Controller or Both pick the motors yourself. Rumble above and Android's vibration settings "
+            "apply.");
     }
     flow::next(flow::button(v.gyro_label), gap);
     if (ImGui::Button(v.gyro_label)) changed |= kGyro;

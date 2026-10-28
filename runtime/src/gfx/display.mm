@@ -32,6 +32,7 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "../exception_report.h"
+#include "../tv_pointer.h"
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -194,9 +195,11 @@ static void load_options() {
 - (void)mouseUp:(NSEvent*)e { [self touch:e down:false]; }
 @end
 
-// TV window: clicks on the GamePad overlay are touches
+// TV window: clicks on the GamePad overlay are touches; while a port page on the TV wants the pointer
+// (tv_pointer.h), clicks on the TV picture are that page's
 @interface WWTvView : NSView
 @property bool touching;
+@property bool pointing;
 @end
 @implementation WWTvView
 - (bool)map:(NSEvent*)e x:(float*)tx y:(float*)ty clamp:(bool)c {
@@ -253,12 +256,22 @@ static void load_options() {
     if (gfx::pip_wheel(nx, ny, steps)) gfx::save_options();
     else [super scrollWheel:e];
 }
+- (bool)picture:(NSEvent*)e down:(bool)down clamp:(bool)c {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSSize sz = self.bounds.size;
+    float x, y, aspect;
+    if (sz.width <= 0 || sz.height <= 0 || !gfx::tv_picture_hit(p.x / sz.width, 1.0f - p.y / sz.height, &x, &y, &aspect, c)) return false;
+    tv_pointer::set(down, x, y, aspect);
+    return true;
+}
 - (void)mouseDown:(NSEvent*)e {
     float x, y;
     if ((e.modifierFlags & NSEventModifierFlagOption) && [self pipBegin:e]) return;
     if ([self map:e x:&x y:&y clamp:false]) {
         self.touching = true;
         input::set_touch(true, x, y);
+    } else if (tv_pointer::wanted() && [self picture:e down:true clamp:false]) {
+        self.pointing = true;
     } else {
         [super mouseDown:e];
     }
@@ -266,11 +279,17 @@ static void load_options() {
 - (void)mouseDragged:(NSEvent*)e {
     float x, y;
     if ([self pipMove:e]) return;
+    if (self.pointing) { [self picture:e down:true clamp:true]; return; }
     if (self.touching && [self map:e x:&x y:&y clamp:true]) input::set_touch(true, x, y);
 }
 - (void)mouseUp:(NSEvent*)e {
     float x, y;
     if ([self pipEnd]) return;
+    if (self.pointing) {
+        self.pointing = false;
+        if (![self picture:e down:false clamp:true]) tv_pointer::set(false, 0, 0, 16.0f / 9.0f);
+        return;
+    }
     if (!self.touching) return;
     self.touching = false;
     if (![self map:e x:&x y:&y clamp:true]) x = y = 0;

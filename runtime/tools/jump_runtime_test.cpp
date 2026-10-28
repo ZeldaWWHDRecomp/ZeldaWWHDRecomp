@@ -40,13 +40,13 @@ int main() {
     st32(link + 0x65F0, 0x04);  // standing
     st32(link + 0x834, 0xFF);
     // off: nothing happens
-    mods::jump_input(input::kL);
+    mods::jump_input(input::kVirtJump);
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     assert(calls.empty());
     mods::set_jump_anywhere(true);
     mods::jump_input(0);
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-    mods::jump_input(input::kL);
+    mods::jump_input(input::kVirtJump);
     true60::test_dt = .5f;  // a true 60 preview never starts a jump
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     assert(calls.empty());
@@ -67,7 +67,7 @@ int main() {
     mods::jump_step(&cpu, link, false);
     assert(calls.size() == 2 && calls[1] == 0x023F6564 && ld32(link + 0x65F0) == 0x27 && ldf32(link + 0x340) == 0.f);
     // within the grace window the button still jumps from the ground
-    mods::jump_input(input::kL);
+    mods::jump_input(input::kVirtJump);
     mods::jump_step(&cpu, link, true);
     assert(calls.size() == 3 && calls[2] == 0x023F7958 && ldf32(link + 0x340) == 16.f);
     mods::jump_step(&cpu, link, false);
@@ -76,17 +76,50 @@ int main() {
     st32(link + 0x65F0, 0x04);
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     st8(0x1046F0B0 + 0x5292, 1);
-    mods::jump_input(input::kL);
+    mods::jump_input(input::kVirtJump);
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     assert(calls.size() == 3);
     st8(0x1046F0B0 + 0x5292, 0);
+    // the moon jump held with it wins (one input for both: L1 by default)
     mods::moon = mods::kMoonJump;
     mods::jump_input(0); mods::jump_step(&cpu, link, true);
-    mods::jump_input(input::kL); mods::jump_step(&cpu, link, true);
+    mods::jump_input(input::kVirtJump | input::kVirtMoonJump); mods::jump_step(&cpu, link, true);
     assert(calls.size() == 3);
-    mods::set_jump_button(input::kR);  // on another button both work
+    // on another input both work; the game's L is never the jump any more
     mods::jump_input(0); mods::jump_step(&cpu, link, true);
-    mods::jump_input(input::kR); mods::jump_step(&cpu, link, true);
+    mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true);
     assert(calls.size() == 4);
+    mods::jump_step(&cpu, link, false);
+    // True 60: a press that begins on a half step (preview, dt < 1) and is let go before the next full
+    // step still jumps there, once; one held through several full steps jumps once
+    mods::moon = 0;
+    st32(link + 0x65F0, 0x04);
+    mods::jump_input(0); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+    true60::test_dt = .5f;
+    mods::jump_input(input::kVirtJump);  // the half step's read
+    mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+    assert(calls.size() == 4);  // the preview starts nothing
+    true60::test_dt = 1;
+    mods::jump_input(0);  // let go before the full step's read
+    mods::jump_step(&cpu, link, true);
+    assert(calls.size() == 5 && calls[4] == 0x023F7958);
+    mods::jump_step(&cpu, link, false);
+    st32(link + 0x65F0, 0x04);
+    for (int i = 0; i < 3; i++) {  // nothing more without a new press
+        mods::jump_input(0); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+    }
+    assert(calls.size() == 5);
+    true60::test_dt = .5f;
+    mods::jump_input(input::kVirtJump);
+    mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+    true60::test_dt = 1;
+    for (int i = 0; i < 3; i++) {  // held on through three full steps (and their half steps): one jump
+        mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+        st32(link + 0x65F0, 0x04);
+        true60::test_dt = .5f;
+        mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
+        true60::test_dt = 1;
+    }
+    assert(calls.size() == 6);
     return 0;
 }

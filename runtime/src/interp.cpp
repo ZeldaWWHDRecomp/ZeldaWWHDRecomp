@@ -1840,6 +1840,7 @@ static void after_pass(int phase) {
 }  // namespace interp
 
 namespace mods { void cheats_service(); }  // mods/cheats.cpp
+namespace mods { void play_context_step(); }  // mods/play_context.cpp
 
 // debug: WWHD_INTERP_PASS_STATS=1 adds to the 300-step log the main thread's CPU time per pass
 // (thread CPU time, so waits for the vsync and the GPU are left out): logic passes, blended hold
@@ -1956,6 +1957,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
+    // the item ring: its equip, the game's pace while open (full logic passes, and true 60's half passes,
+    // which also run Link), the ring drawn
+    mods::item_ring_service(c, !enabled() || !g_hold_next, enabled() && g_hold_next && true60::enabled());
+    mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)
     mods::hud_service();  // the boost bar and climb wheel fade out over the game's menus, events, messages
     const bool was_fast_forward = mods::fast_forward_active();
     mods::fast_forward_service();
@@ -1988,6 +1993,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (!enabled() || !g_hold_next) {
         g_logic_steps++;
         true60_test::logic_step(g_logic_steps);
+        mods::play_context_step();  // once per full logic step (the context buttons' reading)
     }
     if (!enabled()) {
         g_hold_next = false;

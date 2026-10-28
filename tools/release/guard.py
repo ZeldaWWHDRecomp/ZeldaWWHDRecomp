@@ -307,12 +307,41 @@ def check_windows_manifest(name, data, problems):
         problems.append('%s: invalid Windows application manifest: %s' % (name, error))
 
 
+SEALED_TEMPLATE_MAGIC = b"WWHS0001"
+
+
+def open_sealed_template(data, key):
+    """The guard's own reader of a sealed template (shaderprep_format.seal): HMAC-SHA256 tag over magic + nonce +
+    ciphertext, then the SHAKE-256 keystream of key + nonce. The key is the release's template key
+    (WWHD_TEMPLATE_KEY, 64 hex digits: a hash of the game files the template is sealed for)."""
+    import hmac
+    if len(data) < 56 or len(data) > TEMPLATE_MAX_BYTES:
+        raise ValueError("invalid sealed template envelope")
+    nonce, tag, body = data[8:24], data[24:56], data[56:]
+    if not hmac.compare_digest(tag, hmac.new(key, data[:8] + nonce + body, hashlib.sha256).digest()):
+        raise ValueError("sealed template does not open with WWHD_TEMPLATE_KEY")
+    stream = hashlib.shake_256(b"WWHD shader template stream 1\0" + key + nonce).digest(len(body))
+    return bytes(a ^ b for a, b in zip(body, stream))
+
+
 def check_entry(name, data, problems):
     n = name.replace("\\", "/")
     if n.rsplit("/", 1)[-1].lower() in ("wwhd.exe", "wind waker hd.exe"):
         check_windows_manifest(name, data, problems)
     safe_template = False
-    if data.startswith(SAFE_TEMPLATE_MAGIC):
+    if data.startswith(SEALED_TEMPLATE_MAGIC):
+        # sealed (a key from the player's game files): checked as the code-free template it holds, or rejected
+        try:
+            key = os.environ.get("WWHD_TEMPLATE_KEY", "")
+            if len(key) != 64:
+                raise ValueError("a sealed template can only be checked with WWHD_TEMPLATE_KEY")
+            validate_code_free_template(open_sealed_template(data, bytes.fromhex(key)))
+            if not SAFE_TEMPLATE_PATH.fullmatch(n):
+                raise ValueError("code-free template outside approved package path")
+            safe_template = True
+        except (ValueError, TypeError, OverflowError, RecursionError, zlib.error) as error:
+            problems.append("%s: invalid sealed template: %s" % (name, error))
+    elif data.startswith(SAFE_TEMPLATE_MAGIC):
         try:
             validate_code_free_template(data)
             if not SAFE_TEMPLATE_PATH.fullmatch(n):

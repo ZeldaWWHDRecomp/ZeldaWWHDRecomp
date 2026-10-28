@@ -1156,7 +1156,63 @@ static void ready_flip_before_resume() {
 }
 #endif
 
+// Hang watchdog: when the game has not swapped a frame for 3 s, log what the render thread and every
+// guest thread are doing (again every 15 s, at most 6 times per stall); the log file is written
+// line by line, so the dump survives a force-stop. WWHD_NO_WATCHDOG=1 turns it off. A legitimate
+// pause (the app in the background, a debugger) logs it too, at most 6 times.
+// Idea from SwitchWakerHD (thanks @Pulpparty / @depende3000).
+static std::atomic<uint64_t> g_watch_swaps{0};
+static void watchdog_thread() {
+    host::set_thread_name("watchdog");
+    uint64_t lastSwaps = g_watch_swaps.load();
+    auto lastChange = std::chrono::steady_clock::now();
+    auto nextReport = lastChange + std::chrono::seconds(3);
+    int reports = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t swaps = g_watch_swaps.load(std::memory_order_relaxed);
+        if (swaps != lastSwaps) {
+            if (reports) LOG("[watchdog] frames again after %.1f s", std::chrono::duration<double>(now - lastChange).count());
+            lastSwaps = swaps;
+            lastChange = now;
+            nextReport = now + std::chrono::seconds(3);
+            reports = 0;
+            continue;
+        }
+        if (now < nextReport || reports >= 6) continue;
+        reports++;
+        nextReport = now + std::chrono::seconds(15);
+        size_t pending = 0;
+        uint64_t issued = 0, done = 0;
+        bool idle = false, locked = false;
+        {
+            std::unique_lock<std::mutex> lk(g_q_mutex, std::defer_lock);
+            if ((locked = lk.try_lock())) {
+                pending = g_q_pending.size();
+                issued = g_fence_issued;
+                done = g_fence_done;
+                idle = g_q_waiting;
+            }
+        }
+        if (locked)
+            LOG("[watchdog] no frame for %.1f s (swap %llu). Render thread: %s; %zu command words queued; game syncs issued %llu, "
+                "done %llu", std::chrono::duration<double>(now - lastChange).count(), (unsigned long long)swaps,
+                idle ? "waiting for commands" : "executing", pending, (unsigned long long)issued, (unsigned long long)done);
+        else
+            LOG("[watchdog] no frame for %.1f s (swap %llu). Render queue locked", std::chrono::duration<double>(now - lastChange).count(),
+                (unsigned long long)swaps);
+        threads::dump_state();
+    }
+}
+
 HLE(gx2, GX2Init) {
+    static std::once_flag watchdog;
+    std::call_once(watchdog, [] {
+        const char* e = getenv("WWHD_NO_WATCHDOG");
+        if (e && *e && strcmp(e, "0")) LOG("[watchdog] off (WWHD_NO_WATCHDOG)");
+        else std::thread(watchdog_thread).detach();
+    });
     set_default_state();
     LOG("[gx2] initialized (native GX2 -> %s)", render::api_name(render::active()));
     if(uncapped_benchmark())
@@ -1312,6 +1368,19 @@ HLE(gx2, GX2DrawDone) {
 }
 namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
+    const uint64_t watchSwap = g_watch_swaps.fetch_add(1, std::memory_order_relaxed) + 1;
+    // test aid for the watchdog: WWHD_TEST_HANG_AT=<swap>:<seconds> stops the game's thread in that swap
+    static const std::pair<uint64_t, unsigned> hangAt = [] {
+        const char* e = getenv("WWHD_TEST_HANG_AT");
+        unsigned long long at = 0;
+        unsigned secs = 0;
+        if (e && sscanf(e, "%llu:%u", &at, &secs) == 2) return std::pair<uint64_t, unsigned>{at, secs};
+        return std::pair<uint64_t, unsigned>{0, 0};
+    }();
+    if (hangAt.first && watchSwap == hangAt.first) {
+        LOG("[test] WWHD_TEST_HANG_AT: the game's thread stops for %u s at swap %llu", hangAt.second, (unsigned long long)watchSwap);
+        std::this_thread::sleep_for(std::chrono::seconds(hangAt.second));
+    }
     // debug: WWHD_TRACE_SWAP=n logs the guest call chain of the first n swaps
     static int trace = getenv("WWHD_TRACE_SWAP") ? atoi(getenv("WWHD_TRACE_SWAP")) : 0;
     if (trace > 0) {

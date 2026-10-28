@@ -521,4 +521,21 @@ bool pane(const std::string& spec, Pane& out) {
     return true;
 }
 
+bool file(const std::string& archive_name, const std::string& member, Bytes& out, std::string& error) {
+    if (!name_ok(archive_name)) {
+        error = "bad archive name";
+        return false;
+    }
+    std::lock_guard lock(g_mu);
+    Archive* a = archive(archive_name, error);
+    if (!a) return false;
+    const auto it = a->files.find(member);
+    if (it == a->files.end()) {
+        error = "no " + member + " in " + archive_name;
+        return false;
+    }
+    out = it->second;
+    return true;
+}
+
 }  // namespace game_layouts
