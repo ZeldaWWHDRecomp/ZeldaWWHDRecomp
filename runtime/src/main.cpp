@@ -35,6 +35,9 @@
 
 #include "gfx/renderer.h"
 #include "gfx/shader_prebuild.h"
+#if defined(__APPLE__) && defined(WWHD_HAS_METAL)
+#include "gfx/player_question.h"
+#endif
 #include "overlay/hostui.h"
 #include "render_prof.h"
 #include "background_shaders.h"
@@ -271,9 +274,12 @@ static void init_data_imports() {
 // Portable mode (portable.txt next to the executable, see host::portable_user_dir): the macOS paths
 // that do not go through host::config_dir() get their existing overrides pointed into the folder.
 // save_folder.h asks the player at start-up (two saves, another computer playing): a message box
-// on the SDL host; elsewhere, and in test runs, each question takes its safe answer.
+// on the SDL host, a native alert on the macOS app (AppKit host, gfx/player_question.mm); elsewhere,
+// and in test runs, each question takes its safe answer.
 static int ask_player(const std::string& title, const std::string& text, const std::vector<std::string>& buttons) {
-#if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
+#if defined(__APPLE__) && defined(WWHD_HAS_METAL) && !defined(WWHD_SDL_HOST)
+    return gfx::ask_player_alert(title, text, buttons);
+#elif defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
     const char* hidden = getenv("WWHD_HIDDEN_WINDOWS");
     if (hidden && *hidden && strcmp(hidden, "0") != 0) return -1;
     std::vector<SDL_MessageBoxButtonData> data;
