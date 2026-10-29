@@ -231,6 +231,7 @@
 024142F0  # daPy_swBlur_c::draw: sword trail drawn at the pass fraction (interp_fx.cpp)
 020CDF78  # daBoomerang_blur_c::draw: boomerang trail drawn at the pass fraction (interp_fx.cpp)
 021768B0  # daHookshot_shape_draw: chain from the blended root (interp_fx.cpp)
+021783F4  # daHookshot_shape GX2 draw: the link count the blended chain was filled for (interp_fx.cpp)
 025EA548  # mDoExt_3DlineMat0_c::update: line control points blended (interp_fx.cpp)
 025EAF58  # mDoExt_3DlineMat0_c::update (widths): line control points blended (interp_fx.cpp)
 0247255C  # daShip_c::draw: hull texture scroll and cannon sight arc blended (interp_fx.cpp)

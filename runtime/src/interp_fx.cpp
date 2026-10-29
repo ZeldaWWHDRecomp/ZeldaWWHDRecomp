@@ -45,6 +45,7 @@
 #include <vector>
 
 #include "guest_addr.h"
+#include "interp_chain.h"
 #include "interp_pacing.h"
 #include "interp_fade.h"
 #include "interp_slots.h"
@@ -1784,11 +1785,16 @@ extern "C" void hook_020CDF78(Cpu* c) { trail_draw(c, f_020CDF78_orig, 0x98, {0x
 // The hookshot's chain (daHookshot_shape_draw 021768B0, from daHookshot_c::draw, every pass) is
 // built from Link's hookshot root (daPy_lk_c +0x72F0), the hookshot's shape angle (+0x328 x,
 // +0x32A y) and link count (+0xD504, |tip - root| / 7 from its execute), all exact, while Link and
-// the hook are drawn blended. On blended passes it is built from the blended root and angles, with
-// the count from the blended root-tip distance (tip: current.pos +0x314).
+// the hook are drawn blended. On blended passes it is built from the blended root and angles (an
+// angle only between two steps with a chain: interp_chain.h chain_angle), with the count from the
+// blended root-tip distance (tip: current.pos +0x314). The shape's GX2 draw
+// (021783F4, when the pass's lists are painted) then draws that many links, not the exact count
+// (interp_chain.h, issue #304: links beyond the blended count were drawn from matrices of their last
+// fill, the previous shot).
 namespace {
 struct HookRec { uint64_t record = ~0ull; uint32_t hs = 0; float root[3], tip[3]; int16_t ax, ay; int32_t count = 0; };
 HookRec g_hook;
+interp::ChainCount g_chain_drawn;
 }  // namespace
 extern "C" void f_021768B0_orig(Cpu*);
 extern "C" void hook_021768B0(Cpu* c) {
@@ -1817,6 +1823,13 @@ extern "C" void hook_021768B0(Cpu* c) {
         }
     }
     const HookRec& from = blendRecord ? before : g_hook;
+    static int ptr = getenv("WWHD_INTERP_CHAIN_TRACE") ? atoi(getenv("WWHD_INTERP_CHAIN_TRACE")) : 0;
+    if (ptr > 0 && ((int32_t)ld32(cnt) > 0 || from.count > 0)) {
+        ptr--;
+        LOG("[interp-fx] hookshot shape draw pass %llu (step %llu, t %.3f): halfway %d, same hook %d, record %llu/%llu, count %d -> %d, angle %d %d -> %d %d",
+            (unsigned long long)interp::pass_count(), (unsigned long long)interp::logic_steps(), interp::pass_t(), (int)halfway(), (int)(from.hs == hs),
+            (unsigned long long)from.record, (unsigned long long)interp::hold_pass_count(), from.count, (int32_t)ld32(cnt), from.ax, from.ay, ax, ay);
+    }
     // (no chain on either step: nothing to draw; the hook still in Link's hand)
     if (!halfway() || from.hs != hs || from.record != interp::hold_pass_count() || (from.count <= 0 && (int32_t)ld32(cnt) <= 0)) {
         f_021768B0_orig(c);
@@ -1834,11 +1847,13 @@ extern "C" void hook_021768B0(Cpu* c) {
     if (!(dr < 400.0f * 400.0f) || !(dp < 2000.0f * 2000.0f)) { f_021768B0_orig(c); return; }  // a jump: drawn as it is
     const uint32_t saved[6] = {ld32(root), ld32(root + 4), ld32(root + 8), ld32(ang), ld32(cnt), 0};
     for (int i = 0; i < 3; i++) stf32(root + 4 * i, br[i]);
-    st16(ang, (uint16_t)lerp_s16(from.ax, ax, t));
-    st16(ang + 2, (uint16_t)lerp_s16(from.ay, ay, t));
+    const int32_t exact_count = (int32_t)ld32(cnt);
+    st16(ang, (uint16_t)interp::chain_angle(from.count, from.ax, exact_count, ax, t));
+    st16(ang + 2, (uint16_t)interp::chain_angle(from.count, from.ay, exact_count, ay, t));
     int32_t n = (int32_t)(std::sqrt(d) / 7.0f);
     if (n > 300) n = 300;
     st32(cnt, (uint32_t)n);
+    g_chain_drawn.filled(c->r[3], interp::pass_count(), n);
     static int tr = trace_left(7);
     if (tr) {
         tr--;
@@ -1851,6 +1866,29 @@ extern "C" void hook_021768B0(Cpu* c) {
     st32(root + 8, saved[2]);
     st32(ang, saved[3]);
     st32(cnt, saved[4]);
+}
+// daHookshot_shape GX2 draw (021783F4, r3 the shape): on a pass whose links were filled for the
+// blended count, that count (its user area +0x18 is the hookshot, +0xD504 the count)
+extern "C" void f_021783F4_orig(Cpu*);
+extern "C" void hook_021783F4(Cpu* c) {
+    const uint32_t shape = c->r[3], hs = ld32(shape + 0x18);
+    const int32_t exact = hs ? (int32_t)ld32(hs + 0xD504) : 0;
+    const int32_t n = g_chain_drawn.drawn(shape, interp::pass_count(), exact);
+    // debug: WWHD_INTERP_CHAIN_TRACE=n logs n GX2 draws of the chain (pass, links drawn, exact count)
+    static int tr = getenv("WWHD_INTERP_CHAIN_TRACE") ? atoi(getenv("WWHD_INTERP_CHAIN_TRACE")) : 0;
+    if (tr > 0 && exact > 0) {
+        tr--;
+        LOG("[interp-fx] hookshot chain GX2 draw pass %llu (step %llu, t %.3f, record %d): %d links (exact %d; filled pass %llu)",
+            (unsigned long long)interp::pass_count(), (unsigned long long)interp::logic_steps(), interp::display_t(), (int)interp::display_record(), n,
+            exact, (unsigned long long)g_chain_drawn.pass);
+    }
+    if (!hs || n == exact) {
+        f_021783F4_orig(c);
+        return;
+    }
+    st32(hs + 0xD504, (uint32_t)n);
+    f_021783F4_orig(c);
+    st32(hs + 0xD504, (uint32_t)exact);
 }
 
 // The King of Red Lions (daShip_c::draw 0247255C, actor Draw, every pass): the hull's texture
