@@ -57,6 +57,7 @@
 #include "imgui.h"
 #include "trace.h"
 #include "hostui.h"
+#include "../mods/link_poses.h"
 #include "../mods/code_mods.h"
 #include "controls_view.h"
 #include "binding_widget.h"
@@ -1541,6 +1542,11 @@ void tab_display() {
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
          "something new. Off: every button always shows.");
+    if (!mods::context_buttons_on()) ImGui::BeginDisabled();
+    if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
+    help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "
+         "sword, crouching on Crouch. It is drawn from your own game files when the game starts. Off: the game's words only.");
+    if (!mods::context_buttons_on()) ImGui::EndDisabled();
     if (check("Items by tap", mods::item_tap_on(), &v)) hostui::post([v] { mods::set_item_tap_on(v); });
     help("A tap on the bow, boomerang, hookshot or grappling hook takes it out and keeps it aimed; each tap "
          "then shoots, B puts it away. Off: hold the button as on the Wii U.");

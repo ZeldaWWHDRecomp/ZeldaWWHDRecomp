@@ -6,6 +6,7 @@
 #include "../mods/story_mail.h"
 #include "../mods/actor_model_cache.h"
 #include "../mods/game_layouts.h"
+#include "../mods/link_poses.h"
 #include "../mods/item_icons.h"
 #include "../mods/story_lyt_screen.h"
 #include "../mods/story_store.h"
@@ -168,6 +169,7 @@ std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(override.empty()&&(mode=="r"||mode=="rb"))override=game_lang::redirect(guest);
     const std::string path=override.empty()?host_path(guest):override;
     if(mode=="r"||mode=="rb")game_layouts::note_open(guest,path);  // the game's layout art for mods (game_layouts.h)
+    if(mode=="r"||mode=="rb")link_poses::note_open(guest,path);    // Link's model for the touch buttons' poses (link_poses.h)
     // the 2D language pack with the mod items' icons (item_icons.h), built from the file the game would read
     if(mode=="r"||mode=="rb")if(auto icons=item_icons::pack_for(guest,path);!icons.empty())return icons;
     return path;

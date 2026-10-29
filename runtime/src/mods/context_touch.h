@@ -11,6 +11,8 @@
 //     (draw letters / English words), > 0 the generation of the files in `dir` (re-load when it changes):
 //       dir/actions.txt   lines "HH<TAB>word": the game's word for action code HH (hex), UTF-8
 //       dir/item_HH.png   the game's icon for item number HH (hex), RGBA PNG 128 x 128
+//       dir/pose_HH.png   Link in the pose of action code HH (link_poses.h), RGBA PNG 128 x 128; only the
+//                         actions with a pose, and none when Link's model can't be read
 //
 // Idea from the GreenNaugahyde Android fork (GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0),
 // ControlsView's context buttons; reimplemented for our design.
@@ -30,6 +32,7 @@ enum : int32_t {
     kZlLatched = 1 << 4,     // the ZL latch holds the lock-on (draw ZL pressed)
     kClusterHidden = 1 << 5, // the game's own button cluster is hidden now (information only)
     kItemNamesA = 1 << 6,    // the item buttons are named A1 A2 A3 now (Controls > Item button names): draw those, not X Y R
+    kLinkPoses = 1 << 7,     // the "Link in the button pictures" option is on: an action with dir/pose_HH.png shows Link in that pose
 };
 // per-button state (out[kButtons + 3 * button]); kind as ctxbtn::Kind
 enum : int32_t {
@@ -44,7 +47,7 @@ constexpr int kPackLen = kButtons + 3 * ctxbtn::kCount + 3;  // 40
 
 struct Extra {          // what the touch-only state adds to the rules' view
     bool enabled = false;
-    bool aim_latched = false, zl_latched = false, cluster_hidden = false, item_names_a = false;
+    bool aim_latched = false, zl_latched = false, cluster_hidden = false, item_names_a = false, link_poses = false;
     int assets_generation = 0;
     uint32_t held = 0;       // bit per ctxbtn::Button drawn pressed
     int32_t ring[ctxbtn::kCount] = {};  // golden-ring counters
@@ -58,7 +61,8 @@ inline void pack(const ctxbtn::Buttons& b, const Extra& e, int32_t* out, int n) 
     int32_t v[kPackLen] = {};
     v[0] = kPackVersion;
     v[1] = (e.enabled ? kEnabled : 0) | (b.active ? kActive : 0) | (b.tap_continues ? kTapContinues : 0) |
-           (e.aim_latched ? kAimLatched : 0) | (e.zl_latched ? kZlLatched : 0) | (e.cluster_hidden ? kClusterHidden : 0) | (e.item_names_a ? kItemNamesA : 0);
+           (e.aim_latched ? kAimLatched : 0) | (e.zl_latched ? kZlLatched : 0) | (e.cluster_hidden ? kClusterHidden : 0) | (e.item_names_a ? kItemNamesA : 0) |
+           (e.link_poses ? kLinkPoses : 0);
     v[2] = e.assets_generation;
     for (int i = 0; i < ctxbtn::kCount; i++) {
         const ctxbtn::ButtonView& bv = b.b[i];

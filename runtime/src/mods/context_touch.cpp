@@ -2,7 +2,7 @@
 // The context buttons' runtime for the touch controls (context_touch.h has the Java pack, touch_play.h the
 // rules): the options, touch play on the game's pad reads (items by tap, aim-only, auto put-away, the ZL
 // latch), the golden rings, hiding the game's own button cluster while the context buttons show, and the
-// export of the game's action words and item icons for the Android side.
+// export of the game's action words, item icons and Link's poses (link_poses.h) for the Android side.
 //
 // Options (settings.ini; tests: the WWHD_* variable named with each, which also keeps it from being saved):
 //   touchContextButtons (WWHD_CONTEXT_BUTTONS)  on: the touch controls show only what does something now
@@ -31,6 +31,7 @@
 #include "game_layouts.h"
 #include "guest_addr.h"
 #include "item_ring_icons.h"
+#include "link_poses.h"
 #include "mods.h"
 #include "msbt_text.h"
 #include "play_context.h"
@@ -231,8 +232,11 @@ int export_assets(const std::string& dir) {
         snprintf(name, sizeof name, "item_%02X.png", item);
         if (write_file(std::filesystem::path(dir) / name, png.data(), png.size())) icons++;
     }
+    // Link in the pose of an action (link_poses.h), drawn from the game's 3D pack: pose_HH.png; without it
+    // (the files can't be read) the buttons keep their words
+    const int poses = link_poses::export_to(dir, screenshot::encode_png_rgba);
     if (!write_file(std::filesystem::path(dir) / "actions.txt", text.data(), text.size())) return -1;
-    LOG("[touchplay] exported %d action words and %d item icons to %s", nwords, icons, dir.c_str());
+    LOG("[touchplay] exported %d action words, %d item icons and %d Link poses to %s", nwords, icons, std::max(poses, 0), dir.c_str());
     return 1;
 }
 }  // namespace
@@ -317,6 +321,7 @@ void context_touch_pack(int32_t* out, int n) {
     e.enabled = context_buttons_on();
     e.cluster_hidden = g_hide_cluster.load(std::memory_order_relaxed);
     e.item_names_a = item_names_on_hud();
+    e.link_poses = link_poses::enabled();
     e.assets_generation = g_assets_generation.load(std::memory_order_relaxed);
     ctxtouch::pack(b, e, out, n);
 }

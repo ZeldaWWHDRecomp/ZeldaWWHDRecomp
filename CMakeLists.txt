@@ -671,6 +671,14 @@ target_include_directories(item_icons_test PRIVATE runtime/include runtime/src r
 target_compile_options(item_icons_test PRIVATE -UNDEBUG)
 target_link_libraries(item_icons_test PRIVATE ZLIB::ZLIB)
 add_test(NAME item_icons COMMAND item_icons_test)
+# Link pose icons on the touch buttons (runtime/src/mods/link_poses.cpp, controls plan P8): the pose table,
+# the rasteriser and the outline; with WWHD_GAME_DIR set it also renders every pose from the player's files
+add_executable(link_poses_test runtime/tools/link_poses_test.cpp runtime/src/mods/link_poses.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_poses_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_poses_test PRIVATE -UNDEBUG)
+target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_poses COMMAND link_poses_test)
 # the world editor's live item icons (#270): spare frames, and the textures written into the game's archive
 add_executable(item_icons_live_test runtime/tools/item_icons_live_test.cpp runtime/src/mods/item_icons.cpp runtime/src/mods/item_icons_game.cpp
                runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c)

@@ -6,7 +6,8 @@ import java.util.Map;
 
 /** The game's action words and item icons for the context buttons (controls plan P3). Native code exports
  *  them once per game pack into the app cache (nativeContextAssets(dir): 0 not ready yet, -1 failed,
- *  > 0 the files' generation): dir/actions.txt ("HH<TAB>word" lines) and dir/item_HH.png. Nothing of the
+ *  > 0 the files' generation): dir/actions.txt ("HH<TAB>word" lines), dir/item_HH.png and dir/pose_HH.png
+ *  (Link in the pose of action HH, drawn from the game's model: runtime/src/mods/link_poses.h). Nothing of the
  *  game ships with the app. This class decides when to ask native code again and reads actions.txt;
  *  TouchControls loads the files.
  *  Pure Java (no Android): tools/android/ContextButtonsTest.java. */
@@ -42,6 +43,21 @@ final class ContextAssets {
 
     /** The file name of an item's icon. */
     static String itemFile(int item) { return String.format(Locale.ROOT, "item_%02X.png", item & 0xFF); }
+    /** The file name of Link's pose for an action code (only actions with a pose have one). */
+    static String poseFile(int action) { return String.format(Locale.ROOT, "pose_%02X.png", action & 0xFF); }
+
+    /** The Jump button (P6) shows the pose of the game's Jump action. */
+    static final int JUMP_ACTION = 0x12;
+    /** Where a pose picture and its word sit in a button of radius r around its centre (P8): the picture's
+     *  half size and centre offset (y down), then the word's centre and baseline offsets (left of the
+     *  button's letter badge), its largest text size and widest width. */
+    static final float POSE_HALF = 0.6f, POSE_DY = -0.17f, POSE_WORD_DX = -0.14f, POSE_WORD_DY = 0.64f, POSE_WORD_SIZE = 0.3f,
+            POSE_WORD_WIDTH = 1.2f;
+    /** Whether a button shows Link's pose: the option is on (ContextPack.linkPoses), the button shows an
+     *  action and its picture was exported and loaded. */
+    static boolean showPose(boolean linkPoses, int kind, boolean pictureLoaded) {
+        return linkPoses && kind == ContextPack.KIND_ACTION && pictureLoaded;
+    }
 
     /** actions.txt: "HH<TAB>word" per line (HH the action code in hex); bad lines are skipped, words are
      *  trimmed, control characters dropped, and cut to MAX_WORD characters. */

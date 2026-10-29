@@ -31,6 +31,12 @@ int main() {
     ctxtouch::pack(b, e, names, ctxtouch::kPackLen);
     assert(names[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kItemNamesA));
     e.item_names_a = false;
+    e.link_poses = true;  // Link in the button pictures (link_poses.h): a header flag only
+    int32_t poses[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, poses, ctxtouch::kPackLen);
+    assert(poses[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kLinkPoses));
+    for (int i = 2; i < ctxtouch::kPackLen; i++) assert(poses[i] == names[i]);
+    e.link_poses = false;
     assert(out[2] == 7 && out[3] == 0);
     auto st = [&](int i) { return out[ctxtouch::kButtons + 3 * i]; };
     auto lb = [&](int i) { return out[ctxtouch::kButtons + 3 * i + 1]; };

@@ -16,7 +16,10 @@ final class ContextPack {
     static final int ENABLED = 1, ACTIVE = 1 << 1, TAP_CONTINUES = 1 << 2, AIM_LATCHED = 1 << 3,
             ZL_LATCHED = 1 << 4, CLUSTER_HIDDEN = 1 << 5,
             // requested from native code (P3-REQUESTS.md): the HUD names the item buttons A1 A2 A3
-            ITEM_NAMES_A = 1 << 6;
+            ITEM_NAMES_A = 1 << 6,
+            // Link in the button pictures (controls plan P8, link_poses.h): an action with a pose picture
+            // (ContextAssets.poseFile) shows Link in that pose above its word
+            LINK_POSES = 1 << 7;
     // per-button state
     static final int SHOWN = 1, KIND_SHIFT = 1, KIND_MASK = 3 << 1, HELD = 1 << 3;
     static final int KIND_PLAIN = 0, KIND_ACTION = 1, KIND_ITEM = 2, KIND_FAST_FORWARD = 3;
@@ -53,6 +56,7 @@ final class ContextPack {
     boolean on() { return enabled() && (raw[1] & ACTIVE) != 0; }
     int assetsGeneration() { return raw[2]; }
     boolean itemNamesA() { return valid && (raw[1] & ITEM_NAMES_A) != 0; }
+    boolean linkPoses() { return valid && (raw[1] & LINK_POSES) != 0; }
 
     private static boolean inRange(int b) { return b >= 0 && b < COUNT; }
     int state(int b) { return inRange(b) ? raw[FIRST + 3 * b] : 0; }
