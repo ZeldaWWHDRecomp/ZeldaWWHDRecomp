@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **GameCube controller layout** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** in Controls, or let
+  Automatic pick it for a GameCube pad that has no custom bindings yet: A acts, B is the sword, X, Y and Z use the
+  item slots, L targets and R shields (from 25% travel), the C-stick turns the camera and a tap of Start opens the
+  menus. The extra Wii U buttons sit on Start plus the D-pad. Each controller can keep its own layout, and
+  **Restore previous controller bindings** brings back the old buttons. Not yet tested on real adapters; details in
+  [docs/gamecube-controller.md](docs/gamecube-controller.md).
 - **Fixed: Picto Box at wide and tall screens.** With a window wider than 16:9 (21:9, 32:9) or taller (16:10, 4:3,
   phones), the Picto Box now takes the same 16:9 picture as on the Wii U instead of squeezing the whole wide view, and
   its subject check only counts what is inside that 16:9 frame. Normal play keeps your full view. (#303, thanks
