@@ -29,6 +29,7 @@ namespace story_notebook { void pad(input::PadState&, Cpu*){} void mute(input::P
 namespace story_scenes {void mute(input::PadState&){} }
 namespace story_bag { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the bag pages (not under test)
 namespace game_settings_page { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the settings page (not under test)
+namespace menu_sounds { void service(Cpu*){} }  // the Settings overlay's menu sounds (not under test)
 extern "C" void f_0203DEEC_orig(Cpu*){}
 extern "C" void imp_vpad_VPADRead(Cpu*);
 extern "C" void imp_padscore_KPADReadEx(Cpu*);
