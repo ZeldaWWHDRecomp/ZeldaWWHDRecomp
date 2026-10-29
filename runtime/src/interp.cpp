@@ -2137,15 +2137,19 @@ static bool called_from_frame_function() {
     return lr > lo && lr < hi;
 }
 static bool hold_skip_child(int i) {
-    // children 7-14 (after the loop body: frame setup, lighting, display) run; 1, 4, 5 (HD menus and
-    // systems) are held. Child 0 always runs: it only reads a system state, and a non-zero result
-    // makes the per-frame function skip the whole frame (a skipped call would leave its argument, a
-    // pointer, in r3, so hold passes drew nothing and every step was shown twice).
+    // children 8-14 (after the loop body: frame setup, lighting, display) run; 1, 4, 5 (HD menus and
+    // systems) and 7 are held. Child 7 (0270870C, hdSceneBoot_c::execute, called while the boot
+    // scene exists) plays the start-up loading screen (Boot_00: its parts' states and animations);
+    // run on every pass it played 2x/4x/8x too fast at 60/120/240 fps (issue #300). Its draw (the
+    // scene's draw delegate) still runs on every pass.
+    // Child 0 always runs: it only reads a system state, and a non-zero result makes the per-frame
+    // function skip the whole frame (a skipped call would leave its argument, a pointer, in r3, so
+    // hold passes drew nothing and every step was shown twice).
     // Also run: 2-3 (025EE048/02756170: heap setup the drawing needs) and 6 (0273841C: clears the
     // light counts of the HD light manager at *101F8A20 (+0x10..+0x1C), which dKy_setLight (child 8)
     // fills via 0273862C and child 9 hands to the renderer; held, every point light was added a
     // second time on hold passes: candle light twice as bright on every other frame at 60 fps).
-    static const uint32_t run = (getenv("WWHD_HOLD_RUN") ? (uint32_t)strtoul(getenv("WWHD_HOLD_RUN"), nullptr, 0) : 0x7FCC) | 1;
+    static const uint32_t run = (getenv("WWHD_HOLD_RUN") ? (uint32_t)strtoul(getenv("WWHD_HOLD_RUN"), nullptr, 0) : 0x7F4C) | 1;
     return interp::g_hold_frame && !(run & (1u << i)) && called_from_frame_function();
 }
 // debug: WWHD_INTERP_FADER_TRACE=n logs n changes of the HD display's fader object (*101F86B4 +0x440,
