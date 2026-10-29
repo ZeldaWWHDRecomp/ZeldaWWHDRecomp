@@ -78,6 +78,7 @@
 #ifdef WWHD_SDL_HOST
 #include "platform/input_sdl.h"
 #include "overlay/window_target.h"
+#include "platform/wayland_startup.h"
 #include <SDL3/SDL_vulkan.h>
 #endif
 #include "platform/display_rate.h"
@@ -5094,9 +5095,9 @@ void init() {
   {
     const char* driver = SDL_GetCurrentVideoDriver();
     hdr::waylandAfterRestart = waylandForHdr && driver && !strcmp(driver, "x11");
-    LOG("[display] SDL video driver %s", driver ? driver : "none");
   }
 #endif
+  wayland_startup::configure();
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))

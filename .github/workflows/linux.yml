@@ -37,7 +37,7 @@ jobs:
           git clone --depth 1 --branch "$SDL3_VERSION" https://github.com/libsdl-org/SDL.git sdl3-src
           cmake -S sdl3-src -B sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF \
             -DSDL_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
-          cmake --build sdl3-build
+          cmake --build sdl3-build -j 8
           cmake --install sdl3-build
 
       - name: Configure
@@ -47,7 +47,7 @@ jobs:
             -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON
 
       - name: Build
-        run: cmake --build build/linux
+        run: cmake --build build/linux -j 8
 
       - name: Unit tests
         run: |
