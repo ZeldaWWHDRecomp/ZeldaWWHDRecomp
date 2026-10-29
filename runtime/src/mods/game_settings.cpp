@@ -240,6 +240,25 @@ void register_controls() {
     }
     {
         Item it;
+        it.id = "controls.gamecube", it.tab = "controls", it.label = "GameCube layout";
+        it.help = "Controller in use: original GameCube buttons; off restores its previous bindings. Start + D-pad for HD extras.";
+        it.get = [] { return input_map::active_view(input_map::current()).preset.gamecube ? 1.f : 0.f; };
+        it.set = [](float v) {
+            auto m = input_map::current();
+            std::string guid, name;input_map::active_controller(guid,name);
+            int index = guid.empty() && name.empty() ? -1 : input_map::ensure_profile(m,guid,name);
+            auto view = input_map::view_for(m,index);
+            bool legacy = false;
+            for (const auto& c : input::controllers())
+                if (c.guid == guid && c.name == name) legacy = input_map::legacy_gamecube_faces(c);
+            if (v > .5f) input_map::apply_gamecube(view,legacy);
+            else input_map::restore_pad_preset(view);
+            input_map::store_view(m,view,index);input_map::set_current(m);
+        };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "controls.prompts", it.tab = "controls", it.label = "Button prompts", it.kind = Kind::Choice;
         it.help = "How the game's button icons look: automatic follows the connected pad.";
         for (M::Prompts p : {M::Prompts::kAuto, M::Prompts::kOriginal, M::Prompts::kXbox, M::Prompts::kPlayStation})

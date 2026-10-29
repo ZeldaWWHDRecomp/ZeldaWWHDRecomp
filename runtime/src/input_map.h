@@ -58,6 +58,7 @@ enum Pad : int {
     kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
     kPadCapture, kPadRightPaddle1, kPadLeftPaddle1, kPadRightPaddle2, kPadLeftPaddle2, kPadTouchpad,
     kPadMisc2, kPadMisc3, kPadMisc4, kPadMisc5, kPadMisc6,
+    kPadGCL, kPadGCR, kPadStartUp, kPadStartDown, kPadStartLeft, kPadStartRight,
     kPadCount
 };
 const char* pad_id(int p);     // JSON value, e.g. "LeftTrigger"
@@ -101,7 +102,15 @@ std::array<ShortcutBinding, kShortcutCount> shortcut_defaults();
 constexpr int kShortcutsVersion = 3;
 std::string shortcut_key_label(ShortcutKey key);
 
+struct PadPreset {
+    bool gamecube = false;
+    bool saved = false, saved_auto = false;
+    std::array<int, kActionCount> previous{};
+    bool operator==(const PadPreset&) const = default;
+};
+
 struct Mapping {
+    PadPreset preset;
     std::array<ShortcutBinding, kShortcutCount> shortcuts = shortcut_defaults();
     std::array<std::array<int, kKeysPerAction>, kActionCount> keys;  // kNoKey = empty slot
     std::array<int, kActionCount> pad;                                // kPadNone = unbound
@@ -140,6 +149,7 @@ struct Mapping {
         std::string guid;   // SDL GUID (32 hex digits); empty on hosts without one (AppKit)
         std::string name;   // as the host names the controller
         std::array<int, kActionCount> pad{};
+        PadPreset preset;
         bool operator==(const Controller&) const = default;
     };
     std::vector<Controller> controllers;
@@ -149,6 +159,16 @@ struct Mapping {
     bool operator==(const Mapping&) const = default;
 };
 
+// GameCube physical inputs are SDL's AXBY convention (A south, X east, B west, Y north).
+// Old PC-mode SDL database mappings without GameCube classification, and native Apple
+// GameCube framework elements, use ABXY instead. Existing host inputs are never normalized.
+bool is_gamecube(bool sdl_gamecube_type, uint16_t vendor, uint16_t product);
+bool legacy_gamecube_faces(const input::ControllerInfo& controller);
+void apply_gamecube(Mapping& m, bool legacy_pc_faces = false);
+bool restore_pad_preset(Mapping& m);  // one retained pre-preset set, persisted in controls.json
+// Only Automatic and a previously unconfigured dominant pad may create an automatic profile.
+bool auto_gamecube(Mapping& m, const std::string& guid, const std::string& name,
+                   bool detected, bool legacy_pc_faces = false);
 // Which host face buttons drive the Wii U's A/B/X/Y (issue #78). Not stored: it is the shape of
 // the four face bindings, so a hand-edited mapping simply reads back as kCustom.
 //   kPosition (default): by position — the bottom host button (Xbox A) is the Wii U's B, the right
@@ -266,6 +286,17 @@ const char* pad_short_label(int p);
 input::PadState keyboard_state(const Mapping& m, const bool* keys, int count = 256);
 input::PadState controller_state(const Mapping& m, const float values[kPadCount]);
 input::PadState controller_state(const Mapping& m, const float values[kPadCount], const std::array<int, kActionCount>& pad);
+
+// Defer a lone Start until release, so Start chords never open pause first.
+// One gate per physical device; reset when changing layouts or suppressing host input.
+bool gamecube_settings_chord(const Mapping& m, const float values[kPadCount]);
+struct StartGate {
+    bool held = false, used = false;
+    uint8_t directions = 0;
+    std::array<int, kActionCount> bindings{};
+    double tap_until = 0;
+    input::PadState read(const Mapping& m, const float values[kPadCount], double seconds = -1);
+};
 
 // ---- per-controller bindings (format 2) ----
 std::string controller_key(const std::string& guid, const std::string& name);  // "guid name"

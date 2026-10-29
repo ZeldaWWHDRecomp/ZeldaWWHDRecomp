@@ -105,6 +105,7 @@ static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still 
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
 // per-controller bindings (input_map profiles) and Controller details: what identifies each pad
 struct PadIdentity { std::string guid, name; bool is_virtual = false; input::ControllerInfo info; };
+static std::map<SDL_JoystickID,input_map::StartGate> g_start_gates;
 static std::map<SDL_JoystickID,PadIdentity> g_ident;  // under g_pads_mu
 static std::vector<input::ControllerInfo> g_infos;    // the latest poll, under g_mu
 static std::atomic<uint32_t> g_touch_virt{0};         // the on-screen Jump / Moon jump buttons
@@ -579,6 +580,23 @@ static void dominant_labels(input_map::FaceLabel out[4]){
 // outside g_pads_mu: input_map may write controls.json
 static void note_dominant_labels(){
  input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
+ std::string guid,name;bool detected=false,pc=false;
+ {
+  std::lock_guard lk(g_pads_mu);
+  for(auto id:g_order){
+   if(SDL_IsJoystickVirtual(id))continue;
+   auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
+   auto* pad=it->second;
+   const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;
+   detected=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   // SDL's GameCube type uses AXBY positions. Older PC database entries use ABXY.
+   pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
+   if(auto who=g_ident.find(id);who!=g_ident.end()){guid=who->second.guid;name=who->second.name;}
+   break;
+  }
+ }
+ auto m=input_map::current();
+ if(input_map::auto_gamecube(m,guid,name,detected,pc))input_map::set_current(m);
 }
 static void open_controller(SDL_JoystickID id){
 #ifdef __ANDROID__
@@ -652,7 +670,7 @@ static void close_controller(SDL_JoystickID id){
  {std::lock_guard lk(g_pads_mu);
   auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
   std::erase(g_order,id);
-  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_start_gates.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
   g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
  motion::controller_gone(id);
  note_dominant_labels();  // the dominant pad may have changed
@@ -1006,6 +1024,9 @@ void update(){
  // v: every device combined (strongest input wins), as the settings overlay reads it; game: the same with
  // each device's inputs that the overlay or the text prompt had and that are still held left out
  // (overlay/release_gate.h, issue #153)
+ static uint32_t layout_generation=0;
+ if(layout_generation!=input_map::generation()){note_dominant_labels();layout_generation=input_map::generation();}
+ const input_map::Mapping current=input_map::current();
  float v[kPadCount]={},game[kPadCount]={};
  const bool captured_before=overlay::captures();
  std::vector<std::pair<SDL_JoystickID,overlay::PadValues>> devices;
@@ -1028,6 +1049,10 @@ void update(){
   put(kPadLT,std::max(0.f,SDL_GetGamepadAxis(pad,SDL_GAMEPAD_AXIS_LEFT_TRIGGER)/32767.f));put(kPadRT,std::max(0.f,SDL_GetGamepadAxis(pad,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)/32767.f));
   auto stick=[&](SDL_GamepadAxis ax,SDL_GamepadAxis ay,int up,int down,int left,int right){float x=SDL_GetGamepadAxis(pad,ax)/32768.f,y=SDL_GetGamepadAxis(pad,ay)/32768.f;put(right,std::max(x,0.f));put(left,std::max(-x,0.f));put(up,std::max(-y,0.f));put(down,std::max(y,0.f));};
   stick(SDL_GAMEPAD_AXIS_LEFTX,SDL_GAMEPAD_AXIS_LEFTY,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight);stick(SDL_GAMEPAD_AXIS_RIGHTX,SDL_GAMEPAD_AXIS_RIGHTY,kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight);
+  PadIdentity identity;
+  {std::lock_guard lk(g_pads_mu);if(auto who=g_ident.find(id);who!=g_ident.end())identity=who->second;}
+  auto view=input_map::view_for(current,input_map::profile_index(current,identity.guid,identity.name));
+  if(input_map::gamecube_settings_chord(view,d.data()))d[kPadHome]=1;
   for(int p=0;p<kPadCount;p++)v[p]=std::max(v[p],d[p]);  // the shortcut below reads them ungated
   devices.emplace_back(id,d);
  }
@@ -1042,16 +1067,17 @@ void update(){
  const bool captured=captured_before||overlay::captures()||overlay::shortcut_took_input();
  std::vector<overlay::PadValues> gated;
  g_gates.combine(devices,captured,v,game,&gated);  // a reconnected pad (new id) gets a new gate
- const input_map::Mapping current=input_map::current();
  input_map::consume_shortcut_buttons(current,v,game);
  input::PadState state;
- if(current.controllers.empty()){
+ if(current.controllers.empty()&&!current.preset.saved&&!current.preset.gamecube){
   state=input_map::controller_state(current,game);  // one set of bindings for all: as before
  }else{
   // each controller through its own bindings (a profile for its GUID / name, else the shared ones)
   for(size_t i=0;i<gated.size();i++){
    input_map::consume_shortcut_buttons(current,v,gated[i].data());
-   state=input_map::combine(state,input_map::controller_state(current,gated[i].data(),input_map::pads_for(current,idents[i].guid,idents[i].name)));
+   auto& gate=g_start_gates[devices[i].first];
+   if(captured)gate={};
+   state=input_map::combine(state,gate.read(input_map::view_for(current,input_map::profile_index(current,idents[i].guid,idents[i].name)),gated[i].data()));
   }
  }
  // the controller in use (the overlay's confirm / back buttons follow its bindings), the setup offer on

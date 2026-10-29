@@ -1441,7 +1441,92 @@ static void test_v1_migration() {
     CHECK(j.pad[kJump] == kPadR3);
 }
 
+static void test_gamecube() {
+    auto m = Mapping::defaults(), original = m;
+    apply_gamecube(m);
+    CHECK(m.preset.gamecube && !m.face_auto && m.preset.saved);
+    const std::array<int,kActionCount> expected = {
+        kPadA,kPadX,kPadB,kPadY,kPadStartLeft,kPadRB,kPadGCL,kPadGCR,
+        kPadMenu,kPadStartDown,kPadStartRight,kPadDUp,kPadDDown,kPadDLeft,kPadDRight,
+        kPadNone,kPadStartUp,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight,
+        kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight,kPadNone,kPadNone,kPadNone};
+    CHECK(m.pad == expected); CHECK(m.keys == original.keys); CHECK(m.shortcuts == original.shortcuts);
+    for (int p=kPadGCL;p<kPadCount;++p) {
+        CHECK(pad_from_id(pad_id(p))==p); CHECK(pad_label(p)[0]); CHECK(pad_short_label(p)[0]);
+    }
+    float v[kPadCount]{};
+    for (int a=0;a<4;++a) {
+        std::fill_n(v,kPadCount,0.f);v[expected[a]]=1;
+        CHECK(controller_state(m,v).buttons==action_bit(a));
+    }
+    std::fill_n(v,kPadCount,0.f);v[kPadRB]=1;
+    CHECK(controller_state(m,v).buttons==input::kR);
+    std::fill_n(v,kPadCount,0.f);v[kPadLT]=.249f;v[kPadRT]=.249f;
+    CHECK(controller_state(m,v).buttons==0);
+    v[kPadLT]=.25f;CHECK(controller_state(m,v).buttons==input::kZL);
+    v[kPadRT]=.25f;CHECK(controller_state(m,v).buttons==(input::kZL|input::kZR));
+    v[kPadLT]=v[kPadRT]=0;v[kPadMisc3]=v[kPadMisc4]=1;
+    CHECK(controller_state(m,v).buttons==(input::kZL|input::kZR));
+    std::fill_n(v,kPadCount,0.f);v[kPadRSRight]=1;v[kPadLSUp]=1;
+    CHECK(controller_state(m,v).rx==1 && controller_state(m,v).ly==1);
+    StartGate gate;double tick=0;
+    auto read_gate=[&] { tick+=.2;return gate.read(m,v,tick); };
+    std::fill_n(v,kPadCount,0.f);v[kPadMenu]=1;
+    CHECK(read_gate().buttons==0);
+    v[kPadMenu]=0;CHECK(read_gate().buttons==input::kPlus);
+    CHECK(read_gate().buttons==0);
+    v[kPadMenu]=1;gate.read(m,v,10);v[kPadMenu]=0;
+    CHECK(gate.read(m,v,10.01).buttons==input::kPlus);
+    CHECK(gate.read(m,v,10.05).buttons==input::kPlus);
+    CHECK(gate.read(m,v,10.12).buttons==0);gate={};
+    const uint32_t chords[]={input::kStickR,input::kMinus,input::kL,input::kHome};
+    for(int c=0;c<4;++c) {
+        v[kPadMenu]=1;CHECK(read_gate().buttons==0);
+        v[kPadDUp+c]=1;CHECK(read_gate().buttons==chords[c]);
+        v[kPadDUp+c]=0;CHECK(read_gate().buttons==0);
+        v[kPadMenu]=0;CHECK(read_gate().buttons==0);
+    }
+    Mapping loaded;CHECK(from_json(to_json(m),loaded)); CHECK(loaded==m);
+    CHECK(restore_pad_preset(loaded));CHECK(loaded==original);CHECK(!restore_pad_preset(loaded));
+    apply_gamecube(m);CHECK(m.preset.previous==original.pad); // repeated click keeps original
+    for(auto [vendor,product] : {std::pair{0x057e,0x0337},{0x057e,0x2073},{0x0079,0x1843},{0x0079,0x1844},{0x0079,0x1846},{0x0926,0x8888},{0x1a34,0xf705},{0x05e3,0x0681},{0x20d6,0xa711},{0x0e6f,0x0185}})
+        CHECK(is_gamecube(false,vendor,product));
+    CHECK(is_gamecube(true,0,0));CHECK(!is_gamecube(false,0x057e,0x2009));
+    CHECK(!is_gamecube(false,0x2dc8,0x3106)); // 8BitDo is not a device identity
+    CHECK(!is_gamecube(false,0x045e,0x02ea));
+    m=original;CHECK(!auto_gamecube(m,"gc","GC",true)); // manual preset is a choice
+    m.face_auto=true;auto shared=m;
+    CHECK(auto_gamecube(m,"gc","GC",true));CHECK(m.pad==shared.pad && m.face_auto);
+    CHECK(m.controllers.size()==1);auto view=view_for(m,0);CHECK(view.preset.gamecube);
+    CHECK(!auto_gamecube(m,"gc","GC",true));CHECK(!auto_gamecube(m,"x","Xbox",false));
+    set_pad_binding(view,kA,kPadDDown);store_view(m,view,0);
+    CHECK(!auto_gamecube(m,"gc","GC",true));CHECK(m.controllers[0].pad[kA]==kPadDDown);
+    CHECK(from_json(to_json(m),loaded));CHECK(loaded==m);
+    view=view_for(loaded,0);CHECK(restore_pad_preset(view));store_view(loaded,view,0);
+    CHECK(loaded.pad==shared.pad);CHECK(loaded.controllers[0].pad==shared.pad);
+    m=shared;m.pad[kZL]=kPadRB;CHECK(!auto_gamecube(m,"gc","GC",true));
+    m=shared;ensure_profile(m,"gc","GC");CHECK(!auto_gamecube(m,"gc","GC",true));
+    input::ControllerInfo legacy;legacy.vendor=0x0079;legacy.product=0x1844;
+    CHECK(legacy_gamecube_faces(legacy));legacy.type="gamecube";CHECK(!legacy_gamecube_faces(legacy));
+    legacy.type="";legacy.vendor=0x057e;legacy.product=0x0337;CHECK(!legacy_gamecube_faces(legacy));
+    legacy.vendor=0x045e;legacy.product=0x02ea;CHECK(!legacy_gamecube_faces(legacy));
+    legacy.type="gamecube-apple";CHECK(legacy_gamecube_faces(legacy));
+    auto gc=original;apply_gamecube(gc);
+    CHECK(prompt_style(gc,PadFamily::kXbox).face==FaceStyle::kOriginal);
+    gc.shoulder_names=Mapping::ShoulderNames::kNumbered;
+    CHECK(prompt_style(gc,PadFamily::kXbox).shoulders==ShoulderStyle::kNumbered);
+    auto switcher=original;apply_gamecube(switcher);
+    apply_face_layout(switcher,FaceLayout::kLabels);
+    CHECK(switcher.preset.saved && !switcher.preset.gamecube);
+    CHECK(restore_pad_preset(switcher) && switcher==original);
+    m=original;apply_gamecube(m,true);CHECK(m.pad[kB]==kPadB && m.pad[kX]==kPadX);
+    set_current(m,false);set_active_controller("","");
+    CHECK(face_input(kA)==kPadA && face_input(kB)==kPadB);
+    set_current(original,false);
+}
+
 int main() {
+    test_gamecube();
     // Old controls files default to showing Quit; an explicit choice round-trips.
     {
         auto mapping = input_map::Mapping::defaults();

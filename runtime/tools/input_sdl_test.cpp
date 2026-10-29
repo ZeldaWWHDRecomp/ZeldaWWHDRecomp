@@ -225,7 +225,57 @@ static int background_controllers(){
  SDL_Quit();puts("input_sdl_test --background: hint follows the option (default off), background controller presses and rumble only with it on, keyboard and mouse released on focus loss either way: passed");
  return 0;
 }
+static int gamecube_preset() {
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
+ SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+ assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));input::init();input::release_keys();
+ auto m=input_map::Mapping::defaults();input_map::apply_gamecube(m);input_map::set_current(m,false);
+ SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+ d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=6;d.nbuttons=12;d.vendor_id=0x057e;d.product_id=0x0337;
+ d.name="GameCube WUP-028 synthetic";
+ auto id=SDL_AttachVirtualJoystick(&d);assert(id);
+ char guid[33]{};SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
+ // SDL HIDAPI WUP-028 physical button order, independent of printed button labels.
+ std::string mapping=std::string(guid)+",GC fixture,a:b0,b:b2,x:b1,y:b3,dpleft:b4,dpright:b5,dpdown:b6,dpup:b7,start:b8,rightshoulder:b9,misc3:b11,misc4:b10,leftx:a0,lefty:a1~,rightx:a2,righty:a3~,lefttrigger:a4,righttrigger:a5,type:gamecube,hint:!SDL_GAMECONTROLLER_USE_GAMECUBE_LABELS:=1,";
+ assert(SDL_AddGamepadMapping(mapping.c_str())>=0);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ auto* joy=SDL_OpenJoystick(id);assert(joy);
+ auto poll=[&](){SDL_UpdateJoysticks();for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);input::update();return input::read();};
+ SDL_SetJoystickVirtualAxis(joy,4,-32768);SDL_SetJoystickVirtualAxis(joy,5,-32768);poll();
+ const int buttons[]={0,1,2,3,9,11,10};
+ const uint32_t bits[]={input::kA,input::kB,input::kX,input::kY,input::kR,input::kZL,input::kZR};
+ for(int i=0;i<7;++i){SDL_SetJoystickVirtualButton(joy,buttons[i],true);assert(poll().buttons==bits[i]);SDL_SetJoystickVirtualButton(joy,buttons[i],false);assert(poll().buttons==0);}
+ // The settings keyboard and menu use the exact same physical A/B as gameplay.
+ assert(input_map::face_input(input_map::kA)==input_map::kPadA);
+ assert(input_map::face_input(input_map::kB)==input_map::kPadX);
+ SDL_SetJoystickVirtualAxis(joy,4,-17000);assert(!(poll().buttons&input::kZL));
+ SDL_SetJoystickVirtualAxis(joy,4,-15000);assert(poll().buttons==input::kZL);
+ SDL_SetJoystickVirtualAxis(joy,4,-32768);poll();
+ SDL_SetJoystickVirtualAxis(joy,2,32767);assert(poll().rx>.99f);
+ SDL_SetJoystickVirtualAxis(joy,2,0);poll();
+ SDL_SetJoystickVirtualButton(joy,8,true);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,8,false);assert(poll().buttons==input::kPlus);SDL_Delay(110);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,8,true);poll();SDL_SetJoystickVirtualButton(joy,7,true);
+ assert(poll().buttons==input::kStickR);
+ SDL_SetJoystickVirtualButton(joy,8,false);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,7,false);assert(poll().buttons==0);
+ // Home reaches the host shortcut before gameplay evaluation, even on a pad without Home.
+ SDL_SetJoystickVirtualButton(joy,8,true);poll();SDL_SetJoystickVirtualButton(joy,5,true);
+ poll();assert(overlayOpen);
+ SDL_SetJoystickVirtualButton(joy,8,false);SDL_SetJoystickVirtualButton(joy,5,false);poll();overlayOpen=false;poll();
+ assert(input::read().buttons==0);
+ // Per-pad custom bindings survive polling / Automatic; shared GameCube mapping stays separate.
+ m=input_map::current();int index=input_map::ensure_profile(m,guid,d.name);
+ auto view=input_map::view_for(m,index);input_map::set_pad_binding(view,input_map::kA,input_map::kPadY);
+ input_map::store_view(m,view,index);input_map::set_current(m,false);
+ SDL_SetJoystickVirtualButton(joy,3,true);assert(poll().buttons&input::kA);
+ SDL_SetJoystickVirtualButton(joy,3,false);poll();
+ std::puts("GameCube SDL physical faces, Z, dual triggers, camera, Start/chords, Settings, confirm/back and custom profile passed");
+ return 0;
+}
+
 int main(int argc,char** argv){
+ if(argc>1&&std::string(argv[1])=="--gamecube")return gamecube_preset();
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();
  if(argc>1&&std::string(argv[1])=="--background")return background_controllers();
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");

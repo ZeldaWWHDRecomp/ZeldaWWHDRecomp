@@ -2489,13 +2489,13 @@ void tab_controls() {
     ImGui::TextUnformatted("Face buttons");
     flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kPosition)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition),
-              !m.face_auto && fl == input_map::FaceLayout::kPosition)) {
+              !m.face_auto && !m.preset.gamecube && fl == input_map::FaceLayout::kPosition)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
         edit_set(m);
     }
     flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kLabels)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels),
-              !m.face_auto && fl == input_map::FaceLayout::kLabels)) {
+              !m.face_auto && !m.preset.gamecube && fl == input_map::FaceLayout::kLabels)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
         edit_set(m);
     }
@@ -2510,9 +2510,35 @@ void tab_controls() {
          "look in the game. Only the four face bindings change.");
     if (m.face_auto) {
         disabled_after(std::string("(-> ") + input_map::face_layout_label(fl) + ")");
-    } else if (fl == input_map::FaceLayout::kCustom) {
+    } else if (!m.preset.gamecube && fl == input_map::FaceLayout::kCustom) {
         disabled_after("(custom)");
     }
+    bool legacy_gc_faces = false;
+    std::string gc_guid = g_edit_guid, gc_name = g_edit_name;
+    if (!g_edit_controller) input_map::active_controller(gc_guid, gc_name);
+    for (const auto& c : input::controllers())
+        if (c.guid == gc_guid && c.name == gc_name) legacy_gc_faces = input_map::legacy_gamecube_faces(c);
+    flow::next(flow::check("GameCube"));
+    if (radio("GameCube", m.preset.gamecube)) {
+        // A selected controller gets its own profile before applying the preset.
+        if (g_edit_controller) {
+            auto all = input_map::current();
+            const int index = input_map::ensure_profile(all, g_edit_guid, g_edit_name);
+            auto view = input_map::view_for(all, index);
+            input_map::apply_gamecube(view, legacy_gc_faces);
+            input_map::store_view(all, view, index);
+            input_map::set_current(all);
+        } else { input_map::apply_gamecube(m, legacy_gc_faces); edit_set(m); }
+    }
+    help("GameCube: A action, B sword, X/Y/Z items, L target, R shield (25% travel). Start opens "
+         "items/map; Start + up looks in first person, + down is Minus, + left is L, + right opens "
+         "Settings. D-pad up conducts; left/right keep HD's ship controls. Previous bindings are retained.");
+    flow::next(flow::button("Restore previous controller bindings"));
+    ImGui::BeginDisabled(!m.preset.saved);
+    if (ImGui::Button("Restore previous controller bindings")) {
+        input_map::restore_pad_preset(m); edit_set(m);
+    }
+    ImGui::EndDisabled();
     // in-game button prompts (#110, #143): what the game's own button icons look like
     {
         using P = input_map::Mapping::Prompts;

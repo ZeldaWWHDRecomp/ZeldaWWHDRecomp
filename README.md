@@ -573,6 +573,37 @@ or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with
 Controller, the GamePad window keeps its screen and touch input.
 When the game asks for text (e.g. your name), the text window described above opens.
 
+**GameCube layout** (Controls, or macOS Input menu) changes the whole controller layout. Select a
+controller under **Bindings for** to keep its layout separate; **Restore previous controller bindings**
+keeps the old buttons available, even after restarting. With **Automatic** selected for shared bindings,
+the first connected GameCube pad gets its own preset only if it has no saved custom profile and the
+shared non-face bindings are unchanged. Existing custom profiles win. This does not change keyboard bindings.
+
+| GameCube input | HD action |
+| --- | --- |
+| A / B | A action/confirm / B sword/back |
+| X / Y / Z | X / Y / R item slots (hold for the optional item ring) |
+| L / R, including full click | ZL target / ZR shield, crouch, rope and boat actions |
+| Control stick / C-stick | Move / camera, aim and baton directions |
+| Start (tap, then release) | Plus: items, collection and maps; use the GamePad window for touch pages |
+| D-pad up / down / left / right | HD up (baton) / down / left (ship cannon) / right (salvage) |
+| Hold Start + D-pad up | Right stick click: first-person view (Picto Box uses its assigned item button) |
+| Hold Start + D-pad down / left / right | Minus (Off-TV Play) / L (GamePad page option) / Home (Settings by default) |
+| Left stick click; screenshot; Jump / Moon jump | Unbound on the pad; existing keyboard shortcuts remain |
+
+L and R activate at **25% travel**, or at their digital click. Light L already locks on: HD has no
+separate analog camera-centering stage. Clicking further adds no second action. The C-stick is passed
+through like a modern right stick; the preset keeps your camera inversion settings. For the original
+camera feel, choose horizontal inversion in the game's camera options. Start is deferred until release
+so a chord does not also open the menu. HD's D-pad and menu navigation are retained; the original
+GameCube D-pad map shortcuts are reached through Start's menu instead.
+
+Based on the original [GameCube manual, pp. 8–12](https://www.gamingalexandria.com/gc/The%20Legend%20of%20Zelda%20The%20Wind%20Waker/The%20Legend%20of%20Zelda%20The%20Wind%20Waker%20-%20Cleartype.pdf).
+**No real adapters have been tested yet.** Nintendo WUP-028 / compatible Wii U mode, recognized PC-mode
+adapters and Switch Online GameCube mappings are based on SDL's driver/database; an 8BitDo receiver's
+Xbox/Switch mode cannot identify the attached controller automatically. Choose GameCube manually if
+needed. See [adapter coverage, full action table and design notes](docs/gamecube-controller.md).
+
 Rumble works too (SDL hosts): what the game asks its controller's motor to do is passed to the
 connected controllers that have one, which includes the Pro Controller's. A host controller has a
 single motor, so a GamePad rumble pattern plays as on/off (or half strength where it alternates),

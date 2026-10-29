@@ -40,6 +40,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 
 #include <memory>
 #include <set>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,12 @@ static input_map::AppleFaceLayout controller_face_layout(GCController* c) {
     return input_map::apple_face_layout(c.productCategory.UTF8String, c.vendorName.UTF8String);
 }
 
+static bool gamecube_controller(GCController* c) {
+    NSString* category = c.productCategory.lowercaseString;
+    NSString* vendor = c.vendorName.lowercaseString;
+    return [category containsString:@"gamecube"] || [vendor containsString:@"gamecube"];
+}
+
 // every mappable controller input of one controller, 0..1; false: not a gamepad
 static bool device_values(GCController* c, float* v) {
     using namespace input_map;
@@ -145,12 +152,17 @@ static bool device_values(GCController* c, float* v) {
     return true;
 }
 
+static std::string pad_name(GCController* c);
+
 // each connected controller's values, keyed by the controller: a reconnected one is a new object
 static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std::vector<GCController*>* pads = nullptr) {
     std::vector<std::pair<uintptr_t, overlay::PadValues>> out;
     for (GCController* c in [GCController controllers]) {
         overlay::PadValues d;
         if (device_values(c, d.data())) {
+            auto m = input_map::current();
+            auto view = input_map::view_for(m, input_map::profile_index(m, "", pad_name(c)));
+            if (input_map::gamecube_settings_chord(view, d.data())) d[input_map::kPadHome] = 1;
             out.emplace_back((uintptr_t)(__bridge void*)c, d);
             if (pads) pads->push_back(c);
         }
@@ -226,6 +238,11 @@ static void note_dominant_labels() {
         if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
     }
     input_map::note_face_labels(labels);
+    if (dominant) {
+        auto m = input_map::current();
+        if (input_map::auto_gamecube(m, "", pad_name(dominant), gamecube_controller(dominant), true))
+            input_map::set_current(m);
+    }
     if (dominant && input_map::apple_face_workaround(input_map::current(), controller_face_layout(dominant)))
         LOG("[input] Nintendo pad with by-label bindings: if these were the old macOS workaround, "
             "select Input > Face buttons > By position (Nintendo) or Automatic (#181). Saved bindings kept.");
@@ -500,15 +517,26 @@ void init() {
         const auto devices = devices_values(&pads);
         std::vector<overlay::PadValues> gated;
         gates.combine(devices, overlay::captures() || overlay::shortcut_took_input(), v, game, &gated);
+        static uint32_t layout_generation = 0;
+        if (layout_generation != input_map::generation()) {
+            note_dominant_labels(); layout_generation = input_map::generation();
+        }
         const input_map::Mapping current = input_map::current();
         input_map::consume_shortcut_buttons(current, v, game);
         PadState s;
-        if (current.controllers.empty()) {
+        if (current.controllers.empty() && !current.preset.saved && !current.preset.gamecube) {
             s = input_map::controller_state(current, game);
         } else {  // each controller through its own bindings (by name on this host)
+            static std::map<uintptr_t, input_map::StartGate> start_gates;
+            std::erase_if(start_gates, [&](const auto& e) {
+                return std::none_of(devices.begin(), devices.end(), [&](const auto& d) { return d.first == e.first; });
+            });
             for (size_t i = 0; i < gated.size(); i++) {
                 input_map::consume_shortcut_buttons(current, v, gated[i].data());
-                s = input_map::combine(s, input_map::controller_state(current, gated[i].data(), input_map::pads_for(current, "", pad_name(pads[i]))));
+                auto& gate = start_gates[devices[i].first];
+                if (overlay::captures()) gate = {};
+                s = input_map::combine(s, gate.read(input_map::view_for(current,
+                    input_map::profile_index(current, "", pad_name(pads[i]))), gated[i].data()));
             }
         }
         // the one in use, the setup offer on a new controller's first press, Controller details
@@ -530,6 +558,7 @@ void init() {
             info.id = devices[i].first;
             info.name = name;
             if (c.productCategory) info.type = c.productCategory.UTF8String;
+            if (gamecube_controller(c)) info.type = "gamecube-apple";
             info.active = devices[i].first == active;
             if (@available(macOS 11.0, *)) {
                 info.rumble = c.haptics != nil;
