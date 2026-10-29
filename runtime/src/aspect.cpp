@@ -26,6 +26,7 @@
 #include "gfx/stereo.h"
 #include "button_glyphs.h"
 #include "aspect_panes.h"
+#include "aspect_picto.h"
 #include "mods/cemu_pack.h"
 #include "mods/play_context.h"
 #include "mods/mods.h"
@@ -261,6 +262,110 @@ extern "C" void site_024F811C(Cpu* c) { stereo_clipper(c); }
 extern "C" void site_024F8168(Cpu* c) { stereo_clipper(c); }
 // dScnName_c::setView: C_MTXPerspective (file select)
 extern "C" void site_025ADB38(Cpu* c) { adjust_projection_args(c, 1, 2, false, false); }
+
+// ---- The Picto Box (issue #303, aspect_picto.h): the photo and its subjects are the 16:9 part of the
+// wider (taller) picture, as on a Wii U, not the whole picture squeezed into the 800x450 photo.
+//   dSnap_packet::draw 025BF250: copies the finder's frame out of the TV picture (colour, then depth)
+//     with drawColorTexture / drawDepthTexture(renderer, view, viewport, r6 scale, r7 position):
+//     float pairs on the stack, texture coordinates of the 1280x720 screen. The depth copy reuses
+//     the position (sp+0x28), so it is moved once, at the colour copy.
+//   dSnap_packet::DebugDraw 025BFDC0 (the capture: draw, then the subjects): the TV projection, copied
+//     to the stack and narrowed to the finder's frame, goes to matrixProjectionCtor (r4), which the
+//     subjects are drawn with into the photo's alpha channel (their ids, counted by Judge), and,
+//     halved, to setProjectionMtx(mpProjection, r4), which dSnap_project uses for the subjects'
+//     expected areas (CalcArea2D).
+// The factors are the frame's (game()), as the TV picture's targets and projection. The camera's
+// projection is off-centre in the Picto Box (m[1][2] = 0.35: the finder sits above the screen
+// centre), so in a taller picture its 16:9 part sits off the centre too; the rectangle follows it.
+// At 16:9 nothing is touched.
+namespace {
+bool picto_log() {
+    static const bool on = getenv("WWHD_PICTO_LOG") != nullptr;
+    return on;
+}
+// test aid: WWHD_PICTO_FULL_PICTURE=1 keeps the earlier behaviour (the whole wider picture squeezed
+// into the photo, subjects found in all of it), for comparisons
+bool picto_16x9() {
+    static const bool full = getenv("WWHD_PICTO_FULL_PICTURE") != nullptr;
+    return !full;
+}
+void picto_factors(float& kx, float& ky) {
+    factors(game(), kx, ky);
+    if (!picto_16x9()) kx = ky = 1.0f;
+}
+// the off-centre terms m[0][2], m[1][2] of the TV projection the photo is taken from (DebugDraw's
+// context: frame +0x18 the projection, its matrix at +0x44, as getProjectionMtx 0274D83C returns it)
+float g_picto_m02 = 0.0f, g_picto_m12 = 0.0f;
+// the TV copy's scale (and position) pairs at r6 (r7)
+void picto_crop(Cpu* c, bool movePosition) {
+    float kx, ky;
+    picto_factors(kx, ky);
+    const uint32_t scale = c->r[6], position = c->r[7];
+    float sx = (float)ldf32(scale), sy = (float)ldf32(scale + 4);
+    float px = (float)ldf32(position), py = (float)ldf32(position + 4);
+    if (picto_log())
+        LOG("[picto] %s copy: scale %.4f %.4f position %.4f %.4f, picture x%.4f wide x%.4f tall", movePosition ? "colour" : "depth",
+            sx, sy, px, py, kx, ky);
+    if (kx == 1.0f && ky == 1.0f) return;
+    picto::crop_to_16x9(px, sx, kx, -g_picto_m02);
+    picto::crop_to_16x9(py, sy, ky, g_picto_m12);
+    stf32(scale, sx);
+    stf32(scale + 4, sy);
+    if (!movePosition) return;
+    stf32(position, px);
+    stf32(position + 4, py);
+}
+// a row-major 4x4 projection on the stack
+void picto_projection(uint32_t m) {
+    float kx, ky;
+    picto_factors(kx, ky);
+    if (kx == 1.0f && ky == 1.0f && !picto_log()) return;
+    float v[16];
+    for (int i = 0; i < 16; i++) v[i] = (float)ldf32(m + 4 * i);
+    if (picto_log())
+        LOG("[picto] subject projection: x %.5f %.5f %.5f y %.5f %.5f %.5f, picture x%.4f wide x%.4f tall", v[0], v[1],
+            v[2], v[4], v[5], v[6], kx, ky);
+    if (kx == 1.0f && ky == 1.0f) return;
+    picto::narrow_to_16x9(v, kx, ky);
+    stf32(m, v[0]);
+    stf32(m + 20, v[5]);
+}
+}  // namespace
+// DebugDraw: bl draw(packet, r4 context): note the TV projection's off-centre terms
+extern "C" void site_025BFDF8(Cpu* c) {
+    g_picto_m02 = g_picto_m12 = 0.0f;
+    const uint32_t frame = ld32(c->r[4]), projection = frame ? ld32(frame + 0x18) : 0;
+    if (!projection) return;
+    g_picto_m02 = (float)ldf32(projection + 0x44 + 8);
+    g_picto_m12 = (float)ldf32(projection + 0x44 + 24);
+    if (picto_log()) LOG("[picto] TV projection off-centre %.5f %.5f", g_picto_m02, g_picto_m12);
+}
+// draw: bl drawColorTexture (the finder's frame of the TV colour picture)
+extern "C" void site_025BF5D0(Cpu* c) { picto_crop(c, true); }
+// draw: bl drawDepthTexture (the same frame of the TV depth; the position was moved at the colour copy)
+extern "C" void site_025BF7C0(Cpu* c) { picto_crop(c, false); }
+// DebugDraw: bl matrixProjectionCtor(adjusted, r4 matrix, 0): the subjects' projection
+extern "C" void site_025BFFB0(Cpu* c) { picto_projection(c->r[4]); }
+// DebugDraw: bl setProjectionMtx(mpProjection, r4 matrix, 0): dSnap_project's projection
+extern "C" void site_025C0004(Cpu* c) { picto_projection(c->r[4]); }
+
+// dSnap_packet::Execute, after Judge (r31 the packet): debug, WWHD_PICTO_LOG=1 logs each photo's
+// result and its subjects (registered objects with pixels in the photo: id type, pixels, pixels per
+// expected area, bounding box in the 800x450 photo)
+extern "C" void site_025BE898(Cpu* c) {
+    if (!picto_log()) return;
+    const uint32_t snap = c->r[31];
+    LOG("[picto] photo at aspect %.4f: result %u detail %u, %d registered", game(), ld32(snap + 0xF68),
+        ld8(snap + 0xF6C), (int)ld32(snap + 0x9C));
+    for (int i = 0, n = std::min<int>((int)ld32(snap + 0x9C), 63); i < n; i++) {
+        const uint32_t o = snap + 0xA0 + 0x3C * i;
+        const int pixels = (int)ld32(o + 0x20);
+        if (!pixels) continue;
+        LOG("[picto]   subject %d: type 0x%02X pixels %d ratio %.3f box %d,%d-%d,%d", i, ld8(o + 0x18), pixels,
+            (float)ldf32(o + 0x24), (int16_t)ld16(o + 0x28), (int16_t)ld16(o + 0x2A), (int16_t)ld16(o + 0x2C),
+            (int16_t)ld16(o + 0x2E));
+    }
+}
 
 // ---- HD layouts (nw::lyt, WWHD's nw4f): TV draws see the 16:9 layout space centred in the wider
 // screen, panes near the left/right edges move out to the new edges.
