@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Picto Box at wide and tall screens.** With a window wider than 16:9 (21:9, 32:9) or taller (16:10, 4:3,
+  phones), the Picto Box now takes the same 16:9 picture as on the Wii U instead of squeezing the whole wide view, and
+  its subject check only counts what is inside that 16:9 frame. Normal play keeps your full view. (#303, thanks
+  @aaronlink127)
 ## v0.5.0
 
 - **Fixed: frame interpolation glitches.** With interpolation on (above 30 fps), the hookshot no longer leaves
