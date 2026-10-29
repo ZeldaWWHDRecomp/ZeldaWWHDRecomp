@@ -232,6 +232,7 @@ struct UIState {
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
 @property(strong) NSPopUpButton* shoulderNames;
 @property(strong) NSButton* promptColours;
+@property(strong) NSButton* promptTextColours;
 @property(strong) NSTimer* timer;
 - (BOOL)handleKeyEvent:(NSEvent*)e;
 - (BOOL)handleMouseEvent:(NSEvent*)e;
@@ -1144,15 +1145,19 @@ static NSTextField* label(NSString* s) {
     self.shoulderNames = sn;
     NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
     pc.toolTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
-                 @"Off: the game's white buttons (in the Xbox positions while the face buttons are by label).";
+                 @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
     self.promptColours = pc;
-    for (NSView* v in @[which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc]) {
+    NSButton* ptc = [NSButton checkboxWithTitle:@"Coloured face button text" target:self action:@selector(promptsChanged:)];
+    ptc.toolTip = @"Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+                  @"Off: the game's own text colours (white).";
+    self.promptTextColours = ptc;
+    for (NSView* v in @[which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
     NSDictionary* v = NSDictionaryOfVariableBindings(which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
-                                                     ppl, pp, snl, sn, pc);
+                                                     ppl, pp, snl, sn, pc, ptc);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
@@ -1163,7 +1168,7 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-16-[st]-16-|");
     C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
-    C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
     C(@"V:|-12-[which]-6-[skip]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-14-|");
     [w center];
     [self syncOptions];
@@ -1195,6 +1200,7 @@ static NSTextField* label(NSString* s) {
     [self.prompts selectItemWithTag:(NSInteger)_st.m.prompts];
     [self.shoulderNames selectItemWithTag:(NSInteger)_st.m.shoulder_names];
     self.promptColours.state = _st.m.prompt_colours ? NSControlStateValueOn : NSControlStateValueOff;
+    self.promptTextColours.state = _st.m.prompt_text_colours ? NSControlStateValueOn : NSControlStateValueOff;
     // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
     // Automatic is segment 2 whatever the bindings resolved to (as the overlay's "(-> ...)").
     if (_st.m.face_auto) self.faceLayout.selectedSegment = 2;
@@ -1566,6 +1572,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
     _st.m.prompts = (Mapping::Prompts)self.prompts.selectedTag;
     _st.m.shoulder_names = (Mapping::ShoulderNames)self.shoulderNames.selectedTag;
     _st.m.prompt_colours = self.promptColours.state == NSControlStateValueOn;
+    _st.m.prompt_text_colours = self.promptTextColours.state == NSControlStateValueOn;
     [self commit];
 }
 
@@ -1726,9 +1733,10 @@ static int self_test() {
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kPlayStation];
     [c.shoulderNames selectItemWithTag:(NSInteger)Mapping::ShoulderNames::kXbox];
     c.promptColours.state = NSControlStateValueOff;
+    c.promptTextColours.state = NSControlStateValueOff;
     [c promptsChanged:c.prompts];
     expect(current().prompts == Mapping::Prompts::kPlayStation && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
-               !current().prompt_colours,
+               !current().prompt_colours && !current().prompt_text_colours,
            "button prompts: PlayStation, LB/RB/LT/RT, no colours");
     // 9. the file on disk follows
     Mapping disk;

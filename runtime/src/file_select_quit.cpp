@@ -353,8 +353,7 @@ bool button(ImDrawList *d, Box b, const char *name, bool selected, float scale, 
     return clicked;
 }
 void prompt(ImDrawList *d, ImVec2 center, float radius) {
-    const auto m = input_map::current();
-    const auto look = input_map::prompt_style(m, input_map::pad_family());
+    const auto look = input_map::active_prompt_style();
     const int face = look.buttons[2];
     if (rendered_font->icons || look.face == input_map::FaceStyle::kPlayStation) {
         const bool shapes = look.face == input_map::FaceStyle::kPlayStation;

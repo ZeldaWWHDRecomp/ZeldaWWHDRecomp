@@ -563,7 +563,10 @@ In *by label* (including when *Automatic* resolves to it), in-game dialog icons 
 backgrounds use Xbox-style colours (green A, red B, blue X, yellow Y); changing the setting updates
 cached prompts without a restart. The HUD button cluster also follows the Xbox positions: A bottom,
 B right, X left, Y top. In-game shoulder prompts use R1/R2 for R/ZR and L1/L2 for L/ZL in this mode.
-*By position* and *custom* keep the game's colours and positions. See [in-game glyphs](docs/button-glyphs.md).
+*By position* keeps the game's positions. With Xbox or PlayStation prompts, action words take their
+button's colour (**Coloured face button text** off keeps the game's), and a *custom* set of face
+bindings shows each action's own button, with the HUD cluster drawing each button where it sits on the
+pad (sword on Xbox X: the sword is on the left). See [in-game glyphs](docs/button-glyphs.md).
 The **Input** menu switches whether keyboard and controllers act as the Wii U GamePad (default)
 or as a Wii U Pro Controller (`WWHD_PRO_CONTROLLER=1` starts in that mode); with the Pro
 Controller, the GamePad window keeps its screen and touch input.

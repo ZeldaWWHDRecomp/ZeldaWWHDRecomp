@@ -90,6 +90,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "crashrec.h"
 #include "portable_state.h"
 #include "fixed_seed.h"
+#include "hle/os_time.h"
 #include "state_memory.h"
 #include "state_file_section.h"
 #include "mods/guest_mods.h"
@@ -153,6 +154,7 @@ enum : uint32_t {
     kSecMemory = 'MEM ',
     kSecGuestMods = 'GMOD',
     kSecAspectParticles = 'APAR',
+    kSecOsTime = 'OSTB',  // the calendar clock's bias (hle/os_time.h); absent in older states
 };
 
 using Region=MemoryRegion;
@@ -589,6 +591,8 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     put_section(*payload,kSecGuestMods,w);
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
+    w=Writer();w.u64((uint64_t)os_time::bias());
+    put_section(*payload,kSecOsTime,w);
     // memory last, written straight into the payload
     payload->u32(kSecMemory);
     size_t len_at = payload->b.size();
@@ -711,6 +715,8 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     put_section(*payload,kSecGuestMods,w);
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
+    w=Writer();w.u64((uint64_t)os_time::bias());
+    put_section(*payload,kSecOsTime,w);
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
@@ -843,6 +849,12 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     guestmods::state_loaded();
     interp::ss_reset();
     aspect::ss_load_particles(s->section(kSecAspectParticles));
+    {  // the calendar clock continues from the state's (os_time::restored_bias)
+        Reader t = s->section(kSecOsTime);
+        const bool has = s->sections.count(kSecOsTime) != 0;
+        const int64_t state_bias = has ? (int64_t)t.u64() : 0;
+        os_time::set_bias(os_time::restored_bias(os_time::bias(), has && t.ok, state_bias));
+    }
     aspect::ss_reset();
     button_glyphs::ss_reset();
     rumble::reset();     // an effect running before the load is not the restored game's

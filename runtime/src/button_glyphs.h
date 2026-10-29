@@ -83,9 +83,14 @@ void prepare_text_box(uint32_t text_box, Cpu* cpu = nullptr);
 void draw_text_box(Cpu* c, PpcFunc draw);
 
 // Compose the HUD's face-button placement with the existing pane/aspect matrix calculation:
-// a restyled face (by label) puts A south, B east, X west and Y north, moving their complete
-// groups together.
+// each restyled face's complete group moves to the spot of the pad button bound to it
+// (PromptStyle::spots; by label puts A south, B east, X west and Y north).
 void calculate_pane(Cpu* c, PpcFunc calculate);
+// Pane::Draw for the CommandGuide cluster (aspect.cpp's hook): with a restyled look its action words
+// are drawn after its buttons, so moved groups never cover another button's word.
+void draw_pane(Cpu* c, PpcFunc draw);
+// Scope the displayed command-guide button set while calculating its layout.
+void calculate_parts(Cpu* c, PpcFunc calculate);
 
 // a save state was loaded: forget which text boxes were rebuilt for by label (savestate.cpp)
 void ss_reset();

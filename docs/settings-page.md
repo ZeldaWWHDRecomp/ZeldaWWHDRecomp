@@ -39,8 +39,8 @@ same values.
 
 - **Camera:** invert up/down, direct camera and its speed, mouse camera and its sensitivity,
   first person on R3 or the mouse wheel, letterbox while targeting.
-- **Controls:** face buttons, button prompts, shoulder names, coloured face buttons, rumble, stick
-  dead zone, skip controller selection.
+- **Controls:** face buttons, button prompts, shoulder names, coloured face buttons and their text,
+  rumble, stick dead zone, skip controller selection.
 - **Screen:** gameplay field of view, the boost bar. On Android also the touch buttons and the
   on-screen controls.
 - **Game:** the built-in gameplay mods that apply while the game runs: quick doors, fast scene

@@ -1,6 +1,7 @@
 // Unit tests for the controls mapping (runtime/src/input_map.cpp).
 //   make -C build/cmake input_map_test && ./build/cmake/input_map_test
 #include "platform/keycodes.h"
+#include <array>
 #include <filesystem>
 #include <chrono>
 #include <barrier>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 
 #include "input_map.h"
 #include "mouse_bindings.h"
@@ -435,7 +437,7 @@ static void test_prompts() {
     CHECK(pad_family_from_labels(none) == PadFamily::kUnknown);
 
     Mapping m = Mapping::defaults();
-    CHECK(m.prompts == Mapping::Prompts::kAuto && m.shoulder_names == Mapping::ShoulderNames::kAuto && m.prompt_colours);
+    CHECK(m.prompts == Mapping::Prompts::kAuto && m.shoulder_names == Mapping::ShoulderNames::kAuto && m.prompt_colours && m.prompt_text_colours);
     // Full layout x appearance x family matrix. Automatic layout is resolved from labels.
     for (int layout = 0; layout < 4; ++layout)
         for (auto prompts : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal,
@@ -463,14 +465,45 @@ static void test_prompts() {
                 CHECK(actual.face == expected);
                 CHECK(actual.positions == (labels && expected != FaceStyle::kOriginal));
                 CHECK(actual.colours == (expected != FaceStyle::kOriginal));
-                for (int i = 0; i < 4; ++i)
+                for (int i = 0; i < 4; ++i) {
                     CHECK(actual.buttons[i] == (expected == FaceStyle::kOriginal ? i : candidate.pad[kA+i] - kPadA));
+                    // the HUD cluster: by label swaps each pair, by position stays, any other
+                    // face set puts each button on its pad button's spot
+                    CHECK(actual.spots[i] == (expected == FaceStyle::kOriginal ? i : (candidate.pad[kA+i] - kPadA) ^ 1));
+                    if (labels && expected != FaceStyle::kOriginal) CHECK(actual.spots[i] == (i ^ 1));
+                }
                 // Every invalid/ambiguous face set falls back together.
                 for (int invalid : {int(kPadNone), int(kPadLB), candidate.pad[kB]}) {
                     auto bad = candidate; bad.pad[kA] = invalid;
                     CHECK(prompt_style(bad, family).face == FaceStyle::kOriginal);
                 }
             }
+    // hud_spots: the game draws A east, B south, X north, Y west
+    {
+        using Spots = std::array<int, 4>;
+        Mapping h = Mapping::defaults();
+        apply_face_layout(h, FaceLayout::kPosition);
+        CHECK(hud_spots(h) == (Spots{0, 1, 2, 3}));
+        apply_face_layout(h, FaceLayout::kLabels);
+        CHECK(hud_spots(h) == (Spots{1, 0, 3, 2}));
+        // Xbox A does A (south), X sword (west), Y item X (north), B item Y (east)
+        h.pad[kA] = kPadA; h.pad[kB] = kPadX; h.pad[kX] = kPadY; h.pad[kY] = kPadB;
+        CHECK(hud_spots(h) == (Spots{1, 3, 2, 0}));
+        // Y on RB: its own spot (west) is the sword's, so it takes the free east spot
+        h.pad[kY] = kPadRB;
+        CHECK(hud_spots(h) == (Spots{1, 3, 2, 0}));
+        // two off the face buttons: X keeps its free own spot, Y takes the last one
+        h.pad[kX] = kPadLB;
+        CHECK(hud_spots(h) == (Spots{1, 3, 2, 0}));
+        h.pad[kB] = kPadRT;  // only A on a face button: the rest keep their own free spots, then fill
+        CHECK(hud_spots(h) == (Spots{1, 0, 2, 3}));
+        // the same face button twice: the first action takes its spot, the second a free one
+        apply_face_layout(h, FaceLayout::kPosition);
+        h.pad[kY] = h.pad[kX];  // both on Xbox Y (north): X there, Y keeps its own free west spot
+        CHECK(hud_spots(h) == (Spots{0, 1, 2, 3}));
+        h.pad[kA] = h.pad[kB];  // both on Xbox A (south): A there, B to the free east spot
+        CHECK(hud_spots(h) == (Spots{1, 0, 2, 3}));
+    }
     // by label, automatic: Xbox look (LB/RB/LT/RT) unless the pad is a PlayStation one (L1/R1/L2/R2)
     apply_face_layout(m, FaceLayout::kLabels);
     PromptStyle s = prompt_style(m, PadFamily::kXbox);
@@ -511,15 +544,21 @@ static void test_prompts() {
     const Mapping d = Mapping::defaults();
     const std::string plain = to_json(d);
     CHECK(plain.find("button_prompts") == std::string::npos && plain.find("shoulder_names") == std::string::npos &&
-          plain.find("button_colours") == std::string::npos);
+          plain.find("button_colours") == std::string::npos && plain.find("button_text_colours") == std::string::npos);
     for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation})
         for (auto n : {Mapping::ShoulderNames::kAuto, Mapping::ShoulderNames::kNintendo, Mapping::ShoulderNames::kNumbered,
                        Mapping::ShoulderNames::kXbox})
-            for (bool c : {true, false}) {
+            for (bool c : {true, false}) for (bool text : {true, false}) {
                 Mapping w = d, r;
                 w.prompts = p;
                 w.shoulder_names = n;
                 w.prompt_colours = c;
+                w.prompt_text_colours = text;
+                const auto style = prompt_style(w, PadFamily::kXbox);
+                // Original prompts keep the game's words whatever the setting, and stay inactive.
+                CHECK(style.text_colours == (text && style.face != FaceStyle::kOriginal));
+                if (style.face == FaceStyle::kOriginal)
+                    CHECK(style.active() == (style.shoulders != ShoulderStyle::kOriginal));
                 std::string err;
                 CHECK(from_json(to_json(w), r, &err) && err.empty() && r == w);
             }
@@ -1323,6 +1362,57 @@ static void test_profiles() {
     CHECK(r.controllers[0].pad[kB] == r.pad[kB] && !err.empty());
 }
 
+// The game's prompts follow the bindings of the controller in use: its own profile's, else the
+// shared ones (no controller in use: keyboard only). A switch bumps generation() so cached styles
+// (button_glyphs::style) re-read; the same controller again does not.
+static void test_active_prompts() {
+    const Mapping previous = current();
+    Mapping m = Mapping::defaults();
+    apply_face_layout(m, FaceLayout::kLabels);  // shared: by label (A south, B east, X west, Y north)
+    m.prompts = Mapping::Prompts::kXbox;
+    Mapping::Controller one, two;
+    one.guid = "03000000000000000000000000000001";
+    one.name = "Pad One";
+    one.pad = m.pad;
+    std::swap(one.pad[kA], one.pad[kB]);  // Wii U A on the east button, B on the south one
+    two.guid = "03000000000000000000000000000002";
+    two.name = "Pad Two";
+    two.pad = m.pad;
+    std::swap(two.pad[kX], two.pad[kY]);
+    m.controllers = {one, two};
+    set_current(m, false);
+    const PromptStyle shared = prompt_style(m, pad_family());
+    CHECK(shared.face == FaceStyle::kXbox && shared.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+
+    set_active_controller("", "");
+    CHECK(active_prompt_style() == shared);  // keyboard only: the shared bindings
+
+    uint32_t gen = generation();
+    set_active_controller(one.guid, one.name);
+    CHECK(generation() != gen);
+    const PromptStyle a = active_prompt_style();
+    CHECK(a.face == FaceStyle::kXbox && a.buttons == (std::array<int, 4>{1, 0, 2, 3}));
+    CHECK(a.spots == hud_spots(view_for(m, 0)) && a.spots != shared.spots);
+    gen = generation();
+    set_active_controller(one.guid, one.name);  // the same controller pressing again: no re-read
+    CHECK(generation() == gen);
+
+    set_active_controller(two.guid, two.name);
+    CHECK(generation() != gen);
+    const PromptStyle b = active_prompt_style();
+    CHECK(b.buttons == (std::array<int, 4>{0, 1, 3, 2}) && b.spots == hud_spots(view_for(m, 1)));
+
+    // the same model on another bus (GUID match) uses that profile; a controller without one, the shared
+    set_active_controller(one.guid, "Pad One (USB)");
+    CHECK(active_prompt_style().buttons == a.buttons);
+    set_active_controller("03000000000000000000000000000003", "Pad Three");
+    CHECK(active_prompt_style() == shared);
+    CHECK(active_view(m).pad == m.pad);
+
+    set_active_controller("", "");
+    set_current(previous, false);
+}
+
 static void test_v1_migration() {
     // a format 1 file: no profiles; Jump and the moon jump on whatever pressed the Wii U's L
     const char* v1 = R"({"version":1,"keyboard":{"L":["U"]},"controller":{"L":"LeftTrigger","ZL":"LeftShoulder"},"options":{"format":2}})";
@@ -1458,6 +1548,7 @@ int main() {
     test_play_buttons();
     test_displace_rules();
     test_profiles();
+    test_active_prompts();
     test_v1_migration();
     printf("input_map_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

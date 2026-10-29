@@ -30,6 +30,7 @@
 #include "../game_languages.h"
 #include "../rtl_text.h"
 #include "save_root.h"
+#include "os_time.h"
 
 namespace hle_fs {
 namespace {
@@ -187,6 +188,21 @@ void fill_stat(uint32_t out, const struct stat& st, uint64_t size = UINT64_MAX) 
     st32(out + 0x10, dir ? 0 : (uint32_t)size);
     st32(out + 0x14, dir ? 0 : (uint32_t)size);
 }
+// Quest Logs that earlier builds stamped with the time since the start instead of the date (#322,
+// os_time.h) get the file's last-modified time as their date when the game reads them; the game
+// writes that date back with its next save.
+void repair_save_stamps(FILE* f, uint64_t start, uint32_t dst, size_t n) {
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) return;
+    const int64_t stamp = os_time::from_unix((int64_t)st.st_mtime);
+    for (uint32_t k = 0; k < 3; k++) {
+        const uint64_t block = (uint64_t)k * os_time::kSaveBlock;
+        if (block < start || block + os_time::kSaveBlock > start + n) continue;
+        if (os_time::repair_save_stamp(mem::ptr(dst + (uint32_t)(block - start)), stamp))
+            LOG("[save] Quest Log %u had no save date (earlier builds): using the file's date", k + 1);
+    }
+}
+
 // the size the game sees: a save file's story block is not part of it
 uint64_t game_size(const std::string& gpath, const std::string& hp, const struct stat& st) {
     return !S_ISDIR(st.st_mode) && story_store::is_save_file(gpath) ? story_store::game_size(hp, (uint64_t)st.st_size)
@@ -307,11 +323,13 @@ HLE(coreinit, FSReadFile) {
     FILE* f = file(arg(c, 5));
     if (!f || size == 0) { ret(c, 0); return; }
     uint64_t limit = UINT64_MAX;
+    bool save_file = false;
     {
         std::lock_guard<std::mutex> lk(g_fs_mutex);
         auto it = g_files.find(arg(c, 5));
-        if (it != g_files.end()) limit = it->second.limit;
+        if (it != g_files.end()) limit = it->second.limit, save_file = it->second.story;
     }
+    const int64_t start = save_file ? host::file_tell(f) : -1;
     if (limit != UINT64_MAX) {  // a save file's reads end at the game's part
         const int64_t pos = host::file_tell(f);
         const uint64_t left = pos < 0 || (uint64_t)pos >= limit ? 0 : limit - (uint64_t)pos;
@@ -330,6 +348,7 @@ HLE(coreinit, FSReadFile) {
         static const double mbps = getenv("WWHD_TEST_FS_MBPS") ? atof(getenv("WWHD_TEST_FS_MBPS")) : 0;
         if (mbps > 0) std::this_thread::sleep_for(std::chrono::microseconds((int64_t)(n / mbps)));
     }
+    if (start >= 0) repair_save_stamps(f, (uint64_t)start, dst, n);
     ret(c, (uint32_t)(n / size));
 }
 

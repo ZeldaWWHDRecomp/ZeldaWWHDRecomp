@@ -17,11 +17,13 @@
 #include "runtime.h"
 #include "guest_addr.h"
 #include "mods/mods.h"
+#include "shared_patch.h"
 
 extern "C" {
 void f_0286E9F0_orig(Cpu* c);  // CharWriter::Print(writer, character)
 void f_028F7C7C_orig(Cpu* c);  // build vertices from a TextBox's cached glyph list
 void f_02874D54_orig(Cpu* c);  // lyt::Picture::DrawSelf
+void f_026F8CD0_orig(Cpu* c);  // hdParts_c::calcLayout
 void imp_gx2_GX2InitTextureRegs(Cpu* c);
 }
 
@@ -57,19 +59,22 @@ void forget_rebuilt();
 std::atomic<uint32_t> last_signature{0};
 uint32_t signature(const PromptStyle& s) {
     uint32_t buttons = 0;
-    for (int i = 0; i < 4; ++i) buttons |= uint32_t(s.buttons[i]) << (10 + 2*i);
-    return buttons | 0x100u | (uint32_t)s.face | (s.colours ? 4u : 0u) | (uint32_t)s.shoulders << 3 | (s.positions ? 0x20u : 0u);
+    for (int i = 0; i < 4; ++i) buttons |= uint32_t(s.buttons[i]) << (10 + 2*i) | uint32_t(s.spots[i]) << (18 + 2*i);
+    return buttons | 0x100u | (uint32_t)s.face | (s.colours ? 4u : 0u) | (uint32_t)s.shoulders << 3 |
+           (s.positions ? 0x20u : 0u) | (s.text_colours ? 0x40u : 0u);
 }
 
 PromptStyle style() {
     // Per guest thread: layouts can be recorded on multiple cores. Each set_current (and a new pad
-    // family) invalidates the cached choice, including transitions through custom bindings. No
-    // SDL/AppKit dependency, and nothing beyond a generation compare per call.
+    // family or controller in use) invalidates the cached choice, including transitions through
+    // custom bindings. The bindings are the controller in use's own when it has them
+    // (input_map::active_view). No SDL/AppKit dependency, and nothing beyond a generation compare
+    // per call.
     thread_local uint32_t generation = ~0u;
     thread_local PromptStyle current;
     const uint32_t now = input_map::generation();
     if (now != generation) {
-        current = input_map::prompt_style(input_map::current(), input_map::pad_family());
+        current = input_map::active_prompt_style();
         if (current.active()) labels_used.store(true, std::memory_order_relaxed);
         const uint32_t sig = signature(current);
         if (last_signature.exchange(sig, std::memory_order_relaxed) != sig && labels_used.load(std::memory_order_relaxed))
@@ -99,10 +104,9 @@ void forget_rebuilt() {
     rebuilt.clear();
 }
 
-struct SavedWord {
-    uint32_t address;
-    uint32_t value;
-};
+// Draw-time changes to game memory go through shared_patch: two game threads can build and draw
+// the same text at once (#326).
+using shared_patch::Held;
 
 thread_local int hud_shoulder = -1;
 thread_local int hud_face = -1;  // a HUD face-letter pane (T_A_00 on P_A_00, ...)
@@ -178,14 +182,12 @@ uint32_t shoulder_atlas(Cpu* cpu) {
     return info;
 }
 
-void patch(std::vector<SavedWord>& saved, uint32_t address, uint32_t value) {
-    saved.push_back({address, ld32(address)});
-    st32(address, value);
+void patch(std::vector<Held>& saved, uint32_t address, uint32_t value) {
+    shared_patch::hold_value(saved, address, 4, value);
 }
 
-void patch_float(std::vector<SavedWord>& saved, uint32_t address, float value) {
-    saved.push_back({address, ld32(address)});
-    stf32(address, value);
+void patch_float(std::vector<Held>& saved, uint32_t address, float value) {
+    shared_patch::hold_float(saved, address, value);
 }
 
 // The atlas sheet that draws through the text box's colours (coverage = the cell's alpha).
@@ -194,7 +196,7 @@ constexpr uint32_t coverage_sheet(uint32_t atlas) { return atlas + 0x100; }
 // Point a glyph quad at a cell of the composed atlas (a shoulder label or a PlayStation shape).
 // `coverage`: keep the quad a coverage glyph on the coverage sheet, so the game colours (and
 // dims) it exactly like the letter it replaces; otherwise an RGBA picture (#141).
-void atlas_quad(std::vector<SavedWord>& saved, uint32_t quad, int row, bool frame, Cpu* cpu, bool coverage = false) {
+void atlas_quad(std::vector<Held>& saved, uint32_t quad, int row, bool frame, Cpu* cpu, bool coverage = false) {
     const uint32_t atlas = shoulder_atlas(cpu);
     if (!atlas) return;
     const button_glyphs::Cell cell = button_glyphs::atlas_cell(row, frame);
@@ -207,7 +209,7 @@ void atlas_quad(std::vector<SavedWord>& saved, uint32_t quad, int row, bool fram
     // marks a coverage glyph (alpha font, coloured by the text box's colours); a composed RGBA
     // picture clears it like the original icons (issue #141), a coverage shape sets it. The original
     // page and flag are restored with the rest of the authored quad afterwards.
-    patch(saved, quad + 0x2C, (ld32(quad + 0x2C) & ~0xFF01u) | (coverage ? 1u : 0u));
+    shared_patch::hold(saved, quad + 0x2C, 4, [coverage](uint32_t word) { return (word & ~0xFF01u) | (coverage ? 1u : 0u); });
 }
 
 int shoulder_row(ShoulderStyle names, int shoulder) {
@@ -230,7 +232,8 @@ int face_box(uint32_t box) {
     }
     const uint32_t text = ld32(box + 0xA4);
     constexpr char letters[] = {'A', 'B', 'X', 'Y'};
-    return text && ld16(box + 0xCE) == 1 && ld16(text) == letters[face] ? face : -1;
+    // The authored letter, also while another thread draws it swapped (draw_text_box).
+    return text && ld16(box + 0xCE) == 1 && shared_patch::authored(text, 2) == letters[face] ? face : -1;
 }
 
 int shoulder_box(uint32_t box) {
@@ -247,15 +250,11 @@ int shoulder_box(uint32_t box) {
     return length == 2 && ld16(text) == 'Z' && ld16(text + 2) == letter ? shoulder : -1;
 }
 
-void tint_word(std::vector<SavedWord>& saved, uint32_t address, int face) {
-    const uint32_t rgba = ld32(address);
-    saved.push_back({address, rgba});
-    st32(address, button_glyphs::tint(rgba, face));
+void tint_word(std::vector<Held>& saved, uint32_t address, int face) {
+    shared_patch::hold(saved, address, 4, [face](uint32_t rgba) { return button_glyphs::tint(rgba, face); });
 }
 
-void restore(const std::vector<SavedWord>& saved) {
-    for (const auto& word : saved) st32(word.address, word.value);
-}
+void restore(std::vector<Held>& saved) { shared_patch::release(saved); }
 
 std::string_view pane_name(uint32_t pane) {
     const char* name = (const char*)mem::ptr(pane + 0x80);
@@ -281,13 +280,14 @@ int face_group(std::string_view name) {
 struct Point { float x, y; };
 
 // The button centres in their common parent's coordinates, from authored locals, not cached
-// global matrices (which may already contain last frame's Xbox placement). A/X/Y pictures are
-// children of different containers. Include those containers' animated scale and Z rotation.
+// global matrices (which may already contain last frame's Xbox placement), and never another
+// thread's moved group. A/X/Y pictures are children of different containers. Include those
+// containers' animated scale and Z rotation.
 Point button_centre(uint32_t group, uint32_t picture) {
-    Point p{(float)ldf32(group + 0x1C), (float)ldf32(group + 0x20)};
+    Point p{shared_patch::authored_float(group + 0x1C), shared_patch::authored_float(group + 0x20)};
     if (picture != group) {
-        const float x = (float)ldf32(picture + 0x1C) * (float)ldf32(group + 0x34);
-        const float y = (float)ldf32(picture + 0x20) * (float)ldf32(group + 0x38);
+        const float x = shared_patch::authored_float(picture + 0x1C) * (float)ldf32(group + 0x34);
+        const float y = shared_patch::authored_float(picture + 0x20) * (float)ldf32(group + 0x38);
         const float angle = (float)ldf32(group + 0x30) * 0.01745329252f;
         p.x += std::cos(angle) * x - std::sin(angle) * y;
         p.y += std::sin(angle) * x + std::cos(angle) * y;
@@ -295,7 +295,35 @@ Point button_centre(uint32_t group, uint32_t picture) {
     return p;
 }
 
+struct GuideLayout {
+    bool known = false;
+    bool menu_pair = false;
+    int single_face = -1;
+};
+thread_local GuideLayout guide_layout;
+
 }  // namespace
+
+void button_glyphs::calculate_parts(Cpu* c, PpcFunc calculate) {
+    const auto previous = guide_layout;
+    const uint32_t parts = c->r[3];
+    const uint32_t vtable = ld32(parts + 4);
+    guide_layout = {};
+    guide_layout.known = vtable == GD(0x100EE5F8) || vtable == GD(0x100EE378);
+    if (guide_layout.known) {
+        // Retained buttons describe the outgoing layout until its animation finishes.
+        const uint8_t buttons = ld8(parts + 0xDD);
+        guide_layout.menu_pair = vtable == GD(0x100EE5F8) && (buttons & 0x1F) == 3;
+        for (int i = 0; i < 4; ++i)
+            if (buttons == (1u << i)) guide_layout.single_face = i;
+    }
+    calculate(c);
+    guide_layout = previous;
+}
+
+extern "C" void hook_026F8CD0(Cpu* c) {
+    button_glyphs::calculate_parts(c, f_026F8CD0_orig);
+}
 
 void button_glyphs::calculate_pane(Cpu* c, PpcFunc calculate) {
     const uint32_t pane = c->r[3];
@@ -315,21 +343,84 @@ void button_glyphs::calculate_pane(Cpu* c, PpcFunc calculate) {
     // prompt or the item screen's linear row. Move the group root: labels, item art and effects
     // inherit the same transform. Force its tree's matrices in both modes so switching back or
     // restoring a state cannot leave the previous layout's cached global positions behind.
-    // Only once by label has been used: until then the stock path stays untouched.
+    // Only once a restyled look has been used: until then the stock path stays untouched.
     if (marking()) c->r[5] = 1;
-    if (!style().positions) return calculate(c);
+    const auto look = style();
+    // A lone face prompt stays where the game draws it, whatever its binding.
+    const int spot = guide_layout.single_face == face ? face : look.spots[face];
+    const bool menu_pair = face < 2 && look.face != FaceStyle::kOriginal && guide_layout.menu_pair;
+    if (spot == face && !menu_pair) return calculate(c);
     const Point from = button_centre(groups[face], pictures[face]);
-    const Point to = button_centre(groups[face ^ 1], pictures[face ^ 1]);
+    Point to = button_centre(groups[spot], pictures[spot]);
+    if (menu_pair) {
+        const int first = look.spots[0], second = look.spots[1];
+        const Point right = button_centre(groups[0], pictures[0]);
+        const Point bottom = button_centre(groups[1], pictures[1]);
+        // Fit OK/Back into the original menu area: right-align, then remove empty rows.
+        if (first != 0 && second != 0) to.x += right.x - bottom.x;
+        if (first != 1 && second != 1) to.y = spot == 2 ? right.y : bottom.y;
+        // The top/bottom pair keeps one-third of the empty row for label clearance.
+        else if ((first == 2 || second == 2) && spot == 2) to.y = right.y + (to.y - right.y) / 3.0f;
+    }
     const float dx = to.x - from.x, dy = to.y - from.y;
     if (!std::isfinite(dx) || !std::isfinite(dy)) return calculate(c);
-    const float x = (float)ldf32(pane + 0x1C), y = (float)ldf32(pane + 0x20);
-    stf32(pane + 0x1C, x + dx);
-    stf32(pane + 0x20, y + dy);
-    calculate(c);
     // Animation/gameplay still own the local positions. Only the resulting global matrices
-    // retain the rearrangement, matching how the aspect hook handles temporary anchoring.
-    stf32(pane + 0x1C, x);
-    stf32(pane + 0x20, y);
+    // retain the rearrangement; the move is held (shared_patch: two threads can calculate the
+    // same cluster, #326) only while the pane's tree is calculated.
+    std::vector<shared_patch::Held> held;
+    shared_patch::hold_offset(held, pane + 0x1C, dx);
+    shared_patch::hold_offset(held, pane + 0x20, dy);
+    calculate(c);
+    shared_patch::release(held);
+}
+
+namespace {
+// The CommandGuide cluster being drawn with its action words held back (draw_pane), and those words'
+// panes with the Pane::Draw they came through, to draw once the whole cluster is down.
+thread_local uint32_t deferring_cluster = 0;
+thread_local std::vector<std::pair<uint32_t, PpcFunc>> deferred_words;
+
+bool command_word(uint32_t box) {
+    const auto name = pane_name(box);
+    return name == "T_CommandA_00" || name == "T_CommandB_00" || name == "T_CommandX_00" || name == "T_CommandY_00";
+}
+
+bool inside(uint32_t pane, uint32_t ancestor) {
+    for (unsigned depth = 0; pane && depth < 16; depth++, pane = ld32(pane + 0x0C))
+        if (pane == ancestor) return true;
+    return false;
+}
+}  // namespace
+
+// Pane::Draw draws a pane, then its children through Pane::Draw again, so the cluster's groups come
+// in the tree's child order (Y's group first, then R, B, A, X), each with its action word inside. The
+// authored layout keeps every word clear of the other buttons, but moved groups can reach into a
+// neighbour, which then covered the word when it came later. With a restyled look, the words of a
+// complete cluster are held back and drawn after the rest of it, with the same DrawInfo.
+void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
+    const uint32_t pane = c->r[3];
+    if (deferring_cluster) {
+        if (command_word(pane) && inside(pane, deferring_cluster)) {
+            deferred_words.emplace_back(pane, draw);
+            return;
+        }
+        return draw(c);
+    }
+    if (!marking() || style().face == FaceStyle::kOriginal || pane_name(pane) != "N_All_00") return draw(c);
+    for (const char* group : {"W_SetSeatA_00", "P_B_00", "N_X_00", "N_Y_00"})
+        if (!child_named(pane, group)) return draw(c);
+    const Cpu entry = *c;
+    deferring_cluster = pane;
+    deferred_words.clear();
+    draw(c);
+    deferring_cluster = 0;
+    const auto words = std::move(deferred_words);
+    deferred_words.clear();
+    for (const auto& [word, pane_draw] : words) {
+        Cpu w = entry;
+        w.r[3] = word;
+        pane_draw(&w);
+    }
 }
 
 void button_glyphs::prepare_text_box(uint32_t text_box, Cpu* cpu) {
@@ -413,11 +504,11 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
     // Supply the mapped letter to that rebuild too, then restore the authored Wii U text.
     const auto look = style();
     const uint32_t text = hud_face >= 0 ? ld32(hud_box + 0xA4) : 0;
-    const uint16_t authored_letter = text ? ld16(text) : 0;
-    const bool swap_letter = text && look.face == FaceStyle::kXbox && look.buttons[hud_face] != hud_face;
-    if (swap_letter) st16(text, "ABXY"[look.buttons[hud_face]]);
+    std::vector<Held> held;
+    if (text && look.face == FaceStyle::kXbox && look.buttons[hud_face] != hud_face)
+        shared_patch::hold_value(held, text, 2, "ABXY"[look.buttons[hud_face]]);
     draw(c);
-    if (swap_letter) st16(text, authored_letter);
+    shared_patch::release(held);
     hud_shoulder = previous;
     hud_face = previous_face;
     hud_box = previous_box;
@@ -450,14 +541,23 @@ extern "C" void hook_0286E9F0(Cpu* c) {
 // colours. Record the rendered style in bit 3 of the same private marker, so DrawSelf can detect
 // a stale vertex cache on the next setting change or save-state restore. Ordinary text and
 // unrelated icons are not styled; the optional outline pass uses the game's outline colours.
+// The marker byte quad+0x2F sits inside the word atlas_quad holds through shared_patch. Writing it
+// only when it changes keeps a second thread's identical marker write from landing between another
+// thread's hold and release, where shared_patch would take it for a game write (review of #319).
+static inline void set_flag_byte(uint32_t addr, uint8_t value) {
+    if (ld8(addr) != value) st8(addr, value);
+}
+
 extern "C" void hook_028F7C7C(Cpu* c) {
     const PromptStyle look = style();
     const bool active = look.active();
     const bool mark = marking();
     const bool shapes = look.face == FaceStyle::kPlayStation;
     const uint32_t list = c->r[4];
-    std::vector<SavedWord> saved;
-    const uint16_t original_count = ld16(list + 4);
+    std::vector<Held> saved;
+    // Read through shared_patch: another thread may be building this text with its changes in.
+    const uint16_t original_count = (uint16_t)shared_patch::authored(list + 4, 2);
+    uint16_t count = original_count;
     bool needs_shoulder = hud_shoulder >= 0 && original_count;
     bool needs_shape = shapes && hud_face >= 0 && original_count;
     for (uint32_t i = 0; i < original_count && !(needs_shoulder && (needs_shape || !shapes)); i++) {
@@ -472,13 +572,13 @@ extern "C" void hook_028F7C7C(Cpu* c) {
     const bool shape_ready = needs_shape && shoulder_atlas(c) && !(names && hud_face >= 2);
     if (hud_shoulder >= 0 && original_count) {
         const uint32_t quad = list + 0xA4;
-        if (mark) st8(quad + 0x2F, button_glyphs::mark_shoulder(ld8(quad + 0x2F), hud_shoulder));
+        if (mark) set_flag_byte(quad + 0x2F, button_glyphs::mark_shoulder(ld8(quad + 0x2F), hud_shoulder));
         if (shoulder_ready) {
-            float left = (float)ldf32(quad + 8), right = left + (float)ldf32(quad);
+            float left = shared_patch::authored_float(quad + 8), right = left + shared_patch::authored_float(quad);
             for (uint32_t i = 1; i < original_count; i++) {
                 const uint32_t next = quad + i*0x30;
-                left = std::min(left, (float)ldf32(next + 8));
-                right = std::max(right, (float)(ldf32(next + 8) + ldf32(next)));
+                left = std::min(left, shared_patch::authored_float(next + 8));
+                right = std::max(right, shared_patch::authored_float(next + 8) + shared_patch::authored_float(next));
             }
             float width = right - left;
             const uint32_t parent = ld32(hud_box + 0x0C);
@@ -487,18 +587,18 @@ extern "C" void hook_028F7C7C(Cpu* c) {
                 patch_float(saved, quad, width);
                 patch_float(saved, quad + 8, (left + right - width) * 0.5f);
             }
-            st16(list + 4, 1);  // one complete R1/R2/L1/L2 label, not the old separate Z and R/L
+            shared_patch::hold_value(saved, list + 4, 2, count = 1);  // one complete R1/R2/L1/L2 label, not the old separate Z and R/L
         }
     }
     if (hud_face >= 0 && original_count && mark && !look.positions)
-        st8(list + 0xA4 + 0x2F, button_glyphs::mark(ld8(list + 0xA4 + 0x2F), hud_face));
+        set_flag_byte(list + 0xA4 + 0x2F, button_glyphs::mark(ld8(list + 0xA4 + 0x2F), hud_face));
     if (names && hud_face >= 2) {
         // "A1" / "A2" on the X / Y picture: a coverage glyph (the letter's own colours and dimming),
         // a little wider than the letter's height, centred on it
         const uint32_t quad = list + 0xA4;
-        if (mark) st8(quad + 0x2F, button_glyphs::mark(ld8(quad + 0x2F), hud_face));
-        const float w = (float)ldf32(quad), h = (float)ldf32(quad + 4);
-        const float x = (float)ldf32(quad + 8), y = (float)ldf32(quad + 0x0C);
+        if (mark) set_flag_byte(quad + 0x2F, button_glyphs::mark(ld8(quad + 0x2F), hud_face));
+        const float w = shared_patch::authored_float(quad), h = shared_patch::authored_float(quad + 4);
+        const float x = shared_patch::authored_float(quad + 8), y = shared_patch::authored_float(quad + 0x0C);
         const float side = h * 1.1f;
         if (std::isfinite(side) && side > 0 && std::isfinite(w) && std::isfinite(x) && std::isfinite(y)) {
             patch_float(saved, quad, side);
@@ -506,7 +606,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             patch_float(saved, quad + 8, x + (w - side) * 0.5f);
             patch_float(saved, quad + 0x0C, y + (h - side) * 0.5f);
         }
-        st16(list + 4, 1);
+        shared_patch::hold_value(saved, list + 4, 2, count = 1);
     }
     if (hud_face >= 0 && original_count && shape_ready) {
         // The HUD letter becomes the shape, square and centred on the letter, on the game's own
@@ -514,9 +614,9 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         // Without colours the shape is a coverage glyph: the game's own letter colours and
         // dimming apply to it unchanged.
         const uint32_t quad = list + 0xA4;
-        if (mark) st8(quad + 0x2F, button_glyphs::mark(ld8(quad + 0x2F), hud_face));
-        const float w = (float)ldf32(quad), h = (float)ldf32(quad + 4);
-        const float x = (float)ldf32(quad + 8), y = (float)ldf32(quad + 0x0C);
+        if (mark) set_flag_byte(quad + 0x2F, button_glyphs::mark(ld8(quad + 0x2F), hud_face));
+        const float w = shared_patch::authored_float(quad), h = shared_patch::authored_float(quad + 4);
+        const float x = shared_patch::authored_float(quad + 8), y = shared_patch::authored_float(quad + 0x0C);
         const float side = h * 0.8f;
         if (std::isfinite(side) && side > 0 && std::isfinite(w) && std::isfinite(x) && std::isfinite(y)) {
             patch_float(saved, quad, side);
@@ -525,29 +625,30 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             patch_float(saved, quad + 0x0C, y + (h - side) * 0.5f);
         }
         if (look.colours)
-            for (uint32_t corner = 0x10; corner <= 0x14; corner += 4) patch(saved, quad + corner, ld32(quad + corner) | 0xFFFFFF00u);
-        st16(list + 4, 1);
+            for (uint32_t corner = 0x10; corner <= 0x14; corner += 4)
+                shared_patch::hold(saved, quad + corner, 4, [](uint32_t ink) { return ink | 0xFFFFFF00u; });
+        shared_patch::hold_value(saved, list + 4, 2, count = 1);
     }
-    for (uint32_t i = 0, count = ld16(list + 4); i < count; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         const uint32_t quad = list + 0xA4 + i * 0x30;
         const int face = button_glyphs::marked_face(ld8(quad + 0x2F));
         const int shoulder = button_glyphs::marked_shoulder(ld8(quad + 0x2F));
-        // Action words belong to the same physical button as their neighbouring icon.
-        // Keep By label's authored words byte-identical; new position/custom styles tint ink.
-        if (hud_action >= 0 && !look.positions && look.face != FaceStyle::kOriginal && look.colours) {
+        // Action words take their button's prompt colour, independently of icon colours; with
+        // text colours off they keep the game's own.
+        if (hud_action >= 0 && look.text_colours) {
             const int button = look.buttons[hud_action];
             const uint32_t rgb = look.face == FaceStyle::kPlayStation ? button_glyphs::kShapeColours[button]
                                                                     : button_glyphs::colour(button);
-            for (uint32_t offset : {0x10u, 0x14u}) {
-                const uint32_t ink = ld32(quad + offset);
-                uint32_t tinted = ink & 255;
-                for (int shift = 24; shift > 0; shift -= 8)
-                    tinted |= (((ink >> shift) & 255) * ((rgb >> shift) & 255) / 255) << shift;
-                patch(saved, quad + offset, tinted);
-            }
+            for (uint32_t offset : {0x10u, 0x14u})
+                shared_patch::hold(saved, quad + offset, 4, [rgb](uint32_t ink) {
+                    uint32_t tinted = ink & 255;
+                    for (int shift = 24; shift > 0; shift -= 8)
+                        tinted |= (((ink >> shift) & 255) * ((rgb >> shift) & 255) / 255) << shift;
+                    return tinted;
+                });
         }
         if (face < 0 && shoulder < 0) continue;
-        if (mark) st8(quad + 0x2F, button_glyphs::rendered(ld8(quad + 0x2F), active));
+        if (mark) set_flag_byte(quad + 0x2F, button_glyphs::rendered(ld8(quad + 0x2F), active));
         if (face >= 0 && hud_face < 0) {  // dialog/icon-font glyphs; HUD letters keep their ink
             if (look.face == FaceStyle::kXbox && look.colours) {
                 tint_word(saved, quad + 0x10, look.buttons[face]);
@@ -569,8 +670,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
                        hud_shoulder < 0, c, hud_shoulder >= 0);
     }
     f_028F7C7C_orig(c);
-    restore(saved);
-    if (ld16(list + 4) != original_count) st16(list + 4, original_count);  // only if the label merge changed it
+    restore(saved);  // also the glyph count, if the label merge changed it
 }
 
 // CommandGuide, the floating CommandA prompt and IconSlideArea use the same ABXY background
@@ -581,14 +681,14 @@ extern "C" void hook_02874D54(Cpu* c) {
     const int face = button_glyphs::face_picture(pane_name(picture));
     const PromptStyle look = style();
     if (face < 0 || look.face != FaceStyle::kXbox || !look.colours) return f_02874D54_orig(c);
-    std::array<uint32_t, 4> saved;
-    for (uint32_t i = 0; i < saved.size(); i++) {
-        const uint32_t address = picture + 0xA8 + 4 * i;
-        saved[i] = ld32(address);
-        st32(address, button_glyphs::tint(saved[i], look.buttons[face]));
-    }
+    // Through shared_patch: in "play on GamePad" mode the item screen draws these pictures on two
+    // threads at once, and a plain save and restore made the tint permanent, darker each time (#326).
+    const int button = look.buttons[face];
+    std::vector<shared_patch::Held> held;
+    for (uint32_t i = 0; i < 4; i++)
+        shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button](uint32_t rgba) { return button_glyphs::tint(rgba, button); });
     f_02874D54_orig(c);
-    for (uint32_t i = 0; i < saved.size(); i++) st32(picture + 0xA8 + 4 * i, saved[i]);
+    shared_patch::release(held);
 }
 
 namespace button_glyphs {

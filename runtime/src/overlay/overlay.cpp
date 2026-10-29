@@ -2484,8 +2484,16 @@ void tab_controls() {
             edit_set(m);
         }
         help("Green A, red B, blue X and yellow Y in the Xbox look; blue cross, red circle, pink "
-             "square and green triangle with the PlayStation shapes. Off: the game's white buttons "
-             "(in the Xbox positions while the face buttons are by label).");
+             "square and green triangle with the PlayStation shapes. Off: the game's white buttons, "
+             "still placed where the bound buttons sit on the pad.");
+        flow::next(flow::check("Coloured face button text"));
+        bool text_colours = m.prompt_text_colours;
+        if (ImGui::Checkbox("Coloured face button text", &text_colours)) {
+            m.prompt_text_colours = text_colours;
+            input_map::set_current(m);
+        }
+        help("Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+             "Off: the game's own text colours (white).");
     }
     jump_row(m);
     // status line: capture prompt > note > hovered input > duplicates > help

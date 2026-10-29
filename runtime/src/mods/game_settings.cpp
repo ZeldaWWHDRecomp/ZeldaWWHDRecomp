@@ -263,6 +263,14 @@ void register_controls() {
     }
     {
         Item it;
+        it.id = "controls.prompt-text-colours", it.tab = "controls", it.label = "Coloured face button text", it.kind = Kind::Toggle;
+        it.help = "Xbox and PlayStation action words in their button's colour; off keeps the game's white.";
+        it.get = [] { return input_map::current().prompt_text_colours ? 1.0f : 0.0f; };
+        it.set = [](float v) { change_mapping([v](M& m) { m.prompt_text_colours = v >= 0.5f; }); };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "controls.rumble", it.tab = "controls", it.label = "Rumble", it.kind = Kind::Toggle;
         it.help = "The controller rumbles when the game asks for it.";
         it.get = [] { return rumble::enabled() ? 1.0f : 0.0f; };

@@ -230,7 +230,7 @@ void dump(Cpu* c, uint32_t menu, const std::string&) {
 }
 
 font::Prompts prompts() {
-    const input_map::PromptStyle look = input_map::prompt_style(input_map::current(), input_map::pad_family());
+    const input_map::PromptStyle look = input_map::active_prompt_style();
     font::Prompts out;
     out.face = look.face == input_map::FaceStyle::kXbox ? font::Prompts::Xbox
              : look.face == input_map::FaceStyle::kPlayStation ? font::Prompts::PlayStation : font::Prompts::Original;

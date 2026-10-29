@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Button prompts follow your custom face buttons.** With Xbox or PlayStation prompts, the HUD button cluster and the
+  prompts in menus and dialogue now show the button each action is really on, for any face-button setup, and each
+  controller with buttons of its own gets its own prompts. The HUD cluster draws each button where it sits on your
+  pad, and action words take their button's colour (new setting: Controls → Coloured face button text; off keeps the
+  game's white text). Also fixes Xbox button colours getting darker and darker in "play on GamePad" mode (#326).
+  (#319, #326, thanks @itsarahtonin)
+- **Quest Log dates are right again.** The file select showed today's date for every save, and saves were stamped
+  with the time since the game started instead of the real date; both are fixed. A Quest Log saved with an older
+  build shows the save file's date until you save it again. (thanks @koenada, #322)
 - **Android: new Flexible touch controls, now the default.** A stick appears where your thumb lands: the left half
   of the screen moves Link, the right half turns the camera by swiping (Swipe speed, with its own speed on the boat)
   or as a camera stick. The buttons stay where your layout puts them. Classic keeps both sticks at fixed places as

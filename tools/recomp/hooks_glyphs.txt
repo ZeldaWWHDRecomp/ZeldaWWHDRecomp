@@ -3,4 +3,5 @@
 0286E9F0  # CharWriter::Print: identify Wii U face glyphs; select mapped Xbox letters
 028F7C7C  # generate TextBox GPU vertices: colour marked glyphs and record the rendered style
 02874D54  # lyt::Picture::DrawSelf: HUD ABXY backgrounds, including the floating A prompt
+026F8CD0  # hdParts_c::calcLayout: retain the displayed ButtonGuide layout through its fade
 # The existing 028785C8 DrawSelf hook (hooks_rtl.txt) checks for a style change before the cache gate.
