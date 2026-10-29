@@ -58,6 +58,7 @@
 #include "trace.h"
 #include "hostui.h"
 #include "../mods/link_poses.h"
+#include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
 #include "controls_view.h"
 #include "binding_widget.h"
@@ -2957,6 +2958,13 @@ void tab_audio() {
     if (ImGui::IsItemDeactivatedAfterEdit())
         hostui::post([pad_volume] { audio::set_gamepad_sounds_volume(pad_volume / 100.0f); });
     help("Play sounds from the GamePad speaker through your main speakers during TV play. Applies immediately and is remembered. Master volume also applies.");
+    bool menu_sounds_on = menu_sounds::option();
+    if (ImGui::Checkbox("Menu sounds", &menu_sounds_on))
+        hostui::post([menu_sounds_on] { menu_sounds::set_option(menu_sounds_on); });
+    help("Settings plays the game's own menu sounds when you move, choose, change an option or go back. They play "
+         "like the game's other sounds: Master volume applies, and in TV play the game sends them to the GamePad, "
+         "so they need GamePad sounds through main speakers (and its volume) there. Never while the game is in the "
+         "background or muted.");
     if (audio::gamepad_sounds_from_env() || audio::gamepad_sounds_volume_from_env())
         note("GamePad audio test overrides are set for this start; overridden preferences are not saved.");
     if (ext::features().speaker_choice) {
@@ -3569,6 +3577,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
         }
+        menu_sounds::observe({});  // Settings closed: its closing sound (menu_sounds.h)
         return nullptr;
     }
     if (pw < 16 || ph < 16) return nullptr;
@@ -3650,6 +3659,21 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     if (open) settings_window();
     else modsui::background(mods_host());
     g_dialog_open = open && ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    {
+        // the game's menu sounds for what happened in Settings this frame (menu_sounds.h)
+        const ImGuiContext& g = *ImGui::GetCurrentContext();
+        menu_sounds::Frame mf;
+        mf.open = open && is_open();  // (closed by B or the close button this frame: its closing sound)
+        if (mf.open) {
+            mf.tab = U.tab;
+            mf.moved = g.NavJustMovedToId != 0 && g.NavCursorVisible;
+            mf.activated = g.ActiveId != 0 && g.ActiveIdIsJustActivated;
+            mf.edited = g.ActiveIdHasBeenEditedThisFrame;
+            mf.popups = g.OpenPopupStack.Size;
+            mf.back = navigation_pressed(input_map::face_input(input_map::kB)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        }
+        menu_sounds::observe(mf);
+    }
     pip_live_drag();
     if (text) {
         float pad[input_map::kPadCount];
