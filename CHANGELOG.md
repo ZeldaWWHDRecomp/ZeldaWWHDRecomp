@@ -13,6 +13,11 @@ what is on `devel` and not released yet (also in the
   menus. The extra Wii U buttons sit on Start plus the D-pad. Each controller can keep its own layout, and
   **Restore previous controller bindings** brings back the old buttons. Not yet tested on real adapters; details in
   [docs/gamecube-controller.md](docs/gamecube-controller.md).
+- **Fixed: NVIDIA on Wayland closing the game** (#309, thanks @Froggjarl). With an NVIDIA GPU under Wayland (for
+  example KDE Plasma), the desktop could close the game's window shortly after start with an "explicit sync"
+  error. The game now turns on NVIDIA's older sync method on Wayland by itself (`__NV_DISABLE_EXPLICIT_SYNC=1`,
+  NVIDIA driver 575 or newer); a value you set yourself is kept. The log now names the video driver and whether the
+  desktop offers explicit sync. If it still closes, `SDL_VIDEO_DRIVER=x11` runs the game through XWayland.
 - **Fixed: Picto Box at wide and tall screens.** With a window wider than 16:9 (21:9, 32:9) or taller (16:10, 4:3,
   phones), the Picto Box now takes the same 16:9 picture as on the Wii U instead of squeezing the whole wide view, and
   its subject check only counts what is inside that 16:9 frame. Normal play keeps your full view. (#303, thanks

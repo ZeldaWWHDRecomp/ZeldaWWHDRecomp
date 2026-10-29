@@ -134,6 +134,11 @@ First start, per system:
   its own. Ubuntu 24.04 and newer have no FUSE by default: install `libfuse2t64` (`libfuse2` on older
   releases), or start it with `--appimage-extract-and-run`. Repair or change the game with `--setup`.
   Everything it creates is listed under "Everything stays in the release folder" below.
+- **Linux with an NVIDIA GPU on Wayland** (issue #309): on Wayland the game turns on NVIDIA's older
+  sync method by itself (`__NV_DISABLE_EXPLICIT_SYNC=1`), because the newer one can make the desktop
+  close the game's window. If you see flicker or slowdown, start it with `__NV_DISABLE_EXPLICIT_SYNC=0`
+  to switch that off; if the window still closes, start it with `SDL_VIDEO_DRIVER=x11` (XWayland). A
+  hybrid laptop also needs `prime-run` to use the NVIDIA GPU.
 
 **Everything stays in the release folder** (in `data/`): the built game, the extracted game files,
 saves (`data/save`), settings, controls, save states and shader caches (`data/user`), crash logs
