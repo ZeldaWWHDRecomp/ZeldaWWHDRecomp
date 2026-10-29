@@ -192,6 +192,28 @@ int main() {
         for (int pass = 0; pass < 5; pass++)
             for (uint32_t cam = 1; cam <= 4; cam++) assert(history_slot(four, cam, c4).steps++ == pass);
     }
+    {  // sky sprites keep their offset from the eye a pass is drawn from (issue #320)
+        const float exact[3] = {1000.0f, 50.0f, -2000.0f}, drawn[3] = {985.0f, 50.5f, -1990.0f};
+        float sun[3] = {exact[0] + 3000.0f, exact[1] + 7000.0f, exact[2] - 2500.0f};
+        const float offset[3] = {sun[0] - exact[0], sun[1] - exact[1], sun[2] - exact[2]};
+        sky_follow_eye(sun, drawn, exact);
+        for (int i = 0; i < 3; i++) assert(std::fabs((sun[i] - drawn[i]) - offset[i]) < 1e-3f);
+        float same[3] = {1.0f, 2.0f, 3.0f};
+        sky_follow_eye(same, exact, exact);  // exact pass: unchanged
+        assert(same[0] == 1.0f && same[1] == 2.0f && same[2] == 3.0f);
+        // the offset between the steps: a quarter of the way at t 0.25, unchanged at t 1
+        const float before[3] = {3000.0f, 7000.0f, -2500.0f};
+        float off[3] = {3008.0f, 6996.0f, -2500.0f};
+        sky_offset_blend(off, before, 0.25f);
+        assert(std::fabs(off[0] - 3002.0f) < 1e-3f && std::fabs(off[1] - 6999.0f) < 1e-3f && off[2] == -2500.0f);
+        float rec[3] = {3008.0f, 6996.0f, -2500.0f};
+        sky_offset_blend(rec, before, 1.0f);
+        assert(rec[0] == 3008.0f && rec[1] == 6996.0f);
+        // a new place (scene change): drawn as it is
+        float jump[3] = {-7000.0f, 3000.0f, 0.0f};
+        sky_offset_blend(jump, before, 0.5f);
+        assert(jump[0] == -7000.0f && jump[1] == 3000.0f && jump[2] == 0.0f);
+    }
     printf("interp_camera: all tests passed\n");
     return 0;
 }

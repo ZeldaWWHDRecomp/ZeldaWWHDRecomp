@@ -203,4 +203,24 @@ inline bool trim_blends(int32_t size, float prev, float cur, float cinema) {
     return true;
 }
 
+// Sky sprites that the environment's logic places at a fixed offset from the camera's eye (the sun
+// and moon: dKyr_sun_move puts them 8000 units from the eye along their direction; the lens flare's
+// elements) are painted with the pass's camera. On a blended pass that eye is not the one the logic
+// used, so they sat a varying part of a step's camera motion off their place (a 30 Hz judder while
+// sailing, issue #320). Placed around the drawn eye, each keeps its offset from the eye it is seen
+// from; on exact passes nothing moves.
+inline void sky_follow_eye(float* pos, const float* drawn_eye, const float* exact_eye) {
+    for (int i = 0; i < 3; i++) pos[i] += drawn_eye[i] - exact_eye[i];
+}
+// The offset itself (the logic recomputes it once per step: the sun's direction and the eye the logic
+// saw) is drawn between the step drawn last (its record pass, `before`) and the new one at the pass's
+// fraction t, so it does not move once per step either. A change of `cut` units or more (a new place:
+// scene change, time jump) is drawn as it is.
+inline void sky_offset_blend(float* offset, const float* before, float t, float cut = 500.0f) {
+    float d2 = 0;
+    for (int i = 0; i < 3; i++) d2 += (offset[i] - before[i]) * (offset[i] - before[i]);
+    if (!(d2 < cut * cut)) return;
+    for (int i = 0; i < 3; i++) offset[i] = before[i] + (offset[i] - before[i]) * t;
+}
+
 }  // namespace interp::camera

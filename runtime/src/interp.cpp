@@ -33,6 +33,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -2567,7 +2568,24 @@ extern "C" void hook_020315CC(Cpu* c) {
 // around the eye at paint time: the sun and moon (dKyr_drawSun 0256F1C4), the lens flare
 // (dKyr_drawLenzflare 02570210, dKy_set_eyevect_calc2 from the eye) and the sea spray in the rain
 // (dKyr_drawSibuki 02571B1C): they moved at 30 fps against the blended view.
-static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what) {
+// The sun and moon (the sun packet's position +0x98, the argument of dKyr_drawSun) and the lens
+// flare's elements (the sunlenz packet's 9 positions +0xA4, and the sun's position for its rays) are
+// placed by the environment's logic (dKyr_sun_move, 8000 units from the eye) around the eye of the
+// step; painted with the pass's camera they sat a varying part of the step's camera motion off their
+// place, a 30 Hz judder while Link moves or sails (issue #320). While they are painted they are put
+// around the drawn eye with their offset from the exact eye (camera::sky_follow_eye), that offset
+// drawn between the record pass's and the step's (camera::sky_offset_blend), and put back after.
+namespace {
+struct SkyPoints { uint32_t at; int n; };
+constexpr int kSkyPoints = 16;
+// per caller: the offsets from the eye on the last record pass (stamp: its hold pass count)
+struct SkyHistory { uint64_t stamp = ~0ull; int n = 0; float offset[kSkyPoints][3]; };
+// g_env_light (10475A68): the sun packet +0xA34, the sunlenz packet +0xA38 (GameCube offsets + 0x80)
+uint32_t sun_packet() { return ld32(GD(0x10475A68) + 0xA34); }
+uint32_t lenz_packet() { return ld32(GD(0x10475A68) + 0xA38); }
+}  // namespace
+static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what, std::initializer_list<SkyPoints> points = {},
+                              SkyHistory* history = nullptr) {
     using namespace interp;
     if (!enabled()) {
         orig(c);
@@ -2577,19 +2595,60 @@ static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what) {
     static int trace = getenv("WWHD_INTERP_SKY_TRACE") ? atoi(getenv("WWHD_INTERP_SKY_TRACE")) : 0;
     CamState exact[kCamSlots];
     bool swapped[kCamSlots] = {};
+    // the game's camera (dComIfGp_getCamera(0): game info 1046F0B0 +0x5AF8), whose eye the sky's logic used
+    const uint32_t game_cam = ld32(GD(0x1046F0B0) + 0x5AF8);
+    int sky_slot = -1;
     for (int i = 0; i < kCamSlots; i++) {
         Prev& p = g_prev[i];
         if (!p.cam || p.drawn_pass != g_passes) continue;
         exact[i] = read_cam(p.cam);
         write_cam(p.cam, p.drawn);
         swapped[i] = true;
+        if (p.cam == game_cam) sky_slot = i;
         if (trace > 0 && camera::dist(exact[i].eye, p.drawn.eye) > 1.0f) {
             trace--;
             LOG("[interp] %s: pass %llu drawn with eye %.1f %.1f %.1f (exact %.1f %.1f %.1f)", what, (unsigned long long)g_passes, p.drawn.eye[0],
                 p.drawn.eye[1], p.drawn.eye[2], exact[i].eye[0], exact[i].eye[1], exact[i].eye[2]);
         }
     }
+    uint32_t saved[kSkyPoints * 3];
+    int n_saved = 0;
+    if (sky_slot >= 0) {
+        const float* drawn_eye = g_prev[sky_slot].drawn.eye;
+        const float* exact_eye = exact[sky_slot].eye;
+        // the step's record pass (not a 40 fps blended one) keeps its offsets; the passes of the next
+        // step until its record pass (same hold pass count) draw between them and their own
+        const bool record = display_record() && !display_record_blended();
+        const bool blend = history && !record && !display_record_blended() && history->stamp == g_record_passes;
+        const float t = display_t();
+        int k = 0;
+        for (const SkyPoints& sp : points)
+            for (int j = 0; j < sp.n && k < kSkyPoints; j++, k++) {
+                const uint32_t a = sp.at + 12 * j;
+                float v[3];
+                for (int i = 0; i < 3; i++) {
+                    saved[n_saved++] = ld32(a + 4 * i);
+                    v[i] = (float)ldf32(a + 4 * i) - exact_eye[i];  // the offset from the exact eye
+                }
+                if (record && history) for (int i = 0; i < 3; i++) history->offset[k][i] = v[i];
+                else if (blend && k < history->n) camera::sky_offset_blend(v, history->offset[k], t);
+                for (int i = 0; i < 3; i++) v[i] += exact_eye[i];
+                camera::sky_follow_eye(v, drawn_eye, exact_eye);
+                for (int i = 0; i < 3; i++) stf32(a + 4 * i, v[i]);
+            }
+        if (record && history) {
+            history->stamp = g_record_passes;
+            history->n = k;
+        }
+    }
     orig(c);
+    n_saved = 0;
+    if (sky_slot >= 0) {
+        int k = 0;
+        for (const SkyPoints& sp : points)
+            for (int j = 0; j < sp.n && k < kSkyPoints; j++, k++)
+                for (int i = 0; i < 3; i++) st32(sp.at + 12 * j + 4 * i, saved[n_saved++]);
+    }
     for (int i = kCamSlots - 1; i >= 0; i--)
         if (swapped[i]) write_cam(g_prev[i].cam, exact[i]);
 }
@@ -2598,8 +2657,29 @@ extern "C" void f_0256F1C4_orig(Cpu* c);
 extern "C" void f_02570210_orig(Cpu* c);
 extern "C" void f_02571B1C_orig(Cpu* c);
 extern "C" void hook_02574144(Cpu* c) { with_drawn_camera(c, f_02574144_orig, "stars"); }
-extern "C" void hook_0256F1C4(Cpu* c) { with_drawn_camera(c, f_0256F1C4_orig, "sun/moon"); }
-extern "C" void hook_02570210(Cpu* c) { with_drawn_camera(c, f_02570210_orig, "lens flare"); }
+// dKyr_drawSun(view, &sun packet +0x98, ...) from the sun packet's draw
+extern "C" void hook_0256F1C4(Cpu* c) {
+    const uint32_t sun = sun_packet();
+    if (sun && c->r[4] == sun + 0x98) {
+        static SkyHistory history;
+        with_drawn_camera(c, f_0256F1C4_orig, "sun/moon", {{c->r[4], 1}}, &history);
+        return;
+    }
+    static bool logged = false;
+    if (!logged && interp::enabled()) {
+        logged = true;
+        LOG("[interp] sun/moon: drawn from %08X, not the sun packet's position (packet %08X): not moved with the drawn eye", c->r[4], sun);
+    }
+    with_drawn_camera(c, f_0256F1C4_orig, "sun/moon");
+}
+// dKyr_drawLenzflare(view, &sunlenz packet +0xA4 (9 positions), ...) from the sunlenz packet's draw;
+// its rays start at the sun's position
+extern "C" void hook_02570210(Cpu* c) {
+    const uint32_t sun = sun_packet(), lenz = lenz_packet();
+    static SkyHistory history;
+    if (sun && lenz && c->r[4] == lenz + 0xA4) with_drawn_camera(c, f_02570210_orig, "lens flare", {{c->r[4], 9}, {sun + 0x98, 1}}, &history);
+    else with_drawn_camera(c, f_02570210_orig, "lens flare");
+}
 extern "C" void hook_02571B1C(Cpu* c) { with_drawn_camera(c, f_02571B1C_orig, "sea spray"); }
 
 // Screen fade (mDoGph_calcFade 025F06A8): called once per drawn frame, so every fade (stage entry,
