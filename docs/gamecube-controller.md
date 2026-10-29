@@ -43,11 +43,9 @@ The preset does not switch the Wii U controller type, change ring settings, or e
 Nintendo's original GameCube booklet, **Using the Controller** (pp. 8–9), **Main Screen** (p. 11),
 and **Items** (p. 12) establishes A action, B sword, X/Y/Z items, L targeting, R defend, Start
 subscreens, control stick movement, C-stick camera, and D-pad maps. Its p. 8 explicitly separates
-light L camera centering from a full press for targeting. See the
-[scan of the Nintendo booklet](https://www.gamingalexandria.com/gc/The%20Legend%20of%20Zelda%20The%20Wind%20Waker/The%20Legend%20of%20Zelda%20The%20Wind%20Waker%20-%20Cleartype.pdf)
-(PDF page 8 has printed p. 8; imposed spreads are not in reading order).
-Nintendo's [manual index](https://en-americas-support.nintendo.com/app/answers/detail/a_id/16961/~/nintendo-gamecube-and-game-boy-advance-manuals)
-links the original, but its old PDF URL currently returns 404.
+light L camera centering from a full press for targeting. Refer to Nintendo's
+[GameCube manual index](https://en-americas-support.nintendo.com/app/answers/detail/a_id/16961/~/nintendo-gamecube-and-game-boy-advance-manuals)
+for the original booklet.
 The [HD digital manual](https://csassets.nintendo.com/noaext/image/private/t_KA_PDF/manual-WiiU-The_Legend_of_Zelda_The_Wind_Waker_HD)
 and Nintendo's [HD controls guide](https://www.guiasnintendo.com/2b_WIIU/zelda_ww_hd/zelda_ww_hd_sp/cont_basicos.html)
 cover HD's ZL targeting, ZR defense and right-stick click for looking. The

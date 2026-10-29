@@ -598,7 +598,8 @@ camera feel, choose horizontal inversion in the game's camera options. Start is 
 so a chord does not also open the menu. HD's D-pad and menu navigation are retained; the original
 GameCube D-pad map shortcuts are reached through Start's menu instead.
 
-Based on the original [GameCube manual, pp. 8–12](https://www.gamingalexandria.com/gc/The%20Legend%20of%20Zelda%20The%20Wind%20Waker/The%20Legend%20of%20Zelda%20The%20Wind%20Waker%20-%20Cleartype.pdf).
+Based on the original GameCube manual, pp. 8–12, listed on
+[Nintendo's manual index](https://en-americas-support.nintendo.com/app/answers/detail/a_id/16961/~/nintendo-gamecube-and-game-boy-advance-manuals).
 **No real adapters have been tested yet.** Nintendo WUP-028 / compatible Wii U mode, recognized PC-mode
 adapters and Switch Online GameCube mappings are based on SDL's driver/database; an 8BitDo receiver's
 Xbox/Switch mode cannot identify the attached controller automatically. Choose GameCube manually if
