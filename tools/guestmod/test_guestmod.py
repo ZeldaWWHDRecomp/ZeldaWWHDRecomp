@@ -297,7 +297,11 @@ int main(int argc,char** argv) {
     def test_map_hud_services_optional_on_old_host(self):
         src = r'''
 #include "wwhd_guest.h"
-WWHD_HOOK(0x02000000, maps, (void)) { wwhd_hud_boat_compasses(1); wwhd_hud_boat_compasses_rect(0); wwhd_map_chart_select(3); wwhd_map_chart_selected(); wwhd_map_chart_cancel(); }
+WWHD_REPLACE(0x02000000, s32, lease, (void)) { return wwhd_hud_boat_compasses(1); }
+WWHD_REPLACE(0x02000004, s32, rect, (void)) { return wwhd_hud_boat_compasses_rect(0); }
+WWHD_REPLACE(0x02000008, s32, select_chart, (void)) { return wwhd_map_chart_select(3); }
+WWHD_REPLACE(0x0200000C, s32, selected, (void)) { return wwhd_map_chart_selected(); }
+WWHD_REPLACE(0x02000010, s32, cancel, (void)) { return wwhd_map_chart_cancel(); }
 '''
         driver = r'''
 #include "wwhd_guest_abi.h"
@@ -307,11 +311,12 @@ WWHD_HOOK(0x02000000, maps, (void)) { wwhd_hud_boat_compasses(1); wwhd_hud_boat_
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/mman.h>
 #endif
 static int supported;
-static void clip(Cpu* cpu) { (void)cpu; }
+static void success(Cpu* cpu) { cpu->r[3]=42; }
 static PpcFunc service(const char* name) {
-    return supported && !strcmp(name,"wwhd_hud_clip") ? clip : 0;
+    (void)name;return supported ? success : 0;
 }
 int main(int argc,char** argv) {
     assert(argc==2);
@@ -323,9 +328,17 @@ int main(int argc,char** argv) {
     WWHDGuestInitV1 init=(WWHDGuestInitV1)dlsym(library,WWHD_GUEST_INIT_SYMBOL);
 #endif
     assert(init);
-    WWHDGuestHostV1 host={0};host.size=sizeof(host);host.abi_version=WWHD_GUEST_ABI_VERSION;host.service=service;
-    assert(init(&host)); // optional imports resolve to -1 stubs
-    supported=1;assert(init(&host));
+    volatile int preempt[3]={0};
+    WWHDGuestHostV1 host={0};host.core_preempt=preempt;host.size=sizeof(host);host.abi_version=WWHD_GUEST_ABI_VERSION;host.service=service;
+    const WWHDGuestModuleV1* module=init(&host);assert(module&&module->hook_count==5);
+#ifdef _WIN32
+    assert(VirtualAlloc(ppc_ptr(0x20000000),0x10000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+#else
+    assert(mmap(ppc_ptr(0x20000000),0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
+#endif
+    for(unsigned i=0;i<module->hook_count;i++) { Cpu c={0};c.r[1]=0x20008000;module->hooks[i].fn(&c);assert(c.r[3]==0xFFFFFFFFu); }
+    supported=1;module=init(&host);assert(module);
+    for(unsigned i=0;i<module->hook_count;i++) { Cpu c={0};c.r[1]=0x20008000;module->hooks[i].fn(&c);assert(c.r[3]==42); }
 #ifdef _WIN32
     FreeLibrary(library);
 #else
