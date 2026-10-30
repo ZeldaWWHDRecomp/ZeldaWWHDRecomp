@@ -206,9 +206,10 @@ target_compile_options(imgui PRIVATE -w -O2)
 # ---- build identification (runtime/src/build_info.h): version and commit, rewritten by
 # cmake/BuildInfo.cmake on every build when they change. Release builds pass the tag.
 set(WWHD_VERSION "" CACHE STRING "release version shown in reports and logs (default: from git describe)")
+set(WWHD_COMMIT "" CACHE STRING "commit reported by the build (default: from git, -dirty with local changes)")
 set(WWHD_BUILD_INFO ${CMAKE_BINARY_DIR}/generated/build_info.cpp)
 add_custom_target(wwhd_build_info
-  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}"
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}" "-DCOMMIT=${WWHD_COMMIT}"
           "-DVARIANT=$<IF:$<BOOL:${WWHD_DECOMP}>,decomp,>"
           -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake
   BYPRODUCTS ${WWHD_BUILD_INFO}
@@ -402,6 +403,12 @@ endif()
 if(WWHD_HAS_VULKAN)
   include(cmake/PipelineRuntimeIdentity.cmake)
   wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
+  # A build whose changes leave the renderer as released can keep the release's identity, so the
+  # installer's pipeline head start and the player's saved recipes stay usable.
+  set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
+  if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
+    set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
+  endif()
   set_property(SOURCE runtime/src/gfx/vulkan/backend.cpp APPEND PROPERTY
     COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
