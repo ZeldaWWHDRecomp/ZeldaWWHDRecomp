@@ -294,6 +294,58 @@ int main(int argc,char** argv) {
             subprocess.run(command,check=True)
             subprocess.run([str(executable),result['module']],check=True)
 
+    def test_map_hud_services_optional_on_old_host(self):
+        src = r'''
+#include "wwhd_guest.h"
+WWHD_HOOK(0x02000000, maps, (void)) { wwhd_hud_boat_compasses(1); wwhd_hud_boat_compasses_rect(0); wwhd_map_chart_select(3); wwhd_map_chart_selected(); wwhd_map_chart_cancel(); }
+'''
+        driver = r'''
+#include "wwhd_guest_abi.h"
+#include <assert.h>
+#include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+static int supported;
+static void clip(Cpu* cpu) { (void)cpu; }
+static PpcFunc service(const char* name) {
+    return supported && !strcmp(name,"wwhd_hud_clip") ? clip : 0;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);
+#ifdef _WIN32
+    HMODULE library=LoadLibraryA(argv[1]);assert(library);
+    WWHDGuestInitV1 init=(WWHDGuestInitV1)GetProcAddress(library,WWHD_GUEST_INIT_SYMBOL);
+#else
+    void* library=dlopen(argv[1],RTLD_NOW);assert(library);
+    WWHDGuestInitV1 init=(WWHDGuestInitV1)dlsym(library,WWHD_GUEST_INIT_SYMBOL);
+#endif
+    assert(init);
+    WWHDGuestHostV1 host={0};host.size=sizeof(host);host.abi_version=WWHD_GUEST_ABI_VERSION;host.service=service;
+    assert(init(&host)); // optional imports resolve to -1 stubs
+    supported=1;assert(init(&host));
+#ifdef _WIN32
+    FreeLibrary(library);
+#else
+    dlclose(library);
+#endif
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            self.build_elf(src,d)
+            Path(d,'manifest.json').write_text(json.dumps({'kind':'guest','id':'map-hud-capability','guest':{'api_version':1}}))
+            result=builder.build(d,str(Path(d,'cache')),0x7F000000,builder.default_cc(),str(Path(REPO,'runtime/include')))
+            source=Path(d,'driver.c');source.write_text(driver)
+            executable=Path(d,'driver.exe' if os.name=='nt' else 'driver')
+            command=builder.default_cc()+['-O2','-I',str(Path(REPO,'runtime/include')),str(source),'-o',str(executable)]
+            if sys.platform.startswith('linux'):
+                command.append('-ldl')
+            subprocess.run(command,check=True)
+            subprocess.run([str(executable),result['module']],check=True)
+
     def test_register_pair_module_executes(self):
         # Leaf guest functions need no guest RAM: this executes the actual translated module.
         src = r'''
