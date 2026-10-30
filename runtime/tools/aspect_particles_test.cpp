@@ -133,3 +133,5 @@ int main() {
     std::strcpy((char*)mem::ptr(pane+0x80),"reused");pane_at(-500,-300);draw(7);
     assert(drawn[3]==0&&drawn[7]==0);
 }
+
+namespace guestmods::maphud { bool hide_pane(uint32_t) { return false; } }  // map/HUD bridge (mods/map_hud.cpp)

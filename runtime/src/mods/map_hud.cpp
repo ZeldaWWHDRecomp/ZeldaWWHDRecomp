@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <mutex>
 namespace guestmods::maphud {
+namespace { bool trace_enabled(){ static const bool on=std::getenv("WWHD_MAP_HUD_TRACE")!=nullptr; return on; } }
+
 namespace {
 std::recursive_mutex mutex;
 Original original=nullptr;
@@ -93,7 +95,7 @@ void measure(){
         }
     };
     walk(walk,root(),0);
-    if(std::getenv("WWHD_MAP_HUD_TRACE")){
+    if(trace_enabled()){
         static unsigned count=0;if(count==0||count==120||count==600){
             LOG("[map-hud] compass bounds root=%08X pictures=%d rect=%.1f,%.1f %.1fx%.1f",root(),have_rect,rect.x,rect.y,rect.w,rect.h);
             uint32_t p=word(compass,0x50);
@@ -129,7 +131,7 @@ void event(Cpu* c){
     // changes and the START -> WAIT -> FINISH -> processed lifecycle.
     st32(map+0xB8,request->index>after?1:uint32_t(-1));
     st32(map+0xB0,after);st32(map+0xAC,request->index);
-    if(std::getenv("WWHD_MAP_HUD_TRACE"))LOG("[map-hud] carousel commit %u -> %u phase=%u",after,request->index,ld32(map+0x90));
+    if(trace_enabled())LOG("[map-hud] carousel commit %u -> %u phase=%u",after,request->index,ld32(map+0x90));
 }
 void invalidate(){suppressed.store(0,std::memory_order_release);invalidated.store(true,std::memory_order_release);if(game_thread_bound){clear();invalidated.store(false,std::memory_order_release);}}
 void map_destroy(Cpu* c){std::lock_guard guard(mutex);invalidate();original(c,GC(0x026986C4));}
@@ -147,13 +149,13 @@ void install(Original call,const std::function<bool(uint32_t,bool)>& available,c
 bool hide_pane(uint32_t pane){
     const uint32_t wanted=suppressed.load(std::memory_order_acquire);
     if(!wanted||wanted!=pane)return false;
-    if(std::getenv("WWHD_MAP_HUD_TRACE")){static std::atomic<unsigned> count{0};if(count.fetch_add(1)<8)LOG("[map-hud] suppressed native compass layout root=%08X",pane);}
+    if(trace_enabled()){static std::atomic<unsigned> count{0};if(count.fetch_add(1)<8)LOG("[map-hud] suppressed native compass layout root=%08X",pane);}
     return true;
 }
 uint32_t capability(){return supported?1:0;}
 void begin_logic(Cpu*,double dt){std::lock_guard guard(mutex);if(!supported)return;game_thread_bound=true;logic_open=true;context();measure();lease.begin(std::clamp(dt,0.,.25),eligible&&have_rect);}
 void finish_logic(){std::lock_guard guard(mutex);if(!supported)return;context();lease.finish();suppressed.store(eligible&&lease.held()?root():0,std::memory_order_release);
-    if(std::getenv("WWHD_MAP_HUD_TRACE")){static bool previous=false;bool now=eligible&&lease.held();if(previous!=now){previous=now;LOG("[map-hud] finish suppression=%d",now);}}
+    if(trace_enabled()){static bool previous=false;bool now=eligible&&lease.held();if(previous!=now){previous=now;LOG("[map-hud] finish suppression=%d",now);}}
     logic_open=false;}
 void state_loaded(){std::lock_guard guard(mutex);invalidate();if(game_thread_bound)logic_open=false;}
 void revoke(uint32_t owner){std::lock_guard guard(mutex);lease.revoke(owner);charts.revoke(owner);if(!lease.held())suppressed.store(0,std::memory_order_release);}
@@ -161,7 +163,7 @@ int compasses(Cpu* c,uint32_t owner,uint32_t replace,bool draw_phase){
     std::lock_guard guard(mutex);
     if(!supported)return Unsupported;if(!logic(c,draw_phase))return Phase;if(replace>1)return Invalid;
     context();measure();int result=lease.request(owner,replace,eligible&&have_rect);suppressed.store(lease.held()?root():0,std::memory_order_release);
-    if(std::getenv("WWHD_MAP_HUD_TRACE")){static int last=-999;if(last!=result){last=result;LOG("[map-hud] compass result=%d eligible=%d rectangle=%d part=%08X",result,eligible,have_rect,compass);}}
+    if(trace_enabled()){static int last=-999;if(last!=result){last=result;LOG("[map-hud] compass result=%d eligible=%d rectangle=%d part=%08X",result,eligible,have_rect,compass);}}
     return result;
 }
 int rectangle(uint32_t owner,Rect& out){std::lock_guard guard(mutex);if(!supported)return Unsupported;if(!game_thread_bound)return Phase;if(!eligible||!have_rect||lease.owner()!=owner)return 0;out={rect.x+640,360-rect.y,rect.w,rect.h};return 1;}

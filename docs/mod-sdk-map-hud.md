@@ -1,6 +1,6 @@
 # Native map/HUD bridge v1
 
-Implementation note for the HD minimap follow-up. The guest module ABI remains 1;
+Reference for mod authors using the boat-compass and chart-selection services. The guest module ABI remains 1;
 this adds optional services, not a serialized guest structure or pane ownership.
 
 ## Native identities and integration
@@ -95,5 +95,4 @@ commit, unload/cancel restores no previous selection. Subsequent GamePad input
 is ordinary player input. Draw callbacks must only use cached chart selection;
 all selection/lease mutation calls reject the draw phase.
 
-See [mod-sdk-v2.md](mod-sdk-v2.md) for API contracts and examples. Runtime test
-results, retained files and limitations are recorded separately in the task report.
+See [mod-sdk-v2.md](mod-sdk-v2.md) for API contracts and examples.

@@ -1677,3 +1677,5 @@ int main() {
 #endif
     std::printf("button_glyphs_test: passed (%u prints, %u cached text draws, %u HUD draws)\n", prints, text_draws, picture_draws.load());
 }
+
+namespace guestmods::maphud { bool hide_pane(uint32_t) { return false; } }  // map/HUD bridge (mods/map_hud.cpp)
