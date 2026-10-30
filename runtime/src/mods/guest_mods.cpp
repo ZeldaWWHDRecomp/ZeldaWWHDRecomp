@@ -42,6 +42,7 @@
 #include "guest_settings.h"
 #include "guest_hud.h"
 #include "guest_live.h"
+#include "map_hud.h"
 #include "../aspect.h"
 #include "../interp.h"
 #include "../mic.h"
@@ -184,6 +185,8 @@ bool g_world_scenes=false;
 bool g_native_scenes=false;  // native scene playback can run (set once in init): the game-thread binding
 bool g_particle_import=false;  // a loaded code mod imports wwhd_actor_particle or wwhd_particle_at
 std::mutex g_hud_mutex;
+thread_local bool g_map_hud_draw=false;
+uint32_t map_hud_owner(const Loaded& mod){return uint32_t(&mod-g_loaded.data())+1;}
 Loaded& owner(Cpu* c) {
     for(auto& mod:g_loaded)
         if(c->pc>=mod.m->mem_base&&c->pc-mod.m->mem_base<mod.m->mem_size)return mod;
@@ -784,6 +787,26 @@ void svc_setting_get(Cpu* c) {
         if (capacity >= 64) query_layout_pane(c, key, destination);
         return;
     }
+    if(key=="native-map-hud.v1"&&expected==7){
+        c->r[3]=0;
+        if(capacity<36||!setting_buffer(mod,destination,36)||ld32(destination)!=36||ld32(destination+4)!=1)return;
+        uint32_t action=ld32(destination+8),argument=ld32(destination+12),id=map_hud_owner(mod);
+        int result=-2;maphud::Rect rect{};
+        switch(action){
+        case 1:result=maphud::compasses(c,id,argument,g_map_hud_draw);break;
+        case 2:result=maphud::rectangle(id,rect);if(result==1){st32(destination+20,f32_as_u32(rect.x));st32(destination+24,f32_as_u32(rect.y));st32(destination+28,f32_as_u32(rect.w));st32(destination+32,f32_as_u32(rect.h));}break;
+        case 3:result=maphud::selected(c,g_map_hud_draw);break;
+        case 4:result=maphud::select(c,id,argument,g_map_hud_draw);break;
+        case 5:result=maphud::cancel(c,id,g_map_hud_draw);break;
+        }
+        st32(destination+16,uint32_t(result));c->r[3]=36;return;
+    }
+    if(key=="hud.boat-compasses.version"||key=="map.chart-selection.version"){
+        c->r[3]=0;if(expected!=3)return;
+        if(!destination&&!capacity){c->r[3]=4;return;}
+        if(capacity<4||!setting_buffer(mod,destination,4))return;
+        st32(destination,maphud::capability());c->r[3]=4;return;
+    }
     auto value=settings::read(key);c->r[3]=0;
     if(!value||value->type()!=expected)return;
     uint32_t bytes=value->type()==settings::String?uint32_t(std::get<std::string>(value->data).size()+1):value->type()==settings::Number?8:4;
@@ -831,8 +854,22 @@ std::string hud_path(const Loaded& mod,uint32_t address) {
     }
     return {};
 }
+void svc_boat_compasses(Cpu* c){auto& m=owner(c);c->r[3]=maphud::compasses(c,map_hud_owner(m),c->r[3],g_map_hud_draw);}
+void svc_boat_compasses_rect(Cpu* c){
+    auto& m=owner(c);uint32_t out=c->r[3];c->r[3]=uint32_t(-2);
+    if(!setting_buffer(m,out,24)||ld32(out)!=24||ld32(out+4)!=1)return;
+    maphud::Rect r{};int result=maphud::rectangle(map_hud_owner(m),r);
+    if(result==1){st32(out+8,f32_as_u32(r.x));st32(out+12,f32_as_u32(r.y));st32(out+16,f32_as_u32(r.w));st32(out+20,f32_as_u32(r.h));}
+    c->r[3]=uint32_t(result);
+}
+void svc_map_chart_selected(Cpu* c){c->r[3]=maphud::selected(c,g_map_hud_draw);}
+void svc_map_chart_select(Cpu* c){auto& m=owner(c);c->r[3]=maphud::select(c,map_hud_owner(m),c->r[3],g_map_hud_draw);}
+void svc_map_chart_cancel(Cpu* c){auto& m=owner(c);c->r[3]=maphud::cancel(c,map_hud_owner(m),g_map_hud_draw);}
 void svc_hud_register(Cpu* c) {
     auto& mod=owner(c);uint32_t callback=c->r[3],screen=c->r[4];c->r[3]=0;
+    // Map/UI hooks may call HUD services: never acquire their mutex while
+    // holding g_hud_mutex (native event dispatch takes them in the other order).
+    if(!callback&&screen<=2)maphud::revoke(map_hud_owner(mod));
     std::lock_guard lock(g_hud_mutex);
     if(screen>2){hud::store().note(mod.id,"HUD registration failed: invalid screen");return;}
     if(callback) {
@@ -1064,6 +1101,8 @@ const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
+    {"wwhd_hud_boat_compasses",svc_boat_compasses},{"wwhd_hud_boat_compasses_rect",svc_boat_compasses_rect},
+    {"wwhd_map_chart_selected",svc_map_chart_selected},{"wwhd_map_chart_select",svc_map_chart_select},{"wwhd_map_chart_cancel",svc_map_chart_cancel},
     {"wwhd_hud_register",svc_hud_register},{"wwhd_hud_texture",svc_hud_texture},
     {"wwhd_hud_clip",svc_hud_clip},{"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
     {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
@@ -1766,6 +1805,12 @@ void init() {
         NativeSceneRequestIssuer::startup(stage_pass_through,[]() -> uint64_t {
             return g_logic_step.load(std::memory_order_relaxed);
         });
+    if(!g_loaded.empty())maphud::install(call_original,[](uint32_t fn,bool replacing){
+        auto it=g_chains.find(fn);return ordinal_of(fn)>=0&&(!replacing||it==g_chains.end()||!it->second.replace);
+    },[](uint32_t fn,PpcFunc hook){
+        int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
+        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
+    });
     seal_startup();
 }
 
@@ -1999,10 +2044,12 @@ void draw_frame(Cpu* c,uint64_t step) {
             mod.hud_step=step;mod.hud_called=true;callback=mod.hud_callback;screen=mod.hud_screen;
         }
         auto list=hud::store().begin(mod.id,screen);
-        if(!list){hud::store().drop(mod.id);continue;}
+        if(!list){maphud::revoke(map_hud_owner(mod));hud::store().drop(mod.id);continue;}
         Cpu saved=*c;
-        try {guest_call(c,callback,{list});hud::store().commit(mod.id,list);}
-        catch(...) {hud::store().fail(mod.id,list,"HUD callback failed; draw list dropped");hud::store().commit(mod.id,list);}
+        g_map_hud_draw=true;
+        try {guest_call(c,callback,{list});if(!hud::store().commit(mod.id,list))maphud::revoke(map_hud_owner(mod));}
+        catch(...) {maphud::revoke(map_hud_owner(mod));hud::store().fail(mod.id,list,"HUD callback failed; draw list dropped");hud::store().commit(mod.id,list);}
+        g_map_hud_draw=false;
         *c=saved;
     }
 }
@@ -2032,6 +2079,7 @@ void logic_service(Cpu* c) {
 }
 void service(Cpu* c) { story_lyt_screen::service(c); }
 void state_loaded() {
+    maphud::state_loaded();
     story_native_event_game_thread::state_loaded();
     story_native_wait_runtime::state_loaded();
     std::lock_guard lock(g_hud_mutex);

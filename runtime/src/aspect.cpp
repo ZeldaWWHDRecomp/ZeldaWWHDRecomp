@@ -1,3 +1,4 @@
+#include "mods/map_hud.h"
 // Aspect ratio of the TV picture: 16:9 (original), the window's shape, 16:10, 21:9 or 32:9.
 //
 // The game keeps drawing its 1280x720 guest screen. What changes:
@@ -581,6 +582,7 @@ extern "C" void hook_028766CC(Cpu* c) {
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    if(guestmods::maphud::hide_pane(pane))return;
     static const uint64_t trace_frame = getenv("WWHD_ASPECT_TRACE_FRAME") ? strtoull(getenv("WWHD_ASPECT_TRACE_FRAME"), nullptr, 10) : 0;
     if (trace_frame && game_frame() == trace_frame) {
         auto trace = [](auto&& self, uint32_t p, int depth) -> void {

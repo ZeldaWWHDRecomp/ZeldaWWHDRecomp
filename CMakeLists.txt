@@ -3926,6 +3926,7 @@ add_test(NAME state_load_result COMMAND state_load_result_test)
 # The guest-mod start-up harness again, for game code translated without --mod-hooks (setup with code mods
 # off): the hook-flag table stays null and an --editor start must still come up (last: after every source
 # the targets above add to guest_hooks_test).
+target_sources(guest_hooks_test PRIVATE runtime/src/mods/map_hud.cpp)
 get_target_property(GUEST_HOOKS_TEST_SOURCES guest_hooks_test SOURCES)
 add_executable(guest_mods_no_hooks_test ${GUEST_HOOKS_TEST_SOURCES})
 target_compile_definitions(guest_mods_no_hooks_test PRIVATE GUEST_HOOKS_TEST_NO_HOOKS=1)
@@ -3974,3 +3975,13 @@ if(Python3_Interpreter_FOUND AND NOT ANDROID)
   add_test(NAME setup_atomic_replace COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/installer/test_setup.py AtomicReplace)
 endif()
+
+add_executable(map_hud_test runtime/tools/map_hud_test.cpp)
+target_include_directories(map_hud_test PRIVATE runtime/src)
+target_compile_options(map_hud_test PRIVATE -UNDEBUG)
+add_test(NAME map_hud COMMAND map_hud_test)
+
+add_executable(map_hud_native_test runtime/tools/map_hud_native_test.cpp runtime/src/mods/map_hud.cpp runtime/src/guest_addr_identity.c)
+target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/src)
+target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
+add_test(NAME map_hud_native COMMAND map_hud_native_test)
