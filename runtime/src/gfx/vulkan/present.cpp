@@ -91,6 +91,11 @@ void main() {
   else c=toLinear(clamp(c,0.0,1.0));
  }
  else if(params.conv==2)c=toSrgb(clamp(c,0.0,1.0));
+ else if(params.hdrWhite>0.0 && params.hdrSdrCurve!=2) {
+  // sRGB texture views (and linear scan buffers) already decoded the SDR
+  // picture. Reconstruct its code values before applying the selected curve.
+  c=pow(max(toSrgb(max(c,vec3(0.0))),vec3(0.0)),vec3(params.hdrSdrCurve==1?2.4:2.2));
+ }
  if(params.hdrWhite>0.0) {
   c=max(c,vec3(0.0))*exp2(params.hdrExposure);
   float m=max(c.r,max(c.g,c.b));
@@ -549,14 +554,16 @@ void test_hdr_presentation() {
     }
    }
   }
-  for(int curve=0;curve<3;++curve)for(bool pq:{false,true})
+  for(bool sourceLinear:{false,true})for(int curve=0;curve<3;++curve)for(bool pq:{false,true})
   for(auto c:{std::array<float,3>{0,0,0},{0.05f,0.05f,0.05f},{0.5f,0.5f,0.5f},{1,1,1},{0.05f,0.4f,1},{1.2f,0.4f,0.05f}}) {
+   if(sourceLinear && c[0]>1)continue; // sRGB scans contain bounded encoded SDR
    hdr::sdrCurve=curve;
    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-   VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+   const auto sampled=sourceLinear?hdr::decode(c,hdr::SdrCurve::Srgb):c;
+   VkClearColorValue value{{sampled[0],sampled[1],sampled[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
    record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
    mark_gpu_written(&source);
-   ComposeQuad q;q.image=&source;q.sourceLinear=false;q.box={0,0,4,4};
+   ComposeQuad q;q.image=&source;q.sourceLinear=sourceLinear;q.box={0,0,4,4};
    auto& mapped=pq?linearTarget:target;
    compose(mapped.image,mapped.view,mapped.layout,{4,4},mapped.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&mapped.use,true);
    Surface* output=&mapped;
@@ -573,7 +580,7 @@ void test_hdr_presentation() {
    auto expected=hdr::map(hdr::decode(c,static_cast<hdr::SdrCurve>(curve)),hp);
    if(pq)expected=hdr::encode_pq(expected);
    auto* pixels=static_cast<const float*>(readback.mapped);
-   if(!pq && c[0]==c[1] && (c[0]==0.05f || c[0]==0.5f))
+   if(!sourceLinear && !pq && c[0]==c[1] && (c[0]==0.05f || c[0]==0.5f))
     fprintf(stderr,"[renderer smoke] SDR curve=%d code=%.2f scRGB=%.9f\n",curve,c[0],pixels[0]);
    for(int i=0;i<16;++i)for(int k=0;k<3;++k)
     if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>(pq?0.0002f:0.00002f))

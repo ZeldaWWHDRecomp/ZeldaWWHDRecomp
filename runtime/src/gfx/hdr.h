@@ -10,8 +10,8 @@
 #define WWHD_HDR_OUTPUT 1
 #endif
 
-// Explicit HDR output: scRGB FP16, or HDR10 PQ (BT.2020 + ST 2084) where the
-// surface offers no scRGB. The guest scan is SDR; this is a controlled highlight
+// Explicit HDR output: scRGB FP16, or HDR10 PQ (BT.2020 + ST 2084).
+// Auto prefers scRGB; a saved preference can select either supported encoding. The guest scan is SDR; this is a controlled highlight
 // expansion, not recovery of the game's pre-tonemap lighting.
 namespace hdr {
 // Saved integer values are stable; invalid settings use the defaults.

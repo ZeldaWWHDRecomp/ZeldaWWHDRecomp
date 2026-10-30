@@ -1702,7 +1702,7 @@ static void make_swapchain(Screen &s) {
   if (fs.empty())
     exception_report::raise("No presentation formats");
   bool wantHdr=false,wantPq=false;
-  // HDR swapchain candidates: scRGB FP16, else HDR10 PQ (10-bit preferred).
+  // Auto prefers scRGB FP16; a preference may select HDR10 PQ (10-bit preferred).
   auto hdrCandidate=[&](const VkSurfaceFormatKHR& f,bool pq) {
     if(pq ? f.colorSpace!=VK_COLOR_SPACE_HDR10_ST2084_EXT ||
               (f.format!=VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.format!=VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&

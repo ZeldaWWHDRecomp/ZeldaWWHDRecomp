@@ -993,7 +993,7 @@ void tab_graphics() {
         const bool chosen=hdr::enabled.load()||(restart&&hdr::fellBackToSdr.load());
         if(radio("SDR",!chosen))post_changed([] {hdr::enabled=false;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","0");});
         ImGui::SameLine();
-        // scRGB when the surface offers it, otherwise HDR10 PQ (backend.cpp make_swapchain)
+        // Report the active swapchain; Auto prefers scRGB (backend.cpp make_swapchain).
         const bool pq=hdr::enabled.load()?hdr::pqOutput.load():!hdr::scrgbSupported.load()&&hdr::pqSupported.load();
         if(radio(restart?"HDR (after restart)":pq?"HDR (HDR10 PQ)":"HDR (scRGB)",chosen,
                  restart||(hdr::displayEnabled.load()&&hdr::formatSupported.load())))
