@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+
+namespace wayland_startup {
 #if defined(__linux__) && !defined(__ANDROID__)
 namespace {
 // libwayland-client is loaded at run time, like SDL does, instead of linked: players' setup
