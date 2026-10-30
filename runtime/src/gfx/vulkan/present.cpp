@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iterator>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
@@ -33,6 +34,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 namespace gfxvk {
 namespace {
 ImDrawData* overlayDraw=nullptr;
@@ -267,6 +270,7 @@ struct PresentResources {
  VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
  VkPipelineLayout layout=VK_NULL_HANDLE;
  VkSampler linear=VK_NULL_HANDLE,nearest=VK_NULL_HANDLE;
+ const char* imageFragmentSource=fragmentSource; // renderer-thread-only diagnostic override
  std::unordered_map<uint64_t,VkPipeline> pipelines; // (format, kind)
  std::unordered_map<Screen*,ScreenResources> screens;
  Surface diagnosticTarget{};
@@ -319,7 +323,7 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
  if(auto it=resources.pipelines.find(key);it!=resources.pipelines.end())return it->second;
  VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
  try {
-  vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:fragmentSource,false);
+  vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:resources.imageFragmentSource,false);
   VkPipelineShaderStageCreateInfo stages[2]{};
   for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -617,6 +621,62 @@ void test_hdr_presentation() {
  defer_buffer(readback);destroy_surface_image(&source);destroy_surface_image(&target);destroy_surface_image(&pqTarget);destroy_surface_image(&linearTarget);destroy_surface_image(&sdrTarget);
 }
 
+// Compare the original and current shaders against one captured game frame,
+// avoiding simulation differences between runs. Only the opt-in dump invokes this.
+void compare_sdr_scene(Screen& screen,const std::string& path) {
+ const char* baselinePath=std::getenv("WWHD_HDR_SDR_BASELINE_SHADER");
+ if(!baselinePath || !*baselinePath)return;
+ std::ifstream input(baselinePath);
+ const std::string baseline((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+ if(baseline.empty())exception_report::raise("Cannot read the original SDR presentation shader");
+ const auto extent=scan_display_extent(screen);
+ // Freeze the game's TV scan and AA choice; host menus/PIP can otherwise
+ // advance independently while a diagnostic is compiling its other shader.
+ const bool aa=fxaa_enabled();
+ ComposeQuad quad;quad.image=screen.scan.get();quad.sourceLinear=screen.scanSrgb;
+ quad.box={0,0,float(extent.width),float(extent.height)};
+ auto renderSdr=[&](bool srgb) {
+  Surface target;target.width=extent.width;target.height=extent.height;
+  target.format=srgb?0x41a:0x1a;target.fmt=format_info(target.format,false);
+  create_surface_image(&target,true,extent);
+  std::vector<uint8_t> pixels;
+  try {
+   compose(target.image,target.view,target.layout,{extent.width,extent.height},target.fmt.pixel,{quad},
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,aa,nullptr,&target.use);
+   pixels=read_surface_rgba(target,false);
+  } catch(...) {destroy_surface_image(&target);throw;}
+  destroy_surface_image(&target);return pixels;
+ };
+ std::array<std::vector<uint8_t>,2> after;
+ for(int encoding=0;encoding<2;++encoding)
+  after[encoding]=renderSdr(encoding!=0);
+ // Readback drained the submission, so these retained pipelines can safely be
+ // replaced temporarily. Other devices have their own PresentResources object.
+ auto retained=std::move(resources.pipelines);
+ resources.pipelines.clear();
+ const char* currentSource=resources.imageFragmentSource;
+ resources.imageFragmentSource=baseline.c_str();
+ auto restore=[&] {
+  for(auto [key,handle]:resources.pipelines)resources.api.vkDestroyPipeline(resources.device,handle,nullptr);
+  resources.pipelines=std::move(retained);
+  resources.imageFragmentSource=currentSource;
+ };
+ try {
+  for(int encoding=0;encoding<2;++encoding) {
+   const auto before=renderSdr(encoding!=0);
+   const std::string prefix=path+(encoding?".sdr-srgb":".sdr-unorm");
+   write_rgba_png(prefix+".before.png",extent.width,extent.height,before);
+   write_rgba_png(prefix+".after.png",extent.width,extent.height,after[encoding]);
+   if(before!=after[encoding])exception_report::raise("Original and current SDR scene pixels differ");
+   fprintf(stderr,"[SDR scene parity] %s: %ux%u, original/current RGBA bytes identical\n",prefix.c_str(),extent.width,extent.height);
+  }
+ } catch(...) {
+  try {flush();}catch(...) {}
+  restore();throw;
+ }
+ restore();
+}
+
 // WWHD_HDR_CURVE_DUMP accompanies a scheduled scan dump. This offscreen path
 // works without an HDR display and never changes the swapchain or saved setting.
 void dump_hdr_curves(Screen& screen,const std::string& path) {
@@ -659,6 +719,7 @@ void dump_hdr_curves(Screen& screen,const std::string& path) {
  }
  hdr::sdrCurve=savedCurve;
  defer_buffer(readback);destroy_surface_image(&target);
+ compare_sdr_scene(screen,path);
 }
 
 Screen& presentation_source_screen(Screen& physical) {
