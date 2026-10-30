@@ -2151,6 +2151,7 @@ struct DrawTargets {
   Surface* target = nullptr;  // first colour target, else depth (before AO replay drops a mismatch)
   uint32_t depthSlice = 0, width = 0, height = 0;
   float sx = 1, sy = 1;
+  uint8_t activeColors = 0;  // GetActiveColorBufferMask: it also reads the (dynamic) scissor, see continued_reason
   bool same(const DrawTargets& o) const {
     return colors == o.colors && slices == o.slices && depth == o.depth && target == o.target && depthSlice == o.depthSlice &&
            width == o.width && height == o.height && !std::memcmp(&sx, &o.sx, 4) && !std::memcmp(&sy, &o.sy, 4);
@@ -2158,11 +2159,11 @@ struct DrawTargets {
 };
 enum ContinuedReason : uint8_t {
   kContinued, kNoState, kNewFrame, kRegisters, kSurfaces, kUpload, kPrimitive, kSettings,
-  kVerifyMismatch, kNotContinuable, kAoReplay, kReasons
+  kVerifyMismatch, kNotContinuable, kAoReplay, kScissorTargets, kReasons
 };
 const char* const continuedReasonNames[kReasons] = {
   "continued", "no state", "new frame", "registers", "surfaces", "texture upload", "primitive",
-  "settings", "verify mismatch", "not continuable", "AO replay"};
+  "settings", "verify mismatch", "not continuable", "AO replay", "scissor targets"};
 struct ContinuedDraw {
   bool valid = false;
   ContinuedReason invalidReason = kNoState;  // why the state is not valid
@@ -2175,6 +2176,7 @@ struct ContinuedDraw {
   uint64_t fsKey = 0;
   vk::Shader *vs = nullptr, *ps = nullptr;
   DrawTargets targets;
+  uint32_t scissorBR = 0;  // PA_SC_GENERIC_SCISSOR_BR that targets.activeColors was resolved with
   Pipeline* pipeline = nullptr;
   ContinuedStage stages[2];
 };
@@ -2273,6 +2275,7 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
   for (int i = 0; i < 8; i++)
     if (mask & (1 << i))
       t.colors[i] = color_target(r, i, &t.slices[i], claim);
+  t.activeColors = mask;
   t.depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(r, &t.depthSlice) : nullptr;
   // a lookup switched stereo eyes to full size (an unscalable format, surfaces.cpp): the targets
   // looked up before it still have the eye size; looked up again, they are rescaled
@@ -2325,18 +2328,26 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
 bool resolve_replay_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& targets) {
   struct Cached {
     uint64_t frame = ~0ull, version = 0, epoch = 0;
-    uint32_t eyeSize = 0;
+    uint32_t eyeSize = 0, scissorBR = 0;
     vk::Shader* shader = nullptr;
     DrawTargets targets;
   };
   static Cached cache;
   if (cache.frame == R.frame && cache.version == gx2::g_full_state_version &&
       cache.epoch == g_surface_epoch && cache.eyeSize == stereo_eye_size_generation() && cache.shader == ps) {
-    targets = cache.targets;
-    return true;
+    // the scissor does not bump the version but selects the active colour buffers (continued_reason)
+    const uint32_t scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
+    if (scissorBR == cache.scissorBR ||
+        LatteMRT::GetActiveColorBufferMask(ps->dec, *reinterpret_cast<const LatteContextRegister*>(r)) ==
+            cache.targets.activeColors) {
+      cache.scissorBR = scissorBR;
+      targets = cache.targets;
+      return true;
+    }
   }
   if (!resolve_targets(r, ps, targets)) return false;
-  cache = {R.frame, gx2::g_full_state_version, g_surface_epoch, stereo_eye_size_generation(), ps, targets};
+  cache = {R.frame, gx2::g_full_state_version, g_surface_epoch, stereo_eye_size_generation(),
+           r[REGADDR::PA_SC_GENERIC_SCISSOR_BR], ps, targets};
   return true;
 }
 // A sampled texture of a stage (both paths): lookup, AO substitution and the write-tracking check.
@@ -2952,14 +2963,22 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   }
   return false;
 }
-ContinuedReason continued_reason(uint32_t prim) {
-  const auto& c = continuedEyes[stereoEye];
+ContinuedReason continued_reason(const uint32_t* r, uint32_t prim) {
+  auto& c = continuedEyes[stereoEye];
   if (!c.valid) return c.invalidReason;
   if (c.frame != R.frame) return kNewFrame;
   if (c.stateVersion != gx2::g_full_state_version) return kRegisters;
   if (c.surfaceEpoch != g_surface_epoch) return kSurfaces;
   if (c.prim != prim) return kPrimitive;
   if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled()) return kSettings;
+  // the scissor is a continued (dynamic) word, but GetActiveColorBufferMask drops the colour buffers
+  // smaller than it: a new scissor continues only while it leaves the same targets active
+  if (r[REGADDR::PA_SC_GENERIC_SCISSOR_BR] != c.scissorBR) {
+    if (LatteMRT::GetActiveColorBufferMask(c.ps->dec, *reinterpret_cast<const LatteContextRegister*>(r)) !=
+        c.targets.activeColors)
+      return kScissorTargets;
+    c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
+  }
   return kContinued;
 }
 } // namespace
@@ -3101,7 +3120,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   bool fast = false;
   if (fastPathDraw) {
     if (fastPath.stats) report_continued_stats();
-    ContinuedReason reason = continued_reason(prim);
+    ContinuedReason reason = continued_reason(r, prim);
     if (reason == kContinued) {
       // guest writes to the reused textures (write tracking, GX2Invalidate) upload here; an upload
       // can change lookups, so it ends the continuation
@@ -3425,6 +3444,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       c.vs = vs;
       c.ps = ps;
       c.targets = targets;
+      c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
       c.pipeline = &p;
     }
   }
