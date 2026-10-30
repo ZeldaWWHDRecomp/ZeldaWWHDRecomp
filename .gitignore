@@ -26,6 +26,7 @@ captures/
 *.key
 *.wud
 *.wux
+*.wua
 *.iso
 *.rvz
 template.bin

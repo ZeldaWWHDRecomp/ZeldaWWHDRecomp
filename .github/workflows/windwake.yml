@@ -1,0 +1,37 @@
+name: Windwake Android
+on:
+  workflow_dispatch:
+  push:
+    branches: ['windwake/**']
+    paths: ['android/**', 'tools/windwake/**', '.github/workflows/windwake.yml']
+  pull_request:
+    paths: ['android/**', 'tools/windwake/**', '.github/workflows/windwake.yml']
+permissions:
+  contents: read
+concurrency:
+  group: windwake-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: python tools/windwake/bootstrap_android.py
+      - run: python tools/windwake/test_safety.py
+      - run: python tools/windwake/test_touch.py
+      - run: ./gradlew.bat :app:assembleRelease -PwwhdQuestTheater=false --console=plain --no-daemon --max-workers=2 '-Dorg.gradle.jvmargs=-Xmx1024m'
+        working-directory: android
+      - run: python tools/windwake/verify_apk.py android/app/build/outputs/apk/release/app-release.apk
+      - uses: actions/upload-artifact@v5
+        with:
+          name: Windwake-android-arm64
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error

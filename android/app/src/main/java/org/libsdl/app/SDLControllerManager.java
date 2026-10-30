@@ -169,6 +169,10 @@ public class SDLControllerManager
         }
         int sources = device.getSources();
 
+        if (org.wwhdrecomp.wwhd.WindwakeInputPolicy.internalKeyboard(device.getName(),
+                device.getVendorId(), device.getProductId(),
+                (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)) return false;
+
         /* This is called for every button press, so let's not spam the logs */
         /*
         if ((sources & InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {

@@ -53,6 +53,18 @@ final class ContextPack {
     boolean on() { return enabled() && (raw[1] & ACTIVE) != 0; }
     int assetsGeneration() { return raw[2]; }
     boolean itemNamesA() { return valid && (raw[1] & ITEM_NAMES_A) != 0; }
+    boolean telescope() {
+        if (!on() || shown(PLUS) || shown(ZL)) return false;
+        for (int b = X; b <= R; b++) if (shown(b) && kind(b) == KIND_ITEM && label(b) == 0x20) return true;
+        return false;
+    }
+    boolean gestureAim() {
+        if (!valid) return false;
+        if ((flags() & AIM_LATCHED) != 0) return true;
+        if (!on() || shown(PLUS)) return false;
+        return telescope() || shown(ZL) && shown(R3) ||
+            shown(A) && kind(A) == KIND_ACTION && label(A) == 0x20 && !shown(LEFT_RIGHT); // photo finder
+    }
 
     private static boolean inRange(int b) { return b >= 0 && b < COUNT; }
     int state(int b) { return inRange(b) ? raw[FIRST + 3 * b] : 0; }
@@ -73,6 +85,7 @@ final class ContextPack {
             case TouchLayout.KEY_ZR: return ZR;
             case TouchLayout.KEY_ZL: return ZL;
             case TouchLayout.KEY_PLUS: return PLUS;
+            case TouchLayout.KEY_LOOK: return R3;
             case TouchLayout.KEY_UP: return UP;
             case TouchLayout.KEY_LEFT: case TouchLayout.KEY_RIGHT: return LEFT_RIGHT;
             case TouchLayout.KEY_L: case TouchLayout.KEY_DOWN: return HIDDEN;

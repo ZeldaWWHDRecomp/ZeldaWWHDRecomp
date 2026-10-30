@@ -17,15 +17,12 @@ public class ExportSaveActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (!SaveFiles.hasSave(this)) {
-            Toast.makeText(this, R.string.save_none, Toast.LENGTH_LONG).show();
-            finish();
-            return;
-        }
         new Thread(() -> {
             Uri uri = null;
             String error = null;
-            try {
+            try (SessionLease lease = SessionLease.acquire(WindwakeSession.root(this))) {
+                WindwakeSession.store(WindwakeSession.root(this)).recover();
+                if (!SaveFiles.hasSave(this)) throw new java.io.IOException(getString(R.string.save_none));
                 ContentValues v = new ContentValues();
                 v.put(MediaStore.Downloads.DISPLAY_NAME, "WWHD-save-" + SaveFiles.stamp() + ".zip");
                 v.put(MediaStore.Downloads.MIME_TYPE, "application/zip");
