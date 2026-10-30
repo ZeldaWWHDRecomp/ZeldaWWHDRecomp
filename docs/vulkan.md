@@ -1175,7 +1175,9 @@ On panvk, draws that don't write depth therefore clamp depth and clip in their s
 shader passes the clip-space distances to the near and far planes, interpolated like the point on the
 triangle, and the pixel shader discards outside them (and at w = 0). Draws that write depth keep the
 hardware path, so opaque geometry keeps the early depth test; draws whose own state turns off near or
-far clipping are unchanged. `WWHD_VK_CLIP_EMULATION=0` turns this off, `=1` turns it on for other
+far clipping are unchanged. A draw with a stage that can't take the change (a graphics-pack shader
+without the decompiler's `SET_POSITION`) keeps the hardware path for both stages and is drawn as before;
+the log names the shader. `WWHD_VK_CLIP_EMULATION=0` turns this off, `=1` turns it on for other
 drivers with the depthClamp feature; the log names the choice. It is part of the shader key, so shader
 caches keep both variants.
 

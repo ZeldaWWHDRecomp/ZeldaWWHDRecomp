@@ -4889,7 +4889,7 @@ static void init_device(std::vector<const char *> extensions,
           R.bcCpuDecode ? "CPU" : "compute", bc.reason);
   }
   {
-    // panvk has no geometric clipper; see clip_emulation_wanted in shaders.cpp.
+    // panvk has no geometric clipper; see clip_emulation_wanted_regs in shaders.cpp.
     const char* forced = getenv("WWHD_VK_CLIP_EMULATION");
     const bool wanted = forced ? strcmp(forced, "0") != 0 : driver.driverID == VK_DRIVER_ID_MESA_PANVK;
     R.clipEmulation = wanted && R.enabledFeatures.depthClamp;

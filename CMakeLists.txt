@@ -964,6 +964,15 @@ if(WWHD_HAS_VULKAN)
       glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
   add_test(NAME shader_compiler_worker COMMAND shader_compiler_test)
   set_tests_properties(shader_compiler_worker PROPERTIES TIMEOUT 30)
+  # panvk depth clipping in shaders: the rewrite, and the normal-path fallback when a stage can't take it
+  add_executable(clip_emulation_test runtime/tools/clip_emulation_test.cpp
+      runtime/src/gfx/vulkan/shader_compiler.cpp)
+  target_include_directories(clip_emulation_test PRIVATE runtime/src)
+  target_compile_options(clip_emulation_test PRIVATE -UNDEBUG)
+  target_link_libraries(clip_emulation_test PRIVATE Threads::Threads
+      glslang::glslang glslang::SPIRV glslang::glslang-default-resource-limits)
+  add_test(NAME clip_emulation COMMAND clip_emulation_test)
+  set_tests_properties(clip_emulation PROPERTIES TIMEOUT 30)
   # SET_CUBEMAP_INDEX on a unit without a cube map: the translated GLSL declares the index (head-start records)
   add_executable(cubemap_index_shader_test runtime/tools/cubemap_index_shader_test.cpp
       runtime/src/gfx/vulkan/shader_compiler.cpp)

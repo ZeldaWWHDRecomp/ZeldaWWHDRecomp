@@ -51,6 +51,9 @@ struct Shader {
     const std::string& source_text() const { return retainedSource ? *retainedSource : glsl; }
     std::string translatedGlsl;  // verify mode only: the translation a graphics pack replaced
     std::string error;
+    // depth clipping in shaders (clip_emulation.h): this stage carries the rewrite (vertex: writes the
+    // clip varying, pixel: reads it and discards). Decided by the final text, so aliases agree.
+    bool clipVarying = false;
     const std::vector<uint32_t>& spirv() const {
         static const std::vector<uint32_t> none;
         return spirvWords ? *spirvWords : none;
@@ -67,8 +70,15 @@ void select_renderer();
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame = ~uint64_t{0});
 // linkedVs (pixel shaders): the draw's vertex shader; inputs it has no output for read the GPU's
 // default value for them (SPI_PS_INPUT_CNTL DEFAULT_VAL), as constants.
+// clipAllowed=false: never the depth-clipping-in-shaders variant (translate_stages' fallback).
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetchShader, uint64_t fsKey,
-    uint64_t frame = ~uint64_t{0}, uint64_t stateGeneration = ~uint64_t{0}, const Shader* linkedVs = nullptr);
+    uint64_t frame = ~uint64_t{0}, uint64_t stateGeneration = ~uint64_t{0}, const Shader* linkedVs = nullptr,
+    bool clipAllowed = true);
+// A draw's vertex and pixel shader, consistent about depth clipping in shaders (panvk): when only one
+// stage could take the rewrite, both come back without it (clip_emulation::translate_stages; true then).
+// Its pipeline clamps depth only when both carry it (clip_emulation::pair_clips).
+bool translate_stages(const uint32_t* regs, LatteFetchShader* fetch, uint64_t fsKey, uint64_t frame,
+                      uint64_t stateGeneration, Shader*& vs, Shader*& ps);
 // Generation must advance for every shader-relevant register write (every register the key
 // reads must be covered by gx2's shader_irrelevant()/vulkan_shader_key_mask()). Primitive
 // mode is checked separately because draw submission writes it directly.
@@ -115,6 +125,4 @@ std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
 void reset_shader_memoization();
 // Call only after draw code has discarded pipelines and references to Shader.
 void clear_shader_cache();
-// depth clipping in shaders for this draw (panvk; shaders.cpp): its pipeline clamps depth instead
-bool clip_emulation_wanted(const uint32_t* regs);
 } // namespace gfxvk::vk

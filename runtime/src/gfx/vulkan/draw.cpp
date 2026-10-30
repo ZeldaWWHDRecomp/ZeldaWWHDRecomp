@@ -29,6 +29,7 @@
 #include "gx2/gx2.h"
 #include "gx2/gx2_cmd.h"
 #include "shaders.h"
+#include "clip_emulation.h"
 #include "shader_binary.h"
 #include "stutter_trace.h"
 #include "../../dsweep.h"
@@ -742,7 +743,7 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
     key.depthBias = {r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE], r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET],
                      r[REGADDR::PA_SU_POLY_OFFSET_CLAMP]};
   key.clip = (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27)) |   // depth clamp
-             (vk::clip_emulation_wanted(r) ? 1u : 0u);       // and clipping in shaders (vk::clip_emulation_wanted)
+             (vk::clip_emulation::pair_clips(vs, ps) ? 1u : 0u);  // and clipping in shaders (both stages)
   if (fs->bufferGroups.size() > kMaxPipelineStrides)
     exception_report::raise("fetch shader has more vertex buffers than a pipeline key holds");
   for (auto& g : fs->bufferGroups)
@@ -1173,8 +1174,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   // the near plane (vk::depth_clamp_variant_wanted, part of the vertex shader's key)
   if (pipelineClip.get_ZCLIP_FAR_DISABLE() && R.enabledFeatures.depthClamp)
     rs.depthClampEnable = VK_TRUE;
-  // panvk: shaders clip this draw, so its depth is clamped instead of culled (vk::clip_emulation_wanted)
-  if (vk::clip_emulation_wanted(r))
+  // panvk: both shaders clip this draw, so its depth is clamped instead of culled (clip_emulation.h);
+  // a draw whose stages couldn't both take the rewrite keeps the hardware path (translate_stages)
+  if (vk::clip_emulation::pair_clips(vs, ps))
     rs.depthClampEnable = VK_TRUE;
   rs.lineWidth = 1;
   rs.cullMode = (pm.get_CULL_FRONT() ? VK_CULL_MODE_FRONT_BIT : 0) |
@@ -2898,9 +2900,9 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   char detail[200] = "";
   uint64_t fsKey = 0;
   auto* fs = vk::get_fetch_shader(r, &fsKey, R.frame);
-  vk::Shader* vs = fs ? vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen) : nullptr;
-  vk::Shader* ps = fs ? vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen,
-                                     vs && vs->ready() ? vs : nullptr) : nullptr;
+  vk::Shader* vs = nullptr;
+  vk::Shader* ps = nullptr;
+  if (fs) vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
   DrawTargets t;
   if (fs != c.fs || fsKey != c.fsKey) kind = 0;
   else if (vs != c.vs || !vs || !vs->ready()) kind = 1;
@@ -3144,9 +3146,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if(verifyReplay) {
       uint64_t checkedKey=0;
       auto* checkedFetch=vk::get_fetch_shader(r,&checkedKey,R.frame);
-      auto* checkedVs=checkedFetch?vk::translate(r,true,checkedFetch,checkedKey,R.frame,g_shader_state_gen):nullptr;
-      auto* checkedPs=checkedVs?vk::translate(r,false,checkedFetch,checkedKey,R.frame,g_shader_state_gen,
-                                           checkedVs->ready()?checkedVs:nullptr):nullptr;
+      vk::Shader* checkedVs=nullptr;
+      vk::Shader* checkedPs=nullptr;
+      if(checkedFetch)vk::translate_stages(r,checkedFetch,checkedKey,R.frame,g_shader_state_gen,checkedVs,checkedPs);
       if(fs!=checkedFetch||fsKey!=checkedKey||vs!=checkedVs||ps!=checkedPs)
         exception_report::raise("stereo shader reuse differs from independent second-eye resolution");
       static uint64_t verified=0;
@@ -3156,9 +3158,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     fs = vk::get_fetch_shader(r, &fsKey, R.frame);
     if (!fs)
       exception_report::raise("missing Vulkan fetch shader");
-    vs = vk::translate(r, true, fs, fsKey, R.frame, g_shader_state_gen);
-    ps = vk::translate(r, false, fs, fsKey, R.frame, g_shader_state_gen,
-                           vs && vs->ready() ? vs : nullptr);
+    vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
   }
   rprof::mark(rprof::kShader);
   if (shadersOut && vs && vs->ready() && ps && ps->ready()) {
@@ -3937,9 +3937,10 @@ std::shared_ptr<PipelineRecipe> derive_guest_pipeline_recipe(const uint32_t* r, 
   uint64_t fsKey = 0;
   auto* fs = vk::get_fetch_shader(r, &fsKey, ~uint64_t{0});
   if (!fs) return fail("fetch shader");
-  vk::Shader* vs = vk::translate(r, true, fs, fsKey, ~uint64_t{0}, ~uint64_t{0});
+  vk::Shader* vs = nullptr;
+  vk::Shader* ps = nullptr;
+  vk::translate_stages(r, fs, fsKey, ~uint64_t{0}, ~uint64_t{0}, vs, ps);
   if (!vs || !vs->ready()) return fail("vertex shader");
-  vk::Shader* ps = vk::translate(r, false, fs, fsKey, ~uint64_t{0}, ~uint64_t{0}, vs);
   if (!ps || !ps->ready()) return fail("pixel shader");
   const auto& lcr = *reinterpret_cast<const LatteContextRegister*>(r);
   const auto mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
