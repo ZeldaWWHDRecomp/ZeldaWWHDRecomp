@@ -296,6 +296,7 @@ int main(int argc,char** argv) {
 
     def test_map_hud_services_optional_on_old_host(self):
         src = r'''
+#define WWHD_MAP_HUD_DIRECT_IMPORTS 1
 #include "wwhd_guest.h"
 WWHD_REPLACE(0x02000000, s32, lease, (void)) { return wwhd_hud_boat_compasses(1); }
 WWHD_REPLACE(0x02000004, s32, rect, (void)) { return wwhd_hud_boat_compasses_rect(0); }
@@ -349,6 +350,80 @@ int main(int argc,char** argv) {
 '''
         with tempfile.TemporaryDirectory() as d:
             self.build_elf(src,d)
+            Path(d,'manifest.json').write_text(json.dumps({'kind':'guest','id':'map-hud-capability','guest':{'api_version':1}}))
+            result=builder.build(d,str(Path(d,'cache')),0x7F000000,builder.default_cc(),str(Path(REPO,'runtime/include')))
+            source=Path(d,'driver.c');source.write_text(driver)
+            executable=Path(d,'driver.exe' if os.name=='nt' else 'driver')
+            command=builder.default_cc()+['-O2','-I',str(Path(REPO,'runtime/include')),str(source),'-o',str(executable)]
+            if sys.platform.startswith('linux'):
+                command.append('-ldl')
+            subprocess.run(command,check=True)
+            subprocess.run([str(executable),result['module']],check=True)
+
+    def test_map_hud_query_transport_on_older_installer(self):
+        src = r'''
+#include "wwhd_guest.h"
+WWHD_REPLACE(0x02000000, s32, lease, (void)) { return wwhd_hud_boat_compasses(1); }
+static wwhd_boat_compasses_rect where={24,1};
+WWHD_REPLACE(0x02000004, s32, rect, (void)) { return wwhd_hud_boat_compasses_rect(&where); }
+WWHD_REPLACE(0x02000008, s32, select_chart, (void)) { return wwhd_map_chart_select(3); }
+WWHD_REPLACE(0x0200000C, s32, selected, (void)) { return wwhd_map_chart_selected(); }
+WWHD_REPLACE(0x02000010, s32, cancel, (void)) { return wwhd_map_chart_cancel(); }
+'''
+        driver = r'''
+#include "wwhd_guest_abi.h"
+#include <assert.h>
+#include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#include <sys/mman.h>
+#endif
+static int supported;
+static void unknown_setting(Cpu* cpu) { cpu->r[3]=0; }
+static PpcFunc service(const char* name) {
+    return !strcmp(name,"wwhd_setting_get") ? unknown_setting : 0;
+}
+int main(int argc,char** argv) {
+    assert(argc==2);
+#ifdef _WIN32
+    HMODULE library=LoadLibraryA(argv[1]);assert(library);
+    WWHDGuestInitV1 init=(WWHDGuestInitV1)GetProcAddress(library,WWHD_GUEST_INIT_SYMBOL);
+#else
+    void* library=dlopen(argv[1],RTLD_NOW);assert(library);
+    WWHDGuestInitV1 init=(WWHDGuestInitV1)dlsym(library,WWHD_GUEST_INIT_SYMBOL);
+#endif
+    assert(init);
+    volatile int preempt[3]={0};
+    WWHDGuestHostV1 host={0};host.core_preempt=preempt;host.size=sizeof(host);host.abi_version=WWHD_GUEST_ABI_VERSION;host.service=service;
+    const WWHDGuestModuleV1* module=init(&host);assert(module&&module->hook_count==5);
+#ifdef _WIN32
+    assert(VirtualAlloc(ppc_ptr(0x20000000),0x10000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+#else
+    assert(mmap(ppc_ptr(0x20000000),0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
+#endif
+#ifdef _WIN32
+    assert(VirtualAlloc(ppc_ptr(module->mem_base),module->mem_size,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE));
+#else
+    assert(mmap(ppc_ptr(module->mem_base),module->mem_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)!=MAP_FAILED);
+#endif
+    memcpy(ppc_ptr(module->mem_base),module->image,module->image_size);
+    for(unsigned i=0;i<module->hook_count;i++) { Cpu c={0};c.r[1]=0x20008000;module->hooks[i].fn(&c);assert(c.r[3]==0xFFFFFFFFu); }
+    supported=1;module=init(&host);assert(module);
+    for(unsigned i=0;i<module->hook_count;i++) { Cpu c={0};c.r[1]=0x20008000;module->hooks[i].fn(&c);assert(c.r[3]==0xFFFFFFFFu); }
+#ifdef _WIN32
+    FreeLibrary(library);
+#else
+    dlclose(library);
+#endif
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            self.build_elf(src,d)
+            translator=guestmod.Translator(guestmod.Elf(Path(d,'mod.elf').read_bytes()),0x7F000000)
+            self.assertEqual(translator.services,["wwhd_setting_get"])
             Path(d,'manifest.json').write_text(json.dumps({'kind':'guest','id':'map-hud-capability','guest':{'api_version':1}}))
             result=builder.build(d,str(Path(d,'cache')),0x7F000000,builder.default_cc(),str(Path(REPO,'runtime/include')))
             source=Path(d,'driver.c');source.write_text(driver)
