@@ -248,6 +248,8 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
 WWHD_HOOK(0x02000000, clipping, (void)) { wwhd_hud_clip(0,0); }
 '''
         driver = r'''
+/* assert() performs and checks the driver's setup: keep it in every build (zig cc -O2 defines NDEBUG) */
+#undef NDEBUG
 #include "wwhd_guest_abi.h"
 #include <assert.h>
 #include <string.h>
@@ -305,6 +307,8 @@ WWHD_REPLACE(0x0200000C, s32, selected, (void)) { return wwhd_map_chart_selected
 WWHD_REPLACE(0x02000010, s32, cancel, (void)) { return wwhd_map_chart_cancel(); }
 '''
         driver = r'''
+/* assert() performs and checks the driver's setup: keep it in every build (zig cc -O2 defines NDEBUG) */
+#undef NDEBUG
 #include "wwhd_guest_abi.h"
 #include <assert.h>
 #include <string.h>
@@ -371,6 +375,8 @@ WWHD_REPLACE(0x0200000C, s32, selected, (void)) { return wwhd_map_chart_selected
 WWHD_REPLACE(0x02000010, s32, cancel, (void)) { return wwhd_map_chart_cancel(); }
 '''
         driver = r'''
+/* assert() performs and checks the driver's setup: keep it in every build (zig cc -O2 defines NDEBUG) */
+#undef NDEBUG
 #include "wwhd_guest_abi.h"
 #include <assert.h>
 #include <string.h>
@@ -446,6 +452,8 @@ WWHD_REPLACE(0x02000004, u32, pair_low, (wwhd_gpr_pair value)) {
 }
 '''
         driver = r'''
+/* assert() performs and checks the driver's setup: keep it in every build (zig cc -O2 defines NDEBUG) */
+#undef NDEBUG
 #include "wwhd_guest_abi.h"
 #include <assert.h>
 #ifdef _WIN32
