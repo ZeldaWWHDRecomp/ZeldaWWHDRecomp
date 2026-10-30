@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <string_view>
 
 // Hosts with HDR output (Vulkan, SDL host): Windows and desktop Linux.
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
@@ -13,9 +14,34 @@
 // surface offers no scRGB. The guest scan is SDR; this is a controlled highlight
 // expansion, not recovery of the game's pre-tonemap lighting.
 namespace hdr {
+// Saved integer values are stable; invalid settings use the defaults.
+enum class SdrCurve { Gamma22, Gamma24, Srgb };
+enum class Format { Auto, Scrgb, Pq };
+enum class Output { Sdr, Scrgb, Pq };
+inline std::atomic<int> sdrCurve{0}, format{0}, activeFormatPreference{0};
+inline int setting(std::string_view value) {
+    return value=="1" ? 1 : value=="2" ? 2 : 0;
+}
+// Pure surface-selection policy, shared with the exhaustive unit test.
+inline Output choose_format(Format preference, bool scrgb, bool pq) {
+    if (preference==Format::Pq && pq) return Output::Pq;
+    if (scrgb) return Output::Scrgb;
+    if (pq) return Output::Pq;
+    return Output::Sdr;
+}
+inline float decode(float c, SdrCurve curve) {
+    c=std::max(c,0.0f);
+    if(curve==SdrCurve::Gamma22) return std::pow(c,2.2f);
+    if(curve==SdrCurve::Gamma24) return std::pow(c,2.4f);
+    return c<=0.04045f ? c/12.92f : std::pow((c+0.055f)/1.055f,2.4f);
+}
+inline std::array<float,3> decode(std::array<float,3> c, SdrCurve curve) {
+    for(auto& v:c) v=decode(v,curve);
+    return c;
+}
 inline std::atomic<bool> enabled{false}, displayEnabled{false}, formatSupported{false};
 inline std::atomic<bool> fellBackToSdr{false};
-// Per-encoding surface support (formatSupported is either); scRGB is preferred.
+// Per-encoding surface support (formatSupported is either); Auto prefers scRGB.
 inline std::atomic<bool> scrgbSupported{false}, pqSupported{false};
 inline std::atomic<bool> pqOutput{false}; // the TV swapchain presents HDR10 PQ
 // Linux: SDL chose XWayland in a Wayland session. X11 surfaces are SDR only; a saved

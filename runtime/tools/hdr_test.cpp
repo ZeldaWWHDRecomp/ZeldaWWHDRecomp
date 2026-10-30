@@ -1,8 +1,38 @@
 #include "gfx/hdr.h"
+#include <array>
+#include <cmath>
 #include <cassert>
 #include <cstdio>
 #include <limits>
+#include <string_view>
 int main() {
+ // Every offered-format combination and requested preference, including neither.
+ for(bool scrgb:{false,true})for(bool pq:{false,true})for(int preference=0;preference<3;++preference) {
+  const auto expected=!scrgb&&!pq?hdr::Output::Sdr:
+      pq&&(!scrgb||preference==2)?hdr::Output::Pq:hdr::Output::Scrgb;
+  assert(hdr::choose_format(static_cast<hdr::Format>(preference),scrgb,pq)==expected);
+ }
+ for(std::string_view invalid:{"", "old", "1garbage", "3", "-1", "1.5", "nan", "inf"})assert(hdr::setting(invalid)==0);
+ assert(hdr::setting(std::string_view("1"))==1&&hdr::setting(std::string_view("2"))==2);
+ for(int curve=0;curve<3;++curve) {
+  const auto choice=static_cast<hdr::SdrCurve>(curve);
+  assert(hdr::decode(-.1f,choice)==0);
+  for(auto input:{std::array<float,3>{0,0,0},{.05f,.05f,.05f},{.5f,.5f,.5f},{1,1,1},{.05f,.4f,1}}) {
+   auto decoded=hdr::decode(input,choice);
+   for(int k=0;k<3;++k) {
+    const float v=input[k];
+    const float expected=curve==0?std::pow(v,2.2f):curve==1?std::pow(v,2.4f):v<=.04045f?v/12.92f:std::pow((v+.055f)/1.055f,2.4f);
+    assert(std::abs(decoded[k]-expected)<1e-7f);
+   }
+   auto mapped=hdr::map(decoded,hdr::parameters());
+   auto encoded=hdr::encode_pq(mapped);
+   for(float v:encoded)assert(std::isfinite(v)&&v>=0&&v<=1);
+  }
+  for(float v:{.05f,.5f}) {
+   auto mapped=hdr::map(hdr::decode(std::array<float,3>{v,v,v},choice),hdr::parameters());
+   printf("curve=%d code=%.2f scRGB=%.9f\n",curve,v,mapped[0]);
+  }
+ }
  // A saved HDR preference must never prevent startup on an SDR display.
  for(bool display:{false,true})for(bool format:{false,true}) {
   hdr::enabled=true;hdr::displayEnabled=display;hdr::formatSupported=format;

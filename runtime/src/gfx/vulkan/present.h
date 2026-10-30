@@ -1,6 +1,7 @@
 #pragma once
 #include "overlay/window_target.h"
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <optional>
@@ -25,6 +26,8 @@ void compose_headless_diagnostic(Screen& screen);
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter);
 // the composition of a window into an offscreen image, read back as display-encoded RGBA8
 std::vector<uint8_t> compose_offscreen(Screen& screen,uint32_t width,uint32_t height,bool srgb);
+// Opt-in frame-dump diagnostic: raw RGBA32F scRGB for all three SDR curves.
+void dump_hdr_curves(Screen& screen,const std::string& path);
 // screenshot.h: the picture of `screen` at its own size (as the window composition draws it: FXAA,
 // display encoding; no overlay) into an 8-bit image of the window's swapchain format (its pipeline
 // exists already; RGBA8 like the present dumps without a swapchain; `bgra` says which), copied into
@@ -49,8 +52,12 @@ struct PresentImageParams {
  float sharp=1,foot=1,alpha=1;
  float hdrWhite=0,hdrPeak=0,hdrExposure=0,hdrHighlights=0;
  int32_t pq=0; // encode linear scRGB input as HDR10 PQ (the final HDR10 pass)
- float pad[2]{};
+ int32_t hdrSdrCurve=0;
+ float pad[1]{};
 };
+static_assert(sizeof(PresentImageParams)==48);
+static_assert(alignof(PresentImageParams)==4);
+static_assert(offsetof(PresentImageParams,hdrSdrCurve)==40);
 // Prepared on the renderer thread. Recording reads only these copied handles
 // and values; the caller retains all referenced objects through GPU completion.
 struct PresentImageDraw {

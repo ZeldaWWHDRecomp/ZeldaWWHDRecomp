@@ -21,8 +21,11 @@
 #include "gfx/display_modes.h"
 #include "platform/dual_display.h"
 #include <algorithm>
+#include <array>
+#include <fstream>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -45,7 +48,7 @@ const char* fragmentSource = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D image;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
-layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; } params;
+layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; int hdrSdrCurve; } params;
 float luma(vec3 c) { return dot(c,vec3(0.299,0.587,0.114)); }
 vec3 fxaa(vec2 at) {
  vec2 rcp=1.0/vec2(textureSize(image,0));
@@ -81,7 +84,12 @@ void main() {
   c=0.25*(texture(image,at+vec2(-d.x,-d.y)).rgb+texture(image,at+vec2(d.x,-d.y)).rgb+
           texture(image,at+vec2(-d.x,d.y)).rgb+texture(image,at+vec2(d.x,d.y)).rgb);
  }else c=texture(image,at).rgb;
- if(params.conv==1)c=toLinear(clamp(c,0.0,1.0));
+ if(params.conv==1) {
+  c=clamp(c,0.0,1.0);
+  if(params.hdrWhite>0.0 && params.hdrSdrCurve!=2)
+   c=pow(max(c,vec3(0.0)),vec3(params.hdrSdrCurve==1?2.4:2.2));
+  else c=toLinear(c);
+ }
  else if(params.conv==2)c=toSrgb(clamp(c,0.0,1.0));
  if(params.hdrWhite>0.0) {
   c=max(c,vec3(0.0))*exp2(params.hdrExposure);
@@ -477,6 +485,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   if(hdrOutput) {
    const auto h=hdr::parameters();params.hdrWhite=h.paper;params.hdrPeak=h.peak;
    params.hdrExposure=h.exposure;params.hdrHighlights=h.highlights;
+   params.hdrSdrCurve=hdr::sdrCurve.load();
   }
   params.pq=pqEncode;
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
@@ -505,29 +514,69 @@ static ImDrawData* screen_overlay(Screen& screen, uint32_t width, uint32_t heigh
 // Exercise the actual presentation shader and read FP32 values so SDR clipping
 // or a missing HDR push constant cannot pass a CPU-only colour test.
 void test_hdr_presentation() {
- Surface source,target;Buffer readback;
+ Surface source,target,pqTarget,linearTarget,sdrTarget;Buffer readback;
+ const int savedCurve=hdr::sdrCurve.load();
  auto init=[](Surface& s,uint32_t f) {
   s.width=s.height=s.pitch=4;s.slices=s.mips=1;s.dim=1;s.format=f;s.fmt=format_info(f,false);
   create_surface_image(&s,true,VkExtent3D{4,4,1});
  };
  try {
-  init(source,0x823);init(target,0x823);readback=create_readback_buffer(4*4*16);
+  init(source,0x823);init(target,0x823);init(pqTarget,0x823);init(linearTarget,0x820);init(sdrTarget,0x41a);readback=create_readback_buffer(4*4*16);
   const auto hp=hdr::parameters();
-  for(auto c:{std::array<float,3>{0,0,0},{0.18f,0.18f,0.18f},{1,1,1},{0.05f,0.4f,1}}) {
+  // An SDR sRGB attachment also requests conv==1. Its decode must remain
+  // piecewise sRGB regardless of the saved HDR curve (the attachment encodes it).
+  for(auto c:{std::array<float,3>{0,0,0},{.05f,.05f,.05f},{.5f,.5f,.5f},{1,1,1},{.05f,.4f,1}}) {
+   std::array<uint8_t,64> baseline{};
+   for(int curve=0;curve<3;++curve) {
+    hdr::sdrCurve=curve;
+    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
+    mark_gpu_written(&source);
+    ComposeQuad q;q.image=&source;q.sourceLinear=false;q.box={0,0,4,4};
+    compose(sdrTarget.image,sdrTarget.view,sdrTarget.layout,{4,4},sdrTarget.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&sdrTarget.use);
+    transition_image(&sdrTarget,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+    transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={4,4,1};
+    record::vkCmdCopyImageToBuffer(command_buffer(),sdrTarget.image,sdrTarget.layout,readback.buffer,1,&copy);
+    transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
+    const auto* pixels=static_cast<const uint8_t*>(readback.mapped);
+    for(size_t i=0;i<baseline.size();++i) {
+     if(curve==0)baseline[i]=pixels[i];
+     else if(pixels[i]!=baseline[i])exception_report::raise("HDR curve changed SDR sRGB output bytes");
+     if(i%4<3 && std::abs(int(pixels[i])-int(std::lround(c[i%4]*255)))>1)
+      exception_report::raise("SDR sRGB presentation did not preserve encoded input");
+    }
+   }
+  }
+  for(int curve=0;curve<3;++curve)for(bool pq:{false,true})
+  for(auto c:{std::array<float,3>{0,0,0},{0.05f,0.05f,0.05f},{0.5f,0.5f,0.5f},{1,1,1},{0.05f,0.4f,1}}) {
+   hdr::sdrCurve=curve;
    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
    VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
    record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
    mark_gpu_written(&source);
-   ComposeQuad q;q.image=&source;q.sourceLinear=true;q.box={0,0,4,4};
-   compose(target.image,target.view,target.layout,{4,4},target.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&target.use,true);
-   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+   ComposeQuad q;q.image=&source;q.sourceLinear=false;q.box={0,0,4,4};
+   auto& mapped=pq?linearTarget:target;
+   compose(mapped.image,mapped.view,mapped.layout,{4,4},mapped.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&mapped.use,true);
+   Surface* output=&mapped;
+   if(pq) {
+    ComposeQuad encoded;encoded.image=&mapped;encoded.sourceLinear=true;encoded.box={0,0,4,4};
+    compose(pqTarget.image,pqTarget.view,pqTarget.layout,{4,4},pqTarget.fmt.pixel,{encoded},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&pqTarget.use,false,true);
+    output=&pqTarget;
+   }
+   transition_image(output,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
    transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={4,4,1};
-   record::vkCmdCopyImageToBuffer(command_buffer(),target.image,target.layout,readback.buffer,1,&copy);
+   record::vkCmdCopyImageToBuffer(command_buffer(),output->image,output->layout,readback.buffer,1,&copy);
    transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
-   auto expected=hdr::map(c,hp);auto* pixels=static_cast<const float*>(readback.mapped);
+   auto expected=hdr::map(hdr::decode(c,static_cast<hdr::SdrCurve>(curve)),hp);
+   if(pq)expected=hdr::encode_pq(expected);
+   auto* pixels=static_cast<const float*>(readback.mapped);
+   if(!pq && c[0]==c[1] && (c[0]==0.05f || c[0]==0.5f))
+    fprintf(stderr,"[renderer smoke] SDR curve=%d code=%.2f scRGB=%.9f\n",curve,c[0],pixels[0]);
    for(int i=0;i<16;++i)for(int k=0;k<3;++k)
-    if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
+    if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>(pq?0.0002f:0.00002f))
      exception_report::raise("HDR shader readback differs from calibrated scRGB mapping");
   }
   // HDR10: the final pass encodes linear scRGB (0, 80, 1000 and 10000+ nits, a hue) to BT.2020 PQ.
@@ -548,12 +597,61 @@ void test_hdr_presentation() {
     if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
      exception_report::raise("HDR10 shader readback differs from the PQ encoding");
   }
-  fprintf(stderr,"[renderer smoke] HDR scRGB black/grey/highlight/hue and HDR10 PQ readback passed\n");
+  fprintf(stderr,"[renderer smoke] HDR three SDR curves: black/near-black/grey/white/hue through scRGB and two-pass HDR10 PQ readback passed\n");
  } catch(...) {
+  hdr::sdrCurve=savedCurve;
+  if(pqTarget.image)destroy_surface_image(&pqTarget);
+  if(linearTarget.image)destroy_surface_image(&linearTarget);
+  if(sdrTarget.image)destroy_surface_image(&sdrTarget);
   if(readback.buffer)defer_buffer(readback);
   if(source.image)destroy_surface_image(&source);if(target.image)destroy_surface_image(&target);throw;
  }
- defer_buffer(readback);destroy_surface_image(&source);destroy_surface_image(&target);
+ hdr::sdrCurve=savedCurve;
+ defer_buffer(readback);destroy_surface_image(&source);destroy_surface_image(&target);destroy_surface_image(&pqTarget);destroy_surface_image(&linearTarget);destroy_surface_image(&sdrTarget);
+}
+
+// WWHD_HDR_CURVE_DUMP accompanies a scheduled scan dump. This offscreen path
+// works without an HDR display and never changes the swapchain or saved setting.
+void dump_hdr_curves(Screen& screen,const std::string& path) {
+ if(!screen.scan || !screen.scan->image)return;
+ Surface target;Buffer readback;
+ const int savedCurve=hdr::sdrCurve.load();
+ try {
+  const auto scanExtent=scan_display_extent(screen);
+  const VkExtent2D extent{scanExtent.width,scanExtent.height};
+  target.width=target.pitch=extent.width;target.height=extent.height;
+  target.slices=target.mips=1;target.dim=1;target.format=0x823;target.fmt=format_info(0x823,false);
+  create_surface_image(&target,true,VkExtent3D{extent.width,extent.height,1});
+  const size_t bytes=size_t(extent.width)*extent.height*4*sizeof(float);
+  readback=create_readback_buffer(bytes);
+  ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.scanSrgb;
+  q.box={0,0,float(extent.width),float(extent.height)};
+  const char* names[]={"gamma22","gamma24","srgb"};
+  for(int curve=0;curve<3;++curve) {
+   hdr::sdrCurve=curve;
+   compose(target.image,target.view,target.layout,extent,target.fmt.pixel,{q},
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&target.use,true);
+   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+   transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+   VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+   copy.imageExtent={extent.width,extent.height,1};
+   record::vkCmdCopyImageToBuffer(command_buffer(),target.image,target.layout,readback.buffer,1,&copy);
+   transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
+   const auto filename=path+"."+names[curve]+".rgba32f";
+   std::ofstream output(filename,std::ios::binary);
+   output.write(static_cast<const char*>(readback.mapped),bytes);
+   output.close();
+   if(!output)exception_report::raise("Cannot save HDR curve diagnostic");
+   fprintf(stderr,"[HDR curve dump] %s: %ux%u RGBA32F scRGB (1 = 80 nits)\n",filename.c_str(),extent.width,extent.height);
+  }
+ } catch(...) {
+  hdr::sdrCurve=savedCurve;
+  if(readback.buffer)defer_buffer(readback);
+  if(target.image)destroy_surface_image(&target);
+  throw;
+ }
+ hdr::sdrCurve=savedCurve;
+ defer_buffer(readback);destroy_surface_image(&target);
 }
 
 Screen& presentation_source_screen(Screen& physical) {

@@ -1723,7 +1723,9 @@ static void make_swapchain(Screen &s) {
     hdr::displayEnabled=display_hdr_enabled(s.window);
 #endif
     wantHdr=hdr::resolve_output();
-    wantPq=wantHdr&&!scrgb;
+    const int preference=hdr::format.load();
+    wantPq=wantHdr&&hdr::choose_format(static_cast<hdr::Format>(preference),scrgb,pq)==hdr::Output::Pq;
+    hdr::activeFormatPreference=preference;
   }
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
@@ -2763,7 +2765,7 @@ static bool present(Screen &s) {
   // Presentation changed (settings overlay): a new swapchain, as for a resize (also for a window that
   // is not shown right now, so the next frame it shows uses the new mode)
   if (!workerAcquired && screen_has_window(s) && s.swapchain &&
-      (s.presentWanted != effective_present_mode() || (&s==&R.tv && s.hdrOutput!=hdr::enabled.load())))
+      (s.presentWanted != effective_present_mode() || (&s==&R.tv && (s.hdrOutput!=hdr::enabled.load() || hdr::activeFormatPreference.load()!=hdr::format.load()))))
     make_swapchain(s);
   Surface* scan = presentation_source_screen(s).scan.get();
   if (!screen_has_window(s) || !s.visible || s.width <= 0 || s.height <= 0 || !scan ||
@@ -3291,6 +3293,7 @@ static void dump_scan(Screen &s, const std::string &path) {
     write_rgba_png(path, s.scan->extent.width, s.scan->extent.height,
                    read_surface_rgba(*s.scan, s.scanSrgb));
     LOG("[gfx] wrote %s (%ux%u)", path.c_str(), s.scan->extent.width, s.scan->extent.height);
+    if(&s==&R.tv && getenv("WWHD_HDR_CURVE_DUMP"))dump_hdr_curves(s,path);
   } catch (const std::exception &e) {
     LOG("[gfx] cannot write %s: %s", path.c_str(), e.what());
   }

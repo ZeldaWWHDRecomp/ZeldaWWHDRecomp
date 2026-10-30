@@ -1015,7 +1015,18 @@ void tab_graphics() {
                 post_changed([dst,v,lo,hi,key] {hdr::set(*dst,v,lo,hi);hostui::set(key,std::to_string(v));});
             }
         };
+        if(hdr::enabled.load() && hdr::format.load()!=0 &&
+           ((hdr::format.load()==1 && hdr::pqOutput.load()) || (hdr::format.load()==2 && !hdr::pqOutput.load())))
+            note(hdr::pqOutput.load()?"scRGB is unavailable on this surface. Using HDR10 (PQ).":"HDR10 (PQ) is unavailable on this surface. Using scRGB.");
         ImGui::BeginDisabled(!hdr::enabled.load());
+        int curve=hdr::sdrCurve.load();
+        if(combo("SDR curve in HDR",&curve,"Gamma 2.2\0Gamma 2.4\0sRGB\0"))
+            post_changed([curve] {hdr::sdrCurve=curve;hostui::set("hdrSdrCurve",std::to_string(curve));});
+        help("How the game's picture is turned into HDR. Gamma 2.2 matches most monitors in SDR; try 2.4 for a darker, TV-like look; sRGB is the old setting.");
+        int format=hdr::format.load();
+        if(combo("HDR format",&format,"Auto\0scRGB\0HDR10 (PQ)\0"))
+            post_changed([format] {hdr::format=format;hostui::set("hdrFormat",std::to_string(format));});
+        help("Which HDR signal is sent to the display. Auto is best for most setups.");
         slider("Paper white","hdrPaperWhite",hdr::paperWhite,80,500,"%.0f nits");
         slider("Peak brightness","hdrPeak",hdr::peak,200,4000,"%.0f nits");
         slider("Exposure","hdrExposure",hdr::exposure,-3,3,"%+.2f EV");
