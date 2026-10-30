@@ -21,7 +21,8 @@ final class TouchLayout {
     static final String KEY_LEFT_STICK = "1:0", KEY_RIGHT_STICK = "1:1",
             KEY_A = "4:0", KEY_B = "4:1", KEY_X = "4:2", KEY_Y = "4:3",
             KEY_UP = "0:11", KEY_DOWN = "0:12", KEY_LEFT = "0:13", KEY_RIGHT = "0:14",
-            KEY_ZL = "2:0", KEY_L = "0:9", KEY_R = "0:10", KEY_ZR = "2:1", KEY_MINUS = "0:4", KEY_PLUS = "0:6";
+            KEY_ZL = "2:0", KEY_L = "0:9", KEY_R = "0:10", KEY_ZR = "2:1", KEY_MINUS = "0:4", KEY_PLUS = "0:6",
+            KEY_LOOK = "0:8";
 
     static final class Placement {
         final float x, y, radius;

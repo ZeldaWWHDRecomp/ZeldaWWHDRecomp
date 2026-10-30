@@ -6,14 +6,14 @@
         android:enabled="true"
         android:shortcutShortLabel="@string/save_export">
         <intent android:action="android.intent.action.VIEW"
-            android:targetPackage="org.wwhdrecomp.wwhd"
+            android:targetPackage="dev.windwake.android"
             android:targetClass="org.wwhdrecomp.wwhd.ExportSaveActivity" />
     </shortcut>
     <shortcut android:shortcutId="game_setup"
         android:enabled="true"
         android:shortcutShortLabel="@string/game_setup">
         <intent android:action="android.intent.action.MAIN"
-            android:targetPackage="org.wwhdrecomp.wwhd"
+            android:targetPackage="dev.windwake.android"
             android:targetClass="org.wwhdrecomp.wwhd.SetupActivity">
             <extra android:name="org.wwhdrecomp.wwhd.SHOW_SETUP" android:value="true" />
         </intent>
@@ -22,7 +22,7 @@
         android:enabled="true"
         android:shortcutShortLabel="@string/save_import">
         <intent android:action="android.intent.action.VIEW"
-            android:targetPackage="org.wwhdrecomp.wwhd"
+            android:targetPackage="dev.windwake.android"
             android:targetClass="org.wwhdrecomp.wwhd.ImportSaveActivity" />
     </shortcut>
 </shortcuts>

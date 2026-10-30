@@ -10,14 +10,14 @@ android {
     buildToolsVersion "35.0.0"  // pinned (the CI installs this one)
     ndkVersion "30.0.16248370"  // android/build_native.sh's default (the native libraries come from there)
     defaultConfig {
-        applicationId "org.wwhdrecomp.wwhd"
-        buildConfigField 'boolean', 'QUEST_THEATER', providers.gradleProperty('wwhdQuestTheater').getOrElse('true')
-        testInstrumentationRunner "org.wwhdrecomp.wwhd.SetupPolishInstrumentation"
+        applicationId "dev.windwake.android"
+        buildConfigField 'boolean', 'QUEST_THEATER', providers.gradleProperty('wwhdQuestTheater').getOrElse('false')
+        testInstrumentationRunner "org.wwhdrecomp.wwhd.WindwakeInstrumentation"
         minSdk 33
         targetSdk 36
         // release.yml passes the release version and a growing build number; local builds keep these
-        versionCode providers.gradleProperty('wwhdVersionCode').map { it as int }.getOrElse(1)
-        versionName providers.gradleProperty('wwhdVersionName').getOrElse('0.1')
+        versionCode providers.gradleProperty('wwhdVersionCode').map { it as int }.getOrElse(3)
+        versionName providers.gradleProperty('wwhdVersionName').getOrElse('0.3.0-windwake')
         ndk { abiFilters providers.gradleProperty('wwhdAbi').getOrElse('arm64-v8a') }
     }
     buildFeatures { buildConfig true }
@@ -50,6 +50,10 @@ android {
         }
     }
     sourceSets.main.jniLibs.srcDirs = ['libs']
+    // Pinned v0.5.0 runtime plus the verified, authored startup-touch object; no game code.
+    def runtimePackage = rootProject.file('../build/vendor/runtime-v0.5.0-windwake')
+    sourceSets.main.jniLibs.srcDirs += [new File(runtimePackage, 'jniLibs')]
+    sourceSets.main.assets.srcDirs += [new File(runtimePackage, 'assets')]
     def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
     if (pythonPackage != null) {
         sourceSets.main.jniLibs.srcDirs += [file(pythonPackage + '/jniLibs')]
@@ -68,12 +72,12 @@ android {
     // the game's own icon (android/make_icon.py, from your game files; git-ignored), else the app icon (android/icon)
     def gameIcon = file('local-res').exists()
     if (gameIcon) sourceSets.main.res.srcDirs += ['local-res']
-    defaultConfig.manifestPlaceholders = [appIcon: gameIcon ? '@mipmap/ic_game' : '@mipmap/ic_launcher',
-        questTheaterEnabled: providers.gradleProperty('wwhdQuestTheater').getOrElse('true')]
+    defaultConfig.manifestPlaceholders = [appIcon: '@drawable/ic_windwake',
+        questTheaterEnabled: providers.gradleProperty('wwhdQuestTheater').getOrElse('false')]
     packaging {
         jniLibs {
             useLegacyPackaging = true  // libadrenotools needs extracted hooks in nativeLibraryDir
-            keepDebugSymbols += ['**/libmain.so']  // stripped by build_native.sh already
+            keepDebugSymbols += ['**/libmain.so', '**/libwwhd-*.so'] // executable tools have pinned checksums
             if (toolchainPackage != null || extractorPackage != null) keepDebugSymbols += ['**/libwwhd-*.so']  // preserve pinned tool bytes
         }
     }
@@ -81,7 +85,7 @@ android {
 }
 
 dependencies {
-    if (providers.gradleProperty('wwhdQuestTheater').getOrElse('true') == 'true')
+    if (providers.gradleProperty('wwhdQuestTheater').getOrElse('false') == 'true')
         implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.63'
     implementation 'androidx.core:core:1.15.0'
     implementation 'androidx.window:window:1.5.1'
@@ -103,6 +107,24 @@ tasks.register('verifyReleasePython') {
     }
 }
 tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'verifyReleasePython' }
+
+tasks.register('verifyWindwakeRuntime') {
+    doLast {
+        def runtime = rootProject.file('../build/vendor/runtime-v0.5.0-windwake')
+        ['assets/python-source.zip', 'assets/runtime-sdk.json', 'assets/python-build.json',
+         'assets/toolchain-apk.json', 'jniLibs/arm64-v8a/libSDL3.so',
+         'jniLibs/arm64-v8a/libwwhd-clang-driver.so'].each { name ->
+            if (!new File(runtime, name).isFile())
+                throw new GradleException('Prepare the game-free runtime first: python tools/windwake/bootstrap_android.py')
+        }
+        def sources = new java.util.zip.ZipFile(new File(runtime, 'assets/python-source.zip'))
+        try {
+            if (sources.getEntry('sdk/manifest.json') == null)
+                throw new GradleException('The packaged setup sources do not contain the native runtime SDK')
+        } finally { sources.close() }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'verifyWindwakeRuntime' }
 
 // Debug-only side-by-side install (-PwwhdDebugSuffix=.labtest): the debug APK gets its own
 // applicationId so it never replaces an installed player build; its static launcher shortcuts point

@@ -102,6 +102,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // nativeContextAssets(dir) exports the game's words and item icons into dir once (0 not yet, -1 failed,
     // > 0 the files' generation)
     private static native int nativeContextButtons(int[] out);
+    private static native void nativeStartupTitleTap();
     private static native int nativeContextAssets(String dir);
     private static native int nativeTouchOptions(int[] out);
     private static native int nativeFreeTouch(float x, float y);
@@ -124,7 +125,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             LEFT_SHOULDER = 9, RIGHT_SHOULDER = 10, DPAD_UP = 11, DPAD_DOWN = 12, DPAD_LEFT = 13, DPAD_RIGHT = 14;
     private static final int KIND_BUTTON = 0, KIND_STICK = 1, KIND_TRIGGER = 2, KIND_TOGGLE = 3, KIND_FACE = 4,
             KIND_VIRTUAL = 5,  // code: the virtual input bit (VIRT_JUMP, VIRT_MOON)
-            KIND_SWIPE = 6, KIND_DEAD = 7, KIND_TALK = 8, KIND_PINCH = 9;  // (the last four: finger owners only, never drawn)
+            KIND_SWIPE = 6, KIND_DEAD = 7, KIND_TALK = 8, KIND_PINCH = 9,
+            KIND_SHORTCUT = 10, KIND_ZOOM = 11;
     private static final int VIRT_JUMP = 1, VIRT_MOON = 2;
     // KIND_FACE codes: the Wii U button drawn on it (touch_face.h sends the pad button the controls
     // mapping binds to it, so the drawn A is the Wii U's A with either face-button preset)
@@ -135,6 +137,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     private static final class Control {
         final int kind, code;  // code: button number, stick 0/1, trigger 0/1
+        final String layoutId;
         final String label;
         final float fx, fy, fr;  // centre as a fraction of width / height, radius as a fraction of the short side
         float cx, cy, r;
@@ -145,11 +148,16 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         final TouchStick stick;  // sticks only
         Control(int kind, int code, String label, float fx, float fy, float fr) {
             this.kind = kind; this.code = code; this.label = label; this.fx = fx; this.fy = fy; this.fr = fr;
+            layoutId = kind + ":" + code;
             stick = kind == KIND_STICK ? new TouchStick() : null;
         }
     }
 
     private final List<Control> controls = new ArrayList<>();
+    private final WindwakeTouchProfile phone;
+    private final WindwakeScopeState scope = new WindwakeScopeState();
+    private final WindwakeStartupTouch startup = new WindwakeStartupTouch();
+    private final Paint phonePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Control toggle, leftStick, rightStick;
     private final Control swipe = new Control(KIND_SWIPE, 0, "", 0, 0, 0), dead = new Control(KIND_DEAD, 0, "", 0, 0, 0),
             talk = new Control(KIND_TALK, 0, "", 0, 0, 0);
@@ -179,6 +187,13 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private final InputManager inputs;
     private ControllerHintPolicy hintPolicy;
     private Runnable refresh;
+    private final WindwakeTouchRedraw redraw = new WindwakeTouchRedraw();
+    private boolean redrawAttached;
+    private final Runnable redrawCallback = () -> {
+        if (!redrawAttached) { redraw.cancel(); return; }
+        if (editor.editing()) { redraw.cancel(); invalidate(); return; }
+        dispatchControlRedraw(redraw.callback(SystemClock.uptimeMillis()));
+    };
     private boolean shown;      // the player's choice (the show/hide button), remembered
     private boolean controller; // a game controller is connected and no touch came since
     private boolean buttonsVisible = true, revealGesture, settingsOpen;
@@ -208,6 +223,10 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     public TouchControls(Context context) {
         super(context);
+        Map<String, String> phoneSettings;
+        try { phoneSettings = WindwakeSettings.read(new File(AndroidUserDirectories.config(context.getExternalFilesDir(null)), "settings.ini")); }
+        catch (Exception unavailable) { phoneSettings = java.util.Collections.emptyMap(); }
+        phone = new WindwakeTouchProfile(phoneSettings);
         prefs = context.getSharedPreferences("controls", Context.MODE_PRIVATE);
         shown = prefs.getBoolean("touch_controls", true);
         hintPolicy = new ControllerHintPolicy();
@@ -239,6 +258,10 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         controls.add(new Control(KIND_TRIGGER, 1, "ZR", 0.81f, 0.15f, 0.05f));
         controls.add(new Control(KIND_BUTTON, BACK, "−", 0.42f, 0.92f, 0.04f));
         controls.add(new Control(KIND_BUTTON, START, "+", 0.58f, 0.92f, 0.04f));
+        controls.add(new Control(KIND_BUTTON, 8, "Look", .168f, .945f, .040f));
+        controls.add(new Control(KIND_SHORTCUT, 0, "Pause", .304f, .945f, .040f));
+        controls.add(new Control(KIND_ZOOM, 0, "+", .12f, .35f, .047f));
+        controls.add(new Control(KIND_ZOOM, 1, "−", .12f, .49f, .047f));
         controls.add(new Control(KIND_VIRTUAL, VIRT_JUMP, "Jump", 0.41f, 0.15f, 0.05f));
         controls.add(new Control(KIND_VIRTUAL, VIRT_MOON, "Moon", 0.52f, 0.15f, 0.045f));
         toggle = new Control(KIND_TOGGLE, 0, "🎮", 0f, 0f, 0.04f);  // placed in onSizeChanged
@@ -249,7 +272,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             }
         };
         HashSet<String> keys=new HashSet<>();
-        for (Control c : controls) { keys.add(key(c)); baseRadius.put(key(c), c.fr); }
+        for (Control c : controls) { keys.add(key(c)); baseRadius.put(key(c), homeRadius(c)); }
         layout=new TouchLayout(keys);
         // a format 1 layout (one, for the only style there was) seeds both styles' layouts, so the buttons
         // stay where the player put them in the default Flexible style too; the old key stays
@@ -261,7 +284,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         }
         presets.fromJson(prefs.getString("touch_layout_presets", null), null);
         // the style the game last reported (Flexible by default, touch_style.h) until the first poll
-        style = prefs.getInt("touch_style_seen", STYLE_FLEXIBLE) == STYLE_CLASSIC ? STYLE_CLASSIC : STYLE_FLEXIBLE;
+        style = "0".equals(phoneSettings.get("touchStyle")) ? STYLE_CLASSIC : STYLE_FLEXIBLE;
+        rightMode = "1".equals(phoneSettings.get("touchRight")) ? RIGHT_STICK : RIGHT_SWIPE;
         layout.decode(prefs.getString(layoutKey(style), ""));
         setContentDescription(context.getString(R.string.touch_layout_access));
         refresh = new Runnable() {
@@ -274,7 +298,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     syncTouchState();
                     announceControllers();
                     syncJumpButtons();
-                    invalidate();
+                    requestControlRedraw();
                 }
                 syncContext(now);
                 postDelayed(this, active() && contextPack.on() ? FAST_TICK_MS : SLOW_TICK_MS);
@@ -287,6 +311,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     @Override protected void onDetachedFromWindow() {
+        redrawAttached = false;
+        cancelControlRedraw();
         endEditing();
         releaseInputs();
         removeCallbacks(editLongPress);
@@ -298,10 +324,29 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        redrawAttached = true;
+        cancelControlRedraw();
         if (getContext() instanceof WwhdActivity) ((WwhdActivity) getContext()).touchControls = this;
         if (inputs != null) inputs.registerInputDeviceListener(this, null);
         removeCallbacks(refresh);
         post(refresh);
+        requestControlRedraw();
+    }
+
+    private void cancelControlRedraw() {
+        removeCallbacks(redrawCallback);
+        redraw.cancel();
+    }
+
+    private void dispatchControlRedraw(long delay) {
+        if (delay == 0) invalidate();
+        else if (delay > 0) postDelayed(redrawCallback, delay);
+    }
+
+    private void requestControlRedraw() {
+        if (!redrawAttached) return;
+        if (editor.editing()) { cancelControlRedraw(); invalidate(); return; }
+        dispatchControlRedraw(redraw.request(SystemClock.uptimeMillis()));
     }
 
     @Override
@@ -318,17 +363,26 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         edge.setStrokeWidth(Math.max(2f, s * 0.004f));
     }
 
-    private static String key(Control c) { return c.kind+":"+c.code; }
-    private static String layoutKey(int style) { return style == STYLE_FLEXIBLE ? "touch_layout_flexible" : "touch_layout_classic"; }
+    private static String key(Control c) { return c.layoutId; }
+    private String layoutKey(int style) { return WindwakeTouchProfile.LAYOUT_KEY; }
     private static String presetStyle(int style) { return style == STYLE_FLEXIBLE ? TouchPresets.FLEXIBLE : TouchPresets.CLASSIC; }
     private boolean flexible() { return style == STYLE_FLEXIBLE; }
+    private boolean aiming() { return scope.active() || contextPack.gestureAim(); }
+    private boolean floating(Control c) { return flexible() && !(c == leftStick && phone.fixedMovement); }
+    private boolean editable(Control c) { return c != rightStick || rightMode == RIGHT_STICK; }
+    private float homeRadius(Control c) {
+        TouchLayout.Placement p = WindwakeTouchProfile.home(key(c));
+        return p != null ? p.radius : c.fr;
+    }
 
     private TouchLayout.Placement placement(Control c) {
         TouchLayout.Placement p = layout.get(key(c));
+        if (p == null) p = WindwakeTouchProfile.home(key(c));
         return p != null ? p : new TouchLayout.Placement(c.fx, c.fy, c.fr);
     }
     private void place(Control c, int w, int h, float s) {
         TouchLayout.Placement p=layout.get(key(c));
+        if (p==null) p=WindwakeTouchProfile.home(key(c));
         if (p==null && !editor.editing()) {
             c.cx=c.fx*w; c.cy=c.fy*h; c.r=c.fr*s; // unchanged default path
             c.shape=TouchLayout.SHAPE_CIRCLE; c.opacity=TouchLayout.OPACITY_DEFAULT; c.filled=true;
@@ -342,21 +396,37 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
     private void placeControls() {
         for (Control c:controls) place(c,getWidth(),getHeight(),Math.min(getWidth(),getHeight()));
-        invalidate();
+        requestControlRedraw();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
+        final long drawNow = SystemClock.uptimeMillis();
+        if (!editor.editing() && redraw.drawn(drawNow)) removeCallbacks(redrawCallback);
+        // No gameplay pad over the title, Quest Logs, name entry or confirmation screens.
+        if (!contextPack.valid()) return;
+        if (!editor.editing() && contextPack.startupTouch()) {
+            if (contextPack.startupScene() == ContextPack.STARTUP_TITLE && !settingsOpen) {
+                phonePaint.setStyle(Paint.Style.FILL);
+                phonePaint.setColor(0xE6F8F4E8);
+                phonePaint.setTextAlign(Paint.Align.CENTER);
+                phonePaint.setTextSize(getResources().getDisplayMetrics().scaledDensity * 16);
+                canvas.drawText("Toque para iniciar", getWidth() / 2f, getHeight() * .94f, phonePaint);
+            }
+            return;
+        }
         if (editor.editing() && grid) drawGrid(canvas);
+        if (!editor.editing() && active()) drawPhoneChrome(canvas);
         if (editor.editing() || active())
             for (Control c : controls) {
+                if (!editable(c)) continue;
                 if (!editor.editing() && !visible(c)) continue;
                 // floating sticks: only under a thumb, and only when they are shown
-                if (c.stick != null && flexible() && !editor.editing() && (!showSticks || !c.stick.held())) continue;
+                if (c.stick != null && floating(c) && !editor.editing() && (!showSticks || !c.stick.held())) continue;
                 drawControl(canvas, c);
             }
         if (!editor.editing() && buttonsVisible && !settingsOpen) drawControl(canvas, toggle);
-        if (!editor.editing() && rings.playing(SystemClock.uptimeMillis())) postInvalidateOnAnimation();
+        if (!editor.editing() && rings.playing(drawNow)) requestControlRedraw();
     }
 
     private static int alpha(int a, int opacity) { return Math.round(a * opacity / 100f) << 24 | 0xFFFFFF; }
@@ -371,21 +441,28 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         // the golden rings: the button pops a little and gold rings spread from it
         final float flash = editing || b < 0 ? -1 : rings.progress(b, SystemClock.uptimeMillis());
         final float r = c.r * GoldenRings.pop(flash);
-        fill.setColor(alpha(on ? 0x90 : c.filled ? 0x38 : 0, op));
-        edge.setColor(alpha(0x80, op));
-        drawShape(canvas, c.kind == KIND_TOGGLE ? TouchLayout.SHAPE_CIRCLE : c.shape, x, y, r);
+        fill.setColor(WindwakeTouchProfile.fill(k, on, c.filled, op));
+        edge.setColor(WindwakeTouchProfile.color(on ? 190 : 70, WindwakeTouchProfile.TEXT_RGB, op));
+        if (utility(c) && !editor.editing()) {
+            if (!utilityBar()) drawCapsule(canvas, x, y, r);
+        } else if (c.kind == KIND_TRIGGER || c.kind == KIND_BUTTON && c.code == RIGHT_SHOULDER)
+            drawCapsule(canvas, x, y, r);
+        else drawShape(canvas, c.kind == KIND_TOGGLE ? TouchLayout.SHAPE_CIRCLE : c.shape, x, y, r);
         if (flash >= 0) drawRings(canvas, x, y, c.r, flash);
         if (c.stick != null) {
-            fill.setColor(alpha(c.pressed ? 0xB0 : 0x70, op));
+            fill.setColor(WindwakeTouchProfile.color(c.pressed ? 190 : 140, WindwakeTouchProfile.TEXT_RGB, op));
             canvas.drawCircle(x + c.stick.sx * c.r * 0.6f, y + c.stick.sy * c.r * 0.6f, c.r * 0.42f, fill);
             return;
         }
+        if (utility(c) && !editor.editing()) { drawUtilityIcon(canvas, c, x, y, r, op); return; }
         final String letter = b >= 0 ? ContextPack.letter(b, c.label, contextPack.itemNamesA()) : c.label;
-        final int look = editing ? ContextPack.KIND_PLAIN : contextPack.kindFor(k);
+        final boolean scopeItem = scope.active() && b == scope.itemButton();
+        final int look = editing ? ContextPack.KIND_PLAIN : scopeItem ? ContextPack.KIND_ITEM : contextPack.kindFor(k);
         boolean drawn = false;
-        if (look == ContextPack.KIND_ACTION) drawn = drawWord(canvas, ContextPack.word(contextPack.labelFor(k), words), x, y, r, op);
+        if (!editing && scope.active() && b == ContextPack.B) drawn = drawWord(canvas, "Return", x, y, r, op);
+        else if (look == ContextPack.KIND_ACTION) drawn = drawWord(canvas, ContextPack.word(contextPack.labelFor(k), words), x, y, r, op);
         else if (look == ContextPack.KIND_FAST_FORWARD) drawn = drawWord(canvas, "▶▶", x, y, r, op);
-        else if (look == ContextPack.KIND_ITEM) drawn = drawIcon(canvas, contextPack.labelFor(k), x, y, r, op);
+        else if (look == ContextPack.KIND_ITEM) drawn = drawIcon(canvas, scopeItem ? 0x20 : contextPack.labelFor(k), x, y, r, op);
         if (drawn) { drawBadge(canvas, letter, x, y, r, op); return; }
         text.setColor(alpha(0xE0, op));
         text.setTextSize(r * (letter.length() > 2 ? 0.5f : 0.9f));  // "Jump", "Moon": smaller
@@ -396,7 +473,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private boolean drawWord(Canvas canvas, String word, float x, float y, float r, int op) {
         if (word == null || word.isEmpty() || r <= 0) return false;
         final float maxWidth = r * 1.7f, minSize = r * 0.28f, readable = r * 0.42f;
-        text.setColor(alpha(0xF0, op));
+        text.setColor(WindwakeTouchProfile.color(240, WindwakeTouchProfile.TEXT_RGB, op));
         text.setTextSize(1f);
         float size = ContextPack.fitTextSize(text.measureText(word), r, maxWidth, minSize);
         final String[] two = size < readable ? ContextAssets.twoLines(word) : null;
@@ -444,6 +521,78 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             ringPaint.setAlpha(GoldenRings.alpha(t));
             ringPaint.setStrokeWidth(r * GoldenRings.stroke(t));
             canvas.drawCircle(x, y, r * GoldenRings.radius(t), ringPaint);
+        }
+    }
+    private static boolean utility(Control c) {
+        return c.kind == KIND_SHORTCUT || c.kind == KIND_BUTTON && (c.code == START || c.code == BACK || c.code == 8);
+    }
+    private boolean utilityBar() {
+        for (Control c : controls) if (utility(c) && layout.get(key(c)) != null) return false;
+        return true;
+    }
+    private void drawPhoneChrome(Canvas canvas) {
+        if (floating(leftStick) && !leftStick.stick.held() && !aiming() && showSticks) {
+            float x = leftStick.cx, y = leftStick.cy, r = leftStick.r * .83f;
+            phonePaint.setStyle(Paint.Style.STROKE);
+            phonePaint.setStrokeWidth(Math.max(2f, r * .020f));
+            phonePaint.setColor(0x88F8F4E8);
+            canvas.drawCircle(x, y, r, phonePaint);
+            canvas.drawCircle(x, y, r * .90f, phonePaint);
+            canvas.drawCircle(x, y, r * .72f, phonePaint);
+            for (int i = 0; i < 16; i++) {
+                double a = i * Math.PI / 8;
+                canvas.drawLine(x + (float)Math.cos(a) * r * .91f, y + (float)Math.sin(a) * r * .91f,
+                    x + (float)Math.cos(a) * r, y + (float)Math.sin(a) * r, phonePaint);
+            }
+            shapePath.reset();
+            for (int i = 0; i < 8; i++) {
+                double a = i * Math.PI / 4 - Math.PI / 2;
+                float d = (i & 1) == 0 ? r * .60f : r * .20f;
+                float px = x + (float)Math.cos(a) * d, py = y + (float)Math.sin(a) * d;
+                if (i == 0) shapePath.moveTo(px, py); else shapePath.lineTo(px, py);
+            }
+            shapePath.close(); canvas.drawPath(shapePath, phonePaint);
+        }
+        if (!utilityBar()) return;
+        float first = Float.MAX_VALUE, last = 0, y = 0, r = 0;
+        for (Control c : controls) if (utility(c) && visible(c)) { first = Math.min(first, c.cx); last = Math.max(last, c.cx); y = c.cy; r = c.r; }
+        if (first == Float.MAX_VALUE) return;
+        phonePaint.setStyle(Paint.Style.FILL); phonePaint.setColor(0x7A16181C);
+        canvas.drawRoundRect(first-r*1.1f, y-r, last+r*1.1f, y+r, r, r, phonePaint);
+        phonePaint.setStyle(Paint.Style.STROKE); phonePaint.setStrokeWidth(2f); phonePaint.setColor(0x60F8F4E8);
+        canvas.drawRoundRect(first-r*1.1f, y-r, last+r*1.1f, y+r, r, r, phonePaint);
+        for (Control c : controls) if (utility(c) && visible(c) && c.cx > first) {
+            float previous = first;
+            for (Control other : controls) if (utility(other) && visible(other) && other.cx < c.cx) previous = Math.max(previous, other.cx);
+            float separator = (c.cx + previous) / 2;
+            canvas.drawLine(separator, y-r*.50f, separator, y+r*.50f, phonePaint);
+        }
+    }
+    private void drawCapsule(Canvas canvas, float x, float y, float r) {
+        canvas.drawRoundRect(x-r*1.60f, y-r, x+r*1.60f, y+r, r, r, fill);
+        canvas.drawRoundRect(x-r*1.60f, y-r, x+r*1.60f, y+r, r, r, edge);
+    }
+    private void drawUtilityIcon(Canvas canvas, Control c, float x, float y, float r, int opacity) {
+        phonePaint.setColor(WindwakeTouchProfile.color(c.pressed ? 255 : 200, WindwakeTouchProfile.TEXT_RGB, opacity));
+        phonePaint.setStyle(Paint.Style.STROKE); phonePaint.setStrokeWidth(Math.max(3f, r*.065f));
+        float h = r*.50f;
+        if (c.kind == KIND_SHORTCUT) {
+            canvas.drawRoundRect(x-h*.7f,y-h,x-h*.20f,y+h,h*.1f,h*.1f,phonePaint);
+            canvas.drawRoundRect(x+h*.20f,y-h,x+h*.7f,y+h,h*.1f,h*.1f,phonePaint);
+        } else if (c.code == START) {
+            canvas.drawRoundRect(x-h*.75f,y-h*.3f,x+h*.75f,y+h,h*.25f,h*.25f,phonePaint);
+            canvas.drawArc(x-h*.35f,y-h,x+h*.35f,y,180,180,false,phonePaint);
+        } else if (c.code == 8) {
+            canvas.drawOval(x-h*1.1f,y-h*.7f,x+h*1.1f,y+h*.7f,phonePaint);
+            canvas.drawCircle(x,y,h*.32f,phonePaint);
+        } else {
+            shapePath.reset(); shapePath.moveTo(x-h,y-h); shapePath.lineTo(x-h*.33f,y-h*.7f);
+            shapePath.lineTo(x+h*.33f,y-h); shapePath.lineTo(x+h,y-h*.7f);
+            shapePath.lineTo(x+h,y+h); shapePath.lineTo(x+h*.33f,y+h*.7f);
+            shapePath.lineTo(x-h*.33f,y+h); shapePath.lineTo(x-h,y+h*.7f); shapePath.close();
+            canvas.drawPath(shapePath,phonePaint);
+            canvas.drawLine(x-h*.33f,y-h*.7f,x-h*.33f,y+h,phonePaint);
+            canvas.drawLine(x+h*.33f,y-h,x+h*.33f,y+h*.7f,phonePaint);
         }
     }
     private void drawShape(Canvas canvas, int shape, float x, float y, float r) {
@@ -495,9 +644,11 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         float bestD = Float.MAX_VALUE;
         for (Control c : controls) {
             if (!visible(c)) continue;
-            if (c.stick != null && flexible()) continue;  // floating: no fixed place to hit
+            if (c.stick != null && floating(c)) continue;
             float reach = c.kind == KIND_STICK ? 1.5f : 1.3f;
-            float dx = x - c.cx, dy = y - c.cy, dd = (dx * dx + dy * dy) / (c.r * c.r);
+            float dx = x - c.cx, dy = y - c.cy;
+            if (c.kind == KIND_TRIGGER || c.kind == KIND_BUTTON && c.code == RIGHT_SHOULDER) dx /= 1.60f;
+            float dd = (dx * dx + dy * dy) / (c.r * c.r);
             if (dd <= reach * reach && dd < bestD) { best = c; bestD = dd; }
         }
         return best;
@@ -516,11 +667,14 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         try {
             free = nativeFreeTouch(getWidth() > 1 ? x / (getWidth() - 1) : 0.5f, getHeight() > 1 ? y / (getHeight() - 1) : 0.5f);
         } catch (UnsatisfiedLinkError e) { return null; }
+        if (scope.active() && free != FREE_GAME) free = FREE_SWIPE;
+        free = phone.freeRoute(free, aiming());
         switch (free) {
             case FREE_LEFT: return leftStick.stick.held() ? dead : leftStick;  // one thumb per stick, others are ignored
             case FREE_RIGHT: return rightStick.stick.held() ? dead : rightStick;
             case FREE_SWIPE: return swipePointer >= 0 ? dead : swipe;
             case FREE_TALK: return talkPointer >= 0 ? dead : talk;
+            case 5: return dead;
             default: return null;
         }
     }
@@ -542,7 +696,30 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             return false;
         }  // mouse and stylus: SDLSurface underneath as before
         syncTouchState();
-        if (settingsOpen) { editor.pointers(0);return false; }
+        if (settingsOpen) { startup.cancel(); editor.pointers(0);return false; }
+        if (action == MotionEvent.ACTION_DOWN) syncContext(SystemClock.uptimeMillis());
+        if (startup.tracking()) {
+            final int i = event.getActionIndex(), id = event.getPointerId(i);
+            final float slop = android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            if (action == MotionEvent.ACTION_MOVE) {
+                for (int j = 0; j < event.getPointerCount(); j++)
+                    startup.move(event.getPointerId(j), event.getX(j), event.getY(j), slop);
+            } else if (action == MotionEvent.ACTION_UP) {
+                if (startup.up(contextPack.startupScene(), id, event.getX(i), event.getY(i), slop))
+                    try { nativeStartupTitleTap(); } catch (UnsatisfiedLinkError ignored) { }
+            } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP) {
+                startup.cancel();
+            }
+            editor.pointers(0); return true;
+        }
+        if (contextPack.startupTouch()) {
+            editor.pointers(0);
+            if (action == MotionEvent.ACTION_DOWN && contextPack.startupScene() == ContextPack.STARTUP_TITLE) {
+                startup.down(event.getPointerId(0), event.getX(), event.getY());
+                return true;
+            }
+            return false;  // SDLSurface -> real GamePad touchscreen, including native text entry.
+        }
         if (revealGesture) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) revealGesture = false;
             return true;
@@ -552,7 +729,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             nativeRevealButtons();
             syncTouchState();
             revealGesture = true;
-            invalidate();
+            requestControlRedraw();
             return true;
         }
         final int index = event.getActionIndex();
@@ -579,7 +756,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     owner.remove(id);
                     editor.pointers(0);
                     update();
-                    invalidate();
+                    requestControlRedraw();
                     return false;
                 } else if (c == null) {
                     forward(event, index, action);
@@ -597,7 +774,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     // (a pinch's finger, or one more thumb on a half that already has its stick)
                 } else if (c != dead) {
                     c.pressed = true;
-                    if (c.stick != null) c.stick.press(x, y, flexible());
+                    if (c.stick != null) c.stick.press(x, y, floating(c));
                     c.downX = x; c.downY = y;
                     itemRingFinger(c, true, x, y);
                 }
@@ -614,7 +791,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     else if (c == pinch) pinchMove(event, 1);
                     else if (c == swipe) {
                         if (x != swipeX || y != swipeY) {
-                            try { nativeSwipe(x - swipeX, y - swipeY, screenDpi); } catch (UnsatisfiedLinkError ignored) {}
+                            try { nativeSwipe(phone.swipeDelta(x - swipeX, aiming(), options[5]),
+                                    phone.swipeDelta(y - swipeY, aiming(), options[5]), screenDpi); } catch (UnsatisfiedLinkError ignored) {}
                             swipeX = x; swipeY = y;
                         }
                     }
@@ -657,7 +835,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 return true;
         }
         update();
-        invalidate();
+        requestControlRedraw();
         return true;
     }
 
@@ -696,6 +874,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         if (SystemClock.uptimeMillis() - freeDown.valueAt(0) > PINCH_MS) return false;
         final int oi = event.findPointerIndex(other);
         if (oi < 0) return false;
+        // The two thumbs used to run and look must never turn into a zoom gesture.
+        if (!WindwakeTouchProfile.allowPinch(event.getX(oi), x, getWidth(), aiming())) return false;
         final float d = (float) Math.hypot(event.getX(oi) - x, event.getY(oi) - y);
         try { if (nativePinch(0, d) == 0) return false; } catch (UnsatisfiedLinkError e) { return false; }
         final Control first = owner.get(other);
@@ -765,9 +945,12 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         owner.clear();
     }
     private void releaseInputs() {
+        cancelControlRedraw();
+        startup.cancel();
         releaseFingers();
         try { nativeDetachPad(); nativeSetVirtual(0); } catch (UnsatisfiedLinkError ignored) {}
         lastButtons=-1; lastVirtual=-1;
+        requestControlRedraw();
     }
 
     private void beginEditing() {
@@ -794,7 +977,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         editorButton(look,R.string.touch_layout_fill,()->restyleSelected(p->p.look(p.shape,p.opacity,!p.filled)));
         editorBar.addView(look);
         LinearLayout actions=new LinearLayout(getContext());
-        editorButton(actions,R.string.touch_layout_grid,()->{ grid=!grid;invalidate(); });
+        editorButton(actions,R.string.touch_layout_grid,()->{ grid=!grid;requestControlRedraw(); });
         editorButton(actions,R.string.touch_layout_presets,this::layoutsMenu);
         editorButton(actions,R.string.touch_layout_reset,()->{ layout.reset();selected=null;saveLayout();placeControls();showStatus(); });
         editorButton(actions,R.string.touch_layout_done,this::endEditing);
@@ -825,7 +1008,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 : ContextPack.letter(ContextPack.buttonFor(key(selected)),selected.label,contextPack.itemNamesA());
         String[] shapes=getResources().getStringArray(R.array.touch_layout_shapes);
         String status=getContext().getString(R.string.touch_layout_status,name,
-                TouchLayout.sizePercent(p.radius,selected.fr),shapes[Math.max(0,Math.min(shapes.length-1,p.shape))],p.opacity,
+                TouchLayout.sizePercent(p.radius,homeRadius(selected)),shapes[Math.max(0,Math.min(shapes.length-1,p.shape))],p.opacity,
                 getContext().getString(p.filled ? R.string.touch_layout_filled : R.string.touch_layout_outline));
         // with context buttons on, say when this control shows in play
         final int b=ContextPack.buttonFor(key(selected));
@@ -852,7 +1035,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private void resizeSelected(int steps) {
         if (selected==null) return;
         TouchLayout.Placement p=placement(selected);
-        layout.put(key(selected),p.at(p.x,p.y,TouchLayout.resize(p.radius,selected.fr,steps)));
+        layout.put(key(selected),p.at(p.x,p.y,TouchLayout.resize(p.radius,homeRadius(selected),steps)));
         saveLayout();placeControls();showStatus();
     }
     private interface Restyle { TouchLayout.Placement apply(TouchLayout.Placement p); }
@@ -868,6 +1051,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         if (action==MotionEvent.ACTION_DOWN) {
             selected=null;float best=Float.MAX_VALUE;
             for (Control c:controls) {
+                if (!editable(c)) continue;
                 float dx=e.getX()-c.cx,dy=e.getY()-c.cy,d=(dx*dx+dy*dy)/(c.r*c.r);
                 if (d<=1.69f && d<best) { best=d;selected=c; }
             }
@@ -884,7 +1068,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 (action==MotionEvent.ACTION_POINTER_UP && e.getPointerId(e.getActionIndex())==dragPointer)) {
             dragPointer=-1;saveLayout();
         }
-        invalidate();return true;
+        requestControlRedraw();return true;
     }
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -1025,7 +1209,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     // shown, and not hidden for a connected controller
-    private boolean active() { return !editor.editing() && shown && buttonsVisible && !settingsOpen; }
+    private boolean active() { return !editor.editing() && shown && buttonsVisible && !settingsOpen && !contextPack.startupTouch(); }
 
     // the touch options (touch_style.h pack): a style change swaps the layout and lets every finger go
     private void pollOptions() {
@@ -1080,6 +1264,14 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // a Jump / Moon jump button shows only while its mod is on and it does something (native rules)
     // ... and a context button only while it does something (ContextPack: native rules)
     private boolean visible(Control c) {
+        if (!editable(c) || c == leftStick && aiming()) return false;
+        if (c.kind == KIND_ZOOM) return scope.active() || contextPack.telescope();
+        if (c.kind == KIND_BUTTON && c.code == BACK && aiming()) return false;
+        if (scope.active() && c != toggle) {
+            if (c.kind == KIND_SHORTCUT) return true;
+            int b = ContextPack.buttonFor(key(c));
+            return b == ContextPack.B || b == scope.itemButton();
+        }
         if (c.kind == KIND_VIRTUAL) return (jumpShown & c.code) != 0;
         if (c.pressed && ringOpen && itemButton(c) >= 0) return true;  // its finger picks in the item ring
         return c.kind == KIND_TOGGLE || contextPack.visible(key(c));
@@ -1089,9 +1281,20 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // finger, and load the game's words and icons once native code has exported them
     private void syncContext(long now) {
         int version;
+        boolean wasAiming = aiming();
+        boolean wasStartup = contextPack.startupTouch();
         try { version = nativeContextButtons(contextRaw); }
         catch (UnsatisfiedLinkError e) { return; }  // not loaded yet, or a game library from before P3
         boolean changed = contextPack.set(contextRaw, version);
+        if (wasStartup != contextPack.startupTouch()) releaseInputs();
+        boolean wasScope = scope.active();
+        scope.update(contextPack);
+        changed |= wasScope != scope.active();
+        if (!wasAiming && aiming() && leftStick.stick.held()) {
+            // Entering aim releases movement without detaching the virtual pad or its item latch.
+            for (int i = 0; i < owner.size(); i++) if (owner.valueAt(i) == leftStick) owner.setValueAt(i, dead);
+            leftStick.stick.release(); leftStick.pressed = false; update();
+        }
         if (contextPack.on()) {
             boolean open;
             try { open = nativeItemRingOpen(); } catch (UnsatisfiedLinkError e) { open = false; }
@@ -1099,7 +1302,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         } else if (ringOpen) { ringOpen = false; changed = true; }
         if (!contextPack.valid()) rings.forget();
         else for (int b = 0; b < ContextPack.COUNT; b++)
-            if (rings.note(b, contextPack.ring(b), active() && contextPack.on() && contextPack.shown(b), now)) invalidate();
+            if (rings.note(b, contextPack.ring(b), active() && contextPack.on() && contextPack.shown(b), now)) requestControlRedraw();
         if (contextPack.enabled()) syncAssets(now);
         if (!changed) return;
         boolean released = false;
@@ -1113,7 +1316,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             released = true;
         }
         if (released) update();
-        invalidate();
+        requestControlRedraw();
     }
 
     private void syncAssets(long now) {
@@ -1136,7 +1339,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             } catch (java.io.IOException ignored) { /* English words */ }
         }
         words = loaded;
-        invalidate();
+        requestControlRedraw();
     }
     private Bitmap icon(int item) {
         if (assetDir == null || assets.generation() <= 0) return null;
@@ -1173,6 +1376,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private static boolean isController(InputDevice d) {
         if (d == null || d.isVirtual()) return false;
         final int s = d.getSources();
+        if (WindwakeInputPolicy.internalKeyboard(d.getName(), d.getVendorId(), d.getProductId(),
+                (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)) return false;
         return (s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
@@ -1184,20 +1389,20 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         resetControls();
         for (int i = owner.size() - 1; i >= 0; i--) if (owner.valueAt(i) != null && owner.valueAt(i) != toggle) owner.removeAt(i);
         if (shown) { nativeDetachPad(); nativeSetVirtual(0); lastButtons = -1; lastVirtual = -1; }
-        invalidate();
+        requestControlRedraw();
     }
     @Override public void onInputDeviceRemoved(int id) {
         SDLControllerManager.requestDeviceRefresh();
         if (!controller || inputs == null) return;
         boolean any = false;
         for (int other : inputs.getInputDeviceIds()) any |= other != id && isController(InputDevice.getDevice(other));
-        if (!any) { controller = false; invalidate(); }
+        if (!any) { controller = false; requestControlRedraw(); }
     }
     @Override public void onInputDeviceChanged(int id) {
         SDLControllerManager.requestDeviceRefresh();
         controller = false;
         if (inputs != null) for (int other : inputs.getInputDeviceIds()) controller |= isController(InputDevice.getDevice(other));
-        invalidate();
+        requestControlRedraw();
     }
 
     private void update() {
@@ -1206,6 +1411,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         float lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         for (Control c : controls) {
             if (c.kind == KIND_VIRTUAL && c.pressed && visible(c)) virt |= c.code;
+            else if (c.kind == KIND_SHORTCUT && c.pressed) buttons |= 1 << 5; // SDL Guide/Home opens Settings
             else if (c.kind == KIND_BUTTON && c.pressed) buttons |= 1 << c.code;
             else if (c.kind == KIND_FACE && c.pressed) face |= 1 << c.code;
             else if (c.kind == KIND_TRIGGER && c.pressed) { if (c.code == 0) lt = 1; else rt = 1; }
@@ -1214,6 +1420,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             try { nativeSetVirtual(virt); lastVirtual = virt; } catch (UnsatisfiedLinkError e) { lastVirtual = -1; }
         }
         lx = leftStick.stick.sx; ly = leftStick.stick.sy;
+        for (Control c : controls) if (c.kind == KIND_ZOOM && c.pressed && visible(c)) ly += c.code == 0 ? -1f : 1f;
+        ly = Math.max(-1f, Math.min(1f, ly));
         rx = rightStick.stick.sx; ry = rightStick.stick.sy;
         buttons |= face << 16;  // (only for the change check below)
         if (buttons == lastButtons && lx == lastLx && ly == lastLy && rx == lastRx && ry == lastRy && lt == lastLt && rt == lastRt)

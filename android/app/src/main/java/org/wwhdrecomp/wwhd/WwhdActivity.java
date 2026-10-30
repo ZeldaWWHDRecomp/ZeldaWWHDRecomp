@@ -26,7 +26,15 @@ public class WwhdActivity extends SDLActivity {
         // Only the two concrete gameplay entry points participate in routing.
         if (getClass() != WwhdActivity.class && getClass() != QuestActivity.class) return false;
         Intent selected = QuestActivity.gameIntent(this);
-        if (selected.getComponent().getClassName().equals(getClass().getName())) return false;
+        if (selected.getComponent().getClassName().equals(getClass().getName())) {
+            try { WindwakeSession.enterGame(this); }
+            catch (java.io.IOException failure) {
+                android.widget.Toast.makeText(this, failure.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                finish();
+                return true;
+            }
+            return false;
+        }
         // Includes explicit intents and shortcuts created before the theater existed.
         // SDL has not acquired any global state, so finishing this Activity cannot quit it.
         Log.i("wwhd", "redirecting game activity to " + selected.getComponent().getClassName());
@@ -133,6 +141,10 @@ public class WwhdActivity extends SDLActivity {
     @Override protected boolean retainNativeSessionOnRecreation() { return true; }
 
     @Override public void loadLibraries() {
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
+            try { WindwakeSession.enterGame(this); }
+            catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
+        }
         if (isReusingNativeSession()) {
             // A setup update must not change the loaded engine or assets mid-session.
             selection = sessionSelection;
@@ -145,6 +157,10 @@ public class WwhdActivity extends SDLActivity {
         // debug builds: WWHD_* intent extras (benchmark starts over adb), set once SDL's JNI is
         // there but before the game library loads, so its static initializers see them too
         System.loadLibrary("SDL3");
+        // Touch's JNI callbacks can read hostui settings before SDL_main sets XDG_CONFIG_HOME.
+        // Seed the same path before loading the game, so that first read never caches an empty file.
+        File userFiles = getExternalFilesDir(null);
+        if (userFiles != null) SDLActivity.nativeSetenv("XDG_CONFIG_HOME", new File(userFiles, "config").getAbsolutePath());
         DebugLaunch.apply(this);
         applyLaunchEnvironment();
         if (onDeviceGame == null) {

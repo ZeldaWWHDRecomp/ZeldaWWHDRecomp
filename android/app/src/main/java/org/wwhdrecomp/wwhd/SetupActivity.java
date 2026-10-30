@@ -261,7 +261,7 @@ public class SetupActivity extends Activity {
                 AndroidGame.chooseModels(this, enabled);
                 File job = SetupStore.current(this);
                 File host = job == null ? null : new File(job, "host.json");
-                if (enabled && !WwhdActivity.gameLoaded() && host != null && host.isFile() &&
+                if (enabled && !WindwakeSession.inUse(this) && host != null && host.isFile() &&
                         SetupStore.read(host).optString("state").equals("complete") &&
                         new File(AndroidGame.storage(this), "active.json").isFile() && !AndroidGame.needsRebuild(this))
                     runOnUiThread(() -> control(SetupService.RUN_MODELS));
@@ -298,7 +298,7 @@ public class SetupActivity extends Activity {
         else getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         // setup is on the screen again: the step goes on (not while the game itself runs in this app, in the
         // background: two games must not write the shader caches)
-        if (screenPause && !WwhdActivity.gameLoaded() && android.os.SystemClock.elapsedRealtime() - screenResumed > 5000) {
+        if (screenPause && !WindwakeSession.inUse(this) && android.os.SystemClock.elapsedRealtime() - screenResumed > 5000) {
             screenResumed = android.os.SystemClock.elapsedRealtime();
             new Thread(() -> {
                 try {
@@ -572,7 +572,7 @@ public class SetupActivity extends Activity {
             case "paused": {
                 String reason = host == null ? "" : host.optString("reason");
                 if (reason.equals(ModelsStep.SCREEN_REASON)) {
-                    phase(getString(R.string.setup_paused_screen), getString(WwhdActivity.gameLoaded() ?
+                    phase(getString(R.string.setup_paused_screen), getString(WindwakeSession.inUse(this) ?
                         R.string.setup_models_game_open : R.string.setup_paused_screen_detail), -2);
                     return;
                 }
