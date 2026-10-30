@@ -16,6 +16,10 @@ what is on `devel` and not released yet (also in the
   opening or closing Settings play the game's own menu sounds, mixed like its other sounds; in TV play they follow
   **GamePad sounds through main speakers**. Settings → Audio → **Menu sounds** (on by default); silent while the game
   is in the background or muted. Idea from GreenNaugahyde's Android fork, thanks @GreenNaugahyde.
+- **Mod SDK: boat compasses and chart selection.** Code mods can take over the boat compass corner while sailing
+  (`wwhd_hud_boat_compasses`, with the corner's position) and select a sea chart the same way the GamePad does
+  (`wwhd_map_chart_selected` / `_select` / `_cancel`). The game's own compasses come back as soon as the mod lets go,
+  and mods on older ports keep working without these calls. See docs/mod-sdk-v2.md. Used by the HD minimap mod.
 - **GameCube controller layout** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** in Controls, or let
   Automatic pick it for a GameCube pad that has no custom bindings yet: A acts, B is the sword, X, Y and Z use the
   item slots, L targets and R shields (from 25% travel), the C-stick turns the camera and a tap of Start opens the
