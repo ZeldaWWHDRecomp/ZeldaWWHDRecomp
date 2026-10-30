@@ -67,6 +67,13 @@ final class WindwakeSettings {
             changed = true;
         }
         if (!current.containsKey("itemButtonNames")) { current.put("itemButtonNames", "0"); changed = true; }
+        if (!"1".equals(current.get("windwakePerformanceVersion"))) {
+            // Preserve explicit native choices; an inconclusive experiment stays opt-in.
+            current.putIfAbsent("vkRecordWorker", "0");
+            current.putIfAbsent("backgroundShaders", "0");
+            current.put("windwakePerformanceVersion", "1");
+            changed = true;
+        }
         if (changed) write(file, current, durability);
     }
 

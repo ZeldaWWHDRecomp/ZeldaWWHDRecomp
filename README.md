@@ -2,12 +2,14 @@
 
 Launcher e adaptações de controles para jogar **The Wind Waker HD** no Android. Fork de [ZeldaWWHDRecomp v0.5.0](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp), com experiência móvel inspirada no [Dusklight](https://github.com/TwilitRealm/dusklight).
 
-[Baixar o APK v0.2.0](https://github.com/GenissonEmilio/Windwake/releases/tag/v0.2.0) · [Documentação técnica](WINDWAKE.md) · [Notas da versão](docs/releases/v0.2.0.md)
+[Baixar o APK v0.3.0](https://github.com/GenissonEmilio/Windwake/releases/tag/v0.3.0) · [Documentação técnica](WINDWAKE.md) · [Notas da versão](docs/releases/v0.3.0.md)
 
 ## Recursos
 
 - Launcher em português com instalação, perfis de desempenho, controles e transferência de saves.
 - Câmera por gesto na área livre à direita, sem analógico direito na tela. Sensibilidades de câmera e mira independentes, de 25% a 300%.
+- Início por toque: tela de título, seleção de save, teclado para o nome e confirmações. Os botões de gameplay aparecem ao entrar no jogo.
+- Redesenho dos controles agrupado em intervalos de 16 ms; os gestos continuam entregues imediatamente ao jogo.
 - Movimento flutuante à esquerda, com opção de analógico fixo. Botões coloridos, gatilhos em cápsula e layout editável.
 - Toque curto no item prepara a mira; arrastar ajusta a direção; outro toque dispara e **B** guarda. Toque longo abre a roda de itens. A mira aceita gestos nas áreas livres dos dois lados.
 - Luneta com gesto para olhar e botões **+ / −** para zoom. Barra inferior para bolsa, primeira pessoa, mapa e configurações, conforme o contexto.
@@ -18,17 +20,19 @@ Launcher e adaptações de controles para jogar **The Wind Waker HD** no Android
 
 Requer **Android 13 ou superior, ARM64 e Vulkan 1.3**.
 
-1. Baixe `Windwake-0.2.0-android-arm64.apk` na [release](https://github.com/GenissonEmilio/Windwake/releases/tag/v0.2.0) e instale no Android.
+1. Baixe `Windwake-0.3.0-android-arm64.apk` na [release](https://github.com/GenissonEmilio/Windwake/releases/tag/v0.3.0) e instale no Android.
 2. Abra o launcher e selecione seu dump compatível de **Wind Waker HD USA ou Europa, versão 0**.
 3. Para preparar o jogo sem selecionar chaves, use **`.wua`** ou uma pasta extraída com `code`, `content` e `meta`. Imagens `.wux` / `.wud` criptografadas ainda precisam das chaves correspondentes; o instalador não consegue deduzi-las da imagem.
 4. Aguarde a extração e a compilação local. Depois, abra pelo botão **JOGAR**.
 5. Na aba **TOUCH**, ajuste câmera, mira e movimento. Segure o ícone de controle durante o jogo para editar posição, tamanho e transparência dos botões.
 
-Atualizações do APK de mesma assinatura mantêm a instalação e os saves. O identificador deste aplicativo é `dev.windwake.android`.
+Atualizações do APK de mesma assinatura mantêm a instalação e os saves. A v0.3 recompila uma vez o jogo usando os dados já preparados. O identificador deste aplicativo é `dev.windwake.android`.
 
 ## Estado da versão
 
-A v0.2.0 é uma versão inicial para teste. No Poco M8 Pro foram verificados preparação a partir de WUA, abertura e recarga de save, movimento, câmera por gesto, arco por toque, luneta, zoom, pausa e persistência das configurações. Os testes de arco e luneta usaram um save isolado; o progresso original foi restaurado e conferido.
+A v0.3.0 é uma versão para teste. No Poco foi percorrido por toque o fluxo de título, seleção, nome no teclado Android, confirmação, novo jogo e diálogos até controlar Link. O agrupamento dos controles reduziu em cerca de 41% o contador de renderizações da interface no ensaio de 12 segundos. Isso não representa ganho equivalente de FPS: as quedas na exploração continuam presentes; veja as [medições e limitações](docs/performance-v0.3.0.md).
+
+Preparação por WUA, recarga de save, câmera, arco, luneta, zoom e pausa também foram validados nas versões anteriores, usando saves de teste isolados.
 
 A validação se limita a esses fluxos em Outset. Ainda não há validação de campanha completa, todos os itens, controle físico ou desempenho térmico prolongado. Os perfis são pontos de partida, sem garantia de FPS. O APK desta release usa assinatura local de desenvolvimento; artefatos de CI servem para verificar o build e podem ter outra assinatura.
 

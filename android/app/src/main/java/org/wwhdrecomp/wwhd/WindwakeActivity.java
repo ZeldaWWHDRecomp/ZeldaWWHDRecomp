@@ -97,7 +97,7 @@ public final class WindwakeActivity extends Activity {
             default: home();
         }
         gap(28);
-        TextView credit = text("WINDWAKE 0.2  /  WIND WAKER HD\nBase aberta: ZeldaWWHDRecomp v0.5.0 · MPL-2.0", 10, MUTED);
+        TextView credit = text("WINDWAKE 0.3  /  WIND WAKER HD\nBase aberta: ZeldaWWHDRecomp v0.5.0 · MPL-2.0", 10, MUTED);
         credit.setLineSpacing(dp(4), 1);
         body.addView(credit);
     }
@@ -131,6 +131,20 @@ public final class WindwakeActivity extends Activity {
     private void profiles() {
         title("Encontre seu\nvento favorável.", "DESEMPENHO");
         paragraph("Perfis pensados para o Poco M8 Pro com Snapdragon 7s Gen 4. A resolução dinâmica reduz a carga da GPU; o resultado depende da cena e da temperatura.");
+        LinearLayout smooth = card();
+        smooth.addView(text("Fluidez e shaders", 21, INK));
+        CheckBox workerThread = option(smooth, "Gráficos em uma segunda thread", "1".equals(touchValues.get("vkRecordWorker")));
+        smooth.addView(text("Opcional e experimental: divide o trabalho gráfico, mas o resultado varia com a cena. Os testes no Poco não mostraram ganho consistente. Vale no próximo início do jogo.", 14, MUTED));
+        CheckBox fastShaders = option(smooth, "Reduzir espera por shaders", "fast".equals(touchValues.get("backgroundShaders")));
+        smooth.addView(text("Opcional: prioriza a fluidez enquanto um shader compila. Um objeto ou efeito pode aparecer com atraso por alguns instantes. Desligado mantém cada quadro completo.", 14, MUTED));
+        addButton(smooth, "Aplicar ajustes de fluidez", true, () -> change(() -> {
+            Map<String, String> changes = new java.util.LinkedHashMap<>();
+            changes.put("vkRecordWorker", workerThread.isChecked() ? "1" : "0");
+            changes.put("backgroundShaders", fastShaders.isChecked() ? "fast" : "0");
+            WindwakeSettings.update(settings(), changes, WindwakeSession::sync);
+            return "Ajustes salvos para o próximo início do jogo.";
+        }));
+        body.addView(smooth); gap(12);
         for (int i = 0; i < WindwakeSettings.NAMES.length; i++) {
             final int choice = i;
             LinearLayout card = card();
@@ -142,7 +156,7 @@ public final class WindwakeActivity extends Activity {
             }));
             body.addView(card); gap(12);
         }
-        paragraph("Todos mantêm a lógica a 30 FPS, VSync e proteção térmica normal. Interpolação de 60 FPS pode ser experimentada no menu do jogo após medir o desempenho.");
+        paragraph("Os perfis mantêm a lógica a 30 FPS, VSync e proteção térmica normal. O preparo opcional dos shaders dos modelos está em Gerenciar instalação. Interpolação de 60 FPS aumenta a carga e deve ser medida antes de usar.");
     }
 
     private void controls() {

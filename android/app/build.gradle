@@ -16,8 +16,8 @@ android {
         minSdk 33
         targetSdk 36
         // release.yml passes the release version and a growing build number; local builds keep these
-        versionCode providers.gradleProperty('wwhdVersionCode').map { it as int }.getOrElse(2)
-        versionName providers.gradleProperty('wwhdVersionName').getOrElse('0.2.0-windwake')
+        versionCode providers.gradleProperty('wwhdVersionCode').map { it as int }.getOrElse(3)
+        versionName providers.gradleProperty('wwhdVersionName').getOrElse('0.3.0-windwake')
         ndk { abiFilters providers.gradleProperty('wwhdAbi').getOrElse('arm64-v8a') }
     }
     buildFeatures { buildConfig true }
@@ -50,8 +50,8 @@ android {
         }
     }
     sourceSets.main.jniLibs.srcDirs = ['libs']
-    // Verified v0.5.0 runtime-only SDK. Java is rebuilt from this fork; game code is built on device.
-    def runtimePackage = rootProject.file('../build/vendor/runtime-v0.5.0')
+    // Pinned v0.5.0 runtime plus the verified, authored startup-touch object; no game code.
+    def runtimePackage = rootProject.file('../build/vendor/runtime-v0.5.0-windwake')
     sourceSets.main.jniLibs.srcDirs += [new File(runtimePackage, 'jniLibs')]
     sourceSets.main.assets.srcDirs += [new File(runtimePackage, 'assets')]
     def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
@@ -110,7 +110,7 @@ tasks.matching { it.name == 'preReleaseBuild' }.configureEach { dependsOn 'verif
 
 tasks.register('verifyWindwakeRuntime') {
     doLast {
-        def runtime = rootProject.file('../build/vendor/runtime-v0.5.0')
+        def runtime = rootProject.file('../build/vendor/runtime-v0.5.0-windwake')
         ['assets/python-source.zip', 'assets/runtime-sdk.json', 'assets/python-build.json',
          'assets/toolchain-apk.json', 'jniLibs/arm64-v8a/libSDL3.so',
          'jniLibs/arm64-v8a/libwwhd-clang-driver.so'].each { name ->

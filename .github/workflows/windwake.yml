@@ -3,9 +3,23 @@ on:
   workflow_dispatch:
   push:
     branches: ['windwake/**']
-    paths: ['android/**', 'tools/windwake/**', '.github/workflows/windwake.yml']
+    paths:
+      - 'android/**'
+      - 'tools/windwake/**'
+      - '.github/workflows/windwake.yml'
+      - 'runtime/src/mods/context_touch.cpp'
+      - 'runtime/src/mods/context_touch.h'
+      - 'runtime/src/mods/startup_touch.h'
+      - 'CMakeLists.txt'
   pull_request:
-    paths: ['android/**', 'tools/windwake/**', '.github/workflows/windwake.yml']
+    paths:
+      - 'android/**'
+      - 'tools/windwake/**'
+      - '.github/workflows/windwake.yml'
+      - 'runtime/src/mods/context_touch.cpp'
+      - 'runtime/src/mods/context_touch.h'
+      - 'runtime/src/mods/startup_touch.h'
+      - 'CMakeLists.txt'
 permissions:
   contents: read
 concurrency:
@@ -27,6 +41,9 @@ jobs:
       - run: python tools/windwake/bootstrap_android.py
       - run: python tools/windwake/test_safety.py
       - run: python tools/windwake/test_touch.py
+      - run: python tools/windwake/test_runtime_patch.py
+      - run: python tools/windwake/test_build_runtime_patch.py
+      - run: python tools/windwake/test_performance_analysis.py
       - run: ./gradlew.bat :app:assembleRelease -PwwhdQuestTheater=false --console=plain --no-daemon --max-workers=2 '-Dorg.gradle.jvmargs=-Xmx1024m'
         working-directory: android
       - run: python tools/windwake/verify_apk.py android/app/build/outputs/apk/release/app-release.apk

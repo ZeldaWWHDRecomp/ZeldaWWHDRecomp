@@ -17,3 +17,9 @@ subprocess.run(['java', '-ea', '-cp', str(OUT), 'org.wwhdrecomp.wwhd.WindwakeInp
 subprocess.run(['javac', '-encoding', 'UTF-8', '-cp', str(OUT), '-d', str(OUT), str(SRC / 'WindwakeTouchProfile.java'), str(SRC / 'ContextPack.java'), str(SRC / 'WindwakeScopeState.java'),
                 str(Path(__file__).with_name('WindwakeTouchProfileTest.java'))], check=True)
 subprocess.run(['java', '-ea', '-cp', str(OUT), 'org.wwhdrecomp.wwhd.WindwakeTouchProfileTest'], check=True)
+subprocess.run(['javac', '-encoding', 'UTF-8', '-cp', str(OUT), '-d', str(OUT), str(SRC / 'WindwakeStartupTouch.java'),
+                str(Path(__file__).with_name('WindwakeStartupTouchTest.java'))], check=True)
+subprocess.run(['java', '-ea', '-cp', str(OUT), 'org.wwhdrecomp.wwhd.WindwakeStartupTouchTest'], check=True)
+subprocess.run(['javac', '-encoding', 'UTF-8', '-cp', str(OUT), '-d', str(OUT), str(SRC / 'WindwakeTouchRedraw.java'),
+                str(Path(__file__).with_name('WindwakeTouchRedrawTest.java'))], check=True)
+subprocess.run(['java', '-ea', '-cp', str(OUT), 'org.wwhdrecomp.wwhd.WindwakeTouchRedrawTest'], check=True)

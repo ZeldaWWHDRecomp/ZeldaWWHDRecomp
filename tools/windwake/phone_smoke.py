@@ -70,15 +70,41 @@ def main(serial):
         x = round(x1 + pad + (x2 - x1 - 2 * pad) * (percent - 25) / 275)
         call('shell', 'input', 'tap', str(x), str((y1 + y2) // 2))
 
+    def apply_profile(name):
+        tap('PERFIS')  # redraw from the top before locating a card by its label
+        for _ in range(10):
+            for card in dump():
+                if not any(child.get('text') == name for child in card):
+                    continue
+                target = next((child for child in card if child.get('text') == 'Aplicar perfil'), None)
+                if target is not None:
+                    x1, y1, x2, y2 = map(int, re.findall(r'\d+', target.get('bounds')))
+                    if 180 <= y1 < y2 < dimensions[1] - 120:
+                        call('shell', 'input', 'tap', str((x1+x2)//2), str((y1+y2)//2))
+                        return
+            call('shell', 'input', 'swipe', str(dimensions[0]//2), str(dimensions[1]-300),
+                 str(dimensions[0]//2), str(dimensions[1]//2), '400')
+        raise AssertionError('Profile card not reachable: ' + name)
+
     result = {}
     call('shell', 'am', 'start', '-W', '-n', 'dev.windwake.android/org.wwhdrecomp.wwhd.WindwakeActivity')
-    tap('PERFIS')
-    tap('Aplicar perfil', 1)
+    apply_profile('Economia')
     expect({'dynResMin': '0.5', 'fps60': '0', 'heatGuard': 'normal'})
     result['economy_profile'] = True
-    tap('Aplicar perfil', 0)
-    expect({'dynResMin': '0.75', 'fps60': '0'})
+    apply_profile('Poco · equilíbrio')
+    expect({'dynResMin': '0.75', 'fps60': '0', 'vkRecordWorker': '0'})
     result['poco_profile'] = True
+    tap('PERFIS')
+    tap('Gráficos em uma segunda thread')
+    tap('Reduzir espera por shaders')
+    scroll_to('Aplicar ajustes de fluidez'); tap('Aplicar ajustes de fluidez')
+    expect({'vkRecordWorker': '1', 'backgroundShaders': 'fast'})
+    tap('PERFIS')
+    tap('Gráficos em uma segunda thread')
+    tap('Reduzir espera por shaders')
+    scroll_to('Aplicar ajustes de fluidez'); tap('Aplicar ajustes de fluidez')
+    expect({'vkRecordWorker': '0', 'backgroundShaders': '0'})
+    result['graphics_worker_and_shader_options'] = True
     tap('TOUCH')
     sensitivity('Sensibilidade da câmera', 150)
     sensitivity('Sensibilidade da mira', 85)

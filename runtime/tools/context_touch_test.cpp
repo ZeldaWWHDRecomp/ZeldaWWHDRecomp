@@ -32,6 +32,11 @@ int main() {
     assert(names[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kItemNamesA));
     e.item_names_a = false;
     assert(out[2] == 7 && out[3] == 0);
+    e.startup_scene = startup_touch::kFileSelect;
+    int32_t startup[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, startup, ctxtouch::kPackLen);
+    assert(startup[3] == startup_touch::pack(startup_touch::kFileSelect));
+    assert(startup[4] == out[4]);  // the optional header extension never moves the button slots
     auto st = [&](int i) { return out[ctxtouch::kButtons + 3 * i]; };
     auto lb = [&](int i) { return out[ctxtouch::kButtons + 3 * i + 1]; };
     assert(st(ctxbtn::kA) == (ctxtouch::kShown | 1 << ctxtouch::kKindShift) && lb(ctxbtn::kA) == playctx::kActSpeak);

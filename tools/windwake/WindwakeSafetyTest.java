@@ -153,6 +153,24 @@ public final class WindwakeSafetyTest {
                 } finally { child.destroyForcibly().waitFor(); }
                 try (SessionLease lease = SessionLease.acquire(root.toFile())) { }
             });
+            test("performance migration keeps explicit graphics choices and subsequent changes", () -> {
+                File ini = temp.resolve("performance/settings.ini").toFile();
+                WindwakeSettings.update(ini, Map.of("vkRecordWorker", "1", "backgroundShaders", "fast", "resScale", "2"), dir -> {});
+                WindwakeSettings.defaults(ini, dir -> {});
+                Map<String, String> migrated = WindwakeSettings.read(ini);
+                check(migrated.get("vkRecordWorker").equals("1") && migrated.get("backgroundShaders").equals("fast") && migrated.get("resScale").equals("2"), "explicit graphics choice was reset");
+                for (int choice = 0; choice < WindwakeSettings.NAMES.length; choice++) {
+                    check(!WindwakeSettings.profile(choice).containsKey("vkRecordWorker"), "graphics profile overrides the independent worker choice");
+                    WindwakeSettings.update(ini, WindwakeSettings.profile(choice), dir -> {});
+                    check(WindwakeSettings.read(ini).get("vkRecordWorker").equals("1"), "profile reset an explicit native worker choice");
+                }
+                File fresh = temp.resolve("performance/fresh.ini").toFile();
+                WindwakeSettings.defaults(fresh, dir -> {});
+                check(WindwakeSettings.read(fresh).get("vkRecordWorker").equals("0"), "experimental worker must start disabled");
+                WindwakeSettings.update(fresh, Map.of("vkRecordWorker", "1"), dir -> {});
+                WindwakeSettings.defaults(fresh, dir -> {});
+                check(WindwakeSettings.read(fresh).get("vkRecordWorker").equals("1"), "performance migration reset a later native worker choice");
+            });
             System.out.println(tests + " safety contracts passed");
         } finally { TransactionalSaveStore.remove(temp.toFile()); }
     }

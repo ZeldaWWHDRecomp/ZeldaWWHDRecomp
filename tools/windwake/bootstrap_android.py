@@ -1,7 +1,9 @@
-"""Fetch verified build tools and the matching, game-free upstream Android runtime.
+"""Fetch the pinned upstream Android runtime, then apply the authored touch object.
 
 The v0.5.0 runtime SDK contains runtime objects, never translated game code. The
 player's game is compiled locally by the setup already included in that SDK.
+The base remains separate and unchanged; the patch verifies its source hashes,
+ELF/JNI payload, SDK identity and the two permitted modified assets.
 """
 import hashlib
 from pathlib import Path
@@ -9,11 +11,15 @@ import shutil
 import urllib.request
 import zipfile
 
+import runtime_patch
+
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / 'build' / 'vendor'
 SDK = ROOT / 'build' / 'android-sdk'
 APK_URL = 'https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases/download/v0.5.0/WindWakerHD-v0.5.0-android-arm64.apk'
 APK_SHA256 = '6af660aac1c67e5d99bbc653b1c2b9f0e429a8513e0e9ca0c497b0c37177f791'
+PATCH = ROOT / 'tools/windwake/runtime-patches/startup-touch-v1.zip'
+PATCHED_RUNTIME = BUILD / 'runtime-v0.5.0-windwake'
 
 
 def download(url, output, expected, algorithm='sha256'):
@@ -75,6 +81,9 @@ def main():
             raise ValueError('Runtime-only dependency unexpectedly contains a game library')
     extract_checked(apk, runtime / 'assets', 'assets/')
     extract_checked(apk, runtime / 'jniLibs' / 'arm64-v8a', 'lib/arm64-v8a/')
+    patched = runtime_patch.apply(runtime, PATCH, ROOT, PATCHED_RUNTIME)
+    print('Runtime ready: pinned upstream v0.5.0 plus one verified authored startup-touch object; identity',
+          patched['runtime_identity'], flush=True)
     for name, relative, sha1, prefix, target in [
         ('platform-36.zip', 'platform-36_r02.zip', '2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576', 'android-36/', SDK / 'platforms' / 'android-36'),
         ('build-tools-35.zip', 'build-tools_r35_windows.zip', 'af059bb67cf7786f45ee0db85e2d24985df1b4b6', 'android-15/', SDK / 'build-tools' / '35.0.0'),
