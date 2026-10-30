@@ -36,10 +36,11 @@ struct Writer {
     if ((count && !p) || size == 0) {
       failure = PodFailureReason::InvalidInput; valid = false; return;
     }
-    if (count > (limit - used) / size) {
+    // overflow-checked multiply: a division here cost a large share of the packet recording
+    size_t n;
+    if (__builtin_mul_overflow(count, size, &n) || n > limit - used) {
       failure = PodFailureReason::ByteBudgetOrOverflow; valid = false; return;
     }
-    const size_t n = count * size;
     if (!n) return;
     const size_t next = used + n;
     if (overflow.empty() && next <= inline_bytes.size()) {
