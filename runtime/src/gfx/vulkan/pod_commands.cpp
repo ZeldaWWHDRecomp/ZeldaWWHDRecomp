@@ -126,12 +126,14 @@ bool PodCommands::append(uint32_t opcode,
     return reject(PodFailureReason::ByteBudgetOrOverflow);
   const Header h{opcode, uint32_t(payload.size())};
   try {
-    auto old = bytes_.size();
-    bytes_.resize(old + sizeof h + payload.size());
-    std::memcpy(bytes_.data() + old, &h, sizeof h);
-    if (!payload.empty())
-      std::memcpy(bytes_.data() + old + sizeof h, payload.data(),
-                  payload.size());
+    // Reserve (geometric growth) before writing: an allocation failure leaves the stream unchanged.
+    // The inserts then copy without the zero fill resize() would do first.
+    const size_t needed = bytes_.size() + sizeof h + payload.size();
+    if (needed > bytes_.capacity())
+      bytes_.reserve(std::max(needed, bytes_.capacity() * 2));
+    const auto* header = reinterpret_cast<const std::byte*>(&h);
+    bytes_.insert(bytes_.end(), header, header + sizeof h);
+    bytes_.insert(bytes_.end(), payload.begin(), payload.end());
     ++commands_;
     return true;
   } catch (const std::bad_alloc &) {
