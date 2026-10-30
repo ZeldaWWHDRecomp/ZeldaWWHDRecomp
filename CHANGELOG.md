@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Touch controls: Link in the button pictures.** Action buttons show a small picture of Link in that action's pose:
+  jumping on Jump, swinging the sword on the sword button, crouching, rolling, lifting, talking, defending and more,
+  with the game's word under him. The pictures are drawn from your own game files when the game starts; nothing is
+  shipped. Settings → Display → Touch controls → **Link in the button pictures** (on by default). Idea from
+  GreenNaugahyde's Android fork, thanks @GreenNaugahyde.
+- **Settings plays the game's menu sounds.** Moving, choosing, changing an option, switching tabs, going back and
+  opening or closing Settings play the game's own menu sounds, mixed like its other sounds; in TV play they follow
+  **GamePad sounds through main speakers**. Settings → Audio → **Menu sounds** (on by default); silent while the game
+  is in the background or muted. Idea from GreenNaugahyde's Android fork, thanks @GreenNaugahyde.
 - **GameCube controller layout** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** in Controls, or let
   Automatic pick it for a GameCube pad that has no custom bindings yet: A acts, B is the sword, X, Y and Z use the
   item slots, L targets and R shields (from 25% travel), the C-stick turns the camera and a tap of Start opens the
