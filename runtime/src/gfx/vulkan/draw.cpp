@@ -2192,11 +2192,21 @@ VkImageView feedback_view(Surface *source, const uint32_t *textureWords,
 // resolution gives with the state it could not continue, by exact combination of changed groups
 // ([vulkan fastpath oracle] lines with the statistics). WWHD_VK_PROF_SPLIT=1: the render profiler
 // also reports its draw phases for continued and register-broken full draws apart.
+// WWHD_VK_FASTPATH_PARTIAL=1 (off by default): partial continuation. A draw that registers kept from
+// continuing resolves its fetch/vertex/pixel shaders as a full draw does; when they are the state's
+// own, it reuses the state's render targets, pipeline and each stage's texture/sampler bindings
+// whose inputs did not change (gx2/state_groups.h kSgPartial*Mask, from the register groups changed
+// since the state was recorded) and resolves the rest; any other difference (another frame, surface
+// epoch, primitive, settings, an "other" register group) resolves in full. Reused textures still go
+// through upload_surface first, and a stage is reused only while the surface epoch is the state's.
+// The draw records its state as a full one does. With WWHD_VK_FASTPATH_VERIFY=N, every Nth partial
+// draw also runs the full resolution against everything it recorded (a mismatch is logged and ends
+// the continuation; that draw has already used the state).
 struct FastPathConfig {
   bool on = false;
   bool stats = false;
   uint32_t verifyEvery = 0;
-  bool oracle = false, profSplit = false;
+  bool oracle = false, profSplit = false, partial = false;
 };
 const FastPathConfig& fastpath_config() {
   static const FastPathConfig config = [] {
@@ -2209,9 +2219,11 @@ const FastPathConfig& fastpath_config() {
     c.oracle = c.on && o && std::atoi(o) != 0;
     const char* ps = std::getenv("WWHD_VK_PROF_SPLIT");
     c.profSplit = c.on && ps && std::atoi(ps) != 0;
+    const char* pa = std::getenv("WWHD_VK_FASTPATH_PARTIAL");
+    c.partial = c.on && pa && std::atoi(pa) != 0;
     c.stats = preparation_stats_enabled() || c.verifyEvery || c.oracle;
-    LOG("[vulkan] continued-draw fast path %s%s%s%s", c.on ? "on" : "off (WWHD_VK_FASTPATH=0)", c.verifyEvery ? " (verify mode)" : "",
-        c.oracle ? " (oracle)" : "", c.profSplit ? " (profiler split)" : "");
+    LOG("[vulkan] continued-draw fast path %s%s%s%s%s", c.on ? "on" : "off (WWHD_VK_FASTPATH=0)", c.verifyEvery ? " (verify mode)" : "",
+        c.oracle ? " (oracle)" : "", c.profSplit ? " (profiler split)" : "", c.partial ? " (partial continuation)" : "");
     return c;
   }();
   return config;
@@ -2270,6 +2282,10 @@ struct ContinuedDraw {
 };
 // Stereo: each eye's command stream continues its own previous draw (stereo.h).
 std::array<ContinuedDraw, 2> continuedEyes;
+// WWHD_VK_FASTPATH_PARTIAL: per eye, the register groups changed since the eye's state was recorded.
+// Every draw's take_dirty_groups goes to both eyes (they share the register stream) before any early
+// return, so neither a culled or empty draw nor eye 0 taking the changes loses a group.
+std::array<uint32_t, 2> partialGroups{};
 // Stereo: eye 1 draws the same guest operation right after eye 0 (draw_stereo), with the same
 // registers, so it takes eye 0's fetch, vertex and pixel shaders instead of looking them up again.
 // When eye 0's draw completed in the same submission, eye 1 also replays its index and vertex
@@ -2323,6 +2339,10 @@ const StereoShaders* backdropShadersIn = nullptr; // exact original draw, no gue
 const StereoShaders* stereoShadersIn = nullptr;  // eye 1's draw reuses
 struct ContinuedStats {
   uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
+  // WWHD_VK_FASTPATH_PARTIAL: register draws that could continue in part, those with the state's
+  // shaders, and of those the pieces reused
+  uint64_t partialCandidates = 0, partial = 0, partialTargets = 0, partialPipeline = 0;
+  std::array<uint64_t, 2> partialStages{};
   std::array<uint64_t, kReasons> reasons{};
   std::array<uint64_t, gx2::kSgCount> groups{};  // register groups that ended a continuation
   std::array<uint64_t, 8> mismatchKinds{};
@@ -2446,6 +2466,14 @@ void report_continued_stats() {
       k += std::snprintf(buf + k, sizeof buf - k, "; groups/frame:");
       for (int g = 0; g < gx2::kSgCount && k < int(sizeof buf); ++g)
         if (st.groups[g]) k += std::snprintf(buf + k, sizeof buf - k, " %s %.0f", gx2::state_group_name(g), st.groups[g] / frames);
+    }
+    if (fastpath_config().partial && k < int(sizeof buf)) {
+      auto pct = [&](uint64_t a) { return st.partial ? 100.0 * a / st.partial : 0.0; };
+      k += std::snprintf(buf + k, sizeof buf - k,
+                         "; partial: %.1f/frame of %.1f candidates (reused targets %.0f%% pipeline %.0f%% "
+                         "vs textures %.0f%% ps textures %.0f%%)",
+                         st.partial / frames, st.partialCandidates / frames, pct(st.partialTargets),
+                         pct(st.partialPipeline), pct(st.partialStages[0]), pct(st.partialStages[1]));
     }
     if (fastpath_config().verifyEvery && k < int(sizeof buf))
       k += std::snprintf(buf + k, sizeof buf - k, "; verify: %llu checked, %llu mismatches (total %llu of %llu)",
@@ -3102,7 +3130,9 @@ bool replay_stage(const StageReplay& in, const uint32_t* r, vk::Shader* sh, floa
   return true;
 }
 // WWHD_VK_FASTPATH_VERIFY: the full resolution of a continued draw, compared with the reused state
-bool verify_continued(const uint32_t* r, uint32_t prim) {
+// (partial: of a partial continuation, compared with the state it recorded)
+// textures=false: shaders, topology, targets and pipeline only (a partial draw whose new stage cannot continue)
+bool verify_continued(const uint32_t* r, uint32_t prim, bool partial = false, bool textures = true) {
   const auto& c = continuedEyes[stereoEye];
   int kind = -1;
   char detail[200] = "";
@@ -3118,7 +3148,7 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   else if (primitive_topology(prim) != c.topology) kind = 7;
   else if (!resolve_targets(r, ps, t) || !t.same(c.targets)) kind = 3;
   else if (&pipeline(r, vs, ps, fs, c.topology, t.colors, t.depth) != c.pipeline) kind = 4;
-  else
+  else if (textures)
     for (int stage = 0; stage < 2 && kind < 0; ++stage) {
       vk::Shader* sh = stage ? ps : vs;
       const auto& cs = c.stages[stage];
@@ -3153,8 +3183,9 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   static int logged = 0;
   if (logged < 50) {
     ++logged;
-    LOG("[vulkan fastpath] verify mismatch #%llu: %s%s; frame %llu draw %llu prim %u vs %08X ps %08X fs %08X",
-        (unsigned long long)st.totalMismatches, mismatchKindNames[kind], detail, (unsigned long long)R.frame,
+    LOG("[vulkan fastpath] verify mismatch #%llu%s: %s%s; frame %llu draw %llu prim %u vs %08X ps %08X fs %08X",
+        (unsigned long long)st.totalMismatches, partial ? " (partial continuation)" : "", mismatchKindNames[kind], detail,
+        (unsigned long long)R.frame,
         (unsigned long long)R.drawCount, prim, r[mmSQ_PGM_START_VS] << 8, r[mmSQ_PGM_START_PS] << 8,
         r[mmSQ_PGM_START_FS] << 8);
   }
@@ -3177,6 +3208,15 @@ ContinuedReason continued_reason(const uint32_t* r, uint32_t prim) {
     c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
   }
   return kContinued;
+}
+// WWHD_VK_FASTPATH_PARTIAL: a draw that registers kept from continuing (kRegisters: the state is
+// valid and of this frame) may reuse pieces of the state: everything else continued_reason checks
+// holds, and no register outside the known groups changed
+bool partial_candidate(uint32_t prim) {
+  const auto& c = continuedEyes[stereoEye];
+  return c.surfaceEpoch == g_surface_epoch && c.prim == prim && c.aoMode == ao_mode() &&
+         c.aoHires == ao_hires_enabled() && c.aniso == aniso_enabled() && c.pipeline &&
+         !(partialGroups[stereoEye] >> gx2::kSgOther & 1);
 }
 } // namespace
 // Sizing (WWHD_VK_MEMORY_LOG_FRAMES): the game's pipelines (never freed), those still compiling (each holds its two
@@ -3299,6 +3339,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
   if (__builtin_expect(fastpath_config().oracle, 0))
     for (auto& g : oracle.groups) g |= dirtyGroups;
+  if (__builtin_expect(fastpath_config().partial, 0))
+    for (auto& g : partialGroups) g |= dirtyGroups;
   auto& continued = continuedEyes[stereoEye];
   // the top-level stereo draw only, never the AO replay below
   StereoShaders* shadersOut = std::exchange(stereoShadersOut, nullptr);
@@ -3357,6 +3399,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   bool fast = false;
   bool registerBreak = false;  // resolved in full for changed registers
+  bool partialCandidate = false;  // WWHD_VK_FASTPATH_PARTIAL: such a draw may reuse pieces of the state
   uint32_t oracleCombo = 0;    // WWHD_VK_FASTPATH_ORACLE: the breaking groups of such a draw
   if (fastPathDraw) {
     if (fastPath.stats) report_continued_stats();
@@ -3378,6 +3421,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     }
     fast = reason == kContinued;
     registerBreak = reason == kRegisters;
+    partialCandidate = fastPath.partial && registerBreak && partial_candidate(prim);
+    continuedStats.partialCandidates += partialCandidate;
     if (fastPath.oracle) {
       // the state this draw could not continue, before the full path below replaces it
       if (registerBreak) {
@@ -3430,6 +3475,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       exception_report::raise("missing Vulkan fetch shader");
     vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
   }
+  // WWHD_VK_FASTPATH_PARTIAL: the state's own shaders (the state's fields stay as recorded until this
+  // draw records its own); partialChanged: the breaking groups changed since it was recorded
+  // Not while 60 fps (generated) adds the HUD coverage: it changes a draw's targets and pipeline (covSlot below).
+  const bool partial = partialCandidate && fs == continued.fs && fsKey == continued.fsKey && vs == continued.vs &&
+                       ps == continued.ps && vs && vs->ready() && ps && ps->ready() && !reproj::hud_coverage_wanted();
+  const uint32_t partialChanged = partial ? partialGroups[stereoEye] & ~gx2::kSgContinuedMask : 0;
   rprof::mark(rprof::kShader);
   if (shadersOut && vs && vs->ready() && ps && ps->ready()) {
     shadersOut->fs = fs;
@@ -3614,8 +3665,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   rprof::mark(rprof::kIndices);
   DrawTargets targets;
+  // partial: the state's targets while their registers did not change and the scissor leaves the
+  // same colour buffers active (continued_reason)
+  const bool partialTargets = partial && !(partialChanged & gx2::kSgPartialTargetsMask) &&
+      (r[REGADDR::PA_SC_GENERIC_SCISSOR_BR] == continued.scissorBR ||
+       LatteMRT::GetActiveColorBufferMask(ps->dec, *reinterpret_cast<const LatteContextRegister*>(r)) ==
+           continued.targets.activeColors);
   if(backdropReplay) targets=backdropReplay->targets;
-  else if (fast) targets = continued.targets;
+  else if (fast || partialTargets) targets = continued.targets;
   else if (!(replay ? resolve_replay_targets(r, ps, targets) : resolve_targets(r, ps, targets)))
     return;
   if (auto* backdrop = gamepad_backdrop_replay_target()) {
@@ -3646,7 +3703,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         reproj::hud_coverage_failed();  // this frame's in-between one: the HUD found by comparing pictures
       }
     }
-  Pipeline* pp = fast ? continued.pipeline
+  // partial: the same pipeline key (same shaders, topology and targets, no key register changed)
+  const bool partialSameTargets = partial && targets.same(continued.targets);
+  const bool partialPipeline = partialSameTargets && topology == continued.topology &&
+                               !(partialChanged & gx2::kSgPartialPipelineMask);
+  Pipeline* pp = fast || partialPipeline ? continued.pipeline
       : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? replay->pipeline
       : &pipeline(r, vs, ps, fs, topology, colors, depth, covSlot);
   if (covSlot) {  // its coverage variant still compiling (or failed): drawn as usual, the frame generated the old way
@@ -3688,8 +3749,25 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       ? (stereoEye ? 1.0f : -1.0f)*stereo::frame.depth*stereo::eyeDistanceAtUnitDepth : 0.0f;
   const bool sunShadow = ps->kind == gfx::ProgramKind::SunShadowMask;
   const bool recordState = fastPathDraw && !fast;
-  if (recordState)
+  if (recordState && !partial)
     for (auto& stage : continued.stages) stage = {};
+  // partial: a stage keeps the state's texture/sampler bindings while the targets are the same and no
+  // texture or sampler register changed. As on a continued draw, its textures' guest writes upload
+  // first; an upload (of these or of the vertex stage's resolution before) ends the surface epoch
+  // the bindings were resolved in, and the stage resolves in full. Each stage decides right before
+  // it binds, so the pixel stage sees what the vertex stage uploaded, in the full path's order.
+  const bool partialTextures = partialSameTargets && !(partialChanged & gx2::kSgPartialTexturesMask);
+  std::array<bool, 2> partialStage{};
+  auto partial_stage = [&](int s) {
+    if (!partial) return;
+    auto& stage = continued.stages[s];
+    if (partialTextures) {
+      for (uint32_t i = 0; i < stage.count; ++i) upload_surface(stage.textures[i].surface);
+      partialStage[s] = g_surface_epoch == continued.surfaceEpoch;
+    }
+    if (!partialStage[s]) stage = {};
+  };
+  partial_stage(0);
   // eye 1 replays a stage of eye 0's draw at the same scale through the same pipeline
   const bool replayStages = replay && &p == replay->pipeline && replay->sx == sx && replay->sy == sy;
   StageResources vres, pres;
@@ -3703,13 +3781,16 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (!replayStages || !replay->stages[0].valid ||
       !replay_stage(replay->stages[0], r, vs, cameraEye, colors, depth, vres))
     vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe, cameraEye, sunShadow,
-                      fast ? &continued.stages[0] : nullptr, recordState ? &continued.stages[0] : nullptr,
+                      fast || partialStage[0] ? &continued.stages[0] : nullptr,
+                      recordState && !partialStage[0] ? &continued.stages[0] : nullptr,
                       shadersOut ? &shadersOut->stages[0] : nullptr);
+  partial_stage(1);
   if (!replayStages || !replay->stages[1].valid ||
       !replay_stage(replay->stages[1], r, ps, sunShadow ? cameraEye : 0, colors, depth, pres))
     pres = bind_stage(r, ps, p.sets[1], p.dynamicUniforms, sx, sy, colors, depth, probe,
                       sunShadow ? cameraEye : 0, sunShadow,
-                      fast ? &continued.stages[1] : nullptr, recordState ? &continued.stages[1] : nullptr,
+                      fast || partialStage[1] ? &continued.stages[1] : nullptr,
+                      recordState && !partialStage[1] ? &continued.stages[1] : nullptr,
                       shadersOut ? &shadersOut->stages[1] : nullptr);
   }
   if (shadersOut) {
@@ -3747,10 +3828,31 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       c.targets = targets;
       c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
       c.pipeline = &p;
+      partialGroups[stereoEye] = 0;  // the groups changed since this state
+      if (partial) {
+        auto& st = continuedStats;
+        ++st.partial;
+        st.partialTargets += partialTargets;
+        st.partialPipeline += partialPipeline;
+        st.partialStages[0] += partialStage[0];
+        st.partialStages[1] += partialStage[1];
+        // WWHD_VK_FASTPATH_VERIFY: the full resolution against everything this draw recorded,
+        // reused or resolved (the texture lists only of a state that can continue: a stage that cannot
+        // was resolved in full, but the targets and pipeline it was drawn with may have been reused)
+        static uint64_t partialVerifyCounter = 0;
+        if (fastPath.verifyEvery && ++partialVerifyCounter % fastPath.verifyEvery == 0) {
+          ++st.verified;
+          ++st.totalVerified;
+          if (!verify_continued(r, prim, true, c.valid)) {
+            c.valid = false;
+            c.invalidReason = kVerifyMismatch;
+          }
+        }
+      }
       if (fastPath.oracle) {
         OracleKey key;
         oracle_ps_key(r, key);
-        if (registerBreak) oracle_count(oracleCombo, oracle.saved[stereoEye], c, oracle.psKey[stereoEye], key);
+        if (registerBreak && !partial) oracle_count(oracleCombo, oracle.saved[stereoEye], c, oracle.psKey[stereoEye], key);
         oracle.psKey[stereoEye] = key;
       }
     }
