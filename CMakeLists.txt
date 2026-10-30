@@ -128,6 +128,39 @@ option(WWHD_PPC_TRACE "game code checks the function-entry trace switch (WWHD_TR
 if(NOT WWHD_PPC_TRACE)
   target_compile_definitions(gamecode PRIVATE PPC_NO_TRACE=1)
 endif()
+# Profile-guided optimization of the runtime (the render thread): WWHD_PGO_GENERATE=<dir> builds an
+# instrumented runtime that writes profiles there; WWHD_PGO_USE=<file.profdata> optimizes with them.
+# WWHD_PGO_GAMECODE=ON also profiles the recompiled game code (the logic thread).
+# WWHD_PGO_CS_GENERATE=<dir> with WWHD_PGO_USE builds a context-sensitive (post-inline) instrumented
+# binary on top of that profile; merge its profiles with the WWHD_PGO_USE one for the final build.
+set(WWHD_PGO_GENERATE "" CACHE PATH "write runtime PGO profiles to this folder")
+set(WWHD_PGO_USE "" CACHE FILEPATH "optimize the runtime with this merged .profdata")
+set(WWHD_PGO_CS_GENERATE "" CACHE PATH "write context-sensitive PGO profiles to this folder")
+option(WWHD_PGO_GAMECODE "apply PGO to the game code too" OFF)
+if(WWHD_PGO_CS_GENERATE AND WWHD_PGO_USE)
+  add_compile_options(-fprofile-use=${WWHD_PGO_USE} -fcs-profile-generate=${WWHD_PGO_CS_GENERATE}
+                      -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+  add_link_options(-fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE}
+                         -fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+elseif(WWHD_PGO_GENERATE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-generate=${WWHD_PGO_GENERATE}>)
+  add_link_options(-fprofile-generate=${WWHD_PGO_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-generate=${WWHD_PGO_GENERATE})
+  endif()
+elseif(WWHD_PGO_USE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-use=${WWHD_PGO_USE}>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-unprofiled>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-out-of-date>)
+  add_link_options(-fprofile-use=${WWHD_PGO_USE})  # LTO backend: applies a context-sensitive profile
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE} -Wno-profile-instr-unprofiled
+                                            -Wno-profile-instr-out-of-date)
+  endif()
+endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
   target_compile_options(gamecode PRIVATE -mcpu=apple-m1)
 endif()
