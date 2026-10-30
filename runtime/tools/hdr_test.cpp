@@ -17,6 +17,7 @@ int main() {
  for(int curve=0;curve<3;++curve) {
   const auto choice=static_cast<hdr::SdrCurve>(curve);
   assert(hdr::decode(-.1f,choice)==0);
+  assert(std::abs(hdr::decode(1.2f,choice)-(curve==2?1.f:std::pow(1.2f,curve==0?2.2f:2.4f)))<1e-7f);
   for(auto input:{std::array<float,3>{0,0,0},{.05f,.05f,.05f},{.5f,.5f,.5f},{1,1,1},{.05f,.4f,1}}) {
    auto decoded=hdr::decode(input,choice);
    for(int k=0;k<3;++k) {

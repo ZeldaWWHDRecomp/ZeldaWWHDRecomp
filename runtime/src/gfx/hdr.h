@@ -33,6 +33,7 @@ inline float decode(float c, SdrCurve curve) {
     c=std::max(c,0.0f);
     if(curve==SdrCurve::Gamma22) return std::pow(c,2.2f);
     if(curve==SdrCurve::Gamma24) return std::pow(c,2.4f);
+    c=std::min(c,1.0f);
     return c<=0.04045f ? c/12.92f : std::pow((c+0.055f)/1.055f,2.4f);
 }
 inline std::array<float,3> decode(std::array<float,3> c, SdrCurve curve) {

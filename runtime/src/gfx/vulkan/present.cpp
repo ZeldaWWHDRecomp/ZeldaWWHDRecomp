@@ -26,6 +26,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -85,10 +86,9 @@ void main() {
           texture(image,at+vec2(-d.x,d.y)).rgb+texture(image,at+vec2(d.x,d.y)).rgb);
  }else c=texture(image,at).rgb;
  if(params.conv==1) {
-  c=clamp(c,0.0,1.0);
   if(params.hdrWhite>0.0 && params.hdrSdrCurve!=2)
    c=pow(max(c,vec3(0.0)),vec3(params.hdrSdrCurve==1?2.4:2.2));
-  else c=toLinear(c);
+  else c=toLinear(clamp(c,0.0,1.0));
  }
  else if(params.conv==2)c=toSrgb(clamp(c,0.0,1.0));
  if(params.hdrWhite>0.0) {
@@ -550,7 +550,7 @@ void test_hdr_presentation() {
    }
   }
   for(int curve=0;curve<3;++curve)for(bool pq:{false,true})
-  for(auto c:{std::array<float,3>{0,0,0},{0.05f,0.05f,0.05f},{0.5f,0.5f,0.5f},{1,1,1},{0.05f,0.4f,1}}) {
+  for(auto c:{std::array<float,3>{0,0,0},{0.05f,0.05f,0.05f},{0.5f,0.5f,0.5f},{1,1,1},{0.05f,0.4f,1},{1.2f,0.4f,0.05f}}) {
    hdr::sdrCurve=curve;
    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
    VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
