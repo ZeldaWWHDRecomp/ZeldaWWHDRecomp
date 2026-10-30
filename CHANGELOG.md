@@ -35,6 +35,15 @@ what is on `devel` and not released yet (also in the
   phones), the Picto Box now takes the same 16:9 picture as on the Wii U instead of squeezing the whole wide view, and
   its subject check only counts what is inside that 16:9 frame. Normal play keeps your full view. (#303, thanks
   @aaronlink127)
+- **Fixed: Linux on Mali (panvk): one colour over the whole picture at sea** (#317, follow-up to #310, thanks
+  @mkopec). v0.5.0's fix for the flickering sky clamped depth for every draw, which also let through a shape the game
+  draws right at the camera: near Outset, as soon as gameplay started, the picture became one solid colour. The sky
+  is now fixed differently: on panvk, draws that don't write depth clip in their shaders, as the Wii U's clipper does,
+  so clouds and haze stay whole and the camera-plane shape stays hidden; draws that write depth keep the GPU's own
+  path. A draw whose graphics-pack shader can't take this change is drawn the normal way. `WWHD_VK_CLIP_EMULATION=0`
+  turns it off, `=1` turns it on for other drivers that support depth clamp (`WWHD_VK_DEPTH_CLAMP_ALL` is gone).
+  Details in [docs/vulkan.md](docs/vulkan.md).
+
 ## v0.5.0
 
 - **Fixed: frame interpolation glitches.** With interpolation on (above 30 fps), the hookshot no longer leaves
