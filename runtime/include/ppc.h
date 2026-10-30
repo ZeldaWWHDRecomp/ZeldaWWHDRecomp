@@ -59,10 +59,18 @@ void ppc_trace_enter(uint32_t addr);
 /* per-core scheduling: a higher-priority thread on this core is ready, yield at the next function entry */
 extern volatile int g_core_preempt[3];
 void ppc_preempt(Cpu* c);
+/* PPC_NO_TRACE (CMake -DWWHD_PPC_TRACE=OFF): game code without the trace check, one load and branch
+   less per guest call; the WWHD_* trace and watch switches then see no function entries */
+#ifdef PPC_NO_TRACE
+#define PPC_ENTER(a) do {                                                     \
+        if (__builtin_expect(g_core_preempt[c->core], 0)) ppc_preempt(c);     \
+    } while (0)
+#else
 #define PPC_ENTER(a) do {                                                     \
         if (__builtin_expect(g_ppc_trace, 0)) ppc_trace_enter(a);             \
         if (__builtin_expect(g_core_preempt[c->core], 0)) ppc_preempt(c);     \
     } while (0)
+#endif
 
 /* guest mods (docs/mod-sdk-v2.md; game code generated with recomp.py --mod-hooks): every function body
    checks its flag byte; a set flag means a mod hooks or replaces it, and ppc_mod_run (c->pc = the

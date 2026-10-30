@@ -124,6 +124,10 @@ add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps
 target_compile_options(gamecode PRIVATE -O3 -ffp-contract=off -fno-strict-aliasing -fwrapv -w)
+option(WWHD_PPC_TRACE "game code checks the function-entry trace switch (WWHD_TRACE_FUNCS and friends)" ON)
+if(NOT WWHD_PPC_TRACE)
+  target_compile_definitions(gamecode PRIVATE PPC_NO_TRACE=1)
+endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
   target_compile_options(gamecode PRIVATE -mcpu=apple-m1)
 endif()
