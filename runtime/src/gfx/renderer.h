@@ -166,6 +166,9 @@ inline void set_aniso(bool v) { g_backend->set_aniso(v); }
 // Bloom intensity multiplier: 0 off, 1 original, 2 double. Shared by both renderers.
 float bloom_strength();
 void set_bloom_strength(float strength);
+// Tall grass draw distance (Vulkan): patches farther than this from Link are not drawn; 0 draws all, as the original.
+int grass_distance();
+void set_grass_distance(int distance);
 // Horizon haze, the pale band low in the sky: 1 original, 0 removed (a deeper blue sky). Shared by both
 // renderers; below 1 the sky-cloud hook (cloud_proto.cpp) is active.
 float horizon_haze();
