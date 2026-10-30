@@ -46,12 +46,16 @@ int main(int argc, char** argv) {
         assert(logs.front().find("=unknown") == std::string::npos);
 
     // Preserve explicitly disabled, enabled, empty and arbitrary inherited values verbatim.
+    // Not on Windows: its C runtime cannot hold an empty variable ("X=" deletes it), and the
+    // NVIDIA setting only exists on Linux.
+#ifndef _WIN32
     for (const char* override_value : {"0", "1", "", "custom"}) {
         assert(SDL_setenv_unsafe("__NV_DISABLE_EXPLICIT_SYNC", override_value, 1) == 0);
         wayland_startup::configure();
         value = std::getenv("__NV_DISABLE_EXPLICIT_SYNC");
         assert(value && std::strcmp(value, override_value) == 0);
     }
+#endif
     SDL_Quit();
     puts("wayland_startup_test: driver, protocol probe, native default and overrides passed");
 }
