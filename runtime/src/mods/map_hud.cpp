@@ -12,6 +12,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include "story_native_canonical_code_id.h"
+using story_native_code_identity::CANONICAL_CODE_ID;
 namespace guestmods::maphud {
 namespace { bool trace_enabled(){ static const bool on=std::getenv("WWHD_MAP_HUD_TRACE")!=nullptr; return on; } }
 
@@ -29,7 +31,7 @@ uint32_t ui=0,hud=0,compass=0,map=0,coordinator=0,compass_layout=0,map_layout=0;
 char stage[8]{};
 Rect rect{};
 bool eligible=false,have_rect=false;
-constexpr uint32_t kEvent=0x0269B238;
+constexpr uint32_t kEvent=CANONICAL_CODE_ID(0x0269B238).value();
 bool object(uint32_t p,uint32_t n=0x200){return !(p&3)&&p>=mem::kMem2Start&&p<=mem::kMem2End-n;}
 uint32_t word(uint32_t p,uint32_t offset){return object(p,offset+4)?ld32(p+offset):0;}
 void clear(){suppressed.store(0,std::memory_order_release);lease.clear();charts.clear();eligible=have_rect=false;++generation;}
@@ -106,13 +108,13 @@ void measure(){
 }
 bool valid_chart(Cpu* c,uint32_t index){
     if(index>=49||!object(coordinator)||!map)return false;
-    const uint32_t entry=query(c,0x02687A64,coordinator,index);
+    const uint32_t entry=query(c,CANONICAL_CODE_ID(0x02687A64).value(),coordinator,index);
     if(!object(entry,0x26))return false;
     const uint8_t type=ld8(entry+3);const int sea=int8_t(ld8(entry)),save=int8_t(ld8(entry+1));
     if(sea<1||sea>49||save<1||save>128||type>8||!((1u<<type)&0x167))return false;
-    if(!query(c,0x0268A570,coordinator,index)||!query(c,0x0268A5DC,coordinator,index))return false;
+    if(!query(c,CANONICAL_CODE_ID(0x0268A570).value(),coordinator,index)||!query(c,CANONICAL_CODE_ID(0x0268A5DC).value(),coordinator,index))return false;
     const uint32_t saved=ld32(GD(0x101F84DC));
-    return type!=0||(object(saved,0x200)&&query(c,0x025B8308,saved+0xE4,save-1));
+    return type!=0||(object(saved,0x200)&&query(c,CANONICAL_CODE_ID(0x025B8308).value(),saved+0xE4,save-1));
 }
 
 void event(Cpu* c){
@@ -139,8 +141,8 @@ void compass_destroy(Cpu* c){std::lock_guard guard(mutex);invalidate();original(
 }
 void install(Original call,const std::function<bool(uint32_t,bool)>& available,const std::function<void(uint32_t,Hook)>& replace){
     if(std::strcmp(g_guest_build_name,"USA")&&std::strcmp(g_guest_build_name,"EU"))return;
-    const uint32_t hooks[]={kEvent,0x026986C4,0x0264C4BC};
-    const uint32_t queries[]={0x02877100,0x02874D54,0x02687A64,0x0268A570,0x0268A5DC,0x025B8308};
+    const uint32_t hooks[]={kEvent,CANONICAL_CODE_ID(0x026986C4).value(),CANONICAL_CODE_ID(0x0264C4BC).value()};
+    const uint32_t queries[]={CANONICAL_CODE_ID(0x02877100).value(),CANONICAL_CODE_ID(0x02874D54).value(),CANONICAL_CODE_ID(0x02687A64).value(),CANONICAL_CODE_ID(0x0268A570).value(),CANONICAL_CODE_ID(0x0268A5DC).value(),CANONICAL_CODE_ID(0x025B8308).value()};
     for(auto fn:hooks)if(!guest_code_valid(fn)||!available(GC(fn),true))return;
     for(auto fn:queries)if(!guest_code_valid(fn)||!available(GC(fn),false))return;
     original=call;replace(GC(kEvent),event);
