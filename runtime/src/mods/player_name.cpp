@@ -9,6 +9,7 @@
 #include "story_lyt_text_markup.h"  // to_utf8
 #include "../console_language.h"
 #include "../input.h"
+#include "../savestate.h"
 #include "../overlay/text_entry.h"
 
 namespace player_name {
@@ -50,7 +51,8 @@ std::u16string read_name() {
 
 }  // namespace
 
-bool loaded() { return slot(save_info()) >= 0; }
+// (the title and the file select already hold every file's name, and mDataNum is 0 there)
+bool loaded() { return ss::in_gameplay() && slot(save_info()) >= 0; }
 
 std::string current() { return story_lyt_text::to_utf8(read_name()); }
 
@@ -84,7 +86,7 @@ void service(Cpu* c) {
     }
     const uint32_t sv = save_info();
     const int s = slot(sv);
-    if (s < 0) {
+    if (s < 0 || !ss::in_gameplay()) {
         LOG("[player-name] no save file is being played: the new name is dropped");
         return;
     }

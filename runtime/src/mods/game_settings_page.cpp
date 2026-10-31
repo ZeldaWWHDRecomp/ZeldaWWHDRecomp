@@ -28,7 +28,6 @@
 #include "console_language.h"
 #include "game_look.h"
 #include "guest_hud.h"
-#include "player_name.h"
 #include "story_notebook_game.h"
 #include "story_notebook.h"
 #include "story_notebook_page.h"  // menu_screen, fit_to_screen
@@ -373,7 +372,6 @@ void pad(input::PadState& p, Cpu* c) {
     static bool disabled = getenv("WWHD_GAME_SETTINGS") && *getenv("WWHD_GAME_SETTINGS") == '0';
     if (disabled) return;
     game_settings::register_builtin();
-    player_name::service(c);  // a new name from "Change Link's name" goes in here, on the game's thread
     g_page.measure = g_look.font_ready() ? game_measure : nullptr;
     const float dt = frame_seconds();
     shot_after(0);

@@ -83,6 +83,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../input_map.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
+#include "../mods/player_name.h"
 #include "../mods/manager.h"
 #include "../mods/game_settings.h"
 #include "../mods/packages.h"
@@ -535,6 +536,23 @@ void tab_saves() {
     refresh_slots(false);
     std::string msg = ss::last_message();
     if (!msg.empty()) note("%s", msg.c_str());
+    heading("Save file");
+    {   // Link's name on the save file being played (mods/player_name.h), as the settings page's Game tab;
+        // the prompt shows over the game, not over this window, so Change closes it
+        const bool loaded = player_name::loaded();
+        ImGui::AlignTextToFramePadding();
+        if (loaded) ImGui::Text("Link's name: %s", player_name::current().c_str());
+        else ImGui::TextDisabled("Link's name");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!loaded);
+        if (ImGui::Button("Change...")) {
+            set_open(false, OpenReason::API);
+            hostui::post([] { player_name::ask(); });
+        }
+        ImGui::EndDisabled();
+        if (loaded) help("Gives your hero a new name on this save file. It's kept the next time you save.");
+        else note("Load a save file first.");
+    }
     heading("Save states");
     const bool full = ss::full_states();
     const char* keys = ext::features().keyboard ? " Shift+F1..F5 save in game, F6 loads slot 1, F2..F5 load slots 2..5 (Esc or F1 opens this menu)." : "";
