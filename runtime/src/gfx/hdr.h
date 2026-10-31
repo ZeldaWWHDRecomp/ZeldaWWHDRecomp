@@ -90,6 +90,18 @@ inline std::array<float,3> map(std::array<float,3> c, Parameters p) {
     for(auto& v:c) v*=n/(m*80.0f); // Windows scRGB: 1.0 = 80 cd/m^2.
     return c;
 }
+// Static HDR metadata (VK_EXT_hdr_metadata) for the mapped picture. Without it a compositor must guess the
+// content's range: KWin clamps scRGB at 80 cd/m^2 and tone maps HDR10 as 10000 cd/m^2 content. The peak
+// slider is the content and mastering maximum; a frame cannot average more than an all-white scan. The
+// guest picture is BT.709 (mastering primaries, set by the caller).
+struct Metadata { float maxCll, maxFall, maxMastering, minMastering; };
+inline Metadata metadata(Parameters p) {
+    const float white=map({1,1,1},p)[0]*80.0f;
+    return {p.peak,std::min(white,p.peak),p.peak,0.0f};
+}
+inline bool operator==(const Metadata& a, const Metadata& b) {
+    return a.maxCll==b.maxCll && a.maxFall==b.maxFall && a.maxMastering==b.maxMastering && a.minMastering==b.minMastering;
+}
 // HDR10 from map()'s scRGB values: BT.709 -> BT.2020 primaries, then the
 // ST 2084 inverse EOTF of absolute luminance (1.0 = 10000 cd/m^2).
 inline float pq(float nits) {

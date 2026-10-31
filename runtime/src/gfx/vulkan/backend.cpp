@@ -1891,6 +1891,7 @@ static void make_swapchain(Screen &s) {
   s.swapFormat = format.format;
   s.hdrOutput = wantHdr;
   s.hdrPq = wantPq;
+  s.hdrMetadataStale = true;
   if(&s==&R.tv) {
     hdr::pqOutput=wantPq;
     LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
@@ -2638,6 +2639,30 @@ static void register_observed_present(Screen &s, uint32_t observedPresentId, uin
   pendingObservedPresents.emplace(observedPresentId, ObservedPresent{s.swapchainGeneration, frame});
   present_observer::google_present(s.swapchainGeneration, observedPresentId, frame);
 }
+// HDR swapchains: the content range (hdr::metadata) for the compositor or display, sent before the
+// first present and again after a slider change. Called with the graphics queue lock held.
+static void send_hdr_metadata(Screen &s, VkSwapchainKHR swapchain) {
+  if (!R.setHdrMetadata || !s.hdrOutput) return;
+  const auto m = hdr::metadata(hdr::parameters());
+  const std::array<float,4> values{m.maxCll, m.maxFall, m.maxMastering, m.minMastering};
+  const bool newSwapchain = s.hdrMetadataStale.exchange(false);
+  if (!newSwapchain && values == s.hdrMetadataSent) return;
+  s.hdrMetadataSent = values;
+  VkHdrMetadataEXT md{VK_STRUCTURE_TYPE_HDR_METADATA_EXT};
+  // BT.709 / D65: the gamut of the guest's SDR picture, also in HDR10's BT.2020 container
+  md.displayPrimaryRed = {0.640f, 0.330f};
+  md.displayPrimaryGreen = {0.300f, 0.600f};
+  md.displayPrimaryBlue = {0.150f, 0.060f};
+  md.whitePoint = {0.3127f, 0.3290f};
+  md.maxLuminance = m.maxMastering;
+  md.minLuminance = m.minMastering;
+  md.maxContentLightLevel = m.maxCll;
+  md.maxFrameAverageLightLevel = m.maxFall;
+  R.setHdrMetadata(R.device, 1, &swapchain, &md);
+  if (newSwapchain) // not per frame while a slider is dragged
+    LOG("[HDR] metadata: max CLL %.0f, max FALL %.0f, mastering %.0f-%.0f cd/m^2",
+      m.maxCll, m.maxFall, m.minMastering, m.maxMastering);
+}
 static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t index, VkSemaphore wait,
                               const void* pNext, uint32_t observedPresentId, uint64_t frame, bool secondary,
                               bool registered = false) {
@@ -2665,10 +2690,12 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
         observedTimes.pNext = pi.pNext;
         pi.pNext = &observedTimes;
         std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+        send_hdr_metadata(s, swapchain);
         return vkQueuePresentKHR(R.queue, &pi);
       }
     }
     std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+    send_hdr_metadata(s, swapchain);
     VkResult result=vkQueuePresentKHR(R.queue, &pi);
 #ifdef __ANDROID__
     if(secondary)result=secondary_present_result(result);
@@ -4650,6 +4677,10 @@ static void init_device(std::vector<const char *> extensions,
   }
   if (has_extension(des, "VK_KHR_portability_subset"))
     de.push_back("VK_KHR_portability_subset");
+#ifdef WWHD_HDR_OUTPUT
+  const bool hdrMetadata = has_extension(des, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+  if (hdrMetadata) de.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+#endif
   R.portabilitySubset =
       has_extension(des, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
   VkPhysicalDevicePortabilitySubsetFeaturesKHR portability{
@@ -4904,6 +4935,10 @@ static void init_device(std::vector<const char *> extensions,
           forced ? "set by WWHD_VK_CLIP_EMULATION" :
           "panvk culls fragments for depth clipping; WWHD_VK_CLIP_EMULATION=0/1 overrides");
   }
+#ifdef WWHD_HDR_OUTPUT
+  R.setHdrMetadata = hdrMetadata ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(R.device, "vkSetHdrMetadataEXT")) : nullptr;
+  LOG("[HDR] metadata (VK_EXT_hdr_metadata) %s", R.setHdrMetadata ? "available" : "unavailable");
+#endif
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
