@@ -771,8 +771,17 @@ void test_hooks() {
         // the window closes (Back, B, the menu closes, a tab switch): its state no longer runs, the icon goes
         next_frame();
         assert(!icon_place().shown && std::string(icon_reason()) == "the bag window is closed");
-        // another bag's window: no icon
+        // An outside close can stop executeWindow entirely. The next input read must
+        // release the notebook even when that hook never gets a chance to run again.
+        st32(kMenu + 0x54, 2);
+        call(0x0268FF50, kMenu);
+        call(0x0268F060, kMenu, 0x15);
+        assert(page_open());
         st32(kMenu + 0x54, 0);
+        input::PadState outside_close;
+        pad(outside_close);
+        assert(!page_open());
+        // another bag's window: no icon
         call(0x0268FF50, kMenu);
         next_frame();
         assert(!icon_place().shown);

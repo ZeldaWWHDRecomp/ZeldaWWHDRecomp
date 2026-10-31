@@ -113,6 +113,7 @@ int g_item_button = -1;  // gameplay entry: draw on TV independently of the item
 uint32_t g_item_button_held = 0;
 std::array<uint32_t, 6> g_page_context{};
 bool g_page_context_set = false;
+uint32_t g_page_menu = 0;  // the live Delivery Bag that owns this page (0: gameplay entry)
 Page g_page;  // game thread
 Caption g_caption;  // the sealed letter's caption (game thread)
 void (*g_original)(Cpu*, uint32_t) = nullptr;
@@ -1405,6 +1406,7 @@ bool notebook_owned() { return story_mail::notebook_owned(); }
 bool open_page_from_button(unsigned button) {
     if (!open_page("its item button in play")) return false;
     story_notebook_layout::reset();
+    g_page_menu = 0;
     g_item_button = int(button);
     static constexpr uint32_t buttons[] = {input::kX, input::kY, input::kR};
     g_item_button_held = button < 3 ? buttons[button] : 0;
@@ -1421,6 +1423,7 @@ bool open_page(const char* how) {
     g_item_button = -1;
     g_item_button_held = 0;
     g_page_context_set = false;
+    g_page_menu = delivery_window_menu();
     g_page.show();
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1444,6 +1447,7 @@ bool open_letter(const char* how) {
                 if (q.key == key) text = "A sealed letter (" + q.mod_name + "). It isn't addressed to you.";
     }
     g_page_context_set = false;
+    g_page_menu = 0;
     g_caption.show(title, text);
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1457,6 +1461,7 @@ bool show_info(const std::string& title, const std::string& text, const char* ho
     g_item_button = -1;
     g_item_button_held = 0;
     g_page_context_set = false;
+    g_page_menu = 0;
     g_caption.show(title, text);
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1486,6 +1491,7 @@ void close_page() {
     g_page.hide();
     g_caption.hide();
     g_page_context_set = false;
+    g_page_menu = 0;
     g_item_button = -1;
     g_item_button_held = 0;
     story_notebook_layout::reset();
@@ -1566,6 +1572,14 @@ void pad(input::PadState& p, Cpu* c) {
         if (g_page_context_set && context != g_page_context) { close_page(); return; }
         g_page_context = context;
         g_page_context_set = true;
+    }
+    // A close from outside can stop executeWindow, so checking only in that hook
+    // misses it. The gameplay item-button page deliberately has no menu owner.
+    if (g_open && g_page_menu &&
+        (g_page_menu != g_menu || g_window_step + 1 < g_step.load(std::memory_order_relaxed) ||
+         (c && !menu_shown_now(c)) || ld32(g_page_menu + kMenuWindowMode) != kDeliveryWindow)) {
+        close_page();
+        return;
     }
     if (!g_open.load(std::memory_order_relaxed)) {
         publish_closing(dt);
