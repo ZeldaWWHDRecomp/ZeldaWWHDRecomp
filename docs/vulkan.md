@@ -269,10 +269,12 @@ model step also name the object archives whose models use them: those wait until
 one of their archives, then a few compiler threads (one on Android) build them before the models
 first appear, giving way whenever the game needs a pipeline at once. When more unused pipelines are
 ready than the limit allows (1,024; 256 on Android), those of archives no longer loaded go first.
-It owns separate modules, descriptor layouts and a pipeline cache; the render
-thread takes a ready pipeline only after the exact key, both SPIR-V programs and
-descriptor layouts match. `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and
-replay. Missing or unfinished pipelines use a separate demand compiler with an
+It compiles into the demand compiler's driver cache (below; its own cache only until that one exists). When a
+draw needs a pipeline the worker has ready and the exact key, both SPIR-V programs and descriptor layouts match,
+the render thread builds its own pipeline, a driver-cache hit (about 0.25 ms on an Adreno 750), and the worker's
+copy is destroyed: on Qualcomm's driver, frames drawn with the worker's pipeline objects themselves were about
+1.4 times as costly (issue #334, `warm_handover.h`). `WWHD_VK_WARM_HANDOVER=1` hands the worker's pipelines over
+again (measurements). `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and replay. Missing or unfinished pipelines use a separate demand compiler with an
 owned state snapshot and independent native cache. With Shader compile Off, exact guest draws remain at
 the head of the ordered command stream until ready; the renderer can repeat the
 last complete scan image while waiting. It never substitutes state or drops that

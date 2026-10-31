@@ -3918,8 +3918,10 @@ void swap() {
       PipelineWorkerMemory wm;
       pipeline_worker_memory(wm);
       LOG("[gfx] memory pipelines: %zu of the game's (%zu compiling, holding <= %zu shader modules; %zu failed); "
-          "unused warm %zu of %zu (%zu dropped); recipe database %zu recipes %.2f MiB",
-          total,compiling,compiling*2,failed,wm.unusedWarm,wm.unusedWarmLimit,wm.evicted,wm.recipes,wm.recipeBytes/mib);
+          "unused warm %zu of %zu (%zu dropped; %zu found by draws: %zu built by the render thread from the warm cache, "
+          "%zu handed over); recipe database %zu recipes %.2f MiB",
+          total,compiling,compiling*2,failed,wm.unusedWarm,wm.unusedWarmLimit,wm.evicted,
+          wm.builtByRenderThread+wm.handedOver,wm.builtByRenderThread,wm.handedOver,wm.recipes,wm.recipeBytes/mib);
     }
     LOG("[gfx] memory scope: payload/capacity excludes compiler results, disk snapshots, metadata and allocator overhead");
     LOG("[gfx] memory scope: cached image allocations exclude retired, non-cache and driver images");

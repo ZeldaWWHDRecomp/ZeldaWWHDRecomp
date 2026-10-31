@@ -17,6 +17,9 @@ struct WarmPipeline {
 void set_memory_budget(uint64_t bytes);
 void start_pipeline_worker(VkDevice device, PipelineRecipeFingerprint fingerprint,
     std::string path, std::vector<uint8_t> cacheSeed, std::string headstartPath);
+// A matching pipeline the worker compiled ahead: true and its handles (WWHD_VK_WARM_HANDOVER=1 only); by default
+// false after the match, and the caller builds the pipeline itself, a hit in the cache the worker compiled into
+// (warm_handover.h, issue #334)
 bool take_warm_pipeline(const std::vector<uint8_t>& key,
     const std::array<std::vector<uint32_t>, 2>& spirv,
     const std::array<std::vector<VkDescriptorSetLayoutBinding>, 2>& descriptors,
@@ -29,7 +32,10 @@ bool pipeline_recipe_known(const std::vector<uint8_t>& key);
 // and the time they waited in all.
 // Sizing (WWHD_VK_MEMORY_LOG_FRAMES): the recipe database (packed SPIR-V and state, bytes) and the pool of compiled
 // pipelines no draw has taken yet, its limit and how many it dropped.
-struct PipelineWorkerMemory { size_t recipes = 0, recipeBytes = 0, unusedWarm = 0, unusedWarmLimit = 0, evicted = 0; };
+struct PipelineWorkerMemory {
+  size_t recipes = 0, recipeBytes = 0, unusedWarm = 0, unusedWarmLimit = 0, evicted = 0;
+  size_t handedOver = 0, builtByRenderThread = 0;  // warm pipelines a draw found (warm_handover.h)
+};
 void pipeline_worker_memory(PipelineWorkerMemory& out);
 // Low memory (platform/memory_trim.h): destroys the compiled pipelines no draw has taken yet (the pool above); a draw
 // that needs one later compiles it again, from the driver's cache. Returns how many went.

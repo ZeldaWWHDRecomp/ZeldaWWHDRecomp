@@ -58,5 +58,8 @@ bool pipeline_demand_active();
 bool finish_pipeline_demand(VkPipelineCache target);
 // Caller serializes target access. Normal checkpoints skip a busy compiler;
 // background/explicit checkpoints may wait off the UI thread, without stopping it.
+// The warm-up worker compiles into the demand compiler's driver cache, so that the render thread's own build of a
+// pipeline the worker compiled ahead is a cache hit (warm_handover.h). VK_INCOMPLETE: that cache does not exist yet.
+VkResult compile_in_demand_cache(VkDevice device, const VkGraphicsPipelineCreateInfo& info, VkPipeline* out);
 bool merge_pipeline_demand_cache(VkPipelineCache target, bool wait = false);
 }
