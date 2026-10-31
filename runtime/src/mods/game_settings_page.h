@@ -56,7 +56,7 @@ inline std::string bold(const std::string& s) { return kBold + s; }
 // One row as the driver gives it (from game_settings.h)
 struct Row {
     std::string id, label, value, help;
-    bool number = false, toggle = false, choice = false, on = false, enabled = true;
+    bool number = false, toggle = false, choice = false, action = false, on = false, enabled = true;
     bool stepped() const { return number || choice; }  // Left / Right step it (chevrons on its plate)
 };
 
@@ -174,7 +174,8 @@ public:
         };
         if (fire & kPadUp) move(-1);
         else if (fire & kPadDown) move(+1);
-        else if ((fire & (kPadLeft | kPadRight)) && count) change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
+        else if ((fire & (kPadLeft | kPadRight)) && count && !rows[selected_].action)  // (an action takes A only)
+            change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
         else if ((pressed & kPadA) && count) change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
         if (selected_ < int(top_)) top_ = unsigned(selected_);
         if (selected_ >= int(top_ + kRowsShown)) top_ = unsigned(selected_) - kRowsShown + 1;

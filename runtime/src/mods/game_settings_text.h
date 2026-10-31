@@ -199,6 +199,12 @@ inline const std::unordered_map<std::string, Line>& table() {
           "Torce e altre luci a piena risoluzione; disattivato: metà dimensione, come l'originale (contorni squadrettati).",
           "Antorchas y otras luces a resolución completa; desactivado: la mitad, como el original (contornos pixelados)."}},
         // game
+        {"Change Link's name", {"Changer le nom de Link", "Links Namen ändern", "Cambia il nome di Link", "Cambiar el nombre de Link"}},
+        {"Gives your hero a new name on this save file. It's kept the next time you save.",
+         {"Donne un nouveau nom au héros de cette sauvegarde. Il est gardé à la prochaine sauvegarde.",
+          "Gibt dem Helden dieses Spielstands einen neuen Namen. Er bleibt ab dem nächsten Speichern erhalten.",
+          "Dà un nuovo nome all'eroe di questo salvataggio. Resta dal prossimo salvataggio.",
+          "Da un nuevo nombre al héroe de esta partida. Se conserva la próxima vez que guardes."}},
         {"Quick doors", {"Portes rapides", "Schnelle Türen", "Porte rapide", "Puertas rápidas"}},
         {"Doors open and close four times as fast.",
          {"Les portes s'ouvrent et se ferment quatre fois plus vite.", "Türen öffnen und schließen sich viermal so schnell.",

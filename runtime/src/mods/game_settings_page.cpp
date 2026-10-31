@@ -28,6 +28,7 @@
 #include "console_language.h"
 #include "game_look.h"
 #include "guest_hud.h"
+#include "player_name.h"
 #include "story_notebook_game.h"
 #include "story_notebook.h"
 #include "story_notebook_page.h"  // menu_screen, fit_to_screen
@@ -307,9 +308,9 @@ std::vector<Row> rows_of(const std::string& tab) {
         const bool port = it->owner == "port";  // (mods' texts are shown as their manifests write them)
         r.id = it->id, r.label = port ? tr(it->label) : it->label, r.help = port ? tr(it->help) : it->help;
         if (it->next_start) r.help += " " + tr("(applies at the next start)");
-        r.value = it->kind == game_settings::Kind::Number || (!port && it->kind == game_settings::Kind::Choice) ? value : tr(value);
         r.number = it->kind == game_settings::Kind::Number, r.toggle = it->kind == game_settings::Kind::Toggle;
-        r.choice = it->kind == game_settings::Kind::Choice;
+        r.choice = it->kind == game_settings::Kind::Choice, r.action = it->kind == game_settings::Kind::Action;
+        r.value = r.number || r.action || (!port && r.choice) ? value : tr(value);
         r.on = r.toggle && value == "On";
         r.enabled = !it->enabled || it->enabled();
         rows.push_back(std::move(r));
@@ -372,6 +373,7 @@ void pad(input::PadState& p, Cpu* c) {
     static bool disabled = getenv("WWHD_GAME_SETTINGS") && *getenv("WWHD_GAME_SETTINGS") == '0';
     if (disabled) return;
     game_settings::register_builtin();
+    player_name::service(c);  // a new name from "Change Link's name" goes in here, on the game's thread
     g_page.measure = g_look.font_ready() ? game_measure : nullptr;
     const float dt = frame_seconds();
     shot_after(0);
