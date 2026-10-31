@@ -106,6 +106,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // nativeContextAssets(dir) exports the game's words and item icons into dir once (0 not yet, -1 failed,
     // > 0 the files' generation)
     private static native int nativeContextButtons(int[] out);
+    private static native void nativeStartupTitleTap();
     private static native int nativeContextAssets(String dir);
     private static native int nativeTouchOptions(int[] out);
     private static native int nativeFreeTouch(float x, float y);
@@ -154,6 +155,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     private final List<Control> controls = new ArrayList<>();
+    private final StartupTouch startup = new StartupTouch();
     private final Control toggle, leftStick, rightStick;
     private final Control swipe = new Control(KIND_SWIPE, 0, "", 0, 0, 0), dead = new Control(KIND_DEAD, 0, "", 0, 0, 0),
             talk = new Control(KIND_TALK, 0, "", 0, 0, 0);
@@ -353,6 +355,14 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     @Override
     protected void onDraw(Canvas canvas) {
         if (editor.editing() && grid) drawGrid(canvas);
+        if (!editor.editing() && contextPack.startupTouch()) {
+            if (contextPack.startupScene() == ContextPack.STARTUP_TITLE && !settingsOpen) {
+                text.setColor(0xE6F8F4E8);
+                text.setTextSize(getResources().getDisplayMetrics().scaledDensity * 16);
+                canvas.drawText(getContext().getString(R.string.touch_tap_to_start), getWidth() / 2f, getHeight() * .94f, text);
+            }
+            return;
+        }
         if (editor.editing() || active())
             for (Control c : controls) {
                 if (!editor.editing() && !visible(c)) continue;
@@ -571,7 +581,30 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             return false;
         }  // mouse and stylus: SDLSurface underneath as before
         syncTouchState();
-        if (settingsOpen) { editor.pointers(0);return false; }
+        if (settingsOpen) { startup.cancel(); editor.pointers(0);return false; }
+        if (action == MotionEvent.ACTION_DOWN) syncContext(SystemClock.uptimeMillis());
+        if (startup.tracking()) {
+            final int i = event.getActionIndex(), id = event.getPointerId(i);
+            final float slop = android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            if (action == MotionEvent.ACTION_MOVE) {
+                for (int k = 0; k < event.getPointerCount(); k++)
+                    startup.move(event.getPointerId(k), event.getX(k), event.getY(k), slop);
+            } else if (action == MotionEvent.ACTION_UP) {
+                if (startup.up(contextPack.startupScene(), id, event.getX(i), event.getY(i), slop))
+                    try { nativeStartupTitleTap(); } catch (UnsatisfiedLinkError ignored) { }
+            } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP) {
+                startup.cancel();
+            }
+            editor.pointers(0); return true;
+        }
+        if (contextPack.startupTouch()) {
+            editor.pointers(0);
+            if (action == MotionEvent.ACTION_DOWN && contextPack.startupScene() == ContextPack.STARTUP_TITLE) {
+                startup.down(event.getPointerId(0), event.getX(), event.getY());
+                return true;
+            }
+            return false;  // SDLSurface -> real GamePad touchscreen, including native text entry.
+        }
         if (revealGesture) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) revealGesture = false;
             return true;
@@ -784,6 +817,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
     // fingers that never got their up event: the controls let go, the game's touches are cancelled
     private void releaseFingers() {
+        startup.cancel();
         removeCallbacks(editLongPress);
         try { nativeItemRingFinger(-1, false, 0, 0); } catch (UnsatisfiedLinkError ignored) {}
         resetControls();

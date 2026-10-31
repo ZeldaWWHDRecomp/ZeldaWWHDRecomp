@@ -1550,6 +1550,10 @@ add_executable(item_ring_test runtime/tools/item_ring_test.cpp)
 target_include_directories(item_ring_test PRIVATE runtime/src)
 target_compile_options(item_ring_test PRIVATE -UNDEBUG)
 add_test(NAME item_ring COMMAND item_ring_test)
+add_executable(startup_touch_test runtime/tools/startup_touch_test.cpp)
+target_include_directories(startup_touch_test PRIVATE runtime/src)
+target_compile_options(startup_touch_test PRIVATE -UNDEBUG)
+add_test(NAME startup_touch COMMAND startup_touch_test)
 add_executable(context_touch_test runtime/tools/context_touch_test.cpp)
 target_include_directories(context_touch_test PRIVATE runtime/src)
 target_compile_options(context_touch_test PRIVATE -UNDEBUG)
@@ -2152,6 +2156,10 @@ if(NOT ANDROID)
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/https_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
       -P ${CMAKE_SOURCE_DIR}/runtime/tools/https_java_test.cmake)
+    add_test(NAME android_startup_touch COMMAND ${CMAKE_COMMAND}
+      "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
+      "-DWORK=${CMAKE_BINARY_DIR}/startup_touch_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+      -P ${CMAKE_SOURCE_DIR}/runtime/tools/startup_touch_java_test.cmake)
     add_test(NAME android_display_mode COMMAND ${CMAKE_COMMAND}
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/display_mode_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
