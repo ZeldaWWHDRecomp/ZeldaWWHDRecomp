@@ -19,6 +19,7 @@ const uint32_t kSaveInfoPtr = GD(0x101F84DC);   // dComIfGs save area
 constexpr uint32_t kDataNum = 0x20 + 0x1290;     // dSv_info_c::mDataNum: the file being played (0..2)
 constexpr uint32_t kCardInfo = 0x12C0;           // SaveMgr's card info (HD per-file data)
 const uint32_t fn_get_card_name = GC(0x02720154), fn_set_card_name = GC(0x02726668);
+const std::u16string kRefused = u"%";  // see ask()
 
 std::mutex g_mu;
 bool g_pending = false;  // an accepted name, not yet put in (g_mu)
@@ -62,10 +63,17 @@ void ask() {
     r.initial = read_name();
     r.max_len = kMaxLen;
     r.language = int(console_language());  // the keyboard layout (AZERTY, QWERTZ, ...) and the name font
+    // setCardName formats the name (0x02759D3C: a printf-style format string), here and at every start
+    // when the names come from cking.sav: a "%" could read or write anywhere
+    r.refused = kRefused;
     auto done = [](bool ok, std::u16string text) {
         if (!ok) return;
         if (text.find_first_not_of(u' ') == std::u16string::npos) {  // an empty name keeps the old one
             LOG("[player-name] no name given: the name stays");
+            return;
+        }
+        if (text.find_first_of(kRefused) != std::u16string::npos) {  // (the host's own prompt takes any character)
+            LOG("[player-name] a name with %% can't be used: the name stays");
             return;
         }
         std::lock_guard lock(g_mu);
