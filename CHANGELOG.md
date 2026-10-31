@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: controller dead after switching it in a menu** (#330, thanks @itsarahtonin). Switching **Keyboard and
+  controllers act as** between Wii U GamePad and Wii U Pro Controller while the pause menu or the file select was open
+  left the game ignoring every button until you switched back or restarted. The controller you switched away from now
+  keeps working until the game has followed the switch, so you can close the menu or open your save as usual.
 - **Fixed: Android running at about half speed since v0.5.0** (#334, thanks @SpicyAwesomeSauce). From the second
   launch on, the shaders prepared in the background made every frame slower on Snapdragon (Qualcomm) phones: Windfall
   at 40 fps ran at about 22 fps. The game now builds those shaders itself from the prepared cache, which takes well
