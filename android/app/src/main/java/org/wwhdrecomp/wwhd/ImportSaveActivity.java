@@ -10,8 +10,8 @@ import java.io.File;
 import java.io.InputStream;
 
 // Launcher shortcut "Import save": pick a zip (from Export save, or a zip of the PC version's save/
-// folder); it must contain user/cking.sav. The game is stopped, the current save is kept as
-// save-backup-<time> next to it, and the zip's files become the save.
+// folder); it must contain user/cking.sav. Transfer requires the game to be closed. The complete
+// staged tree replaces the save after validation; the previous tree is kept as save-backup-<time>-<id>.
 public class ImportSaveActivity extends Activity {
     private static final int PICK = 1;
 
@@ -35,28 +35,11 @@ public class ImportSaveActivity extends Activity {
         final Uri uri = data.getData();
         new Thread(() -> {
             String message;
-            try {
-                String root;
-                try (InputStream in = getContentResolver().openInputStream(uri)) {
-                    root = SaveFiles.saveRoot(in);
-                }
-                if (root == null) {
-                    message = getString(R.string.save_not_a_save);
-                } else {
-                    SaveFiles.stopGame(this);
-                    File save = SaveFiles.saveDir(this);
-                    File backup = new File(save.getParentFile(), "save-backup-" + SaveFiles.stamp());
-                    if (save.exists() && !save.renameTo(backup)) throw new java.io.IOException("cannot keep the current save");
-                    try (InputStream in = getContentResolver().openInputStream(uri)) {
-                        save.mkdirs();
-                        SaveFiles.unzip(in, root, save);
-                    } catch (Exception e) {
-                        SaveFiles.deleteTree(save);  // put the previous save back
-                        if (backup.exists()) backup.renameTo(save);
-                        throw e;
-                    }
-                    message = getString(R.string.save_imported, backup.getName());
-                }
+            try (SessionLease lease = SessionLease.acquire(SaveSession.root(this));
+                 InputStream in = getContentResolver().openInputStream(uri)) {
+                File backup = SaveSession.store(SaveSession.root(this)).importZip(in);
+                message = backup == null ? getString(R.string.save_imported_new)
+                        : getString(R.string.save_imported, backup.getName());
             } catch (Exception e) {
                 message = getString(R.string.save_import_failed, e.getMessage());
             }

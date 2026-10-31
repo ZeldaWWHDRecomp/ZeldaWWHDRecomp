@@ -26,7 +26,15 @@ public class WwhdActivity extends SDLActivity {
         // Only the two concrete gameplay entry points participate in routing.
         if (getClass() != WwhdActivity.class && getClass() != QuestActivity.class) return false;
         Intent selected = QuestActivity.gameIntent(this);
-        if (selected.getComponent().getClassName().equals(getClass().getName())) return false;
+        if (selected.getComponent().getClassName().equals(getClass().getName())) {
+            try { SaveSession.enterGame(this); }
+            catch (java.io.IOException failure) {
+                android.widget.Toast.makeText(this, failure.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                finish();
+                return true;
+            }
+            return false;
+        }
         // Includes explicit intents and shortcuts created before the theater existed.
         // SDL has not acquired any global state, so finishing this Activity cannot quit it.
         Log.i("wwhd", "redirecting game activity to " + selected.getComponent().getClassName());
@@ -133,6 +141,10 @@ public class WwhdActivity extends SDLActivity {
     @Override protected boolean retainNativeSessionOnRecreation() { return true; }
 
     @Override public void loadLibraries() {
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
+            try { SaveSession.enterGame(this); }
+            catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
+        }
         if (isReusingNativeSession()) {
             // A setup update must not change the loaded engine or assets mid-session.
             selection = sessionSelection;

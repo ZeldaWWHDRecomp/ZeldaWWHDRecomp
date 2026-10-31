@@ -2140,6 +2140,10 @@ endif()
 if(NOT ANDROID)
   find_package(Java COMPONENTS Development QUIET)
   if(Java_FOUND)
+    add_test(NAME android_save_import COMMAND ${CMAKE_COMMAND}
+      "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
+      "-DWORK=${CMAKE_BINARY_DIR}/save_import_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+      -P ${CMAKE_SOURCE_DIR}/runtime/tools/save_import_java_test.cmake)
     add_test(NAME android_system_exit_reports COMMAND ${CMAKE_COMMAND}
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/system_exit_report_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
