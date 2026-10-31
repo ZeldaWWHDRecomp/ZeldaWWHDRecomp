@@ -183,6 +183,13 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private final InputManager inputs;
     private ControllerHintPolicy hintPolicy;
     private Runnable refresh;
+    private final TouchRedraw redraw = new TouchRedraw();
+    private boolean redrawAttached;
+    private final Runnable redrawCallback = () -> {
+        if (!redrawAttached) { redraw.cancel(); return; }
+        if (editor.editing()) { redraw.cancel(); invalidate(); return; }
+        dispatchControlRedraw(redraw.callback(SystemClock.uptimeMillis()));
+    };
     private boolean shown;      // the player's choice (the show/hide button), remembered
     private boolean controller; // a game controller is connected and no touch came since
     private boolean buttonsVisible = true, revealGesture, settingsOpen;
@@ -279,7 +286,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     syncTouchState();
                     announceControllers();
                     syncJumpButtons();
-                    invalidate();
+                    requestControlRedraw();
                 }
                 syncContext(now);
                 postDelayed(this, active() && contextPack.on() ? FAST_TICK_MS : SLOW_TICK_MS);
@@ -292,6 +299,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     @Override protected void onDetachedFromWindow() {
+        redrawAttached = false;
+        cancelControlRedraw();
         endEditing();
         releaseInputs();
         removeCallbacks(editLongPress);
@@ -303,10 +312,29 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        redrawAttached = true;
+        cancelControlRedraw();
         if (getContext() instanceof WwhdActivity) ((WwhdActivity) getContext()).touchControls = this;
         if (inputs != null) inputs.registerInputDeviceListener(this, null);
         removeCallbacks(refresh);
         post(refresh);
+        requestControlRedraw();
+    }
+
+    private void cancelControlRedraw() {
+        removeCallbacks(redrawCallback);
+        redraw.cancel();
+    }
+
+    private void dispatchControlRedraw(long delay) {
+        if (delay == 0) invalidate();
+        else if (delay > 0) postDelayed(redrawCallback, delay);
+    }
+
+    private void requestControlRedraw() {
+        if (!redrawAttached) return;
+        if (editor.editing()) { cancelControlRedraw(); invalidate(); return; }
+        dispatchControlRedraw(redraw.request(SystemClock.uptimeMillis()));
     }
 
     @Override
@@ -347,11 +375,13 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
     private void placeControls() {
         for (Control c:controls) place(c,getWidth(),getHeight(),Math.min(getWidth(),getHeight()));
-        invalidate();
+        requestControlRedraw();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
+        final long drawNow = SystemClock.uptimeMillis();
+        if (!editor.editing() && redraw.drawn(drawNow)) removeCallbacks(redrawCallback);
         if (editor.editing() && grid) drawGrid(canvas);
         if (editor.editing() || active())
             for (Control c : controls) {
@@ -361,7 +391,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 drawControl(canvas, c);
             }
         if (!editor.editing() && buttonsVisible && !settingsOpen) drawControl(canvas, toggle);
-        if (!editor.editing() && rings.playing(SystemClock.uptimeMillis())) postInvalidateOnAnimation();
+        if (!editor.editing() && rings.playing(drawNow)) requestControlRedraw();
     }
 
     private static int alpha(int a, int opacity) { return Math.round(a * opacity / 100f) << 24 | 0xFFFFFF; }
@@ -581,7 +611,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             nativeRevealButtons();
             syncTouchState();
             revealGesture = true;
-            invalidate();
+            requestControlRedraw();
             return true;
         }
         final int index = event.getActionIndex();
@@ -608,7 +638,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                     owner.remove(id);
                     editor.pointers(0);
                     update();
-                    invalidate();
+                    requestControlRedraw();
                     return false;
                 } else if (c == null) {
                     forward(event, index, action);
@@ -686,7 +716,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 return true;
         }
         update();
-        invalidate();
+        requestControlRedraw();
         return true;
     }
 
@@ -794,9 +824,11 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         owner.clear();
     }
     private void releaseInputs() {
+        cancelControlRedraw();
         releaseFingers();
         try { nativeDetachPad(); nativeSetVirtual(0); } catch (UnsatisfiedLinkError ignored) {}
         lastButtons=-1; lastVirtual=-1;
+        requestControlRedraw();
     }
 
     private void beginEditing() {
@@ -823,7 +855,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         editorButton(look,R.string.touch_layout_fill,()->restyleSelected(p->p.look(p.shape,p.opacity,!p.filled)));
         editorBar.addView(look);
         LinearLayout actions=new LinearLayout(getContext());
-        editorButton(actions,R.string.touch_layout_grid,()->{ grid=!grid;invalidate(); });
+        editorButton(actions,R.string.touch_layout_grid,()->{ grid=!grid;requestControlRedraw(); });
         editorButton(actions,R.string.touch_layout_presets,this::layoutsMenu);
         editorButton(actions,R.string.touch_layout_reset,()->{ layout.reset();selected=null;saveLayout();placeControls();showStatus(); });
         editorButton(actions,R.string.touch_layout_done,this::endEditing);
@@ -913,7 +945,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
                 (action==MotionEvent.ACTION_POINTER_UP && e.getPointerId(e.getActionIndex())==dragPointer)) {
             dragPointer=-1;saveLayout();
         }
-        invalidate();return true;
+        requestControlRedraw();return true;
     }
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
@@ -1128,7 +1160,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         } else if (ringOpen) { ringOpen = false; changed = true; }
         if (!contextPack.valid()) rings.forget();
         else for (int b = 0; b < ContextPack.COUNT; b++)
-            if (rings.note(b, contextPack.ring(b), active() && contextPack.on() && contextPack.shown(b), now)) invalidate();
+            if (rings.note(b, contextPack.ring(b), active() && contextPack.on() && contextPack.shown(b), now)) requestControlRedraw();
         if (contextPack.enabled()) syncAssets(now);
         if (!changed) return;
         boolean released = false;
@@ -1142,7 +1174,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             released = true;
         }
         if (released) update();
-        invalidate();
+        requestControlRedraw();
     }
 
     private void syncAssets(long now) {
@@ -1166,7 +1198,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             } catch (java.io.IOException ignored) { /* English words */ }
         }
         words = loaded;
-        invalidate();
+        requestControlRedraw();
     }
     private Bitmap icon(int item) {
         if (assetDir == null || assets.generation() <= 0) return null;
@@ -1226,20 +1258,20 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         resetControls();
         for (int i = owner.size() - 1; i >= 0; i--) if (owner.valueAt(i) != null && owner.valueAt(i) != toggle) owner.removeAt(i);
         if (shown) { nativeDetachPad(); nativeSetVirtual(0); lastButtons = -1; lastVirtual = -1; }
-        invalidate();
+        requestControlRedraw();
     }
     @Override public void onInputDeviceRemoved(int id) {
         SDLControllerManager.requestDeviceRefresh();
         if (!controller || inputs == null) return;
         boolean any = false;
         for (int other : inputs.getInputDeviceIds()) any |= other != id && isController(InputDevice.getDevice(other));
-        if (!any) { controller = false; invalidate(); }
+        if (!any) { controller = false; requestControlRedraw(); }
     }
     @Override public void onInputDeviceChanged(int id) {
         SDLControllerManager.requestDeviceRefresh();
         controller = false;
         if (inputs != null) for (int other : inputs.getInputDeviceIds()) controller |= isController(InputDevice.getDevice(other));
-        invalidate();
+        requestControlRedraw();
     }
 
     private void update() {

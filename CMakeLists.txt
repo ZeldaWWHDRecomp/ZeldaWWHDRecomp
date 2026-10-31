@@ -2148,6 +2148,10 @@ if(NOT ANDROID)
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/touch_layout_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
       -P ${CMAKE_SOURCE_DIR}/runtime/tools/touch_layout_java_test.cmake)
+    add_test(NAME android_touch_redraw COMMAND ${CMAKE_COMMAND}
+      "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
+      "-DWORK=${CMAKE_BINARY_DIR}/touch_redraw_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+      -P ${CMAKE_SOURCE_DIR}/runtime/tools/touch_redraw_java_test.cmake)
     add_test(NAME https_java_transport COMMAND ${CMAKE_COMMAND}
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/https_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
