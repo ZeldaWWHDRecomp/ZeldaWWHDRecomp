@@ -109,7 +109,7 @@ struct Portrait {
 std::map<uint16_t, Portrait> g_portraits;
 bool g_imported = false, g_installed = false;
 std::atomic<bool> g_open{false};
-int g_item_button = -1;  // gameplay entry: draw on TV independently of the item screen
+int g_item_button = -1;  // gameplay entry: no bag owner; Pro Controller uses the TV HUD
 uint32_t g_item_button_held = 0;
 std::array<uint32_t, 6> g_page_context{};
 bool g_page_context_set = false;
@@ -682,13 +682,13 @@ void append_all(guestmods::hud::Handle list, std::vector<Command>& cmds, const s
 void publish(const std::vector<Row>& all, const std::vector<Command>* caption = nullptr) {
     auto& store = guestmods::hud::store();
     // the page as a game layout (story_notebook_layout.h): then the HUD draws only its portraits
-    const bool by_layout = !caption && g_item_button < 0 && story_notebook_layout::update(g_page, all);
+    const bool by_layout = !caption && (g_item_button < 0 || !input::pro_controller()) && story_notebook_layout::update(g_page, all);
     if (!g_page.open() && !caption) {
         store.drop(kOwner);
         return;
     }
     // only on the screen with the game's item menu (the GamePad, or the TV with the Pro Controller)
-    const uint32_t screen = g_item_button >= 0 ? 0 : menu_screen(input::pro_controller());
+    const uint32_t screen = menu_screen(input::pro_controller());
     const float k = screen == 1 ? 854.0f / 1280.0f : 1.0f;
     const guestmods::hud::Handle list = store.begin(kOwner, screen);
     if (!list) return;

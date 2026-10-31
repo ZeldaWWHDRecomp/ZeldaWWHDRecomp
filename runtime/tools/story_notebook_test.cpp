@@ -565,11 +565,16 @@ void test_hooks() {
             held.buttons = input::kX;
             pad(held);
             assert(page_open() && held.buttons == 0);  // opening press isn't a toggle
-            auto lists = guestmods::hud::store().snapshot(0);
-            bool visible = false;
-            for (const auto& list : lists)
-                visible |= list->owner == "port:story-notebook" && !list->commands.empty();
-            assert(visible);  // visible on TV for either controller, without a menu draw
+            if (pro) {  // no item screen is drawn on the TV during gameplay
+                auto lists = guestmods::hud::store().snapshot(0);
+                bool visible = false;
+                for (const auto& list : lists)
+                    visible |= list->owner == "port:story-notebook" && !list->commands.empty();
+                assert(visible);
+            } else {
+                // The GamePad item screen is always drawn, including GamePad-only presentation.
+                assert(story_notebook_layout::drawing());
+            }
             held = {};
             pad(held);
             if (cycle == 5) {
@@ -603,6 +608,15 @@ void test_hooks() {
     assert(!story_notebook_layout::drawing());
     input::g_pro = false;
     story_notebook_layout::test_layout_ready = false;
+    close_page();
+    // Without a native layout, GamePad fallback also belongs to the GamePad picture.
+    assert(open_page_from_button(0));
+    p = {};
+    pad(p);
+    bool gamepad_visible = false;
+    for (const auto& list : guestmods::hud::store().snapshot(1))
+        gamepad_visible |= list->owner == "port:story-notebook" && !list->commands.empty();
+    assert(gamepad_visible);
     close_page();
     // With only the HUD available, a stage transition still releases input before another draw.
     assert(open_page_from_button(0));
