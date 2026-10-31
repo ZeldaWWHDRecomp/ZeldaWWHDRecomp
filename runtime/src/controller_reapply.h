@@ -51,8 +51,11 @@ void request(const char* kind);
 // at the frame boundary (ss::service)
 void service(Cpu* c);
 // the game is being switched from the Pro Controller to the GamePad: its Pro Controller stays
-// connected (idle) until the switch is done (padscore)
+// connected until the switch is done (padscore)
 bool holds_pro_controller();
+// ... and keeps its buttons and sticks while the game still reads it (mode 0): in the pause menu the
+// press that leads back to play must reach the game. Idle while the menu path switches it.
+bool pro_controller_live();
 // the game is being switched from the GamePad to the Pro Controller: its GamePad buttons and sticks
 // stay live (VPADRead) until the switch is done (keeps_gamepad)
 bool holds_gamepad();

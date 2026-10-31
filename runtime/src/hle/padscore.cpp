@@ -20,9 +20,10 @@ constexpr int32_t kWpadErrNone = 0, kWpadErrNoController = -1;
 constexpr int32_t kKpadErrNone = 0, kKpadErrNoController = -2;
 constexpr uint8_t kDevURCC = 31, kDevNone = 253, kFormatURCC = 22;
 
-// While the game is switched from the Pro Controller to the GamePad after a save-state load, its Pro
-// Controller stays connected but idle, as when a player changes the controller in the game's Options
-// (a missing controller would stop the game at its reconnect prompt before the switch completes).
+// While the game is switched from the Pro Controller to the GamePad (after a save-state load or a change
+// of the host's choice), its Pro Controller stays connected, as when a player changes the controller in
+// the game's Options (a missing controller would stop the game at its reconnect prompt before the
+// switch completes). It is idle unless the game still reads it (controller_reapply::pro_controller_live).
 bool connected(uint32_t chan) { return chan == 0 && (input::pro_controller() || controller_reapply::holds_pro_controller()); }
 
 // VPAD button bits (input::PadState) -> Pro Controller (URCC) bits
@@ -98,16 +99,20 @@ HLE(padscore, KPADReadEx) {
     if (input::pro_controller() && chan == 0) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on
     if (input::pro_controller() && chan == 0) mods::guest_pad_filter(c, p, repeat);  // code mods: their touches and input filters
     last_p = p;
-    if (!input::pro_controller()) p = input::PadState{};  // held connected for a controller switch: idle
+    // held connected for a controller switch: idle, unless the game still reads it (pause menu)
+    if (!input::pro_controller() && !controller_reapply::pro_controller_live()) p = input::PadState{};
     story_notebook::mute(p);  // the notebook's page has the controller (VPADRead drives it)
     story_scenes::mute(p);
     story_bag::mute(p);       // so do the Delivery Bag's extra pages
     game_settings_page::mute(p);  // and the settings page
-    mods::moon_jump_input(p);
-    mods::move_speed_input(p.buttons);
+    // the host's extras follow the host's choice: while a held Pro Controller is live, VPADRead has them
+    input::PadState idle{};
+    input::PadState& extras = input::pro_controller() ? p : idle;
+    mods::moon_jump_input(extras);
+    mods::move_speed_input(extras.buttons);
     if (live && input::pro_controller()) mods::jump_input(live_virt);
-    mods::fast_forward_input(p.buttons);
-    if (!repeat) motion::right_stick(p.rx, p.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
+    mods::fast_forward_input(extras.buttons);
+    if (!repeat) motion::right_stick(extras.rx, extras.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
     uint32_t hold = pro_buttons(p.buttons);
     memset(mem::ptr(st), 0, 0xF0);
     st8(st + 0x5C, kDevURCC);     // devType

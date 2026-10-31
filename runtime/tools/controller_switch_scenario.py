@@ -17,7 +17,8 @@ WWHD_TEST_CONTROLLER at a scripted moment and presses buttons afterwards:
   free-play         switch while Link stands on the pier; A and Plus reach the game afterwards
   dialog            switch in a dialog (needs --state: a full save state in a dialog, slot 2 here)
   reverse           starts on the Pro Controller, switches to the GamePad in play (holds_pro_controller)
-  reverse-pause     as reverse, switched in the pause menu
+  reverse-pause     as reverse, switched in the pause menu: B closes it (the held Pro Controller stays
+                    live while the game still reads it), then the game plays with the GamePad
 
 Muted, hidden windows, no host input, own user folder; the shader cache lives in WORK. The log's
 [controller] / [test] controller trace lines are printed; the exit status is 0 when the case passed.

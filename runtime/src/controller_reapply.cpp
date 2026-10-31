@@ -60,6 +60,7 @@ int g_frames = 0, g_stable = 0, g_trace = 0, g_category = -1;
 bool g_direct_refused = false;  // setMode refused the mode: the menu path, once in play
 std::atomic<bool> g_hold_pro{false};  // see holds_pro_controller
 std::atomic<bool> g_hold_gamepad{false};  // see holds_gamepad
+std::atomic<bool> g_live_pro{false};  // see pro_controller_live
 
 int game_mode() {
     uint32_t m = ld32(kInputManager);
@@ -194,12 +195,15 @@ std::atomic<const char*> g_request{nullptr};
 // the game's mode has followed, the host switches back, or the re-apply ends (done, given up, or a
 // load / reset that leaves the game in the host's mode).
 void update_gamepad_hold() {
-    // the GamePad stays live while the game still reads it: the switch waits for play, and a menu
-    // (pause menu, file select) is left only by a press the game can hear (issue #330)
-    g_hold_gamepad = keeps_gamepad(g_phase != kIdle, game_mode(), input::pro_controller(), g_category);
+    // the controller the game still reads stays live: the switch waits for play, and a menu (pause
+    // menu, file select) is left only by a press the game can hear (issue #330)
+    const bool switching = g_phase != kIdle, pro = input::pro_controller();
+    const int mode = game_mode();
+    g_hold_gamepad = keeps_gamepad(switching, mode, pro, g_category);
+    g_live_pro = switching && !pro && mode == 0 && g_category != 1;
 }
 void update_holds() {
-    // the Pro Controller stays connected (idle) while the game still plays with it or is being switched off it
+    // the Pro Controller stays connected while the game still plays with it or is being switched off it
     g_hold_pro = g_phase != kIdle && !input::pro_controller() && (game_mode() == 0 || g_category == 1);
     update_gamepad_hold();
 }
@@ -207,6 +211,7 @@ void update_holds() {
 // the host's choice changed (Input menu, Controls, shortcut): the game follows it as after a load
 void host_changed(bool pro) {
     if (!pro) g_hold_pro = true;  // no reconnect prompt before the game thread has looked at it
+    g_live_pro = !pro && game_mode() == 0;  // no deaf Pro Controller read before then either
     // no deaf GamePad read before the game thread has looked at it (a GamePad game; no-op otherwise)
     g_hold_gamepad = pro && reads_gamepad(game_mode());
     request("controller change");
@@ -218,6 +223,7 @@ void request(const char* kind) { g_request = kind; }
 
 bool holds_pro_controller() { return g_hold_pro.load(std::memory_order_relaxed); }
 bool holds_gamepad() { return g_hold_gamepad.load(std::memory_order_relaxed); }
+bool pro_controller_live() { return g_live_pro.load(std::memory_order_relaxed); }
 
 void service(Cpu* c) {
     (void)g_listening;
@@ -243,6 +249,6 @@ void service(Cpu* c) {
     else if (g_phase == kWaitMenuOpen) wait_menu_open(c, ui);
     else wait_menu_back(c, ui);
     restore(c, saved);
-    update_gamepad_hold();  // a switch that just finished releases the GamePad before the game's next read
+    update_gamepad_hold();  // a switch that just finished hands over before the game's next read
 }
 }  // namespace controller_reapply
