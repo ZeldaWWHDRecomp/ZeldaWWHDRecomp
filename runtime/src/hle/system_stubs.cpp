@@ -4,6 +4,7 @@
 #include "../crashrec.h"
 #include "../runtime.h"
 #include "../input.h"
+#include "../controller_reapply.h"
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
@@ -131,9 +132,13 @@ HLE(vpad, VPADRead) {
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
     if (!input::pro_controller() && live) mods::jump_input(live_virt);
     if (!input::pro_controller()) mods::fast_forward_input(p.buttons);
-    if (input::pro_controller()) {  // GamePad on the table: screen and touch only
-        p.buttons = 0;
-        p.lx = p.ly = p.rx = p.ry = 0;
+    if (input::pro_controller()) {
+        // GamePad on the table: screen and touch only. Not yet while the game still reads it and is
+        // being switched to the Pro Controller (controller_reapply::holds_gamepad, issue #330)
+        if (!controller_reapply::holds_gamepad()) {
+            p.buttons = 0;
+            p.lx = p.ly = p.rx = p.ry = 0;
+        }
     } else if (!repeat) {
         motion::right_stick(p.rx, p.ry);  // the game ignores the gyro while it is pushed (gyro diagnostics)
     }
