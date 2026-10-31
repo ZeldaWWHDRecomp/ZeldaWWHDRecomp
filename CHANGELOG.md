@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: code mods "not available" in Android development builds** (mods issue #6, thanks @alexander-beepx).
+  Development builds for Android didn't know their own version, so every mod in Mods → Community looked too new for
+  them. Releases weren't affected.
 - **HDR: darker, truer shadows and a choice of HDR format** (#333, thanks @findel77). With HDR on, the game's picture
   is now turned into HDR with a gamma 2.2 curve, like most monitors show it in SDR, so shadows no longer look washed
   out. Settings → Graphics → **SDR curve in HDR**: Gamma 2.2 (default), Gamma 2.4 for a darker TV-like look, or sRGB
