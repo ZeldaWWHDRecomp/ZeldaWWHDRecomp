@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Story Notebook leaving the menu broken** (mods issue #9, thanks @francosang). After the notebook closed, the
+  menu cursor or bait icons in the bag could stay hidden, and using the notebook from an item button opened it without
+  showing it, so Link didn't respond until Go back. The menu is now restored on every way the notebook closes, and the
+  item button shows the notebook on the TV and the GamePad.
 - **Fixed: code mods "not available" in Android development builds** (mods issue #6, thanks @alexander-beepx).
   Development builds for Android didn't know their own version, so every mod in Mods → Community looked too new for
   them. Releases weren't affected.
