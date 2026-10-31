@@ -705,6 +705,21 @@ void test_hooks() {
             assert(ld8(floating_pane + 0x44) == 0xB1);
             restore_notebook_icons();
             st32(kFloat + 0xEC, 0xA0);
+            // The real #9 reproduction: a Delivery Bag notebook place is reused for a
+            // Hyoi Pear when switching to the bait bag. mVisible stays true, so the
+            // game's setVisible(true) skips its pane write. Our draw must have restored it.
+            assert(ld8(kChild + 0xFC) == 1);
+            st32(kChild + 0xEC, 0x83);
+            st32(kMenu + 0x54, 1);
+            call(0x0268FF50, kMenu);
+            call(0x026333F0, kChild, 1);
+            hide_floating_notebook_icon();
+            assert(ld8(kIconA + 0x44) == 0xA5);
+            restore_notebook_icons();
+            assert(ld8(kIconA + 0x44) == 0xA5 && ld8(kChild + 0xFC) == 1);
+            st32(kChild + 0xEC, 0xA0);
+            st32(kMenu + 0x54, 2);
+            call(0x0268FF50, kMenu);
             std::vector<uint8_t> menu_before(mem::ptr(kMenu), mem::ptr(kMenu) + 0x100);
             std::vector<uint8_t> item_before(mem::ptr(kChild), mem::ptr(kChild) + 0x400);
             call(0x0268F060, kMenu, 0x15);
