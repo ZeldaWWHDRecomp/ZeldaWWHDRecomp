@@ -69,13 +69,24 @@ inline bool resolve_output() {
     return false;
 }
 inline std::atomic<float> paperWhite{240}, peak{1025}, exposure{-0.32f}, highlights{0.32f}, menuWhite{160};
+inline std::atomic<bool> peakAuto{false};
+inline std::atomic<float> headroom{0}; // SDL ratio relative to SDR white; <=1 means unavailable
+inline bool valid_headroom(float value) { return std::isfinite(value) && value>1.0f; }
+inline float automatic_peak(float paper, float ratio) {
+    // Bound implausible reports to PQ's absolute range. Missing headroom uses the old default.
+    return valid_headroom(ratio) ? std::clamp(paper*ratio,paper,10000.0f) : 1025.0f;
+}
+inline bool automatic_peak_setting(bool hasMode, std::string_view mode) {
+    return hasMode && mode=="1";
+}
 inline void set(std::atomic<float>& dst, float value, float lo, float hi) {
     if (std::isfinite(value)) dst = std::clamp(value,lo,hi);
 }
 struct Parameters { float paper, peak, exposure, highlights; };
 inline Parameters parameters() {
-    const float maxNits=peak.load();
-    return {std::min(paperWhite.load(),maxNits),maxNits,exposure.load(),highlights.load()};
+    const float paper=paperWhite.load();
+    const float maxNits=peakAuto.load() ? automatic_peak(paper,headroom.load()) : peak.load();
+    return {std::min(paper,maxNits),maxNits,exposure.load(),highlights.load()};
 }
 // Max-channel scaling preserves hue, including saturated highlights; zero stays
 // zero. The smooth shoulder limits all RGB channels to the selected peak.

@@ -6,6 +6,21 @@
 #include <limits>
 #include <string_view>
 int main() {
+ // Auto Peak: SDL headroom is relative to paper white; invalid/missing SDR-only reports fall back.
+ assert(hdr::automatic_peak(203,5)==1015);
+ for(float ratio:{0.f,1.f,-1.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
+  assert(hdr::automatic_peak(203,ratio)==1025);
+ assert(hdr::automatic_peak(500,100)==10000);
+ assert(!hdr::peakAuto.load()); // manual by default on every compositor
+ assert(!hdr::automatic_peak_setting(false,"")); // fresh/legacy configs stay manual
+ assert(hdr::automatic_peak_setting(true,"1")); // explicit opt-in persists
+ for(std::string_view mode:{"0","","invalid","2"})assert(!hdr::automatic_peak_setting(true,mode));
+ hdr::paperWhite=203;hdr::headroom=5;hdr::peakAuto=true;hdr::peak=1150;
+ assert(hdr::parameters().peak==1015);
+ hdr::paperWhite=240;assert(hdr::parameters().peak==1200); // paper white updates Auto
+ hdr::headroom=3;assert(hdr::parameters().peak==720); // display/headroom update
+ hdr::peakAuto=false;assert(hdr::parameters().peak==1150); // retained manual override
+ hdr::paperWhite=240;hdr::peak=1025;hdr::peakAuto=true;hdr::headroom=0;
  // Every offered-format combination and requested preference, including neither.
  for(bool scrgb:{false,true})for(bool pq:{false,true})for(int preference=0;preference<3;++preference) {
   const auto expected=!scrgb&&!pq?hdr::Output::Sdr:

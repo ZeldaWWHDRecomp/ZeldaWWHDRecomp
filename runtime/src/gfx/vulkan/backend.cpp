@@ -1657,6 +1657,9 @@ static bool async_present();
 // sRGB preferred image description even on PQ outputs, so SDL never reports HDR there; Mesa
 // offers the HDR colour spaces only when the compositor accepts them, so those count too.
 // The HDR choice itself stays explicit.
+static void update_hdr_headroom(SDL_Window* window) {
+  hdr::headroom=SDL_GetFloatProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT,0.0f);
+}
 static bool display_hdr_enabled(SDL_Window* window) {
   const bool sdl=SDL_GetBooleanProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
 #ifdef _WIN32
@@ -1721,6 +1724,7 @@ static void make_swapchain(Screen &s) {
     hdr::formatSupported=scrgb||pq;
 #if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
     hdr::displayEnabled=display_hdr_enabled(s.window);
+    update_hdr_headroom(s.window);
 #endif
     wantHdr=hdr::resolve_output();
     const int preference=hdr::format.load();
@@ -5757,10 +5761,11 @@ void run_main_loop() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
 #ifdef WWHD_HDR_OUTPUT
-      if(event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED && event.window.windowID==SDL_GetWindowID(R.tv.window)) {
+      if((event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED || event.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED) &&
+         event.window.windowID==SDL_GetWindowID(R.tv.window)) {
         const bool enabled=display_hdr_enabled(R.tv.window);
-        // SDL also reports white-level/headroom changes after presentation.
-        // Our explicit nits controls do not require a new swapchain for those.
+        // Auto Peak and metadata follow headroom changes without recreating the swapchain.
+        update_hdr_headroom(R.tv.window);
         if(hdr::displayEnabled.exchange(enabled)!=enabled)R.tv.resize=true;
       }
 #endif
