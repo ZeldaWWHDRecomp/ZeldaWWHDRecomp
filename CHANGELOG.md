@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **HDR: darker, truer shadows and a choice of HDR format** (#333, thanks @findel77). With HDR on, the game's picture
+  is now turned into HDR with a gamma 2.2 curve, like most monitors show it in SDR, so shadows no longer look washed
+  out. Settings → Graphics → **SDR curve in HDR**: Gamma 2.2 (default), Gamma 2.4 for a darker TV-like look, or sRGB
+  for the previous look. **HDR format** picks the signal: Auto (as before), scRGB or HDR10 (PQ); if the choice isn't
+  available, the game says so and uses the other one. SDR output is unchanged. See [docs/hdr.md](docs/hdr.md).
 - **Touch controls: Link in the button pictures.** Action buttons show a small picture of Link in that action's pose:
   jumping on Jump, swinging the sword on the sword button, crouching, rolling, lifting, talking, defending and more,
   with the game's word under him. The pictures are drawn from your own game files when the game starts; nothing is
