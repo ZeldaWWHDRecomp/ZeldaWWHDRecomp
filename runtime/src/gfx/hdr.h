@@ -92,12 +92,14 @@ inline std::array<float,3> map(std::array<float,3> c, Parameters p) {
 }
 // Static HDR metadata (VK_EXT_hdr_metadata) for the mapped picture. Without it a compositor must guess the
 // content's range: KWin clamps scRGB at 80 cd/m^2 and tone maps HDR10 as 10000 cd/m^2 content. The peak
-// slider is the content and mastering maximum; a frame cannot average more than an all-white scan. The
-// guest picture is BT.709 (mastering primaries, set by the caller).
+// slider is the mastering maximum, not necessarily the content maximum. Estimate the latter from
+// mapped SDR white and the overlay white, so compositors don't tone map unused headroom. The guest
+// picture is BT.709 (mastering primaries, set by the caller).
 struct Metadata { float maxCll, maxFall, maxMastering, minMastering; };
-inline Metadata metadata(Parameters p) {
+inline Metadata metadata(Parameters p, float menuWhite) {
     const float white=map({1,1,1},p)[0]*80.0f;
-    return {p.peak,std::min(white,p.peak),p.peak,0.0f};
+    const float maxCll=std::max(white,std::min(menuWhite,p.peak));
+    return {maxCll,std::min(white,p.peak),p.peak,0.0f};
 }
 inline bool operator==(const Metadata& a, const Metadata& b) {
     return a.maxCll==b.maxCll && a.maxFall==b.maxFall && a.maxMastering==b.maxMastering && a.minMastering==b.minMastering;

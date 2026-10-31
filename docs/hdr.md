@@ -15,7 +15,21 @@ uses the other HDR format, or SDR if neither is available. Graphics settings sho
 the active format and explain a fallback. Both settings take effect while playing.
 
 Paper white controls the brightness of the game's normal whites, including its
-HUD. Peak brightness should match your display's capability. Exposure and
-highlight expansion adjust the game's HDR appearance; settings-menu brightness
-is independent. HDR expands the game's SDR picture and cannot recover lighting
-that was already clipped. Screenshots remain SDR.
+HUD. On KDE Plasma, start with paper white 203 nits to match the desktop's SDR
+brightness. KWin scales this reference by its SDR brightness setting. For Peak,
+use display peak × 203 / desktop SDR brightness (all in nits), rather than the
+physical display peak alone. Other setups may use the display's peak directly.
+Peak is currently manual; the game does not read compositor HDR headroom.
+Exposure adjusts overall brightness; settings-menu brightness is independent.
+
+The game sends HDR metadata when the driver supports VK_EXT_hdr_metadata and
+updates it when the settings change. Max CLL estimates the brightest mapped SDR
+white or menu white, not unused Peak headroom; mastering maximum stays at Peak.
+
+**Highlight expansion is where the HDR effect comes from.** The game renders an
+SDR picture: at 0, HDR aims to reproduce SDR rather than add brighter highlights.
+For an SDR comparison, use Gamma 2.2 and exposure 0. Raising highlight expansion
+makes the sun and other bright areas brighter than normal white, limited by Peak.
+Start around 0.15; try 0.30 for a stronger effect. HDR cannot recover lighting that
+was already clipped. Screenshots remain SDR. Compositor screenshots (for example
+on KDE) are tone mapped, so judge the result on the display itself.

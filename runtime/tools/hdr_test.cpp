@@ -73,15 +73,22 @@ int main() {
  for(float v:white)assert(std::abs(v-hdr::pq(100))<.0005f);
  auto red=hdr::encode_pq({1,0,0});
  assert(std::abs(red[0]-hdr::pq(80*.627404f))<1e-5f&&std::abs(red[1]-hdr::pq(80*.069097f))<1e-5f);
- // Metadata: the peak slider is the content maximum; average at most all-white, never above the peak.
+ // Metadata: mastering uses Peak; content uses mapped white or capped menu white.
  for(float paper:{80.f,203.f,500.f})for(float peak:{200.f,1150.f,4000.f})for(float boost:{0.f,.3f,1.f}) {
   const hdr::Parameters q{std::min(paper,peak),peak,0,boost};
-  const auto m=hdr::metadata(q);
-  assert(m.maxCll==peak&&m.maxMastering==peak&&m.minMastering==0);
+  const auto m=hdr::metadata(q,160);
+  assert(m.maxCll==std::max(hdr::map({1,1,1},q)[0]*80,std::min(160.f,peak)));
+  assert(m.maxCll<=peak&&m.maxMastering==peak&&m.minMastering==0);
   assert(m.maxFall>0&&m.maxFall<=peak&&std::abs(m.maxFall-std::min(hdr::map({1,1,1},q)[0]*80,peak))<1e-3f);
  }
- assert(std::abs(hdr::metadata({203,1150,0,0}).maxFall-203)<.01f); // highlights 0: white stays paper white
- assert(!(hdr::metadata({203,1150,0,0})==hdr::metadata({203,1000,0,0})));
+ const hdr::Parameters kde{203,1150,0,0};
+ assert(std::abs(hdr::metadata(kde,160).maxFall-203)<.01f);
+ assert(std::abs(hdr::metadata(kde,160).maxCll-203)<.01f); // no unused peak headroom in Max CLL
+ assert(hdr::metadata(kde,400).maxCll==400); // brighter overlay must not be clipped
+ assert(hdr::metadata(kde,2000).maxCll==1150); // overlay is capped at Peak
+ assert(!(hdr::metadata(kde,160)==hdr::metadata(kde,400))); // live menu brightness update
+ assert(!(hdr::metadata(kde,160)==hdr::metadata({203,1000,0,0},160)));
+ assert(hdr::metadata({203,1150,0,.3f},160).maxCll>hdr::metadata(kde,160).maxCll);
  // Linux: Wayland for HDR only in a Wayland session, never under gamescope or a chosen SDL driver.
  assert(hdr::wayland_for_hdr(false,true,false));
  assert(!hdr::wayland_for_hdr(false,true,true)&&!hdr::wayland_for_hdr(true,true,false)&&!hdr::wayland_for_hdr(false,false,false));

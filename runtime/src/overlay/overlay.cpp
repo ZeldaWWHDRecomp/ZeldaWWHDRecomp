@@ -1033,7 +1033,7 @@ void tab_graphics() {
         slider("Highlight expansion","hdrHighlights",hdr::highlights,0,1,"%.2f");
         slider("Settings menu brightness","hdrMenuWhite",hdr::menuWhite,80,500,"%.0f nits");
         ImGui::EndDisabled();
-        help("HDR output expands the game's SDR picture; it cannot recover already clipped lighting. Paper white also affects the in-game HUD. Settings-menu brightness is independent. Set peak brightness to your display's capability. SDR screenshots remain SDR.");
+        help("HDR expands the game's SDR picture; it cannot recover already clipped lighting. At highlight expansion 0, HDR aims to reproduce SDR; try 0.15-0.30 for brighter highlights. For an SDR comparison, use Gamma 2.2 and exposure 0. Paper white also affects the HUD. On KDE Plasma, start with paper white 203 and set Peak to display peak times 203 divided by desktop SDR brightness (all in nits). Other setups may use the display's peak directly. Settings-menu brightness is independent. SDR screenshots remain SDR.");
     }
 #endif
     heading("Effects");

@@ -2643,7 +2643,7 @@ static void register_observed_present(Screen &s, uint32_t observedPresentId, uin
 // first present and again after a slider change. Called with the graphics queue lock held.
 static void send_hdr_metadata(Screen &s, VkSwapchainKHR swapchain) {
   if (!R.setHdrMetadata || !s.hdrOutput) return;
-  const auto m = hdr::metadata(hdr::parameters());
+  const auto m = hdr::metadata(hdr::parameters(), hdr::menuWhite.load());
   const std::array<float,4> values{m.maxCll, m.maxFall, m.maxMastering, m.minMastering};
   const bool newSwapchain = s.hdrMetadataStale.exchange(false);
   if (!newSwapchain && values == s.hdrMetadataSent) return;
