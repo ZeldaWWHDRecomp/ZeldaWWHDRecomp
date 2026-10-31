@@ -107,7 +107,10 @@ inline std::array<float,3> map(std::array<float,3> c, Parameters p) {
 // mapped SDR white and the overlay white, so compositors don't tone map unused headroom. The guest
 // picture is BT.709 (mastering primaries, set by the caller).
 struct Metadata { float maxCll, maxFall, maxMastering, minMastering; };
-inline Metadata metadata(Parameters p, float menuWhite) {
+inline Metadata metadata(Parameters p, float menuWhite, bool boundedScan=true) {
+    // Floating-point scans can exceed nominal SDR white. Without measuring their maximum,
+    // only the mapper's Peak ceiling bounds content and its full-frame average safely.
+    if (!boundedScan) return {p.peak,p.peak,p.peak,0.0f};
     const float white=map({1,1,1},p)[0]*80.0f;
     const float maxCll=std::max(white,std::min(menuWhite,p.peak));
     return {maxCll,std::min(white,p.peak),p.peak,0.0f};

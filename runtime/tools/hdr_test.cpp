@@ -104,6 +104,16 @@ int main() {
  assert(!(hdr::metadata(kde,160)==hdr::metadata(kde,400))); // live menu brightness update
  assert(!(hdr::metadata(kde,160)==hdr::metadata({203,1000,0,0},160)));
  assert(hdr::metadata({203,1150,0,.3f},160).maxCll>hdr::metadata(kde,160).maxCll);
+ // Float scans retain above-white values. Their metadata must bound those values,
+ // including a full frame of super-white, without changing bounded SDR metadata.
+ const auto floatMetadata=hdr::metadata(kde,160,false);
+ assert(floatMetadata.maxCll==1150 && floatMetadata.maxFall==1150);
+ for(auto curve:{hdr::SdrCurve::Gamma22,hdr::SdrCurve::Gamma24})for(float code:{1.2f,2.f,10.f}) {
+  const auto c=hdr::map(hdr::decode(std::array<float,3>{code,code,code},curve),kde);
+  assert(c[0]*80>hdr::metadata(kde,160,true).maxCll);
+  assert(c[0]*80<=floatMetadata.maxCll+1e-3f); // FP rounding at the shoulder's ceiling
+ }
+ assert(!(floatMetadata==hdr::metadata(kde,160,true))); // format changes resend metadata
  // Linux: Wayland for HDR only in a Wayland session, never under gamescope or a chosen SDL driver.
  assert(hdr::wayland_for_hdr(false,true,false));
  assert(!hdr::wayland_for_hdr(false,true,true)&&!hdr::wayland_for_hdr(true,true,false)&&!hdr::wayland_for_hdr(false,false,false));

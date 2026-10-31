@@ -586,9 +586,13 @@ void test_hdr_presentation() {
    auto* pixels=static_cast<const float*>(readback.mapped);
    if(!sourceLinear && !pq && c[0]==c[1] && (c[0]==0.05f || c[0]==0.5f))
     fprintf(stderr,"[renderer smoke] SDR curve=%d code=%.2f scRGB=%.9f\n",curve,c[0],pixels[0]);
-   for(int i=0;i<16;++i)for(int k=0;k<3;++k)
+   const auto metadata=hdr::metadata(hp,hdr::menuWhite.load(),bounded_color_format(source.fmt.pixel));
+   for(int i=0;i<16;++i)for(int k=0;k<3;++k) {
     if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>(pq?0.0002f:0.00002f))
      exception_report::raise("HDR shader readback differs from calibrated scRGB mapping");
+    if(!pq && pixels[i*4+k]*80>metadata.maxCll+0.01f)
+     exception_report::raise("HDR float scan exceeds advertised Max CLL");
+   }
   }
   // HDR10: the final pass encodes linear scRGB (0, 80, 1000 and 10000+ nits, a hue) to BT.2020 PQ.
   for(auto c:{std::array<float,3>{0,0,0},{1,1,1},{12.5f,12.5f,12.5f},{200,200,200},{0.05f,0.4f,1}}) {
@@ -839,6 +843,11 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  }
  if(fxaa_enabled()&&!linear)exception_report::raise("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
+ // Inspect actual guest quads, including GamePad PiP and the second stereo eye, not
+ // the FP16 intermediate used for PQ encoding. Unknown/float formats need Peak metadata.
+ screen.hdrScanBounded=std::all_of(quads.begin(),quads.end(),[](const ComposeQuad& q) {
+  return q.solid || !q.image || q.box.w<=0 || q.box.h<=0 || bounded_color_format(q.image->fmt.pixel);
+ });
  auto* overlay=screen_overlay(screen,screen.swapExtent.width,screen.swapExtent.height);
  if(screen.hdrPq) {
   // HDR10: compose and blend in linear FP16 scRGB exactly as for scRGB output, then

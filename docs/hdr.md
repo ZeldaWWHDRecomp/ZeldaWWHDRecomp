@@ -37,7 +37,9 @@ use the display's peak directly.
 
 The game sends HDR metadata when the driver supports VK_EXT_hdr_metadata and
 updates it when the settings change. Max CLL estimates the brightest mapped SDR
-white or menu white, not unused Peak headroom; mastering maximum stays at Peak.
+white or menu white for normalized SDR scans, not unused Peak headroom. For
+floating-point scans that can exceed SDR white, Peak is used as a conservative
+content bound instead. Mastering maximum stays at Peak.
 
 **Highlight expansion is where the HDR effect comes from.** The game renders an
 SDR picture: at 0, HDR aims to reproduce SDR rather than add brighter highlights.
