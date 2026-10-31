@@ -792,7 +792,10 @@ jobs:
       - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
-          GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          # the version the app reports and checks catalogue mods against (CI has no tags for git describe;
+          # without it a development build counted as 0.0.0 and every mod was unavailable, mods issue #6)
+          WWHD_VERSION="$VERSION" GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          grep -qF "\"$VERSION\"" android/build/game/generated/build_info.cpp || { echo "libmain.so does not carry version $VERSION"; exit 1; }
           cmake --build android/build/game --target wwhd-extract --parallel 4
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk
