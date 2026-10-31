@@ -9,6 +9,7 @@
     <string name="save_exported">Save exported to Downloads</string>
     <string name="save_export_failed">Could not export the save: %1$s</string>
     <string name="save_not_a_save">This zip has no Wind Waker HD save (user/cking.sav)</string>
+    <string name="save_imported_new">Save imported</string>
     <string name="save_imported">Save imported (the previous one is in %1$s)</string>
     <string name="save_import_failed">Could not import the save: %1$s</string>
     <string name="setup_welcome">Set up your game</string>
