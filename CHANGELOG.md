@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Android running at about half speed since v0.5.0** (#334, thanks @SpicyAwesomeSauce). From the second
+  launch on, the shaders prepared in the background made every frame slower on Snapdragon (Qualcomm) phones: Windfall
+  at 40 fps ran at about 22 fps. The game now builds those shaders itself from the prepared cache, which takes well
+  under a millisecond each, so it holds 40 fps again with no extra stutter when new areas load. The workaround
+  `WWHD_VK_PIPELINE_WARMUP=0` is no longer needed.
 - **Fixed: Story Notebook leaving the menu broken** (mods issue #9, thanks @francosang). After the notebook closed, the
   menu cursor or bait icons in the bag could stay hidden, and using the notebook from an item button opened it without
   showing it, so Link didn't respond until Go back. The menu is now restored on every way the notebook closes, and the
