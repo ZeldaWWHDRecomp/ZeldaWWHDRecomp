@@ -6,6 +6,21 @@
 #include <limits>
 #include <string_view>
 int main() {
+ // Auto Peak: SDL headroom is relative to paper white; invalid/missing SDR-only reports fall back.
+ assert(hdr::automatic_peak(203,5)==1015);
+ for(float ratio:{0.f,1.f,-1.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
+  assert(hdr::automatic_peak(203,ratio)==1025);
+ assert(hdr::automatic_peak(500,100)==10000);
+ assert(!hdr::peakAuto.load()); // manual by default on every compositor
+ assert(!hdr::automatic_peak_setting(false,"")); // fresh/legacy configs stay manual
+ assert(hdr::automatic_peak_setting(true,"1")); // explicit opt-in persists
+ for(std::string_view mode:{"0","","invalid","2"})assert(!hdr::automatic_peak_setting(true,mode));
+ hdr::paperWhite=203;hdr::headroom=5;hdr::peakAuto=true;hdr::peak=1150;
+ assert(hdr::parameters().peak==1015);
+ hdr::paperWhite=240;assert(hdr::parameters().peak==1200); // paper white updates Auto
+ hdr::headroom=3;assert(hdr::parameters().peak==720); // display/headroom update
+ hdr::peakAuto=false;assert(hdr::parameters().peak==1150); // retained manual override
+ hdr::paperWhite=240;hdr::peak=1025;hdr::peakAuto=true;hdr::headroom=0;
  // Every offered-format combination and requested preference, including neither.
  for(bool scrgb:{false,true})for(bool pq:{false,true})for(int preference=0;preference<3;++preference) {
   const auto expected=!scrgb&&!pq?hdr::Output::Sdr:
@@ -73,10 +88,36 @@ int main() {
  for(float v:white)assert(std::abs(v-hdr::pq(100))<.0005f);
  auto red=hdr::encode_pq({1,0,0});
  assert(std::abs(red[0]-hdr::pq(80*.627404f))<1e-5f&&std::abs(red[1]-hdr::pq(80*.069097f))<1e-5f);
+ // Metadata: mastering uses Peak; content uses mapped white or capped menu white.
+ for(float paper:{80.f,203.f,500.f})for(float peak:{200.f,1150.f,4000.f})for(float boost:{0.f,.3f,1.f}) {
+  const hdr::Parameters q{std::min(paper,peak),peak,0,boost};
+  const auto m=hdr::metadata(q,160);
+  assert(m.maxCll==std::max(hdr::map({1,1,1},q)[0]*80,std::min(160.f,peak)));
+  assert(m.maxCll<=peak&&m.maxMastering==peak&&m.minMastering==0);
+  assert(m.maxFall>0&&m.maxFall<=peak&&std::abs(m.maxFall-std::min(hdr::map({1,1,1},q)[0]*80,peak))<1e-3f);
+ }
+ const hdr::Parameters kde{203,1150,0,0};
+ assert(std::abs(hdr::metadata(kde,160).maxFall-203)<.01f);
+ assert(std::abs(hdr::metadata(kde,160).maxCll-203)<.01f); // no unused peak headroom in Max CLL
+ assert(hdr::metadata(kde,400).maxCll==400); // brighter overlay must not be clipped
+ assert(hdr::metadata(kde,2000).maxCll==1150); // overlay is capped at Peak
+ assert(!(hdr::metadata(kde,160)==hdr::metadata(kde,400))); // live menu brightness update
+ assert(!(hdr::metadata(kde,160)==hdr::metadata({203,1000,0,0},160)));
+ assert(hdr::metadata({203,1150,0,.3f},160).maxCll>hdr::metadata(kde,160).maxCll);
+ // Float scans retain above-white values. Their metadata must bound those values,
+ // including a full frame of super-white, without changing bounded SDR metadata.
+ const auto floatMetadata=hdr::metadata(kde,160,false);
+ assert(floatMetadata.maxCll==1150 && floatMetadata.maxFall==1150);
+ for(auto curve:{hdr::SdrCurve::Gamma22,hdr::SdrCurve::Gamma24})for(float code:{1.2f,2.f,10.f}) {
+  const auto c=hdr::map(hdr::decode(std::array<float,3>{code,code,code},curve),kde);
+  assert(c[0]*80>hdr::metadata(kde,160,true).maxCll);
+  assert(c[0]*80<=floatMetadata.maxCll+1e-3f); // FP rounding at the shoulder's ceiling
+ }
+ assert(!(floatMetadata==hdr::metadata(kde,160,true))); // format changes resend metadata
  // Linux: Wayland for HDR only in a Wayland session, never under gamescope or a chosen SDL driver.
  assert(hdr::wayland_for_hdr(false,true,false));
  assert(!hdr::wayland_for_hdr(false,true,true)&&!hdr::wayland_for_hdr(true,true,false)&&!hdr::wayland_for_hdr(false,false,false));
  auto before=hdr::paperWhite.load();hdr::set(hdr::paperWhite,std::numeric_limits<float>::quiet_NaN(),80,500);
  assert(hdr::paperWhite.load()==before);
- puts("HDR: SDR fallback, black, calibrated grey, monotonicity, peak limit, hue, HDR10 PQ and invalid settings passed.");
+ puts("HDR: SDR fallback, black, calibrated grey, monotonicity, peak limit, hue, HDR10 PQ, metadata and invalid settings passed.");
 }

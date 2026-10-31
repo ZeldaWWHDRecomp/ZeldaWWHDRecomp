@@ -1028,12 +1028,23 @@ void tab_graphics() {
             post_changed([format] {hdr::format=format;hostui::set("hdrFormat",std::to_string(format));});
         help("Which HDR signal is sent to the display. Auto is best for most setups.");
         slider("Paper white","hdrPaperWhite",hdr::paperWhite,80,500,"%.0f nits");
+        bool autoPeak=hdr::peakAuto.load();
+        if(ImGui::Checkbox("Automatic peak brightness",&autoPeak))
+            post_changed([autoPeak] {hdr::peakAuto=autoPeak;hostui::set("hdrPeakAuto",autoPeak?"1":"0");});
+        if(autoPeak) {
+            ImGui::Text("Peak brightness: %.0f nits",hdr::parameters().peak);
+            if(!hdr::valid_headroom(hdr::headroom.load()))
+                note("HDR headroom is unavailable. Auto uses 1025 nits; disable Auto to set Peak manually.");
+        }
+        ImGui::BeginDisabled(autoPeak);
         slider("Peak brightness","hdrPeak",hdr::peak,200,4000,"%.0f nits");
+        ImGui::EndDisabled();
+        help("Auto uses paper white times the display's SDL HDR headroom and follows display changes. Disable it to use a manual Peak; your manual value is kept.");
         slider("Exposure","hdrExposure",hdr::exposure,-3,3,"%+.2f EV");
         slider("Highlight expansion","hdrHighlights",hdr::highlights,0,1,"%.2f");
         slider("Settings menu brightness","hdrMenuWhite",hdr::menuWhite,80,500,"%.0f nits");
         ImGui::EndDisabled();
-        help("HDR output expands the game's SDR picture; it cannot recover already clipped lighting. Paper white also affects the in-game HUD. Settings-menu brightness is independent. Set peak brightness to your display's capability. SDR screenshots remain SDR.");
+        help("HDR expands the game's SDR picture; it cannot recover already clipped lighting. At highlight expansion 0, HDR aims to reproduce SDR; try 0.15-0.30 for brighter highlights. For an SDR comparison, use Gamma 2.2 and exposure 0. Paper white also affects the HUD. On KDE Plasma, start with paper white 203. For manual Peak, use display peak times 203 divided by desktop SDR brightness (all in nits). Other setups may use the display's peak directly. Settings-menu brightness is independent. SDR screenshots remain SDR.");
     }
 #endif
     heading("Effects");

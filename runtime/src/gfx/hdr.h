@@ -69,13 +69,24 @@ inline bool resolve_output() {
     return false;
 }
 inline std::atomic<float> paperWhite{240}, peak{1025}, exposure{-0.32f}, highlights{0.32f}, menuWhite{160};
+inline std::atomic<bool> peakAuto{false};
+inline std::atomic<float> headroom{0}; // SDL ratio relative to SDR white; <=1 means unavailable
+inline bool valid_headroom(float value) { return std::isfinite(value) && value>1.0f; }
+inline float automatic_peak(float paper, float ratio) {
+    // Bound implausible reports to PQ's absolute range. Missing headroom uses the old default.
+    return valid_headroom(ratio) ? std::clamp(paper*ratio,paper,10000.0f) : 1025.0f;
+}
+inline bool automatic_peak_setting(bool hasMode, std::string_view mode) {
+    return hasMode && mode=="1";
+}
 inline void set(std::atomic<float>& dst, float value, float lo, float hi) {
     if (std::isfinite(value)) dst = std::clamp(value,lo,hi);
 }
 struct Parameters { float paper, peak, exposure, highlights; };
 inline Parameters parameters() {
-    const float maxNits=peak.load();
-    return {std::min(paperWhite.load(),maxNits),maxNits,exposure.load(),highlights.load()};
+    const float paper=paperWhite.load();
+    const float maxNits=peakAuto.load() ? automatic_peak(paper,headroom.load()) : peak.load();
+    return {std::min(paper,maxNits),maxNits,exposure.load(),highlights.load()};
 }
 // Max-channel scaling preserves hue, including saturated highlights; zero stays
 // zero. The smooth shoulder limits all RGB channels to the selected peak.
@@ -89,6 +100,23 @@ inline std::array<float,3> map(std::array<float,3> c, Parameters p) {
     if(n>knee) n=knee+(p.peak-knee)*(1-std::exp(-(n-knee)/(p.peak-knee)));
     for(auto& v:c) v*=n/(m*80.0f); // Windows scRGB: 1.0 = 80 cd/m^2.
     return c;
+}
+// Static HDR metadata (VK_EXT_hdr_metadata) for the mapped picture. Without it a compositor must guess the
+// content's range: KWin clamps scRGB at 80 cd/m^2 and tone maps HDR10 as 10000 cd/m^2 content. The peak
+// slider is the mastering maximum, not necessarily the content maximum. Estimate the latter from
+// mapped SDR white and the overlay white, so compositors don't tone map unused headroom. The guest
+// picture is BT.709 (mastering primaries, set by the caller).
+struct Metadata { float maxCll, maxFall, maxMastering, minMastering; };
+inline Metadata metadata(Parameters p, float menuWhite, bool boundedScan=true) {
+    // Floating-point scans can exceed nominal SDR white. Without measuring their maximum,
+    // only the mapper's Peak ceiling bounds content and its full-frame average safely.
+    if (!boundedScan) return {p.peak,p.peak,p.peak,0.0f};
+    const float white=map({1,1,1},p)[0]*80.0f;
+    const float maxCll=std::max(white,std::min(menuWhite,p.peak));
+    return {maxCll,std::min(white,p.peak),p.peak,0.0f};
+}
+inline bool operator==(const Metadata& a, const Metadata& b) {
+    return a.maxCll==b.maxCll && a.maxFall==b.maxFall && a.maxMastering==b.maxMastering && a.minMastering==b.minMastering;
 }
 // HDR10 from map()'s scRGB values: BT.709 -> BT.2020 primaries, then the
 // ST 2084 inverse EOTF of absolute luminance (1.0 = 10000 cd/m^2).

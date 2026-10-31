@@ -73,6 +73,10 @@ struct Screen {
  VkFormat swapFormat=VK_FORMAT_UNDEFINED; VkExtent2D swapExtent{};
  bool hdrOutput=false;
  bool hdrPq=false; // hdrOutput as HDR10 PQ: composed in FP16 scRGB, then encoded (present.cpp)
+ bool hdrScanBounded=false; // all guest image quads in the last composition use normalized formats
+ // VK_EXT_hdr_metadata: a new swapchain has none; queue_present sends it, and again when the sliders change
+ std::atomic<bool> hdrMetadataStale{true};
+ std::array<float,4> hdrMetadataSent{};
  std::vector<VkImage> images; std::vector<VkImageLayout> layouts;
  std::vector<ResourceUse> imageUses;
  VkSemaphore acquired=VK_NULL_HANDLE,finished=VK_NULL_HANDLE;
@@ -147,6 +151,7 @@ struct Renderer {
  bool renderPasses=false;
  const char* renderingReason="not initialized";
  bool portabilitySubset=false,imageViewSwizzle=true,imageViewReinterpretation=true;
+ PFN_vkSetHdrMetadataEXT setHdrMetadata=nullptr; // VK_EXT_hdr_metadata, when the device offers it
  bool attachmentViewUsage=false; // attachment views name their usage (issue #144: Intel; WWHD_VK_ATTACHMENT_VIEW_USAGE)
  bool imageView2DOn3DImage=true; // 2D views of volume slices (render targets); core Vulkan 1.1, optional in the portability subset
  bool samplerMipLodBias=true,separateStencilMaskRef=true,constantAlphaColorBlendFactors=true,vertexAttributeAccessBeyondStride=true,samplerMirrorClampToEdge=false;

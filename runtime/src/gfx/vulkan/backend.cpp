@@ -1653,12 +1653,21 @@ static bool secondary_retirement_available();
 #endif
 static bool async_present();
 #if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+// SDL_GetWindowProperties is main-thread-only. Cache native HDR properties at
+// window creation and on SDL display/HDR events; swapchain creation only reads atomics.
+static std::atomic<bool> sdlDisplayHdrEnabled{false};
+static void update_hdr_properties(SDL_Window* window) {
+  SDL_assert(SDL_IsMainThread());
+  const auto properties=SDL_GetWindowProperties(window);
+  sdlDisplayHdrEnabled=SDL_GetBooleanProperty(properties,SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+  hdr::headroom=SDL_GetFloatProperty(properties,SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT,0.0f);
+}
 // Whether the display can show HDR. Linux: wlroots compositors (sway) give every surface an
-// sRGB preferred image description even on PQ outputs, so SDL never reports HDR there; Mesa
+// sRGB preferred image description even on PQ outputs, so SDL may not report HDR there; Mesa
 // offers the HDR colour spaces only when the compositor accepts them, so those count too.
-// The HDR choice itself stays explicit.
-static bool display_hdr_enabled(SDL_Window* window) {
-  const bool sdl=SDL_GetBooleanProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+// The HDR choice itself stays explicit. Safe to call from the render thread.
+static bool display_hdr_enabled() {
+  const bool sdl=sdlDisplayHdrEnabled.load();
 #ifdef _WIN32
   return sdl;
 #else
@@ -1720,7 +1729,7 @@ static void make_swapchain(Screen &s) {
     hdr::scrgbSupported=scrgb;hdr::pqSupported=pq;
     hdr::formatSupported=scrgb||pq;
 #if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
-    hdr::displayEnabled=display_hdr_enabled(s.window);
+    hdr::displayEnabled=display_hdr_enabled();
 #endif
     wantHdr=hdr::resolve_output();
     const int preference=hdr::format.load();
@@ -1891,6 +1900,7 @@ static void make_swapchain(Screen &s) {
   s.swapFormat = format.format;
   s.hdrOutput = wantHdr;
   s.hdrPq = wantPq;
+  s.hdrMetadataStale = true;
   if(&s==&R.tv) {
     hdr::pqOutput=wantPq;
     LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
@@ -2638,6 +2648,30 @@ static void register_observed_present(Screen &s, uint32_t observedPresentId, uin
   pendingObservedPresents.emplace(observedPresentId, ObservedPresent{s.swapchainGeneration, frame});
   present_observer::google_present(s.swapchainGeneration, observedPresentId, frame);
 }
+// HDR swapchains: the content range (hdr::metadata) for the compositor or display, sent before the
+// first present and again after a slider change. Called with the graphics queue lock held.
+static void send_hdr_metadata(Screen &s, VkSwapchainKHR swapchain) {
+  if (!R.setHdrMetadata || !s.hdrOutput) return;
+  const auto m = hdr::metadata(hdr::parameters(), hdr::menuWhite.load(), s.hdrScanBounded);
+  const std::array<float,4> values{m.maxCll, m.maxFall, m.maxMastering, m.minMastering};
+  const bool newSwapchain = s.hdrMetadataStale.exchange(false);
+  if (!newSwapchain && values == s.hdrMetadataSent) return;
+  s.hdrMetadataSent = values;
+  VkHdrMetadataEXT md{VK_STRUCTURE_TYPE_HDR_METADATA_EXT};
+  // BT.709 / D65: the gamut of the guest's SDR picture, also in HDR10's BT.2020 container
+  md.displayPrimaryRed = {0.640f, 0.330f};
+  md.displayPrimaryGreen = {0.300f, 0.600f};
+  md.displayPrimaryBlue = {0.150f, 0.060f};
+  md.whitePoint = {0.3127f, 0.3290f};
+  md.maxLuminance = m.maxMastering;
+  md.minLuminance = m.minMastering;
+  md.maxContentLightLevel = m.maxCll;
+  md.maxFrameAverageLightLevel = m.maxFall;
+  R.setHdrMetadata(R.device, 1, &swapchain, &md);
+  if (newSwapchain) // not per frame while a slider is dragged
+    LOG("[HDR] metadata: max CLL %.0f, max FALL %.0f, mastering %.0f-%.0f cd/m^2",
+      m.maxCll, m.maxFall, m.minMastering, m.maxMastering);
+}
 static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t index, VkSemaphore wait,
                               const void* pNext, uint32_t observedPresentId, uint64_t frame, bool secondary,
                               bool registered = false) {
@@ -2665,10 +2699,12 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
         observedTimes.pNext = pi.pNext;
         pi.pNext = &observedTimes;
         std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+        send_hdr_metadata(s, swapchain);
         return vkQueuePresentKHR(R.queue, &pi);
       }
     }
     std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
+    send_hdr_metadata(s, swapchain);
     VkResult result=vkQueuePresentKHR(R.queue, &pi);
 #ifdef __ANDROID__
     if(secondary)result=secondary_present_result(result);
@@ -4650,6 +4686,10 @@ static void init_device(std::vector<const char *> extensions,
   }
   if (has_extension(des, "VK_KHR_portability_subset"))
     de.push_back("VK_KHR_portability_subset");
+#ifdef WWHD_HDR_OUTPUT
+  const bool hdrMetadata = has_extension(des, VK_EXT_HDR_METADATA_EXTENSION_NAME);
+  if (hdrMetadata) de.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+#endif
   R.portabilitySubset =
       has_extension(des, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
   VkPhysicalDevicePortabilitySubsetFeaturesKHR portability{
@@ -4904,6 +4944,10 @@ static void init_device(std::vector<const char *> extensions,
           forced ? "set by WWHD_VK_CLIP_EMULATION" :
           "panvk culls fragments for depth clipping; WWHD_VK_CLIP_EMULATION=0/1 overrides");
   }
+#ifdef WWHD_HDR_OUTPUT
+  R.setHdrMetadata = hdrMetadata ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(R.device, "vkSetHdrMetadataEXT")) : nullptr;
+  LOG("[HDR] metadata (VK_EXT_hdr_metadata) %s", R.setHdrMetadata ? "available" : "unavailable");
+#endif
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
@@ -5134,6 +5178,9 @@ void init() {
   R.tv.window = SDL_CreateWindow("Wind Waker HD — Vulkan", 1280, 720, windowFlags);
   if (!R.tv.window)
     exception_report::raise(SDL_GetError());
+#ifdef WWHD_HDR_OUTPUT
+  update_hdr_properties(R.tv.window);
+#endif
 #ifdef __ANDROID__
   quest_theater::initialize();
   // one surface: the GamePad picture is drawn into it (display_modes.h: picture-in-picture, GamePad
@@ -5722,10 +5769,11 @@ void run_main_loop() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
 #ifdef WWHD_HDR_OUTPUT
-      if(event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED && event.window.windowID==SDL_GetWindowID(R.tv.window)) {
-        const bool enabled=display_hdr_enabled(R.tv.window);
-        // SDL also reports white-level/headroom changes after presentation.
-        // Our explicit nits controls do not require a new swapchain for those.
+      if((event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED || event.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED) &&
+         event.window.windowID==SDL_GetWindowID(R.tv.window)) {
+        // Auto Peak and metadata follow headroom changes without recreating the swapchain.
+        update_hdr_properties(R.tv.window);
+        const bool enabled=display_hdr_enabled();
         if(hdr::displayEnabled.exchange(enabled)!=enabled)R.tv.resize=true;
       }
 #endif
