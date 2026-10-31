@@ -2144,6 +2144,10 @@ if(NOT ANDROID)
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/system_exit_report_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
       -P ${CMAKE_SOURCE_DIR}/runtime/tools/system_exit_report_test.cmake)
+    add_test(NAME android_controller_input COMMAND ${CMAKE_COMMAND}
+      "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
+      "-DWORK=${CMAKE_BINARY_DIR}/controller_input_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+      -P ${CMAKE_SOURCE_DIR}/runtime/tools/controller_input_java_test.cmake)
     add_test(NAME android_touch_layout COMMAND ${CMAKE_COMMAND}
       "-DJAVAC=${Java_JAVAC_EXECUTABLE}" "-DJAVA=${Java_JAVA_EXECUTABLE}"
       "-DWORK=${CMAKE_BINARY_DIR}/touch_layout_java_test" "-DSOURCE=${CMAKE_SOURCE_DIR}"
