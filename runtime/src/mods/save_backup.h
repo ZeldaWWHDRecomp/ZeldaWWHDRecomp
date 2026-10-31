@@ -6,7 +6,8 @@
 //   save-backups/<YYYY-MM-DD_HH-MM-SS>-<reason>/save/...      the copied files
 // A backup is copied into a hidden temporary folder first and renamed into place when complete;
 // an existing backup is never overwritten (a second one in the same second gets "-2", ...).
-// Automatic backups (before an experimental mod, before a restore) keep the newest kKeepAutomatic;
+// Automatic backups (before an experimental mod, before a restore) keep the newest kKeepAutomatic, and
+// so do, counted separately, the backups made for a chosen save folder (save_folder.h);
 // manual ones ("Back up now") are never deleted. Folders without our backup.json are never touched.
 //
 // Restoring never replaces files the running game may have open: restore() only stages the choice
@@ -40,7 +41,7 @@ inline constexpr uint64_t kSpareBytes = 16ull << 20; // free space left over aft
 
 struct Info {
     std::string name;      // folder name in save-backups
-    std::string reason;    // "manual", "before-mod", "before-restore"
+    std::string reason;    // "manual", "before-mod", "before-restore", "save-folder", "cloud-conflict"
     std::string mod, mod_name;
     bool automatic = true;
     int64_t created = 0;   // seconds since the epoch
@@ -61,6 +62,8 @@ struct Info {
     std::string description() const {
         if (reason == "manual") return "Manual backup";
         if (reason == "before-restore") return "Before a restore";
+        if (reason == "save-folder") return "Before a save folder change";
+        if (reason == "cloud-conflict") return "Before choosing between cloud copies";
         return "Before enabling " + (mod_name.empty() ? mod : mod_name);
     }
 };
@@ -109,14 +112,17 @@ public:
     const fs::path& save_dir() const { return save_; }
     const fs::path& root() const { return root_; }
 
-    // Copies the save folder. reason: "manual", "before-mod" (mod = its ID) or "before-restore".
+    // Copies the save folder. reason: "manual", "before-mod" (mod = its ID), "before-restore", or
+    // "save-folder" / "cloud-conflict" (save_folder.h).
     // Nothing to copy (no save folder or no files yet) succeeds without creating a backup.
     Result create(const std::string& reason, const std::string& mod = {}, const std::string& mod_name = {}) {
         Result r;
         fs::path temporary;
         try {
             need(configured(), "Save backups are unavailable: the save folder is unknown");
-            need(reason == "manual" || reason == "before-restore" || (reason == "before-mod" && valid_id(mod)), "Invalid backup reason");
+            need(reason == "manual" || reason == "before-restore" || reason == "save-folder" || reason == "cloud-conflict" ||
+                     (reason == "before-mod" && valid_id(mod)),
+                 "Invalid backup reason");
             const auto source = resolved_save();
             if (!fs::exists(source) || count(source).first == 0) {
                 r.ok = true;
@@ -320,13 +326,16 @@ public:
         }
     }
 
-    // Keeps the newest kKeepAutomatic automatic backups (and always the one staged for restore).
+    // Keeps the newest kKeepAutomatic automatic backups (and always the one staged for restore). The
+    // backups of a save folder's other copies (save_folder.h) are counted on their own, so a run of
+    // mod backups never removes the only other side of a cloud conflict.
     void prune() {
         auto keep = pending();
-        size_t automatic = 0;
+        size_t automatic = 0, folder = 0;
         for (const auto& info : std::vector<Info>(list())) {
             if (!info.automatic) continue;
-            if (++automatic <= kKeepAutomatic || info.name == keep) continue;
+            const bool folder_copy = info.reason == "save-folder" || info.reason == "cloud-conflict";
+            if (++(folder_copy ? folder : automatic) <= kKeepAutomatic || info.name == keep) continue;
             std::error_code ec;
             fs::remove_all(root_ / info.name, ec);
             log("[save-backup] removed old automatic backup " + info.name + (ec ? " (failed: " + ec.message() + ")" : ""));
@@ -436,7 +445,9 @@ private:
             Info info;
             info.name = name;
             info.reason = v.get("reason").string();
-            if (info.reason != "manual" && info.reason != "before-mod" && info.reason != "before-restore") return std::nullopt;
+            if (info.reason != "manual" && info.reason != "before-mod" && info.reason != "before-restore" && info.reason != "save-folder" &&
+                info.reason != "cloud-conflict")
+                return std::nullopt;
             info.automatic = info.reason != "manual";  // a hand-edited flag never makes a manual backup prunable
             info.mod = v.get("mod").string();
             info.mod_name = v.get("mod_name").string();
@@ -456,11 +467,13 @@ inline Store& store() { static Store s; return s; }
 inline std::string& startup_notice() { static std::string text; return text; }
 
 // main(): before the game reads any save. Applies a staged restore.
-inline void startup(const fs::path& save_dir, std::function<void(const std::string&)> log = {}, bool apply = true) {
+// backup_root: save_folder.h keeps backups of a chosen (cloud) save folder in the local save-backups.
+inline void startup(const fs::path& save_dir, std::function<void(const std::string&)> log = {}, bool apply = true,
+                    const fs::path& backup_root = {}) {
     std::lock_guard guard(mutex());
     auto& s = store();
     if (log) s.log = std::move(log);
-    try { s.configure(save_dir); } catch (const std::exception& e) { s.log(std::string("[save-backup] unavailable: ") + e.what()); return; }
+    try { s.configure(save_dir, backup_root); } catch (const std::exception& e) { s.log(std::string("[save-backup] unavailable: ") + e.what()); return; }
     if (!apply) return;
     auto result = s.apply_pending();
     if (!result.ok) startup_notice() = result.error;
