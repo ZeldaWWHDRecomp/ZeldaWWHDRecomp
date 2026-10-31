@@ -137,6 +137,9 @@ ctxbtn::Buttons g_buttons;  // as last decided (with aim-only)
 uint32_t g_held = 0;
 std::atomic<bool> g_hide_cluster{false};
 std::atomic<int> g_assets_generation{0};
+std::atomic<startup_touch::Scene> g_startup_scene{startup_touch::kBoot};
+std::atomic<bool> g_title_tapped{false};
+startup_touch::TitlePress g_title_press;  // pad reads, protected by g_mu
 
 void log_buttons(const ctxbtn::Buttons& b) {
     static std::string last;
@@ -260,6 +263,9 @@ void context_touch_pad(input::PadState& p, bool repeat) {
     if (touch) want_context();
     const PlayContext c = play_context();
     std::lock_guard<std::mutex> lk(g_mu);
+    // Consume the request on actual logic reads. A title touch never carries into the file menu.
+    p.buttons = g_title_press.filter(p.buttons, g_startup_scene.load(std::memory_order_relaxed),
+        g_title_tapped.exchange(false, std::memory_order_relaxed), step());
     const int was_latched = g_machine.latched();
     const bool was_zl = g_machine.zl_latched();
     const uint32_t puts = g_machine.put_aways();
@@ -281,6 +287,10 @@ void context_touch_pad(input::PadState& p, bool repeat) {
 
 // ---- once per logic step, after the PlayContext was read (play_context.cpp) ----
 void context_touch_step(const PlayContext& c) {
+    char stage[9] = {};
+    const uint32_t name = GD(0x1046F0B0) + playctx::kStage;
+    for (int i = 0; i < 8; i++) stage[i] = char(ld8(name + uint32_t(i)));
+    g_startup_scene.store(startup_touch::scene(c.has(kInGame), stage), std::memory_order_relaxed);
     ctxbtn::Options o;
     o.fast_forward = fast_forward() && fast_forward_button() == input::kZR;
     ctxbtn::Buttons b = ctxbtn::context_buttons(c, o);
@@ -323,7 +333,13 @@ void context_touch_pack(int32_t* out, int n) {
     e.item_names_a = item_names_on_hud();
     e.link_poses = link_poses::enabled();
     e.assets_generation = g_assets_generation.load(std::memory_order_relaxed);
+    e.startup_scene = g_startup_scene.load(std::memory_order_relaxed);
     ctxtouch::pack(b, e, out, n);
+}
+
+void startup_title_tap() {
+    if (g_startup_scene.load(std::memory_order_relaxed) == startup_touch::kTitle)
+        g_title_tapped.store(true, std::memory_order_relaxed);
 }
 
 // 0 not ready yet, -1 failed, > 0 the generation of the files in dir (re-exported when the dir changes or
@@ -363,6 +379,9 @@ void context_touch_service() {
 
 #ifdef __ANDROID__
 #include <jni.h>
+extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeStartupTitleTap(JNIEnv*, jclass) {
+    mods::startup_title_tap();
+}
 extern "C" JNIEXPORT jint JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeContextButtons(JNIEnv* env, jclass, jintArray out) {
     int32_t v[mods::ctxtouch::kPackLen];
     mods::context_touch_pack(v, mods::ctxtouch::kPackLen);

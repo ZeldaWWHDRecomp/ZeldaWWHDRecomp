@@ -1,4 +1,5 @@
 <resources>
+    <string name="touch_tap_to_start">Tap to start</string>
     <string name="app_name">Wind Waker HD</string>
     <string name="game_setup">Game setup</string>
     <string name="game_widget">The game, with its own icon</string>
