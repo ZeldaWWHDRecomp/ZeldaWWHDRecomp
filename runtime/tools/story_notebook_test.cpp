@@ -3,6 +3,9 @@
 // the tracked quest's marker on the sea chart, and the item menu hooks on synthetic menu objects.
 // The game's own functions are stubbed; no game files are needed.
 #include "mods/story_notebook.h"
+#include "mods/story_notebook_layout.h"
+#include "mods/guest_hud.h"
+namespace story_notebook_layout { extern bool test_layout_ready; }
 #include "mods/story_notebook_list.h"
 #include "mods/story_notebook_page.h"
 #include "mods/story_notebook_font.h"
@@ -26,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <chrono>
+#include <thread>
 #include <cstring>
 #include <cstdarg>
 #include <cstdlib>
@@ -433,7 +437,12 @@ void original(Cpu* c, uint32_t fn) {
     case 0x026302B8: calls.push_back("float"); break;
     case 0x026333F0: {  // setVisible: the icon pane follows the item's visibility
         const uint32_t icon = ld32(ld32(c->r[3] + 0x8C + 4));
-        st8(icon + 0x44, uint8_t((ld8(icon + 0x44) & ~1u) | (c->r[4] & 1)));
+        // The real function (0263340C..0263343C) only updates the pane when its
+        // cached mVisible changes. A second setVisible(true) cannot repair a hidden pane.
+        if (ld8(c->r[3] + 0xFC) != c->r[4]) {
+            st8(c->r[3] + 0xFC, uint8_t(c->r[4]));
+            st8(icon + 0x44, uint8_t((ld8(icon + 0x44) & ~1u) | (c->r[4] & 1)));
+        }
         calls.push_back("visible");
         break;
     }
@@ -546,7 +555,69 @@ void test_hooks() {
     close_page();
     p = {};
     pad(p);
-    // setVisible: a game item's icon pane shows, the notebook's stays hidden (the port draws its own)
+    // A ready layout must not suppress gameplay rendering when the item screen isn't drawn.
+    story_notebook_layout::test_layout_ready = true;
+    for (bool pro : {false, true}) {
+        input::g_pro = pro;
+        for (int cycle = 0; cycle < 6; ++cycle) {
+            assert(open_page_from_button(0));
+            input::PadState held;
+            held.buttons = input::kX;
+            pad(held);
+            assert(page_open() && held.buttons == 0);  // opening press isn't a toggle
+            auto lists = guestmods::hud::store().snapshot(0);
+            bool visible = false;
+            for (const auto& list : lists)
+                visible |= list->owner == "port:story-notebook" && !list->commands.empty();
+            assert(visible);  // visible on TV for either controller, without a menu draw
+            held = {};
+            pad(held);
+            if (cycle == 5) {
+                held.buttons = input::kA;
+                pad(held); // the toggle must also close from a quest's detail page
+                assert(page_open());
+                held = {};
+                pad(held);
+            }
+            held.buttons = cycle % 2 ? input::kX : input::kB;
+            pad(held);
+            assert(!page_open() && held.buttons == 0);
+            held.buttons = input::kA;
+            pad(held);
+            assert(held.buttons == input::kA);  // gameplay gets input again
+        }
+    }
+    // Close without any layout draw: coverage must still end (otherwise the game cursor
+    // stays missing when the Pro Controller's menu is opened afterwards).
+    assert(open_page());
+    p = {};
+    pad(p);
+    assert(story_notebook_layout::drawing());
+    p.buttons = input::kB;
+    pad(p);
+    assert(!page_open());
+    for (int i = 0; i < 10; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        p = {}; pad(p);
+    }
+    assert(!story_notebook_layout::drawing());
+    input::g_pro = false;
+    story_notebook_layout::test_layout_ready = false;
+    close_page();
+    // With only the HUD available, a stage transition still releases input before another draw.
+    assert(open_page_from_button(0));
+    Cpu context_cpu{};
+    p = {};
+    pad(p, &context_cpu);
+    assert(page_open());
+    st32(kPlayObj + 0x5134, 0x73656100); // a new start-stage record
+    pad(p, &context_cpu);
+    assert(!page_open());
+    st32(kPlayObj + 0x5134, 0);
+    p.buttons = input::kA;
+    pad(p);
+    assert(p.buttons == input::kA);
+    // setVisible preserves the game's icon state; hiding lasts only for a draw pass.
     const uint32_t kGroups = kArena + 0x5000, kIconA = kArena + 0x5100, kIconB = kArena + 0x5200;
     st32(kChild + 0x8C + 4, kGroups);
     st32(kGroups, kIconA);
@@ -555,7 +626,7 @@ void test_hooks() {
     calls.clear();
     call(0x026333F0, kChild, 1);
     call(0x026333F0, kChild + 0x200, 1);
-    assert(calls.size() == 2 && !(ld8(kIconA + 0x44) & 1) && (ld8(kIconB + 0x44) & 1));
+    assert(calls.size() == 2 && (ld8(kIconA + 0x44) & 1) && (ld8(kIconB + 0x44) & 1));
     // the notebook goes on X/Y/R in the story block (record 15), never in the save's key; a game item
     // put on the same button takes it back
     calls.clear();
@@ -614,7 +685,39 @@ void test_hooks() {
         IconPlace at = icon_place();
         // (640 + 216, 360 - 38) in the 1280 x 720 layout, on the 854 x 480 GamePad picture
         assert(at.shown && std::fabs(at.x - 856.0f * 854 / 1280) < 0.01f && std::fabs(at.y - 322.0f * 854 / 1280) < 0.01f &&
-               std::fabs(at.size - 90.0f * 854 / 1280) < 0.01f && !(ld8(kIconA + 0x44) & 1));
+               std::fabs(at.size - 90.0f * 854 / 1280) < 0.01f && (ld8(kIconA + 0x44) & 1));
+        // Repeated draw passes must restore every byte, including unrelated flag bits and alpha.
+        // The floating icon is then reused for bait without another setVisible call.
+        const uint32_t floating_pane = kArena + 0x7100;
+        st32(0x101F5578, kFloat);
+        for (int cycle = 0; cycle < 6; ++cycle) {
+            st8(kIconA + 0x44, 0xA5);
+            st8(floating_pane + 0x44, 0xB1);
+            st8(floating_pane + 0x45, 123);
+            std::vector<uint8_t> before(mem::ptr(kIconA), mem::ptr(kIconA) + 0x100);
+            hide_floating_notebook_icon();
+            assert(ld8(kIconA + 0x44) == 0xA4 && ld8(floating_pane + 0x44) == 0xB0);
+            restore_notebook_icons();
+            assert(!memcmp(before.data(), mem::ptr(kIconA), before.size()));
+            assert(ld8(floating_pane + 0x44) == 0xB1 && ld8(floating_pane + 0x45) == 123);
+            st32(kFloat + 0xEC, 0x8C); // bait reuses the floating icon
+            hide_floating_notebook_icon();
+            assert(ld8(floating_pane + 0x44) == 0xB1);
+            restore_notebook_icons();
+            st32(kFloat + 0xEC, 0xA0);
+            std::vector<uint8_t> menu_before(mem::ptr(kMenu), mem::ptr(kMenu) + 0x100);
+            std::vector<uint8_t> item_before(mem::ptr(kChild), mem::ptr(kChild) + 0x400);
+            call(0x0268F060, kMenu, 0x15);
+            assert(page_open());
+            input::PadState idle;
+            pad(idle);
+            idle.buttons = input::kB;
+            pad(idle);
+            assert(!page_open());
+            assert(!memcmp(menu_before.data(), mem::ptr(kMenu), menu_before.size()));
+            assert(!memcmp(item_before.data(), mem::ptr(kChild), item_before.size()));
+            assert(ld8(kIconA + 0x44) == 0xA5 && (ld8(kIconB + 0x44) & 1));
+        }
         for (int i = 0; i < 4; i++) assert(icon_place().shown);  // frames drawn within the step (60/120 fps) keep it
         // the notebook page open over the menu: no bag icon over it
         call(0x0268F060, kMenu, 0x15);
@@ -633,9 +736,16 @@ void test_hooks() {
             st32(kUiObj + 0x14, 0x1049ECDC);  // MenuSubWindow: the bag window is shown
             call(0x0268FF50, kMenu);
             assert(icon_place().shown);
+            call(0x0268F060, kMenu, 0x15);
+            assert(page_open());
             st32(kUiObj + 0x14, 0x1049EC00);  // Play: the menu was closed with +
             call(0x0268FF50, kMenu);
             assert(!icon_place().shown && std::string(icon_reason()) == "the menu is closed (Pro Controller)");
+            assert(!page_open());  // an external close must release notebook input too
+            assert(open_page_from_button(0));
+            call(0x0268FF50, kMenu);
+            assert(page_open());  // gameplay entry does not depend on the hidden menu
+            close_page();
             input::g_pro = false;
             call(0x0268FF50, kMenu);
             assert(icon_place().shown);  // the GamePad: the menu is always shown

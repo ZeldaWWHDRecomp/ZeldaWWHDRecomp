@@ -1,5 +1,6 @@
 // The story notebook's page as a game layout (story_notebook_layout.h).
 #include "story_notebook_layout.h"
+#include "story_notebook.h"
 #include "story_notebook_layout_view.h"
 
 #include <atomic>
@@ -34,6 +35,7 @@ View g_view;            // the latest (g_mu)
 detail::DetailView g_detail;  // the quest the detail view shows (g_mu; with g_view.mode 2)
 uint64_t g_detail_serial = 0;
 chart::ChartView g_chart;  // the detail view's mini chart (g_mu; with g_view.mode 2)
+bool g_reset = false;
 bool g_drawing = false;  // the layout draws the page (or its closing) now (g_mu)
 std::atomic<bool> g_animating{false};  // the page's open or close animation runs (the bag shows the open book)
 
@@ -193,6 +195,7 @@ bool frame_inner(Cpu* c, uint32_t) {
     chart::ChartView cv;
     {
         std::lock_guard lock(g_mu);
+        if (g_reset) g_shown = Shown{}, g_reset = false;
         v = g_view;
         drawing = g_drawing;
         dv = g_detail;
@@ -381,8 +384,10 @@ bool configure() {
     }
     client.covers = [] { return drawing(); };
     client.before = [] {  // the menu's floating icon is drawn with the menu's screens, before our layout
-        if (drawing()) nb::hide_floating_notebook_icon();
+        nb::hide_floating_notebook_icon();
     };
+    client.after = nb::restore_notebook_icons;
+    client.finalized = nb::state_loaded;
     client.game_archives = {chart::kGameArchive};  // the sea chart's Link icon (story_notebook_layout_chart.h)
     client.built = built;
     client.frame = frame;
@@ -410,6 +415,14 @@ bool update(const nb::Page& page, const std::vector<nb::Row>& all) {
 }
 
 bool animating() { return g_animating.load(std::memory_order_relaxed); }
+
+void reset() {
+    std::lock_guard lock(g_mu);
+    g_view = {};
+    g_reset = true;
+    g_drawing = false;
+    g_animating = false;
+}
 
 bool drawing() {
     std::lock_guard lock(g_mu);

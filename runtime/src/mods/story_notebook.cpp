@@ -23,6 +23,7 @@
 #include "guest_png.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -108,6 +109,10 @@ struct Portrait {
 std::map<uint16_t, Portrait> g_portraits;
 bool g_imported = false, g_installed = false;
 std::atomic<bool> g_open{false};
+int g_item_button = -1;  // gameplay entry: draw on TV independently of the item screen
+uint32_t g_item_button_held = 0;
+std::array<uint32_t, 6> g_page_context{};
+bool g_page_context_set = false;
 Page g_page;  // game thread
 Caption g_caption;  // the sealed letter's caption (game thread)
 void (*g_original)(Cpu*, uint32_t) = nullptr;
@@ -415,9 +420,6 @@ IconPlace place_over(uint32_t item, uint32_t number) {
     const uint32_t layout = ld32(item + kItemLayout), lyt = layout ? ld32(layout + kLayoutLyt) : 0;
     const uint32_t root = lyt ? ld32(lyt + kLytRootPane) : 0;
     if (!icon || !root) return g_icon_reason = "the place has no panes", at;
-    static const bool show_sentinel = [] { const char* e = getenv("WWHD_NOTEBOOK_SHOW_SENTINEL"); return e && *e == '1'; }();
-    if (!show_sentinel)  // (test aid: WWHD_NOTEBOOK_SHOW_SENTINEL=1 leaves the stand-in's icon under ours, to check the alignment)
-        st8(icon + kPaneFlags, uint8_t(ld8(icon + kPaneFlags) & ~1u));  // the game's sentinel icon stays hidden
     // ... also while the page is open: the page drawn as a game layout fades in over the bag (the HUD's page
     // covered it at once), and the game's selection animation of the tapped place shows the sentinel's
     // stand-in icon (the Cabana Deed's parchment) otherwise
@@ -425,7 +427,6 @@ IconPlace place_over(uint32_t item, uint32_t number) {
     const bool open_book = g_open.load(std::memory_order_relaxed) && number == kNotebookItem && story_notebook_layout::animating() &&
                            !icon_open_png().empty();
     if (g_open.load(std::memory_order_relaxed) && !open_book) {
-        hide_floating_notebook_icon();
         return g_icon_reason = "the notebook page is open", at;  // the page covers the menu
     }
     std::vector<PaneNode> chain;
@@ -680,13 +681,13 @@ void append_all(guestmods::hud::Handle list, std::vector<Command>& cmds, const s
 void publish(const std::vector<Row>& all, const std::vector<Command>* caption = nullptr) {
     auto& store = guestmods::hud::store();
     // the page as a game layout (story_notebook_layout.h): then the HUD draws only its portraits
-    const bool by_layout = !caption && story_notebook_layout::update(g_page, all);
+    const bool by_layout = !caption && g_item_button < 0 && story_notebook_layout::update(g_page, all);
     if (!g_page.open() && !caption) {
         store.drop(kOwner);
         return;
     }
     // only on the screen with the game's item menu (the GamePad, or the TV with the Pro Controller)
-    const uint32_t screen = menu_screen(input::pro_controller());
+    const uint32_t screen = g_item_button >= 0 ? 0 : menu_screen(input::pro_controller());
     const float k = screen == 1 ? 854.0f / 1280.0f : 1.0f;
     const guestmods::hud::Handle list = store.begin(kOwner, screen);
     if (!list) return;
@@ -736,6 +737,9 @@ void publish_closing(float dt) {
     story_notebook_layout::update_closed();  // the layout's own closing animation (its page commands aren't kept)
     if (g_close_time >= 1.0f) return;
     g_close_time = std::min(1.0f, g_close_time + dt / 0.15f);
+    // Close is authored for 0.15 s. A hidden item screen cannot finish its animation;
+    // release cursor coverage on the same clock even when no draw pass runs.
+    if (g_close_time >= 1.0f) story_notebook_layout::reset();
     if (g_close_time >= 1.0f || g_closing.empty()) {
         store.drop(kOwner);
         g_closing.clear();
@@ -1362,14 +1366,30 @@ int32_t talk(const std::string& mod, const std::string& quest, uint32_t step, co
     return saved(q->key);
 }
 
+// Suppress stand-ins for one draw pass only. Menu items and the floating icon are reused by
+// the game; a persistent visibility write can otherwise follow the object to another item.
+namespace {
+std::vector<std::pair<uint32_t, uint8_t>> g_hidden_icons;
+void hide_icon(uint32_t item) {
+    if (!item || !port_item(ld32(item + kItemNumber))) return;
+    const uint32_t pane = icon_pane(item);
+    if (!pane) return;
+    for (const auto& hidden : g_hidden_icons) if (hidden.first == pane) return;
+    const uint8_t flags = ld8(pane + kPaneFlags);
+    g_hidden_icons.emplace_back(pane, flags);
+    st8(pane + kPaneFlags, uint8_t(flags & ~1u));
+}
+}
 void hide_floating_notebook_icon() {
-    // the menu's floating icon (hdMenuItem sMenuIcon, HD decomp hd_screen_menu_item.cpp): a tap on a place
-    // lifts its item into it; for the notebook's place it would show the stand-in's icon (the Cabana Deed's
-    // parchment) while the page opens over the bag
-    static const uint32_t kMenuIcon = GD(0x101F5578);
-    const uint32_t icon = ld32(kMenuIcon);
-    if (!icon || ld32(icon + kItemNumber) != kNotebookItem) return;
-    if (const uint32_t pane = icon_pane(icon)) st8(pane + kPaneFlags, uint8_t(ld8(pane + kPaneFlags) & ~1u));
+    static const bool show = [] { const char* e = getenv("WWHD_NOTEBOOK_SHOW_SENTINEL"); return e && *e == '1'; }();
+    if (show) return;
+    hide_icon(g_bag_item);
+    hide_icon(g_letter_item);
+    hide_icon(ld32(GD(0x101F5578)));
+}
+void restore_notebook_icons() {
+    for (const auto& [pane, flags] : g_hidden_icons) st8(pane + kPaneFlags, flags);
+    g_hidden_icons.clear();
 }
 
 bool portrait_pixels(uint16_t key, guestmods::hud::Image& out) {
@@ -1382,6 +1402,15 @@ bool portrait_pixels(uint16_t key, guestmods::hud::Image& out) {
 
 bool notebook_owned() { return story_mail::notebook_owned(); }
 
+bool open_page_from_button(unsigned button) {
+    if (!open_page("its item button in play")) return false;
+    story_notebook_layout::reset();
+    g_item_button = int(button);
+    static constexpr uint32_t buttons[] = {input::kX, input::kY, input::kR};
+    g_item_button_held = button < 3 ? buttons[button] : 0;
+    return true;
+}
+
 bool open_page(const char* how) {
     const char* refused = !g_installed ? "the notebook is not installed" : !have_save() ? "no save file" :
                           !notebook_owned() ? "no notebook in this save file" : g_open ? "the page is already open" : nullptr;
@@ -1389,6 +1418,9 @@ bool open_page(const char* how) {
         LOG("[notebook] page not opened (%s): %s", how, refused);
         return false;
     }
+    g_item_button = -1;
+    g_item_button_held = 0;
+    g_page_context_set = false;
     g_page.show();
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1400,6 +1432,8 @@ bool open_page(const char* how) {
 bool open_letter(const char* how) {
     const uint16_t key = carried_letter();
     if (!g_installed || !key || g_open) return false;
+    g_item_button = -1;
+    g_item_button_held = 0;
     std::string title = "Sealed Letter", text;
     {
         std::lock_guard lock(g_mu);
@@ -1409,6 +1443,7 @@ bool open_letter(const char* how) {
             for (const Quest& q : g_quests)
                 if (q.key == key) text = "A sealed letter (" + q.mod_name + "). It isn't addressed to you.";
     }
+    g_page_context_set = false;
     g_caption.show(title, text);
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1419,6 +1454,9 @@ bool open_letter(const char* how) {
 // An item's caption (story_items.h): its Info, its use "show", a get. False while the page or a caption is open.
 bool show_info(const std::string& title, const std::string& text, const char* how) {
     if (!g_installed || g_open || !have_save()) return false;
+    g_item_button = -1;
+    g_item_button_held = 0;
+    g_page_context_set = false;
     g_caption.show(title, text);
     g_open = true;
     g_close_time = 1.0f, g_closing.clear();
@@ -1447,6 +1485,10 @@ void close_page() {
     if (g_open) LOG("[notebook] page closed (state load or shutdown)");
     g_page.hide();
     g_caption.hide();
+    g_page_context_set = false;
+    g_item_button = -1;
+    g_item_button_held = 0;
+    story_notebook_layout::reset();
     g_open = false;
     g_close_time = 1.0f, g_closing.clear(), g_closing_images.clear();
     g_pending_sound = Sound::None;
@@ -1512,6 +1554,19 @@ void pad(input::PadState& p, Cpu* c) {
     story_item_buttons::test_assign();
     story_item_buttons::tick();  // ours on X/Y/R: the item number the game reads this frame
     const float dt = frame_seconds();
+    // Also cover HUD fallback sessions, where there is no native layout teardown callback.
+    // A new save, UI, player or start-stage record ends this page's input ownership.
+    if (g_open && c && g_call) {
+        Cpu probe = *c;
+        const uint32_t play_object = g_call(&probe, kPlay, {});
+        if (!play_object) { close_page(); return; }
+        const uint32_t stage = play_object + kPlayStartStage;
+        const std::array<uint32_t, 6> context = {
+            ld32(kSavePtr), ld32(kIngameUi), ld32(kLinkActor), ld32(stage), ld32(stage + 4), ld32(stage + 8)};
+        if (g_page_context_set && context != g_page_context) { close_page(); return; }
+        g_page_context = context;
+        g_page_context_set = true;
+    }
     if (!g_open.load(std::memory_order_relaxed)) {
         publish_closing(dt);
         if (const uint32_t s = g_swallow.load(std::memory_order_relaxed)) {
@@ -1565,6 +1620,16 @@ void pad(input::PadState& p, Cpu* c) {
     PadInput in;
     in.buttons = p.buttons, in.ly = p.ly, in.touch = p.touch;
     in.x = p.tx * 1280.0f, in.y = p.ty * 720.0f;  // the GamePad picture (854 x 480) as the page's 1280 x 720
+    // Ignore the opening press until released; pressing the same item button again closes it.
+    if (g_item_button >= 0) {
+        static constexpr uint32_t buttons[] = {input::kX, input::kY, input::kR};
+        const uint32_t button = g_item_button < 3 ? buttons[g_item_button] : 0;
+        g_item_button_held &= p.buttons;
+        if (!g_item_button_held && (p.buttons & button)) {
+            g_page.hide();
+            g_pending_sound = Sound::Close;
+        }
+    }
     const Page::Action act = g_page.input(in, rows);
     g_page.tick(dt);
     if (act.kind == Page::Action::OpenChart) {  // the MAP screen's chart list, the step's chart selected
@@ -1670,14 +1735,9 @@ void open_child(Cpu* c) {
     g_original(c, kOpenChild);
 }
 
-// setVisible(this, visible): the game shows a place's icon pane; the notebook's own icon replaces it
+// Keep the game's visibility state intact; stand-ins are suppressed only during drawing.
 void set_visible(Cpu* c) {
-    const uint32_t item = c->r[3];
     g_original(c, kSetVisible);
-    if (!port_item(ld32(item + kItemNumber))) return;
-    static const bool show_sentinel = [] { const char* e = getenv("WWHD_NOTEBOOK_SHOW_SENTINEL"); return e && *e == '1'; }();
-    if (show_sentinel) return;
-    if (const uint32_t icon = icon_pane(item)) st8(icon + kPaneFlags, uint8_t(ld8(icon + kPaneFlags) & ~1u));
 }
 
 // executeWindow(this): the bag window runs this frame; find the notebook's place among its children
@@ -1685,6 +1745,8 @@ void execute_window(Cpu* c) {
     const uint32_t menu = c->r[3];
     g_original(c, kExecuteWindow);
     g_menu_shown = menu_shown_now(c);
+    if (g_open && g_item_button < 0 && !g_caption.open() &&
+        (!g_menu_shown || ld32(menu + kMenuWindowMode) != kDeliveryWindow)) close_page();
     g_menu = menu;
     g_window_step = g_step.load(std::memory_order_relaxed);
     g_bag_item = g_letter_item = 0;
@@ -2159,6 +2221,9 @@ std::vector<LiveVillager> scan_villagers(const std::string& stage) {
 
 void state_loaded() {
     close_page();
+    g_swallow = 0;
+    g_hidden_icons.clear();  // loaded memory must never receive an old pane snapshot
+    guestmods::hud::store().drop(kIconOwner);
     g_bag_item = 0, g_letter_item = 0, g_menu = 0, g_window_step = 0, g_menu_shown = true, g_touch_item = 0;
     g_talk = {};
     if (g_sail.phase == Sail::Talking) story_mail::unsay();

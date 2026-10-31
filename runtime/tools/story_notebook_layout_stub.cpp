@@ -4,6 +4,7 @@
 #include <string>
 
 #include "mods/story_notebook_layout.h"
+#include "mods/story_notebook_page.h"
 
 namespace story_notebook {
 void set_layout_description(const std::string&, const std::string&) {}
@@ -14,10 +15,17 @@ const std::vector<uint8_t>& icon_open_png() {
 }
 }  // namespace story_notebook
 namespace story_notebook_layout {
+bool test_layout_ready = false;
+bool test_layout_drawn = false;
 bool configure() { return false; }
-bool update(const story_notebook::Page&, const std::vector<story_notebook::Row>&) { return false; }
-bool update_closed() { return false; }
-bool drawing() { return false; }
+bool update(const story_notebook::Page& page, const std::vector<story_notebook::Row>&) {
+    const bool active = test_layout_ready && page.open();
+    test_layout_drawn |= active;
+    return active;
+}
+bool update_closed() { return test_layout_drawn; }
+void reset() { test_layout_drawn = false; }
+bool drawing() { return test_layout_drawn; }
 bool animating() { return false; }
 }  // namespace story_notebook_layout
 
