@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -174,20 +175,23 @@ public:
         int width = 0, height = 0;  // pixels
         int margin = 0;  // pixels left and right of the line in the cell (a sized line's border room)
     };
-    // true if every line of `lines` (line_key) is in the atlas, composed with this look and these fonts
+    // true if every line of `lines` (line_key) is in the atlas (or was left out of it), composed with
+    // this look and these fonts
     bool holds(const std::vector<std::string>& lines, const Prompts& look, uint64_t fonts) const {
         if (look != look_ || fonts != fonts_ || !image_) return false;
         for (const std::string& l : lines)
-            if (!cells_.count(l)) return false;
+            if (!cells_.count(l) && !left_out_.count(l)) return false;
         return true;
     }
     // Compose the lines (line_key: the main font, and `fallback` for characters the main font lacks;
     // the icon font for the button pictures) at `scale` of the font's own size, sized lines
-    // (sized_key) at their own height. Lines that don't fit any more are left out (drawn with the
-    // overlay font).
+    // (sized_key) at their own height. A line wider than the atlas is composed smaller (drawn scaled
+    // up). Lines that still don't fit are left out (drawn with the overlay font); holds() counts
+    // them, so they don't rebuild the atlas on every frame.
     void build(const std::vector<std::string>& lines, const Face& main, const Face* fallback, const Face* icons, const Prompts& look,
                uint64_t fonts, float scale = 1.0f) {
         cells_.clear();
+        left_out_.clear();
         look_ = look, fonts_ = fonts;
         const int base = std::max(1, int(std::lround(main.cell_height * scale)));
         auto image = std::make_shared<guestmods::hud::Image>();
@@ -204,13 +208,31 @@ public:
         if (main.cell_height <= 0) places.clear();
         // layout: rows left to right, each as tall as its first (tallest) line
         int x = kPad, y = kPad, row = 0, used = 0;
+        bool full = false;
         std::vector<Place> kept;
         for (Place p : places) {
+            if (full) {
+                left_out_.insert(*p.key);
+                continue;
+            }
             const std::string text = p.key->substr(0, p.key->rfind('\x1F'));
             p.w = std::max(1, line_width(text, main, fallback, p.h)) + 2 * p.m;
-            if (p.w + 2 * kPad > kWidth) continue;
+            // too wide at its height: shorter until it fits
+            const int room = kWidth - 2 * kPad - 2 * p.m;
+            while (p.w - 2 * p.m > room && p.h > 1) {
+                p.h = std::clamp(int(float(p.h) * float(room) / float(p.w - 2 * p.m)), 1, p.h - 1);
+                p.w = std::max(1, line_width(text, main, fallback, p.h)) + 2 * p.m;
+            }
+            if (p.w - 2 * p.m > room) {
+                left_out_.insert(*p.key);
+                continue;
+            }
             if (x + p.w + kPad > kWidth) x = kPad, y += row + kPad, row = 0;
-            if (y + p.h + kPad > kMaxHeight) break;
+            if (y + p.h + kPad > kMaxHeight) {
+                full = true;
+                left_out_.insert(*p.key);
+                continue;
+            }
             p.x = x, p.y = y;
             row = std::max(row, p.h);
             kept.push_back(p);
@@ -240,6 +262,7 @@ public:
     uint64_t generation() const { return generation_; }
     void clear() {
         cells_.clear();
+        left_out_.clear();
         image_.reset();
         generation_++;
     }
@@ -441,6 +464,7 @@ private:
     }
 
     std::map<std::string, Cell> cells_;
+    std::set<std::string> left_out_;  // lines too big for the atlas (the overlay font draws them)
     std::shared_ptr<guestmods::hud::Image> image_;
     Prompts look_;
     uint64_t fonts_ = 0, generation_ = 0;

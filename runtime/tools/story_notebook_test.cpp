@@ -958,6 +958,30 @@ void test_game_font() {
         assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].h == 40 && pics[0].x < 0 && pics[0].x > -1);  // the border room left of the line
         assert((font::lines_of({st}, 1.0f, 0.25f) == std::vector<std::string>{key}));
     }
+    {
+        // a line wider than the atlas at its height (a long help line on a 4K screen) is composed
+        // shorter and drawn scaled up; one too long even then is left out; either way the atlas holds
+        // the lines, so the page doesn't rebuild it on every frame
+        Command w;
+        w.kind = Command::Text, w.size = 20, w.rgba = ink, w.text = std::string(300, 'a');
+        const std::string wide = font::key_of(w, 1.0f, 1.0f);  // 21 pixels tall: 3150 wide
+        const std::string endless = font::sized_key(std::string(5000, 'b'), ink, 20);  // 2500 pixels even at 1
+        font::Atlas atlas2;
+        atlas2.build({wide, endless, font::line_key("abc", ink)}, main, nullptr, nullptr, {}, 1);
+        const font::Atlas::Cell* c = atlas2.cell(wide);
+        assert(c && c->height < 21 && c->height >= 12 && c->width + 2 * font::Atlas::kPad <= font::Atlas::kWidth);
+        assert(!atlas2.cell(endless) && atlas2.cell(font::line_key("abc", ink)));
+        assert(atlas2.holds({wide, endless, font::line_key("abc", ink)}, {}, 1));
+        auto pics = font::to_pictures({w}, &atlas2, 1.0f, 1.0f);
+        assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].h == 20 && pics[0].w > 2900 && pics[0].w < 3100);
+        // lines past the atlas's height are left out, and held too
+        const std::vector<std::string> tall = {font::sized_key("aa", ink, 1000), font::sized_key("bb", ink, 999), font::sized_key("cc", ink, 998),
+                                               font::sized_key("ab", ink, 997), font::sized_key("ac", ink, 996)};
+        atlas2.build(tall, main, nullptr, nullptr, {}, 1);
+        for (size_t i = 0; i < 4; i++) assert(atlas2.cell(tall[i]));
+        assert(!atlas2.cell(tall[4]) && atlas2.holds(tall, {}, 1));
+        assert(!atlas2.holds({font::line_key("new", ink)}, {}, 1));  // a new line still rebuilds it
+    }
     // Text commands become pictures of their lines, scaled to the text size, faded by their alpha
     Command t;
     t.kind = Command::Text, t.x = 100, t.y = 50, t.size = 40, t.rgba = 0x00380080, t.text = "abc";
