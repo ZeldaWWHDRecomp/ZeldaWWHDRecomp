@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: start-up audio threads now sync like on the console.** At boot the game waits for its audio threads to
+  finish setting up before it continues; the port let it run ahead. It now waits as the Wii U does (about 2 ms once at
+  start-up), so the sound system is always ready before the game first uses it.
 - **New: change Link's name mid-game** (#328, thanks @itsarahtonin). The settings page in the pause menu (Game tab)
   and the Settings window's Saves tab can now rename Link on the save file being played. The new name shows right
   away and is kept with your next save. `%` isn't accepted, because the game reads it as a format code, and
