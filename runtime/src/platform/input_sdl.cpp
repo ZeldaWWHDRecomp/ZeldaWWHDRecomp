@@ -103,6 +103,12 @@ static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
 static overlay::DeviceGates<SDL_JoystickID> g_gates;  // update(): one per device, see overlay/release_gate.h
 static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
+// Only the integration fixture opts synthetic WUP-028 identity in; touch pads stay excluded.
+#ifdef WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION
+static bool test_virtual_gamepad_detection(){return getenv("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION")!=nullptr;}
+#else
+static bool test_virtual_gamepad_detection(){return false;}
+#endif
 // per-controller bindings (input_map profiles) and Controller details: what identifies each pad
 struct PadIdentity { std::string guid, name; bool is_virtual = false; input::ControllerInfo info; };
 static std::map<SDL_JoystickID,input_map::StartGate> g_start_gates;
@@ -552,9 +558,7 @@ static void dominant_labels(input_map::FaceLabel out[4]){
  for(int i=0;i<4;i++)out[i]=FL::kUnknown;
  std::lock_guard lk(g_pads_mu);
  for(SDL_JoystickID id:g_order){
-#ifndef WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION
-  if(SDL_IsJoystickVirtual(id))continue;  // #88's on-screen pad is not a pad to follow for labels
-#endif
+  if(SDL_IsJoystickVirtual(id)&&!test_virtual_gamepad_detection())continue;  // #88's on-screen pad is not a pad to follow for labels
   auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
   SDL_Gamepad* pad=i->second;
 #ifdef __ANDROID__
@@ -586,9 +590,7 @@ static void note_dominant_labels(){
  {
   std::lock_guard lk(g_pads_mu);
   for(auto id:g_order){
-#ifndef WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION
-   if(SDL_IsJoystickVirtual(id))continue;
-#endif
+   if(SDL_IsJoystickVirtual(id)&&!test_virtual_gamepad_detection())continue;
    auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
    auto* pad=it->second;
    const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;

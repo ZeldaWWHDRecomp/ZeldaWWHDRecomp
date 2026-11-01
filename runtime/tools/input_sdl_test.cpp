@@ -280,6 +280,7 @@ static int gamecube_auto_prompts() {
  assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));input::init();input::release_keys();
  auto m=input_map::Mapping::defaults();input_map::set_face_auto(m,true);input_map::set_current(m,false);
  assert(!input_map::gamecube_pad());
+ set_env("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION","1");
  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=6;d.nbuttons=12;d.vendor_id=0x057e;d.product_id=0x0337;
  d.name="GameCube WUP-028 automatic fixture";
@@ -300,6 +301,7 @@ static int gamecube_auto_prompts() {
  assert(input_map::prompt_style(view,input_map::PadFamily::kNintendo).face==input_map::FaceStyle::kGameCube);
  SDL_DetachVirtualJoystick(id);
  for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ set_env("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION",nullptr);
  assert(!input_map::gamecube_pad());
  assert(input_map::prompt_style(input_map::Mapping::defaults(),input_map::PadFamily::kXbox).face==input_map::FaceStyle::kXbox);
  SDL_Quit();
