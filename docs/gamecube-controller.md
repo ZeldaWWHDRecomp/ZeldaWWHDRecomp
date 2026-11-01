@@ -68,9 +68,13 @@ confirms left cannon/right salvage.
   horizontal camera in HD's own options; do not invert the raw C-stick (that would invert baton
   conducting too). Vertical inversion remains the player's choice. The camera options are
   documented in Nintendo's [HD options guide](https://www.guiasnintendo.com/2b_WIIU/zelda_ww_hd/zelda_ww_hd_sp/opciones.html).
-* **Prompts:** automatic prompts keep the game's original A/B/X/Y identities with GameCube.
-  Shoulder prompts are still HD's L/R/ZL/ZR, so the third item slot is displayed as R, physically Z.
-  Settings and the on-screen keyboard read the same per-controller A/B bindings as gameplay.
+* **Prompts:** Automatic selects the GameCube button look when a supported adapter is active.
+  Choose **Controls → Button prompts → GameCube** to use it with another pad. It shows a large
+  green A, small red B, grey X/Y and colours the action words to match. The HUD group follows
+  the GameCube face layout; the item menu's OK/Back pair stays compact within the Wii U menu area.
+  The port draws the button shapes itself. Shoulder prompts use L, R and a purple Z; the third
+  item slot is shown as Z. Settings and the on-screen keyboard keep using the
+  same per-controller A/B bindings as gameplay.
 
 ## SDL adapter coverage
 

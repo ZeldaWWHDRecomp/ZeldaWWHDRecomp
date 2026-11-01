@@ -595,6 +595,7 @@ static void note_dominant_labels(){
    break;
   }
  }
+ input_map::note_gamecube(detected);
  auto m=input_map::current();
  if(input_map::auto_gamecube(m,guid,name,detected,pc))input_map::set_current(m);
 }

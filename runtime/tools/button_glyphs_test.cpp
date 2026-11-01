@@ -62,7 +62,7 @@ extern "C" void f_026F8CD0_orig(Cpu*) {}
 namespace {
 constexpr uint32_t base = 0x15000000, writer = base, list = base + 0x100, picture = base + 0x1000, text_box = base + 0x2000;
 constexpr uint32_t first_quad = list + 0xA4;
-constexpr uint32_t kArena = 0x100000;  // synthetic guest memory, including the 512 KiB button atlas
+constexpr uint32_t kArena = 0x400000;  // synthetic guest memory, including the expanded composed atlas
 constexpr std::array<uint32_t, 2> authored = {0xFFFFFFFF, 0xB0804042};
 constexpr std::array<uint32_t, 4> corners = {0xFFFFFFFF, 0x80A0C042, 0x00000000, 0xFFFFFF80};
 uint32_t printed_character;
@@ -88,7 +88,8 @@ void expect_current() {
     expect_xbox = look.positions;
     expect_tint = look.face == input_map::FaceStyle::kXbox && look.colours;
     expect_names = (int)look.shoulders;
-    expect_shapes = look.face == input_map::FaceStyle::kPlayStation ? (look.colours ? 1 : 0) : -1;
+    expect_shapes = look.face == input_map::FaceStyle::kPlayStation ? (look.colours ? 1 : 0)
+                  : look.face == input_map::FaceStyle::kGameCube ? 2 : -1;
 }
 int picture_face;
 unsigned prints = 0, text_draws = 0;
@@ -273,6 +274,22 @@ void positions_test() {
         for (uint32_t i = 0; i < nodes.size(); i++)
             for (uint32_t j = 0; j < 8; j++) assert(ld32(nodes[i] + 0x1C + 4*j) == authored_positions[i][j]);
     }
+
+    auto mapping = input_map::Mapping::defaults();
+    mapping.prompts = input_map::Mapping::Prompts::kGameCube;
+    input_map::set_current(mapping, false); expect_current();
+    calculate(false);
+    std::array<Point,4> arranged;
+    for (int i = 0; i < 4; ++i) arranged[i]=position(face_panes[i]);
+    assert(arranged[1].x < arranged[0].x && arranged[1].y < arranged[0].y); // B down-left
+    assert(arranged[2].x > arranged[0].x);                                  // X right
+    assert(arranged[3].y > arranged[0].y);                                  // Y above
+    // The special A and item art move with their face groups.
+    same_point(position(special_a), original_special);
+    const Point moved_item=position(item_x);
+    same_point({moved_item.x-original_item.x,moved_item.y-original_item.y},
+               {arranged[2].x-original[2].x,arranged[2].y-original[2].y});
+    layout(input_map::FaceLayout::kPosition);
 
     // Every OK/Back pair, in either order, stays in the menu's original two-row area.
     const uint32_t guide = base + 0x6400;
@@ -564,6 +581,19 @@ void shoulders_test() {
     assert(font_queries == button_glyphs::kAtlasGlyphs);
     const auto composed = button_glyphs::button_atlas(font_records);
     assert(composed.size() == button_glyphs::kAtlasWidth*button_glyphs::kAtlasHeight*4);
+    auto row_has = [&](int row, uint32_t rgba) {
+        for (int y=0; y<64; ++y) for (int x=0; x<64; ++x) {
+            const size_t p=(size_t(row*64+y)*button_glyphs::kAtlasWidth+x)*4;
+            if (composed[p]==(rgba>>24) && composed[p+1]==((rgba>>16)&255) &&
+                composed[p+2]==((rgba>>8)&255) && composed[p+3]==(rgba&255)) return true;
+        }
+        return false;
+    };
+    assert(row_has(button_glyphs::gamecube_row(0),0x58BE36FF));
+    assert(row_has(button_glyphs::gamecube_row(1),0xE34B49FF));
+    assert(row_has(button_glyphs::gamecube_row(2),0xA9ADB1FF));
+    assert(row_has(button_glyphs::gamecube_shoulder_row(1),0x6754C8FF));
+    assert(row_has(button_glyphs::gamecube_cstick_row(),0xE8C72AFF));
     assert(!std::memcmp(composed.data(),mem::ptr(image),composed.size()));
     bool antialias = false;
     for (uint32_t y = 0; y < 256; y++) for (uint32_t x = 64; x < 128; x++) {
@@ -935,7 +965,7 @@ void options_test() {
         child(hint_root, text_box);
         std::strcpy((char*)mem::ptr(text_box + 0x80), letters[face]);
         st16(base + 0xB000, "ABXY"[face]);
-        for (auto prompts : {P::kPlayStation, P::kXbox, P::kOriginal}) {
+        for (auto prompts : {P::kPlayStation, P::kXbox, P::kGameCube, P::kOriginal}) {
             for (bool colours : {true, false}) {
                 set_options(F::kLabels, prompts, N::kAuto, colours);
                 st16(list + 4, 0); st8(list + 6, 0);
@@ -943,8 +973,8 @@ void options_test() {
                 draw_letter();
                 draw_letter();  // also exercise the cached-list recognition path
                 assert(button_glyphs::marked_face(ld8(first_quad + 0x2F)) == face);
-                assert(drawn_sheet == (prompts == P::kPlayStation ?
-                    (colours ? atlas : atlas + 0x100) : base + 0xD000));
+                assert(drawn_sheet == (prompts == P::kPlayStation ? (colours ? atlas : atlas + 0x100)
+                    : prompts == P::kGameCube ? atlas : base + 0xD000));
                 picture_face = face;
                 Cpu c{}; c.r[3] = picture; hook_02874D54(&c);
             }
@@ -1140,7 +1170,7 @@ uint32_t host_alloc(uint32_t size, uint32_t align) {
 }
 extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
     assert(ld32(c->r[3]) == 5 && ld32(c->r[3] + 12) == 1);
-    assert(ld32(c->r[3] + 4) == 128 && ld32(c->r[3] + 8) == 1280);
+    assert(ld32(c->r[3] + 4) == 128 && ld32(c->r[3] + 8) == button_glyphs::kAtlasHeight);
     assert(ld32(c->r[3] + 0x14) == 0x1A && ld32(c->r[3] + 0x30) == 1);
     assert(ld32(c->r[3] + 0x3C) == 128 && ld32(c->r[3] + 0x84) == 0x00010203);
     atlas = c->r[3] - 16;
@@ -1208,6 +1238,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         const uint32_t quad = c->r[4] + 0xA4 + 0x30 * i;
         const int face = button_glyphs::marked_face(ld8(quad + 0x2F));
         const int shoulder = button_glyphs::marked_shoulder(ld8(quad + 0x2F));
+        const bool cstick = button_glyphs::marked_cstick(ld8(quad + 0x2F));
         for (uint32_t j = 0; j < 2; j++) {
             uint32_t want = expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face]) : authored[j];
             if (expected_action >= 0) {
@@ -1215,7 +1246,8 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
                 if (look.text_colours) {
                     const int button = expected_buttons[expected_action];
                     const uint32_t rgb = look.face == input_map::FaceStyle::kXbox ? button_glyphs::colour(button)
-                                                                                 : button_glyphs::kShapeColours[button];
+                                          : look.face == input_map::FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
+                                          : button_glyphs::kShapeColours[button];
                     want = authored[j] & 255;
                     for (int shift = 24; shift > 0; shift -= 8)
                         want |= (((authored[j] >> shift) & 255) * ((rgb >> shift) & 255) / 255) << shift;
@@ -1223,7 +1255,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
             }
             // coloured shapes carry their own colour (white vertices); plain ones keep the letter's
             if (expect_shapes == 1 && face >= 0 && hud_letter && font_available) want |= 0xFFFFFF00;
-            assert(ld32(quad + 0x10 + j * 4) == want);
+            if (!(expect_shapes == 2 && face >= 0)) assert(ld32(quad + 0x10 + j * 4) == want);
             assert(ld8(quad + 0x13 + j * 4) == (authored[j] & 0xFF));  // fade alpha
         }
         // #141: the composed dialog label is an RGBA picture, like the game's own icons: neither the
@@ -1232,11 +1264,15 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         const bool shape = expect_shapes >= 0 && font_available && face >= 0;
         // A plain HUD shape and a HUD shoulder caption (#143) stay coverage glyphs, drawn through
         // the game's own letter colours (dark on the white shoulder plates) and its dimming.
-        const bool coverage = (shape && hud_letter && expect_shapes == 0) || (shoulder_label && !expect_frame);
-        assert((ld8(quad + 0x2F) & 1) == (coverage ? 1 : shoulder_label || shape ? 0 : (i & 1)));
-        if (shoulder_label || shape) {
+        const bool coverage = (shape && hud_letter && expect_shapes == 0) ||
+                              (shoulder_label && !expect_frame && !(expect_names == 3 && shoulder == 1));
+        assert((ld8(quad + 0x2F) & 1) == (coverage ? 1 : shoulder_label || shape || cstick ? 0 : (i & 1)));
+        if (shoulder_label || shape || cstick) {
             // the composed atlas: an RGBA picture (#141), one layer, the style's cell
-            const int row = shape ? button_glyphs::shape_row(expected_buttons[face], expect_shapes == 1)
+            const int row = cstick ? button_glyphs::gamecube_cstick_row()
+                          : shape ? expect_shapes == 2 ? button_glyphs::gamecube_row(face)
+                                             : button_glyphs::shape_row(expected_buttons[face], expect_shapes == 1)
+                          : expect_names == 3 ? button_glyphs::gamecube_shoulder_row(shoulder)
                           : expect_names == 2 ? button_glyphs::xbox_row(shoulder) : button_glyphs::numbered_row(shoulder);
             const auto cell = button_glyphs::atlas_cell(row, shape ? !hud_letter : expect_frame);
             assert(ld8(quad + 0x2E) == 0);
@@ -1269,7 +1305,13 @@ extern "C" void f_02874D54_orig(Cpu* c) {
     for (int pass = 0; pass < (yield_in_draw ? 2 : 1); pass++) {
         if (pass) std::this_thread::yield();
         for (uint32_t i = 0; i < 4; i++) {
-            const uint32_t want = expect_tint && picture_face >= 0 ? button_glyphs::tint(corners[i], expected_buttons[picture_face]) : corners[i];
+            uint32_t want = corners[i];
+            if (expect_tint && picture_face >= 0) want = button_glyphs::tint(corners[i], expected_buttons[picture_face]);
+            else if (picture_face >= 0 && input_map::active_prompt_style().face == input_map::FaceStyle::kGameCube &&
+                     input_map::active_prompt_style().colours) {
+                const uint32_t rgb=button_glyphs::gamecube_colour(expected_buttons[picture_face]); want=corners[i]&255;
+                for(int shift=24;shift>0;shift-=8) want|=(((corners[i]>>shift)&255)*((rgb>>shift)&255)/255)<<shift;
+            }
             assert(ld32(c->r[3] + 0xA8 + i * 4) == want);
         }
     }
@@ -1366,6 +1408,13 @@ void concurrent_draw_test() {
 }
 
 int main() {
+    {
+        const auto gc = button_glyphs::gamecube_cluster({10,0},{0,-10},{10,10},{0,0});
+        assert(gc[0].x == 10 && gc[0].y == 0);          // A remains central-right
+        assert(gc[1].x < gc[0].x && gc[1].y < gc[0].y); // B down-left
+        assert(gc[2].x > gc[0].x);                      // X to the right
+        assert(gc[3].y > gc[0].y);                      // Y above
+    }
 #ifdef _WIN32
     auto memory = VirtualAlloc(mem::ptr(base), kArena, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
@@ -1439,6 +1488,8 @@ int main() {
     }
     assert(button_glyphs::mark(0x40, 1) == 0x40);  // don't overwrite another mod's flags
     assert(button_glyphs::marked_face(0x40) == -1);
+    assert(button_glyphs::cstick_character(0xE082) && !button_glyphs::cstick_character(0xE081));
+    assert(button_glyphs::marked_cstick(button_glyphs::mark_cstick(0)));
 
     st32(writer + 0x2C, list);
     st32(text_box + 0xFC, list);
@@ -1587,7 +1638,7 @@ int main() {
     std::array<int, 4> permutation = {0, 1, 2, 3};
     do {
         for (auto appearance : {input_map::Mapping::Prompts::kXbox, input_map::Mapping::Prompts::kPlayStation,
-                                input_map::Mapping::Prompts::kOriginal}) {
+                                input_map::Mapping::Prompts::kGameCube, input_map::Mapping::Prompts::kOriginal}) {
             auto mapping = input_map::Mapping::defaults();
             for (int i = 0; i < 4; ++i) mapping.pad[input_map::kA+i] = input_map::kPadA + permutation[i];
             mapping.prompts = appearance;
@@ -1613,7 +1664,7 @@ int main() {
     // Action words follow every face permutation even when icon colours are disabled.
     do {
         for (auto appearance : {input_map::Mapping::Prompts::kXbox, input_map::Mapping::Prompts::kPlayStation,
-                                input_map::Mapping::Prompts::kOriginal})
+                                input_map::Mapping::Prompts::kGameCube, input_map::Mapping::Prompts::kOriginal})
             for (bool colours : {true, false}) for (bool text_colours : {true, false})
             for (int face = 0; face < 4; ++face) {
                 auto mapping = input_map::Mapping::defaults(); mapping.prompts = appearance;
@@ -1642,10 +1693,12 @@ int main() {
                     if (word) {
                         constexpr uint32_t xbox[] = {0x58BE36FF, 0xE34B49FF, 0x3B91E5FF, 0xEBC52EFF};
                         constexpr uint32_t ps[] = {0x3C7DD9FF, 0xD9413CFF, 0xD05FB0FF, 0x2AA67DFF};
+                        constexpr uint32_t gc[] = {0x58BE36FF, 0xE34B49FF, 0xA9ADB1FF, 0xA9ADB1FF};
                         // Off, or with Original prompts, the words keep the game's own colours.
                         const bool restyled = appearance != input_map::Mapping::Prompts::kOriginal;
                         const uint32_t want = !text_colours || !restyled ? authored[0]
-                            : appearance == input_map::Mapping::Prompts::kXbox ? xbox[permutation[face]] : ps[permutation[face]];
+                            : appearance == input_map::Mapping::Prompts::kXbox ? xbox[permutation[face]]
+                            : appearance == input_map::Mapping::Prompts::kGameCube ? gc[face] : ps[permutation[face]];
                         assert(drawn_ink == want);
                         // A text-only setting change rebuilds cached vertices immediately, except with
                         // Original prompts, where it changes nothing.

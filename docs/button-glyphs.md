@@ -11,6 +11,13 @@ and custom face bindings. Original always keeps the game's icons.
 | Automatic | Uses the resolved face bindings | Uses the resolved face bindings |
 | Custom | Uses each bound host face button | Uses each bound host face button |
 
+**GameCube** shows a large green A, a small red B, grey X and Y, a purple Z, grey L/R and a
+yellow C-stick. Its HUD face buttons follow the controller's classic arrangement. The action,
+item art and word stay together when the layout changes. The item menu keeps its compact OK/Back
+pair inside the Wii U menu area.
+The pictures are drawn by the port and do not use Nintendo artwork. **Automatic** selects this
+look when a supported GameCube adapter is the active pad. You can also choose it for any pad.
+
 The HUD cluster follows the face bindings: each button, with its item art and action word, is
 drawn where its pad button sits (an Xbox pad's A is the bottom button, which is where the game
 draws B). By position keeps the authored positions (roll right, sword bottom), by label puts A
@@ -23,9 +30,10 @@ The item menu's OK/Back pair keeps the mapped buttons' relative directions while
 
 A guide displaying exactly one face button keeps it where the game draws it, whatever its binding or icon style: a conversation's lone Next or End stays at the Confirm position instead of following the cluster's rearrangement. The retained button set keeps that placement stable through transitions; guides with additional buttons retain their normal layout.
 
-Automatic prompts follow Xbox and PlayStation pads. Nintendo and unknown pads keep the original
-look with By position or custom bindings. By label retains its existing Xbox fallback for those
-families. Switching takes effect immediately, including cached message text.
+Automatic prompts follow Xbox and PlayStation pads and use GameCube prompts for a detected
+GameCube adapter. Other Nintendo and unknown pads keep the original look with By position or
+custom bindings. By label retains its existing Xbox fallback for those families. Switching takes
+effect immediately, including cached message text.
 
 ## Options
 
@@ -34,7 +42,7 @@ In the settings overlay's **Controls** tab (and the Controls window on macOS), s
 
 | Option | Choices | Default |
 |---|---|---|
-| **Button prompts** | Automatic, Original, Xbox, PlayStation | Automatic: follows the pad family; By label retains its Xbox fallback |
+| **Button prompts** | Automatic, Original, Xbox, PlayStation, GameCube | Automatic: follows the connected pad; By label retains its Xbox fallback |
 | **Shoulder names** | Automatic, L / R / ZL / ZR, L1 / R1 / L2 / R2, LB / RB / LT / RT | Automatic: follows the button prompts |
 | **Coloured face buttons** | on, off | on; affects button icons only, leaving mapped action-text colours enabled |
 | **Coloured face button text** | on, off | on; off keeps the game's own text colours (white); no effect with Original prompts |

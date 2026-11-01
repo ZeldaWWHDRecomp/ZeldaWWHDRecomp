@@ -135,9 +135,9 @@ struct Mapping {
     bool invert_camera_y = false;
     bool face_auto = false;         // Automatic face preset: follow the dominant pad's labels
     // In-game button prompts (issues #110, #141, #143; runtime/src/button_glyphs.cpp)
-    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation };
+    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation, kGameCube };
     enum class ShoulderNames : uint8_t { kAuto, kNintendo, kNumbered, kXbox };
-    Prompts prompts = Prompts::kAuto;            // face-button look while the face buttons are by label
+    Prompts prompts = Prompts::kAuto;            // in-game face-button look
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
     bool prompt_colours = true;                  // coloured face buttons (Xbox / PlayStation colours)
     // Controls > Controller > "L turns the GamePad page" (off): in play the game reads L only to turn
@@ -231,26 +231,30 @@ void set_face_auto(Mapping& m, bool on);
 // The dominant pad's family, from the labels note_face_labels last reported: PlayStation when it
 // names Cross/Circle/Square/Triangle, Xbox when its bottom button is A, Nintendo when it is B.
 enum class PadFamily { kUnknown, kXbox, kPlayStation, kNintendo };
+// The dominant device GameCube-adapter identity, separate from its face labels.
+void note_gamecube(bool detected);
+bool gamecube_pad();
 PadFamily pad_family_from_labels(const FaceLabel labels[4]);
 PadFamily pad_family();
 
 // What the in-game button prompts look like (button_glyphs.cpp draws it). Resolved from the
 // mapping and the pad family; pure, so input_map_test and button_glyphs_test can cover it.
 //   face: appearance and host-button identities follow the resolved face bindings. Automatic
-//     follows Xbox/PlayStation; position/custom on Nintendo or unknown retain original icons.
+//     follows Xbox/PlayStation and detected GameCube adapters; other Nintendo/unknown pads retain
+//     original icons unless by label selects its existing Xbox fallback.
 //     By label retains its existing Xbox fallback. Original never changes face prompts.
 //   shoulders: Automatic follows the face style (Xbox: LB/RB/LT/RT, PlayStation: L1/R1/L2/R2,
-//     original: the game's L/R/ZL/ZR); a fixed choice applies with any face layout.
-enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation };
-enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox };
+//     GameCube: L/R/Z; Original: the game's L/R/ZL/ZR; a fixed choice applies with any face layout.
+enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation, kGameCube };
+enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox, kGameCube };
 struct PromptStyle {
     FaceStyle face = FaceStyle::kOriginal;
     bool colours = false;         // face colours (only with a face style)
     bool text_colours = false;    // action words in their button's colour (only with a face style)
     ShoulderStyle shoulders = ShoulderStyle::kOriginal;
-    bool positions = false;       // by label's look: the HUD face cluster in the Xbox/PlayStation positions
-    std::array<int, 4> buttons = {0, 1, 2, 3};  // Wii U face -> host A/B/X/Y
-    std::array<int, 4> spots = {0, 1, 2, 3};    // HUD cluster: Wii U face -> the face whose drawn spot it takes
+    bool positions = false;       // by label's look: the HUD cluster follows the host face buttons
+    std::array<int, 4> buttons = {0, 1, 2, 3};  // Wii U face -> host A/B/X/Y, or identity for GameCube art
+    std::array<int, 4> spots = {0, 1, 2, 3};    // HUD cluster: Wii U face -> destination spot
     bool active() const { return face != FaceStyle::kOriginal || shoulders != ShoulderStyle::kOriginal; }
     bool operator==(const PromptStyle&) const = default;
 };
