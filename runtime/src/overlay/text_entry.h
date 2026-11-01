@@ -37,6 +37,7 @@ struct Request {
     int max_len = 0;         // in UTF-16 units, as the game counts
     int mode = 0;            // swkbd keyboard mode: 0 full, 1 numbers only, 2 UTF-8, 3 Nintendo Network ID
     int language = 1;        // swkbd language: 0 Japanese (kana pages), 1 English, 2 French, ...
+    std::u16string refused;  // characters not taken (left out of the keyboard; typed: a note)
     // called (render thread) with the text after each edit, so the game's own name field shows it
     // as it is typed, in the game's font (the real keyboard tells the game's receiver the same way)
     std::function<void(const std::u16string&)> changed;

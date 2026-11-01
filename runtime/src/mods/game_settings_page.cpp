@@ -307,9 +307,9 @@ std::vector<Row> rows_of(const std::string& tab) {
         const bool port = it->owner == "port";  // (mods' texts are shown as their manifests write them)
         r.id = it->id, r.label = port ? tr(it->label) : it->label, r.help = port ? tr(it->help) : it->help;
         if (it->next_start) r.help += " " + tr("(applies at the next start)");
-        r.value = it->kind == game_settings::Kind::Number || (!port && it->kind == game_settings::Kind::Choice) ? value : tr(value);
         r.number = it->kind == game_settings::Kind::Number, r.toggle = it->kind == game_settings::Kind::Toggle;
-        r.choice = it->kind == game_settings::Kind::Choice;
+        r.choice = it->kind == game_settings::Kind::Choice, r.action = it->kind == game_settings::Kind::Action;
+        r.value = r.number || r.action || (!port && r.choice) ? value : tr(value);
         r.on = r.toggle && value == "On";
         r.enabled = !it->enabled || it->enabled();
         rows.push_back(std::move(r));

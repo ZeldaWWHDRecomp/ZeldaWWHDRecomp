@@ -531,13 +531,14 @@ if(WIN32)
   target_link_libraries(report_header_test PRIVATE advapi32)
 endif()
 
-foreach(test register_blocks scheduler_tick full_state_header sky_frame)
+foreach(test register_blocks scheduler_tick full_state_header sky_frame rendezvous)
   add_executable(${test}_test runtime/tools/${test}_test.cpp)
   target_include_directories(${test}_test PRIVATE runtime/src)
   target_compile_options(${test}_test PRIVATE -UNDEBUG)
 endforeach()
 
 target_link_libraries(scheduler_tick_test PRIVATE Threads::Threads)
+target_link_libraries(rendezvous_test PRIVATE Threads::Threads)
 
 add_executable(savestate_native_gate_test runtime/tools/savestate_native_gate_test.cpp runtime/src/savestate_native_gate.cpp)
 target_include_directories(savestate_native_gate_test PRIVATE runtime/src runtime/include)
@@ -1286,6 +1287,7 @@ target_compile_options(state_metadata_validation_test PRIVATE -UNDEBUG)
 add_test(NAME state_metadata_validation COMMAND state_metadata_validation_test)
 
 add_test(NAME scheduler_tick COMMAND scheduler_tick_test)
+add_test(NAME rendezvous COMMAND rendezvous_test)  # OSRendezvous per-core arrivals (runtime/src/rendezvous.h)
 add_test(NAME full_state_header COMMAND full_state_header_test)
 add_test(NAME mod_manager COMMAND mod_manager_test)
 add_executable(camera_directed_items_test runtime/tools/camera_directed_items_test.cpp
