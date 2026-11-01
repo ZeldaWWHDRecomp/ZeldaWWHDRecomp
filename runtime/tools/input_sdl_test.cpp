@@ -274,8 +274,42 @@ static int gamecube_preset() {
  return 0;
 }
 
+static int gamecube_auto_prompts() {
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
+ SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+ assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));input::init();input::release_keys();
+ auto m=input_map::Mapping::defaults();input_map::set_face_auto(m,true);input_map::set_current(m,false);
+ assert(!input_map::gamecube_pad());
+ SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+ d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=6;d.nbuttons=12;d.vendor_id=0x057e;d.product_id=0x0337;
+ d.name="GameCube WUP-028 automatic fixture";
+ auto id=SDL_AttachVirtualJoystick(&d);assert(id);
+ char guid[33]{};SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
+ std::string mapping=std::string(guid)+",GC automatic fixture,a:b0,b:b2,x:b1,y:b3,dpleft:b4,dpright:b5,dpdown:b6,dpup:b7,start:b8,rightshoulder:b9,misc3:b11,misc4:b10,leftx:a0,lefty:a1~,rightx:a2,righty:a3~,lefttrigger:a4,righttrigger:a5,type:gamecube,hint:!SDL_GAMECONTROLLER_USE_GAMECUBE_LABELS:=1,";
+ assert(SDL_AddGamepadMapping(mapping.c_str())>=0);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ assert(input_map::gamecube_pad());
+ auto current=input_map::current();
+ assert(current.prompts==input_map::Mapping::Prompts::kAuto&&current.controllers.size()==1);
+ const int profile=input_map::profile_index(current,guid,d.name);assert(profile>=0);
+ const auto view=input_map::view_for(current,profile);
+ assert(view.preset.gamecube);
+ assert(view.pad[input_map::kA]==input_map::kPadA);
+ assert(view.pad[input_map::kB]==input_map::kPadX);
+ assert(view.pad[input_map::kX]==input_map::kPadB);
+ assert(input_map::prompt_style(view,input_map::PadFamily::kNintendo).face==input_map::FaceStyle::kGameCube);
+ SDL_DetachVirtualJoystick(id);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ assert(!input_map::gamecube_pad());
+ assert(input_map::prompt_style(input_map::Mapping::defaults(),input_map::PadFamily::kXbox).face==input_map::FaceStyle::kXbox);
+ SDL_Quit();
+ std::puts("SDL GameCube detection selects GameCube prompts under Automatic and creates the matching per-pad layout profile: passed");
+ return 0;
+}
+
 int main(int argc,char** argv){
  if(argc>1&&std::string(argv[1])=="--gamecube")return gamecube_preset();
+ if(argc>1&&std::string(argv[1])=="--gamecube-auto")return gamecube_auto_prompts();
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();
  if(argc>1&&std::string(argv[1])=="--background")return background_controllers();
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
