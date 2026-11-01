@@ -10,6 +10,7 @@
 #include "../mods/item_icons.h"
 #include "../mods/story_lyt_screen.h"
 #include "../mods/story_store.h"
+#include "../mods/save_folder_writes.h"
 #include "../platform/filesystem.h"
 
 #include <atomic>
@@ -70,6 +71,8 @@ struct OpenFile {
     uint64_t limit = UINT64_MAX;  // the game's part of a save file with the story block (story_store.h)
     bool story = false;           // a save file that carries the story block
     std::string host;
+    std::string final_host;       // written through `host`, a temporary file renamed over this one when closed
+    bool failed = false;          // a write failed: the temporary file never replaces final_host
 };
 struct OpenDir {
     DIR* d;
@@ -220,6 +223,15 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     if (mode.find_first_of("wa") != std::string::npos) make_parent_dirs(hp);
     std::string m = mode;
     if (m.find('b') == std::string::npos) m += "b";
+    // a chosen save folder (save_folder.h, often a cloud folder): the game writes a temporary file,
+    // renamed over the save when it is closed, so a cloud app never uploads half a save
+    std::string final_host;
+    if (save_folder::writes_through_temporary() && mode.find_first_of("wa+") != std::string::npos && gpath.rfind("/vol/save/", 0) == 0) {
+        final_host = hp;
+        hp += ".wwhd-part";
+        // updates and appends start from the save's contents; a failed copy fails the open
+        if (!save_folder::prepare_written(final_host, mode[0] != 'w')) return FS_ACCESS_ERROR;
+    }
     FILE* f = fopen(hp.c_str(), m.c_str());
     TRACE("[fs] open %s (%s) -> %s", gpath.c_str(), mode.c_str(), f ? "ok" : "not found");
     if (!f) return FS_NOT_FOUND;
@@ -234,7 +246,7 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     }
     std::lock_guard<std::mutex> lk(g_fs_mutex);
     uint32_t h = g_next_handle++;
-    g_files[h] = {f, gpath, m, limit, story, hp};
+    g_files[h] = {f, gpath, m, limit, story, hp, final_host};
     st32(out_handle, h);
     return FS_OK;
 }
@@ -284,17 +296,29 @@ HLE(coreinit, FSOpenFile) {
 }
 
 HLE(coreinit, FSCloseFile) {
-    std::string written_guest, written_host;
+    std::string written_guest, written_host, final_host;
+    bool written = false, complete = true;
     {
         std::lock_guard<std::mutex> lk(g_fs_mutex);
         auto it = g_files.find(arg(c, 2));
         if (it != g_files.end()) {
-            fclose(it->second.f);
-            if (it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos)
-                written_guest = it->second.path, written_host = it->second.host;
+            // a temporary file is on the disk, whole, before it can replace the save
+            if (!it->second.final_host.empty()) complete = !it->second.failed && host::flush_file(it->second.f);
+            if (fclose(it->second.f) != 0) complete = false;
+            written = it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos;
+            written_guest = it->second.path, written_host = it->second.host, final_host = it->second.final_host;
             g_files.erase(it);
         }
     }
+    // a chosen save folder: the temporary file becomes the save (retried while a cloud app holds it;
+    // kept for the next start if that never works), outside the lock
+    if (!final_host.empty()) {
+        BlockingScope b;
+        if (!complete) save_folder::discard_written(final_host);
+        else if (save_folder::commit_written(final_host)) written_host = final_host;
+        if (!complete) written = false;  // the save is unchanged: its story block stays as it is
+    }
+    if (!written) written_guest.clear();
     // a save file the game wrote: the story block goes after it again (story_store.h)
     if (!written_guest.empty()) {
         BlockingScope b;
@@ -345,7 +369,12 @@ HLE(coreinit, FSWriteFile) {
     {
         BlockingScope b;
         n = fwrite(mem::ptr(src), 1, (size_t)size * count, f);
-        fflush(f);
+        const bool flushed = fflush(f) == 0;
+        if (n != (size_t)size * count || !flushed) {  // a full disk or an I/O error
+            std::lock_guard<std::mutex> lk(g_fs_mutex);
+            auto it = g_files.find(arg(c, 5));
+            if (it != g_files.end()) it->second.failed = true;
+        }
     }
     ret(c, (uint32_t)(n / size));
 }

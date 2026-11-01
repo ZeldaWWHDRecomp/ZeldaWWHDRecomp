@@ -715,6 +715,35 @@ The SDK reference is [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md), the mod manager i
 - Debugging aids (frame/draw dumps, traces, scheduler statistics) are documented next to their
   code: grep for `WWHD_` in `runtime/src`.
 
+## Optional: keep your save in a cloud folder
+
+**Settings → Saves → Save folder → Choose save folder...** (Windows, macOS, Linux) puts your save in a
+folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive, so the cloud app
+keeps it the same on all your computers. Choose the same folder on each computer.
+
+- The change takes effect at the next start: your save is copied there then (never moved). If that
+  folder already has a save, the game shows both dates and asks which one to keep; the other one is
+  kept in `save-backups`.
+- Only the save (`user/cking.sav`, the pictographs and the story progress inside it) goes there. Save
+  states, settings and backups stay on the computer. The choice itself is per computer
+  (`save-folder.json` in the config folder), and **Back to default** returns to the usual folder.
+- If the cloud app kept both sides of a conflict (`cking-PCNAME.sav`, `cking (conflicted copy).sav`,
+  `cking 2.sav`), the next start backs up the folder and asks which save to play with.
+- While the game runs, a small `wwhd-playing.lock` in the folder names the computer. Another computer
+  starting with the same folder warns first. Close the game on one computer before playing on another.
+- If the save can't be read (a cloud file that isn't on this computer yet), the folder is missing
+  (the cloud app signed out, a drive unplugged) or a save that was there is gone, the game asks
+  first (try again, or quit) instead of starting a new, empty save there.
+- The game writes the save to a temporary file next to it and renames it into place, so the cloud app
+  never uploads half a save. If the cloud app holds the file and the rename keeps failing, the new save
+  stays next to it (`cking.sav.wwhd-part`) and the next start offers it. A write that fails (a full
+  disk) never replaces the save. Nothing is replaced or removed without a backup first, and without
+  your answer nothing is removed at all.
+- A folder inside the current save folder (or the other way round) can't be chosen. Choosing a
+  folder that already holds other files (such as the OneDrive folder itself) puts the save in a
+  `Wind Waker HD` folder inside it.
+- `--save DIR` on the command line still wins over the choice.
+
 ## Optional: bring your GameCube save to HD
 
 `tools/savegame/gc2hd.py` converts a GameCube Wind Waker save (`.gci`, USA GZLE01, Japanese GZLJ01 or European GZLP01,
