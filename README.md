@@ -557,6 +557,8 @@ plays the recorded input back to reproduce the crash. Automatic states can also 
 
 Game controllers (Xbox, PlayStation, Switch Pro, MFi) work too; by default buttons map by
 position (the bottom face button is the Wii U's B), and they can be remapped in the Controls window.
+On macOS the app also reads generic HID gamepads through IOKit (for example a Steam Controller as
+Steam Input's virtual pad), which GameController.framework does not surface.
 **Face buttons** in the settings overlay (F1 → Controls) or the Input menu switches that preset:
 *by position (Nintendo)* is the default; *by label (Xbox)* makes the button named A drive the Wii
 U's A instead — on an Xbox pad that means A accepts/acts and B goes back (issue #78), and the X/Y

@@ -203,6 +203,9 @@ what is on `devel` and not released yet (also in the
   every 5 seconds where the game's main thread spends its time. The Vulkan memory log (`WWHD_VK_MEMORY_LOG_FRAMES`)
   now also lists pipeline counts, the warm pool and the recipe database. Idea from SwitchWakerHD (thanks @Pulpparty
   and @depende3000).
+- **macOS: generic HID gamepads work too, including the Steam Controller** (issue #342). The AppKit
+  host now reads pads GameController.framework does not surface (Steam Input's virtual pad and
+  others) through IOKit, with the same controls mapping.
 - **Shader translation: cube-map helper shaders translate again** (Vulkan and Metal). Some library shaders set a
   cube-map layer index on a texture slot that, in some states, holds an ordinary texture; the translator then used an
   undeclared variable and the shader failed. Shader preparation now finishes with no failed shaders (11 on Vulkan and

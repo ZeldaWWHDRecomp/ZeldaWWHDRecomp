@@ -208,6 +208,20 @@ manual bindings are preserved because that preset may be intentional or shared
 with another controller. A connected Nintendo pad with that exact manual pattern
 logs a reminder. Other custom bindings are kept.
 
+## Generic HID gamepads on macOS
+
+The macOS app also reads generic HID gamepads through IOKit, which
+GameController.framework does not surface. That is what lets a Steam Controller work:
+launched from Steam, Steam Input presents it as a virtual pad ("Microsoft GamePad-1")
+that GameController ignores.
+
+- Launch from Steam so Steam Input keeps translating the controller.
+- It maps as the standard Xbox layout with Xbox labels, so **Automatic** resolves to
+  **By label (Xbox)**; Controls remap, dead zone and range, and camera invert apply.
+- Pads GameController already handles are skipped (`GCSyntheticDevice`), so nothing is
+  read twice. Gyro is not provided (the virtual pad carries no motion); use Steam
+  Input's gyro-to-mouse if wanted.
+
 ## Input diagnostics
 
 For a reproducible controller report, these optional environment variables log

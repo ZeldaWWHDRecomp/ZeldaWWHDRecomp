@@ -44,6 +44,12 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include <string>
 #include <vector>
 
+#ifdef WWHD_HAS_IOKIT
+#import <IOKit/hid/IOHIDManager.h>
+#import <IOKit/hid/IOHIDKeys.h>
+#include "platform/hid_gamepad.h"
+#endif
+
 namespace gfx { void request_capture(); bool menu_hotkey(uint16_t keyCode); bool controls_window_is_key(); bool text_input_key(void* event); }
 namespace mods { void filter_pad(input::PadState& s); bool host_key_down(uint16_t code); void update_gyro_mouse(); }  // mods/
 
@@ -153,6 +159,160 @@ static bool device_values(GCController* c, float* v) {
 }
 
 static std::string pad_name(GCController* c);
+#ifdef WWHD_HAS_IOKIT
+// ---- Generic HID gamepads on the AppKit host.
+//
+// GameController.framework only surfaces the pad families Apple supports (MFi, Xbox One/Series,
+// DualShock/DualSense, Switch). Steam Input's virtual pad (a "Microsoft GamePad-1", an Xbox-style
+// HID device) and other generic HID gamepads are not among them, so those never reach the game
+// (SDL ignores Steam's virtual pad too). They are read here through IOKit and folded into the same
+// per-device pad positions as the GCController pads; a pad GameController supports is skipped (see
+// io_add), so nothing is read twice. The mapping lives in platform/hid_gamepad.h so it is testable.
+//
+// Values arrive through the input-value callback, and the whole reader runs on the main run loop
+// (the manager is scheduled there, the pad is polled from the main-thread timer), so no lock is
+// needed for the pads.
+struct IokitPad {
+    IOHIDDeviceRef dev = nullptr;
+    uint16_t vendor = 0, product = 0;
+    hid_gamepad::Layout layout = hid_gamepad::Layout::kStandard;
+    std::string name;                      // the HID product string, for per-controller details
+    uint32_t buttons = 0;                  // usage page 0x09, bit usage-1
+    float lx = 0, ly = 0, rx = 0, ry = 0;  // -1..1; +x right, +y down (the HID axes' convention)
+    float lt = 0, rt = 0;                  // 0..1
+    hid_gamepad::Hat hat;
+};
+static std::vector<IokitPad*> g_io_pads;
+static IOHIDManagerRef g_io_manager = nullptr;  // process lifetime: the reader lives until the app exits
+static void note_dominant_labels();
+
+static void io_value(void* ctx, IOReturn r, void* sender, IOHIDValueRef value) {
+    if (r != kIOReturnSuccess || !value) return;
+    IOHIDElementRef e = IOHIDValueGetElement(value);
+    const IOHIDElementType type = IOHIDElementGetType(e);
+    if (type < kIOHIDElementTypeInput_Misc || type > kIOHIDElementTypeInput_ScanCodes) return;
+    IokitPad* p = (IokitPad*)ctx;
+    const uint32_t page = IOHIDElementGetUsagePage(e), usage = IOHIDElementGetUsage(e);
+    const long v = (long)IOHIDValueGetIntegerValue(value);
+    const long mn = (long)IOHIDElementGetLogicalMin(e), mx = (long)IOHIDElementGetLogicalMax(e);
+    switch (hid_gamepad::classify(page, usage)) {
+        case hid_gamepad::Kind::kButton:
+            if (v) p->buttons |= 1u << (usage - 1); else p->buttons &= ~(1u << (usage - 1));
+            break;
+        case hid_gamepad::Kind::kLeftX: p->lx = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kLeftY: p->ly = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightX: p->rx = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightY: p->ry = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kLeftTrigger: p->lt = hid_gamepad::trigger_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightTrigger: p->rt = hid_gamepad::trigger_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kHat: p->hat = hid_gamepad::hat_directions(v, mn, mx); break;
+        case hid_gamepad::Kind::kNone: break;
+    }
+}
+static bool io_xbox_labels() {
+    for (IokitPad* p : g_io_pads) if (hid_gamepad::xbox_labelled(p->layout)) return true;
+    return false;
+}
+static void io_add(IOHIDDeviceRef dev) {
+    int v = 0, pr = 0;
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDVendorIDKey))) CFNumberGetValue(n, kCFNumberIntType, &v);
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductIDKey))) CFNumberGetValue(n, kCFNumberIntType, &pr);
+    // A pad GameController supports is also exposed to IOKit, as a synthetic HID device; skip that
+    // one, or it would be read twice (kIOHIDGCSyntheticDeviceKey, "GCSyntheticDevice").
+    if (IOHIDDeviceGetProperty(dev, CFSTR("GCSyntheticDevice")) == kCFBooleanTrue) {
+        LOG("[input] IOKit HID pad %04X:%04X is a GameController synthetic device; read through GameController", v, pr);
+        return;
+    }
+    // The layout comes from the pad's own descriptors: the Steam virtual pad carries its D-pad as
+    // buttons 12..15 and no hat switch; a standard pad carries a hat switch.
+    bool has_hat = false, has_dpad_buttons = false;
+    if (CFArrayRef els = IOHIDDeviceCopyMatchingElements(dev, nullptr, 0)) {
+        for (CFIndex i = 0; i < CFArrayGetCount(els); i++) {
+            IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(els, i);
+            const IOHIDElementType t = IOHIDElementGetType(e);
+            if (t < kIOHIDElementTypeInput_Misc || t > kIOHIDElementTypeInput_ScanCodes) continue;
+            const uint32_t page = IOHIDElementGetUsagePage(e), use = IOHIDElementGetUsage(e);
+            if (page == 0x01 && use == 0x39) has_hat = true;
+            if (page == 0x09 && use >= 12 && use <= 15) has_dpad_buttons = true;
+        }
+        CFRelease(els);
+    }
+    if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
+        LOG("[input] IOKit HID device open failed");
+        return;
+    }
+    auto* p = new IokitPad();
+    p->dev = dev;
+    p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
+    p->layout = hid_gamepad::layout_for(has_hat, has_dpad_buttons);
+    IOHIDDeviceRegisterInputValueCallback(dev, io_value, p);
+    char name[128] = {0};
+    if (CFStringRef s = (CFStringRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductKey))) CFStringGetCString(s, name, sizeof name, kCFStringEncodingUTF8);
+    p->name = name[0] ? name : "HID controller";
+    LOG("[input] IOKit HID controller connected: %s (vendor %04X product %04X, %s layout)", name, v, pr,
+        p->layout == hid_gamepad::Layout::kSteamVirtual ? "Steam virtual" : "standard");
+    g_io_pads.push_back(p);
+    note_dominant_labels();
+}
+static void io_remove(IOHIDDeviceRef dev) {
+    for (auto it = g_io_pads.begin(); it != g_io_pads.end(); ++it) {
+        if ((*it)->dev != dev) continue;
+        IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
+        delete *it;
+        g_io_pads.erase(it);
+        LOG("[input] IOKit HID controller disconnected");
+        note_dominant_labels();
+        break;
+    }
+}
+static std::string io_device_name(uintptr_t id) {
+    for (IokitPad* p : g_io_pads) if ((uintptr_t)p->dev == id) return p->name;
+    return "HID controller";
+}
+// every IOKit pad's values, keyed by the device pointer (distinct from a GCController's pointer); a
+// null goes into pads for each, so the per-device loops stay parallel with the GCController ones
+static void io_devices_values(std::vector<std::pair<uintptr_t, overlay::PadValues>>& out, std::vector<GCController*>* pads) {
+    using namespace input_map;
+    for (IokitPad* p : g_io_pads) {
+        overlay::PadValues d;
+        float* v = d.data();
+        for (int i = 0; i < kPadCount; i++) v[i] = 0;
+        auto put = [&](int idx, float x) { if (x > v[idx]) v[idx] = x; };
+        for (uint32_t usage = 1; usage <= 15; usage++) {
+            if (!(p->buttons & (1u << (usage - 1)))) continue;
+            const int pad = hid_gamepad::button_pad(p->layout, 0x09, usage);
+            if (pad != kPadNone) put(pad, 1.f);
+        }
+        if (p->hat.up) put(kPadDUp, 1.f);     if (p->hat.down) put(kPadDDown, 1.f);
+        if (p->hat.left) put(kPadDLeft, 1.f); if (p->hat.right) put(kPadDRight, 1.f);
+        put(kPadLSRight, std::max(p->lx, 0.f)); put(kPadLSLeft, std::max(-p->lx, 0.f));
+        put(kPadLSDown, std::max(p->ly, 0.f));  put(kPadLSUp, std::max(-p->ly, 0.f));
+        put(kPadRSRight, std::max(p->rx, 0.f)); put(kPadRSLeft, std::max(-p->rx, 0.f));
+        put(kPadRSDown, std::max(p->ry, 0.f));  put(kPadRSUp, std::max(-p->ry, 0.f));
+        put(kPadLT, p->lt); put(kPadRT, p->rt);
+        out.emplace_back((uintptr_t)p->dev, d);
+        if (pads) pads->push_back(nil);
+    }
+}
+static void io_matched(void*, IOReturn r, void*, IOHIDDeviceRef dev) { if (r == kIOReturnSuccess && dev) io_add(dev); }
+static void io_removed(void*, IOReturn r, void*, IOHIDDeviceRef dev) { if (r == kIOReturnSuccess && dev) io_remove(dev); }
+
+static void iokit_input_init() {
+    if (getenv("WWHD_NO_CONTROLLERS")) return;
+    g_io_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (!g_io_manager) { LOG("[input] IOHIDManagerCreate failed"); return; }
+    NSArray* match = @[ @{@kIOHIDDeviceUsagePageKey:@(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey:@(kHIDUsage_GD_GamePad)},
+                        @{@kIOHIDDeviceUsagePageKey:@(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey:@(kHIDUsage_GD_Joystick)},
+                        @{@kIOHIDDeviceUsagePageKey:@(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey:@(kHIDUsage_GD_MultiAxisController)} ];
+    IOHIDManagerSetDeviceMatchingMultiple(g_io_manager, (__bridge CFArrayRef)match);
+    IOHIDManagerRegisterDeviceMatchingCallback(g_io_manager, io_matched, nullptr);
+    IOHIDManagerRegisterDeviceRemovalCallback(g_io_manager, io_removed, nullptr);
+    IOHIDManagerScheduleWithRunLoop(g_io_manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    const IOReturn o = IOHIDManagerOpen(g_io_manager, kIOHIDOptionsTypeNone);
+    if (o != kIOReturnSuccess) LOG("[input] IOHIDManagerOpen failed: 0x%X", (unsigned)o);
+    LOG("[input] IOKit HID controller input ready");
+}
+#endif
 
 // each connected controller's values, keyed by the controller: a reconnected one is a new object
 static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std::vector<GCController*>* pads = nullptr) {
@@ -167,6 +327,9 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std:
             if (pads) pads->push_back(c);
         }
     }
+#ifdef WWHD_HAS_IOKIT
+    io_devices_values(out, pads);
+#endif
     return out;
 }
 static std::string pad_name(GCController* c) {
@@ -237,6 +400,12 @@ static void note_dominant_labels() {
         input_map::apple_face_labels(controller_face_layout(dominant), labels);
         if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
     }
+#ifdef WWHD_HAS_IOKIT
+    // no GameController pad: claim Xbox labels for the pad we know is Xbox-labelled (Steam's)
+    else if (io_xbox_labels()) {
+        labels[0] = FL::kA; labels[1] = FL::kB; labels[2] = FL::kX; labels[3] = FL::kY;
+    }
+#endif
     input_map::note_face_labels(labels);
     if (dominant) {
         auto m = input_map::current();
@@ -430,6 +599,9 @@ void init() {
         LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
     input_map::load_startup();
     start_test_keys();
+#ifdef WWHD_HAS_IOKIT
+    iokit_input_init();  // HID gamepads GameController.framework does not surface (Steam Input's pad)
+#endif
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -536,7 +708,7 @@ void init() {
                 auto& gate = start_gates[devices[i].first];
                 if (overlay::captures()) gate = {};
                 s = input_map::combine(s, gate.read(input_map::view_for(current,
-                    input_map::profile_index(current, "", pad_name(pads[i]))), gated[i].data()));
+                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : io_device_name(devices[i].first))), gated[i].data()));
             }
         }
         // the one in use, the setup offer on a new controller's first press, Controller details
@@ -545,7 +717,7 @@ void init() {
         std::vector<ControllerInfo> infos;
         for (size_t i = 0; i < devices.size(); i++) {
             GCController* c = pads[i];
-            const std::string name = pad_name(c);
+            const std::string name = c ? pad_name(c) : io_device_name(devices[i].first);
             bool pressed = false;
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
             if (pressed && devices[i].first != active) {
@@ -557,28 +729,28 @@ void init() {
             ControllerInfo info;
             info.id = devices[i].first;
             info.name = name;
-            if (c.productCategory) info.type = c.productCategory.UTF8String;
-            if (gamecube_controller(c)) info.type = "gamecube-apple";
             info.active = devices[i].first == active;
+            info.values.assign(devices[i].second.begin(), devices[i].second.end());
+            if (c && c.productCategory) info.type = c.productCategory.UTF8String;
+            if (c && gamecube_controller(c)) info.type = "gamecube-apple";
             if (@available(macOS 11.0, *)) {
-                info.rumble = c.haptics != nil;
-                if (c.battery) {
+                info.rumble = c && c.haptics != nil;
+                if (c && c.battery) {
                     info.battery = int(std::lround(c.battery.batteryLevel * 100));
                     info.power = c.battery.batteryState == GCDeviceBatteryStateCharging ? "charging"
                                : c.battery.batteryState == GCDeviceBatteryStateFull     ? "charged"
                                : c.battery.batteryState == GCDeviceBatteryStateDischarging ? "on battery" : "unknown";
                 }
-                info.led = c.light != nil;
+                info.led = c && c.light != nil;
             }
-            info.gyro = info.accel = c.motion != nil;
-            info.values.assign(devices[i].second.begin(), devices[i].second.end());
+            info.gyro = info.accel = c && c.motion != nil;
             input_map::FaceLabel labels[4] = {};
-            GCExtendedGamepad* g = c.extendedGamepad;
+            GCExtendedGamepad* g = c ? c.extendedGamepad : nil;
             GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};
             bool any = false;
             for (int k = 0; k < 4; k++) any |= (labels[k] = button_letter(face[k])) != input_map::FaceLabel::kUnknown;
-            input_map::apple_face_labels(controller_face_layout(c), labels);
-            if (!any) family_letters(c, labels);
+            if (c) input_map::apple_face_labels(controller_face_layout(c), labels);
+            if (c && !any) family_letters(c, labels);
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
