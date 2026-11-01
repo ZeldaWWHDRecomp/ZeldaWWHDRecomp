@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: change Link's name mid-game** (#328, thanks @itsarahtonin). The settings page in the pause menu (Game tab)
+  and the Settings window's Saves tab can now rename Link on the save file being played. The new name shows right
+  away and is kept with your next save. `%` isn't accepted, because the game reads it as a format code, and
+  characters the game's font can't show are refused.
 - **New: keep your save in a cloud folder** (#190, thanks @rhemfur). Settings → Saves → **Save folder** (Windows,
   macOS, Linux) puts your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive,
   so it stays the same on all your computers. The save is written to a temporary file and only replaces the real one
