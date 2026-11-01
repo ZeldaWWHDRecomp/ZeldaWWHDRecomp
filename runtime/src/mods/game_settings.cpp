@@ -14,6 +14,7 @@
 #include "mods.h"
 #include "packages.h"
 #include "game_settings_graphics.h"
+#include "player_name.h"
 #include "../aspect.h"
 #include "../dynres.h"
 #include "../gfx/renderer.h"
@@ -146,6 +147,7 @@ std::string value_text(const Item& item) {
         const size_t i = size_t(std::clamp(int(std::lround(v)), 0, int(item.choices.size()) - 1));
         return item.choices.empty() ? "" : item.choices[i];
     }
+    case Kind::Action: return item.text ? item.text() : "";
     case Kind::Number:
         if (item.format) return item.format(v);
         char b[32];
@@ -158,6 +160,10 @@ std::string value_text(const Item& item) {
 
 float apply(const Item& item, int direction) {
     const float v = current(item);
+    if (item.kind == Kind::Action) {  // A or a tap only (Left / Right do nothing)
+        if (direction == 0 && item.set) hostui::post([set = item.set] { set(0); });
+        return v;
+    }
     float next = v;
     switch (item.kind) {
     case Kind::Toggle: next = direction == 0 ? (v >= 0.5f ? 0.0f : 1.0f) : direction > 0 ? 1.0f : 0.0f; break;
@@ -173,6 +179,7 @@ float apply(const Item& item, int direction) {
         next = std::clamp(item.min + steps * item.step, item.min, item.max);
         break;
     }
+    case Kind::Action: break;  // (above)
     }
     if (next == v) return v;
     {
@@ -582,6 +589,15 @@ void register_touch() {  // the Settings window's "Touch controls" (Android)
 }
 #endif
 void register_game() {
+    {  // the save file's name for Link (player_name.h): the page is only open in play, with a file loaded
+        Item it;
+        it.id = "game.link-name", it.tab = "game", it.label = "Change Link's name", it.kind = Kind::Action;
+        it.help = "Gives your hero a new name on this save file. It's kept the next time you save.";
+        it.text = [] { return player_name::current(); };
+        it.set = [](float) { player_name::ask(); };
+        it.enabled = [] { return player_name::loaded(); };
+        add(std::move(it));
+    }
     // the built-in gameplay mods (mods/manager.cpp), switched as the Mods tab switches them
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)
