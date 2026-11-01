@@ -1441,7 +1441,8 @@ int main() {
 #ifdef _WIN32
     auto memory = VirtualAlloc(mem::ptr(base), kArena, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-    auto memory = mmap(mem::ptr(base), kArena, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    auto memory = mmap(mem::ptr(base), kArena, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 #endif
     assert(memory == mem::ptr(base));
     // Prompts/dialogue cached before 3D is enabled must still replay as flat
@@ -1473,7 +1474,8 @@ int main() {
 #ifdef _WIN32
     auto globals = VirtualAlloc(mem::ptr(0x101F0000), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-    auto globals = mmap(mem::ptr(0x101F0000), 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    auto globals = mmap(mem::ptr(0x101F0000), 0x10000, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 #endif
     assert(globals == mem::ptr(0x101F0000));
     st32(GD(0x101F4A50),base+0xE000); st32(base+0xE010,base+0xE100);
