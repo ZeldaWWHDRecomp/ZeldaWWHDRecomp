@@ -7,10 +7,6 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **Android: tap to start, and touch on the file select and name entry** (#340, thanks @GenissonEmilio). The title
-  screen shows "Tap to start" and a single tap starts the game (a drag or a second finger doesn't). On the file select
-  and the name entry your touches go to the game's own GamePad screen, so you can pick a save and type a name with the
-  keyboard by touch. The gameplay touch controls stay hidden until you're in the game.
 - **Fixed: controller dead after switching it in a menu** (#330, thanks @itsarahtonin). Switching **Keyboard and
   controllers act as** between Wii U GamePad and Wii U Pro Controller while the pause menu or the file select was open
   left the game ignoring every button until you switched back or restarted. The controller you switched away from now
