@@ -45,9 +45,11 @@ class FakeActivity(threading.Thread):
         if action == 'absent':  # the setup screen is not in front: nothing starts
             return
         pid = next(PIDS)
+        # alive before its status names the pid, as the real activity (it writes its own running pid): the other
+        # order lets Attempt.poll see a started attempt whose process is gone and end it early
+        self.alive.add(pid)
         status = {'schema': 1, 'id': request['id'], 'pid': pid, 'state': 'running'}
         android_models.write_json(self.job / 'model-attempt-status.json', status)
-        self.alive.add(pid)
         env = request['env']
         state = Path(env['WWHD_DSWEEP_STATE'])
         archives = [l for l in Path(env['WWHD_DSWEEP_ARCHIVES']).read_text().splitlines() if l]
