@@ -161,6 +161,8 @@ std::vector<uint8_t> button_atlas(const std::array<uint32_t,kAtlasGlyphs>& recor
     for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
         put(gamecube_cstick_row(), 0, x, y, gamecube_cstick_icon(true, x, y));
         put(gamecube_cstick_row(), 1, x, y, gamecube_cstick_icon(false, x, y));
+        put(gamecube_start_row(), 0, x, y, gamecube_start_icon(true, x, y));
+        put(gamecube_start_row(), 1, x, y, gamecube_start_icon(false, x, y));
     }
     return atlas;
 }

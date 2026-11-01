@@ -19,6 +19,7 @@ constexpr int item_name_row(int item_button) { return 16 + item_button; }  // 0 
 constexpr int gamecube_row(int face) { return 20 + face; }
 constexpr int gamecube_shoulder_row(int shoulder) { return 24 + shoulder; }
 constexpr int gamecube_cstick_row() { return 28; }
+constexpr int gamecube_start_row() { return 29; }
 
 // Native nw::font::Glyph records for L, R, 1, 2, B, T, A, 3 (0x18 bytes each). Empty means
 // unsupported/not ready.

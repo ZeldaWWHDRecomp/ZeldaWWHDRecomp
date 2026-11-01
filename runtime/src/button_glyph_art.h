@@ -141,4 +141,27 @@ inline uint32_t gamecube_cstick_icon(bool framed, int x, int y) {
     return c;
 }
 
+inline uint32_t gamecube_start_icon(bool framed, int x, int y) {
+    const float px=x+0.5f-32.f, py=y+0.5f-32.f;
+    auto rounded=[](float x,float y,float halfw,float halfh,float radius) {
+        const float qx=std::fabs(x)-(halfw-radius), qy=std::fabs(y)-(halfh-radius);
+        return std::hypot(std::max(qx,0.f),std::max(qy,0.f))+std::min(std::max(qx,qy),0.f)-radius;
+    };
+    const float outer=rounded(px,py,framed?24.f:21.f,framed?13.f:10.f,framed?7.f:5.f);
+    const float inner=rounded(px,py,framed?21.f:18.f,framed?10.f:8.f,framed?5.f:4.f);
+    uint32_t c=outer<0&&inner>=0?0x4A4F54FF:inner<0?0x737A80FF:0;
+    auto line=[](float px,float py,float ax,float ay,float bx,float by){return art::segment(px,py,ax,ay,bx,by)<1.15f;};
+    bool ink=false;
+    // Five compact vector letters spell START across the button face.
+    for(int i=0;i<5;i++) {
+        const float ox=-14.f+i*7.f;
+        if(i==0) ink|=line(px,py,ox+2,-4,ox-2,-4)||line(px,py,ox-2,-4,ox-2,0)||line(px,py,ox-2,0,ox+2,0)||line(px,py,ox+2,0,ox+2,4)||line(px,py,ox+2,4,ox-2,4);
+        else if(i==2) ink|=line(px,py,ox-3,4,ox, -4)||line(px,py,ox,-4,ox+3,4)||line(px,py,ox-2,1,ox+2,1);
+        else if(i==3) ink|=line(px,py,ox-2,4,ox-2,-4)||line(px,py,ox-2,-4,ox+2,-4)||line(px,py,ox+2,-4,ox+2,-1)||line(px,py,ox+2,-1,ox-2,0)||line(px,py,ox,0,ox+2,4);
+        else ink|=line(px,py,ox-2,4,ox-2,-4)||line(px,py,ox-2,-4,ox+2,-4)||line(px,py,ox, -4,ox,4);
+    }
+    if(inner<0&&ink)c=0xF2F2F2FF;
+    return c;
+}
+
 }  // namespace button_glyphs

@@ -594,6 +594,7 @@ void shoulders_test() {
     assert(row_has(button_glyphs::gamecube_row(2),0xA9ADB1FF));
     assert(row_has(button_glyphs::gamecube_shoulder_row(1),0x6754C8FF));
     assert(row_has(button_glyphs::gamecube_cstick_row(),0xE8C72AFF));
+    assert(row_has(button_glyphs::gamecube_start_row(),0x737A80FF));
     assert(!std::memcmp(composed.data(),mem::ptr(image),composed.size()));
     bool antialias = false;
     for (uint32_t y = 0; y < 256; y++) for (uint32_t x = 64; x < 128; x++) {
@@ -1239,6 +1240,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         const int face = button_glyphs::marked_face(ld8(quad + 0x2F));
         const int shoulder = button_glyphs::marked_shoulder(ld8(quad + 0x2F));
         const bool cstick = button_glyphs::marked_cstick(ld8(quad + 0x2F));
+        const bool start = button_glyphs::marked_start(ld8(quad + 0x2F));
         for (uint32_t j = 0; j < 2; j++) {
             uint32_t want = expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face]) : authored[j];
             if (expected_action >= 0) {
@@ -1266,10 +1268,11 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         // the game's own letter colours (dark on the white shoulder plates) and its dimming.
         const bool coverage = (shape && hud_letter && expect_shapes == 0) ||
                               (shoulder_label && !expect_frame && !(expect_names == 3 && shoulder == 1));
-        assert((ld8(quad + 0x2F) & 1) == (coverage ? 1 : shoulder_label || shape || cstick ? 0 : (i & 1)));
-        if (shoulder_label || shape || cstick) {
+        assert((ld8(quad + 0x2F) & 1) == (coverage ? 1 : shoulder_label || shape || cstick || start ? 0 : (i & 1)));
+        if (shoulder_label || shape || cstick || start) {
             // the composed atlas: an RGBA picture (#141), one layer, the style's cell
             const int row = cstick ? button_glyphs::gamecube_cstick_row()
+                          : start ? button_glyphs::gamecube_start_row()
                           : shape ? expect_shapes == 2 ? button_glyphs::gamecube_row(face)
                                              : button_glyphs::shape_row(expected_buttons[face], expect_shapes == 1)
                           : expect_names == 3 ? button_glyphs::gamecube_shoulder_row(shoulder)
@@ -1490,6 +1493,8 @@ int main() {
     assert(button_glyphs::marked_face(0x40) == -1);
     assert(button_glyphs::cstick_character(0xE082) && !button_glyphs::cstick_character(0xE081));
     assert(button_glyphs::marked_cstick(button_glyphs::mark_cstick(0)));
+    assert(button_glyphs::start_character('+') && !button_glyphs::start_character('A'));
+    assert(button_glyphs::marked_start(button_glyphs::mark_start(0)));
 
     st32(writer + 0x2C, list);
     st32(text_box + 0xFC, list);

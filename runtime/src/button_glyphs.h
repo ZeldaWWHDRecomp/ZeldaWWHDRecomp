@@ -14,6 +14,7 @@ namespace button_glyphs {
 constexpr int face_character(uint32_t code) { return code >= 0xE000 && code <= 0xE003 ? int(code - 0xE000) : -1; }
 constexpr int shoulder_character(uint32_t code) { return code >= 0xE083 && code <= 0xE086 ? int(code - 0xE083) : -1; }
 constexpr bool cstick_character(uint32_t code) { return code == 0xE082; }
+constexpr bool start_character(uint32_t code) { return code == '+'; }
 inline int shoulder_text(std::string_view name) {
     if (name == "T_L_00") return 0;
     if (name == "T_R_00") return 1;
@@ -80,6 +81,8 @@ constexpr uint8_t mark_shoulder(uint8_t flags, int shoulder) {
 constexpr int marked_shoulder(uint8_t flags) { return (flags & 0xF0) == 0xE0 ? (flags >> 1) & 3 : -1; }
 constexpr uint8_t mark_cstick(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(0xC0 | flags) : flags; }
 constexpr bool marked_cstick(uint8_t flags) { return (flags & 0xF0) == 0xC0; }
+constexpr uint8_t mark_start(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(0xB0 | flags) : flags; }
+constexpr bool marked_start(uint8_t flags) { return (flags & 0xF0) == 0xB0; }
 // Bit 3: the quad's vertices were generated with a restyled look. A change between two restyled
 // looks (colours, shapes, shoulder names) is caught by the style signature instead, which
 // rebuilds every cached text box once.

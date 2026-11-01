@@ -17,7 +17,7 @@ bindings. Other controllers continue using their own profile or the shared defau
 | R | Z | Item slot 3: the original Z item now lives on HD R |
 | ZL | L, 25% travel or click | Target / center camera |
 | ZR | R, 25% travel or click | Shield/crouch; rope stop, boat jump/cruise |
-| Plus | Tap and release Start | Items / collection / map menus |
+| Plus | Tap and release Start | Items / collection / map menus (shown as a GameCube-style Start button prompt) |
 | Minus | Hold Start + down | HD Off-TV Play |
 | L | Hold Start + left | GamePad page; enable “L turns the GamePad page” for this during play |
 | Home | Hold Start + right | Host Settings with the default Home shortcut |

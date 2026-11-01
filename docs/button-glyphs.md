@@ -14,7 +14,7 @@ and custom face bindings. Original always keeps the game's icons.
 **GameCube** shows a large green A, a small red B, grey X and Y, a purple Z, grey L/R and a
 yellow C-stick. Its HUD face buttons follow the controller's classic arrangement. The action,
 item art and word stay together when the layout changes. The item menu keeps its compact OK/Back
-pair inside the Wii U menu area.
+pair inside the Wii U menu area. The game's Plus cue is rendered as a compact Start button glyph.
 The pictures are drawn by the port and do not use Nintendo artwork. **Automatic** selects this
 look when a supported GameCube adapter is the active pad. You can also choose it for any pad.
 
