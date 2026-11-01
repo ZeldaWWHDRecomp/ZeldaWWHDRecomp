@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: keep your save in a cloud folder** (#190, thanks @rhemfur). Settings → Saves → **Save folder** (Windows,
+  macOS, Linux) puts your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive,
+  so it stays the same on all your computers. The save is written to a temporary file and only replaces the real one
+  once it is fully on disk, a lock warns when the folder is in use on another computer, and cloud conflict copies are
+  offered at the next start. Nothing is replaced or removed without a backup first and without your answer; on macOS
+  the questions show as a native alert. See the README section "Optional: keep your save in a cloud folder".
 - **Fixed: controller dead after switching it in a menu** (#330, thanks @itsarahtonin). Switching **Keyboard and
   controllers act as** between Wii U GamePad and Wii U Pro Controller while the pause menu or the file select was open
   left the game ignoring every button until you switched back or restarted. The controller you switched away from now
