@@ -44,7 +44,7 @@ struct Letter {
 };
 struct Font {
     static constexpr int cell = 128, width = 2048, height = 896;
-    std::array<Letter, 108> letters{};
+    std::array<Letter, 112> letters{};
     std::vector<uint8_t> pixels;
     int cell_height = 1, nominal_width = 1, nominal_height = 1;
     bool icons = false;
@@ -267,6 +267,15 @@ void load_font(Cpu *cpu) {
                 p[3] = rgba;
             }
     }
+    for (unsigned face = 0; face < 4; ++face) {
+        const unsigned i = 108 + face, x0 = (i % 16) * Font::cell, y0 = (i / 16) * Font::cell;
+        next->letters[i] = {64, 64, 0, 0};
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+            const uint32_t rgba = button_glyphs::gamecube_icon(face, true, x, y);
+            auto *p = next->pixels.data() + ((y0 + y) * Font::width + x0 + x) * 4;
+            p[0] = rgba >> 24; p[1] = rgba >> 16; p[2] = rgba >> 8; p[3] = rgba;
+        }
+    }
     const auto metrics = game_font::message_metrics(game_lang::started());
     next->nominal_width = metrics.width > 0 ? metrics.width : next->cell_height;
     next->nominal_height = metrics.height > 0 ? metrics.height : next->cell_height;
@@ -360,15 +369,16 @@ bool button(ImDrawList *d, Box b, const char *name, bool selected, float scale, 
 void prompt(ImDrawList *d, ImVec2 center, float radius) {
     const auto look = input_map::active_prompt_style();
     const int face = look.buttons[2];
-    if (rendered_font->icons || look.face == input_map::FaceStyle::kPlayStation) {
+    if (rendered_font->icons || look.face == input_map::FaceStyle::kPlayStation || look.face == input_map::FaceStyle::kGameCube) {
         const bool shapes = look.face == input_map::FaceStyle::kPlayStation;
-        const unsigned i = shapes ? 100 + face + (look.colours ? 4 : 0) : 96 + face;
+        const bool gamecube = look.face == input_map::FaceStyle::kGameCube;
+        const unsigned i = gamecube ? 108 + face : shapes ? 100 + face + (look.colours ? 4 : 0) : 96 + face;
         const auto &g = rendered_font->letters[i];
         const float w = radius * 2 * g.width / g.height;
         ImVec2 uv((i % 16) * float(Font::cell) / Font::width, (i / 16) * float(Font::cell) / Font::height);
         const uint32_t rgba = button_glyphs::colour(face);
         const ImU32 tint =
-            !shapes && look.colours ? IM_COL32(rgba >> 24, (rgba >> 16) & 255, (rgba >> 8) & 255, 255) : IM_COL32_WHITE;
+            !shapes && !gamecube && look.colours ? IM_COL32(rgba >> 24, (rgba >> 16) & 255, (rgba >> 8) & 255, 255) : IM_COL32_WHITE;
         d->AddImage(texture->GetTexRef(), ImVec2(center.x - w * .5f, center.y - radius),
                     ImVec2(center.x + w * .5f, center.y + radius), uv,
                     ImVec2(uv.x + g.width / float(Font::width), uv.y + g.height / float(Font::height)), tint);

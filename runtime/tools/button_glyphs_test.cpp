@@ -70,6 +70,9 @@ int expected_plain = -1;
 int expected_action = -1;
 bool expect_xbox;      // Xbox positions (the HUD cluster moves)
 bool expect_tint;      // Xbox colours on face icons and pictures
+bool expect_gamecube_picture_texture;
+uint32_t gamecube_material = base + 0xB000;
+uint32_t stock_picture_texture = base + 0xB100;
 int expect_names = 0;  // shoulder labels: 0 stock, 1 L1/R1/L2/R2, 2 LB/RB/LT/RT
 int expect_shapes = -1;  // PlayStation shapes: -1 none, 0 without colours, 1 coloured
 bool hud_letter = false;  // the text box under test is a HUD face letter (T_A_00 on P_A_00)
@@ -104,6 +107,18 @@ float label_centre = 0;
 std::array<uint32_t,button_glyphs::kAtlasGlyphs> font_records{};
 unsigned font_queries = 0;
 void layout(input_map::FaceLayout choice);
+
+#ifndef _WIN32
+void* map_guest_region(uint32_t address, size_t size) {
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+    flags |= MAP_FIXED_NOREPLACE;
+#endif
+    void* p = mmap(mem::ptr(address), size, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (p != MAP_FAILED && p != mem::ptr(address)) { munmap(p, size); return MAP_FAILED; }
+    return p;
+}
+#endif
 
 constexpr uint32_t cluster = base + 0x3000;
 constexpr std::array<uint32_t, 5> groups = {base + 0x3200, base + 0x3600, base + 0x3800,
@@ -616,6 +631,14 @@ void shoulders_test() {
     assert(row_has(button_glyphs::gamecube_cstick_row(),0xE8C72AFF));
     assert(row_has(button_glyphs::gamecube_start_row(),0x737A80FF));
     assert(!std::memcmp(composed.data(),mem::ptr(image),composed.size()));
+    auto shoulder_pixel = [&](int row, int x, int y) {
+        const size_t p=(size_t(row*64+y)*button_glyphs::kAtlasWidth+64+x)*4; // bare shoulder cell
+        return uint32_t(composed[p])<<24|uint32_t(composed[p+1])<<16|uint32_t(composed[p+2])<<8|composed[p+3];
+    };
+    // L, Z and R strokes are dark against the bare white disc; ZR must be R, R must be Z.
+    assert(shoulder_pixel(button_glyphs::gamecube_shoulder_row(0),26,32)==0x292D31FF);
+    assert(shoulder_pixel(button_glyphs::gamecube_shoulder_row(1),32,23)==0xFFFFFFFF); // R plate: white Z
+    assert(shoulder_pixel(button_glyphs::gamecube_shoulder_row(3),37,39)==0x292D31FF); // ZR plate: dark R
     bool antialias = false;
     for (uint32_t y = 0; y < 256; y++) for (uint32_t x = 64; x < 128; x++) {
         const uint8_t alpha = composed[(y*128+x)*4+3];
@@ -822,6 +845,40 @@ void automatic_test() {
     layout(input_map::FaceLayout::kPosition);  // leave the manual default for later tests
 }
 
+void gamecube_picture_test() {
+    input_map::note_gamecube(true);
+    auto mapping = input_map::Mapping::defaults();
+    input_map::apply_face_layout(mapping, input_map::FaceLayout::kLabels);
+    mapping.prompts = input_map::Mapping::Prompts::kGameCube;
+    input_map::set_current(mapping, false);
+    expect_current();
+    assert(input_map::active_prompt_style().face == input_map::FaceStyle::kGameCube);
+
+    std::memset(mem::ptr(picture), 0, 0xC0);
+    std::strcpy((char*)mem::ptr(picture + 0x80), "P_X_00");
+    picture_face = 2;
+    for (uint32_t i = 0; i < 4; ++i) st32(picture + 0xA8 + i * 4, corners[i]);
+    st32(picture + 0xA4, gamecube_material);
+    st32(gamecube_material + 0x28, stock_picture_texture);
+    expect_gamecube_picture_texture = true;
+    Cpu c{}; c.r[3] = picture;
+    hook_02874D54(&c);
+    expect_gamecube_picture_texture = false;
+    assert(ld32(gamecube_material + 0x28) == stock_picture_texture);
+
+    // The Y slot uses its own kidney-shaped texture while retaining the common draw path.
+    std::strcpy((char*)mem::ptr(picture + 0x80), "P_Y_00");
+    picture_face = 3;
+    expect_gamecube_picture_texture = true;
+    Cpu y{}; y.r[3] = picture;
+    hook_02874D54(&y);
+    expect_gamecube_picture_texture = false;
+    assert(ld32(gamecube_material + 0x28) == stock_picture_texture);
+    input_map::note_gamecube(false);
+    input_map::set_current(input_map::Mapping::defaults(), false);
+    expect_current();
+}
+
 // Per-controller bindings: the prompts follow the controller in use. Two pads with different face
 // bindings (one with A and B swapped, one with X and Y), pressed in turn: each print of the Wii U A
 // and X icons draws the button that controller has them on; a controller without bindings of its
@@ -892,6 +949,9 @@ void options_test() {
     using P = input_map::Mapping::Prompts;
     using N = input_map::Mapping::ShoulderNames;
     using F = input_map::FaceLayout;
+    const input_map::FaceLabel xbox_labels[4] = {input_map::FaceLabel::kA, input_map::FaceLabel::kB,
+                                                  input_map::FaceLabel::kX, input_map::FaceLabel::kY};
+    input_map::note_face_labels(xbox_labels);
     // A dialog with the four face icons and the four shoulder icons, cached once.
     st32(writer + 0x2C, list); st32(text_box + 0xFC, list); st32(list, 8);
     std::memset(mem::ptr(text_box + 0x80), 0, 24);
@@ -909,6 +969,20 @@ void options_test() {
     set_options(F::kLabels, P::kAuto, N::kAuto, false);
     assert(expect_xbox && !expect_tint && expect_names == 2);
     dialog_draw_counts_once();
+    // The draw path's thread-local style cache must refresh when only GameCube detection changes.
+    // set_current is intentionally absent here, matching adapters that keep the active profile.
+    input_map::note_gamecube(true);
+    expect_current();
+    assert(expect_shapes == 2);
+    st16(list + 4, 0); st8(list + 6, 0); print(0xE000); draw();
+    const input_map::FaceLabel nintendo_labels[4] = {input_map::FaceLabel::kB, input_map::FaceLabel::kA,
+                                                      input_map::FaceLabel::kY, input_map::FaceLabel::kX};
+    input_map::note_face_labels(nintendo_labels);
+    assert(drawn_sheet == atlas);
+    input_map::note_gamecube(false);
+    expect_current();
+    assert(expect_xbox && !expect_tint && expect_shapes < 0);
+    st16(list + 4, 0); st8(list + 6, 0); print(0xE000); draw();
     calculate(true);
     same_point(position(face_panes[0]), moved);
     std::memset(mem::ptr(picture), 0, 0xC0);
@@ -1191,10 +1265,11 @@ uint32_t host_alloc(uint32_t size, uint32_t align) {
 }
 extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
     assert(ld32(c->r[3]) == 5 && ld32(c->r[3] + 12) == 1);
-    assert(ld32(c->r[3] + 4) == 128 && ld32(c->r[3] + 8) == button_glyphs::kAtlasHeight);
+    const uint32_t width = ld32(c->r[3] + 4), height = ld32(c->r[3] + 8);
+    assert((width == 128 && height == button_glyphs::kAtlasHeight) || (width == 64 && height == 64));
     assert(ld32(c->r[3] + 0x14) == 0x1A && ld32(c->r[3] + 0x30) == 1);
-    assert(ld32(c->r[3] + 0x3C) == 128 && ld32(c->r[3] + 0x84) == 0x00010203);
-    atlas = c->r[3] - 16;
+    assert(ld32(c->r[3] + 0x3C) == width && ld32(c->r[3] + 0x84) == 0x00010203);
+    if (width == 128) atlas = c->r[3] - 16;
 }
 
 extern "C" void ppc_dispatch(Cpu* c) {
@@ -1325,16 +1400,26 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
 
 extern "C" void f_02874D54_orig(Cpu* c) {
     picture_draws++;
+    if (expect_gamecube_picture_texture) {
+        const uint32_t material = ld32(c->r[3] + 0xA4);
+        assert(material == gamecube_material);
+        const uint32_t texture = ld32(material + 0x28);
+        assert(texture != stock_picture_texture);
+        assert(ld32(texture + 4) == 64 && ld32(texture + 8) == 64);
+        const uint32_t image = ld32(texture + 0x24);
+        assert(image >= base && image < base + kArena);
+        // At the centre the X/Y plate is filled; the round grey game image is no longer the source.
+        const uint32_t centre = image + (32 * 64 + 32) * 4;
+        assert(ld8(centre + 3) == 255);
+        assert(ld8(image + (32 * 64 + 16) * 4 + 3) == 0);   // the inward kidney bite
+        assert(ld8(image + (32 * 64 + 26) * 4 + 3) == 255); // the button face beside the bite
+        assert(ld32(material + 0x28) == texture);
+    }
     for (int pass = 0; pass < (yield_in_draw ? 2 : 1); pass++) {
         if (pass) std::this_thread::yield();
         for (uint32_t i = 0; i < 4; i++) {
             uint32_t want = corners[i];
             if (expect_tint && picture_face >= 0) want = button_glyphs::tint(corners[i], expected_buttons[picture_face]);
-            else if (picture_face >= 0 && input_map::active_prompt_style().face == input_map::FaceStyle::kGameCube &&
-                     input_map::active_prompt_style().colours) {
-                const uint32_t rgb=button_glyphs::gamecube_colour(expected_buttons[picture_face]); want=corners[i]&255;
-                for(int shift=24;shift>0;shift-=8) want|=(((corners[i]>>shift)&255)*((rgb>>shift)&255)/255)<<shift;
-            }
             assert(ld32(c->r[3] + 0xA8 + i * 4) == want);
         }
     }
@@ -1435,14 +1520,21 @@ int main() {
         const auto gc = button_glyphs::gamecube_cluster({10,0},{0,-10},{10,10},{0,0});
         assert(gc[0].x == 10 && gc[0].y == 0);          // A remains central-right
         assert(gc[1].x < gc[0].x && gc[1].y < gc[0].y); // B down-left
+        assert(gc[1].x > -1.0f);                       // B is pulled closer to A
         assert(gc[2].x > gc[0].x);                      // X to the right
         assert(gc[3].y > gc[0].y);                      // Y above
+        assert(gc[3].y - gc[0].y > 10.0f);              // enough room to separate Y from A
+        int face_area[4]{};
+        for (int face=0; face<4; ++face) for (int py=0; py<64; ++py) for (int px=0; px<64; ++px)
+            face_area[face] += button_glyphs::gamecube_icon(face, false, px, py) != 0;
+        assert(face_area[0] > face_area[1] && face_area[0] > face_area[2] && face_area[0] > face_area[3]);
+        assert(button_glyphs::gamecube_icon(2, true, 16, 32) == 0); // smooth inward bite, no grey bar
+        assert(button_glyphs::gamecube_icon(2, true, 26, 32) != 0); // button face and X remain intact
     }
 #ifdef _WIN32
     auto memory = VirtualAlloc(mem::ptr(base), kArena, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-    auto memory = mmap(mem::ptr(base), kArena, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    auto memory = map_guest_region(base, kArena);
 #endif
     assert(memory == mem::ptr(base));
     // Prompts/dialogue cached before 3D is enabled must still replay as flat
@@ -1474,8 +1566,7 @@ int main() {
 #ifdef _WIN32
     auto globals = VirtualAlloc(mem::ptr(0x101F0000), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 #else
-    auto globals = mmap(mem::ptr(0x101F0000), 0x10000, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    auto globals = map_guest_region(0x101F0000, 0x10000);
 #endif
     assert(globals == mem::ptr(0x101F0000));
     st32(GD(0x101F4A50),base+0xE000); st32(base+0xE010,base+0xE100);
@@ -1658,6 +1749,7 @@ int main() {
     shoulders_test();
     font_fallback_test();
     automatic_test();
+    gamecube_picture_test();
     options_test();
     active_controller_test();
     shoulder_colour_source_test();

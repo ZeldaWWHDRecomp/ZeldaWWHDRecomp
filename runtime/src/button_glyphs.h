@@ -41,9 +41,9 @@ inline int face_picture(std::string_view name) {
 struct ClusterPoint { float x, y; };
 inline std::array<ClusterPoint,4> gamecube_cluster(ClusterPoint a, ClusterPoint b, ClusterPoint x, ClusterPoint y) {
     return {a,
-            {a.x+(b.x-a.x)*.65f+(y.x-a.x)*.55f, a.y+(b.y-a.y)*.72f+(y.y-a.y)*.35f},
+            {a.x+(b.x-a.x)*.65f+(y.x-a.x)*.30f, a.y+(b.y-a.y)*.72f+(y.y-a.y)*.35f},
             {a.x+(a.x-y.x)*.72f, a.y+(x.y-a.y)*.32f},
-            {a.x+(x.x-a.x)*.25f, a.y+(x.y-a.y)*.72f}};
+            {a.x+(x.x-a.x)*.25f, a.y+(x.y-a.y)*1.15f}};
 }
 
 constexpr uint32_t colour(int face) {

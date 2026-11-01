@@ -1134,7 +1134,7 @@ static NSTextField* label(NSString* s) {
     pp.target = self;
     pp.action = @selector(promptsChanged:);
     pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
-                 @"Automatic follows the connected pad; Nintendo keeps the game's look. By label keeps its "
+                 @"Automatic follows the connected pad; recognized GameCube adapters use the GameCube look. By label keeps its "
                  @"existing Xbox fallback. Original keeps the game's look. Custom bindings need four "
                  @"distinct face buttons; otherwise the original icons are used.";
     self.prompts = pp;
@@ -1150,7 +1150,7 @@ static NSTextField* label(NSString* s) {
     sn.action = @selector(promptsChanged:);
     sn.toolTip = @"How prompts name the shoulder buttons and triggers. Automatic follows the button prompts: "
                  @"LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation shapes, the game's "
-                 @"L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
+                 @"L / R / Z with GameCube prompts, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
     self.shoulderNames = sn;
     NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
     pc.toolTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "

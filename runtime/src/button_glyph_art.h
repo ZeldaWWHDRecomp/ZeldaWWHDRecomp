@@ -78,20 +78,22 @@ inline uint32_t face_shape(int face, bool colour, bool disc, int x, int y) {
 
 // Original controller inspired button silhouettes. These are fresh geometry: a large A,
 // smaller B and the two indented, kidney-like item buttons. No controller artwork is used.
-inline uint32_t gamecube_icon(int face, bool framed, int x, int y) {
+inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter = true) {
     float r = 0, g = 0, b = 0, a = 0;
     for (int sy = 0; sy < 4; ++sy) for (int sx = 0; sx < 4; ++sx) {
         const float px = x + (sx + .5f) / 4 - 32.f;
         const float py = y + (sy + .5f) / 4 - 32.f;
-        const float scale = face == 0 ? 25.f : face == 1 ? 19.f : 22.f;
+        const float scale = face == 0 ? 27.f : face == 1 ? 20.f : 22.f;
         float dx = px, dy = py;
         if (face >= 2) { dx *= .86f; dy *= 1.0f; }
         float d = std::hypot(dx, dy);
         bool inside = d < scale;
-        if (face >= 2) inside = inside && !(px < -8.f && std::fabs(py) < 8.f + (face == 2 ? py * .16f : -py * .16f));
+        // A rounded concave bite turns X/Y into the GameCube's kidney-shaped plates. Subtract
+        // the same circle from the frame at its expanded radius so the outline follows smoothly.
+        if (face >= 2) inside = inside && std::hypot(px + 20.f, py) >= 8.f;
         const float border = framed ? scale + 3.f : scale;
         bool outer = std::hypot(dx, dy) < border;
-        if (face >= 2 && outer) outer = !(px < -10.f && std::fabs(py) < 10.f);
+        if (face >= 2 && outer) outer = std::hypot(px + 20.f, py) >= (framed ? 11.f : 8.f);
         uint32_t c = 0;
         if (outer && !inside) c = framed ? 0x34383CFF : 0;
         else if (inside) c = face == 0 ? 0x58BE36FF : face == 1 ? 0xE34B49FF : 0xA9ADB1FF;
@@ -102,7 +104,7 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y) {
         else if (face == 1) ink=line(px,py,-5,-10,-5,10)||line(px,py,-5,-10,3,-10)||line(px,py,3,-10,7,-6)||line(px,py,7,-6,7,-2)||line(px,py,7,-2,2,0)||line(px,py,2,0,7,3)||line(px,py,7,3,7,7)||line(px,py,7,7,3,10)||line(px,py,3,10,-5,10);
         else if (face == 2) ink=line(px,py,-5,-8,5,8)||line(px,py,5,-8,-5,8);
         else ink=line(px,py,-6,-8,0,0)||line(px,py,6,-8,0,0)||line(px,py,0,0,0,8);
-        if (inside && ink) c=0xF4F4F4FF;
+        if (letter && inside && ink) c=0xF4F4F4FF;
         if (!c) continue;
         r += (c>>24)&255; g += (c>>16)&255; b += (c>>8)&255; a += 1;
     }
@@ -119,13 +121,13 @@ inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) 
     else if (inner) c=shoulder==1?0x6754C8FF:framed?0xE5E5E5FF:0xFFFFFFFF;
     const float width=2.5f;
     auto line=[](float px,float py,float ax,float ay,float bx,float by){return art::segment(px,py,ax,ay,bx,by)<2.5f;};
-    const int code[4]={0,2,0,1}; // L, Z, L, R for the Wii U's L/R/ZL/ZR prompt panes.
+    const int code[4]={0,1,0,2}; // L, Z, L, R for the Wii U's L/R/ZL/ZR prompt panes.
     const int glyph=code[shoulder&3];
     bool ink=false;
     if(glyph==0) ink=line(px,py,-6,-10,-6,10)||line(px,py,-6,10,7,10);
     else if(glyph==1) ink=line(px,py,-7,-9,7,-9)||line(px,py,7,-9,-7,9)||line(px,py,-7,9,7,9);
-    else ink=line(px,py,-6,-10,6,-10)||line(px,py,-6,-10,-6,10)||line(px,py,-6,0,5,0)||line(px,py,5,0,5,10)||line(px,py,-6,10,6,10);
-    if (inner && ink) c=framed?0x292D31FF:0xFFFFFFFF;
+    else ink=line(px,py,-6,-10,3,-10)||line(px,py,-6,-10,-6,10)||line(px,py,3,-10,6,-7)||line(px,py,6,-7,6,-3)||line(px,py,6,-3,3,0)||line(px,py,3,0,-6,0)||line(px,py,0,0,6,10);
+    if (inner && ink) c=framed?0x292D31FF:(shoulder==1?0xFFFFFFFF:0x292D31FF);
     return c;
 }
 

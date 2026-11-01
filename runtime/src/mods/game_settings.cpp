@@ -268,10 +268,10 @@ void register_controls() {
         Item it;
         it.id = "controls.prompts", it.tab = "controls", it.label = "Button prompts", it.kind = Kind::Choice;
         it.help = "How the game's button icons look: automatic follows the connected pad.";
-        for (M::Prompts p : {M::Prompts::kAuto, M::Prompts::kOriginal, M::Prompts::kXbox, M::Prompts::kPlayStation})
+        for (M::Prompts p : {M::Prompts::kAuto, M::Prompts::kOriginal, M::Prompts::kXbox, M::Prompts::kPlayStation, M::Prompts::kGameCube})
             it.choices.push_back(capital(input_map::prompts_label(p)));
         it.get = [] { return float(int(input_map::current().prompts)); };
-        it.set = [](float v) { change_mapping([v](M& m) { m.prompts = M::Prompts(std::clamp(int(std::lround(v)), 0, 3)); }); };
+        it.set = [](float v) { change_mapping([v](M& m) { m.prompts = M::Prompts(std::clamp(int(std::lround(v)), 0, 4)); }); };
         add(std::move(it));
     }
     {

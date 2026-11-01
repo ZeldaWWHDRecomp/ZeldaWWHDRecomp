@@ -39,8 +39,8 @@ direction for these extra actions:
 Start opens the in-game menu when released on its own. A direction used with Start is consumed by
 that shortcut until released, so it will not also move Link or change a menu selection.
 
-L targets with a light press and centers the camera when pressed fully. R uses its full press for
-the shield. The layout preserves the game's usual camera options; adjust horizontal camera
+L and R trigger their assigned actions at 25% travel or when clicked: L targets, while R uses the
+shield. The layout preserves the game's usual camera options; adjust horizontal camera
 direction in the game's options if you prefer the original GameCube feel.
 
 ## Button prompts

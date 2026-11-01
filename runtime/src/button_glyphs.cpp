@@ -182,6 +182,35 @@ uint32_t shoulder_atlas(Cpu* cpu) {
     return info;
 }
 
+// CommandGuide and the item ring draw their face-button backgrounds as lyt::Picture materials.
+// The text hook replaces only the letter quad, so GameCube needs a per-picture texture with the
+// right silhouette underneath it as well. These host-owned 64x64 RGBA textures are swapped into
+// the material's first texture slot only while that picture is drawn.
+uint32_t gamecube_picture_texture(int face) {
+    static std::mutex mutex;
+    static std::array<uint32_t,4> textures{};
+    std::lock_guard lock(mutex);
+    if (textures[face]) return textures[face];
+    const uint32_t texture = mem::host_alloc(0x100, 256);
+    const uint32_t image = mem::host_alloc(64 * 64 * 4, 256);
+    std::memset(mem::ptr(texture), 0, 0x100);
+    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+        const uint32_t rgba = button_glyphs::gamecube_icon(face, true, x, y, false);
+        const uint32_t offset = (y * 64 + x) * 4;
+        auto* pixel = mem::ptr(image + offset);
+        pixel[0] = rgba >> 24; pixel[1] = rgba >> 16; pixel[2] = rgba >> 8; pixel[3] = rgba;
+    }
+    st32(texture, 5); st32(texture + 4, 64); st32(texture + 8, 64); st32(texture + 12, 1);
+    st32(texture + 16, 1); st32(texture + 20, 0x1A);
+    st32(texture + 28, 1); st32(texture + 32, 64 * 64 * 4); st32(texture + 36, image);
+    st32(texture + 48, 1); st32(texture + 56, 1); st32(texture + 60, 64);
+    st32(texture + 0x78, 1); st32(texture + 0x80, 1); st32(texture + 0x84, 0x00010203);
+    Cpu init{}; init.r[3] = texture;
+    imp_gx2_GX2InitTextureRegs(&init);
+    textures[face] = texture;
+    return texture;
+}
+
 void patch(std::vector<Held>& saved, uint32_t address, uint32_t value) {
     shared_patch::hold_value(saved, address, 4, value);
 }
@@ -710,18 +739,23 @@ extern "C" void hook_02874D54(Cpu* c) {
     const uint32_t picture = c->r[3];
     const int face = button_glyphs::face_picture(pane_name(picture));
     const PromptStyle look = style();
-    if (face < 0 || (look.face != FaceStyle::kXbox && look.face != FaceStyle::kGameCube) || !look.colours) return f_02874D54_orig(c);
+    if (face < 0 || (look.face != FaceStyle::kXbox && look.face != FaceStyle::kGameCube) ||
+        (look.face == FaceStyle::kXbox && !look.colours)) return f_02874D54_orig(c);
     // Through shared_patch: in "play on GamePad" mode the item screen draws these pictures on two
-    // threads at once, and a plain save and restore made the tint permanent, darker each time (#326).
-    const int button = look.buttons[face];
+    // threads at once, so neither a texture swap nor a tint may persist after DrawSelf (#326).
     std::vector<shared_patch::Held> held;
-    for (uint32_t i = 0; i < 4; i++)
-        shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button, gamecube = look.face == FaceStyle::kGameCube](uint32_t rgba) {
-            if (!gamecube) return button_glyphs::tint(rgba, button);
-            const uint32_t gc = button_glyphs::gamecube_colour(button); uint32_t out=rgba&255;
-            for(int shift=24;shift>0;shift-=8) out|=(((rgba>>shift)&255)*((gc>>shift)&255)/255)<<shift;
-            return out;
-        });
+    if (look.face == FaceStyle::kGameCube) {
+        const uint32_t material = ld32(picture + 0xA4);
+        const bool valid_material = (material >= mem::kMem2Start && material <= mem::kMem2End - 0x40) ||
+                                    (material >= mem::kMem1 && material <= mem::kMem1 + mem::kMem1Size - 0x40);
+        if (valid_material) shared_patch::hold_value(held, material + 0x28, 4, gamecube_picture_texture(face));
+    } else {
+        const int button = look.buttons[face];
+        for (uint32_t i = 0; i < 4; i++)
+            shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button](uint32_t rgba) {
+                return button_glyphs::tint(rgba, button);
+            });
+    }
     f_02874D54_orig(c);
     shared_patch::release(held);
 }

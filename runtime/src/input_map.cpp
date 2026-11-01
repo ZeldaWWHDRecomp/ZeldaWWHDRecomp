@@ -514,7 +514,7 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     if (unambiguous) {
         switch (m.prompts) {
         case Mapping::Prompts::kAuto:
-            s.face = gamecube_pad() ? FaceStyle::kGameCube : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
+            s.face = gamecube_pad() ? FaceStyle::kGameCube : m.preset.gamecube ? FaceStyle::kOriginal : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
                    : labels || family == PadFamily::kXbox ? FaceStyle::kXbox : FaceStyle::kOriginal;
             break;
         case Mapping::Prompts::kXbox: s.face = FaceStyle::kXbox; break;
@@ -1494,7 +1494,10 @@ static std::atomic<int> g_family{(int)PadFamily::kUnknown};
 static std::atomic<bool> g_gamecube_pad{false};
 
 PadFamily pad_family() { return (PadFamily)g_family.load(std::memory_order_relaxed); }
-void note_gamecube(bool detected) { g_gamecube_pad.store(detected, std::memory_order_relaxed); }
+void note_gamecube(bool detected) {
+    if (g_gamecube_pad.exchange(detected, std::memory_order_relaxed) != detected)
+        g_gen.fetch_add(1, std::memory_order_relaxed);
+}
 bool gamecube_pad() { return g_gamecube_pad.load(std::memory_order_relaxed); }
 
 void note_face_labels(const FaceLabel labels[4]) {

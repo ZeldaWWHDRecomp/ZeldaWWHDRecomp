@@ -567,9 +567,18 @@ static void test_prompts() {
     std::string err;
     CHECK(from_json("{\"options\": {\"button_prompts\": \"sega\", \"shoulder_names\": 3}}", r, &err));
     CHECK(r.prompts == Mapping::Prompts::kAuto && r.shoulder_names == Mapping::ShoulderNames::kAuto);
+    note_gamecube(false);
+    const uint32_t no_change = generation();
+    note_gamecube(false);
+    CHECK(generation() == no_change);
     note_gamecube(true);
+    const uint32_t detected = generation();
+    CHECK(detected != no_change);
+    note_gamecube(true);
+    CHECK(generation() == detected);
     CHECK(prompt_style(d, PadFamily::kXbox).face == FaceStyle::kGameCube);
     note_gamecube(false);
+    CHECK(generation() != detected);
     CHECK(prompt_style(d, PadFamily::kXbox).face == FaceStyle::kXbox);
     CHECK(err.find("button_prompts") != std::string::npos);
 
@@ -1517,7 +1526,7 @@ static void test_gamecube() {
     legacy.vendor=0x045e;legacy.product=0x02ea;CHECK(!legacy_gamecube_faces(legacy));
     legacy.type="gamecube-apple";CHECK(legacy_gamecube_faces(legacy));
     auto gc=original;apply_gamecube(gc);
-    CHECK(prompt_style(gc,PadFamily::kXbox).face==FaceStyle::kXbox);
+    CHECK(prompt_style(gc,PadFamily::kXbox).face==FaceStyle::kOriginal);
     gc.shoulder_names=Mapping::ShoulderNames::kNumbered;
     CHECK(prompt_style(gc,PadFamily::kXbox).shoulders==ShoulderStyle::kNumbered);
     auto switcher=original;apply_gamecube(switcher);

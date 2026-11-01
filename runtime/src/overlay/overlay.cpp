@@ -2638,11 +2638,11 @@ void tab_controls() {
         ImGui::PopID();
         help("How prompts name the shoulder buttons and triggers. Automatic follows the button "
              "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
-             "shapes, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
+             "shapes, L / R / Z with GameCube prompts, and the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
              "buttons setting.");
         disabled_after(std::string("(-> ") + (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
                                        : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
-                                                                                               : "L / R / ZL / ZR") + ")");
+                                                                                               : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z" : "L / R / ZL / ZR") + ")");
         bool colours = m.prompt_colours;
         if (ImGui::Checkbox("Coloured face buttons", &colours)) {
             m.prompt_colours = colours;
