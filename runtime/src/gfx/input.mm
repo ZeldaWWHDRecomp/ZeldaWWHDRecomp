@@ -181,10 +181,26 @@ struct IokitPad {
     float lx = 0, ly = 0, rx = 0, ry = 0;  // -1..1; +x right, +y down (the HID axes' convention)
     float lt = 0, rt = 0;                  // 0..1
     hid_gamepad::Hat hat;
+    bool virtualPad = false;               // "HIDVirtualDevice": a software pad that may duplicate a real one
 };
 static std::vector<IokitPad*> g_io_pads;
 static IOHIDManagerRef g_io_manager = nullptr;  // process lifetime: the reader lives until the app exits
 static void note_dominant_labels();
+
+// Steam Input's virtual pads (io_add): preferred for input once one has reported any, so a stale
+// or idle one cannot take input from a live GameController pad (devices_values).
+static std::atomic<bool> g_virtual_pad_alive{false};
+static int io_virtual_pad_count() {
+    int n = 0;
+    for (IokitPad* p : g_io_pads) if (p->virtualPad) ++n;
+    return n;
+}
+static bool io_virtual_pad_alive() { return g_virtual_pad_alive.load(std::memory_order_relaxed); }
+static void io_note_virtual_input(IokitPad* p) {
+    if (p->buttons || std::fabs(p->lx) > 0.2f || std::fabs(p->ly) > 0.2f || std::fabs(p->rx) > 0.2f ||
+        std::fabs(p->ry) > 0.2f || p->lt > 0.2f || p->rt > 0.2f || p->hat.up || p->hat.down || p->hat.left || p->hat.right)
+        g_virtual_pad_alive.store(true, std::memory_order_relaxed);
+}
 
 static void io_value(void* ctx, IOReturn r, void* sender, IOHIDValueRef value) {
     if (r != kIOReturnSuccess || !value) return;
@@ -208,6 +224,7 @@ static void io_value(void* ctx, IOReturn r, void* sender, IOHIDValueRef value) {
         case hid_gamepad::Kind::kHat: p->hat = hid_gamepad::hat_directions(v, mn, mx); break;
         case hid_gamepad::Kind::kNone: break;
     }
+    if (p->virtualPad) io_note_virtual_input(p);
 }
 static bool io_xbox_labels() {
     for (IokitPad* p : g_io_pads) if (hid_gamepad::xbox_labelled(p->layout)) return true;
@@ -223,6 +240,9 @@ static void io_add(IOHIDDeviceRef dev) {
         LOG("[input] IOKit HID pad %04X:%04X is a GameController synthetic device; read through GameController", v, pr);
         return;
     }
+    // A virtual HID pad ("HIDVirtualDevice", e.g. Steam Input's) can duplicate a pad GameController
+    // also surfaces; devices_values prefers it for input.
+    const bool virtualPad = IOHIDDeviceGetProperty(dev, CFSTR("HIDVirtualDevice")) == kCFBooleanTrue;
     // The layout comes from the pad's own descriptors: the Steam virtual pad carries its D-pad as
     // buttons 12..15 and no hat switch; a standard pad carries a hat switch.
     bool has_hat = false, has_dpad_buttons = false;
@@ -243,6 +263,7 @@ static void io_add(IOHIDDeviceRef dev) {
     }
     auto* p = new IokitPad();
     p->dev = dev;
+    p->virtualPad = virtualPad;
     p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
     p->layout = hid_gamepad::layout_for(has_hat, has_dpad_buttons);
     IOHIDDeviceRegisterInputValueCallback(dev, io_value, p);
@@ -271,9 +292,10 @@ static std::string io_device_name(uintptr_t id) {
 }
 // every IOKit pad's values, keyed by the device pointer (distinct from a GCController's pointer); a
 // null goes into pads for each, so the per-device loops stay parallel with the GCController ones
-static void io_devices_values(std::vector<std::pair<uintptr_t, overlay::PadValues>>& out, std::vector<GCController*>* pads) {
+static void io_devices_values(std::vector<std::pair<uintptr_t, overlay::PadValues>>& out, std::vector<GCController*>* pads, bool skipVirtual) {
     using namespace input_map;
     for (IokitPad* p : g_io_pads) {
+        if (skipVirtual && p->virtualPad) continue;
         overlay::PadValues d;
         float* v = d.data();
         for (int i = 0; i < kPadCount; i++) v[i] = 0;
@@ -317,18 +339,25 @@ static void iokit_input_init() {
 // each connected controller's values, keyed by the controller: a reconnected one is a new object
 static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std::vector<GCController*>* pads = nullptr) {
     std::vector<std::pair<uintptr_t, overlay::PadValues>> out;
-    for (GCController* c in [GCController controllers]) {
-        overlay::PadValues d;
-        if (device_values(c, d.data())) {
-            auto m = input_map::current();
-            auto view = input_map::view_for(m, input_map::profile_index(m, "", pad_name(c)));
-            if (input_map::gamecube_settings_chord(view, d.data())) d[input_map::kPadHome] = 1;
-            out.emplace_back((uintptr_t)(__bridge void*)c, d);
-            if (pads) pads->push_back(c);
-        }
-    }
+    // Steam Input's virtual pad duplicates a physical pad: prefer it for input once it has reported
+    // any (a stale one must not take input from a live pad), else GameController (motion, haptics).
+    bool preferVirtual = false;
 #ifdef WWHD_HAS_IOKIT
-    io_devices_values(out, pads);
+    preferVirtual = io_virtual_pad_count() > 0 && io_virtual_pad_alive();
+#endif
+    if (!preferVirtual)
+        for (GCController* c in [GCController controllers]) {
+            overlay::PadValues d;
+            if (device_values(c, d.data())) {
+                auto m = input_map::current();
+                auto view = input_map::view_for(m, input_map::profile_index(m, "", pad_name(c)));
+                if (input_map::gamecube_settings_chord(view, d.data())) d[input_map::kPadHome] = 1;
+                out.emplace_back((uintptr_t)(__bridge void*)c, d);
+                if (pads) pads->push_back(c);
+            }
+        }
+#ifdef WWHD_HAS_IOKIT
+    io_devices_values(out, pads, !preferVirtual);
 #endif
     return out;
 }
