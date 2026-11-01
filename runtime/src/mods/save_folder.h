@@ -566,6 +566,8 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
                     if (names[0] == "cking.sav.wwhd-part") {
                         if (host::replace_file((user / names[0]).string(), (user / "cking.sav").string()))
                             say("no cking.sav: the unfinished write became cking.sav");
+                        else
+                            say("no cking.sav: the unfinished write could not become cking.sav (kept as cking.sav.wwhd-part)");
                     } else {
                         if (names[0] != "cking.sav") {
                             fs::copy_file(user / fs::path(names[0]), user / "cking.sav", ec);
@@ -575,6 +577,9 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
                             const std::string copy = free_copy_name(user, "cking-unfinished");
                             if (host::replace_file((user / "cking.sav.wwhd-part").string(), (user / copy).string()))
                                 say("kept the unfinished write as " + copy);
+                            else  // the game's next save builds on the part; the unfinished write is in the backup
+                                say("the unfinished write could not be renamed to " + copy +
+                                    ": it stays as cking.sav.wwhd-part, and the next save writes into it (it is in save-backups)");
                         }
                     }
                     s.notice = "Your save folder has more than one copy of your save. Nothing was removed; you'll be asked again at the next start.";
@@ -703,7 +708,10 @@ inline bool inside(const fs::path& a, const fs::path& b) {
     const fs::path rel = x.lexically_relative(y);
     return !rel.empty() && *rel.begin() != "..";
 }
-// the same folder, through another case (Windows, macOS) or a symbolic link
+// the same folder, through another case (Windows, macOS) or a symbolic link. inside() ignores case on
+// Windows and macOS, so on a case-sensitive volume there (rare, e.g. a case-sensitive APFS volume) two
+// folders whose names differ only in case count as the same one: choosing the other is treated as no
+// change, and a folder inside it is refused as nested.
 inline bool same_folder(const fs::path& a, const fs::path& b) { return inside(a, b) && inside(b, a); }
 // A folder that already holds other things (for example the cloud folder itself) gets the save in a
 // "Wind Waker HD" folder inside it, so backups copy only the save. Empty folders and save folders
