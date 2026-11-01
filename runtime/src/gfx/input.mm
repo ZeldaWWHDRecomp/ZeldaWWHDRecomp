@@ -17,6 +17,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 // switchable to by-label with input_map::FaceLayout (issue #78).
 #import <AppKit/AppKit.h>
 #import <GameController/GameController.h>
+#import <CoreHaptics/CoreHaptics.h>
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime
 #include <Carbon/Carbon.h>  // kVK_* key codes
 
@@ -32,6 +33,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../true60.h"
+#include "../rumble.h"
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
@@ -269,10 +271,69 @@ void release_keys() {
     memset(g_keys, 0, sizeof(g_keys));
 }
 
-// Rumble would go to the host game controllers through GameController.framework (GCController
-// haptics); this host has none of its own yet (see platform/input_sdl.cpp for the SDL host, which
-// does rumble). The game's requests are kept by rumble.h all the same.
-bool has_rumble() { return false; }
+// ---- Controller rumble (GameController haptics, through CoreHaptics).
+//
+// Any pad GameController reports haptics for gets a continuous haptic whose intensity follows the
+// strength rumble.h asks for, so this is not tied to one controller: the Steam Controller on
+// macOS 27+, a DualSense and others all work the same way. The game's requests are kept by
+// rumble.h; rumble::host_level is the strength to run at (0 while the Rumble option is off).
+struct HapticPad {
+    __strong GCController* controller = nil;
+    __strong CHHapticEngine* engine = nil;
+    __strong id<CHHapticPatternPlayer> player = nil;  // running only while the strength is not 0
+    float last = 0.f;
+};
+static std::vector<HapticPad> g_haptics;  // main thread only
+
+static void haptic_start(GCController* c) {
+    if (!c.haptics) return;
+    for (const auto& h : g_haptics) if (h.controller == c) return;
+    NSError* err = nil;
+    CHHapticEngine* engine = [c.haptics createEngineWithLocality:GCHapticsLocalityDefault];
+    if (!engine || ![engine startAndReturnError:&err]) {
+        LOG("[rumble] engine start failed: %s", err ? err.localizedDescription.UTF8String : "no engine");
+        return;
+    }
+    g_haptics.push_back({c, engine, nil, 0.f});
+    LOG("[rumble] host: %s motors ready", (c.vendorName ?: @"controller").UTF8String);
+}
+static void haptic_stop(GCController* c) {
+    for (auto it = g_haptics.begin(); it != g_haptics.end(); ++it) {
+        if (it->controller != c) continue;
+        if (it->player) [it->player stopAtTime:0 error:nil];
+        [it->engine stopWithCompletionHandler:nil];
+        g_haptics.erase(it);
+        return;
+    }
+}
+// A continuous event at the requested strength, and no event at all at strength 0, so the motors
+// are only ever on while the game asks for them.
+static void haptic_apply(HapticPad& h, float level) {
+    if (std::fabs(level - h.last) < 0.05f) return;  // coarse steps: restarts the player only on a real change
+    if (h.player) { [h.player stopAtTime:0 error:nil]; h.player = nil; }
+    if (level > 0.001f) {
+        NSError* err = nil;
+        CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:level];
+        CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
+        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:3600.0];
+        CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
+        id<CHHapticPatternPlayer> player = pattern ? [h.engine createPlayerWithPattern:pattern error:&err] : nil;
+        if (player && [player startAtTime:0 error:&err]) h.player = player;
+    }
+    h.last = level;
+}
+static void haptic_tick() {
+    if (g_haptics.empty()) return;
+    float level = std::max(0.f, std::min(1.f, rumble::host_level(1000000 / 60)));
+    // as on the SDL hosts (input_sdl.cpp): the game cannot stop the motors from there while the
+    // settings overlay holds the input, and they stay still while the app is not focused, unless
+    // "Controller input when the game isn't focused" is on
+    if (overlay::is_open() || !(window_focused() || background_controllers())) level = 0.f;
+    for (auto& h : g_haptics) haptic_apply(h, level);
+}
+bool has_rumble() { return !g_haptics.empty(); }
+// The crash handler calls this from a signal (main.cpp, issue #35) and must stay async-signal-safe,
+// so it does not touch CoreHaptics; the engines stop with the process.
 void stop_rumble_now() {}
 
 // modifier keys arrive as flagsChanged; the device-dependent bits tell left from right
@@ -491,14 +552,16 @@ void init() {
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) [g_connect_order addObject:c];
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
+        haptic_start(c);
         note_dominant_labels();
     }];
     [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+        haptic_stop(n.object);
         [g_connect_order removeObject:n.object];
         note_dominant_labels();
     }];
@@ -601,6 +664,7 @@ void init() {
             screenshot::poll_controller(game);  // a controller input bound to Screenshot
         }
         mods::update_gyro_mouse();
+        haptic_tick();  // controller motors, from rumble.h's requested strength
     }];
 }
 
