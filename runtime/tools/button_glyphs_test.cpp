@@ -545,6 +545,26 @@ void draw() {
     assert(ld32(c.r[5]) == 0x121212A0);
 }
 
+void gamecube_start_test() {
+    auto mapping = input_map::Mapping::defaults();
+    mapping.prompts = input_map::Mapping::Prompts::kGameCube;
+    input_map::set_current(mapping, false);
+    expect_current();
+    st32(writer + 0x2C, list);
+    st32(text_box + 0xFC, list);
+    st32(list, 8); st16(list + 4, 0); st8(list + 6, 0);
+    print('+');
+    assert(button_glyphs::marked_start(ld8(first_quad + 0x2F)));
+    draw();  // the draw stub checks the composed atlas row and UVs for the Start button
+
+    mapping.prompts = input_map::Mapping::Prompts::kOriginal;
+    input_map::set_current(mapping, false);
+    expect_current();
+    st16(list + 4, 0); st8(list + 6, 0);
+    print('+');
+    assert(!button_glyphs::marked_start(ld8(first_quad + 0x2F)));
+}
+
 void unchanged_quads(const std::array<uint8_t, 7 * 0x30>& stock) {
     for (uint32_t i = 0; i < stock.size(); i++) {
         const uint8_t want = stock[i];
@@ -1723,6 +1743,7 @@ int main() {
             }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
 
+    gamecube_start_test();
     shared_patch_test();
     concurrent_draw_test();
 
