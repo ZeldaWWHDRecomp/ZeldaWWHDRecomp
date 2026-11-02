@@ -16,7 +16,12 @@ namespace hid_gamepad {
 enum class Kind : uint8_t {
     kNone, kButton, kLeftX, kLeftY, kRightX, kRightY, kLeftTrigger, kRightTrigger, kHat,
 };
+// Buttons above 15 (including vendor-specific paddles) are intentionally ignored.
 Kind classify(uint32_t usage_page, uint32_t usage);
+
+// Replace only an identified, unique Steam physical/virtual pair after the virtual pad reports
+// input. Ambiguous pairs retain their physical sources; unrelated controllers always remain live.
+bool replace_steam_source(bool steam_controller, unsigned steam_count, unsigned virtual_count, bool virtual_input);
 
 // How a pad numbers its buttons. The two differ on the stick clicks and Start/Back, and on how the
 // D-pad is carried (a hat switch on the standard layout, buttons 12..15 on the Steam virtual pad).

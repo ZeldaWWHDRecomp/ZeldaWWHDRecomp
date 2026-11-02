@@ -7,6 +7,10 @@ namespace hid_gamepad {
 
 using input_map::Pad;
 
+bool replace_steam_source(bool steam_controller, unsigned steam_count, unsigned virtual_count, bool virtual_input) {
+    return steam_controller && steam_count == 1 && virtual_count == 1 && virtual_input;
+}
+
 Kind classify(uint32_t page, uint32_t usage) {
     if (page == 0x09 && usage >= 1 && usage <= 15) return Kind::kButton;
     if (page != 0x01) return Kind::kNone;
@@ -39,8 +43,11 @@ Hat hat_directions(long value, long min, long max) {
 }
 
 float signed_axis(long value, long min, long max) {
-    if (value < 0) return min < 0 ? std::max(-1.f, (float)value / (float)(-min)) : -1.f;
-    return max > 0 ? std::min(1.f, (float)value / (float)max) : 1.f;
+    if (max <= min) return 0.f;
+    // Signed descriptors conventionally use zero; unsigned descriptors use the midpoint.
+    const double centre = min < 0 ? 0.0 : (double(min) + double(max)) * 0.5;
+    const double span = value < centre ? centre - double(min) : double(max) - centre;
+    return span > 0 ? float(std::clamp((double(value) - centre) / span, -1.0, 1.0)) : 0.f;
 }
 
 float trigger_axis(long value, long min, long max) {

@@ -218,9 +218,15 @@ that GameController ignores.
 - Launch from Steam so Steam Input keeps translating the controller.
 - It maps as the standard Xbox layout with Xbox labels, so **Automatic** resolves to
   **By label (Xbox)**; Controls remap, dead zone and range, and camera invert apply.
-- Pads GameController already handles are skipped (`GCSyntheticDevice`), so nothing is
-  read twice. Gyro is not provided (the virtual pad carries no motion); use Steam
-  Input's gyro-to-mouse if wanted.
+- Pads GameController handles are excluded using its `supportsHIDDevice` query, as are
+  synthetic GameController devices. This avoids duplicate input and incorrect generic
+  button numbering on supported physical pads.
+- With one Steam Controller and one recognised Steam virtual pad, the virtual source takes
+  over after reporting input. Other GameController pads remain usable. Ambiguous multiple-pad
+  setups retain their physical sources rather than guessing a pairing. Disconnecting the
+  virtual pad restores physical input; a newly connected virtual pad starts inactive.
+- GameController remains available for motion and haptics. A generic HID pad itself supplies
+  neither. Controller details shows its HID type and vendor/product IDs.
 
 ## Input diagnostics
 

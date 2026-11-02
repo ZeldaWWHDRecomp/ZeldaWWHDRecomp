@@ -61,6 +61,10 @@ static void test_axes() {
     CHECK(hid_gamepad::signed_axis(0, -32768, 32767) == 0.f);
     CHECK(hid_gamepad::signed_axis(32767, -32768, 32767) == 1.f);
     CHECK(hid_gamepad::signed_axis(-255, -255, 255) == -1.f);
+    CHECK(hid_gamepad::signed_axis(0, 0, 254) == -1.f);
+    CHECK(hid_gamepad::signed_axis(127, 0, 254) == 0.f);
+    CHECK(hid_gamepad::signed_axis(254, 0, 254) == 1.f);
+    CHECK(hid_gamepad::signed_axis(100, 7, 7) == 0.f);
     CHECK(hid_gamepad::trigger_axis(0, 0, 255) == 0.f);
     CHECK(hid_gamepad::trigger_axis(255, 0, 255) == 1.f);
     CHECK(hid_gamepad::trigger_axis(128, 0, 255) > 0.49f && hid_gamepad::trigger_axis(128, 0, 255) < 0.51f);
@@ -95,7 +99,18 @@ static void test_buttons() {
     CHECK(!hid_gamepad::xbox_labelled(Layout::kStandard));
 }
 
+static void test_source_selection() {
+    using hid_gamepad::replace_steam_source;
+    CHECK(replace_steam_source(true, 1, 1, true));
+    CHECK(!replace_steam_source(false, 1, 1, true)); // another DualSense/Xbox remains live
+    CHECK(!replace_steam_source(true, 1, 1, false)); // idle or reconnected virtual device
+    CHECK(!replace_steam_source(true, 1, 0, true)); // virtual device disconnected
+    CHECK(!replace_steam_source(true, 2, 1, true)); // cannot identify which physical pad
+    CHECK(!replace_steam_source(true, 1, 2, true)); // cannot identify which virtual pad
+}
+
 int main() {
+    test_source_selection();
     test_classify();
     test_layout();
     test_hat();
