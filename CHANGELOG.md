@@ -7,11 +7,6 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **macOS: controller rumble.** The AppKit host now drives a controller's motors through
-  GameController haptics (CoreHaptics), so any pad the framework reports haptics for rumbles: the
-  Steam Controller on macOS 27 and newer, a DualSense, and others. The strength follows the game's
-  request through the existing **Controls > Rumble** option, and the motors stay still while no
-  rumble is asked for.
 - **New: keep your save in a cloud folder** (#190, thanks @rhemfur). Settings → Saves → **Save folder** (Windows,
   macOS, Linux) puts your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive,
   so it stays the same on all your computers. The save is written to a temporary file and only replaces the real one

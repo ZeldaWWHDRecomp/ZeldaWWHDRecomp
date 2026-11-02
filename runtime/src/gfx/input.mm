@@ -280,47 +280,96 @@ void release_keys() {
 struct HapticPad {
     __strong GCController* controller = nil;
     __strong CHHapticEngine* engine = nil;
-    __strong id<CHHapticPatternPlayer> player = nil;  // running only while the strength is not 0
+    __strong id<CHHapticAdvancedPatternPlayer> player = nil;
     float last = 0.f;
+    bool ready = false;
+    double retry_after = 0;
 };
 static std::vector<HapticPad> g_haptics;  // main thread only
 
+// CoreHaptics invokes these handlers on its own queue. Resolve the controller and engine on
+// the main queue; an old engine's late callback cannot invalidate a reconnected controller.
+static void haptic_invalidated(GCController* controller, CHHapticEngine* engine) {
+    for (auto& h : g_haptics) if (h.controller == controller && h.engine == engine) {
+        if (h.player) [h.player stopAtTime:0 error:nil];
+        h.player = nil;
+        h.last = 0;
+        h.ready = false;
+        h.retry_after = CACurrentMediaTime() + 0.1;
+        break;
+    }
+}
 static void haptic_start(GCController* c) {
     if (!c.haptics) return;
     for (const auto& h : g_haptics) if (h.controller == c) return;
-    NSError* err = nil;
     CHHapticEngine* engine = [c.haptics createEngineWithLocality:GCHapticsLocalityDefault];
-    if (!engine || ![engine startAndReturnError:&err]) {
-        LOG("[rumble] engine start failed: %s", err ? err.localizedDescription.UTF8String : "no engine");
-        return;
-    }
-    g_haptics.push_back({c, engine, nil, 0.f});
+    if (!engine) return;
+    __weak GCController* weakController = c;
+    __weak CHHapticEngine* weakEngine = engine;
+    engine.resetHandler = ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ haptic_invalidated(weakController, weakEngine); });
+    };
+    engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
+        dispatch_async(dispatch_get_main_queue(), ^{ haptic_invalidated(weakController, weakEngine); });
+    };
+    g_haptics.push_back({c, engine, nil, 0.f, false, 0});
     LOG("[rumble] host: %s motors ready", (c.vendorName ?: @"controller").UTF8String);
 }
 static void haptic_stop(GCController* c) {
     for (auto it = g_haptics.begin(); it != g_haptics.end(); ++it) {
         if (it->controller != c) continue;
+        it->engine.resetHandler = ^{};
+        it->engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {};
         if (it->player) [it->player stopAtTime:0 error:nil];
         [it->engine stopWithCompletionHandler:nil];
         g_haptics.erase(it);
         return;
     }
 }
-// A continuous event at the requested strength, and no event at all at strength 0, so the motors
-// are only ever on while the game asks for them.
+// Keep one looping player while rumble is nonzero, and update its intensity in place. Zero
+// always stops immediately, including a final strength change smaller than the update epsilon.
 static void haptic_apply(HapticPad& h, float level) {
-    if (std::fabs(level - h.last) < 0.05f) return;  // coarse steps: restarts the player only on a real change
-    if (h.player) { [h.player stopAtTime:0 error:nil]; h.player = nil; }
-    if (level > 0.001f) {
-        NSError* err = nil;
-        CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:level];
-        CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
-        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:3600.0];
-        CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
-        id<CHHapticPatternPlayer> player = pattern ? [h.engine createPlayerWithPattern:pattern error:&err] : nil;
-        if (player && [player startAtTime:0 error:&err]) h.player = player;
+    if (!std::isfinite(level) || level <= 0.f) {
+        if (h.player) [h.player stopAtTime:0 error:nil];
+        h.player = nil;
+        h.last = 0;
+        return;
     }
-    h.last = level;
+    const double now = CACurrentMediaTime();
+    if (now < h.retry_after) return;
+    NSError* err = nil;
+    if (!h.ready) {
+        if (![h.engine startAndReturnError:&err]) {
+            h.retry_after = now + 1.0;
+            return;
+        }
+        h.ready = true;
+    }
+    bool created = false;
+    if (!h.player) {
+        CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.f];
+        CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
+        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:1.0];
+        CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
+        h.player = pattern ? [h.engine createAdvancedPlayerWithPattern:pattern error:&err] : nil;
+        h.player.loopEnabled = YES;
+        h.player.loopEnd = 1.0;
+        created = true;
+    }
+    if (h.player && (created || std::fabs(level - h.last) >= 0.001f)) {
+        CHHapticDynamicParameter* intensity = [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:level relativeTime:0];
+        if ([h.player sendParameters:@[intensity] atTime:0 error:&err] &&
+            (!created || [h.player startAtTime:0 error:&err])) {
+            h.last = level;
+            return;
+        }
+    } else if (h.player) return;
+    // A reset can race an API call. Retry at a bounded rate rather than rebuilding every tick.
+    if (h.player) [h.player stopAtTime:0 error:nil];
+    h.player = nil;
+    h.last = 0;
+    h.ready = false;
+    h.retry_after = now + 1.0;
 }
 static void haptic_tick() {
     if (g_haptics.empty()) return;
@@ -554,13 +603,13 @@ void init() {
     g_connect_order = [NSMutableArray array];
     for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
-    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
         haptic_start(c);
         note_dominant_labels();
     }];
-    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         haptic_stop(n.object);
         [g_connect_order removeObject:n.object];
         note_dominant_labels();
