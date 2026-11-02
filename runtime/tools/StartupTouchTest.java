@@ -20,6 +20,11 @@ public final class StartupTouchTest {
         raw[3] = 0x57570202; pack.set(raw, ContextPack.VERSION);
         assert !pack.startupTouch(); // unknown extension, no false startup mode
         StartupTouch tap = new StartupTouch();
+        assert !tap.down(2, 100, 100, true);
+        assert !tap.tracking();
+        assert !tap.up(ContextPack.STARTUP_TITLE, 2, 100, 100, 8);
+        assert tap.down(2, 100, 100, false);
+        assert tap.up(ContextPack.STARTUP_TITLE, 2, 100, 100, 8);
         tap.down(2, 100, 100); assert tap.up(ContextPack.STARTUP_TITLE, 2, 103, 100, 8);
         tap.down(2, 100, 100); tap.move(2, 130, 100, 8);
         assert !tap.up(ContextPack.STARTUP_TITLE, 2, 100, 100, 8); // no drag-to-confirm

@@ -107,6 +107,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // > 0 the files' generation)
     private static native int nativeContextButtons(int[] out);
     private static native void nativeStartupTitleTap();
+    private static native boolean nativeViewButtonHit(float x, float y);
     private static native int nativeContextAssets(String dir);
     private static native int nativeTouchOptions(int[] out);
     private static native int nativeFreeTouch(float x, float y);
@@ -359,7 +360,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             if (contextPack.startupScene() == ContextPack.STARTUP_TITLE && !settingsOpen) {
                 text.setColor(0xE6F8F4E8);
                 text.setTextSize(getResources().getDisplayMetrics().scaledDensity * 16);
-                canvas.drawText(getContext().getString(R.string.touch_tap_to_start), getWidth() / 2f, getHeight() * .94f, text);
+                canvas.drawText(getContext().getString(R.string.touch_tap_to_start), getWidth() / 2f, getHeight() * .14f, text);
             }
             return;
         }
@@ -600,8 +601,12 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         if (contextPack.startupTouch()) {
             editor.pointers(0);
             if (action == MotionEvent.ACTION_DOWN && contextPack.startupScene() == ContextPack.STARTUP_TITLE) {
-                startup.down(event.getPointerId(0), event.getX(), event.getY());
-                return true;
+                boolean viewButton = false;
+                try {
+                    viewButton = nativeViewButtonHit(getWidth() > 1 ? event.getX() / (getWidth()-1) : .5f,
+                            getHeight() > 1 ? event.getY() / (getHeight()-1) : .5f);
+                } catch (UnsatisfiedLinkError ignored) { }
+                return startup.down(event.getPointerId(0), event.getX(), event.getY(), viewButton);
             }
             return false;  // SDLSurface -> real GamePad touchscreen, including native text entry.
         }
