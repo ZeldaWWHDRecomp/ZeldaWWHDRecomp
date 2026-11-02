@@ -98,10 +98,31 @@ static inline uint8_t ld8(uint32_t ea) { return *ppc_ptr(ea); }
 static inline uint16_t ld16(uint32_t ea) { uint16_t v; memcpy(&v, ppc_ptr(ea), 2); return __builtin_bswap16(v); }
 static inline uint32_t ld32(uint32_t ea) { uint32_t v; memcpy(&v, ppc_ptr(ea), 4); return __builtin_bswap32(v); }
 static inline uint64_t ld64(uint32_t ea) { uint64_t v; memcpy(&v, ppc_ptr(ea), 8); return __builtin_bswap64(v); }
+/* Local diagnostic (not for releases; CMake -DWWHD_WRITE_WATCH=ON, runtime/src/guest_write_watch.cpp): every store into the
+ * blocks named by WWHD_WW_WINDOWS goes through a noinline function whose return address is the exact writer. Without the
+ * define these are the plain stores and the code is unchanged. */
+#ifdef WWHD_WRITE_WATCH
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern uint8_t wwhd_ww_bm[1u << 21]; /* one bit per 256-byte block of the guest address space */
+void wwhd_ww_store(uint32_t ea, const void* bytes, unsigned n);
+void wwhd_ww_note(uint32_t ea, unsigned n); /* the bytes were stored already (stwcx.): take them over with this writer */
+#ifdef __cplusplus
+}
+#endif
+static inline __attribute__((always_inline)) int wwhd_ww_block(uint32_t ea) { return wwhd_ww_bm[ea >> 11] >> ((ea >> 8) & 7) & 1; }
+#define WWHD_WW_HIT(ea, n) __builtin_expect(wwhd_ww_block(ea) | wwhd_ww_block((ea) + (n) - 1), 0)
+static inline __attribute__((always_inline)) void st8(uint32_t ea, uint8_t v) { if (WWHD_WW_HIT(ea, 1)) wwhd_ww_store(ea, &v, 1); else *ppc_ptr(ea) = v; }
+static inline __attribute__((always_inline)) void st16(uint32_t ea, uint16_t v) { v = __builtin_bswap16(v); if (WWHD_WW_HIT(ea, 2)) wwhd_ww_store(ea, &v, 2); else memcpy(ppc_ptr(ea), &v, 2); }
+static inline __attribute__((always_inline)) void st32(uint32_t ea, uint32_t v) { v = __builtin_bswap32(v); if (WWHD_WW_HIT(ea, 4)) wwhd_ww_store(ea, &v, 4); else memcpy(ppc_ptr(ea), &v, 4); }
+static inline __attribute__((always_inline)) void st64(uint32_t ea, uint64_t v) { v = __builtin_bswap64(v); if (WWHD_WW_HIT(ea, 8)) wwhd_ww_store(ea, &v, 8); else memcpy(ppc_ptr(ea), &v, 8); }
+#else
 static inline void st8(uint32_t ea, uint8_t v) { *ppc_ptr(ea) = v; }
 static inline void st16(uint32_t ea, uint16_t v) { v = __builtin_bswap16(v); memcpy(ppc_ptr(ea), &v, 2); }
 static inline void st32(uint32_t ea, uint32_t v) { v = __builtin_bswap32(v); memcpy(ppc_ptr(ea), &v, 4); }
 static inline void st64(uint32_t ea, uint64_t v) { v = __builtin_bswap64(v); memcpy(ppc_ptr(ea), &v, 8); }
+#endif
 
 /* ---- bit casts ---- */
 static inline double u64_as_f64(uint64_t u) { double d; memcpy(&d, &u, 8); return d; }
@@ -275,12 +296,23 @@ static inline void ppc_stwcx(Cpu* c, uint32_t ea, uint32_t v) {
         uint32_t expected = c->res_val;
         ok = __atomic_compare_exchange_n((uint32_t*)ppc_ptr(ea), &expected, __builtin_bswap32(v), 0,
                                          __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+#ifdef WWHD_WRITE_WATCH
+        if (ok && WWHD_WW_HIT(ea, 4)) wwhd_ww_note(ea, 4);
+#endif
     }
     c->res_addr = 0xFFFFFFFFu;
     c->cr[0] = 0; c->cr[1] = 0; c->cr[2] = (uint8_t)ok; c->cr[3] = c->xer_so;
 }
 
+#ifdef WWHD_WRITE_WATCH
+static inline __attribute__((always_inline)) void ppc_dcbz(uint32_t ea) {
+    ea &= ~31u;
+    if (WWHD_WW_HIT(ea, 32)) { static const uint8_t z[32] = {0}; wwhd_ww_store(ea, z, 32); }
+    else memset(ppc_ptr(ea), 0, 32);
+}
+#else
 static inline void ppc_dcbz(uint32_t ea) { memset(ppc_ptr(ea & ~31u), 0, 32); }
+#endif
 
 /* ---- floating point ---- */
 static inline double round25(double d) {

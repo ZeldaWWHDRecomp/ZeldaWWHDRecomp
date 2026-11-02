@@ -68,6 +68,12 @@ if(WWHD_SNAN_COUNT)
   add_compile_definitions(WWHD_SNAN_COUNT=1)
 endif()
 
+# Local diagnostic (not for releases): exact writers of guest memory windows (runtime/src/guest_write_watch.cpp).
+option(WWHD_WRITE_WATCH "log the exact writer of every byte of the WWHD_WW_WINDOWS windows (diagnostic)" OFF)
+if(WWHD_WRITE_WATCH)
+  add_compile_definitions(WWHD_WRITE_WATCH=1)
+endif()
+
 option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS; experimental)" OFF)
 include(cmake/Decomp.cmake)
 if(WWHD_DECOMP)

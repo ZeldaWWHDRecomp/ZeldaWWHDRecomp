@@ -37,9 +37,18 @@ static uint32_t g_watch_r3 = 0;
 static std::atomic<int> g_watch_r3_count{0};
 
 void true60_nan_probe(uint32_t addr);  // true60.cpp (WWHD_NAN_PROBE)
+void guest_capture_enter(uint32_t addr);  // guest_capture.cpp (WWHD_GUEST_CAPTURE, debug only)
+#ifdef WWHD_WRITE_WATCH
+void wwhd_ww_enter(uint32_t addr);  // guest_write_watch.cpp (diagnostic build)
+#endif
 extern "C" void ppc_trace_enter(uint32_t addr) {
     static const bool nan_probe = getenv("WWHD_NAN_PROBE") != nullptr;
     if (nan_probe) true60_nan_probe(addr);
+    static const bool guest_capture = getenv("WWHD_GUEST_CAPTURE") != nullptr;
+#ifdef WWHD_WRITE_WATCH
+    wwhd_ww_enter(addr);  // before the capture hook: its report must see the state up to this entry
+#endif
+    if (guest_capture) guest_capture_enter(addr);
     if (g_watch_r3) {
         Cpu* c = threads::current();
         if (c && c->r[3] == g_watch_r3 && g_watch_r3_count++ < 3000) {
