@@ -1564,11 +1564,22 @@ int main() {
         for (int face=0; face<4; ++face) for (int py=0; py<64; ++py) for (int px=0; px<64; ++px)
             face_area[face] += button_glyphs::gamecube_icon(face, false, px, py) != 0;
         assert(face_area[0] > face_area[1] && face_area[0] > face_area[2] && face_area[0] > face_area[3]);
-        assert(button_glyphs::gamecube_icon(2, true, 16, 32) == 0); // smooth inward bite, no grey bar
-        assert(button_glyphs::gamecube_icon(2, true, 26, 32) != 0); // button face and X remain intact
-        assert(button_glyphs::gamecube_icon(3, true, 48, 32) == 0); // Y bite faces right, toward A
-        assert(button_glyphs::gamecube_icon(3, true, 38, 32) != 0);
-        assert(button_glyphs::gamecube_icon(2, true, 27, 24) == 0x24282CFF); // high-contrast ink
+        int x_min=64,x_max=-1,x_min_y=64,x_max_y=-1,y_min=64,y_max=-1,y_min_y=64,y_max_y=-1;
+        for (int py=0; py<64; ++py) for (int px=0; px<64; ++px) {
+            if (button_glyphs::gamecube_icon(2,false,px,py,false)) {
+                x_min=std::min(x_min,px); x_max=std::max(x_max,px); x_min_y=std::min(x_min_y,py); x_max_y=std::max(x_max_y,py);
+            }
+            if (button_glyphs::gamecube_icon(3,false,px,py,false)) {
+                y_min=std::min(y_min,px); y_max=std::max(y_max,px); y_min_y=std::min(y_min_y,py); y_max_y=std::max(y_max_y,py);
+            }
+        }
+        assert(x_max_y-x_min_y > x_max-x_min); // X is the taller, narrow bean
+        assert(y_max-y_min > y_max_y-y_min_y); // Y is the wider bean
+        assert(button_glyphs::gamecube_icon(2,true,16,32) == 0); // long inward curve faces left toward A
+        assert(button_glyphs::gamecube_icon(2,true,45,32) != 0); // keep a solid right lobe
+        assert(button_glyphs::gamecube_icon(3,true,32,38) == 0); // long Y concavity faces down toward A
+        assert(button_glyphs::gamecube_icon(3,true,32,24) != 0); // broad upper lobe
+        assert(button_glyphs::gamecube_icon(2,true,40,32) == 0x24282CFF); // high-contrast ink
     }
 #ifdef _WIN32
     auto memory = VirtualAlloc(mem::ptr(base), kArena, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);

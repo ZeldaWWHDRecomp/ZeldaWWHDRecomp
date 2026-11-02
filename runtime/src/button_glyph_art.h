@@ -83,28 +83,45 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
     for (int sy = 0; sy < 4; ++sy) for (int sx = 0; sx < 4; ++sx) {
         const float px = x + (sx + .5f) / 4 - 32.f;
         const float py = y + (sy + .5f) / 4 - 32.f;
-        const float scale = face == 0 ? 27.f : face == 1 ? 20.f : 22.f;
-        float dx = px, dy = py;
-        if (face >= 2) { dx *= .86f; dy *= 1.0f; }
-        float d = std::hypot(dx, dy);
-        bool inside = d < scale;
-        // A rounded concave bite turns X/Y into the GameCube's kidney-shaped plates. Subtract
-        // the same circle from the frame at its expanded radius so the outline follows smoothly.
-        const float bite_x = face == 2 ? -20.f : 20.f;
-        if (face >= 2) inside = inside && std::hypot(px - bite_x, py) >= 8.f;
-        const float border = framed ? scale + 3.f : scale;
-        bool outer = std::hypot(dx, dy) < border;
-        if (face >= 2 && outer) outer = std::hypot(px - bite_x, py) >= (framed ? 11.f : 8.f);
+        auto ellipse = [](float x, float y, float cx, float cy, float rx, float ry) {
+            const float nx = (x - cx) / rx, ny = (y - cy) / ry;
+            return nx * nx + ny * ny < 1.f;
+        };
+        bool inside, outer;
+        if (face == 2) {
+            // X is a vertical bean. Its long, shallow inner arc faces left toward A.
+            constexpr float cx = 2.f, rx = 17.f, ry = 27.f;
+            constexpr float notch_x = -15.f, notch_rx = 20.f, notch_ry = 35.f;
+            inside = ellipse(px, py, cx, 0.f, rx, ry) && !ellipse(px, py, notch_x, 0.f, notch_rx, notch_ry);
+            const float margin = framed ? 3.f : 0.f;
+            outer = ellipse(px, py, cx, 0.f, rx + margin, ry + margin) &&
+                    !ellipse(px, py, notch_x, 0.f, notch_rx + margin, notch_ry + margin);
+        } else if (face == 3) {
+            // Y is a broad horizontal bean above A. Removing an offset, wide ellipse makes
+            // one continuous concave lower edge that curves down toward both ends.
+            constexpr float cy = -4.f, rx = 28.f, ry = 18.f;
+            constexpr float notch_y = 23.f, notch_rx = 40.f, notch_ry = 21.f;
+            inside = ellipse(px, py, 0.f, cy, rx, ry) && !ellipse(px, py, 0.f, notch_y, notch_rx, notch_ry);
+            const float margin = framed ? 3.f : 0.f;
+            outer = ellipse(px, py, 0.f, cy, rx + margin, ry + margin) &&
+                    !ellipse(px, py, 0.f, notch_y, notch_rx + margin, notch_ry + margin);
+        } else {
+            const float scale = face == 0 ? 27.f : 20.f;
+            inside = std::hypot(px, py) < scale;
+            outer = std::hypot(px, py) < (framed ? scale + 3.f : scale);
+        }
         uint32_t c = 0;
         if (outer && !inside) c = framed ? 0x34383CFF : 0;
         else if (inside) c = face == 0 ? 0x58BE36FF : face == 1 ? 0xE34B49FF : 0xA9ADB1FF;
         // Letterforms from line segments and a compact elliptical bowl for B.
         auto line = [](float px, float py, float ax, float ay, float bx, float by) { return art::segment(px, py, ax, ay, bx, by) < 2.0f; };
+        const float lpx = px - (face == 2 ? 8.f : 0.f);
+        const float lpy = py + (face == 3 ? 4.f : 0.f);
         bool ink=false;
         if (face == 0) ink=line(px,py, -8,9,0,-10)||line(px,py,0,-10,8,9)||line(px,py,-5,2,5,2);
         else if (face == 1) ink=line(px,py,-5,-10,-5,10)||line(px,py,-5,-10,3,-10)||line(px,py,3,-10,7,-6)||line(px,py,7,-6,7,-2)||line(px,py,7,-2,2,0)||line(px,py,2,0,7,3)||line(px,py,7,3,7,7)||line(px,py,7,7,3,10)||line(px,py,3,10,-5,10);
-        else if (face == 2) ink=line(px,py,-5,-8,5,8)||line(px,py,5,-8,-5,8);
-        else ink=line(px,py,-6,-8,0,0)||line(px,py,6,-8,0,0)||line(px,py,0,0,0,8);
+        else if (face == 2) ink=line(lpx,lpy,-5,-8,5,8)||line(lpx,lpy,5,-8,-5,8);
+        else ink=line(lpx,lpy,-6,-8,0,0)||line(lpx,lpy,6,-8,0,0)||line(lpx,lpy,0,0,0,8);
         if (letter && inside && ink) c=face >= 2 ? 0x24282CFF : 0xF4F4F4FF;
         if (!c) continue;
         r += (c>>24)&255; g += (c>>16)&255; b += (c>>8)&255; a += 1;
