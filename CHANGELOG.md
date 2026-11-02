@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: long help lines no longer make the settings page flicker at high resolutions** (#345, thanks @itsarahtonin).
+  At 4K, the Controls tab's long help rows made the whole page redraw over and over. Long lines now stay as sharp as the
+  rest, whatever the display's density, and L / R between tabs no longer redraws the text.
 - **Fixed: the settings page in the pause menu no longer takes Left from the game.** In the item menu, Left from the
   slot next to the bottom-left one opened the settings page instead of moving to that slot. Left now always goes to the
   game first. Only where the game has nothing further left does the cursor move onto the page arrow; A or Left again
