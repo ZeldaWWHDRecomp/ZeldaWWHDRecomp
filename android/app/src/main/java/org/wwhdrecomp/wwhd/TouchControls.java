@@ -1215,6 +1215,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private static boolean isController(InputDevice d) {
         if (d == null || d.isVirtual()) return false;
         final int s = d.getSources();
+        if (ControllerInputPolicy.internalKeyboard(d.getName(), d.getVendorId(), d.getProductId(),
+                (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)) return false;
         return (s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
