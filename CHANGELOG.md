@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the settings page in the pause menu no longer takes Left from the game.** In the item menu, Left from the
+  slot next to the bottom-left one opened the settings page instead of moving to that slot. Left now always goes to the
+  game first. Only where the game has nothing further left does the cursor move onto the page arrow; A or Left again
+  opens the page, and Right or B goes back. ZL no longer opens it, and Controls has a new option, **Settings page in the
+  pause menu**, to turn the arrow off (Esc and holding Select still open Settings). The arrow's design follows the
+  GreenNaugahyde Android fork (thanks @GreenNaugahyde).
 - **Fixed: the new-game name screen refuses `%` too** (#351, thanks @itsarahtonin). The game reads `%` in a name as a
   format code, which could read or write game memory; the keyboard now leaves it out, as the rename already did.
 - **New: GameCube button prompts** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** under Button prompts
