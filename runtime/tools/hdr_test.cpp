@@ -10,9 +10,15 @@ int main() {
  assert(hdr::automatic_peak(203,5)==1015);
  for(float ratio:{0.f,1.f,-1.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
   assert(hdr::automatic_peak(203,ratio)==1025);
- assert(hdr::automatic_peak(500,100)==10000);
- assert(!hdr::peakAuto.load()); // manual by default on every compositor
- assert(!hdr::automatic_peak_setting(false,"")); // fresh/legacy configs stay manual
+ assert(hdr::automatic_peak(500,100)==1025);
+ assert(hdr::automatic_peak(200,50)==1025); // Sway's 10000-nit sentinel
+ assert(hdr::automatic_peak(200,49.99f)<10000);
+ assert(!hdr::valid_automatic_peak(200,50));
+ assert(hdr::automatic_peak(std::numeric_limits<float>::max(),2)==1025);
+ assert(hdr::peakAuto.load()); // fresh installs use Auto
+ assert(hdr::automatic_peak_setting(false,"",false));
+ assert(!hdr::automatic_peak_setting(false,"",true)); // saved manual Peak stays manual
+ assert(hdr::automatic_peak_setting(true,"1",true)); // explicit Auto overrides a retained manual Peak
  assert(hdr::automatic_peak_setting(true,"1")); // explicit opt-in persists
  for(std::string_view mode:{"0","","invalid","2"})assert(!hdr::automatic_peak_setting(true,mode));
  hdr::paperWhite=203;hdr::headroom=5;hdr::peakAuto=true;hdr::peak=1150;

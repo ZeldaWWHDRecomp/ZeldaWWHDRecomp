@@ -1901,6 +1901,7 @@ static void make_swapchain(Screen &s) {
   s.hdrOutput = wantHdr;
   s.hdrPq = wantPq;
   s.hdrMetadataStale = true;
+  s.hdrCompositionReady = false;
   if(&s==&R.tv) {
     hdr::pqOutput=wantPq;
     LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
@@ -2651,7 +2652,7 @@ static void register_observed_present(Screen &s, uint32_t observedPresentId, uin
 // HDR swapchains: the content range (hdr::metadata) for the compositor or display, sent before the
 // first present and again after a slider change. Called with the graphics queue lock held.
 static void send_hdr_metadata(Screen &s, VkSwapchainKHR swapchain) {
-  if (!R.setHdrMetadata || !s.hdrOutput) return;
+  if (!R.setHdrMetadata || !s.hdrOutput || !s.hdrCompositionReady) return;
   const auto m = hdr::metadata(hdr::parameters(), hdr::menuWhite.load(), s.hdrScanBounded);
   const std::array<float,4> values{m.maxCll, m.maxFall, m.maxMastering, m.minMastering};
   const bool newSwapchain = s.hdrMetadataStale.exchange(false);

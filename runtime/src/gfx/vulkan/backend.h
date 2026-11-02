@@ -73,6 +73,7 @@ struct Screen {
  VkFormat swapFormat=VK_FORMAT_UNDEFINED; VkExtent2D swapExtent{};
  bool hdrOutput=false;
  bool hdrPq=false; // hdrOutput as HDR10 PQ: composed in FP16 scRGB, then encoded (present.cpp)
+ bool hdrCompositionReady=false; // defer metadata until the first actual composition
  bool hdrScanBounded=false; // all guest image quads in the last composition use normalized formats
  // VK_EXT_hdr_metadata: a new swapchain has none; queue_present sends it, and again when the sliders change
  std::atomic<bool> hdrMetadataStale{true};

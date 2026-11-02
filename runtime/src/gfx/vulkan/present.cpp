@@ -848,6 +848,7 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  screen.hdrScanBounded=std::all_of(quads.begin(),quads.end(),[](const ComposeQuad& q) {
   return q.solid || !q.image || q.box.w<=0 || q.box.h<=0 || bounded_color_format(q.image->fmt.pixel);
  });
+ screen.hdrCompositionReady=true;
  auto* overlay=screen_overlay(screen,screen.swapExtent.width,screen.swapExtent.height);
  if(screen.hdrPq) {
   // HDR10: compose and blend in linear FP16 scRGB exactly as for scRGB output, then

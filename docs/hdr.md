@@ -24,13 +24,14 @@ changes to paper white and the window's display/headroom without restarting.
 For example, paper white 203 and headroom 5 give Peak 1015; on the reported KDE
 setup this maps to the physical display peak of 1150 nits. Valid headroom must
 be finite and greater than 1. If unavailable, Auto uses 1025 nits and shows a
-notice. Auto caps its result at 10000 nits, the HDR signal's absolute limit.
+notice. A reported peak of 10000 nits or more is treated as unavailable and also
+uses 1025 nits, rather than treating the HDR signal's absolute limit as a display capability.
 Headroom reporting depends on the driver/compositor; use manual Peak if the
 reported result does not suit your setup.
 
-Manual Peak is the default for compatibility across compositors. Auto is opt-in:
-it has worked on the reported KDE setup, but on Sway it can report an unsuitable
-10000-nit Peak. Explicitly saved Auto choices are preserved. Disabling Auto
+Auto is the default on fresh installs. Existing configurations with a saved manual
+`hdrPeak` remain manual unless Auto was explicitly selected. The reported Sway
+10000-nit value now uses the 1025-nit fallback. Explicitly saved Auto choices are preserved. Disabling Auto
 restores your manual slider value. For manual Peak on KDE, use display peak × 203 / desktop SDR brightness
 (all in nits), rather than the physical display peak alone. Other setups may
 use the display's peak directly.

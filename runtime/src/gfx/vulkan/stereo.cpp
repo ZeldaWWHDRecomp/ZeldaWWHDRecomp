@@ -256,7 +256,7 @@ void load_saved_stereo_hdr() {
     const auto savedPeak=num("hdrPeak");
     if(savedPeak)hdr::set(hdr::peak,*savedPeak,200,4000);
     const bool hasPeakMode=::hostui::get("hdrPeakAuto",v);
-    hdr::peakAuto=hdr::automatic_peak_setting(hasPeakMode,v);
+    hdr::peakAuto=hdr::automatic_peak_setting(hasPeakMode,v,savedPeak.has_value());
     if(auto x=num("hdrExposure"))hdr::set(hdr::exposure,*x,-3,3);
     if(auto x=num("hdrHighlights"))hdr::set(hdr::highlights,*x,0,1);
     if(auto x=num("hdrMenuWhite"))hdr::set(hdr::menuWhite,*x,80,500);
