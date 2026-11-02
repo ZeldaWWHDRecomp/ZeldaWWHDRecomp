@@ -50,6 +50,12 @@ names the reason (`[savestate] slot N: portable state refused: ...`). This cover
 and Shift+F1–F5. Full save states and Crash Recovery's automatic states can be made at any time.
 Loading is not affected.
 
+Crawling states restore Link in the native crawl posture before his first player execution,
+so loading inside a low tunnel does not put him standing in its ceiling. Existing portable
+states already record the player procedure and need no conversion. Crawl start, movement,
+automatic movement and crawl end resume as controllable crawling; their transient animation
+or automatic movement is not replayed. Standing and boat restores keep their usual behavior.
+
 ## Last session, auto saves and At start
 
 The Saves tab's **Last session and auto saves** section holds portable states in their own slots;
