@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: touch controls stay visible on the Poco M8 Pro** (#338, thanks @GenissonEmilio). The phone's built-in key
+  injector reports itself as a gamepad, so the game hid the touch controls as if a controller were connected. That one
+  internal device is now ignored; real controllers still hide the touch controls as before.
 - **New: HDR metadata for the output range** (#337, thanks @mkopec, and @findel77 for testing). With HDR on, the game
   now tells the display its brightness range, so HDR TVs and monitors tone-map it correctly. **Auto Peak** (on by default)
   reads the display's peak from the system and stays within the manual slider's 4000 nits; each HDR option has its own
