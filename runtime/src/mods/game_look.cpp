@@ -84,27 +84,29 @@ std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>
         LOG("[%s] text composed at %.2f screen pixels per page unit (screen %u)", tag.c_str(), traced = pixels, screen);
     if (have_font) {
         const std::vector<std::string> lines = font::lines_of(cmds, font_scale, pixels);
-        if (!atlas.holds(lines, prompts, fonts_key)) {
-            atlas.build(lines, main, &fallback, icons.ready() ? &icons : nullptr, prompts, fonts_key, atlas_scale);
-            if (atlas_image) store.release(owner, atlas_image);
-            atlas_image = 0;
+        atlas.update(lines, main, &fallback, icons.ready() ? &icons : nullptr, prompts, fonts_key, atlas_scale, atlas_budget);
+        if (atlas.too_tall() && !told_too_tall) {
+            told_too_tall = true;
+            LOG("[%s] a line is taller than a text page (%d pixels): it is drawn scaled up", tag.c_str(), font::Atlas::kMaxHeight);
         }
-        if (!atlas_image || store_generation != generation) {
-            const auto img = atlas.image();
-            atlas_image = img ? store.create_image(owner, img->width, img->height, img->width * 4, img->rgba.data(), img->rgba.size()) : 0;
-            store_generation = generation;
-        }
+        sync_pages(generation);
     }
-    cmds = font::to_pictures(cmds, have_font && atlas_image ? &atlas : nullptr, font_scale, pixels);
+    std::map<const guestmods::hud::Image*, Handle> page_handle;
+    for (const PageImage& p : page_images)
+        if (p.handle) page_handle[p.image.get()] = p.handle;
+    auto drawable = [&](int page) { return page_handle.count(atlas.image(size_t(page)).get()) != 0; };
+    cmds = font::to_pictures(cmds, have_font ? &atlas : nullptr, font_scale, pixels, drawable);
     images.assign(cmds.size(), 0);
     for (size_t i = 0; i < cmds.size(); i++) {
         Command& c = cmds[i];
-        if (c.kind != Command::Picture || c.image) continue;
-        if (c.text.rfind("art:", 0) != 0) {  // a line of text
-            images[i] = atlas_image;
-            c.text.clear();
+        if (c.kind != Command::Picture) continue;
+        if (c.image) {  // a line of text: its atlas page's image
+            auto it = page_handle.find(c.image.get());
+            images[i] = it == page_handle.end() ? 0 : it->second;
+            c.image.reset();
             continue;
         }
+        if (c.text.rfind("art:", 0) != 0) continue;
         int bw, bh;  // the size the box was laid out at (the animations scale only the picture)
         style::box_size(c.text, bw, bh);
         const std::string name = "nb:" + style::box_name(c.text).substr(4);
@@ -122,6 +124,33 @@ std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>
         c.text.clear();
     }
     return cmds;
+}
+
+// The store's images of the atlas pages: a dropped page's image released first, then a new page's
+// created (a state load: the store forgot them all, so every page's again)
+void Look::sync_pages(uint64_t generation) {
+    auto& store = guestmods::hud::store();
+    const bool forgotten = store_generation != generation;
+    store_generation = generation;
+    page_images.resize(std::max(page_images.size(), atlas.pages()));
+    for (size_t i = 0; i < page_images.size(); i++) {
+        PageImage& p = page_images[i];
+        const auto img = atlas.image(i);
+        if (p.image == img && !forgotten) continue;
+        if (p.handle && !forgotten) store.release(owner, p.handle);
+        p = {img, 0};
+    }
+    for (size_t i = 0; i < page_images.size(); i++) {
+        PageImage& p = page_images[i];
+        if (!p.image || p.handle) continue;
+        p.handle = store.create_image(owner, p.image->width, p.image->height, p.image->width * 4, p.image->rgba.data(), p.image->rgba.size());
+        if (!p.handle && !told_quota) {
+            told_quota = true;
+            LOG("[%s] text page %zu (%ux%u) doesn't fit the HUD image quota now: its lines use the overlay font until it does", tag.c_str(), i,
+                p.image->width, p.image->height);
+        }
+    }
+    while (!page_images.empty() && !page_images.back().image) page_images.pop_back();
 }
 
 void Look::append(Handle list, std::vector<Command>& cmds, const std::vector<Handle>& images) const {

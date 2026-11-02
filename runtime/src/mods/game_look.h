@@ -52,7 +52,18 @@ struct Look {
     font::Face main, fallback, icons;  // CKingMain, CKingMsg (characters CKingMain lacks), the button icons
     bool font_failed = false, icons_probed = false;
     font::Atlas atlas;
-    Handle atlas_image = 0;
+    // The atlas pages' images in the HUD store, by page. An owner's images may take 16 MiB
+    // (guest_hud.h kMaxPixels), counting the ones it released that a list or the screen still draws
+    // for a few frames. The pages keep under `atlas_budget` unless the shown lines need more: the
+    // rest is room for the boxes (about 2.6 MiB at 4K) and for a page added while a dropped one is
+    // still drawn. Pages are composed once; only a new page's image is created in a read.
+    struct PageImage {
+        std::shared_ptr<const guestmods::hud::Image> image;
+        Handle handle = 0;
+    };
+    std::vector<PageImage> page_images;
+    size_t atlas_budget = guestmods::hud::kMaxPixels * 3 / 8;
+    bool told_too_tall = false, told_quota = false;
     uint64_t store_generation = 0, fonts_key = 0;
     style::Art art;
     bool art_tried = false, art_ok = false;
@@ -79,6 +90,8 @@ struct Look {
     std::vector<Command> render(std::vector<Command> cmds, std::vector<Handle>& images, uint32_t screen);
     void append(Handle list, std::vector<Command>& cmds, const std::vector<Handle>& images) const;
     void forget_boxes() { boxes.clear(); }
+    // the atlas pages' images in the store (render)
+    void sync_pages(uint64_t generation);
 };
 
 }  // namespace game_look
