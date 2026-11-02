@@ -62,7 +62,7 @@ extern "C" void f_026F8CD0_orig(Cpu*) {}
 namespace {
 constexpr uint32_t base = 0x15000000, writer = base, list = base + 0x100, picture = base + 0x1000, text_box = base + 0x2000;
 constexpr uint32_t first_quad = list + 0xA4;
-constexpr uint32_t kArena = 0x400000;  // synthetic guest memory, including the expanded composed atlas
+constexpr uint32_t kArena = 0x1000000;  // synthetic guest memory, including the expanded composed atlas
 constexpr std::array<uint32_t, 2> authored = {0xFFFFFFFF, 0xB0804042};
 constexpr std::array<uint32_t, 4> corners = {0xFFFFFFFF, 0x80A0C042, 0x00000000, 0xFFFFFF80};
 uint32_t printed_character;
@@ -106,6 +106,8 @@ bool font_available = true;
 float label_centre = 0;
 std::array<uint32_t,button_glyphs::kAtlasGlyphs> font_records{};
 unsigned font_queries = 0;
+std::vector<uint32_t> keycap_sheets;
+float keycap_u=0, keycap_v=0;
 void layout(input_map::FaceLayout choice);
 
 #ifndef _WIN32
@@ -1293,7 +1295,7 @@ uint32_t host_alloc(uint32_t size, uint32_t align) {
 extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
     assert(ld32(c->r[3]) == 5 && ld32(c->r[3] + 12) == 1);
     const uint32_t width = ld32(c->r[3] + 4), height = ld32(c->r[3] + 8);
-    assert((width == 128 && height == button_glyphs::kAtlasHeight) || (width == 64 && height == 64));
+    assert((width == 128 && height == button_glyphs::kAtlasHeight) || (width == 64 && height == 64) || (width == 1024 && height == 1088));
     assert(ld32(c->r[3] + 0x14) == 0x1A && ld32(c->r[3] + 0x30) == 1);
     assert(ld32(c->r[3] + 0x3C) == width && ld32(c->r[3] + 0x84) == 0x00010203);
     if (width == 128) atlas = c->r[3] - 16;
@@ -1353,14 +1355,36 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         inside_build = false;
     }
     if (input_map::current().prompts == input_map::Mapping::Prompts::kKeyboard) {
-        const uint32_t quad=c->r[4]+0xA4;
-        drawn_sheet=ld32(quad+0x28);
-        assert(drawn_sheet != base+0xD000);
-        assert(ldf32(quad+0x18)==0 && ldf32(quad+0x1C)==0);
-        assert(ldf32(quad+0x20)==1 && ldf32(quad+0x24)==1);
-        assert((ld8(quad+0x2F)&1)==0);
-        assert((ld32(quad+0x10)&255)==(authored[0]&255));
-        assert(ld8(drawn_sheet+0x0E)==0);
+        keycap_sheets.clear();
+        for (uint32_t i=0;i<ld16(c->r[4]+4);++i) {
+            const uint32_t quad=c->r[4]+0xA4+i*0x30;
+            const uint8_t flags=ld8(quad+0x2F);
+            const bool input = button_glyphs::marked_face(flags)>=0 || button_glyphs::marked_shoulder(flags)>=0 ||
+                               button_glyphs::marked_input(flags)>=0;
+            const uint32_t sheet=ld32(quad+0x28);
+            if (!input) { assert(sheet==base+0xD000); continue; }
+            keycap_sheets.push_back(sheet);
+            assert(sheet != base+0xD000);
+            assert(ldf32(quad+0x18)>=0 && ldf32(quad+0x1C)>=0);
+            assert(ldf32(quad+0x20)<=1 && ldf32(quad+0x24)<=1);
+            const bool atlas=ld32(sheet+0x14)==1024;
+            assert(std::fabs(ldf32(quad+0x20)-ldf32(quad+0x18)-(atlas ? 1.f/16 : 1.f))<.0001);
+            assert(std::fabs(ldf32(quad+0x24)-ldf32(quad+0x1C)-(atlas ? 1.f/17 : 1.f))<.0001);
+            assert((ld8(quad+0x2F)&1)==0);
+            assert((ld32(quad+0x10)&255)==(authored[0]&255));
+            assert(ld8(sheet+0x0E)==0);
+        }
+        drawn_sheet=ld32(c->r[4]+0xA4+0x28);
+        keycap_u=ldf32(c->r[4]+0xA4+0x18); keycap_v=ldf32(c->r[4]+0xA4+0x1C);
+        std::vector<uint32_t> batches;
+        for (uint32_t i=0;i<ld16(c->r[4]+4);++i) {
+            const uint32_t sheet=ld32(c->r[4]+0xA4+i*0x30+0x28);
+            if (std::find(batches.begin(),batches.end(),sheet)==batches.end()) batches.push_back(sheet);
+        }
+        assert(batches.size()<=8); // native fixed-capacity batch table
+        st32(c->r[4]+0xA0,batches.size());
+        for (size_t i=0;i<batches.size();++i) st32(c->r[4]+0x20+i*0x10,batches[i]);
+        st8(c->r[4]+6,1);
         return;
     }
     text_draws++;
@@ -1912,6 +1936,7 @@ int main() {
         Cpu c{}; c.r[4]=list;
         hook_028F7C7C(&c);
         const auto tab=drawn_sheet;
+        const auto tab_u=keycap_u, tab_v=keycap_v;
         assert(tab && ld32(first_quad+0x28)==stock_sheet);
         std::strcpy(reinterpret_cast<char*>(mem::ptr(picture+0x80)),"W_SetSeatA_00");
         st8(picture+0x46,173);
@@ -1922,12 +1947,47 @@ int main() {
         mapping.keys[input_map::kA]={input_map::kMouse1,input_map::kNoKey};
         input_map::set_current(mapping,false);
         c.r[4]=list; hook_028F7C7C(&c);
-        assert(drawn_sheet && drawn_sheet!=tab);
+        assert(drawn_sheet==tab); // all individual keys share one native batch
+        assert(keycap_u!=tab_u || keycap_v!=tab_v);
         mapping.keys[input_map::kA]={input_map::key_from_id("Tab"),input_map::kNoKey};
         input_map::set_current(mapping,false);
         c.r[4]=list; hook_028F7C7C(&c);
-        assert(drawn_sheet==tab); // immutable sheet reused after rebinding
+        assert(drawn_sheet==tab && keycap_u==tab_u && keycap_v==tab_v); // immutable cell reused after rebinding
         assert(ld32(first_quad+0x28)==stock_sheet);
+        st32(list,24); st16(list+4,0);
+        for (int i=0;i<int(std::size(button_glyphs::kInputCharacters));++i) {
+            print(button_glyphs::kInputCharacters[i]);
+            assert(button_glyphs::marked_input(ld8(first_quad+i*0x30+0x2F))==i);
+            for (uint8_t flags : {uint8_t(0),uint8_t(1)}) {
+                const auto marker=button_glyphs::mark_input(flags,i);
+                assert(button_glyphs::marked_input(button_glyphs::rendered(marker,true))==i);
+                assert(button_glyphs::marked_input(button_glyphs::rendered(marker,false))==i);
+                assert(button_glyphs::marked_face(marker)==-1 && button_glyphs::marked_shoulder(marker)==-1);
+            }
+        }
+        print('+'); print(0x2665); print(0xE090); // ordinary text, heart and directional artwork
+        c.r[4]=list; hook_028F7C7C(&c);
+        assert(keycap_sheets.size()==std::size(button_glyphs::kInputCharacters));
+        auto unique=keycap_sheets;
+        std::sort(unique.begin(),unique.end()); unique.erase(std::unique(unique.begin(),unique.end()),unique.end());
+        assert(unique.size()==4); // nineteen icons need only one key atlas and three directional diagrams
+        std::strcpy(reinterpret_cast<char*>(mem::ptr(text_box+0x80)),"Dialogue");
+        st32(text_box+0x0C,0); st32(text_box+0xFC,list);
+        button_glyphs::prepare_text_box(text_box,&c);
+        c.r[4]=list; hook_028F7C7C(&c);
+        button_glyphs::prepare_text_box(text_box,&c);
+        assert(ld8(list+6)==1); // reuse live atlas batches
+        st32(list+0xA0,1); st32(list+0x20,base+0xD000);
+        button_glyphs::prepare_text_box(text_box,&c);
+        assert(ld8(list+6)==0); // stale host pointers from a restored state must rebuild
+
+        assert(keycap_sheets[7]==keycap_sheets[8]); // generic and labelled left-stick diagrams
+        assert(keycap_sheets[8]!=keycap_sheets[9]); // right stick uses its own bindings
+        const uint32_t groupImage=ld32(keycap_sheets[8]+0x34);
+        assert(ld8(groupImage+(32*64+32)*4+3)==0); // keep the cross centre empty
+        assert(ld8(groupImage+(11*64+32)*4+3)!=0); // visible upper keycap
+        assert(button_glyphs::input_character('+')==-1);
+
         mapping.prompts=input_map::Mapping::Prompts::kOriginal;
         input_map::set_current(mapping,false);
     }

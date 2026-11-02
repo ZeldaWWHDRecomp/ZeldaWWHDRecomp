@@ -285,6 +285,7 @@ int conflict_count(const Mapping& m);
 // short labels for compact UI chips, e.g. "L ⇧", "Num 5" / "LB", "LS ↑"
 std::string key_short_label(int code);
 // ASCII labels for game-font keycaps; first bound slot, or an explicit unbound label.
+int prompt_key_code(const Mapping& m, int action);
 std::string prompt_key_label(const Mapping& m, int action);
 const char* pad_short_label(int p);
 

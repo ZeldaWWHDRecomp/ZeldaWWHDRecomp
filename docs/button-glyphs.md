@@ -37,7 +37,9 @@ is available in the Controls window. Changes apply to messages and the HUD as we
 ## Keyboard and mouse bindings
 
 Choose **Controls → Button prompts → Keyboard / mouse** to replace A/B/X/Y and
-L/R/ZL/ZR prompts in the HUD, item menu and dialog text with keycaps. This is an
+L/R/ZL/ZR prompts in the HUD, item menu and dialog text with keycaps. Native
+Plus/Minus and individual D-pad/stick direction icons show their mapped keys too.
+Whole-stick and D-pad icons show the four directional keys in a cross. This is an
 explicit choice; Automatic continues to follow the controller. The first assigned
 keyboard/mouse slot supplies the caption, with the second used if the first is empty.
 Bindings update immediately. `M1`–`M5` identify mouse buttons and `Wh+`/`Wh-` the wheel;
@@ -48,4 +50,4 @@ Keyboard prompts take priority over the item ring's A1/A2/A3 captions. Controlle
 colour/placement settings remain saved and apply again when a controller style is chosen.
 Mouse camera, Direct right-stick camera and First-person shortcut now live in Controls,
 along with camera speed and mouse sensitivity. Existing saved settings still apply.
-Stick and D-pad diagrams retain their controller symbols; mouse-wheel zoom behavior is unchanged.
+The existing first-person mouse-wheel behavior is retained.

@@ -1179,10 +1179,12 @@ static NSTextField* label(NSString* s) {
     cameras.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameras.spacing = 24;
     NSSlider* cameraSpeed = [NSSlider sliderWithValue:mods::camera_speed() minValue:.5 maxValue:2 target:self action:@selector(cameraSpeedChanged:)];
+    cameraSpeed.continuous = YES;
     cameraSpeed.toolTip = @"Direct camera speed (0.5x to 2x).";
     [cameraSpeed.widthAnchor constraintEqualToConstant:160].active = YES;
     self.cameraSpeed = cameraSpeed;
     NSSlider* mouseSensitivity = [NSSlider sliderWithValue:mods::mouse_sensitivity() minValue:.08 maxValue:.3 target:self action:@selector(mouseSensitivityChanged:)];
+    mouseSensitivity.continuous = YES;
     mouseSensitivity.toolTip = @"Mouse camera sensitivity.";
     [mouseSensitivity.widthAnchor constraintEqualToConstant:160].active = YES;
     self.mouseSensitivity = mouseSensitivity;

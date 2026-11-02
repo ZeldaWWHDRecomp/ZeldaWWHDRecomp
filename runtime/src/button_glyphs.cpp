@@ -242,14 +242,28 @@ void atlas_quad(std::vector<Held>& saved, uint32_t quad, int row, bool frame, Cp
     shared_patch::hold(saved, quad + 0x2C, 4, [coverage](uint32_t word) { return (word & ~0xFF01u) | (coverage ? 1u : 0u); });
 }
 
-// Immutable per-font, per-input keycap sheets. Binding edits reuse existing sheets rather
+// A group uses four directional bindings in a cross, in the same order as the
+// Mapping action enum: up, down, left, right. Values below kActionCount are single keys.
+constexpr int key_group(int first) { return input_map::kActionCount+first; }
+int input_glyph_action(int index) {
+    using namespace input_map;
+    constexpr int actions[] = {key_group(kDUp),kPlus,kMinus,kDUp,kDDown,kDLeft,kDRight,
+        key_group(kLUp),key_group(kLUp),key_group(kRUp),kLUp,kLDown,kLLeft,kLRight,
+        kRUp,kRDown,kRLeft,kRRight,kA};
+    return index>=0 && index<int(std::size(actions)) ? actions[index] : -1;
+}
+
+// Immutable per-font key atlas and per-binding directional diagrams. Binding edits reuse sheets rather
 // than changing textures that another recording thread may still be drawing.
 uint32_t keycap_sheet(Cpu* cpu, int action) {
     const auto mapping = input_map::current();
-    const auto caption = input_map::prompt_key_label(mapping, action);
+    const bool group = action >= input_map::kActionCount;
+    const int first = action-input_map::kActionCount;
+    std::string caption = group ? "Group:" : "@Keys";
+    if (group) for (int i=0;i<4;++i) caption += input_map::prompt_key_label(mapping,first+i)+"/";
     const uint32_t manager = ld32(GD(0x101F4A50));
     const uint32_t font = manager ? ld32(manager + 0x10) : 0;
-    if (!font || !cpu || !ld32(font + 8)) return 0;
+    if (!font || !cpu || !ld32(font + 8) || !ld32(font + 0x0C) || !ld32(font + 0x44)) return 0;
     const uint32_t resource = ld32(font + 8);
     struct Entry { uint32_t font, resource, sheet; std::string caption; };
     static std::mutex mutex;
@@ -258,42 +272,87 @@ uint32_t keycap_sheet(Cpu* cpu, int action) {
         std::lock_guard lock(mutex);
         for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
     }
-    const uint32_t table = ld32(font + 4), get_glyph = table ? ld32(table + 0x8C) : 0;
-    if (!get_glyph || caption.size() > 32) return 0;
-    thread_local uint32_t scratch = mem::host_alloc(32*0x18,16);
-    std::vector<uint32_t> records;
-    for (unsigned char ch : caption) {
-        const uint32_t record = scratch + records.size()*0x18;
-        std::memset(mem::ptr(record),0,0x18);
-        Cpu get = *cpu;
-        get.r[3]=font; get.r[4]=record; get.r[5]=ch; get.pc=get.ctr=get_glyph;
-        ppc_dispatch(&get);
-        records.push_back(record);
+    std::vector<uint8_t> pixels;
+    uint32_t source_sheet = 0;
+    const uint32_t width = group ? 64 : 1024, height = group ? 64 : 1088;
+    if (group) {
+        pixels.resize(64*64*4);
+        constexpr int positions[4][2] = {{21,0},{21,42},{0,21},{42,21}};
+        for (int direction=0;direction<4;++direction) {
+            const uint32_t sheet = keycap_sheet(cpu,first+direction);
+            if (!sheet) return 0;
+            source_sheet = sheet;
+            const auto* source = mem::ptr(ld32(sheet+0x34));
+            const int code = input_map::prompt_key_code(mapping,first+direction);
+            const int index = code < 0 ? input_map::kInputCount : code;
+            const int cell_x = (index%16)*64, cell_y=(index/16)*64;
+            for (int y=0;y<22;++y) for (int x=0;x<22;++x) {
+                const int sx=std::min(63,(x*64+32)/22), sy=std::min(63,(y*64+32)/22);
+                const int dest=((positions[direction][1]+y)*64+positions[direction][0]+x)*4;
+                std::copy_n(source+((cell_y+sy)*1024+cell_x+sx)*4,4,pixels.data()+dest);
+            }
+        }
+    } else {
+        const uint32_t table = ld32(font + 4), get_glyph = table ? ld32(table + 0x8C) : 0;
+        if (!get_glyph) return 0;
+        thread_local uint32_t scratch = mem::host_alloc(128*0x18,16);
+        std::array<uint32_t,128> glyphs{};
+        pixels.resize(width*height*4);
+        auto labels = mapping;
+        for (int index=0;index<=input_map::kInputCount;++index) {
+            labels.keys[input_map::kA] = {index<input_map::kInputCount ? index : input_map::kNoKey,input_map::kNoKey};
+            const auto label = input_map::prompt_key_label(labels,input_map::kA);
+            std::vector<uint32_t> records;
+            for (unsigned char ch : label) {
+                if (ch>=128) return 0;
+                if (!glyphs[ch]) {
+                    const uint32_t record=scratch+ch*0x18;
+                    std::memset(mem::ptr(record),0,0x18);
+                    Cpu get=*cpu;
+                    get.r[3]=font; get.r[4]=record; get.r[5]=ch; get.pc=get.ctr=get_glyph;
+                    ppc_dispatch(&get);
+                    glyphs[ch]=record;
+                }
+                records.push_back(glyphs[ch]);
+            }
+            const auto cell = button_glyphs::keycap_pixels(records);
+            if (cell.empty()) {
+                std::lock_guard lock(mutex);
+                cache.push_back({font,resource,0,caption});
+                return 0;
+            }
+            if (!source_sheet) source_sheet=ld32(records[0]+0x14);
+            for (int y=0;y<64;++y)
+                std::copy_n(cell.data()+y*64*4,64*4,pixels.data()+(((index/16)*64+y)*width+(index%16)*64)*4);
+        }
     }
-    const auto pixels = button_glyphs::keycap_pixels(records);
-    if (pixels.empty()) return 0;
     std::lock_guard lock(mutex);
     for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
-    const uint32_t object = mem::host_alloc(0x100,256), image = mem::host_alloc(64*64*4,256);
+    const uint32_t object = mem::host_alloc(0x100,256), image = mem::host_alloc(width*height*4,256);
     std::memset(mem::ptr(object),0,0x100);
-    std::memcpy(mem::ptr(object),mem::ptr(ld32(records[0]+0x14)),16);
+    std::memcpy(mem::ptr(object),mem::ptr(source_sheet),16);
     st8(object+0x0E,0);
     std::memcpy(mem::ptr(image),pixels.data(),pixels.size());
     const uint32_t texture=object+0x10;
-    st32(texture,5); st32(texture+4,64); st32(texture+8,64); st32(texture+12,1);
+    st32(texture,5); st32(texture+4,width); st32(texture+8,height); st32(texture+12,1);
     st32(texture+16,1); st32(texture+20,0x1A); st32(texture+28,1);
-    st32(texture+32,64*64*4); st32(texture+36,image); st32(texture+48,1);
-    st32(texture+56,64); st32(texture+60,64);
+    st32(texture+32,width*height*4); st32(texture+36,image); st32(texture+48,1);
+    st32(texture+56,height); st32(texture+60,width);
     st32(texture+0x78,1); st32(texture+0x80,1); st32(texture+0x84,0x00010203);
     Cpu init{}; init.r[3]=texture; imp_gx2_GX2InitTextureRegs(&init);
     cache.push_back({font,resource,object,caption});
     return object;
 }
 
-void keycap_quad(std::vector<Held>& saved, uint32_t quad, uint32_t sheet) {
+void keycap_quad(std::vector<Held>& saved, uint32_t quad, uint32_t sheet, int action) {
     patch(saved,quad+0x28,sheet);
-    patch_float(saved,quad+0x18,0); patch_float(saved,quad+0x1C,0);
-    patch_float(saved,quad+0x20,1); patch_float(saved,quad+0x24,1);
+    const int code = input_map::prompt_key_code(input_map::current(),action);
+    const int index = code < 0 ? input_map::kInputCount : code;
+    const bool group = action >= input_map::kActionCount;
+    patch_float(saved,quad+0x18,group ? 0.f : (index%16)/16.f);
+    patch_float(saved,quad+0x1C,group ? 0.f : (index/16)/17.f);
+    patch_float(saved,quad+0x20,group ? 1.f : (index%16+1)/16.f);
+    patch_float(saved,quad+0x24,group ? 1.f : (index/16+1)/17.f);
     shared_patch::hold(saved,quad+0x2C,4,[](uint32_t word) { return word & ~0xFF01u; });
     for (uint32_t corner : {0x10u,0x14u})
         shared_patch::hold(saved,quad+corner,4,[](uint32_t rgba) { return rgba | 0xFFFFFF00u; });
@@ -561,9 +620,21 @@ void button_glyphs::prepare_text_box(uint32_t text_box, Cpu* cpu) {
     for (uint32_t i = 0, count = ld16(list + 4); i < count; i++) {
         const uint8_t flags = ld8(list + 0xA4 + i * 0x30 + 0x2F);
         const int face = marked_face(flags), shoulder = marked_shoulder(flags);
-        if ((face >= 0 || shoulder >= 0 || button_glyphs::marked_cstick(flags) || button_glyphs::marked_start(flags)) && styled(flags) != active) {
+        if ((face >= 0 || shoulder >= 0 || button_glyphs::marked_cstick(flags) || button_glyphs::marked_start(flags) || button_glyphs::marked_input(flags)>=0) && styled(flags) != active) {
             st8(list + 6, 0);  // the original DrawSelf rebuilds the text and its vertex buffer
             return;
+        }
+        if (look.face == FaceStyle::kKeyboard) {
+            const int action = face>=0 ? input_map::kA+face : shoulder>=0 ? input_map::kL+shoulder
+                             : input_glyph_action(button_glyphs::marked_input(flags));
+            if (action >= 0) {
+                const uint32_t sheet = keycap_sheet(cpu,action);
+                const uint32_t expected = sheet ? sheet : ld32(list+0xA4+i*0x30+0x28);
+                bool bound = false;
+                for (uint32_t batch=0,n=ld32(list+0xA0); batch<n && batch<8; ++batch)
+                    bound |= ld32(list+0x20+batch*0x10)==expected;
+                if (!bound) { st8(list+6,0); return; }
+            }
         }
         // quads drawn from the composed atlas: restyled shoulder labels and PlayStation shapes
         const bool named = item_names() && ((letter >= 2 && face >= 2) || (hud == 1 && shoulder == 1));
@@ -635,9 +706,10 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
 extern "C" void hook_0286E9F0(Cpu* c) {
     const int face = button_glyphs::face_character(c->r[4]);
     const int shoulder = button_glyphs::shoulder_character(c->r[4]);
+    const int extra = style().face == FaceStyle::kKeyboard ? button_glyphs::input_character(c->r[4]) : -1;
     const bool cstick = button_glyphs::cstick_character(c->r[4]) && style().face == FaceStyle::kGameCube;
     const bool start = button_glyphs::start_character(c->r[4]) && style().face == FaceStyle::kGameCube;
-    const uint32_t list = face >= 0 || shoulder >= 0 || cstick || start ? ld32(c->r[3] + 0x2C) : 0;
+    const uint32_t list = face >= 0 || shoulder >= 0 || cstick || start || extra >= 0 ? ld32(c->r[3] + 0x2C) : 0;
     const uint32_t count = list ? ld16(list + 4) : 0;
     const auto look = style();
     const int identity = face >= 0 ? face : hud_face;
@@ -650,6 +722,7 @@ extern "C" void hook_0286E9F0(Cpu* c) {
         const uint32_t flags = list + 0xA4 + count * 0x30 + 0x2F;
         st8(flags, face >= 0 ? button_glyphs::mark(ld8(flags), face)
                  : shoulder >= 0 ? button_glyphs::mark_shoulder(ld8(flags), shoulder)
+                 : extra >= 0 ? button_glyphs::mark_input(ld8(flags),extra)
                  : cstick ? button_glyphs::mark_cstick(ld8(flags))
                  : start ? button_glyphs::mark_start(ld8(flags)) : ld8(flags));
     }
@@ -698,12 +771,20 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             const uint8_t flags=ld8(quad+0x2F);
             const int face=button_glyphs::marked_face(flags), shoulder=button_glyphs::marked_shoulder(flags);
             const int action=face>=0 ? input_map::kA+face : shoulder>=0 ? input_map::kL+shoulder
-                           : button_glyphs::marked_start(flags) ? input_map::kPlus : -1;
+                           : button_glyphs::marked_start(flags) ? input_map::kPlus
+                           : input_glyph_action(button_glyphs::marked_input(flags));
             const uint32_t sheet = hud_sheet ? hud_sheet : action>=0 ? keycap_sheet(c,action) : 0;
+            if (hud_sheet || action>=0) set_flag_byte(quad+0x2F,button_glyphs::rendered(flags,true));
             if (!sheet) continue;
-            set_flag_byte(quad+0x2F,button_glyphs::rendered(flags,true));
-            keycap_quad(saved,quad,sheet);
+            keycap_quad(saved,quad,sheet,hud_sheet ? hud : action);
         }
+        std::vector<std::pair<uint32_t,uint8_t>> sheets;
+        for (uint32_t i=0;i<count;++i) {
+            const uint32_t quad=list+0xA4+i*0x30;
+            const auto key=std::pair{ld32(quad+0x28),ld8(quad+0x2E)};
+            if (std::find(sheets.begin(),sheets.end(),key)==sheets.end()) sheets.push_back(key);
+        }
+        if (sheets.size()>8) restore(saved); // retain the original glyphs if custom fonts exceed the batch budget
         f_028F7C7C_orig(c);
         restore(saved);
         return;

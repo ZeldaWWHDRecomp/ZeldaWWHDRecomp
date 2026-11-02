@@ -657,10 +657,14 @@ std::string key_short_label(int code) {
     return l;
 }
 
+int prompt_key_code(const Mapping& m, int action) {
+    if (action < 0 || action >= kActionCount) return kNoKey;
+    for (int key : m.keys[action]) if (key >= 0 && key < kInputCount) return key;
+    return kNoKey;
+}
+
 std::string prompt_key_label(const Mapping& m, int action) {
-    if (action < 0 || action >= kActionCount) return "?";
-    int code = kNoKey;
-    for (int key : m.keys[action]) if (key >= 0 && key < kInputCount) { code = key; break; }
+    const int code = prompt_key_code(m,action);
     if (code == kNoKey) return "None";
     if (code >= kMouse1 && code <= kMouse5) return "M" + std::to_string(code-kMouse1+1);
     if (code == kWheelUp) return "Wh+";
