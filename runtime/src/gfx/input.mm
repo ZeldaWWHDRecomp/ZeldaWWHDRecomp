@@ -238,6 +238,7 @@ static void note_dominant_labels() {
         if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
     }
     input_map::note_face_labels(labels);
+    input_map::note_gamecube(gamecube_controller(dominant));
     if (dominant) {
         auto m = input_map::current();
         if (input_map::auto_gamecube(m, "", pad_name(dominant), gamecube_controller(dominant), true))

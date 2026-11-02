@@ -982,6 +982,10 @@ void test_game_font() {
     font::Prompts ps;
     ps.face = font::Prompts::PlayStation;
     assert(font::button_picture(&icon, 0, ps, 20).width == 64);
+    font::Prompts gc;
+    gc.face = font::Prompts::GameCube;
+    const game_glyph::Bitmap gamecube = font::button_picture(&icon, 0, gc, 20);
+    assert(gamecube.width == 64 && gamecube.rgba[(48 * 64 + 32) * 4] == 0x58); // GC A art overrides font icon
     font::Prompts xbox;
     xbox.face = font::Prompts::Xbox, xbox.colours = true;
     const game_glyph::Bitmap green = font::button_picture(&icon, 0, xbox, 20);

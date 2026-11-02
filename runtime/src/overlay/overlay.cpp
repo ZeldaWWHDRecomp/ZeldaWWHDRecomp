@@ -2608,7 +2608,7 @@ void tab_controls() {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Button prompts");
         ImGui::PushID("prompts");  // "automatic" is also a face-buttons choice
-        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation}) {
+        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube}) {
             flow::next(flow::check(input_map::prompts_label(p)));
             if (radio(input_map::prompts_label(p), m.prompts == p)) {
                 m.prompts = p;
@@ -2616,14 +2616,14 @@ void tab_controls() {
             }
         }
         ImGui::PopID();
-        help("How the game's button icons look, with any face-button setting. Xbox and "
-             "PlayStation show the button bound to each Wii U action. By position on Xbox, "
+        help("How the game's button icons look, with any face-button setting. Xbox and PlayStation show the button bound to each Wii U action. GameCube uses the classic coloured face buttons. By position on Xbox, "
              "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
              "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
              "Original keeps the game's look. Custom bindings need four distinct face buttons; "
              "otherwise the original icons are used.");
         disabled_after(std::string("(-> ") + (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
                                        : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
+                                       : look.face == input_map::FaceStyle::kGameCube  ? "GameCube"
                                                                                        : "original") + ")");
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Shoulder names");
@@ -2638,11 +2638,11 @@ void tab_controls() {
         ImGui::PopID();
         help("How prompts name the shoulder buttons and triggers. Automatic follows the button "
              "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
-             "shapes, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
+             "shapes, L / R / Z with GameCube prompts, and the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
              "buttons setting.");
         disabled_after(std::string("(-> ") + (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
                                        : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
-                                                                                               : "L / R / ZL / ZR") + ")");
+                                                                                               : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z" : "L / R / ZL / ZR") + ")");
         bool colours = m.prompt_colours;
         if (ImGui::Checkbox("Coloured face buttons", &colours)) {
             m.prompt_colours = colours;
@@ -2657,7 +2657,7 @@ void tab_controls() {
             m.prompt_text_colours = text_colours;
             input_map::set_current(m);
         }
-        help("Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+        help("Action text follows the mapped button's prompt colour, independently of icon colours. "
              "Off: the game's own text colours (white).");
     }
     jump_row(m);

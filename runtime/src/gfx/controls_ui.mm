@@ -738,7 +738,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
                 if (look.colours) {
                     constexpr uint32_t xbox[] = {0x58BE36, 0xE34B49, 0x3B91E5, 0xEBC52E};
                     constexpr uint32_t ps[] = {0x3C7DD9, 0xD9413C, 0xD05FB0, 0x2AA67D};
-                    const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : ps[host];
+                    const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : look.face == FaceStyle::kGameCube ? (host == 0 ? 0x58BE36FF : host == 1 ? 0xE34B49FF : 0xA9ADB1FF) : ps[host];
                     ink = [NSColor colorWithRed:((rgb >> 16) & 255)/255.0 green:((rgb >> 8) & 255)/255.0
                                           blue:(rgb & 255)/255.0 alpha:1];
                 }
@@ -1126,16 +1126,15 @@ static NSTextField* label(NSString* s) {
     // in-game button prompts (#110, #143); the item tags are the Mapping enums
     NSTextField* ppl = label(@"Button prompts:");
     NSPopUpButton* pp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation}) {
+    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube}) {
         NSString* t = [NSString stringWithUTF8String:prompts_label(p)];
         [pp addItemWithTitle:[[t substringToIndex:1].uppercaseString stringByAppendingString:[t substringFromIndex:1]]];
         pp.lastItem.tag = (NSInteger)p;
     }
     pp.target = self;
     pp.action = @selector(promptsChanged:);
-    pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation "
-                 @"show the button bound to each Wii U action. By position on Xbox: roll is B, sword is A. "
-                 @"Automatic follows the connected pad; Nintendo keeps the game's look. By label keeps its "
+    pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
+                 @"Automatic follows the connected pad; recognized GameCube adapters use the GameCube look. By label keeps its "
                  @"existing Xbox fallback. Original keeps the game's look. Custom bindings need four "
                  @"distinct face buttons; otherwise the original icons are used.";
     self.prompts = pp;
@@ -1151,14 +1150,14 @@ static NSTextField* label(NSString* s) {
     sn.action = @selector(promptsChanged:);
     sn.toolTip = @"How prompts name the shoulder buttons and triggers. Automatic follows the button prompts: "
                  @"LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation shapes, the game's "
-                 @"L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
+                 @"L / R / Z with GameCube prompts, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
     self.shoulderNames = sn;
     NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
     pc.toolTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
                  @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
     self.promptColours = pc;
     NSButton* ptc = [NSButton checkboxWithTitle:@"Coloured face button text" target:self action:@selector(promptsChanged:)];
-    ptc.toolTip = @"Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+    ptc.toolTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
                   @"Off: the game's own text colours (white).";
     self.promptTextColours = ptc;
     for (NSView* v in @[bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc]) {
@@ -1787,14 +1786,14 @@ static int self_test() {
     c.rightRange.doubleValue = 1.111;
     [c rangeChanged:c.rightRange];
     expect(current().right_range == 1.11f && current().left_range == 1.0f, "right stick range = 111%");
-    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kPlayStation];
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kGameCube];
     [c.shoulderNames selectItemWithTag:(NSInteger)Mapping::ShoulderNames::kXbox];
     c.promptColours.state = NSControlStateValueOff;
     c.promptTextColours.state = NSControlStateValueOff;
     [c promptsChanged:c.prompts];
-    expect(current().prompts == Mapping::Prompts::kPlayStation && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
+    expect(current().prompts == Mapping::Prompts::kGameCube && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
                !current().prompt_colours && !current().prompt_text_colours,
-           "button prompts: PlayStation, LB/RB/LT/RT, no colours");
+           "button prompts: GameCube, LB/RB/LT/RT, no colours");
     // 9. the file on disk follows
     Mapping disk;
     expect(load_file(default_path(), disk) && disk == current(), "controls.json matches the live mapping");

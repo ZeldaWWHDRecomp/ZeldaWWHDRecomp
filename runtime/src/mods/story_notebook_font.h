@@ -57,7 +57,7 @@ inline std::vector<uint32_t> codes(const std::string& s) {
 // How the button pictures look (input_map::prompt_style, as the game's own prompts are restyled by
 // button_glyphs.cpp): the game's icon, the icon in the Xbox colours, or the PlayStation shapes.
 struct Prompts {
-    enum Face : uint8_t { Original, Xbox, PlayStation } face = Original;
+    enum Face : uint8_t { Original, Xbox, PlayStation, GameCube } face = Original;
     bool colours = false;
     std::array<int, 4> buttons = {0, 1, 2, 3};
     bool operator==(const Prompts&) const = default;
@@ -103,13 +103,14 @@ inline float measure(const Face& f, const std::string& text, float size) {
 // Xbox colours if asked), or the PlayStation shape the port draws for that button.
 inline game_glyph::Bitmap button_picture(const game_glyph::Glyph* icon, int face, const Prompts& look, int height) {
     game_glyph::Bitmap out;
-    if (look.face == Prompts::PlayStation || !icon) {
+    if (look.face == Prompts::GameCube || look.face == Prompts::PlayStation || !icon) {
         // the port's own shape on a disc (button_glyph_art.h), or a plain disc when the font has no icon
         out.width = out.height = 64;
         out.rgba.resize(64 * 64 * 4);
         for (int y = 0; y < 64; y++)
             for (int x = 0; x < 64; x++) {
-                const uint32_t c = button_glyphs::face_shape(face, look.colours, true, x, y);
+                const uint32_t c = look.face == Prompts::GameCube ? button_glyphs::gamecube_icon(face, true, x, y)
+                                 : button_glyphs::face_shape(face, look.colours, true, x, y);
                 uint8_t* p = &out.rgba[(size_t(y) * 64 + x) * 4];
                 p[0] = c >> 24, p[1] = c >> 16, p[2] = c >> 8, p[3] = c;
             }

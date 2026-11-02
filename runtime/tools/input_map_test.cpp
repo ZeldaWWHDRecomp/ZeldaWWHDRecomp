@@ -441,7 +441,7 @@ static void test_prompts() {
     // Full layout x appearance x family matrix. Automatic layout is resolved from labels.
     for (int layout = 0; layout < 4; ++layout)
         for (auto prompts : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal,
-                             Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation})
+                             Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube})
             for (auto family : {PadFamily::kXbox, PadFamily::kPlayStation, PadFamily::kNintendo, PadFamily::kUnknown}) {
                 Mapping candidate = Mapping::defaults();
                 if (layout == 1) apply_face_layout(candidate, FaceLayout::kLabels);
@@ -459,6 +459,7 @@ static void test_prompts() {
                 const FaceStyle expected = prompts == Mapping::Prompts::kOriginal ? FaceStyle::kOriginal
                     : prompts == Mapping::Prompts::kXbox ? FaceStyle::kXbox
                     : prompts == Mapping::Prompts::kPlayStation ? FaceStyle::kPlayStation
+                    : prompts == Mapping::Prompts::kGameCube ? FaceStyle::kGameCube
                     : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
                     : labels || family == PadFamily::kXbox ? FaceStyle::kXbox : FaceStyle::kOriginal;
                 const auto actual = prompt_style(candidate, family);
@@ -466,11 +467,11 @@ static void test_prompts() {
                 CHECK(actual.positions == (labels && expected != FaceStyle::kOriginal));
                 CHECK(actual.colours == (expected != FaceStyle::kOriginal));
                 for (int i = 0; i < 4; ++i) {
-                    CHECK(actual.buttons[i] == (expected == FaceStyle::kOriginal ? i : candidate.pad[kA+i] - kPadA));
+                    CHECK(actual.buttons[i] == (expected == FaceStyle::kOriginal || expected == FaceStyle::kGameCube ? i : candidate.pad[kA+i] - kPadA));
                     // the HUD cluster: by label swaps each pair, by position stays, any other
                     // face set puts each button on its pad button's spot
-                    CHECK(actual.spots[i] == (expected == FaceStyle::kOriginal ? i : (candidate.pad[kA+i] - kPadA) ^ 1));
-                    if (labels && expected != FaceStyle::kOriginal) CHECK(actual.spots[i] == (i ^ 1));
+                    CHECK(actual.spots[i] == (expected == FaceStyle::kOriginal || expected == FaceStyle::kGameCube ? i : (candidate.pad[kA+i] - kPadA) ^ 1));
+                    if (labels && expected != FaceStyle::kOriginal && expected != FaceStyle::kGameCube) CHECK(actual.spots[i] == (i ^ 1));
                 }
                 // Every invalid/ambiguous face set falls back together.
                 for (int invalid : {int(kPadNone), int(kPadLB), candidate.pad[kB]}) {
@@ -545,7 +546,7 @@ static void test_prompts() {
     const std::string plain = to_json(d);
     CHECK(plain.find("button_prompts") == std::string::npos && plain.find("shoulder_names") == std::string::npos &&
           plain.find("button_colours") == std::string::npos && plain.find("button_text_colours") == std::string::npos);
-    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation})
+    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube})
         for (auto n : {Mapping::ShoulderNames::kAuto, Mapping::ShoulderNames::kNintendo, Mapping::ShoulderNames::kNumbered,
                        Mapping::ShoulderNames::kXbox})
             for (bool c : {true, false}) for (bool text : {true, false}) {
@@ -566,6 +567,19 @@ static void test_prompts() {
     std::string err;
     CHECK(from_json("{\"options\": {\"button_prompts\": \"sega\", \"shoulder_names\": 3}}", r, &err));
     CHECK(r.prompts == Mapping::Prompts::kAuto && r.shoulder_names == Mapping::ShoulderNames::kAuto);
+    note_gamecube(false);
+    const uint32_t no_change = generation();
+    note_gamecube(false);
+    CHECK(generation() == no_change);
+    note_gamecube(true);
+    const uint32_t detected = generation();
+    CHECK(detected != no_change);
+    note_gamecube(true);
+    CHECK(generation() == detected);
+    CHECK(prompt_style(d, PadFamily::kXbox).face == FaceStyle::kGameCube);
+    note_gamecube(false);
+    CHECK(generation() != detected);
+    CHECK(prompt_style(d, PadFamily::kXbox).face == FaceStyle::kXbox);
     CHECK(err.find("button_prompts") != std::string::npos);
 
     // a new pad family is a new generation: the prompts follow the pad that was plugged in

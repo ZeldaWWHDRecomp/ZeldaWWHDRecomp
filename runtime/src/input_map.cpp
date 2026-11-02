@@ -514,23 +514,25 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     if (unambiguous) {
         switch (m.prompts) {
         case Mapping::Prompts::kAuto:
-            s.face = m.preset.gamecube ? FaceStyle::kOriginal : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
+            s.face = gamecube_pad() ? FaceStyle::kGameCube : m.preset.gamecube ? FaceStyle::kOriginal : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
                    : labels || family == PadFamily::kXbox ? FaceStyle::kXbox : FaceStyle::kOriginal;
             break;
         case Mapping::Prompts::kXbox: s.face = FaceStyle::kXbox; break;
         case Mapping::Prompts::kPlayStation: s.face = FaceStyle::kPlayStation; break;
+        case Mapping::Prompts::kGameCube: s.face = FaceStyle::kGameCube; break;
         case Mapping::Prompts::kOriginal: break;
         }
     }
-    if (s.face == FaceStyle::kOriginal) s.buttons = {0, 1, 2, 3};
+    if (s.face == FaceStyle::kOriginal || s.face == FaceStyle::kGameCube) s.buttons = {0, 1, 2, 3};
     s.positions = s.face != FaceStyle::kOriginal && labels;
-    if (s.face != FaceStyle::kOriginal) s.spots = hud_spots(m);
+    if (s.face != FaceStyle::kOriginal) s.spots = s.face == FaceStyle::kGameCube ? std::array<int,4>{0,1,2,3} : hud_spots(m);
     s.colours = s.face != FaceStyle::kOriginal && m.prompt_colours;
     s.text_colours = s.face != FaceStyle::kOriginal && m.prompt_text_colours;
     switch (m.shoulder_names) {
     case Mapping::ShoulderNames::kAuto:
         s.shoulders = s.face == FaceStyle::kXbox ? ShoulderStyle::kXbox
-                    : s.face == FaceStyle::kPlayStation ? ShoulderStyle::kNumbered : ShoulderStyle::kOriginal;
+                    : s.face == FaceStyle::kPlayStation ? ShoulderStyle::kNumbered
+                    : s.face == FaceStyle::kGameCube ? ShoulderStyle::kGameCube : ShoulderStyle::kOriginal;
         break;
     case Mapping::ShoulderNames::kNintendo: break;
     case Mapping::ShoulderNames::kNumbered: s.shoulders = ShoulderStyle::kNumbered; break;
@@ -545,6 +547,7 @@ const char* prompts_label(Mapping::Prompts p) {
     case Mapping::Prompts::kOriginal: return "original";
     case Mapping::Prompts::kXbox: return "Xbox";
     case Mapping::Prompts::kPlayStation: return "PlayStation";
+    case Mapping::Prompts::kGameCube: return "GameCube";
     }
     return "?";
 }
@@ -1202,7 +1205,7 @@ std::string to_json(const Mapping& m) {
         o += a + 1 < kActionCount ? ",\n" : "\n";
     }
     // button prompts: written only when not the default, as face_layout
-    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation"};
+    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation", "gamecube"};
     static const char* const kShoulderIds[] = {"auto", "nintendo", "numbered", "xbox"};
     std::string prompts;
     if (m.prompts != Mapping::Prompts::kAuto)
@@ -1358,6 +1361,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             if (p->s == "original") m.prompts = Mapping::Prompts::kOriginal;
             else if (p->s == "xbox") m.prompts = Mapping::Prompts::kXbox;
             else if (p->s == "playstation") m.prompts = Mapping::Prompts::kPlayStation;
+            else if (p->s == "gamecube") m.prompts = Mapping::Prompts::kGameCube;
             else if (p->s != "auto") warn += "unknown button_prompts \"" + p->s + "\"; ";
         }
         if (const Json* n = op->get("shoulder_names"); n && n->type == Json::Str) {
@@ -1487,8 +1491,14 @@ static FaceLabel g_labels[4] = {FaceLabel::kUnknown, FaceLabel::kUnknown, FaceLa
                                 FaceLabel::kUnknown};
 
 static std::atomic<int> g_family{(int)PadFamily::kUnknown};
+static std::atomic<bool> g_gamecube_pad{false};
 
 PadFamily pad_family() { return (PadFamily)g_family.load(std::memory_order_relaxed); }
+void note_gamecube(bool detected) {
+    if (g_gamecube_pad.exchange(detected, std::memory_order_relaxed) != detected)
+        g_gen.fetch_add(1, std::memory_order_relaxed);
+}
+bool gamecube_pad() { return g_gamecube_pad.load(std::memory_order_relaxed); }
 
 void note_face_labels(const FaceLabel labels[4]) {
     Mapping m = current();
