@@ -289,7 +289,11 @@ void context_touch_step(const PlayContext& c) {
     char stage[9] = {};
     const uint32_t name = GD(0x1046F0B0) + playctx::kStage;
     for (int i = 0; i < 8; ++i) stage[i] = char(ld8(name + uint32_t(i)));
-    g_startup_scene.store(startup_touch::scene(c.has(kInGame), stage), std::memory_order_relaxed);
+    const auto startup_scene = startup_touch::scene(c.has(kInGame), stage);
+    g_startup_scene.store(startup_scene, std::memory_order_relaxed);
+#ifdef __ANDROID__
+    gfx::g_startup_gamepad = startup_scene == startup_touch::kFileSelect;
+#endif
     ctxbtn::Options o;
     o.fast_forward = fast_forward() && fast_forward_button() == input::kZR;
     ctxbtn::Buttons b = ctxbtn::context_buttons(c, o);

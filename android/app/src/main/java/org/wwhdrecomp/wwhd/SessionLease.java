@@ -32,7 +32,7 @@ final class SessionLease implements AutoCloseable {
     }
 
     private static IOException busy() {
-        return new IOException("Close the game through its menu before importing or exporting saves.");
+        return new IOException("Choose Settings › Quit Game before importing or exporting saves.");
     }
 
     @Override public void close() throws IOException {

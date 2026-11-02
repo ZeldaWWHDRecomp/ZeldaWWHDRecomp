@@ -7,7 +7,14 @@ final class StartupTouch {
     private float downX, downY;
     private boolean tap;
     boolean tracking() { return pointer >= 0; }
-    void down(int id, float x, float y) { pointer = id; downX = x; downY = y; tap = Float.isFinite(x) && Float.isFinite(y); }
+    boolean down(int id, float x, float y) { return down(id, x, y, false); }
+    boolean down(int id, float x, float y, boolean viewButton) {
+        cancel();
+        if (viewButton) return false;
+        pointer = id; downX = x; downY = y;
+        tap = Float.isFinite(x) && Float.isFinite(y);
+        return true;
+    }
     void move(int id, float x, float y, float slop) {
         if (id != pointer || !Float.isFinite(x) || !Float.isFinite(y) || !Float.isFinite(slop) || slop < 0 ||
                 (x-downX)*(x-downX) + (y-downY)*(y-downY) > slop*slop) tap = false;

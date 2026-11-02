@@ -67,6 +67,7 @@ static GamePadUiState gamepad_ui() {
 bool gamepad_ui_menu() { return gamepad_ui().menu; }
 std::atomic<float> g_drc_aspect{854.0f / 480.0f};
 std::atomic<bool> g_has_drc_window{false};
+std::atomic<bool> g_startup_gamepad{false};
 std::atomic<bool> g_one_screen{false}, g_one_screen_off_tv{false};
 std::atomic<bool> g_second_screen_off{false};
 std::atomic<bool> g_second_display_available{false};
@@ -640,10 +641,14 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
     bool pip = (g_pip_preview || ((g_mode == kDrcPip || g_mode == kDrcAuto) && pip_shown_now()) || window_fallback) && have_drc;
     // One screen (handheld) mode (one_screen.h): the GamePad picture whenever the game plays Off-TV, whatever the mode
     const bool off_tv = gamepad_ui().available && gamepad_ui().off_tv;
-    bool drc_only = !g_pip_preview && (g_mode == kDrcGamePad || (g_mode == kDrcAuto && off_tv) || g_one_screen_off_tv) && have_drc;
+    const bool startup_gamepad = g_startup_gamepad.load() && !g_has_drc_window;
+    bool drc_only = !g_pip_preview && (startup_gamepad || g_mode == kDrcGamePad || (g_mode == kDrcAuto && off_tv) || g_one_screen_off_tv) && have_drc;
     // Releasing a connected Android display also suspends its single-screen
     // fallback (including a hidden GamePad-only or pinned automatic view).
-    if (g_second_display_available && g_second_screen_off) pip = drc_only = false;
+    if (g_second_display_available && g_second_screen_off) {
+        pip = false;
+        if (!startup_gamepad) drc_only = false; // keep startup touch usable on the remaining primary screen
+    }
     float dw = 0, dh = 0;
     bool sim = sim_screen(&dw, &dh);
     if (!sim) dw = layer_w, dh = layer_h;
