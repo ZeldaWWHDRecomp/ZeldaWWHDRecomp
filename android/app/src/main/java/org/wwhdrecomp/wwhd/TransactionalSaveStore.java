@@ -22,6 +22,12 @@ final class TransactionalSaveStore {
         this.durability = durability;
     }
 
+    void prepareForGame() throws IOException {
+        // An empty live directory would make recovery mistake an interrupted rename for a commit.
+        recover();
+        if (!live.isDirectory() && !live.mkdirs()) throw new IOException("Could not create the save directory.");
+    }
+
     void recover() throws IOException {
         if (previous.exists()) {
             if (!live.exists()) move(previous, live); // interrupted between the two renames

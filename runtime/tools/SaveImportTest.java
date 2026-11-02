@@ -148,6 +148,33 @@ public final class SaveImportTest {
                 new TransactionalSaveStore(root.toFile(), dir -> {}).recover();
                 consistent(root.resolve("save"), "old");
             });
+            test("game startup restores interrupted import before creating live save", () -> {
+                Path root = Files.createDirectory(temp.resolve("startup-interrupted"));
+                dataset(root.resolve(".wwhd-save-previous"), "old");
+                dataset(root.resolve(".wwhd-save-stage"), "new");
+                try (SessionLease lease = SessionLease.acquire(root.toFile())) {
+                    new TransactionalSaveStore(root.toFile(), dir -> {}).prepareForGame();
+                }
+                consistent(root.resolve("save"), "old");
+                check(!Files.exists(root.resolve(".wwhd-save-stage")), "staging tree remains");
+                File[] backups = root.toFile().listFiles((dir, name) -> name.startsWith("save-backup-"));
+                check(backups != null && backups.length == 0, "old save incorrectly retired as backup");
+            });
+            test("fresh game startup creates save directory after recovery", () -> {
+                Path root = Files.createDirectory(temp.resolve("startup-fresh"));
+                new TransactionalSaveStore(root.toFile(), dir -> {}).prepareForGame();
+                check(Files.isDirectory(root.resolve("save")), "fresh save directory missing");
+            });
+            test("second transfer reports transfer contention", () -> {
+                Path root = Files.createDirectory(temp.resolve("overlap"));
+                try (SessionLease first = SessionLease.acquire(root.toFile())) {
+                    try (SessionLease second = SessionLease.acquire(root.toFile())) {
+                        throw new AssertionError("concurrent transfer accepted");
+                    } catch (IOException expected) {
+                        check(expected.getMessage().contains("Another save transfer"), "wrong transfer guidance");
+                    }
+                }
+            });
             test("recovery after publication preserves current tree and old backup", () -> {
                 Path root = Files.createDirectory(temp.resolve("published")); dataset(root.resolve(".wwhd-save-previous"), "old"); dataset(root.resolve("save"), "new");
                 new TransactionalSaveStore(root.toFile(), dir -> {}).recover();
@@ -163,7 +190,11 @@ public final class SaveImportTest {
                     long deadline = System.nanoTime() + 10_000_000_000L;
                     while (!Files.exists(ready) && child.isAlive() && System.nanoTime() < deadline) Thread.sleep(10);
                     check(Files.exists(ready), "child did not acquire the session");
-                    rejects(() -> { try (SessionLease lease = SessionLease.acquire(root.toFile())) { } });
+                    try (SessionLease lease = SessionLease.acquire(root.toFile())) {
+                        throw new AssertionError("concurrent game session accepted");
+                    } catch (IOException expected) {
+                        check(expected.getMessage().contains("Settings › Quit Game"), "wrong game-close guidance");
+                    }
                 } finally { child.destroyForcibly().waitFor(); }
                 try (SessionLease lease = SessionLease.acquire(root.toFile())) { }
             });

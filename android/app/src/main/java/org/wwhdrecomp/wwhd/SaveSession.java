@@ -23,7 +23,7 @@ final class SaveSession {
         File root = root(context);
         SessionLease lease = SessionLease.acquire(root);
         try {
-            store(root).recover();
+            store(root).prepareForGame();
             gameLease = lease;
         } finally { if (gameLease == null) lease.close(); }
     }

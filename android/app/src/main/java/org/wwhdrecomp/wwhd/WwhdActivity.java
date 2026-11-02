@@ -300,7 +300,7 @@ public class WwhdActivity extends SDLActivity {
         File files = getExternalFilesDir(null);
         if (files != null) {
             new File(files, "game").mkdirs();
-            new File(files, "save").mkdirs();
+            // SaveSession creates save/ only after interrupted-import recovery under the lease.
             Log.i("wwhd", "game folder: " + new File(files, "game"));
         }
         super.onCreate(savedInstanceState);

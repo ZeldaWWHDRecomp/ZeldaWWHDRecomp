@@ -23,7 +23,8 @@ final class SessionLease implements AutoCloseable {
             if (acquired == null) throw busy();
         } catch (OverlappingFileLockException failure) {
             file.close();
-            throw busy();
+            // Import and export activities share :tools; overlapping locks belong to a transfer.
+            throw new IOException("Another save transfer is in progress. Wait for it to finish before trying again.");
         } catch (IOException | RuntimeException failure) {
             file.close();
             throw failure;
@@ -32,7 +33,7 @@ final class SessionLease implements AutoCloseable {
     }
 
     private static IOException busy() {
-        return new IOException("Close the game from its menu before transferring saves.");
+        return new IOException("Choose Settings › Quit Game before importing or exporting saves.");
     }
 
     @Override public void close() throws IOException {
