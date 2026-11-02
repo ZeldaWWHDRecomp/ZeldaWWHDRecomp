@@ -6,6 +6,7 @@
 #include <chrono>
 #include <thread>
 
+#include "../game_name_text.h"
 #include "../input.h"
 #include "../overlay/text_entry.h"
 #include "../runtime.h"
@@ -14,15 +15,10 @@ namespace {
 
 constexpr int kMaxForm = 4096;      // 16-bit characters
 constexpr uint32_t kStateBlank = 0, kStateDisplayed = 2;
-// "%" is refused on every request: the game only asks this keyboard for names (its SwkbdMgr), and it
-// formats names as printf-style format strings (setCardName, mods/player_name.cpp), at every start
-// too, so a "%" could read or write anywhere. A caller that needs "%" has to tell the name apart.
-const std::u16string kRefused = u"%";
-
-std::u16string without_refused(std::u16string s) {
-    std::erase_if(s, [](char16_t ch) { return kRefused.find(ch) != std::u16string::npos; });
-    return s;
-}
+// "%" is refused on every request (game_name_text.h): the game only asks this keyboard for names (its
+// SwkbdMgr). A caller that needs "%" has to tell the name apart.
+using game_name::kRefused;
+using game_name::without_refused;
 
 struct State {
     std::mutex mu;
@@ -121,7 +117,7 @@ void start_prompt() {
     r.refused = kRefused;
     r.changed = [](const std::u16string& text) {
         std::lock_guard<std::mutex> lk(S.mu);
-        S.live_text = text;
+        S.live_text = without_refused(text);
         S.live_pending = true;
     };
     // the overlay's prompt; the host's own (window title, macOS sheet) where the overlay can't show
