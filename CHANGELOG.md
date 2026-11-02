@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: GameCube button prompts** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** under Button prompts
+  in Controls (or leave it on Automatic with a GameCube pad): the HUD, item menu and dialogue show the GameCube's
+  buttons, with the big green A, the red B, the kidney-shaped X and Y curving around A, the purple Z and the R and L
+  shoulder captions. The in-game settings page offers GameCube too.
 - **Fixed: start-up audio threads now sync like on the console.** At boot the game waits for its audio threads to
   finish setting up before it continues; the port let it run ahead. It now waits as the Wii U does (about 2 ms once at
   start-up), so the sound system is always ready before the game first uses it.
