@@ -132,6 +132,8 @@ void Look::sync_pages(uint64_t generation) {
     auto& store = guestmods::hud::store();
     const bool forgotten = store_generation != generation;
     store_generation = generation;
+    // the shown lines at any screen size: room for the pages, and for as much again still on the screen
+    store.raise_pixel_quota(owner, guestmods::hud::kMaxPixels + 2 * atlas.bytes());
     page_images.resize(std::max(page_images.size(), atlas.pages()));
     for (size_t i = 0; i < page_images.size(); i++) {
         PageImage& p = page_images[i];

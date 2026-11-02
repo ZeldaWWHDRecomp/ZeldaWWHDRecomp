@@ -84,6 +84,7 @@ class Store {
     std::map<Handle,List> pending;
     std::map<Handle,OwnedImage> images;
     std::map<std::string,std::vector<std::weak_ptr<const Image>>> allocations;
+    std::map<std::string,size_t> raised_pixels;  // (raise_pixel_quota)
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> published;
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> previous;  // (the one it replaced)
     std::atomic<uint64_t> step_{0};
@@ -167,11 +168,18 @@ public:
         auto& live=allocations[owner];size_t used=0,count=0;
         std::erase_if(live,[](const auto& weak){return weak.expired();});
         for(const auto& weak:live)if(auto image=weak.lock()){used+=image->rgba.size();++count;}
-        if(count>=kMaxImages||used>kMaxPixels-size)return 0;
+        auto raised=raised_pixels.find(owner);
+        const size_t limit=raised==raised_pixels.end()?kMaxPixels:raised->second;
+        if(count>=kMaxImages||used>limit-size)return 0;
         Handle h=handle();if(!h)return 0;
         auto image=std::make_shared<Image>();image->width=width;image->height=height;image->rgba.resize(size);
         for(uint32_t y=0;y<height;++y)std::copy_n(source+size_t(y)*stride,size_t(width)*4,image->rgba.data()+size_t(y)*width*4);
         images.emplace(h,OwnedImage{owner,image});live.push_back(image);return h;
+    }
+    // The port's own pages only (host code; a mod has no call that reaches this): a higher limit for
+    // an owner's images than kMaxPixels, for text that needs it on a large screen. It only ever rises.
+    void raise_pixel_quota(const std::string& owner,size_t bytes) {
+        std::lock_guard lock(mutex);auto& limit=raised_pixels[owner];limit=std::max({limit,kMaxPixels,bytes});
     }
     bool picture(const std::string& owner,Handle list,Handle image,Command command) {
         std::lock_guard lock(mutex);auto it=images.find(image);
