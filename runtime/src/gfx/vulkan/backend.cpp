@@ -6,6 +6,7 @@
 #include "atomic_temporary.h"
 #include "validation_diagnostics.h"
 #include "../../audio_out.h"
+#include "../../mods/save_folder_writes.h"
 #include "../../interp_pacing.h"
 #ifndef VK_ENABLE_BETA_EXTENSIONS
 #define VK_ENABLE_BETA_EXTENSIONS
@@ -78,6 +79,7 @@
 #ifdef WWHD_SDL_HOST
 #include "platform/input_sdl.h"
 #include "overlay/window_target.h"
+#include "platform/wayland_startup.h"
 #include <SDL3/SDL_vulkan.h>
 #endif
 #include "platform/display_rate.h"
@@ -1701,7 +1703,7 @@ static void make_swapchain(Screen &s) {
   if (fs.empty())
     exception_report::raise("No presentation formats");
   bool wantHdr=false,wantPq=false;
-  // HDR swapchain candidates: scRGB FP16, else HDR10 PQ (10-bit preferred).
+  // Auto prefers scRGB FP16; a preference may select HDR10 PQ (10-bit preferred).
   auto hdrCandidate=[&](const VkSurfaceFormatKHR& f,bool pq) {
     if(pq ? f.colorSpace!=VK_COLOR_SPACE_HDR10_ST2084_EXT ||
               (f.format!=VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.format!=VK_FORMAT_A2R10G10B10_UNORM_PACK32 &&
@@ -1722,7 +1724,9 @@ static void make_swapchain(Screen &s) {
     hdr::displayEnabled=display_hdr_enabled(s.window);
 #endif
     wantHdr=hdr::resolve_output();
-    wantPq=wantHdr&&!scrgb;
+    const int preference=hdr::format.load();
+    wantPq=wantHdr&&hdr::choose_format(static_cast<hdr::Format>(preference),scrgb,pq)==hdr::Output::Pq;
+    hdr::activeFormatPreference=preference;
   }
   // Presentation uses image blits, so both advertised surface support and
   // optimal-tiling BLIT_DST format support must hold.
@@ -2762,7 +2766,7 @@ static bool present(Screen &s) {
   // Presentation changed (settings overlay): a new swapchain, as for a resize (also for a window that
   // is not shown right now, so the next frame it shows uses the new mode)
   if (!workerAcquired && screen_has_window(s) && s.swapchain &&
-      (s.presentWanted != effective_present_mode() || (&s==&R.tv && s.hdrOutput!=hdr::enabled.load())))
+      (s.presentWanted != effective_present_mode() || (&s==&R.tv && (s.hdrOutput!=hdr::enabled.load() || hdr::activeFormatPreference.load()!=hdr::format.load()))))
     make_swapchain(s);
   Surface* scan = presentation_source_screen(s).scan.get();
   if (!screen_has_window(s) || !s.visible || s.width <= 0 || s.height <= 0 || !scan ||
@@ -3290,6 +3294,7 @@ static void dump_scan(Screen &s, const std::string &path) {
     write_rgba_png(path, s.scan->extent.width, s.scan->extent.height,
                    read_surface_rgba(*s.scan, s.scanSrgb));
     LOG("[gfx] wrote %s (%ux%u)", path.c_str(), s.scan->extent.width, s.scan->extent.height);
+    if(&s==&R.tv && getenv("WWHD_HDR_CURVE_DUMP"))dump_hdr_curves(s,path);
   } catch (const std::exception &e) {
     LOG("[gfx] cannot write %s: %s", path.c_str(), e.what());
   }
@@ -3914,8 +3919,10 @@ void swap() {
       PipelineWorkerMemory wm;
       pipeline_worker_memory(wm);
       LOG("[gfx] memory pipelines: %zu of the game's (%zu compiling, holding <= %zu shader modules; %zu failed); "
-          "unused warm %zu of %zu (%zu dropped); recipe database %zu recipes %.2f MiB",
-          total,compiling,compiling*2,failed,wm.unusedWarm,wm.unusedWarmLimit,wm.evicted,wm.recipes,wm.recipeBytes/mib);
+          "unused warm %zu of %zu (%zu dropped; %zu found by draws: %zu built by the render thread from the warm cache, "
+          "%zu handed over); recipe database %zu recipes %.2f MiB",
+          total,compiling,compiling*2,failed,wm.unusedWarm,wm.unusedWarmLimit,wm.evicted,
+          wm.builtByRenderThread+wm.handedOver,wm.builtByRenderThread,wm.handedOver,wm.recipes,wm.recipeBytes/mib);
     }
     LOG("[gfx] memory scope: payload/capacity excludes compiler results, disk snapshots, metadata and allocator overhead");
     LOG("[gfx] memory scope: cached image allocations exclude retired, non-cache and driver images");
@@ -4888,15 +4895,15 @@ static void init_device(std::vector<const char *> extensions,
           R.bcCpuDecode ? "CPU" : "compute", bc.reason);
   }
   {
-    // panvk has no geometric depth clipper; see depth_clamp_wanted in draw.cpp.
-    const char* forced = getenv("WWHD_VK_DEPTH_CLAMP_ALL");
+    // panvk has no geometric clipper; see clip_emulation_wanted_regs in shaders.cpp.
+    const char* forced = getenv("WWHD_VK_CLIP_EMULATION");
     const bool wanted = forced ? strcmp(forced, "0") != 0 : driver.driverID == VK_DRIVER_ID_MESA_PANVK;
-    R.depthClampAll = wanted && R.enabledFeatures.depthClamp;
-    if (R.depthClampAll || forced)
-      LOG("[vulkan] depth clamp for every pipeline %s (%s)", R.depthClampAll ? "on" : "off",
-          forced && !R.enabledFeatures.depthClamp ? "WWHD_VK_DEPTH_CLAMP_ALL, but the device has no depthClamp" :
-          forced ? "set by WWHD_VK_DEPTH_CLAMP_ALL" :
-          "panvk culls fragments for depth clipping; WWHD_VK_DEPTH_CLAMP_ALL=0/1 overrides");
+    R.clipEmulation = wanted && R.enabledFeatures.depthClamp;
+    if (R.clipEmulation || forced)
+      LOG("[vulkan] depth clipping in shaders %s (%s)", R.clipEmulation ? "on" : "off",
+          forced && !R.enabledFeatures.depthClamp ? "WWHD_VK_CLIP_EMULATION, but the device has no depthClamp" :
+          forced ? "set by WWHD_VK_CLIP_EMULATION" :
+          "panvk culls fragments for depth clipping; WWHD_VK_CLIP_EMULATION=0/1 overrides");
   }
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
@@ -5094,9 +5101,9 @@ void init() {
   {
     const char* driver = SDL_GetCurrentVideoDriver();
     hdr::waylandAfterRestart = waylandForHdr && driver && !strcmp(driver, "x11");
-    LOG("[display] SDL video driver %s", driver ? driver : "none");
   }
 #endif
+  wayland_startup::configure();
   // the Vulkan loader (vulkan-1.dll, libvulkan.so.1), loaded here rather than imported (loader.h); the
   // windows below use the same one
   if (!SDL_Vulkan_LoadLibrary(nullptr))
@@ -5683,6 +5690,7 @@ static void quit_game() {
   ss::save_last_session(1500);  // the "Last session" state (a few KB; skipped outside gameplay)
   audio::finish_dump();  // _Exit bypasses atexit handlers
   screenshot::finish();  // the screenshots taken are written first
+  save_folder::release_lock();  // a chosen save folder's lock: this computer stops playing
   gx2::shutdown_vulkan_caches();
 #ifdef __ANDROID__
   if (::hostui::quit_from_menu() && android_end_task()) {

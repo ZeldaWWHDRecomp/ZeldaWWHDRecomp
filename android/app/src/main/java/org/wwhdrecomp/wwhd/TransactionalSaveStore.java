@@ -17,8 +17,8 @@ final class TransactionalSaveStore {
     TransactionalSaveStore(File root, Durability durability) {
         this.root = root;
         this.live = new File(root, "save");
-        this.stage = new File(root, ".windwake-save-stage");
-        this.previous = new File(root, ".windwake-save-previous");
+        this.stage = new File(root, ".wwhd-save-stage");
+        this.previous = new File(root, ".wwhd-save-previous");
         this.durability = durability;
     }
 
@@ -76,22 +76,22 @@ final class TransactionalSaveStore {
 
     private void syncTree(File directory) throws IOException {
         File[] children = directory.listFiles();
-        if (children == null) throw new IOException("Não foi possível verificar o save preparado.");
+        if (children == null) throw new IOException("Could not verify the staged save.");
         for (File child : children) if (child.isDirectory()) syncTree(child);
         durability.sync(directory);
     }
 
     private static void move(File from, File to) throws IOException {
-        if (to.exists()) throw new IOException("O destino de recuperação já existe: " + to.getName());
+        if (to.exists()) throw new IOException("Recovery destination already exists: " + to.getName());
         Files.move(from.toPath(), to.toPath(), StandardCopyOption.ATOMIC_MOVE);
     }
 
     static void remove(File file) throws IOException {
-        if (Files.isSymbolicLink(file.toPath())) throw new IOException("Link inesperado na área de preparação.");
+        if (Files.isSymbolicLink(file.toPath())) throw new IOException("Unexpected symbolic link in staging.");
         if (!file.exists()) return;
         if (file.isDirectory()) {
             File[] children = file.listFiles();
-            if (children == null) throw new IOException("Não foi possível limpar a preparação.");
+            if (children == null) throw new IOException("Could not clean staging.");
             for (File child : children) remove(child);
         }
         Files.delete(file.toPath());

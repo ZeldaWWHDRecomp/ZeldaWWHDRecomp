@@ -57,7 +57,10 @@
 #include "imgui.h"
 #include "trace.h"
 #include "hostui.h"
+#include "../mods/link_poses.h"
+#include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
+#include "../mods/save_folder.h"
 #include "controls_view.h"
 #include "binding_widget.h"
 #include "extensions.h"
@@ -80,6 +83,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../input_map.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
+#include "../mods/player_name.h"
 #include "../mods/manager.h"
 #include "../mods/game_settings.h"
 #include "../mods/packages.h"
@@ -526,11 +530,29 @@ void refresh_slots(bool force) {
 
 void tab_saves_screenshots();
 void tab_saves_crash_recovery();
+void tab_saves_folder();
 void tab_saves_convenience();
 void tab_saves() {
     refresh_slots(false);
     std::string msg = ss::last_message();
     if (!msg.empty()) note("%s", msg.c_str());
+    heading("Save file");
+    {   // Link's name on the save file being played (mods/player_name.h), as the settings page's Game tab;
+        // the prompt shows over the game, not over this window, so Change closes it
+        const bool loaded = player_name::loaded();
+        ImGui::AlignTextToFramePadding();
+        if (loaded) ImGui::Text("Link's name: %s", player_name::current().c_str());
+        else ImGui::TextDisabled("Link's name");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!loaded);
+        if (ImGui::Button("Change...")) {
+            set_open(false, OpenReason::API);
+            hostui::post([] { player_name::ask(); });
+        }
+        ImGui::EndDisabled();
+        if (loaded) help("Gives your hero a new name on this save file. It's kept the next time you save.");
+        else note("Load a save file first.");
+    }
     heading("Save states");
     const bool full = ss::full_states();
     const char* keys = ext::features().keyboard ? " Shift+F1..F5 save in game, F6 loads slot 1, F2..F5 load slots 2..5 (Esc or F1 opens this menu)." : "";
@@ -627,8 +649,31 @@ void tab_saves() {
              "Applies to manual full states and Crash Recovery; loading works with either path.");
 
     }
+#ifndef __ANDROID__
+    tab_saves_folder();
+#endif
     if (features.screenshots) tab_saves_screenshots();
     if (features.full_states) tab_saves_crash_recovery();  // its automatic states are full states
+}
+
+// Settings > Saves > Save folder (mods/save_folder.h): for example a cloud folder, from the next start.
+void tab_saves_folder() {
+    heading("Save folder");
+    const save_folder::View v = save_folder::view();
+    if (!v.notice.empty()) note("%s", v.notice.c_str());
+    note("In use: %s%s", v.folder.c_str(), v.custom ? "" : " (the default folder)");
+    if (v.pending)
+        note("From the next start: %s. Your save is copied there then (never moved).",
+             v.chosen.empty() ? "the default folder" : v.chosen.c_str());
+    if (ImGui::Button("Choose save folder...")) hostui::choose_save_folder([](std::string path) { save_folder::choose(path); });
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!v.custom && v.chosen.empty());
+    if (ImGui::Button("Back to default")) save_folder::choose("");
+    ImGui::EndDisabled();
+    help("Keeps your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive, so the "
+         "cloud app keeps it the same on your computers. Only the save goes there: save states and settings stay on this "
+         "computer. The change takes effect the next time you start the game. Close the game on one computer before "
+         "playing on another.");
 }
 
 void tab_saves_screenshots() {
@@ -991,7 +1036,7 @@ void tab_graphics() {
         const bool chosen=hdr::enabled.load()||(restart&&hdr::fellBackToSdr.load());
         if(radio("SDR",!chosen))post_changed([] {hdr::enabled=false;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","0");});
         ImGui::SameLine();
-        // scRGB when the surface offers it, otherwise HDR10 PQ (backend.cpp make_swapchain)
+        // Report the active swapchain; Auto prefers scRGB (backend.cpp make_swapchain).
         const bool pq=hdr::enabled.load()?hdr::pqOutput.load():!hdr::scrgbSupported.load()&&hdr::pqSupported.load();
         if(radio(restart?"HDR (after restart)":pq?"HDR (HDR10 PQ)":"HDR (scRGB)",chosen,
                  restart||(hdr::displayEnabled.load()&&hdr::formatSupported.load())))
@@ -1013,7 +1058,18 @@ void tab_graphics() {
                 post_changed([dst,v,lo,hi,key] {hdr::set(*dst,v,lo,hi);hostui::set(key,std::to_string(v));});
             }
         };
+        if(hdr::enabled.load() && hdr::format.load()!=0 &&
+           ((hdr::format.load()==1 && hdr::pqOutput.load()) || (hdr::format.load()==2 && !hdr::pqOutput.load())))
+            note(hdr::pqOutput.load()?"scRGB is unavailable on this surface. Using HDR10 (PQ).":"HDR10 (PQ) is unavailable on this surface. Using scRGB.");
         ImGui::BeginDisabled(!hdr::enabled.load());
+        int curve=hdr::sdrCurve.load();
+        if(combo("SDR curve in HDR",&curve,"Gamma 2.2\0Gamma 2.4\0sRGB\0"))
+            post_changed([curve] {hdr::sdrCurve=curve;hostui::set("hdrSdrCurve",std::to_string(curve));});
+        help("How the game's picture is turned into HDR. Gamma 2.2 matches most monitors in SDR; try 2.4 for a darker, TV-like look; sRGB is the old setting.");
+        int format=hdr::format.load();
+        if(combo("HDR format",&format,"Auto\0scRGB\0HDR10 (PQ)\0"))
+            post_changed([format] {hdr::format=format;hostui::set("hdrFormat",std::to_string(format));});
+        help("Which HDR signal is sent to the display. Auto is best for most setups.");
         slider("Paper white","hdrPaperWhite",hdr::paperWhite,80,500,"%.0f nits");
         slider("Peak brightness","hdrPeak",hdr::peak,200,4000,"%.0f nits");
         slider("Exposure","hdrExposure",hdr::exposure,-3,3,"%+.2f EV");
@@ -1541,6 +1597,11 @@ void tab_display() {
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
          "something new. Off: every button always shows.");
+    if (!mods::context_buttons_on()) ImGui::BeginDisabled();
+    if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
+    help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "
+         "sword, crouching on Crouch. It is drawn from your own game files when the game starts. Off: the game's words only.");
+    if (!mods::context_buttons_on()) ImGui::EndDisabled();
     if (check("Items by tap", mods::item_tap_on(), &v)) hostui::post([v] { mods::set_item_tap_on(v); });
     help("A tap on the bow, boomerang, hookshot or grappling hook takes it out and keeps it aimed; each tap "
          "then shoots, B puts it away. Off: hold the button as on the Wii U.");
@@ -2318,6 +2379,13 @@ void controller_row() {
     if (ImGui::Button("Controller details...")) g_details_open = true;
     help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
     bool v;
+    flow::next(flow::check("Settings page in the pause menu"), 24);
+    if (check("Settings page in the pause menu", cur.settings_pause_page, &v)) {
+        input_map::Mapping m = cur;
+        m.settings_pause_page = v;
+        input_map::set_current(m);
+    }
+    help("Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.");
     flow::next(flow::check("L turns the GamePad page"), 24);
     if (check("L turns the GamePad page", cur.l_turns_page, &v)) {
         input_map::Mapping m = cur;
@@ -2489,13 +2557,13 @@ void tab_controls() {
     ImGui::TextUnformatted("Face buttons");
     flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kPosition)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kPosition),
-              !m.face_auto && fl == input_map::FaceLayout::kPosition)) {
+              !m.face_auto && !m.preset.gamecube && fl == input_map::FaceLayout::kPosition)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kPosition);
         edit_set(m);
     }
     flow::next(flow::check(input_map::face_layout_label(input_map::FaceLayout::kLabels)));
     if (radio(input_map::face_layout_label(input_map::FaceLayout::kLabels),
-              !m.face_auto && fl == input_map::FaceLayout::kLabels)) {
+              !m.face_auto && !m.preset.gamecube && fl == input_map::FaceLayout::kLabels)) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
         edit_set(m);
     }
@@ -2510,9 +2578,35 @@ void tab_controls() {
          "look in the game. Only the four face bindings change.");
     if (m.face_auto) {
         disabled_after(std::string("(-> ") + input_map::face_layout_label(fl) + ")");
-    } else if (fl == input_map::FaceLayout::kCustom) {
+    } else if (!m.preset.gamecube && fl == input_map::FaceLayout::kCustom) {
         disabled_after("(custom)");
     }
+    bool legacy_gc_faces = false;
+    std::string gc_guid = g_edit_guid, gc_name = g_edit_name;
+    if (!g_edit_controller) input_map::active_controller(gc_guid, gc_name);
+    for (const auto& c : input::controllers())
+        if (c.guid == gc_guid && c.name == gc_name) legacy_gc_faces = input_map::legacy_gamecube_faces(c);
+    flow::next(flow::check("GameCube"));
+    if (radio("GameCube", m.preset.gamecube)) {
+        // A selected controller gets its own profile before applying the preset.
+        if (g_edit_controller) {
+            auto all = input_map::current();
+            const int index = input_map::ensure_profile(all, g_edit_guid, g_edit_name);
+            auto view = input_map::view_for(all, index);
+            input_map::apply_gamecube(view, legacy_gc_faces);
+            input_map::store_view(all, view, index);
+            input_map::set_current(all);
+        } else { input_map::apply_gamecube(m, legacy_gc_faces); edit_set(m); }
+    }
+    help("GameCube: A action, B sword, X/Y/Z items, L target, R shield (25% travel). Start opens "
+         "items/map; Start + up looks in first person, + down is Minus, + left is L, + right opens "
+         "Settings. D-pad up conducts; left/right keep HD's ship controls. Previous bindings are retained.");
+    flow::next(flow::button("Restore previous controller bindings"));
+    ImGui::BeginDisabled(!m.preset.saved);
+    if (ImGui::Button("Restore previous controller bindings")) {
+        input_map::restore_pad_preset(m); edit_set(m);
+    }
+    ImGui::EndDisabled();
     // in-game button prompts (#110, #143): what the game's own button icons look like
     {
         using P = input_map::Mapping::Prompts;
@@ -2521,7 +2615,7 @@ void tab_controls() {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Button prompts");
         ImGui::PushID("prompts");  // "automatic" is also a face-buttons choice
-        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation}) {
+        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube}) {
             flow::next(flow::check(input_map::prompts_label(p)));
             if (radio(input_map::prompts_label(p), m.prompts == p)) {
                 m.prompts = p;
@@ -2529,14 +2623,14 @@ void tab_controls() {
             }
         }
         ImGui::PopID();
-        help("How the game's button icons look, with any face-button setting. Xbox and "
-             "PlayStation show the button bound to each Wii U action. By position on Xbox, "
+        help("How the game's button icons look, with any face-button setting. Xbox and PlayStation show the button bound to each Wii U action. GameCube uses the classic coloured face buttons. By position on Xbox, "
              "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
              "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
              "Original keeps the game's look. Custom bindings need four distinct face buttons; "
              "otherwise the original icons are used.");
         disabled_after(std::string("(-> ") + (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
                                        : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
+                                       : look.face == input_map::FaceStyle::kGameCube  ? "GameCube"
                                                                                        : "original") + ")");
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Shoulder names");
@@ -2551,11 +2645,11 @@ void tab_controls() {
         ImGui::PopID();
         help("How prompts name the shoulder buttons and triggers. Automatic follows the button "
              "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
-             "shapes, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
+             "shapes, L / R / Z with GameCube prompts, and the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
              "buttons setting.");
         disabled_after(std::string("(-> ") + (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
                                        : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
-                                                                                               : "L / R / ZL / ZR") + ")");
+                                                                                               : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z" : "L / R / ZL / ZR") + ")");
         bool colours = m.prompt_colours;
         if (ImGui::Checkbox("Coloured face buttons", &colours)) {
             m.prompt_colours = colours;
@@ -2570,7 +2664,7 @@ void tab_controls() {
             m.prompt_text_colours = text_colours;
             input_map::set_current(m);
         }
-        help("Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+        help("Action text follows the mapped button's prompt colour, independently of icon colours. "
              "Off: the game's own text colours (white).");
     }
     jump_row(m);
@@ -2925,6 +3019,13 @@ void tab_audio() {
     if (ImGui::IsItemDeactivatedAfterEdit())
         hostui::post([pad_volume] { audio::set_gamepad_sounds_volume(pad_volume / 100.0f); });
     help("Play sounds from the GamePad speaker through your main speakers during TV play. Applies immediately and is remembered. Master volume also applies.");
+    bool menu_sounds_on = menu_sounds::option();
+    if (ImGui::Checkbox("Menu sounds", &menu_sounds_on))
+        hostui::post([menu_sounds_on] { menu_sounds::set_option(menu_sounds_on); });
+    help("Settings plays the game's own menu sounds when you move, choose, change an option or go back. They play "
+         "like the game's other sounds: Master volume applies, and in TV play the game sends them to the GamePad, "
+         "so they need GamePad sounds through main speakers (and its volume) there. Never while the game is in the "
+         "background or muted.");
     if (audio::gamepad_sounds_from_env() || audio::gamepad_sounds_volume_from_env())
         note("GamePad audio test overrides are set for this start; overridden preferences are not saved.");
     if (ext::features().speaker_choice) {
@@ -3537,6 +3638,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
         }
+        menu_sounds::observe({});  // Settings closed: its closing sound (menu_sounds.h)
         return nullptr;
     }
     if (pw < 16 || ph < 16) return nullptr;
@@ -3618,6 +3720,21 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     if (open) settings_window();
     else modsui::background(mods_host());
     g_dialog_open = open && ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    {
+        // the game's menu sounds for what happened in Settings this frame (menu_sounds.h)
+        const ImGuiContext& g = *ImGui::GetCurrentContext();
+        menu_sounds::Frame mf;
+        mf.open = open && is_open();  // (closed by B or the close button this frame: its closing sound)
+        if (mf.open) {
+            mf.tab = U.tab;
+            mf.moved = g.NavJustMovedToId != 0 && g.NavCursorVisible;
+            mf.activated = g.ActiveId != 0 && g.ActiveIdIsJustActivated;
+            mf.edited = g.ActiveIdHasBeenEditedThisFrame;
+            mf.popups = g.OpenPopupStack.Size;
+            mf.back = navigation_pressed(input_map::face_input(input_map::kB)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        }
+        menu_sounds::observe(mf);
+    }
     pip_live_drag();
     if (text) {
         float pad[input_map::kPadCount];

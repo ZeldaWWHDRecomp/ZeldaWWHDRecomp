@@ -12,14 +12,17 @@ import java.util.Map;
  *  Idea from the GreenNaugahyde Android fork (MPL-2.0), ControlsView's context buttons; reimplemented. */
 final class ContextPack {
     static final int VERSION = 1, LEN = 40;
-    // Optional extension in reserved header slot 3; zero from the upstream runtime keeps its behaviour.
+    // Optional startup extension in reserved slot 3; older native libraries leave it zero.
     static final int STARTUP_MAGIC = 0x57570100;
     static final int STARTUP_UNKNOWN = 0, STARTUP_BOOT = 1, STARTUP_TITLE = 2, STARTUP_FILES = 3, STARTUP_GAME = 4;
     // header flags (raw[1])
     static final int ENABLED = 1, ACTIVE = 1 << 1, TAP_CONTINUES = 1 << 2, AIM_LATCHED = 1 << 3,
             ZL_LATCHED = 1 << 4, CLUSTER_HIDDEN = 1 << 5,
             // requested from native code (P3-REQUESTS.md): the HUD names the item buttons A1 A2 A3
-            ITEM_NAMES_A = 1 << 6;
+            ITEM_NAMES_A = 1 << 6,
+            // Link in the button pictures (controls plan P8, link_poses.h): an action with a pose picture
+            // (ContextAssets.poseFile) shows Link in that pose above its word
+            LINK_POSES = 1 << 7;
     // per-button state
     static final int SHOWN = 1, KIND_SHIFT = 1, KIND_MASK = 3 << 1, HELD = 1 << 3;
     static final int KIND_PLAIN = 0, KIND_ACTION = 1, KIND_ITEM = 2, KIND_FAST_FORWARD = 3;
@@ -62,18 +65,7 @@ final class ContextPack {
     }
     boolean startupTouch() { int scene = startupScene(); return scene >= STARTUP_BOOT && scene <= STARTUP_FILES; }
     boolean itemNamesA() { return valid && (raw[1] & ITEM_NAMES_A) != 0; }
-    boolean telescope() {
-        if (!on() || shown(PLUS) || shown(ZL)) return false;
-        for (int b = X; b <= R; b++) if (shown(b) && kind(b) == KIND_ITEM && label(b) == 0x20) return true;
-        return false;
-    }
-    boolean gestureAim() {
-        if (!valid) return false;
-        if ((flags() & AIM_LATCHED) != 0) return true;
-        if (!on() || shown(PLUS)) return false;
-        return telescope() || shown(ZL) && shown(R3) ||
-            shown(A) && kind(A) == KIND_ACTION && label(A) == 0x20 && !shown(LEFT_RIGHT); // photo finder
-    }
+    boolean linkPoses() { return valid && (raw[1] & LINK_POSES) != 0; }
 
     private static boolean inRange(int b) { return b >= 0 && b < COUNT; }
     int state(int b) { return inRange(b) ? raw[FIRST + 3 * b] : 0; }
@@ -94,7 +86,6 @@ final class ContextPack {
             case TouchLayout.KEY_ZR: return ZR;
             case TouchLayout.KEY_ZL: return ZL;
             case TouchLayout.KEY_PLUS: return PLUS;
-            case TouchLayout.KEY_LOOK: return R3;
             case TouchLayout.KEY_UP: return UP;
             case TouchLayout.KEY_LEFT: case TouchLayout.KEY_RIGHT: return LEFT_RIGHT;
             case TouchLayout.KEY_L: case TouchLayout.KEY_DOWN: return HIDDEN;

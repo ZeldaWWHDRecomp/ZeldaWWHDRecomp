@@ -1,3 +1,4 @@
+#include "mods/hud_visibility.h"
 #include "mods/story_game_pieces.h"
 #include "mods/story_kit_models.h"
 #include "mods/mod_stages.h"
@@ -1158,3 +1159,5 @@ int main() {
     std::puts("guest hook ordering and original passed");
 }
 #endif
+
+namespace mods { GameUi game_ui_now(){return {};} }

@@ -59,6 +59,8 @@ const char* g_kind = "";
 int g_frames = 0, g_stable = 0, g_trace = 0, g_category = -1;
 bool g_direct_refused = false;  // setMode refused the mode: the menu path, once in play
 std::atomic<bool> g_hold_pro{false};  // see holds_pro_controller
+std::atomic<bool> g_hold_gamepad{false};  // see holds_gamepad
+std::atomic<bool> g_live_pro{false};  // see pro_controller_live
 
 int game_mode() {
     uint32_t m = ld32(kInputManager);
@@ -189,9 +191,29 @@ void wait_menu_back(Cpu* c, uint32_t ui) {
 
 std::atomic<const char*> g_request{nullptr};
 
+// Which controller is kept for the game while it follows the host's choice. Both holds end as soon as
+// the game's mode has followed, the host switches back, or the re-apply ends (done, given up, or a
+// load / reset that leaves the game in the host's mode).
+void update_gamepad_hold() {
+    // the controller the game still reads stays live: the switch waits for play, and a menu (pause
+    // menu, file select) is left only by a press the game can hear (issue #330)
+    const bool switching = g_phase != kIdle, pro = input::pro_controller();
+    const int mode = game_mode();
+    g_hold_gamepad = keeps_gamepad(switching, mode, pro, g_category);
+    g_live_pro = switching && !pro && mode == 0 && g_category != 1;
+}
+void update_holds() {
+    // the Pro Controller stays connected while the game still plays with it or is being switched off it
+    g_hold_pro = g_phase != kIdle && !input::pro_controller() && (game_mode() == 0 || g_category == 1);
+    update_gamepad_hold();
+}
+
 // the host's choice changed (Input menu, Controls, shortcut): the game follows it as after a load
 void host_changed(bool pro) {
     if (!pro) g_hold_pro = true;  // no reconnect prompt before the game thread has looked at it
+    g_live_pro = !pro && game_mode() == 0;  // no deaf Pro Controller read before then either
+    // no deaf GamePad read before the game thread has looked at it (a GamePad game; no-op otherwise)
+    g_hold_gamepad = pro && reads_gamepad(game_mode());
     request("controller change");
 }
 const bool g_listening = (input::set_controller_listener(host_changed), true);
@@ -200,6 +222,8 @@ const bool g_listening = (input::set_controller_listener(host_changed), true);
 void request(const char* kind) { g_request = kind; }
 
 bool holds_pro_controller() { return g_hold_pro.load(std::memory_order_relaxed); }
+bool holds_gamepad() { return g_hold_gamepad.load(std::memory_order_relaxed); }
+bool pro_controller_live() { return g_live_pro.load(std::memory_order_relaxed); }
 
 void service(Cpu* c) {
     (void)g_listening;
@@ -212,12 +236,12 @@ void service(Cpu* c) {
         g_trace = 600;
     }
     trace_ui(c);
-    // the Pro Controller stays connected (idle) while the game still plays with it or is being switched off it
-    g_hold_pro = g_phase != kIdle && !input::pro_controller() && (game_mode() == 0 || g_category == 1);
+    update_holds();
     if (g_phase == kIdle) return;
     const uint32_t ui = ld32(kIngameUi);
     if (!object(ui) || !object(ld32(kInputManager))) {
-        if (++g_frames > kGiveUpFrames) g_phase = kIdle;  // title screen or a stage change: no in-game UI
+        // title screen or a stage change: no in-game UI
+        if (may_give_up(holds_gamepad(), ++g_frames, kGiveUpFrames)) g_phase = kIdle, update_gamepad_hold();
         return;
     }
     Cpu saved = *c;
@@ -225,5 +249,6 @@ void service(Cpu* c) {
     else if (g_phase == kWaitMenuOpen) wait_menu_open(c, ui);
     else wait_menu_back(c, ui);
     restore(c, saved);
+    update_gamepad_hold();  // a switch that just finished hands over before the game's next read
 }
 }  // namespace controller_reapply

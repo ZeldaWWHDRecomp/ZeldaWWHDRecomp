@@ -7,7 +7,8 @@
 //
 // Items come from the port (the built-in ones below, registered by register_builtin()) and later from
 // mods (the planned QoL package: a manifest "settings" list, owner = the mod's ID; see the design note
-// in the p9 report). Values are floats: toggles 0 / 1, choices their index, numbers themselves.
+// in the p9 report). Values are floats: toggles 0 / 1, choices their index, numbers themselves. Actions
+// have no value: A (or a tap) runs their set(0), and their plate shows text().
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -16,7 +17,7 @@
 
 namespace game_settings {
 
-enum class Kind : uint8_t { Toggle, Choice, Number };
+enum class Kind : uint8_t { Toggle, Choice, Number, Action };
 
 struct Item {
     std::string id;     // stable key ("camera.invert-y"); also the settings key for mod items
@@ -29,6 +30,7 @@ struct Item {
     std::function<float()> get;        // any thread (the owners keep their values in atomics)
     std::function<void(float)> set;    // main thread (apply() posts it): applies and saves
     std::function<std::string(float)> format;  // Number: the value as shown ("1.25x"); empty: "%.2f"
+    std::function<std::string()> text;  // Action: what its plate shows (as it is, not translated)
     std::function<bool()> enabled;     // false: shown dimmed (it depends on another item); empty: always
     std::string owner = "port";
     bool next_start = false;  // a change applies at the next start (the page says so after the help)

@@ -11,15 +11,15 @@
 // HUD layer; its text and boxes use the game's menu font and window art, read from the running game
 // (story_notebook_game.cpp's services), never stored.
 //
-// Prototype limits (p9 report): the entry is ZL or the arrow (not yet "left past the first column",
-// which needs the item cursor), the page does not know the items page from the second page, and its
-// look code is a copy of the notebook's (to be shared).
 #include "game_settings_page.h"
+#include "game_settings_entry.h"
+#include "input_map.h"
 
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <memory>
 
@@ -53,9 +53,6 @@ const uint32_t kPlay = GD(0x1046F0B0);           // g_dComIfG_gameInfo.play
 constexpr uint32_t kUiCurrentState = 0x18, kUiPendingState = 0x14, kUiItemScreen = 0x17C, kMenuWindowMode = 0x54;
 constexpr uint32_t kPlayEventRun = 0x5292;
 const uint32_t kCursorMgr = GD(0x101F5A44);      // sCursorMgrInstance (hdCursorMgr_c*)
-// the items page's left column: ITEMS (-462), Save and Options (-397), the bottom left place (about
-// -380); the next column starts at about -154
-constexpr float kLeftColumnX = -300;
 
 bool trace() {
     static const bool on = getenv("WWHD_GAME_SETTINGS_TRACE") != nullptr;
@@ -67,12 +64,12 @@ struct Menu {
     uint32_t ui = 0, descriptor = 0, items = 0, window = ~0u;
     uint32_t selection_mode = ~0u, selected = ~0u;  // hdMenuMain_c::mSelectionMode (+0x50), mSelectedChild (+0x58)
     float offset = 0;                                // hdMenuMain_c::mWindowOffset (+0x5C) (research trace)
-    // the items page, standing still: its content (N_All_00) at 0 and the game's right page arrow in its
-    // place on the screen (the second page: -1280 and the arrow out at the right edge)
+    // The game enables menu input once its transitions have finished.
     bool still = false;
-    float arrow_x = 0;    // the game's right arrow (L_MenuArrowR_00), layout units
-    float cursor_x = 0;   // the game's menu cursor (hdCursorMgr_c's active cursor screen), layout units
     bool cursor = false;
+    uint32_t receiver = 0, cursor_pane = 0;
+    bool right_target = false, left_target = false, back_target = false;
+    bool left_neighbour = true; // fail closed unless the game's focus links are readable
     bool items_page = false;  // the + menu stands still with no bag window
 };
 Menu read_menu() {
@@ -88,16 +85,42 @@ Menu read_menu() {
     m.items_page = m.descriptor == kStateMenu && m.window >= 3 && m.window != ~0u;
     if (m.items_page) {
         const uint32_t root = game_look::layout_root(m.items);
-        const uint32_t all = game_look::find_pane(root, "N_All_00"), arrow = game_look::find_pane(root, "L_MenuArrowR_00");
-        if (all && arrow) {
-            const float page_x = u32_as_f32(ld32(all + 0x1C));
-            m.arrow_x = u32_as_f32(ld32(arrow + 0x1C));
-            m.still = page_x == 0.0f && m.arrow_x > 0 && m.arrow_x < 640 - 40;  // (out: 686)
+        // A pane's visible flag alone is insufficient: the game parks unused arrows offscreen
+        // without clearing it. The event manager's registered pane targets are the logical
+        // visible controls. Inspect their pane ancestry, never slot numbers or coordinates.
+        const uint32_t events = ld32(GD(0x101F4FF0));
+        if (object(events, 0xE4)) {
+            m.receiver = ld32(events + 0x70);
+            for (uint32_t r = ld32(events + 4), guard = 0;
+                 r && r != events && guard < 256 && object(r, 0x60); r = ld32(r + 4), ++guard) {
+                if (ld32(r + 0xC) != events) continue;
+                bool visible = true;
+                std::string kind;
+                for (uint32_t pane = ld32(r + 0x18), depth = 0;
+                     pane && game_look::guest_pointer(pane) && depth < 24; pane = ld32(pane + 0xC), ++depth) {
+                    visible &= game_look::visible(pane) && ld8(pane + 0x45) != 0;
+                    const std::string name = game_look::pane_name(pane);
+                    if (name.starts_with("L_MenuArrowR_")) kind = "right";
+                    if (name.starts_with("L_MenuArrowL_")) kind = "left";
+                    if (name.starts_with("L_BtnBack_")) kind = "back";
+                }
+                if (visible) {
+                    m.right_target |= kind == "right";
+                    m.left_target |= kind == "left";
+                    m.back_target |= kind == "back";
+                }
+            }
+            if (object(m.receiver, 0x60)) {
+                m.left_neighbour = ld32(m.receiver + 0x38 + 6 * 4) != 0;
+                m.cursor_pane = game_look::find_pane(root, "L_MenuArrowR_00");
+            } else m.receiver = 0;
         }
+        m.still = object(m.items, 0x97) && ld8(m.items + 0x95) && !ld8(m.items + 0x96);
         const uint32_t mgr = ld32(kCursorMgr);  // sCursorMgrInstance (hd_cursor_mgr.cpp)
         const uint32_t active = object(mgr, 0x20) ? ld32(mgr + 0x18) : ~0u;
         const uint32_t cursor = active < 2 ? ld32(mgr + 0x10 + 4 * active) : 0, croot = game_look::layout_root(cursor);
-        if (croot) m.cursor = true, m.cursor_x = u32_as_f32(ld32(croot + 0x1C));
+        if (croot) m.cursor = true;
+
     }
     return m;
 }
@@ -283,9 +306,57 @@ void play(Cpu* c, Sound s) {
     ui.sound(c, label);
 }
 
+EntryFocus g_entry;
+// A detached pane is the extra cursor stop. Only the focused receiver's cursor-pane
+// override is borrowed; its navigation links and the game's layouts remain intact.
+// The pane and restoration receipt live in state-serialized runtime guest memory, so
+// loading a state taken on the arrow can restore the original target even in a new process.
+void entry_cursor(const Menu& m, bool focus) {
+    constexpr uint32_t magic = 0x47534541, bytes = 0xB0;
+    static uint32_t pane = 0, borrowed = 0, menu = 0, old_cursor = 0;
+    static uint64_t generation = 0;
+    const uint64_t now = guestmods::hud::store().state_generation();
+    auto ours = [&](uint32_t p) {
+        return p >= mem::kRuntimeStart && p <= mem::runtime_top() - bytes &&
+               p < mem::kHostStart - bytes && ld32(p + 0xA0) == magic;
+    };
+    if (generation != now) borrowed = menu = 0, generation = now;
+    if (pane && !ours(pane)) pane = 0;
+    // A state may contain an override from this or a previous host session.
+    if (m.receiver && !borrowed) {
+        const uint32_t current = ld32(m.receiver + 0x5C);
+        if (ours(current) && ld32(current + 0xA4) == m.items && ld32(current + 0xA8) == m.receiver)
+            st32(m.receiver + 0x5C, ld32(current + 0xAC));
+    }
+    if (borrowed && (!focus || menu != m.items || borrowed != m.receiver)) {
+        if (menu == m.items && object(borrowed, 0x60) && ld32(borrowed + 0x5C) == pane)
+            st32(borrowed + 0x5C, old_cursor);
+        borrowed = menu = 0;
+    }
+    if (!focus || !m.receiver || !m.cursor_pane) return;
+    if (!pane) pane = mem::runtime_alloc(bytes, 16);
+    if (!pane) return;
+    if (!borrowed) {
+        borrowed = m.receiver; menu = m.items; old_cursor = ld32(borrowed + 0x5C);
+        std::memcpy(mem::ptr(pane), mem::ptr(m.cursor_pane), 0xA0);
+        st32(pane + 0xC, 0); // detached: never traversed or drawn as a game layout
+        st32(pane + 0x14, pane + 0x14); st32(pane + 0x18, pane + 0x14);
+        std::memset(mem::ptr(pane + 0x48), 0, 0x30);
+        st32(pane + 0x48, f32_as_u32(1)); st32(pane + 0x5C, f32_as_u32(1)); st32(pane + 0x70, f32_as_u32(1));
+        st8(pane + 0x47, 0); // centre anchor
+        st32(pane + 0xA0, magic); st32(pane + 0xA4, menu);
+        st32(pane + 0xA8, borrowed); st32(pane + 0xAC, old_cursor);
+    }
+    st32(pane + 0x54, f32_as_u32(640.0f - g_arrow.x));
+    st32(pane + 0x64, f32_as_u32(360.0f - g_arrow.y));
+    st32(pane + 0x3C, f32_as_u32(g_arrow.w)); st32(pane + 0x40, f32_as_u32(g_arrow.h));
+    st32(borrowed + 0x5C, pane);
+}
+
 Page g_page;
-std::atomic<bool> g_has_controller{false};  // the page (or its slide out) has the controller
+std::atomic<bool> g_has_controller{false};  // the entry stop, page or slide out has the controller
 std::atomic<uint32_t> g_swallow{0};
+std::atomic<bool> g_swallow_x{false}; // a stick used to leave the entry stop must return to centre
 
 float frame_seconds() {
     using clock = std::chrono::steady_clock;
@@ -307,9 +378,9 @@ std::vector<Row> rows_of(const std::string& tab) {
         const bool port = it->owner == "port";  // (mods' texts are shown as their manifests write them)
         r.id = it->id, r.label = port ? tr(it->label) : it->label, r.help = port ? tr(it->help) : it->help;
         if (it->next_start) r.help += " " + tr("(applies at the next start)");
-        r.value = it->kind == game_settings::Kind::Number || (!port && it->kind == game_settings::Kind::Choice) ? value : tr(value);
         r.number = it->kind == game_settings::Kind::Number, r.toggle = it->kind == game_settings::Kind::Toggle;
-        r.choice = it->kind == game_settings::Kind::Choice;
+        r.choice = it->kind == game_settings::Kind::Choice, r.action = it->kind == game_settings::Kind::Action;
+        r.value = r.number || r.action || (!port && r.choice) ? value : tr(value);
         r.on = r.toggle && value == "On";
         r.enabled = !it->enabled || it->enabled();
         rows.push_back(std::move(r));
@@ -366,11 +437,16 @@ void mute(input::PadState& p) {
         return;
     }
     if (const uint32_t s = g_swallow.load(std::memory_order_relaxed)) p.buttons &= ~s;
+    if (g_swallow_x.load(std::memory_order_relaxed)) p.lx = 0;
 }
 
 void pad(input::PadState& p, Cpu* c) {
     static bool disabled = getenv("WWHD_GAME_SETTINGS") && *getenv("WWHD_GAME_SETTINGS") == '0';
     if (disabled) return;
+    if (g_swallow_x.load(std::memory_order_relaxed)) {
+        if (std::fabs(p.lx) <= 0.5f) g_swallow_x.store(false, std::memory_order_relaxed);
+        else p.lx = 0;
+    }
     game_settings::register_builtin();
     g_page.measure = g_look.font_ready() ? game_measure : nullptr;
     const float dt = frame_seconds();
@@ -404,6 +480,23 @@ void pad(input::PadState& p, Cpu* c) {
             if (last != line) LOG("[game-settings] %s", line), last = line;
         }
     }
+    if (trace() && m.items_page) {
+        std::string state = "targets R" + std::to_string(m.right_target) + " L" + std::to_string(m.left_target) +
+            " Back" + std::to_string(m.back_target) + " still" + std::to_string(m.still) + " focus " + std::to_string(m.receiver);
+        if (m.receiver) {
+            std::string label;
+            for (uint32_t pane = ld32(m.receiver + 0x18), depth = 0;
+                 pane && game_look::guest_pointer(pane) && depth < 24; pane = ld32(pane + 0xC), ++depth) {
+                const std::string name = game_look::pane_name(pane);
+                if (!label.empty()) label += "/";
+                label += name;
+                if (name.starts_with("L_")) break;
+            }
+            state += " " + label + " left=" + std::to_string(ld32(m.receiver + 0x50));
+        }
+        static std::string last;
+        if (last != state) LOG("[game-settings] %s", state.c_str()), last = state;
+    }
     const bool other_page = story_notebook::page_open();
     const std::vector<std::string> tabs = game_settings::tabs();
     std::vector<std::string> labels;
@@ -414,9 +507,11 @@ void pad(input::PadState& p, Cpu* c) {
     in.x = p.tx * 1280.0f, in.y = p.ty * 720.0f;  // the GamePad picture as the page's 1280 x 720
     // With the Pro Controller the menu (and the page) are on the TV: the mouse on the TV picture is the
     // page's touch (tv_pointer.h), wanted while the page or its entry arrow is there
+    const bool enabled = input_map::settings_pause_page();
+    const bool offered = entry_exists(enabled, m.right_target, m.left_target, m.back_target);
     const bool pro = input::pro_controller();
     {
-        const bool on_tv = pro && ((m.items_page && m.still && !other_page && !tabs.empty()) || g_page.shown());
+        const bool on_tv = pro && ((offered && m.items_page && m.still && !other_page && !tabs.empty()) || g_page.shown());
         tv_pointer::set_wanted(on_tv);
         if (pro) {
             tv_pointer::State s = tv_pointer::read();
@@ -427,12 +522,13 @@ void pad(input::PadState& p, Cpu* c) {
         }
     }
     if (!g_page.open()) {
+        if (!enabled) g_page.cancel_entry();
         g_page.tick(dt);
         if (const uint32_t s = g_swallow.load(std::memory_order_relaxed)) {
             g_swallow.store(s & p.buttons, std::memory_order_relaxed);
             p.buttons &= ~s;
         }
-        const bool eligible = m.items_page && m.still && !other_page && !tabs.empty();
+        const bool eligible = offered && m.items_page && m.still && !other_page && !tabs.empty();
         if (eligible) {
             load_art(m.items);
             read_arrow_place(m.items);
@@ -450,15 +546,45 @@ void pad(input::PadState& p, Cpu* c) {
                 }
             }
         }
-        in.cursor_left = m.cursor && m.cursor_x < kLeftColumnX;
+        const bool left = (in.buttons & kPadLeft) || in.lx < -0.5f;
+        const uint32_t source = m.receiver ? ld32(m.receiver + 0x18) : 0;
+        EntryPosition position{m.items, m.receiver, m.selected, m.selection_mode, m.offset};
+        if (game_look::guest_pointer(source)) {
+            position.x = u32_as_f32(ld32(source + 0x1C));
+            position.y = u32_as_f32(ld32(source + 0x20));
+        }
+        const bool focused_before = g_entry.focused();
+        if (g_entry.update(eligible && m.cursor && m.cursor_pane && !in.touch, left,
+                           m.left_neighbour, position, render::frame_count())) {
+            LOG("[game-settings] entry arrow highlighted after dead Left");
+            play(c, Sound::Cursor);
+            shot_after(20);
+        }
+        if (g_entry.focused() && focused_before &&
+            ((in.buttons & (kPadRight | kPadB | kPadUp | kPadDown | kPadPlus | kPadL | kPadR)) || in.lx > 0.5f || std::fabs(in.ly) > 0.5f)) {
+            const bool back = (in.buttons & (kPadRight | kPadB)) || in.lx > 0.5f;
+            g_entry.clear();
+            if (back) {
+                g_swallow.store(in.buttons, std::memory_order_relaxed);
+                if (in.lx > 0.5f) g_swallow_x.store(true, std::memory_order_relaxed);
+                p.buttons = 0; p.lx = p.ly = 0;
+                play(c, Sound::Cursor);
+                LOG("[game-settings] entry arrow returned to the game's focus");
+            }
+        }
+        entry_cursor(m, g_entry.focused());
+        // ZL is deliberately not an entry: the shared menu event dispatcher does not
+        // route its normalized bit 6, but no shortcut needs to borrow GameCube L/ZL.
+        in.arrow_focused = focused_before && g_entry.focused();
         Input watched = in;
-        if (!eligible) watched.touch = false;  // (the buttons are followed: a ZL held into the menu does not open it)
+        if (!eligible) watched.touch = false, watched.arrow_focused = false;
         const bool on_arrow_touch = eligible && !pro && p.touch && g_page.on_arrow(in.x, in.y, true);
         if (g_page.entry(watched) && eligible) {
             g_page.show(int(tabs.size()));
             g_has_controller.store(true, std::memory_order_relaxed);
-            LOG("[game-settings] page opened (%s)", (p.buttons & kPadZL) ? "ZL" : (in.buttons & kPadLeft) || in.lx < -0.5f ? "Left from the left column"
-                                                                                                            : "the arrow");
+            LOG("[game-settings] page opened (%s)", in.arrow_focused ? "focused entry arrow" : "the arrow");
+            g_entry.clear();
+            entry_cursor(m, false);
             play(c, Sound::Open);
             shot_after(20);
             g_swallow.store(0, std::memory_order_relaxed);
@@ -473,12 +599,13 @@ void pad(input::PadState& p, Cpu* c) {
             p = input::PadState{};
             return;
         }
-        g_has_controller.store(false, std::memory_order_relaxed);
+        g_has_controller.store(g_entry.focused(), std::memory_order_relaxed);
         hide_game_pieces(m, false);
         if (!eligible) {
             publish({}, c);
             return;
         }
+        if (g_entry.focused()) p = input::PadState{};
         if (on_arrow_touch) p.touch = false;  // a touch on our arrow is ours (a tap or the start of a swipe)
         static bool shown_once = false;
         if (!shown_once) shown_once = true, shot_after(20);
@@ -486,6 +613,7 @@ void pad(input::PadState& p, Cpu* c) {
         return;
     }
     // open: the page has the controller
+    if (!enabled) g_page.hide();
     g_has_controller.store(true, std::memory_order_relaxed);
     if (!m.items_page && m.descriptor != kStateMenu) {  // the menu closed under the page (a state load, a cutscene)
         g_page.hide();
@@ -494,10 +622,12 @@ void pad(input::PadState& p, Cpu* c) {
     } else {
         hide_game_pieces(m, true);
     }
-    const std::string tab = tabs.empty() ? "" : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))];
+    auto tab_name = [&] { return tabs.empty() ? std::string() : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))]; };
+    std::string tab = tab_name();
     std::vector<Row> rows = rows_of(tab);
     const Action act = g_page.input(in, rows, int(tabs.size()));
     g_page.tick(dt);
+    if (tab_name() != tab) rows = rows_of(tab = tab_name());  // L / R: the new tab's rows at once (not the old tab's for a read)
     if (!act.id.empty())
         if (const game_settings::Item* it = game_settings::find(act.id)) {
             const float v = game_settings::apply(*it, act.direction);

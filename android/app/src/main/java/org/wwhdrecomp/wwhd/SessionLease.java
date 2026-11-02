@@ -15,8 +15,8 @@ final class SessionLease implements AutoCloseable {
     static SessionLease acquire(File root) throws IOException { return new SessionLease(root); }
 
     private SessionLease(File root) throws IOException {
-        if (!root.isDirectory() && !root.mkdirs()) throw new IOException("Armazenamento indisponível.");
-        file = new RandomAccessFile(new File(root, ".windwake-session.lock"), "rw");
+        if (!root.isDirectory() && !root.mkdirs()) throw new IOException("Storage is unavailable.");
+        file = new RandomAccessFile(new File(root, ".wwhd-session.lock"), "rw");
         FileLock acquired;
         try {
             acquired = file.getChannel().tryLock();
@@ -32,7 +32,7 @@ final class SessionLease implements AutoCloseable {
     }
 
     private static IOException busy() {
-        return new IOException("Feche o jogo pelo menu antes de alterar configurações ou transferir saves.");
+        return new IOException("Close the game through its menu before importing or exporting saves.");
     }
 
     @Override public void close() throws IOException {

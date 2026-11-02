@@ -168,8 +168,7 @@ public class SDLControllerManager
             return false;
         }
         int sources = device.getSources();
-
-        if (org.wwhdrecomp.wwhd.WindwakeInputPolicy.internalKeyboard(device.getName(),
+        if (org.wwhdrecomp.wwhd.InternalInputDevices.internalKeyboard(device.getName(),
                 device.getVendorId(), device.getProductId(),
                 (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)) return false;
 

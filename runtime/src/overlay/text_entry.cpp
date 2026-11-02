@@ -164,6 +164,7 @@ struct Ui {
 Ui U;
 
 bool in_font(uint32_t c) { return !U.glyphs || U.glyphs->count(c); }
+bool refused(uint32_t c) { return c < 0x10000 && U.req.refused.find(char16_t(c)) != std::u16string::npos; }
 // the character a key types: Shift's form only where the font has it
 uint32_t key_char(uint32_t c) {
     const uint32_t s = U.shift ? shifted(c) : c;
@@ -172,7 +173,7 @@ uint32_t key_char(uint32_t c) {
 
 bool allowed(uint32_t c) {
     if (c < 0x20 || c == 0x7F || (c >= 0x80 && c < 0xA0)) return false;  // control characters
-    if (!in_font(c)) return false;
+    if (!in_font(c) || refused(c)) return false;
     switch (U.req.mode) {
     case 1: return c >= '0' && c <= '9';
     case 3: return (c < 0x80 && isalnum((int)c)) || c == '-' || c == '_' || c == '.';  // Nintendo Network ID
@@ -187,8 +188,8 @@ void build_grid() {
         std::vector<Cell> row;
         for (int i = 0; i < (int)r.size(); i++) {
             auto cp = code_points(r[i]);
-            // keys the game's font can't draw are left out (a gap)
-            row.push_back({kChar, cp.empty() || !in_font(cp[0]) ? 0 : cp[0], i, 1});
+            // keys the game's font can't draw, or the request refuses, are left out (a gap)
+            row.push_back({kChar, cp.empty() || !in_font(cp[0]) || refused(cp[0]) ? 0 : cp[0], i, 1});
         }
         U.grid.push_back(row);
     }
@@ -231,6 +232,11 @@ void insert(uint32_t c) {
     if (c >= 0x20 && !in_font(c)) {  // typed: say why nothing appears
         U.note = "\"" + utf8(c > 0xFFFF ? std::u16string{(char16_t)(0xD800 + ((c - 0x10000) >> 10)), (char16_t)(0xDC00 + (c & 1023))}
                                          : std::u16string{(char16_t)c}) + "\" is not available in the game's font";
+        U.note_since = now_s();
+        return;
+    }
+    if (refused(c)) {
+        U.note = "\"" + utf8(std::u16string{(char16_t)c}) + "\" can't be used here";
         U.note_since = now_s();
         return;
     }

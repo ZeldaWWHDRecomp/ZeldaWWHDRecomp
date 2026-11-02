@@ -27,8 +27,9 @@ public class WwhdActivity extends SDLActivity {
         if (getClass() != WwhdActivity.class && getClass() != QuestActivity.class) return false;
         Intent selected = QuestActivity.gameIntent(this);
         if (selected.getComponent().getClassName().equals(getClass().getName())) {
-            try { WindwakeSession.enterGame(this); }
+            try { SaveSession.enterGame(this); }
             catch (java.io.IOException failure) {
+                Log.e("wwhd", "save session unavailable", failure);
                 android.widget.Toast.makeText(this, failure.getMessage(), android.widget.Toast.LENGTH_LONG).show();
                 finish();
                 return true;
@@ -121,6 +122,11 @@ public class WwhdActivity extends SDLActivity {
     @Override protected void onDestroy() {
         if (phoneRumble != null) phoneRumble.setActive(false);
         super.onDestroy();
+        // Keep the lease during Activity recreation or a native thread still shutting down.
+        if (!isRedirectedActivity() && (mSDLThread == null || !mSDLThread.isAlive())) {
+            try { SaveSession.leaveGame(); }
+            catch (java.io.IOException failure) { Log.e("wwhd", "save session close failed", failure); }
+        }
     }
 
     private volatile PhoneRumble phoneRumble;
@@ -141,10 +147,6 @@ public class WwhdActivity extends SDLActivity {
     @Override protected boolean retainNativeSessionOnRecreation() { return true; }
 
     @Override public void loadLibraries() {
-        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
-            try { WindwakeSession.enterGame(this); }
-            catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
-        }
         if (isReusingNativeSession()) {
             // A setup update must not change the loaded engine or assets mid-session.
             selection = sessionSelection;
@@ -157,10 +159,6 @@ public class WwhdActivity extends SDLActivity {
         // debug builds: WWHD_* intent extras (benchmark starts over adb), set once SDL's JNI is
         // there but before the game library loads, so its static initializers see them too
         System.loadLibrary("SDL3");
-        // Touch's JNI callbacks can read hostui settings before SDL_main sets XDG_CONFIG_HOME.
-        // Seed the same path before loading the game, so that first read never caches an empty file.
-        File userFiles = getExternalFilesDir(null);
-        if (userFiles != null) SDLActivity.nativeSetenv("XDG_CONFIG_HOME", new File(userFiles, "config").getAbsolutePath());
         DebugLaunch.apply(this);
         applyLaunchEnvironment();
         if (onDeviceGame == null) {
@@ -304,7 +302,7 @@ public class WwhdActivity extends SDLActivity {
         File files = getExternalFilesDir(null);
         if (files != null) {
             new File(files, "game").mkdirs();
-            new File(files, "save").mkdirs();
+            // SaveSession recovers interrupted imports before creating/opening the save tree.
             Log.i("wwhd", "game folder: " + new File(files, "game"));
         }
         super.onCreate(savedInstanceState);

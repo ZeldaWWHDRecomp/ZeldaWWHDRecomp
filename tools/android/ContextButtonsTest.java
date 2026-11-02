@@ -101,6 +101,9 @@ public final class ContextButtonsTest {
         int[] v = pack(ContextPack.ITEM_NAMES_A, 0);
         p.set(v, 1);
         check(p.itemNamesA(), "names flag");
+        check(!p.linkPoses(), "poses flag off");
+        p.set(pack(ContextPack.LINK_POSES, 0), 1);
+        check(p.linkPoses() && !p.itemNamesA(), "poses flag (P8)");
         // text fitting: a letter-sized word stays 0.9 r; a long one shrinks to the width; never below min
         check(near(ContextPack.fitTextSize(1f, 50, 85, 10), 45), "short word");
         check(near(ContextPack.fitTextSize(4f, 50, 85, 10), 85 / 4f), "long word fits");
@@ -167,6 +170,19 @@ public final class ContextButtonsTest {
         check(!f.result(-1, 0, 2) && !f.shouldAsk(99999, 2) && f.shouldAsk(99999, 3), "failed at a generation");
         check(ContextAssets.itemFile(0x27).equals("item_27.png") && ContextAssets.itemFile(0x0A).equals("item_0A.png")
                 && ContextAssets.itemFile(-1).equals("item_FF.png"), "item file names");
+        // Link's poses (P8): pose_HH.png as native code writes it (link_poses.h file_for); shown only for an
+        // action with the option on and its picture loaded, else the word as before
+        check(ContextAssets.poseFile(0x35).equals("pose_35.png") && ContextAssets.poseFile(0x0A).equals("pose_0A.png"), "pose file names");
+        check(ContextAssets.showPose(true, ContextPack.KIND_ACTION, true), "pose shown");
+        check(!ContextAssets.showPose(false, ContextPack.KIND_ACTION, true), "option off: the word");
+        check(!ContextAssets.showPose(true, ContextPack.KIND_ACTION, false), "no picture (not exported, or the model unreadable): the word");
+        check(!ContextAssets.showPose(true, ContextPack.KIND_ITEM, true) && !ContextAssets.showPose(true, ContextPack.KIND_FAST_FORWARD, true)
+                && !ContextAssets.showPose(true, ContextPack.KIND_PLAIN, true), "items and plain buttons: no pose");
+        // the picture and its word stay inside the button (radius 1)
+        check(-ContextAssets.POSE_DY + ContextAssets.POSE_HALF < 1 && ContextAssets.POSE_DY - ContextAssets.POSE_HALF > -1
+                && ContextAssets.POSE_WORD_DY + 0.2f < 1, "pose layout inside the button");
+        // the word ends left of the letter badge (centre 0.74 r, radius 0.3 r)
+        check(ContextAssets.POSE_WORD_DX + ContextAssets.POSE_WORD_WIDTH / 2 < 0.74f - 0.3f + 0.05f, "word clear of the badge");
         Map<Integer, String> w = ContextAssets.parseActions("04\tLift\r\n0B\t Open \n1b\tPick Up\nZZ\tbad\n\tnone\n123\tlong code\n"
                 + "05\t\n04\tagain\n08\tPut\u0007Away\n0C\t" + "x".repeat(50) + "\n");
         check(w.get(0x04).equals("Lift") && w.get(0x0B).equals("Open") && w.get(0x1B).equals("Pick Up"), "parse");

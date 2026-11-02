@@ -5,6 +5,7 @@
 #include "recipe_persistence.h"
 #include "headstart.h"
 #include "pipeline_demand.h"
+#include "warm_handover.h"
 #include "shader_compiler.h"
 #include "platform/host.h"
 #include "stutter_trace.h"
@@ -79,6 +80,8 @@ struct Worker {
   std::unordered_set<std::string> inDriver;
   std::condition_variable driverDone;
   uint64_t promotions = 0, promotedHits = 0, promotedWaitNs = 0;
+  // matches taken: handed over (WWHD_VK_WARM_HANDOVER=1) or, by default, left to the render thread's own build
+  size_t handedOver = 0, builtByRenderThread = 0;
   uint64_t residentGeneration = 0, readySequence = 0;
   size_t prefetchedReady = 0;
   bool drainExit = false;                     // finish/offline warming: leave once the queues are empty
@@ -363,7 +366,10 @@ VkResult compile(VkDevice device, VkPipelineCache cache, PipelineRecipe& recipe,
     if (R.renderPasses) render_pass_pipeline_targets(info, state.rendering_targets());
     const auto cpuStart = stutter::trace().enabled() ? stutter::thread_cpu_now() : 0;
     const auto started = stutter::trace().enabled() ? stutter::now() : 0;
-    result = vkCreateGraphicsPipelines(device, cache, 1, &info, nullptr, &out.pipeline);
+    // into the demand compiler's driver cache (the render thread's own build of this pipeline is then a hit,
+    // warm_handover.h), else (that cache not made yet) the worker's own, merged for persistence
+    result = compile_in_demand_cache(device, info, &out.pipeline);
+    if (result == VK_INCOMPLETE) result = vkCreateGraphicsPipelines(device, cache, 1, &info, nullptr, &out.pipeline);
     if (started) stutter::trace().add(traceKind, 0, std::hash<std::string>{}(identity(recipe.key)),
         started, stutter::now(), int(result), stutter::cpu_elapsed(cpuStart));
   }
@@ -748,8 +754,18 @@ bool take_warm_pipeline(const std::vector<uint8_t>& key,
     destroy(w.device, entry.handles);
     return false;
   }
+  // Cache only (default, warm_handover.h): the compile has warmed the driver cache; the render thread builds its
+  // own pipeline from it (and records the recipe then), this one goes
+  static const auto use = warm_handover::use(std::getenv("WWHD_VK_WARM_HANDOVER"));
+  if (use == warm_handover::Use::CacheOnly) {
+    destroy(w.device, entry.handles);
+    std::lock_guard lock(w.mutex);
+    ++w.builtByRenderThread;
+    return false;
+  }
   record_headstart_pipeline(w.fingerprint, entry.recipe);
   out = entry.handles;
+  { std::lock_guard lock(w.mutex); ++w.handedOver; }
   return true;
 }
 void pipeline_promotion_stats(uint64_t& promotions, uint64_t& hits, double& waitMs) {
@@ -763,6 +779,7 @@ void pipeline_worker_memory(PipelineWorkerMemory& out) {
   out.recipes = w.recipes.size(); out.recipeBytes = w.recipeBytes;
   out.unusedWarm = w.ready.size(); out.unusedWarmLimit = w.device ? maxUnusedWarmPipelines : 0;
   out.evicted = g_evictions.load();
+  out.handedOver = w.handedOver; out.builtByRenderThread = w.builtByRenderThread;
 }
 size_t drop_unused_warm_pipelines() {
   auto& w = worker();

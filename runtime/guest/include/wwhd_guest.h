@@ -451,6 +451,41 @@ typedef struct {
     u32 marker_count, reserved;
     struct { f32 x, z; u32 kind; } markers[64]; /* 1 chest, 2 boss door */
 } wwhd_dungeon_room;
+/* Optional native map/HUD bridge v1. Default helpers return -1 on old hosts,
+ * including with older installers. Query the unsigned capability first. */
+#define WWHD_MAP_HUD_API_VERSION 1
+#define WWHD_MAP_HUD_UNSUPPORTED (-1)
+#define WWHD_MAP_HUD_INVALID (-2)
+#define WWHD_MAP_HUD_BUSY (-3)
+#define WWHD_MAP_HUD_PHASE (-4)
+typedef struct {u32 size,version;f32 x,y,w,h;} wwhd_boat_compasses_rect;
+/* Default helpers use the existing optional query transport, including with
+ * older installers. DIRECT_IMPORTS is for bindings using translator >=0.3. */
+#ifdef WWHD_MAP_HUD_DIRECT_IMPORTS
+s32 wwhd_hud_boat_compasses(u32 replace);
+s32 wwhd_hud_boat_compasses_rect(wwhd_boat_compasses_rect* out);
+s32 wwhd_map_chart_selected(void);
+s32 wwhd_map_chart_select(u32 native_chart_index);
+s32 wwhd_map_chart_cancel(void);
+
+#else
+static inline s32 wwhd_map_hud_request(u32 action,u32 argument,wwhd_boat_compasses_rect* rect) {
+    static struct {u32 size,version,action,argument;s32 result;f32 x,y,w,h;} request;
+    request.size=36;request.version=1;request.action=action;request.argument=argument;
+    if(wwhd_setting_get("native-map-hud.v1",7,&request,36)!=36)return WWHD_MAP_HUD_UNSUPPORTED;
+    if(rect&&request.result==1){rect->x=request.x;rect->y=request.y;rect->w=request.w;rect->h=request.h;}
+    return request.result;
+}
+static inline s32 wwhd_hud_boat_compasses(u32 replace){return wwhd_map_hud_request(1,replace,0);}
+static inline s32 wwhd_hud_boat_compasses_rect(wwhd_boat_compasses_rect* out){
+    if(!out||out->size!=24||out->version!=1)return WWHD_MAP_HUD_INVALID;
+    return wwhd_map_hud_request(2,0,out);
+}
+static inline s32 wwhd_map_chart_selected(void){return wwhd_map_hud_request(3,0,0);}
+static inline s32 wwhd_map_chart_select(u32 index){return wwhd_map_hud_request(4,index,0);}
+static inline s32 wwhd_map_chart_cancel(void){return wwhd_map_hud_request(5,0,0);}
+#endif
+
 #ifdef __cplusplus
 static_assert(sizeof(wwhd_dungeon_room) == 808, "wwhd_dungeon_room layout");
 #else

@@ -31,12 +31,13 @@ int main() {
     ctxtouch::pack(b, e, names, ctxtouch::kPackLen);
     assert(names[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kItemNamesA));
     e.item_names_a = false;
+    e.link_poses = true;  // Link in the button pictures (link_poses.h): a header flag only
+    int32_t poses[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, poses, ctxtouch::kPackLen);
+    assert(poses[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kLinkPoses));
+    for (int i = 2; i < ctxtouch::kPackLen; i++) assert(poses[i] == names[i]);
+    e.link_poses = false;
     assert(out[2] == 7 && out[3] == 0);
-    e.startup_scene = startup_touch::kFileSelect;
-    int32_t startup[ctxtouch::kPackLen];
-    ctxtouch::pack(b, e, startup, ctxtouch::kPackLen);
-    assert(startup[3] == startup_touch::pack(startup_touch::kFileSelect));
-    assert(startup[4] == out[4]);  // the optional header extension never moves the button slots
     auto st = [&](int i) { return out[ctxtouch::kButtons + 3 * i]; };
     auto lb = [&](int i) { return out[ctxtouch::kButtons + 3 * i + 1]; };
     assert(st(ctxbtn::kA) == (ctxtouch::kShown | 1 << ctxtouch::kKindShift) && lb(ctxbtn::kA) == playctx::kActSpeak);
@@ -48,5 +49,10 @@ int main() {
     int32_t small[3];
     ctxtouch::pack(b, e, small, 3);  // a shorter array takes the front
     assert(small[0] == 1 && small[2] == 7);
+    e.startup_scene = startup_touch::kFileSelect;
+    int32_t startup[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, startup, ctxtouch::kPackLen);
+    assert(startup[3] == startup_touch::pack(startup_touch::kFileSelect));
+    for (int i = 0; i < ctxtouch::kPackLen; ++i) if (i != 3) assert(startup[i] == out[i]);
     puts("context_touch: pack layout, flags, kinds, held, rings PASS");
 }

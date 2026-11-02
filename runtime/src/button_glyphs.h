@@ -3,6 +3,7 @@
 // Xbox A to game A: the letters must NOT be transposed. The same palette styles the dialog icon
 // font and the HUD's button backgrounds; keyboard bindings are separate.
 #pragma once
+#include <array>
 #include <cstdint>
 #include <string_view>
 #include "ppc.h"
@@ -12,6 +13,8 @@ namespace button_glyphs {
 // Face order: A, B, X, Y. -1 means this is not a face-button picture.
 constexpr int face_character(uint32_t code) { return code >= 0xE000 && code <= 0xE003 ? int(code - 0xE000) : -1; }
 constexpr int shoulder_character(uint32_t code) { return code >= 0xE083 && code <= 0xE086 ? int(code - 0xE083) : -1; }
+constexpr bool cstick_character(uint32_t code) { return code == 0xE082; }
+constexpr bool start_character(uint32_t code) { return code == '+'; }
 inline int shoulder_text(std::string_view name) {
     if (name == "T_L_00") return 0;
     if (name == "T_R_00") return 1;
@@ -35,8 +38,20 @@ inline int face_picture(std::string_view name) {
     return -1;
 }
 
+struct ClusterPoint { float x, y; };
+inline std::array<ClusterPoint,4> gamecube_cluster(ClusterPoint a, ClusterPoint b, ClusterPoint x, ClusterPoint y) {
+    return {a,
+            {a.x+(b.x-a.x)*.65f+(y.x-a.x)*.30f, a.y+(b.y-a.y)*.72f+(y.y-a.y)*.35f},
+            {a.x+(a.x-y.x)*.72f, a.y+(x.y-a.y)*.32f},
+            {a.x+(x.x-a.x)*.25f, a.y+(x.y-a.y)*1.15f}};
+}
+
 constexpr uint32_t colour(int face) {
     constexpr uint32_t colours[] = {0x58BE36FF, 0xE34B49FF, 0x3B91E5FF, 0xEBC52EFF};
+    return face >= 0 && face < 4 ? colours[face] : 0xFFFFFFFF;
+}
+constexpr uint32_t gamecube_colour(int face) {
+    constexpr uint32_t colours[] = {0x58BE36FF, 0xE34B49FF, 0xA9ADB1FF, 0xA9ADB1FF};
     return face >= 0 && face < 4 ? colours[face] : 0xFFFFFFFF;
 }
 
@@ -64,6 +79,10 @@ constexpr uint8_t mark_shoulder(uint8_t flags, int shoulder) {
     return shoulder >= 0 && shoulder < 4 && !(flags & 0xFE) ? uint8_t(0xE0 | (shoulder << 1) | flags) : flags;
 }
 constexpr int marked_shoulder(uint8_t flags) { return (flags & 0xF0) == 0xE0 ? (flags >> 1) & 3 : -1; }
+constexpr uint8_t mark_cstick(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(0xC0 | flags) : flags; }
+constexpr bool marked_cstick(uint8_t flags) { return (flags & 0xF0) == 0xC0; }
+constexpr uint8_t mark_start(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(0xB0 | flags) : flags; }
+constexpr bool marked_start(uint8_t flags) { return (flags & 0xF0) == 0xB0; }
 // Bit 3: the quad's vertices were generated with a restyled look. A change between two restyled
 // looks (colours, shapes, shoulder names) is caught by the style signature instead, which
 // rebuilds every cached text box once.
@@ -73,7 +92,7 @@ constexpr uint8_t rendered(uint8_t flags, bool restyled) { return uint8_t((flags
 // Atlas cell of a composed label/shape, as the quad's texture coordinates (+0x18..+0x24).
 struct Cell { float u0, v0, u1, v1; };
 constexpr Cell atlas_cell(int row, bool frame) {
-    return {frame ? 0.0f : 0.5f, row / 20.0f, frame ? 0.5f : 1.0f, (row + 1) / 20.0f};  // (button_glyph_font.h kAtlasRows)
+    return {frame ? 0.0f : 0.5f, row / 32.0f, frame ? 0.5f : 1.0f, (row + 1) / 32.0f};
 }
 
 // Called before TextBox::DrawSelf checks its cached-vertex valid byte. A live style change must

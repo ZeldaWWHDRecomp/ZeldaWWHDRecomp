@@ -7,7 +7,9 @@
 #include <unistd.h>
 namespace gfx { void show_drc_window(bool){} }
 namespace overlay { void external_binding_capture(bool){} }
+static std::vector<input::ControllerInfo> fixtureControllers;
 namespace input {
+std::vector<ControllerInfo> controllers(){return fixtureControllers;}
 bool pro_controller(){return false;}
 void set_pro_controller(bool){}
 void release_keys(){}
@@ -107,6 +109,23 @@ int main() {
         CGEventRef cg=CGEventCreateMouseEvent(nullptr,kCGEventLeftMouseDown,CGPointZero,kCGMouseButtonLeft);
         const auto before=current();[g_controls handleMouseEvent:[NSEvent eventWithCGEvent:cg]];
         assert(current()==before);CFRelease(cg);[g_controls cancelCapture];
+        // Actual AppKit controls: apply, persisted restore, and one controller's own bindings.
+        auto presetBefore = current();
+        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().preset.gamecube && current().preset.saved);
+        Mapping loaded;assert(from_json(to_json(current()),loaded));assert(loaded.preset.previous==presetBefore.pad);
+        g_controls.faceLayout.selectedSegment=4;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current()==presetBefore);
+        input::ControllerInfo controller;controller.guid="gc-ui";controller.name="GameCube fixture";
+        fixtureControllers={controller};[g_controls syncOptions];
+        [g_controls.bindingTarget selectItemAtIndex:1];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().controllers.size()==1 && current().controllers[0].preset.gamecube);
+        assert(current().pad==presetBefore.pad && !current().preset.gamecube);
+        g_controls.faceLayout.selectedSegment=4;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().controllers[0].pad==presetBefore.pad);
+        [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+        input_map::set_current(presetBefore,false);
         menu_settings_key_test();
         std::filesystem::remove(path);
         fprintf(stderr,"controls_ui_test: passed (incl. fixed Cmd+, Settings menu key)\n");

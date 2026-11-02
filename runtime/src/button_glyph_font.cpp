@@ -146,6 +146,24 @@ std::vector<uint8_t> button_atlas(const std::array<uint32_t,kAtlasGlyphs>& recor
     for (int face = 0; face < 4; face++) for (bool colour : {true, false}) for (int column = 0; column < 2; column++)
         for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++)
             put(shape_row(face, colour), column, x, y, face_shape(face, colour, column == 0, x, y));
+    for (int face = 0; face < 4; ++face) {
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+            put(gamecube_row(face), 0, x, y, gamecube_icon(face, true, x, y));
+            put(gamecube_row(face), 1, x, y, gamecube_icon(face, false, x, y));
+        }
+    }
+    for (int shoulder = 0; shoulder < 4; ++shoulder) {
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+            put(gamecube_shoulder_row(shoulder), 0, x, y, gamecube_shoulder_icon(shoulder, true, x, y));
+            put(gamecube_shoulder_row(shoulder), 1, x, y, gamecube_shoulder_icon(shoulder, false, x, y));
+        }
+    }
+    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+        put(gamecube_cstick_row(), 0, x, y, gamecube_cstick_icon(true, x, y));
+        put(gamecube_cstick_row(), 1, x, y, gamecube_cstick_icon(false, x, y));
+        put(gamecube_start_row(), 0, x, y, gamecube_start_icon(true, x, y));
+        put(gamecube_start_row(), 1, x, y, gamecube_start_icon(false, x, y));
+    }
     return atlas;
 }
 

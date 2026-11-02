@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Windwake</string>
+    <string name="app_name">Wind Waker HD</string>
     <string name="game_setup">Game setup</string>
     <string name="game_widget">The game, with its own icon</string>
     <string name="save_export">Export save</string>
@@ -10,6 +10,7 @@
     <string name="save_export_failed">Could not export the save: %1$s</string>
     <string name="save_not_a_save">This zip has no Wind Waker HD save (user/cking.sav)</string>
     <string name="save_imported">Save imported (the previous one is in %1$s)</string>
+    <string name="save_imported_no_backup">Save imported</string>
     <string name="save_import_failed">Could not import the save: %1$s</string>
     <string name="setup_welcome">Set up your game</string>
     <string name="setup_welcome_detail">Choose your copy of the game: an extracted game folder, a Cemu .wua archive or a .wud/.wux disc image. The Android device prepares it once; this takes a few minutes.</string>

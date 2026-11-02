@@ -110,6 +110,7 @@ std::vector<Row> rows_now(std::vector<Quest>& storage);
 // is open it moves through the page, draws it and leaves the game an idle controller; buttons held
 // when it closes reach the game only after they are released.
 bool notebook_owned();
+bool open_page_from_button(unsigned button);
 bool open_page(const char* how = "by the port");  // how: for the log
 // an item's caption (story_items.h: Info, use "show", a get); false while the page or a caption is open
 bool show_info(const std::string& title, const std::string& text, const char* how);

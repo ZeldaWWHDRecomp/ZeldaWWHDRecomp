@@ -20,37 +20,37 @@ final class SafeSaveArchive {
     private SafeSaveArchive() { }
 
     static File extract(InputStream input, File stage) throws IOException {
-        if (input == null) throw new IOException("Não foi possível abrir o arquivo.");
-        if (!stage.isDirectory() && !stage.mkdirs()) throw new IOException("Não foi possível preparar o save.");
+        if (input == null) throw new IOException("Could not open the archive.");
+        if (!stage.isDirectory() && !stage.mkdirs()) throw new IOException("Could not prepare the save staging directory.");
         String base = stage.getCanonicalPath() + File.separator;
         Set<String> names = new HashSet<>();
         long total = 0;
         int count = 0;
         try (ZipInputStream zip = new ZipInputStream(new BoundedInput(input, MAX_TOTAL))) {
             for (ZipEntry entry; (entry = zip.getNextEntry()) != null;) {
-                if (++count > MAX_ENTRIES) throw new IOException("O ZIP tem arquivos demais.");
+                if (++count > MAX_ENTRIES) throw new IOException("The archive contains too many entries.");
                 String name = entry.getName().replace('\\', '/');
                 if (name.endsWith("/")) name = name.substring(0, name.length() - 1);
                 if (!safeName(name) || !names.add(name.toLowerCase(Locale.ROOT)))
-                    throw new IOException("O ZIP contém um caminho inválido ou repetido.");
-                if (entry.getSize() > MAX_FILE) throw new IOException("Um arquivo do save é grande demais.");
+                    throw new IOException("The archive contains an invalid or duplicate path.");
+                if (entry.getSize() > MAX_FILE) throw new IOException("A save file exceeds the size limit.");
                 File output = new File(stage, name);
-                if (!output.getCanonicalPath().startsWith(base)) throw new IOException("Caminho fora do save.");
+                if (!output.getCanonicalPath().startsWith(base)) throw new IOException("Archive path escapes the save directory.");
                 if (entry.isDirectory()) {
-                    if (!output.isDirectory() && !output.mkdirs()) throw new IOException("Não foi possível criar uma pasta.");
-                    if (zip.read() != -1) throw new IOException("Uma pasta do ZIP contém dados inesperados.");
+                    if (!output.isDirectory() && !output.mkdirs()) throw new IOException("Could not create a directory.");
+                    if (zip.read() != -1) throw new IOException("An archive directory contains unexpected data.");
                     continue;
                 }
                 File parent = output.getParentFile();
-                if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Não foi possível preparar uma pasta.");
+                if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("Could not prepare a directory.");
                 long size = 0;
                 try (FileOutputStream out = new FileOutputStream(output)) {
                     byte[] buffer = new byte[64 * 1024];
                     for (int n; (n = zip.read(buffer)) != -1;) {
-                        if (Thread.currentThread().isInterrupted()) throw new IOException("Importação interrompida.");
+                        if (Thread.currentThread().isInterrupted()) throw new IOException("Save import interrupted.");
                         size += n;
                         total += n;
-                        if (size > MAX_FILE || total > MAX_TOTAL) throw new IOException("O save excede o limite de descompactação.");
+                        if (size > MAX_FILE || total > MAX_TOTAL) throw new IOException("The extracted save exceeds the size limit.");
                         out.write(buffer, 0, n);
                     }
                     out.getFD().sync();
@@ -65,11 +65,11 @@ final class SafeSaveArchive {
         if (children != null) for (File child : children) {
             File save = new File(child, "user/cking.sav");
             if (child.isDirectory() && save.isFile() && save.length() > 0) {
-                if (selected != null) throw new IOException("O ZIP contém mais de um save.");
+                if (selected != null) throw new IOException("The archive contains more than one save.");
                 selected = child;
             }
         }
-        if (selected == null) throw new IOException("O ZIP não contém user/cking.sav válido.");
+        if (selected == null) throw new IOException("The archive does not contain a nonempty user/cking.sav.");
         return selected;
     }
 
@@ -84,12 +84,12 @@ final class SafeSaveArchive {
         BoundedInput(InputStream input, long limit) { super(input); remaining = limit; }
         @Override public int read() throws IOException {
             int value = in.read();
-            if (value != -1 && --remaining < 0) throw new IOException("O ZIP é grande demais.");
+            if (value != -1 && --remaining < 0) throw new IOException("The archive exceeds the size limit.");
             return value;
         }
         @Override public int read(byte[] data, int offset, int length) throws IOException {
             int n = in.read(data, offset, length);
-            if (n > 0 && (remaining -= n) < 0) throw new IOException("O ZIP é grande demais.");
+            if (n > 0 && (remaining -= n) < 0) throw new IOException("The archive exceeds the size limit.");
             return n;
         }
     }

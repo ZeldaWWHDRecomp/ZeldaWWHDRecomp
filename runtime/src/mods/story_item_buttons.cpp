@@ -253,7 +253,7 @@ void check_new_item_change(Cpu* c) {
     if (!answer(o)) return g_original(c, kCheckNewItemChange);
     bool ok;
     if (o.notebook) {
-        ok = story_notebook::open_page("its item button in play");
+        ok = story_notebook::open_page_from_button(button);
     } else {
         ok = story_items::act(o.key, story_items::Action::Use);
         const std::optional<story_items::Item> it = story_items::find(o.key);

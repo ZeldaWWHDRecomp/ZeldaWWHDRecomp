@@ -20,8 +20,8 @@ public class ExportSaveActivity extends Activity {
         new Thread(() -> {
             Uri uri = null;
             String error = null;
-            try (SessionLease lease = SessionLease.acquire(WindwakeSession.root(this))) {
-                WindwakeSession.store(WindwakeSession.root(this)).recover();
+            try (SessionLease lease = SessionLease.acquire(SaveSession.root(this))) {
+                SaveSession.store(SaveSession.root(this)).recover();
                 if (!SaveFiles.hasSave(this)) throw new java.io.IOException(getString(R.string.save_none));
                 ContentValues v = new ContentValues();
                 v.put(MediaStore.Downloads.DISPLAY_NAME, "WWHD-save-" + SaveFiles.stamp() + ".zip");

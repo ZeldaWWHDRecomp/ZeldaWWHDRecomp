@@ -58,6 +58,7 @@ enum Pad : int {
     kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
     kPadCapture, kPadRightPaddle1, kPadLeftPaddle1, kPadRightPaddle2, kPadLeftPaddle2, kPadTouchpad,
     kPadMisc2, kPadMisc3, kPadMisc4, kPadMisc5, kPadMisc6,
+    kPadGCL, kPadGCR, kPadStartUp, kPadStartDown, kPadStartLeft, kPadStartRight,
     kPadCount
 };
 const char* pad_id(int p);     // JSON value, e.g. "LeftTrigger"
@@ -101,7 +102,15 @@ std::array<ShortcutBinding, kShortcutCount> shortcut_defaults();
 constexpr int kShortcutsVersion = 3;
 std::string shortcut_key_label(ShortcutKey key);
 
+struct PadPreset {
+    bool gamecube = false;
+    bool saved = false, saved_auto = false;
+    std::array<int, kActionCount> previous{};
+    bool operator==(const PadPreset&) const = default;
+};
+
 struct Mapping {
+    PadPreset preset;
     std::array<ShortcutBinding, kShortcutCount> shortcuts = shortcut_defaults();
     std::array<std::array<int, kKeysPerAction>, kActionCount> keys;  // kNoKey = empty slot
     std::array<int, kActionCount> pad;                                // kPadNone = unbound
@@ -126,20 +135,22 @@ struct Mapping {
     bool invert_camera_y = false;
     bool face_auto = false;         // Automatic face preset: follow the dominant pad's labels
     // In-game button prompts (issues #110, #141, #143; runtime/src/button_glyphs.cpp)
-    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation };
+    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation, kGameCube };
     enum class ShoulderNames : uint8_t { kAuto, kNintendo, kNumbered, kXbox };
-    Prompts prompts = Prompts::kAuto;            // face-button look while the face buttons are by label
+    Prompts prompts = Prompts::kAuto;            // in-game face-button look
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
     bool prompt_colours = true;                  // coloured face buttons (Xbox / PlayStation colours)
     // Controls > Controller > "L turns the GamePad page" (off): in play the game reads L only to turn
     // its GamePad screen between Items and Map; off, L reaches the game only outside play, so L1 can
     // jump without turning the page (play_buttons)
     bool l_turns_page = false;
+    bool settings_pause_page = true; // offer the settings page in the pause menu
     // per-controller bindings (format 2): see profile_index()
     struct Controller {
         std::string guid;   // SDL GUID (32 hex digits); empty on hosts without one (AppKit)
         std::string name;   // as the host names the controller
         std::array<int, kActionCount> pad{};
+        PadPreset preset;
         bool operator==(const Controller&) const = default;
     };
     std::vector<Controller> controllers;
@@ -149,6 +160,16 @@ struct Mapping {
     bool operator==(const Mapping&) const = default;
 };
 
+// GameCube physical inputs are SDL's AXBY convention (A south, X east, B west, Y north).
+// Old PC-mode SDL database mappings without GameCube classification, and native Apple
+// GameCube framework elements, use ABXY instead. Existing host inputs are never normalized.
+bool is_gamecube(bool sdl_gamecube_type, uint16_t vendor, uint16_t product);
+bool legacy_gamecube_faces(const input::ControllerInfo& controller);
+void apply_gamecube(Mapping& m, bool legacy_pc_faces = false);
+bool restore_pad_preset(Mapping& m);  // one retained pre-preset set, persisted in controls.json
+// Only Automatic and a previously unconfigured dominant pad may create an automatic profile.
+bool auto_gamecube(Mapping& m, const std::string& guid, const std::string& name,
+                   bool detected, bool legacy_pc_faces = false);
 // Which host face buttons drive the Wii U's A/B/X/Y (issue #78). Not stored: it is the shape of
 // the four face bindings, so a hand-edited mapping simply reads back as kCustom.
 //   kPosition (default): by position — the bottom host button (Xbox A) is the Wii U's B, the right
@@ -211,26 +232,30 @@ void set_face_auto(Mapping& m, bool on);
 // The dominant pad's family, from the labels note_face_labels last reported: PlayStation when it
 // names Cross/Circle/Square/Triangle, Xbox when its bottom button is A, Nintendo when it is B.
 enum class PadFamily { kUnknown, kXbox, kPlayStation, kNintendo };
+// The dominant device GameCube-adapter identity, separate from its face labels.
+void note_gamecube(bool detected);
+bool gamecube_pad();
 PadFamily pad_family_from_labels(const FaceLabel labels[4]);
 PadFamily pad_family();
 
 // What the in-game button prompts look like (button_glyphs.cpp draws it). Resolved from the
 // mapping and the pad family; pure, so input_map_test and button_glyphs_test can cover it.
 //   face: appearance and host-button identities follow the resolved face bindings. Automatic
-//     follows Xbox/PlayStation; position/custom on Nintendo or unknown retain original icons.
+//     follows Xbox/PlayStation and detected GameCube adapters; other Nintendo/unknown pads retain
+//     original icons unless by label selects its existing Xbox fallback.
 //     By label retains its existing Xbox fallback. Original never changes face prompts.
 //   shoulders: Automatic follows the face style (Xbox: LB/RB/LT/RT, PlayStation: L1/R1/L2/R2,
-//     original: the game's L/R/ZL/ZR); a fixed choice applies with any face layout.
-enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation };
-enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox };
+//     GameCube: L/R/Z; Original: the game's L/R/ZL/ZR; a fixed choice applies with any face layout.
+enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation, kGameCube };
+enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox, kGameCube };
 struct PromptStyle {
     FaceStyle face = FaceStyle::kOriginal;
     bool colours = false;         // face colours (only with a face style)
     bool text_colours = false;    // action words in their button's colour (only with a face style)
     ShoulderStyle shoulders = ShoulderStyle::kOriginal;
-    bool positions = false;       // by label's look: the HUD face cluster in the Xbox/PlayStation positions
-    std::array<int, 4> buttons = {0, 1, 2, 3};  // Wii U face -> host A/B/X/Y
-    std::array<int, 4> spots = {0, 1, 2, 3};    // HUD cluster: Wii U face -> the face whose drawn spot it takes
+    bool positions = false;       // by label's look: the HUD cluster follows the host face buttons
+    std::array<int, 4> buttons = {0, 1, 2, 3};  // Wii U face -> host A/B/X/Y, or identity for GameCube art
+    std::array<int, 4> spots = {0, 1, 2, 3};    // HUD cluster: Wii U face -> destination spot
     bool active() const { return face != FaceStyle::kOriginal || shoulders != ShoulderStyle::kOriginal; }
     bool operator==(const PromptStyle&) const = default;
 };
@@ -266,6 +291,17 @@ const char* pad_short_label(int p);
 input::PadState keyboard_state(const Mapping& m, const bool* keys, int count = 256);
 input::PadState controller_state(const Mapping& m, const float values[kPadCount]);
 input::PadState controller_state(const Mapping& m, const float values[kPadCount], const std::array<int, kActionCount>& pad);
+
+// Defer a lone Start until release, so Start chords never open pause first.
+// One gate per physical device; reset when changing layouts or suppressing host input.
+bool gamecube_settings_chord(const Mapping& m, const float values[kPadCount]);
+struct StartGate {
+    bool held = false, used = false;
+    uint8_t directions = 0;
+    std::array<int, kActionCount> bindings{};
+    double tap_until = 0;
+    input::PadState read(const Mapping& m, const float values[kPadCount], double seconds = -1);
+};
 
 // ---- per-controller bindings (format 2) ----
 std::string controller_key(const std::string& guid, const std::string& name);  // "guid name"
@@ -342,6 +378,7 @@ bool skip_controller_selection();
 bool background_controllers();  // current().background_controllers, any thread (hosts poll it)
 bool file_select_quit();
 bool invert_camera_y();  // current().invert_camera_y without copying the mapping (camera hooks)
+bool settings_pause_page(); // current().settings_pause_page, any thread
 bool l_turns_page();     // current().l_turns_page, any thread
 // The old Jump anywhere button (mods: traversal_settings): applied once to a format 1 (or missing)
 // controls.json; a format 2 file has its own Jump bindings and ignores it.

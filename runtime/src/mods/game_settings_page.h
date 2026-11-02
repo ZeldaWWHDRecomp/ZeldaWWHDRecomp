@@ -7,7 +7,7 @@
 // the player's game.
 //
 //   Closed  over the item menu's items page: a page arrow at the left edge (the mirror of the game's
-//           own arrow to the right page). A tap / click on it, or ZL, slides the page in from the left.
+//           own arrow to the right page). A tap / click, or A / Left once focused, slides the page in.
 //   Open    the tabs (L / R), one row per setting (Up / Down, the left stick too, with repeat), Left /
 //           Right change the value (a toggle follows the direction, a number steps), A toggles or steps
 //           up, B, + or a tap on the right page arrow slide the page back out to the items. Touch:
@@ -56,7 +56,7 @@ inline std::string bold(const std::string& s) { return kBold + s; }
 // One row as the driver gives it (from game_settings.h)
 struct Row {
     std::string id, label, value, help;
-    bool number = false, toggle = false, choice = false, on = false, enabled = true;
+    bool number = false, toggle = false, choice = false, action = false, on = false, enabled = true;
     bool stepped() const { return number || choice; }  // Left / Right step it (chevrons on its plate)
 };
 
@@ -66,7 +66,7 @@ struct Input {
     bool touch = false;
     float x = 0, y = 0;    // page coordinates
     float dt = 0;          // seconds since the last input
-    bool cursor_left = false;  // the game's cursor is in the items page's left column (Left from there opens the page)
+    bool arrow_focused = false; // reaching the arrow is a separate stop; a fresh A / Left turns the page
 };
 
 enum class Sound : uint8_t { None, Cursor, Change, Decide, Cancel, Tab, Open, Close, Blocked };
@@ -107,10 +107,8 @@ public:
     }
     void hide() { open_ = false; }
 
-    // The closed page's input: true when it should open (the entry arrow tapped, or ZL)
-    // How the closed page opens: ZL; Left (the cross or the stick) while the game's cursor is in the left
-    // column; a tap on the entry arrow; or a swipe that starts on the arrow and pulls the page in (it
-    // follows the finger; let go past a quarter of the screen, or flicked, it opens, else it slides back).
+    // A / Left on the focused arrow turns the page. Reaching it is handled by EntryFocus,
+    // after the game has received Left. Touch and swipes keep their existing behaviour.
     bool entry(const Input& in) {
         uint32_t buttons = in.buttons;
         if (in.lx < -0.5f) buttons |= kPadLeft;  // the stick as the cross
@@ -133,8 +131,9 @@ public:
             if (tap && on_arrow(in_x_, in_y_, true)) return true;
             return false;  // (the page slides back: shown() until it is out)
         }
-        return (pressed & kPadZL) || ((pressed & kPadLeft) && in.cursor_left);
+        return in.arrow_focused && (pressed & (kPadA | kPadLeft));
     }
+    void cancel_entry() { touch_ = swipe_ = false; if (!open_) slide_ = 0; }
     bool swiping() const { return swipe_; }
 
     Action input(const Input& in, const std::vector<Row>& rows, int tabs) {
@@ -174,7 +173,8 @@ public:
         };
         if (fire & kPadUp) move(-1);
         else if (fire & kPadDown) move(+1);
-        else if ((fire & (kPadLeft | kPadRight)) && count) change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
+        else if ((fire & (kPadLeft | kPadRight)) && count && !rows[selected_].action)  // (an action takes A only)
+            change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
         else if ((pressed & kPadA) && count) change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
         if (selected_ < int(top_)) top_ = unsigned(selected_);
         if (selected_ >= int(top_ + kRowsShown)) top_ = unsigned(selected_) - kRowsShown + 1;
@@ -432,6 +432,6 @@ private:
 // reading thread for the game's fonts and sounds); mute() on the Pro Controller's reads
 void pad(input::PadState& p, Cpu* c);
 void mute(input::PadState& p);
-bool page_open();  // the page (or its slide out) has the controller
+bool page_open();  // the entry focus stop, page or slide out has the controller
 
 }  // namespace game_settings_page

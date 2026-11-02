@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +56,9 @@ const PadInfo kPads[kPadCount] = {
     {"RightPaddle2", "Right paddle 2"}, {"LeftPaddle2", "Left paddle 2"}, {"Touchpad", "Touchpad click"},
     {"Misc2", "Extra button 2"}, {"Misc3", "Extra button 3"}, {"Misc4", "Extra button 4"},
     {"Misc5", "Extra button 5"}, {"Misc6", "Extra button 6"},
+    {"GameCubeL", "GC L (25% / click)"}, {"GameCubeR", "GC R (25% / click)"},
+    {"StartUp", "Start + D-pad up"}, {"StartDown", "Start + D-pad down"},
+    {"StartLeft", "Start + D-pad left"}, {"StartRight", "Start + D-pad right"},
 };
 
 struct KeyInfo { int code; const char* id; const char* label; };
@@ -321,6 +325,7 @@ FaceLayout face_layout(const Mapping& m) {
 
 void apply_face_layout(Mapping& m, FaceLayout layout) {
     if (layout == FaceLayout::kCustom) return;
+    m.preset.gamecube = false;
     m.face_auto = false;  // a preset is a choice, not a pad's to make
     const int* src = layout == FaceLayout::kLabels ? kFaceByLabel : kFaceByPosition;
     for (int i = 0; i < 4; i++) m.pad[kA + i] = src[i];
@@ -509,23 +514,25 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     if (unambiguous) {
         switch (m.prompts) {
         case Mapping::Prompts::kAuto:
-            s.face = family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
+            s.face = gamecube_pad() ? FaceStyle::kGameCube : m.preset.gamecube ? FaceStyle::kOriginal : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
                    : labels || family == PadFamily::kXbox ? FaceStyle::kXbox : FaceStyle::kOriginal;
             break;
         case Mapping::Prompts::kXbox: s.face = FaceStyle::kXbox; break;
         case Mapping::Prompts::kPlayStation: s.face = FaceStyle::kPlayStation; break;
+        case Mapping::Prompts::kGameCube: s.face = FaceStyle::kGameCube; break;
         case Mapping::Prompts::kOriginal: break;
         }
     }
-    if (s.face == FaceStyle::kOriginal) s.buttons = {0, 1, 2, 3};
+    if (s.face == FaceStyle::kOriginal || s.face == FaceStyle::kGameCube) s.buttons = {0, 1, 2, 3};
     s.positions = s.face != FaceStyle::kOriginal && labels;
-    if (s.face != FaceStyle::kOriginal) s.spots = hud_spots(m);
+    if (s.face != FaceStyle::kOriginal) s.spots = s.face == FaceStyle::kGameCube ? std::array<int,4>{0,1,2,3} : hud_spots(m);
     s.colours = s.face != FaceStyle::kOriginal && m.prompt_colours;
     s.text_colours = s.face != FaceStyle::kOriginal && m.prompt_text_colours;
     switch (m.shoulder_names) {
     case Mapping::ShoulderNames::kAuto:
         s.shoulders = s.face == FaceStyle::kXbox ? ShoulderStyle::kXbox
-                    : s.face == FaceStyle::kPlayStation ? ShoulderStyle::kNumbered : ShoulderStyle::kOriginal;
+                    : s.face == FaceStyle::kPlayStation ? ShoulderStyle::kNumbered
+                    : s.face == FaceStyle::kGameCube ? ShoulderStyle::kGameCube : ShoulderStyle::kOriginal;
         break;
     case Mapping::ShoulderNames::kNintendo: break;
     case Mapping::ShoulderNames::kNumbered: s.shoulders = ShoulderStyle::kNumbered; break;
@@ -540,6 +547,7 @@ const char* prompts_label(Mapping::Prompts p) {
     case Mapping::Prompts::kOriginal: return "original";
     case Mapping::Prompts::kXbox: return "Xbox";
     case Mapping::Prompts::kPlayStation: return "PlayStation";
+    case Mapping::Prompts::kGameCube: return "GameCube";
     }
     return "?";
 }
@@ -556,6 +564,7 @@ const char* shoulder_names_label(Mapping::ShoulderNames n) {
 
 void set_pad_binding(Mapping& m, int action, int pad) {
     if (action < 0 || action >= kActionCount) return;
+    if (m.pad[action] != pad) m.preset.gamecube = false;
     m.pad[action] = pad;
     if (action <= kY) m.face_auto = false;  // a hand-edited face binding is nobody's preset
 }
@@ -648,6 +657,7 @@ const char* pad_short_label(int p) {
         "D-pad ↑", "D-pad ↓", "D-pad ←", "D-pad →", "LS ↑", "LS ↓", "LS ←", "LS →", "RS ↑", "RS ↓", "RS ←", "RS →",
         "Capture", "R paddle 1", "L paddle 1", "R paddle 2", "L paddle 2", "Touchpad",
         "Extra 2", "Extra 3", "Extra 4", "Extra 5", "Extra 6",
+        "GC L", "GC R", "Start + ↑", "Start + ↓", "Start + ←", "Start + →",
     };
     return p > 0 && p < kPadCount ? kShort[p] : "";
 }
@@ -700,10 +710,21 @@ input::PadState controller_state(const Mapping& m, const float values[kPadCount]
 }
 
 input::PadState controller_state(const Mapping& m, const float values[kPadCount], const std::array<int, kActionCount>& pad) {
+    float resolved[kPadCount];
+    std::copy_n(values, kPadCount, resolved);
+    resolved[kPadGCL] = std::max(values[kPadGCL], values[kPadLT] >= 0.25f || values[kPadMisc3] > 0.5f ? 1.f : 0.f);
+    resolved[kPadGCR] = std::max(values[kPadGCR], values[kPadRT] >= 0.25f || values[kPadMisc4] > 0.5f ? 1.f : 0.f);
+    // Chords consume Start and their D-pad direction only when that chord is actually bound.
+    for (int c = 0; c < 4; ++c) {
+        int chord = kPadStartUp + c, direction = kPadDUp + c;
+        const bool used = std::find(pad.begin(), pad.end(), chord) != pad.end();
+        resolved[chord] = std::max(values[chord], used && values[kPadMenu] > .5f && values[direction] > .5f ? 1.f : 0.f);
+        if (resolved[chord]) { resolved[kPadMenu] = 0; resolved[direction] = 0; }
+    }
     float v[kActionCount];
     for (int a = 0; a < kActionCount; a++) {
         int p = pad[a];
-        v[a] = p > kPadNone && p < kPadCount ? values[p] : 0;
+        v[a] = p > kPadNone && p < kPadCount ? resolved[p] : 0;
     }
     input::PadState s;
     for (int a = 0; a < kActionCount; a++)
@@ -721,6 +742,99 @@ input::PadState controller_state(const Mapping& m, const float values[kPadCount]
     apply_range(s.lx, s.ly, m.left_range);
     apply_range(s.rx, s.ry, m.right_range);
     return s;
+}
+
+bool gamecube_settings_chord(const Mapping& m, const float values[kPadCount]) {
+    return m.pad[kHome] == kPadStartRight && values[kPadMenu] > .5f && values[kPadDRight] > .5f;
+}
+input::PadState StartGate::read(const Mapping& m, const float values[kPadCount], double seconds) {
+    if (seconds < 0) seconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (bindings != m.pad) { held = used = false; directions = 0; tap_until = 0; bindings = m.pad; }
+    bool chords = false;
+    for (int p : m.pad) chords |= p >= kPadStartUp && p <= kPadStartRight;
+    if (!chords) { *this = {}; return controller_state(m, values); }
+    const bool down = values[kPadMenu] > .5f;
+    float filtered[kPadCount]; std::copy_n(values, kPadCount, filtered);
+    for (int c = 0; c < 4; ++c) {
+        if (values[kPadDUp+c] <= .5f) directions &= ~(1 << c);
+        if (!down && (directions & (1 << c))) filtered[kPadDUp+c] = 0;
+    }
+    auto s = controller_state(m, filtered);
+    if (down) {
+        tap_until = 0;
+        if (!held) used = false;
+        for (int c = 0; c < 4; ++c)
+            if (values[kPadDUp + c] > .5f &&
+                std::find(m.pad.begin(), m.pad.end(), kPadStartUp + c) != m.pad.end()) { used = true; directions |= 1 << c; }
+        // Start is a modifier until released. Chord outputs were already evaluated above.
+        for (int a = 0; a < kActionCount; ++a)
+            if (m.pad[a] == kPadMenu) { s.buttons &= ~action_bit(a); s.virt &= ~action_virtual(a); }
+    } else if (held && !used) {
+        // Host polling may outrun the game's 30 Hz input read. Keep one press long enough to be seen.
+        tap_until = seconds + .1;
+    }
+    if (!down && seconds < tap_until) {
+        for (int a = 0; a < kActionCount; ++a)
+            if (m.pad[a] == kPadMenu) { s.buttons |= action_bit(a); s.virt |= action_virtual(a); }
+    }
+    held = down;
+    return s;
+}
+
+// SDL 3.4's GameCube classification, deliberately no vendor-wide or name substring guesses.
+bool is_gamecube(bool type, uint16_t v, uint16_t p) {
+    return type || (v == 0x057e && (p == 0x0337 || p == 0x2073)) ||
+        (v == 0x0079 && (p == 0x1843 || p == 0x1844 || p == 0x1846)) ||
+        (v == 0x0926 && p == 0x8888) || (v == 0x1a34 && p == 0xf705) ||
+        (v == 0x05e3 && p == 0x0681) || (v == 0x20d6 && p == 0xa711) ||
+        (v == 0x0e6f && p == 0x0185);
+}
+bool legacy_gamecube_faces(const input::ControllerInfo& c) {
+    // HIDAPI's adapter layout is positional even when an older SDL doesn't classify its type.
+    if (c.type == "gamecube-apple") return true;  // framework elements retain their original letter identities
+    return is_gamecube(c.type == "gamecube", c.vendor, c.product) && c.type != "gamecube" &&
+        !(c.vendor == 0x057e && c.product == 0x0337);
+}
+void apply_gamecube(Mapping& m, bool pc) {
+    if (!m.preset.gamecube) {
+        m.preset.previous = m.pad;
+        m.preset.saved_auto = m.face_auto;
+        m.preset.saved = true;
+    }
+    m.preset.gamecube = true;
+    m.face_auto = false;
+    m.pad.fill(kPadNone);
+    m.pad[kA] = kPadA; m.pad[kB] = pc ? kPadB : kPadX;
+    m.pad[kX] = pc ? kPadX : kPadB; m.pad[kY] = kPadY;
+    m.pad[kR] = kPadRB;  // physical Z: third item slot
+    m.pad[kZL] = kPadGCL; m.pad[kZR] = kPadGCR;
+    m.pad[kPlus] = kPadMenu;
+    // HD's map is in the pause menu; retain ordinary D-pad navigation and ship shortcuts.
+    m.pad[kDUp] = kPadDUp; m.pad[kDDown] = kPadDDown;
+    m.pad[kDLeft] = kPadDLeft; m.pad[kDRight] = kPadDRight;
+    m.pad[kStickRClick] = kPadStartUp;
+    m.pad[kMinus] = kPadStartDown;
+    m.pad[kL] = kPadStartLeft;
+    m.pad[kHome] = kPadStartRight;
+    for (int a = kLUp; a <= kRRight; ++a) m.pad[a] = kPadLSUp + a - kLUp;
+}
+bool restore_pad_preset(Mapping& m) {
+    if (!m.preset.saved) return false;
+    m.pad = m.preset.previous;
+    m.face_auto = m.preset.saved_auto;
+    m.preset = {};
+    return true;
+}
+bool auto_gamecube(Mapping& m, const std::string& guid, const std::string& name, bool detected, bool pc) {
+    if (!m.face_auto || !detected || (guid.empty() && name.empty()) || profile_index(m, guid, name) >= 0) return false;
+    // Automatic may follow face labels, but shared custom shoulders/sticks are intentional too.
+    auto defaults = Mapping::defaults();
+    for (int a = kL; a < kActionCount; ++a) if (m.pad[a] != defaults.pad[a]) return false;
+    int index = ensure_profile(m, guid, name);
+    auto view = view_for(m, index);
+    apply_gamecube(view, pc);
+    store_view(m, view, index);
+    return true;
 }
 
 // ---- per-controller bindings (format 2)
@@ -751,6 +865,7 @@ int ensure_profile(Mapping& m, const std::string& guid, const std::string& name)
     Mapping::Controller c;
     c.guid = guid;
     c.name = name;
+    c.preset = view_for(m, profile_index(m, guid, name)).preset;
     c.pad = pads_for(m, guid, name);  // what it plays with now: a profile of the same model, or the shared
     m.controllers.push_back(c);
     std::erase(m.setup_declined, controller_key(guid, name));
@@ -765,6 +880,7 @@ Mapping view_for(const Mapping& m, int index) {
     Mapping v = m;
     if (index >= 0 && index < (int)m.controllers.size()) {
         v.pad = m.controllers[index].pad;
+        v.preset = m.controllers[index].preset;
         v.face_auto = false;  // a controller's own bindings are its own: Automatic is for the shared ones
     }
     return v;
@@ -787,12 +903,15 @@ void store_view(Mapping& m, const Mapping& view, int index) {
         m.setup_declined = declined;
         return;
     }
+    const auto shared_preset = m.preset;
     const auto shared_pad = m.pad;
     const bool shared_auto = m.face_auto;
     auto controllers = m.controllers;
     auto declined = m.setup_declined;
     m = view;
     controllers[index].pad = view.pad;
+    controllers[index].preset = view.preset;
+    m.preset = shared_preset;
     m.pad = shared_pad;
     m.face_auto = shared_auto;
     m.controllers = controllers;
@@ -1042,6 +1161,32 @@ std::string quote(const std::string& s) {
 }
 }  // namespace
 
+static std::string preset_json(const PadPreset& p) {
+    std::string out = "{\"gamecube\": " + std::string(p.gamecube ? "true" : "false");
+    if (p.saved) {
+        out += std::string(", \"automatic\": ") + (p.saved_auto ? "true" : "false") + ", \"previous\": [";
+        for (int a = 0; a < kActionCount; ++a) out += std::string(a ? ", " : "") + quote(pad_id(p.previous[a]));
+        out += "]";
+    }
+    return out + "}";
+}
+static PadPreset read_preset(const Json* j) {
+    PadPreset p;
+    if (!j || j->type != Json::Obj) return p;
+    if (auto* g = j->get("gamecube"); g && g->type == Json::Bool) p.gamecube = g->b;
+    if (auto* a = j->get("automatic"); a && a->type == Json::Bool) p.saved_auto = a->b;
+    if (auto* a = j->get("previous"); a && a->type == Json::Arr && a->arr.size() == kActionCount) {
+        p.saved = true;
+        for (int i = 0; i < kActionCount; ++i) {
+            const auto& v = a->arr[i];
+            int b = v.type == Json::Str ? pad_from_id(v.s) : -1;
+            if (b < 0) { p.saved = false; p.previous = {}; break; }
+            p.previous[i] = b;
+        }
+    }
+    return p;
+}
+
 std::string to_json(const Mapping& m) {
     std::string o = "{\n  \"version\": 2,\n  \"keyboard\": {\n";
     for (int a = 0; a < kActionCount; a++) {
@@ -1060,7 +1205,7 @@ std::string to_json(const Mapping& m) {
         o += a + 1 < kActionCount ? ",\n" : "\n";
     }
     // button prompts: written only when not the default, as face_layout
-    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation"};
+    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation", "gamecube"};
     static const char* const kShoulderIds[] = {"auto", "nintendo", "numbered", "xbox"};
     std::string prompts;
     if (m.prompts != Mapping::Prompts::kAuto)
@@ -1072,6 +1217,7 @@ std::string to_json(const Mapping& m) {
     // issue #267: written only when on (files without it stay as they were)
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
     if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
+    if (!m.settings_pause_page) prompts += ",\n    \"settings_pause_page\": false";
     char opt[320];
     snprintf(opt, sizeof opt,
              "  },\n  \"options\": {\n    \"format\": 2,\n    \"stick_deadzone\": %.3g,\n"
@@ -1081,13 +1227,14 @@ std::string to_json(const Mapping& m) {
              m.face_auto ? ",\n    \"face_layout\": \"auto\"" : "");
     o += opt + prompts + std::string(",\n    \"file_select_quit\": ") + (m.file_select_quit ? "true" : "false") + "\n  },\n";
     // per-controller bindings and the controllers that declined the setup (format 2)
+    o += "  \"pad_preset\": " + preset_json(m.preset) + ",\n";
     o += "  \"controllers\": [";
     for (size_t i = 0; i < m.controllers.size(); i++) {
         const auto& c = m.controllers[i];
         o += std::string(i ? ",\n" : "\n") + "    {\"guid\": " + quote(c.guid) + ", \"name\": " + quote(c.name) + ", \"controller\": {";
         for (int a = 0; a < kActionCount; a++)
             o += std::string(a ? ", " : "") + quote(action_id(a)) + ": " + (c.pad[a] == kPadNone ? std::string("null") : quote(pad_id(c.pad[a])));
-        o += "}}";
+        o += "}, \"pad_preset\": " + preset_json(c.preset) + "}";
     }
     o += m.controllers.empty() ? "],\n" : "\n  ],\n";
     o += "  \"controller_setup_declined\": [";
@@ -1166,6 +1313,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             const Json* binds = e.get("controller");
             if (!guid || guid->type != Json::Str || !name || name->type != Json::Str) { warn += "controller without guid/name; "; continue; }
             Mapping::Controller c;
+            c.preset = read_preset(e.get("pad_preset"));
             c.guid = guid->s;
             c.name = name->s;
             c.pad = m.pad;  // inputs missing from the profile: the shared binding
@@ -1207,6 +1355,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
         if (const Json* i = op->get("background_controllers"); i && i->type == Json::Bool) m.background_controllers = i->b;
         if (const Json* i = op->get("l_turns_gamepad_page"); i && i->type == Json::Bool) m.l_turns_page = i->b;
+        if (const Json* i = op->get("settings_pause_page"); i && i->type == Json::Bool) m.settings_pause_page = i->b;
         // only "automatic" is stored: the two manual presets are the shape of the face bindings
         if (const Json* f = op->get("face_layout"); f && f->type == Json::Str) m.face_auto = f->s == "auto";
         // button prompts (#143); an unknown value keeps the default
@@ -1214,6 +1363,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             if (p->s == "original") m.prompts = Mapping::Prompts::kOriginal;
             else if (p->s == "xbox") m.prompts = Mapping::Prompts::kXbox;
             else if (p->s == "playstation") m.prompts = Mapping::Prompts::kPlayStation;
+            else if (p->s == "gamecube") m.prompts = Mapping::Prompts::kGameCube;
             else if (p->s != "auto") warn += "unknown button_prompts \"" + p->s + "\"; ";
         }
         if (const Json* n = op->get("shoulder_names"); n && n->type == Json::Str) {
@@ -1225,6 +1375,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* c = op->get("button_colours"); c && c->type == Json::Bool) m.prompt_colours = c->b;
         if (const Json* c = op->get("button_text_colours"); c && c->type == Json::Bool) m.prompt_text_colours = c->b;
     }
+    m.preset = read_preset(root.get("pad_preset"));
     // Migration is one-way: an explicit shortcuts.Screenshot wins over the old Photo row.
     for (int i = 0; i < 2; ++i) m.shortcuts[kPhoto].keys[i] = {m.keys[kScreenshot][i], 0};
     // Legacy single-button controller screenshots retain their original path.
@@ -1328,6 +1479,7 @@ static std::atomic<bool> g_background_controllers{false};
 static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
 static std::atomic<bool> g_l_turns_page{false};
+static std::atomic<bool> g_settings_pause_page{true};
 // format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
 static std::mutex g_legacy_mu;
 static bool g_loaded = false, g_legacy = true;
@@ -1342,8 +1494,14 @@ static FaceLabel g_labels[4] = {FaceLabel::kUnknown, FaceLabel::kUnknown, FaceLa
                                 FaceLabel::kUnknown};
 
 static std::atomic<int> g_family{(int)PadFamily::kUnknown};
+static std::atomic<bool> g_gamecube_pad{false};
 
 PadFamily pad_family() { return (PadFamily)g_family.load(std::memory_order_relaxed); }
+void note_gamecube(bool detected) {
+    if (g_gamecube_pad.exchange(detected, std::memory_order_relaxed) != detected)
+        g_gen.fetch_add(1, std::memory_order_relaxed);
+}
+bool gamecube_pad() { return g_gamecube_pad.load(std::memory_order_relaxed); }
 
 void note_face_labels(const FaceLabel labels[4]) {
     Mapping m = current();
@@ -1369,6 +1527,7 @@ void note_face_labels(const FaceLabel labels[4]) {
 
 void set_face_auto(Mapping& m, bool on) {
     m.face_auto = on;
+    if (on) m.preset.gamecube = false;
     if (!on) return;
     int out[4];
     FaceLabel labels[4];
@@ -1466,6 +1625,7 @@ void set_current(const Mapping& requested, bool save) {
     g_background_controllers = m.background_controllers;
     g_file_select_quit = m.file_select_quit;
     g_l_turns_page = m.l_turns_page;
+    g_settings_pause_page = m.settings_pause_page;
     g_gen++;
     if (save && !save_file(default_path(), m))
         fprintf(stderr, "[input] could not save controls to %s\n", default_path().c_str());
@@ -1476,6 +1636,7 @@ bool file_select_quit() { return g_file_select_quit.load(std::memory_order_relax
 bool skip_controller_selection() { return g_skip_controller_selection.load(std::memory_order_relaxed); }
 bool background_controllers() { return g_background_controllers.load(std::memory_order_relaxed); }
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
+bool settings_pause_page() { return g_settings_pause_page.load(std::memory_order_relaxed); }
 bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
 
 }  // namespace input_map

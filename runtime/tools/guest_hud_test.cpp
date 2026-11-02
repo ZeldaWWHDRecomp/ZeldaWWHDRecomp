@@ -71,6 +71,19 @@ int main() {
     auto old=quota.snapshot(0);assert(quota.release("q",handles[0]));quota.drop("q");
     assert(!quota.create_image("q",1,1,4,pixel,4));old.clear();
     assert(quota.create_image("q",1,1,4,pixel,4));
+    // A raised limit (the port's own pages) is its owner's alone, and only rises.
+    Store raised;std::vector<uint8_t> full(kMaxPixels);
+    assert(raised.create_image("port:a",2048,2048,2048*4,full.data(),full.size()));
+    assert(!raised.create_image("port:a",1,1,4,pixel,4));
+    raised.raise_pixel_quota("port:a",kMaxPixels+4);raised.raise_pixel_quota("port:a",1);
+    assert(raised.create_image("port:a",1,1,4,pixel,4)&&!raised.create_image("port:a",1,1,4,pixel,4));
+    assert(raised.create_image("mod",2048,2048,2048*4,full.data(),full.size()));
+    assert(!raised.create_image("mod",1,1,4,pixel,4));
+    // at most kMaxPortPixels, however much is asked
+    Store ceiling;
+    ceiling.raise_pixel_quota("port:b",SIZE_MAX);
+    for(size_t i=0;i<kMaxPortPixels/kMaxPixels;++i)assert(ceiling.create_image("port:b",2048,2048,2048*4,full.data(),full.size()));
+    assert(!ceiling.create_image("port:b",1,1,4,pixel,4));
     auto capped=store.begin("caps",0);command=Command{};
     for(unsigned i=0;i<kMaxCommands;++i)assert(store.append("caps",capped,command));
     assert(!store.append("caps",capped,command)&&!store.commit("caps",capped));

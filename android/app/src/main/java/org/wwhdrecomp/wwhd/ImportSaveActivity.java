@@ -10,7 +10,7 @@ import java.io.File;
 import java.io.InputStream;
 
 // Launcher shortcut "Import save": pick a zip (from Export save, or a zip of the PC version's save/
-// folder); it must contain user/cking.sav. The game is stopped, the current save is kept as
+// folder); it must contain user/cking.sav. The game must be closed; the current save is kept as
 // save-backup-<time> next to it, and the zip's files become the save.
 public class ImportSaveActivity extends Activity {
     private static final int PICK = 1;
@@ -35,10 +35,10 @@ public class ImportSaveActivity extends Activity {
         final Uri uri = data.getData();
         new Thread(() -> {
             String message;
-            try (SessionLease lease = SessionLease.acquire(WindwakeSession.root(this));
+            try (SessionLease lease = SessionLease.acquire(SaveSession.root(this));
                  InputStream in = getContentResolver().openInputStream(uri)) {
-                File backup = WindwakeSession.store(WindwakeSession.root(this)).importZip(in);
-                message = backup == null ? "Save importado com segurança." : getString(R.string.save_imported, backup.getName());
+                File backup = SaveSession.store(SaveSession.root(this)).importZip(in);
+                message = backup == null ? getString(R.string.save_imported_no_backup) : getString(R.string.save_imported, backup.getName());
             } catch (Exception e) {
                 message = getString(R.string.save_import_failed, e.getMessage());
             }

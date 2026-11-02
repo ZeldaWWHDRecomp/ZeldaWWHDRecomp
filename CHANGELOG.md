@@ -7,6 +7,92 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: long help lines no longer make the settings page flicker at high resolutions** (#345, thanks @itsarahtonin).
+  At 4K, the Controls tab's long help rows made the whole page redraw over and over. Long lines now stay as sharp as the
+  rest, whatever the display's density, and L / R between tabs no longer redraws the text.
+- **Fixed: the settings page in the pause menu no longer takes Left from the game.** In the item menu, Left from the
+  slot next to the bottom-left one opened the settings page instead of moving to that slot. Left now always goes to the
+  game first. Only where the game has nothing further left does the cursor move onto the page arrow; A or Left again
+  opens the page, and Right or B goes back. ZL no longer opens it, and Controls has a new option, **Settings page in the
+  pause menu**, to turn the arrow off (Esc and holding Select still open Settings). The arrow's design follows the
+  GreenNaugahyde Android fork (thanks @GreenNaugahyde).
+- **Fixed: the new-game name screen refuses `%` too** (#351, thanks @itsarahtonin). The game reads `%` in a name as a
+  format code, which could read or write game memory; the keyboard now leaves it out, as the rename already did.
+- **New: GameCube button prompts** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** under Button prompts
+  in Controls (or leave it on Automatic with a GameCube pad): the HUD, item menu and dialogue show the GameCube's
+  buttons, with the big green A, the red B, the kidney-shaped X and Y curving around A, the purple Z and the R and L
+  shoulder captions. The in-game settings page offers GameCube too.
+- **Fixed: start-up audio threads now sync like on the console.** At boot the game waits for its audio threads to
+  finish setting up before it continues; the port let it run ahead. It now waits as the Wii U does (about 2 ms once at
+  start-up), so the sound system is always ready before the game first uses it.
+- **New: change Link's name mid-game** (#328, thanks @itsarahtonin). The settings page in the pause menu (Game tab)
+  and the Settings window's Saves tab can now rename Link on the save file being played. The new name shows right
+  away and is kept with your next save. `%` isn't accepted, because the game reads it as a format code, and
+  characters the game's font can't show are refused.
+- **New: keep your save in a cloud folder** (#190, thanks @rhemfur). Settings → Saves → **Save folder** (Windows,
+  macOS, Linux) puts your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or Google Drive,
+  so it stays the same on all your computers. The save is written to a temporary file and only replaces the real one
+  once it is fully on disk, a lock warns when the folder is in use on another computer, and cloud conflict copies are
+  offered at the next start. Nothing is replaced or removed without a backup first and without your answer; on macOS
+  the questions show as a native alert. See the README section "Optional: keep your save in a cloud folder".
+- **Fixed: controller dead after switching it in a menu** (#330, thanks @itsarahtonin). Switching **Keyboard and
+  controllers act as** between Wii U GamePad and Wii U Pro Controller while the pause menu or the file select was open
+  left the game ignoring every button until you switched back or restarted. The controller you switched away from now
+  keeps working until the game has followed the switch, so you can close the menu or open your save as usual.
+- **Fixed: Android running at about half speed since v0.5.0** (#334, thanks @SpicyAwesomeSauce). From the second
+  launch on, the shaders prepared in the background made every frame slower on Snapdragon (Qualcomm) phones: Windfall
+  at 40 fps ran at about 22 fps. The game now builds those shaders itself from the prepared cache, which takes well
+  under a millisecond each, so it holds 40 fps again with no extra stutter when new areas load. The workaround
+  `WWHD_VK_PIPELINE_WARMUP=0` is no longer needed.
+- **Fixed: Story Notebook leaving the menu broken** (mods issue #9, thanks @francosang). After the notebook closed, the
+  menu cursor or bait icons in the bag could stay hidden, and using the notebook from an item button opened it without
+  showing it, so Link didn't respond until Go back. The menu is now restored on every way the notebook closes, and the
+  item button shows the notebook on the TV and the GamePad.
+- **Fixed: code mods "not available" in Android development builds** (mods issue #6, thanks @alexander-beepx).
+  Development builds for Android didn't know their own version, so every mod in Mods → Community looked too new for
+  them. Releases weren't affected.
+- **HDR: darker, truer shadows and a choice of HDR format** (#333, thanks @findel77). With HDR on, the game's picture
+  is now turned into HDR with a gamma 2.2 curve, like most monitors show it in SDR, so shadows no longer look washed
+  out. Settings → Graphics → **SDR curve in HDR**: Gamma 2.2 (default), Gamma 2.4 for a darker TV-like look, or sRGB
+  for the previous look. **HDR format** picks the signal: Auto (as before), scRGB or HDR10 (PQ); if the choice isn't
+  available, the game says so and uses the other one. SDR output is unchanged. See [docs/hdr.md](docs/hdr.md).
+- **Touch controls: Link in the button pictures.** Action buttons show a small picture of Link in that action's pose:
+  jumping on Jump, swinging the sword on the sword button, crouching, rolling, lifting, talking, defending and more,
+  with the game's word under him. The pictures are drawn from your own game files when the game starts; nothing is
+  shipped. Settings → Display → Touch controls → **Link in the button pictures** (on by default). Idea from
+  GreenNaugahyde's Android fork, thanks @GreenNaugahyde.
+- **Settings plays the game's menu sounds.** Moving, choosing, changing an option, switching tabs, going back and
+  opening or closing Settings play the game's own menu sounds, mixed like its other sounds; in TV play they follow
+  **GamePad sounds through main speakers**. Settings → Audio → **Menu sounds** (on by default); silent while the game
+  is in the background or muted. Idea from GreenNaugahyde's Android fork, thanks @GreenNaugahyde.
+- **Mod SDK: boat compasses and chart selection.** Code mods can take over the boat compass corner while sailing
+  (`wwhd_hud_boat_compasses`, with the corner's position) and select a sea chart the same way the GamePad does
+  (`wwhd_map_chart_selected` / `_select` / `_cancel`). The game's own compasses come back as soon as the mod lets go,
+  and mods on older ports keep working without these calls. See docs/mod-sdk-v2.md. Used by the HD minimap mod.
+- **GameCube controller layout** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** in Controls, or let
+  Automatic pick it for a GameCube pad that has no custom bindings yet: A acts, B is the sword, X, Y and Z use the
+  item slots, L targets and R shields (from 25% travel), the C-stick turns the camera and a tap of Start opens the
+  menus. The extra Wii U buttons sit on Start plus the D-pad. Each controller can keep its own layout, and
+  **Restore previous controller bindings** brings back the old buttons. Not yet tested on real adapters; details in
+  [docs/gamecube-controller.md](docs/gamecube-controller.md).
+- **Fixed: NVIDIA on Wayland closing the game** (#309, thanks @Froggjarl). With an NVIDIA GPU under Wayland (for
+  example KDE Plasma), the desktop could close the game's window shortly after start with an "explicit sync"
+  error. The game now turns on NVIDIA's older sync method on Wayland by itself (`__NV_DISABLE_EXPLICIT_SYNC=1`,
+  NVIDIA driver 575 or newer); a value you set yourself is kept. The log now names the video driver and whether the
+  desktop offers explicit sync. If it still closes, `SDL_VIDEO_DRIVER=x11` runs the game through XWayland.
+- **Fixed: Picto Box at wide and tall screens.** With a window wider than 16:9 (21:9, 32:9) or taller (16:10, 4:3,
+  phones), the Picto Box now takes the same 16:9 picture as on the Wii U instead of squeezing the whole wide view, and
+  its subject check only counts what is inside that 16:9 frame. Normal play keeps your full view. (#303, thanks
+  @aaronlink127)
+- **Fixed: Linux on Mali (panvk): one colour over the whole picture at sea** (#317, follow-up to #310, thanks
+  @mkopec). v0.5.0's fix for the flickering sky clamped depth for every draw, which also let through a shape the game
+  draws right at the camera: near Outset, as soon as gameplay started, the picture became one solid colour. The sky
+  is now fixed differently: on panvk, draws that don't write depth clip in their shaders, as the Wii U's clipper does,
+  so clouds and haze stay whole and the camera-plane shape stays hidden; draws that write depth keep the GPU's own
+  path. A draw whose graphics-pack shader can't take this change is drawn the normal way. `WWHD_VK_CLIP_EMULATION=0`
+  turns it off, `=1` turns it on for other drivers that support depth clamp (`WWHD_VK_DEPTH_CLAMP_ALL` is gone).
+  Details in [docs/vulkan.md](docs/vulkan.md).
+
 ## v0.5.0
 
 - **Fixed: frame interpolation glitches.** With interpolation on (above 30 fps), the hookshot no longer leaves

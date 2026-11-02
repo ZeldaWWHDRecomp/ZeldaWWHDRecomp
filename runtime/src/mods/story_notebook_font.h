@@ -5,8 +5,8 @@
 //
 // Each distinct line is composed once into a line atlas (an RGBA sheet: the letters in their colours,
 // the icon font's own colours for the button pictures); a Text command becomes one picture of its
-// line, scaled to the command's size. The atlas is rebuilt only when the page shows a line it doesn't
-// hold yet.
+// line (one per segment of a line wider than a page), scaled to the command's size. Only the lines the
+// atlas doesn't hold yet are composed, onto new pages.
 //
 // Sized lines (sized_key) are composed at the pixel height the screen draws them at (the TV window's
 // or the GamePad window's real pixels, pixel_height), so the screen samples them about 1:1: a line
@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -57,7 +58,7 @@ inline std::vector<uint32_t> codes(const std::string& s) {
 // How the button pictures look (input_map::prompt_style, as the game's own prompts are restyled by
 // button_glyphs.cpp): the game's icon, the icon in the Xbox colours, or the PlayStation shapes.
 struct Prompts {
-    enum Face : uint8_t { Original, Xbox, PlayStation } face = Original;
+    enum Face : uint8_t { Original, Xbox, PlayStation, GameCube } face = Original;
     bool colours = false;
     std::array<int, 4> buttons = {0, 1, 2, 3};
     bool operator==(const Prompts&) const = default;
@@ -103,13 +104,14 @@ inline float measure(const Face& f, const std::string& text, float size) {
 // Xbox colours if asked), or the PlayStation shape the port draws for that button.
 inline game_glyph::Bitmap button_picture(const game_glyph::Glyph* icon, int face, const Prompts& look, int height) {
     game_glyph::Bitmap out;
-    if (look.face == Prompts::PlayStation || !icon) {
+    if (look.face == Prompts::GameCube || look.face == Prompts::PlayStation || !icon) {
         // the port's own shape on a disc (button_glyph_art.h), or a plain disc when the font has no icon
         out.width = out.height = 64;
         out.rgba.resize(64 * 64 * 4);
         for (int y = 0; y < 64; y++)
             for (int x = 0; x < 64; x++) {
-                const uint32_t c = button_glyphs::face_shape(face, look.colours, true, x, y);
+                const uint32_t c = look.face == Prompts::GameCube ? button_glyphs::gamecube_icon(face, true, x, y)
+                                 : button_glyphs::face_shape(face, look.colours, true, x, y);
                 uint8_t* p = &out.rgba[(size_t(y) * 64 + x) * 4];
                 p[0] = c >> 24, p[1] = c >> 16, p[2] = c >> 8, p[3] = c;
             }
@@ -164,84 +166,126 @@ inline int pixel_height(float pixels) {
     return int(std::ceil(16.0f * std::pow(1.08f, float(n)) - 0.01f));
 }
 
-// The line atlas: every line the page shows, composed once.
+// The line atlas: every line the page shows, composed once, on one or more pages (each its own RGBA
+// image, at most kWidth x kMaxHeight, sized to what it holds). A line wider than a page is cut into
+// segments, each its own cell, drawn side by side; every segment keeps a column of its neighbours'
+// pixels on either side (outside its cell), so the screen's filtering finds the same pixels at a cut
+// as inside the line, and the cuts don't show. Pages are never changed once composed: new lines go
+// onto new pages, so the pages the screen already has stay as they are.
 class Atlas {
 public:
     static constexpr int kWidth = 2048, kMaxHeight = 2048, kPad = 2;
     static constexpr float kMinBorder = 1.0f;  // a bold line's border in pixels, at least
     struct Cell {
-        float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+        float u0 = 0, v0 = 0, u1 = 0, v1 = 0;  // on its page
         int width = 0, height = 0;  // pixels
-        int margin = 0;  // pixels left and right of the line in the cell (a sized line's border room)
+        int margin = 0;  // pixels left and right of the line (a sized line's border room)
+        int page = 0;    // the page it is on
+        int offset = 0;  // pixels from the line's left edge (its margin included) to the cell: a segment's place
     };
     // true if every line of `lines` (line_key) is in the atlas, composed with this look and these fonts
     bool holds(const std::vector<std::string>& lines, const Prompts& look, uint64_t fonts) const {
-        if (look != look_ || fonts != fonts_ || !image_) return false;
+        if (look != look_ || fonts != fonts_ || pages_.empty()) return false;
         for (const std::string& l : lines)
             if (!cells_.count(l)) return false;
         return true;
     }
     // Compose the lines (line_key: the main font, and `fallback` for characters the main font lacks;
     // the icon font for the button pictures) at `scale` of the font's own size, sized lines
-    // (sized_key) at their own height. Lines that don't fit any more are left out (drawn with the
-    // overlay font).
+    // (sized_key) at their own height, on new pages.
     void build(const std::vector<std::string>& lines, const Face& main, const Face* fallback, const Face* icons, const Prompts& look,
                uint64_t fonts, float scale = 1.0f) {
-        cells_.clear();
-        look_ = look, fonts_ = fonts;
-        const int base = std::max(1, int(std::lround(main.cell_height * scale)));
-        auto image = std::make_shared<guestmods::hud::Image>();
-        image->width = kWidth;
-        struct Place {
-            const std::string* key;
-            int x, y, w, h, m;
-        };
-        std::vector<Place> places;
-        for (const std::string& key : lines) places.push_back({&key, 0, 0, 0, height_of(key, base), sized(key) ? int(std::ceil(kMinBorder)) : 0});
-        // unique lines, the tallest first (rows of about one height)
-        std::sort(places.begin(), places.end(), [](const Place& a, const Place& b) { return a.h != b.h ? a.h > b.h : *a.key < *b.key; });
-        places.erase(std::unique(places.begin(), places.end(), [](const Place& a, const Place& b) { return *a.key == *b.key; }), places.end());
-        if (main.cell_height <= 0) places.clear();
-        // layout: rows left to right, each as tall as its first (tallest) line
-        int x = kPad, y = kPad, row = 0, used = 0;
-        std::vector<Place> kept;
-        for (Place p : places) {
-            const std::string text = p.key->substr(0, p.key->rfind('\x1F'));
-            p.w = std::max(1, line_width(text, main, fallback, p.h)) + 2 * p.m;
-            if (p.w + 2 * kPad > kWidth) continue;
-            if (x + p.w + kPad > kWidth) x = kPad, y += row + kPad, row = 0;
-            if (y + p.h + kPad > kMaxHeight) break;
-            p.x = x, p.y = y;
-            row = std::max(row, p.h);
-            kept.push_back(p);
-            x += p.w + kPad;
-            used = y + row + kPad;
-        }
-        image->height = std::max(4, used);
-        image->rgba.assign(size_t(image->width) * image->height * 4, 0);
-        for (const Place& p : kept) {
-            Cell c;
-            c.width = p.w, c.height = p.h, c.margin = p.m;
-            c.u0 = float(p.x) / kWidth, c.v0 = float(p.y) / image->height;
-            c.u1 = float(p.x + p.w) / kWidth, c.v1 = float(p.y + p.h) / image->height;
-            const size_t sep = p.key->rfind('\x1F');
-            const uint32_t rgb = uint32_t(std::strtoul(p.key->c_str() + sep + 1, nullptr, 16));
-            compose(*image, p.key->substr(0, sep), rgb, main, fallback, icons, look, p.x + p.m, p.y, p.w - 2 * p.m, p.h, p.m);
-            cells_[*p.key] = c;
-        }
-        image_ = image;
-        generation_++;
+        clear();
+        update(lines, main, fallback, icons, look, fonts, scale);
     }
+    // The lines a page shows in this read: the ones the atlas doesn't hold yet are composed onto new pages (all of
+    // them again with another look, other fonts or another scale). Then, while the pages take more than
+    // `budget` bytes, the page unused for the longest is dropped (none of these lines on it), or else,
+    // in a read that composed lines anyway, the current lines of the emptiest page under half used are
+    // moved onto a new page and that page is dropped. So without a new line nothing is composed, and
+    // the lines that are shown stay, however many bytes they need.
+    void update(const std::vector<std::string>& lines, const Face& main, const Face* fallback, const Face* icons, const Prompts& look,
+                uint64_t fonts, float scale = 1.0f, size_t budget = SIZE_MAX) {
+        if (look != look_ || fonts != fonts_ || scale != scale_) clear();
+        look_ = look, fonts_ = fonts, scale_ = scale;
+        reads_++;
+        std::vector<const std::string*> shown, missing;  // (each line once)
+        for (const std::string& l : lines) shown.push_back(&l);
+        std::sort(shown.begin(), shown.end(), [](const std::string* a, const std::string* b) { return *a < *b; });
+        shown.erase(std::unique(shown.begin(), shown.end(), [](const std::string* a, const std::string* b) { return *a == *b; }), shown.end());
+        for (const std::string* l : shown)
+            if (!cells_.count(*l)) missing.push_back(l);
+        const bool added_lines = !missing.empty();
+        std::vector<int> added = place(missing, main, fallback, icons, look);
+        // the pages these lines are on, and the area they take there
+        std::vector<size_t> use;
+        auto measure = [&] {
+            use.assign(pages_.size(), 0);
+            for (const std::string* l : shown)
+                if (auto it = cells_.find(*l); it != cells_.end())
+                    for (const Cell& c : it->second) use[size_t(c.page)] += size_t(c.width + kPad) * size_t(c.height + kPad);
+            for (size_t p = 0; p < pages_.size(); p++)
+                if (use[p]) pages_[p].last_used = reads_;
+        };
+        measure();
+        std::vector<bool> moved(pages_.size(), false);  // pages composed or emptied in this read are not moved again
+        for (int p : added) moved[size_t(p)] = true;
+        while (bytes() > budget) {
+            int drop = -1, sparse = -1;
+            for (size_t p = 0; p < pages_.size(); p++) {
+                if (!pages_[p].image) continue;
+                if (!use[p]) {
+                    if (drop < 0 || pages_[p].last_used < pages_[size_t(drop)].last_used) drop = int(p);
+                } else if (added_lines && !moved[p] && use[p] * 2 < area(p) && (sparse < 0 || use[p] * area(size_t(sparse)) < use[size_t(sparse)] * area(p))) {
+                    sparse = int(p);
+                }
+            }
+            if (drop >= 0) {
+                drop_page(drop);
+                continue;
+            }
+            if (sparse < 0) break;
+            std::vector<const std::string*> keep;
+            for (const std::string* l : shown)
+                if (auto it = cells_.find(*l); it != cells_.end())
+                    for (const Cell& c : it->second)
+                        if (c.page == sparse) {
+                            keep.push_back(l);
+                            cells_.erase(it);
+                            break;
+                        }
+            added = place(keep, main, fallback, icons, look);
+            moved.resize(pages_.size(), true);
+            for (int p : added) moved[size_t(p)] = true;
+            moved[size_t(sparse)] = true;
+            measure();
+        }
+    }
+    // the line's first cell (its only one unless it is wider than a page)
     const Cell* cell(const std::string& key) const {
+        auto it = cells_.find(key);
+        return it == cells_.end() ? nullptr : &it->second.front();
+    }
+    // the line's cells left to right (null if it isn't in the atlas)
+    const std::vector<Cell>* segments(const std::string& key) const {
         auto it = cells_.find(key);
         return it == cells_.end() ? nullptr : &it->second;
     }
-    std::shared_ptr<const guestmods::hud::Image> image() const { return image_; }
-    uint64_t generation() const { return generation_; }
+    // the pages (an index of a dropped page stays null until a new page takes it)
+    size_t pages() const { return pages_.size(); }
+    std::shared_ptr<const guestmods::hud::Image> image(size_t page = 0) const { return page < pages_.size() ? pages_[page].image : nullptr; }
+    size_t bytes() const {
+        size_t n = 0;
+        for (const Page& p : pages_)
+            if (p.image) n += p.image->rgba.size();
+        return n;
+    }
+    // lines taller than a page, composed at a page's height (drawn scaled up), since the last clear
+    int too_tall() const { return too_tall_; }
     void clear() {
         cells_.clear();
-        image_.reset();
-        generation_++;
+        pages_.clear();
+        too_tall_ = 0;
     }
 
     // the button characters' width in a line: as wide as tall (the game's icons are square cells)
@@ -440,10 +484,108 @@ private:
         d[3] = uint8_t(std::clamp(oa * 255.0f + 0.5f, 0.0f, 255.0f));
     }
 
-    std::map<std::string, Cell> cells_;
-    std::shared_ptr<guestmods::hud::Image> image_;
+    struct Page {
+        std::shared_ptr<guestmods::hud::Image> image;  // null: dropped
+        uint64_t last_used = 0;  // the read that last showed one of its lines
+    };
+    size_t area(size_t page) const { return size_t(pages_[page].image->width) * pages_[page].image->height; }
+    void drop_page(int page) {
+        std::erase_if(cells_, [&](const auto& line) {
+            return std::any_of(line.second.begin(), line.second.end(), [&](const Cell& c) { return c.page == page; });
+        });
+        pages_[size_t(page)] = {};
+    }
+    // The lines onto new pages (the free indices first): rows left to right, each as tall as its first
+    // (tallest) line; a line wider than a page as segments of at most a page's width; a page full: the
+    // next one. Each line is composed once into a strip (with a column on either side for its border's
+    // edge) and its segments copied from there, with a column of the strip on either side of each.
+    // Returns the pages it composed.
+    std::vector<int> place(const std::vector<const std::string*>& keys, const Face& main, const Face* fallback, const Face* icons,
+                           const Prompts& look) {
+        if (main.cell_height <= 0 || keys.empty()) return {};
+        const int base = std::clamp(int(std::lround(main.cell_height * scale_)), 1, kMaxHeight - 2 * kPad);
+        struct Line {
+            const std::string* key;
+            int w, h, m;
+        };
+        struct Piece {
+            size_t line;
+            int offset, w, x, y, page;
+        };
+        struct Sheet {
+            int width = 0, height = 0;
+        };
+        std::vector<Line> todo;
+        for (const std::string* key : keys) {
+            todo.push_back({key, 0, height_of(*key, base), sized(*key) ? int(std::ceil(kMinBorder)) : 0});
+            if (sized(*key) && std::atoi(key->c_str() + key->rfind('\x1E') + 1) > todo.back().h) too_tall_++;
+        }
+        // unique lines, the tallest first (rows of about one height)
+        std::sort(todo.begin(), todo.end(), [](const Line& a, const Line& b) { return a.h != b.h ? a.h > b.h : *a.key < *b.key; });
+        todo.erase(std::unique(todo.begin(), todo.end(), [](const Line& a, const Line& b) { return *a.key == *b.key; }), todo.end());
+        std::vector<Piece> pieces;
+        std::vector<Sheet> sheets;
+        int x = kPad, y = kPad, row = 0;
+        for (size_t i = 0; i < todo.size(); i++) {
+            Line& l = todo[i];
+            l.w = std::max(1, line_width(l.key->substr(0, l.key->rfind('\x1F')), main, fallback, l.h)) + 2 * l.m;
+            const int widest = kWidth - 2 * kPad, n = (l.w + widest - 1) / widest;
+            for (int s = 0; s < n; s++) {
+                const int from = int(int64_t(l.w) * s / n), to = int(int64_t(l.w) * (s + 1) / n);
+                if (x + (to - from) + kPad > kWidth) x = kPad, y += row + kPad, row = 0;
+                if (sheets.empty() || y + l.h + kPad > kMaxHeight) sheets.emplace_back(), x = kPad, y = kPad, row = 0;
+                pieces.push_back({i, from, to - from, x, y, int(sheets.size()) - 1});
+                row = std::max(row, l.h);
+                x += to - from + kPad;
+                Sheet& sh = sheets.back();
+                sh.width = std::max(sh.width, x), sh.height = std::max(sh.height, y + row + kPad);
+            }
+        }
+        // the sheets as pages, at the free indices
+        std::vector<int> index;
+        size_t free = 0;
+        for (const Sheet& sh : sheets) {
+            while (free < pages_.size() && pages_[free].image) free++;
+            if (free == pages_.size()) pages_.emplace_back();
+            auto image = std::make_shared<guestmods::hud::Image>();
+            image->width = uint32_t(std::max(4, sh.width)), image->height = uint32_t(std::max(4, sh.height));
+            image->rgba.assign(size_t(image->width) * image->height * 4, 0);
+            pages_[free] = {image, reads_};
+            index.push_back(int(free));
+        }
+        size_t next = 0;
+        for (size_t i = 0; i < todo.size(); i++) {
+            const Line& l = todo[i];
+            const size_t sep = l.key->rfind('\x1F');
+            const uint32_t rgb = uint32_t(std::strtoul(l.key->c_str() + sep + 1, nullptr, 16));
+            guestmods::hud::Image strip;
+            strip.width = uint32_t(l.w + 2), strip.height = uint32_t(l.h);
+            strip.rgba.assign(size_t(strip.width) * strip.height * 4, 0);
+            compose(strip, l.key->substr(0, sep), rgb, main, fallback, icons, look, 1 + l.m, 0, l.w - 2 * l.m, l.h, l.m);
+            std::vector<Cell>& cells = cells_[*l.key];
+            cells.clear();
+            for (; next < pieces.size() && pieces[next].line == i; next++) {
+                const Piece& p = pieces[next];
+                guestmods::hud::Image& page = *pages_[size_t(index[size_t(p.page)])].image;
+                for (int ty = 0; ty < l.h; ty++)  // strip columns offset .. offset + w + 1: the cell and a column either side
+                    std::copy_n(&strip.rgba[(size_t(ty) * strip.width + size_t(p.offset)) * 4], size_t(p.w + 2) * 4,
+                                &page.rgba[(size_t(p.y + ty) * page.width + size_t(p.x - 1)) * 4]);
+                Cell c;
+                c.width = p.w, c.height = l.h, c.margin = l.m, c.page = index[size_t(p.page)], c.offset = p.offset;
+                c.u0 = float(p.x) / float(page.width), c.v0 = float(p.y) / float(page.height);
+                c.u1 = float(p.x + p.w) / float(page.width), c.v1 = float(p.y + l.h) / float(page.height);
+                cells.push_back(c);
+            }
+        }
+        return index;
+    }
+
+    std::map<std::string, std::vector<Cell>> cells_;  // a line's cells, left to right
+    std::vector<Page> pages_;
     Prompts look_;
-    uint64_t fonts_ = 0, generation_ = 0;
+    uint64_t fonts_ = 0, reads_ = 0;
+    float scale_ = -1;
+    int too_tall_ = 0;
 };
 
 // A Text command's atlas key: sized (pixel_height) when `pixels` (screen pixels per page unit) is set
@@ -465,11 +607,13 @@ inline std::vector<std::string> texts_of(const std::vector<Command>& cmds) {
     return out;
 }
 
-// The page's Text commands as pictures of their atlas lines (kind Picture, u/v set; the caller hands
-// them to the HUD store with the atlas image). `font_scale`: the drawn line height per text size.
-// Lines not in the atlas stay Text (the overlay font); a button without the atlas becomes a disc
-// with its letter.
-inline std::vector<Command> to_pictures(const std::vector<Command>& in, const Atlas* atlas, float font_scale = 1.0f, float pixels = 0.0f) {
+// The page's Text commands as pictures of their atlas lines (kind Picture, u/v set, `image` the
+// atlas page it is on: the caller hands them to the HUD store with that page's image), one per cell
+// of the line, side by side. `font_scale`: the drawn line height per text size. Lines not in the atlas,
+// or on a page `drawable` says the screen can't have, stay Text (the overlay font); a button without
+// the atlas becomes a disc with its letter.
+inline std::vector<Command> to_pictures(const std::vector<Command>& in, const Atlas* atlas, float font_scale = 1.0f, float pixels = 0.0f,
+                                        const std::function<bool(int page)>& drawable = nullptr) {
     std::vector<Command> out;
     out.reserve(in.size());
     for (const Command& c : in) {
@@ -477,8 +621,11 @@ inline std::vector<Command> to_pictures(const std::vector<Command>& in, const At
             out.push_back(c);
             continue;
         }
-        const Atlas::Cell* cell = atlas ? atlas->cell(key_of(c, font_scale, pixels)) : nullptr;
-        if (!cell) {
+        const std::vector<Atlas::Cell>* cells = atlas ? atlas->segments(key_of(c, font_scale, pixels)) : nullptr;
+        if (cells && drawable)
+            for (const Atlas::Cell& cell : *cells)
+                if (!drawable(cell.page)) cells = nullptr;
+        if (!cells) {
             if (c.text == kGlyphA || c.text == kGlyphB) {  // no font: the button as a dark disc with its letter
                 const float r = c.size * 0.5f;
                 Command disc;
@@ -496,14 +643,19 @@ inline std::vector<Command> to_pictures(const std::vector<Command>& in, const At
             out.push_back(t);
             continue;
         }
-        Command p;
-        p.kind = Command::Picture;
-        const float h = c.size * font_scale, k = h / float(cell->height);
-        p.x = c.x - float(cell->margin) * k, p.y = c.y - (h - c.size) * 0.5f, p.w = float(cell->width) * k, p.h = h;
-        p.u0 = cell->u0, p.v0 = cell->v0, p.u1 = cell->u1, p.v1 = cell->v1;
-        p.rgba = 0xFFFFFF00u | (c.rgba & 0xFF);  // the colours are in the atlas; the alpha fades it
-        p.anchor = c.anchor, p.blend = c.blend;
-        out.push_back(p);
+        // each cell from the line's left edge, scaled alike; a cell ends where the next one starts
+        const float h = c.size * font_scale, k = h / float(cells->front().height), left = c.x - float(cells->front().margin) * k;
+        for (const Atlas::Cell& cell : *cells) {
+            Command p;
+            p.kind = Command::Picture;
+            p.x = left + float(cell.offset) * k, p.y = c.y - (h - c.size) * 0.5f;
+            p.w = left + float(cell.offset + cell.width) * k - p.x, p.h = h;
+            p.u0 = cell.u0, p.v0 = cell.v0, p.u1 = cell.u1, p.v1 = cell.v1;
+            p.rgba = 0xFFFFFF00u | (c.rgba & 0xFF);  // the colours are in the atlas; the alpha fades it
+            p.anchor = c.anchor, p.blend = c.blend;
+            p.image = atlas->image(size_t(cell.page));
+            out.push_back(p);
+        }
     }
     return out;
 }

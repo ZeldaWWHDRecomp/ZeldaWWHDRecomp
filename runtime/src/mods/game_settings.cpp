@@ -14,6 +14,7 @@
 #include "mods.h"
 #include "packages.h"
 #include "game_settings_graphics.h"
+#include "player_name.h"
 #include "../aspect.h"
 #include "../dynres.h"
 #include "../gfx/renderer.h"
@@ -146,6 +147,7 @@ std::string value_text(const Item& item) {
         const size_t i = size_t(std::clamp(int(std::lround(v)), 0, int(item.choices.size()) - 1));
         return item.choices.empty() ? "" : item.choices[i];
     }
+    case Kind::Action: return item.text ? item.text() : "";
     case Kind::Number:
         if (item.format) return item.format(v);
         char b[32];
@@ -158,6 +160,10 @@ std::string value_text(const Item& item) {
 
 float apply(const Item& item, int direction) {
     const float v = current(item);
+    if (item.kind == Kind::Action) {  // A or a tap only (Left / Right do nothing)
+        if (direction == 0 && item.set) hostui::post([set = item.set] { set(0); });
+        return v;
+    }
     float next = v;
     switch (item.kind) {
     case Kind::Toggle: next = direction == 0 ? (v >= 0.5f ? 0.0f : 1.0f) : direction > 0 ? 1.0f : 0.0f; break;
@@ -173,6 +179,7 @@ float apply(const Item& item, int direction) {
         next = std::clamp(item.min + steps * item.step, item.min, item.max);
         break;
     }
+    case Kind::Action: break;  // (above)
     }
     if (next == v) return v;
     {
@@ -220,6 +227,14 @@ void register_controls() {
     using M = input_map::Mapping;
     {
         Item it;
+        it.id = "controls.settings-pause-page", it.tab = "controls", it.label = "Settings page in the pause menu", it.kind = Kind::Toggle;
+        it.help = "Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.";
+        it.get = [] { return input_map::settings_pause_page() ? 1.0f : 0.0f; };
+        it.set = [](float v) { change_mapping([v](M& m) { m.settings_pause_page = v >= 0.5f; }); };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "controls.face-buttons", it.tab = "controls", it.label = "Face buttons", it.kind = Kind::Choice;
         it.help = "Which button does A / B / X / Y: by position (right is A), by label, or automatic.";
         it.choices = {"By position", "By label", "Automatic"};
@@ -240,12 +255,31 @@ void register_controls() {
     }
     {
         Item it;
+        it.id = "controls.gamecube", it.tab = "controls", it.label = "GameCube layout";
+        it.help = "Controller in use: original GameCube buttons; off restores its previous bindings. Start + D-pad for HD extras.";
+        it.get = [] { return input_map::active_view(input_map::current()).preset.gamecube ? 1.f : 0.f; };
+        it.set = [](float v) {
+            auto m = input_map::current();
+            std::string guid, name;input_map::active_controller(guid,name);
+            int index = guid.empty() && name.empty() ? -1 : input_map::ensure_profile(m,guid,name);
+            auto view = input_map::view_for(m,index);
+            bool legacy = false;
+            for (const auto& c : input::controllers())
+                if (c.guid == guid && c.name == name) legacy = input_map::legacy_gamecube_faces(c);
+            if (v > .5f) input_map::apply_gamecube(view,legacy);
+            else input_map::restore_pad_preset(view);
+            input_map::store_view(m,view,index);input_map::set_current(m);
+        };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "controls.prompts", it.tab = "controls", it.label = "Button prompts", it.kind = Kind::Choice;
         it.help = "How the game's button icons look: automatic follows the connected pad.";
-        for (M::Prompts p : {M::Prompts::kAuto, M::Prompts::kOriginal, M::Prompts::kXbox, M::Prompts::kPlayStation})
+        for (M::Prompts p : {M::Prompts::kAuto, M::Prompts::kOriginal, M::Prompts::kXbox, M::Prompts::kPlayStation, M::Prompts::kGameCube})
             it.choices.push_back(capital(input_map::prompts_label(p)));
         it.get = [] { return float(int(input_map::current().prompts)); };
-        it.set = [](float v) { change_mapping([v](M& m) { m.prompts = M::Prompts(std::clamp(int(std::lround(v)), 0, 3)); }); };
+        it.set = [](float v) { change_mapping([v](M& m) { m.prompts = M::Prompts(std::clamp(int(std::lround(v)), 0, 4)); }); };
         add(std::move(it));
     }
     {
@@ -563,6 +597,15 @@ void register_touch() {  // the Settings window's "Touch controls" (Android)
 }
 #endif
 void register_game() {
+    {  // the save file's name for Link (player_name.h): the page is only open in play, with a file loaded
+        Item it;
+        it.id = "game.link-name", it.tab = "game", it.label = "Change Link's name", it.kind = Kind::Action;
+        it.help = "Gives your hero a new name on this save file. It's kept the next time you save.";
+        it.text = [] { return player_name::current(); };
+        it.set = [](float) { player_name::ask(); };
+        it.enabled = [] { return player_name::loaded(); };
+        add(std::move(it));
+    }
     // the built-in gameplay mods (mods/manager.cpp), switched as the Mods tab switches them
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)

@@ -221,6 +221,7 @@ struct UIState {
 @property(strong) NSTextField* padInfo;
 @property(strong) NSSegmentedControl* which;
 @property(strong) NSSegmentedControl* faceLayout;
+@property(strong) NSPopUpButton* bindingTarget;
 @property(strong) NSSlider* deadzone;
 @property(strong) NSTextField* deadzoneValue;
 @property(strong) NSSlider* leftRange;     // issue #40: per-stick range, tag 0 = left, 1 = right
@@ -234,6 +235,7 @@ struct UIState {
 @property(strong) NSButton* promptColours;
 @property(strong) NSButton* promptTextColours;
 @property(strong) NSTimer* timer;
+- (Mapping)bindingView;
 - (BOOL)handleKeyEvent:(NSEvent*)e;
 - (BOOL)handleMouseEvent:(NSEvent*)e;
 - (void)beginCapture:(int)a mode:(int)mode;
@@ -736,7 +738,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
                 if (look.colours) {
                     constexpr uint32_t xbox[] = {0x58BE36, 0xE34B49, 0x3B91E5, 0xEBC52E};
                     constexpr uint32_t ps[] = {0x3C7DD9, 0xD9413C, 0xD05FB0, 0x2AA67D};
-                    const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : ps[host];
+                    const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : look.face == FaceStyle::kGameCube ? (host == 0 ? 0x58BE36FF : host == 1 ? 0xE34B49FF : 0xA9ADB1FF) : ps[host];
                     ink = [NSColor colorWithRed:((rgb >> 16) & 255)/255.0 green:((rgb >> 8) & 255)/255.0
                                           blue:(rgb & 255)/255.0 alpha:1];
                 }
@@ -995,11 +997,13 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
     double _messageTime;
     bool _freezeView;  // snapshot in progress: don't follow the Input menu
     NSString* _lastPadInfo;
+    std::string _bindingGuid, _bindingName;
+    bool _ownBindings;
 }
 
 - (instancetype)init {
     if (!(self = [super init])) return nil;
-    _st.m = current();
+    _st.m = [self bindingView];
     _st.pro = input::pro_controller();
     _gen = generation();
     memset(_localKeys, 0, sizeof _localKeys);
@@ -1014,7 +1018,7 @@ static NSTextField* label(NSString* s) {
 }
 
 - (void)build {
-    WWControlsWindow* w = [[WWControlsWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1060, 638)
+    WWControlsWindow* w = [[WWControlsWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1060, 670)
                                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                                         NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                                                                 backing:NSBackingStoreBuffered
@@ -1023,7 +1027,7 @@ static NSTextField* label(NSString* s) {
     w.controls = self;
     w.delegate = self;
     w.releasedWhenClosed = NO;
-    w.contentMinSize = NSMakeSize(960, 632);
+    w.contentMinSize = NSMakeSize(960, 664);
     // remembered window frame (NSUserDefaults); not in portable mode, which keeps nothing outside its folder
     if (!getenv("WWHD_NO_HOST_INPUT") && !host::portable()) w.frameAutosaveName = @"WWHDControls2";  // test runs: always the default size
     self.window = w;
@@ -1040,14 +1044,20 @@ static NSTextField* label(NSString* s) {
     NSButton* skip = [NSButton checkboxWithTitle:@"Skip controller selection" target:self action:@selector(skipControllerChanged:)];
     skip.toolTip = @"At the title screen, automatically choose the configured Wii U controller.";
     self.skipController = skip;
-    NSSegmentedControl* fl = [NSSegmentedControl segmentedControlWithLabels:@[@"Face by position", @"Face by label (Xbox)", @"Face automatic"]
+    NSSegmentedControl* fl = [NSSegmentedControl segmentedControlWithLabels:@[@"Face by position", @"Face by label (Xbox)", @"Face automatic", @"GameCube", @"Restore previous"]
                                                                 trackingMode:NSSegmentSwitchTrackingSelectOne
                                                                       target:self
                                                                       action:@selector(faceLayoutChanged:)];
     fl.toolTip = @"Which physical button performs each Wii U action. By position: right is A, bottom B, "
                  @"top X and left Y. By label: A does A, B does B, X does X and Y does Y. Automatic "
-                 @"reads the connected pad's labels. Button prompts chooses how the icons look in the game.";
+                 @"reads the connected pad's labels. GameCube changes the whole controller layout and retains previous bindings. "
+                 @"Start + up: first person; down: Minus; left: L; right: Home. Tap/release Start: items/map. "
+                 @"Button prompts chooses how the icons look in the game.";
     self.faceLayout = fl;
+    NSPopUpButton* bt = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    bt.target = self; bt.action = @selector(bindingTargetChanged:);
+    bt.toolTip = @"Bindings for one controller, or the shared defaults. Keyboard and options are shared.";
+    self.bindingTarget = bt;
     NSTextField* pi = label(@"");
     pi.textColor = NSColor.secondaryLabelColor;
     pi.alignment = NSTextAlignmentRight;
@@ -1116,16 +1126,15 @@ static NSTextField* label(NSString* s) {
     // in-game button prompts (#110, #143); the item tags are the Mapping enums
     NSTextField* ppl = label(@"Button prompts:");
     NSPopUpButton* pp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation}) {
+    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube}) {
         NSString* t = [NSString stringWithUTF8String:prompts_label(p)];
         [pp addItemWithTitle:[[t substringToIndex:1].uppercaseString stringByAppendingString:[t substringFromIndex:1]]];
         pp.lastItem.tag = (NSInteger)p;
     }
     pp.target = self;
     pp.action = @selector(promptsChanged:);
-    pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation "
-                 @"show the button bound to each Wii U action. By position on Xbox: roll is B, sword is A. "
-                 @"Automatic follows the connected pad; Nintendo keeps the game's look. By label keeps its "
+    pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
+                 @"Automatic follows the connected pad; recognized GameCube adapters use the GameCube look. By label keeps its "
                  @"existing Xbox fallback. Original keeps the game's look. Custom bindings need four "
                  @"distinct face buttons; otherwise the original icons are used.";
     self.prompts = pp;
@@ -1141,35 +1150,36 @@ static NSTextField* label(NSString* s) {
     sn.action = @selector(promptsChanged:);
     sn.toolTip = @"How prompts name the shoulder buttons and triggers. Automatic follows the button prompts: "
                  @"LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation shapes, the game's "
-                 @"L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
+                 @"L / R / Z with GameCube prompts, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
     self.shoulderNames = sn;
     NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
     pc.toolTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
                  @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
     self.promptColours = pc;
     NSButton* ptc = [NSButton checkboxWithTitle:@"Coloured face button text" target:self action:@selector(promptsChanged:)];
-    ptc.toolTip = @"Action text follows the mapped button's Xbox or PlayStation colour, independently of icon colours. "
+    ptc.toolTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
                   @"Off: the game's own text colours (white).";
     self.promptTextColours = ptc;
-    for (NSView* v in @[which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc]) {
+    for (NSView* v in @[bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
-    NSDictionary* v = NSDictionaryOfVariableBindings(which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
+    NSDictionary* v = NSDictionaryOfVariableBindings(bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
                                                      ppl, pp, snl, sn, pc, ptc);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
-    C(@"H:|-14-[which]-(>=12)-[fl]-12-[pi]-14-|", NSLayoutFormatAlignAllCenterY);
-    C(@"H:|-14-[skip]-(>=14)-|");
+    C(@"H:|-14-[which]-(>=12)-[pi]-14-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-14-[fl]-(>=14)-|");
+    C(@"H:|-14-[skip]-(>=14)-[bt(300)]-14-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-0-[pv]-0-|");
     C(@"H:|-0-[sep]-0-|");
     C(@"H:|-16-[st]-16-|");
     C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
-    C(@"V:|-12-[which]-6-[skip]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-14-|");
+    C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-14-|");
     [w center];
     [self syncOptions];
     [self syncWhich];
@@ -1181,7 +1191,7 @@ static NSTextField* label(NSString* s) {
 
 - (void)reloadFromModel {
     if (generation() != _gen) {
-        _st.m = current();
+        _st.m = [self bindingView];
         _gen = generation();
     }
     [self syncOptions];
@@ -1189,6 +1199,22 @@ static NSTextField* label(NSString* s) {
 }
 
 - (void)syncOptions {
+    [self.bindingTarget removeAllItems];
+    [self.bindingTarget addItemWithTitle:@"All controllers (shared)"];
+    auto all = current();
+    std::vector<std::pair<std::string,std::string>> targets;
+    for (auto& c : all.controllers) targets.emplace_back(c.guid,c.name);
+    for (auto& c : input::controllers()) {
+        auto key = std::pair{c.guid,c.name};
+        if (!c.is_virtual && std::find(targets.begin(),targets.end(),key)==targets.end()) targets.push_back(key);
+    }
+    for (auto& [guid,name] : targets) {
+        [self.bindingTarget addItemWithTitle:ns(name)];
+        self.bindingTarget.lastItem.representedObject = @{@"guid":ns(guid), @"name":ns(name)};
+        if (_ownBindings && guid == _bindingGuid && name == _bindingName)
+            [self.bindingTarget selectItem:self.bindingTarget.lastItem];
+    }
+    [self.faceLayout setEnabled:_st.m.preset.saved forSegment:4];
     self.deadzone.doubleValue = _st.m.deadzone;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
     self.skipController.state = _st.m.skip_controller_selection ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1203,7 +1229,8 @@ static NSTextField* label(NSString* s) {
     self.promptTextColours.state = _st.m.prompt_text_colours ? NSControlStateValueOn : NSControlStateValueOff;
     // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
     // Automatic is segment 2 whatever the bindings resolved to (as the overlay's "(-> ...)").
-    if (_st.m.face_auto) self.faceLayout.selectedSegment = 2;
+    if (_st.m.preset.gamecube) self.faceLayout.selectedSegment = 3;
+    else if (_st.m.face_auto) self.faceLayout.selectedSegment = 2;
     else {
         FaceLayout fl = face_layout(_st.m);
         self.faceLayout.selectedSegment = fl == FaceLayout::kCustom ? -1 : fl == FaceLayout::kLabels ? 1 : 0;
@@ -1215,8 +1242,28 @@ static NSTextField* label(NSString* s) {
     [self.padView invalidateGeo];
 }
 
+- (Mapping)bindingView {
+    auto m = current();
+    return view_for(m, _ownBindings ? profile_index(m, _bindingGuid, _bindingName) : -1);
+}
+
+- (void)bindingTargetChanged:(NSPopUpButton*)button {
+    [self cancelCapture];
+    _ownBindings = button.indexOfSelectedItem > 0;
+    if (_ownBindings) {
+        NSDictionary* target = button.selectedItem.representedObject;
+        _bindingGuid = [target[@"guid"] UTF8String];
+        _bindingName = [target[@"name"] UTF8String];
+        auto m = current(); ensure_profile(m, _bindingGuid, _bindingName); set_current(m);
+    }
+    _st.m = [self bindingView]; _gen = generation();
+    [self syncOptions]; [self.padView invalidateGeo];
+}
+
 - (void)commit {
-    set_current(_st.m);  // live: the next game read uses it; saved to controls.json
+    auto m = current();
+    store_view(m, _st.m, _ownBindings ? profile_index(m, _bindingGuid, _bindingName) : -1);
+    set_current(m);  // live: the next game read uses it; saved to controls.json
     _gen = generation();
     self.padView.needsDisplay = YES;
 }
@@ -1294,7 +1341,7 @@ static NSTextField* label(NSString* s) {
     static const bool no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;
     bool dirty = false;
     if (generation() != _gen && _st.capAction < 0) {  // changed elsewhere (another window, reset)
-        _st.m = current();
+        _st.m = [self bindingView];
         _gen = generation();
         [self syncOptions];
         dirty = true;
@@ -1545,16 +1592,14 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 - (void)deadzoneChanged:(NSSlider*)s {
     _st.m.deadzone = std::round(s.doubleValue * 100) / 100;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
-    set_current(_st.m);
-    _gen = generation();
+    [self commit];
 }
 
 - (void)rangeChanged:(NSSlider*)s {
     float r = std::clamp((float)(std::round(s.doubleValue * 100) / 100), kMinStickRange, kMaxStickRange);
     (s.tag ? _st.m.right_range : _st.m.left_range) = r;
     (s.tag ? self.rightRangeValue : self.leftRangeValue).stringValue = [NSString stringWithFormat:@"%.0f%%", r * 100];
-    set_current(_st.m);
-    _gen = generation();
+    [self commit];
 }
 
 - (void)skipControllerChanged:(NSButton*)b {
@@ -1588,11 +1633,22 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 
 - (void)faceLayoutChanged:(NSSegmentedControl*)c {
     // the same as Input > Face buttons; rewrites the four face bindings only
-    if (c.selectedSegment == 2) set_face_auto(_st.m, true);
+    if (c.selectedSegment == 4) restore_pad_preset(_st.m);
+    else if (c.selectedSegment == 3) {
+        bool legacy = false;
+        std::string guid=_bindingGuid, name=_bindingName;
+        if (!_ownBindings) active_controller(guid,name);
+        for (const auto& pad : input::controllers())
+            if (pad.guid == guid && pad.name == name)
+                legacy = legacy_gamecube_faces(pad);
+        apply_gamecube(_st.m, legacy);
+    }
+    else if (c.selectedSegment == 2) set_face_auto(_st.m, true);
     else apply_face_layout(_st.m, c.selectedSegment == 1 ? FaceLayout::kLabels : FaceLayout::kPosition);
     [self commit];
     [self.padView invalidateGeo];
-    [self setStatus:_st.m.face_auto
+    [self syncOptions];
+    [self setStatus:_st.m.preset.gamecube ? @"GameCube layout. Hold Start for D-pad shortcuts; tap/release for items and map." : _st.m.face_auto
                      ? [NSString stringWithFormat:@"Face buttons: automatic (%s).", face_layout_label(face_layout(_st.m))]
                      : [NSString stringWithFormat:@"Face buttons: %s.", face_layout_label(face_layout(_st.m))]
                level:0];
@@ -1730,14 +1786,14 @@ static int self_test() {
     c.rightRange.doubleValue = 1.111;
     [c rangeChanged:c.rightRange];
     expect(current().right_range == 1.11f && current().left_range == 1.0f, "right stick range = 111%");
-    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kPlayStation];
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kGameCube];
     [c.shoulderNames selectItemWithTag:(NSInteger)Mapping::ShoulderNames::kXbox];
     c.promptColours.state = NSControlStateValueOff;
     c.promptTextColours.state = NSControlStateValueOff;
     [c promptsChanged:c.prompts];
-    expect(current().prompts == Mapping::Prompts::kPlayStation && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
+    expect(current().prompts == Mapping::Prompts::kGameCube && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
                !current().prompt_colours && !current().prompt_text_colours,
-           "button prompts: PlayStation, LB/RB/LT/RT, no colours");
+           "button prompts: GameCube, LB/RB/LT/RT, no colours");
     // 9. the file on disk follows
     Mapping disk;
     expect(load_file(default_path(), disk) && disk == current(), "controls.json matches the live mapping");

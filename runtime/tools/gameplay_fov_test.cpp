@@ -111,3 +111,5 @@ int main() {
     }
     puts("Gameplay FOV: camera/culling agree across aspects and stereo modes; events, dialogue, menus and transitions retain authored FOV; control return restores slider.");
 }
+
+namespace guestmods::maphud { bool hide_pane(uint32_t) { return false; } }  // map/HUD bridge (mods/map_hud.cpp)

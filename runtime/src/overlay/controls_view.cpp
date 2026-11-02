@@ -527,7 +527,7 @@ void draw_controls(ControlsView& v, float w, float h) {
             if (styled && look.colours) {
                 constexpr uint32_t xbox[] = {0x58BE36, 0xE34B49, 0x3B91E5, 0xEBC52E};
                 constexpr uint32_t ps[] = {0x3C7DD9, 0xD9413C, 0xD05FB0, 0x2AA67D};
-                const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : ps[host];
+                const uint32_t rgb = look.face == FaceStyle::kXbox ? xbox[host] : look.face == FaceStyle::kGameCube ? (host == 0 ? 0x58BE36FF : host == 1 ? 0xE34B49FF : 0xA9ADB1FF) : ps[host];
                 ink = col(((rgb >> 16) & 255)/255.0f, ((rgb >> 8) & 255)/255.0f, (rgb & 255)/255.0f);
             }
             if (styled && look.face == FaceStyle::kPlayStation) {

@@ -315,7 +315,14 @@ static WWStateMenu* g_state_menu;
 - (void)setFaceLayout:(NSMenuItem*)item {
     // issue #78: which host face buttons drive the Wii U's A/B/X/Y (the same as the Controls window)
     input_map::Mapping m = input_map::current();
-    if (item.tag == 2) input_map::set_face_auto(m, true);
+    if (item.tag == 4) input_map::restore_pad_preset(m);
+    else if (item.tag == 3) {
+        bool legacy = false;std::string guid,name;input_map::active_controller(guid,name);
+        for (const auto& pad : input::controllers())
+            if (pad.guid == guid && pad.name == name) legacy = input_map::legacy_gamecube_faces(pad);
+        input_map::apply_gamecube(m,legacy);
+    }
+    else if (item.tag == 2) input_map::set_face_auto(m, true);
     else input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
     input_map::set_current(m);
 }
@@ -349,8 +356,12 @@ static WWStateMenu* g_state_menu;
     if (item.action == @selector(setController:))
         item.state = (item.tag == 1) == input::pro_controller() ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(setFaceLayout:)) {
-        input_map::FaceLayout fl = input_map::face_layout(input_map::current());
-        bool on = fl == (item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+        const auto m = input_map::current();
+        input_map::FaceLayout fl = input_map::face_layout(m);
+        bool on = item.tag == 3 ? m.preset.gamecube : item.tag == 2 ? m.face_auto :
+            item.tag < 2 && !m.face_auto && !m.preset.gamecube &&
+            fl == (item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+        if (item.tag == 4) return m.preset.saved;
         item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
     }
     if (item.action == @selector(toggleInterp:)) item.state = interp::mode() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
@@ -543,6 +554,8 @@ void install_menu(NSWindow* tv) {
     add(in, @"    Automatic", @selector(setFaceLayout:), @"", 2).toolTip =
         @"Follows the labels printed on the pad that was plugged in first: by label on an Xbox pad, "
         @"by position on a Nintendo one";
+    add(in, @"    GameCube", @selector(setFaceLayout:), @"", 3).toolTip = @"GameCube controls; keeps previous bindings for Restore.";
+    add(in, @"    Restore previous controller bindings", @selector(setFaceLayout:), @"", 4);
     [in addItem:[NSMenuItem separatorItem]];
     add(in, @"Show GamePad screen (\u2318G)", @selector(toggleDrcWindow:), @"");
     [in addItem:gfx::controls_menu_item()];

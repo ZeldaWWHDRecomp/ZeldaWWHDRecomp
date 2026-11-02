@@ -269,10 +269,12 @@ model step also name the object archives whose models use them: those wait until
 one of their archives, then a few compiler threads (one on Android) build them before the models
 first appear, giving way whenever the game needs a pipeline at once. When more unused pipelines are
 ready than the limit allows (1,024; 256 on Android), those of archives no longer loaded go first.
-It owns separate modules, descriptor layouts and a pipeline cache; the render
-thread takes a ready pipeline only after the exact key, both SPIR-V programs and
-descriptor layouts match. `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and
-replay. Missing or unfinished pipelines use a separate demand compiler with an
+It compiles into the demand compiler's driver cache (below; its own cache only until that one exists). When a
+draw needs a pipeline the worker has ready and the exact key, both SPIR-V programs and descriptor layouts match,
+the render thread builds its own pipeline, a driver-cache hit (about 0.25 ms on an Adreno 750), and the worker's
+copy is destroyed: on Qualcomm's driver, frames drawn with the worker's pipeline objects themselves were about
+1.4 times as costly (issue #334, `warm_handover.h`). `WWHD_VK_WARM_HANDOVER=1` hands the worker's pipelines over
+again (measurements). `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and replay. Missing or unfinished pipelines use a separate demand compiler with an
 owned state snapshot and independent native cache. With Shader compile Off, exact guest draws remain at
 the head of the ordered command stream until ready; the renderer can repeat the
 last complete scan image while waiting. It never substitutes state or drops that
@@ -1161,17 +1163,25 @@ It is **off** by default.
 
 Both renderers (Metal and Vulkan) support it. The idea comes from GreenNaugahyde's Android fork.
 
-## Depth clamp on panvk (Mali)
+## Depth clipping in shaders on panvk (Mali)
 
-Mali GPUs have no geometric depth clipper: panvk implements depth clipping by culling each fragment
-whose depth leaves the viewport's depth range. The game draws parts of the sky (the title screen's
-cloud band, a cylinder around the camera) at the far plane; when such triangles pass beside or behind
-the camera, interpolated depth rounds just above 1.0 and pieces of the band are culled along straight
-edges, which flickers as the camera moves. On panvk every pipeline therefore uses depth clamp, so
-those fragments are clamped instead of culled. Geometry in front of the near plane is then not clipped
-either; the game rarely draws any there. `WWHD_VK_DEPTH_CLAMP_ALL=0` restores normal depth clipping,
-`=1` forces depth clamp on other drivers (both need the device's `depthClamp` feature); the log names
-the choice.
+Mali GPUs have no geometric clipper: panvk clips depth by culling each fragment whose depth leaves the
+viewport's depth range. That cull works on depth interpolated in screen space, which drifts past 1.0 on
+far-plane geometry whose triangles pass beside or behind the camera: the sky's cloud band on the title
+screen and at sea lost pieces along straight edges, flickering as the camera moved. Turning on depth
+clamp avoids the cull but also lets through what only it removes: the game draws primitives on the
+camera plane (w = 0), which clipping discards; with clamp, one of them filled the 16:9 picture with a
+single colour at sea near Outset.
+
+On panvk, draws that don't write depth therefore clamp depth and clip in their shaders: the vertex
+shader passes the clip-space distances to the near and far planes, interpolated like the point on the
+triangle, and the pixel shader discards outside them (and at w = 0). Draws that write depth keep the
+hardware path, so opaque geometry keeps the early depth test; draws whose own state turns off near or
+far clipping are unchanged. A draw with a stage that can't take the change (a graphics-pack shader
+without the decompiler's `SET_POSITION`) keeps the hardware path for both stages and is drawn as before;
+the log names the shader. `WWHD_VK_CLIP_EMULATION=0` turns this off, `=1` turns it on for other
+drivers with the depthClamp feature; the log names the choice. It is part of the shader key, so shader
+caches keep both variants.
 
 ## Choosing the GPU
 
