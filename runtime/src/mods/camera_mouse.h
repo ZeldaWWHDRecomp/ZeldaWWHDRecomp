@@ -11,6 +11,9 @@ inline constexpr bool aiming_item(uint32_t proc) {
            proc == 0x83 || proc == 0x84 || (proc >= 0x8A && proc <= 0x8D) ||
            proc == 0x94 || proc == 0x95;
 }
+// procShipCannon_init (023F1B10) selects 0x8E. Require the ship flag as well so stale
+// procedure state cannot send camera movement into walking or ordinary boat steering.
+inline constexpr bool cannon_aim(uint32_t proc, bool in_ship) { return in_ship && proc == 0x8E; }
 inline float yaw_speed(float points, float sensitivity, double yaw_step) {
     if (!(yaw_step > 0.01)) yaw_step = 8.0;
     return static_cast<float>(-points * sensitivity / (0.92f * yaw_step));

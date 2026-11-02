@@ -2691,6 +2691,11 @@ target_include_directories(camera_mouse_test PRIVATE runtime/src)
 target_compile_options(camera_mouse_test PRIVATE -UNDEBUG)
 add_test(NAME camera_mouse COMMAND camera_mouse_test)
 
+add_executable(cannon_mouse_test runtime/tools/cannon_mouse_test.cpp runtime/src/mods/camera.cpp runtime/src/guest_addr_identity.c)
+target_include_directories(cannon_mouse_test PRIVATE runtime/src runtime/include)
+target_compile_options(cannon_mouse_test PRIVATE -UNDEBUG)
+add_test(NAME cannon_mouse COMMAND cannon_mouse_test)
+
 add_executable(camera_swipe_test runtime/tools/camera_swipe_test.cpp)
 target_include_directories(camera_swipe_test PRIVATE runtime/src)
 target_compile_options(camera_swipe_test PRIVATE -UNDEBUG)
