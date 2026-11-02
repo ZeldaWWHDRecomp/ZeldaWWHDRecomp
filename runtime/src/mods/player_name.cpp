@@ -8,6 +8,7 @@
 #include "runtime.h"
 #include "story_lyt_text_markup.h"  // to_utf8
 #include "../console_language.h"
+#include "../game_name_text.h"
 #include "../input.h"
 #include "../savestate.h"
 #include "../overlay/text_entry.h"
@@ -19,7 +20,7 @@ const uint32_t kSaveInfoPtr = GD(0x101F84DC);   // dComIfGs save area
 constexpr uint32_t kDataNum = 0x20 + 0x1290;     // dSv_info_c::mDataNum: the file being played (0..2)
 constexpr uint32_t kCardInfo = 0x12C0;           // SaveMgr's card info (HD per-file data)
 const uint32_t fn_get_card_name = GC(0x02720154), fn_set_card_name = GC(0x02726668);
-const std::u16string kRefused = u"%";  // see ask()
+using game_name::kRefused;  // see ask()
 
 std::mutex g_mu;
 bool g_pending = false;  // an accepted name, not yet put in (g_mu)
