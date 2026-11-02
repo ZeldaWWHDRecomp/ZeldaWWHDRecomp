@@ -1629,6 +1629,15 @@ int main() {
     CHECK(!skip_controller_selection());
     set_current(Mapping::defaults(), false);
     CHECK(skip_controller_selection());
+    Mapping pause = Mapping::defaults();
+    CHECK(pause.settings_pause_page && settings_pause_page());
+    CHECK(from_json("{\"options\":{}}", parsed) && parsed.settings_pause_page);
+    pause.settings_pause_page = false;
+    CHECK(from_json(to_json(pause), parsed) && parsed == pause);
+    set_current(pause, false);
+    CHECK(!settings_pause_page());
+    set_current(Mapping::defaults(), false);
+    CHECK(settings_pause_page());
     // issue #267: controller input in the background, off by default, saved only when on
     Mapping background = Mapping::defaults();
     CHECK(!background.background_controllers && !background_controllers());

@@ -2379,6 +2379,13 @@ void controller_row() {
     if (ImGui::Button("Controller details...")) g_details_open = true;
     help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
     bool v;
+    flow::next(flow::check("Settings page in the pause menu"), 24);
+    if (check("Settings page in the pause menu", cur.settings_pause_page, &v)) {
+        input_map::Mapping m = cur;
+        m.settings_pause_page = v;
+        input_map::set_current(m);
+    }
+    help("Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.");
     flow::next(flow::check("L turns the GamePad page"), 24);
     if (check("L turns the GamePad page", cur.l_turns_page, &v)) {
         input_map::Mapping m = cur;

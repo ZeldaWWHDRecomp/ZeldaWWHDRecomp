@@ -144,6 +144,7 @@ struct Mapping {
     // its GamePad screen between Items and Map; off, L reaches the game only outside play, so L1 can
     // jump without turning the page (play_buttons)
     bool l_turns_page = false;
+    bool settings_pause_page = true; // offer the settings page in the pause menu
     // per-controller bindings (format 2): see profile_index()
     struct Controller {
         std::string guid;   // SDL GUID (32 hex digits); empty on hosts without one (AppKit)
@@ -377,6 +378,7 @@ bool skip_controller_selection();
 bool background_controllers();  // current().background_controllers, any thread (hosts poll it)
 bool file_select_quit();
 bool invert_camera_y();  // current().invert_camera_y without copying the mapping (camera hooks)
+bool settings_pause_page(); // current().settings_pause_page, any thread
 bool l_turns_page();     // current().l_turns_page, any thread
 // The old Jump anywhere button (mods: traversal_settings): applied once to a format 1 (or missing)
 // controls.json; a format 2 file has its own Jump bindings and ignores it.

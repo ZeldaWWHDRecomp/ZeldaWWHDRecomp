@@ -31,6 +31,12 @@ inline const std::unordered_map<std::string, Line>& table() {
         {"On", {"Oui", "An", "Sì", "Sí"}},
         {"Off", {"Non", "Aus", "No", "No"}},
         {"(applies at the next start)", {"(au prochain démarrage)", "(ab dem nächsten Start)", "(dal prossimo avvio)", "(en el próximo inicio)"}},
+        {"Settings page in the pause menu", {"Page des paramètres dans le menu pause", "Einstellungsseite im Pausenmenü", "Pagina impostazioni nel menu di pausa", "Página de ajustes en el menú de pausa"}},
+        {"Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.",
+         {"Afficher la flèche des paramètres dans le menu pause. Échap / maintenir Select ouvre toujours les paramètres.",
+          "Einstellungspfeil im Pausenmenü anzeigen. Esc / Select halten öffnet weiterhin die Einstellungen.",
+          "Mostra la freccia delle impostazioni nel menu di pausa. Esc / tieni premuto Select apre sempre le impostazioni.",
+          "Muestra la flecha de ajustes en el menú de pausa. Esc / mantener Select sigue abriendo los ajustes."}},
         // camera
         {"Invert camera up/down", {"Inverser la caméra (haut/bas)", "Kamera oben/unten umkehren", "Inverti telecamera su/giù", "Invertir cámara arriba/abajo"}},
         {"The camera, first person and aiming turn the other way up and down.",
