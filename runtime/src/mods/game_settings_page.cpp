@@ -622,10 +622,12 @@ void pad(input::PadState& p, Cpu* c) {
     } else {
         hide_game_pieces(m, true);
     }
-    const std::string tab = tabs.empty() ? "" : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))];
+    auto tab_name = [&] { return tabs.empty() ? std::string() : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))]; };
+    std::string tab = tab_name();
     std::vector<Row> rows = rows_of(tab);
     const Action act = g_page.input(in, rows, int(tabs.size()));
     g_page.tick(dt);
+    if (tab_name() != tab) rows = rows_of(tab = tab_name());  // L / R: the new tab's rows at once (not the old tab's for a read)
     if (!act.id.empty())
         if (const game_settings::Item* it = game_settings::find(act.id)) {
             const float v = game_settings::apply(*it, act.direction);

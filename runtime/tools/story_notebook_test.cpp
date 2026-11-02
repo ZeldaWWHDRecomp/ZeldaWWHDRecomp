@@ -906,7 +906,7 @@ void test_game_font() {
     const font::Atlas::Cell* button = atlas.cell(font::line_key(font::kGlyphA, 0xFFFFFFFF));
     assert(button && button->width == 20);  // no icon font: the port's own disc
     auto img = atlas.image();
-    assert(img && img->width == font::Atlas::kWidth && img->height >= 20);
+    assert(img && img->width <= font::Atlas::kWidth && img->height >= 20);  // sized to what it holds
     // a pixel of 'a' in the atlas: the line's colour, opaque
     const size_t at = (size_t(abc->v0 * img->height + 5) * img->width + size_t(abc->u0 * img->width) + 3) * 4;
     assert(img->rgba[at] == 0x00 && img->rgba[at + 1] == 0x38 && img->rgba[at + 3] == 255);
@@ -957,6 +957,115 @@ void test_game_font() {
         auto pics = font::to_pictures({st}, &sized, 1.0f, 1.0f);
         assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].h == 40 && pics[0].x < 0 && pics[0].x > -1);  // the border room left of the line
         assert((font::lines_of({st}, 1.0f, 0.25f) == std::vector<std::string>{key}));
+    }
+    {
+        // a line wider than a page (a long help line on a 4K screen) is cut into segments at its full
+        // height, side by side, their widths adding up to the line's; each keeps its neighbour's column
+        // beside its cell, so a cut samples the same pixels as the rest of the line
+        Command w;
+        w.kind = Command::Text, w.size = 20, w.rgba = ink, w.text = std::string(300, 'a');
+        const std::string wide = font::key_of(w, 1.0f, 1.0f);  // 21 pixels tall: 3150 wide and its border room
+        const std::string endless = font::line_key(std::string(5000, 'b'), ink);  // 50000 pixels wide
+        const std::string abc = font::line_key("abc", ink);
+        font::Atlas atlas2;
+        atlas2.build({wide, endless, abc}, main, nullptr, nullptr, {}, 1);
+        const int wide_width = font::Atlas::line_width(w.text, main, nullptr, 21) + 2;
+        auto check_segments = [&](const std::string& key, int width, size_t count) {
+            const std::vector<font::Atlas::Cell>* s = atlas2.segments(key);
+            assert(s && s->size() == count);
+            int at = 0;
+            for (const font::Atlas::Cell& c : *s) {
+                assert(c.height == atlas2.cell(key)->height && c.offset == at && c.width + 2 * font::Atlas::kPad <= font::Atlas::kWidth);
+                at += c.width;
+            }
+            assert(at == width);
+        };
+        check_segments(wide, wide_width, 2);
+        assert(atlas2.cell(wide)->height == 21);
+        check_segments(endless, 50000, 25);
+        assert(atlas2.cell(endless)->height == 20 && atlas2.cell(abc)->height == 20);
+        // at a cut: the column right of the first segment is the second's first, and the other way round
+        const font::Atlas::Cell& s0 = (*atlas2.segments(wide))[0];
+        const font::Atlas::Cell& s1 = (*atlas2.segments(wide))[1];
+        auto texel = [&](const font::Atlas::Cell& c, int x, int y) {
+            const auto im = atlas2.image(size_t(c.page));
+            return &im->rgba[((size_t(c.v0 * im->height + 0.5f) + y) * im->width + size_t(c.u0 * im->width + 0.5f) + x) * 4];
+        };
+        bool any_ink = false;
+        for (int y = 0; y < 21; y++) {
+            assert(std::memcmp(texel(s0, s0.width, y), texel(s1, 0, y), 4) == 0);
+            assert(std::memcmp(texel(s1, -1, y), texel(s0, s0.width - 1, y), 4) == 0);
+            any_ink |= texel(s1, 0, y)[3] != 0 || texel(s1, -1, y)[3] != 0;
+        }
+        assert(any_ink);  // (the cut goes through the letters)
+        // drawn: one picture per segment at the line's height, each ending where the next starts, from its page
+        auto pics = font::to_pictures({w}, &atlas2, 1.0f, 1.0f);
+        assert(pics.size() == 2 && pics[0].kind == Command::Picture && pics[1].kind == Command::Picture);
+        assert(pics[0].h == 20 && pics[1].h == 20 && pics[0].x + pics[0].w == pics[1].x);
+        assert(std::fabs(pics[0].w + pics[1].w - wide_width * 20.0f / 21.0f) < 0.01f);
+        assert(pics[0].image == atlas2.image(size_t(s0.page)) && pics[1].image == atlas2.image(size_t(s1.page)));
+        // nothing falls back: every line is a picture
+        Command e = w;
+        e.text = std::string(5000, 'b');
+        pics = font::to_pictures({e}, &atlas2);
+        assert(pics.size() == 25);
+        for (const Command& p : pics) assert(p.kind == Command::Picture && p.h == 20);
+    }
+    {
+        // a page full: the lines go onto the next page, its own image sized to what it holds, and are
+        // drawn from that page's image
+        Command last;
+        last.kind = Command::Text, last.size = 900, last.rgba = ink, last.text = "ac";
+        const std::string last_key = font::key_of(last, 1.0f, 1.0f);
+        const std::vector<std::string> tall = {font::sized_key("aa", ink, 1000), font::sized_key("bb", ink, 1000), font::sized_key("cc", ink, 1000),
+                                               font::sized_key("ab", ink, 1000), last_key};
+        font::Atlas pages;
+        pages.build(tall, main, nullptr, nullptr, {}, 1);
+        for (size_t i = 0; i < 4; i++) assert(pages.cell(tall[i]) && pages.cell(tall[i])->page == 0);
+        const font::Atlas::Cell* on_two = pages.cell(last_key);
+        assert(on_two && on_two->page == 1 && on_two->height == font::pixel_height(900.0f) && pages.pages() == 2);
+        const auto first = pages.image(0), second = pages.image(1);
+        assert(first && second && first != second && first->height <= font::Atlas::kMaxHeight);
+        assert(second->height == uint32_t(on_two->height + 2 * font::Atlas::kPad) && second->width == uint32_t(on_two->width + 2 * font::Atlas::kPad));
+        auto pics = font::to_pictures({last}, &pages, 1.0f, 1.0f);
+        assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].image == second &&
+               std::fabs(pics[0].u1 - (1.0f - 2.0f / float(second->width))) < 1e-6f);
+        // a page the screen can't have: its lines in the overlay font (only then)
+        pics = font::to_pictures({last}, &pages, 1.0f, 1.0f, [](int page) { return page != 1; });
+        assert(pics.size() == 1 && pics[0].kind == Command::Text);
+        // the same lines again: held, nothing composed, the pages as they were
+        assert(pages.holds(tall, {}, 1));
+        const size_t bytes = pages.bytes();
+        for (int i = 0; i < 3; i++) pages.update(tall, main, nullptr, nullptr, {}, 1);
+        assert(pages.pages() == 2 && pages.image(0) == first && pages.image(1) == second && pages.bytes() == bytes);
+        // a new line: not held, and added on a page of its own (the pages the screen has stay as they are)
+        const std::vector<std::string> more = {tall[0], font::line_key("new", ink)};
+        assert(!pages.holds(more, {}, 1));
+        pages.update(more, main, nullptr, nullptr, {}, 1);
+        assert(pages.holds(more, {}, 1) && pages.pages() == 3 && pages.image(0) == first && pages.image(1) == second);
+        assert(pages.cell(more[1])->page == 2 && pages.image(2)->height == 24 && pages.image(2)->width < 64);
+        // over the budget: the page unused the longest goes first (page 1: none of these lines), and
+        // with nothing unused left, the shown lines of a page under half used move onto a new page
+        pages.update(more, main, nullptr, nullptr, {}, 1, 1.0f, pages.bytes() - 1);
+        assert(!pages.image(1) && !pages.cell(last_key) && pages.image(0) == first && pages.cell(more[1]));
+        const size_t one_line = size_t(pages.cell(tall[0])->width + 4) * (pages.cell(tall[0])->height + 4) * 4;
+        // (over the budget with no new line: nothing is composed, however often it is asked)
+        for (int i = 0; i < 3; i++) pages.update(more, main, nullptr, nullptr, {}, 1, 1.0f, one_line * 2);
+        assert(pages.image(0) == first && pages.cell(tall[1]) && pages.holds(more, {}, 1));
+        const std::vector<std::string> moving = {tall[0], more[1], font::line_key("abc", ink)};
+        pages.update(moving, main, nullptr, nullptr, {}, 1, 1.0f, one_line * 2);
+        assert(pages.image(0) != first && pages.cell(tall[0]) && pages.cell(more[1]) && !pages.cell(tall[1]) && pages.bytes() <= one_line * 2);
+        assert(pages.holds(moving, {}, 1));
+        // (the moved lines' page stays as it is from then on)
+        const auto settled = pages.image(size_t(pages.cell(tall[0])->page));
+        for (int i = 0; i < 3; i++) pages.update(moving, main, nullptr, nullptr, {}, 1, 1.0f, 1);
+        assert(pages.image(size_t(pages.cell(tall[0])->page)) == settled);
+        // another look or fonts: composed again
+        pages.update(more, main, nullptr, nullptr, {}, 2);
+        assert(pages.holds(more, {}, 2) && !pages.holds(more, {}, 1));
+        // a line taller than a page: at a page's height (drawn scaled up), counted for the log
+        pages.build({font::sized_key("a", ink, 3000)}, main, nullptr, nullptr, {}, 1);
+        assert(pages.too_tall() == 1 && pages.cell(font::sized_key("a", ink, 3000))->height == font::Atlas::kMaxHeight - 2 * font::Atlas::kPad);
     }
     // Text commands become pictures of their lines, scaled to the text size, faded by their alpha
     Command t;
