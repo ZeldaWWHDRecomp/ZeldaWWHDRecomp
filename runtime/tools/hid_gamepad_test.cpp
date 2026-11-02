@@ -16,6 +16,19 @@ static int g_fail = 0, g_pass = 0;
         else { g_fail++; fprintf(stderr, "%s:%d: FAILED: %s\n", __FILE__, __LINE__, #x); }  \
     } while (0)
 
+static void test_admission() {
+    using hid_gamepad::supported_device;
+    CHECK(supported_device(true, "Microsoft GamePad-1"));
+    // Physical devices remain excluded even with the same product string or Xbox-like axes.
+    CHECK(!supported_device(false, "Microsoft GamePad-1"));
+    CHECK(!supported_device(false, "Generic USB Joystick"));
+    CHECK(!supported_device(false, "Flight Stick"));
+    CHECK(!supported_device(false, "DirectInput Gamepad"));
+    CHECK(!supported_device(true, "Generic USB Joystick"));
+    CHECK(!supported_device(true, ""));
+    CHECK(!supported_device(true, "Microsoft GamePad-1 extra"));
+}
+
 static void test_classify() {
     CHECK(hid_gamepad::classify(0x09, 1) == Kind::kButton);
     CHECK(hid_gamepad::classify(0x09, 15) == Kind::kButton);
@@ -110,6 +123,7 @@ static void test_source_selection() {
 }
 
 int main() {
+    test_admission();
     test_source_selection();
     test_classify();
     test_layout();

@@ -7,6 +7,10 @@ namespace hid_gamepad {
 
 using input_map::Pad;
 
+bool supported_device(bool virtual_device, std::string_view product_name) {
+    return virtual_device && product_name == "Microsoft GamePad-1";
+}
+
 bool replace_steam_source(bool steam_controller, unsigned steam_count, unsigned virtual_count, bool virtual_input) {
     return steam_controller && steam_count == 1 && virtual_count == 1 && virtual_input;
 }

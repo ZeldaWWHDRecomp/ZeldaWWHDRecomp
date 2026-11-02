@@ -164,8 +164,8 @@ static std::string pad_name(GCController* c);
 //
 // GameController.framework only surfaces the pad families Apple supports (MFi, Xbox One/Series,
 // DualShock/DualSense, Switch). Steam Input's virtual pad (a "Microsoft GamePad-1", an Xbox-style
-// HID device) and other generic HID gamepads are not among them, so those never reach the game
-// (SDL ignores Steam's virtual pad too). They are read here through IOKit and folded into the same
+// HID device) is not among them, so it never reaches the game
+// (SDL ignores Steam's virtual pad too). It is read here through IOKit and folded into the same
 // per-device pad positions as the GCController pads; a pad GameController supports is skipped (see
 // io_add), so nothing is read twice. The mapping lives in platform/hid_gamepad.h so it is testable.
 //
@@ -244,6 +244,11 @@ static void io_add(IOHIDDeviceRef dev) {
     // A virtual HID pad ("HIDVirtualDevice", e.g. Steam Input's) can duplicate a pad GameController
     // also surfaces; devices_values prefers it for input.
     const bool virtualPad = IOHIDDeviceGetProperty(dev, CFSTR("HIDVirtualDevice")) == kCFBooleanTrue;
+    char name[128] = {0};
+    if (CFStringRef s = (CFStringRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductKey))) CFStringGetCString(s, name, sizeof name, kCFStringEncodingUTF8);
+    // A joystick's Z/Rz axes can rest at their midpoint. Reading those as Xbox triggers would
+    // press LT/RT at rest. No mapping is inferred for unknown physical or software devices.
+    if (!hid_gamepad::supported_device(virtualPad, name)) return;
     // The layout comes from the pad's own descriptors: the Steam virtual pad carries its D-pad as
     // buttons 12..15 and no hat switch; a standard pad carries a hat switch.
     bool has_hat = false, has_dpad_buttons = false;
@@ -268,8 +273,6 @@ static void io_add(IOHIDDeviceRef dev) {
     p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
     p->layout = hid_gamepad::layout_for(has_hat, has_dpad_buttons);
     IOHIDDeviceRegisterInputValueCallback(dev, io_value, p);
-    char name[128] = {0};
-    if (CFStringRef s = (CFStringRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductKey))) CFStringGetCString(s, name, sizeof name, kCFStringEncodingUTF8);
     p->name = name[0] ? name : "HID controller";
     LOG("[input] IOKit HID controller connected: %s (vendor %04X product %04X, %s layout)", name, v, pr,
         p->layout == hid_gamepad::Layout::kSteamVirtual ? "Steam virtual" : "standard");

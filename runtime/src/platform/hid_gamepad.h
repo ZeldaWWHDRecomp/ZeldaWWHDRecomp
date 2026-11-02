@@ -4,12 +4,16 @@
 // IOKit reader (gfx/input.mm) is its only user.
 //
 // IOKit hands back raw HID elements, and which element is which input is a per-device fact: the
-// same kind of table SDL keeps in its controller database. Rather than key it by vendor/product,
-// the reader picks the layout from the descriptors it can see: a pad whose D-pad is four buttons
-// (Steam Input's virtual pad) needs the Steam layout, everything else the standard Xbox 360 one.
+// same kind of table SDL keeps in its controller database. Only the recognised Steam software
+// device is admitted; a generic joystick's descriptors do not establish an Xbox mapping.
 #include <cstdint>
+#include <string_view>
 
 namespace hid_gamepad {
+
+// Admission must precede opening or reading a device. Unknown physical and virtual devices
+// cannot safely use this fixed Xbox mapping, even if their axes/buttons look similar.
+bool supported_device(bool virtual_device, std::string_view product_name);
 
 // What one HID element feeds. Stick axes are signed (centred at 0), the triggers are 0..1, and a
 // hat switch is the D-pad.

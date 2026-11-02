@@ -210,12 +210,14 @@ logs a reminder. Other custom bindings are kept.
 
 ## Generic HID gamepads on macOS
 
-The macOS app also reads generic HID gamepads through IOKit, which
-GameController.framework does not surface. That is what lets a Steam Controller work:
+The macOS app also reads the recognised Steam Input virtual HID device through IOKit, which
+GameController.framework does not surface. Unknown physical joysticks, flight sticks and
+DirectInput pads are ignored because their axes and buttons need a device-specific mapping. That is what lets a Steam Controller work:
 launched from Steam, Steam Input presents it as a virtual pad ("Microsoft GamePad-1")
 that GameController ignores.
 
-- Launch from Steam so Steam Input keeps translating the controller.
+- Launch from Steam so Steam Input keeps translating the controller. The IOKit fallback
+  requires a software device named exactly "Microsoft GamePad-1"; other HID devices are ignored.
 - It maps as the standard Xbox layout with Xbox labels, so **Automatic** resolves to
   **By label (Xbox)**; Controls remap, dead zone and range, and camera invert apply.
 - Pads GameController handles are excluded using its `supportsHIDDevice` query, as are
