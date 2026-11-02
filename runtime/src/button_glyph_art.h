@@ -90,10 +90,11 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
         bool inside = d < scale;
         // A rounded concave bite turns X/Y into the GameCube's kidney-shaped plates. Subtract
         // the same circle from the frame at its expanded radius so the outline follows smoothly.
-        if (face >= 2) inside = inside && std::hypot(px + 20.f, py) >= 8.f;
+        const float bite_x = face == 2 ? -20.f : 20.f;
+        if (face >= 2) inside = inside && std::hypot(px - bite_x, py) >= 8.f;
         const float border = framed ? scale + 3.f : scale;
         bool outer = std::hypot(dx, dy) < border;
-        if (face >= 2 && outer) outer = std::hypot(px + 20.f, py) >= (framed ? 11.f : 8.f);
+        if (face >= 2 && outer) outer = std::hypot(px - bite_x, py) >= (framed ? 11.f : 8.f);
         uint32_t c = 0;
         if (outer && !inside) c = framed ? 0x34383CFF : 0;
         else if (inside) c = face == 0 ? 0x58BE36FF : face == 1 ? 0xE34B49FF : 0xA9ADB1FF;
@@ -104,7 +105,7 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
         else if (face == 1) ink=line(px,py,-5,-10,-5,10)||line(px,py,-5,-10,3,-10)||line(px,py,3,-10,7,-6)||line(px,py,7,-6,7,-2)||line(px,py,7,-2,2,0)||line(px,py,2,0,7,3)||line(px,py,7,3,7,7)||line(px,py,7,7,3,10)||line(px,py,3,10,-5,10);
         else if (face == 2) ink=line(px,py,-5,-8,5,8)||line(px,py,5,-8,-5,8);
         else ink=line(px,py,-6,-8,0,0)||line(px,py,6,-8,0,0)||line(px,py,0,0,0,8);
-        if (letter && inside && ink) c=0xF4F4F4FF;
+        if (letter && inside && ink) c=face >= 2 ? 0x24282CFF : 0xF4F4F4FF;
         if (!c) continue;
         r += (c>>24)&255; g += (c>>16)&255; b += (c>>8)&255; a += 1;
     }

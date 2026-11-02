@@ -1194,15 +1194,23 @@ void shoulder_colour_source_test() {
     using N = input_map::Mapping::ShoulderNames;
     using F = input_map::FaceLayout;
     st32(writer + 0x2C, list); st32(text_box + 0xFC, list); st32(list, 8);
-    auto hud_caption = [] {
-        std::strcpy((char*)mem::ptr(text_box + 0x80), "T_ZR_00");
+    auto hud_caption = [](int shoulder) {
+        constexpr const char* text_names[] = {"T_L_00", "T_R_00", "T_ZL_00", "T_ZR_00"};
+        constexpr const char* picture_names[] = {"P_L_00", "P_R_00", "P_ZL_00", "P_ZR_00"};
+        const char letter = shoulder & 1 ? 'R' : 'L';
+        std::strcpy((char*)mem::ptr(text_box + 0x80), text_names[shoulder]);
         std::memset(mem::ptr(picture), 0, 0xC0);
-        std::strcpy((char*)mem::ptr(picture + 0x80), "P_ZR_00");
+        std::strcpy((char*)mem::ptr(picture + 0x80), picture_names[shoulder]);
         st32(text_box + 0x0C, picture); stf32(picture + 0x3C, 68);
         st32(text_box + 0xB4, base + 0xE100); st32(text_box + 0xA4, base + 0xB000);
-        st16(text_box + 0xCE, 2); st16(base + 0xB000, 'Z'); st16(base + 0xB002, 'R'); st16(base + 0xB004, 0);
+        const bool prefixed = shoulder >= 2;
+        st16(text_box + 0xCE, prefixed ? 2 : 1);
+        st16(base + 0xB000, prefixed ? 'Z' : letter);
+        if (prefixed) st16(base + 0xB002, letter);
+        st16(base + (prefixed ? 4 : 2), 0);
         st16(list + 4, 0); st8(list + 6, 0);
-        print('Z'); print('R');
+        if (prefixed) print('Z');
+        print(letter);
         stf32(first_quad, 20); stf32(first_quad + 4, 40); stf32(first_quad + 8, 0);
         stf32(first_quad + 0x30, 24); stf32(first_quad + 0x34, 40); stf32(first_quad + 0x38, 22);
         // the mock writer leaves bit 0 clear on the first quad: a coverage caption must set it itself
@@ -1223,8 +1231,15 @@ void shoulder_colour_source_test() {
                     if (names == N::kXbox) assert(expect_names == 2);
                     // HUD shoulder plate
                     expect_frame = false;
-                    hud_caption();
-                    if (expect_names) {
+                    hud_caption(3);
+                    if (expect_names == 3) {
+                        assert(drawn_sheet == atlas && ld8(atlas + 0x0E) == 0);
+                        assert((drawn_flags & 1) == 0);  // HUD R uses the RGBA caption path
+                        const uint32_t image = ld32(atlas + 0x10 + 0x24);
+                        const size_t p = (size_t(button_glyphs::gamecube_shoulder_row(3)*64+39)*128+64+37)*4;
+                        const auto* pixels = mem::ptr(image);
+                        assert(pixels[p] == 0x29 && pixels[p+1] == 0x2D && pixels[p+2] == 0x31 && pixels[p+3] == 0xFF);
+                    } else if (expect_names) {
                         assert(drawn_sheet == atlas + 0x100 && ld8(atlas + 0x100 + 0x0E) == 1);
                         assert((drawn_flags & 1) == 1);
                         assert(drawn_quad[0] <= 68);  // still fits the plate (cell and centre: checked per quad)
@@ -1244,6 +1259,18 @@ void shoulder_colour_source_test() {
                     }
                     checked[expect_names]++;
                 }
+    // Every HUD shoulder row must take the RGBA vertex path under GameCube prompts, including
+    // both letter plates (L/R) and both Z plates (ZL/ZR).
+    set_options(F::kLabels, P::kGameCube, N::kAuto, true);
+    for (int shoulder = 0; shoulder < 4; ++shoulder) {
+        expect_frame = false;
+        label_centre = shoulder < 2 ? 10 : 23;
+        hud_caption(shoulder);
+        assert(drawn_sheet == atlas && ld8(atlas + 0x0E) == 0);
+        assert((drawn_flags & 1) == 0);
+        assert(button_glyphs::atlas_cell(button_glyphs::gamecube_shoulder_row(shoulder), false).u0 <
+               button_glyphs::atlas_cell(button_glyphs::gamecube_shoulder_row(shoulder), false).u1);
+    }
     assert(checked[0] && checked[1] && checked[2]);
     expect_frame = true;
     layout(F::kPosition);  // leave the manual default for later tests
@@ -1362,7 +1389,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         // A plain HUD shape and a HUD shoulder caption (#143) stay coverage glyphs, drawn through
         // the game's own letter colours (dark on the white shoulder plates) and its dimming.
         const bool coverage = (shape && hud_letter && expect_shapes == 0) ||
-                              (shoulder_label && !expect_frame && !(expect_names == 3 && shoulder == 1));
+                              (shoulder_label && !expect_frame && expect_names != 3);
         assert((ld8(quad + 0x2F) & 1) == (coverage ? 1 : shoulder_label || shape || cstick || start ? 0 : (i & 1)));
         if (shoulder_label || shape || cstick || start) {
             // the composed atlas: an RGBA picture (#141), one layer, the style's cell
@@ -1372,7 +1399,8 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
                                              : button_glyphs::shape_row(expected_buttons[face], expect_shapes == 1)
                           : expect_names == 3 ? button_glyphs::gamecube_shoulder_row(shoulder)
                           : expect_names == 2 ? button_glyphs::xbox_row(shoulder) : button_glyphs::numbered_row(shoulder);
-            const auto cell = button_glyphs::atlas_cell(row, shape ? !hud_letter : expect_frame);
+            const bool kidney = shape && expect_shapes == 2 && hud_letter && face >= 2;
+            const auto cell = button_glyphs::atlas_cell(row, kidney || (shape ? !hud_letter : expect_frame));
             assert(ld8(quad + 0x2E) == 0);
             assert(ld32(quad + 0x28) == (coverage ? atlas + 0x100 : atlas));
             assert(ld8(atlas + 0x0E) == 0);
@@ -1401,6 +1429,10 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
 extern "C" void f_02874D54_orig(Cpu* c) {
     picture_draws++;
     if (expect_gamecube_picture_texture) {
+        if (picture_face >= 2) {
+            for (uint32_t i = 0; i < 4; ++i) assert((ld32(c->r[3] + 0xA8 + 4*i) & 255) == 0);
+            return;
+        }
         const uint32_t material = ld32(c->r[3] + 0xA4);
         assert(material == gamecube_material);
         const uint32_t texture = ld32(material + 0x28);
@@ -1418,6 +1450,10 @@ extern "C" void f_02874D54_orig(Cpu* c) {
     for (int pass = 0; pass < (yield_in_draw ? 2 : 1); pass++) {
         if (pass) std::this_thread::yield();
         for (uint32_t i = 0; i < 4; i++) {
+            if (input_map::active_prompt_style().face == input_map::FaceStyle::kGameCube && picture_face >= 2) {
+                assert((ld32(c->r[3] + 0xA8 + i * 4) & 255) == 0);
+                continue;
+            }
             uint32_t want = corners[i];
             if (expect_tint && picture_face >= 0) want = button_glyphs::tint(corners[i], expected_buttons[picture_face]);
             assert(ld32(c->r[3] + 0xA8 + i * 4) == want);
@@ -1530,6 +1566,9 @@ int main() {
         assert(face_area[0] > face_area[1] && face_area[0] > face_area[2] && face_area[0] > face_area[3]);
         assert(button_glyphs::gamecube_icon(2, true, 16, 32) == 0); // smooth inward bite, no grey bar
         assert(button_glyphs::gamecube_icon(2, true, 26, 32) != 0); // button face and X remain intact
+        assert(button_glyphs::gamecube_icon(3, true, 48, 32) == 0); // Y bite faces right, toward A
+        assert(button_glyphs::gamecube_icon(3, true, 38, 32) != 0);
+        assert(button_glyphs::gamecube_icon(2, true, 27, 24) == 0x24282CFF); // high-contrast ink
     }
 #ifdef _WIN32
     auto memory = VirtualAlloc(mem::ptr(base), kArena, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
