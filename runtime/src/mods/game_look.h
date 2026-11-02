@@ -54,16 +54,18 @@ struct Look {
     font::Atlas atlas;
     // The atlas pages' images in the HUD store, by page. An owner's images may take 16 MiB
     // (guest_hud.h kMaxPixels), counting the ones it released that a list or the screen still draws
-    // for a few frames. The pages keep under `atlas_budget` unless the shown lines need more (8K text
-    // takes over 20 MiB); then the page raises its own limit by what they need (sync_pages), so a
-    // read never falls back to the overlay font. Pages are composed once; only a new page's image is
-    // created in a read.
+    // for a few frames; a page raises that by what its lines need, up to 48 MiB (kMaxPortPixels,
+    // sync_pages). At 4K a tab's lines take about 5 MiB and the menu art about 2.6 MiB, so a 14 MiB
+    // budget keeps two tabs' pages (L / R composes nothing once both were shown), and 14 + a new
+    // page (about 6) + 14 still drawn + the art stays well under 48. 8K text takes 20-27 MiB, more
+    // than the budget: then only the shown lines stay. Pages are composed once; only a new page's
+    // image is created in a read.
     struct PageImage {
         std::shared_ptr<const guestmods::hud::Image> image;
         Handle handle = 0;
     };
     std::vector<PageImage> page_images;
-    size_t atlas_budget = guestmods::hud::kMaxPixels * 3 / 8;
+    size_t atlas_budget = 14u << 20;
     bool told_too_tall = false, told_quota = false;
     uint64_t store_generation = 0, fonts_key = 0;
     style::Art art;

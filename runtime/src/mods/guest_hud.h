@@ -16,6 +16,7 @@ namespace guestmods::hud {
 using Handle = uint32_t;
 inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768, kMaxClipDepth=16;
 inline constexpr size_t kMaxPixels=16*1024*1024, kMaxText=64*1024;
+inline constexpr size_t kMaxPortPixels=48*1024*1024;  // the port's own pages at most (Store::raise_pixel_quota)
 struct Image { uint32_t width,height; std::vector<uint8_t> rgba; };
 enum class Anchor : uint32_t { Center,TopLeft,Top,TopRight,Left,Right,BottomLeft,Bottom,BottomRight };
 enum class Blend : uint32_t { Alpha,Additive };
@@ -176,10 +177,12 @@ public:
         for(uint32_t y=0;y<height;++y)std::copy_n(source+size_t(y)*stride,size_t(width)*4,image->rgba.data()+size_t(y)*width*4);
         images.emplace(h,OwnedImage{owner,image});live.push_back(image);return h;
     }
-    // The port's own pages only (host code; a mod has no call that reaches this): a higher limit for
-    // an owner's images than kMaxPixels, for text that needs it on a large screen. It only ever rises.
+    // The port's own pages only (host code; a mod has no call that reaches this, and mods keep
+    // kMaxPixels): a higher limit for an owner's images, for text that needs it on a large screen,
+    // between kMaxPixels and kMaxPortPixels. It only ever rises.
     void raise_pixel_quota(const std::string& owner,size_t bytes) {
-        std::lock_guard lock(mutex);auto& limit=raised_pixels[owner];limit=std::max({limit,kMaxPixels,bytes});
+        std::lock_guard lock(mutex);auto& limit=raised_pixels[owner];
+        limit=std::max(limit,std::clamp(bytes,kMaxPixels,kMaxPortPixels));
     }
     bool picture(const std::string& owner,Handle list,Handle image,Command command) {
         std::lock_guard lock(mutex);auto it=images.find(image);
