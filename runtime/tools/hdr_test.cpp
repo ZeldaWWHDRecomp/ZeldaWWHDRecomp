@@ -6,14 +6,23 @@
 #include <limits>
 #include <string_view>
 int main() {
- // Auto Peak: SDL headroom is relative to paper white; invalid/missing SDR-only reports fall back.
+ // Auto Peak: SDL headroom is relative to desktop SDR white; invalid/missing SDR-only reports fall back.
  assert(hdr::automatic_peak(203,5)==1015);
  for(float ratio:{0.f,1.f,-1.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
   assert(hdr::automatic_peak(203,ratio)==1025);
- assert(hdr::automatic_peak(500,100)==1025);
- assert(hdr::automatic_peak(200,50)==1025); // Sway's 10000-nit sentinel
- assert(hdr::automatic_peak(200,49.99f)<10000);
- assert(!hdr::valid_automatic_peak(200,50));
+ // The presumed signal-limit report is rejected at every paper-white setting, including
+ // the rounded 49.26 ratio used in the review. These are regression calculations, not Sway measurements.
+ for(float paper:{80.f,202.f,203.f,240.f,500.f})
+  for(float ratio:{49.f,49.26f,10000.f/203.f,50.f,100.f}) {
+   assert(!hdr::valid_headroom(ratio));
+   assert(!hdr::valid_automatic_peak(paper,ratio));
+   assert(hdr::automatic_peak(paper,ratio)==1025);
+  }
+ assert(hdr::valid_headroom(std::nextafter(hdr::kHeadroomLimit,0.f)));
+ assert(hdr::automatic_peak(500,10)==4000); // Auto shares the manual upper limit
+ assert(hdr::automatic_peak(203,20)==4000);
+ assert(hdr::automatic_peak(80,48)==3840);
+ assert(hdr::automatic_peak(240,12.5f)==3000); // Windows 1000/80 headroom still needs calibrated paper white
  assert(hdr::automatic_peak(std::numeric_limits<float>::max(),2)==1025);
  assert(hdr::peakAuto.load()); // fresh installs use Auto
  assert(hdr::automatic_peak_setting(false,"",false));

@@ -70,15 +70,17 @@ inline bool resolve_output() {
 }
 inline std::atomic<float> paperWhite{240}, peak{1025}, exposure{-0.32f}, highlights{0.32f}, menuWhite{160};
 inline std::atomic<bool> peakAuto{true};
-inline std::atomic<float> headroom{0}; // SDL ratio relative to SDR white; <=1 means unavailable
-inline bool valid_headroom(float value) { return std::isfinite(value) && value>1.0f; }
+inline std::atomic<float> headroom{0}; // SDL ratio relative to the desktop's SDR white
+// Conservatively reject the signal-limit sentinel (~10000 / 203 = 49.26), independently of
+// the player's paper white. Round the cutoff down so rounded compositor reports are rejected too.
+inline constexpr float kHeadroomLimit = 49.0f;
+inline bool valid_headroom(float value) { return std::isfinite(value) && value>1.0f && value<kHeadroomLimit; }
 inline bool valid_automatic_peak(float paper, float ratio) {
-    const double value=double(paper)*double(ratio);
-    return std::isfinite(paper) && paper>0 && valid_headroom(ratio) && std::isfinite(value) && value<10000.0;
+    return std::isfinite(paper) && paper>0 && valid_headroom(ratio) && std::isfinite(paper*ratio);
 }
 inline float automatic_peak(float paper, float ratio) {
-    // Some compositors report the signal's 10000-nit limit rather than a display peak.
-    return valid_automatic_peak(paper,ratio) ? paper*ratio : 1025.0f;
+    // Keep Auto within the same upper range as the manual Peak slider.
+    return valid_automatic_peak(paper,ratio) ? std::min(paper*ratio,4000.0f) : 1025.0f;
 }
 inline bool automatic_peak_setting(bool hasMode, std::string_view mode, bool hasSavedPeak=false) {
     return hasMode ? mode=="1" : !hasSavedPeak;
