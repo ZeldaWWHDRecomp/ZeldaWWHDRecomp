@@ -28,7 +28,8 @@ decompilation does not contain the game's model data, and autoglue reads the con
 and checks the tables against the game's code. They are game data: they stay in OUT_DIR. Sources
 without a glue block need nothing from the game; a decompilation without any needs no --game.
 
-Game units: verify units (tools/verify/units/*.txt) that share source files with VERIFY marks form one
+Game units: verify units (tools/verify/units/*.txt; with the decompilation's tools/verify/specfile.py: the
+specs its own gates run, sub-folders and `include` lines too) that share source files with VERIFY marks form one
 game unit (connected components), named after its shortest verify-unit name. A shared source without
 marks (support code: guest-call stubs, the translation unit's gc_tu) is compiled into each game unit
 that lists it, as each verify unit is its own program in the decompilation's harness. Every
@@ -54,16 +55,41 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
 
 
+def unit_specs(src):
+    """the verify-unit specs of the decompilation -> [(unit name, [spec lines])]. A decompilation with
+    tools/verify/specfile.py (unit specs with `include` lines and specs in sub-folders) is read as its own
+    gates read it: specfile.gated_specs (which leaves out units/shared/ and the units/_NAME/ self-tests and
+    diagnosis specs) and specfile.expanded_lines. Without it: units/*.txt, line by line. A spec in a
+    sub-folder is named with `__` for each `/` (game unit names become file names)."""
+    vdir = os.path.join(src, "tools", "verify")
+    if os.path.isfile(os.path.join(vdir, "specfile.py")):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("decomp_specfile", os.path.join(vdir, "specfile.py"))
+        specfile = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(specfile)
+        udir = os.path.join(vdir, "units")
+        return [(name.replace("/", "__"), specfile.expanded_lines(os.path.join(udir, name + ".txt")))
+                for name in specfile.gated_specs(udir)]
+    out = []
+    for f in sorted(glob.glob(os.path.join(vdir, "units", "*.txt"))):
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            out.append((os.path.basename(f)[:-4], fh.read().splitlines()))
+    return out
+
+
+def spec_files(src):
+    """every spec file (include fragments too): CMake configures again when one of them changes"""
+    return [p for p in glob.glob(os.path.join(src, "tools", "verify", "units", "**", "*.txt"), recursive=True)]
+
+
 def read_units(src):
     units = {}
-    for f in sorted(glob.glob(os.path.join(src, "tools/verify/units/*.txt"))):
-        u = os.path.basename(f)[:-4]
+    for u, lines in unit_specs(src):
         srcs = []
-        with open(f, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                t = line.split("#")[0].split()
-                if t and t[0] == "src":
-                    srcs += t[1:]
+        for line in lines:
+            t = line.split("#")[0].split()
+            if t and t[0] == "src":
+                srcs += [x for x in t[1:] if x not in srcs]
         if srcs:
             units[u] = srcs
     return units
@@ -437,7 +463,9 @@ def main():
                 cm.append('set_property(SOURCE "%s" APPEND PROPERTY COMPILE_OPTIONS -iquote "%s")' % (
                     cmake_path(compiled[s]), cmake_path(os.path.dirname(os.path.join(src, s)))))
     # what the lists above depend on: CMake configures again when one of these changes
-    deps.update(cmake_path(p) for p in glob.glob(os.path.join(src, "tools/verify/units/*.txt")))
+    deps.update(cmake_path(p) for p in spec_files(src))
+    if os.path.isfile(os.path.join(src, "tools", "verify", "specfile.py")):
+        deps.add(cmake_path(os.path.join(src, "tools", "verify", "specfile.py")))
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
     if n_glued:

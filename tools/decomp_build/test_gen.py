@@ -19,6 +19,26 @@ def runtime_hook():
                                         game_builds.canonical_build())
     return next(canon for site, canon, _, _ in entries if not site)
 
+# a minimal stand-in for the decompilation's tools/verify/specfile.py (its gated_specs and expanded_lines)
+SPECFILE_STUB = """import os
+def gated_specs(units_dir):
+    out = []
+    for r, ds, fs in os.walk(units_dir):
+        if r == units_dir:
+            ds[:] = [d for d in ds if d != "shared" and not d.startswith("_")]
+        out += [os.path.relpath(os.path.join(r, f), units_dir)[:-4] for f in fs if f.endswith(".txt")]
+    return sorted(out)
+def expanded_lines(path):
+    out = []
+    for line in open(path):
+        f = line.split("#")[0].split()
+        if f and f[0] == "include":
+            out += expanded_lines(os.path.join(os.path.dirname(os.path.abspath(__file__)), "units", f[1]))
+        else:
+            out.append(line)
+    return out
+"""
+
 
 class GenTest(unittest.TestCase):
     def setUp(self):
@@ -121,6 +141,31 @@ class GenTest(unittest.TestCase):
         self.assertIn('_NAME "c1")', units)
         self.assertIn('_NAME "c2")', units)
         self.assertEqual(units.count("wwhd_src/c_pending.cpp\""), 3)  # c1, c2 and the configure dependencies
+
+    def test_specfile_specs(self):
+        # a decompilation with tools/verify/specfile.py: specs in sub-folders and `include` lines are read as its
+        # gates read them; units/shared/ (fragments) and units/_NAME/ (self-tests, diagnosis) are left out
+        with open(os.path.join(self.src, "tools/verify/specfile.py"), "w") as f:
+            f.write(SPECFILE_STUB)
+        for d in ("tools/verify/units/shared", "tools/verify/units/dsub", "tools/verify/units/_diag"):
+            os.makedirs(os.path.join(self.src, d))
+        with open(os.path.join(self.src, "wwhd_src/d.cpp"), "w") as f:
+            f.write("VERIFY(0x02000A00, f_d)\n")
+        with open(os.path.join(self.src, "wwhd_src/diag.cpp"), "w") as f:
+            f.write("VERIFY(0x02000B00, f_diag)\n")
+        with open(os.path.join(self.src, "tools/verify/units/shared/d_src.txt"), "w") as f:
+            f.write("src wwhd_src/d.cpp\n")
+        with open(os.path.join(self.src, "tools/verify/units/dsub/case.txt"), "w") as f:
+            f.write("include shared/d_src.txt\n")
+        with open(os.path.join(self.src, "tools/verify/units/_diag/probe.txt"), "w") as f:
+            f.write("src wwhd_src/diag.cpp\n")
+        self.assertIn("3 game units, 5 functions decompiled", self.run_gen())
+        self.assertIn("02000A00\tdsub__case\tf_d", self.read("functions.tsv"))
+        self.assertNotIn("02000B00", self.read("decomp_hooks.txt"))
+        units = self.read("units.cmake")
+        self.assertIn('_NAME "dsub__case")', units)
+        self.assertIn("units/shared/d_src.txt", units)   # include fragments are configure dependencies
+        self.assertIn("tools/verify/specfile.py", units)
 
     def test_verify_named(self):
         with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
