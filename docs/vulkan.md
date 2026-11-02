@@ -49,7 +49,7 @@ can also be dragged while placement is open. See [GamePad screen modes](gamepad-
 | Scaling smooth / sharp / integer, FXAA | yes | yes |
 | Internal resolution, AO modes, full-size AO depth, 16x AF | yes | yes |
 | Dynamic resolution (Settings → Graphics: off, down to 75 % or 50 %) | yes | yes |
-| Aspect ratio (16:10, 21:9, 32:9, match window) | yes | yes |
+| Aspect ratio (16:9, 4:3, 16:10, 21:9, 32:9, match window) | yes | yes |
 | 60 fps interpolation, true 60 | yes | yes |
 | Save states (menu, Shift+F1..F5 / F6, F2..F5) | yes | yes (a state loads with either renderer) |
 | Controls window, keyboard, game controllers, mouse camera, mods | yes | yes |

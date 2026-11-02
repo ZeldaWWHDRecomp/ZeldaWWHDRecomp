@@ -1,5 +1,5 @@
 #include "mods/map_hud.h"
-// Aspect ratio of the TV picture: 16:9 (original), the window's shape, 16:10, 21:9 or 32:9.
+// Aspect ratio of the TV picture: 16:9 (original), the window's shape, 4:3, 16:10, 21:9 or 32:9.
 //
 // The game keeps drawing its 1280x720 guest screen. What changes:
 //  - 3D: the camera's projection uses the new aspect with the same vertical field of view (Hor+:
@@ -54,6 +54,7 @@ int parse_env_mode(float& custom) {
     if (!e || !*e) return kOriginal;
     if (!strcmp(e, "window") || !strcmp(e, "match")) return kWindow;
     if (!strcmp(e, "16:9")) return kOriginal;
+    if (!strcmp(e, "4:3")) return k4x3;
     if (!strcmp(e, "16:10")) return k16x10;
     if (!strcmp(e, "21:9")) return k21x9;
     if (!strcmp(e, "32:9")) return k32x9;
@@ -148,12 +149,13 @@ float layout_scale(float fovyDeg) {
 }
 
 const char* mode_name(int m) {
-    static const char* n[kModes] = {"16:9 (original)", "Match window", "16:10", "21:9", "32:9", "custom"};
+    static const char* n[kModes] = {"16:9 (original)", "Match window", "16:10", "21:9", "32:9", "custom", "4:3"};
     return m >= 0 && m < kModes ? n[m] : "?";
 }
 float mode_value(int m) {
     switch (m) {
     case kOriginal: return kBase;
+    case k4x3: return 4.0f / 3.0f;
     case k16x10: return 16.0f / 10.0f;
     case k21x9: return 64.0f / 27.0f;  // 2560x1080 / 3440x1440-class monitors sold as 21:9
     case k32x9: return 32.0f / 9.0f;
