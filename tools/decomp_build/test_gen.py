@@ -167,6 +167,26 @@ class GenTest(unittest.TestCase):
         self.assertIn("units/shared/d_src.txt", units)   # include fragments are configure dependencies
         self.assertIn("tools/verify/specfile.py", units)
 
+    def test_verify_only_and_missing_sources_are_skipped(self):
+        # a harness control variant (its source under tools/verify/units/) defines a game function again, and a
+        # spec of generated sources that are not in the tree: neither is game code
+        os.makedirs(os.path.join(self.src, "tools/verify/units/ctl"))
+        with open(os.path.join(self.src, "tools/verify/units/ctl/variant.cpp"), "w") as f:
+            f.write("VERIFY(0x02000C00, f_variant)\n")
+        with open(os.path.join(self.src, "tools/verify/units/ctl_variant.txt"), "w") as f:
+            f.write("src tools/verify/units/ctl/variant.cpp wwhd_src/b.cpp\n")
+        with open(os.path.join(self.src, "tools/verify/units/generated.txt"), "w") as f:
+            f.write("src build/gen_variants/x.cpp\n")
+        out = self.run_gen()
+        self.assertIn("2 game units, 4 functions decompiled", out)
+        self.assertIn("2 verify units skipped", out)
+        self.assertNotIn("02000C00", self.read("decomp_hooks.txt"))
+        skipped = self.read("skipped.txt")
+        self.assertIn("ctl_variant", skipped)
+        self.assertIn("verify-only source tools/verify/units/ctl/variant.cpp", skipped)
+        self.assertIn("source not in the tree: build/gen_variants/x.cpp", skipped)
+        self.assertEqual(self.read("skipped.txt"), skipped)
+
     def test_verify_named(self):
         with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
             f.write('VERIFY_NAMED(0x02000700, static_cast<void (C::*)(int)>(&C::set), "&C::set(int)");\n')

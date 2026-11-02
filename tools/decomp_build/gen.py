@@ -17,6 +17,8 @@ never the source tree or the submodule) and is rewritten only when it changes:
   glue/N.cpp        per unit: tools/decomp_build/glue.cpp with the unit's name
   functions.tsv     address, unit, name of every listed function
   excluded.txt      decompiled functions that stay recompiled, with the reason
+  skipped.txt       verify units that are not game code (a harness control/companion source, or a source
+                    that is not in the tree), with the reason
   glued/PATH        GameCube-style sources (a `/* WWHD glue` block) as the decompilation's harness compiles
                     them: rewritten by its tools/verify/autoglue.py (function entry glue, VERIFY marks, guest
                     views of static tables, guest copies of string literals)
@@ -82,17 +84,32 @@ def spec_files(src):
     return [p for p in glob.glob(os.path.join(src, "tools", "verify", "units", "**", "*.txt"), recursive=True)]
 
 
+VERIFY_ONLY = "tools/verify/units/"  # sources of the harness's control and companion variants
+
+
 def read_units(src):
-    units = {}
+    """-> (units: name -> [sources], skipped: [(name, why)]). A spec is not game code when it compiles a source
+    of the verification harness itself (tools/verify/units/...: control and companion variants that define a
+    game function a second time) or when one of its sources is not in the tree (a spec of generated
+    sources); both are skipped and listed in skipped.txt."""
+    units, skipped = {}, []
     for u, lines in unit_specs(src):
         srcs = []
         for line in lines:
             t = line.split("#")[0].split()
             if t and t[0] == "src":
                 srcs += [x for x in t[1:] if x not in srcs]
-        if srcs:
+        if not srcs:
+            continue
+        own = [x for x in srcs if x.replace("\\", "/").startswith(VERIFY_ONLY)]
+        missing = [x for x in srcs if not os.path.isfile(os.path.join(src, x))]
+        if own:
+            skipped.append((u, "verify-only source %s" % " ".join(own)))
+        elif missing:
+            skipped.append((u, "source not in the tree: %s" % " ".join(missing)))
+        else:
             units[u] = srcs
-    return units
+    return units, skipped
 
 
 def components(units, joins=None):
@@ -349,7 +366,8 @@ def main():
             sys.exit("gen.py: %s has no %s (run: git submodule update --init decomp)" % (src, need))
     os.makedirs(os.path.join(out, "glue"), exist_ok=True)
 
-    units = read_units(src)
+    units, skipped = read_units(src)
+    write_if_changed(os.path.join(out, "skipped.txt"), "".join("%-40s %s\n" % x for x in skipped))
     hooks = runtime_hooks()
     gluer = Glue(src, out, os.path.abspath(a.game) if a.game else None)
     texts = {}          # source (relative) -> its text as compiled
@@ -478,6 +496,8 @@ def main():
     print("decomp: %d game units, %d functions decompiled, %d excluded (%s); %d of %d sources glued, %d model "
           "data headers" % (len(units_used), len(listed), len(excluded), os.path.join(out, "excluded.txt"),
                             n_glued, len(compiled), n_assets))
+    if skipped:
+        print("decomp: %d verify units skipped (not game code: %s)" % (len(skipped), os.path.join(out, "skipped.txt")))
 
 
 if __name__ == "__main__":
