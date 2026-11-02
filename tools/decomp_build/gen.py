@@ -22,7 +22,8 @@ never the source tree or the submodule) and is rewritten only when it changes:
   glued/PATH        GameCube-style sources (a `/* WWHD glue` block) as the decompilation's harness compiles
                     them: rewritten by its tools/verify/autoglue.py (function entry glue, VERIFY marks, guest
                     views of static tables, guest copies of string literals)
-  include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py)
+  include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py; a decompilation
+                    without assets.py has none)
   verify/image.bin  the loaded sections of the game's code (tools/verify/mkimage.py)
 
 The last three are made from your own copy of the game (--game, cking.rpx of the USA game): the
@@ -190,7 +191,11 @@ class Glue:
                 sys.exit("gen.py: mkimage.py failed:\n%s%s" % (r.stdout, r.stderr))
             os.replace(self.image + ".tmp", self.image)
         sys.path.insert(0, os.path.join(self.src, "tools", "verify"))
-        import assets
+        # the public snapshot has tools/verify/assets.py (model data headers from the game); a decompilation
+        # without it keeps that data in its sources and needs no headers
+        assets = None
+        if os.path.isfile(os.path.join(self.src, "tools", "verify", "assets.py")):
+            import assets
         import autoglue
         with open(self.image, "rb") as fh:
             d = fh.read()
@@ -200,7 +205,8 @@ class Glue:
             i += 8
             regs.append((a, d[i:i + n]))
             i += n
-        assets.IMAGE, assets.OUT, assets._image = self.image, os.path.join(self.include, "assets"), regs
+        if assets:
+            assets.IMAGE, assets.OUT, assets._image = self.image, os.path.join(self.include, "assets"), regs
         autoglue._image = regs
         self.mods = (assets, autoglue)
         return self.mods
@@ -208,6 +214,8 @@ class Glue:
     def assets(self):
         """every header of tools/verify/assets.txt (as verify.py prepare_shared does)"""
         assets, _ = self.load()
+        if not assets:
+            return 0
         try:
             man = assets.manifest()
             for h in man:
@@ -487,7 +495,8 @@ def main():
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
     if n_glued:
-        deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt"))
+        deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
+                    if os.path.isfile(os.path.join(src, "tools", "verify", f)))
         deps.add(cmake_path(gluer.rpx))
     cm.append("set(WWHD_DECOMP_GEN_DEPENDS\n  %s)" % "\n  ".join('"%s"' % d for d in sorted(deps)))
     write_if_changed(os.path.join(out, "units.cmake"), "\n".join(cm) + "\n")

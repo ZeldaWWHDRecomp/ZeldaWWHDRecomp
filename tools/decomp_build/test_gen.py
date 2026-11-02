@@ -200,6 +200,27 @@ class GenTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("WWHD_DECOMP_GAME", r.stderr)
 
+    def test_glue_without_assets_py(self):
+        # a decompilation without tools/verify/assets.py (no model data headers): its glued sources still build
+        def write(rel, text):
+            with open(os.path.join(self.src, rel), "w") as f:
+                f.write(text)
+        write("tools/verify/mkimage.py", "import sys\nopen(sys.argv[2], 'wb').close()\n")
+        write("tools/verify/autoglue.py", "class GlueError(Exception): pass\n"
+                                          "def transform(text, path): return text + '// glued\\n'\n"
+                                          "def include_closure(text, path): return []\n")
+        with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
+            f.write("/* WWHD glue (tools/verify/autoglue.py)\n*/\n")
+        rpx = os.path.join(self.tmp.name, "cking.rpx")
+        open(rpx, "wb").close()
+        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out, "--game", rpx, "--jobs", "1"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("1 of 3 sources glued, 0 model data headers", r.stdout)
+        with open(os.path.join(self.out, "glued/wwhd_src/b.cpp")) as f:
+            self.assertIn("// glued", f.read())
+        self.assertNotIn("assets.py", self.read("units.cmake"))  # no configure dependency on a missing file
+
     def test_missing_tree(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), os.path.join(self.tmp.name, "nothing"), self.out],
                            capture_output=True, text=True)
