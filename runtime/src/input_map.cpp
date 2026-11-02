@@ -1217,6 +1217,7 @@ std::string to_json(const Mapping& m) {
     // issue #267: written only when on (files without it stay as they were)
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
     if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
+    if (!m.settings_pause_page) prompts += ",\n    \"settings_pause_page\": false";
     char opt[320];
     snprintf(opt, sizeof opt,
              "  },\n  \"options\": {\n    \"format\": 2,\n    \"stick_deadzone\": %.3g,\n"
@@ -1354,6 +1355,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
         if (const Json* i = op->get("background_controllers"); i && i->type == Json::Bool) m.background_controllers = i->b;
         if (const Json* i = op->get("l_turns_gamepad_page"); i && i->type == Json::Bool) m.l_turns_page = i->b;
+        if (const Json* i = op->get("settings_pause_page"); i && i->type == Json::Bool) m.settings_pause_page = i->b;
         // only "automatic" is stored: the two manual presets are the shape of the face bindings
         if (const Json* f = op->get("face_layout"); f && f->type == Json::Str) m.face_auto = f->s == "auto";
         // button prompts (#143); an unknown value keeps the default
@@ -1477,6 +1479,7 @@ static std::atomic<bool> g_background_controllers{false};
 static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
 static std::atomic<bool> g_l_turns_page{false};
+static std::atomic<bool> g_settings_pause_page{true};
 // format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
 static std::mutex g_legacy_mu;
 static bool g_loaded = false, g_legacy = true;
@@ -1622,6 +1625,7 @@ void set_current(const Mapping& requested, bool save) {
     g_background_controllers = m.background_controllers;
     g_file_select_quit = m.file_select_quit;
     g_l_turns_page = m.l_turns_page;
+    g_settings_pause_page = m.settings_pause_page;
     g_gen++;
     if (save && !save_file(default_path(), m))
         fprintf(stderr, "[input] could not save controls to %s\n", default_path().c_str());
@@ -1632,6 +1636,7 @@ bool file_select_quit() { return g_file_select_quit.load(std::memory_order_relax
 bool skip_controller_selection() { return g_skip_controller_selection.load(std::memory_order_relaxed); }
 bool background_controllers() { return g_background_controllers.load(std::memory_order_relaxed); }
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
+bool settings_pause_page() { return g_settings_pause_page.load(std::memory_order_relaxed); }
 bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
 
 }  // namespace input_map
