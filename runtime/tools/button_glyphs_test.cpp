@@ -1388,6 +1388,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
             assert((ld32(quad+0x10)&255)==(authored[0]&255));
             assert(ld8(sheet+0x0E)==0);
         }
+        for (int i=0;i<4;++i) drawn_quad[i]=ldf32(c->r[4]+0xA4+4*i);
         drawn_sheet=ld32(c->r[4]+0xA4+0x28);
         keycap_u=ldf32(c->r[4]+0xA4+0x18); keycap_v=ldf32(c->r[4]+0xA4+0x1C);
         std::vector<uint32_t> batches;
@@ -1982,6 +1983,28 @@ int main() {
         drawn_panes.clear(); button_glyphs::draw_pane(&tree,draw_tree);
         assert(at("T_R_00")>at("P_ItemR_00"));
         assert(std::count(drawn_panes.begin(),drawn_panes.end(),"T_R_00")==1);
+        st32(rtext+0xFC,list);
+        const float authored_y=ldf32(first_quad+0x0C), authored_h=ldf32(first_quad+4);
+        tree.r[3]=rtext;
+        button_glyphs::draw_text_box(&tree,[](Cpu* c) { c->r[4]=list; hook_028F7C7C(c); });
+        assert(std::fabs(drawn_quad[3]-(authored_y+authored_h*.45f))<.0001);
+        assert(std::fabs(drawn_quad[2]-(ldf32(first_quad+8)+(ldf32(first_quad)-authored_h*1.5f)*.5f+authored_h*1.5f))<.0001);
+        assert(ldf32(first_quad+0x0C)==authored_y); // layout/source quads are restored
+        st32(plate+0x0C,0); // same letter in an item-menu slot has no TV offset
+        button_glyphs::draw_text_box(&tree,[](Cpu* c) { c->r[4]=list; hook_028F7C7C(c); });
+        assert(drawn_quad[3]==authored_y);
+        st32(plate+0x0C,root);
+        for (int face=2;face<4;++face) {
+            const char letter="ABXY"[face];
+            std::string boxName=std::string("T_")+letter+"_00", plateName=std::string("P_")+letter+"_00";
+            std::strcpy(reinterpret_cast<char*>(mem::ptr(rtext+0x80)),boxName.c_str());
+            std::strcpy(reinterpret_cast<char*>(mem::ptr(plate+0x80)),plateName.c_str());
+            st16(base+0x9000,letter);
+            button_glyphs::draw_text_box(&tree,[](Cpu* c) { c->r[4]=list; hook_028F7C7C(c); });
+            assert(drawn_quad[3]==authored_y);
+            assert(std::fabs(drawn_quad[2]-(ldf32(first_quad+8)+(ldf32(first_quad)-authored_h*1.5f)*.5f-authored_h*1.5f))<.0001);
+        }
+
 
         mapping.keys[input_map::kA]={input_map::kMouse1,input_map::kNoKey};
         input_map::set_current(mapping,false);

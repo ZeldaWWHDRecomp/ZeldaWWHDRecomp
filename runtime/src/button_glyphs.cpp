@@ -621,6 +621,18 @@ bool command_word(uint32_t box) {
     return name == "T_CommandA_00" || name == "T_CommandB_00" || name == "T_CommandX_00" || name == "T_CommandY_00";
 }
 
+bool command_cluster(uint32_t pane) {
+    if (pane_name(pane)!="N_All_00") return false;
+    for (const char* group : {"W_SetSeatA_00","P_B_00","N_X_00","N_Y_00"})
+        if (!child_named(pane,group)) return false;
+    return true;
+}
+bool in_command_cluster(uint32_t pane) {
+    for (unsigned depth=0;pane && depth<16;++depth,pane=ld32(pane+0x0C))
+        if (command_cluster(pane)) return true;
+    return false;
+}
+
 bool inside(uint32_t pane, uint32_t ancestor) {
     for (unsigned depth = 0; pane && depth < 16; depth++, pane = ld32(pane + 0x0C))
         if (pane == ancestor) return true;
@@ -657,9 +669,7 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
         }
         return draw(c);
     }
-    if (!marking() || style().face == FaceStyle::kOriginal || pane_name(pane) != "N_All_00") return draw(c);
-    for (const char* group : {"W_SetSeatA_00", "P_B_00", "N_X_00", "N_Y_00"})
-        if (!child_named(pane, group)) return draw(c);
+    if (!marking() || style().face == FaceStyle::kOriginal || !command_cluster(pane)) return draw(c);
     const Cpu entry = *c;
     deferring_cluster = pane;
     deferred_words.clear();
@@ -845,6 +855,19 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             if (std::isfinite(w) && std::isfinite(h) && h>0) {
                 patch_float(saved,quad,h*1.5f);
                 patch_float(saved,quad+8,x+(w-h*1.5f)*.5f);
+                // TV item pictures occupy the original button letters. Put X/Y
+                // keycaps to their left and R to its right; keep action words clear too.
+                // Item-menu slots use a different tree and keep their authored positions.
+                if (in_command_cluster(hud_box)) {
+                    const float y=shared_patch::authored_float(quad+0x0C);
+                    if (hud_face>=2)
+                        patch_float(saved,quad+8,x+(w-h*1.5f)*.5f-h*1.5f);
+                    else if (hud_shoulder==1) {
+                        patch_float(saved,quad+8,x+(w-h*1.5f)*.5f+h*1.5f);
+                        if (std::isfinite(y)) patch_float(saved,quad+0x0C,y+h*.45f);
+                    } else if (std::isfinite(y) && hud_shoulder>=0)
+                        patch_float(saved,quad+0x0C,y-h*.5f);
+                }
             }
             shared_patch::hold_value(saved,list+4,2,count=1);
         }
