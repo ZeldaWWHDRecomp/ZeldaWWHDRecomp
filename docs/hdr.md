@@ -25,8 +25,7 @@ For example, paper white 203 and headroom 5 give Peak 1015; on the reported KDE
 setup this maps to the physical display peak of 1150 nits. Valid headroom must
 be finite, greater than 1 and below 49. A ratio of about 49.26 corresponds to the
 10000-nit signal limit relative to a 203-nit reference; such a report is treated as
-unavailable regardless of the player's paper white. This guard is based on the
-review's calculation, not a measurement on Sway. Invalid or unavailable headroom
+unavailable regardless of the player's paper white. Invalid or unavailable headroom
 uses 1025 nits and shows a notice. Valid Auto results are capped at 4000 nits,
 the manual slider's upper limit.
 
@@ -34,7 +33,6 @@ Headroom is relative to the desktop's SDR white, not necessarily the game's pape
 white. On Windows, for example, a 1000-nit display with Windows SDR white at 80 nits
 reports headroom 12.5; paper white 240 then produces Auto Peak 3000. Match paper
 white to the desktop SDR white or use manual Peak if this does not suit the display.
-The new defaults still need a physical Windows HDR test before merging.
 
 Auto is the default on fresh installs. Configurations with a saved manual
 `hdrPeak` remain manual unless Auto was explicitly selected. Explicitly saved Auto
