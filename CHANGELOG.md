@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: HDR metadata for the output range** (#337, thanks @mkopec, and @findel77 for testing). With HDR on, the game
+  now tells the display its brightness range, so HDR TVs and monitors tone-map it correctly. **Auto Peak** (on by default)
+  reads the display's peak from the system and stays within the manual slider's 4000 nits; each HDR option has its own
+  help. See the HDR guide for the Windows SDR-white note.
 - **Fixed: long help lines no longer make the settings page flicker at high resolutions** (#345, thanks @itsarahtonin).
   At 4K, the Controls tab's long help rows made the whole page redraw over and over. Long lines now stay as sharp as the
   rest, whatever the display's density, and L / R between tabs no longer redraws the text.
