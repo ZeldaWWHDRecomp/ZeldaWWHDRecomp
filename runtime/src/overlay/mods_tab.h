@@ -1034,6 +1034,7 @@ inline void builtin_list(Host& h) {
     muted(kAreaCaptions[kBuiltin]);
     if (!begin_list("builtin")) return;
     for (const auto& e : mods::manager::entries()) {
+        if (std::string_view(e.id) == "mouse-camera" || std::string_view(e.id) == "direct-camera" || std::string_view(e.id) == "first-person") continue;
         // the story system needs the Story Notebook package, which only the mod list provides
         if (e.id == "story-system" && !h.mod_downloads && !find_view(mods::packages::list(), mods::required::kStoryNotebook))
             continue;

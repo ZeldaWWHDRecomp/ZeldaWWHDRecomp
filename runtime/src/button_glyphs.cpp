@@ -45,7 +45,7 @@ void forget_rebuilt();
 // rebuilds every cached text once; turning them on counts as a restyled look for the session gate.
 bool item_names() {
     static std::atomic<int> last{-1};
-    const bool on = mods::item_names_on_hud();
+    const bool on = input_map::current().prompts != input_map::Mapping::Prompts::kKeyboard && mods::item_names_on_hud();
     if (last.exchange(on ? 1 : 0, std::memory_order_relaxed) != (on ? 1 : 0)) {
         if (on) labels_used.store(true, std::memory_order_relaxed);
         if (labels_used.load(std::memory_order_relaxed)) forget_rebuilt();
@@ -79,6 +79,7 @@ PromptStyle style() {
         const uint32_t sig = signature(current);
         if (last_signature.exchange(sig, std::memory_order_relaxed) != sig && labels_used.load(std::memory_order_relaxed))
             forget_rebuilt();
+        if (current.face == FaceStyle::kKeyboard) forget_rebuilt();
         generation = now;
     }
     return current;
@@ -239,6 +240,63 @@ void atlas_quad(std::vector<Held>& saved, uint32_t quad, int row, bool frame, Cp
     // picture clears it like the original icons (issue #141), a coverage shape sets it. The original
     // page and flag are restored with the rest of the authored quad afterwards.
     shared_patch::hold(saved, quad + 0x2C, 4, [coverage](uint32_t word) { return (word & ~0xFF01u) | (coverage ? 1u : 0u); });
+}
+
+// Immutable per-font, per-input keycap sheets. Binding edits reuse existing sheets rather
+// than changing textures that another recording thread may still be drawing.
+uint32_t keycap_sheet(Cpu* cpu, int action) {
+    const auto mapping = input_map::current();
+    const auto caption = input_map::prompt_key_label(mapping, action);
+    const uint32_t manager = ld32(GD(0x101F4A50));
+    const uint32_t font = manager ? ld32(manager + 0x10) : 0;
+    if (!font || !cpu || !ld32(font + 8)) return 0;
+    const uint32_t resource = ld32(font + 8);
+    struct Entry { uint32_t font, resource, sheet; std::string caption; };
+    static std::mutex mutex;
+    static std::vector<Entry> cache;
+    {
+        std::lock_guard lock(mutex);
+        for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
+    }
+    const uint32_t table = ld32(font + 4), get_glyph = table ? ld32(table + 0x8C) : 0;
+    if (!get_glyph || caption.size() > 32) return 0;
+    thread_local uint32_t scratch = mem::host_alloc(32*0x18,16);
+    std::vector<uint32_t> records;
+    for (unsigned char ch : caption) {
+        const uint32_t record = scratch + records.size()*0x18;
+        std::memset(mem::ptr(record),0,0x18);
+        Cpu get = *cpu;
+        get.r[3]=font; get.r[4]=record; get.r[5]=ch; get.pc=get.ctr=get_glyph;
+        ppc_dispatch(&get);
+        records.push_back(record);
+    }
+    const auto pixels = button_glyphs::keycap_pixels(records);
+    if (pixels.empty()) return 0;
+    std::lock_guard lock(mutex);
+    for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
+    const uint32_t object = mem::host_alloc(0x100,256), image = mem::host_alloc(64*64*4,256);
+    std::memset(mem::ptr(object),0,0x100);
+    std::memcpy(mem::ptr(object),mem::ptr(ld32(records[0]+0x14)),16);
+    st8(object+0x0E,0);
+    std::memcpy(mem::ptr(image),pixels.data(),pixels.size());
+    const uint32_t texture=object+0x10;
+    st32(texture,5); st32(texture+4,64); st32(texture+8,64); st32(texture+12,1);
+    st32(texture+16,1); st32(texture+20,0x1A); st32(texture+28,1);
+    st32(texture+32,64*64*4); st32(texture+36,image); st32(texture+48,1);
+    st32(texture+56,64); st32(texture+60,64);
+    st32(texture+0x78,1); st32(texture+0x80,1); st32(texture+0x84,0x00010203);
+    Cpu init{}; init.r[3]=texture; imp_gx2_GX2InitTextureRegs(&init);
+    cache.push_back({font,resource,object,caption});
+    return object;
+}
+
+void keycap_quad(std::vector<Held>& saved, uint32_t quad, uint32_t sheet) {
+    patch(saved,quad+0x28,sheet);
+    patch_float(saved,quad+0x18,0); patch_float(saved,quad+0x1C,0);
+    patch_float(saved,quad+0x20,1); patch_float(saved,quad+0x24,1);
+    shared_patch::hold(saved,quad+0x2C,4,[](uint32_t word) { return word & ~0xFF01u; });
+    for (uint32_t corner : {0x10u,0x14u})
+        shared_patch::hold(saved,quad+corner,4,[](uint32_t rgba) { return rgba | 0xFFFFFF00u; });
 }
 
 int shoulder_row(ShoulderStyle names, int shoulder) {
@@ -438,6 +496,20 @@ bool inside(uint32_t pane, uint32_t ancestor) {
 // complete cluster are held back and drawn after the rest of it, with the same DrawInfo.
 void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
     const uint32_t pane = c->r[3];
+    // CommandGuide's A disc is a Window, not a Picture. Pane::Draw tests +0x46
+    // only for DrawSelf, then still draws the children. Suppress the stock frame
+    // while preserving its letter, item, action text and their inherited alpha.
+    const auto name = pane_name(pane);
+    int keyboard_action = name == "W_SetSeatA_00" ? input_map::kA : -1;
+    constexpr std::string_view plates[] = {"P_L_00","P_R_00","P_ZL_00","P_ZR_00"};
+    for (int i=0;i<4;++i) if (name == plates[i]) keyboard_action = input_map::kL+i;
+    if (style().face == FaceStyle::kKeyboard && keyboard_action >= 0 && keycap_sheet(c,keyboard_action)) {
+        std::vector<Held> held;
+        shared_patch::hold_value(held,pane+0x46,1,0);
+        draw(c);
+        shared_patch::release(held);
+        return;
+    }
     if (deferring_cluster) {
         if (command_word(pane) && inside(pane, deferring_cluster)) {
             deferred_words.emplace_back(pane, draw);
@@ -604,6 +676,38 @@ extern "C" void hook_028F7C7C(Cpu* c) {
     // Read through shared_patch: another thread may be building this text with its changes in.
     const uint16_t original_count = (uint16_t)shared_patch::authored(list + 4, 2);
     uint16_t count = original_count;
+    if (look.face == FaceStyle::kKeyboard) {
+        const int hud = hud_face >= 0 ? input_map::kA + hud_face
+                      : hud_shoulder >= 0 ? input_map::kL + hud_shoulder : -1;
+        const uint32_t hud_sheet = hud >= 0 && original_count ? keycap_sheet(c,hud) : 0;
+        if (hud_sheet) {
+            const uint32_t quad = list+0xA4;
+            const uint8_t flags = ld8(quad+0x2F);
+            set_flag_byte(quad+0x2F, hud_face >= 0 ? button_glyphs::mark(flags,hud_face)
+                                                : button_glyphs::mark_shoulder(flags,hud_shoulder));
+            const float w = shared_patch::authored_float(quad), h = shared_patch::authored_float(quad+4);
+            const float x = shared_patch::authored_float(quad+8);
+            if (std::isfinite(w) && std::isfinite(h) && h>0) {
+                patch_float(saved,quad,h*1.5f);
+                patch_float(saved,quad+8,x+(w-h*1.5f)*.5f);
+            }
+            shared_patch::hold_value(saved,list+4,2,count=1);
+        }
+        for (uint32_t i=0;i<count;++i) {
+            const uint32_t quad=list+0xA4+i*0x30;
+            const uint8_t flags=ld8(quad+0x2F);
+            const int face=button_glyphs::marked_face(flags), shoulder=button_glyphs::marked_shoulder(flags);
+            const int action=face>=0 ? input_map::kA+face : shoulder>=0 ? input_map::kL+shoulder
+                           : button_glyphs::marked_start(flags) ? input_map::kPlus : -1;
+            const uint32_t sheet = hud_sheet ? hud_sheet : action>=0 ? keycap_sheet(c,action) : 0;
+            if (!sheet) continue;
+            set_flag_byte(quad+0x2F,button_glyphs::rendered(flags,true));
+            keycap_quad(saved,quad,sheet);
+        }
+        f_028F7C7C_orig(c);
+        restore(saved);
+        return;
+    }
     bool needs_shoulder = hud_shoulder >= 0 && original_count;
     bool needs_shape = shapes && hud_face >= 0 && original_count;
     bool needs_cstick = false;
@@ -750,6 +854,14 @@ extern "C" void hook_02874D54(Cpu* c) {
     const uint32_t picture = c->r[3];
     const int face = button_glyphs::face_picture(pane_name(picture));
     const PromptStyle look = style();
+    if (face >= 0 && look.face == FaceStyle::kKeyboard && keycap_sheet(c,input_map::kA+face)) {
+        std::vector<Held> held;
+        for (uint32_t i=0;i<4;++i)
+            shared_patch::hold(held,picture+0xA8+4*i,4,[](uint32_t rgba) { return rgba & 0xFFFFFF00u; });
+        f_02874D54_orig(c);
+        shared_patch::release(held);
+        return;
+    }
     if (face < 0 || (look.face != FaceStyle::kXbox && look.face != FaceStyle::kGameCube) ||
         (look.face == FaceStyle::kXbox && !look.colours)) return f_02874D54_orig(c);
     // Through shared_patch: in "play on GamePad" mode the item screen draws these pictures on two

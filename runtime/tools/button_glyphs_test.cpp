@@ -1304,6 +1304,7 @@ extern "C" void ppc_dispatch(Cpu* c) {
     constexpr uint32_t characters[] = {'L','R','1','2','B','T','A','3'};
     uint32_t index = 0;
     while (index < 8 && characters[index] != c->r[5]) index++;
+    if (input_map::current().prompts == input_map::Mapping::Prompts::kKeyboard) index = c->r[5] % 8;
     assert(index < 8);
     const uint32_t record = c->r[4];
     font_records[index] = record;
@@ -1350,6 +1351,17 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         Cpu other = *c;
         hook_028F7C7C(&other);
         inside_build = false;
+    }
+    if (input_map::current().prompts == input_map::Mapping::Prompts::kKeyboard) {
+        const uint32_t quad=c->r[4]+0xA4;
+        drawn_sheet=ld32(quad+0x28);
+        assert(drawn_sheet != base+0xD000);
+        assert(ldf32(quad+0x18)==0 && ldf32(quad+0x1C)==0);
+        assert(ldf32(quad+0x20)==1 && ldf32(quad+0x24)==1);
+        assert((ld8(quad+0x2F)&1)==0);
+        assert((ld32(quad+0x10)&255)==(authored[0]&255));
+        assert(ld8(drawn_sheet+0x0E)==0);
+        return;
     }
     text_draws++;
     drawn_ink = ld32(c->r[4] + 0xA4 + 0x10);
@@ -1889,6 +1901,36 @@ int main() {
             }
     } while (std::next_permutation(permutation.begin(), permutation.end()));
 
+    {
+        auto mapping=input_map::Mapping::defaults();
+        mapping.prompts=input_map::Mapping::Prompts::kKeyboard;
+        mapping.keys[input_map::kA]={input_map::key_from_id("Tab"),input_map::kNoKey};
+        input_map::set_current(mapping,false);
+        st32(writer+0x2C,list); st32(list,8); st16(list+4,0); st8(list+6,0);
+        print(0xE000);
+        const auto stock_sheet=ld32(first_quad+0x28);
+        Cpu c{}; c.r[4]=list;
+        hook_028F7C7C(&c);
+        const auto tab=drawn_sheet;
+        assert(tab && ld32(first_quad+0x28)==stock_sheet);
+        std::strcpy(reinterpret_cast<char*>(mem::ptr(picture+0x80)),"W_SetSeatA_00");
+        st8(picture+0x46,173);
+        Cpu window{}; window.r[3]=picture;
+        button_glyphs::draw_pane(&window,[](Cpu* c) { assert(ld8(c->r[3]+0x46)==0); });
+        assert(ld8(picture+0x46)==173);
+
+        mapping.keys[input_map::kA]={input_map::kMouse1,input_map::kNoKey};
+        input_map::set_current(mapping,false);
+        c.r[4]=list; hook_028F7C7C(&c);
+        assert(drawn_sheet && drawn_sheet!=tab);
+        mapping.keys[input_map::kA]={input_map::key_from_id("Tab"),input_map::kNoKey};
+        input_map::set_current(mapping,false);
+        c.r[4]=list; hook_028F7C7C(&c);
+        assert(drawn_sheet==tab); // immutable sheet reused after rebinding
+        assert(ld32(first_quad+0x28)==stock_sheet);
+        mapping.prompts=input_map::Mapping::Prompts::kOriginal;
+        input_map::set_current(mapping,false);
+    }
     gamecube_start_test();
     shared_patch_test();
     concurrent_draw_test();
