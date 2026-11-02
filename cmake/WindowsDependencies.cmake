@@ -76,6 +76,11 @@ if(WWHD_SDL_HOST)
                               -l "${LIBUSB_GEN}/libusb-1.0.dll.a" COMMAND_ERROR_IS_FATAL ANY)
       set(LibUSB_INCLUDE_PATH "${LIBUSB_DIR}" CACHE PATH "" FORCE)
       set(LibUSB_LIBRARY "${LIBUSB_GEN}/libusb-1.0.dll.a" CACHE FILEPATH "" FORCE)
+    elseif(WIN32)
+      unset(LibUSB_INCLUDE_PATH CACHE)  # the paths an earlier configure set
+      unset(LibUSB_LIBRARY CACHE)
+      message(WARNING "libusb: no dlltool found, so SDL3 is built without libusb and the Wii U "
+                      "GameCube adapter gives no input (issue #354)")
     endif()
     FetchContent_Declare(SDL3
       URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
