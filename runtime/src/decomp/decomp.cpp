@@ -22,6 +22,7 @@
 //                                                 caller's frame (restore: and undo it)
 //   WWHD_DECOMP_FRAMES=0                          no native frames (frames.cpp)
 #include "decomp/decomp.h"
+#include "decomp/call_lr.h"
 
 #include <algorithm>
 #include <atomic>
@@ -36,6 +37,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "../runtime.h"
@@ -46,6 +48,9 @@ extern "C" {
 // function entry in this game, or containing an instruction-level hook); their slots stay off
 extern const uint32_t g_recomp_decomp_kept[];
 extern const unsigned g_recomp_decomp_kept_count;
+// every call site of an imported function -> its import slot (sorted by site)
+extern const uint32_t g_recomp_decomp_import_calls[][2];
+extern const unsigned g_recomp_decomp_import_call_count;
 // guest mods (runtime/src/mods/guest_mods.cpp): per-function flags, null without --mod-hooks code
 extern uint8_t* g_mod_hook_flags;
 
@@ -66,6 +71,11 @@ void gmem_call_top(uint32_t) {}
 void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
     // kind 1: through a function pointer (bctrl: CTR holds the target)
     if (kind == 1) c->ctr = target;
+    // LR as the original's bl/bctrl leaves it: a runtime hook, an HLE import or a mod that tells its
+    // callers apart by LR (story_mail's text-length check, true60's call-site checks) sees the same
+    // caller as in the normal build (before, LR still held the return address into the decompiled
+    // function's own caller)
+    if (const uint32_t f = decomp::t_running) c->lr = decomp::call_lr(f, target, kind, c->lr);
     c->pc = target;
     ppc_dispatch(c);
 }
@@ -85,6 +95,41 @@ void decomp_register(const char* unit, uint32_t addr, const char* name, void (*f
 
 namespace decomp {
 void frames_init();  // frames.cpp
+
+thread_local uint32_t t_running = 0;
+
+namespace {
+struct LrKey {
+    uint32_t caller, target;
+    bool operator==(const LrKey& o) const { return caller == o.caller && target == o.target; }
+};
+struct LrHash {
+    size_t operator()(const LrKey& k) const { return (size_t(k.caller) << 32) ^ k.target; }
+};
+}  // namespace
+
+uint32_t call_lr(uint32_t caller, uint32_t target, int kind, uint32_t lr) {
+    // per thread: no lock on the hot path; a result is a fact of the game's code, the same on every thread
+    // (0: no unique call, LR stays as it is)
+    static thread_local std::unordered_map<LrKey, uint32_t, LrHash> cache;
+    const LrKey key{caller, kind == 1 ? 1u : target};
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        uint32_t ret = 0;
+        const RecompEntry* b = g_recomp_funcs;
+        const RecompEntry* e = g_recomp_funcs + g_recomp_func_count;
+        const RecompEntry* f = std::lower_bound(b, e, caller, [](const RecompEntry& r, uint32_t a) { return r.addr < a; });
+        if (f != e && f->addr == caller && f + 1 != e) {
+            const uint32_t n = (f[1].addr - caller) / 4;
+            std::vector<uint32_t> words(n);
+            for (uint32_t i = 0; i < n; i++) words[i] = ld32(caller + 4 * i);
+            ret = call_lr_scan(words.data(), caller, n, target, kind, 0, g_recomp_decomp_import_calls,
+                               g_recomp_decomp_import_call_count);
+        }
+        it = cache.emplace(key, ret).first;
+    }
+    return it->second ? it->second : lr;
+}
 
 int g_debug = 0;
 namespace {
@@ -177,13 +222,17 @@ void call_debug(Cpu* c, Slot& s) {
         return;
     }
     if (g_stats) g_ncand[i].fetch_add(1, std::memory_order_relaxed);
+    const uint32_t outer = t_running;
+    t_running = s.addr;
     if (!g_guard) {
         s.run(c, s.cand);
+        t_running = outer;
         return;
     }
     uint8_t before[0x40];
     memcpy(before, ppc_ptr(c->r[1]), sizeof before);
     s.run(c, s.cand);
+    t_running = outer;
     if (memcmp(before, ppc_ptr(c->r[1]), 4)) guard_report(c, s, before);
 }
 

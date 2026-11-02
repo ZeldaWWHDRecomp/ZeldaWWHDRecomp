@@ -521,6 +521,13 @@ class Recompiler:
         kept = sorted(self.canon_of.get(a, a) for a, _ in self.decomp_kept)
         f.write("const uint32_t g_recomp_decomp_kept[] = {%s};\n" % (", ".join("0x%08Xu" % a for a in kept) or "0u"))
         f.write("const unsigned g_recomp_decomp_kept_count = %d;\n" % len(kept))
+        # every call of an imported function (bl, REL24 into an import section) -> its import slot: the code in
+        # guest memory is not relocated there, so the runtime cannot tell which import a bl calls
+        # (runtime/src/decomp: the LR of a decompiled function's guest call is the original's return address)
+        calls = sorted((self.canon_of.get(a) or self.build.canon_code(a), slot) for a, (_, _, slot) in self.p.import_calls.items())
+        f.write("const uint32_t g_recomp_decomp_import_calls[][2] = {%s};\n" % (
+            ", ".join("{0x%08Xu, 0x%08Xu}" % c for c in calls) or "{0u, 0u}"))
+        f.write("const unsigned g_recomp_decomp_import_call_count = %d;\n" % len(calls))
         shutil.copyfile(self.decomp_hooks_file, os.path.join(outdir, "decomp_hooks.txt"))
 
     def write_build_map(self, f):
