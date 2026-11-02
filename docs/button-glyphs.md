@@ -39,7 +39,8 @@ is available in the Controls window. Changes apply to messages and the HUD as we
 Choose **Controls → Button prompts → Keyboard / mouse** to replace A/B/X/Y and
 L/R/ZL/ZR prompts in the HUD, item menu and dialog text with keycaps. Native
 Plus/Minus and individual D-pad/stick direction icons show their mapped keys too.
-Whole-stick and D-pad icons show the four directional keys in a cross. This is an
+Labelled left/right-stick and D-pad icons show the four directional keys in a cross.
+The unlabelled stick glyph retains its native artwork because it does not identify a stick. This is an
 explicit choice; Automatic continues to follow the controller. The first assigned
 keyboard/mouse slot supplies the caption, with the second used if the first is empty.
 Bindings update immediately. `M1`–`M5` identify mouse buttons and `Wh+`/`Wh-` the wheel;
@@ -51,3 +52,9 @@ colour/placement settings remain saved and apply again when a controller style i
 Mouse camera, Direct right-stick camera and First-person shortcut now live in Controls,
 along with camera speed and mouse sensitivity. Existing saved settings still apply.
 The existing first-person mouse-wheel behavior is retained.
+
+If the game font cannot supply a caption, that keycap shows a question mark (or a
+crossed keycap if the question mark is also missing), and the runtime logs the font
+and first unavailable caption. Other bindings still render. Text that would exceed
+the game's eight texture batches retains its native icons until its contents or
+bindings change; it does not rebuild every frame.

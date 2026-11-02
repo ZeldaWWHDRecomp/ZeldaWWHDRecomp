@@ -11,6 +11,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #include "input_map.h"
@@ -25,6 +26,8 @@ void f_028F7C7C_orig(Cpu* c);  // build vertices from a TextBox's cached glyph l
 void f_02874D54_orig(Cpu* c);  // lyt::Picture::DrawSelf
 void f_026F8CD0_orig(Cpu* c);  // hdParts_c::calcLayout
 void imp_gx2_GX2InitTextureRegs(Cpu* c);
+void imp_gx2_GX2Invalidate(Cpu* c);
+void imp_gx2_GX2DrawDone(Cpu* c);
 }
 
 namespace {
@@ -40,12 +43,13 @@ using input_map::ShoulderStyle;
 // in either mode.
 std::atomic<bool> labels_used{false};
 
+PromptStyle style();
 void forget_rebuilt();
 // The item ring's button names (mods/item_ring.cpp): A1 A2 A3 on the HUD's X, Y and R now. A change
 // rebuilds every cached text once; turning them on counts as a restyled look for the session gate.
 bool item_names() {
     static std::atomic<int> last{-1};
-    const bool on = input_map::current().prompts != input_map::Mapping::Prompts::kKeyboard && mods::item_names_on_hud();
+    const bool on = style().face != FaceStyle::kKeyboard && mods::item_names_on_hud();
     if (last.exchange(on ? 1 : 0, std::memory_order_relaxed) != (on ? 1 : 0)) {
         if (on) labels_used.store(true, std::memory_order_relaxed);
         if (labels_used.load(std::memory_order_relaxed)) forget_rebuilt();
@@ -60,8 +64,8 @@ std::atomic<uint32_t> last_signature{0};
 uint32_t signature(const PromptStyle& s) {
     uint32_t buttons = 0;
     for (int i = 0; i < 4; ++i) buttons |= uint32_t(s.buttons[i]) << (10 + 2*i) | uint32_t(s.spots[i]) << (18 + 2*i);
-    return buttons | 0x100u | (uint32_t)s.face | (s.colours ? 4u : 0u) | (uint32_t)s.shoulders << 3 |
-           (s.positions ? 0x20u : 0u) | (s.text_colours ? 0x40u : 0u);
+    return buttons | 0x100u | (uint32_t)s.face | (s.colours ? 8u : 0u) | (uint32_t)s.shoulders << 4 |
+           (s.positions ? 0x40u : 0u) | (s.text_colours ? 0x80u : 0u);
 }
 
 PromptStyle style() {
@@ -93,6 +97,30 @@ bool marking() { return restyled() || item_names() || labels_used.load(std::memo
 // hooks could recognise. Each text box is therefore rebuilt once: the game re-runs Print, which
 // marks the new quads. The registry is a one-shot switch (only consulted after activation) and
 // never identifies glyphs; it cannot go stale because it only ever forces a rebuild.
+// A font can need more than the native eight vertex batches after substitution. Keep
+// that one text's authored fallback until its quads, batches or prompt generation change.
+// Exact snapshots also reject a stale list recycled for another text or restored state.
+struct StockFallback {
+    std::vector<uint8_t> quads;
+    std::array<uint8_t, 0x84> batches;
+};
+std::mutex fallback_mutex;
+std::unordered_map<uint32_t, StockFallback> stock_fallbacks;
+bool stock_fallback(uint32_t list, bool remember = false) {
+    const size_t bytes = size_t(ld16(list+4))*0x30;
+    std::lock_guard lock(fallback_mutex);
+    if (remember) {
+        auto& entry=stock_fallbacks[list];
+        entry.quads.assign(mem::ptr(list+0xA4),mem::ptr(list+0xA4)+bytes);
+        std::memcpy(entry.batches.data(),mem::ptr(list+0x20),entry.batches.size());
+        return true;
+    }
+    const auto it=stock_fallbacks.find(list);
+    return it!=stock_fallbacks.end() && it->second.quads.size()==bytes &&
+        !std::memcmp(it->second.quads.data(),mem::ptr(list+0xA4),bytes) &&
+        !std::memcmp(it->second.batches.data(),mem::ptr(list+0x20),it->second.batches.size());
+}
+
 std::mutex rebuilt_mutex;
 std::unordered_set<uint32_t> rebuilt;  // text boxes rebuilt since by label was first used (or the last state load / style change)
 bool first_rebuild(uint32_t text_box) {
@@ -103,6 +131,8 @@ bool first_rebuild(uint32_t text_box) {
 void forget_rebuilt() {
     std::lock_guard lock(rebuilt_mutex);
     rebuilt.clear();
+    std::lock_guard fallback_lock(fallback_mutex);
+    stock_fallbacks.clear();
 }
 
 // Draw-time changes to game memory go through shared_patch: two game threads can build and draw
@@ -248,29 +278,41 @@ constexpr int key_group(int first) { return input_map::kActionCount+first; }
 int input_glyph_action(int index) {
     using namespace input_map;
     constexpr int actions[] = {key_group(kDUp),kPlus,kMinus,kDUp,kDDown,kDLeft,kDRight,
-        key_group(kLUp),key_group(kLUp),key_group(kRUp),kLUp,kLDown,kLLeft,kLRight,
+        // E080 is an unlabelled stick, not evidence of a left-stick binding.
+        // Keep its native artwork until its context identifies which stick it means.
+        -1,key_group(kLUp),key_group(kRUp),kLUp,kLDown,kLLeft,kLRight,
         kRUp,kRDown,kRLeft,kRRight,kA};
     return index>=0 && index<int(std::size(actions)) ? actions[index] : -1;
 }
 
-// Immutable per-font key atlas and per-binding directional diagrams. Binding edits reuse sheets rather
-// than changing textures that another recording thread may still be drawing.
+// Cache the controls snapshot once per binding generation, only on the keyboard path.
+const input_map::Mapping& keyboard_mapping() {
+    thread_local uint32_t generation=~0u;
+    thread_local input_map::Mapping mapping;
+    const uint32_t now=input_map::generation();
+    if (now!=generation) { mapping=input_map::current(); generation=now; }
+    return mapping;
+}
+
+// One immutable key atlas and three reusable directional diagrams per native font.
+// Updating a diagram uses the same GX2 texture invalidation as CPU-written game textures.
 uint32_t keycap_sheet(Cpu* cpu, int action) {
-    const auto mapping = input_map::current();
+    const auto& mapping = keyboard_mapping();
     const bool group = action >= input_map::kActionCount;
     const int first = action-input_map::kActionCount;
-    std::string caption = group ? "Group:" : "@Keys";
-    if (group) for (int i=0;i<4;++i) caption += input_map::prompt_key_label(mapping,first+i)+"/";
+    const std::string caption = group ? "Group:"+std::to_string(first) : "@Keys";
+    std::string bindings;
+    if (group) for (int i=0;i<4;++i) bindings += input_map::prompt_key_label(mapping,first+i)+"/";
     const uint32_t manager = ld32(GD(0x101F4A50));
     const uint32_t font = manager ? ld32(manager + 0x10) : 0;
     if (!font || !cpu || !ld32(font + 8) || !ld32(font + 0x0C) || !ld32(font + 0x44)) return 0;
     const uint32_t resource = ld32(font + 8);
-    struct Entry { uint32_t font, resource, sheet; std::string caption; };
+    struct Entry { uint32_t font, resource, sheet; std::string caption, bindings; };
     static std::mutex mutex;
     static std::vector<Entry> cache;
     {
         std::lock_guard lock(mutex);
-        for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
+        for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption && e.bindings == bindings) return e.sheet;
     }
     std::vector<uint8_t> pixels;
     uint32_t source_sheet = 0;
@@ -298,6 +340,8 @@ uint32_t keycap_sheet(Cpu* cpu, int action) {
         thread_local uint32_t scratch = mem::host_alloc(128*0x18,16);
         std::array<uint32_t,128> glyphs{};
         pixels.resize(width*height*4);
+        unsigned missing=0;
+        std::string first_missing;
         auto labels = mapping;
         for (int index=0;index<=input_map::kInputCount;++index) {
             labels.keys[input_map::kA] = {index<input_map::kInputCount ? index : input_map::kNoKey,input_map::kNoKey};
@@ -315,19 +359,55 @@ uint32_t keycap_sheet(Cpu* cpu, int action) {
                 }
                 records.push_back(glyphs[ch]);
             }
-            const auto cell = button_glyphs::keycap_pixels(records);
+            auto cell = button_glyphs::keycap_pixels(records);
+            if (!cell.empty() && !source_sheet) source_sheet=ld32(records[0]+0x14);
             if (cell.empty()) {
-                std::lock_guard lock(mutex);
-                cache.push_back({font,resource,0,caption});
-                return 0;
+                if (missing++ == 0) first_missing=label;
+                // A missing caption must not disable unrelated bindings. A native question
+                // mark is preferable; an explicit crossed keycap also works if '?' is absent.
+                const uint32_t record=scratch+'?'*0x18;
+                if (!glyphs['?']) {
+                    std::memset(mem::ptr(record),0,0x18);
+                    Cpu get=*cpu; get.r[3]=font; get.r[4]=record; get.r[5]='?';
+                    get.pc=get.ctr=get_glyph; ppc_dispatch(&get); glyphs['?']=record;
+                }
+                cell=button_glyphs::keycap_pixels(std::span(&record,1));
+                if (!cell.empty() && !source_sheet) source_sheet=ld32(record+0x14);
+                if (cell.empty()) {
+                    cell.resize(64*64*4);
+                    for (int y=0;y<64;++y) for (int x=0;x<64;++x) {
+                        const uint32_t bg=button_glyphs::shoulder_background(x,y);
+                        const bool cross=x>=22 && x<=42 && y>=22 && y<=42 &&
+                            (std::abs(x-y)<=1 || std::abs(x+y-64)<=1);
+                        const size_t p=(y*64+x)*4;
+                        cell[p]=cell[p+1]=cell[p+2]=cross ? 36 : bg>>24;
+                        cell[p+3]=cross ? 255 : bg&255;
+                    }
+                }
             }
-            if (!source_sheet) source_sheet=ld32(records[0]+0x14);
             for (int y=0;y<64;++y)
                 std::copy_n(cell.data()+y*64*4,64*4,pixels.data()+(((index/16)*64+y)*width+(index%16)*64)*4);
         }
+        if (missing) LOG("[button-prompts] font %08X: %u key captions unavailable (first: %s); using visible fallback keycaps", font, missing, first_missing.c_str());
     }
     std::lock_guard lock(mutex);
-    for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption) return e.sheet;
+    for (const auto& e : cache) if (e.font == font && e.resource == resource && e.caption == caption && e.bindings == bindings) return e.sheet;
+    if (group) for (auto& e : cache) if (e.font==font && e.resource==resource && e.caption==caption) {
+        // Drain existing consumers before reusing CPU texture storage. This happens
+        // only on a directional rebind, never on ordinary pane draws.
+        Cpu done=*cpu; imp_gx2_GX2DrawDone(&done);
+        const uint32_t image=ld32(e.sheet+0x34);
+        std::memcpy(mem::ptr(image),pixels.data(),pixels.size());
+        Cpu invalidate=*cpu; invalidate.r[3]=2; invalidate.r[4]=image; invalidate.r[5]=pixels.size();
+        imp_gx2_GX2Invalidate(&invalidate);
+        e.bindings=bindings;
+        return e.sheet;
+    }
+    if (!source_sheet) {
+        LOG("[button-prompts] font %08X has no readable glyph sheet; retaining native prompts",font);
+        cache.push_back({font,resource,0,caption,bindings});
+        return 0;
+    }
     const uint32_t object = mem::host_alloc(0x100,256), image = mem::host_alloc(width*height*4,256);
     std::memset(mem::ptr(object),0,0x100);
     std::memcpy(mem::ptr(object),mem::ptr(source_sheet),16);
@@ -340,13 +420,13 @@ uint32_t keycap_sheet(Cpu* cpu, int action) {
     st32(texture+56,height); st32(texture+60,width);
     st32(texture+0x78,1); st32(texture+0x80,1); st32(texture+0x84,0x00010203);
     Cpu init{}; init.r[3]=texture; imp_gx2_GX2InitTextureRegs(&init);
-    cache.push_back({font,resource,object,caption});
+    cache.push_back({font,resource,object,caption,bindings});
     return object;
 }
 
 void keycap_quad(std::vector<Held>& saved, uint32_t quad, uint32_t sheet, int action) {
     patch(saved,quad+0x28,sheet);
-    const int code = input_map::prompt_key_code(input_map::current(),action);
+    const int code = input_map::prompt_key_code(keyboard_mapping(),action);
     const int index = code < 0 ? input_map::kInputCount : code;
     const bool group = action >= input_map::kActionCount;
     patch_float(saved,quad+0x18,group ? 0.f : (index%16)/16.f);
@@ -559,7 +639,7 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
     // only for DrawSelf, then still draws the children. Suppress the stock frame
     // while preserving its letter, item, action text and their inherited alpha.
     const auto name = pane_name(pane);
-    int keyboard_action = name == "W_SetSeatA_00" ? input_map::kA : -1;
+    int keyboard_action = (name == "W_SetSeatA_00" || name == "P_SetSeatASpecial_00") ? input_map::kA : -1;
     constexpr std::string_view plates[] = {"P_L_00","P_R_00","P_ZL_00","P_ZR_00"};
     for (int i=0;i<4;++i) if (name == plates[i]) keyboard_action = input_map::kL+i;
     if (style().face == FaceStyle::kKeyboard && keyboard_action >= 0 && keycap_sheet(c,keyboard_action)) {
@@ -570,7 +650,8 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
         return;
     }
     if (deferring_cluster) {
-        if (command_word(pane) && inside(pane, deferring_cluster)) {
+        if ((command_word(pane) || (style().face == FaceStyle::kKeyboard &&
+             (face_box(pane)>=0 || shoulder_box(pane)>=0))) && inside(pane, deferring_cluster)) {
             deferred_words.emplace_back(pane, draw);
             return;
         }
@@ -617,6 +698,7 @@ void button_glyphs::prepare_text_box(uint32_t text_box, Cpu* cpu) {
         const uint32_t flag = list + 0xA4 + 0x2F;
         if (marked_face(ld8(flag)) < 0) st8(flag, mark(ld8(flag), letter));
     }
+    if (look.face == FaceStyle::kKeyboard && stock_fallback(list)) return;
     for (uint32_t i = 0, count = ld16(list + 4); i < count; i++) {
         const uint8_t flags = ld8(list + 0xA4 + i * 0x30 + 0x2F);
         const int face = marked_face(flags), shoulder = marked_shoulder(flags);
@@ -774,7 +856,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
                            : button_glyphs::marked_start(flags) ? input_map::kPlus
                            : input_glyph_action(button_glyphs::marked_input(flags));
             const uint32_t sheet = hud_sheet ? hud_sheet : action>=0 ? keycap_sheet(c,action) : 0;
-            if (hud_sheet || action>=0) set_flag_byte(quad+0x2F,button_glyphs::rendered(flags,true));
+            if (hud_sheet || action>=0 || button_glyphs::marked_input(flags)>=0) set_flag_byte(quad+0x2F,button_glyphs::rendered(flags,true));
             if (!sheet) continue;
             keycap_quad(saved,quad,sheet,hud_sheet ? hud : action);
         }
@@ -784,9 +866,11 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             const auto key=std::pair{ld32(quad+0x28),ld8(quad+0x2E)};
             if (std::find(sheets.begin(),sheets.end(),key)==sheets.end()) sheets.push_back(key);
         }
-        if (sheets.size()>8) restore(saved); // retain the original glyphs if custom fonts exceed the batch budget
+        const bool fallback = sheets.size()>8;
+        if (fallback) restore(saved); // keep native glyphs within the fixed batch budget
         f_028F7C7C_orig(c);
         restore(saved);
+        if (fallback) stock_fallback(list,true);
         return;
     }
     bool needs_shoulder = hud_shoulder >= 0 && original_count;

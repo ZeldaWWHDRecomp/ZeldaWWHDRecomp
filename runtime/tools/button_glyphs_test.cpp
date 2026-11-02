@@ -38,7 +38,10 @@ void site_02877150(Cpu* c);
 
 // The real aspect hook is included in this test; only GPU emission and guest originals are
 // stubbed. This verifies composition, rather than substituting a fake aspect callback.
-void log_msg(const char*, ...) {}
+static unsigned missing_caption_logs=0;
+void log_msg(const char* fmt, ...) {
+    if (std::strstr(fmt,"key captions unavailable")) ++missing_caption_logs;
+}
 namespace gx2 {
 bool recording = false;
 std::vector<std::vector<uint32_t>> layoutCommands;
@@ -66,6 +69,9 @@ constexpr uint32_t kArena = 0x1000000;  // synthetic guest memory, including the
 constexpr std::array<uint32_t, 2> authored = {0xFFFFFFFF, 0xB0804042};
 constexpr std::array<uint32_t, 4> corners = {0xFFFFFFFF, 0x80A0C042, 0x00000000, 0xFFFFFF80};
 uint32_t printed_character;
+uint32_t allocated_bytes=0;
+unsigned diagram_invalidates=0, diagram_drains=0;
+bool expect_keyboard_fallback=false, missing_keyboard_glyph=false;
 int expected_plain = -1;
 int expected_action = -1;
 bool expect_xbox;      // Xbox positions (the HUD cluster moves)
@@ -1288,6 +1294,7 @@ uint32_t host_alloc(uint32_t size, uint32_t align) {
     next = (next + align - 1) & ~(align - 1);
     const uint32_t result = next;
     next += size;
+    allocated_bytes+=size;
     assert(next <= base + kArena);
     return result;
 }
@@ -1301,6 +1308,11 @@ extern "C" void imp_gx2_GX2InitTextureRegs(Cpu* c) {
     if (width == 128) atlas = c->r[3] - 16;
 }
 
+extern "C" void imp_gx2_GX2DrawDone(Cpu*) { ++diagram_drains; }
+extern "C" void imp_gx2_GX2Invalidate(Cpu* c) {
+    assert(c->r[3]==2 && c->r[5]==64*64*4);
+    ++diagram_invalidates;
+}
 extern "C" void ppc_dispatch(Cpu* c) {
     assert(c->pc == 0x0286F7BC && c->r[3] == base + 0xE100);
     constexpr uint32_t characters[] = {'L','R','1','2','B','T','A','3'};
@@ -1316,6 +1328,7 @@ extern "C" void ppc_dispatch(Cpu* c) {
     st16(record + 8,32); st16(record + 10,32);
     st16(record + 12,(index % 4)*8); st16(record + 14,0);  // B and T reuse two of the four masks
     st8(record + 0x13,1); st32(record + 0x14,base + 0xD000);
+    if (missing_keyboard_glyph && (c->r[5]=='Q' || c->r[5]=='?')) st32(record+0x14,0);
     c->r[3] = 0xF001; c->r[4] = 0xDEAD;  // cloned CPU changes cannot corrupt the draw caller
 }
 
@@ -1362,7 +1375,8 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
             const bool input = button_glyphs::marked_face(flags)>=0 || button_glyphs::marked_shoulder(flags)>=0 ||
                                button_glyphs::marked_input(flags)>=0;
             const uint32_t sheet=ld32(quad+0x28);
-            if (!input) { assert(sheet==base+0xD000); continue; }
+            if (expect_keyboard_fallback) { assert(sheet>=base+0xD000 && sheet<=base+0xD700); continue; }
+            if (!input || button_glyphs::marked_input(flags)==7) { assert(sheet==base+0xD000); continue; }
             keycap_sheets.push_back(sheet);
             assert(sheet != base+0xD000);
             assert(ldf32(quad+0x18)>=0 && ldf32(quad+0x1C)>=0);
@@ -1930,6 +1944,7 @@ int main() {
         mapping.prompts=input_map::Mapping::Prompts::kKeyboard;
         mapping.keys[input_map::kA]={input_map::key_from_id("Tab"),input_map::kNoKey};
         input_map::set_current(mapping,false);
+        missing_keyboard_glyph=true;
         st32(writer+0x2C,list); st32(list,8); st16(list+4,0); st8(list+6,0);
         print(0xE000);
         const auto stock_sheet=ld32(first_quad+0x28);
@@ -1938,11 +1953,35 @@ int main() {
         const auto tab=drawn_sheet;
         const auto tab_u=keycap_u, tab_v=keycap_v;
         assert(tab && ld32(first_quad+0x28)==stock_sheet);
+        assert(missing_caption_logs==1); // one failed caption is reported without disabling Tab/A
+        const uint32_t image=ld32(tab+0x34);
+        const int q=input_map::key_from_id("Q");
+        const uint32_t centre=image+(((q/16)*64+32)*1024+(q%16)*64+32)*4;
+        assert(ld8(centre)==36 && ld8(centre+3)==255); // visible crossed fallback without '?'
+
         std::strcpy(reinterpret_cast<char*>(mem::ptr(picture+0x80)),"W_SetSeatA_00");
         st8(picture+0x46,173);
         Cpu window{}; window.r[3]=picture;
         button_glyphs::draw_pane(&window,[](Cpu* c) { assert(ld8(c->r[3]+0x46)==0); });
         assert(ld8(picture+0x46)==173);
+        std::strcpy(reinterpret_cast<char*>(mem::ptr(picture+0x80)),"P_SetSeatASpecial_00");
+        button_glyphs::draw_pane(&window,[](Cpu* c) { assert(ld8(c->r[3]+0x46)==0); });
+        assert(ld8(picture+0x46)==173);
+
+        // TV's R item picture follows its letter in the native tree. Keyboard
+        // prompts must be replayed after that picture, with the original DrawInfo.
+        constexpr uint32_t root=base+0x6000, plate=base+0x7A00, rtext=base+0x7C00, leaf=base+0x7E00;
+        pane(root,"N_All_00",0,0);
+        const char* required[]={"W_SetSeatA_00","P_B_00","N_X_00","N_Y_00"};
+        for (int i=0;i<4;++i) { pane(base+0x6200+i*0x200,required[i],0,0); child(root,base+0x6200+i*0x200); }
+        pane(plate,"P_R_00",0,0); child(root,plate);
+        pane(rtext,"T_R_00",0,0); child(plate,rtext);
+        st32(rtext+0xA4,base+0x9000); st16(base+0x9000,'R'); st16(rtext+0xCE,1);
+        pane(leaf,"P_ItemR_00",0,0); child(plate,leaf);
+        Cpu tree{}; tree.r[3]=root; tree.r[4]=0x1234;
+        drawn_panes.clear(); button_glyphs::draw_pane(&tree,draw_tree);
+        assert(at("T_R_00")>at("P_ItemR_00"));
+        assert(std::count(drawn_panes.begin(),drawn_panes.end(),"T_R_00")==1);
 
         mapping.keys[input_map::kA]={input_map::kMouse1,input_map::kNoKey};
         input_map::set_current(mapping,false);
@@ -1967,7 +2006,7 @@ int main() {
         }
         print('+'); print(0x2665); print(0xE090); // ordinary text, heart and directional artwork
         c.r[4]=list; hook_028F7C7C(&c);
-        assert(keycap_sheets.size()==std::size(button_glyphs::kInputCharacters));
+        assert(keycap_sheets.size()==std::size(button_glyphs::kInputCharacters)-1);
         auto unique=keycap_sheets;
         std::sort(unique.begin(),unique.end()); unique.erase(std::unique(unique.begin(),unique.end()),unique.end());
         assert(unique.size()==4); // nineteen icons need only one key atlas and three directional diagrams
@@ -1981,13 +2020,50 @@ int main() {
         button_glyphs::prepare_text_box(text_box,&c);
         assert(ld8(list+6)==0); // stale host pointers from a restored state must rebuild
 
-        assert(keycap_sheets[7]==keycap_sheets[8]); // generic and labelled left-stick diagrams
-        assert(keycap_sheets[8]!=keycap_sheets[9]); // right stick uses its own bindings
-        const uint32_t groupImage=ld32(keycap_sheets[8]+0x34);
+        assert(keycap_sheets[7]!=keycap_sheets[8]); // left/right labelled sticks have distinct bindings
+        const uint32_t leftSheet=keycap_sheets[7];
+        const uint32_t groupImage=ld32(leftSheet+0x34);
         assert(ld8(groupImage+(32*64+32)*4+3)==0); // keep the cross centre empty
         assert(ld8(groupImage+(11*64+32)*4+3)!=0); // visible upper keycap
         assert(button_glyphs::input_character('+')==-1);
 
+        const uint32_t before_allocations=allocated_bytes;
+        const unsigned before_invalidates=diagram_invalidates;
+        for (int key=0;key<input_map::kInputCount;++key) {
+            mapping.keys[input_map::kLUp]={key,input_map::kNoKey};
+            input_map::set_current(mapping,false);
+            c.r[4]=list; hook_028F7C7C(&c);
+            assert(keycap_sheets[7]==leftSheet);
+        }
+        assert(allocated_bytes==before_allocations); // no 16 KiB allocation per distinct rebind
+        assert(diagram_invalidates>before_invalidates && diagram_drains==diagram_invalidates);
+        assert(missing_caption_logs==1); // the failed glyph is not retried/reported every draw
+
+        // Eight native sheets fit; adding the keyboard atlas would need nine. Cache
+        // the authored fallback, and still reject a binding change or foreign batch.
+        st32(list,24); st16(list+4,0); st8(list+6,0);
+        print(0xE000);
+        for (int i=0;i<8;++i) {
+            print('x');
+            st32(first_quad+(i+1)*0x30+0x28,base+0xD000+i*0x100);
+        }
+        expect_keyboard_fallback=true;
+        button_glyphs::prepare_text_box(text_box,&c);
+        c.r[4]=list; hook_028F7C7C(&c);
+        for (int frame=0;frame<20;++frame) {
+            button_glyphs::prepare_text_box(text_box,&c);
+            assert(ld8(list+6)==1);
+        }
+        mapping.keys[input_map::kA]={input_map::kMouse2,input_map::kNoKey};
+        input_map::set_current(mapping,false);
+        button_glyphs::prepare_text_box(text_box,&c);
+        assert(ld8(list+6)==0);
+        c.r[4]=list; hook_028F7C7C(&c);
+        st32(list+0x20,base+0xD800);
+        button_glyphs::prepare_text_box(text_box,&c);
+        assert(ld8(list+6)==0);
+        expect_keyboard_fallback=false;
+        missing_keyboard_glyph=false;
         mapping.prompts=input_map::Mapping::Prompts::kOriginal;
         input_map::set_current(mapping,false);
     }
