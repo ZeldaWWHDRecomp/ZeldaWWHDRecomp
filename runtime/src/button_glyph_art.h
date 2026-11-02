@@ -83,28 +83,37 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
     for (int sy = 0; sy < 4; ++sy) for (int sx = 0; sx < 4; ++sx) {
         const float px = x + (sx + .5f) / 4 - 32.f;
         const float py = y + (sy + .5f) / 4 - 32.f;
-        auto ellipse = [](float x, float y, float cx, float cy, float rx, float ry) {
-            const float nx = (x - cx) / rx, ny = (y - cy) / ry;
-            return nx * nx + ny * ny < 1.f;
-        };
         bool inside, outer;
         if (face == 2) {
             // X is a vertical bean. Its long, shallow inner arc faces left toward A.
-            constexpr float cx = 2.f, rx = 17.f, ry = 27.f;
-            constexpr float notch_x = -15.f, notch_rx = 20.f, notch_ry = 35.f;
-            inside = ellipse(px, py, cx, 0.f, rx, ry) && !ellipse(px, py, notch_x, 0.f, notch_rx, notch_ry);
+            auto bean = [](float x, float y, float margin) {
+                const float rx = 18.f + margin, ry = 27.f + margin;
+                const float q = y / ry;
+                if (std::fabs(q) >= 1.f) return false;
+                const float half = rx * std::sqrt(1.f - q*q);
+                const float q4 = y / 14.f, profile = std::exp(-q4*q4*q4*q4);
+                const float left = 3.f - half + 8.f * profile;
+                return x > left && x < 3.f + half;
+            };
+            inside = bean(px, py, 0.f);
             const float margin = framed ? 3.f : 0.f;
-            outer = ellipse(px, py, cx, 0.f, rx + margin, ry + margin) &&
-                    !ellipse(px, py, notch_x, 0.f, notch_rx + margin, notch_ry + margin);
+            outer = bean(px, py, margin);
         } else if (face == 3) {
-            // Y is a broad horizontal bean above A. Removing an offset, wide ellipse makes
-            // one continuous concave lower edge that curves down toward both ends.
-            constexpr float cy = -4.f, rx = 28.f, ry = 18.f;
-            constexpr float notch_y = 23.f, notch_rx = 40.f, notch_ry = 21.f;
-            inside = ellipse(px, py, 0.f, cy, rx, ry) && !ellipse(px, py, 0.f, notch_y, notch_rx, notch_ry);
+            // Y is a broad horizontal bean above A. Its lower edge bends gently toward A,
+            // then closes into rounded lobes at both ends.
+            auto bean = [](float x, float y, float margin) {
+                const float rx = 27.f + margin, ry = 18.f + margin;
+                const float q = x / rx;
+                if (std::fabs(q) >= 1.f) return false;
+                const float half = ry * std::sqrt(1.f - q*q);
+                const float q4 = x / 13.f, profile = std::exp(-q4*q4*q4*q4);
+                const float top = -1.f - half;
+                const float bottom = -1.f + half - 8.f * profile;
+                return y > top && y < bottom;
+            };
+            inside = bean(px, py, 0.f);
             const float margin = framed ? 3.f : 0.f;
-            outer = ellipse(px, py, 0.f, cy, rx + margin, ry + margin) &&
-                    !ellipse(px, py, 0.f, notch_y, notch_rx + margin, notch_ry + margin);
+            outer = bean(px, py, margin);
         } else {
             const float scale = face == 0 ? 27.f : 20.f;
             inside = std::hypot(px, py) < scale;

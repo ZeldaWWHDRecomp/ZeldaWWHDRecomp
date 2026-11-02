@@ -1577,8 +1577,10 @@ int main() {
         assert(y_max-y_min > y_max_y-y_min_y); // Y is the wider bean
         assert(button_glyphs::gamecube_icon(2,true,16,32) == 0); // long inward curve faces left toward A
         assert(button_glyphs::gamecube_icon(2,true,45,32) != 0); // keep a solid right lobe
-        assert(button_glyphs::gamecube_icon(3,true,32,38) == 0); // long Y concavity faces down toward A
+        assert(button_glyphs::gamecube_icon(2,false,25,9,false) != 0); // X stays closed at the top
+        assert(button_glyphs::gamecube_icon(3,false,32,43,false) == 0); // lower Y concavity faces down toward A
         assert(button_glyphs::gamecube_icon(3,true,32,24) != 0); // broad upper lobe
+        assert(button_glyphs::gamecube_icon(3,false,18,42,false) != 0); // Y closes into its lower side lobes
         assert(button_glyphs::gamecube_icon(2,true,40,32) == 0x24282CFF); // high-contrast ink
     }
 #ifdef _WIN32
