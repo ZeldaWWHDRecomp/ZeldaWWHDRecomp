@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the new-game name screen refuses `%` too** (#351, thanks @itsarahtonin). The game reads `%` in a name as a
+  format code, which could read or write game memory; the keyboard now leaves it out, as the rename already did.
 - **New: GameCube button prompts** (#301, thanks @MattPlays02 for the idea). Choose **GameCube** under Button prompts
   in Controls (or leave it on Automatic with a GameCube pad): the HUD, item menu and dialogue show the GameCube's
   buttons, with the big green A, the red B, the kidney-shaped X and Y curving around A, the purple Z and the R and L
