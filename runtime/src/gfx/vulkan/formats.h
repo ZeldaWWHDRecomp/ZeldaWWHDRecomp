@@ -31,6 +31,29 @@ struct FormatInfo {
     enum Kind : uint8_t { FLOAT, UINT, SINT } kind = FLOAT;  // shader-visible data type
 };
 
+// Only known normalized colour formats guarantee sampled RGB <= 1.0. In particular,
+// FormatInfo::FLOAT also describes UNORM sampling; it does not identify floating-point storage.
+inline bool bounded_color_format(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_R8_UNORM: case VK_FORMAT_R8_SNORM:
+    case VK_FORMAT_R16_UNORM: case VK_FORMAT_R16_SNORM:
+    case VK_FORMAT_R8G8_UNORM: case VK_FORMAT_R8G8_SNORM:
+    case VK_FORMAT_R16G16_UNORM: case VK_FORMAT_R16G16_SNORM:
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SNORM: case VK_FORMAT_R8G8B8A8_SRGB:
+    case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+    case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_SNORM:
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
+    case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
+    case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK:
+    case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
+    case VK_FORMAT_BC5_UNORM_BLOCK: case VK_FORMAT_BC5_SNORM_BLOCK:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // isDepth: the surface is used as a depth buffer (selects depth pixel formats)
 FormatInfo format_info(uint32_t gx2Format, bool isDepth);
 

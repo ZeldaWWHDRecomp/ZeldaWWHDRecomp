@@ -8,7 +8,13 @@
 namespace overlay::widgets {
 // a help text shown as a tooltip of the item before
 inline void help(const char* text) {
-    if (overlay::tooltip_hovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", text);
+    if (overlay::tooltip_hovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_ForTooltip)) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(std::max(1.f, std::min(ImGui::GetFontSize()*35.f, ImGui::GetMainViewport()->WorkSize.x-40.f)));
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
 }
 // a grey note on its own wrapped lines
 inline void note(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
