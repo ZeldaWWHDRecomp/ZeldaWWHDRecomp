@@ -53,6 +53,26 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
   and the Mods folder. Notices from the manager (for example a graphics pack that
   was switched off) appear at the top of the tab until OK.
 
+### Story items
+
+**Mods › More › Cheats › Story items** contains separate one-shot grants for Nayru's,
+Din's and Farore's Pearls, and real ownership of the fully upgraded Master Sword.
+They are unused by default and are separate from **Give all items** and the temporary
+sword-equipping cheat.
+
+The first use each session asks for confirmation: “This can change or break the
+story's order. A save backup is made first.” A complete backup of the last in-game
+save must succeed before any story item is granted. Save in the game first if no
+save exists yet. The backup appears under **Mods › More › Save backups** and can be
+staged for restoration at the next start.
+
+These grants change inventory only. Pearl placement and the Tower of the Gods still
+follow the game's statue interactions. The sword grant records only its final native
+ownership phase and equips it; it does not grant the intermediate ownership phase
+that hid Medli in #85, or change the shield. Ownership itself can still affect story
+checks and character availability. Save in the game to keep a grant; loading a save
+state restores the item flags recorded in that state.
+
 **Switching a mod on is the one way to get it running.** A built-in mod or a mod
 that needs nothing switches on at once. Otherwise one review opens with
 everything at once: what the mod does, the experimental warning (saves are backed
