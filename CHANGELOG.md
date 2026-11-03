@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Changed: the Controls settings are split into pages** (#371). Settings › Controls now has five tabs: Bindings,
+  Controller, Prompts, Camera and Gameplay, instead of one long list. Every setting keeps its value; only its place
+  changed (for example Rumble and Gyro are under Controller, the item ring under Gameplay, button prompts under
+  Prompts). The docs name the new places.
 - **Fixed on Linux: the launcher and menu entry for data folders with special characters** (#377, fixes #376, thanks
   @RaphaelFakhri for the report and the fix). Setup now quotes the data folder correctly in `play.sh` and in the menu
   entry, so a folder name containing `$`, `` ` ``, `"`, `\` or `%` (for example `Games 100%`) no longer breaks the
