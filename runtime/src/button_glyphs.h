@@ -83,6 +83,23 @@ constexpr uint8_t mark_cstick(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(
 constexpr bool marked_cstick(uint8_t flags) { return (flags & 0xF0) == 0xC0; }
 constexpr uint8_t mark_start(uint8_t flags) { return !(flags & 0xFE) ? uint8_t(0xB0 | flags) : flags; }
 constexpr bool marked_start(uint8_t flags) { return (flags & 0xF0) == 0xB0; }
+// Other input glyphs in CKingPic. Prefixes 1..A are unused by the game and the
+// existing face/shoulder markers; bit 3 remains available for cached-style tracking.
+constexpr uint32_t kInputCharacters[] = {0xE041,0xE045,0xE046,0xE079,0xE07A,0xE07B,0xE07C,
+    0xE080,0xE081,0xE082,0xE0A0,0xE0A1,0xE0A2,0xE0A3,0xE0A4,0xE0A5,0xE0A6,0xE0A7,0xE0A8};
+constexpr int input_character(uint32_t code) {
+    for (int i=0;i<int(std::size(kInputCharacters));++i) if (kInputCharacters[i]==code) return i;
+    return -1;
+}
+constexpr uint8_t mark_input(uint8_t flags, int index) {
+    return index>=0 && index<int(std::size(kInputCharacters)) && !(flags&0xFE)
+         ? uint8_t(((index/4+1)<<4) | ((index%4)<<1) | flags) : flags;
+}
+constexpr int marked_input(uint8_t flags) {
+    const int prefix=flags>>4;
+    const int index=(prefix-1)*4+((flags>>1)&3);
+    return prefix>=1 && prefix<=10 && index<int(std::size(kInputCharacters)) ? index : -1;
+}
 // Bit 3: the quad's vertices were generated with a restyled look. A change between two restyled
 // looks (colours, shapes, shoulder names) is caught by the style signature instead, which
 // rebuilds every cached text box once.

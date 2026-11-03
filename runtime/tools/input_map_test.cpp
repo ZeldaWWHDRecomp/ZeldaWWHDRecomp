@@ -1540,6 +1540,24 @@ static void test_gamecube() {
 }
 
 int main() {
+    {
+        auto m = Mapping::defaults();
+        m.prompts = Mapping::Prompts::kKeyboard;
+        m.pad[kA] = kPadNone; // keyboard appearance does not depend on controller bindings
+        CHECK(prompt_style(m, PadFamily::kXbox).face == FaceStyle::kKeyboard);
+        CHECK(!prompt_style(m, PadFamily::kXbox).positions);
+        m.keys[kA] = {key_from_id("Tab"), key_from_id("M")};
+        CHECK(prompt_key_label(m,kA) == "Tab");
+        m.keys[kA] = {kNoKey,key_from_id("M")};
+        CHECK(prompt_key_label(m,kA) == "M");
+        m.keys[kX] = {kMouse5,kNoKey}; CHECK(prompt_key_label(m,kX) == "M5");
+        m.keys[kY] = {kWheelDown,kNoKey}; CHECK(prompt_key_label(m,kY) == "Wh-");
+        m.keys[kR] = {kNoKey,kNoKey}; CHECK(prompt_key_label(m,kR) == "None");
+        Mapping loaded;
+        CHECK(from_json(to_json(m),loaded));
+        CHECK(loaded.prompts == Mapping::Prompts::kKeyboard);
+        CHECK(prompt_key_label(loaded,kA) == "M");
+    }
     test_gamecube();
     // Old controls files default to showing Quit; an explicit choice round-trips.
     {

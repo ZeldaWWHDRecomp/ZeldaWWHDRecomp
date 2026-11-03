@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <vector>
+#include <span>
 
 namespace button_glyphs {
 
@@ -25,5 +26,7 @@ constexpr int gamecube_start_row() { return 29; }
 // unsupported/not ready.
 constexpr int kAtlasGlyphs = 8;
 std::vector<uint8_t> button_atlas(const std::array<uint32_t, kAtlasGlyphs>& glyphs);
+
+std::vector<uint8_t> keycap_pixels(std::span<const uint32_t> records);
 
 }  // namespace button_glyphs

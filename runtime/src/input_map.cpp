@@ -520,6 +520,7 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
         case Mapping::Prompts::kXbox: s.face = FaceStyle::kXbox; break;
         case Mapping::Prompts::kPlayStation: s.face = FaceStyle::kPlayStation; break;
         case Mapping::Prompts::kGameCube: s.face = FaceStyle::kGameCube; break;
+        case Mapping::Prompts::kKeyboard: break;
         case Mapping::Prompts::kOriginal: break;
         }
     }
@@ -538,6 +539,12 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     case Mapping::ShoulderNames::kNumbered: s.shoulders = ShoulderStyle::kNumbered; break;
     case Mapping::ShoulderNames::kXbox: s.shoulders = ShoulderStyle::kXbox; break;
     }
+    if (m.prompts == Mapping::Prompts::kKeyboard) {
+        s.face = FaceStyle::kKeyboard;
+        s.buttons = s.spots = {0,1,2,3};
+        s.positions = s.colours = s.text_colours = false;
+        s.shoulders = ShoulderStyle::kOriginal;
+    }
     return s;
 }
 
@@ -548,6 +555,7 @@ const char* prompts_label(Mapping::Prompts p) {
     case Mapping::Prompts::kXbox: return "Xbox";
     case Mapping::Prompts::kPlayStation: return "PlayStation";
     case Mapping::Prompts::kGameCube: return "GameCube";
+    case Mapping::Prompts::kKeyboard: return "Keyboard / mouse";
     }
     return "?";
 }
@@ -647,6 +655,49 @@ std::string key_short_label(int code) {
     std::string l = key_label(code);
     if (l.compare(0, 7, "Keypad ") == 0) return "Num " + l.substr(7);
     return l;
+}
+
+int prompt_key_code(const Mapping& m, int action) {
+    if (action < 0 || action >= kActionCount) return kNoKey;
+    for (int key : m.keys[action]) if (key >= 0 && key < kInputCount) return key;
+    return kNoKey;
+}
+
+std::string prompt_key_label(const Mapping& m, int action) {
+    const int code = prompt_key_code(m,action);
+    if (code == kNoKey) return "None";
+    if (code >= kMouse1 && code <= kMouse5) return "M" + std::to_string(code-kMouse1+1);
+    if (code == kWheelUp) return "Wh+";
+    if (code == kWheelDown) return "Wh-";
+    // JSON key names are ASCII and stable across hosts, unlike modifier/arrow UI symbols.
+    std::string label = key_id(code);
+    for (auto suffix : {"Shift", "Control", "Option"}) {
+        if (label == std::string("Left") + suffix || label == std::string("Right") + suffix)
+            return std::string(label.starts_with("Left") ? "L" : "R") +
+                   (std::string_view(suffix) == "Control" ? "Ctrl" : std::string_view(suffix) == "Option" ? "Alt" : suffix);
+    }
+    if (label.starts_with("Keypad")) {
+        auto tail = label.substr(6);
+        if (tail == "Decimal") tail = ".";
+        if (tail == "Multiply") tail = "*";
+        if (tail == "Plus") tail = "+";
+        if (tail == "Minus") tail = "-";
+        if (tail == "Divide") tail = "/";
+        if (tail == "Equals") tail = "=";
+        if (tail == "Enter") tail = "Ent";
+        if (tail == "Clear") tail = "Clr";
+        return "Num" + tail;
+    }
+    if (label == "ForwardDelete") label = "Del";
+    if (label == "CapsLock") label = "Caps";
+    if (label == "Escape") label = "Esc";
+    if (label == "HomeKey") label = "Home";
+    if (const auto* info = find_key(code); info && std::strlen(info->label)==1) return info->label;
+    if (label == "Return") label = "Enter";
+    if (label == "Backspace") label = "Bksp";
+    if (label == "PageDown") label = "PgDn";
+    if (label == "PageUp") label = "PgUp";
+    return label;
 }
 
 const char* pad_short_label(int p) {
@@ -1205,7 +1256,7 @@ std::string to_json(const Mapping& m) {
         o += a + 1 < kActionCount ? ",\n" : "\n";
     }
     // button prompts: written only when not the default, as face_layout
-    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation", "gamecube"};
+    static const char* const kPromptIds[] = {"auto", "original", "xbox", "playstation", "gamecube", "keyboard"};
     static const char* const kShoulderIds[] = {"auto", "nintendo", "numbered", "xbox"};
     std::string prompts;
     if (m.prompts != Mapping::Prompts::kAuto)
@@ -1364,6 +1415,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             else if (p->s == "xbox") m.prompts = Mapping::Prompts::kXbox;
             else if (p->s == "playstation") m.prompts = Mapping::Prompts::kPlayStation;
             else if (p->s == "gamecube") m.prompts = Mapping::Prompts::kGameCube;
+            else if (p->s == "keyboard") m.prompts = Mapping::Prompts::kKeyboard;
             else if (p->s != "auto") warn += "unknown button_prompts \"" + p->s + "\"; ";
         }
         if (const Json* n = op->get("shoulder_names"); n && n->type == Json::Str) {

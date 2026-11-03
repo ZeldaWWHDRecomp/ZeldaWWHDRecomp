@@ -172,7 +172,7 @@ Existing keyboard/controller files load unchanged. Each wheel notch supplies one
 short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
-Enable **Mouse camera** and click the TV picture to capture the pointer. Move the
+In **Controls**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
 mouse to look around on foot or while sailing, at the same mouse sensitivity. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows

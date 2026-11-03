@@ -2664,9 +2664,21 @@ void tab_controls() {
         using N = input_map::Mapping::ShoulderNames;
         const input_map::PromptStyle look = input_map::prompt_style(m, input_map::pad_family());
         ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Camera controls");
+        for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
+            const auto* entry = mods::manager::find(id);
+            bool enabled = entry->enabled();
+            if (ImGui::Checkbox(entry->name, &enabled)) {
+                const std::string key = id;
+                hostui::post([key, enabled] { mods::manager::set_enabled(key,enabled); });
+            }
+            help(entry->description);
+            if (enabled) builtin_options(id);
+        }
+        ImGui::Separator();
         ImGui::TextUnformatted("Button prompts");
         ImGui::PushID("prompts");  // "automatic" is also a face-buttons choice
-        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube}) {
+        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube, P::kKeyboard}) {
             flow::next(flow::check(input_map::prompts_label(p)));
             if (radio(input_map::prompts_label(p), m.prompts == p)) {
                 m.prompts = p;
@@ -2674,13 +2686,14 @@ void tab_controls() {
             }
         }
         ImGui::PopID();
-        help("How the game's button icons look, with any face-button setting. Xbox and PlayStation show the button bound to each Wii U action. GameCube uses the classic coloured face buttons. By position on Xbox, "
+        help("Keyboard / mouse shows the first bound keyboard or mouse input; M1-M5 are mouse buttons, Wh+/Wh- are wheel directions, None means unbound. Xbox and PlayStation show the button bound to each Wii U action. GameCube uses the classic coloured face buttons. By position on Xbox, "
              "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
              "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
              "Original keeps the game's look. Custom bindings need four distinct face buttons; "
              "otherwise the original icons are used.");
         disabled_after(std::string("(-> ") + (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
                                        : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
+                                       : look.face == input_map::FaceStyle::kKeyboard  ? "Keyboard / mouse"
                                        : look.face == input_map::FaceStyle::kGameCube  ? "GameCube"
                                                                                        : "original") + ")");
         ImGui::AlignTextToFramePadding();
