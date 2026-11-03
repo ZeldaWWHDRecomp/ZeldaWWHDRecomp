@@ -343,4 +343,206 @@ void sci_language_0286D620(Cpu* c) {
 void sci_parental_0286D938(Cpu* c) { sci_parental(c, 0x1017E948u, false); }
 void sci_parental_0286D9E0(Cpu* c) { sci_parental(c, 0x1017E96Cu, true); }
 
+// ---- erreula Create (CreateArg {buffer, region, language, FSClient*}), measured: argument checks with
+// OSReport; a 0x1600000-byte expanded heap in the buffer (handle at 104B6798, heap flag 101FC898 = 1);
+// the RPL allocator callbacks 0286C590/0286C5E8; OSDynLoad_Acquire("erreula.rpl") into 104B679C; the
+// heap's left space is reported (more than 0x380000 used: error); the 20 exports into their table slots;
+// a 0x1280000-byte work area from the heap; then ErrEulaCreate(work, region, language, FSClient). r3 = 1,
+// or 0 on an error.
+namespace {
+struct Export { uint32_t slot, name, handle; };
+const Export kErrEulaExports[] = {
+    {0x104B6748u, 0x1017DDBCu, 0x104B679Cu},  // helper 0286CBCC
+    {0x104B674Cu, 0x1017DF74u, 0x104B679Cu},  // helper 0286CBE4
+    {0x104B675Cu, 0x1017E12Cu, 0x104B679Cu},  // helper 0286CBFC
+    {0x104B6760u, 0x1017DFA8u, 0x104B679Cu},  // helper 0286CC14
+    {0x104B6764u, 0x1017DECCu, 0x104B679Cu},  // helper 0286CC2C
+    {0x104B6768u, 0x1017DFC0u, 0x104B679Cu},  // helper 0286CC14
+    {0x104B676Cu, 0x1017DEECu, 0x104B679Cu},  // helper 0286CC14
+    {0x104B6774u, 0x1017DFD8u, 0x104B679Cu},  // helper 0286CC44
+    {0x104B6784u, 0x1017DFFCu, 0x104B679Cu},  // helper 0286CC5C
+    {0x104B6788u, 0x1017E028u, 0x104B679Cu},  // helper 0286CC5C
+    {0x104B678Cu, 0x1017DF04u, 0x104B679Cu},  // helper 0286CC5C
+    {0x104B6754u, 0x1017DF34u, 0x104B679Cu},  // helper 0286CC74
+    {0x104B6758u, 0x1017DCDCu, 0x104B679Cu},  // helper 0286CC8C
+    {0x104B6790u, 0x1017E058u, 0x104B679Cu},  // helper 0286CC5C
+    {0x104B6770u, 0x1017DDF0u, 0x104B679Cu},  // helper 0286CC14
+    {0x104B6750u, 0x1017DD1Cu, 0x104B679Cu},  // helper 0286CCA4
+    {0x104B6794u, 0x1017DE14u, 0x104B679Cu},  // helper 0286CC5C
+    {0x104B6780u, 0x1017E07Cu, 0x104B679Cu},  // helper 0286CCBC
+    {0x104B6778u, 0x1017E09Cu, 0x104B679Cu},  // helper 0286CCD4
+    {0x104B677Cu, 0x1017E0BCu, 0x104B679Cu},  // helper 0286CCD4
+};
+
+inline void import_call(Cpu* c, void (*fn)(Cpu*), uint32_t ret) {
+    c->lr = GC(ret);
+    fn(c);
+}
+}  // namespace
+
+void erreula_create_0286C5F8(Cpu* c) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1], arg = e.r[3];
+    st32(sp + 4, e.lr);
+    st32(sp - 0x18, sp);
+    c->r[1] = sp - 0x18;
+    c->r[31] = arg;
+    auto fail = [&](uint32_t fmt, uint32_t r4, bool with_r4) {
+        c->r[3] = GD(fmt);
+        if (with_r4) c->r[4] = r4;
+        c->cr[6] = 0;
+        imp_coreinit_OSReport(c);
+        finish(c, e);
+        c->r[3] = 0;
+    };
+    if (!ld32(arg)) return fail(0x1017DE38u, 0, false);
+    if (!ld32(arg + 0xC)) return fail(0x1017DD7Cu, 0, false);
+    c->r[3] = GD(0x101FCD58u), c->cr[6] = 0, c->lr = GC(0x0286C6ACu), c->pc = GC(0x0286D5F0u);
+    ppc_dispatch(c);
+    const uint32_t heap_slot = GD(0x104B6798u), flag = GD(0x101FC898u), handle = GD(0x104B679Cu);
+    c->r[3] = ld32(arg), c->r[4] = 0x01600000, c->r[5] = 0;
+    import_call(c, imp_coreinit_MEMCreateExpHeapEx, 0x0286C6BCu);
+    st32(heap_slot, c->r[3]);
+    st8(flag, 1);
+    c->r[29] = heap_slot, c->r[30] = flag, c->r[0] = 1;
+    c->r[3] = GC(0x0286C590u), c->r[4] = GC(0x0286C5E8u);
+    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, 0x0286C6E8u);
+    c->r[3] = GD(0x1017DDB0u), c->r[4] = handle;
+    import_call(c, imp_coreinit_OSDynLoad_Acquire, 0x0286C6F8u);
+    if (c->r[3]) return fail(0x1017DE6Cu, c->r[3], true);
+    if (ld8(flag)) {
+        c->r[3] = ld32(heap_slot), c->r[4] = 4;
+        import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, 0x0286C744u);
+        const uint32_t used = 0x01600000u - c->r[3];
+        c->r[28] = used;
+        c->r[3] = GD(0x1017DEACu), c->r[4] = used, c->cr[6] = 0;
+        imp_coreinit_OSReport(c);
+        if (used > 0x00380000u) return fail(0x1017E0E4u, 0, false);
+    }
+    for (const Export& x : kErrEulaExports) {
+        c->r[3] = ld32(GD(x.handle)), c->r[4] = 0, c->r[5] = GD(x.name), c->r[6] = GD(x.slot);
+        imp_coreinit_OSDynLoad_FindExport(c);
+    }
+    uint32_t work = 0;
+    if (ld8(flag)) {
+        c->r[3] = ld32(heap_slot), c->r[4] = 0x01280000, c->r[5] = 4;
+        import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, 0x0286C964u);
+        work = c->r[3];
+        if (!work) return fail(0x1017DD4Cu, 0, false);
+    }
+    c->r[3] = work, c->r[4] = ld32(arg + 4), c->r[5] = ld32(arg + 8), c->r[6] = ld32(arg + 0xC);
+    call_export(c, 0x104B675Cu, 0x0286C9A8u);
+    finish(c, e);
+    c->r[3] = 1;
+}
+
+// ---- swkbd Create (CreateArg {buffer, region, option flags, FSClient*}), measured: like erreula's, with
+// the heap sized by the work-size function (0286CD54) for the flags (handle at 104B682C), the allocator
+// callbacks 0286CCEC/0286CD44, swkbd.rpl into 104B6830, the used space reported against 0x380000, the 35
+// exports, a work area of (work size - 0x380000) and SwkbdCreate(work, region, flags, FSClient).
+namespace {
+const Export kSwkbdExports[] = {
+    {0x104B67A0u, 0x1017E210u, 0x104B6830u},  // helper 0286D410
+    {0x104B67A4u, 0x1017E2ACu, 0x104B6830u},  // helper 0286D428
+    {0x104B67A8u, 0x1017E504u, 0x104B6830u},  // helper 0286D440
+    {0x104B67ACu, 0x1017E2E4u, 0x104B6830u},  // helper 0286D440
+    {0x104B67B0u, 0x1017E524u, 0x104B6830u},  // helper 0286D458
+    {0x104B67B4u, 0x1017E554u, 0x104B6830u},  // helper 0286D440
+    {0x104B67B8u, 0x1017E308u, 0x104B6830u},  // helper 0286D470
+    {0x104B67BCu, 0x1017E574u, 0x104B6830u},  // helper 0286D440
+    {0x104B67C0u, 0x1017E1A8u, 0x104B6830u},  // helper 0286D488
+    {0x104B67C4u, 0x1017E58Cu, 0x104B6830u},  // helper 0286D488
+    {0x104B67C8u, 0x1017E5ACu, 0x104B6830u},  // helper 0286D440
+    {0x104B67CCu, 0x1017E244u, 0x104B6830u},  // helper 0286D440
+    {0x104B67D0u, 0x1017E5C4u, 0x104B6830u},  // helper 0286D4A0
+    {0x104B67D4u, 0x1017E1C8u, 0x104B6830u},  // helper 0286D4B8
+    {0x104B67D8u, 0x1017E7C4u, 0x104B6830u},  // helper 0286D4D0
+    {0x104B67DCu, 0x1017E600u, 0x104B6830u},  // helper 0286D4E8
+    {0x104B67E0u, 0x1017E61Cu, 0x104B6830u},  // helper 0286D500
+    {0x104B67E4u, 0x1017E344u, 0x104B6830u},  // helper 0286D500
+    {0x104B67E8u, 0x1017E258u, 0x104B6830u},  // helper 0286D488
+    {0x104B67ECu, 0x1017E63Cu, 0x104B6830u},  // helper 0286D518
+    {0x104B67F0u, 0x1017E660u, 0x104B6830u},  // helper 0286D518
+    {0x104B67F4u, 0x1017E364u, 0x104B6830u},  // helper 0286D530
+    {0x104B67F8u, 0x1017E680u, 0x104B6830u},  // helper 0286D488
+    {0x104B67FCu, 0x1017E1E8u, 0x104B6830u},  // helper 0286D488
+    {0x104B6800u, 0x1017E3A0u, 0x104B6830u},  // helper 0286D488
+    {0x104B6804u, 0x1017E27Cu, 0x104B6830u},  // helper 0286D440
+    {0x104B6808u, 0x1017E3C4u, 0x104B6830u},  // helper 0286D548
+    {0x104B680Cu, 0x1017E400u, 0x104B6830u},  // helper 0286D560
+    {0x104B6810u, 0x1017E6A8u, 0x104B6830u},  // helper 0286D578
+    {0x104B6814u, 0x1017E6C8u, 0x104B6830u},  // helper 0286D590
+    {0x104B6818u, 0x1017E6FCu, 0x104B6830u},  // helper 0286D560
+    {0x104B681Cu, 0x1017E808u, 0x104B6830u},  // helper 0286D5A8
+    {0x104B6820u, 0x1017E718u, 0x104B6830u},  // helper 0286D5C0
+    {0x104B6824u, 0x1017E41Cu, 0x104B6830u},  // helper 0286D5D8
+    {0x104B6828u, 0x1017E440u, 0x104B6830u},  // helper 0286D578
+};
+
+uint32_t work_size(Cpu* c, uint32_t flags) {
+    c->r[3] = flags;
+    c->pc = GC(0x0286CD54u);
+    ppc_dispatch(c);
+    return c->r[3];
+}
+}  // namespace
+
+void swkbd_create_0286CD7C(Cpu* c) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1], arg = e.r[3];
+    st32(sp + 4, e.lr);
+    st32(sp - 0x18, sp);
+    c->r[1] = sp - 0x18;
+    c->r[29] = arg;
+    auto fail = [&](uint32_t fmt, uint32_t r4, bool with_r4) {
+        c->r[3] = GD(fmt);
+        if (with_r4) c->r[4] = r4;
+        c->cr[6] = 0;
+        imp_coreinit_OSReport(c);
+        finish(c, e);
+        c->r[3] = 0;
+    };
+    if (!ld32(arg)) return fail(0x1017E45Cu, 0, false);
+    if (!ld32(arg + 0xC)) return fail(0x1017E490u, 0, false);
+    c->r[3] = GD(0x101FCD74u), c->cr[6] = 0, c->lr = GC(0x0286CE24u), c->pc = GC(0x0286D5F0u);
+    ppc_dispatch(c);
+    const uint32_t heap_slot = GD(0x104B682Cu), handle = GD(0x104B6830u);
+    c->lr = GC(0x0286CE30u);
+    const uint32_t ws = work_size(c, ld32(arg + 8));
+    c->r[3] = ld32(arg), c->r[4] = ws, c->r[5] = 0;
+    import_call(c, imp_coreinit_MEMCreateExpHeapEx, 0x0286CE40u);
+    st32(heap_slot, c->r[3]);
+    c->r[31] = heap_slot;
+    c->r[3] = GC(0x0286CCECu), c->r[4] = GC(0x0286CD44u);
+    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, 0x0286CE5Cu);
+    c->r[3] = GD(0x1017E2A0u), c->r[4] = handle;
+    import_call(c, imp_coreinit_OSDynLoad_Acquire, 0x0286CE6Cu);
+    if (c->r[3]) return fail(0x1017E4C4u, c->r[3], true);
+    c->r[3] = ld32(heap_slot), c->r[4] = 4;
+    import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, 0x0286CEB0u);
+    const uint32_t avail = c->r[3];
+    c->r[11] = avail;
+    c->lr = GC(0x0286CEBCu);
+    const uint32_t used = work_size(c, ld32(arg + 8)) - avail;
+    c->r[30] = used;
+    c->r[3] = GD(0x1017E180u), c->r[4] = used, c->r[5] = 0x00380000, c->cr[6] = 0;
+    imp_coreinit_OSReport(c);
+    if (used > 0x00380000u) return fail(0x1017E77Cu, 0, false);
+    for (const Export& x : kSwkbdExports) {
+        c->r[3] = ld32(GD(x.handle)), c->r[4] = 0, c->r[5] = GD(x.name), c->r[6] = GD(x.slot);
+        imp_coreinit_OSDynLoad_FindExport(c);
+    }
+    const uint32_t heap = ld32(heap_slot);
+    c->r[11] = heap;
+    const uint32_t ws3 = work_size(c, ld32(arg + 8));
+    c->r[3] = heap, c->r[4] = ws3 - 0x00380000u, c->r[5] = 4;
+    import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, 0x0286D1F8u);
+    const uint32_t work = c->r[3];
+    if (!work) return fail(0x1017E74Cu, 0, false);
+    c->r[3] = work, c->r[4] = ld32(arg + 4), c->r[5] = ld32(arg + 8), c->r[6] = ld32(arg + 0xC);
+    call_export(c, 0x104B67B8u, 0x0286D240u);
+    finish(c, e);
+    c->r[3] = 1;
+}
+
 }  // namespace hostrt

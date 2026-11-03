@@ -62,3 +62,5 @@
 0286D620  # nn SCI: cafe.language
 0286D938  # nn SCI: parental control (online communication)
 0286D9E0  # nn SCI: parental control (network launcher)
+0286C5F8  # nn: erreula Create (loads erreula.rpl)
+0286CD7C  # nn: swkbd Create (loads swkbd.rpl)

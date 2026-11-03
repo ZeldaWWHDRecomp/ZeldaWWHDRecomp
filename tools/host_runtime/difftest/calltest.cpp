@@ -64,6 +64,8 @@ void f_0286D37C(Cpu*);
 void f_0286D620(Cpu*);
 void f_0286D938(Cpu*);
 void f_0286D9E0(Cpu*);
+void f_0286C5F8(Cpu*);
+void f_0286CD7C(Cpu*);
 void f_0286DA70(Cpu*);
 void f_028F5C88(Cpu*);
 void f_028F1748(Cpu*);
@@ -106,6 +108,29 @@ bool import_model(Cpu* c, const char* name) {
         return true;
     }
     const uint32_t h = mix(c->r[3] ^ mix(c->r[4] ^ mix(c->r[5])));
+    if (!strcmp(name, "coreinit_MEMCreateExpHeapEx")) {
+        c->r[3] = (h & 7) ? 0xE0F00000u | (h & 0xFFF0) : 0;
+        return true;
+    }
+    if (!strcmp(name, "coreinit_MEMGetAllocatableSizeForExpHeapEx")) {
+        static const uint32_t avail[] = {0x01600000u, 0x01500000u, 0x01100000u, 0x01900000u, 0x01700000u};
+        c->r[3] = avail[h % 5];  // both sides of the 0x380000 check for both loaders
+        return true;
+    }
+    if (!strcmp(name, "coreinit_OSDynLoad_SetAllocator")) {
+        c->r[3] = 0;
+        return true;
+    }
+    if (!strcmp(name, "coreinit_OSDynLoad_Acquire")) {
+        st32(c->r[4], 0x70000000u | (h & 0xFFFF));
+        c->r[3] = (h & 7) ? 0 : 0xFFFFFFF1u;
+        return true;
+    }
+    if (!strcmp(name, "coreinit_OSDynLoad_FindExport")) {
+        st32(c->r[6], kFakeBase + (h & 0xFFFC));
+        c->r[3] = 0;
+        return true;
+    }
     if (!strcmp(name, "coreinit_UCOpen")) {
         c->r[3] = (h & 7) ? h & 0xFF : 0xFFFFFFF0u | (h & 0xF);
         return true;
@@ -319,6 +344,15 @@ void sci_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
     c.r[4] = (uint32_t)r() % 16;                    // the account
 }
 
+// a CreateArg {buffer, region, language, FSClient} with now and then a null buffer or client
+void loader_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
+    nn_args(c, r, s);
+    const uint32_t arg = s + 0x100;
+    st32(arg, (r() % 8) ? s + 0x10000 : 0), st32(arg + 4, (uint32_t)r() % 8), st32(arg + 8, (uint32_t)r() % 16);
+    st32(arg + 0xC, (r() % 8) ? s + 0x8000 : 0);
+    c.r[3] = arg;
+}
+
 std::vector<Root> roots() {
     return {
         {"construct_array", f_028EFFD0, hostrt::construct_array_028EFFD0,
@@ -415,6 +449,8 @@ std::vector<Root> roots() {
         {"sci_0286D620", f_0286D620, always<hostrt::sci_language_0286D620>, sci_args, R3 | R4},
         {"sci_0286D938", f_0286D938, always<hostrt::sci_parental_0286D938>, sci_args, R3 | R4},
         {"sci_0286D9E0", f_0286D9E0, always<hostrt::sci_parental_0286D9E0>, sci_args, R3 | R4},
+        {"erreula_create", f_0286C5F8, always<hostrt::erreula_create_0286C5F8>, loader_args, R3 | R4, {0x104B6740u, 0x104B6744u, 0x104B6748u, 0x104B674Cu, 0x104B6750u, 0x104B6754u, 0x104B6758u, 0x104B675Cu, 0x104B6760u, 0x104B6764u, 0x104B6768u, 0x104B676Cu, 0x104B6770u, 0x104B6774u, 0x104B6778u, 0x104B677Cu, 0x104B6780u, 0x104B6784u, 0x104B6788u, 0x104B678Cu, 0x104B6790u, 0x104B6794u, 0x104B6798u, 0x104B679Cu, 0x104B67A0u, 0x104B67A4u, 0x104B67A8u, 0x104B67ACu, 0x104B67B0u, 0x104B67B4u, 0x104B67B8u, 0x104B67BCu, 0x104B67C0u, 0x104B67C4u, 0x104B67C8u, 0x104B67CCu, 0x104B67D0u, 0x104B67D4u, 0x104B67D8u, 0x104B67DCu, 0x104B67E0u, 0x104B67E4u, 0x104B67E8u, 0x104B67ECu, 0x104B67F0u, 0x104B67F4u, 0x104B67F8u, 0x104B67FCu, 0x104B6800u, 0x104B6804u, 0x104B6808u, 0x104B680Cu, 0x104B6810u, 0x104B6814u, 0x104B6818u, 0x104B681Cu, 0x104B6820u, 0x104B6824u, 0x104B6828u, 0x104B682Cu, 0x104B6830u, 0x104B6834u, 0x104B6838u, 0x104B683Cu, 0x101FC898u}},
+        {"swkbd_create", f_0286CD7C, always<hostrt::swkbd_create_0286CD7C>, loader_args, R3 | R4, {0x104B6740u, 0x104B6744u, 0x104B6748u, 0x104B674Cu, 0x104B6750u, 0x104B6754u, 0x104B6758u, 0x104B675Cu, 0x104B6760u, 0x104B6764u, 0x104B6768u, 0x104B676Cu, 0x104B6770u, 0x104B6774u, 0x104B6778u, 0x104B677Cu, 0x104B6780u, 0x104B6784u, 0x104B6788u, 0x104B678Cu, 0x104B6790u, 0x104B6794u, 0x104B6798u, 0x104B679Cu, 0x104B67A0u, 0x104B67A4u, 0x104B67A8u, 0x104B67ACu, 0x104B67B0u, 0x104B67B4u, 0x104B67B8u, 0x104B67BCu, 0x104B67C0u, 0x104B67C4u, 0x104B67C8u, 0x104B67CCu, 0x104B67D0u, 0x104B67D4u, 0x104B67D8u, 0x104B67DCu, 0x104B67E0u, 0x104B67E4u, 0x104B67E8u, 0x104B67ECu, 0x104B67F0u, 0x104B67F4u, 0x104B67F8u, 0x104B67FCu, 0x104B6800u, 0x104B6804u, 0x104B6808u, 0x104B680Cu, 0x104B6810u, 0x104B6814u, 0x104B6818u, 0x104B681Cu, 0x104B6820u, 0x104B6824u, 0x104B6828u, 0x104B682Cu, 0x104B6830u, 0x104B6834u, 0x104B6838u, 0x104B683Cu, 0x101FC898u}},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);
@@ -475,7 +511,9 @@ bool same_call(const Call& a, const Call& b) {
         static const std::pair<const char*, int> counts[] = {
             {"coreinit___gh_set_errno", 1}, {"coreinit_memset", 3}, {"coreinit_UCOpen", 1}, {"coreinit_UCClose", 1},
             {"coreinit_UCReadSysConfig", 3}, {"coreinit_OSReport", 4}, {"nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc", 2},
-            {"coreinit_MEMAllocFromExpHeapEx", 3}, {"coreinit_MEMDestroyExpHeap", 1}, {"coreinit_OSDynLoad_Release", 1}};
+            {"coreinit_MEMAllocFromExpHeapEx", 3}, {"coreinit_MEMCreateExpHeapEx", 3},
+            {"coreinit_MEMGetAllocatableSizeForExpHeapEx", 2}, {"coreinit_OSDynLoad_SetAllocator", 2}, {"coreinit_OSDynLoad_Acquire", 2},
+            {"coreinit_OSDynLoad_FindExport", 4}, {"coreinit_MEMDestroyExpHeap", 1}, {"coreinit_OSDynLoad_Release", 1}};
         int nargs = 8;
         for (auto& [n, k] : counts)
             if (!strcmp(a.import, n)) nargs = k;

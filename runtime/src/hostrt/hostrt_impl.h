@@ -25,6 +25,11 @@ extern "C" void imp_coreinit_UCOpen(Cpu* c);
 extern "C" void imp_coreinit_UCReadSysConfig(Cpu* c);
 extern "C" void imp_coreinit_UCClose(Cpu* c);
 extern "C" void imp_coreinit_OSReport(Cpu* c);
+extern "C" void imp_coreinit_MEMCreateExpHeapEx(Cpu* c);
+extern "C" void imp_coreinit_MEMGetAllocatableSizeForExpHeapEx(Cpu* c);
+extern "C" void imp_coreinit_OSDynLoad_SetAllocator(Cpu* c);
+extern "C" void imp_coreinit_OSDynLoad_Acquire(Cpu* c);
+extern "C" void imp_coreinit_OSDynLoad_FindExport(Cpu* c);
 extern "C" void imp_nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc(Cpu* c);
 
 namespace hostrt {
@@ -91,6 +96,8 @@ void wrap_0286D280(Cpu* c);
 void wrap_0286D2F4(Cpu* c);
 void wrap_0286D338(Cpu* c);
 void wrap_0286CB7C(Cpu* c);              // calls an export with a copy of *r3
+void erreula_create_0286C5F8(Cpu* c);
+void swkbd_create_0286CD7C(Cpu* c);     // (CreateArg*): load swkbd.rpl, its heap and exports, create   // (CreateArg*): load erreula.rpl, its heap and exports, create
 void sci_language_0286D620(Cpu* c);      // (out): system config "cafe.language"
 void sci_parental_0286D938(Cpu* c);      // (out, account): "p_acct%d.net_communication_on_game"
 void sci_parental_0286D9E0(Cpu* c);      // (out, account): "p_acct%d.network_launcher"  // returns the work memory size (0x01600000)

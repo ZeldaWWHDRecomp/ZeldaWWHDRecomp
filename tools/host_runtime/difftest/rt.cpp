@@ -131,3 +131,8 @@ extern "C" __attribute__((weak)) void imp_coreinit_UCReadSysConfig(Cpu* c) { hos
 extern "C" __attribute__((weak)) void imp_coreinit_UCClose(Cpu* c) { hostrt_test_import(c, "coreinit_UCClose"); }
 extern "C" __attribute__((weak)) void imp_coreinit_OSReport(Cpu* c) { hostrt_test_import(c, "coreinit_OSReport"); }
 extern "C" __attribute__((weak)) void imp_nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc(Cpu* c) { hostrt_test_import(c, "nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc"); }
+extern "C" __attribute__((weak)) void imp_coreinit_MEMCreateExpHeapEx(Cpu* c) { hostrt_test_import(c, "coreinit_MEMCreateExpHeapEx"); }
+extern "C" __attribute__((weak)) void imp_coreinit_MEMGetAllocatableSizeForExpHeapEx(Cpu* c) { hostrt_test_import(c, "coreinit_MEMGetAllocatableSizeForExpHeapEx"); }
+extern "C" __attribute__((weak)) void imp_coreinit_OSDynLoad_SetAllocator(Cpu* c) { hostrt_test_import(c, "coreinit_OSDynLoad_SetAllocator"); }
+extern "C" __attribute__((weak)) void imp_coreinit_OSDynLoad_Acquire(Cpu* c) { hostrt_test_import(c, "coreinit_OSDynLoad_Acquire"); }
+extern "C" __attribute__((weak)) void imp_coreinit_OSDynLoad_FindExport(Cpu* c) { hostrt_test_import(c, "coreinit_OSDynLoad_FindExport"); }
