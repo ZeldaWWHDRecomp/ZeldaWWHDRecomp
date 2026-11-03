@@ -1020,7 +1020,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             (hud_action < 4 || (look.face == FaceStyle::kGameCube && look.shoulders == ShoulderStyle::kGameCube))) {
             const bool gc_shoulder_word = hud_action >= 4;
             const int button = gc_shoulder_word ? hud_action-4 : look.buttons[hud_action];
-            const uint32_t rgb = gc_shoulder_word ? (button==1 ? 0x6754C8FF : 0xE5E5E5FF)
+            const uint32_t rgb = gc_shoulder_word ? (button==1 ? button_glyphs::kGameCubeZ : button_glyphs::kGameCubeShoulder)
                               : look.face == FaceStyle::kPlayStation ? button_glyphs::kShapeColours[button]
                               : look.face == FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
                               : button_glyphs::colour(button);

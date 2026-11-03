@@ -26,6 +26,8 @@ constexpr uint32_t shoulder_background(int x, int y) {
 // game draws it with its own letter colours (button_glyphs.cpp, coverage_sheet).
 constexpr uint32_t kShapeColours[4] = {0x3C7DD9FF, 0xD9413CFF, 0xD05FB0FF, 0x2AA67DFF};
 constexpr uint32_t kShapeInk = 0x3A3A3AFF;
+// GameCube shoulder plates: purple Z, light grey L/R.
+constexpr uint32_t kGameCubeZ = 0x6754C8FF, kGameCubeShoulder = 0xE5E5E5FF;
 
 namespace art {
 inline float segment(float px, float py, float ax, float ay, float bx, float by) {
@@ -150,7 +152,7 @@ inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) 
     const bool inner=framed ? rounded(px,py,26.f,shoulder==1?13.f:17.f,6.f) : d<20.f;
     uint32_t c=0;
     if (framed && outer && !inner) c=0x676B70FF;
-    else if (inner) c=shoulder==1?0x6754C8FF:framed?0xE5E5E5FF:0xFFFFFFFF;
+    else if (inner) c=shoulder==1?kGameCubeZ:framed?kGameCubeShoulder:0xFFFFFFFF;
     const float width=2.5f;
     auto line=[](float px,float py,float ax,float ay,float bx,float by){return art::segment(px,py,ax,ay,bx,by)<2.5f;};
     const int code[4]={0,1,0,2}; // L, Z, L, R for the Wii U's L/R/ZL/ZR prompt panes.
