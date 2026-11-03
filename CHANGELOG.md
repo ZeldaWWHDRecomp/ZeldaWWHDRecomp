@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the rupee sparkle fades out with the rupee counter** (#358, fixes #353, thanks @thejorro for the report). With
+  "Rupees only when they change" on, the counter faded out but its sparkle stayed on screen. HUD effects now fade with
+  the part of the HUD they belong to; effects in the world and on the GamePad are unchanged.
 - **New on Android: tap the title screen to start, and touch works on file select and name entry** (#340, thanks
   @GenissonEmilio). A tap on the title screen now starts the game, and on the file-selection and name-entry screens your
   touches reach the game's own GamePad touchscreen. With no second display, the GamePad picture shows on the main screen
