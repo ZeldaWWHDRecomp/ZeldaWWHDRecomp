@@ -30,7 +30,7 @@ def make(base_path, reviewed_paths, reviewed_functions):
     for path in reviewed_paths:
         patched = Rpx(str(path))
         # Always require canonical hook words and tiny bodies as one aggregate.
-        # Only bodies of at least 32 bytes can gain explicitly reviewed variants.
+        # Only bodies of at least 64 bytes can gain explicitly reviewed variants.
         layout = dict(profile, functions=[])
         check(patched, layout, hooks, struct.unpack_from('>I', path.read_bytes(), 24)[0])
         for function in profile['functions']:

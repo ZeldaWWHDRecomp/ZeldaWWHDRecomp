@@ -1,6 +1,11 @@
 """Bound untrusted input and actual inflation without trusting the zlib prefix."""
 from pathlib import Path
 import struct, tempfile, unittest, zlib
+import sys
+
+# Direct execution must work independently of imports performed by another suite.
+HERE = Path(__file__).resolve().parent
+sys.path[:0] = [str(HERE), str(HERE.parent)]
 from unittest import mock
 from rpx import Rpx, Section, SHF_RPL_ZLIB, SHT_SYMTAB, SHT_RELA
 import randomizer_compat as compat

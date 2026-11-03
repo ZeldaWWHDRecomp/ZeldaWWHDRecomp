@@ -18,14 +18,14 @@ HOOKS = [(False, START, START, 'test:1'), (True, START+4, START+4, 'test:2')]
 
 
 def fixture():
-    original = b'abcdefghijklmnopqrstuvwxyz012345'
+    original = bytes(range(64))
     reviewed = original[:-4]+b'1234'
-    section = SimpleNamespace(name='.text', addr=START, type=1, flags=6, size=32, data=original)
+    section = SimpleNamespace(name='.text', addr=START, type=1, flags=6, size=64, data=original)
     rpx = SimpleNamespace(by_name={'.text': section}, sections=[section], symbols=[])
     profile = dict(format=2, id='synthetic', base_sha256=builds.canonical_build().sha256,
                    hooks_sha256=C.hook_digest(HOOKS), entry_point=START,
-                   imports_sha256=C.import_digest(rpx), sections=[dict(name='.text', address=START, size=32, type=1, flags=6)],
-                   **C.range_profile(rpx, [START, START+4], [(START, START+32)]))
+                   imports_sha256=C.import_digest(rpx), sections=[dict(name='.text', address=START, size=64, type=1, flags=6)],
+                   **C.range_profile(rpx, [START, START+4], [(START, START+64)]))
     profile['functions'][0]['sha256'].append(C.digest(reviewed))
     return rpx, profile, reviewed
 
@@ -90,14 +90,14 @@ class Compatibility(unittest.TestCase):
 
     def test_aggregate_covers_tiny_bodies_and_binds_ranges(self):
         rpx, profile, _ = fixture()
-        rpx.by_name['.text'].data = bytes(range(72))
-        rpx.by_name['.text'].size = 72
-        ranges = [(START, START+4), (START+4, START+12), (START+12, START+40), (START+40, START+72)]
+        rpx.by_name['.text'].data = bytes(range(168))
+        rpx.by_name['.text'].size = 168
+        ranges = [(START, START+4), (START+4, START+12), (START+12, START+44), (START+44, START+104), (START+104, START+168)]
         profile.update(C.range_profile(rpx, [START, START+4], ranges))
-        self.assertEqual([f['end']-f['start'] for f in profile['tiny_functions']], [4, 8, 28])
-        self.assertEqual([f['end']-f['start'] for f in profile['functions']], [32])
+        self.assertEqual([f['end']-f['start'] for f in profile['tiny_functions']], [4, 8, 32, 60])
+        self.assertEqual([f['end']-f['start'] for f in profile['functions']], [64])
         C.check(rpx, profile, HOOKS, START)
-        for offset in (0, 7, 11, 39):
+        for offset in (0, 7, 11, 43, 103):
             changed = deepcopy(rpx)
             data = bytearray(changed.by_name['.text'].data);data[offset] ^= 1
             changed.by_name['.text'].data = bytes(data)
@@ -120,7 +120,7 @@ class Compatibility(unittest.TestCase):
     def test_generator_allows_only_explicit_body_review_and_canonical_hook_words(self):
         rpx, _, reviewed = fixture()
         reference = SimpleNamespace(build=builds.canonical_build(), p=SimpleNamespace(rpx=rpx, entry=START),
-                                    func_of=lambda address: START, func_end=lambda address: START+32)
+                                    func_of=lambda address: START, func_end=lambda address: START+64)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'reviewed.rpx';header = bytearray(28);struct.pack_into('>I', header, 24, START);path.write_bytes(header)
             changed = deepcopy(rpx);changed.by_name['.text'].data = reviewed

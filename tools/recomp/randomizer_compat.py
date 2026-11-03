@@ -24,8 +24,8 @@ RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
                   name=1024, name_bytes=1 << 20)
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
 # Short instruction sequences (including li/blr) must not expose enumerable digests.
-# Group every body below 32 bytes with all hook words in one canonical aggregate.
-MIN_FUNCTION_HASH_BYTES = 32
+# Group every body below 64 bytes with all hook words in one canonical aggregate.
+MIN_FUNCTION_HASH_BYTES = 64
 
 
 class CompatibilityError(ValueError):
@@ -69,7 +69,7 @@ def guard_digest(rpx, points, tiny_functions):
 
 
 def range_profile(rpx, points, ranges):
-    """Split at 32 bytes; all smaller bodies share the hook-word aggregate."""
+    """Split at 64 bytes; all smaller bodies share the hook-word aggregate."""
     tiny = [dict(start=a, end=b) for a, b in ranges if b-a < MIN_FUNCTION_HASH_BYTES]
     functions = [dict(start=a, end=b, sha256=[digest(text_slice(rpx, a, b))])
                  for a, b in ranges if b-a >= MIN_FUNCTION_HASH_BYTES]
