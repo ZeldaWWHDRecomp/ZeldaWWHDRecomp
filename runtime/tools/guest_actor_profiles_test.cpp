@@ -17,6 +17,7 @@ void log_msg(const char*,...){}
 namespace {
 std::map<uint32_t,void(*)(Cpu*)> hooks;
 unsigned originals=0;
+void retire(uint32_t,uint32_t,uint16_t)noexcept{}
 void original(Cpu*c,uint32_t){++originals;c->r[3]=0xCAFE;}
 void map(uint32_t a,uint32_t n){
 #ifdef _WIN32
@@ -63,7 +64,12 @@ int main(){
  configure(original);
  assert(!install_guest(0x7F000000,owner,replace));
  assert(!install_guest(0x60000000,[](uint32_t){return std::string("foreign");},replace));assert(hooks.empty());
+ // Port services install their listener/profile first, before the bridge.
+ assert(add_before_delete_listener("existing-port-listener",retire));
+ st16(0x60008008,0x7FFE);assert(add(0x7FFE,0x60008000));
+ assert(install(owner,replace)&&hooks.size()==3);
  assert(install_guest(0x60000000,owner,replace)&&hooks.size()==5);
+ assert(add_before_delete_listener("existing-port-listener",retire));
  // GameMain entry invokes registration before the original begins allocating
  // processes. Lookup queries do not close the window; first base create does.
  setup(0x1E4,"SwOp");Cpu c{};c.r[3]=0x1E4;hooks.at(GC(0x025E10E0))(&c);assert(c.r[3]==0);

@@ -1543,15 +1543,6 @@ void init() {
         seal_startup();
         return;
     }
-    if(g_actor_profile_import){
-        native_actor_profiles::configure(call_original,[](Cpu*c,uint32_t f,std::initializer_list<uint32_t>a){return guest_call(c,f,a);});
-        std::string why;
-        const bool ok=native_actor_profiles::install_guest(mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16),
-            [](uint32_t a){auto it=g_chains.find(a);return it==g_chains.end()?std::string():it->second.replace_mod;},
-            [](uint32_t a,PpcFunc fn){const int ordinal=ordinal_of(a);if(ordinal<0)fatal("[guestmods] native actor profile hook missing: %08X",a);
-                auto&ch=g_chains[a];ch.addr=a;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's native actor profiles";g_mod_hook_flags[ordinal]=1;},&why);
-        if(!ok)LOG("[guestmods] native actor profiles unavailable: %s",why.c_str());
-    }
     // The story system runs only with its required package, the Story Notebook (packages.cpp makes every
     // quest mod depend on it); without it: no letters, takeovers, chart marks or notebook, the game as it is.
     if((story_mail::imported()||story_chart::imported()||story_notebook::imported())&&!g_story_package) {
@@ -1863,6 +1854,18 @@ void init() {
         int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
         ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
     });
+    // Existing port actor services configure their before-delete listeners
+    // before the central registry becomes immutable. Extend its lookup only
+    // after those services and every guest module have finished installation.
+    if(g_actor_profile_import){
+        native_actor_profiles::configure(call_original,[](Cpu*c,uint32_t f,std::initializer_list<uint32_t>a){return guest_call(c,f,a);});
+        std::string why;
+        const bool ok=native_actor_profiles::install_guest(mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16),
+            [](uint32_t a){auto it=g_chains.find(a);return it==g_chains.end()?std::string():it->second.replace_mod;},
+            [](uint32_t a,PpcFunc fn){const int ordinal=ordinal_of(a);if(ordinal<0)fatal("[guestmods] native actor profile hook missing: %08X",a);
+                auto&ch=g_chains[a];ch.addr=a;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's native actor profiles";g_mod_hook_flags[ordinal]=1;},&why);
+        if(!ok)LOG("[guestmods] native actor profiles unavailable: %s",why.c_str());
+    }
     seal_startup();
 }
 
