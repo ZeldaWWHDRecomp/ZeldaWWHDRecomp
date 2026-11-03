@@ -19,7 +19,7 @@ class RandomizerSetup(unittest.TestCase):
         self.assertIsNone(setup.path_length_problem(root, windows=True, extra_path_chars=setup.RANDOMIZER_PATH_EXTRA))
         self.assertIsNotNone(setup.path_length_problem(root+'x', windows=True, extra_path_chars=setup.RANDOMIZER_PATH_EXTRA))
         self.assertIsNone(setup.path_length_problem(root+'x', windows=True))
-        backup = 'save\\save-backups\\randomizer-'+'a'*64+'\\2026-10-12_03-15-00-mod-abcdefg-99\\save\\user\\cking_pic_order0.sav'
+        backup = 'save-backups-randomizer-'+'a'*64+'\\2026-10-12_03-15-00-mod-abcdefg-99\\save\\user\\cking_pic_order0.sav'
         self.assertLessEqual(len(root+'\\'+backup), setup.WINDOWS_MAX_PATH)
 
     def folder(self, root, title=None):
@@ -128,6 +128,67 @@ class RandomizerSetup(unittest.TestCase):
             self.assertEqual(Path(reply['path']), folder)
             self.assertEqual(reply['title'], 'The Wind Waker HD Randomizer')
 
+    def test_compiled_identity_report_matches_actual_build_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertIsNone(setup.translated_randomizer_identity(tmp))
+            for identity in ('a'*64, 'b'*64):
+                report = {'profile':'synthetic', 'rpx_sha256':identity}
+                (root/'randomizer.json').write_text(json.dumps(report))
+                (root/'table.c').write_text('const char g_guest_build_title_id[] = "'+setup.RANDOMIZER_TITLE+'";\nconst char g_guest_build_rpx_sha256[] = "'+identity+'";\n')
+                self.assertEqual(setup.translated_randomizer_identity(tmp), report)
+            (root/'randomizer.json').write_text(json.dumps({'rpx_sha256':'a'*64}))
+            with self.assertRaisesRegex(setup.SetupError, 'differ'):
+                setup.translated_randomizer_identity(tmp)
+            (root/'randomizer.json').write_text('{}')
+            with self.assertRaises(setup.SetupError):
+                setup.translated_randomizer_identity(tmp)
+            (root/'randomizer.json').unlink()
+            with self.assertRaisesRegex(setup.SetupError, 'no identity report'):
+                setup.translated_randomizer_identity(tmp)
+
+    def test_install_records_translated_seed_instead_of_preliminary_seed(self):
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);game=self.folder(root/'game');data=root/'data';data.mkdir()
+            selected=self.build(game);selected.randomizer_report['rpx_sha256']='a'*64
+            compiled={'profile':'synthetic','rpx_sha256':'b'*64}
+            args=SimpleNamespace(code_mods='0',jobs=1,shortcuts=False,keep_work=False)
+            tc=SimpleNamespace(desc='fixture',env={},cc=['fixture'])
+            ctx=SimpleNamespace(args=args,manifest={'platform':'test','toolchain':{},'exe':'fixture'},
+                                data_dir=str(data),game_dir=str(game),exe=str(data/'bin/fixture'),
+                                exe_dir=str(data/'bin'),version='test',state=lambda:{})
+            def translate(game,gen,hooks=False):
+                out=Path(gen);out.mkdir(parents=True)
+                (out/'randomizer.json').write_text(json.dumps(compiled))
+                (out/'table.c').write_text('const char g_guest_build_title_id[] = "'+setup.RANDOMIZER_TITLE+'";\nconst char g_guest_build_rpx_sha256[] = "'+'b'*64+'";\n')
+                return 1
+            def link(tc,manifest,objs,work,target):Path(target).write_bytes(b'synthetic executable')
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.multiple(setup,PKG=str(root),PORTABLE=True))
+                for name,value in {'check_game_version':selected,'get_toolchain':tc,'free_space':20<<30,
+                                   'compile_gamecode':[],'prepare_shaders_nonfatal':{'status':'skipped'},
+                                   'model_sweep_wanted':False,'decomp_wanted':False,'setup_code_mods':False,
+                                   'write_guest_build_config':None,'install_story_notebook':None}.items():
+                    stack.enter_context(mock.patch.object(setup,name,return_value=value))
+                stack.enter_context(mock.patch.object(setup,'recompile',side_effect=translate))
+                stack.enter_context(mock.patch.object(setup,'link_game',side_effect=link))
+                stack.enter_context(mock.patch.object(setup.code_mods,'remember_installed'))
+                state=setup.install(ctx,('folder',str(game)))
+            self.assertEqual(state['randomizer'],compiled)
+            self.assertEqual(json.loads((data/'install.json').read_text())['randomizer'],compiled)
+
+    def test_legacy_nested_save_is_not_abandoned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); identity = 'a'*64
+            (root/'install.json').write_text(json.dumps({'randomizer': {'rpx_sha256':identity}}))
+            legacy = root/'save'/('randomizer-'+identity)/'user'
+            legacy.mkdir(parents=True);(legacy/'cking.sav').write_bytes(b'keep')
+            with self.assertRaisesRegex(setup.SetupError, 'older randomized save folder'):
+                setup.save_user_dir(tmp)
+            self.assertEqual((legacy/'cking.sav').read_bytes(), b'keep')
+            self.assertFalse((root/('save-randomizer-'+identity)).exists())
+
     def test_save_import_targets_current_seed_without_touching_vanilla_or_other_seed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -137,14 +198,14 @@ class RandomizerSetup(unittest.TestCase):
             self.assertTrue(setup.have_save(tmp))
             for identity in ('a'*64, 'b'*64):
                 (root/'install.json').write_text(json.dumps({'randomizer': {'rpx_sha256': identity}}))
-                expected = root/'save'/('randomizer-'+identity)/'user'
+                expected = root/('save-randomizer-'+identity)/'user'
                 self.assertEqual(Path(setup.save_user_dir(tmp)), expected)
                 self.assertFalse(setup.have_save(tmp))
                 expected.mkdir(parents=True)
                 (expected/'cking.sav').write_bytes(identity.encode())
                 self.assertTrue(setup.have_save(tmp))
             self.assertEqual(vanilla.read_bytes(), b'vanilla')
-            self.assertEqual((root/'save'/('randomizer-'+'a'*64)/'user/cking.sav').read_bytes(), b'a'*64)
+            self.assertEqual((root/('save-randomizer-'+'a'*64)/'user/cking.sav').read_bytes(), b'a'*64)
 
 
 if __name__ == '__main__':

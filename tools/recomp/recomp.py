@@ -151,7 +151,11 @@ class Recompiler:
             raise ValueError("randomized builds cannot use decompiled function replacements")
         self.mod_hooks = mod_hooks
         self.preserve_registers = preserve_registers or getattr(self.build, "randomizer", False)
-        self.p = Program(path)
+        if getattr(self.build, "randomizer", False):
+            from randomizer_compat import RPX_LIMITS
+            self.p = Program(path, rpx_limits=RPX_LIMITS)
+        else:
+            self.p = Program(path)
         self.p.discover()
         self.entries = set(self.p.entries)
         self.imports = {}  # slot address -> (lib, name, kind)

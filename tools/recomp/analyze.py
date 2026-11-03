@@ -21,8 +21,8 @@ def sext(v, bits):
 
 
 class Program:
-    def __init__(self, path):
-        self.rpx = r = Rpx(path)
+    def __init__(self, path, rpx_limits=None):
+        self.rpx = r = Rpx(path, limits=rpx_limits)
         self.text = r.by_name[".text"]
         self.text_lo = self.text.addr
         self.text_hi = self.text.addr + self.text.size

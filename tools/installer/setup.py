@@ -102,8 +102,8 @@ WINDOWS_MAX_PATH = 259  # characters of a full path without the extended-length 
 # deletes the compiler with \\?\ paths (its unused Python/lldb files are 128 deep, 139 while unpacking).
 DEEPEST_DATA_PATH = 78
 MAX_DATA_DIR_CHARS = WINDOWS_MAX_PATH - 1 - DEEPEST_DATA_PATH  # 180 (the 1: the separator after it)
-# Seed backups add save/ plus the full-hash namespace to the ordinary backup path.
-RANDOMIZER_PATH_EXTRA = len("save\\randomizer-" + "0" * 64 + "\\")
+# Seed save/backup roots are siblings suffixed by the full-hash namespace.
+RANDOMIZER_PATH_EXTRA = len("-randomizer-" + "0" * 64)
 
 
 # Extended-length paths need a Python whose own path functions join with backslashes: shutil, os.walk
@@ -1638,6 +1638,40 @@ def recompile(game_dir, gen_dir, hooks=False):
     return n
 
 
+def translated_randomizer_identity(gen_dir):
+    """Read the identity emitted beside the actual sources that will be linked.
+
+    The selected folder can change while setup runs; it is not authoritative
+    for install.json. Cross-check the compiler report against its build map.
+    """
+    report_path = os.path.join(gen_dir, "randomizer.json")
+    if not os.path.isfile(report_path):
+        table = os.path.join(gen_dir, "table.c")
+        if os.path.isfile(table):
+            with open(table, encoding="utf-8") as stream:
+                for line in stream:
+                    if re.fullmatch(r'const char g_guest_build_title_id\[\] = "'+RANDOMIZER_TITLE+r'";\s*', line):
+                        raise SetupError("The randomized translated build has no identity report; run setup again.")
+        return None
+    try:
+        with open(report_path, encoding="utf-8") as stream:
+            report = json.load(stream)
+        identity = report["rpx_sha256"]
+        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ValueError("invalid RPX identity")
+        fields = {}
+        with open(os.path.join(gen_dir, "table.c"), encoding="utf-8") as stream:
+            for line in stream:
+                match = re.fullmatch(r'const char g_guest_build_(title_id|rpx_sha256)\[\] = "([0-9a-f]+)";\s*', line)
+                if match:
+                    fields[match.group(1)] = match.group(2)
+        if fields != {"title_id": RANDOMIZER_TITLE, "rpx_sha256": identity}:
+            raise ValueError("compiler identity report and build map differ")
+        return report
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise SetupError("Cannot verify the translated randomizer identity: %s" % error) from error
+
+
 def default_jobs():
     n = os.cpu_count() or 2
     mem = None
@@ -2154,7 +2188,10 @@ def save_user_dir(data_dir):
     root = os.path.join(data_dir, "save")
     identity = read_state(data_dir).get("randomizer", {}).get("rpx_sha256", "")
     if re.fullmatch(r"[0-9a-f]{64}", identity):
-        root = os.path.join(root, "randomizer-" + identity)
+        legacy = os.path.join(root, "randomizer-" + identity)
+        root += "-randomizer-" + identity
+        if os.path.exists(legacy):
+            raise SetupError("An older randomized save folder exists at %s. Move it to the separate sibling folder %s before continuing. Do not merge or overwrite an existing folder; both copies have been left unchanged." % (legacy, root))
     return os.path.join(root, "user")
 
 
@@ -2678,6 +2715,13 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)))
         say("  %d source files (%d s)" % (nfiles, time.time() - t0))
 
+    compiled_randomizer = translated_randomizer_identity(gen_dir)
+    if getattr(source_build, "randomizer", False) is True and not compiled_randomizer:
+        raise SetupError("The translator did not record this randomized build identity; run setup again.")
+    if compiled_randomizer:
+        problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
+        if problem:
+            raise SetupError(problem)
     begin("compile")
     jobs = args.jobs or default_jobs()
     t0 = time.time()
@@ -2702,8 +2746,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
              "installed": time.strftime("%Y-%m-%d %H:%M:%S"), "toolchain": manifest["toolchain"],
              "placeholder_code": kind == "gen",
              "code_mods": code_mods.hooks_option(getattr(args, "code_mods", None))}
-    if getattr(source_build, "randomizer", False) is True:
-        state["randomizer"] = source_build.randomizer_report
+    if compiled_randomizer:
+        state["randomizer"] = compiled_randomizer
     if manifest.get("variant"):
         state["variant"] = manifest["variant"]  # "decomp": the decomp build (docs/decomp-build.md)
     if os.environ.get("APPIMAGE"):

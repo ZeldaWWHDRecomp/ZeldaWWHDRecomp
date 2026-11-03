@@ -1,4 +1,5 @@
 """Wii U RPX/RPL container: sections, symbols, relocations."""
+import os
 import struct
 import zlib
 
@@ -18,25 +19,57 @@ class Symbol:
 
 
 class Rpx:
-    def __init__(self, path):
-        d = open(path, "rb").read()
+    def __init__(self, path, limits=None):
+        # Only untrusted randomized inputs opt in; immutable retail builds keep
+        # their existing parser behavior. Bound the read as well as the stat.
+        if limits and os.path.getsize(path) > limits['file']:
+            raise ValueError("RPX input exceeds size limit")
+        with open(path, "rb") as stream:
+            d = stream.read(limits['file']+1) if limits else stream.read()
+        if limits and len(d) > limits['file']:
+            raise ValueError("RPX input exceeds size limit")
+        total = 0
         shoff, = struct.unpack_from(">I", d, 0x20)
         shentsize, shnum, shstrndx = struct.unpack_from(">HHH", d, 0x2E)
+        if limits and shnum > limits.get('sections', shnum):
+            raise ValueError("RPX section count exceeds limit")
+        self.limits = limits
         self.sections = []
         for i in range(shnum):
             s = Section()
             (s.name_off, s.type, s.flags, s.addr, s.offset, s.file_size,
              s.link, s.info, s.align, s.entsize) = struct.unpack_from(">10I", d, shoff + i * shentsize)
             s.index = i
+            if limits and (s.file_size > limits['section'] or
+                           s.type != SHT_NOBITS and s.offset+s.file_size > len(d)):
+                raise ValueError("RPX section exceeds input or size limit")
+            if limits and s.flags & SHF_RPL_ZLIB and s.file_size < 4:
+                raise ValueError("RPX compressed section is truncated")
             if s.type == SHT_NOBITS or s.file_size == 0:
                 s.data = b""
                 s.size = s.file_size
             else:
                 raw = d[s.offset:s.offset + s.file_size]
                 if s.flags & SHF_RPL_ZLIB:
-                    raw = zlib.decompress(raw[4:])
+                    if limits:
+                        if len(raw) < 4:
+                            raise ValueError("RPX compressed section is truncated")
+                        declared, = struct.unpack_from(">I", raw)
+                        budget = min(limits['section'], limits['inflated']-total)
+                        if declared > budget:
+                            raise ValueError("RPX inflated section exceeds size limit")
+                        inflater = zlib.decompressobj()
+                        raw = inflater.decompress(raw[4:], declared+1)
+                        if (len(raw) != declared or not inflater.eof or
+                                inflater.unconsumed_tail or inflater.unused_data):
+                            raise ValueError("RPX compressed section length or stream is invalid")
+                    else:
+                        raw = zlib.decompress(raw[4:])
                 s.data = raw
                 s.size = len(raw)
+            total += s.size
+            if limits and (s.size > limits['section'] or total > limits['inflated']):
+                raise ValueError("RPX aggregate inflated size exceeds limit")
             self.sections.append(s)
         shstr = self.sections[shstrndx].data
         for s in self.sections:
@@ -47,6 +80,9 @@ class Rpx:
 
     def _load_symbols(self):
         self.symbols = []
+        count = sum(len(s.data)//16 for s in self.sections if s.type == SHT_SYMTAB)
+        if self.limits and count > self.limits.get('symbols', count):
+            raise ValueError("RPX symbol count exceeds limit")
         for s in self.sections:
             if s.type != SHT_SYMTAB:
                 continue
@@ -66,6 +102,9 @@ class Rpx:
     def _load_relocs(self):
         """list of (target section, offset-address, type, symbol, addend)"""
         self.relocs = []
+        count = sum(len(s.data)//12 for s in self.sections if s.type == SHT_RELA)
+        if self.limits and count > self.limits.get('relocations', count):
+            raise ValueError("RPX relocation count exceeds limit")
         for s in self.sections:
             if s.type != SHT_RELA:
                 continue

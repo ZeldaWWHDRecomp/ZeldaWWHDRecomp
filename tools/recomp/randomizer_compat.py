@@ -19,6 +19,8 @@ import builds
 from rpx import Rpx
 
 TITLE_ID = '0005000010143599'
+RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
+                  sections=128, symbols=8192, relocations=500000)
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
 
 
@@ -93,6 +95,8 @@ def identify(path, profile=None, expected_sha256=None):
     the folder title; the child compiler can additionally pin the parent's hash.
     """
     path = Path(path)
+    if path.stat().st_size > RPX_LIMITS['file']:
+        raise CompatibilityError('randomizer RPX input exceeds size limit')
     with path.open('rb') as stream:
         header = stream.read(0x34)
     if (len(header) != 0x34 or header[:6] != b'\x7fELF\x01\x02' or
@@ -105,7 +109,7 @@ def identify(path, profile=None, expected_sha256=None):
         profile = json.loads(PROFILE.read_text(encoding='utf-8'))
     hooks, _ = builds.read_hooks(builds.hook_files(), builds.canonical_build())
     try:
-        rpx = Rpx(str(path))
+        rpx = Rpx(str(path), limits=RPX_LIMITS)
         original_text = next(section for section in profile['sections'] if section['name']=='.text')
         if actual == profile['base_sha256'] or rpx.by_name['.text'].size <= original_text['size']:
             raise CompatibilityError('randomizer folder does not contain the expected extended randomized game code')
