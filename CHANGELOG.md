@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New on Android: tap the title screen to start, and touch works on file select and name entry** (#340, thanks
+  @GenissonEmilio). A tap on the title screen now starts the game, and on the file-selection and name-entry screens your
+  touches reach the game's own GamePad touchscreen. With no second display, the GamePad picture shows on the main screen
+  for those two screens and your view comes back afterwards; your settings don't change. The gameplay touch controls
+  stay hidden until the game starts.
 - **Fixed: touch controls stay visible on the Poco M8 Pro** (#338, thanks @GenissonEmilio). The phone's built-in key
   injector reports itself as a gamepad, so the game hid the touch controls as if a controller were connected. That one
   internal device is now ignored; real controllers still hide the touch controls as before.
