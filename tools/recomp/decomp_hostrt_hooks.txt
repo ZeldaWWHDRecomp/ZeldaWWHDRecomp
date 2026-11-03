@@ -44,3 +44,7 @@
 028F1748  # vsnprintf (float/wide conversions run the original)
 028F17A8  # snprintf
 028F186C  # sprintf
+028EA038  # memmove (start-up)
+028F35A8  # div
+028F2EE8  # strtoul
+028F3090  # strtol

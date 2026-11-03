@@ -122,3 +122,4 @@ bool (*outside_hook)(Cpu*, uint32_t) = nullptr;
 
 // the port's memset for replacements that call it, in a closure that does not reference it
 extern "C" __attribute__((weak)) void imp_coreinit_memset(Cpu* c) { hostrt_test_import(c, "coreinit_memset"); }
+extern "C" __attribute__((weak)) void imp_coreinit___gh_set_errno(Cpu* c) { hostrt_test_import(c, "coreinit___gh_set_errno"); }

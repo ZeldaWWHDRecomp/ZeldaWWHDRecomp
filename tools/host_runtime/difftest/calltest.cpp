@@ -64,6 +64,9 @@ void f_028F026C(Cpu*);
 void f_028F521C(Cpu*);
 void f_028F5914(Cpu*);
 void f_028F040C(Cpu*);
+void f_028EA038(Cpu*);
+void f_028F2EE8(Cpu*);
+void f_028F3090(Cpu*);
 }
 
 namespace {
@@ -232,6 +235,25 @@ void array_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
     c.r[7] = (r() & 1) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
 }
 
+// a number string (white space, sign, prefix, digits of random bases, trailing junk), endptr, base
+void strto_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
+    std::string t;
+    static const char* ws = " \t\n\b\r\v\f";
+    for (int i = (int)(r() % 3); i > 0; i--) t += ws[r() % 7];
+    if (r() % 3 == 0) t += "+-"[r() % 2];
+    if (r() % 4 == 0) t += (r() & 1) ? "0x" : "0X";
+    else if (r() % 4 == 0) t += "0";
+    static const char* digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFXZ";
+    for (int i = (int)(r() % ((r() & 3) ? 8 : 24)); i > 0; i--) t += digits[r() % 44];
+    if (r() & 1) t += "_ -"[r() % 3];
+    const uint32_t str = s + 0x1000;
+    for (size_t i = 0; i < t.size(); i++) st8(str + (uint32_t)i, (uint8_t)t[i]);
+    st8(str + (uint32_t)t.size(), 0);
+    c.r[3] = str, c.r[4] = (r() % 5) ? s + 0x2000 : 0;
+    static const uint32_t bases[] = {0, 10, 16, 8, 2, 36, 1, 37, 0xFFFFFFFF, 7};
+    c.r[5] = (r() & 1) ? bases[r() % 10] : (uint32_t)(r() % 40);
+}
+
 std::vector<Root> roots() {
     return {
         {"construct_array", f_028EFFD0, hostrt::construct_array_028EFFD0,
@@ -307,6 +329,14 @@ std::vector<Root> roots() {
              varargs_regs(c, r, s, 5);
          },
          R3 | R4},
+        {"memmove", f_028EA038, always<hostrt::memmove_028EA038>,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             c.r[3] = s + 0x1000 + ((uint32_t)r() & 0x3FF), c.r[4] = s + 0x1000 + ((uint32_t)r() & 0x3FF);
+             c.r[5] = (r() & 3) ? (uint32_t)(r() % 64) : (uint32_t)(r() % 0x800);
+         },
+         0},
+        {"strtoul", f_028F2EE8, always<hostrt::strtoul_028F2EE8>, strto_args, R3 | R4},
+        {"strtol", f_028F3090, always<hostrt::strtol_028F3090>, strto_args, R3 | R4},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);
@@ -363,6 +393,12 @@ bool kept(const Cpu& e, const Cpu& b, int outs) {
 bool same_call(const Call& a, const Call& b) {
     if (a.addr != b.addr || (a.import == nullptr) != (b.import == nullptr)) return false;
     if (a.import && strcmp(a.import, b.import)) return false;
+    if (a.import) {  // the port's host functions: only their arguments matter, not where on the stack
+        const int nargs = !strcmp(a.import, "coreinit___gh_set_errno") ? 1 : !strcmp(a.import, "coreinit_memset") ? 3 : 8;
+        for (int i = 3; i < 3 + nargs; i++)
+            if (a.r[i] != b.r[i]) return false;
+        return true;
+    }
     for (int i = 1; i <= 10; i++)
         if (i != 2 && a.r[i] != b.r[i]) return false;
     // the stack below the entry SP is the functions' scratch (as in tools/verify): compared are the back

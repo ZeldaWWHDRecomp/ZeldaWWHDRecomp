@@ -82,4 +82,84 @@ void va_arg_028F5C88(Cpu* c) {
     c->r[3] = addr;
 }
 
+// memmove(dst, src, n): byte copy that is correct for overlapping ranges; registers callers read: none
+void memmove_028EA038(Cpu* c) {
+    const uint32_t dst = c->r[3], src = c->r[4], n = c->r[5];
+    if (dst - src >= n) {  // forward is safe (no overlap, or the destination is below the source)
+        for (uint32_t i = 0; i < n; i++) st8(dst + i, ld8(src + i));
+    } else {
+        for (uint32_t i = n; i-- > 0;) st8(dst + i, ld8(src + i));
+    }
+}
+
+// div(a, b) = {a / b truncated, a - quotient*b} (C's div). Division by zero (and INT_MIN / -1) gives the
+// PowerPC divw result as the port's CPU emulation defines it (ppc_divw).
+void div_028F35A8(Cpu* c) {
+    const uint32_t a = c->r[3], b = c->r[4];
+    const uint32_t q = ppc_divw(a, b);
+    c->r[3] = q;
+    c->r[4] = a - q * b;
+}
+
+namespace {
+void set_errno(Cpu* c, uint32_t code) {
+    const uint32_t r3 = c->r[3];
+    c->r[3] = code;
+    imp_coreinit___gh_set_errno(c);
+    c->r[3] = r3;
+}
+
+// strtol/strtoul (C's rules; measured specifics: white space is ' ' and the characters 8..13, a base
+// outside 2..36 other than 0 sets errno EINVAL (0x16) and stores the string in *endptr, an overflow sets
+// ERANGE (0x22)); returns the 32-bit result
+uint32_t strto(Cpu* c, bool is_signed) {
+    st32(c->r[1] + 4, c->lr);  // the LR save word, as the original
+    const uint32_t str = c->r[3], endp = c->r[4];
+    uint32_t base = c->r[5];
+    uint32_t p = str;
+    while (ld8(p) == ' ' || (ld8(p) >= 8 && ld8(p) < 14)) p++;
+    bool neg = false;
+    if (ld8(p) == '-') neg = true, p++;
+    else if (ld8(p) == '+') p++;
+    if (base == 0) {
+        if (ld8(p) == '0' && (ld8(p + 1) == 'x' || ld8(p + 1) == 'X')) base = 16, p += 2;
+        else if (ld8(p) == '0') base = 8;
+        else base = 10;
+    } else if (base < 2 || base > 36) {
+        if (endp) st32(endp, str);
+        set_errno(c, 0x16);
+        return 0;
+    } else if (base == 16 && ld8(p) == '0' && (ld8(p + 1) == 'x' || ld8(p + 1) == 'X')) {
+        p += 2;
+    }
+    uint64_t v = 0;
+    bool any = false, over = false;
+    for (;; p++) {
+        const uint8_t ch = ld8(p);
+        uint32_t d = ch >= '0' && ch <= '9' ? ch - '0' : ch >= 'a' && ch <= 'z' ? ch - 'a' + 10 : ch >= 'A' && ch <= 'Z' ? ch - 'A' + 10 : 99;
+        if (d >= base) break;
+        any = true;
+        v = v * base + d;
+        if (v > 0xFFFFFFFFull) over = true, v = 0x100000000ull;
+    }
+    if (endp) st32(endp, any ? p : str);
+    if (is_signed) {
+        const uint64_t lim = neg ? 0x80000000ull : 0x7FFFFFFFull;
+        if (over || v > lim) {
+            set_errno(c, 0x22);
+            return neg ? 0x80000000u : 0x7FFFFFFFu;
+        }
+        return neg ? (uint32_t)(0 - (uint32_t)v) : (uint32_t)v;
+    }
+    if (over) {
+        set_errno(c, 0x22);
+        return 0xFFFFFFFFu;
+    }
+    return neg ? (uint32_t)(0 - (uint32_t)v) : (uint32_t)v;
+}
+}  // namespace
+
+void strtoul_028F2EE8(Cpu* c) { c->r[3] = strto(c, false); }
+void strtol_028F3090(Cpu* c) { c->r[3] = strto(c, true); }
+
 }  // namespace hostrt

@@ -275,8 +275,8 @@ addr	size	block	reach	callers_out	callers_in	data_refs	code_addr_refs	callees	im
 028F2E60	72	ghs	internal	0	2	0		028F2CC4,028F2EA8,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock,coreinit_memset		4	028EF854	stdio	calloc
 028F2EA8	40	ghs	internal	0	12	0		028F29AC,028F2ED0,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock				stdio	free
 028F2ED0	24	ghs	internal	0	3	0		028F2EE8,028F57D8,028F5E38	coreinit_exit				stdio	abort
-028F2EE8	424	ghs	game	3	1	0		028F3090,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtol
-028F3090	460	ghs	game	2	1	0		028F325C,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtoul
+028F2EE8	424	ghs	game	3	1	0		028F3090,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtoul (measured: ULONG_MAX on overflow)
+028F3090	460	ghs	game	2	1	0		028F325C,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtol (measured: LONG_MAX/LONG_MIN on overflow)
 028F325C	312	ghs	game	3	1	0		028F3394,028F5880					special	setjmp
 028F3394	272	ghs	game	2	1	0		028F34A4,028F5888					special	longjmp
 028F34A4	64	ghs	internal	0	2	0		028F34E4,028F36CC,028F5E10,028F5E24			8	028F3598	stdio	locale name lookup~

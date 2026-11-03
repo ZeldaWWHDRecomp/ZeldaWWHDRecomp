@@ -15,7 +15,8 @@
 #pragma once
 #include "ppc.h"
 
-extern "C" void imp_coreinit_memset(Cpu* c);  // the port's memset (hle/coreinit_mem.cpp)
+extern "C" void imp_coreinit_memset(Cpu* c);         // the port's memset (hle/coreinit_mem.cpp)
+extern "C" void imp_coreinit___gh_set_errno(Cpu* c);  // the port's errno setter (hle/coreinit_misc.cpp)
 
 namespace hostrt {
 
@@ -82,5 +83,9 @@ bool sprintf_028F186C(Cpu* c);    // (buf, fmt, ...)      // __va_arg(va_list, t
 void bzero_028F521C(Cpu* c);       // (p, n): memset(p, 0, n) through the port's memset
 void zero_words_028F5914(Cpu* c);  // (p, n): n zero words at p
 void strcpy_028F040C(Cpu* c);      // (dst, src)
+void memmove_028EA038(Cpu* c);     // (dst, src, n), used once by the start-up code
+void div_028F35A8(Cpu* c);         // div(a, b): r3 = quotient, r4 = remainder
+void strtoul_028F2EE8(Cpu* c);     // (str, endptr, base)
+void strtol_028F3090(Cpu* c);      // (str, endptr, base)
 
 }  // namespace hostrt

@@ -40,8 +40,8 @@ NAMES = {
  0x028F521C: ("bzero~ / memset(p,0,n) (import memset)", "trivial"),
  0x028F5970: ("bzero~ (import memset)", "trivial"),
  0x028F5914: ("__ghs_zero_words~ (clear n words)", "trivial"),
- 0x028F2EE8: ("strtol", "trivial"),
- 0x028F3090: ("strtoul", "trivial"),
+ 0x028F2EE8: ("strtoul (measured: ULONG_MAX on overflow)", "trivial"),
+ 0x028F3090: ("strtol (measured: LONG_MAX/LONG_MIN on overflow)", "trivial"),
  0x028F35A8: ("div", "trivial"),
  # ---- printf family
  0x028F0428: ("printf: unsigned to decimal, padded~", "format"),
