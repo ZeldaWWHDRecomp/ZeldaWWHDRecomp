@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (experimental) fixes** (#368). The `-DWWHD_DECOMP=ON` build now reads the decompilation's unit specs the
+  way its own checks do (specs in sub-folders and `include` lines), skips verification-only sources, works without
+  model data, and gives calls from decompiled code back into the game the same return address as the original, so
+  runtime checks that identify their caller (for example the Story mods' text check) work in that build too.
 - **New: a 4:3 aspect-ratio preset** (#359). Settings › Graphics (and the macOS Graphics menu) now offer 4:3 next to the
   widescreen presets, and it's remembered on the next launch. `WWHD_ASPECT=4:3` selects it too. Your saved aspect
   choice keeps its meaning.
