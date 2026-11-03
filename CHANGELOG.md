@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (experimental): a stand-in for the scalable font** (#370). The game's scalable font takes its data
+  from the Wii U's system font, which the port doesn't provide. In the `-DWWHD_DECOMP=ON` build, the font module's
+  entry points now draw with the game's own main font instead, so its metrics are sane; `WWHD_FONT_GUARD=1` stops if
+  the original font code runs. The normal build is unchanged and keeps running the game's own font code.
 - **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
   state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
   respawn loop. Existing states work without conversion; standing and boat states load as before.
