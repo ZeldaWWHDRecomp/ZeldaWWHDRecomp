@@ -159,7 +159,7 @@ inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) 
     if(glyph==0) ink=line(px,py,-6,-10,-6,10)||line(px,py,-6,10,7,10);
     else if(glyph==1) ink=line(px,py,-7,-9,7,-9)||line(px,py,7,-9,-7,9)||line(px,py,-7,9,7,9);
     else ink=line(px,py,-6,-10,3,-10)||line(px,py,-6,-10,-6,10)||line(px,py,3,-10,6,-7)||line(px,py,6,-7,6,-3)||line(px,py,6,-3,3,0)||line(px,py,3,0,-6,0)||line(px,py,0,0,6,10);
-    if (inner && ink) c=framed?0x292D31FF:(shoulder==1?0xFFFFFFFF:0x292D31FF);
+    if (inner && ink) c=shoulder==1?0xFFFFFFFF:0x292D31FF;
     return c;
 }
 

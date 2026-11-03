@@ -1597,6 +1597,9 @@ void concurrent_draw_test() {
 
 // #355: full GC discs/shoulders replace native plates and remain above item art.
 void gamecube_hud_plate_test() {
+    assert(button_glyphs::gamecube_shoulder_icon(1,true,32,32)==0xFFFFFFFF); // white Z ink
+    assert(button_glyphs::gamecube_shoulder_icon(1,true,20,32)==0x6754C8FF); // purple plate
+
     set_options(input_map::FaceLayout::kPosition,input_map::Mapping::Prompts::kGameCube,
                 input_map::Mapping::ShoulderNames::kAuto,true);
     for (const char* name : {"W_SetSeatA_00","P_SetSeatASpecial_00","P_R_00","P_ZR_00"}) {
