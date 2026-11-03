@@ -50,23 +50,23 @@ void f_0240EBB0_orig(Cpu*){} void f_024FA9C8_orig(Cpu*){}
 void f_0250D4E8_orig(Cpu*){} void f_0250FDC8_orig(Cpu*){} void f_025071FC_orig(Cpu*){}
 void hook_0240EBB0(Cpu*); void hook_025071FC(Cpu*);
 }
-static constexpr uint32_t link=0x20000000;
+static constexpr uint32_t kLinkBase=0x20000000;
 static void procedure(uint32_t proc,bool ship=true){
-    st32(link+0x65F0,proc);
-    st32(link+mods::playctx::kLinkModeFlg,ship?mods::playctx::kModeInShip:0);
+    st32(kLinkBase+0x65F0,proc);
+    st32(kLinkBase+mods::playctx::kLinkModeFlg,ship?mods::playctx::kModeInShip:0);
 }
 static bool close(float a,float b){return std::fabs(a-b)<.00001f;}
 static input::PadState sample(float dx,float dy,input::PadState pad={}){
     ++clock_step;mods::mouse_add(dx,dy);mods::filter_pad(pad);return pad;
 }
 int main(){
-    void* address=mem::ptr(link);
+    void* address=mem::ptr(kLinkBase);
 #ifdef _WIN32
     assert(VirtualAlloc(address,0x10000,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)==address);
 #else
     assert(mmap(address,0x10000,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0)==address);
 #endif
-    Cpu c{};c.r[3]=link;hook_0240EBB0(&c);procedure(0x8E);
+    Cpu c{};c.r[3]=kLinkBase;hook_0240EBB0(&c);procedure(0x8E);
     auto p=sample(5,-5);assert(close(p.lx,.4f)&&close(p.ly,.4f)&&p.rx==0&&p.ry==0);
     assert(!aiming); // mouse gyro must not consume the cannon's input
     input::PadState repeat;mods::filter_pad(repeat);assert(close(repeat.lx,p.lx)&&close(repeat.ly,p.ly));
@@ -81,7 +81,7 @@ int main(){
     captured=false;p=sample(5,-5);assert(p.lx==0&&p.ly==0&&p.rx==0);captured=true;
     enabled=false;p=sample(5,-5);assert(p.lx==0&&p.ly==0);enabled=true;
     // Even a recent subject-camera call cannot hand the cannon's mouse to gyro.
-    c.r[3]=link;hook_025071FC(&c);p=sample(5,0);assert(close(p.lx,.4f)&&!aiming);
+    c.r[3]=kLinkBase;hook_025071FC(&c);p=sample(5,0);assert(close(p.lx,.4f)&&!aiming);
     clock_step+=10;
     // Sailing and salvage retain right-stick mouse look, including a stale cannon proc off-boat.
     for(auto proc:{0x88u,0x89u,0x8Fu}){
