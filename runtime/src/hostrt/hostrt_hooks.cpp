@@ -5,8 +5,9 @@
 //
 // WWHD_HOSTRT=0      runs the recompiled originals instead (A/B comparisons).
 // WWHD_HOSTRT_CHECK=1 runs both for every call of a register-only root and logs the first differences
-//                    (the original runs on a copy of the CPU state; these roots write no guest memory
-//                    except the stack below SP and the LR save word, which both write alike).
+//                    (the original runs first on the thread's CPU state, then the registers are reset
+//                    and the replacement runs; these roots write no guest memory except the stack below
+//                    SP and the LR save word, which both write alike).
 // A root a guest mod hooks or replaces (mod-hook builds, docs/mod-sdk-v2.md) always runs its original,
 // where the mod's check sits.
 #include <algorithm>
@@ -70,8 +71,19 @@ bool same(const Cpu& a, const Cpu& b, int outs) {
 void run(Root& r, Cpu* c, void (*host)(Cpu*), PpcFunc orig) {
     if (!use_host(r)) return orig(c);
     if (mode() == 2) {
-        Cpu entry = *c, o = *c;
-        orig(&o);
+        // the original runs on the guest thread's own CPU state (a copy would confuse the scheduler if
+        // it yields at a function entry), its results are kept aside, the registers go back, and the
+        // replacement runs; only the replacement's results stay
+        const Cpu entry = *c;
+        orig(c);
+        Cpu o;
+        memcpy(o.r, c->r, sizeof o.r);
+        memcpy(o.f, c->f, sizeof o.f);
+        memcpy(c->r, entry.r, sizeof c->r);
+        memcpy(c->f, entry.f, sizeof c->f);
+        memcpy(c->cr, entry.cr, sizeof c->cr);
+        c->lr = entry.lr, c->ctr = entry.ctr, c->fpscr = entry.fpscr;
+        c->xer_so = entry.xer_so, c->xer_ov = entry.xer_ov, c->xer_ca = entry.xer_ca;
         host(c);
         if (!same(o, *c, r.outs) && r.mismatches.fetch_add(1) < 20)
             LOG("[hostrt] CHECK %s (%08X) differs: in r3 %08X r4 %08X r5 %08X r6 %08X f1 %016llX f2 %016llX -> original r3 %08X r4 %08X f1 %016llX/%016llX, "
