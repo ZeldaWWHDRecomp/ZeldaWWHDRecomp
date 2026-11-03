@@ -5,6 +5,12 @@ controller only, select it under **Bindings for** first. **All controllers** cha
 bindings used by controllers without their own profile. The game's Controls page also has a
 GameCube layout toggle for the controller in use.
 
+## Wii U GameCube adapter on Windows
+
+The adapter needs the WinUSB driver, the same one Dolphin uses: install it with
+[Zadig](https://zadig.akeo.ie/) for the device "WUP-028" (USB ID 057E 0337). Windows' own driver
+for the adapter isn't supported. If the adapter already works in Dolphin, nothing else is needed.
+
 ## Main controls
 
 | GameCube control | In-game action |

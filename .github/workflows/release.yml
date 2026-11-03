@@ -565,7 +565,9 @@ jobs:
             --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
+            --runtime-file build/rel/libusb-1.0.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
+            --license "libusb (LGPL-2.1-or-later)=$W/build/rel/_deps/libusb-src/COPYING" \
             --license "Vulkan-Headers (Apache-2.0)=$VULKAN_DIR/LICENSE.md" \
             --license "glslang (BSD-3-Clause and others)=$W/build/rel/_deps/glslang-src/LICENSE.txt" \
             --license "zlib (zlib)=$W/build/rel/_deps/zlib-src/LICENSE" \
@@ -638,6 +640,7 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'install.json'))) { throw "the console setup did not finish" }
           $exe = Join-Path $data 'bin\wwhd.exe'
           if (-not (Test-Path (Join-Path $data 'bin\SDL3.dll'))) { throw "SDL3.dll was not installed" }
+          if (-not (Test-Path (Join-Path $data 'bin\libusb-1.0.dll'))) { throw "libusb-1.0.dll was not installed" }
           # no game files: the executable must start and stop with "cannot load ..." (abort() may leave
           # an error-reporting process around, so do not wait forever)
           $p = Start-Process -FilePath $exe -ArgumentList '--game', (Join-Path $env:RUNNER_TEMP 'nogame') `

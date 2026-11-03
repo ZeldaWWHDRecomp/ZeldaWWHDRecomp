@@ -1242,6 +1242,12 @@ if(WIN32 AND WWHD_SDL_HOST)
       add_custom_command(TARGET ${SDL3_APP} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> $<TARGET_FILE_DIR:${SDL3_APP}>
         VERBATIM)
+      if(TARGET libusb)  # loaded by SDL3 at runtime (cmake/WindowsDependencies.cmake)
+        add_dependencies(${SDL3_APP} libusb)
+        add_custom_command(TARGET ${SDL3_APP} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:libusb> $<TARGET_FILE_DIR:${SDL3_APP}>
+          VERBATIM)
+      endif()
     endforeach()
   endif()
 endif()
