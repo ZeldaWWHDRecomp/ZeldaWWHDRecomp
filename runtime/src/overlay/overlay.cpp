@@ -1004,7 +1004,7 @@ void tab_graphics() {
 
     heading("Aspect ratio");
     int am = aspect::mode();
-    for (int i = aspect::kOriginal; i <= aspect::k32x9; i++) {
+    for (const auto i : aspect::kPresets) {
         if (i) flow::next(flow::check(aspect::mode_name(i)));
         if (radio(aspect::mode_name(i), am == i))
             post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
@@ -3559,7 +3559,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (!dynres::min_from_env() && hostui::get("dynResMin", v)) dynres::set_min(strtof(v.c_str(), nullptr));
         if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {
             const int m = atoi(v.c_str());
-            if (m >= aspect::kOriginal && m <= aspect::k32x9) aspect::set_mode(m);
+            if (aspect::is_preset(m)) aspect::set_mode(m);
         }
         // the saved gyro settings (WWHD_GYRO overrides the source)
         hostui::post([] { load_gyro(); });
