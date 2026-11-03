@@ -27,8 +27,7 @@ class Program:
         self.text_lo = self.text.addr
         self.text_hi = self.text.addr + self.text.size
         self.words = struct.unpack(">%dI" % (self.text.size // 4), self.text.data)
-        d = open(path, "rb").read()
-        self.entry, = struct.unpack_from(">I", d, 0x18)
+        self.entry = r.entry
 
         # imports: call sites (REL24 into an import section) -> (lib, name)
         self.import_calls = {}

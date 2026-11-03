@@ -154,6 +154,8 @@ class Recompiler:
         if getattr(self.build, "randomizer", False):
             from randomizer_compat import RPX_LIMITS
             self.p = Program(path, rpx_limits=RPX_LIMITS)
+            if self.p.rpx.buffer_sha256 != self.build.sha256:
+                raise ValueError("randomized RPX changed before translation parsed its input buffer")
         else:
             self.p = Program(path)
         self.p.discover()

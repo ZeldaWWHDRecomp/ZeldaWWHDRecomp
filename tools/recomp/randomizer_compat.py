@@ -20,7 +20,8 @@ from rpx import Rpx
 
 TITLE_ID = '0005000010143599'
 RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
-                  sections=128, symbols=8192, relocations=500000)
+                  sections=128, symbols=8192, relocations=500000,
+                  name=1024, name_bytes=1 << 20)
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
 # Short instruction sequences (including li/blr) must not expose enumerable digests.
 # Group every body below 32 bytes with all hook words in one canonical aggregate.
@@ -142,6 +143,8 @@ def identify(path, profile=None, expected_sha256=None):
     hooks, _ = builds.read_hooks(builds.hook_files(), builds.canonical_build())
     try:
         rpx = Rpx(str(path), limits=RPX_LIMITS)
+        if rpx.buffer_sha256 != actual:
+            raise CompatibilityError('randomized RPX changed while parsing its input buffer')
         original_text = next(section for section in profile['sections'] if section['name']=='.text')
         if actual == profile['base_sha256'] or rpx.by_name['.text'].size <= original_text['size']:
             raise CompatibilityError('randomizer folder does not contain the expected extended randomized game code')

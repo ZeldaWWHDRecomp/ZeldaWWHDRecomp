@@ -1,4 +1,5 @@
 """Wii U RPX/RPL container: sections, symbols, relocations."""
+import hashlib
 import os
 import struct
 import zlib
@@ -28,12 +29,15 @@ class Rpx:
             d = stream.read(limits['file']+1) if limits else stream.read()
         if limits and len(d) > limits['file']:
             raise ValueError("RPX input exceeds size limit")
+        self.buffer_sha256 = hashlib.sha256(d).hexdigest() if limits else None
         total = 0
+        self.entry, = struct.unpack_from(">I", d, 0x18)
         shoff, = struct.unpack_from(">I", d, 0x20)
         shentsize, shnum, shstrndx = struct.unpack_from(">HHH", d, 0x2E)
         if limits and shnum > limits.get('sections', shnum):
             raise ValueError("RPX section count exceeds limit")
         self.limits = limits
+        self._name_bytes = 0
         self.sections = []
         for i in range(shnum):
             s = Section()
@@ -73,10 +77,26 @@ class Rpx:
             self.sections.append(s)
         shstr = self.sections[shstrndx].data
         for s in self.sections:
-            s.name = _cstr(shstr, s.name_off)
+            s.name = self._read_name(shstr, s.name_off)
         self.by_name = {s.name: s for s in self.sections}
         self._load_symbols()
         self._load_relocs()
+
+    def _read_name(self, buf, off):
+        if not self.limits:
+            return _cstr(buf, off)
+        # Search a bounded span, then charge the raw UTF-8 bytes before slicing
+        # or decoding. Repeated/overlapping offsets cannot amplify a tiny table
+        # into unbounded Python strings. Section and symbol names share a budget.
+        remaining = self.limits.get('name_bytes', 1 << 20)-self._name_bytes
+        maximum = min(self.limits.get('name', 1024), remaining)
+        if off < 0 or off >= len(buf):
+            raise ValueError("RPX name offset is invalid")
+        end = buf.find(b"\0", off, off+maximum+1)
+        if end < 0:
+            raise ValueError("RPX name length or aggregate name budget exceeds limit")
+        self._name_bytes += end-off
+        return buf[off:end].decode("utf-8", "replace")
 
     def _load_symbols(self):
         self.symbols = []
@@ -90,7 +110,7 @@ class Rpx:
             for j in range(len(s.data) // 16):
                 sym = Symbol()
                 name, sym.value, sym.size, info, _other, sym.shndx = struct.unpack_from(">IIIBBH", s.data, j * 16)
-                sym.name = _cstr(strtab, name)
+                sym.name = self._read_name(strtab, name)
                 sym.type, sym.bind = info & 0xF, info >> 4
                 sym.section = self.sections[sym.shndx] if 0 < sym.shndx < len(self.sections) else None
                 sym.import_lib = None
