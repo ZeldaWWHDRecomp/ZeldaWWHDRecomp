@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: story-item cheats** (#362, for #289). Mods › More › Cheats › Story items can grant Nayru's, Din's or Farore's
+  Pearl, or the fully powered Master Sword, one at a time. The first use each session asks for confirmation, because it
+  can change the story's order, and a backup of your save is made first (Mods › More › Save backups). Statue placement
+  and the Tower still happen through normal play.
 - **New: aim the boat cannon with the mouse** (#360, for #332, thanks @AnythingVocaloid for the idea). With Mouse
   camera on and the pointer captured, moving the mouse now aims the cannon on the King of Red Lions. Mouse sensitivity
   and invert-Y apply; the keyboard or a left stick still takes priority, and firing keeps its binding.
