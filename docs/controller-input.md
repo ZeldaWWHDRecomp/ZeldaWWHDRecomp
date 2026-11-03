@@ -173,7 +173,10 @@ short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
 Enable **Mouse camera** and click the TV picture to capture the pointer. Move the
-mouse to look around on foot or while sailing, at the same mouse sensitivity. That
+mouse to look around on foot or while sailing, at the same mouse sensitivity. With
+the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
+controller's left stick takes priority while held. Mouse cannon aim also follows
+**Invert camera up/down**. Firing keeps its existing button binding. The
 first click only captures; release it and click again to use its binding. Bound
 buttons work only in the TV window while the mouse camera has captured the
 pointer. Escape releases it; with the pointer free, Escape opens Settings. A left

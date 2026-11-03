@@ -21,7 +21,7 @@ const Entry catalogue[] = {
      "Lock-on, ongoing first-person aim and other projectile pitch stay native. New item coverage needs gameplay validation.",
      "WWHD_MOD_CAMERA_DIRECTED_ITEMS", camera_directed_items, set_camera_directed_items},
     {"mouse-camera", "Mouse camera", "Camera",
-     "Click the game picture to capture the mouse. Move it to look around on foot or while sailing; Esc releases it.",
+     "Click the game picture to capture the mouse. Move it to look around on foot or while sailing, or to aim the boat cannon; Esc releases it.",
      "WWHD_MOD_MOUSE_CAMERA", mouse_camera, set_mouse_camera},
     {"first-person", "First-person shortcut", "Camera",
      "Enter first person with R3 or the mouse wheel.",
