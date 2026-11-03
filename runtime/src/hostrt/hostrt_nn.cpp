@@ -219,4 +219,128 @@ void swkbd_destroy_0286D37C(Cpu* c) {
     finish(c, e);
 }
 
+// ---- SCI (system config) wrappers, measured: they read one UC system-config item through the port's
+// UCOpen/UCReadSysConfig/UCClose and clamp the value; errors are reported with OSReport. Frames are at the
+// original's places (the UC request is built in the reader's frame and read by UCReadSysConfig).
+namespace {
+inline void report(Cpu* c, uint32_t fmt, uint32_t a, uint32_t b, uint32_t d) {
+    c->r[3] = GD(fmt), c->r[4] = a, c->r[5] = b, c->r[6] = d;
+    c->cr[6] = 0;  // no floating-point arguments
+    imp_coreinit_OSReport(c);
+}
+inline void report0(Cpu* c, uint32_t fmt) {  // a message without arguments
+    c->r[3] = GD(fmt);
+    c->cr[6] = 0;
+    imp_coreinit_OSReport(c);
+}
+
+// the reader (0286D670) with its frame 0x78 below `sp`: r3 result 1 ok, 0 no handle, -4/-3 the two
+// UC errors 0xFFDFFFF7/0xFFDFFFEB, -1 any other error
+uint32_t sci_read(Cpu* c, uint32_t sp, uint32_t name, uint32_t type, uint32_t size, uint32_t out) {
+    const uint32_t frame = sp - 0x78, req = frame + 8;
+    st32(frame, sp);
+    c->r[1] = frame;
+    c->r[3] = name, c->r[4] = type, c->r[5] = size, c->r[6] = out;  // the reader's arguments, still there
+    imp_coreinit_UCOpen(c);
+    const uint32_t h = c->r[3];
+    const uint32_t file = GD(0x1017E874u);
+    if ((int32_t)h < 0) {
+        report(c, 0x1017E888u, file, 0x4A, h);
+        c->r[3] = h;
+        imp_coreinit_UCClose(c);
+        return 0;
+    }
+    // the request: the name in 64 bytes (zero-filled after its terminator), access 0x777, type, error 0,
+    // size, the destination
+    uint32_t i = 0;
+    for (; i < 64; i++) {
+        const uint8_t b = ld8(name + i);
+        st8(req + i, b);
+        if (!b) break;
+    }
+    for (; i < 64; i++) st8(req + i, 0);
+    st32(req + 0x40, 0x777), st32(req + 0x44, type), st32(req + 0x48, 0), st32(req + 0x4C, size), st32(req + 0x50, out);
+    c->r[3] = h, c->r[4] = 1, c->r[5] = req;
+    imp_coreinit_UCReadSysConfig(c);
+    const uint32_t err = c->r[3];
+    uint32_t res = 1;
+    if (err == 0xFFDFFFF7u) res = 0xFFFFFFFCu;
+    else if (err == 0xFFDFFFEBu) res = 0xFFFFFFFDu;
+    else if (err) {
+        report(c, 0x1017E8B8u, file, 0x68, err);
+        res = 0xFFFFFFFFu;
+    }
+    c->r[3] = h;
+    imp_coreinit_UCClose(c);
+    return res;
+}
+
+// the parental-control slot of an account (0286D890, frame 0x10 below `sp`): the slot, or 0 when nn::act
+// fails (two failure codes are reported)
+uint32_t act_slot(Cpu* c, uint32_t sp, uint32_t account) {
+    const uint32_t frame = sp - 0x10, slot = frame + 8;
+    st32(frame, sp);
+    st32(sp + 4, GC(0x0286D96Cu));  // its LR save word (the return address into the caller)
+    st8(slot, 0);
+    c->r[1] = frame;
+    c->r[3] = slot, c->r[4] = account;
+    imp_nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc(c);
+    const uint32_t r = c->r[3];
+    if (!(r & 0x80000000u)) return ld8(slot);
+    if (r == 0xC070FA80u) report0(c, 0x1017E91Cu);
+    else if (r == 0xC0712C80u) report0(c, 0x1017E8FCu);
+    return 0;
+}
+
+void sci_parental(Cpu* c, uint32_t fmt, bool clamp_to_2) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1], frame = sp - 0x50, out = e.r[3];
+    st32(sp + 4, e.lr);
+    st32(frame, sp);
+    c->r[31] = out;
+    const uint32_t slot = act_slot(c, frame, e.r[4]);
+    uint32_t res;
+    if (!slot) {
+        res = 0xFFFFFFFBu;
+    } else {
+        // snprintf(buf, 0x40, fmt, slot) through the game's snprintf (it is a root of its own)
+        c->r[1] = frame;
+        c->r[3] = frame + 8, c->r[4] = 0x40, c->r[5] = GD(fmt), c->r[6] = slot;
+        c->cr[6] = 0;
+        c->lr = GC(0x0286D994u);
+        c->pc = GC(0x028F17A8u);
+        ppc_dispatch(c);
+        res = sci_read(c, frame, frame + 8, 1, 1, out);
+        const uint8_t b = ld8(out);
+        if (clamp_to_2) {
+            if (b > 2) st8(out, 2);
+        } else if (b > 1) {
+            st8(out, 1);
+        } else if ((int8_t)b < 0) {
+            st8(out, 0);
+        }
+    }
+    finish(c, e);
+    c->r[3] = res;
+}
+}  // namespace
+
+// cafe.language (type 3, 4 bytes); a value over 11, or with a negative low byte, becomes 0xFF (result 0)
+void sci_language_0286D620(Cpu* c) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1], frame = sp - 0x10, out = e.r[3];
+    st32(sp + 4, e.lr);
+    st32(frame, sp);
+    c->r[31] = out;
+    st32(frame + 4, GC(0x0286D648u));  // the reader's LR save word
+    const uint32_t res = sci_read(c, frame, GD(0x1017E850u), 3, 4, out);
+    const uint32_t v = ld32(out);
+    if ((int32_t)v > 11 || (int8_t)v < 0) st32(out, 0xFF);
+    finish(c, e);
+    c->r[3] = res;
+}
+
+void sci_parental_0286D938(Cpu* c) { sci_parental(c, 0x1017E948u, false); }
+void sci_parental_0286D9E0(Cpu* c) { sci_parental(c, 0x1017E96Cu, true); }
+
 }  // namespace hostrt

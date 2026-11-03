@@ -59,3 +59,6 @@
 0286D2F4  # nn: swkbd wrapper
 0286D338  # nn: swkbd wrapper
 0286CB7C  # nn: erreula wrapper
+0286D620  # nn SCI: cafe.language
+0286D938  # nn SCI: parental control (online communication)
+0286D9E0  # nn SCI: parental control (network launcher)

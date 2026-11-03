@@ -126,3 +126,8 @@ extern "C" __attribute__((weak)) void imp_coreinit___gh_set_errno(Cpu* c) { host
 extern "C" __attribute__((weak)) void imp_coreinit_MEMAllocFromExpHeapEx(Cpu* c) { hostrt_test_import(c, "coreinit_MEMAllocFromExpHeapEx"); }
 extern "C" __attribute__((weak)) void imp_coreinit_MEMDestroyExpHeap(Cpu* c) { hostrt_test_import(c, "coreinit_MEMDestroyExpHeap"); }
 extern "C" __attribute__((weak)) void imp_coreinit_OSDynLoad_Release(Cpu* c) { hostrt_test_import(c, "coreinit_OSDynLoad_Release"); }
+extern "C" __attribute__((weak)) void imp_coreinit_UCOpen(Cpu* c) { hostrt_test_import(c, "coreinit_UCOpen"); }
+extern "C" __attribute__((weak)) void imp_coreinit_UCReadSysConfig(Cpu* c) { hostrt_test_import(c, "coreinit_UCReadSysConfig"); }
+extern "C" __attribute__((weak)) void imp_coreinit_UCClose(Cpu* c) { hostrt_test_import(c, "coreinit_UCClose"); }
+extern "C" __attribute__((weak)) void imp_coreinit_OSReport(Cpu* c) { hostrt_test_import(c, "coreinit_OSReport"); }
+extern "C" __attribute__((weak)) void imp_nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc(Cpu* c) { hostrt_test_import(c, "nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc"); }

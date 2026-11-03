@@ -61,6 +61,9 @@ void f_0286CB7C(Cpu*);
 void f_0286C590(Cpu*);
 void f_0286C9CC(Cpu*);
 void f_0286D37C(Cpu*);
+void f_0286D620(Cpu*);
+void f_0286D938(Cpu*);
+void f_0286D9E0(Cpu*);
 void f_0286DA70(Cpu*);
 void f_028F5C88(Cpu*);
 void f_028F1748(Cpu*);
@@ -100,6 +103,28 @@ bool import_model(Cpu* c, const char* name) {
     if (!strcmp(name, "coreinit_MEMAllocFromExpHeapEx")) {
         c->r[3] = (mix(c->r[4] ^ c->r[5] ^ t_heap) & 7) ? t_heap : 0;
         if (c->r[3]) t_heap += (c->r[4] + 15) & ~15u;
+        return true;
+    }
+    const uint32_t h = mix(c->r[3] ^ mix(c->r[4] ^ mix(c->r[5])));
+    if (!strcmp(name, "coreinit_UCOpen")) {
+        c->r[3] = (h & 7) ? h & 0xFF : 0xFFFFFFF0u | (h & 0xF);
+        return true;
+    }
+    if (!strcmp(name, "coreinit_UCReadSysConfig")) {
+        const uint32_t req = c->r[5], size = ld32(req + 0x4C), dst = ld32(req + 0x50);
+        for (uint32_t i = 0; i < size && i < 16; i++) st8(dst + i, (uint8_t)mix(h + i));
+        static const uint32_t errs[] = {0, 0, 0, 0xFFDFFFF7u, 0xFFDFFFEBu, 0xFFDFFF00u};
+        c->r[3] = errs[h % 6];
+        return true;
+    }
+    if (!strcmp(name, "coreinit_UCClose") || !strcmp(name, "coreinit_OSReport")) {
+        c->r[3] = 0;
+        return true;
+    }
+    if (!strncmp(name, "nn_act_GetParentalControlSlotNoEx", 33)) {
+        st8(c->r[3], (uint8_t)(h >> 8));
+        static const uint32_t res[] = {0, 0, 0, 0xA070F480u, 0xC070FA80u, 0xC0712C80u, 0x80000001u};
+        c->r[3] = res[h % 7];
         return true;
     }
     if (!strcmp(name, "coreinit_MEMDestroyExpHeap") || !strcmp(name, "coreinit_OSDynLoad_Release")) {
@@ -289,6 +314,11 @@ void nn_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
     c.r[4] = (uint32_t)r() % 64, c.r[5] = s + 0x200 + ((uint32_t)r() & 0xFF0);
 }
 
+void sci_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
+    c.r[3] = s + 0x100 + ((uint32_t)r() & 0xFF0);  // the value's destination
+    c.r[4] = (uint32_t)r() % 16;                    // the account
+}
+
 std::vector<Root> roots() {
     return {
         {"construct_array", f_028EFFD0, hostrt::construct_array_028EFFD0,
@@ -382,6 +412,9 @@ std::vector<Root> roots() {
         {"heap_0286C590", f_0286C590, always<hostrt::heap_alloc_0286C590>, nn_args, R3 | R4, {0x104B6740u, 0x104B6744u, 0x104B6748u, 0x104B674Cu, 0x104B6750u, 0x104B6754u, 0x104B6758u, 0x104B675Cu, 0x104B6760u, 0x104B6764u, 0x104B6768u, 0x104B676Cu, 0x104B6770u, 0x104B6774u, 0x104B6778u, 0x104B677Cu, 0x104B6780u, 0x104B6784u, 0x104B6788u, 0x104B678Cu, 0x104B6790u, 0x104B6794u, 0x104B6798u, 0x104B679Cu, 0x104B67A0u, 0x104B67A4u, 0x104B67A8u, 0x104B67ACu, 0x104B67B0u, 0x104B67B4u, 0x104B67B8u, 0x104B67BCu, 0x104B67C0u, 0x104B67C4u, 0x104B67C8u, 0x104B67CCu, 0x104B67D0u, 0x104B67D4u, 0x104B67D8u, 0x104B67DCu, 0x104B67E0u, 0x104B67E4u, 0x104B67E8u, 0x104B67ECu, 0x104B67F0u, 0x104B67F4u, 0x104B67F8u, 0x104B67FCu, 0x104B6800u, 0x104B6804u, 0x104B6808u, 0x104B680Cu, 0x104B6810u, 0x104B6814u, 0x104B6818u, 0x104B681Cu, 0x104B6820u, 0x104B6824u, 0x104B6828u, 0x104B682Cu, 0x104B6830u, 0x104B6834u, 0x104B6838u, 0x104B683Cu, 0x101FC898u}},
         {"erreula_0286C9CC", f_0286C9CC, always<hostrt::erreula_destroy_0286C9CC>, nn_args, R3 | R4, {0x104B6740u, 0x104B6744u, 0x104B6748u, 0x104B674Cu, 0x104B6750u, 0x104B6754u, 0x104B6758u, 0x104B675Cu, 0x104B6760u, 0x104B6764u, 0x104B6768u, 0x104B676Cu, 0x104B6770u, 0x104B6774u, 0x104B6778u, 0x104B677Cu, 0x104B6780u, 0x104B6784u, 0x104B6788u, 0x104B678Cu, 0x104B6790u, 0x104B6794u, 0x104B6798u, 0x104B679Cu, 0x104B67A0u, 0x104B67A4u, 0x104B67A8u, 0x104B67ACu, 0x104B67B0u, 0x104B67B4u, 0x104B67B8u, 0x104B67BCu, 0x104B67C0u, 0x104B67C4u, 0x104B67C8u, 0x104B67CCu, 0x104B67D0u, 0x104B67D4u, 0x104B67D8u, 0x104B67DCu, 0x104B67E0u, 0x104B67E4u, 0x104B67E8u, 0x104B67ECu, 0x104B67F0u, 0x104B67F4u, 0x104B67F8u, 0x104B67FCu, 0x104B6800u, 0x104B6804u, 0x104B6808u, 0x104B680Cu, 0x104B6810u, 0x104B6814u, 0x104B6818u, 0x104B681Cu, 0x104B6820u, 0x104B6824u, 0x104B6828u, 0x104B682Cu, 0x104B6830u, 0x104B6834u, 0x104B6838u, 0x104B683Cu, 0x101FC898u}},
         {"swkbd_0286D37C", f_0286D37C, always<hostrt::swkbd_destroy_0286D37C>, nn_args, R3 | R4, {0x104B6740u, 0x104B6744u, 0x104B6748u, 0x104B674Cu, 0x104B6750u, 0x104B6754u, 0x104B6758u, 0x104B675Cu, 0x104B6760u, 0x104B6764u, 0x104B6768u, 0x104B676Cu, 0x104B6770u, 0x104B6774u, 0x104B6778u, 0x104B677Cu, 0x104B6780u, 0x104B6784u, 0x104B6788u, 0x104B678Cu, 0x104B6790u, 0x104B6794u, 0x104B6798u, 0x104B679Cu, 0x104B67A0u, 0x104B67A4u, 0x104B67A8u, 0x104B67ACu, 0x104B67B0u, 0x104B67B4u, 0x104B67B8u, 0x104B67BCu, 0x104B67C0u, 0x104B67C4u, 0x104B67C8u, 0x104B67CCu, 0x104B67D0u, 0x104B67D4u, 0x104B67D8u, 0x104B67DCu, 0x104B67E0u, 0x104B67E4u, 0x104B67E8u, 0x104B67ECu, 0x104B67F0u, 0x104B67F4u, 0x104B67F8u, 0x104B67FCu, 0x104B6800u, 0x104B6804u, 0x104B6808u, 0x104B680Cu, 0x104B6810u, 0x104B6814u, 0x104B6818u, 0x104B681Cu, 0x104B6820u, 0x104B6824u, 0x104B6828u, 0x104B682Cu, 0x104B6830u, 0x104B6834u, 0x104B6838u, 0x104B683Cu, 0x101FC898u}},
+        {"sci_0286D620", f_0286D620, always<hostrt::sci_language_0286D620>, sci_args, R3 | R4},
+        {"sci_0286D938", f_0286D938, always<hostrt::sci_parental_0286D938>, sci_args, R3 | R4},
+        {"sci_0286D9E0", f_0286D9E0, always<hostrt::sci_parental_0286D9E0>, sci_args, R3 | R4},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);
@@ -439,7 +472,18 @@ bool same_call(const Call& a, const Call& b) {
     if (a.addr != b.addr || (a.import == nullptr) != (b.import == nullptr)) return false;
     if (a.import && strcmp(a.import, b.import)) return false;
     if (a.import) {  // the port's host functions: only their arguments matter, not where on the stack
-        const int nargs = !strcmp(a.import, "coreinit___gh_set_errno") ? 1 : !strcmp(a.import, "coreinit_memset") ? 3 : 8;
+        static const std::pair<const char*, int> counts[] = {
+            {"coreinit___gh_set_errno", 1}, {"coreinit_memset", 3}, {"coreinit_UCOpen", 1}, {"coreinit_UCClose", 1},
+            {"coreinit_UCReadSysConfig", 3}, {"coreinit_OSReport", 4}, {"nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc", 2},
+            {"coreinit_MEMAllocFromExpHeapEx", 3}, {"coreinit_MEMDestroyExpHeap", 1}, {"coreinit_OSDynLoad_Release", 1}};
+        int nargs = 8;
+        for (auto& [n, k] : counts)
+            if (!strcmp(a.import, n)) nargs = k;
+        if (!strcmp(a.import, "coreinit_OSReport")) {  // the format and the arguments it uses
+            nargs = 1;
+            for (uint32_t i = a.r[3]; ld8(i); i++)
+                if (ld8(i) == '%') nargs++;
+        }
         for (int i = 3; i < 3 + nargs; i++)
             if (a.r[i] != b.r[i]) return false;
         return true;
