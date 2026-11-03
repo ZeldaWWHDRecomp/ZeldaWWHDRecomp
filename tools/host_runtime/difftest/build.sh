@@ -1,0 +1,31 @@
+#!/bin/sh
+# Builds the host-runtime difference tests into OUT (default build/difftest):
+#   tools/host_runtime/difftest/build.sh GAME_RPX [GEN_DIR] [OUT]
+# GEN_DIR is recomp.py output (default build/gen); OUT gets the RPX image (game data: keep it in build/).
+#   OUT/mathsurvey OUT/image.bin FUNC|all [threads] [count]   bit-exactness survey of the math library
+#   OUT/abisurvey  OUT/image.bin FUNC|all [threads] [count]   compiler helpers (64-bit, conversions)
+#   OUT/regtest    OUT/image.bin ROOT|all [count]             replacements vs originals (0: every input)
+set -e
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+RPX=$1
+GEN=${2:-$ROOT/build/gen}
+OUT=${3:-$ROOT/build/difftest}
+D=$ROOT/tools/host_runtime/difftest
+mkdir -p "$OUT"
+python3 "$ROOT/tools/verify/mkimage.py" "$RPX" "$OUT/image.bin" > /dev/null
+GCC="-O3 -ffp-contract=off -fno-strict-aliasing -fwrapv -w -I$ROOT/runtime/include"
+CXX="-std=c++20 -O2 -ffp-contract=off -I$ROOT/runtime/include -I$ROOT/runtime/src/hostrt -I$D"
+clang -c $GCC "$ROOT/runtime/src/espresso_fp.c" -o "$OUT/espresso_fp.o"
+MATH="028F4384 028F37F0 028F43F8 028F4BE0 028F423C 028F4114 028F41B0 028F3F90 028F4DC4 028F4F20 028F4FAC 028F4034 028F4560 028F4D28 028F38F8 028F3C78 028F3CA0 028F3EC0 028F3B98 028F3AB8"
+ABI="028F5680 028F5678 028F543C 028F597C 028F5A1C 028F5B8C"
+REG="028F4114 028F41B0 028F3B98 028F543C 028F597C 028F5680 028F5678"
+for set in MATH ABI REG; do
+    eval addrs=\$$set
+    python3 "$D/mkclosure.py" "$GEN" "$OUT/closure_$set.c" $addrs > /dev/null
+    clang -c $GCC "$OUT/closure_$set.c" -o "$OUT/closure_$set.o"
+done
+HOSTRT="$ROOT/runtime/src/hostrt/hostrt_math.cpp $ROOT/runtime/src/hostrt/hostrt_abi.cpp"
+clang++ $CXX "$D/mathsurvey.cpp" "$D/rt.cpp" "$OUT/closure_MATH.o" "$OUT/espresso_fp.o" -o "$OUT/mathsurvey"
+clang++ $CXX "$D/abisurvey.cpp" "$D/rt.cpp" "$ROOT/runtime/src/hostrt/hostrt_abi.cpp" "$OUT/closure_ABI.o" "$OUT/espresso_fp.o" -o "$OUT/abisurvey"
+clang++ $CXX "$D/regtest.cpp" "$D/rt.cpp" $HOSTRT "$OUT/closure_REG.o" "$OUT/espresso_fp.o" -o "$OUT/regtest"
+echo "difftest tools in $OUT"

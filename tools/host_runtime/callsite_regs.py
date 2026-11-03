@@ -6,7 +6,7 @@ only exact if no caller reads a register the original left behind as a side effe
 call site in the plain-form recompiled code (WWHD_RECOMP_PLAIN=1) with a liveness analysis over GPRs,
 FPRs, CR bits, CTR and XER[CA].
 
-usage: callsite_regs.py GEN_PLAIN_DIR inventory.tsv [ADDR ...] > callsite_regs.tsv
+usage: callsite_regs.py GEN_PLAIN_DIR inventory.tsv --rpx=cking.rpx [ADDR ...] > callsite_regs.tsv
 Output per root: callers analysed, tail calls, and the registers live after the call (outputs included,
 so the caller's use of r3/r4/f1 shows too). Indirect callers (vtables, function pointers) cannot be
 analysed here and are counted separately.
@@ -82,7 +82,7 @@ def root_defs(df, gi, addr, seen):
     return d
 
 
-def live_after(df, caller, root, unknown_reads_args=True):
+def live_after(df, caller, root, unknown_reads_args=True, ret_use=None):
     g = df.cfg(caller)
     n = len(g.insns)
     use, defs, sites, tails = [], [], [], []
@@ -103,7 +103,7 @@ def live_after(df, caller, root, unknown_reads_args=True):
                     u |= funcdb.ARGS - d
                 d |= funcdb.VOLATILE
             if s.startswith(("return;", "MUSTTAIL return")) and not g.calls[k]:
-                u |= RET_USE
+                u |= RET_USE if ret_use is None else ret_use
         use.append(u)
         defs.append(d)
     live = [set() for _ in range(n)]
@@ -127,7 +127,7 @@ def live_after(df, caller, root, unknown_reads_args=True):
         for j in g.succ[k]:
             after |= live[j]
     if tails:
-        after |= RET_USE
+        after |= RET_USE if ret_use is None else ret_use
     return after, len(sites), len(tails)
 
 
@@ -138,20 +138,25 @@ def fmt(regs):
 
 
 def main():
-    gen, inv = sys.argv[1], sys.argv[2]
+    args = [a for a in sys.argv[1:] if not a.startswith("--rpx=")]
+    rpx_path = next((a[6:] for a in sys.argv[1:] if a.startswith("--rpx=")), None)
+    gen, inv = args[0], args[1]
     rows = [l.rstrip("\n").split("\t") for l in open(inv)]
     head, rows = rows[0], rows[1:]
     col = {h: i for i, h in enumerate(head)}
-    want = {int(a, 16) for a in sys.argv[3:]}
+    want = {int(a, 16) for a in args[2:]}
     roots = [int(r[0], 16) for r in rows if r[col["reach"]] != "internal" and (not want or int(r[0], 16) in want)]
     gi = funcdb.GenIndex(gen)
     df = funcdb.Dataflow(gi)
     df_strict = funcdb.Dataflow(gi, unknown_reads_args=False)
     callers = {r: set() for r in roots}
+    callers_of = {}
     for a in gi.addrs:
         txt = gi.text(a)
         for m in funcdb.CALL_RE.finditer(txt):
             t = int(m.group(1), 16)
+            if t != a:
+                callers_of.setdefault(t, set()).add(a)
             if t in callers and t != a:
                 callers[t].add(a)
     def special_defs(addr, seen):
@@ -169,6 +174,35 @@ def main():
                 d |= VOL_CR | {("ctr", 0), ("xer_ca", 0)}
         return d
 
+    # what the callers of a function read of its result registers after it returns: the union over its
+    # call sites (strict liveness, recursively for the callers' own returns); a function whose address
+    # is taken (vtables, pointers) or that is reached by a tail call or has no known caller keeps the
+    # conservative r3, r4, f1, f2
+    import struct as _struct
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    import rpx as rpxmod
+    taken = set()
+    if rpx_path:
+        for sec, off, typ, sym, add in rpxmod.Rpx(rpx_path).relocs:
+            if typ in (rpxmod.R_PPC_ADDR32, rpxmod.R_PPC_ADDR16_LO):
+                taken.add((sym.value + add) & 0xFFFFFFFF)
+    memo, busy = {}, set()
+
+    def ret_reads(f, depth):
+        if f in memo:
+            return memo[f]
+        if f in taken or depth > 6 or f in busy or not callers_of.get(f):
+            return set(RET_USE)
+        busy.add(f)
+        r = set()
+        for c in callers_of[f]:
+            v, s_, t_ = live_after(df_strict, c, f, False, ret_reads(c, depth + 1))
+            r |= v & RET_USE
+        busy.discard(f)
+        if depth == 0 or not (r - RET_USE):
+            memo[f] = r
+        return r
+
     print("addr\tcallers\tsites\ttail_calls\tlive_after\tlive_scratch\tclobbered_and_read\tclobbered_and_read_strict")
     for r in roots:
         allv, hard, ns, nt = set(), set(), 0, 0
@@ -177,7 +211,7 @@ def main():
             allv |= v
             # strict: imports and indirect calls read no argument registers (a register is then live
             # only if the caller's own code or a known callee reads it)
-            hard |= live_after(df_strict, c, r, False)[0]
+            hard |= live_after(df_strict, c, r, False, ret_reads(c, 1))[0]
             ns += s
             nt += t
         # the registers a caller reads that the original root may have written: the replacement must

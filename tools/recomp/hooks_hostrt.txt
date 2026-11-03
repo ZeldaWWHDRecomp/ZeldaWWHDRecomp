@@ -1,0 +1,10 @@
+# Port-owned guest runtime replaced by host code (runtime/src/hostrt; tools/host_runtime). Each root's
+# replacement was measured bit-exact against the recompiled original (tools/host_runtime/difftest).
+# WWHD_HOSTRT=0 runs the originals.
+028F4114  # floorf
+028F41B0  # ceilf
+028F3B98  # floor (double)
+028F543C  # u64 -> float
+028F597C  # u64 % u64
+028F5680  # float -> s64
+028F5678  # float -> u64
