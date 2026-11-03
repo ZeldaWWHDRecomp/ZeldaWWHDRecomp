@@ -13,6 +13,15 @@ import setup
 
 
 class RandomizerSetup(unittest.TestCase):
+    def test_windows_path_budget_includes_seed_backups(self):
+        limit = setup.MAX_DATA_DIR_CHARS - setup.RANDOMIZER_PATH_EXTRA
+        root = 'C:\\' + 'x' * (limit-3)
+        self.assertIsNone(setup.path_length_problem(root, windows=True, extra_path_chars=setup.RANDOMIZER_PATH_EXTRA))
+        self.assertIsNotNone(setup.path_length_problem(root+'x', windows=True, extra_path_chars=setup.RANDOMIZER_PATH_EXTRA))
+        self.assertIsNone(setup.path_length_problem(root+'x', windows=True))
+        backup = 'save\\save-backups\\randomizer-'+'a'*64+'\\2026-10-12_03-15-00-mod-abcdefg-99\\save\\user\\cking_pic_order0.sav'
+        self.assertLessEqual(len(root+'\\'+backup), setup.WINDOWS_MAX_PATH)
+
     def folder(self, root, title=None):
         root = Path(root)
         for name in ('code', 'content', 'meta'):

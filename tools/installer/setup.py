@@ -102,6 +102,8 @@ WINDOWS_MAX_PATH = 259  # characters of a full path without the extended-length 
 # deletes the compiler with \\?\ paths (its unused Python/lldb files are 128 deep, 139 while unpacking).
 DEEPEST_DATA_PATH = 78
 MAX_DATA_DIR_CHARS = WINDOWS_MAX_PATH - 1 - DEEPEST_DATA_PATH  # 180 (the 1: the separator after it)
+# Seed backups add save/ plus the full-hash namespace to the ordinary backup path.
+RANDOMIZER_PATH_EXTRA = len("save\\randomizer-" + "0" * 64 + "\\")
 
 
 # Extended-length paths need a Python whose own path functions join with backslashes: shutil, os.walk
@@ -171,7 +173,7 @@ def plain_text(text):
     return text
 
 
-def path_length_problem(data_dir, package=None, windows=None):
+def path_length_problem(data_dir, package=None, windows=None, extra_path_chars=0):
     """None, or the message that stops setup before it downloads anything when the data folder is too
     deep for Windows: the game, wwhd-extract and the compiler would fail on their deepest files
     (DEEPEST_DATA_PATH). package: the release folder; when the data folder is inside it (a portable
@@ -179,16 +181,17 @@ def path_length_problem(data_dir, package=None, windows=None):
     if not (IS_WIN if windows is None else windows):
         return None
     data_dir = windows_path(plain_path(data_dir))
-    if len(data_dir) <= MAX_DATA_DIR_CHARS:
+    data_limit = MAX_DATA_DIR_CHARS - extra_path_chars
+    if len(data_dir) <= data_limit:
         return None
     if package and data_dir.rsplit("\\", 1)[0].lower() == windows_path(package).lower():
         package = windows_path(package)
-        limit = MAX_DATA_DIR_CHARS - (len(data_dir) - len(package))
+        limit = data_limit - (len(data_dir) - len(package))
         return ("This folder's path is too long for Windows (%d characters, at most %d work). Move the Wind "
                 "Waker HD folder to a shorter place such as C:\\Games\\WindWakerHD and start it again."
                 % (len(package), limit))
     return ("The install folder's path is too long for Windows (%d characters, at most %d work). Choose a "
-            "shorter place such as C:\\Games\\WindWakerHD and start it again." % (len(data_dir), MAX_DATA_DIR_CHARS))
+            "shorter place such as C:\\Games\\WindWakerHD and start it again." % (len(data_dir), data_limit))
 
 
 APP_NAME = "Wind Waker HD"
@@ -2576,6 +2579,9 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     want_decomp = kind != "gen" and decomp_wanted(ctx)
     if kind in ("folder", "installed") and game_folder_title(source[1]) == RANDOMIZER_TITLE:
         want_decomp = False
+        problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
+        if problem:
+            raise SetupError(problem)
     old_state = ctx.state()
     steps = plan_steps(kind, want_decomp)
     total = len(steps)
@@ -2649,6 +2655,9 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     ctx.game_dir = game_dir
     source_build = check_game_version(game_dir) if kind != "gen" else None
     if getattr(source_build, "randomizer", False) is True:
+        problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
+        if problem:
+            raise SetupError(problem)
         if manifest.get("variant") == "decomp":
             raise SetupError("Randomized games require the regular port release, not the decomp runtime.")
         want_decomp = False
@@ -3247,6 +3256,10 @@ def gui_main(args):
                     return fail(req, "wrong_title", str(e))
             try:
                 checked_build = check_game_version(folder)
+                if getattr(checked_build, "randomizer", False) is True:
+                    problem = path_length_problem(ctx.data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
+                    if problem:
+                        return fail(req, "path_length", problem)
             except SetupError as e:
                 return fail(req, "wrong_version", str(e)[0].upper() + str(e)[1:])
             return reply(req, kind="folder", path=folder, title=title_desc(tid) if tid else "The Wind Waker HD",
