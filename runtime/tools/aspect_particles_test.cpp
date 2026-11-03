@@ -18,11 +18,15 @@ bool recording_display_list() { return false; }
 }
 namespace mods::cemu { float aspect_ratio() { return 0; } }
 namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' pane observer (mods/play_context.cpp)
-namespace mods { float hud_fade_alpha_of(uint32_t) { return 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
+static uint32_t faded_pane = 0;
+static float hud_alpha = 1.f;
+namespace mods { float hud_fade_alpha_of(uint32_t p) { return p == faded_pane ? hud_alpha : 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
 namespace button_glyphs { void calculate_pane(Cpu* c,PpcFunc fn) { fn(c); } void draw_pane(Cpu* c,PpcFunc fn) { fn(c); } }
 static constexpr uint32_t base=0x20000000, pane=base+0x100, out=base+0x200,
     root=base+0xa00, emitter=base+0x400, projection=base+0x900;
 static float drawn[16];
+static unsigned draws = 0;
+static uint8_t drawn_alpha = 0;
 extern "C" void hook_028766CC(Cpu*);
 extern "C" {
 void f_02874038_orig(Cpu*) {}
@@ -42,6 +46,7 @@ void f_02704D2C_orig(Cpu* c) {
     stf32(c->r[3]+8,0);
 }
 void f_0282D9C0_orig(Cpu* c) {
+    ++draws; drawn_alpha = ld8(emitter+0x247);
     for(unsigned i=0;i<16;++i) drawn[i]=ldf32(c->r[5]+4*i);
 }
 void hook_025A847C(Cpu*);
@@ -62,9 +67,11 @@ static void draw(unsigned group) {
     st8(emitter+0x262,group);
     uint32_t before[16];for(unsigned i=0;i<16;++i)before[i]=ld32(projection+4*i);
     const uint32_t x=ld32(emitter+0x22c),y=ld32(emitter+0x230);
+    const uint8_t alpha = ld8(emitter+0x247);
     Cpu c{};c.r[3]=emitter+0x9c;c.r[5]=projection;hook_0282D9C0(&c);
     for(unsigned i=0;i<16;++i)assert(before[i]==ld32(projection+4*i));
     assert(x==ld32(emitter+0x22c)&&y==ld32(emitter+0x230));
+    assert(alpha == ld8(emitter+0x247));
 }
 static bool close(float a,float b) { return std::abs(a-b)<0.00001f; }
 int main() {
@@ -129,9 +136,25 @@ int main() {
         assert(close(drawn[0],1.f/(640*wide)));
     }
     mode(aspect::k16x10);pane_at(390,280);
+    // HUD effects inherit the fade of their pane's ancestors, even at the original aspect.
+    mode(aspect::kOriginal);pane_at(390,280);capture();
+    st8(emitter+0x247,200); faded_pane=root;
+    hud_alpha=.5f; draw(7); assert(drawn_alpha==100);
+    hud_alpha=0.f; unsigned before=draws; draw(7); assert(draws==before);
+    // Hidden effects still simulate; showing the HUD draws the same emitter at its original alpha.
+    hud_alpha=1.f; draw(7); assert(draws==before+1 && drawn_alpha==200);
+    // World and DRC groups never inherit the TV HUD fade.
+    hud_alpha=0.f;
+    for(unsigned group:{0u,6u,11u,12u}) {before=draws;draw(group);assert(draws==before+1 && drawn_alpha==200);}
+    hud_alpha=.25f;
+    for(unsigned group:{7u,8u,9u,10u}) {draw(group);assert(drawn_alpha==50);}
+    hud_alpha=1.f;
     // A recycled pane address with another name must not move an old emitter.
+    hud_alpha=0.f; before=draws;
     std::strcpy((char*)mem::ptr(pane+0x80),"reused");pane_at(-500,-300);draw(7);
     assert(drawn[3]==0&&drawn[7]==0);
+    assert(draws==before+1 && drawn_alpha==200); // recycled panes must not hide unrelated effects
+
 }
 
 namespace guestmods::maphud { bool hide_pane(uint32_t) { return false; } }  // map/HUD bridge (mods/map_hud.cpp)

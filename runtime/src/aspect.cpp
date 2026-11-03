@@ -719,6 +719,14 @@ std::pair<float,float> particle_pane_offset(uint32_t pane) {
     }
     return {dx,dy};
 }
+// HUD particles are separate from the layout draw tree. Follow the source pane's ancestors
+// explicitly so a sparkle emitted by a child inherits the counter/heart/magic fade as well.
+float particle_pane_fade(uint32_t pane) {
+    float alpha=1.f;
+    for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent))
+        alpha*=mods::hud_fade_alpha_of(pane);
+    return alpha;
+}
 bool particle_pane_follows_aspect(uint32_t pane) {
     for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent)) {
         if(!ld32(pane+aspect::kPaneParent)) {
@@ -793,7 +801,7 @@ extern "C" void hook_0282D9C0(Cpu* c) {
     const uint32_t group=ld8(emitter+0x262);
     if (group<7 || group>10) { f_0282D9C0_orig(c); return; }
     const float x=ldf32(emitter+0x22c), y=ldf32(emitter+0x230);
-    float dx=0,dy=0;
+    float dx=0,dy=0,fade=1.f;
     {
         std::lock_guard<std::mutex> lock(particle_mu);
         const auto key=particle_key(x,y);
@@ -807,14 +815,24 @@ extern "C" void hook_0282D9C0(Cpu* c) {
         if(bound!=particle_bindings.end()) {
             const auto& source=bound->second.source;
             if(aspect::name_of(source.pane)==source.name) {
+                fade=particle_pane_fade(source.pane);
                 const auto offset=particle_pane_offset(source.pane);
                 dx=offset.first-source.dx;
                 dy=source.dy-offset.second;
             }
         }
     }
+    // dPa::set (025A854C) writes the emitter's global primary alpha at +0x247.
+    // Scale only for this draw: do not alter animation, particle simulation or the authored alpha.
+    if(fade<=0.f)return;
+    const auto draw=[&] {
+        const uint8_t alpha=ld8(emitter+0x247);
+        if(fade<1.f)st8(emitter+0x247,uint8_t(std::lround(float(alpha)*fade)));
+        f_0282D9C0_orig(c);
+        if(fade<1.f)st8(emitter+0x247,alpha);
+    };
     float kx,ky; aspect::factors(aspect::game(),kx,ky);
-    if (kx==1 && ky==1 && dx==0 && dy==0) { f_0282D9C0_orig(c); return; }
+    if (kx==1 && ky==1 && dx==0 && dy==0) { draw(); return; }
     uint32_t saved[8];
     for (unsigned i=0;i<8;++i) saved[i]=ld32(projection+4*i);
     stf32(projection+12,float(ldf32(projection+12))+float(ldf32(projection))*dx);
@@ -831,7 +849,7 @@ extern "C" void hook_0282D9C0(Cpu* c) {
             LOG("[effect-draw] frame=%llu aspect=%.6f emitter=%08X group=%u position=%.3f/%.3f shift=%.3f/%.3f scale=%.6f/%.6f",(unsigned long long)frame,aspect::game(),emitter,group,x,y,dx,dy,kx,ky);
         }
     }
-    f_0282D9C0_orig(c);
+    draw();
     for (unsigned i=0;i<8;++i) st32(projection+4*i,saved[i]);
 }
 
