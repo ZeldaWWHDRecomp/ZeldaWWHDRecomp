@@ -56,7 +56,7 @@ and Right Stick Down separately.
 ## Setting up a controller, and buttons per controller
 
 The first time a new controller is used, Settings opens with **New controller: Set up / Later /
-Don't ask again**. **Controls > Set up controller...** runs the same setup any time:
+Don't ask again**. **Controls > Bindings > Set up controller...** runs the same setup any time:
 
 1. **Face buttons**: *by position*, as on the Wii U GamePad (the bottom button is the sword, the
    Wii U's B; the right one the action button, A), or *by the letters on the buttons* (the button
@@ -132,7 +132,7 @@ in the game's item screen. An item already on another button swaps places with t
   an item (bow, hookshot, boomerang, telescope, Picto Box, Deku Leaf, conducting, the sail), and outside
   play, the buttons work at once and the ring doesn't open.
 
-Controls → **Item ring**: **Touch only** (default: the on-screen X, Y and R), **Touch and controllers**,
+Controls → Gameplay → **Item ring**: **Touch only** (default: the on-screen X, Y and R), **Touch and controllers**,
 or **Off**. It is off for controllers by default because of that short wait on every press.
 
 **While the ring is open** the game runs on, runs in **slow motion** (default: a third of its speed) or
@@ -243,7 +243,7 @@ and KPAD writers, including direction bits, press/release edges, both sticks,
 interpolation repeats and fresh analog samples. Neither test reads game data or a save, or uses a physical controller. These
 checks do not replace testing a particular physical device and its driver.
 
-Controls → **Skip controller selection** is on by default. At the title screen it chooses the
+Controls → Controller → **Skip controller selection** is on by default. At the title screen it chooses the
 configured Wii U GamePad or Pro Controller through the game's normal selection path; turn it off
 to choose manually. Unavailable options and controller-disconnect prompts remain interactive.
 

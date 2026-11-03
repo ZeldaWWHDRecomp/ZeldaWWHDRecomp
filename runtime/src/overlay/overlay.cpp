@@ -2830,7 +2830,6 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
 
 void controls_prompts_page(input_map::Mapping& m) {
     auto disabled_after = controls_resolved_note;
-    controller_row(false);
     m = edit_current();
     heading("In-game button prompts");
     using P = input_map::Mapping::Prompts;

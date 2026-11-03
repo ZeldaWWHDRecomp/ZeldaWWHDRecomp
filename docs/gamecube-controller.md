@@ -51,7 +51,7 @@ direction in the game's options if you prefer the original GameCube feel.
 
 ## Button prompts
 
-The controller layout and the on-screen button style are separate choices. In **Controls → Button
+The controller layout and the on-screen button style are separate choices. In **Controls → Prompts → Button
 prompts**, choose **GameCube** to show the classic green A, red B, grey X/Y, purple Z, grey L/R,
 yellow C-stick and Start button. **Automatic** uses this style when a supported GameCube adapter
 is recognized. Choose it by hand for another controller. See [Button prompts](button-glyphs.md)

@@ -130,7 +130,7 @@ recalibrate on return. The status line reports unavailable sensors.
   window losing the focus does this too, SDL pauses controller events then), "turning its sensors off
   and on again" (the watchdog), "motion from controller N" (another controller took over), or "the
   right stick has rested at x, y for 2 s while aiming" (the game ignores the gyro while the right stick
-  is outside its 0.1 dead zone: a drifting stick does this; raise **Controls → stick dead zone**).
+  is outside its 0.1 dead zone: a drifting stick does this; raise **Controls → Controller → stick dead zone**).
   The Gyro window shows the same.
 - **More detail:** `WWHD_GYRO_LOG=1` logs, twice a second and for every source, the raw gyro and
   accelerometer samples, the sample rate, the bias, the gravity direction and the aim, plus what the
