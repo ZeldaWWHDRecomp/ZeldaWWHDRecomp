@@ -88,5 +88,7 @@ void prompt_text(const std::u16string& initial, int max_len,
 bool has_rumble();
 // Any thread: the motors still at once and for good; the process ends (quit, exit, crash handler).
 void stop_rumble_now();
+// AppKit normal shutdown only, separate from the async-signal-safe crash hook.
+void shutdown_rumble();
 
 }  // namespace input

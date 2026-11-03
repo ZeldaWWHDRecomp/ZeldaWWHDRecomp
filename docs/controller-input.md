@@ -141,8 +141,8 @@ or with remote play. It is off by default and saved with your controls. The chan
 
 - Only controllers are affected. Keyboard keys and mouse buttons are still released when the
   game loses the focus, and they reach the game only while it is focused again.
-- Rumble keeps working in the background on Windows and Linux. The macOS app does not drive
-  controller rumble yet.
+- Rumble keeps working in the background on Windows, Linux and macOS (macOS drives a controller's
+  motors through GameController haptics, for any pad the framework reports haptics for).
 - A controller press in the background never opens Settings. If Settings is already open, the
   controller can still navigate and close it. Other controller shortcuts work as they do with
   the focus.

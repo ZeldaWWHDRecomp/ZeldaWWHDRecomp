@@ -771,6 +771,7 @@ void run_appkit_loop() {
     // orderly exit (Quit, Cmd+Q): the renderer writes its caches (Vulkan pipeline / SPIR-V caches)
     [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification object:nil queue:nil
                                                   usingBlock:^(NSNotification*) {
+        input::shutdown_rumble();
         ss::save_last_session(1500);  // the "Last session" state (a few KB; skipped outside gameplay)
         render::shutdown();
         // leave without running static destructors: the GX2 render thread and the game threads may
