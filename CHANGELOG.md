@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: keyboard and mouse button prompts** (#364, for #265, thanks @Eggtooth for the idea). Choose **Keyboard / mouse**
+  under Controls › Button prompts and the game's prompts show the key or mouse button you bound (for example Tab, M1,
+  LShift, Wh+), drawn in the game's own font; an unbound action shows None. The camera mods (mouse camera, direct
+  camera, first person) moved from Mods › Built-in to Controls, with their settings unchanged.
 - **Decomp build (experimental) fixes** (#368). The `-DWWHD_DECOMP=ON` build now reads the decompilation's unit specs the
   way its own checks do (specs in sub-folders and `include` lines), skips verification-only sources, works without
   model data, and gives calls from decompiled code back into the game the same return address as the original, so
