@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
+  state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
+  respawn loop. Existing states work without conversion; standing and boat states load as before.
 - **Fixed for mod authors: hooks can no longer change the game's registers** (#367). A `WWHD_HOOK` or `WWHD_HOOK_RETURN`
   hook now leaves every register of the hooked game function as it was, including its result; only writes through
   pointers stay. Before, a hook could clobber values that some game or patch code relies on. Existing mods don't need
