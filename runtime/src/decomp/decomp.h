@@ -39,6 +39,10 @@ extern const unsigned kNumSlots;
 // the guest mods are registered, before any guest thread runs
 void init();
 
+// the decompiled function whose code runs on this thread (0: none). gmem_call sets LR for a guest call
+// from it to the return address of the original's call instruction (decomp.cpp call_lr).
+extern thread_local uint32_t t_running;
+
 // debug only (0 unless WWHD_DECOMP_STATS / WWHD_DECOMP_GUARD are set)
 extern int g_debug;
 void call_debug(Cpu* c, Slot& s);
@@ -46,7 +50,18 @@ void call_debug(Cpu* c, Slot& s);
 inline void call(Cpu* c, int i) {
     Slot& s = g_slots[i];
     if (__builtin_expect(g_debug, 0)) return call_debug(c, s);
-    if (s.on) s.run(c, s.cand);
-    else s.orig(c);
+    if (s.on) {
+        const uint32_t outer = t_running;
+        t_running = s.addr;
+        s.run(c, s.cand);
+        t_running = outer;
+    } else {
+        s.orig(c);
+    }
 }
+
+// the LR a guest call from decompiled function `caller` to `target` (kind 1: through CTR) gets: the return
+// address after the original's call instruction when the original has exactly one such call, else `lr`
+// (unchanged); the scan of the original's code is call_lr.h
+uint32_t call_lr(uint32_t caller, uint32_t target, int kind, uint32_t lr);
 }  // namespace decomp
