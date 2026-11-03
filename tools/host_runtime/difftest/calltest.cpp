@@ -50,6 +50,7 @@ void f_0286D3E0(Cpu*);
 void f_0286D3F0(Cpu*);
 void f_0286D400(Cpu*);
 void f_0286DA70(Cpu*);
+void f_028F5C88(Cpu*);
 void f_0286DA9C(Cpu*);
 void f_0286DACC(Cpu*);
 void f_0286DB18(Cpu*);
@@ -195,6 +196,16 @@ std::vector<Root> roots() {
         {"thunk_0286D3E0", f_0286D3E0, always<hostrt::export_thunk_0286D3E0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67A4u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67A4u}},
         {"thunk_0286D3F0", f_0286D3F0, always<hostrt::export_thunk_0286D3F0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67C4u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67C4u}},
         {"thunk_0286D400", f_0286D400, always<hostrt::export_thunk_0286D400>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67D8u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67D8u}},
+        {"va_arg", f_028F5C88, always<hostrt::va_arg_028F5C88>,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             const uint32_t ap = s + 0x100 + ((uint32_t)r() & 0xF0);
+             st8(ap, (r() & 3) ? (uint8_t)(r() % 10) : (uint8_t)r());
+             st8(ap + 1, (r() & 3) ? (uint8_t)(r() % 10) : (uint8_t)r());
+             st32(ap + 4, s + 0x1000 + ((uint32_t)r() & 0xFFF));  // overflow area, any alignment
+             st32(ap + 8, s + 0x3000 + ((uint32_t)r() & 0xFF8));  // register save area
+             c.r[3] = ap, c.r[4] = (r() & 3) ? 1 + (uint32_t)(r() % 3) : (uint32_t)(r() % 16);
+         },
+         R3},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);

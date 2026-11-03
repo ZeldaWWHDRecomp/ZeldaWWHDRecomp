@@ -38,3 +38,4 @@
 0286DA9C  # nn::ut list erase
 0286DACC  # nn::ut list erase range
 0286DB18  # nn::ut list clear
+028F5C88  # __va_arg

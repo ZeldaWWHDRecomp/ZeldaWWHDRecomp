@@ -39,4 +39,47 @@ void strcpy_028F040C(Cpu* c) {
     c->r[4] = src;
 }
 
+// __va_arg(ap, type): the PowerPC EABI va_list {u8 gpr, u8 fpr, u16 -, u32 overflow area, u32 register save
+// area} (8 GPR words, then 8 FPR doublewords). Type 1: a word, 2: a doubleword in a GPR pair (an odd gpr is
+// rounded up), 3: a double; other types are passed by reference: the word slot holds the address, which is
+// returned. Registers run out at 8; then the argument comes from the overflow area (aligned to 8 for
+// types 2 and 3) and the counter keeps its value (type 2: rounded up to even), as measured. r3 = the argument's address.
+void va_arg_028F5C88(Cpu* c) {
+    const uint32_t ap = c->r[3], type = c->r[4];
+    uint32_t gpr = ld8(ap), fpr = ld8(ap + 1), ovf = ld32(ap + 4);
+    const uint32_t save = ld32(ap + 8);
+    uint32_t addr;
+    if (type == 3) {
+        if (fpr < 8) {
+            addr = save + 32 + fpr * 8;
+            st8(ap + 1, (uint8_t)(fpr + 1));
+        } else {
+            ovf = (ovf + 7) & ~7u;
+            addr = ovf;
+            st32(ap + 4, ovf + 8);
+        }
+    } else if (type == 2) {
+        gpr = (uint8_t)(gpr + (gpr & 1));  // in the 8-bit counter (255 rounds to 0, measured)
+        if (gpr < 8) {
+            addr = save + gpr * 4;
+            st8(ap, (uint8_t)(gpr + 2));
+        } else {
+            st8(ap, (uint8_t)gpr);  // the rounded-up count (measured)
+            ovf = (ovf + 7) & ~7u;
+            addr = ovf;
+            st32(ap + 4, ovf + 8);
+        }
+    } else {
+        if (gpr < 8) {
+            addr = save + gpr * 4;
+            st8(ap, (uint8_t)(gpr + 1));
+        } else {
+            addr = ovf;
+            st32(ap + 4, ovf + 4);
+        }
+        if (type != 1) addr = ld32(addr);
+    }
+    c->r[3] = addr;
+}
+
 }  // namespace hostrt

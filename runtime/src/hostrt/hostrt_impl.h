@@ -71,6 +71,7 @@ void work_size_0286CBC4(Cpu* c);  // returns the work memory size (0x01600000)
 void empty_0286D5F0(Cpu* c);      // does nothing
 
 // ---- C library (hostrt_libc.cpp)
+void va_arg_028F5C88(Cpu* c);      // __va_arg(va_list, type class) -> address of the next argument
 void bzero_028F521C(Cpu* c);       // (p, n): memset(p, 0, n) through the port's memset
 void zero_words_028F5914(Cpu* c);  // (p, n): n zero words at p
 void strcpy_028F040C(Cpu* c);      // (dst, src)
