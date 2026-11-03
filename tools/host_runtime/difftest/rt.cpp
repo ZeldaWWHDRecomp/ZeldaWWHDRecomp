@@ -46,6 +46,8 @@ Call make_call(Cpu* c, uint32_t addr, const char* import) {
     k.r[1] = t_entry_sp - c->r[1];
     for (int i = 0; i < 9; i++) k.f[i] = f64_as_u64(c->f[i].ps0);
     for (int i = 0; i < 4; i++) k.stack[i] = ld32(c->r[1] + 8 + 4 * i);
+    k.lr = c->lr;
+    k.back = t_entry_sp - ld32(c->r[1]);
     return k;
 }
 
@@ -109,3 +111,6 @@ namespace difftest {
 bool (*import_hook)(Cpu*, const char*) = nullptr;
 bool (*outside_hook)(Cpu*, uint32_t) = nullptr;
 }  // namespace difftest
+
+// the port's memset for replacements that call it, in a closure that does not reference it
+extern "C" __attribute__((weak)) void imp_coreinit_memset(Cpu* c) { hostrt_test_import(c, "coreinit_memset"); }

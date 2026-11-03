@@ -8,3 +8,8 @@
 028F597C  # u64 % u64
 028F5680  # float -> s64
 028F5678  # float -> u64
+028EFFD0  # __construct_array (in place; the allocating form runs the original)
+028F026C  # __register_global_object
+028F521C  # bzero (memset(p, 0, n))
+028F5914  # zero n words
+028F040C  # strcpy

@@ -84,6 +84,12 @@ void run(Root& r, Cpu* c, void (*host)(Cpu*), PpcFunc orig) {
     host(c);
 }
 
+// roots that write memory or call game code: no CHECK run (the original cannot run on a copy); the
+// replacement may hand an input back to the original (false)
+void run_calls(Root& r, Cpu* c, bool (*host)(Cpu*), PpcFunc orig) {
+    if (!use_host(r) || !host(c)) orig(c);
+}
+
 }  // namespace
 }  // namespace hostrt
 
@@ -96,6 +102,14 @@ void run(Root& r, Cpu* c, void (*host)(Cpu*), PpcFunc orig) {
         hostrt::run(root, c, hostrt::IMPL##_##ADDR, f_##ADDR##_orig);                               \
     }
 
+#define HOSTRT_CALLS_ROOT(ADDR, IMPL, OUTS)                                                         \
+    extern "C" void f_##ADDR(Cpu* __restrict c);                                                    \
+    extern "C" void f_##ADDR##_orig(Cpu* __restrict c);                                             \
+    extern "C" void hook_##ADDR(Cpu* c) {                                                           \
+        static hostrt::Root root{0x##ADDR##u, f_##ADDR, #IMPL, OUTS};                               \
+        hostrt::run_calls(root, c, hostrt::IMPL##_##ADDR, f_##ADDR##_orig);                         \
+    }
+
 using namespace hostrt;
 
 HOSTRT_ROOT(028F4114, floorf, F1)
@@ -105,3 +119,25 @@ HOSTRT_ROOT(028F543C, cvt_u64_f, F1)
 HOSTRT_ROOT(028F597C, umod64, R3 | R4)
 HOSTRT_ROOT(028F5680, cvt_f_s64, R3 | R4)
 HOSTRT_ROOT(028F5678, cvt_f_u64, R3 | R4)
+HOSTRT_CALLS_ROOT(028EFFD0, construct_array, R3 | R4)
+
+// memory-writing roots that never hand back
+namespace hostrt {
+template <void (*F)(Cpu*)>
+bool always(Cpu* c) {
+    F(c);
+    return true;
+}
+}  // namespace hostrt
+#define HOSTRT_MEM_ROOT(ADDR, IMPL, OUTS)                                                           \
+    extern "C" void f_##ADDR(Cpu* __restrict c);                                                    \
+    extern "C" void f_##ADDR##_orig(Cpu* __restrict c);                                             \
+    extern "C" void hook_##ADDR(Cpu* c) {                                                           \
+        static hostrt::Root root{0x##ADDR##u, f_##ADDR, #IMPL, OUTS};                               \
+        hostrt::run_calls(root, c, hostrt::always<hostrt::IMPL##_##ADDR>, f_##ADDR##_orig);         \
+    }
+
+HOSTRT_MEM_ROOT(028F026C, register_global_object, 0)
+HOSTRT_MEM_ROOT(028F521C, bzero, R4)
+HOSTRT_MEM_ROOT(028F5914, zero_words, R3)
+HOSTRT_MEM_ROOT(028F040C, strcpy, R4)

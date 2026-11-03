@@ -15,6 +15,8 @@
 #pragma once
 #include "ppc.h"
 
+extern "C" void imp_coreinit_memset(Cpu* c);  // the port's memset (hle/coreinit_mem.cpp)
+
 namespace hostrt {
 
 // ---- math (hostrt_math.cpp): only functions measured bit-exact over their full input sets
@@ -29,5 +31,20 @@ void cvt_f_u64_028F5678(Cpu* c);  // float (f1) -> u64 (r3:r4)
 uint64_t cvt_f_s64_value(float x);
 uint64_t cvt_f_u64_value(float x);
 void umod64_028F597C(Cpu* c);     // u64 (r3:r4) % u64 (r5:r6) -> r3:r4
+
+}  // namespace hostrt
+
+namespace hostrt {
+
+// ---- C++ runtime (hostrt_cxx.cpp)
+// __construct_array(p, n, size, ctor): returns false when it hands the call back to the original
+// (the allocating form, p == 0); the hook then runs the original instead
+bool construct_array_028EFFD0(Cpu* c);
+void register_global_object_028F026C(Cpu* c);  // (record) links a destructor record into the global chain
+
+// ---- C library (hostrt_libc.cpp)
+void bzero_028F521C(Cpu* c);       // (p, n): memset(p, 0, n) through the port's memset
+void zero_words_028F5914(Cpu* c);  // (p, n): n zero words at p
+void strcpy_028F040C(Cpu* c);      // (dst, src)
 
 }  // namespace hostrt

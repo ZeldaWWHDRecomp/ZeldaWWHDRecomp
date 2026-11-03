@@ -22,6 +22,13 @@
 
 using namespace difftest;
 
+// threads per run: HOSTRT_TEST_THREADS (default 4; the machine-wide budget is 4 across all runs)
+static int test_threads() {
+    const char* e = getenv("HOSTRT_TEST_THREADS");
+    int n = e ? atoi(e) : 4;
+    return n < 1 ? 1 : n > 4 ? 4 : n;
+}
+
 extern "C" {
 void f_028F4114(Cpu*);
 void f_028F41B0(Cpu*);
@@ -122,7 +129,7 @@ int main(int argc, char** argv) {
     load_image(argv[1]);
     const std::string which = argc > 2 ? argv[2] : "all";
     const uint64_t count = argc > 3 ? strtoull(argv[3], nullptr, 0) : 10000000ull;
-    const int nth = 4;
+    const int nth = test_threads();
     int bad_roots = 0;
     for (const Root& rt : roots()) {
         if (which != "all" && which != rt.name) continue;
