@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: aim the boat cannon with the mouse** (#360, for #332, thanks @AnythingVocaloid for the idea). With Mouse
+  camera on and the pointer captured, moving the mouse now aims the cannon on the King of Red Lions. Mouse sensitivity
+  and invert-Y apply; the keyboard or a left stick still takes priority, and firing keeps its binding.
 - **Safer save import on Android** (#339, thanks @GenissonEmilio). An imported save is now checked completely before it
   replaces yours, and your previous save is kept as a backup. If the import is interrupted, your old save comes back.
   Oversized or damaged archives are refused, and import and export only run while the game is closed.
