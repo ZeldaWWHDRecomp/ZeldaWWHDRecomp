@@ -604,6 +604,41 @@ int shoulder_action(uint32_t box) {
     return -1;
 }
 
+int word_action(uint32_t box) {
+    if (const int shoulder=shoulder_action(box); shoulder>=0) return 4+shoulder;
+    const auto name=pane_name(box);
+    if (!name.starts_with("T_Command")) return -1;
+    constexpr std::string_view words[]={"T_CommandA_00","T_CommandB_00","T_CommandX_00","T_CommandY_00"};
+    constexpr std::string_view pictures[]={"P_A_00","P_B_00","P_X_00","P_Y_00"};
+    const uint32_t parent=ld32(box+0x0C);
+    for (int i=0;parent && i<4;++i)
+        if (name==words[i] && (button_glyphs::face_picture(pane_name(parent))==i || child_named(parent,pictures[i]))) return i;
+    return -1;
+}
+
+void draw_gamecube_word(Cpu* c,PpcFunc draw) {
+    const uint32_t box=c->r[3];
+    const int action=word_action(box);
+    if (action<0) return draw(c);
+    const auto look=style();
+    if (look.face!=FaceStyle::kGameCube || !look.text_colours ||
+        (action>=4 && look.shoulders!=ShoulderStyle::kGameCube)) return draw(c);
+    // Actual text drawing (028787FC) reads this live black/white ramp, independently
+    // of cached vertices. The native blue ramp would otherwise tint every outline blue.
+    const uint32_t colors=ld32(box+0xF8);
+    const bool valid=(colors>=mem::kMem2Start && colors<=mem::kMem2End-8) ||
+                     (colors>=mem::kMem1 && colors<=mem::kMem1+mem::kMem1Size-8);
+    if (!valid) return draw(c);
+    std::vector<Held> held;
+    for (uint32_t offset : {0u,4u})
+        shared_patch::hold(held,colors+offset,4,[](uint32_t rgba) {
+            const uint32_t shade=(((rgba>>24)&255)*54+((rgba>>16)&255)*183+((rgba>>8)&255)*19)>>8;
+            return shade*0x01010100u | (rgba&255);
+        });
+    draw(c);
+    shared_patch::release(held);
+}
+
 bool command_cluster(uint32_t pane) {
     if (pane_name(pane)!="N_All_00") return false;
     for (const char* group : {"W_SetSeatA_00","P_B_00","N_X_00","N_Y_00"})
@@ -653,9 +688,9 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
             deferred_words.emplace_back(pane, draw);
             return;
         }
-        return draw(c);
+        return draw_gamecube_word(c,draw);
     }
-    if (!marking() || style().face == FaceStyle::kOriginal || !command_cluster(pane)) return draw(c);
+    if (!marking() || style().face == FaceStyle::kOriginal || !command_cluster(pane)) return draw_gamecube_word(c,draw);
     const Cpu entry = *c;
     deferring_cluster = pane;
     deferred_words.clear();
@@ -666,7 +701,7 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
     for (const auto& [word, pane_draw] : words) {
         Cpu w = entry;
         w.r[3] = word;
-        pane_draw(&w);
+        draw_gamecube_word(&w,pane_draw);
     }
 }
 
@@ -753,34 +788,13 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
     hud_box = c->r[3];
     hud_shoulder = shoulder_box(hud_box);
     hud_face = face_box(hud_box);
-    hud_action = -1;
-    const auto name = pane_name(hud_box);
-    constexpr std::string_view commands[] = {"T_CommandA_00", "T_CommandB_00", "T_CommandX_00", "T_CommandY_00"};
-    constexpr std::string_view pictures[] = {"P_A_00", "P_B_00", "P_X_00", "P_Y_00"};
-    const uint32_t parent = ld32(hud_box + 0x0C);
-    for (int i = 0; i < 4; ++i)
-        if (name == commands[i] && parent && (button_glyphs::face_picture(pane_name(parent)) == i || child_named(parent, pictures[i])))
-            hud_action = i;
-    if (const int shoulder=shoulder_action(hud_box); shoulder>=0) hud_action=4+shoulder;
+    hud_action=word_action(hud_box);
     prepare_text_box(hud_box, c);
     // HUD letters can be emitted through the font's direct glyph path, bypassing Print.
     // Supply the mapped letter to that rebuild too, then restore the authored Wii U text.
     const auto look = style();
     const uint32_t text = hud_face >= 0 ? ld32(hud_box + 0xA4) : 0;
     std::vector<Held> held;
-    if (hud_action >= 4 && look.face == FaceStyle::kGameCube &&
-        look.shoulders == ShoulderStyle::kGameCube && look.text_colours) {
-        // TextBox's separate outline pass reads these two RGBA colors (028786A8/B4).
-        // Recoloring only the main glyph leaves Defend's native blue outline intact.
-        const uint32_t rgb=hud_action==5 ? 0x6754C8FF : 0xE5E5E5FF;
-        for (uint32_t offset : {0xE8u,0xECu})
-            shared_patch::hold(held,hud_box+offset,4,[rgb](uint32_t ink) {
-                const uint32_t shade=(((ink>>24)&255)*54+((ink>>16)&255)*183+((ink>>8)&255)*19)>>8;
-                uint32_t out=ink&255;
-                for (int shift=24;shift>0;shift-=8) out|=(shade*((rgb>>shift)&255)/255)<<shift;
-                return out;
-            });
-    }
     if (text && look.face == FaceStyle::kXbox && look.buttons[hud_face] != hud_face)
         shared_patch::hold_value(held, text, 2, "ABXY"[look.buttons[hud_face]]);
     draw(c);

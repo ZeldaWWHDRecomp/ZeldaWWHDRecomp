@@ -1646,16 +1646,22 @@ void gamecube_hud_plate_test() {
         st32(text_box+0x0C,picture);st32(text_box+0xFC,list);st32(writer+0x2C,list);
         st16(list+4,0);st8(list+6,0);print('D');
         for (int j=0;j<2;++j)st32(first_quad+0x10+j*4,shoulder_word_ink[j]);
-        st32(text_box+0xE8,shoulder_word_ink[0]);st32(text_box+0xEC,shoulder_word_ink[1]);
+        // The actual draw consumes a live black/white material ramp even with cached vertices.
+        const uint32_t material=base+0xA000;
+        st32(text_box+0xF8,material);st32(material,0x0032E600);st32(material+4,0xFFFFFFFF);
+        st32(text_box+0xE8,0x000000FF);st32(text_box+0xEC,0x00000042);
         expected_action=7;Cpu word{};word.r[3]=text_box;
-        button_glyphs::draw_text_box(&word,[](Cpu* c) {
+        button_glyphs::draw_text_box(&word,[](Cpu*) { draw(); });expected_action=-1;
+        word.r[3]=text_box;
+        button_glyphs::draw_pane(&word,[](Cpu* c) {
             const auto look=input_map::active_prompt_style();
             const bool gc=look.face==input_map::FaceStyle::kGameCube && look.text_colours;
-            assert(ld32(c->r[3]+0xE8)==(gc?0x777777FF:shoulder_word_ink[0]));
-            assert(ld32(c->r[3]+0xEC)==(gc?0x3C3C3C42:shoulder_word_ink[1]));
-            draw();
-        });expected_action=-1;
-        assert(ld32(text_box+0xE8)==shoulder_word_ink[0] && ld32(text_box+0xEC)==shoulder_word_ink[1]);
+            const uint32_t material=ld32(c->r[3]+0xF8);
+            assert(ld32(material)==(gc?0x34343400:0x0032E600));
+            assert(ld32(material+4)==0xFFFFFFFF);
+            assert(ld32(c->r[3]+0xE8)==0x000000FF && ld32(c->r[3]+0xEC)==0x00000042);
+        });
+        assert(ld32(material)==0x0032E600 && ld32(material+4)==0xFFFFFFFF);
         const bool tinted=prompts==input_map::Mapping::Prompts::kGameCube && colours;
         assert(drawn_ink==(tinted?0xCDCDCDFF:shoulder_word_ink[0]));
         for (int j=0;j<2;++j)assert(ld32(first_quad+0x10+j*4)==shoulder_word_ink[j]);
