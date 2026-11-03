@@ -1478,3 +1478,52 @@ those of the existing output backend.
 
 For bounded service-call diagnostics, `WWHD_AUDIO_STREAM_TRACE=1` logs open/submit/close
 results and epochs, never sample payloads. Leave it unset for normal operation.
+
+### Native ACTR profiles (startup only)
+
+`wwhd_native_actor_profile_register` adds a native actor process and an eight-byte
+stage ACTR name without replacing `fpcPf_Get` or the stage name lookup functions.
+It shares the port's profile registry with the higher-level `wwhd_actor_register`
+API; that existing manifest/behavior API is unchanged.
+
+Call this API from a `WWHD_HOOK(0x028EA120, ..., (void))` GameMain entry hook.
+Registration from other hooks is refused. The window also closes before the
+first native process allocation, including an allocation triggered by another
+entry hook. Register all profiles before creating any actor. Modules and their
+callbacks remain resident until the game exits. There is no hot unregister or
+callback unloading; changing the enabled code-mod set requires restarting.
+
+Set the descriptor's `size` to `sizeof(wwhd_native_actor_profile_v1)` and `version`
+to 1. `profile` points to a module-owned 0x30-byte native actor profile, with a
+module-owned five-word create/delete/execute/isDelete/draw method table at
+profile offset 0x24. Each callback must be an exact function entry in the calling
+module. The native process and actor base-method pointers at offsets 0x0C and
+0x1C can be zero: the runtime fills these from its region's retail actor template.
+Nonzero values must match that template. Actor class size must be at least
+0x3AC; class size plus extra allocation must not exceed 1 MiB.
+
+The runtime copies the profile, method table and name into its snapshot-owned
+pool (64 registrations). Later changes to the source descriptor do not change
+registration. Unused native profile padding is zeroed for deterministic snapshots. Requested IDs are 0x01E4 through 0x7FCF. Retail IDs and the port's
+0x7FD0–0x7FFE reservation cannot be claimed, even if currently unused. A duplicate
+ID or name is refused rather than remapped. Choose a unique name of one to eight
+ASCII letters, digits or underscores; zero-pad shorter names. `argument` is -1
+through 127 and `gba_name` is 0 through 255. Name lookup and reverse lookup use
+the copied entry; reverse lookup retains the native same-process fallback when
+the requested subtype differs. The retail tables remain immutable. All native
+code/data addresses pass through the regional address maps; an unexpected retail
+profile-table boundary disables this bridge.
+
+Success returns the requested positive process ID. Negative results are invalid
+input (-1), collision (-2), registration closed/outside GameMain entry (-3),
+bridge unavailable (-4), and capacity exhausted (-5). Refusals are logged with
+the caller and cause. Check the result before requesting actor creation.
+
+Full save states contain a bounded exact identity of the registered snapshots,
+owner IDs and owning ELF SHA-256 fingerprints. A different callback/profile/name
+or changed ELF refuses a full-state restore before memory is changed, even when
+the package version is unchanged. Legacy full states are accepted only when no
+guest profiles are registered. Restoring a compatible full state republishes the
+immutable snapshots. Portable states retain the existing mod-set warning and
+rebuild actors from the current modules; use those to transfer progress across
+code changes.

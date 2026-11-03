@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod SDK: native actor profiles** can register their own stage names and actor callbacks at startup while sharing
+  the port's profile lookup. Conflicting IDs and names are refused, and full states require matching profile/code
+  fingerprints before they can load. Existing manifest actor behaviors are unchanged.
+
 - **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
   state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
   respawn loop. Existing states work without conversion; standing and boat states load as before.

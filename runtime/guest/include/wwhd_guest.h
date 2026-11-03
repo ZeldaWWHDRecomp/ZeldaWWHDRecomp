@@ -191,6 +191,22 @@ typedef struct {
     u32 flags;
     char animation[36];
 } wwhd_actor_state_v1; /* size=80, version=1 */
+// Low-level native ACTR profile registration, startup only. Call from a
+// GameMain (028EA120) entry hook before any native process allocation. The
+// runtime copies the profile, five callbacks and name; the module stays loaded.
+// profile points to the 0x30-byte native actor profile, whose method table has
+// five caller-owned functions (create, delete, execute, isDelete, draw).
+// Native base method pointers may be zero (filled by the runtime).
+// IDs 01E4..7FCF only, no remapping/unregister; names 1..8 ASCII alnum/_ bytes.
+// Returns ID, or -1 invalid, -2 collision, -3 closed, -4 unavailable, -5 full.
+typedef struct {
+    u32 size,version; // sizeof(...), 1
+    const void* profile;
+    char name[8];
+    s32 argument; // -1..127
+    u32 gba_name; // 0..255
+} wwhd_native_actor_profile_v1;
+s32 wwhd_native_actor_profile_register(const wwhd_native_actor_profile_v1*);
 u32 wwhd_actor_register(const char* actor_id,const wwhd_actor_behavior_v1* behavior);
 wwhd_actor_handle wwhd_actor_find(const char* actor_id); /* zero until create dispatch */
 u32 wwhd_actor_get(wwhd_actor_handle,wwhd_actor_state_v1* state);
