@@ -17,7 +17,7 @@ In Pro Controller mode the game's own **Options → Gyroscope** switch stays in 
 changed as usual (checked in a game run); its help text still says it "will have no effect when using the
 Wii U Pro Controller", which is the Wii U's behaviour: in the port it does apply while a gyro source is on.
 
-Settings overlay (F1) → **Controls** → **Gyro…**:
+Settings overlay (F1) → **Controls** → **Controller** → **Gyro…**:
 
 - **Source** (above). `WWHD_GYRO=off|controller|cemuhook|mouse|device` overrides it at start.
 - **Turn left/right by** (controller, device and Cemuhook sources), the usual gyro aiming conventions (as in
@@ -80,7 +80,7 @@ frame. Measured in R3 look (`WWHD_TEST_GYRO`, Outset): a GamePad turn of 60° ri
 
 ## Phone sensors
 
-On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Gyro**.
+On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Controller > Gyro**.
 It is off by default and requires both a gyro and an accelerometer. Rest the phone
 for a second, enable the game’s own **Options > Gyro**, then aim in first person with
 the right stick at rest. Player space, sensitivity, inversion and recalibration
@@ -130,7 +130,7 @@ recalibrate on return. The status line reports unavailable sensors.
   window losing the focus does this too, SDL pauses controller events then), "turning its sensors off
   and on again" (the watchdog), "motion from controller N" (another controller took over), or "the
   right stick has rested at x, y for 2 s while aiming" (the game ignores the gyro while the right stick
-  is outside its 0.1 dead zone: a drifting stick does this; raise **Controls → stick dead zone**).
+  is outside its 0.1 dead zone: a drifting stick does this; raise **Controls → Controller → stick dead zone**).
   The Gyro window shows the same.
 - **More detail:** `WWHD_GYRO_LOG=1` logs, twice a second and for every source, the raw gyro and
   accelerometer samples, the sample rate, the bias, the gravity direction and the aim, plus what the

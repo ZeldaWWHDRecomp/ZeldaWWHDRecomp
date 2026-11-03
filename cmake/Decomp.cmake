@@ -67,7 +67,12 @@ function(wwhd_decomp_configure)
   endforeach()
 endfunction()
 
+# the host replacements of the port-owned guest runtime (GHS C/C++ runtime, nn static wrappers): decomp build
+# only (recomp.py --decomp-hooks routes tools/recomp/decomp_hostrt_hooks.txt to them)
+file(GLOB WWHD_HOSTRT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/runtime/src/hostrt/*.cpp")
+
 function(wwhd_decomp_link target)
+  target_sources(${target} PRIVATE ${WWHD_HOSTRT_SOURCES})
   # as the decompilation's verify.py; decomp/include holds the generated assets/ headers
   set(inc "${CMAKE_SOURCE_DIR}/runtime/include" "${WWHD_DECOMP_DIR}/tools/verify/include"
           "${WWHD_DECOMP_DIR}/tools/verify/src" "${WWHD_DECOMP_DIR}/wwhd_src/include" "${WWHD_DECOMP_OUT}/include")

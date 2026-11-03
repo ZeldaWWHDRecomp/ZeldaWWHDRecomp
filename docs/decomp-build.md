@@ -93,6 +93,23 @@ function through the runtime (`runtime/src/decomp`), which runs the decompiled f
 The runtime also rebuilds, from the game's code in memory, the stack frame layout of each decompiled
 function's original, so the decompiled code leaves the game's stack as the original does.
 
+## Host runtime (decomp build only)
+
+The decomp build also replaces parts of the game's own runtime library (the compiler's C/C++ runtime and
+the nn static wrappers, which belong to the port rather than to the decompilation) with host code:
+`runtime/src/hostrt`, routed by `tools/recomp/decomp_hostrt_hooks.txt`, which `recomp.py` reads only with
+`--decomp-hooks`. Each replacement was measured bit-exact against the recompiled original
+(`tools/host_runtime/difftest`). The normal build never uses them: its game code is exactly the recompiled
+originals.
+
+Switches (decomp build only; the normal build ignores them):
+
+- `WWHD_HOSTRT=0` runs the recompiled originals instead of the replacements (A/B comparisons);
+- `WWHD_HOSTRT_CHECK=1` runs both for every call of a replacement that only computes registers and logs the
+  first differences (`[hostrt] CHECK`).
+
+A function that a guest mod hooks keeps its original in any case.
+
 ## In setup (development builds, macOS)
 
 The development builds for macOS (the rolling "Development build" pre-release) can build the decomp

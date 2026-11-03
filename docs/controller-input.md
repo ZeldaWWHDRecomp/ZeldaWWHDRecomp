@@ -1,9 +1,17 @@
 # Controller directions and Wind Waker controls
 
 The physical controller layout and the emulated Wii U controller are separate
-choices. Controls selects whether your inputs act as a Wii U GamePad or Pro
+choices. Controls → Controller selects whether your inputs act as a Wii U GamePad or Pro
 Controller. Select that controller in the game's Controller Selection screen too.
 The face-button preset changes A/B/X/Y; it does not change D-pad or stick directions.
+
+Settings → Controls is organised into five pages. **Bindings** opens first, with the
+controller drawing or list, the controller profile selector and setup. **Controller**
+has the Wii U controller choice, face-button layout, stick tuning, vibration, gyro
+and menu behaviour. **Prompts** changes in-game button icons and names. **Camera**
+contains camera mods and steering, and **Gameplay** contains the item ring and talk
+options. L / R visits these pages before moving to the next Settings tab. Narrow
+windows use the binding list automatically; resizing back restores your chosen view.
 
 **Stick dead zone** defaults to **15%** for both controller sticks. This filters
 small resting-stick drift, which can otherwise keep the Picto Box zooming and its
@@ -19,7 +27,7 @@ register because the game needs an almost fully tilted stick. The range applies
 after the dead zone: the stick's tilt is multiplied by the range and capped at
 full deflection, keeping its direction, so diagonals keep their angle. A stick
 that only reaches 90% needs about 112% to reach full deflection. Both sliders
-sit below the dead zone in the Controls tab and in the macOS Controls window, take
+sit below the dead zone in Controls → Controller and in the macOS Controls window, take
 effect immediately and are saved as `left_stick_range` and `right_stick_range`
 in the controls file's `options` (stored as factors, 1.0 to 1.5). Files without
 these keys load at 100%; values outside the range are clamped.
@@ -48,7 +56,7 @@ and Right Stick Down separately.
 ## Setting up a controller, and buttons per controller
 
 The first time a new controller is used, Settings opens with **New controller: Set up / Later /
-Don't ask again**. **Controls > Set up controller...** runs the same setup any time:
+Don't ask again**. **Controls > Bindings > Set up controller...** runs the same setup any time:
 
 1. **Face buttons**: *by position*, as on the Wii U GamePad (the bottom button is the sword, the
    Wii U's B; the right one the action button, A), or *by the letters on the buttons* (the button
@@ -61,14 +69,14 @@ Don't ask again**. **Controls > Set up controller...** runs the same setup any t
 4. **Try it**: every press shows what it does in the game. Hold **Start** to finish, hold
    **Select** to change the setup, so the setup works without touching the screen.
 
-The controller then keeps **its own buttons**. **Controls > Bindings for** chooses which buttons the
+The controller then keeps **its own buttons**. **Controls > Bindings > Bindings for** chooses which buttons the
 drawing (or the list) edits: *All controllers* (the shared buttons every other controller uses) or
 one controller, with **Give it its own buttons** / **Use the shared buttons**. The keyboard is always
 shared. A controller is recognised by its SDL GUID and name, then by its GUID alone (the same model
 under another name), then by its name alone (the same model on another connection, and the macOS
 app, which has no GUIDs).
 
-**Controls > Controller details...** lists what the system reports about each connected controller:
+**Controls > Bindings > Controller details...** lists what the system reports about each connected controller:
 vendor and product IDs, GUID, connection, battery, rumble motors, motion sensors, lights, buttons and
 axes, which buttons it uses, and what is pressed right now. On Android some controllers have motion
 sensors or rumble that apps only get with the right Linux kernel driver: a DualSense or DualShock 4
@@ -124,7 +132,7 @@ in the game's item screen. An item already on another button swaps places with t
   an item (bow, hookshot, boomerang, telescope, Picto Box, Deku Leaf, conducting, the sail), and outside
   play, the buttons work at once and the ring doesn't open.
 
-Controls → **Item ring**: **Touch only** (default: the on-screen X, Y and R), **Touch and controllers**,
+Controls → Gameplay → **Item ring**: **Touch only** (default: the on-screen X, Y and R), **Touch and controllers**,
 or **Off**. It is off for controllers by default because of that short wait on every press.
 
 **While the ring is open** the game runs on, runs in **slow motion** (default: a third of its speed) or
@@ -172,7 +180,7 @@ Existing keyboard/controller files load unchanged. Each wheel notch supplies one
 short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
-In **Controls**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
+In **Controls → Camera**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
 mouse to look around on foot or while sailing, at the same mouse sensitivity. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows
@@ -211,6 +219,32 @@ manual bindings are preserved because that preset may be intentional or shared
 with another controller. A connected Nintendo pad with that exact manual pattern
 logs a reminder. Other custom bindings are kept.
 
+## Generic HID gamepads on macOS
+
+The macOS app also reads the recognised Steam Input virtual HID device through IOKit, which
+GameController.framework does not surface. Unknown physical joysticks, flight sticks and
+DirectInput pads are ignored because their axes and buttons need a device-specific mapping. That is what lets a Steam Controller work:
+launched from Steam, Steam Input presents it as a virtual pad ("GamePad-1", with the
+Xbox 360 vendor/product IDs 045E:028E) that GameController ignores.
+
+- Launch from Steam so Steam Input keeps translating the controller. The IOKit fallback
+  requires a software device with the IDs 045E:028E named "GamePad-<n>" (or
+  "Microsoft GamePad-<n>"), so a second virtual pad or one renumbered after a reconnect
+  also works; other HID devices are ignored. Each ignored device gets one `[input]` log
+  line with its name, manufacturer, vendor/product IDs, whether it is virtual, and why.
+- It maps as the standard Xbox layout with Xbox labels, so **Automatic** resolves to
+  **By label (Xbox)**; Controls remap, dead zone and range, and camera invert apply.
+- Pads GameController handles are excluded using its `supportsHIDDevice` query, as are
+  synthetic GameController devices. Steam's virtual pad is recognised before that query,
+  because GameController claims its Xbox 360 IDs without ever surfacing the pad. This avoids duplicate input and incorrect generic
+  button numbering on supported physical pads.
+- With one Steam Controller and one recognised Steam virtual pad, the virtual source takes
+  over after reporting input. Other GameController pads remain usable. Ambiguous multiple-pad
+  setups retain their physical sources rather than guessing a pairing. Disconnecting the
+  virtual pad restores physical input; a newly connected virtual pad starts inactive.
+- GameController remains available for motion and haptics. A generic HID pad itself supplies
+  neither. Controller details shows its HID type and vendor/product IDs.
+
 ## Input diagnostics
 
 For a reproducible controller report, these optional environment variables log
@@ -235,7 +269,7 @@ and KPAD writers, including direction bits, press/release edges, both sticks,
 interpolation repeats and fresh analog samples. Neither test reads game data or a save, or uses a physical controller. These
 checks do not replace testing a particular physical device and its driver.
 
-Controls → **Skip controller selection** is on by default. At the title screen it chooses the
+Controls → Controller → **Skip controller selection** is on by default. At the title screen it chooses the
 configured Wii U GamePad or Pro Controller through the game's normal selection path; turn it off
 to choose manually. Unavailable options and controller-disconnect prompts remain interactive.
 

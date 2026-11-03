@@ -174,6 +174,25 @@ class Hooks(unittest.TestCase):
 
 
 class NativeBoundaries(unittest.TestCase):
+    def test_randomized_build_cannot_override_seed_code_with_decomp(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from recomp import Recompiler
+        with patch('recomp.Program') as program:
+            with self.assertRaisesRegex(ValueError, 'decompiled function replacements'):
+                Recompiler('unused.rpx', SimpleNamespace(randomizer=True), decomp_hooks='decomp.txt')
+            program.assert_not_called()
+
+    def test_generated_identity_keeps_exact_rpx_hash_for_runtime_seed_check(self):
+        from io import StringIO
+        from recomp import Recompiler
+        compiler = Recompiler.__new__(Recompiler)
+        for identity in ('a'*64, 'b'*64):
+            compiler.build = builds.Build(dict(name='USA', title_id='0005000010143599', rpx_sha256=identity))
+            output = StringIO()
+            compiler.write_build_map(output)
+            self.assertIn('const char g_guest_build_rpx_sha256[] = "%s";' % identity, output.getvalue())
+
     def test_hooks_and_sites_use_guarded_calls_in_each_symbol_map(self):
         from types import SimpleNamespace
         from recomp import Recompiler
@@ -184,6 +203,7 @@ class NativeBoundaries(unittest.TestCase):
             compiler.hooks = {address}
             compiler.sites = {address}
             compiler.mod_hooks = False
+            compiler.preserve_registers = False
             compiler.imm_override = {}
             compiler.canon_of = {address: 0x1000}
             compiler.build = SimpleNamespace(canon_code=lambda a: a)
