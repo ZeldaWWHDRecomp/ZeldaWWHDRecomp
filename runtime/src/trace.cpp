@@ -38,6 +38,10 @@ static std::atomic<int> g_watch_r3_count{0};
 
 void true60_nan_probe(uint32_t addr);  // true60.cpp (WWHD_NAN_PROBE)
 void guest_capture_enter(uint32_t addr);  // guest_capture.cpp (WWHD_GUEST_CAPTURE, debug only)
+#if WWHD_DECOMP
+void scalable_font_guard_enter(uint32_t addr);  // scalable_font_hooks.cpp (WWHD_FONT_GUARD, decomp build)
+static bool g_font_guard = false;
+#endif
 #ifdef WWHD_WRITE_WATCH
 void wwhd_ww_enter(uint32_t addr);  // guest_write_watch.cpp (diagnostic build)
 #endif
@@ -49,6 +53,9 @@ extern "C" void ppc_trace_enter(uint32_t addr) {
     wwhd_ww_enter(addr);  // before the capture hook: its report must see the state up to this entry
 #endif
     if (guest_capture) guest_capture_enter(addr);
+#if WWHD_DECOMP
+    if (g_font_guard) scalable_font_guard_enter(addr);
+#endif
     if (g_watch_r3) {
         Cpu* c = threads::current();
         if (c && c->r[3] == g_watch_r3 && g_watch_r3_count++ < 3000) {
@@ -129,6 +136,14 @@ __attribute__((constructor)) static void trace_init() {
         g_ppc_trace = 1;
     }
     if (getenv("WWHD_NAN_PROBE")) g_ppc_trace = 1;
+    // traps when any function of the replaced scalable font module runs (scalable_font.h). The decomp build
+    // only: the normal build runs the game's own font module, so there is nothing to guard or log there.
+#if WWHD_DECOMP
+    if (getenv("WWHD_FONT_GUARD")) { g_font_guard = true; g_ppc_trace = 1; }
+#else
+    if (getenv("WWHD_FONT_GUARD") || getenv("WWHD_FONT_LOG"))
+        fputs("[font] WWHD_FONT_GUARD / WWHD_FONT_LOG only apply to the decomp build; this build runs the game's own font module\n", stderr);
+#endif
     if (getenv("WWHD_TRACE_FUNCS")) {
         g_ppc_trace = 1;
 #ifndef _WIN32

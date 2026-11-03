@@ -210,3 +210,11 @@ def read_hooks(paths, build):
 def hook_files(directory=None):
     d = directory or HERE
     return [os.path.join(d, "hooks.txt")] + sorted(glob.glob(os.path.join(glob.escape(d), "hooks_*.txt")))
+
+
+def decomp_only_hook_files(directory=None):
+    """Hooks for the decomp build only (recomp.py --decomp-hooks, tools/decomp_build/gen.py): runtime
+    replacements of game modules the decompilation leaves out, e.g. the scalable font
+    (decomp_only_hooks_font.txt). The normal build runs the game's own code there."""
+    d = directory or HERE
+    return sorted(glob.glob(os.path.join(glob.escape(d), "decomp_only_hooks_*.txt")))
