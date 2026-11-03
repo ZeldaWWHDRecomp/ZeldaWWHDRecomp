@@ -142,7 +142,12 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
 
 inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) {
     const float px=x+0.5f-32.f, py=y+0.5f-32.f, d=std::hypot(px,py);
-    const bool outer=d<(framed?25.f:22.f), inner=d<20.f;
+    const auto rounded=[](float x,float y,float rx,float ry,float radius) {
+        return std::hypot(std::max(std::fabs(x)-(rx-radius),0.f),
+                          std::max(std::fabs(y)-(ry-radius),0.f))<radius;
+    };
+    const bool outer=framed ? rounded(px,py,29.f,shoulder==1?16.f:20.f,8.f) : d<22.f;
+    const bool inner=framed ? rounded(px,py,26.f,shoulder==1?13.f:17.f,6.f) : d<20.f;
     uint32_t c=0;
     if (framed && outer && !inner) c=0x676B70FF;
     else if (inner) c=shoulder==1?0x6754C8FF:framed?0xE5E5E5FF:0xFFFFFFFF;

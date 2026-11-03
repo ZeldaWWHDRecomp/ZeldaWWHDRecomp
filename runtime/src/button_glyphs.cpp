@@ -213,34 +213,6 @@ uint32_t shoulder_atlas(Cpu* cpu) {
     return info;
 }
 
-// CommandGuide and the item ring draw their face-button backgrounds as lyt::Picture materials.
-// The text hook replaces only the letter quad, so GameCube needs a per-picture texture with the
-// right silhouette underneath it as well. These host-owned 64x64 RGBA textures are swapped into
-// the material's first texture slot only while that picture is drawn.
-uint32_t gamecube_picture_texture(int face) {
-    static std::mutex mutex;
-    static std::array<uint32_t,4> textures{};
-    std::lock_guard lock(mutex);
-    if (textures[face]) return textures[face];
-    const uint32_t texture = mem::host_alloc(0x100, 256);
-    const uint32_t image = mem::host_alloc(64 * 64 * 4, 256);
-    std::memset(mem::ptr(texture), 0, 0x100);
-    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
-        const uint32_t rgba = button_glyphs::gamecube_icon(face, true, x, y, false);
-        const uint32_t offset = (y * 64 + x) * 4;
-        auto* pixel = mem::ptr(image + offset);
-        pixel[0] = rgba >> 24; pixel[1] = rgba >> 16; pixel[2] = rgba >> 8; pixel[3] = rgba;
-    }
-    st32(texture, 5); st32(texture + 4, 64); st32(texture + 8, 64); st32(texture + 12, 1);
-    st32(texture + 16, 1); st32(texture + 20, 0x1A);
-    st32(texture + 28, 1); st32(texture + 32, 64 * 64 * 4); st32(texture + 36, image);
-    st32(texture + 48, 1); st32(texture + 56, 1); st32(texture + 60, 64);
-    st32(texture + 0x78, 1); st32(texture + 0x80, 1); st32(texture + 0x84, 0x00010203);
-    Cpu init{}; init.r[3] = texture;
-    imp_gx2_GX2InitTextureRegs(&init);
-    textures[face] = texture;
-    return texture;
-}
 
 void patch(std::vector<Held>& saved, uint32_t address, uint32_t value) {
     shared_patch::hold_value(saved, address, 4, value);
@@ -654,7 +626,10 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
     int keyboard_action = (name == "W_SetSeatA_00" || name == "P_SetSeatASpecial_00") ? input_map::kA : -1;
     constexpr std::string_view plates[] = {"P_L_00","P_R_00","P_ZL_00","P_ZR_00"};
     for (int i=0;i<4;++i) if (name == plates[i]) keyboard_action = input_map::kL+i;
-    if (style().face == FaceStyle::kKeyboard && keyboard_action >= 0 && keycap_sheet(c,keyboard_action)) {
+    const auto look = style();
+    const bool gc_plate = look.face == FaceStyle::kGameCube && keyboard_action >= 0 &&
+        (keyboard_action == input_map::kA || look.shoulders == ShoulderStyle::kGameCube) && shoulder_atlas(c);
+    if ((look.face == FaceStyle::kKeyboard && keyboard_action >= 0 && keycap_sheet(c,keyboard_action)) || gc_plate) {
         std::vector<Held> held;
         shared_patch::hold_value(held,pane+0x46,1,0);
         draw(c);
@@ -662,7 +637,7 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
         return;
     }
     if (deferring_cluster) {
-        if ((command_word(pane) || (style().face == FaceStyle::kKeyboard &&
+        if ((command_word(pane) || ((style().face == FaceStyle::kKeyboard || style().face == FaceStyle::kGameCube) &&
              (face_box(pane)>=0 || shoulder_box(pane)>=0))) && inside(pane, deferring_cluster)) {
             deferred_words.emplace_back(pane, draw);
             return;
@@ -911,7 +886,9 @@ extern "C" void hook_028F7C7C(Cpu* c) {
     const bool names = item_names() && original_count && (hud_face >= 2 || hud_shoulder == 1) && shoulder_atlas(c);
     const bool shoulder_ready = (look.shoulders != ShoulderStyle::kOriginal || (names && hud_shoulder == 1)) &&
                                 needs_shoulder && shoulder_atlas(c);
-    const bool gc_kidney = look.face == FaceStyle::kGameCube && hud_face >= 2;
+    const bool gc_face = look.face == FaceStyle::kGameCube && hud_face >= 0;
+    const bool gc_kidney = gc_face && hud_face >= 2;
+    const bool gc_shoulder = look.face == FaceStyle::kGameCube && look.shoulders == ShoulderStyle::kGameCube;
     const bool shape_ready = needs_shape && shoulder_atlas(c) && (!(names && hud_face >= 2) || gc_kidney);
     const bool cstick_ready = needs_cstick && shoulder_atlas(c);
     const bool start_ready = needs_start && shoulder_atlas(c);
@@ -928,6 +905,16 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             float width = right - left;
             const uint32_t parent = ld32(hud_box + 0x0C);
             if (hud_shoulder < 2 && parent) width = std::max(width, (float)ldf32(parent + 0x3C) * 0.7f);
+            if (gc_shoulder && parent) {
+                const float side = shared_patch::authored_float(parent + 0x3C);
+                const float h = shared_patch::authored_float(quad + 4);
+                const float y = shared_patch::authored_float(quad + 0x0C);
+                if (std::isfinite(side) && side > 0) {
+                    width = side;
+                    patch_float(saved,quad+4,side);
+                    patch_float(saved,quad+0x0C,y+(h-side)*.5f);
+                }
+            }
             if (std::isfinite(width) && width > 0) {
                 patch_float(saved, quad, width);
                 patch_float(saved, quad + 8, (left + right - width) * 0.5f);
@@ -963,7 +950,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         const float w = shared_patch::authored_float(quad), h = shared_patch::authored_float(quad + 4);
         const float x = shared_patch::authored_float(quad + 8), y = shared_patch::authored_float(quad + 0x0C);
         float side = h * 0.8f;
-        if (gc_kidney) {
+        if (gc_face) {
             const uint32_t parent = ld32(hud_box + 0x0C);
             if (parent) {
                 const float pw = shared_patch::authored_float(parent + 0x3C);
@@ -978,7 +965,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             patch_float(saved, quad + 8, x + (w - side) * 0.5f);
             patch_float(saved, quad + 0x0C, y + (h - side) * 0.5f);
         }
-        if (look.colours || gc_kidney)
+        if (look.colours || gc_face)
             for (uint32_t corner = 0x10; corner <= 0x14; corner += 4)
                 shared_patch::hold(saved, quad + corner, 4, [](uint32_t ink) { return ink | 0xFFFFFF00u; });
         shared_patch::hold_value(saved, list + 4, 2, count = 1);
@@ -1018,16 +1005,19 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         if (face >= 0 && hud_face >= 0 && shape_ready)
             atlas_quad(saved, quad, look.face == FaceStyle::kGameCube ? button_glyphs::gamecube_row(face)
                        : button_glyphs::shape_row(look.buttons[face], look.colours),
-                       look.face == FaceStyle::kGameCube && face >= 2, c, look.face == FaceStyle::kPlayStation && !look.colours);
+                       look.face == FaceStyle::kGameCube, c, look.face == FaceStyle::kPlayStation && !look.colours);
         if (names && face >= 2 && hud_face >= 2 && !gc_kidney)
             atlas_quad(saved, quad, button_glyphs::item_name_row(hud_face - 2), false, c, true);
         // Dialogs: the framed label is an RGBA picture (#141). HUD shoulder plates: the bare
         // caption is a coverage glyph like the plate's own "R"/"ZR", so the game draws it in the
         // plate's dark letter colour and dims it with the button (#143); as a picture it was
         // white on the white plate.
+        if (gc_shoulder && hud_shoulder >= 0 && shoulder >= 0)
+            for (uint32_t offset : {0x10u,0x14u})
+                shared_patch::hold(saved,quad+offset,4,[](uint32_t rgba) { return rgba | 0xFFFFFF00u; });
         if (shoulder_ready && shoulder >= 0)
             atlas_quad(saved, quad, names && hud_shoulder == 1 ? button_glyphs::item_name_row(2) : shoulder_row(look.shoulders, shoulder),
-                       hud_shoulder < 0, c, hud_shoulder >= 0 && look.shoulders != ShoulderStyle::kGameCube);
+                       hud_shoulder < 0 || gc_shoulder, c, hud_shoulder >= 0 && look.shoulders != ShoulderStyle::kGameCube);
         if (cstick && cstick_ready) atlas_quad(saved, quad, button_glyphs::gamecube_cstick_row(), true, c);
         if (start && start_ready) atlas_quad(saved, quad, button_glyphs::gamecube_start_row(), true, c);
     }
@@ -1055,19 +1045,11 @@ extern "C" void hook_02874D54(Cpu* c) {
     // Through shared_patch: in "play on GamePad" mode the item screen draws these pictures on two
     // threads at once, so neither a texture swap nor a tint may persist after DrawSelf (#326).
     std::vector<shared_patch::Held> held;
-    if (look.face == FaceStyle::kGameCube) {
-        if (face >= 2) {
-            // The stock round plate is a separate picture layer. Let the text batch below draw
-            // the complete GC kidney in its place, across the same pane bounds.
-            for (uint32_t i = 0; i < 4; ++i)
-                shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [](uint32_t rgba) { return rgba & 0xFFFFFF00u; });
-        } else {
-            const uint32_t material = ld32(picture + 0xA4);
-            const bool valid_material = (material >= mem::kMem2Start && material <= mem::kMem2End - 0x40) ||
-                                        (material >= mem::kMem1 && material <= mem::kMem1 + mem::kMem1Size - 0x40);
-            if (valid_material) shared_patch::hold_value(held, material + 0x28, 4, gamecube_picture_texture(face));
-        }
-    } else {
+    if (look.face == FaceStyle::kGameCube && shoulder_atlas(c)) {
+        // Complete GC glyphs replace every stock disc; its separate white rim must not remain.
+        for (uint32_t i = 0; i < 4; ++i)
+            shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [](uint32_t rgba) { return rgba & 0xFFFFFF00u; });
+    } else if (look.face == FaceStyle::kXbox) {
         const int button = look.buttons[face];
         for (uint32_t i = 0; i < 4; i++)
             shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button](uint32_t rgba) {
