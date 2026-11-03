@@ -54,6 +54,7 @@ jobs:
         run: |
           ctest --test-dir build/linux --output-on-failure
           python3 tools/installer/test_setup.py
+          python3 tools/installer/test_randomizer_setup.py
           # Every translator test (synthetic inputs only, no game files); new test files run automatically.
           python3 -m unittest discover -s tools/recomp -p "test_*.py"
 
