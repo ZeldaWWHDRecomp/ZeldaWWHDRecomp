@@ -568,6 +568,7 @@ jobs:
             --runtime-file build/rel/libusb-1.0.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
             --license "libusb (LGPL-2.1-or-later)=$W/build/rel/_deps/libusb-src/COPYING" \
+            --license-source "libusb (LGPL-2.1-or-later)=libusb 1.0.30, unmodified; source: https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2" \
             --license "Vulkan-Headers (Apache-2.0)=$VULKAN_DIR/LICENSE.md" \
             --license "glslang (BSD-3-Clause and others)=$W/build/rel/_deps/glslang-src/LICENSE.txt" \
             --license "zlib (zlib)=$W/build/rel/_deps/zlib-src/LICENSE" \

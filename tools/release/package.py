@@ -544,6 +544,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--toolchain", required=True, help="toolchain id from tools/installer/toolchains.json")
     ap.add_argument("--license", action="append", default=[], help="NAME=PATH of a dependency's license")
+    ap.add_argument("--license-source", action="append", default=[],
+                    help="NAME=TEXT: version and source location of a --license dependency (shown in the index)")
     ap.add_argument("--runtime-file", action="append", default=[], help="file to install next to the executable")
     ap.add_argument("--linkonly-lib", action="append", default=[], help="system library to ship for linking only")
     ap.add_argument("--setup-gui", help="the built graphical installer (wwhd-setup) to include")
@@ -663,6 +665,10 @@ def main():
     for spec in a.license:
         k, _, v = spec.partition("=")
         entries[k] = v
+    sources = dict(spec.partition("=")[::2] for spec in a.license_source)
+    for k in sources:
+        if k not in entries:
+            sys.exit("--license-source for %s has no matching --license" % k)
     index = ["Third-party software in this package and its license files:\n"]
     for k, v in sorted(entries.items()):
         src = v if os.path.isabs(v) else os.path.join(ROOT, v)
@@ -671,6 +677,8 @@ def main():
         fn = re.sub(r"[^A-Za-z0-9]+", "-", k.split(" (")[0]).strip("-") + ".txt"
         copy(src, os.path.join(licdir, fn))
         index.append("  %-28s %s\n" % (k, fn))
+        if k in sources:
+            index.append("  %-28s %s\n" % ("", sources[k]))
     with open(os.path.join(licdir, "README.txt"), "w") as f:
         f.writelines(index)
     with open(os.path.join(pkg, "VERSION.txt"), "w") as f:
