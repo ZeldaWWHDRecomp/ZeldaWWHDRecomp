@@ -191,8 +191,11 @@ with their content:
 | `WWHD_GAME_ORIGINAL(...)` | the game's own code, below all mod hooks |
 
 - Every game function can be hooked, including calls through function pointers.
-- Hooks can't change the arguments or the result. To change them, replace the function and
-  call the original yourself.
+- Observer hooks preserve the game's register state, including scratch registers, paired
+  floating-point values and condition bits. Return hooks receive the original argument
+  registers, while the game's result (including nonstandard assembly returns) is kept.
+  Memory writes through pointers remain visible. To change arguments or results, replace
+  the function and call the original yourself.
 - Only one mod may replace a function; a second one is an error naming both mods. Any number
   of mods may hook one.
 - Entry hooks run in load order, return hooks in reverse order.
