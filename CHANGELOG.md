@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: a 4:3 aspect-ratio preset** (#359). Settings › Graphics (and the macOS Graphics menu) now offer 4:3 next to the
+  widescreen presets, and it's remembered on the next launch. `WWHD_ASPECT=4:3` selects it too. Your saved aspect
+  choice keeps its meaning.
 - **New: story-item cheats** (#362, for #289). Mods › More › Cheats › Story items can grant Nayru's, Din's or Farore's
   Pearl, or the fully powered Master Sword, one at a time. The first use each session asks for confirmation, because it
   can change the story's order, and a backup of your save is made first (Mods › More › Save backups). Statue placement
