@@ -6,6 +6,7 @@
 #include <string>
 
 #include "portable_state.h"
+#include "portable_restart.h"
 #include "full_state_header.h"
 
 using namespace pstate;
@@ -74,6 +75,24 @@ static std::string reseal(std::string text) {
 }
 
 int main() {
+    {
+        State s=sample();
+        CHECK(restart_parameters(s)==(0xFF000000u | (2u<<12) | 0x100u | 44u));
+        s.on_ship=s.has_ship=false;
+        for (int proc : {0x0E,0x0F,0x10,0x11,0x12,0x13,0x88,-1}) {
+            s.link_proc=proc;
+            std::string why; State loaded;
+            CHECK(read(write(s,why),loaded,why)); // existing format and old link_proc field suffice
+            const bool crawl=proc>=0x0F && proc<=0x12;
+            CHECK(restore_crawl(loaded)==crawl);
+            CHECK(restart_parameters(loaded)==(0xFF000000u | (crawl ? 5u<<12 : 0u) | 44u));
+            CHECK(restart_scene_mode(loaded)==(crawl ? 2u : 0u));
+        }
+        s.link_proc=0x10; s.has_ship=true;
+        CHECK(restart_mode(s)==5); // a nearby boat does not make Link ride it
+        s.on_ship=true;
+        CHECK(restart_mode(s)==2 && restart_scene_mode(s)==0);
+    }
     std::string why;
     // ---- write and read back
     State s = sample();
@@ -88,6 +107,10 @@ int main() {
     State legacy;
     CHECK(read(reseal(replace(text, "controller = 2\n", "")), legacy, why));
     CHECK(legacy.controller == 0);
+    State without_proc;
+    CHECK(!read(reseal(replace(text,"link_proc = 136\n","")),without_proc,why));
+    CHECK(why.find("link_proc") != std::string::npos);
+
     for (const char* invalid : {"-1", "3", "Pro", "999999999999999999999"}) {
         State x;
         CHECK(!read(reseal(replace(text, "controller = 2", std::string("controller = ") + invalid)), x, why));

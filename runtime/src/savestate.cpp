@@ -89,6 +89,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "controller_reapply.h"
 #include "crashrec.h"
 #include "portable_state.h"
+#include "portable_restart.h"
 #include "fixed_seed.h"
 #include "hle/os_time.h"
 #include "state_memory.h"
@@ -1203,19 +1204,19 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     st8(rs + 0, (uint8_t)s.room);
     st16(rs + 0x16, (uint16_t)s.angle_y);
     for (int i = 0; i < 3; i++) stf32(rs + 0x18 + 4 * i, s.pos[i]);
-    // player parameters (daPy_lk_c::setParamData): room, start mode 0 (standing), no start event
-    st32(rs + 0x24, (uint32_t)(s.room & 0x3F) | 0xFF000000u);
-    stf32(rs + 0x28, 0.0);  // last scene speed and mode: a plain start
-    st32(rs + 0x2C, 0);
+    // Native player entry: keep crawl states low enough for their saved tunnel position.
+    st32(rs + 0x24, (uint32_t)(s.room & 0x3F) | (pstate::restore_crawl(s) ? 5u << 12 : 0u) | 0xFF000000u);
+    stf32(rs + 0x28, 0.0);  // no automatic movement through the saved tunnel
+    st32(rs + 0x2C, pstate::restart_scene_mode(s));
     char name[8] = {};
     memcpy(name, s.stage.data(), std::min<size_t>(s.stage.size(), 7));
     for (int i = 0; i < 8; i++) st8(kNextStage + i, (uint8_t)name[i]);
     const uint16_t point = 0xFFFD;  // dStage_playerInit reads the independent turn-restart record
     {
         // daPy_lk_c::getDayNightParamData without the Wind Waker parts (event 0xCC, flag 0x40: the
-        // conducting animation): standing on foot, or mode 2 on a restored boat; no start event.
+        // conducting animation): standing, native crawl entry, or a restored boat; no start event.
         // A foot-player restore must not create or reposition a boat.
-        uint32_t param = (uint32_t)(s.room & 0x3F) | (uint32_t)(s.has_ship && s.on_ship ? 2 : 0) << 12 | 0xFF000000u | (s.has_ship ? 0x100u : 0u);
+        uint32_t param = pstate::restart_parameters(s);
         for (int i = 0; i < 3; i++) {
             stf32(buf + 4 * i, s.pos[i]);
             stf32(buf + 0x10 + 4 * i, s.ship_pos[i]);
@@ -1281,7 +1282,7 @@ std::string g_last_portable;      // newest portable state written or loaded (un
 // loads keep their own marker (g_last_load_frame), which crash recovery reads; test aids that count
 // frames after "a load" take the newer of the two (dynres.cpp).
 std::atomic<uint64_t> g_last_arrival_frame{0};
-struct Arrival { std::string stage; float pos[3]; uint64_t frame = 0; uint32_t link_id = 0; int frames = 0; std::shared_ptr<pstate::State> s; LoadResult result; } g_arrival;
+struct Arrival { std::string stage; float pos[3]; uint64_t frame = 0; uint32_t link_id = 0; int frames = 0; std::shared_ptr<pstate::State> s; LoadResult result; bool crawl_stopped = false; } g_arrival;
 
 void cancel_portable_arrival(const std::string&why){
     auto result=g_arrival.result;
@@ -1440,12 +1441,27 @@ void watch_arrival(Cpu* c) {
         CallScope scope(c);
         apply_hd_sections(c, *g_arrival.s);
     }
+    // The new actor can exist before its procedure is initialized. Wait for native
+    // crawl entry, then stop its initial moving cycle once; with no input it would
+    // otherwise coast ~30 units to the next half-cycle on every reload. Native
+    // crawl input restarts the animation normally. HD frame-control rate is +0.
+    if (!g_arrival.crawl_stopped && pstate::restore_crawl(*g_arrival.s) && ld32(link+kLinkProc)==0x10 &&
+        ld16(link+0x420)==4 && ld32(link+0x430)==0x0E) {
+        stf32(link+0x5898,0.0f); // mFrameCtrlUnder[0].mRate
+        g_arrival.crawl_stopped = true;
+        LOG("[savestate] portable load: crawl entry animation stopped at arrival frame %d",g_arrival.frames);
+    }
     if (g_arrival.frames < 30) return;  // let Link settle (start animation, ground check)
     float p[3];
     for (int i = 0; i < 3; i++) p[i] = (float)ldf32(link + kActorPos + 4 * i);
     float dx = p[0] - g_arrival.pos[0], dy = p[1] - g_arrival.pos[1], dz = p[2] - g_arrival.pos[2];
     LOG("[savestate] portable load: arrived in %s room %d at %.1f %.1f %.1f (distance %.1f from the saved position)",
         stage_name().c_str(), (int8_t)ld8(link + kActorRoom), p[0], p[1], p[2], sqrtf(dx * dx + dy * dy + dz * dz));
+    if (pstate::restore_crawl(*g_arrival.s)) {
+        const int proc=(int)ld32(link+kLinkProc);
+        LOG("[savestate] portable load: crawl entry %s (procedure 0x%X)",
+            pstate::crawl_procedure(proc) ? "restored" : "has ended", proc);
+    }
     if (g_arrival.s->has_ship) {
         const uint32_t ship = ld32(kShipPtr);
         const int proc = (int)ld32(link + kLinkProc);

@@ -57,7 +57,7 @@ struct State {
     int room = 0;               // Link's room (fopAcM_GetRoomNo)
     float pos[3] = {0, 0, 0};   // Link's current.pos
     int angle_y = 0;            // shape_angle.y (s16)
-    int link_proc = -1;         // daPy_lk_c::mCurProc (informational)
+    int link_proc = -1;         // daPy_lk_c::mCurProc (crawl posture is restored)
     bool on_ship = false;       // Link rides the boat (a daPyProc_SHIP_* procedure): he starts on it
     bool has_ship = false;      // the boat (dComIfGp_getShipActor) is in the stage: it goes back to its place
     float ship_pos[3] = {0, 0, 0};
