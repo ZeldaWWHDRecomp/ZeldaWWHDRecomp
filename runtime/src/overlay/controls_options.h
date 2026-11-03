@@ -1,4 +1,4 @@
-// Settings > Controls: the options under the controller drawing (stick dead zone, camera inversion,
+// Settings > Controls > Controller: device tuning (stick dead zone, camera inversion,
 // rumble, phone vibration, gyro, reset, stick ranges). They flow (flow_layout.h): on a desktop window
 // they stay on two lines as before, in a phone's narrow window they stack instead of running past the
 // right edge, and the closing hint keeps a readable width. Kept free of the game so

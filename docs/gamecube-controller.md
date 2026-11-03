@@ -1,6 +1,6 @@
 # GameCube controller layout
 
-Open **Settings → Controls** and choose **GameCube** under **Face buttons**. To change one
+Open **Settings → Controls → Controller** and choose **GameCube** under **Face buttons**. To change one
 controller only, select it under **Bindings for** first. **All controllers** changes the shared
 bindings used by controllers without their own profile. The game's Controls page also has a
 GameCube layout toggle for the controller in use.
@@ -51,7 +51,7 @@ direction in the game's options if you prefer the original GameCube feel.
 
 ## Button prompts
 
-The controller layout and the on-screen button style are separate choices. In **Controls → Button
+The controller layout and the on-screen button style are separate choices. In **Controls → Prompts → Button
 prompts**, choose **GameCube** to show the classic green A, red B, grey X/Y, purple Z, grey L/R,
 yellow C-stick and Start button. **Automatic** uses this style when a supported GameCube adapter
 is recognized. Choose it by hand for another controller. See [Button prompts](button-glyphs.md)
