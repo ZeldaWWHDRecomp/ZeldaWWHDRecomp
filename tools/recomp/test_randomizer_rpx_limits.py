@@ -8,7 +8,7 @@ import randomizer_compat as compat
 class RpxLimits(unittest.TestCase):
     def parse(self, sections, limit=64):
         payloads=[(b'\0.names\0.payload\0',0)]+sections
-        header=bytearray(0x34);struct.pack_into('>I',header,0x20,0x34)
+        header=bytearray(0x34);header[:6]=b'\x7fELF\x01\x02';header[18:20]=b'\x00\x14';struct.pack_into('>I',header,0x20,0x34)
         struct.pack_into('>HHH',header,0x2E,40,len(payloads),0)
         offset=len(header)+40*len(payloads);entries=[];data=b''
         for index,(raw,flags) in enumerate(payloads):
@@ -91,7 +91,7 @@ class RpxLimits(unittest.TestCase):
         # Minimal bounded container, changed after identity selection, before
         # the translator parses it. Restoring the path afterward cannot change
         # the digest of the actual buffer passed into analysis.
-        header=bytearray(0x34);struct.pack_into('>I',header,0x20,0x34)
+        header=bytearray(0x34);header[:6]=b'\x7fELF\x01\x02';header[18:20]=b'\x00\x14';struct.pack_into('>I',header,0x20,0x34)
         struct.pack_into('>HHH',header,0x2E,40,1,0)
         names=b'\0.names\0'
         entry=struct.pack('>10I',1,1,0,0,0x34+40,len(names),0,0,1,0)
@@ -114,6 +114,51 @@ class RpxLimits(unittest.TestCase):
                     recomp.Recompiler(path)
             discovery.assert_not_called()
             self.assertEqual(path.read_bytes(),original)
+
+    def test_actual_buffer_header_is_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'bad.rpx'
+            valid=bytearray(0x34);valid[:6]=b'\x7fELF\x01\x02';valid[18:20]=b'\x00\x14'
+            for offset,value in [(0,0),(4,2),(5,1),(19,21)]:
+                bad=bytearray(valid);bad[offset]=value;path.write_bytes(bad)
+                with self.subTest(offset=offset),self.assertRaisesRegex(ValueError,'PowerPC RPX'):
+                    Rpx(path,limits=compat.RPX_LIMITS)
+
+    def test_valid_initial_header_cannot_waive_bad_replacement_header(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'seed.rpx';header=bytearray(0x34)
+            header[:6]=b'\x7fELF\x01\x02';header[18:20]=b'\x00\x14';path.write_bytes(header)
+            bad=bytearray(header);bad[5]=1
+            def changed_hash(selected):
+                path.write_bytes(bad)
+                return hashlib.sha256(bad).hexdigest()
+            with mock.patch.object(compat.builds,'file_sha256',side_effect=changed_hash):
+                with self.assertRaisesRegex(ValueError,'PowerPC RPX'):
+                    compat.identify(path)
+
+    def test_header_to_hash_replacement_checks_actual_parsed_entry(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'seed.rpx';header=bytearray(0x34)
+            header[:6]=b'\x7fELF\x01\x02';header[18:20]=b'\x00\x14'
+            struct.pack_into('>I',header,24,0x2000000);path.write_bytes(header)
+            # The first header is valid but a replacement before hashing has a
+            # different entry. All subsequent hashes match that replacement.
+            parsed=SimpleNamespace(buffer_sha256='b'*64,entry=0x2000004,
+                                   by_name={'.text':SimpleNamespace(size=2)})
+            profile={'base_sha256':'a'*64,'sections':[{'name':'.text','size':1}]}
+            def changed_hash(selected):
+                new=bytearray(header);struct.pack_into('>I',new,24,parsed.entry);path.write_bytes(new)
+                return 'b'*64
+            def check(rpx,profile,hooks,entry):
+                self.assertEqual(entry,parsed.entry)
+                raise compat.CompatibilityError('actual parsed entry rejected')
+            with mock.patch.object(compat.builds,'file_sha256',side_effect=changed_hash), \
+                 mock.patch.object(compat,'Rpx',return_value=parsed), \
+                 mock.patch.object(compat,'check',side_effect=check):
+                with self.assertRaisesRegex(ValueError,'actual parsed entry rejected'):
+                    compat.identify(path,profile=profile)
 
     def test_object_counts_fail_before_object_loops(self):
         rpx=Rpx.__new__(Rpx);rpx.limits=dict(symbols=1,relocations=1)

@@ -148,7 +148,7 @@ def identify(path, profile=None, expected_sha256=None):
         original_text = next(section for section in profile['sections'] if section['name']=='.text')
         if actual == profile['base_sha256'] or rpx.by_name['.text'].size <= original_text['size']:
             raise CompatibilityError('randomizer folder does not contain the expected extended randomized game code')
-        report = check(rpx, profile, hooks, struct.unpack_from('>I', header, 24)[0])
+        report = check(rpx, profile, hooks, rpx.entry)
     except (struct.error, zlib.error, IndexError, KeyError) as error:
         raise CompatibilityError('randomizer input has an invalid RPX section or symbol table') from error
     if builds.file_sha256(path) != actual:

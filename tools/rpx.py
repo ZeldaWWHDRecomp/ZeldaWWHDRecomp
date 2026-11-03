@@ -29,6 +29,9 @@ class Rpx:
             d = stream.read(limits['file']+1) if limits else stream.read()
         if limits and len(d) > limits['file']:
             raise ValueError("RPX input exceeds size limit")
+        if limits and (len(d) < 0x34 or d[:6] != b"\x7fELF\x01\x02" or
+                       struct.unpack_from(">H", d, 18)[0] != 20):
+            raise ValueError("RPX input is not a 32-bit big-endian PowerPC RPX")
         self.buffer_sha256 = hashlib.sha256(d).hexdigest() if limits else None
         total = 0
         self.entry, = struct.unpack_from(">I", d, 0x18)
