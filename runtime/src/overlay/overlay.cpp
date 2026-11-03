@@ -1926,6 +1926,41 @@ void cheats() {
         int bit = which;
         if (check(label, mods::infinite(bit), &v)) hostui::post([bit, v] { mods::set_infinite(bit, v); });
     }
+    static int story_item = 0;
+    if (ImGui::CollapsingHeader("Story items")) {
+        note("Inventory only. Place the pearls at the statues yourself.");
+        note("A backup of your last in-game save is made before the first grant this session.");
+        const std::pair<const char*,int> items[] = {{"Nayru's Pearl",mods::kStoryNayru},
+            {"Din's Pearl",mods::kStoryDin}, {"Farore's Pearl",mods::kStoryFarore},
+            {"Own the fully upgraded Master Sword",mods::kStorySword}};
+        bool first = true;
+        for (const auto& [label,item] : items) {
+            if (!first) modsui::same_line_if_fits(label);
+            first = false;
+            if (ImGui::Button(label)) {
+                if (mods::story_item_confirmation_needed()) {
+                    story_item = item;
+                    ImGui::OpenPopup("Story item warning");
+                } else mods::request_story_item(item);
+            }
+        }
+        help("Story checks can react to ownership alone. Sword upgrades can remove characters from earlier locations. "
+             "Restore a backup from Mods > More > Save backups if needed; loading an older save state can also restore old item flags.");
+    }
+    ImGui::SetNextWindowSize(ImVec2(std::min(460.f,ImGui::GetIO().DisplaySize.x-24.f),0.f),ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Story item warning",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("This can change or break the story's order. A save backup is made first.");
+        ImGui::TextWrapped("The backup contains your last in-game save. No item is granted if the backup fails. "
+                            "Pearls still need placing at the statues. Upgraded sword ownership can change which characters appear.");
+        if (ImGui::Button("Back up and give item")) {
+            mods::request_story_item(story_item,true);
+            story_item = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        modsui::same_line_if_fits("Cancel");
+        if (ImGui::Button("Cancel")) { story_item = 0; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
     heading("Story cheats (can break story events; use a spare save file)");
     auto story = [first = true](const char* label, int which) mutable {
         if (!first) modsui::same_line_if_fits(label);
