@@ -617,12 +617,11 @@ int word_action(uint32_t box) {
 }
 
 void draw_gamecube_word(Cpu* c,PpcFunc draw) {
+    const auto look=style();
+    if (look.face!=FaceStyle::kGameCube || !look.text_colours) return draw(c);
     const uint32_t box=c->r[3];
     const int action=word_action(box);
-    if (action<0) return draw(c);
-    const auto look=style();
-    if (look.face!=FaceStyle::kGameCube || !look.text_colours ||
-        (action>=4 && look.shoulders!=ShoulderStyle::kGameCube)) return draw(c);
+    if (action<0 || (action>=4 && look.shoulders!=ShoulderStyle::kGameCube)) return draw(c);
     // Actual text drawing (028787FC) reads this live black/white ramp, independently
     // of cached vertices. The native blue ramp would otherwise tint every outline blue.
     const uint32_t colors=ld32(box+0xF8);
