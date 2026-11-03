@@ -2334,7 +2334,9 @@ void touch_question_check(bool open) {
     if (decided || render::frame_count() < 120) return;  // (the game's first pictures are up)
     decided = true;
 #ifdef __ANDROID__
-    const bool touch = true;
+    // test runs (WWHD_NO_HOST_INPUT, e.g. tools/android/bench_phone.py) read no settings.ini, so the question
+    // would open Settings over every run; they skip it unless the test asks for it
+    const bool touch = !getenv("WWHD_NO_HOST_INPUT") || getenv("WWHD_TEST_TOUCH_QUESTION");
 #else
     const bool touch = getenv("WWHD_TEST_TOUCH_QUESTION") != nullptr;
 #endif
