@@ -292,6 +292,23 @@ int main() {
     assert(view().notice.find("Wind Waker HD") != std::string::npos);
     assert(choose(cloud.string()));
 
+    // Choosing the same cloud root in different randomized installations cannot copy the vanilla
+    // save into a seed, nor share a pending restore or folder preference with another seed.
+    const std::string seed = "randomizer-" + std::string(64, 'a');
+    const fs::path seed_default = root / "seed-data/save" / seed;
+    const fs::path seed_config = config / seed;
+    write(seed_default / "user/cking.sav", "seed A");
+    const std::string vanilla_before = read(cloud / "user/cking.sav");
+    s = startup(seed_default, seed_config, none.fn(), {}, seed);
+    assert(state().backups == seed_default.parent_path() / "save-backups" / seed);
+    assert(choose(cloud.string()));
+    assert(fs::path(read_choice(choice_file(seed_config))->folder) == cloud / seed);
+    s = startup(seed_default, seed_config, none.fn(), {}, seed);
+    assert(!s.quit && s.save_dir == cloud / seed);
+    assert(read(s.save_dir / "user/cking.sav") == "seed A");
+    assert(read(cloud / "user/cking.sav") == vanilla_before);
+    release();
+
     fs::remove_all(root);
     std::puts("save_folder_test: ok");
     return 0;

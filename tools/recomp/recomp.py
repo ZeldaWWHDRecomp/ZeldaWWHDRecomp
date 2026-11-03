@@ -60,6 +60,7 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -146,8 +147,10 @@ class Recompiler:
         self.build = build or game_builds.identify(path)
         if self.build is None:
             raise SystemExit(unknown_build_message(path))
+        if getattr(self.build, "randomizer", False) and decomp_hooks:
+            raise ValueError("randomized builds cannot use decompiled function replacements")
         self.mod_hooks = mod_hooks
-        self.preserve_registers = preserve_registers
+        self.preserve_registers = preserve_registers or getattr(self.build, "randomizer", False)
         self.p = Program(path)
         self.p.discover()
         self.entries = set(self.p.entries)
@@ -433,6 +436,12 @@ class Recompiler:
         if ppc2c.NAN_PROPAGATION:  # the helpers, next to funcs.h (the decomp's verify build has its own runtime)
             with _Output(os.path.join(outdir, "ppc_nan.h")) as f:
                 f.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppc_nan.h"), encoding="utf-8").read())
+        if getattr(self.build, "randomizer", False):
+            with _Output(os.path.join(outdir, "randomizer.json")) as output:
+                json.dump(self.build.randomizer_report, output, indent=2)
+                output.write("\n")
+        else:
+            Path(outdir, "randomizer.json").unlink(missing_ok=True)
         self.write_report(outdir, len(files))
 
     def static_float_gqrs(self):
@@ -536,6 +545,7 @@ class Recompiler:
         f.write('\n/* %s build: canonical (USA) address -> this build\'s (tools/recomp/builds.py) */\n' % b.name)
         f.write('const char g_guest_build_name[] = "%s";\n' % b.name)
         f.write('const char g_guest_build_title_id[] = "%s";\n' % b.title_id)
+        f.write('const char g_guest_build_rpx_sha256[] = "%s";\n' % b.sha256)
         for kind, steps in (("code", b.code_steps()), ("data", b.data_steps())):
             f.write("const GuestStep g_guest_%s_steps[] = {%s};\n" % (
                 kind, ", ".join("{0x%08Xu, %d}" % (a, d) for a, d in steps)))
@@ -566,6 +576,9 @@ class Recompiler:
                 f.write("PowerPC NaN propagation: on (verification build, ppc_nan.h)\n")
             # only with the passes on: with them off (WWHD_RECOMP_PLAIN=1) every output file is the same
             # as without them
+            if getattr(self.build, "randomizer", False):
+                f.write("randomizer compatibility: %s; RPX %s\n" %
+                        (self.build.randomizer_report["profile"], self.build.sha256))
             if self.preserve_registers:
                 f.write("guest register preservation: on (CR liveness and ABI register-local passes off)\n")
             if CRLIVE and not self.mod_hooks and not self.preserve_registers:
@@ -590,6 +603,8 @@ if __name__ == "__main__":
     ap.add_argument("--build", help="which build the rpx is, when it should not be identified by "
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
+    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible USA randomized RPX")
+    ap.add_argument("--expected-rpx-sha256", help="randomizer: require the exact RPX checked by setup")
     ap.add_argument("--preserve-registers", action="store_true",
                     help="experimental patched RPX: preserve scratch GPR/FPR/CR writes across guest calls")
     ap.add_argument("--decomp-hooks", help="the decomp build's function list (tools/decomp_build/gen.py)")
@@ -597,7 +612,19 @@ if __name__ == "__main__":
                     help="verification builds: float instructions return the NaN operand the PowerPC would (ppc_nan.h)")
     a = ap.parse_args()
     ppc2c.NAN_PROPAGATION = a.ppc_nan_propagation
+    if a.randomizer and a.build:
+        ap.error("--randomizer and --build cannot be combined")
+    if a.randomizer and a.decomp_hooks:
+        ap.error("--randomizer and --decomp-hooks cannot be combined")
+    if a.expected_rpx_sha256 and not a.randomizer:
+        ap.error("--expected-rpx-sha256 requires --randomizer")
     build = None
+    if a.randomizer:
+        import randomizer_compat
+        try:
+            build = randomizer_compat.identify(a.rpx, expected_sha256=a.expected_rpx_sha256)
+        except (ValueError, OSError, KeyError) as error:
+            ap.exit(1, "randomizer compatibility check failed: %s\n" % error)
     if a.build:
         build = game_builds.by_name(a.build)
         if build is None:

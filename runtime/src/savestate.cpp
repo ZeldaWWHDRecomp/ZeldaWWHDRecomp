@@ -65,6 +65,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
  static void after_thaw(story_native_restore_resume::LoadWindow&w){w.after_thaw();}
 };}
 #include "guest_addr.h"
+#include "randomizer_identity.h"
 #include "full_state_header.h"
 #include "full_state_stream.h"
 #include "input.h"
@@ -270,6 +271,7 @@ std::string state_dir() {
             d=host::config_dir()+"/states";
 #endif
         }
+        d = randomizer::seed_directory(d);
         std::error_code ec; std::filesystem::create_directories(d,ec);
         return d;
     }();

@@ -34,6 +34,7 @@ extern const GuestChanged g_guest_changed_code[];
 extern const unsigned g_guest_changed_code_count;
 extern const char g_guest_build_name[];     /* "USA", "EU", ... */
 extern const char g_guest_build_title_id[];
+extern const char g_guest_build_rpx_sha256[];
 #ifdef __cplusplus
 }
 #endif

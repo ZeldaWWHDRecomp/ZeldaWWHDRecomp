@@ -290,6 +290,7 @@ struct State {
     bool active = false;     // the game uses a chosen folder (safe writes, the lock)
     fs::path folder;         // the save folder in use
     fs::path default_folder; // where the save goes without a choice
+    std::string seed_namespace; // randomized saves also isolate chosen folders and backup restores
     fs::path backups;        // the local save-backups folder
     fs::path config_dir;
     std::string machine;
@@ -376,7 +377,8 @@ struct Startup {
 };
 
 // main(), before the game reads any save. default_dir: config::save_dir without a choice.
-inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, const Ask& ask, std::function<void(const std::string&)> log) {
+inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, const Ask& ask, std::function<void(const std::string&)> log,
+                       const std::string& seed_namespace = {}) {
     auto& s = state();
     std::lock_guard guard(s.mu);
     Startup out;
@@ -384,6 +386,8 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
     out.save_dir = default_dir;
     s.default_folder = def;
     s.backups = def.parent_path() / "save-backups";
+    s.seed_namespace = seed_namespace;
+    if (!seed_namespace.empty()) s.backups /= seed_namespace;
     s.config_dir = config_dir;
     s.machine = machine_name();
     s.folder = def;
@@ -735,7 +739,9 @@ inline bool choose(const std::string& folder) {
     fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
     if (same_folder(picked, current)) picked = current;  // the same folder, spelled another way
     else if (same_folder(picked, s.default_folder)) picked = s.default_folder;
-    const fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
+    fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
+    if (!s.seed_namespace.empty() && !folder.empty() && picked != current && next != s.default_folder &&
+        next.filename() != s.seed_namespace) next /= s.seed_namespace;
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
     Choice c;

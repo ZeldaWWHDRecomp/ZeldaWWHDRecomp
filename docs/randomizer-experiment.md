@@ -1,15 +1,42 @@
-# Experimental randomized-RPX builds
+# Randomized USA games (experimental)
 
-This developer workflow tests route 2 for [#117](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/issues/117):
-compile the player's randomized USA RPX together with that seed's content. It is
-not an installer feature or a claim that every seed is compatible. Ordinary setup
-still requires a recognized, unmodified RPX.
+Route 2 for [#117](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/issues/117)
+compiles the player's randomized USA RPX together with that seed's content. It is
+an experimental installer feature, not a claim that every seed is compatible.
+
+## Player setup
+
+Generate a USA game with the official TWWHD Randomizer, then choose its complete
+`code/content/meta` output folder in setup. Selecting that folder's
+`code/cking.rpx` also works; the surrounding content and metadata are required.
+Keep the seed output for as long as that installation uses it.
+
+Setup automatically checks the section/import layout, every port hook instruction
+and the complete containing functions against a shipped compatibility profile.
+The profile contains hashes and addresses only. Players do not need to supply a
+second original dump or manually review hooks. Unreviewed changes are rejected;
+a matching randomizer title alone never bypasses these checks. The normal
+supported-build registry still rejects arbitrary modified RPX files.
+
+Randomized builds automatically preserve assembly scratch-register returns and
+use translated randomizer code throughout; decompiled replacements are disabled.
+An executable checks its exact RPX hash before accessing saves. If you regenerate
+the output in place, run setup again for the new seed.
+
+Ordinary saves are under `save/randomizer-<full RPX SHA-256>/user`, and save-state
+slots get the same seed subfolder inside the states directory. Settings and
+controls remain shared. Importing a save in setup targets the currently installed
+seed. Copying a save or a state manually between seeds is unsupported.
+
+Two default-option 1.2.0 seeds and one swordless seed pass the automatic compatibility check. Windows,
+other option combinations and a full playthrough still need validation; passing
+the hook check is not a guarantee of complete gameplay compatibility.
 
 Use separate checkouts and private build, save, user and cache folders. Keep the
 original game and saves unchanged. Generated C, randomized game files, spoiler
 logs and saves remain private; do not attach them to a PR.
 
-## Audit a seed
+## Maintainer audit of a new compatibility variant
 
 You need an original supported USA dump and a randomized `code/content/meta`
 folder. The experimental tool accepts the randomizer title `0005000010143599`
@@ -36,6 +63,20 @@ unchanged hook instruction does not prove compatible behavior: a replacement
 that skips the original function could skip the randomizer patch too. The tool
 refuses to generate if a hook instruction changed or text lies outside the
 reference function map. Such cases need a port change and another audit.
+
+After that review, maintainers can regenerate the shipped hash-only profile:
+
+```sh
+python3 tools/recomp/mk_randomizer_profile.py /private/original-usa/code/cking.rpx \
+  tools/recomp/randomizer-usa.json \
+  --reviewed-rpx /private/randomized/code/cking.rpx \
+  --reviewed-functions REVIEWED_COMMA_SEPARATED_FUNCTIONS
+```
+
+Repeat `--reviewed-rpx` for independently reviewed variants. The tool refuses a
+changed hook instruction or a changed function missing from the explicit review
+list. Adding a port hook also invalidates the profile until it is regenerated
+and reviewed; `test_randomizer_compat.py` checks that it matches the current hooks.
 
 ## Generate and build
 

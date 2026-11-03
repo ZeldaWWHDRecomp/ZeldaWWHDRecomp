@@ -201,6 +201,8 @@ TITLE_IDS = {
 # canonical one, every other is translated through its own address map (tools/recomp/builds/*.json).
 sys.path.insert(0, os.path.join(PKG, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
+import randomizer_compat  # noqa: E402
+RANDOMIZER_TITLE = randomizer_compat.TITLE_ID
 SUPPORTED_BUILDS = {b.title_id: b for b in game_builds.all_builds()}
 SUPPORTED_TITLE = game_builds.canonical_build().title_id
 # The translated code (tools/recomp, the hooks in tools/recomp/hooks*.txt, the runtime) is made for
@@ -1041,7 +1043,7 @@ def disc_info(image, keys):
 
 def check_title(title_id):
     """Raises SetupError unless this is a version of the game the port can be built from."""
-    if title_id in SUPPORTED_BUILDS:
+    if title_id in SUPPORTED_BUILDS or title_id == RANDOMIZER_TITLE:
         return
     region = TITLE_IDS.get(title_id)
     if region:
@@ -1053,6 +1055,8 @@ def check_title(title_id):
 def title_desc(tid, version=None):
     """'The Wind Waker HD (USA), version 0', 'the update for The Wind Waker HD (USA), version 16', ..."""
     tid = tid.lower()
+    if tid == RANDOMIZER_TITLE:
+        return "The Wind Waker HD Randomizer" + ("" if version is None else ", version %d" % version)
     region = TITLE_IDS.get("00050000" + tid[8:])
     name = "The Wind Waker HD (%s)" % region if region else "title %s-%s" % (tid[:8].upper(), tid[8:].upper())
     kind = tid[:8]
@@ -1076,7 +1080,7 @@ def archive_info(path, title=_ANY_SUPPORTED):
     if title is _ANY_SUPPORTED:
         # which build is in there (one pass that only lists), then ask for that one
         _, _, listed = _archive_info_one(path, None)
-        title = next((t["id"] for t in listed.get("titles", []) if t["id"] in SUPPORTED_BUILDS), SUPPORTED_TITLE)
+        title = next((t["id"] for t in listed.get("titles", []) if t["id"] in SUPPORTED_BUILDS or t["id"] == RANDOMIZER_TITLE), SUPPORTED_TITLE)
     return _archive_info_one(path, title)
 
 
@@ -1139,6 +1143,18 @@ def archive_choice(info):
     return info["selected"], notes
 
 
+def selected_game_folder(path):
+    """A complete extracted game selected by its root, code folder, or cking.rpx."""
+    path = os.path.abspath(path)
+    candidates = [path] if os.path.isdir(path) else []
+    if os.path.isdir(path):
+        candidates.append(os.path.dirname(path))
+    elif (os.path.isfile(path) and os.path.basename(path).lower() == "cking.rpx" and
+          os.path.basename(os.path.dirname(path)).lower() == "code"):
+        candidates.append(os.path.dirname(os.path.dirname(path)))
+    return next((p for p in candidates if valid_game_folder(p)), None)
+
+
 def game_folder_title(path):
     meta = os.path.join(path, "meta", "meta.xml")
     try:
@@ -1192,10 +1208,21 @@ def check_game_version(path):
         digest = file_sha256(rpx)
     except OSError as e:
         raise SetupError("cannot read %s: %s" % (rpx, e))
+    tid, ver = code_title_version(path)
+    folder_title = game_folder_title(path)
+    if tid == RANDOMIZER_TITLE or folder_title == RANDOMIZER_TITLE:
+        if ver != SUPPORTED_VERSION or tid != RANDOMIZER_TITLE or folder_title != RANDOMIZER_TITLE:
+            raise SetupError("The randomized game's code and metadata do not match. Select the complete output folder from the official randomizer.")
+        try:
+            build = randomizer_compat.identify(rpx, expected_sha256=digest)
+        except (ValueError, OSError, KeyError, struct.error) as error:
+            LOG.write("Randomizer compatibility: %s" % error)
+            raise SetupError("This randomized game is not compatible with this port version. Update the port or use a supported seed configuration. See the setup log for the clash details.") from error
+        LOG.write("Randomizer compatibility passed: %s" % json.dumps(build.randomizer_report, sort_keys=True))
+        return build
     build = game_builds.by_sha256(digest)
     if build:
         return build
-    tid, ver = code_title_version(path)
     updates = ["0005000e" + t[8:] for t in SUPPORTED_BUILDS]
     if tid and tid not in SUPPORTED_BUILDS and tid not in updates:
         found = "the game code (code/cking.rpx) is from %s (title %s-%s)" % (title_desc(tid, ver), tid[:8].upper(),
@@ -1590,14 +1617,17 @@ def decomp_hooks_file():
 def recompile(game_dir, gen_dir, hooks=False):
     shutil.rmtree(longpath(gen_dir), ignore_errors=True)
     rpx = os.path.join(game_dir, "code", "cking.rpx")
-    decomp = decomp_hooks_file()
+    randomized = game_folder_title(game_dir) == RANDOMIZER_TITLE or code_title_version(game_dir)[0] == RANDOMIZER_TITLE
+    build = check_game_version(game_dir) if randomized else None
+    decomp = None if randomized else decomp_hooks_file()
     if decomp:
         build = game_builds.identify(rpx)
         if build is not None and not build.canonical:
             raise SetupError("this is the decomp build of the port, which works with the USA game only (yours is the %s "
                              "build); use the regular release" % build.name)
     out = run_logged([sys.executable, os.path.join(PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir] +
-                     (["--mod-hooks"] if hooks else []) + (["--decomp-hooks", decomp] if decomp else []),
+                     (["--mod-hooks"] if hooks else []) + (["--decomp-hooks", decomp] if decomp else []) +
+                     (["--randomizer", "--expected-rpx-sha256", build.sha256] if randomized else []),
                      env=dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0"), what="translating the game code")
     n = len(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
     if n == 0:
@@ -2118,7 +2148,11 @@ def remove_toolchain(data_dir):
 
 
 def save_user_dir(data_dir):
-    return os.path.join(data_dir, "save", "user")
+    root = os.path.join(data_dir, "save")
+    identity = read_state(data_dir).get("randomizer", {}).get("rpx_sha256", "")
+    if re.fullmatch(r"[0-9a-f]{64}", identity):
+        root = os.path.join(root, "randomizer-" + identity)
+    return os.path.join(root, "user")
 
 
 def have_save(data_dir):
@@ -2540,6 +2574,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     kind = source[0]
     want_models = kind != "gen" and model_sweep_wanted(ctx, ui)
     want_decomp = kind != "gen" and decomp_wanted(ctx)
+    if kind in ("folder", "installed") and game_folder_title(source[1]) == RANDOMIZER_TITLE:
+        want_decomp = False
     old_state = ctx.state()
     steps = plan_steps(kind, want_decomp)
     total = len(steps)
@@ -2611,6 +2647,12 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             game_dir = os.path.join(data_dir, "game")
             say("  Game files are in %s (%d s)" % (game_dir, time.time() - t0))
     ctx.game_dir = game_dir
+    source_build = check_game_version(game_dir) if kind != "gen" else None
+    if getattr(source_build, "randomizer", False) is True:
+        if manifest.get("variant") == "decomp":
+            raise SetupError("Randomized games require the regular port release, not the decomp runtime.")
+        want_decomp = False
+        say("  Randomized game: compatibility check passed; building this seed's code.")
     keys = None
 
     work = os.path.join(data_dir, "work")
@@ -2651,6 +2693,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
              "installed": time.strftime("%Y-%m-%d %H:%M:%S"), "toolchain": manifest["toolchain"],
              "placeholder_code": kind == "gen",
              "code_mods": code_mods.hooks_option(getattr(args, "code_mods", None))}
+    if getattr(source_build, "randomizer", False) is True:
+        state["randomizer"] = source_build.randomizer_report
     if manifest.get("variant"):
         state["variant"] = manifest["variant"]  # "decomp": the decomp build (docs/decomp-build.md)
     if os.environ.get("APPIMAGE"):
@@ -2808,7 +2852,7 @@ def main():
     ap.add_argument("--archive", help="Cemu Wii U archive (.wua): no keys needed")
     ap.add_argument("--disc-key", help="disc key file or Cemu keys.txt (default: IMAGE.key)")
     ap.add_argument("--common-key", help="Wii U common key file or Cemu keys.txt (or WIIU_COMMON_KEY)")
-    ap.add_argument("--game-dir", help="an already extracted game folder (code/, content/, meta/) instead of an image")
+    ap.add_argument("--game-dir", help="an extracted game folder or randomized code/cking.rpx with its content/meta folders")
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
@@ -2933,7 +2977,7 @@ def run(args, ui):
     elif args.image:
         source = ("image", os.path.abspath(args.image))
     elif args.game_dir:
-        source = ("folder", os.path.abspath(args.game_dir))
+        source = ("folder", selected_game_folder(args.game_dir) or os.path.abspath(args.game_dir))
     elif args.repair or decomp_change:
         if not valid_game_folder(game_dir):
             raise SetupError("no installed game files to repair from; run setup with your disc image")
@@ -3014,7 +3058,7 @@ def run(args, ui):
                                             "run setup again to restore it." % human(folder_size(tdir)), False):
             remove_toolchain(data_dir)
     say("")
-    say("Done. Saves are in %s" % os.path.join(data_dir, "save"))
+    say("Done. Saves are in %s" % os.path.dirname(save_user_dir(data_dir)))
     if source[0] == "gen":
         say("(built with placeholder code: this executable cannot run the game)")
         return 0
@@ -3191,21 +3235,22 @@ def gui_main(args):
 
     def probe(req):
         p = req.get("path") or ""
-        if os.path.isdir(p):
-            folder = p if valid_game_folder(p) else (os.path.dirname(p) if valid_game_folder(os.path.dirname(p)) else None)
+        if os.path.isdir(p) or os.path.basename(p).lower() == "cking.rpx":
+            folder = selected_game_folder(p)
             if not folder:
                 return fail(req, "invalid", "This folder does not contain an extracted game (code, content and meta).")
             tid = game_folder_title(folder)
-            if tid and tid not in SUPPORTED_BUILDS:
+            if tid and tid not in SUPPORTED_BUILDS and tid != RANDOMIZER_TITLE:
                 try:
                     check_title(tid)
                 except SetupError as e:
                     return fail(req, "wrong_title", str(e))
             try:
-                check_game_version(folder)
+                checked_build = check_game_version(folder)
             except SetupError as e:
                 return fail(req, "wrong_version", str(e)[0].upper() + str(e)[1:])
             return reply(req, kind="folder", path=folder, title=title_desc(tid) if tid else "The Wind Waker HD",
+                         randomizer=getattr(checked_build, "randomizer", False) is True,
                          in_place=PORTABLE, bytes=folder_size(folder))
         if not os.path.isfile(p):
             return fail(req, "invalid", "File not found.")
@@ -3221,6 +3266,7 @@ def gui_main(args):
                    "this folder (about %s)." % (title_desc(info["title_id"], int(info["version"])), folder,
                                                 human(int(info.get("bytes", 0)))))
             return reply(req, kind="archive", path=p, title=title_desc(info["title_id"], int(info["version"])),
+                         randomizer=info["title_id"] == RANDOMIZER_TITLE,
                          folder=folder, bytes=int(info.get("bytes", 0)), message=" ".join([msg] + notes))
         if not p.lower().endswith((".wux", ".wud")):
             return fail(req, "invalid", "Choose a .wux or .wud disc image, a .wua Cemu archive, or an extracted game "

@@ -46,6 +46,8 @@ TOOL_FILES = [
     "tools/recomp/analyze.py",
     "tools/recomp/ppc2c.py",
     "tools/recomp/builds.py",
+    "tools/recomp/randomizer_compat.py",
+    "tools/recomp/randomizer-usa.json",
     "tools/recomp/crlive.py",
     "tools/recomp/leaflocal.py",
     "tools/recomp/rawstore.py",
