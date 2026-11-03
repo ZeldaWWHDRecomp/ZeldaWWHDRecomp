@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New on macOS: controller rumble** (#347, fixes #346, thanks @davidsgullick). The macOS app now drives controller
+  motors through Apple's GameController haptics, so any pad macOS reports haptics for rumbles, for example a DualSense.
+  Strength, the Rumble setting and the quiet rules (settings open, window in the background, quitting) work as on the
+  other platforms.
 - **Fixed: the rupee sparkle fades out with the rupee counter** (#358, fixes #353, thanks @thejorro for the report). With
   "Rupees only when they change" on, the counter faded out but its sparkle stayed on screen. HUD effects now fade with
   the part of the HUD they belong to; effects in the world and on the GamePad are unchanged.
