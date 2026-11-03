@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed on Linux: the launcher and menu entry for data folders with special characters** (#377, fixes #376, thanks
+  @RaphaelFakhri for the report and the fix). Setup now quotes the data folder correctly in `play.sh` and in the menu
+  entry, so a folder name containing `$`, `` ` ``, `"`, `\` or `%` (for example `Games 100%`) no longer breaks the
+  launcher or makes the menu entry invalid. Ordinary folder names produce the same files as before.
 - **Decomp build (experimental): a stand-in for the scalable font** (#370). The game's scalable font takes its data
   from the Wii U's system font, which the port doesn't provide. In the `-DWWHD_DECOMP=ON` build, the font module's
   entry points now draw with the game's own main font instead, so its metrics are sane; `WWHD_FONT_GUARD=1` stops if
