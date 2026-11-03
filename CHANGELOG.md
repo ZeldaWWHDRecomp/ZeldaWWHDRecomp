@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (experimental): host versions of the game's runtime library** (#373). In the `-DWWHD_DECOMP=ON`
+  build, 63 functions of the game's compiler runtime and nn wrappers (exact math helpers, array construction, string
+  and printf functions, list helpers and others) now run as host code, each matched to the original by measurement.
+  `WWHD_HOSTRT=0` runs the originals and `WWHD_HOSTRT_CHECK=1` runs both and logs any difference. The normal build is
+  unchanged and keeps the game's own code.
 - **Fixed on macOS: Steam Controllers launched through Steam** (#348, fixes #342, thanks @davidsgullick for the change
   and @jamesmendel for testing every step on real hardware). The macOS app now reads Steam Input's virtual pad, which
   GameController never shows, so a Steam Controller started from Steam works, appears once in Controller details and

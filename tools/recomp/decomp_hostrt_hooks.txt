@@ -1,0 +1,68 @@
+# Decomp build only (recomp.py --decomp-hooks; docs/decomp-build.md): the port-owned guest runtime (GHS
+# C/C++ runtime, nn static wrappers) replaced by host code (runtime/src/hostrt; tools/host_runtime). Each
+# root's replacement was measured bit-exact against the recompiled original (tools/host_runtime/difftest).
+# The normal build never reads this file (it is not a hooks_*.txt) and keeps the recompiled originals.
+# In the decomp build, WWHD_HOSTRT=0 runs the originals.
+028F4114  # floorf
+028F41B0  # ceilf
+028F3B98  # floor (double)
+028F543C  # u64 -> float
+028F597C  # u64 % u64
+028F5680  # float -> s64
+028F5678  # float -> u64
+028EFFD0  # __construct_array
+028EFF8C  # __vec_new
+028F0020  # array new, zero-filled
+028F026C  # __register_global_object
+028F521C  # bzero (memset(p, 0, n))
+028F5914  # zero n words
+028F040C  # strcpy
+028F0164  # __destroy_arr (a header the original rejects runs the original)
+0286CA30  # nn export thunk (erreula/swkbd)
+0286CA40  # nn export thunk (erreula/swkbd)
+0286CB2C  # nn export thunk (erreula/swkbd)
+0286CB3C  # nn export thunk (erreula/swkbd)
+0286CB4C  # nn export thunk (erreula/swkbd)
+0286CB5C  # nn export thunk (erreula/swkbd)
+0286CB6C  # nn export thunk (erreula/swkbd)
+0286CBB4  # nn export thunk (erreula/swkbd)
+0286D270  # nn export thunk (erreula/swkbd)
+0286D2D4  # nn export thunk (erreula/swkbd)
+0286D2E4  # nn export thunk (erreula/swkbd)
+0286D3C0  # nn export thunk (erreula/swkbd)
+0286D3D0  # nn export thunk (erreula/swkbd)
+0286D3E0  # nn export thunk (erreula/swkbd)
+0286D3F0  # nn export thunk (erreula/swkbd)
+0286D400  # nn export thunk (erreula/swkbd)
+0286CBC4  # nn: work memory size
+0286D5F0  # nn: empty function
+0286DA70  # nn::ut list insert
+0286DA9C  # nn::ut list erase
+0286DACC  # nn::ut list erase range
+0286DB18  # nn::ut list clear
+028F5C88  # __va_arg
+028F1748  # vsnprintf (float/wide conversions run the original)
+028F17A8  # snprintf
+028F186C  # sprintf
+028EA038  # memmove (start-up)
+028F35A8  # div
+028F2EE8  # strtoul
+028F3090  # strtol
+0286CD54  # nn: swkbd work size
+0286C590  # nn: erreula RPL allocator
+0286C9CC  # nn: erreula destroy
+0286D37C  # nn: swkbd destroy
+0286CA50  # nn: erreula wrapper
+0286CAA4  # nn: erreula wrapper
+0286CAE8  # nn: erreula wrapper
+0286D280  # nn: swkbd wrapper
+0286D2F4  # nn: swkbd wrapper
+0286D338  # nn: swkbd wrapper
+0286CB7C  # nn: erreula wrapper
+0286D620  # nn SCI: cafe.language
+0286D938  # nn SCI: parental control (online communication)
+0286D9E0  # nn SCI: parental control (network launcher)
+0286C5F8  # nn: erreula Create (loads erreula.rpl)
+0286CD7C  # nn: swkbd Create (loads swkbd.rpl)
+028F0294  # __construct_array with an argument array
+028EA09C  # static-initializer walk of the start-up code

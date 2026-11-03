@@ -1,0 +1,8 @@
+# abisurvey: compiler helpers vs C arithmetic with measured edge rules, 2026-11-03
+# float inputs: all 2^32; integer inputs: 2M random + all pairs of edge values
+cvt_f_s64      inputs   4294967296  differ            0  EXACT   (sign-magnitude rule, -NaN -> INT64_MIN)
+cvt_f_u64      inputs   4294967296  differ            0  EXACT   (negative: -magnitude mod 2^64; NaN magnitude = inf)
+cvt_u64_f      inputs      2000651  differ            0  EXACT   (direct u64->float; through double: 3 differ)
+umod64         inputs      2423801  differ            0  EXACT   (x % 0 = x)
+udiv64         inputs      2423801  differ        31737   (division by zero: algorithm-dependent results, e.g. 0x100000000/0 = 0x3FFFFFFFF) -> stays recompiled
+sdiv64         inputs      2423801  differ        33112   (division by zero, same) -> stays recompiled

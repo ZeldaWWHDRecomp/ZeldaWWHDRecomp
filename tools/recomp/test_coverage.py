@@ -24,6 +24,8 @@ NON_ADDRESS = {
     ("mods/lyt_build.cpp", 0x02020000): "the layout files' format version (BFLYT / BFLAN)",
     ("mods/item_ring.cpp", 0x10101CC0): "RGBA colour of the item ring's entry discs",
 }
+NON_ADDRESS.update({("trace.cpp", value): "WWHD_HOSTRT_TRACE: USA ranges of the port-owned guest runtime (decomp-build diagnostic)"
+                    for value in (0x0286C590, 0x0286DB50, 0x028EA038, 0x028F626C)})
 NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
                     for value in (0x02FB7000, 0x02D26000, 0x02AC0000, 0x02881000,
                                   0x02665000, 0x02468000, 0x02287000, 0x020C1000)})
