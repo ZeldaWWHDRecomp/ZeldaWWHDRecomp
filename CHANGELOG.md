@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Safer save import on Android** (#339, thanks @GenissonEmilio). An imported save is now checked completely before it
+  replaces yours, and your previous save is kept as a backup. If the import is interrupted, your old save comes back.
+  Oversized or damaged archives are refused, and import and export only run while the game is closed.
 - **New on Windows: the Wii U GameCube adapter works** (#357, fixes #354, thanks @itsarahtonin). Windows builds now
   include libusb, which SDL needs to reach the adapter. Install the WinUSB driver for it with Zadig (the same driver
   Dolphin uses); Windows' own driver isn't supported. See the GameCube controller guide.
