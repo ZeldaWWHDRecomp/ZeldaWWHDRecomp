@@ -38,6 +38,7 @@ void f_028F597C(Cpu*);
 void f_028F5680(Cpu*);
 void f_028F5678(Cpu*);
 void f_0286CBC4(Cpu*);
+void f_0286CD54(Cpu*);
 void f_028F35A8(Cpu*);
 void f_0286D5F0(Cpu*);
 }
@@ -86,6 +87,7 @@ std::vector<Root> roots() {
              c.r[4] = m == 1 ? 0 : m == 2 ? 0xFFFFFFFFu : (uint32_t)r() >> (r() % 32);
              if (r() & 1) c.r[4] = 0 - c.r[4];
          }, R3 | R4},
+        {"swkbd_work_size", f_0286CD54, hostrt::work_size_0286CD54, [](Cpu& c, std::mt19937_64& r, uint64_t) { c.r[3] = (uint32_t)r(); }, R3},
         {"work_size", f_0286CBC4, hostrt::work_size_0286CBC4, [](Cpu&, std::mt19937_64&, uint64_t) {}, R3},
         {"empty", f_0286D5F0, hostrt::empty_0286D5F0, [](Cpu&, std::mt19937_64&, uint64_t) {}, 0},
         {"cvt_f_u64", f_028F5678, hostrt::cvt_f_u64_028F5678, [](Cpu& c, std::mt19937_64& r, uint64_t i) { f1_single(c, r, i, true); }, R3 | R4, true},

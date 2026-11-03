@@ -17,6 +17,10 @@
 
 extern "C" void imp_coreinit_memset(Cpu* c);         // the port's memset (hle/coreinit_mem.cpp)
 extern "C" void imp_coreinit___gh_set_errno(Cpu* c);  // the port's errno setter (hle/coreinit_misc.cpp)
+// the port's coreinit memory and dynamic-load functions (hle/)
+extern "C" void imp_coreinit_MEMAllocFromExpHeapEx(Cpu* c);
+extern "C" void imp_coreinit_MEMDestroyExpHeap(Cpu* c);
+extern "C" void imp_coreinit_OSDynLoad_Release(Cpu* c);
 
 namespace hostrt {
 
@@ -70,7 +74,18 @@ void export_thunk_0286D3D0(Cpu* c);
 void export_thunk_0286D3E0(Cpu* c);
 void export_thunk_0286D3F0(Cpu* c);
 void export_thunk_0286D400(Cpu* c);
-void work_size_0286CBC4(Cpu* c);  // returns the work memory size (0x01600000)
+void work_size_0286CBC4(Cpu* c);
+void work_size_0286CD54(Cpu* c);         // swkbd work memory size for the option flags in r3
+void heap_alloc_0286C590(Cpu* c);        // (size, align, out): erreula's RPL allocator callback
+void erreula_destroy_0286C9CC(Cpu* c);
+void swkbd_destroy_0286D37C(Cpu* c);
+void wrap_0286CA50(Cpu* c);              // the wrappers that check two exports, then call a third
+void wrap_0286CAA4(Cpu* c);
+void wrap_0286CAE8(Cpu* c);
+void wrap_0286D280(Cpu* c);
+void wrap_0286D2F4(Cpu* c);
+void wrap_0286D338(Cpu* c);
+void wrap_0286CB7C(Cpu* c);              // calls an export with a copy of *r3  // returns the work memory size (0x01600000)
 void empty_0286D5F0(Cpu* c);      // does nothing
 
 // ---- C library (hostrt_libc.cpp)

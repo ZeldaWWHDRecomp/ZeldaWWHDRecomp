@@ -48,3 +48,14 @@
 028F35A8  # div
 028F2EE8  # strtoul
 028F3090  # strtol
+0286CD54  # nn: swkbd work size
+0286C590  # nn: erreula RPL allocator
+0286C9CC  # nn: erreula destroy
+0286D37C  # nn: swkbd destroy
+0286CA50  # nn: erreula wrapper
+0286CAA4  # nn: erreula wrapper
+0286CAE8  # nn: erreula wrapper
+0286D280  # nn: swkbd wrapper
+0286D2F4  # nn: swkbd wrapper
+0286D338  # nn: swkbd wrapper
+0286CB7C  # nn: erreula wrapper
