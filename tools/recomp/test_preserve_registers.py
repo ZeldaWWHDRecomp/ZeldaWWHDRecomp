@@ -48,14 +48,15 @@ class PreserveRegisters(unittest.TestCase):
         self.assertGreater(c.cr_stats[0], 0)
 
     @unittest.skipUnless(CC, "no C compiler")
-    def test_scratch_returns_survive_leaf_and_nonleaf_helpers(self):
-        for nested in (False, True):
-            c, caller = compiler(True, nested)
+    def test_scratch_returns_require_preservation_for_leaf_and_nonleaf_helpers(self):
+        for preserve, nested in ((True, False), (True, True), (False, False), (False, True)):
+            c, caller = compiler(preserve, nested)
             with patch.object(recomp, "CRLIVE", True), patch.object(recomp, "LEAF", True), patch.object(recomp, "NONLEAF", True):
                 functions = [c.emit_function(a)[0] for a in c.sorted_entries]
-            self.assertEqual(c.leaf_count, 0)
-            self.assertEqual(c.nonleaf_count, 0)
-            self.assertEqual(c.cr_stats, [0, 0])
+            if preserve:
+                self.assertEqual(c.leaf_count, 0)
+                self.assertEqual(c.nonleaf_count, 0)
+                self.assertEqual(c.cr_stats, [0, 0])
             self.assertFalse(c.unhandled)
             source = '#include "ppc.h"\n#include <stdlib.h>\n'
             source += '\n'.join('void f_%08X(Cpu*);' % a for a in c.sorted_entries)
@@ -81,10 +82,12 @@ int main(void) {
                 src.write_text(source)
                 exe = Path(tmp)/('scratch.exe' if os.name == 'nt' else 'scratch')
                 for opt in ('-O0', '-O2'):
-                    with self.subTest(nested=nested, opt=opt):
+                    with self.subTest(preserve=preserve, nested=nested, opt=opt):
                         subprocess.run([CC, '-std=c11', opt, '-w', '-I'+str(ROOT/'runtime/include'), str(src), '-lm', '-o', str(exe)], check=True, capture_output=True)
                         result = subprocess.run([str(exe)], capture_output=True)
-                        self.assertEqual(result.returncode, 0, result.stderr)
+                        # Identical assembly must demonstrate the original ABI-optimization bug
+                        # when preservation is disabled, not merely pass with the fix enabled.
+                        self.assertEqual(result.returncode, 0 if preserve else 1, result.stderr)
 
 
 if __name__ == '__main__':

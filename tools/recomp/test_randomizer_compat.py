@@ -6,6 +6,9 @@ from types import SimpleNamespace
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
+import struct
+import mk_randomizer_profile as M
 
 import builds
 import randomizer_compat as C
@@ -15,15 +18,15 @@ HOOKS = [(False, START, START, 'test:1'), (True, START+4, START+4, 'test:2')]
 
 
 def fixture():
-    original = b'abcdefghijklmnop'
-    reviewed = original[:12]+b'1234'
-    section = SimpleNamespace(name='.text', addr=START, type=1, flags=6, size=16, data=original)
-    rpx = SimpleNamespace(by_name={'.text': section}, symbols=[])
-    profile = dict(format=1, id='synthetic', base_sha256=builds.canonical_build().sha256,
+    original = b'abcdefghijklmnopqrstuvwxyz012345'
+    reviewed = original[:-4]+b'1234'
+    section = SimpleNamespace(name='.text', addr=START, type=1, flags=6, size=32, data=original)
+    rpx = SimpleNamespace(by_name={'.text': section}, sections=[section], symbols=[])
+    profile = dict(format=2, id='synthetic', base_sha256=builds.canonical_build().sha256,
                    hooks_sha256=C.hook_digest(HOOKS), entry_point=START,
-                   imports_sha256=C.import_digest(rpx), sections=[dict(name='.text', address=START, size=16, type=1, flags=6)],
-                   points=[dict(address=a, sha256=C.digest(original[a-START:a-START+4])) for a in (START, START+4)],
-                   functions=[dict(start=START, end=START+16, sha256=[C.digest(original), C.digest(reviewed)])])
+                   imports_sha256=C.import_digest(rpx), sections=[dict(name='.text', address=START, size=32, type=1, flags=6)],
+                   **C.range_profile(rpx, [START, START+4], [(START, START+32)]))
+    profile['functions'][0]['sha256'].append(C.digest(reviewed))
     return rpx, profile, reviewed
 
 
@@ -45,7 +48,7 @@ class Compatibility(unittest.TestCase):
 
     def test_unchanged_hook_word_does_not_waive_body_review(self):
         rpx, profile, _ = fixture()
-        rpx.by_name['.text'].data = rpx.by_name['.text'].data[:8]+b'unknown!'
+        rpx.by_name['.text'].data = rpx.by_name['.text'].data[:8]+b'unknown!'+rpx.by_name['.text'].data[16:]
         with self.assertRaisesRegex(C.CompatibilityError, 'unreviewed change'):
             C.check(rpx, profile, HOOKS, START)
 
@@ -85,6 +88,65 @@ class Compatibility(unittest.TestCase):
         with self.assertRaisesRegex(C.CompatibilityError, 'loaded section set'):
             C.check(rpx, profile, HOOKS, START)
 
+    def test_aggregate_covers_tiny_bodies_and_binds_ranges(self):
+        rpx, profile, _ = fixture()
+        rpx.by_name['.text'].data = bytes(range(72))
+        rpx.by_name['.text'].size = 72
+        ranges = [(START, START+4), (START+4, START+12), (START+12, START+40), (START+40, START+72)]
+        profile.update(C.range_profile(rpx, [START, START+4], ranges))
+        self.assertEqual([f['end']-f['start'] for f in profile['tiny_functions']], [4, 8, 28])
+        self.assertEqual([f['end']-f['start'] for f in profile['functions']], [32])
+        C.check(rpx, profile, HOOKS, START)
+        for offset in (0, 7, 11, 39):
+            changed = deepcopy(rpx)
+            data = bytearray(changed.by_name['.text'].data);data[offset] ^= 1
+            changed.by_name['.text'].data = bytes(data)
+            with self.subTest(offset=offset), self.assertRaisesRegex(C.CompatibilityError, 'tiny hooked function'):
+                C.check(changed, profile, HOOKS, START)
+        altered = deepcopy(profile);altered['tiny_functions'][1]['end'] += 4
+        with self.assertRaises(C.CompatibilityError):C.check(rpx, altered, HOOKS, START)
+        for field, value in (('minimum_function_hash_bytes', 4), ('points', [START])):
+            altered = dict(profile);altered[field] = value
+            with self.assertRaises(C.CompatibilityError):C.check(rpx, altered, HOOKS, START)
+
+    def test_reviewed_body_cannot_waive_changed_hook_word(self):
+        rpx, profile, reviewed = fixture()
+        changed = bytearray(reviewed);changed[0] ^= 1
+        rpx.by_name['.text'].data = bytes(changed)
+        profile['functions'][0]['sha256'].append(C.digest(bytes(changed)))
+        with self.assertRaisesRegex(C.CompatibilityError, 'hook instruction'):
+            C.check(rpx, profile, HOOKS, START)
+
+    def test_generator_allows_only_explicit_body_review_and_canonical_hook_words(self):
+        rpx, _, reviewed = fixture()
+        reference = SimpleNamespace(build=builds.canonical_build(), p=SimpleNamespace(rpx=rpx, entry=START),
+                                    func_of=lambda address: START, func_end=lambda address: START+32)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'reviewed.rpx';header = bytearray(28);struct.pack_into('>I', header, 24, START);path.write_bytes(header)
+            changed = deepcopy(rpx);changed.by_name['.text'].data = reviewed
+            with patch.object(M, 'Recompiler', return_value=reference), patch.object(M.builds, 'read_hooks', return_value=(HOOKS, None)), patch.object(M, 'Rpx', return_value=changed):
+                profile = M.make(path, [path], {START})
+                self.assertEqual(len(profile['functions'][0]['sha256']), 2)
+                with self.assertRaisesRegex(ValueError, 'unreviewed hook function'):M.make(path, [path], set())
+                data = bytearray(reviewed);data[4] ^= 1;changed.by_name['.text'].data = bytes(data)
+                with self.assertRaisesRegex(C.CompatibilityError, 'hook instruction'):M.make(path, [path], {START})
+
+    def test_generator_does_not_publish_or_waive_tiny_body_hashes(self):
+        rpx, _, _ = fixture()
+        reference = SimpleNamespace(build=builds.canonical_build(), p=SimpleNamespace(rpx=rpx, entry=START),
+                                    func_of=lambda address: START, func_end=lambda address: START+20)
+        changed = deepcopy(rpx)
+        data = bytearray(changed.by_name['.text'].data);data[12] ^= 1
+        changed.by_name['.text'].data = bytes(data)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'reviewed.rpx';header = bytearray(28);struct.pack_into('>I', header, 24, START);path.write_bytes(header)
+            with patch.object(M, 'Recompiler', return_value=reference), patch.object(M.builds, 'read_hooks', return_value=(HOOKS, None)), patch.object(M, 'Rpx', return_value=changed):
+                profile = M.make(path, [], set())
+                self.assertEqual(profile['functions'], [])
+                self.assertEqual(profile['tiny_functions'], [dict(start=START, end=START+20)])
+                with self.assertRaisesRegex(C.CompatibilityError, 'tiny hooked function'):
+                    M.make(path, [path], {START})
+
     def test_unknown_file_and_hash_mismatch_are_rejected_before_parse(self):
         with self.assertRaisesRegex(C.CompatibilityError, 'PowerPC RPX'):
             C.identify(__file__)
@@ -102,16 +164,23 @@ class Compatibility(unittest.TestCase):
         hooks, _ = builds.read_hooks(builds.hook_files(), builds.canonical_build())
         self.assertEqual(profile['hooks_sha256'], C.hook_digest(hooks))
         self.assertEqual(profile['base_sha256'], builds.canonical_build().sha256)
-        self.assertEqual({p['address'] for p in profile['points']}, {a for _, _, a, _ in hooks})
+        self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
         self.assertEqual(len({f['start'] for f in profile['functions']}), len(profile['functions']))
-        for point in profile['points']:
-            self.assertEqual(set(point), {'address', 'sha256'})
-            self.assertRegex(point['sha256'], r'^[0-9a-f]{64}$')
+        self.assertEqual(profile['format'], 2)
+        self.assertEqual(profile['minimum_function_hash_bytes'], C.MIN_FUNCTION_HASH_BYTES)
+        self.assertRegex(profile['guard_sha256'], r'^[0-9a-f]{64}$')
+        self.assertTrue(all(isinstance(p, int) for p in profile['points']))
+        self.assertTrue(profile['tiny_functions'])
+        for function in profile['tiny_functions']:
+            self.assertEqual(set(function), {'start', 'end'})
+            self.assertLess(function['end']-function['start'], C.MIN_FUNCTION_HASH_BYTES)
         for function in profile['functions']:
             self.assertEqual(set(function), {'start', 'end', 'sha256'})
-            self.assertLess(function['start'], function['end'])
+            self.assertGreaterEqual(function['end']-function['start'], C.MIN_FUNCTION_HASH_BYTES)
             for value in function['sha256']:
                 self.assertRegex(value, r'^[0-9a-f]{64}$')
+        self.assertEqual({f['start'] for f in profile['functions'] if len(f['sha256']) > 1},
+                         {0x0216F7FC, 0x023EFF20, 0x025499A0})
         self.assertIsNone(builds.by_title(C.TITLE_ID))  # not a normal immutable build hash
 
 

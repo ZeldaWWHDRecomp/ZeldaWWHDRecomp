@@ -8,7 +8,7 @@ from pathlib import Path
 
 import builds
 from recomp import Recompiler
-from randomizer_compat import digest, hook_digest, import_digest, text_slice, check
+from randomizer_compat import digest, hook_digest, import_digest, text_slice, check, range_profile
 from rpx import Rpx
 
 
@@ -20,19 +20,17 @@ def make(base_path, reviewed_paths, reviewed_functions):
     hooks, _ = builds.read_hooks(builds.hook_files(), reference.build)
     starts = sorted({reference.func_of(address) for _, _, address, _ in hooks})
     points = sorted({address for _, _, address, _ in hooks})
-    profile = dict(format=1, id='twwhd-randomizer-usa-v0-1', base_sha256=reference.build.sha256,
+    profile = dict(format=2, id='twwhd-randomizer-usa-v0-2', base_sha256=reference.build.sha256,
                    hooks_sha256=hook_digest(hooks), entry_point=reference.p.entry,
                    imports_sha256=import_digest(rpx),
                    sections=[dict(name=s.name, address=s.addr, size=s.size, type=s.type, flags=s.flags & 7)
                              for s in rpx.sections if s.flags & 2 and s.size],
-                   points=[dict(address=a, sha256=digest(text_slice(rpx, a, a+4))) for a in points],
-                   functions=[dict(start=a, end=reference.func_end(a),
-                                   sha256=[digest(text_slice(rpx, a, reference.func_end(a)))]) for a in starts])
+                   **range_profile(rpx, points, [(a, reference.func_end(a)) for a in starts]))
     seen = set()
     for path in reviewed_paths:
         patched = Rpx(str(path))
-        # First check only the layout, imports and exact hook words. Whole-body
-        # changes are permitted here solely for the maintainer's explicit list.
+        # Always require canonical hook words and tiny bodies as one aggregate.
+        # Only bodies of at least 32 bytes can gain explicitly reviewed variants.
         layout = dict(profile, functions=[])
         check(patched, layout, hooks, struct.unpack_from('>I', path.read_bytes(), 24)[0])
         for function in profile['functions']:
@@ -60,7 +58,7 @@ def main():
     profile = make(a.original_rpx, a.reviewed_rpx, reviewed)
     a.output.write_text(json.dumps(profile, indent=2)+'\n', encoding='utf-8')
     print('%d hook points, %d containing functions; wrote hashes/layout only' %
-          (len(profile['points']), len(profile['functions'])))
+          (len(profile['points']), len(profile['functions'])+len(profile['tiny_functions'])))
 
 
 if __name__ == '__main__':

@@ -22,6 +22,9 @@ TITLE_ID = '0005000010143599'
 RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
                   sections=128, symbols=8192, relocations=500000)
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
+# Short instruction sequences (including li/blr) must not expose enumerable digests.
+# Group every body below 32 bytes with all hook words in one canonical aggregate.
+MIN_FUNCTION_HASH_BYTES = 32
 
 
 class CompatibilityError(ValueError):
@@ -51,8 +54,31 @@ def text_slice(rpx, start, end):
     return text.data[offset:end-text.addr]
 
 
+def guard_digest(rpx, points, tiny_functions):
+    """One address/length-bound commitment; never publish per-word/tiny-body hashes."""
+    value = hashlib.sha256(b'WWHD randomizer hook/tiny aggregate v2\0')
+    for address in points:
+        value.update(b'P' + struct.pack('>II', address, 4))
+        value.update(text_slice(rpx, address, address+4))
+    for function in tiny_functions:
+        start, end = function['start'], function['end']
+        value.update(b'F' + struct.pack('>II', start, end-start))
+        value.update(text_slice(rpx, start, end))
+    return value.hexdigest()
+
+
+def range_profile(rpx, points, ranges):
+    """Split at 32 bytes; all smaller bodies share the hook-word aggregate."""
+    tiny = [dict(start=a, end=b) for a, b in ranges if b-a < MIN_FUNCTION_HASH_BYTES]
+    functions = [dict(start=a, end=b, sha256=[digest(text_slice(rpx, a, b))])
+                 for a, b in ranges if b-a >= MIN_FUNCTION_HASH_BYTES]
+    return dict(points=points, tiny_functions=tiny, functions=functions,
+                minimum_function_hash_bytes=MIN_FUNCTION_HASH_BYTES,
+                guard_sha256=guard_digest(rpx, points, tiny))
+
+
 def check(rpx, profile, hooks, entry):
-    if profile.get('format') != 1 or profile.get('base_sha256') != builds.canonical_build().sha256:
+    if profile.get('format') != 2 or profile.get('base_sha256') != builds.canonical_build().sha256:
         raise CompatibilityError('randomizer compatibility profile does not match the supported USA build')
     if hook_digest(hooks) != profile['hooks_sha256']:
         raise CompatibilityError('randomizer compatibility profile needs updating for this port hook set')
@@ -73,10 +99,16 @@ def check(rpx, profile, hooks, entry):
             raise CompatibilityError('randomized RPX changed the %s section size' % expected['name'])
     if import_digest(rpx) != profile['imports_sha256']:
         raise CompatibilityError('randomized RPX changed the native import layout')
-    for point in profile['points']:
-        address = point['address']
-        if digest(text_slice(rpx, address, address+4)) != point['sha256']:
-            raise CompatibilityError('randomizer clash: hook instruction %08X changed' % address)
+    if profile.get('minimum_function_hash_bytes') != MIN_FUNCTION_HASH_BYTES:
+        raise CompatibilityError('randomizer compatibility profile has an unsupported hash threshold')
+    if profile['points'] != sorted({a for _, _, a, _ in hooks}):
+        raise CompatibilityError('randomizer compatibility profile has incomplete hook coverage')
+    if any(not 0 < f['end']-f['start'] < MIN_FUNCTION_HASH_BYTES for f in profile['tiny_functions']):
+        raise CompatibilityError('randomizer compatibility profile has an invalid tiny-function range')
+    if any(f['end']-f['start'] < MIN_FUNCTION_HASH_BYTES for f in profile['functions']):
+        raise CompatibilityError('randomizer compatibility profile exposes a tiny-function digest')
+    if guard_digest(rpx, profile['points'], profile['tiny_functions']) != profile['guard_sha256']:
+        raise CompatibilityError('randomizer clash: hook instruction or tiny hooked function changed')
     changed = []
     for function in profile['functions']:
         actual = digest(text_slice(rpx, function['start'], function['end']))
@@ -85,7 +117,7 @@ def check(rpx, profile, hooks, entry):
         if actual != function['sha256'][0]:
             changed.append('%08X' % function['start'])
     return dict(profile=profile['id'], title_id=TITLE_ID, reviewed_changed_functions=changed,
-                hook_points_checked=len(profile['points']), functions_checked=len(profile['functions']))
+                hook_points_checked=len(profile['points']), functions_checked=len(profile['functions'])+len(profile['tiny_functions']))
 
 
 def identify(path, profile=None, expected_sha256=None):
