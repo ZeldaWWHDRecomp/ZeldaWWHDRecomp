@@ -171,3 +171,11 @@ Verified locally on Apple Silicon/macOS with the real version-0 executables:
 German pause text and Italian gameplay HUD text were also checked visually. This
 is local runtime validation; Android, Linux and Windows execution remains covered
 by their own CI/build and platform testing, not by these macOS game runs.
+
+## Randomized games
+
+Setup accepts USA output from the official TWWHD Randomizer as an experimental
+feature. It checks the randomized executable against a compatibility profile and
+pins the build to that exact game file. Arbitrary modified RPX files and
+randomized European games remain unsupported. See [randomized USA games](randomizer-experiment.md)
+for setup instructions, compatibility limits and the maintainer audit workflow.

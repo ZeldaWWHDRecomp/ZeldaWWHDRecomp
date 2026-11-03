@@ -452,6 +452,7 @@ struct App {
     std::string source_path, source_kind;  // kind: image | archive (Cemu .wua, no keys) | folder
     std::string probe_msg;
     bool probe_ok = false;
+    bool source_randomizer = false;
     std::string disc_key_found, disc_key_file, common_key_found, common_key_file;
     int disc_mode = 0;
     char disc_paste[128] = {};
@@ -838,7 +839,7 @@ static void start_install(const std::string& source) {
     A.current = -1;
     std::string f = "\"source\":" + jstr(source);
     f += std::string(",\"code_mods\":") + (A.code_mods ? "true" : "false");
-    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp ? "true" : "false");
+    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp && !A.source_randomizer ? "true" : "false");
     if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
     f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
@@ -875,6 +876,7 @@ static void handle_reply(const J& ev) {
     if ((int)ev.num("id") == A.pending_id) A.pending_id = 0, A.pending_cmd.clear();
     if (cmd == "probe") {
         A.probe_ok = ok;
+        A.source_randomizer = ok && ev.boolean("randomizer");
         if (!ok) {
             A.probe_msg = ev.str("message");
             return;
@@ -887,9 +889,8 @@ static void handle_reply(const J& ev) {
         if (A.source_kind == "archive")  // setup.py says which title is used and why
             A.probe_msg = ev.str("message");
         else if (A.source_kind == "folder")
-            A.probe_msg = ev.boolean("in_place") ? "Extracted game folder: The Wind Waker HD (USA). It is used where it is; "
-                                                   "nothing is copied."
-                                                 : "Extracted game folder: The Wind Waker HD (USA)";
+            A.probe_msg = "Extracted game folder: " + ev.str("title", "The Wind Waker HD") +
+                          (ev.boolean("in_place") ? ". It is used where it is; nothing is copied." : "");
         else
             A.probe_msg = "Wii U disc image. The game files are extracted from it into this folder (about 1.7 GB).";
     } else if (cmd == "check_keys") {
@@ -1226,11 +1227,13 @@ static void code_mods_choice() {
           "content mods do not need this. The game code gets a small check in every function, which can "
           "cost some performance, and the build takes a bit longer. You can switch this later in "
           "Settings > Mods; that requires another rebuild.");
-    if (A.decomp_offered) {
+    if (A.decomp_offered && !A.source_randomizer) {
         checkbox("Also build the decomp version (experimental)", &A.decomp);
         muted(A.decomp_text);
         if (button("About the decomp version (docs/decomp-build.md)")) SDL_OpenURL(A.decomp_docs.c_str());
     }
+    if (A.source_randomizer)
+        muted("Randomized games use their own translated code. The decomp version is unavailable for them.");
     ImGui::Spacing();
 }
 
@@ -1270,13 +1273,14 @@ static void screen_menu() {
 
 static void screen_source() {
     page_header("Choose your game",
-                "A Wii U disc image (.wux or .wud), a Cemu archive (.wua) or an already extracted game folder.");
-    static const SDL_DialogFileFilter filters[] = {{"Wii U disc image or Cemu archive (.wux, .wud, .wua)", "wux;wud;wua"},
+                "A Wii U disc image, a Cemu archive or an extracted game folder. For a randomized game, choose the official randomizer output folder or its code/cking.rpx.");
+    static const SDL_DialogFileFilter filters[] = {{"Wii U game or randomized RPX (.wux, .wud, .wua, .rpx)", "wux;wud;wua;rpx"},
                                                    {"Wii U disc image (.wux, .wud)", "wux;wud"},
                                                    {"Cemu Wii U archive (.wua)", "wua"},
+                                                   {"Randomizer game code (.rpx)", "rpx"},
                                                    {"All files", "*"}};
-    if (button("Choose disc image or archive...", ImVec2(320, 0), A.source_path.empty()))
-        choose_file("source", filters, 4);
+    if (button("Choose game file...", ImVec2(320, 0), A.source_path.empty()))
+        choose_file("source", filters, 5);
     ImGui::SameLine();
     if (button("Choose extracted game folder...", ImVec2(320, 0))) choose_folder("source");
     ImGui::Spacing();

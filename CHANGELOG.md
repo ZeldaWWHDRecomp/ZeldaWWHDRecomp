@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Experimental: randomized USA games in setup** (#366, for #117). Setup now accepts a compatible USA output folder
+  of the TWWHD Randomizer (or its `code/cking.rpx` with the content around it). It checks automatically that the
+  randomized game is compatible with the port, builds that seed's game code, and keeps its saves, save backups,
+  state slots and cloud-folder choice apart from your normal game and from other seeds; settings and controls stay
+  shared. Your existing saves stay where they are. Randomized EU output is not supported (the randomizer supports
+  USA only). This is experimental: only a few seeds have been tested, Windows not yet, and a full playthrough is
+  still outstanding.
 - **Fixed: Match window keeps exact preset ratios** (#372, for #349, thanks @plxjammerplx for the report). A window or
   screen shaped exactly like a preset (for example 1280×960) now uses that preset's exact ratio instead of a rounded
   one (1.335 instead of 4:3), so the picture matches the dedicated 4:3, 16:10, 21:9 and 32:9 presets. The 4:3
