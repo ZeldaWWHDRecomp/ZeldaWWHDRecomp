@@ -44,7 +44,8 @@ void guest_capture_enter(uint32_t addr);  // guest_capture.cpp (WWHD_GUEST_CAPTU
 #ifdef WWHD_WRITE_WATCH
 void wwhd_ww_enter(uint32_t addr);  // guest_write_watch.cpp (diagnostic build)
 #endif
-// WWHD_HOSTRT_TRACE=<file>: entry counts (and up to 8 distinct return addresses) of the port-owned guest
+#if WWHD_DECOMP
+// WWHD_HOSTRT_TRACE=<file> (decomp build only): entry counts (and up to 8 distinct return addresses) of the port-owned guest
 // runtime (GHS C/C++ runtime, nn static wrappers; tools/host_runtime/inventory.py), rewritten every 2 s
 // because test runs leave with _Exit. Only these ranges are counted; nothing else is traced.
 namespace hostrt {
@@ -90,12 +91,15 @@ static void writer(std::string path) {
     }
 }
 }  // namespace hostrt
+#endif
 
 extern "C" void ppc_trace_enter(uint32_t addr) {
+#if WWHD_DECOMP
     if (hostrt::g_on) {
         hostrt::enter(addr);
         if (hostrt::g_only) return;
     }
+#endif
     static const bool nan_probe = getenv("WWHD_NAN_PROBE") != nullptr;
     if (nan_probe) true60_nan_probe(addr);
     static const bool guest_capture = getenv("WWHD_GUEST_CAPTURE") != nullptr;
@@ -172,6 +176,7 @@ static void on_usr1(int) {
 }
 
 __attribute__((constructor)) static void trace_init() {
+#if WWHD_DECOMP
     if (const char* p = getenv("WWHD_HOSTRT_TRACE")) {
         hostrt::g_on = true;
         g_ppc_trace = 1;
@@ -179,6 +184,7 @@ __attribute__((constructor)) static void trace_init() {
                          !getenv("WWHD_TRACE_FUNCS") && !getenv("WWHD_GUEST_CAPTURE");
         std::thread(hostrt::writer, std::string(p)).detach();
     }
+#endif
     if (const char* w = getenv("WWHD_WATCH_R3")) { g_watch_r3 = (uint32_t)strtoul(w, nullptr, 16); g_ppc_trace = 1; }
     if (const char* w = getenv("WWHD_WATCH")) {
         g_watch = (uint32_t)strtoul(w, nullptr, 16);
