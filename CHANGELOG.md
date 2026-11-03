@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For testers: scripted Android runs no longer open Settings** (#379). Runs started with `WWHD_NO_HOST_INPUT` (for
+  example `tools/android/bench_phone.py`) skip the first-start touch-controls question, which had left the Settings
+  window open over every scripted run. `WWHD_TEST_TOUCH_QUESTION=1` still asks it. Normal starts are unchanged.
 - **Experimental: randomized USA games in setup** (#366, for #117). Setup now accepts a compatible USA output folder
   of the TWWHD Randomizer (or its `code/cking.rpx` with the content around it). It checks automatically that the
   randomized game is compatible with the port, builds that seed's game code, and keeps its saves, save backups,
