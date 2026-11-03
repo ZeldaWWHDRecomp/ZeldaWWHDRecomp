@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed for mod authors: hooks can no longer change the game's registers** (#367). A `WWHD_HOOK` or `WWHD_HOOK_RETURN`
+  hook now leaves every register of the hooked game function as it was, including its result; only writes through
+  pointers stay. Before, a hook could clobber values that some game or patch code relies on. Existing mods don't need
+  changes.
 - **New: keyboard and mouse button prompts** (#364, for #265, thanks @Eggtooth for the idea). Choose **Keyboard / mouse**
   under Controls › Button prompts and the game's prompts show the key or mouse button you bound (for example Tab, M1,
   LShift, Wh+), drawn in the game's own font; an unbound action shows None. The camera mods (mouse camera, direct
