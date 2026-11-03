@@ -18,13 +18,15 @@ GameCube prompts with any controller or binding.
 
 The GameCube style arranges the HUD buttons like a GameCube controller: A is large and to the
 right, B is down-left, X is to the right of A, and Y is above A. An action, its item and its word
-stay together when they move. Messages and menu prompts use the same button style. The item
-menu's OK and Back prompts stay close together to fit its Wii U layout, and the item ring keeps
-its existing layout.
+stay together when they move. The GameCube artwork replaces the original button plates, and
+its labels remain visible in front of large item pictures. Messages and menu prompts use the
+same button style. The item menu's OK and Back prompts stay close together to fit its Wii U
+layout, and the item ring keeps its existing layout.
 
 **Coloured face buttons** controls the button pictures. **Coloured face button text** controls
-the colours of action words such as “Roll” and “Attack.” Turn the text option off to keep the
-game's usual word colours. Original prompts always keep the game's usual colours.
+the colours of action words such as “Roll” and “Attack,” including GameCube shoulder actions
+such as “Defend.” Turn the text option off to keep the game's usual word colours. Original
+prompts always keep the game's usual colours.
 
 **Shoulder names** can follow the prompt style automatically or use Nintendo, numbered or Xbox
 labels. GameCube prompts use L, R and Z. Your choices are saved.
