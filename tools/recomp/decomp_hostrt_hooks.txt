@@ -39,3 +39,6 @@
 0286DACC  # nn::ut list erase range
 0286DB18  # nn::ut list clear
 028F5C88  # __va_arg
+028F1748  # vsnprintf (float/wide conversions run the original)
+028F17A8  # snprintf
+028F186C  # sprintf

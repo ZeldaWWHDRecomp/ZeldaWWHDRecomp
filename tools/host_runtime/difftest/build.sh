@@ -21,13 +21,13 @@ clang -c $GCC "$ROOT/runtime/src/guest_addr_identity.c" -o "$OUT/guest_addr_iden
 MATH="028F4384 028F37F0 028F43F8 028F4BE0 028F423C 028F4114 028F41B0 028F3F90 028F4DC4 028F4F20 028F4FAC 028F4034 028F4560 028F4D28 028F38F8 028F3C78 028F3CA0 028F3EC0 028F3B98 028F3AB8"
 ABI="028F5680 028F5678 028F543C 028F597C 028F5A1C 028F5B8C"
 REG="0286CBC4 0286D5F0 028F4114 028F41B0 028F3B98 028F543C 028F597C 028F5680 028F5678"
-CALL="0286CA30 0286CA40 0286CB2C 0286CB3C 0286CB4C 0286CB5C 0286CB6C 0286CBB4 0286D270 0286D2D4 0286D2E4 0286D3C0 0286D3D0 0286D3E0 0286D3F0 0286D400 028F5C88 0286DA70 0286DA9C 0286DACC 0286DB18 028EFFD0 028F0164 028F026C 028F521C 028F5914 028F040C"
+CALL="0286CA30 0286CA40 0286CB2C 0286CB3C 0286CB4C 0286CB5C 0286CB6C 0286CBB4 0286D270 0286D2D4 0286D2E4 0286D3C0 0286D3D0 0286D3E0 0286D3F0 0286D400 028F1748 028F17A8 028F186C 028F171C 028F18EC 028F5C88 0286DA70 0286DA9C 0286DACC 0286DB18 028EFFD0 028F0164 028F026C 028F521C 028F5914 028F040C"
 for set in MATH ABI REG CALL; do
     eval addrs=\$$set
     python3 "$D/mkclosure.py" "$GEN" "$OUT/closure_$set.c" $addrs > /dev/null
     clang -c $GCC "$OUT/closure_$set.c" -o "$OUT/closure_$set.o"
 done
-HOSTRT="$ROOT/runtime/src/hostrt/hostrt_math.cpp $ROOT/runtime/src/hostrt/hostrt_abi.cpp $ROOT/runtime/src/hostrt/hostrt_cxx.cpp $ROOT/runtime/src/hostrt/hostrt_libc.cpp $ROOT/runtime/src/hostrt/hostrt_nn.cpp"
+HOSTRT="$ROOT/runtime/src/hostrt/hostrt_math.cpp $ROOT/runtime/src/hostrt/hostrt_abi.cpp $ROOT/runtime/src/hostrt/hostrt_cxx.cpp $ROOT/runtime/src/hostrt/hostrt_libc.cpp $ROOT/runtime/src/hostrt/hostrt_nn.cpp $ROOT/runtime/src/hostrt/hostrt_printf.cpp"
 clang++ $CXX "$D/mathsurvey.cpp" "$D/rt.cpp" "$OUT/closure_MATH.o" "$OUT/espresso_fp.o" -o "$OUT/mathsurvey"
 clang++ $CXX "$D/abisurvey.cpp" "$D/rt.cpp" "$ROOT/runtime/src/hostrt/hostrt_abi.cpp" "$OUT/closure_ABI.o" "$OUT/espresso_fp.o" -o "$OUT/abisurvey"
 clang++ $CXX "$D/regtest.cpp" "$D/rt.cpp" $HOSTRT "$OUT/closure_REG.o" "$OUT/espresso_fp.o" "$OUT/guest_addr_identity.o" -o "$OUT/regtest"

@@ -21,7 +21,15 @@ int wwhd_snan_on = 0;
 void ppc_trace_enter(uint32_t) {}
 void ppc_preempt(Cpu*) {}
 void ppc_mod_run(Cpu*) { abort(); }
-void ppc_dispatch(Cpu* c) { hostrt_test_outside(c, c->pc); }
+typedef struct { uint32_t addr; void (*fn)(Cpu*); } ClosureEntry;
+extern const ClosureEntry hostrt_test_closure[] __attribute__((weak));
+// indirect call: a function of the closure under test runs, anything else is an outside call
+void ppc_dispatch(Cpu* c) {
+    if (hostrt_test_closure)
+        for (const ClosureEntry* e = hostrt_test_closure; e->fn; e++)
+            if (e->addr == c->pc) return e->fn(c);
+    hostrt_test_outside(c, c->pc);
+}
 void ppc_unimplemented(Cpu*, uint32_t addr, uint32_t insn) {
     fprintf(stderr, "difftest: unimplemented instruction %08X at %08X\n", insn, addr);
     abort();

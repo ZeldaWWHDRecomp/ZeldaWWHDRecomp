@@ -51,6 +51,9 @@ void f_0286D3F0(Cpu*);
 void f_0286D400(Cpu*);
 void f_0286DA70(Cpu*);
 void f_028F5C88(Cpu*);
+void f_028F1748(Cpu*);
+void f_028F17A8(Cpu*);
+void f_028F186C(Cpu*);
 void f_0286DA9C(Cpu*);
 void f_0286DACC(Cpu*);
 void f_0286DB18(Cpu*);
@@ -152,6 +155,71 @@ void list_args(Cpu& c, std::mt19937_64& r, uint32_t s, int op) {
     if (op == 4) c.r[4] = it(ring[a]);
 }
 
+// a random printf format (mostly integer, string and char conversions; some float ones, which the
+// replacement hands back) and a va_list over random arguments, in the scratch region
+uint32_t random_format(std::mt19937_64& r, uint32_t at) {
+    static const char* flags[] = {"", "", "", "-", "+", " ", "#", "0", "-0", "+ ", "#0", "-#"};
+    static const char* lens[] = {"", "", "", "h", "hh", "l", "ll"};
+    static const char* convs = "diuoxXcs%";
+    std::string f;
+    const int parts = 1 + (int)(r() % 4);
+    for (int i = 0; i < parts; i++) {
+        if (r() & 1) f += "ab/:"[r() % 4], f += "xyz.%"[r() % 4];
+        f += '%';
+        f += flags[r() % 12];
+        const int w = (int)(r() % 6);
+        if (w == 1) f += std::to_string(r() % 20);
+        if (w == 2) f += '*';
+        const int pr = (int)(r() % 6);
+        if (pr == 1) f += "." + std::to_string(r() % 12);
+        if (pr == 2) f += ".*";
+        if (pr == 3) f += ".";
+        f += lens[r() % 7];
+        f += (r() % 40) ? convs[r() % 9] : "fegp"[r() % 4];
+    }
+    if (getenv("CALLTEST_SHOW_FORMAT")) fprintf(stderr, "format: \"%s\"\n", f.c_str());
+    for (size_t i = 0; i < f.size(); i++) st8(at + (uint32_t)i, (uint8_t)f[i]);
+    st8(at + (uint32_t)f.size(), 0);
+    return at;
+}
+
+uint32_t random_va(std::mt19937_64& r, uint32_t s) {
+    const uint32_t ap = s + 0x100, save = s + 0x200, ovf = s + 0x400 + ((uint32_t)r() & 4);
+    st8(ap, (uint8_t)(r() % 10)), st8(ap + 1, (uint8_t)(r() % 9)), st16(ap + 2, (uint16_t)r());
+    st32(ap + 4, ovf), st32(ap + 8, save);
+    // argument words: small numbers, extremes, random bits, and pointers to strings
+    for (uint32_t i = 0; i < 0x60; i++) {
+        const uint32_t m = (uint32_t)(r() % 6), at = (i < 8 ? save : ovf - 0x20) + 4 * i;
+        uint32_t v = m == 0 ? (uint32_t)(r() % 100) : m == 1 ? (uint32_t)-(int)(r() % 100) : m == 2 ? 0x80000000u
+                   : m == 3 ? (uint32_t)r() & 0x0FFFFFFF : s + 0x1000 + 0x40 * (uint32_t)(r() % 16);
+        st32(at, v);
+    }
+    for (uint32_t k = 0; k < 16; k++) {  // the strings
+        const uint32_t p = s + 0x1000 + 0x40 * k, n = (uint32_t)(r() % 40);
+        for (uint32_t i = 0; i < n; i++) st8(p + i, (uint8_t)(0x20 + r() % 0x5F));
+        st8(p + n, 0);
+    }
+    return ap;
+}
+
+// variadic arguments in r<first>..r10, f1..f8 (CR1.eq says whether floats were passed) and the stack
+void varargs_regs(Cpu& c, std::mt19937_64& r, uint32_t s, int first) {
+    for (int i = first; i <= 10; i++) {
+        const uint32_t m = (uint32_t)(r() % 5);
+        c.r[i] = m == 0 ? (uint32_t)(r() % 100) : m == 1 ? (uint32_t)-(int)(r() % 100) : m == 2 ? (uint32_t)r() & 0x0FFFFFFF
+                                                                                       : s + 0x1000 + 0x40 * (uint32_t)(r() % 16);
+    }
+    for (uint32_t k = 0; k < 16; k++) {
+        const uint32_t p = s + 0x1000 + 0x40 * k, n = (uint32_t)(r() % 40);
+        for (uint32_t i = 0; i < n; i++) st8(p + i, (uint8_t)(0x20 + r() % 0x5F));
+        st8(p + n, 0);
+    }
+    c.cr[6] = r() & 1;
+    for (uint32_t i = 0; i < 24; i++) st32(c.r[1] + 8 + 4 * i, (uint32_t)(r() % 1000));  // stack arguments
+}
+bool snprintf_wrap(Cpu* c) { return hostrt::snprintf_028F17A8(c); }
+bool sprintf_wrap(Cpu* c) { return hostrt::sprintf_028F186C(c); }
+
 std::vector<Root> roots() {
     return {
         {"construct_array", f_028EFFD0, hostrt::construct_array_028EFFD0,
@@ -206,6 +274,25 @@ std::vector<Root> roots() {
              c.r[3] = ap, c.r[4] = (r() & 3) ? 1 + (uint32_t)(r() % 3) : (uint32_t)(r() % 16);
          },
          R3},
+        {"vsnprintf", f_028F1748, hostrt::vsnprintf_028F1748,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             c.r[3] = s + 0x2000, c.r[4] = (r() & 3) ? 0x200 : (uint32_t)(r() % 20);
+             c.r[5] = random_format(r, s + 0x3000), c.r[6] = random_va(r, s);
+         },
+         R3 | R4},
+        {"snprintf", f_028F17A8, snprintf_wrap,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             c.r[3] = s + 0x2000, c.r[4] = (r() & 3) ? 0x200 : (uint32_t)(r() % 20);
+             c.r[5] = random_format(r, s + 0x3000);
+             varargs_regs(c, r, s, 6);
+         },
+         R3 | R4},
+        {"sprintf", f_028F186C, sprintf_wrap,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             c.r[3] = s + 0x2000, c.r[4] = random_format(r, s + 0x3000);
+             varargs_regs(c, r, s, 5);
+         },
+         R3 | R4},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);
@@ -365,6 +452,16 @@ int main(int argc, char** argv) {
                             for (int x = 3; x <= 10; x++) printf(" %08X", q->r[x]);
                             printf(" stk %08X %08X %08X %08X\n", q->stack[0], q->stack[1], q->stack[2], q->stack[3]);
                         }
+                    }
+                    if (!why.empty() && why == "memory" && getenv("CALLTEST_SHOW_TEXT") && fails[k] < 12) {
+                        // printf tests: the format (scratch + 0x3000) and both outputs (scratch + 0x2000)
+                        auto str = [&](const uint8_t* m, uint32_t off) {
+                            std::string t;
+                            for (uint32_t i = off; i < off + 200 && m[i]; i++) t += (char)m[i];
+                            return t;
+                        };
+                        printf("    format \"%s\"\n    orig   \"%s\"\n    repl   \"%s\"\n", str(init.data(), 0x3000).c_str(),
+                               str(after_a.data(), 0x2000).c_str(), str(after_b.data(), 0x2000).c_str());
                     }
                     if (!why.empty() && fails[k]++ < 3)
                         printf("  %s FAIL (%s): r3 %08X r4 %08X r5 %08X r6 %08X r7 %08X r8 %08X; calls %zu/%zu; result %08X %08X / %08X %08X\n",

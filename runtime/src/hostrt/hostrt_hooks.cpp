@@ -168,3 +168,8 @@ HOSTRT_MEM_ROOT(0286DA9C, list_erase, R3)
 HOSTRT_MEM_ROOT(0286DACC, list_erase_range, R3 | R4)
 HOSTRT_MEM_ROOT(0286DB18, list_clear, R3 | R4)
 HOSTRT_MEM_ROOT(028F5C88, va_arg, R3)
+
+// printf family: formats with floating-point or wide conversions run the original
+HOSTRT_CALLS_ROOT(028F1748, vsnprintf, R3 | R4)
+HOSTRT_CALLS_ROOT(028F17A8, snprintf, R3 | R4)
+HOSTRT_CALLS_ROOT(028F186C, sprintf, R3 | R4)

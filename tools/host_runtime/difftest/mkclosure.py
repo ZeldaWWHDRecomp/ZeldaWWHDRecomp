@@ -86,6 +86,13 @@ def main():
         for imp in imports:
             f.write('void imp_%s(Cpu* c) { hostrt_test_import(c, "%s"); }\n' % (imp, imp))
         f.write(text + "\n")
+        # indirect calls (function pointers, e.g. printf's output callbacks) reach closure functions
+        # through this table (difftest/rt.cpp ppc_dispatch)
+        f.write("typedef struct { uint32_t addr; void (*fn)(Cpu*); } ClosureEntry;\n")
+        f.write("const ClosureEntry hostrt_test_closure[] = {\n")
+        for a in sorted(have):
+            f.write("    {0x%08Xu, f_%08X},\n" % (a, a))
+        f.write("    {0, 0}};\n")
     print("%d functions, %d outside calls, %d imports -> %s" % (len(have), len(called - have), len(imports), out))
 
 
