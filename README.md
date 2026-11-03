@@ -619,7 +619,7 @@ remembered (`WWHD_RUMBLE=0` starts with it off). On macOS the motors are driven 
 GameController haptics, so any pad the framework reports haptics for rumbles (the Steam Controller
 on macOS 27 and newer, a DualSense, and others).
 
-**Gyro aiming** (settings overlay → **Controls** → **Gyro…**, off by default): in first person the
+**Gyro aiming** (settings overlay → **Controls** → **Controller** → **Gyro…**, off by default): in first person the
 game turns the camera when the GamePad moves. The port turns its virtual GamePad with a host
 controller's gyro (SDL3; on the macOS app through GameController.framework), a Cemuhook (DSU) server
 or the mouse (Steam Input "gyro to mouse": while the game aims, the pointer is captured and the mouse

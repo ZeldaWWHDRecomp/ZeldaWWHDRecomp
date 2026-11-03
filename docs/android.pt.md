@@ -45,7 +45,7 @@ personalizado na Adreno), e alguns GB livres.
 
 ## Mirar com o giroscópio do celular
 
-Abra **Settings > Controls > Gyro** e escolha **Device gyro (phone/tablet)**.
+Abra **Settings > Controls > Controller > Gyro** e escolha **Device gyro (phone/tablet)**.
 A opção vem desligada e exige giroscópio e acelerômetro. Deixe o celular parado
 por um segundo para calibrar. Ative **Options > Gyro** no jogo e mire em primeira
 pessoa sem mover o analógico direito. Os eixos acompanham a tela nas duas posições

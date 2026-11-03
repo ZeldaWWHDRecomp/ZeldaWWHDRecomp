@@ -1,9 +1,17 @@
 # Controller directions and Wind Waker controls
 
 The physical controller layout and the emulated Wii U controller are separate
-choices. Controls selects whether your inputs act as a Wii U GamePad or Pro
+choices. Controls → Controller selects whether your inputs act as a Wii U GamePad or Pro
 Controller. Select that controller in the game's Controller Selection screen too.
 The face-button preset changes A/B/X/Y; it does not change D-pad or stick directions.
+
+Settings → Controls is organised into five pages. **Bindings** opens first, with the
+controller drawing or list, the controller profile selector and setup. **Controller**
+has the Wii U controller choice, face-button layout, stick tuning, vibration, gyro
+and menu behaviour. **Prompts** changes in-game button icons and names. **Camera**
+contains camera mods and steering, and **Gameplay** contains the item ring and talk
+options. L / R visits these pages before moving to the next Settings tab. Narrow
+windows use the binding list automatically; resizing back restores your chosen view.
 
 **Stick dead zone** defaults to **15%** for both controller sticks. This filters
 small resting-stick drift, which can otherwise keep the Picto Box zooming and its
@@ -19,7 +27,7 @@ register because the game needs an almost fully tilted stick. The range applies
 after the dead zone: the stick's tilt is multiplied by the range and capped at
 full deflection, keeping its direction, so diagonals keep their angle. A stick
 that only reaches 90% needs about 112% to reach full deflection. Both sliders
-sit below the dead zone in the Controls tab and in the macOS Controls window, take
+sit below the dead zone in Controls → Controller and in the macOS Controls window, take
 effect immediately and are saved as `left_stick_range` and `right_stick_range`
 in the controls file's `options` (stored as factors, 1.0 to 1.5). Files without
 these keys load at 100%; values outside the range are clamped.
@@ -61,14 +69,14 @@ Don't ask again**. **Controls > Set up controller...** runs the same setup any t
 4. **Try it**: every press shows what it does in the game. Hold **Start** to finish, hold
    **Select** to change the setup, so the setup works without touching the screen.
 
-The controller then keeps **its own buttons**. **Controls > Bindings for** chooses which buttons the
+The controller then keeps **its own buttons**. **Controls > Bindings > Bindings for** chooses which buttons the
 drawing (or the list) edits: *All controllers* (the shared buttons every other controller uses) or
 one controller, with **Give it its own buttons** / **Use the shared buttons**. The keyboard is always
 shared. A controller is recognised by its SDL GUID and name, then by its GUID alone (the same model
 under another name), then by its name alone (the same model on another connection, and the macOS
 app, which has no GUIDs).
 
-**Controls > Controller details...** lists what the system reports about each connected controller:
+**Controls > Bindings > Controller details...** lists what the system reports about each connected controller:
 vendor and product IDs, GUID, connection, battery, rumble motors, motion sensors, lights, buttons and
 axes, which buttons it uses, and what is pressed right now. On Android some controllers have motion
 sensors or rumble that apps only get with the right Linux kernel driver: a DualSense or DualShock 4
@@ -172,7 +180,7 @@ Existing keyboard/controller files load unchanged. Each wheel notch supplies one
 short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
-In **Controls**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
+In **Controls → Camera**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
 mouse to look around on foot or while sailing, at the same mouse sensitivity. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows

@@ -17,7 +17,7 @@ In Pro Controller mode the game's own **Options → Gyroscope** switch stays in 
 changed as usual (checked in a game run); its help text still says it "will have no effect when using the
 Wii U Pro Controller", which is the Wii U's behaviour: in the port it does apply while a gyro source is on.
 
-Settings overlay (F1) → **Controls** → **Gyro…**:
+Settings overlay (F1) → **Controls** → **Controller** → **Gyro…**:
 
 - **Source** (above). `WWHD_GYRO=off|controller|cemuhook|mouse|device` overrides it at start.
 - **Turn left/right by** (controller, device and Cemuhook sources), the usual gyro aiming conventions (as in
@@ -80,7 +80,7 @@ frame. Measured in R3 look (`WWHD_TEST_GYRO`, Outset): a GamePad turn of 60° ri
 
 ## Phone sensors
 
-On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Gyro**.
+On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Controller > Gyro**.
 It is off by default and requires both a gyro and an accelerometer. Rest the phone
 for a second, enable the game’s own **Options > Gyro**, then aim in first person with
 the right stick at rest. Player space, sensitivity, inversion and recalibration

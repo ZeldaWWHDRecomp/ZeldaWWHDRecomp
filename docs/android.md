@@ -92,7 +92,7 @@ itself down, which can make the game stutter or run slower. If that happens, go 
 
 ## Gyro aiming with your phone
 
-Open **Settings > Controls > Gyro**, then choose **Device gyro (phone/tablet)**.
+Open **Settings > Controls > Controller > Gyro**, then choose **Device gyro (phone/tablet)**.
 This is off by default and needs both a gyroscope and an accelerometer. Rest the
 phone for a second to calibrate. Enable **Options > Gyro** in the game and aim in
 first person, keeping the right stick at rest. The axes follow the displayed screen

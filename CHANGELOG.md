@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Clearer Controls settings**. Bindings, controller setup and tuning, in-game prompts, camera options and gameplay
+  conveniences now have their own pages. The binding diagram has room of its own; narrow windows use the list.
+  Existing bindings and saved settings are kept.
+
 - **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
   state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
   respawn loop. Existing states work without conversion; standing and boat states load as before.

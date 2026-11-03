@@ -46,7 +46,7 @@ personalizado en Adreno), y unos pocos GB libres.
 
 ## Apuntar con el giroscopio del teléfono
 
-Abre **Settings > Controls > Gyro** y elige **Device gyro (phone/tablet)**.
+Abre **Settings > Controls > Controller > Gyro** y elige **Device gyro (phone/tablet)**.
 Está desactivado de forma predeterminada y necesita giroscopio y acelerómetro.
 Deja el teléfono quieto un segundo para calibrarlo. Activa **Options > Gyro** en
 el juego y apunta en primera persona sin mover el stick derecho. Los ejes siguen

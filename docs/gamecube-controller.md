@@ -1,6 +1,6 @@
 # GameCube controller layout
 
-Open **Settings → Controls** and choose **GameCube** under **Face buttons**. To change one
+Open **Settings → Controls → Controller** and choose **GameCube** under **Face buttons**. To change one
 controller only, select it under **Bindings for** first. **All controllers** changes the shared
 bindings used by controllers without their own profile. The game's Controls page also has a
 GameCube layout toggle for the controller in use.
