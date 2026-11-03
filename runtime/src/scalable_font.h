@@ -8,9 +8,17 @@
 // Miiverse itself is stubbed. Everything else reaches the font only through its virtual functions, the
 // nw::lyt FontInterface slots (vtable 0x101880C0; vptr at +4, slot n at vptr+8n+4).
 //
-// The stand-in (tools/recomp/hooks_font.txt, scalable_font_hooks.cpp) replaces the 12 functions the
-// game calls directly and the 12 slot functions; the original module's code never runs
-// (WWHD_FONT_GUARD traps if it does). Every slot answers from CKingMain (font #0 of the game's font
+// Which build uses it: only the decomp build (CMake WWHD_DECOMP=ON, and later the full native build), whose
+// decompilation leaves this module out. The normal (recompiled) build runs the game's own recompiled font
+// module unchanged: no hooks (recomp.py adds tools/recomp/decomp_only_hooks_font.txt only with
+// --decomp-hooks), scalable_font_hooks.cpp compiles to nothing, and WWHD_FONT_GUARD / WWHD_FONT_LOG only
+// print a notice. There the font keeps the original behaviour without the shared font (its metrics read
+// 0x80000000), as on devel.
+//
+// In the decomp build the stand-in (decomp_only_hooks_font.txt, scalable_font_hooks.cpp) replaces the 12
+// functions the game calls directly and the 12 slot functions; the original module's code never runs.
+// WWHD_FONT_GUARD=1 makes any function of the module that starts running a fatal error;
+// WWHD_FONT_LOG=n logs the first n advance and glyph requests. Every slot answers from CKingMain (font #0 of the game's font
 // manager) through that font's own slot functions: metrics, advances, kerning, glyph records (which
 // point at CKingMain's sheets) and its replacement character for characters it lacks.
 //

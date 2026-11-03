@@ -143,6 +143,23 @@ class Hooks(unittest.TestCase):
         self.assertIn(("hooks_language.txt", "USA"), skipped)
         self.assertFalse(any(where.startswith("hooks_language.txt") for _, _, _, where in entries))
 
+    def test_decomp_only_hooks_stay_out_of_the_normal_list(self):
+        """decomp_only_hooks_*.txt (the scalable font stand-in) apply to every build, but only the decomp
+        build reads them (recomp.py --decomp-hooks): the normal build runs the game's own code."""
+        normal = builds.hook_files()
+        decomp_only = builds.decomp_only_hook_files()
+        self.assertIn("decomp_only_hooks_font.txt", [os.path.basename(p) for p in decomp_only])
+        self.assertFalse(set(normal) & set(decomp_only))
+        normal_addrs = {canon for _, canon, _, _ in builds.read_hooks(normal, builds.canonical_build())[0]}
+        for build in builds.all_builds():
+            entries, skipped = builds.read_hooks(decomp_only, build)
+            self.assertEqual(skipped, [])
+            self.assertEqual(len([e for e in entries if e[3].startswith("decomp_only_hooks_font.txt")]), 23)
+            for site, canon, addr, where in entries:
+                self.assertFalse(site, where)
+                self.assertNotIn(canon, normal_addrs, where)
+                self.assertTrue(0x028B2204 <= canon < 0x028E81E4, where)
+
     def test_no_instruction_site_patches_code_a_build_compiled_differently(self):
         """The invariant the recompiler enforces (recomp.py _check_hooks): an "@ADDR" hook patches
         one exact instruction, so its function must be the same code in that build. A new hook that

@@ -157,7 +157,10 @@ class Recompiler:
         # canonical i.e. USA) plus the extra lists (hooks_*.txt). "@ADDR" is an instruction-level
         # hook: site_ADDR(c) runs just before the instruction at ADDR (also when ADDR is reached by
         # a branch), so it can adjust what that instruction uses.
-        hook_entries, self.skipped_hooks = game_builds.read_hooks(game_builds.hook_files(), self.build)
+        # the decomp build adds its own runtime replacements (decomp_only_hooks_*.txt); the normal build
+        # keeps the game's code there
+        hook_list = game_builds.hook_files() + (game_builds.decomp_only_hook_files() if decomp_hooks else [])
+        hook_entries, self.skipped_hooks = game_builds.read_hooks(hook_list, self.build)
         self.canon_of = {}              # this build's address -> canonical address (for symbol names)
         self.hooks, self.sites = set(), set()
         for site, canon, addr, _ in hook_entries:

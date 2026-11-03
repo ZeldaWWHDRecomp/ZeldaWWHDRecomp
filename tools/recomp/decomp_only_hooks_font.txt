@@ -1,3 +1,4 @@
+# DECOMP BUILD ONLY (recomp.py --decomp-hooks; the normal build runs the game's own font module).
 # The game's scalable font (font #5, "CafeStd.bffnt"), replaced by the port's stand-in that draws with
 # the game's own CKingMain bitmap font (runtime/src/scalable_font.h, scalable_font_hooks.cpp).
 # The functions the game's scalable-font manager calls (d/hd_scalable_font_mgr):

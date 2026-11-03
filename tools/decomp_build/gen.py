@@ -32,7 +32,7 @@ Game units: verify units (tools/verify/units/*.txt) that share source files with
 game unit (connected components), named after its shortest verify-unit name. A shared source without
 marks (support code: guest-call stubs, the translation unit's gc_tu) is compiled into each game unit
 that lists it, as each verify unit is its own program in the decompilation's harness. Every
-`VERIFY(0xADDR, fn)` in its sources is a candidate for ADDR. Excluded here: addresses the runtime already hooks (hooks*.txt; the
+`VERIFY(0xADDR, fn)` in its sources is a candidate for ADDR. Excluded here: addresses the runtime already hooks (hooks*.txt, decomp_only_hooks_*.txt; the
 decompiled function would bypass that hook) and addresses verified in more than one game unit (the
 first unit by name keeps it). recomp.py excludes the rest, which needs the game's code: an address
 that is not a function entry, or a function containing an instruction-level hook ("@ADDR").
@@ -275,7 +275,8 @@ def _glue_worker(rel):
 
 def runtime_hooks():
     """The functions the runtime hooks itself (canonical addresses; instruction sites are left to recomp.py)."""
-    entries, _ = game_builds.read_hooks(game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")),
+    d = os.path.join(ROOT, "tools", "recomp")
+    entries, _ = game_builds.read_hooks(game_builds.hook_files(d) + game_builds.decomp_only_hook_files(d),
                                         game_builds.canonical_build())
     return {canon for site, canon, _, _ in entries if not site}
 
@@ -439,6 +440,7 @@ def main():
     # what the lists above depend on: CMake configures again when one of these changes
     deps.update(cmake_path(p) for p in glob.glob(os.path.join(src, "tools/verify/units/*.txt")))
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
+    deps.update(cmake_path(p) for p in game_builds.decomp_only_hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
     if n_glued:
         deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt"))

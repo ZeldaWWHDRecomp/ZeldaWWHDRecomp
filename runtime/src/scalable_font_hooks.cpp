@@ -1,11 +1,14 @@
-// The scalable font stand-in's hooks (scalable_font.h, tools/recomp/hooks_font.txt): the 12 functions the
-// game's scalable-font manager calls and the 12 slot functions of the font's vtable. The decomp build
-// reaches the same hooks: its decompiled manager calls these addresses through the dispatch table
-// (runtime/src/decomp/decomp.cpp gmem_call), whose entry for a hooked address is the hook.
+// The scalable font stand-in's hooks (scalable_font.h, tools/recomp/decomp_only_hooks_font.txt): the 12
+// functions the game's scalable-font manager calls and the 12 slot functions of the font's vtable.
+// DECOMP BUILD ONLY (WWHD_DECOMP; recomp.py --decomp-hooks adds the list): the normal build runs the game's
+// own recompiled font module unchanged, and this file compiles to nothing there. In the decomp build the
+// decompiled manager calls these addresses through the dispatch table (runtime/src/decomp/decomp.cpp
+// gmem_call), whose entry for a hooked address is the hook; the layout code's virtual calls get there too.
 //
 // WWHD_FONT_LOG=n: logs the first n advance and glyph requests (character, caller, answer).
 // WWHD_FONT_GUARD=1: any function of the replaced module (0x028B2204-0x028E81E4) that starts running is
 // a fatal error naming it (trace.cpp calls scalable_font_guard_enter at every function entry).
+#if WWHD_DECOMP
 #include <atomic>
 #include <cstdlib>
 
@@ -197,3 +200,5 @@ void hook_028B28F4(Cpu* c) { (void)c; }                                         
 void hook_028B286C(Cpu* c) { GuestMem m; MainFont fb(c); c->r[3] = slot_kind(m, c->r[3], fb); }        // 30
 
 }  // extern "C"
+
+#endif  // WWHD_DECOMP

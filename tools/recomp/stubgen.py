@@ -21,9 +21,12 @@ here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.normpath(os.path.join(here, "..", ".."))
 
 
-def hook_lists():
+def hook_lists(decomp=False):
     hooks, sites = set(), set()
-    for hp in [os.path.join(here, "hooks.txt")] + sorted(glob.glob(os.path.join(glob.escape(here), "hooks_*.txt"))):
+    files = [os.path.join(here, "hooks.txt")] + sorted(glob.glob(os.path.join(glob.escape(here), "hooks_*.txt")))
+    if decomp:  # the decomp build's own runtime replacements (builds.decomp_only_hook_files)
+        files += sorted(glob.glob(os.path.join(glob.escape(here), "decomp_only_hooks_*.txt")))
+    for hp in files:
         for line in open(hp):
             line = line.split("#")[0].strip()
             if line.startswith("@"):
@@ -54,7 +57,7 @@ def decomp_list(path):
 
 def main(outdir, decomp_hooks=None):
     os.makedirs(outdir, exist_ok=True)
-    hooks, sites = hook_lists()
+    hooks, sites = hook_lists(decomp=bool(decomp_hooks))
     if decomp_hooks:
         hooks |= decomp_list(decomp_hooks)
     funcs = sorted(runtime_refs() | hooks)
