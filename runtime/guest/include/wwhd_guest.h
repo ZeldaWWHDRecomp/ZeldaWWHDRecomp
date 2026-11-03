@@ -46,8 +46,9 @@ typedef struct { u32 kind, target; void* func; u32 flags; } wwhd_hook_desc;
     WWHD__DESC(WWHD_KIND_REPLACE, addr, name); \
     __attribute__((noinline, used)) static ret name params
 
-/* Run before the function (gets its arguments; changes to argument registers are discarded, write
- * through pointers instead) or after it (gets the arguments again; the return value is kept). */
+/* Run before the function (gets its arguments) or after it (gets the original arguments again).
+ * Observer register changes are discarded, including scratch registers and condition bits;
+ * all of the game's return registers are kept. Write through pointers for memory effects. */
 #define WWHD_HOOK(addr, name, params) \
     static void name params;          \
     WWHD__DESC(WWHD_KIND_ENTRY, addr, name); \
