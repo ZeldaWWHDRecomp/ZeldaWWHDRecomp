@@ -295,19 +295,81 @@ int main() {
     // Choosing the same cloud root in different randomized installations cannot copy the vanilla
     // save into a seed, nor share a pending restore or folder preference with another seed.
     const std::string seed = "randomizer-" + std::string(64, 'a');
-    const fs::path seed_default = root / "seed-data/save" / seed;
+    const fs::path seed_default = randomizer_paths::sibling(root / "seed-data/save",seed);
     const fs::path seed_config = config / seed;
     write(seed_default / "user/cking.sav", "seed A");
     const std::string vanilla_before = read(cloud / "user/cking.sav");
     s = startup(seed_default, seed_config, none.fn(), {}, seed);
-    assert(state().backups == seed_default.parent_path() / "save-backups" / seed);
+    assert(state().backups == randomizer_paths::sibling(seed_default.parent_path() / "save-backups",seed));
     assert(choose(cloud.string()));
-    assert(fs::path(read_choice(choice_file(seed_config))->folder) == cloud / seed);
+    assert(fs::path(read_choice(choice_file(seed_config))->folder) == randomizer_paths::sibling(cloud,seed));
     s = startup(seed_default, seed_config, none.fn(), {}, seed);
-    assert(!s.quit && s.save_dir == cloud / seed);
+    assert(!s.quit && s.save_dir == randomizer_paths::sibling(cloud,seed));
     assert(read(s.save_dir / "user/cking.sav") == "seed A");
     assert(read(cloud / "user/cking.sav") == vanilla_before);
     release();
+
+    // Vanilla backup restore and cloud-folder copy cannot reach seed siblings.
+    const fs::path local = root / "isolation/save";
+    const fs::path local_seed = randomizer_paths::sibling(local, seed);
+    const fs::path local_backup = local.parent_path() / "save-backups";
+    const fs::path seed_backup = randomizer_paths::sibling(local_backup, seed);
+    write(local / "user/cking.sav", "vanilla original");
+    write(local_seed / "user/cking.sav", "randomizer progress");
+    write(seed_backup / "sentinel", "randomizer backup");
+    mods::saves::Store vanilla(local, local_backup);
+    auto backup = vanilla.create("manual");
+    assert(backup.ok && backup.created);
+    const fs::path snapshot = local_backup / backup.name / "save";
+    size_t snapshot_files = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(snapshot)) {
+        if (!entry.is_regular_file()) continue;
+        ++snapshot_files;
+        assert(entry.path() == snapshot / "user/cking.sav");
+    }
+    assert(snapshot_files == 1);
+    write(local / "user/cking.sav", "vanilla changed");
+    std::string restore_error;
+    assert(vanilla.restore(backup.name, restore_error));
+    assert(vanilla.apply_pending().ok);
+    assert(read(local / "user/cking.sav") == "vanilla original");
+    assert(read(local_seed / "user/cking.sav") == "randomizer progress");
+    assert(read(seed_backup / "sentinel") == "randomizer backup");
+
+    const fs::path vanilla_config = root / "isolation/config";
+    const fs::path new_cloud = root / "new-cloud";
+    const fs::path cloud_seed = randomizer_paths::sibling(new_cloud, seed);
+    write(cloud_seed / "user/cking.sav", "cloud randomizer progress");
+    s = startup(local, vanilla_config, none.fn(), {});
+    assert(choose(new_cloud.string()));
+    s = startup(local, vanilla_config, none.fn(), {});
+    assert(!s.quit && read(new_cloud / "user/cking.sav") == "vanilla original");
+    assert(!fs::exists(new_cloud / local_seed.filename()));
+    assert(read(local_seed / "user/cking.sav") == "randomizer progress");
+    assert(read(cloud_seed / "user/cking.sav") == "cloud randomizer progress");
+    assert(read(seed_backup / "sentinel") == "randomizer backup");
+    release();
+
+    // Legacy data stops planning before a pending copy or restore can write.
+    std::string legacy_why;
+    assert(legacy_randomizer_preflight(local, vanilla_config, false, legacy_why));
+    write(local / seed / "user/cking.sav", "legacy seed");
+    assert(vanilla.restore(backup.name, restore_error));
+    write(local / "user/cking.sav", "pending restore must wait");
+    write_choice(choice_file(vanilla_config), {(root / "blocked-cloud").string(), local.string(), true});
+    assert(!legacy_randomizer_preflight(local, vanilla_config, false, legacy_why));
+    assert(legacy_why.find((local / seed).string()) != std::string::npos);
+    assert(legacy_why.find(local_seed.string()) != std::string::npos);
+    assert(read(local / "user/cking.sav") == "pending restore must wait");
+    assert(read(local / seed / "user/cking.sav") == "legacy seed");
+    assert(vanilla.pending() == backup.name && !fs::exists(root / "blocked-cloud"));
+    assert(read_choice(choice_file(vanilla_config))->copy_from == local.string());
+    fs::remove_all(local / seed);
+    write_choice(choice_file(vanilla_config / seed), {(new_cloud / seed).string(), "", true});
+    // Even a missing legacy path is not silently abandoned.
+    assert(!legacy_randomizer_preflight(local, vanilla_config, false, legacy_why));
+    // --save ignores remembered choices, retaining the exact requested folder.
+    assert(legacy_randomizer_preflight(local, vanilla_config, true, legacy_why));
 
     fs::remove_all(root);
     std::puts("save_folder_test: ok");

@@ -673,7 +673,15 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    config::save_dir = randomizer::seed_directory(config::save_dir);
+    if (!warm_shaders) {
+        std::string why;
+        if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
+            LOG("[save-folder] %s", why.c_str());
+            ask_player("Wind Waker HD: separate randomized saves", why, {"Quit"});
+            return 1;
+        }
+    }
+    config::save_dir = randomizer::save_directory(config::save_dir, save_arg);
     const std::string seed_namespace = randomizer::compiled_seed() ?
         std::string("randomizer-") + g_guest_build_rpx_sha256 : std::string();
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
@@ -682,7 +690,7 @@ int main(int argc, char** argv) {
     // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
     // a change made there is applied now, and the folder is checked before the game reads its save.
     if (!save_arg && !warm_shaders) {
-        const auto chosen = save_folder::startup(config::save_dir, randomizer::seed_directory(host::config_dir()), ask_player,
+        const auto chosen = save_folder::startup(config::save_dir, randomizer::config_directory(host::config_dir()), ask_player,
                                                  [](const std::string& line) { LOG("%s", line.c_str()); }, seed_namespace);
         if (chosen.quit) {
             fflush(stderr);
@@ -693,7 +701,7 @@ int main(int argc, char** argv) {
 #endif
     std::filesystem::path backup_dir = save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path();
     if (randomizer::compiled_seed() && backup_dir.empty())
-        backup_dir = std::filesystem::path(config::save_dir).parent_path() / "save-backups" / seed_namespace;
+        backup_dir = randomizer_paths::backups(config::save_dir, seed_namespace);
     mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders,
                          backup_dir);
     mods::manager::load_saved();  // player choices, before the game starts
