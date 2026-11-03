@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Statically recompile a Wii U RPX into C.
 
-usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--decomp-hooks FILE] [--ppc-nan-propagation]
+usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--preserve-registers] [--decomp-hooks FILE] [--ppc-nan-propagation]
 
 The rpx is identified by its SHA-256 (tools/recomp/builds.py). Functions are named by their
 *canonical* (USA) address, so the runtime refers to the same f_XXXXXXXX whichever build of the game
@@ -10,6 +10,11 @@ it was translated from; the dispatch table maps this build's real addresses to t
 --mod-hooks (or WWHD_RECOMP_MOD_HOOKS=1): every function body starts with a check of its byte in
 g_mod_hook_flags (runtime/src/mods/guest_mods.cpp), so guest mods (docs/mod-sdk-v2.md) can hook or
 replace any game function at runtime without rebuilding the game code.
+
+--preserve-registers: experimental patched-RPX builds whose assembly helpers do not follow the
+PowerPC EABI. Keep all guest register writes across function returns and calls, including scratch
+GPRs/FPRs and CR bits. Disables the CR liveness and leaf/nonleaf register-local passes, without
+adding mod hooks or changing RPX identification. Vanilla builds retain their normal optimizations.
 
 --decomp-hooks FILE: the code for the decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md). FILE
 (written by tools/decomp_build/gen.py) lists the decompiled functions; each becomes a hook (f_X calls
@@ -135,13 +140,14 @@ class Recompiler:
     raw_stores = 0     # rawstore.py statistics (report.txt)
     single_stores = 0
 
-    def __init__(self, path, build=None, mod_hooks=False, decomp_hooks=None):
+    def __init__(self, path, build=None, mod_hooks=False, decomp_hooks=None, preserve_registers=False):
         """`build` is which build of the game `path` is (tools/recomp/builds.py); by default it is
         identified by its SHA-256, and an rpx that is none of them is refused."""
         self.build = build or game_builds.identify(path)
         if self.build is None:
             raise SystemExit(unknown_build_message(path))
         self.mod_hooks = mod_hooks
+        self.preserve_registers = preserve_registers
         self.p = Program(path)
         self.p.discover()
         self.entries = set(self.p.entries)
@@ -336,15 +342,16 @@ class Recompiler:
         # the passes (crlive.py, leaflocal.py) only where no outside code can look at this function's
         # registers mid-way: not in hooked functions (hook_X runs around f_X_orig), not in functions
         # with instruction hooks (ppc_host_call(c, site_X) reads and changes the Cpu struct) and not in
-        # builds with guest mod hooks (a mod may hook or replace any function): those keep the plain code
-        plain = hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
+        # builds with guest mod hooks (a mod may hook or replace any function). Experimental patched
+        # assembly can also return scratch registers outside the EABI, so preserve every write there.
+        plain = self.preserve_registers or hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
         if CRLIVE and not plain:
             live_after, fields = crlive.analyze(body, self.cur_start, self.cur_end, self.p.jump_tables, branch_target,
                                                 self.sites)
             body = [(a, w, crlive.rewrite(s, fields[i], live_after[i], CR_CHECK, a)) for i, (a, w, s) in enumerate(body)]
             self.cr_stats[0] += sum(1 for f in fields if f is not None)
             self.cr_stats[1] += sum(1 for i, f in enumerate(fields) if f is not None and (live_after[i] >> (4 * f)) & 0xF == 0)
-        elif CRLIVE and CR_CHECK and not self.mod_hooks:
+        elif CRLIVE and CR_CHECK and not self.mod_hooks and not self.preserve_registers:
             # checking build: plain functions store every CR bit, but they still check what they read
             # (a bit another function dropped)
             body = [(a, w, crlive.rewrite(s, None, 0, True, a)) for a, w, s in body]
@@ -559,10 +566,12 @@ class Recompiler:
                 f.write("PowerPC NaN propagation: on (verification build, ppc_nan.h)\n")
             # only with the passes on: with them off (WWHD_RECOMP_PLAIN=1) every output file is the same
             # as without them
-            if CRLIVE and not self.mod_hooks:
+            if self.preserve_registers:
+                f.write("guest register preservation: on (CR liveness and ABI register-local passes off)\n")
+            if CRLIVE and not self.mod_hooks and not self.preserve_registers:
                 f.write("CR writers: %d, %d with no live bit (liveness on%s)\n" % (
                     self.cr_stats[0], self.cr_stats[1], ", check build" if CR_CHECK else ""))
-            if (LEAF or NONLEAF) and not self.mod_hooks:
+            if (LEAF or NONLEAF) and not self.mod_hooks and not self.preserve_registers:
                 f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
                 f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
             if RAWSTORE:
@@ -581,6 +590,8 @@ if __name__ == "__main__":
     ap.add_argument("--build", help="which build the rpx is, when it should not be identified by "
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
+    ap.add_argument("--preserve-registers", action="store_true",
+                    help="experimental patched RPX: preserve scratch GPR/FPR/CR writes across guest calls")
     ap.add_argument("--decomp-hooks", help="the decomp build's function list (tools/decomp_build/gen.py)")
     ap.add_argument("--ppc-nan-propagation", action="store_true", default=os.environ.get("WWHD_RECOMP_PPC_NAN") == "1",
                     help="verification builds: float instructions return the NaN operand the PowerPC would (ppc_nan.h)")
@@ -591,4 +602,5 @@ if __name__ == "__main__":
         build = game_builds.by_name(a.build)
         if build is None:
             sys.exit("unknown build %r; known: %s" % (a.build, ", ".join(b.name for b in game_builds.all_builds())))
-    Recompiler(a.rpx, build, mod_hooks=a.mod_hooks, decomp_hooks=a.decomp_hooks).run(a.outdir, a.insns_per_file)
+    Recompiler(a.rpx, build, mod_hooks=a.mod_hooks, decomp_hooks=a.decomp_hooks,
+               preserve_registers=a.preserve_registers).run(a.outdir, a.insns_per_file)

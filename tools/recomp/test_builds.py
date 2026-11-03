@@ -167,6 +167,7 @@ class NativeBoundaries(unittest.TestCase):
             compiler.hooks = {address}
             compiler.sites = {address}
             compiler.mod_hooks = False
+            compiler.preserve_registers = False
             compiler.imm_override = {}
             compiler.canon_of = {address: 0x1000}
             compiler.build = SimpleNamespace(canon_code=lambda a: a)
