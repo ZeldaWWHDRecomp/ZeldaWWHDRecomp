@@ -68,9 +68,7 @@ void list_clear_0286DB18(Cpu* c) {
 namespace {
 // an export thunk: r12 and CTR get the table entry and the export runs with the caller's registers and
 // LR (a tail call), as measured
-template <uint32_t kSlot>
-inline void export_thunk(Cpu* c) {
-    static const uint32_t slot = GD(kSlot);  // canonical address -> this build's
+inline void export_thunk(Cpu* c, uint32_t slot) {  // slot: this build's address (GD at the use site)
     const uint32_t t = ld32(slot);
     c->r[12] = t;
     c->ctr = t;
@@ -79,22 +77,70 @@ inline void export_thunk(Cpu* c) {
 }
 }  // namespace
 
-void export_thunk_0286CA30(Cpu* c) { export_thunk<0x104B6774u>(c); }
-void export_thunk_0286CA40(Cpu* c) { export_thunk<0x104B6790u>(c); }
-void export_thunk_0286CB2C(Cpu* c) { export_thunk<0x104B6748u>(c); }
-void export_thunk_0286CB3C(Cpu* c) { export_thunk<0x104B6764u>(c); }
-void export_thunk_0286CB4C(Cpu* c) { export_thunk<0x104B6784u>(c); }
-void export_thunk_0286CB5C(Cpu* c) { export_thunk<0x104B6780u>(c); }
-void export_thunk_0286CB6C(Cpu* c) { export_thunk<0x104B6778u>(c); }
-void export_thunk_0286CBB4(Cpu* c) { export_thunk<0x104B6770u>(c); }
-void export_thunk_0286D270(Cpu* c) { export_thunk<0x104B67E4u>(c); }
-void export_thunk_0286D2D4(Cpu* c) { export_thunk<0x104B67F8u>(c); }
-void export_thunk_0286D2E4(Cpu* c) { export_thunk<0x104B67A8u>(c); }
-void export_thunk_0286D3C0(Cpu* c) { export_thunk<0x104B67ECu>(c); }
-void export_thunk_0286D3D0(Cpu* c) { export_thunk<0x104B67F0u>(c); }
-void export_thunk_0286D3E0(Cpu* c) { export_thunk<0x104B67A4u>(c); }
-void export_thunk_0286D3F0(Cpu* c) { export_thunk<0x104B67C4u>(c); }
-void export_thunk_0286D400(Cpu* c) { export_thunk<0x104B67D8u>(c); }
+void export_thunk_0286CA30(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6774u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CA40(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6790u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CB2C(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6748u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CB3C(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6764u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CB4C(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6784u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CB5C(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6780u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CB6C(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6778u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286CBB4(Cpu* c) {
+    static const uint32_t slot = GD(0x104B6770u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D270(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67E4u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D2D4(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67F8u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D2E4(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67A8u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D3C0(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67ECu);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D3D0(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67F0u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D3E0(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67A4u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D3F0(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67C4u);
+    export_thunk(c, slot);
+}
+void export_thunk_0286D400(Cpu* c) {
+    static const uint32_t slot = GD(0x104B67D8u);
+    export_thunk(c, slot);
+}
 
 void work_size_0286CBC4(Cpu* c) { c->r[3] = 0x01600000u; }
 void empty_0286D5F0(Cpu*) {}
@@ -105,10 +151,10 @@ void empty_0286D5F0(Cpu*) {}
 // call are set; afterwards the registers come back as the original leaves them for its callers (r3/r4 as
 // the last call left them).
 namespace {
-inline uint32_t table(uint32_t canon) { return ld32(GD(canon)); }
-inline void call_export(Cpu* c, uint32_t canon_slot, uint32_t canon_ret) {
-    const uint32_t t = table(canon_slot);
-    c->r[12] = t, c->ctr = t, c->pc = t, c->lr = GC(canon_ret);
+inline uint32_t table(uint32_t slot) { return ld32(slot); }  // addresses here are this build's (GD/GC at the use site)
+inline void call_export(Cpu* c, uint32_t slot, uint32_t ret) {
+    const uint32_t t = table(slot);
+    c->r[12] = t, c->ctr = t, c->pc = t, c->lr = ret;
     ppc_dispatch(c);
 }
 // a frame of `size` bytes below the entry SP (back chain), LR save word in the caller's frame
@@ -145,12 +191,12 @@ inline void check_then_call(Cpu* c, uint32_t frame, uint32_t a_slot, uint32_t a_
 }
 }  // namespace
 
-void wrap_0286CA50(Cpu* c) { check_then_call(c, 0x10, 0x104B6774u, 0x0286CA68u, 0x104B6790u, 0x0286CA74u, 0x104B674Cu, 0x0286CA90u, true); }
-void wrap_0286CAA4(Cpu* c) { check_then_call(c, 0x08, 0x104B6774u, 0x0286CAB4u, 0x104B6790u, 0x0286CAC0u, 0x104B676Cu, 0x0286CAD8u, false); }
-void wrap_0286CAE8(Cpu* c) { check_then_call(c, 0x08, 0x104B6774u, 0x0286CAF8u, 0x104B6790u, 0x0286CB04u, 0x104B6768u, 0x0286CB1Cu, false); }
-void wrap_0286D280(Cpu* c) { check_then_call(c, 0x10, 0x104B67E0u, 0x0286D298u, 0x104B67E4u, 0x0286D2A4u, 0x104B67B0u, 0x0286D2C0u, true); }
-void wrap_0286D2F4(Cpu* c) { check_then_call(c, 0x08, 0x104B67E0u, 0x0286D304u, 0x104B67E4u, 0x0286D310u, 0x104B67CCu, 0x0286D328u, false); }
-void wrap_0286D338(Cpu* c) { check_then_call(c, 0x08, 0x104B67E0u, 0x0286D348u, 0x104B67E4u, 0x0286D354u, 0x104B67C8u, 0x0286D36Cu, false); }
+void wrap_0286CA50(Cpu* c) { check_then_call(c, 0x10, GD(0x104B6774u), GC(0x0286CA68u), GD(0x104B6790u), GC(0x0286CA74u), GD(0x104B674Cu), GC(0x0286CA90u), true); }
+void wrap_0286CAA4(Cpu* c) { check_then_call(c, 0x08, GD(0x104B6774u), GC(0x0286CAB4u), GD(0x104B6790u), GC(0x0286CAC0u), GD(0x104B676Cu), GC(0x0286CAD8u), false); }
+void wrap_0286CAE8(Cpu* c) { check_then_call(c, 0x08, GD(0x104B6774u), GC(0x0286CAF8u), GD(0x104B6790u), GC(0x0286CB04u), GD(0x104B6768u), GC(0x0286CB1Cu), false); }
+void wrap_0286D280(Cpu* c) { check_then_call(c, 0x10, GD(0x104B67E0u), GC(0x0286D298u), GD(0x104B67E4u), GC(0x0286D2A4u), GD(0x104B67B0u), GC(0x0286D2C0u), true); }
+void wrap_0286D2F4(Cpu* c) { check_then_call(c, 0x08, GD(0x104B67E0u), GC(0x0286D304u), GD(0x104B67E4u), GC(0x0286D310u), GD(0x104B67CCu), GC(0x0286D328u), false); }
+void wrap_0286D338(Cpu* c) { check_then_call(c, 0x08, GD(0x104B67E0u), GC(0x0286D348u), GD(0x104B67E4u), GC(0x0286D354u), GD(0x104B67C8u), GC(0x0286D36Cu), false); }
 
 // calls export 104B6758 with r3 = the address of a local copy of the word at r3 (entry SP - 0x10)
 void wrap_0286CB7C(Cpu* c) {
@@ -158,7 +204,7 @@ void wrap_0286CB7C(Cpu* c) {
     open_frame(c, e.r[1], e.lr, 0x18);
     st32(e.r[1] - 0x10, ld32(e.r[3]));
     c->r[3] = e.r[1] - 0x10;
-    call_export(c, 0x104B6758u, 0x0286CBA4u);
+    call_export(c, GD(0x104B6758u), GC(0x0286CBA4u));
     finish(c, e);
 }
 
@@ -176,7 +222,7 @@ void heap_alloc_0286C590(Cpu* c) {
     const Cpu e = *c;
     open_frame(c, e.r[1], e.lr, 0x10);
     c->r[31] = e.r[5];
-    c->r[3] = table(0x104B6798u), c->r[4] = e.r[3], c->r[5] = e.r[4];
+    c->r[3] = table(GD(0x104B6798u)), c->r[4] = e.r[3], c->r[5] = e.r[4];
     c->lr = GC(0x0286C5BCu);
     imp_coreinit_MEMAllocFromExpHeapEx(c);
     st32(e.r[5], c->r[3]);
@@ -190,14 +236,14 @@ void heap_alloc_0286C590(Cpu* c) {
 void erreula_destroy_0286C9CC(Cpu* c) {
     const Cpu e = *c;
     open_frame(c, e.r[1], e.lr, 0x10);
-    call_export(c, 0x104B6760u, 0x0286C9ECu);
-    c->r[3] = table(0x104B679Cu);
+    call_export(c, GD(0x104B6760u), GC(0x0286C9ECu));
+    c->r[3] = table(GD(0x104B679Cu));
     c->lr = GC(0x0286C9F8u);
     imp_coreinit_OSDynLoad_Release(c);
     const uint32_t flag = GD(0x101FC898u);
     c->r[31] = flag;
     if (ld8(flag)) {
-        c->r[3] = table(0x104B6798u);
+        c->r[3] = table(GD(0x104B6798u));
         c->lr = GC(0x0286CA10u);
         imp_coreinit_MEMDestroyExpHeap(c);
         st8(flag, 0);
@@ -209,11 +255,11 @@ void erreula_destroy_0286C9CC(Cpu* c) {
 void swkbd_destroy_0286D37C(Cpu* c) {
     const Cpu e = *c;
     open_frame(c, e.r[1], e.lr, 0x08);
-    call_export(c, 0x104B67BCu, 0x0286D398u);
-    c->r[3] = table(0x104B6830u);
+    call_export(c, GD(0x104B67BCu), GC(0x0286D398u));
+    c->r[3] = table(GD(0x104B6830u));
     c->lr = GC(0x0286D3A4u);
     imp_coreinit_OSDynLoad_Release(c);
-    c->r[3] = table(0x104B682Cu);
+    c->r[3] = table(GD(0x104B682Cu));
     c->lr = GC(0x0286D3B0u);
     imp_coreinit_MEMDestroyExpHeap(c);
     finish(c, e);
@@ -224,12 +270,12 @@ void swkbd_destroy_0286D37C(Cpu* c) {
 // original's places (the UC request is built in the reader's frame and read by UCReadSysConfig).
 namespace {
 inline void report(Cpu* c, uint32_t fmt, uint32_t a, uint32_t b, uint32_t d) {
-    c->r[3] = GD(fmt), c->r[4] = a, c->r[5] = b, c->r[6] = d;
+    c->r[3] = fmt, c->r[4] = a, c->r[5] = b, c->r[6] = d;
     c->cr[6] = 0;  // no floating-point arguments
     imp_coreinit_OSReport(c);
 }
 inline void report0(Cpu* c, uint32_t fmt) {  // a message without arguments
-    c->r[3] = GD(fmt);
+    c->r[3] = fmt;
     c->cr[6] = 0;
     imp_coreinit_OSReport(c);
 }
@@ -245,7 +291,7 @@ uint32_t sci_read(Cpu* c, uint32_t sp, uint32_t name, uint32_t type, uint32_t si
     const uint32_t h = c->r[3];
     const uint32_t file = GD(0x1017E874u);
     if ((int32_t)h < 0) {
-        report(c, 0x1017E888u, file, 0x4A, h);
+        report(c, GD(0x1017E888u), file, 0x4A, h);
         c->r[3] = h;
         imp_coreinit_UCClose(c);
         return 0;
@@ -267,7 +313,7 @@ uint32_t sci_read(Cpu* c, uint32_t sp, uint32_t name, uint32_t type, uint32_t si
     if (err == 0xFFDFFFF7u) res = 0xFFFFFFFCu;
     else if (err == 0xFFDFFFEBu) res = 0xFFFFFFFDu;
     else if (err) {
-        report(c, 0x1017E8B8u, file, 0x68, err);
+        report(c, GD(0x1017E8B8u), file, 0x68, err);
         res = 0xFFFFFFFFu;
     }
     c->r[3] = h;
@@ -287,8 +333,8 @@ uint32_t act_slot(Cpu* c, uint32_t sp, uint32_t account) {
     imp_nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc(c);
     const uint32_t r = c->r[3];
     if (!(r & 0x80000000u)) return ld8(slot);
-    if (r == 0xC070FA80u) report0(c, 0x1017E91Cu);
-    else if (r == 0xC0712C80u) report0(c, 0x1017E8FCu);
+    if (r == 0xC070FA80u) report0(c, GD(0x1017E91Cu));
+    else if (r == 0xC0712C80u) report0(c, GD(0x1017E8FCu));
     return 0;
 }
 
@@ -305,7 +351,7 @@ void sci_parental(Cpu* c, uint32_t fmt, bool clamp_to_2) {
     } else {
         // snprintf(buf, 0x40, fmt, slot) through the game's snprintf (it is a root of its own)
         c->r[1] = frame;
-        c->r[3] = frame + 8, c->r[4] = 0x40, c->r[5] = GD(fmt), c->r[6] = slot;
+        c->r[3] = frame + 8, c->r[4] = 0x40, c->r[5] = fmt, c->r[6] = slot;
         c->cr[6] = 0;
         c->lr = GC(0x0286D994u);
         c->pc = GC(0x028F17A8u);
@@ -340,8 +386,8 @@ void sci_language_0286D620(Cpu* c) {
     c->r[3] = res;
 }
 
-void sci_parental_0286D938(Cpu* c) { sci_parental(c, 0x1017E948u, false); }
-void sci_parental_0286D9E0(Cpu* c) { sci_parental(c, 0x1017E96Cu, true); }
+void sci_parental_0286D938(Cpu* c) { sci_parental(c, GD(0x1017E948u), false); }
+void sci_parental_0286D9E0(Cpu* c) { sci_parental(c, GD(0x1017E96Cu), true); }
 
 // ---- erreula Create (CreateArg {buffer, region, language, FSClient*}), measured: argument checks with
 // OSReport; a 0x1600000-byte expanded heap in the buffer (handle at 104B6798, heap flag 101FC898 = 1);
@@ -351,31 +397,31 @@ void sci_parental_0286D9E0(Cpu* c) { sci_parental(c, 0x1017E96Cu, true); }
 // or 0 on an error.
 namespace {
 struct Export { uint32_t slot, name, handle; };
-const Export kErrEulaExports[] = {
-    {0x104B6748u, 0x1017DDBCu, 0x104B679Cu},  // helper 0286CBCC
-    {0x104B674Cu, 0x1017DF74u, 0x104B679Cu},  // helper 0286CBE4
-    {0x104B675Cu, 0x1017E12Cu, 0x104B679Cu},  // helper 0286CBFC
-    {0x104B6760u, 0x1017DFA8u, 0x104B679Cu},  // helper 0286CC14
-    {0x104B6764u, 0x1017DECCu, 0x104B679Cu},  // helper 0286CC2C
-    {0x104B6768u, 0x1017DFC0u, 0x104B679Cu},  // helper 0286CC14
-    {0x104B676Cu, 0x1017DEECu, 0x104B679Cu},  // helper 0286CC14
-    {0x104B6774u, 0x1017DFD8u, 0x104B679Cu},  // helper 0286CC44
-    {0x104B6784u, 0x1017DFFCu, 0x104B679Cu},  // helper 0286CC5C
-    {0x104B6788u, 0x1017E028u, 0x104B679Cu},  // helper 0286CC5C
-    {0x104B678Cu, 0x1017DF04u, 0x104B679Cu},  // helper 0286CC5C
-    {0x104B6754u, 0x1017DF34u, 0x104B679Cu},  // helper 0286CC74
-    {0x104B6758u, 0x1017DCDCu, 0x104B679Cu},  // helper 0286CC8C
-    {0x104B6790u, 0x1017E058u, 0x104B679Cu},  // helper 0286CC5C
-    {0x104B6770u, 0x1017DDF0u, 0x104B679Cu},  // helper 0286CC14
-    {0x104B6750u, 0x1017DD1Cu, 0x104B679Cu},  // helper 0286CCA4
-    {0x104B6794u, 0x1017DE14u, 0x104B679Cu},  // helper 0286CC5C
-    {0x104B6780u, 0x1017E07Cu, 0x104B679Cu},  // helper 0286CCBC
-    {0x104B6778u, 0x1017E09Cu, 0x104B679Cu},  // helper 0286CCD4
-    {0x104B677Cu, 0x1017E0BCu, 0x104B679Cu},  // helper 0286CCD4
+const Export kErrEulaExports[] = {  // this build's addresses (GD)
+    {GD(0x104B6748u), GD(0x1017DDBCu), GD(0x104B679Cu)},  // helper 0286CBCC
+    {GD(0x104B674Cu), GD(0x1017DF74u), GD(0x104B679Cu)},  // helper 0286CBE4
+    {GD(0x104B675Cu), GD(0x1017E12Cu), GD(0x104B679Cu)},  // helper 0286CBFC
+    {GD(0x104B6760u), GD(0x1017DFA8u), GD(0x104B679Cu)},  // helper 0286CC14
+    {GD(0x104B6764u), GD(0x1017DECCu), GD(0x104B679Cu)},  // helper 0286CC2C
+    {GD(0x104B6768u), GD(0x1017DFC0u), GD(0x104B679Cu)},  // helper 0286CC14
+    {GD(0x104B676Cu), GD(0x1017DEECu), GD(0x104B679Cu)},  // helper 0286CC14
+    {GD(0x104B6774u), GD(0x1017DFD8u), GD(0x104B679Cu)},  // helper 0286CC44
+    {GD(0x104B6784u), GD(0x1017DFFCu), GD(0x104B679Cu)},  // helper 0286CC5C
+    {GD(0x104B6788u), GD(0x1017E028u), GD(0x104B679Cu)},  // helper 0286CC5C
+    {GD(0x104B678Cu), GD(0x1017DF04u), GD(0x104B679Cu)},  // helper 0286CC5C
+    {GD(0x104B6754u), GD(0x1017DF34u), GD(0x104B679Cu)},  // helper 0286CC74
+    {GD(0x104B6758u), GD(0x1017DCDCu), GD(0x104B679Cu)},  // helper 0286CC8C
+    {GD(0x104B6790u), GD(0x1017E058u), GD(0x104B679Cu)},  // helper 0286CC5C
+    {GD(0x104B6770u), GD(0x1017DDF0u), GD(0x104B679Cu)},  // helper 0286CC14
+    {GD(0x104B6750u), GD(0x1017DD1Cu), GD(0x104B679Cu)},  // helper 0286CCA4
+    {GD(0x104B6794u), GD(0x1017DE14u), GD(0x104B679Cu)},  // helper 0286CC5C
+    {GD(0x104B6780u), GD(0x1017E07Cu), GD(0x104B679Cu)},  // helper 0286CCBC
+    {GD(0x104B6778u), GD(0x1017E09Cu), GD(0x104B679Cu)},  // helper 0286CCD4
+    {GD(0x104B677Cu), GD(0x1017E0BCu), GD(0x104B679Cu)},  // helper 0286CCD4
 };
 
 inline void import_call(Cpu* c, void (*fn)(Cpu*), uint32_t ret) {
-    c->lr = GC(ret);
+    c->lr = ret;
     fn(c);
 }
 }  // namespace
@@ -388,50 +434,50 @@ void erreula_create_0286C5F8(Cpu* c) {
     c->r[1] = sp - 0x18;
     c->r[31] = arg;
     auto fail = [&](uint32_t fmt, uint32_t r4, bool with_r4) {
-        c->r[3] = GD(fmt);
+        c->r[3] = fmt;
         if (with_r4) c->r[4] = r4;
         c->cr[6] = 0;
         imp_coreinit_OSReport(c);
         finish(c, e);
         c->r[3] = 0;
     };
-    if (!ld32(arg)) return fail(0x1017DE38u, 0, false);
-    if (!ld32(arg + 0xC)) return fail(0x1017DD7Cu, 0, false);
+    if (!ld32(arg)) return fail(GD(0x1017DE38u), 0, false);
+    if (!ld32(arg + 0xC)) return fail(GD(0x1017DD7Cu), 0, false);
     c->r[3] = GD(0x101FCD58u), c->cr[6] = 0, c->lr = GC(0x0286C6ACu), c->pc = GC(0x0286D5F0u);
     ppc_dispatch(c);
     const uint32_t heap_slot = GD(0x104B6798u), flag = GD(0x101FC898u), handle = GD(0x104B679Cu);
     c->r[3] = ld32(arg), c->r[4] = 0x01600000, c->r[5] = 0;
-    import_call(c, imp_coreinit_MEMCreateExpHeapEx, 0x0286C6BCu);
+    import_call(c, imp_coreinit_MEMCreateExpHeapEx, GC(0x0286C6BCu));
     st32(heap_slot, c->r[3]);
     st8(flag, 1);
     c->r[29] = heap_slot, c->r[30] = flag, c->r[0] = 1;
     c->r[3] = GC(0x0286C590u), c->r[4] = GC(0x0286C5E8u);
-    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, 0x0286C6E8u);
+    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, GC(0x0286C6E8u));
     c->r[3] = GD(0x1017DDB0u), c->r[4] = handle;
-    import_call(c, imp_coreinit_OSDynLoad_Acquire, 0x0286C6F8u);
-    if (c->r[3]) return fail(0x1017DE6Cu, c->r[3], true);
+    import_call(c, imp_coreinit_OSDynLoad_Acquire, GC(0x0286C6F8u));
+    if (c->r[3]) return fail(GD(0x1017DE6Cu), c->r[3], true);
     if (ld8(flag)) {
         c->r[3] = ld32(heap_slot), c->r[4] = 4;
-        import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, 0x0286C744u);
+        import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, GC(0x0286C744u));
         const uint32_t used = 0x01600000u - c->r[3];
         c->r[28] = used;
         c->r[3] = GD(0x1017DEACu), c->r[4] = used, c->cr[6] = 0;
         imp_coreinit_OSReport(c);
-        if (used > 0x00380000u) return fail(0x1017E0E4u, 0, false);
+        if (used > 0x00380000u) return fail(GD(0x1017E0E4u), 0, false);
     }
     for (const Export& x : kErrEulaExports) {
-        c->r[3] = ld32(GD(x.handle)), c->r[4] = 0, c->r[5] = GD(x.name), c->r[6] = GD(x.slot);
+        c->r[3] = ld32(x.handle), c->r[4] = 0, c->r[5] = x.name, c->r[6] = x.slot;
         imp_coreinit_OSDynLoad_FindExport(c);
     }
     uint32_t work = 0;
     if (ld8(flag)) {
         c->r[3] = ld32(heap_slot), c->r[4] = 0x01280000, c->r[5] = 4;
-        import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, 0x0286C964u);
+        import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, GC(0x0286C964u));
         work = c->r[3];
-        if (!work) return fail(0x1017DD4Cu, 0, false);
+        if (!work) return fail(GD(0x1017DD4Cu), 0, false);
     }
     c->r[3] = work, c->r[4] = ld32(arg + 4), c->r[5] = ld32(arg + 8), c->r[6] = ld32(arg + 0xC);
-    call_export(c, 0x104B675Cu, 0x0286C9A8u);
+    call_export(c, GD(0x104B675Cu), GC(0x0286C9A8u));
     finish(c, e);
     c->r[3] = 1;
 }
@@ -442,41 +488,41 @@ void erreula_create_0286C5F8(Cpu* c) {
 // exports, a work area of (work size - 0x380000) and SwkbdCreate(work, region, flags, FSClient).
 namespace {
 const Export kSwkbdExports[] = {
-    {0x104B67A0u, 0x1017E210u, 0x104B6830u},  // helper 0286D410
-    {0x104B67A4u, 0x1017E2ACu, 0x104B6830u},  // helper 0286D428
-    {0x104B67A8u, 0x1017E504u, 0x104B6830u},  // helper 0286D440
-    {0x104B67ACu, 0x1017E2E4u, 0x104B6830u},  // helper 0286D440
-    {0x104B67B0u, 0x1017E524u, 0x104B6830u},  // helper 0286D458
-    {0x104B67B4u, 0x1017E554u, 0x104B6830u},  // helper 0286D440
-    {0x104B67B8u, 0x1017E308u, 0x104B6830u},  // helper 0286D470
-    {0x104B67BCu, 0x1017E574u, 0x104B6830u},  // helper 0286D440
-    {0x104B67C0u, 0x1017E1A8u, 0x104B6830u},  // helper 0286D488
-    {0x104B67C4u, 0x1017E58Cu, 0x104B6830u},  // helper 0286D488
-    {0x104B67C8u, 0x1017E5ACu, 0x104B6830u},  // helper 0286D440
-    {0x104B67CCu, 0x1017E244u, 0x104B6830u},  // helper 0286D440
-    {0x104B67D0u, 0x1017E5C4u, 0x104B6830u},  // helper 0286D4A0
-    {0x104B67D4u, 0x1017E1C8u, 0x104B6830u},  // helper 0286D4B8
-    {0x104B67D8u, 0x1017E7C4u, 0x104B6830u},  // helper 0286D4D0
-    {0x104B67DCu, 0x1017E600u, 0x104B6830u},  // helper 0286D4E8
-    {0x104B67E0u, 0x1017E61Cu, 0x104B6830u},  // helper 0286D500
-    {0x104B67E4u, 0x1017E344u, 0x104B6830u},  // helper 0286D500
-    {0x104B67E8u, 0x1017E258u, 0x104B6830u},  // helper 0286D488
-    {0x104B67ECu, 0x1017E63Cu, 0x104B6830u},  // helper 0286D518
-    {0x104B67F0u, 0x1017E660u, 0x104B6830u},  // helper 0286D518
-    {0x104B67F4u, 0x1017E364u, 0x104B6830u},  // helper 0286D530
-    {0x104B67F8u, 0x1017E680u, 0x104B6830u},  // helper 0286D488
-    {0x104B67FCu, 0x1017E1E8u, 0x104B6830u},  // helper 0286D488
-    {0x104B6800u, 0x1017E3A0u, 0x104B6830u},  // helper 0286D488
-    {0x104B6804u, 0x1017E27Cu, 0x104B6830u},  // helper 0286D440
-    {0x104B6808u, 0x1017E3C4u, 0x104B6830u},  // helper 0286D548
-    {0x104B680Cu, 0x1017E400u, 0x104B6830u},  // helper 0286D560
-    {0x104B6810u, 0x1017E6A8u, 0x104B6830u},  // helper 0286D578
-    {0x104B6814u, 0x1017E6C8u, 0x104B6830u},  // helper 0286D590
-    {0x104B6818u, 0x1017E6FCu, 0x104B6830u},  // helper 0286D560
-    {0x104B681Cu, 0x1017E808u, 0x104B6830u},  // helper 0286D5A8
-    {0x104B6820u, 0x1017E718u, 0x104B6830u},  // helper 0286D5C0
-    {0x104B6824u, 0x1017E41Cu, 0x104B6830u},  // helper 0286D5D8
-    {0x104B6828u, 0x1017E440u, 0x104B6830u},  // helper 0286D578
+    {GD(0x104B67A0u), GD(0x1017E210u), GD(0x104B6830u)},  // helper 0286D410
+    {GD(0x104B67A4u), GD(0x1017E2ACu), GD(0x104B6830u)},  // helper 0286D428
+    {GD(0x104B67A8u), GD(0x1017E504u), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67ACu), GD(0x1017E2E4u), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67B0u), GD(0x1017E524u), GD(0x104B6830u)},  // helper 0286D458
+    {GD(0x104B67B4u), GD(0x1017E554u), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67B8u), GD(0x1017E308u), GD(0x104B6830u)},  // helper 0286D470
+    {GD(0x104B67BCu), GD(0x1017E574u), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67C0u), GD(0x1017E1A8u), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B67C4u), GD(0x1017E58Cu), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B67C8u), GD(0x1017E5ACu), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67CCu), GD(0x1017E244u), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B67D0u), GD(0x1017E5C4u), GD(0x104B6830u)},  // helper 0286D4A0
+    {GD(0x104B67D4u), GD(0x1017E1C8u), GD(0x104B6830u)},  // helper 0286D4B8
+    {GD(0x104B67D8u), GD(0x1017E7C4u), GD(0x104B6830u)},  // helper 0286D4D0
+    {GD(0x104B67DCu), GD(0x1017E600u), GD(0x104B6830u)},  // helper 0286D4E8
+    {GD(0x104B67E0u), GD(0x1017E61Cu), GD(0x104B6830u)},  // helper 0286D500
+    {GD(0x104B67E4u), GD(0x1017E344u), GD(0x104B6830u)},  // helper 0286D500
+    {GD(0x104B67E8u), GD(0x1017E258u), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B67ECu), GD(0x1017E63Cu), GD(0x104B6830u)},  // helper 0286D518
+    {GD(0x104B67F0u), GD(0x1017E660u), GD(0x104B6830u)},  // helper 0286D518
+    {GD(0x104B67F4u), GD(0x1017E364u), GD(0x104B6830u)},  // helper 0286D530
+    {GD(0x104B67F8u), GD(0x1017E680u), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B67FCu), GD(0x1017E1E8u), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B6800u), GD(0x1017E3A0u), GD(0x104B6830u)},  // helper 0286D488
+    {GD(0x104B6804u), GD(0x1017E27Cu), GD(0x104B6830u)},  // helper 0286D440
+    {GD(0x104B6808u), GD(0x1017E3C4u), GD(0x104B6830u)},  // helper 0286D548
+    {GD(0x104B680Cu), GD(0x1017E400u), GD(0x104B6830u)},  // helper 0286D560
+    {GD(0x104B6810u), GD(0x1017E6A8u), GD(0x104B6830u)},  // helper 0286D578
+    {GD(0x104B6814u), GD(0x1017E6C8u), GD(0x104B6830u)},  // helper 0286D590
+    {GD(0x104B6818u), GD(0x1017E6FCu), GD(0x104B6830u)},  // helper 0286D560
+    {GD(0x104B681Cu), GD(0x1017E808u), GD(0x104B6830u)},  // helper 0286D5A8
+    {GD(0x104B6820u), GD(0x1017E718u), GD(0x104B6830u)},  // helper 0286D5C0
+    {GD(0x104B6824u), GD(0x1017E41Cu), GD(0x104B6830u)},  // helper 0286D5D8
+    {GD(0x104B6828u), GD(0x1017E440u), GD(0x104B6830u)},  // helper 0286D578
 };
 
 uint32_t work_size(Cpu* c, uint32_t flags) {
@@ -495,31 +541,31 @@ void swkbd_create_0286CD7C(Cpu* c) {
     c->r[1] = sp - 0x18;
     c->r[29] = arg;
     auto fail = [&](uint32_t fmt, uint32_t r4, bool with_r4) {
-        c->r[3] = GD(fmt);
+        c->r[3] = fmt;
         if (with_r4) c->r[4] = r4;
         c->cr[6] = 0;
         imp_coreinit_OSReport(c);
         finish(c, e);
         c->r[3] = 0;
     };
-    if (!ld32(arg)) return fail(0x1017E45Cu, 0, false);
-    if (!ld32(arg + 0xC)) return fail(0x1017E490u, 0, false);
+    if (!ld32(arg)) return fail(GD(0x1017E45Cu), 0, false);
+    if (!ld32(arg + 0xC)) return fail(GD(0x1017E490u), 0, false);
     c->r[3] = GD(0x101FCD74u), c->cr[6] = 0, c->lr = GC(0x0286CE24u), c->pc = GC(0x0286D5F0u);
     ppc_dispatch(c);
     const uint32_t heap_slot = GD(0x104B682Cu), handle = GD(0x104B6830u);
     c->lr = GC(0x0286CE30u);
     const uint32_t ws = work_size(c, ld32(arg + 8));
     c->r[3] = ld32(arg), c->r[4] = ws, c->r[5] = 0;
-    import_call(c, imp_coreinit_MEMCreateExpHeapEx, 0x0286CE40u);
+    import_call(c, imp_coreinit_MEMCreateExpHeapEx, GC(0x0286CE40u));
     st32(heap_slot, c->r[3]);
     c->r[31] = heap_slot;
     c->r[3] = GC(0x0286CCECu), c->r[4] = GC(0x0286CD44u);
-    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, 0x0286CE5Cu);
+    import_call(c, imp_coreinit_OSDynLoad_SetAllocator, GC(0x0286CE5Cu));
     c->r[3] = GD(0x1017E2A0u), c->r[4] = handle;
-    import_call(c, imp_coreinit_OSDynLoad_Acquire, 0x0286CE6Cu);
-    if (c->r[3]) return fail(0x1017E4C4u, c->r[3], true);
+    import_call(c, imp_coreinit_OSDynLoad_Acquire, GC(0x0286CE6Cu));
+    if (c->r[3]) return fail(GD(0x1017E4C4u), c->r[3], true);
     c->r[3] = ld32(heap_slot), c->r[4] = 4;
-    import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, 0x0286CEB0u);
+    import_call(c, imp_coreinit_MEMGetAllocatableSizeForExpHeapEx, GC(0x0286CEB0u));
     const uint32_t avail = c->r[3];
     c->r[11] = avail;
     c->lr = GC(0x0286CEBCu);
@@ -527,20 +573,20 @@ void swkbd_create_0286CD7C(Cpu* c) {
     c->r[30] = used;
     c->r[3] = GD(0x1017E180u), c->r[4] = used, c->r[5] = 0x00380000, c->cr[6] = 0;
     imp_coreinit_OSReport(c);
-    if (used > 0x00380000u) return fail(0x1017E77Cu, 0, false);
+    if (used > 0x00380000u) return fail(GD(0x1017E77Cu), 0, false);
     for (const Export& x : kSwkbdExports) {
-        c->r[3] = ld32(GD(x.handle)), c->r[4] = 0, c->r[5] = GD(x.name), c->r[6] = GD(x.slot);
+        c->r[3] = ld32(x.handle), c->r[4] = 0, c->r[5] = x.name, c->r[6] = x.slot;
         imp_coreinit_OSDynLoad_FindExport(c);
     }
     const uint32_t heap = ld32(heap_slot);
     c->r[11] = heap;
     const uint32_t ws3 = work_size(c, ld32(arg + 8));
     c->r[3] = heap, c->r[4] = ws3 - 0x00380000u, c->r[5] = 4;
-    import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, 0x0286D1F8u);
+    import_call(c, imp_coreinit_MEMAllocFromExpHeapEx, GC(0x0286D1F8u));
     const uint32_t work = c->r[3];
-    if (!work) return fail(0x1017E74Cu, 0, false);
+    if (!work) return fail(GD(0x1017E74Cu), 0, false);
     c->r[3] = work, c->r[4] = ld32(arg + 4), c->r[5] = ld32(arg + 8), c->r[6] = ld32(arg + 0xC);
-    call_export(c, 0x104B67B8u, 0x0286D240u);
+    call_export(c, GD(0x104B67B8u), GC(0x0286D240u));
     finish(c, e);
     c->r[3] = 1;
 }
