@@ -12,6 +12,9 @@ import java.util.Map;
  *  Idea from the GreenNaugahyde Android fork (MPL-2.0), ControlsView's context buttons; reimplemented. */
 final class ContextPack {
     static final int VERSION = 1, LEN = 40;
+    // Optional extension in reserved header slot 3; zero keeps older runtimes' behaviour.
+    static final int STARTUP_MAGIC = 0x57570100;
+    static final int STARTUP_UNKNOWN = 0, STARTUP_BOOT = 1, STARTUP_TITLE = 2, STARTUP_FILES = 3, STARTUP_GAME = 4;
     // header flags (raw[1])
     static final int ENABLED = 1, ACTIVE = 1 << 1, TAP_CONTINUES = 1 << 2, AIM_LATCHED = 1 << 3,
             ZL_LATCHED = 1 << 4, CLUSTER_HIDDEN = 1 << 5,
@@ -55,6 +58,12 @@ final class ContextPack {
     /** the rules apply now: only the controls that do something show */
     boolean on() { return enabled() && (raw[1] & ACTIVE) != 0; }
     int assetsGeneration() { return raw[2]; }
+    int startupScene() {
+        int scene = raw[3] & 255;
+        return valid && (raw[3] & 0xFFFFFF00) == STARTUP_MAGIC && scene >= STARTUP_BOOT && scene <= STARTUP_GAME
+                ? scene : STARTUP_UNKNOWN;
+    }
+    boolean startupTouch() { int scene = startupScene(); return scene >= STARTUP_BOOT && scene <= STARTUP_FILES; }
     boolean itemNamesA() { return valid && (raw[1] & ITEM_NAMES_A) != 0; }
     boolean linkPoses() { return valid && (raw[1] & LINK_POSES) != 0; }
 
