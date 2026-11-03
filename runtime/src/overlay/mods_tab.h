@@ -1030,11 +1030,16 @@ inline std::string unavailable_reason(const Host& h, const mods::catalogue::Entr
     return compatible ? "" : "Not available for this version of the game.";
 }
 // Built-in: the mods compiled into the game, each with its switch.
+// the camera mods are switched on Settings > Controls, not in the Built-in list
+inline bool on_controls_tab(std::string_view id) {
+    return id == "mouse-camera" || id == "direct-camera" || id == "first-person";
+}
+
 inline void builtin_list(Host& h) {
     muted(kAreaCaptions[kBuiltin]);
     if (!begin_list("builtin")) return;
     for (const auto& e : mods::manager::entries()) {
-        if (std::string_view(e.id) == "mouse-camera" || std::string_view(e.id) == "direct-camera" || std::string_view(e.id) == "first-person") continue;
+        if (on_controls_tab(e.id)) continue;
         // the story system needs the Story Notebook package, which only the mod list provides
         if (e.id == "story-system" && !h.mod_downloads && !find_view(mods::packages::list(), mods::required::kStoryNotebook))
             continue;
