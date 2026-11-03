@@ -40,7 +40,10 @@ namespace hostrt {
 // __construct_array(p, n, size, ctor): returns false when it hands the call back to the original
 // (the allocating form, p == 0); the hook then runs the original instead
 bool construct_array_028EFFD0(Cpu* c);
-void register_global_object_028F026C(Cpu* c);  // (record) links a destructor record into the global chain
+void register_global_object_028F026C(Cpu* c);
+// __destroy_arr(p, n, size, dtor, flags, extra): destroys n elements (n == -1: the count from the array's
+// header) in reverse order and, when flags != 0, frees the array
+bool destroy_arr_028F0164(Cpu* c);  // (record) links a destructor record into the global chain
 
 // ---- C library (hostrt_libc.cpp)
 void bzero_028F521C(Cpu* c);       // (p, n): memset(p, 0, n) through the port's memset

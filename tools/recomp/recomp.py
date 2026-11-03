@@ -11,7 +11,9 @@ it was translated from; the dispatch table maps this build's real addresses to t
 g_mod_hook_flags (runtime/src/mods/guest_mods.cpp), so guest mods (docs/mod-sdk-v2.md) can hook or
 replace any game function at runtime without rebuilding the game code.
 
---decomp-hooks FILE: the code for the decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md). FILE
+--decomp-hooks FILE: the code for the decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md); it also
+routes the roots in tools/recomp/decomp_hostrt_hooks.txt (the port-owned guest runtime) to their host
+replacements (runtime/src/hostrt), which only the decomp build has. FILE
 (written by tools/decomp_build/gen.py) lists the decompiled functions; each becomes a hook (f_X calls
 hook_X in the runtime, which runs the decompiled function or the recompiled f_X_orig). A listed address
 that is not a function entry, or a function containing an instruction-level hook ("@ADDR"; the
@@ -158,6 +160,11 @@ class Recompiler:
         # hook: site_ADDR(c) runs just before the instruction at ADDR (also when ADDR is reached by
         # a branch), so it can adjust what that instruction uses.
         hook_entries, self.skipped_hooks = game_builds.read_hooks(game_builds.hook_files(), self.build)
+        if decomp_hooks:
+            # decomp build only: the port-owned guest runtime's host replacements (runtime/src/hostrt);
+            # the normal build keeps the recompiled originals and never reads this list
+            hook_entries += game_builds.read_hooks([os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                 "decomp_hostrt_hooks.txt")], self.build)[0]
         self.canon_of = {}              # this build's address -> canonical address (for symbol names)
         self.hooks, self.sites = set(), set()
         for site, canon, addr, _ in hook_entries:

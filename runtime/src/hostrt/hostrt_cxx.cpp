@@ -82,4 +82,61 @@ void register_global_object_028F026C(Cpu* c) {
     st32(rec, head);
 }
 
+// __destroy_arr(p, n, size, dtor, flags, extra), measured:
+// - p == 0: only the caller's LR save word is written (r3, r4 unchanged);
+// - n == 0xFFFFFFFF: the array has the 8-byte header before p (word p-4 = ~count, word p-8 = the byte size
+//   of the elements); the count is ~[p-4] and the destructors see r6 = 8, otherwise the count is n, r6 = 0;
+//   a header with count 0 or a byte size other than count*size makes the original report a runtime error:
+//   handed back to it;
+// - with a destructor: it is called for i = count-1 .. 0 with r3 = p + i*size, r4 = 2; the first call gets
+//   r5 = size, r6 = 0 or 8, r7 = dtor, r8 = flags, r9 = r10 = 0, later ones what the previous left; SP = entry SP - 0x48 (back chain to entry-0x10, which
+//   chains to the entry SP), LR = 028F0120;
+// - flags != 0: operator delete[] (0273AFC8) with r3 = p (p - 8 with the header), r4 = 0 (the header's byte
+//   size + 8), r5..r10 as for a further destructor call, LR = 028F014C;
+// - the caller's LR save word gets LR; r3/r4 are what the last call left (unchanged without calls).
+bool destroy_arr_028F0164(Cpu* c) {
+    const uint32_t p = c->r[3];
+    if (!p) {
+        st32(c->r[1] + 4, c->lr);
+        return true;
+    }
+    const Cpu entry = *c;
+    const uint32_t n = c->r[4], size = c->r[5], dtor = c->r[6], flags = c->r[7];
+    const uint32_t sp = entry.r[1];
+    const bool header = n == 0xFFFFFFFFu;
+    const uint32_t count = header ? ~ld32(p - 4) : n;
+    // a header the original rejects (it then reports a runtime error and stops the game): its own path
+    if (header && (count == 0 || (uint64_t)count * size != ld32(p - 8))) return false;
+    const uint32_t r6 = header ? 8 : 0;
+    st32(sp + 4, entry.lr);
+    bool called = false;
+    auto frame = [&] {
+        st32(sp - 0x10, sp);
+        st32(sp - 0x48, sp - 0x10);
+        c->r[1] = sp - 0x48;
+    };
+    // r5..r10 are set once; each later call sees what the previous callee left in them (measured)
+    c->r[5] = size, c->r[6] = r6, c->r[7] = dtor, c->r[8] = flags, c->r[9] = c->r[10] = 0;
+    if (dtor) {
+        static const uint32_t ret = GC(0x028F0120u);
+        for (uint32_t i = count; i-- > 0;) {
+            frame();
+            c->r[3] = p + i * size, c->r[4] = 2;
+            call(c, dtor, ret);
+            called = true;
+        }
+    }
+    if (flags) {
+        static const uint32_t ret = GC(0x028F014Cu), del = GC(0x0273AFC8u);
+        frame();
+        c->r[3] = header ? p - 8 : p, c->r[4] = header ? ld32(p - 8) + 8 : 0;
+        call(c, del, ret);
+        called = true;
+    }
+    const uint32_t r3 = called ? c->r[3] : entry.r[3], r4 = called ? c->r[4] : entry.r[4];
+    restore_registers(c, entry);
+    c->r[3] = r3, c->r[4] = r4;
+    return true;
+}
+
 }  // namespace hostrt

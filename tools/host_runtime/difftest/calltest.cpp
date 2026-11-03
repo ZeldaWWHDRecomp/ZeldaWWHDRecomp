@@ -33,6 +33,7 @@ static int test_threads() {
 
 extern "C" {
 void f_028EFFD0(Cpu*);
+void f_028F0164(Cpu*);
 void f_028F026C(Cpu*);
 void f_028F521C(Cpu*);
 void f_028F5914(Cpu*);
@@ -52,7 +53,14 @@ uint32_t mix(uint32_t x) {
     return x ^ (x >> 16);
 }
 
-thread_local uint32_t t_heap;  // the bump pointer of the operator new stand-in (reset before each run)
+thread_local uint32_t t_heap;
+thread_local Cpu t_input;  // the input being tested (for reports)
+
+bool import_report(Cpu* c, const char* name) {
+    fprintf(stderr, "calltest: import %s (lr %08X) for input r3 %08X r4 %08X r5 %08X r6 %08X r7 %08X r8 %08X\n", name, c->lr,
+            t_input.r[3], t_input.r[4], t_input.r[5], t_input.r[6], t_input.r[7], t_input.r[8]);
+    return false;
+}  // the bump pointer of the operator new stand-in (reset before each run)
 
 // stand-ins for the game functions the runtime calls: operator new / new[] (bump allocation in the
 // scratch region, every 16th request fails), operator delete / delete[], and fake constructors and
@@ -103,6 +111,19 @@ std::vector<Root> roots() {
              c.r[4] = (r() & 15) ? (uint32_t)(r() % 7) : (uint32_t)(r() % 60);
              c.r[5] = sizes[r() % 6];
              c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+         },
+         R3 | R4},
+        {"destroy_arr", f_028F0164, hostrt::destroy_arr_028F0164,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             static const uint32_t sizes[] = {1, 4, 8, 12, 0x2C, 0x12C};
+             const uint32_t size = sizes[r() % 6], n = (r() & 15) ? (uint32_t)(r() % 7) : (uint32_t)(r() % 40);
+             const uint32_t p = (r() & 15) ? s + 0x108 + ((uint32_t)r() & 0xFF8) : 0;
+             const bool header = p && (r() & 1);
+             if (header) st32(p - 8, (r() & 15) ? n * size : (uint32_t)r() % 64), st32(p - 4, ~n);
+             c.r[3] = p, c.r[4] = header ? 0xFFFFFFFFu : n, c.r[5] = size;
+             c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+             c.r[7] = (r() & 1) ? 0 : (uint32_t)(r() % 4);
+             c.r[8] = (uint32_t)r();
          },
          R3 | R4},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
@@ -163,7 +184,9 @@ bool same_call(const Call& a, const Call& b) {
     if (a.import && strcmp(a.import, b.import)) return false;
     for (int i = 1; i <= 10; i++)
         if (i != 2 && a.r[i] != b.r[i]) return false;
-    return !memcmp(a.stack, b.stack, sizeof a.stack) && a.lr == b.lr && a.back == b.back;
+    // the stack below the entry SP is the functions' scratch (as in tools/verify): compared are the back
+    // chain and the first stack-argument word (SP+8), which the originals write for some callees
+    return a.stack[0] == b.stack[0] && a.lr == b.lr && a.back == b.back;
 }
 
 }  // namespace
@@ -175,6 +198,7 @@ int main(int argc, char** argv) {
     }
     load_image(argv[1]);
     outside_hook = model;
+    import_hook = import_report;
     const std::string which = argc > 2 ? argv[2] : "all";
     const uint64_t count = argc > 3 ? strtoull(argv[3], nullptr, 0) : 1000000ull;
     int bad = 0;
@@ -203,11 +227,35 @@ int main(int argc, char** argv) {
                     memcpy(init.data(), PPC_MEM_BASE + s, kScratchSize);
                     for (uint32_t g : rt.globals) g_init.push_back(ld32(g));
                     const uint32_t sp = e.r[1];
-                    uint8_t frame_a[0x20], frame_init[0x20];
+                    t_input = e;
+                    uint8_t frame_a[0x20], frame_init[0x20], below[0x400];
                     for (int j = 0; j < 0x20; j++) frame_init[j] = (uint8_t)r();
+                    // the stack below SP starts with the same garbage for both runs, so stack words a
+                    // replacement fails to write (or writes but the original does not) show in the calls
+                    for (int j = 0; j < 0x400; j++) below[j] = (uint8_t)r();
+                    // replacement
+                    memcpy(PPC_MEM_BASE + s, init.data(), kScratchSize);
+                    memcpy(PPC_MEM_BASE + sp, frame_init, 0x20);
+                    memcpy(PPC_MEM_BASE + sp - 0x400, below, 0x400);
+                    for (size_t g = 0; g < rt.globals.size(); g++) st32(rt.globals[g], g_init[g]);
+                    b = e, t_entry_sp = sp, lb.clear(), t_log = &lb, t_heap = s + 0x20000;
+                    if (!rt.repl(&b)) {  // handed back: the hook runs the original itself, nothing to compare
+                        handed[k]++;
+                        // ... provided the replacement changed nothing before handing back
+                        if ((!lb.empty() || memcmp(init.data(), PPC_MEM_BASE + s, kScratchSize) || memcmp(frame_init, PPC_MEM_BASE + sp, 0x20) ||
+                             !kept(e, b, 0)) && fails[k]++ < 3)
+                            printf("  %s FAIL: changed state before handing back (r3 %08X r4 %08X)\n", rt.name, e.r[3], e.r[4]);
+                        continue;
+                    }
+                    std::vector<uint8_t> after_b(PPC_MEM_BASE + s, PPC_MEM_BASE + s + kScratchSize);
+                    uint8_t frame_b[0x20];
+                    memcpy(frame_b, PPC_MEM_BASE + sp, 0x20);
+                    std::vector<uint32_t> g_b;
+                    for (uint32_t g : rt.globals) g_b.push_back(ld32(g));
                     // original
                     memcpy(PPC_MEM_BASE + s, init.data(), kScratchSize);
                     memcpy(PPC_MEM_BASE + sp, frame_init, 0x20);
+                    memcpy(PPC_MEM_BASE + sp - 0x400, below, 0x400);
                     for (size_t g = 0; g < rt.globals.size(); g++) st32(rt.globals[g], g_init[g]);
                     a = e, t_entry_sp = sp, la.clear(), t_log = &la, t_heap = s + 0x20000;
                     rt.orig(&a);
@@ -215,27 +263,26 @@ int main(int argc, char** argv) {
                     memcpy(frame_a, PPC_MEM_BASE + sp, 0x20);
                     std::vector<uint32_t> g_a;
                     for (uint32_t g : rt.globals) g_a.push_back(ld32(g));
-                    // replacement
-                    memcpy(PPC_MEM_BASE + s, init.data(), kScratchSize);
-                    memcpy(PPC_MEM_BASE + sp, frame_init, 0x20);
-                    for (size_t g = 0; g < rt.globals.size(); g++) st32(rt.globals[g], g_init[g]);
-                    b = e, t_entry_sp = sp, lb.clear(), t_log = &lb, t_heap = s + 0x20000;
-                    if (!rt.repl(&b)) {
-                        handed[k]++;
-                        continue;
-                    }
                     calls[k] += lb.size();
                     std::string why;
                     if (la.size() != lb.size()) why = "call count";
                     else
                         for (size_t j = 0; j < la.size() && why.empty(); j++)
                             if (!same_call(la[j], lb[j])) why = "call " + std::to_string(j);
-                    if (why.empty() && memcmp(after_a.data(), PPC_MEM_BASE + s, kScratchSize)) why = "memory";
-                    if (why.empty() && memcmp(frame_a, PPC_MEM_BASE + sp, 0x20)) why = "caller frame";
+                    if (why.empty() && memcmp(after_a.data(), after_b.data(), kScratchSize)) why = "memory";
+                    if (why.empty() && memcmp(frame_a, frame_b, 0x20)) why = "caller frame";
                     for (size_t g = 0; g < rt.globals.size() && why.empty(); g++)
-                        if (ld32(rt.globals[g]) != g_a[g]) why = "global";
+                        if (g_b[g] != g_a[g]) why = "global";
                     if (why.empty() && (((rt.outs & R3) && a.r[3] != b.r[3]) || ((rt.outs & R4) && a.r[4] != b.r[4]))) why = "result";
                     if (why.empty() && !kept(e, b, rt.outs)) why = "registers kept";
+                    if (!why.empty() && why.rfind("call ", 0) == 0 && fails[k] < 3) {
+                        const size_t j = std::stoul(why.substr(5));
+                        for (const Call* q : {&la[j], &lb[j]}) {
+                            printf("    %s %08X sp-%X back sp-%X lr %08X r:", q == &la[j] ? "orig" : "repl", q->addr, q->r[1], q->back, q->lr);
+                            for (int x = 3; x <= 10; x++) printf(" %08X", q->r[x]);
+                            printf(" stk %08X %08X %08X %08X\n", q->stack[0], q->stack[1], q->stack[2], q->stack[3]);
+                        }
+                    }
                     if (!why.empty() && fails[k]++ < 3)
                         printf("  %s FAIL (%s): r3 %08X r4 %08X r5 %08X r6 %08X r7 %08X r8 %08X; calls %zu/%zu; result %08X %08X / %08X %08X\n",
                                rt.name, why.c_str(), e.r[3], e.r[4], e.r[5], e.r[6], e.r[7], e.r[8], la.size(), lb.size(), a.r[3], a.r[4],

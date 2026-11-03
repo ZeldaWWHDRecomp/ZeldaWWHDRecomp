@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-// Routes the game's calls of the port-owned runtime roots (tools/recomp/hooks_hostrt.txt) to the host
-// replacements (hostrt_impl.h).
+// Decomp build only (cmake/Decomp.cmake; docs/decomp-build.md): routes the game's calls of the port-owned
+// runtime roots (tools/recomp/decomp_hostrt_hooks.txt, read by recomp.py --decomp-hooks) to the host
+// replacements (hostrt_impl.h). The normal build keeps the recompiled originals and has none of this.
 //
 // WWHD_HOSTRT=0      runs the recompiled originals instead (A/B comparisons).
 // WWHD_HOSTRT_CHECK=1 runs both for every call of a register-only root and logs the first differences
@@ -120,6 +121,7 @@ HOSTRT_ROOT(028F597C, umod64, R3 | R4)
 HOSTRT_ROOT(028F5680, cvt_f_s64, R3 | R4)
 HOSTRT_ROOT(028F5678, cvt_f_u64, R3 | R4)
 HOSTRT_CALLS_ROOT(028EFFD0, construct_array, R3 | R4)
+HOSTRT_CALLS_ROOT(028F0164, destroy_arr, R3 | R4)
 
 // memory-writing roots that never hand back
 namespace hostrt {
