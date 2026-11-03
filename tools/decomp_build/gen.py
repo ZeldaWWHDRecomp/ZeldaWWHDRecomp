@@ -71,7 +71,7 @@ def unit_specs(src):
         specfile = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(specfile)
         udir = os.path.join(vdir, "units")
-        return [(name.replace("/", "__"), specfile.expanded_lines(os.path.join(udir, name + ".txt")))
+        return [(name.replace("\\", "/").replace("/", "__"), specfile.expanded_lines(os.path.join(udir, name + ".txt")))
                 for name in specfile.gated_specs(udir)]
     out = []
     for f in sorted(glob.glob(os.path.join(vdir, "units", "*.txt"))):

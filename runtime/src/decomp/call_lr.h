@@ -32,8 +32,7 @@ inline uint32_t call_lr_scan(const uint32_t* words, uint32_t lo, uint32_t n, uin
         if (k < nimports && imports[k][0] == a) {
             t = imports[k][1];
         } else {
-            int32_t li = int32_t(w & 0x03FFFFFCu);
-            if (li & 0x02000000) li -= 0x04000000;
+            int32_t li = int32_t((w & 0x03FFFFFCu) << 6) >> 6;  // sign-extended 26-bit branch offset
             t = (w & 2) ? uint32_t(li) : a + uint32_t(li);
         }
         if (t == target) { found = a + 4; hits++; }
