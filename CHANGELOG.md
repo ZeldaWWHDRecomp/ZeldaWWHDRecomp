@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New on Windows: the Wii U GameCube adapter works** (#357, fixes #354, thanks @itsarahtonin). Windows builds now
+  include libusb, which SDL needs to reach the adapter. Install the WinUSB driver for it with Zadig (the same driver
+  Dolphin uses); Windows' own driver isn't supported. See the GameCube controller guide.
 - **New on macOS: controller rumble** (#347, fixes #346, thanks @davidsgullick). The macOS app now drives controller
   motors through Apple's GameController haptics, so any pad macOS reports haptics for rumbles, for example a DualSense.
   Strength, the Rumble setting and the quiet rules (settings open, window in the background, quitting) work as on the
