@@ -7,7 +7,10 @@
 #include <unistd.h>
 #endif
 
+#include <chrono>
 #include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "runtime.h"
@@ -41,7 +44,58 @@ void guest_capture_enter(uint32_t addr);  // guest_capture.cpp (WWHD_GUEST_CAPTU
 #ifdef WWHD_WRITE_WATCH
 void wwhd_ww_enter(uint32_t addr);  // guest_write_watch.cpp (diagnostic build)
 #endif
+// WWHD_HOSTRT_TRACE=<file>: entry counts (and up to 8 distinct return addresses) of the port-owned guest
+// runtime (GHS C/C++ runtime, nn static wrappers; tools/host_runtime/inventory.py), rewritten every 2 s
+// because test runs leave with _Exit. Only these ranges are counted; nothing else is traced.
+namespace hostrt {
+struct Range { uint32_t lo, hi; };
+constexpr Range kRanges[] = {{0x0286C590u, 0x0286DB50u}, {0x028EA038u, 0x028F626Cu}};
+constexpr uint32_t kSlots0 = (0x0286DB50u - 0x0286C590u) / 4, kSlots1 = (0x028F626Cu - 0x028EA038u) / 4;
+std::atomic<uint64_t> g_count[kSlots0 + kSlots1];
+std::atomic<uint32_t> g_lr[kSlots0 + kSlots1][8];
+bool g_on = false, g_only = false;
+static inline int slot(uint32_t a) {
+    if (a - kRanges[0].lo < kRanges[0].hi - kRanges[0].lo) return (int)((a - kRanges[0].lo) / 4);
+    if (a - kRanges[1].lo < kRanges[1].hi - kRanges[1].lo) return (int)(kSlots0 + (a - kRanges[1].lo) / 4);
+    return -1;
+}
+static uint32_t addr_of(int i) { return i < (int)kSlots0 ? kRanges[0].lo + 4 * i : kRanges[1].lo + 4 * (i - kSlots0); }
+static void enter(uint32_t a) {
+    int i = slot(a);
+    if (i < 0) return;
+    g_count[i].fetch_add(1, std::memory_order_relaxed);
+    Cpu* c = threads::current();
+    uint32_t lr = c ? c->lr : 0;
+    for (auto& e : g_lr[i]) {
+        uint32_t v = e.load(std::memory_order_relaxed);
+        if (v == lr) break;
+        if (v == 0) { uint32_t z = 0; if (e.compare_exchange_strong(z, lr) || z == lr) break; }
+    }
+}
+static void writer(std::string path) {
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::string tmp = path + ".tmp";
+        FILE* f = fopen(tmp.c_str(), "w");
+        if (!f) continue;
+        for (int i = 0; i < (int)(kSlots0 + kSlots1); i++) {
+            uint64_t n = g_count[i].load(std::memory_order_relaxed);
+            if (!n) continue;
+            fprintf(f, "%08X\t%llu\t", addr_of(i), (unsigned long long)n);
+            for (auto& e : g_lr[i]) if (uint32_t v = e.load()) fprintf(f, "%08X,", v);
+            fputc('\n', f);
+        }
+        fclose(f);
+        rename(tmp.c_str(), path.c_str());
+    }
+}
+}  // namespace hostrt
+
 extern "C" void ppc_trace_enter(uint32_t addr) {
+    if (hostrt::g_on) {
+        hostrt::enter(addr);
+        if (hostrt::g_only) return;
+    }
     static const bool nan_probe = getenv("WWHD_NAN_PROBE") != nullptr;
     if (nan_probe) true60_nan_probe(addr);
     static const bool guest_capture = getenv("WWHD_GUEST_CAPTURE") != nullptr;
@@ -118,6 +172,13 @@ static void on_usr1(int) {
 }
 
 __attribute__((constructor)) static void trace_init() {
+    if (const char* p = getenv("WWHD_HOSTRT_TRACE")) {
+        hostrt::g_on = true;
+        g_ppc_trace = 1;
+        hostrt::g_only = !getenv("WWHD_WATCH_R3") && !getenv("WWHD_WATCH") && !getenv("WWHD_NAN_PROBE") &&
+                         !getenv("WWHD_TRACE_FUNCS") && !getenv("WWHD_GUEST_CAPTURE");
+        std::thread(hostrt::writer, std::string(p)).detach();
+    }
     if (const char* w = getenv("WWHD_WATCH_R3")) { g_watch_r3 = (uint32_t)strtoul(w, nullptr, 16); g_ppc_trace = 1; }
     if (const char* w = getenv("WWHD_WATCH")) {
         g_watch = (uint32_t)strtoul(w, nullptr, 16);
