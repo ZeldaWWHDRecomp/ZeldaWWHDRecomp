@@ -277,7 +277,8 @@ int main() {
     assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
     assert(backups.list().size()==1 && !mods::story_item_confirmation_needed());
     const auto backup_file=backups.root()/backups.list()[0].name/"save/user/cking.sav";
-    std::ifstream backup(backup_file);std::string text((std::istreambuf_iterator<char>(backup)),{});
+    std::string text;
+    {std::ifstream backup(backup_file);text.assign(std::istreambuf_iterator<char>(backup),{});} // closed before remove_all (Windows)
     assert(text=="before story cheats");
     for(auto [item,bit]:{std::pair{mods::kStoryNayru,1},std::pair{mods::kStoryFarore,4}}){
         mods::request_story_item(item);mods::cheats_service();expected[0x20+0xBF]|=bit;
