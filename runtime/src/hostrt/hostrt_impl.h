@@ -45,6 +45,31 @@ void register_global_object_028F026C(Cpu* c);
 // header) in reverse order and, when flags != 0, frees the array
 bool destroy_arr_028F0164(Cpu* c);  // (record) links a destructor record into the global chain
 
+// ---- nn static wrappers (hostrt_nn.cpp)
+void list_insert_0286DA70(Cpu* c);       // (list, pos iterator, node) -> node
+void list_erase_0286DA9C(Cpu* c);        // (list, node) -> next
+void list_erase_range_0286DACC(Cpu* c);  // (list, first iterator, end iterator) -> end
+void list_clear_0286DB18(Cpu* c);        // (list, iterator)
+// erreula/swkbd export thunks: jump to the export the loader stored in the wrapper's table
+void export_thunk_0286CA30(Cpu* c);
+void export_thunk_0286CA40(Cpu* c);
+void export_thunk_0286CB2C(Cpu* c);
+void export_thunk_0286CB3C(Cpu* c);
+void export_thunk_0286CB4C(Cpu* c);
+void export_thunk_0286CB5C(Cpu* c);
+void export_thunk_0286CB6C(Cpu* c);
+void export_thunk_0286CBB4(Cpu* c);
+void export_thunk_0286D270(Cpu* c);
+void export_thunk_0286D2D4(Cpu* c);
+void export_thunk_0286D2E4(Cpu* c);
+void export_thunk_0286D3C0(Cpu* c);
+void export_thunk_0286D3D0(Cpu* c);
+void export_thunk_0286D3E0(Cpu* c);
+void export_thunk_0286D3F0(Cpu* c);
+void export_thunk_0286D400(Cpu* c);
+void work_size_0286CBC4(Cpu* c);  // returns the work memory size (0x01600000)
+void empty_0286D5F0(Cpu* c);      // does nothing
+
 // ---- C library (hostrt_libc.cpp)
 void bzero_028F521C(Cpu* c);       // (p, n): memset(p, 0, n) through the port's memset
 void zero_words_028F5914(Cpu* c);  // (p, n): n zero words at p

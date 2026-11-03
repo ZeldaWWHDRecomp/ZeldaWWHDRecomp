@@ -33,6 +33,26 @@ static int test_threads() {
 
 extern "C" {
 void f_028EFFD0(Cpu*);
+void f_0286CA30(Cpu*);
+void f_0286CA40(Cpu*);
+void f_0286CB2C(Cpu*);
+void f_0286CB3C(Cpu*);
+void f_0286CB4C(Cpu*);
+void f_0286CB5C(Cpu*);
+void f_0286CB6C(Cpu*);
+void f_0286CBB4(Cpu*);
+void f_0286D270(Cpu*);
+void f_0286D2D4(Cpu*);
+void f_0286D2E4(Cpu*);
+void f_0286D3C0(Cpu*);
+void f_0286D3D0(Cpu*);
+void f_0286D3E0(Cpu*);
+void f_0286D3F0(Cpu*);
+void f_0286D400(Cpu*);
+void f_0286DA70(Cpu*);
+void f_0286DA9C(Cpu*);
+void f_0286DACC(Cpu*);
+void f_0286DB18(Cpu*);
 void f_028F0164(Cpu*);
 void f_028F026C(Cpu*);
 void f_028F521C(Cpu*);
@@ -85,7 +105,7 @@ bool model(Cpu* c, uint32_t addr) {
     return true;
 }
 
-enum Out { R3 = 1, R4 = 2 };
+enum Out { R3 = 1, R4 = 2, TAIL = 0x100 };  // TAIL: a tail call, every register must end as the original's
 
 struct Root {
     const char* name;
@@ -100,6 +120,35 @@ template <void (*F)(Cpu*)>
 bool always(Cpu* c) {
     F(c);
     return true;
+}
+
+// a list {count, sentinel{next, prev}} with k nodes in a ring through the sentinel, in the scratch region,
+// and the arguments for one list operation (op 1 insert, 2 erase, 3 erase range, 4 clear)
+void list_args(Cpu& c, std::mt19937_64& r, uint32_t s, int op) {
+    const uint32_t list = s + 0x100, sent = list + 4;
+    const int k = (int)(r() % 7);
+    std::vector<uint32_t> ring{sent};
+    for (int i = 0; i < k; i++) ring.push_back(s + 0x400 + 0x40 * (uint32_t)i + ((uint32_t)r() & 0x38));
+    for (size_t i = 0; i < ring.size(); i++) {
+        st32(ring[i], ring[(i + 1) % ring.size()]);
+        st32(ring[i] + 4, ring[(i + ring.size() - 1) % ring.size()]);
+    }
+    st32(list, (uint32_t)k);
+    auto it = [&](uint32_t node) {  // an iterator: a word holding a node pointer
+        const uint32_t w = s + 0x2000 + ((uint32_t)r() & 0xFF0);
+        st32(w, node);
+        return w;
+    };
+    const uint32_t a = (uint32_t)(r() % ring.size());
+    c.r[3] = list;
+    if (op == 1) c.r[4] = it(ring[a]), c.r[5] = s + 0x3000 + ((uint32_t)r() & 0xFF8);
+    if (op == 2) c.r[4] = k ? ring[1 + r() % k] : sent;
+    if (op == 3) {
+        const uint32_t b = a + (uint32_t)(r() % (ring.size() - a));  // end at or after first, on the ring
+        c.r[4] = it(ring[a]), c.r[5] = it(b == 0 && a == 0 ? sent : ring[b]);
+        if (a == 0 && b != 0) c.r[4] = it(ring[1 % ring.size()]);
+    }
+    if (op == 4) c.r[4] = it(ring[a]);
 }
 
 std::vector<Root> roots() {
@@ -126,6 +175,26 @@ std::vector<Root> roots() {
              c.r[8] = (uint32_t)r();
          },
          R3 | R4},
+        {"list_insert", f_0286DA70, always<hostrt::list_insert_0286DA70>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 1); }, R3 | R4},
+        {"list_erase", f_0286DA9C, always<hostrt::list_erase_0286DA9C>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 2); }, R3 | R4},
+        {"list_erase_range", f_0286DACC, always<hostrt::list_erase_range_0286DACC>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 3); }, R3 | R4},
+        {"list_clear", f_0286DB18, always<hostrt::list_clear_0286DB18>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 4); }, R3 | R4},
+        {"thunk_0286CA30", f_0286CA30, always<hostrt::export_thunk_0286CA30>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6774u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6774u}},
+        {"thunk_0286CA40", f_0286CA40, always<hostrt::export_thunk_0286CA40>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6790u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6790u}},
+        {"thunk_0286CB2C", f_0286CB2C, always<hostrt::export_thunk_0286CB2C>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6748u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6748u}},
+        {"thunk_0286CB3C", f_0286CB3C, always<hostrt::export_thunk_0286CB3C>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6764u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6764u}},
+        {"thunk_0286CB4C", f_0286CB4C, always<hostrt::export_thunk_0286CB4C>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6784u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6784u}},
+        {"thunk_0286CB5C", f_0286CB5C, always<hostrt::export_thunk_0286CB5C>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6780u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6780u}},
+        {"thunk_0286CB6C", f_0286CB6C, always<hostrt::export_thunk_0286CB6C>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6778u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6778u}},
+        {"thunk_0286CBB4", f_0286CBB4, always<hostrt::export_thunk_0286CBB4>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B6770u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B6770u}},
+        {"thunk_0286D270", f_0286D270, always<hostrt::export_thunk_0286D270>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67E4u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67E4u}},
+        {"thunk_0286D2D4", f_0286D2D4, always<hostrt::export_thunk_0286D2D4>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67F8u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67F8u}},
+        {"thunk_0286D2E4", f_0286D2E4, always<hostrt::export_thunk_0286D2E4>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67A8u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67A8u}},
+        {"thunk_0286D3C0", f_0286D3C0, always<hostrt::export_thunk_0286D3C0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67ECu, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67ECu}},
+        {"thunk_0286D3D0", f_0286D3D0, always<hostrt::export_thunk_0286D3D0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67F0u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67F0u}},
+        {"thunk_0286D3E0", f_0286D3E0, always<hostrt::export_thunk_0286D3E0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67A4u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67A4u}},
+        {"thunk_0286D3F0", f_0286D3F0, always<hostrt::export_thunk_0286D3F0>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67C4u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67C4u}},
+        {"thunk_0286D400", f_0286D400, always<hostrt::export_thunk_0286D400>, [](Cpu& c, std::mt19937_64& r, uint32_t) { st32(0x104B67D8u, kFakeBase + ((uint32_t)r() & 0xFFFC)); }, TAIL, {0x104B67D8u}},
         {"register_global", f_028F026C, always<hostrt::register_global_object_028F026C>,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              const uint32_t rec = s + 0x100 + ((uint32_t)r() & 0xFF0);
@@ -274,7 +343,10 @@ int main(int argc, char** argv) {
                     for (size_t g = 0; g < rt.globals.size() && why.empty(); g++)
                         if (g_b[g] != g_a[g]) why = "global";
                     if (why.empty() && (((rt.outs & R3) && a.r[3] != b.r[3]) || ((rt.outs & R4) && a.r[4] != b.r[4]))) why = "result";
-                    if (why.empty() && !kept(e, b, rt.outs)) why = "registers kept";
+                    if (why.empty() && (rt.outs & TAIL) && (memcmp(a.r, b.r, sizeof a.r) || memcmp(a.f, b.f, sizeof a.f) ||
+                                                             memcmp(a.cr, b.cr, sizeof a.cr) || a.ctr != b.ctr || a.lr != b.lr))
+                        why = "registers (tail call)";
+                    if (why.empty() && !(rt.outs & TAIL) && !kept(e, b, rt.outs)) why = "registers kept";
                     if (!why.empty() && why.rfind("call ", 0) == 0 && fails[k] < 3) {
                         const size_t j = std::stoul(why.substr(5));
                         for (const Call* q : {&la[j], &lb[j]}) {

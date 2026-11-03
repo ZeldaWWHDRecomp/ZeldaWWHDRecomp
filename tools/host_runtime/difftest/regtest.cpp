@@ -37,6 +37,8 @@ void f_028F543C(Cpu*);
 void f_028F597C(Cpu*);
 void f_028F5680(Cpu*);
 void f_028F5678(Cpu*);
+void f_0286CBC4(Cpu*);
+void f_0286D5F0(Cpu*);
 }
 
 namespace {
@@ -76,6 +78,8 @@ std::vector<Root> roots() {
              c.r[3] = (uint32_t)(a >> 32), c.r[4] = (uint32_t)a, c.r[5] = (uint32_t)(b >> 32), c.r[6] = (uint32_t)b;
          }, R3 | R4},
         {"cvt_f_s64", f_028F5680, hostrt::cvt_f_s64_028F5680, [](Cpu& c, std::mt19937_64& r, uint64_t i) { f1_single(c, r, i, true); }, R3 | R4, true},
+        {"work_size", f_0286CBC4, hostrt::work_size_0286CBC4, [](Cpu&, std::mt19937_64&, uint64_t) {}, R3},
+        {"empty", f_0286D5F0, hostrt::empty_0286D5F0, [](Cpu&, std::mt19937_64&, uint64_t) {}, 0},
         {"cvt_f_u64", f_028F5678, hostrt::cvt_f_u64_028F5678, [](Cpu& c, std::mt19937_64& r, uint64_t i) { f1_single(c, r, i, true); }, R3 | R4, true},
     };
 }
