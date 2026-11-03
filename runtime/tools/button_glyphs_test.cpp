@@ -67,6 +67,7 @@ constexpr uint32_t base = 0x15000000, writer = base, list = base + 0x100, pictur
 constexpr uint32_t first_quad = list + 0xA4;
 constexpr uint32_t kArena = 0x1000000;  // synthetic guest memory, including the expanded composed atlas
 constexpr std::array<uint32_t, 2> authored = {0xFFFFFFFF, 0xB0804042};
+constexpr std::array<uint32_t, 2> shoulder_word_ink = {0x3B91E5FF,0x174B8042};
 constexpr std::array<uint32_t, 4> corners = {0xFFFFFFFF, 0x80A0C042, 0x00000000, 0xFFFFFF80};
 uint32_t printed_character;
 uint32_t allocated_bytes=0;
@@ -1416,17 +1417,23 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         const bool cstick = button_glyphs::marked_cstick(ld8(quad + 0x2F));
         const bool start = button_glyphs::marked_start(ld8(quad + 0x2F));
         for (uint32_t j = 0; j < 2; j++) {
-            uint32_t want = expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face]) : authored[j];
+            uint32_t want = expected_action>=4 ? shoulder_word_ink[j] :
+                expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face]) : authored[j];
             if (expected_action >= 0) {
                 const auto look = input_map::prompt_style(input_map::current(), input_map::pad_family());
-                if (look.text_colours) {
-                    const int button = expected_buttons[expected_action];
-                    const uint32_t rgb = look.face == input_map::FaceStyle::kXbox ? button_glyphs::colour(button)
-                                          : look.face == input_map::FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
-                                          : button_glyphs::kShapeColours[button];
-                    want = authored[j] & 255;
-                    for (int shift = 24; shift > 0; shift -= 8)
-                        want |= (((authored[j] >> shift) & 255) * ((rgb >> shift) & 255) / 255) << shift;
+                if (look.text_colours && (expected_action<4 || (look.face==input_map::FaceStyle::kGameCube &&
+                    look.shoulders==input_map::ShoulderStyle::kGameCube))) {
+                    const bool shoulder=expected_action>=4;
+                    const int button=shoulder ? expected_action-4 : expected_buttons[expected_action];
+                    const uint32_t rgb=shoulder ? (button==1?0x6754C8FF:0xE5E5E5FF)
+                        : look.face == input_map::FaceStyle::kXbox ? button_glyphs::colour(button)
+                        : look.face == input_map::FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
+                        : button_glyphs::kShapeColours[button];
+                    const uint32_t ink=shoulder ? shoulder_word_ink[j] : authored[j];
+                    want=ink&255;
+                    const uint32_t shade=std::max({(ink>>24)&255,(ink>>16)&255,(ink>>8)&255});
+                    for (int shift=24;shift>0;shift-=8)
+                        want|=((shoulder?shade:(ink>>shift)&255)*((rgb>>shift)&255)/255)<<shift;
                 }
             }
             // coloured shapes carry their own colour (white vertices); plain ones keep the letter's
@@ -1627,6 +1634,21 @@ void gamecube_hud_plate_test() {
     button_glyphs::draw_pane(&tree,draw_tree);
     assert(at("T_Y_00")>at("P_ItemY_00"));
     assert(std::count(drawn_panes.begin(),drawn_panes.end(),"T_Y_00")==1);
+    // Defend follows GC's grey R rather than multiplying grey into the old blue ink.
+    for (auto prompts : {input_map::Mapping::Prompts::kGameCube,input_map::Mapping::Prompts::kOriginal})
+      for (bool colours : {false,true}) {
+        auto mapping=input_map::Mapping::defaults();mapping.prompts=prompts;mapping.prompt_text_colours=colours;
+        input_map::set_current(mapping,false);expect_current();
+        pane(picture,"P_ZR_00",0,0);pane(text_box,"T_CommandZR_00",0,0);
+        st32(text_box+0x0C,picture);st32(text_box+0xFC,list);st32(writer+0x2C,list);
+        st16(list+4,0);st8(list+6,0);print('D');
+        for (int j=0;j<2;++j)st32(first_quad+0x10+j*4,shoulder_word_ink[j]);
+        expected_action=7;Cpu word{};word.r[3]=text_box;
+        button_glyphs::draw_text_box(&word,[](Cpu*) { draw(); });expected_action=-1;
+        const bool tinted=prompts==input_map::Mapping::Prompts::kGameCube && colours;
+        assert(drawn_ink==(tinted?0xCDCDCDFF:shoulder_word_ink[0]));
+        for (int j=0;j<2;++j)assert(ld32(first_quad+0x10+j*4)==shoulder_word_ink[j]);
+      }
     st32(text_box+0x0C,0);std::memset(mem::ptr(text_box+0x80),0,24);
     layout(input_map::FaceLayout::kPosition);
 }

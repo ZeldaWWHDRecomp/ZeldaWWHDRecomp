@@ -24,7 +24,8 @@ menu's OK and Back prompts stay close together to fit its Wii U layout, and the 
 its existing layout.
 
 **Coloured face buttons** controls the button pictures. **Coloured face button text** controls
-the colours of action words such as “Roll” and “Attack.” Turn the text option off to keep the
+the colours of action words such as “Roll” and “Attack,” including GameCube shoulder actions
+such as “Defend.” Turn the text option off to keep the
 game's usual word colours. Original prompts always keep the game's usual colours.
 
 **Shoulder names** can follow the prompt style automatically or use Nintendo, numbered or Xbox

@@ -593,6 +593,17 @@ bool command_word(uint32_t box) {
     return name == "T_CommandA_00" || name == "T_CommandB_00" || name == "T_CommandX_00" || name == "T_CommandY_00";
 }
 
+int shoulder_action(uint32_t box) {
+    constexpr std::string_view words[]={"T_CommandL_00","T_CommandR_00","T_CommandZL_00","T_CommandZR_00"};
+    constexpr std::string_view plates[]={"P_L_00","P_R_00","P_ZL_00","P_ZR_00"};
+    const auto name=pane_name(box);
+    if (!name.starts_with("T_Command")) return -1;
+    const uint32_t parent=ld32(box+0x0C);
+    for (int i=0;parent && i<4;++i)
+        if (name==words[i] && pane_name(parent)==plates[i]) return i;
+    return -1;
+}
+
 bool command_cluster(uint32_t pane) {
     if (pane_name(pane)!="N_All_00") return false;
     for (const char* group : {"W_SetSeatA_00","P_B_00","N_X_00","N_Y_00"})
@@ -637,7 +648,7 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
         return;
     }
     if (deferring_cluster) {
-        if ((command_word(pane) || ((style().face == FaceStyle::kKeyboard || style().face == FaceStyle::kGameCube) &&
+        if ((command_word(pane) || (style().face == FaceStyle::kGameCube && shoulder_action(pane)>=0) || ((style().face == FaceStyle::kKeyboard || style().face == FaceStyle::kGameCube) &&
              (face_box(pane)>=0 || shoulder_box(pane)>=0))) && inside(pane, deferring_cluster)) {
             deferred_words.emplace_back(pane, draw);
             return;
@@ -750,6 +761,7 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
     for (int i = 0; i < 4; ++i)
         if (name == commands[i] && parent && (button_glyphs::face_picture(pane_name(parent)) == i || child_named(parent, pictures[i])))
             hud_action = i;
+    if (const int shoulder=shoulder_action(hud_box); shoulder>=0) hud_action=4+shoulder;
     prepare_text_box(hud_box, c);
     // HUD letters can be emitted through the font's direct glyph path, bypassing Print.
     // Supply the mapped letter to that rebuild too, then restore the authored Wii U text.
@@ -978,16 +990,20 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         const bool start = button_glyphs::marked_start(ld8(quad + 0x2F));
         // Action words take their button's prompt colour, independently of icon colours; with
         // text colours off they keep the game's own.
-        if (hud_action >= 0 && look.text_colours) {
-            const int button = look.buttons[hud_action];
-            const uint32_t rgb = look.face == FaceStyle::kPlayStation ? button_glyphs::kShapeColours[button]
+        if (hud_action >= 0 && look.text_colours &&
+            (hud_action < 4 || (look.face == FaceStyle::kGameCube && look.shoulders == ShoulderStyle::kGameCube))) {
+            const bool gc_shoulder_word = hud_action >= 4;
+            const int button = gc_shoulder_word ? hud_action-4 : look.buttons[hud_action];
+            const uint32_t rgb = gc_shoulder_word ? (button==1 ? 0x6754C8FF : 0xE5E5E5FF)
+                              : look.face == FaceStyle::kPlayStation ? button_glyphs::kShapeColours[button]
                               : look.face == FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
                               : button_glyphs::colour(button);
             for (uint32_t offset : {0x10u, 0x14u})
-                shared_patch::hold(saved, quad + offset, 4, [rgb](uint32_t ink) {
+                shared_patch::hold(saved, quad + offset, 4, [rgb,gc_shoulder_word](uint32_t ink) {
                     uint32_t tinted = ink & 255;
+                    const uint32_t shade=std::max({(ink>>24)&255,(ink>>16)&255,(ink>>8)&255});
                     for (int shift = 24; shift > 0; shift -= 8)
-                        tinted |= (((ink >> shift) & 255) * ((rgb >> shift) & 255) / 255) << shift;
+                        tinted |= ((gc_shoulder_word ? shade : ((ink >> shift) & 255)) * ((rgb >> shift) & 255) / 255) << shift;
                     return tinted;
                 });
         }
