@@ -165,8 +165,11 @@ jobs:
         if: needs.version.outputs.devel == 'true'
         run: |
           git submodule update --init decomp
+          # the decomp build's own placeholder: its hooks (decomp-only lists) and decomp tables
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
           cmake -S . -B build/rel-decomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub-decomp" \
             -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
             -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
             -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib" \

@@ -24,8 +24,9 @@ root = os.path.normpath(os.path.join(here, "..", ".."))
 def hook_lists(decomp=False):
     hooks, sites = set(), set()
     files = [os.path.join(here, "hooks.txt")] + sorted(glob.glob(os.path.join(glob.escape(here), "hooks_*.txt")))
-    if decomp:  # the decomp build's own runtime replacements (builds.decomp_only_hook_files)
+    if decomp:  # the decomp build's own runtime replacements, as recomp.py --decomp-hooks reads them
         files += sorted(glob.glob(os.path.join(glob.escape(here), "decomp_only_hooks_*.txt")))
+        files.append(os.path.join(here, "decomp_hostrt_hooks.txt"))  # the guest runtime's host replacements
     for hp in files:
         for line in open(hp):
             line = line.split("#")[0].strip()
@@ -93,6 +94,8 @@ def main(outdir, decomp_hooks=None):
         f.write("const uint32_t g_recomp_entry_point = 0u; /* placeholder: matches no RPX */\n")
         if decomp_hooks:
             f.write("const uint32_t g_recomp_decomp_kept[] = {0u};\nconst unsigned g_recomp_decomp_kept_count = 0;\n")
+            f.write("const uint32_t g_recomp_decomp_import_calls[][2] = {{0u, 0u}};\n"
+                    "const unsigned g_recomp_decomp_import_call_count = 0;\n")
         # Hooks off: like recomp.py without --mod-hooks, emit no registration.
         # The runtime owns the hook count, flag pointer and body pointer.
     with open(os.path.join(outdir, "imports.c"), "w") as f:
