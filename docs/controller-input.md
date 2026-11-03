@@ -219,6 +219,32 @@ manual bindings are preserved because that preset may be intentional or shared
 with another controller. A connected Nintendo pad with that exact manual pattern
 logs a reminder. Other custom bindings are kept.
 
+## Generic HID gamepads on macOS
+
+The macOS app also reads the recognised Steam Input virtual HID device through IOKit, which
+GameController.framework does not surface. Unknown physical joysticks, flight sticks and
+DirectInput pads are ignored because their axes and buttons need a device-specific mapping. That is what lets a Steam Controller work:
+launched from Steam, Steam Input presents it as a virtual pad ("GamePad-1", with the
+Xbox 360 vendor/product IDs 045E:028E) that GameController ignores.
+
+- Launch from Steam so Steam Input keeps translating the controller. The IOKit fallback
+  requires a software device with the IDs 045E:028E named "GamePad-<n>" (or
+  "Microsoft GamePad-<n>"), so a second virtual pad or one renumbered after a reconnect
+  also works; other HID devices are ignored. Each ignored device gets one `[input]` log
+  line with its name, manufacturer, vendor/product IDs, whether it is virtual, and why.
+- It maps as the standard Xbox layout with Xbox labels, so **Automatic** resolves to
+  **By label (Xbox)**; Controls remap, dead zone and range, and camera invert apply.
+- Pads GameController handles are excluded using its `supportsHIDDevice` query, as are
+  synthetic GameController devices. Steam's virtual pad is recognised before that query,
+  because GameController claims its Xbox 360 IDs without ever surfacing the pad. This avoids duplicate input and incorrect generic
+  button numbering on supported physical pads.
+- With one Steam Controller and one recognised Steam virtual pad, the virtual source takes
+  over after reporting input. Other GameController pads remain usable. Ambiguous multiple-pad
+  setups retain their physical sources rather than guessing a pairing. Disconnecting the
+  virtual pad restores physical input; a newly connected virtual pad starts inactive.
+- GameController remains available for motion and haptics. A generic HID pad itself supplies
+  neither. Controller details shows its HID type and vendor/product IDs.
+
 ## Input diagnostics
 
 For a reproducible controller report, these optional environment variables log

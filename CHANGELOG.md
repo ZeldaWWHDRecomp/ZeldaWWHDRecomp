@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed on macOS: Steam Controllers launched through Steam** (#348, fixes #342, thanks @davidsgullick for the change
+  and @jamesmendel for testing every step on real hardware). The macOS app now reads Steam Input's virtual pad, which
+  GameController never shows, so a Steam Controller started from Steam works, appears once in Controller details and
+  is found again after a reconnect. Other joysticks and generic devices stay ignored, and each ignored device gets one
+  `[input]` log line. Not yet tested: a DualSense or Xbox pad with Steam Input turned on for it.
 - **Improved: GameCube button prompts in the HUD** (#374, for #355). With GameCube prompts, the HUD now draws complete
   GameCube buttons instead of small letters inside the Wii U plates: full A and B discs, grey and purple shoulder
   plates, and the Y prompt stays readable in front of large item pictures such as the telescope. With **Coloured face
