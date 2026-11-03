@@ -33,6 +33,8 @@ static int test_threads() {
 
 extern "C" {
 void f_028EFFD0(Cpu*);
+void f_028EA09C(Cpu*);
+void f_028F0294(Cpu*);
 void f_028EFF8C(Cpu*);
 void f_028F0020(Cpu*);
 void f_0286CA30(Cpu*);
@@ -308,6 +310,7 @@ void array_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
     c.r[5] = sizes[r() % 6];
     c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
     c.r[7] = (r() & 1) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+    st32(0x101FCD08u, (r() % 8) ? 8 : (uint32_t)(r() % 4) * 8);  // the header size (not 8: handed back)
 }
 
 // a number string (white space, sign, prefix, digits of random bases, trailing junk), endptr, base
@@ -362,10 +365,27 @@ std::vector<Root> roots() {
              c.r[4] = (r() & 15) ? (uint32_t)(r() % 7) : (uint32_t)(r() % 60);
              c.r[5] = sizes[r() % 6];
              c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+             st32(0x101FCD08u, (r() % 8) ? 8 : (uint32_t)(r() % 4) * 8);  // the header size (not 8: handed back)
+         },
+         R3 | R4, {0x101FCD08u}},
+        {"vec_new", f_028EFF8C, hostrt::vec_new_028EFF8C, array_args, R3 | R4, {0x101FCD08u}},
+        {"vec_new_zero", f_028F0020, hostrt::vec_new_zero_028F0020, array_args, R3 | R4, {0x101FCD08u}},
+        {"construct_array_arg", f_028F0294, always<hostrt::construct_array_arg_028F0294>,
+         [](Cpu& c, std::mt19937_64& r, uint32_t s) {
+             array_args(c, r, s);
+             if (!c.r[3]) c.r[3] = s + 0x108;
+             c.r[7] = s + 0x2000 + ((uint32_t)r() & 0xFF8);
          },
          R3 | R4},
-        {"vec_new", f_028EFF8C, hostrt::vec_new_028EFF8C, array_args, R3 | R4},
-        {"vec_new_zero", f_028F0020, hostrt::vec_new_zero_028F0020, array_args, R3 | R4},
+        {"static_init", f_028EA09C, always<hostrt::static_init_028EA09C>,
+         [](Cpu& c, std::mt19937_64& r, uint32_t) {
+             const uint32_t n = (uint32_t)(r() % 12);
+             for (uint32_t i = 0; i < n; i++) st32(0x1018AC20u + 4 * i, kFakeBase + ((uint32_t)r() & 0xFFFC) + 4);
+             st32(0x1018AC20u + 4 * n, 0);
+             st32(0x101FCBB8u, (r() % 4) ? 0 : 1);
+         },
+         R3 | R4, {0x101FCBB8u, 0x1018AC20u, 0x1018AC24u, 0x1018AC28u, 0x1018AC2Cu, 0x1018AC30u, 0x1018AC34u, 0x1018AC38u, 0x1018AC3Cu,
+                   0x1018AC40u, 0x1018AC44u, 0x1018AC48u, 0x1018AC4Cu, 0x1018AC50u}},
         {"destroy_arr", f_028F0164, hostrt::destroy_arr_028F0164,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              static const uint32_t sizes[] = {1, 4, 8, 12, 0x2C, 0x12C};
@@ -377,8 +397,9 @@ std::vector<Root> roots() {
              c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
              c.r[7] = (r() & 1) ? 0 : (uint32_t)(r() % 4);
              c.r[8] = (uint32_t)r();
+             st32(0x101FCD08u, (r() % 8) ? 8 : (uint32_t)(r() % 4) * 8);
          },
-         R3 | R4},
+         R3 | R4, {0x101FCD08u}},
         {"list_insert", f_0286DA70, always<hostrt::list_insert_0286DA70>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 1); }, R3 | R4},
         {"list_erase", f_0286DA9C, always<hostrt::list_erase_0286DA9C>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 2); }, R3 | R4},
         {"list_erase_range", f_0286DACC, always<hostrt::list_erase_range_0286DACC>, [](Cpu& c, std::mt19937_64& r, uint32_t s) { list_args(c, r, s, 3); }, R3 | R4},
@@ -622,7 +643,7 @@ int main(int argc, char** argv) {
                                                              memcmp(a.cr, b.cr, sizeof a.cr) || a.ctr != b.ctr || a.lr != b.lr))
                         why = "registers (tail call)";
                     if (why.empty() && !(rt.outs & TAIL) && !kept(e, b, rt.outs)) why = "registers kept";
-                    if (!why.empty() && why.rfind("call ", 0) == 0 && fails[k] < 3) {
+                    if (!why.empty() && why.rfind("call ", 0) == 0 && isdigit((unsigned char)why[5]) && fails[k] < 3) {
                         const size_t j = std::stoul(why.substr(5));
                         for (const Call* q : {&la[j], &lb[j]}) {
                             printf("    %s %08X sp-%X back sp-%X lr %08X r:", q == &la[j] ? "orig" : "repl", q->addr, q->r[1], q->back, q->lr);

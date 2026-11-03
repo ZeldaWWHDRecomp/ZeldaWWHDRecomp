@@ -57,6 +57,8 @@ namespace hostrt {
 bool construct_array_028EFFD0(Cpu* c);
 bool vec_new_028EFF8C(Cpu* c);
 bool vec_new_zero_028F0020(Cpu* c);
+void construct_array_arg_028F0294(Cpu* c);
+void static_init_028EA09C(Cpu* c);  // runs the static initializers (once)  // (p, n, size, ctor, arg): ctor(p + i*size, arg + i*size)
 void register_global_object_028F026C(Cpu* c);
 // __destroy_arr(p, n, size, dtor, flags, extra): destroys n elements (n == -1: the count from the array's
 // header) in reverse order and, when flags != 0, frees the array

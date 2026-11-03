@@ -32,7 +32,7 @@ inline void restore_registers(Cpu* c, const Cpu& e) {
 
 // Array construction, measured on __construct_array (028EFFD0), __vec_new (028EFF8C) and the zero-filling
 // form (028F0020):
-// - the allocator hook at 1020CD08 is 0 in the game; when it is set, the original runs;
+// - the array header's size is the word at 101FCD08 (8 in the game's data); another value runs the original;
 // - the byte size is n*size, or 1 for an empty array; p == 0 allocates: operator new[] (0273ADAC) with
 //   r3 = the byte size + 8, r4 = n, r5 = size, r6 = 8, r7 = 0,
 //   r8 = ctor, r9 = dtor (0 for __construct_array), r10 = 0, LR = 028EFEB4; a null result is returned
@@ -47,8 +47,8 @@ inline void restore_registers(Cpu* c, const Cpu& e) {
 //   calls); every other register is restored (callers read only r3/r4).
 namespace {
 bool array_new(Cpu* c, uint32_t p, uint32_t n, uint32_t size, uint32_t ctor, uint32_t dtor, bool header, bool zero) {
-    static const uint32_t hook = GD(0x1020CD08u);
-    if (ld32(hook)) return false;
+    static const uint32_t header_size = GD(0x101FCD08u);
+    if (ld32(header_size) != 8) return false;  // the array header's size, 8 in the game's data
     const Cpu entry = *c;
     const uint32_t sp = entry.r[1];
     st32(sp + 4, entry.lr);
@@ -138,6 +138,8 @@ void register_global_object_028F026C(Cpu* c) {
 //   size + 8), r5..r10 as for a further destructor call, LR = 028F014C;
 // - the caller's LR save word gets LR; r3/r4 are what the last call left (unchanged without calls).
 bool destroy_arr_028F0164(Cpu* c) {
+    static const uint32_t header_size = GD(0x101FCD08u);
+    if (ld32(header_size) != 8) return false;  // the array header's size (8 in the game's data)
     const uint32_t p = c->r[3];
     if (!p) {
         st32(c->r[1] + 4, c->lr);
@@ -180,6 +182,57 @@ bool destroy_arr_028F0164(Cpu* c) {
     restore_registers(c, entry);
     c->r[3] = r3, c->r[4] = r4;
     return true;
+}
+
+// __construct_array with an argument array (copy construction), measured: for i = 0 .. n-1 the
+// constructor gets r3 = p + i*size, r4 = arg + i*size, the other argument registers as the previous call
+// left them (the first call: the entry values), SP = entry SP - 0x20 (back chain to the entry SP),
+// LR = 028F02CC, the frame holding r26..r31 from SP+8 (stmw); no constructor: nothing. The caller's LR save word gets LR; r3/r4 as the last call left them.
+void construct_array_arg_028F0294(Cpu* c) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1], p = e.r[3], n = e.r[4], size = e.r[5], ctor = e.r[6], arg = e.r[7];
+    st32(sp + 4, e.lr);
+    if (!ctor) return;
+    st32(sp - 0x20, sp);
+    for (int k = 26; k <= 31; k++) st32(sp - 0x20 + 8 + 4 * (k - 26), e.r[k]);  // its saved registers (stmw)
+    static const uint32_t ret = GC(0x028F02CCu);
+    for (uint32_t i = 0; i < n; i++) {
+        c->r[1] = sp - 0x20;
+        c->r[3] = p + i * size, c->r[4] = arg + i * size;
+        call(c, ctor, ret);
+    }
+    const uint32_t r3 = c->r[3], r4 = c->r[4];
+    restore_registers(c, e);
+    if (n) c->r[3] = r3, c->r[4] = r4;
+}
+
+// The static-initializer walk of the start-up code, measured: when the guard word 101FCBB8 is 0 it is set
+// to 1 and the initializers listed from 1018AC20 (up to a null entry) are called in order with
+// r6 = r9 = 4*i, r8 = r10 = CTR = the initializer, r0 = the table, r7 = 1 before the first, other
+// registers as the previous one left them, SP = entry SP - 0x10, LR = 028EA0F4.
+void static_init_028EA09C(Cpu* c) {
+    const Cpu e = *c;
+    const uint32_t sp = e.r[1];
+    st32(sp + 4, e.lr);
+    static const uint32_t guard = GD(0x101FCBB8u), tbl = GD(0x1018AC20u), ret = GC(0x028EA0F4u);
+    if (ld32(guard)) return;
+    st32(sp - 0x10, sp);
+    st32(sp - 0x10 + 0xC, e.r[31]);  // its saved r31
+    c->r[7] = 1;
+    st32(guard, 1);
+    bool called = false;
+    for (uint32_t i = 0;; i++) {
+        const uint32_t fn = ld32(tbl + 4 * i);
+        c->r[0] = tbl, c->r[6] = 4 * i, c->r[8] = fn, c->r[12] = guard;
+        if (!fn) break;
+        c->r[9] = 4 * i, c->r[10] = fn, c->r[31] = i + 1;
+        c->r[1] = sp - 0x10;
+        call(c, fn, ret);
+        called = true;
+    }
+    const uint32_t r3 = c->r[3], r4 = c->r[4];
+    restore_registers(c, e);
+    if (called) c->r[3] = r3, c->r[4] = r4;
 }
 
 }  // namespace hostrt
