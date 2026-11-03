@@ -93,7 +93,7 @@ void operator_delete(Cpu* c, uint32_t p) { guest_call(c, GC(0x0273AF40), {p}); }
 }  // namespace
 
 void scalable_font_guard_enter(uint32_t addr) {
-    static const uint32_t lo = GC(kModuleStart), hi = GC(kModuleEnd);
+    static const uint32_t lo = GC(0x028B2204), hi = GC(0x028E81E4);
     if (addr - lo < hi - lo) {
         Cpu* c = threads::current();
         fatal("[font] WWHD_FONT_GUARD: the replaced scalable font module ran f_%08X (lr %08X)", addr, c ? c->lr : 0);
@@ -111,7 +111,7 @@ void hook_028B2204(Cpu* c) {
     if (!font) { c->r[3] = 0; return; }
     guest_call(c, GC(0x0286EC28), {font});  // nw::lyt::FontInterface::create
     GuestMem m;
-    construct(m, font, GD(kVtable));
+    construct(m, font, GD(0x101880C0));
     c->r[3] = font;
 }
 
@@ -158,7 +158,7 @@ static void cache_update(Cpu* c) {
     const uint32_t cache = c->r[3];
     // the manager embeds the font at +0x3C and the cache at +0x64
     const uint32_t font = cache - (0x64 - 0x3C);
-    if (cache && m.ld32(font + kVptr) == GD(kVtable) && m.ld32(font + kCache) == cache) {
+    if (cache && m.ld32(font + kVptr) == GD(0x101880C0) && m.ld32(font + kCache) == cache) {
         update(m, font, fb);
         note(fb, font);
     }

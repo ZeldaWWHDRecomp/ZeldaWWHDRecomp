@@ -37,8 +37,8 @@
 namespace scalable_font {
 
 // ---- the original module's address range and entry points (USA build) ----
-constexpr uint32_t kModuleStart = 0x028B2204, kModuleEnd = 0x028E81E4;
-constexpr uint32_t kVtable = 0x101880C0;  // the scalable font's vtable (game rodata)
+// The module spans 028B2204-028E81E4 and the font's vtable is 101880C0 (USA addresses); the hooks translate
+// them for the running build where they use them (GC/GD in scalable_font_hooks.cpp).
 
 // the font object (0x28 bytes); fields as the outside sees them through the slots
 constexpr uint32_t kFontSize = 0x28;
@@ -93,7 +93,7 @@ struct Fallback {
 // ---- the 12 entry points the game calls ----
 // The FontInterface base constructor/destructor stay the layout library's (the hooks call them);
 // these set up and tear down the rest.
-// after the base constructor; vtable = kVtable translated to the running build (GD)
+// after the base constructor; vtable = the font's vtable translated to the running build (GD)
 void construct(Mem& m, uint32_t font, uint32_t vtable);
 void cache_construct(Mem& m, uint32_t cache);
 void cache_arg_defaults(Mem& m, uint32_t arg);
