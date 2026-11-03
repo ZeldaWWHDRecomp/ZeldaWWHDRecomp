@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Match window keeps exact preset ratios** (for #349, thanks @plxjammerplx). A 1280×960 screen now uses
+  exactly 4:3 instead of 1.335, matching the dedicated preset and avoiding a one-row render-target sizing error.
+  The same applies to the other preset-shaped windows.
 - **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
   state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
   respawn loop. Existing states work without conversion; standing and boat states load as before.
