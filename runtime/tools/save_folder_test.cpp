@@ -309,6 +309,26 @@ int main() {
     assert(read(cloud / "user/cking.sav") == vanilla_before);
     release();
 
+    // Empty/new synced roots contain seed data, rather than selecting a sibling
+    // outside the folder the player actually syncs. Non-save contents do too.
+    for (const std::string kind : {"empty", "new", "occupied"}) {
+        const fs::path picked = root / ("seed-cloud-" + kind);
+        if (kind == "empty") fs::create_directories(picked);
+        if (kind == "occupied") write(picked / "photo.jpg", "unrelated cloud file");
+        s = startup(seed_default, seed_config, none.fn(), {}, seed);
+        assert(choose(picked.string()));
+        const fs::path expected = picked / ("Wind Waker HD-" + seed);
+        assert(fs::path(read_choice(choice_file(seed_config))->folder) == expected);
+        assert(view().notice.find("already holds other files") == std::string::npos);
+        assert(view().notice.find(expected.string()) != std::string::npos);
+        s = startup(seed_default, seed_config, none.fn(), {}, seed);
+        assert(!s.quit && s.save_dir == expected);
+        assert(read(expected / "user/cking.sav") == "seed A");
+        assert(!fs::exists(randomizer_paths::sibling(picked, seed)));
+        if (kind == "occupied") assert(read(picked / "photo.jpg") == "unrelated cloud file");
+        release();
+    }
+
     // Vanilla backup restore and cloud-folder copy cannot reach seed siblings.
     const fs::path local = root / "isolation/save";
     const fs::path local_seed = randomizer_paths::sibling(local, seed);

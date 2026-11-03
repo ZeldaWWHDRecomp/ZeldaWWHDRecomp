@@ -783,7 +783,16 @@ inline bool choose(const std::string& folder) {
     if (same_folder(picked, current)) picked = current;  // the same folder, spelled another way
     else if (same_folder(picked, s.default_folder)) picked = s.default_folder;
     fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
-    if (!s.seed_namespace.empty() && !folder.empty() && picked != current && next != s.default_folder) next = randomizer_paths::sibling(next,s.seed_namespace);
+    if (!s.seed_namespace.empty() && !folder.empty() && picked != current && next != s.default_folder) {
+        std::error_code ec;
+        if (fs::is_directory(picked / "user", ec)) {
+            // An actual vanilla save is a target, not a general synced root.
+            next = randomizer_paths::sibling(picked, s.seed_namespace);
+        } else {
+            // Keep a newly selected synced root in the path of the saved data.
+            next = picked / ("Wind Waker HD-" + s.seed_namespace);
+        }
+    }
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
     Choice c;
@@ -791,7 +800,9 @@ inline bool choose(const std::string& folder) {
     if (next != current) c.copy_from = current.string();
     else if (auto old = read_choice(choice_file(s.config_dir))) c.had_save = old->had_save;
     if (!write_choice(choice_file(s.config_dir), c)) return s.notice = "The new save folder could not be remembered.", false;
-    s.notice = next != picked ? "That folder already holds other files, so your save goes in " + next.string() + "." : std::string();
+    if (next == picked) s.notice.clear();
+    else if (!s.seed_namespace.empty()) s.notice = "This seed's save goes in " + next.string() + ".";
+    else s.notice = "That folder already holds other files, so your save goes in " + next.string() + ".";
     return true;
 }
 }  // namespace save_folder

@@ -9,6 +9,10 @@ int main() {
     namespace fs = std::filesystem;
     const std::string seed = "randomizer-" + std::string(64, 'a');
     assert(randomizer::valid_identity());
+    assert(!randomizer_paths::legacy_preflight_required(false, false));
+    assert(!randomizer_paths::legacy_preflight_required(false, true));
+    assert(!randomizer_paths::legacy_preflight_required(true, true));
+    assert(randomizer_paths::legacy_preflight_required(true, false));
     assert(fs::path(randomizer::save_directory("data/save")) == fs::path("data/save-" + seed));
     assert(fs::path(randomizer::save_directory("data/save/")) == fs::path("data/save-" + seed));
     assert(fs::path(randomizer::save_directory("data/save-" + seed)) == fs::path("data/save-" + seed));

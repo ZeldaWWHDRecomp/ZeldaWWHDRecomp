@@ -9,6 +9,11 @@ inline bool seed_name(const std::string& name) {
            name.find_first_not_of("0123456789abcdef", 11) == std::string::npos;
 }
 
+// Vanilla launches must not inspect unrelated experimental folders or permissions.
+inline bool legacy_preflight_required(bool randomized, bool warm_shaders) {
+    return randomized && !warm_shaders;
+}
+
 // Siblings keep every vanilla copy/restore/cloud operation outside seed data.
 inline std::filesystem::path sibling(const std::filesystem::path& root, const std::string& seed) {
     if (seed.empty()) return root;

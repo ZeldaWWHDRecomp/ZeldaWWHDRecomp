@@ -673,7 +673,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (!warm_shaders) {
+    if (randomizer_paths::legacy_preflight_required(randomizer::compiled_seed(), warm_shaders)) {
         std::string why;
         if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
             LOG("[save-folder] %s", why.c_str());
