@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--decomp-ref", default="decomp-readable")
     ap.add_argument("--hooks-dir", default=os.path.join(os.path.dirname(__file__), "..", "recomp"))
     ap.add_argument("--trace", nargs="*", default=[])
+    ap.add_argument("--expect", type=int, help="fail unless exactly this many port-owned functions and no strays")
     a = ap.parse_args()
 
     funcs = sorted(int(x, 16) for x in re.findall(r"\{0x([0-9A-F]{8})u, f_", open(os.path.join(a.gen, "table.c")).read()))
@@ -56,12 +57,25 @@ def main():
         m = re.match(r"^(?:[^:]+:)?/\* (0[23][0-9A-F]{6}) \*/$", l)
         if m:
             done.add(int(m.group(1), 16))
+    # the second marker style (as tools/verify/mkunit.py scans it): VERIFY(0xADDR, fn) after a candidate,
+    # WWHD_FUNC(0xADDR, ...) as the first statement of one
+    src = subprocess.run(["git", "-C", a.decomp, "grep", "-h", "-E", r"^\s*(VERIFY|WWHD_FUNC)\(\s*0x[0-9A-Fa-f]{8}\s*,",
+                          a.decomp_ref, "--", "wwhd_src"], capture_output=True, text=True, check=True).stdout.splitlines()
+    for l in src:
+        m = re.match(r"^(?:[^:]+:)?\s*(?:VERIFY|WWHD_FUNC)\(\s*0x([0-9A-Fa-f]{8})\s*,", l)
+        if m:
+            done.add(int(m.group(1), 16))
     board = set(int(x, 16) for x in re.findall(r"^\| (0[23][0-9A-F]{6}) \|", open(a.board).read(), re.M))
     resid = [f for f in funcs if f not in done and f not in board]
     owned = [f for f in resid if block_of(f)]
     for f in resid:
         if not block_of(f):
             print("note: %08X is neither decompiled nor on the board, outside the port-owned blocks" % f, file=sys.stderr)
+    strays = [f for f in resid if not block_of(f)]
+    print("%d port-owned functions (%s), %d strays" % (len(owned), ", ".join(
+        "%s %d" % (n, sum(1 for f in owned if block_of(f) == n)) for n, _, _ in BLOCKS), len(strays)), file=sys.stderr)
+    if a.expect is not None and (len(owned) != a.expect or strays):
+        sys.exit("inventory: expected %d port-owned functions and no strays" % a.expect)
     for f in funcs:
         if block_of(f) and f not in owned:
             print("note: %08X inside a port-owned block is %s" % (f, "decompiled" if f in done else "on the board"), file=sys.stderr)
