@@ -768,6 +768,19 @@ void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
     const auto look = style();
     const uint32_t text = hud_face >= 0 ? ld32(hud_box + 0xA4) : 0;
     std::vector<Held> held;
+    if (hud_action >= 4 && look.face == FaceStyle::kGameCube &&
+        look.shoulders == ShoulderStyle::kGameCube && look.text_colours) {
+        // TextBox's separate outline pass reads these two RGBA colors (028786A8/B4).
+        // Recoloring only the main glyph leaves Defend's native blue outline intact.
+        const uint32_t rgb=hud_action==5 ? 0x6754C8FF : 0xE5E5E5FF;
+        for (uint32_t offset : {0xE8u,0xECu})
+            shared_patch::hold(held,hud_box+offset,4,[rgb](uint32_t ink) {
+                const uint32_t shade=(((ink>>24)&255)*54+((ink>>16)&255)*183+((ink>>8)&255)*19)>>8;
+                uint32_t out=ink&255;
+                for (int shift=24;shift>0;shift-=8) out|=(shade*((rgb>>shift)&255)/255)<<shift;
+                return out;
+            });
+    }
     if (text && look.face == FaceStyle::kXbox && look.buttons[hud_face] != hud_face)
         shared_patch::hold_value(held, text, 2, "ABXY"[look.buttons[hud_face]]);
     draw(c);
