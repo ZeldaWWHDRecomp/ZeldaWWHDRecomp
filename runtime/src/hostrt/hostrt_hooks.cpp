@@ -121,6 +121,8 @@ HOSTRT_ROOT(028F597C, umod64, R3 | R4)
 HOSTRT_ROOT(028F5680, cvt_f_s64, R3 | R4)
 HOSTRT_ROOT(028F5678, cvt_f_u64, R3 | R4)
 HOSTRT_CALLS_ROOT(028EFFD0, construct_array, R3 | R4)
+HOSTRT_CALLS_ROOT(028EFF8C, vec_new, R3 | R4)
+HOSTRT_CALLS_ROOT(028F0020, vec_new_zero, R3 | R4)
 HOSTRT_CALLS_ROOT(028F0164, destroy_arr, R3 | R4)
 
 // memory-writing roots that never hand back

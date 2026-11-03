@@ -33,6 +33,8 @@ static int test_threads() {
 
 extern "C" {
 void f_028EFFD0(Cpu*);
+void f_028EFF8C(Cpu*);
+void f_028F0020(Cpu*);
 void f_0286CA30(Cpu*);
 void f_0286CA40(Cpu*);
 void f_0286CB2C(Cpu*);
@@ -220,6 +222,16 @@ void varargs_regs(Cpu& c, std::mt19937_64& r, uint32_t s, int first) {
 bool snprintf_wrap(Cpu* c) { return hostrt::snprintf_028F17A8(c); }
 bool sprintf_wrap(Cpu* c) { return hostrt::sprintf_028F186C(c); }
 
+// arguments of the array-new family: p (0: allocate), n, size, ctor, dtor
+void array_args(Cpu& c, std::mt19937_64& r, uint32_t s) {
+    static const uint32_t sizes[] = {1, 4, 8, 12, 0x2C, 0x12C};
+    c.r[3] = (r() & 3) ? s + 0x108 + ((uint32_t)r() & 0xFF8) : 0;
+    c.r[4] = (r() & 15) ? (uint32_t)(r() % 7) : (uint32_t)(r() % 60);
+    c.r[5] = sizes[r() % 6];
+    c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+    c.r[7] = (r() & 1) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
+}
+
 std::vector<Root> roots() {
     return {
         {"construct_array", f_028EFFD0, hostrt::construct_array_028EFFD0,
@@ -231,6 +243,8 @@ std::vector<Root> roots() {
              c.r[6] = (r() & 7) ? kFakeBase + ((uint32_t)r() & 0xFFFC) : 0;
          },
          R3 | R4},
+        {"vec_new", f_028EFF8C, hostrt::vec_new_028EFF8C, array_args, R3 | R4},
+        {"vec_new_zero", f_028F0020, hostrt::vec_new_zero_028F0020, array_args, R3 | R4},
         {"destroy_arr", f_028F0164, hostrt::destroy_arr_028F0164,
          [](Cpu& c, std::mt19937_64& r, uint32_t s) {
              static const uint32_t sizes[] = {1, 4, 8, 12, 0x2C, 0x12C};

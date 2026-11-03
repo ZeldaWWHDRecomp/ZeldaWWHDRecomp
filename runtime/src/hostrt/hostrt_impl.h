@@ -37,9 +37,11 @@ void umod64_028F597C(Cpu* c);     // u64 (r3:r4) % u64 (r5:r6) -> r3:r4
 namespace hostrt {
 
 // ---- C++ runtime (hostrt_cxx.cpp)
-// __construct_array(p, n, size, ctor): returns false when it hands the call back to the original
-// (the allocating form, p == 0); the hook then runs the original instead
+// array construction: __construct_array(p, n, size, ctor), __vec_new(p, n, size, ctor, dtor) and the
+// zero-filling form; false hands the call back to the original (an allocator hook is set)
 bool construct_array_028EFFD0(Cpu* c);
+bool vec_new_028EFF8C(Cpu* c);
+bool vec_new_zero_028F0020(Cpu* c);
 void register_global_object_028F026C(Cpu* c);
 // __destroy_arr(p, n, size, dtor, flags, extra): destroys n elements (n == -1: the count from the array's
 // header) in reverse order and, when flags != 0, frees the array
