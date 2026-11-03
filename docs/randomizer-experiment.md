@@ -25,7 +25,17 @@ the output in place, run setup again for the new seed.
 Each randomized executable uses the full RPX SHA-256 to isolate its saves,
 backups, cloud-folder preferences and save states from other seeds. Settings and
 controls remain shared. Importing a save in setup targets the currently installed
-seed. Copying a save or a state manually between seeds is unsupported.
+seed. Default save folders are siblings, such as `save-randomizer-<hash>/user`
+and `save-backups-randomizer-<hash>/`. Choosing a cloud save folder creates a
+seed-specific sibling of the vanilla save folder. An explicit `--save DIR` uses
+exactly that directory. Save-state slots retain their per-seed subfolder.
+Copying a save or a state manually between seeds is unsupported.
+
+If an earlier experimental build left randomized data inside a vanilla save or
+backup folder, startup stops before restoring or moving saves. Follow the shown
+old and new paths to move that data out of the vanilla folder while the game is
+closed. Never overwrite or merge an existing destination; keep both copies until
+you have verified which one to use. Update any old cloud-folder choice as well.
 
 Two default-option 1.2.0 seeds and one swordless seed pass the automatic compatibility check. Windows,
 other option combinations and a full playthrough still need validation; passing
