@@ -43,6 +43,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1978,20 +1979,33 @@ def write_game_icon(data_dir, ico):
     return path
 
 
+def desktop_exec(path):
+    """path as a quoted argument of a .desktop file's Exec key: the quoting rule escapes " ` $ \\, then the
+    string rule escapes \\ again, and a literal % is %% (not a field code)."""
+    quoted = '"%s"' % re.sub(r'(["`$\\])', r"\\\1", path)
+    return quoted.replace("\\", "\\\\").replace("%", "%%")
+
+
+def desktop_string(value):
+    """value for a string key of a .desktop file (Path, Icon): a backslash is written \\\\."""
+    return value.replace("\\", "\\\\")
+
+
 def linux_launchers(data_dir, exe):
     play = os.path.join(data_dir, "play.sh")
     with open(play, "w") as f:
-        f.write('#!/bin/sh\n# written by the Wind Waker HD setup\ncd "%s" || exit 1\nexec "%s" --game game --save save "$@"\n'
-                % (data_dir, exe))
+        f.write('#!/bin/sh\n# written by the Wind Waker HD setup\ncd %s || exit 1\nexec %s --game game --save save "$@"\n'
+                % (shlex.quote(data_dir), shlex.quote(exe)))
     os.chmod(play, 0o755)
     apps = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
     os.makedirs(apps, exist_ok=True)
     with open(os.path.join(apps, "wwhd.desktop"), "w") as f:
         f.write("[Desktop Entry]\nType=Application\nName=%s\nComment=The Wind Waker HD, native PC port\n"
-                "Exec=\"%s\"\nPath=%s\nTerminal=false\nCategories=Game;\n" % (APP_NAME, play, data_dir))
+                "Exec=%s\nPath=%s\nTerminal=false\nCategories=Game;\n"
+                % (APP_NAME, desktop_exec(play), desktop_string(data_dir)))
         icon = write_game_icon(data_dir, ico=False)
         if icon:
-            f.write("Icon=%s\n" % icon)
+            f.write("Icon=%s\n" % desktop_string(icon))
     return play
 
 
@@ -2087,9 +2101,9 @@ def create_shortcut():
         os.makedirs(apps, exist_ok=True)
         link = os.path.join(apps, "wwhd.desktop")
         with open(link, "w") as f:
-            f.write("[Desktop Entry]\nType=Application\nName=%s\nExec=\"%s\"\nPath=%s\nTerminal=false\nCategories=Game;\n"
+            f.write("[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nPath=%s\nTerminal=false\nCategories=Game;\n"
                     "Actions=setup;\n\n[Desktop Action setup]\nName=Setup (repair, update, change game)\n"
-                    "Exec=\"%s\" --setup\n" % (APP_NAME, target, PKG, target))
+                    "Exec=%s --setup\n" % (APP_NAME, desktop_exec(target), desktop_string(PKG), desktop_exec(target)))
     else:
         link = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", APP_NAME + ".lnk")
         try:

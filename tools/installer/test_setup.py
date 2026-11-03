@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -128,6 +129,46 @@ class BracketsInInstallFolder(unittest.TestCase):
 
             with mock.patch.object(setup, "run_logged", side_effect=run_logged):
                 self.assertEqual(setup.recompile(os.path.join(temporary, "game"), gen_dir), 2)
+
+
+class SpecialCharactersInLauncherFolder(unittest.TestCase):
+    """play.sh and wwhd.desktop name the data folder: a folder such as "Games $1 "HD" `x` 100%" must
+    reach the shell and the menu entry as it is, not expanded, run or read as a field code."""
+    FOLDER = 'Games $1 "HD" `x` \\ 100%'
+
+    @staticmethod
+    def exec_argument(line):
+        """the first argument of an Exec value, decoded as the Desktop Entry spec reads it"""
+        value = re.sub(r"\\(.)", lambda m: "\\" if m[1] == "\\" else "\\" + m[1], line)  # string rule
+        assert value.startswith('"'), value
+        out, i = "", 1
+        while value[i] != '"':
+            if value[i] == "\\":
+                i += 1
+            out += value[i]
+            i += 1
+        return out.replace("%%", "%"), value[i + 1:]
+
+    @unittest.skipUnless(setup.IS_LINUX, "play.sh and the menu entry are the Linux launchers")
+    def test_launchers_keep_the_folder_name(self):
+        with tempfile.TemporaryDirectory() as t:
+            data = os.path.join(t, self.FOLDER)
+            os.makedirs(data)
+            exe = os.path.join(data, "wwhd")
+            with open(exe, "w") as f:
+                f.write('#!/bin/sh\nprintf "%s\\n" "$PWD" "$@" > "$WWHD_TEST_OUT"\n')
+            os.chmod(exe, 0o755)
+            out = os.path.join(t, "out")
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": t}), \
+                    mock.patch.object(setup, "write_game_icon", return_value=None):
+                play = setup.linux_launchers(data, exe)
+            subprocess.run(["sh", play, "--x"], check=True, env=dict(os.environ, WWHD_TEST_OUT=out))
+            with open(out) as f:
+                self.assertEqual(f.read().splitlines(), [data, "--game", "game", "--save", "save", "--x"])
+            with open(os.path.join(t, "applications", "wwhd.desktop")) as f:
+                keys = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+            self.assertEqual(self.exec_argument(keys["Exec"]), (play, ""))
+            self.assertEqual(keys["Path"].replace("\\\\", "\\"), data)
 
 
 class GuestBuildConfig(unittest.TestCase):
