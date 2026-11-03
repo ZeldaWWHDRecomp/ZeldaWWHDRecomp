@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Improved: GameCube button prompts in the HUD** (#374, for #355). With GameCube prompts, the HUD now draws complete
+  GameCube buttons instead of small letters inside the Wii U plates: full A and B discs, grey and purple shoulder
+  plates, and the Y prompt stays readable in front of large item pictures such as the telescope. With **Coloured face
+  button text** on, shoulder actions such as "Defend" take their button's colour. The GameCube action-word font is not
+  reproduced yet. Other prompt styles are unchanged.
 - **Changed: the Controls settings are split into pages** (#371). Settings › Controls now has five tabs: Bindings,
   Controller, Prompts, Camera and Gameplay, instead of one long list. Every setting keeps its value; only its place
   changed (for example Rumble and Gyro are under Controller, the item ring under Gameplay, button prompts under
