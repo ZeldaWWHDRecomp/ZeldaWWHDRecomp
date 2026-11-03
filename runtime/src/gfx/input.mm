@@ -163,8 +163,8 @@ static std::string pad_name(GCController* c);
 // ---- Generic HID gamepads on the AppKit host.
 //
 // GameController.framework only surfaces the pad families Apple supports (MFi, Xbox One/Series,
-// DualShock/DualSense, Switch). Steam Input's virtual pad (a "Microsoft GamePad-1", an Xbox-style
-// HID device) is not among them, so it never reaches the game
+// DualShock/DualSense, Switch). Steam Input's virtual pad (a virtual "GamePad-<n>" with the Xbox 360
+// IDs 045E:028E, an Xbox-style HID device) is not among them, so it never reaches the game
 // (SDL ignores Steam's virtual pad too). It is read here through IOKit and folded into the same
 // per-device pad positions as the GCController pads; a pad GameController supports is skipped (see
 // io_add), so nothing is read twice. The mapping lives in platform/hid_gamepad.h so it is testable.
@@ -224,31 +224,39 @@ static bool io_xbox_labels() {
     for (IokitPad* p : g_io_pads) if (hid_gamepad::xbox_labelled(p->layout)) return true;
     return false;
 }
+static std::string io_string(IOHIDDeviceRef dev, CFStringRef key) {
+    char buf[128] = {0};
+    if (CFTypeRef s = IOHIDDeviceGetProperty(dev, key); s && CFGetTypeID(s) == CFStringGetTypeID())
+        CFStringGetCString((CFStringRef)s, buf, sizeof buf, kCFStringEncodingUTF8);
+    return buf;
+}
 static void io_add(IOHIDDeviceRef dev) {
+    for (const auto* p : g_io_pads) if (p->dev == dev) return;
     int v = 0, pr = 0;
     if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDVendorIDKey))) CFNumberGetValue(n, kCFNumberIntType, &v);
     if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductIDKey))) CFNumberGetValue(n, kCFNumberIntType, &pr);
-    // Supported physical HID devices are not necessarily marked synthetic. Ask the framework
-    // once at discovery, before opening them or publishing them in Controller details.
-    if (IOHIDDeviceGetProperty(dev, CFSTR("GCSyntheticDevice")) == kCFBooleanTrue) {
-        LOG("[input] IOKit HID pad %04X:%04X is a GameController synthetic device; read through GameController", v, pr);
-        return;
-    }
-    if (@available(macOS 11.0, *)) {
-        if ([GCController supportsHIDDevice:dev]) return;
-    } else {
-        // Without the support query, only software pads can safely use this fallback.
-        if (IOHIDDeviceGetProperty(dev, CFSTR("HIDVirtualDevice")) != kCFBooleanTrue) return;
-    }
-    for (const auto* p : g_io_pads) if (p->dev == dev) return;
-    // A virtual HID pad ("HIDVirtualDevice", e.g. Steam Input's) can duplicate a pad GameController
-    // also surfaces; devices_values prefers it for input.
+    const std::string name = io_string(dev, CFSTR(kIOHIDProductKey));
+    const std::string maker = io_string(dev, CFSTR(kIOHIDManufacturerKey));
+    // A virtual HID pad ("HIDVirtualDevice", e.g. Steam Input's) is a software device.
     const bool virtualPad = IOHIDDeviceGetProperty(dev, CFSTR("HIDVirtualDevice")) == kCFBooleanTrue;
-    char name[128] = {0};
-    if (CFStringRef s = (CFStringRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductKey))) CFStringGetCString(s, name, sizeof name, kCFStringEncodingUTF8);
+    hid_gamepad::DeviceIdentity id;
+    id.virtual_device = virtualPad;
+    id.vendor = (uint16_t)v; id.product = (uint16_t)pr;
+    id.product_name = name;
+    // Supported physical HID devices are not necessarily marked synthetic, so the framework is
+    // asked too. Steam's virtual pad is recognised first (hid_gamepad::admit): GameController
+    // claims its Xbox 360 IDs but never surfaces it. Without the support query (before macOS 11)
+    // only that virtual pad is admitted anyway.
+    id.gc_synthetic = IOHIDDeviceGetProperty(dev, CFSTR("GCSyntheticDevice")) == kCFBooleanTrue;
+    if (@available(macOS 11.0, *)) id.gc_supported = [GCController supportsHIDDevice:dev];
     // A joystick's Z/Rz axes can rest at their midpoint. Reading those as Xbox triggers would
     // press LT/RT at rest. No mapping is inferred for unknown physical or software devices.
-    if (!hid_gamepad::supported_device(virtualPad, name)) return;
+    const hid_gamepad::Admission adm = hid_gamepad::admit(id);
+    if (adm != hid_gamepad::Admission::kSteamVirtual) {
+        LOG("[input] IOKit HID device ignored: \"%s\" (manufacturer \"%s\", vendor %04X product %04X, %s): %s",
+            name.c_str(), maker.c_str(), v, pr, virtualPad ? "virtual" : "physical", hid_gamepad::ignore_reason(adm));
+        return;
+    }
     // The layout comes from the pad's own descriptors: the Steam virtual pad carries its D-pad as
     // buttons 12..15 and no hat switch; a standard pad carries a hat switch.
     bool has_hat = false, has_dpad_buttons = false;
@@ -263,8 +271,8 @@ static void io_add(IOHIDDeviceRef dev) {
         }
         CFRelease(els);
     }
-    if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) {
-        LOG("[input] IOKit HID device open failed");
+    if (const IOReturn o = IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone); o != kIOReturnSuccess) {
+        LOG("[input] IOKit HID device open failed: \"%s\" (vendor %04X product %04X): 0x%X", name.c_str(), v, pr, (unsigned)o);
         return;
     }
     auto* p = new IokitPad();
@@ -273,8 +281,8 @@ static void io_add(IOHIDDeviceRef dev) {
     p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
     p->layout = hid_gamepad::layout_for(has_hat, has_dpad_buttons);
     IOHIDDeviceRegisterInputValueCallback(dev, io_value, p);
-    p->name = name[0] ? name : "HID controller";
-    LOG("[input] IOKit HID controller connected: %s (vendor %04X product %04X, %s layout)", name, v, pr,
+    p->name = name.empty() ? "HID controller" : name;
+    LOG("[input] IOKit HID controller connected: %s (vendor %04X product %04X, %s layout)", name.c_str(), v, pr,
         p->layout == hid_gamepad::Layout::kSteamVirtual ? "Steam virtual" : "standard");
     g_io_pads.push_back(p);
     note_dominant_labels();
@@ -284,10 +292,10 @@ static void io_remove(IOHIDDeviceRef dev) {
         if ((*it)->dev != dev) continue;
         IOHIDDeviceRegisterInputValueCallback(dev, nullptr, nullptr);
         IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
+        LOG("[input] IOKit HID controller disconnected: %s", (*it)->name.c_str());
         CFRelease((*it)->dev);
         delete *it;
         g_io_pads.erase(it);
-        LOG("[input] IOKit HID controller disconnected");
         note_dominant_labels();
         break;
     }

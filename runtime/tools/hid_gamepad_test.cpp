@@ -17,16 +17,69 @@ static int g_fail = 0, g_pass = 0;
     } while (0)
 
 static void test_admission() {
-    using hid_gamepad::supported_device;
-    CHECK(supported_device(true, "Microsoft GamePad-1"));
-    // Physical devices remain excluded even with the same product string or Xbox-like axes.
-    CHECK(!supported_device(false, "Microsoft GamePad-1"));
-    CHECK(!supported_device(false, "Generic USB Joystick"));
-    CHECK(!supported_device(false, "Flight Stick"));
-    CHECK(!supported_device(false, "DirectInput Gamepad"));
-    CHECK(!supported_device(true, "Generic USB Joystick"));
-    CHECK(!supported_device(true, ""));
-    CHECK(!supported_device(true, "Microsoft GamePad-1 extra"));
+    using hid_gamepad::Admission;
+    using hid_gamepad::steam_virtual_pad;
+    // Steam Input's virtual pad as reported on a real 2015 Steam Controller launched from Steam:
+    // virtual, 045E:028E, product "GamePad-1", manufacturer "Microsoft".
+    CHECK(steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-1"));
+    CHECK(steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-2"));   // second pad / after a reconnect
+    CHECK(steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-12"));
+    CHECK(steam_virtual_pad(true, 0x045E, 0x028E, "Microsoft GamePad-1"));
+    CHECK(steam_virtual_pad(true, 0x045E, 0x028E, "Microsoft GamePad-3"));
+    // A physical Xbox 360 pad (or anything else claiming its IDs) is not Steam's virtual pad.
+    CHECK(!steam_virtual_pad(false, 0x045E, 0x028E, "GamePad-1"));
+    CHECK(!steam_virtual_pad(false, 0x045E, 0x028E, "Microsoft GamePad-1"));
+    CHECK(!steam_virtual_pad(false, 0x045E, 0x028E, "Controller"));
+    // Other IDs, or a name that is not "GamePad-<n>".
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x02EA, "GamePad-1"));
+    CHECK(!steam_virtual_pad(true, 0x28DE, 0x028E, "GamePad-1"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, ""));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-0"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-1 extra"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-x"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "GamePad-1234"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "Microsoft GamePad-1 extra"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "Xbox 360 Controller"));
+    CHECK(!steam_virtual_pad(true, 0x045E, 0x028E, "Microsoft Microsoft GamePad-1"));
+
+    hid_gamepad::DeviceIdentity steam;
+    steam.virtual_device = true; steam.vendor = 0x045E; steam.product = 0x028E; steam.product_name = "GamePad-1";
+    CHECK(hid_gamepad::admit(steam) == Admission::kSteamVirtual);
+    CHECK(hid_gamepad::ignore_reason(Admission::kSteamVirtual)[0] == 0);
+    // GameController claims the Xbox 360 IDs (supportsHIDDevice) but never surfaces the virtual
+    // pad: the Steam check comes first, or the pad would be dropped (the bd7a574 regression).
+    steam.gc_supported = true;
+    CHECK(hid_gamepad::admit(steam) == Admission::kSteamVirtual);
+    steam.product_name = "GamePad-2";
+    CHECK(hid_gamepad::admit(steam) == Admission::kSteamVirtual);
+
+    // A physical 045E:028E pad stays with GameController when it supports it, else is ignored.
+    hid_gamepad::DeviceIdentity x360;
+    x360.vendor = 0x045E; x360.product = 0x028E; x360.product_name = "GamePad-1";
+    CHECK(hid_gamepad::admit(x360) == Admission::kUnsupported);
+    x360.gc_supported = true;
+    CHECK(hid_gamepad::admit(x360) == Admission::kGameControllerSupported);
+    // A pad GameController synthesised, or a supported DualSense, stays with GameController.
+    hid_gamepad::DeviceIdentity synth;
+    synth.virtual_device = true; synth.vendor = 0x054C; synth.product = 0x0CE6;
+    synth.product_name = "DualSense Wireless Controller"; synth.gc_synthetic = true;
+    CHECK(hid_gamepad::admit(synth) == Admission::kGameControllerSynthetic);
+    hid_gamepad::DeviceIdentity ds;
+    ds.vendor = 0x054C; ds.product = 0x0CE6; ds.product_name = "DualSense Wireless Controller"; ds.gc_supported = true;
+    CHECK(hid_gamepad::admit(ds) == Admission::kGameControllerSupported);
+    // Unknown joysticks, flight sticks, DirectInput pads, 3D mice and other virtual devices.
+    const char* unknown[] = {"Generic USB Joystick", "Flight Stick", "DirectInput Gamepad", "SpaceMouse Compact", ""};
+    for (const char* n : unknown) {
+        for (bool virt : {false, true}) {
+            hid_gamepad::DeviceIdentity d;
+            d.virtual_device = virt; d.vendor = 0x046D; d.product = 0xC626; d.product_name = n;
+            CHECK(hid_gamepad::admit(d) == Admission::kUnsupported);
+        }
+    }
+    CHECK(hid_gamepad::ignore_reason(Admission::kUnsupported)[0] != 0);
+    CHECK(hid_gamepad::ignore_reason(Admission::kGameControllerSupported)[0] != 0);
+    CHECK(hid_gamepad::ignore_reason(Admission::kGameControllerSynthetic)[0] != 0);
 }
 
 static void test_classify() {

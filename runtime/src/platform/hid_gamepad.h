@@ -11,9 +11,30 @@
 
 namespace hid_gamepad {
 
-// Admission must precede opening or reading a device. Unknown physical and virtual devices
+// What IOKit reports about a matched HID device, as far as admission needs it.
+struct DeviceIdentity {
+    bool virtual_device = false;       // "HIDVirtualDevice": a software device (Steam Input's pad)
+    uint16_t vendor = 0, product = 0;  // kIOHIDVendorIDKey / kIOHIDProductIDKey
+    std::string_view product_name;     // kIOHIDProductKey
+    bool gc_synthetic = false;         // "GCSyntheticDevice": made by GameController.framework
+    bool gc_supported = false;         // +[GCController supportsHIDDevice:] (macOS 11+)
+};
+
+// Steam Input's virtual pad as it identifies itself: a virtual device with the Xbox 360 wired IDs
+// (045E:028E) named "GamePad-<n>" (n = 1, 2, ... per virtual pad, renumbered on reconnect);
+// "Microsoft GamePad-<n>" is accepted too. The manufacturer string ("Microsoft") is not required.
+bool steam_virtual_pad(bool virtual_device, uint16_t vendor, uint16_t product, std::string_view product_name);
+
+// Whether the IOKit reader opens a device, and if not, why. Admission must precede opening or
+// reading a device. Steam's virtual pad is admitted before the GameController exclusions:
+// GameController claims its Xbox 360 IDs (supportsHIDDevice) but never surfaces it as a
+// GCController. Everything else GameController supports or synthesised stays with
+// GameController, and unknown physical and virtual devices (joysticks, flight sticks, 3D mice)
 // cannot safely use this fixed Xbox mapping, even if their axes/buttons look similar.
-bool supported_device(bool virtual_device, std::string_view product_name);
+enum class Admission : uint8_t { kSteamVirtual, kGameControllerSynthetic, kGameControllerSupported, kUnsupported };
+Admission admit(const DeviceIdentity& d);
+// The reason logged when a device is ignored (empty for kSteamVirtual).
+const char* ignore_reason(Admission a);
 
 // What one HID element feeds. Stick axes are signed (centred at 0), the triggers are 0..1, and a
 // hat switch is the D-pad.
