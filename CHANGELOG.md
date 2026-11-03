@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Match window keeps exact preset ratios** (#372, for #349, thanks @plxjammerplx for the report). A window or
+  screen shaped exactly like a preset (for example 1280×960) now uses that preset's exact ratio instead of a rounded
+  one (1.335 instead of 4:3), so the picture matches the dedicated 4:3, 16:10, 21:9 and 32:9 presets. The 4:3
+  clipping reported on Android in #349 is still being investigated.
 - **Decomp build (experimental): host versions of the game's runtime library** (#373). In the `-DWWHD_DECOMP=ON`
   build, 63 functions of the game's compiler runtime and nn wrappers (exact math helpers, array construction, string
   and printf functions, list helpers and others) now run as host code, each matched to the original by measurement.
