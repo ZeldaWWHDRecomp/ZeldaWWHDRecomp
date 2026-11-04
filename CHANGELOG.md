@@ -9,6 +9,10 @@ what is on `devel` and not released yet (also in the
 
 - **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
   the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
+- **Randomizer: more seeds accepted** (#390, fixes #383, thanks @KaitoCrisHub for the report). Seeds from TWWHD
+  Randomizer 1.2.0 with Quiet Swift Sail or any entrance shuffle were refused by setup's compatibility check; both are
+  now reviewed and accepted. Every option of 1.2.0 that patches game code has been checked, and five seeds (including
+  everything-on) were booted into the game. Seeds from 1.1.1 and older are still refused.
 - **For mod authors: native actors from C mods** (#375). A C mod can now register its own native actors (profile,
   callbacks and name) in the game's shared actor table with `wwhd_native_actor_profile_register`, from a hook on the
   game's main loop entry before the first actor is created. Retail and port IDs, duplicate names and foreign callbacks
