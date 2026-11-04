@@ -5,7 +5,7 @@
  * R3/R4 return is outside the scalar SDK ABI. Retain the real constructor and
  * its returned pointer, then capture all halfwords before caller writes.
  * The expanded Add entry observer is not reproduced; constructor observers are.
- * All matrices/vectors are copied by raw words to preserve NaN/alias behavior. */
+ * Vector copies preserve object bytes, including NaN payloads and signed zero. */
 #pragma once
 #define RMT8(a,o) (*(volatile u8*)((a)+(o)))
 #define RMTS8(a,o) (*(volatile s8*)((a)+(o)))
@@ -109,7 +109,8 @@ static f32 rmt_reg_f(unsigned int group,unsigned int index){return RMTF(rmt_stat
 static s16 rmt_reg_s(unsigned int group,unsigned int index){return RMT16(rmt_static(0x1047B688),0x90*group+2*index);}
 static s32 rmt_abs(s16 value){return value<0?-(s32)value:value;}
 static unsigned int rmt_truncate(f64 value){if(value!=value)return 0x80000000u;if(value>=2147483648.0)return 0x7FFFFFFFu;if(value<=-2147483648.0)return 0x80000000u;return(unsigned int)(s32)value;}
-static void rmt_copy_vector(u32 destination,u32 source){unsigned int x=RMT32(source,0),y=RMT32(source,4),z=RMT32(source,8);RMT32(destination,0)=x;RMT32(destination,4)=y;RMT32(destination,8)=z;}
+/* Character accesses preserve float bits and may alias typed local vectors. */
+static void rmt_copy_vector(u32 destination,u32 source){for(u32 i=0;i<12;i++)RMT8(destination,i)=RMT8(source,i);}
 static void rmt_copy_model(u32 model,u32 matrix){unsigned int words[12];for(unsigned int i=0;i<12;i++)words[i]=RMT32(matrix,i*4);for(unsigned int i=0;i<12;i++)RMT32(model,0xC8+i*4)=words[i];}
 static void rmt_line_init(u32 line,s32 object){rmt_line_construct(line);for(unsigned int i=0;i<7;i++)RMT8(line,0x5C+i)=0;if(object)RMT8(line,0x5C)=1;RMT32(line,0x68)=1;RMT32(line,4)=(unsigned int)(line+0x64);RMT32(line,0)=(unsigned int)(line+0x58);RMT32(line,0x10)=object?0x1001560C:0x100155CC;RMT32(line,0x64)=object?0x1001562C:0x100155EC;RMT32(line,0x58)=object?0x1001563C:0x100155FC;RMT32(line,0x20)=object?0x1001561C:0x100155DC;}
 static void rmt_line_finish(u32 line){RMT32(line,0x58)=0x100155FC;RMT32(line,0x64)=0x100154CC;RMT32(line,0x20)=0x100154BC;rmt_line_destroy(line,0);}

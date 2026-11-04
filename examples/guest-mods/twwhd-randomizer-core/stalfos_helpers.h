@@ -70,7 +70,8 @@ static u32 rst_matrix(void){return WWHD_GAME_DATA(0x1018C7B0,u32);}
 static f32 rst_reg_f(unsigned int group,unsigned int index){return RSTF((u32)&WWHD_GAME_DATA(0x1047B610,u8),0x90*group+4*index);}
 static s16 rst_reg_s(unsigned int group,unsigned int index){return RST16((u32)&WWHD_GAME_DATA(0x1047B688,u8),0x90*group+2*index);}
 static unsigned int rst_truncate(f64 value){if(value!=value)return 0x80000000u;if(value>=2147483648.0)return 0x7FFFFFFFu;if(value<=-2147483648.0)return 0x80000000u;return(unsigned int)(s32)value;}
-static void rst_copy_vector(u32 destination,u32 source){unsigned int x=RST32(source,0),y=RST32(source,4),z=RST32(source,8);RST32(destination,0)=x;RST32(destination,4)=y;RST32(destination,8)=z;}
+/* Character accesses preserve float bits and may alias typed local vectors. */
+static void rst_copy_vector(u32 destination,u32 source){for(u32 i=0;i<12;i++)RST8(destination,i)=RST8(source,i);}
 static u32 rst_find(u32 id){unsigned int value=(unsigned int)id;return value==0xFFFFFFFFu?0:rst_judge(0x025E1234,(u32)&value);}
 static void rst_copy_model(u32 model,u32 matrix){unsigned int words[12];for(unsigned int i=0;i<12;i++)words[i]=RST32(matrix,i*4);for(unsigned int i=0;i<12;i++)RST32(model,0xC8+i*4)=words[i];}
 static void rst_joint(u32 actor,s32 joint){u32 model=RSTPTR(RSTPTR(actor,0x3D8),0x90),data=RSTPTR(model,0x2C);const u16 flags=RSTU16(data,4);const u32 matrices=RSTPTR(data,0x10);RSTU16(data,4)=flags|0x10;rst_matrix_copy(matrices+(unsigned int)joint*0x30,rst_matrix());}

@@ -73,7 +73,8 @@ static f32 pgm_fma(f32 a,f32 b,f32 c){
 static s32 pgm_stopped(u32 actor){const u32 morf=R_PGM(u32,actor+0x3DC);return(R_PGM(u8,morf+0xA7)&1)||R_PGM(f32,morf+0x98)==0.0f;}
 static void pgm_voice(u32 actor,u32 id){if(actor+0x37C){const s32 room=R_PGM(s8,actor+0x326);const u32 process=actor?R_PGM(u32,actor+4):0xFFFFFFFFu;pgm_monster_sound(id,actor+0x37C,process,0,pgm_reverb(room));}}
 static void pgm_effect_sound(u32 actor,u32 id,u32 volume){if(actor&&actor+0x37C)pgm_sound(id,actor+0x37C,volume,pgm_reverb(R_PGM(s8,actor+0x326)));}
-static void pgm_copy_vector(u32 to,u32 from){for(u32 i=0;i<3;i++)R_PGM(u32,to+4*i)=R_PGM(u32,from+4*i);}
+/* Character accesses preserve float bits and may alias typed local vectors. */
+static void pgm_copy_vector(u32 to,u32 from){for(u32 i=0;i<12;i++)R_PGM(u8,to+i)=R_PGM(u8,from+i);}
 static void pgm_line_init(unsigned int* line){
  pgm_line_construct((u32)line);u8* bytes=(u8*)line;for(u32 i=0;i<7;i++)bytes[0x5C+i]=0;
  line[0x68/4]=1;line[1]=(unsigned int)((u32)line+0x64);line[0]=(unsigned int)((u32)line+0x58);

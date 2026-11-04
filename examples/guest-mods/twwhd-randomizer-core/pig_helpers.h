@@ -79,7 +79,8 @@ WWHD_GAME_FUNC(0x02018C8C,void,rp_sphere_radius,(u32 sphere,f32 radius));
 WWHD_GAME_FUNC(0x025E535C,s32,rp_morf_play,(u32 morf,u32 position,u32 material,s8 reverb));
 WWHD_GAME_FUNC(0x025200D4,u32,rp_play,(void));
 WWHD_GAME_FUNC(0x02008B4C,void,rp_line_poly_dtor,(u32 line,s32 flags));
-static void rp_copy_vector(u32 out,u32 in){const unsigned int x=RP_U32(in,0),y=RP_U32(in,4),z=RP_U32(in,8);RP_U32(out,0)=x;RP_U32(out,4)=y;RP_U32(out,8)=z;}
+/* Character accesses preserve float bits and may alias typed local vectors. */
+static void rp_copy_vector(u32 out,u32 in){for(u32 i=0;i<12;i++)RP_U8(out,i)=RP_U8(in,i);}
 static void rp_set_vector(volatile rp_vector* out,f32 x,f32 y,f32 z){out->x=x;out->y=y;out->z=z;}
 static unsigned int rp_truncate(f32 value){if(value!=value)return 0x80000000u;if(value>=2147483648.0f)return 0x7FFFFFFFu;if(value<=-2147483648.0f)return 0x80000000u;return (unsigned int)(s32)value;}
 #ifndef RP_FMA
