@@ -14,6 +14,7 @@ class VectorCopyAliasing(unittest.TestCase):
             ("stalfos_helpers.h", "rst_copy_vector"),
             ("pig_helpers.h", "rp_copy_vector"),
             ("phantom_maze.h", "pgm_copy_vector"),
+            ("arrow_move.h", "ram_copy"),
         )
         prefix = r'''
 #include <stdint.h>
@@ -31,6 +32,7 @@ typedef float f32;
 #define COPY_TYPE_u32 unsigned int
 #define COPY_TYPE_u8 u8
 #define R_PGM(t,a) (*(volatile COPY_TYPE_##t*)(a))
+#define R_ARROW(t,a) (*(volatile COPY_TYPE_##t*)(a))
 '''
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
@@ -73,6 +75,7 @@ int main(void) {
                         "-Wall", "-Wextra", "-Werror", str(path), "-o", str(executable),
                     ], check=True)
                     subprocess.run([str(executable)], check=True)
+
 
 
 if __name__ == "__main__":

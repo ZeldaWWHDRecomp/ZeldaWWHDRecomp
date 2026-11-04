@@ -61,8 +61,9 @@ WWHD_GAME_FUNC(0x0200E240, void, ram_collision_set,
 WWHD_GAME_FUNC(0x02516C14, void, ram_mass_set,
                (u32 manager, u32 collision, u32 priority));
 static void ram_copy(u32 to, u32 from) {
-  for (u32 i = 0; i < 3; i++)
-    R_ARROW(u32, to + i * 4) = R_ARROW(u32, from + i * 4);
+  /* Character accesses may initialize typed float temporaries without alias UB. */
+  for (u32 i = 0; i < 12; i++)
+    R_ARROW(u8, to + i) = R_ARROW(u8, from + i);
 }
 static u32 ram_stack(void) { return (u32)&WWHD_GAME_DATA(0x1048D0CC, u8); }
 static void ram_proc(u32 actor, u32 function) {
