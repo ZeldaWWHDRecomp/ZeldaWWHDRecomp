@@ -590,11 +590,26 @@ static void trace_gamepad_backdrop_pane(const char* stage, uint32_t pane) {
         const char* e = std::getenv("WWHD_GAMEPAD_BACKDROP_LOG");
         return e && *e ? std::strtoull(e, nullptr, 10) : ~uint64_t{0};
     }();
-    if (game_frame() < first || name_of(pane) != "P_BgPattern_00") return;
-    static std::atomic<unsigned> count{0};
+    if (game_frame() < first) return;
+    const auto name = name_of(pane);
+    const bool exact = name == "P_BgPattern_00";
+    char lower[25]{};
+    for (size_t i = 0; i < name.size(); ++i) {
+        const char ch = name[i];
+        lower[i] = ch >= 'A' && ch <= 'Z' ? char(ch + ('a' - 'A')) : ch;
+    }
+    const float width = float(ldf32(pane+kPaneSize));
+    const float height = float(ldf32(pane+kPaneSize+4));
+    const bool candidate = !std::strcmp(stage, "DrawSelf") &&
+        (std::strstr(lower, "bg") || std::strstr(lower, "back") ||
+         (width >= 1200.f && height >= 680.f));
+    if (!exact && !candidate) return;
+    // Separate quotas keep inactive exact-name panes from hiding actual candidates.
+    static std::atomic<unsigned> exactCount{0}, candidateCount{0};
+    auto& count = exact ? exactCount : candidateCount;
     if (count.fetch_add(1, std::memory_order_relaxed) >= 100) return;
-    LOG("[backdrop producer] stage=%s game_frame=%llu pane=%08X flags=%02X alpha=%u inheritedAlpha=%u enabled=%d requested=%d capture=%d recording=%d size=%.3f,%.3f",
-        stage, (unsigned long long)game_frame(), pane, ld8(pane+0x44),
+    LOG("[backdrop producer] stage=%s name=%.*s game_frame=%llu pane=%08X flags=%02X alpha=%u inheritedAlpha=%u enabled=%d requested=%d capture=%d recording=%d size=%.3f,%.3f",
+        stage, int(name.size()), name.data(), (unsigned long long)game_frame(), pane, ld8(pane+0x44),
         ld8(pane+0x45), ld8(pane+0x46),
         int(gfx::gamepad_backdrop::enabled.load()),
         int(gfx::gamepad_backdrop::capture_requested.load()),
