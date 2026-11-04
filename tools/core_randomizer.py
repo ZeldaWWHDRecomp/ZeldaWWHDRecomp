@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+# The Windows release's isolated Python omits the script directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core_randomizer_resources import load
 
 

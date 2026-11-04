@@ -10,8 +10,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 
+# Resolve shipped siblings even with the release's isolated Python.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import randomizer_compat as compat
 
 POLICY = Path(__file__).with_name('source-core-usa.json')

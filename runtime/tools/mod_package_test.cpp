@@ -109,8 +109,10 @@ int main(int argc, char** argv) {
         try {
             const auto profile=startup_save_profile();
             assert(!view("dep").active&&!view("seed").active);
-            std::ifstream input(storage/"profiles.json");
-            assert(std::string(std::istreambuf_iterator<char>(input),{})==original);
+            {
+                std::ifstream input(storage/"profiles.json");
+                assert(std::string(std::istreambuf_iterator<char>(input),{})==original);
+            } // Release the Windows read handle before activation replaces the file.
             assert(!fs::exists(root/"save"));
             const bool absent=mode=="disabled"||mode=="untrusted"||mode=="code-off"||mode=="unsupported"||mode=="blocked-build";
             if(profile.empty()!=absent)for(const auto& item:list())std::cerr<<item.id<<": "<<item.reason<<" confirmed="<<item.native_confirmed<<"\n";
