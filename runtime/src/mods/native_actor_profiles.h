@@ -35,3 +35,21 @@ bool add_before_delete_listener(const std::string& name,BeforeDelete);
 std::array<uint32_t,5> heap_free(Cpu*);
 bool install(const Owner&,const Replace&,std::string* why=nullptr);
 }
+
+// Guest modules use copied profiles, never runtime pointer admission via add().
+namespace native_actor_profiles {
+constexpr uint32_t kGuestCapacity=64, kGuestSlotBytes=0x60;
+using OwnRange=std::function<bool(uint32_t,uint32_t)>;
+using OwnFunction=std::function<bool(uint32_t)>;
+using Allocate=std::function<uint32_t()>;
+// Install before the native hook registry is sealed. Registration closes at the
+// first process allocation; module code remains resident until process exit.
+// The profile pool is allocated only once every other check has passed.
+bool install_guest(const Allocate& pool,const Owner&,const Replace&,std::string* why=nullptr);
+int32_t register_guest(const std::string& owner,const std::string& fingerprint,
+                      uint32_t descriptor,const OwnRange&,const OwnFunction&,
+                      std::string* why=nullptr);
+// Exact bounded identity for full-state compatibility, not executable content.
+std::string guest_identity();
+void restore_guest_snapshots();
+}
