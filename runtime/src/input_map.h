@@ -167,7 +167,7 @@ bool is_gamecube(bool sdl_gamecube_type, uint16_t vendor, uint16_t product);
 bool legacy_gamecube_faces(const input::ControllerInfo& controller);
 void apply_gamecube(Mapping& m, bool legacy_pc_faces = false);
 bool restore_pad_preset(Mapping& m);  // one retained pre-preset set, persisted in controls.json
-// Only Automatic and a previously unconfigured dominant pad may create an automatic profile.
+// Recognized GameCube pads get a complete private layout; existing profiles are retained.
 bool auto_gamecube(Mapping& m, const std::string& guid, const std::string& name,
                    bool detected, bool legacy_pc_faces = false);
 // Which host face buttons drive the Wii U's A/B/X/Y (issue #78). Not stored: it is the shape of
@@ -312,7 +312,12 @@ std::string controller_key(const std::string& guid, const std::string& name);  /
 int profile_index(const Mapping& m, const std::string& guid, const std::string& name);
 // the controller bindings a controller plays with: its profile's, else the shared ones
 const std::array<int, kActionCount>& pads_for(const Mapping& m, const std::string& guid, const std::string& name);
-// give a controller its own bindings (a copy of the shared ones), or find the ones it has; the index
+// Multiple adapter ports with one GUID/name edit one profile.
+struct BindingTarget { std::string guid, name; bool connected; };
+std::vector<BindingTarget> binding_targets(const Mapping&, const std::vector<input::ControllerInfo>&);
+inline bool automatic_face_available(bool individual) { return !individual; }
+
+// Give a controller its own bindings, or return its existing profile index.
 int ensure_profile(Mapping& m, const std::string& guid, const std::string& name);
 void remove_profile(Mapping& m, int index);
 // the Controls tab edits one set of controller bindings: `view` is `m` with profile `index`'s bindings

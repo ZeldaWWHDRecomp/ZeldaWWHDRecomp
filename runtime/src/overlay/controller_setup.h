@@ -76,6 +76,7 @@ inline Result build(const input_map::Mapping& m, const std::string& guid, const 
     const int i = ensure_profile(r.mapping, guid, name);
     Mapping v = view_for(r.mapping, i);
     v.pad = Mapping::defaults().pad;
+    v.preset = {};  // Generic setup replaces the complete layout and its preset state.
     apply_face(v, face, labels);
     if (layout != Layout::kOriginal && jump_pad > kPadNone && jump_pad < kPadCount) {
         r.jump_on = true;
