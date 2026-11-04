@@ -1,8 +1,10 @@
 """Parser checks use declarations only, with no game input."""
+import tempfile
 import unittest
+from pathlib import Path
 from public_sdk_index import DECL, VERIFY, mask_declarations, symbols_header
 from public_sdk_layouts import layout, vectors
-from public_sdk_bindings import bindings, guest_type
+from public_sdk_bindings import bindings, guest_type, save_view
 from public_sdk_data import declarations, play_declarations
 from public_sdk_semantics import semantic_declarations
 from public_sdk_object_facts import unique_number, function_body
@@ -209,6 +211,22 @@ class PublicDeclarations(unittest.TestCase):
     def test_member_verification_retains_name(self):
         match = VERIFY.search('VERIFY(0x02000000, &Actor::execute);')
         self.assertEqual(match[2], '&Actor::execute')
+
+    def test_save_event_offset_from_public_accesses(self):
+        save = ' * max life 0, life 2, rupees 4\n * the save info is at *(101F84DC) + 0x20 (dSv_info_c)\n'
+        game = ('static inline u32 savep() { return gabi::load<u32>(0x101F84DC); }\n'
+                'isEventBit_l(savep() + 0x644, flag);\ngetEventReg_l(savep() + 0x644, 0xC3FF);\n')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'wwhd_src/d').mkdir(parents=True)
+            (root / 'wwhd_src/d/d_save.cpp').write_text(save)
+            (root / 'wwhd_src/d/d_com_inf_game.cpp').write_text(game)
+            self.assertIn('#define WWHD_OFFSET_save_event 0x624', save_view(root, 'public'))
+            for changed in (game + 'isEventBit_l(savep() + 0x648, flag);\n',
+                            game.replace('101F84DC', '101F84E0')):
+                (root / 'wwhd_src/d/d_com_inf_game.cpp').write_text(changed)
+                with self.assertRaisesRegex(ValueError, 'public save event layout changed'):
+                    save_view(root, 'public')
 
 
 if __name__ == '__main__':

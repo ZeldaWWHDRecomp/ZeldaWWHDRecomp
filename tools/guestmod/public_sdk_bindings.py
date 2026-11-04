@@ -81,13 +81,24 @@ def save_view(root, revision):
     pointer = re.search(r'save info is at \*\(([0-9A-Fa-f]{8})\) \+ (0x[0-9A-Fa-f]+)', text)
     if not layout or not pointer:
         raise ValueError('public save layout documentation changed; review required')
-    return f'''/* Generated from public wwhd_src/d/d_save.cpp ({revision}); CC0-1.0.
+    # dSv_event_c: every public event access in d_com_inf_game.cpp uses one offset from the save pointer
+    game = (root / 'wwhd_src/d/d_com_inf_game.cpp').read_text()
+    savep = re.search(r'u32 savep\(\) \{ return gabi::load<u32>\(0x([0-9A-Fa-f]{8})\); \}', game)
+    events = set(re.findall(r'(?:isEventBit_l|getEventReg_l)\(savep\(\) \+ (0x[0-9A-Fa-f]+),', game))
+    if not savep or int(savep[1], 16) != int(pointer[1], 16) or len(events) != 1:
+        raise ValueError('public save event layout changed; review required')
+    event = int(events.pop(), 16) - int(pointer[2], 16)
+    if event <= 0:
+        raise ValueError('public save event layout changed; review required')
+    return f'''/* Generated from public wwhd_src/d/d_save.cpp and d_com_inf_game.cpp ({revision}); CC0-1.0.
  * Partial status prefix only; no full save-object size is claimed. */
 #pragma once
 #include "../wwhd_guest.h"
 #include "data.h"
 #define WWHD_ADDR_save_info_pointer WWHD_ADDR_dComIfG_save_info_pointer
 #define WWHD_OFFSET_save_info {pointer[2]}
+/* dSv_event_c (the story event bytes), relative to the save info. */
+#define WWHD_OFFSET_save_event 0x{event:X}
 typedef struct dSv_player_status_a_view {{
     u16 max_life;
     u16 life;
