@@ -84,10 +84,6 @@ what is on `devel` and not released yet (also in the
 - **New: aim the boat cannon with the mouse** (#360, for #332, thanks @AnythingVocaloid for the idea). With Mouse
   camera on and the pointer captured, moving the mouse now aims the cannon on the King of Red Lions. Mouse sensitivity
   and invert-Y apply; the keyboard or a left stick still takes priority, and firing keeps its binding.
-- **Mod SDK: native actor profiles** can register their own stage names and actor callbacks at startup while sharing
-  the port's profile lookup. Conflicting IDs and names are refused, and full states require matching profile/code
-  fingerprints before they can load. Existing manifest actor behaviors are unchanged.
-
 - **Safer save import on Android** (#339, thanks @GenissonEmilio). An imported save is now checked completely before it
   replaces yours, and your previous save is kept as a backup. If the import is interrupted, your old save comes back.
   Oversized or damaged archives are refused, and import and export only run while the game is closed.

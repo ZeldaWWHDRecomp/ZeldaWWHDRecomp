@@ -476,10 +476,10 @@ sibling `save-mod-…`; backups use sibling `save-backups-mod-…`. Save-folder
 preferences live under `save-profiles/<namespace>` in the configuration folder.
 Choosing a new cloud container puts a dedicated save inside it. Choosing an
 existing actual save puts the new profile save beside that save. Normal saves
-and backups are never copied or migrated automatically. An explicit `--save DIR`
-uses that exact directory and overrides cloud preferences; its backups remain
-namespaced beside it. A caller explicitly selecting a shared directory remains
-responsible for that override.
+and backups are never copied or migrated automatically. `--save DIR` selects the ordinary root; a profile mod always uses its
+namespaced sibling, including launches through official desktop launchers.
+Its backups are namespaced beside it. A launch without a profile mod keeps
+the exact selected directory.
 
 State slots, automatic states and last-session/editor states use a sibling state
 directory with the same namespace, including when `WWHD_STATE_DIR` is supplied.
@@ -491,7 +491,9 @@ legacy compatibility. A profile cannot change during a running session.
 
 Android takes its app-wide game lease before native startup but defers save
 creation/import recovery until native metadata selects the directory. Import
-and export remain vanilla-only; profile saves are not migrated. The matching
+and export remain vanilla-only; profile saves are not migrated. Android warns
+before enabling an installed profile mod and on its details page: these saves
+cannot currently be imported/exported and are deleted when the app is uninstalled. The matching
 app/native save-preparation bridge is required for profile activation. Windows
 rejects locations whose complete namespace and save/backup suffixes exceed the
 supported path budget; select a shorter installation or save root.

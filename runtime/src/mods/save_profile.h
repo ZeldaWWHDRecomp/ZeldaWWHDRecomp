@@ -168,19 +168,20 @@ inline std::filesystem::path sibling(const std::filesystem::path &path, const st
     if (!base.has_filename())
         base = base.parent_path();
     if (!base.has_filename())
-        throw Error("A default save profile needs a named save folder");
+        throw Error("A mod save profile needs a named base save folder");
     return base.parent_path() / (base.filename().string() + "-" + suffix);
 }
 inline Paths paths(const Selection &selection, const std::filesystem::path &ordinary_save,
-                   const std::filesystem::path &config, bool explicit_save) {
+                   const std::filesystem::path &config, bool /*explicit_save*/) {
     Paths out;
     out.save = ordinary_save;
     out.preferences = config;
     if (selection.empty())
         return out; // Ordinary startup keeps its exact existing paths.
     out.namespace_key = selection.namespace_key();
-    if (!explicit_save)
-        out.save = sibling(ordinary_save, out.namespace_key);
+    // --save is also supplied by official launchers. Always isolate a mod
+    // profile from that ordinary save root, including explicit command lines.
+    out.save = sibling(ordinary_save, out.namespace_key);
     auto base = ordinary_save.lexically_normal();
     if (!base.has_filename())
         base = base.parent_path();

@@ -43,12 +43,30 @@ int main() {
     assert(paths.backups.parent_path() == normal.parent_path());
     assert(!profile::contains_path(normal, paths.save));
     const fs::path exact = root / "custom/../explicit";
-    assert(profile::paths(selected, exact, config, true).save == exact);
+    assert(profile::paths(selected, exact, config, true).save ==
+           profile::sibling(exact, selected.namespace_key()));
+    // Official launchers pass --save <data>/save. Both paths must stay isolated.
+    const auto launched = profile::paths(selected, normal, config, true);
+    assert(launched.save == paths.save && launched.backups == paths.backups);
+    assert(launched.save != normal);
+    assert(profile::paths({}, exact, config, true).save == exact);
     assert(profile::paths({}, normal, config, false).save == normal);
     assert(profile::windows_budget(211, 48) && !profile::windows_budget(212, 48));
     write(normal / "user/cking.sav", "vanilla");
     write(paths.save / "user/cking.sav", "seed");
     write(root / "data/save-backups/keep", "normal backup");
+    // Launcher --save must never make a profile backup/restore touch vanilla.
+    mods::saves::Store launcher_backup(launched.save, launched.backups);
+    assert(launcher_backup.create("manual").ok);
+    assert(launcher_backup.list().size() == 1);
+    const auto launcher_snapshot = launcher_backup.list().front().name;
+    write(launched.save / "user/cking.sav", "changed seed");
+    std::string launcher_restore_error;
+    assert(launcher_backup.restore(launcher_snapshot, launcher_restore_error));
+    assert(launcher_backup.apply_pending().ok);
+    assert(read(launched.save / "user/cking.sav") == "seed");
+    assert(read(normal / "user/cking.sav") == "vanilla");
+    assert(read(root / "data/save-backups/keep") == "normal backup");
     save_folder::Policy policy{
         selected.namespace_key(), paths.backups, paths.protected_roots, {normal}, false};
     auto start = save_folder::startup(paths.save, paths.preferences, {}, {}, policy);

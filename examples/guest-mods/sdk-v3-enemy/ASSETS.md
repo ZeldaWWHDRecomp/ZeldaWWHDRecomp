@@ -28,7 +28,7 @@ Build with a PowerPC-capable Clang and LLVM LLD (set `SDK` to the guest include
 directory); keep compiled outputs outside this source package while developing:
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections -I"$SDK" -c mod.c -o /tmp/sdk-v3-enemy.o
+clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections -I"$SDK" -c mod.c -o /tmp/sdk-v3-enemy.o
 ld.lld -m elf32ppc -r /tmp/sdk-v3-enemy.o -o /tmp/sdk-v3-enemy.elf
 ```
 

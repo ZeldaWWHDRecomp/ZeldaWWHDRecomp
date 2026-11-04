@@ -306,20 +306,6 @@ static void test_ship() {
         site_0247ED24(&c);
         assert(c.f[29].ps0 == stock && c.f[29].ps1 == stock);
     }
-    mods::set_sail_speed_normal_factor(2.f);
-    mods::set_sail_speed_swift_factor(1.25f);
-    // Source consumers scale a scalar without leaving an instruction-site
-    // restoration token. Live Swift/settings must be sampled at this call.
-    for (bool swift : {false,true}) {
-        st8(kPlay+0x5D2C,swift);
-        Cpu pending{};pending.f[29].ps0=10;
-        site_0247EB88(&pending); // intentionally leave a native restore pending
-        const float target=mods::ship_sail_target(15.f);
-        assert(target==(swift?18.75f:30.f));
-        pending.f[29].ps0=30;
-        site_0247ED24(&pending);
-        assert(pending.f[29].ps0==30); // source helper cleared stale native token
-    }
     // automatic wind: the Swift Sail's call, with the same angle, registers kept
     mods::set_auto_wind(true);
     st16(kShip + 0x32A, 0x0FFF);
@@ -327,16 +313,7 @@ static void test_ship() {
     const unsigned calls = wind_calls;
     site_0247E988(&c);
     assert(wind_calls == calls + 1 && wind_angle == 0x4000 && c.r[31] == kShip && c.f[29].ps0 == 5.f);
-    // The service receives a compiler-owned R31; its explicit actor controls
-    // wind and all CPU fields survive even a clobbering guest callback.
-    c.r[31]=0x12345678;c.r[3]=0x87654321;
-    const Cpu before=c;
-    mods::ship_normal_sail_wind(&c,kShip);
-    assert(!memcmp(&before,&c,sizeof c)&&wind_calls==calls+2&&wind_angle==0x4000);
     all_off();
-    assert(mods::ship_sail_target(13.f)==13.f);
-    mods::ship_normal_sail_wind(&c,kShip);
-    assert(!memcmp(&before,&c,sizeof c)&&wind_calls==calls+2);
 }
 
 // HD setMoveAngle (0247D4B0), m0388=0: both sails share this rudder path.

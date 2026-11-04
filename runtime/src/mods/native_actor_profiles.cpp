@@ -72,20 +72,3 @@ bool install(const Owner&owner,const Replace&replace,std::string*why){if(install
 }
 
 #include "native_actor_guest_profiles.inc"
-
-namespace native_actor_profiles {
-uint32_t guest_execute_method(uint16_t profile,uint32_t table) noexcept {
-    if(!guest_enabled||!installed)return 0;
-    for(const auto& e:guest_entries){
-        const uint32_t address=e.profile.address;
-        if(!address||e.profile.id!=profile||table!=address+0x30)continue;
-        // A matching identity never permits reads outside snapshot-owned RAM.
-        if(!valid_storage(address)||address>mem::kHostStart-kGuestSlotBytes)return 0;
-        if(std::memcmp(mem::ptr(address),e.bytes.data(),e.bytes.size()))return 0;
-        // Return the immutable admitted value, not a second mutable-memory read.
-        return (uint32_t(e.bytes[0x38])<<24)|(uint32_t(e.bytes[0x39])<<16)|
-               (uint32_t(e.bytes[0x3A])<<8)|uint32_t(e.bytes[0x3B]);
-    }
-    return 0;
-}
-}

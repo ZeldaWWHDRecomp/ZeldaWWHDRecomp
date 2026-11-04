@@ -21,7 +21,7 @@ ZeldaWWHDMods), first compile it with a PowerPC capable clang and lld:
 
 ```sh
 H=../ZeldaWWHDMods/heart-ticker
-clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding -fno-builtin -nostdlib \
+clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib \
   -fno-jump-tables -ffunction-sections -fdata-sections -Iruntime/guest/include -c $H/mod.c -o build/heart-ticker.o
 ld.lld -m elf32ppc -r build/heart-ticker.o -o build/heart-ticker.elf
 python3 tools/catalogue/make_pilots.py --out build/catalogue-pilots \

@@ -4090,7 +4090,7 @@ if(Python3_Interpreter_FOUND)
     ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
 endif()
 
-foreach(mode success malformed conflict disabled untrusted code-off unsupported blocked-build native-failure changed)
+foreach(mode success malformed conflict disabled untrusted code-off unsupported blocked-build native-failure changed ordinary-conflict session)
   add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
 endforeach()
 

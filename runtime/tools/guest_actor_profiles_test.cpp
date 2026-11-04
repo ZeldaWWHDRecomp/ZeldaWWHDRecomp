@@ -52,7 +52,6 @@ int main(){
   {startup::EntryScope other(allowed,false);assert(!allowed);}assert(allowed);
  }assert(!allowed);
 
- assert(guest_execute_method(0x1E4,0x60000030)==0); // no dereference before installation
  map(0x60000000,0x10000);map(0x101E0000,0x40000);map(0x10000000,0x10000);map(descriptor,0x10000);
  st32(GD(0x101F3EE0)+0x1E3*4,0x10000000);st16(0x10000008,0x1E3);
  st32(GD(0x101F3EE0)+0xB6*4,0x10000100);st32(0x1000010C,0x10123450);st32(0x1000011C,0x10123460);
@@ -66,6 +65,7 @@ int main(){
  unsigned allocations=0;
  auto pool=[&](uint32_t at){return [&allocations,at]{++allocations;return at;};};
  assert(!install_guest(pool(0x7F000000),owner,replace));assert(allocations==1);
+ // A refused bridge must not take the profile pool from the startup allocator.
  assert(!install_guest(pool(0x60000000),[](uint32_t){return std::string("foreign");},replace));assert(hooks.empty()&&allocations==1);
  // Port services install their listener/profile first, before the bridge.
  assert(add_before_delete_listener("existing-port-listener",retire));
@@ -77,21 +77,7 @@ int main(){
  // processes. Lookup queries do not close the window; first base create does.
  setup(0x1E4,"SwOp");Cpu c{};c.r[3]=0x1E4;hooks.at(GC(0x025E10E0))(&c);assert(c.r[3]==0);
  st16(profile+0xA,0xFFFF);st16(profile+0x22,0xFFFF);st16(profile+0x2E,0xFFFF);
- assert(reg()==0x1E4);
- assert(guest_execute_method(0x1E4,0x60000030)==descriptor+0x108);
- assert(guest_execute_method(0x1E5,0x60000030)==0); // ID/table identity must agree
- for(uint32_t invalid:{0u,0x6000002Fu,0x60000031u,0x60000034u,0x60000090u,0x6000FFF8u,0x68000030u,0xFFFFFFFFu})
-     assert(guest_execute_method(0x1E4,invalid)==0);
- // A source module can no longer mutate its already admitted copy.
- st32(methods+8,0);assert(guest_execute_method(0x1E4,0x60000030)==descriptor+0x108);
- // Every copied callback and profile byte is protected, not just Execute.
- for(unsigned offset:{0u,8u,0x24u,0x30u,0x34u,0x38u,0x3Cu,0x40u,0x5Cu}){
-     const uint32_t before=ld32(0x60000000+offset);st32(0x60000000+offset,before^4);
-     assert(guest_execute_method(0x1E4,0x60000030)==0);
-     assert(ld32(0x60000000+offset)==(before^4)); // query never repairs state
-     restore_guest_snapshots();assert(guest_execute_method(0x1E4,0x60000030)==descriptor+0x108);
- }
- assert(!ld16(0x6000000A)&&!ld16(0x60000022)&&!ld16(0x6000002E));const auto identity=guest_identity();assert(!identity.empty());
+ assert(reg()==0x1E4);assert(!ld16(0x6000000A)&&!ld16(0x60000022)&&!ld16(0x6000002E));const auto identity=guest_identity();assert(!identity.empty());
  assert(reg()==-2);setup(0x1E5,"SwOp");assert(reg()==-2);
  setup(0x1E5,"Retail");assert(reg()==-2);
  setup(0x1E3,"Other");assert(reg()==-1);setup(0x7FD0,"Other");assert(reg()==-1);
@@ -99,8 +85,6 @@ int main(){
  setup(0x1E5,"DngSw");st32(profile+0xC,descriptor);assert(reg()==-1);
  setup(0x1E5,"DngSw");st32(profile+0x10,0x3AB);assert(reg()==-1);
  setup(0x1E5,"DngSw");assert(reg()==0x1E5);
- assert(guest_execute_method(0x1E5,0x60000090)==descriptor+0x108);
- assert(guest_execute_method(0x1E4,0x60000090)==0);
  c.r[3]=0x1E4;hooks.at(GC(0x025E10E0))(&c);assert(c.r[3]==0x60000000);
  assert(ld32(c.r[3]+0xC)==0x10123450&&ld32(c.r[3]+0x1C)==0x10123460&&ld32(c.r[3]+0x24)==0x60000030);
  assert(ld32(0x60000030)==descriptor+0x100);

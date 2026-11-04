@@ -664,6 +664,10 @@ void check_session_enabled(const std::set<std::string>& enabled) {
     if(frozen_save_profile.empty())return;
     for(const auto& [id,fingerprint]:save_profile_inventory)
         require(enabled.contains(id),kSessionChange);
+    for(const auto& id:enabled)for(const auto& [setting,on]:records.at(id).manifest.settings) {
+        auto locked=save_profile_builtins.find(setting);
+        require(locked==save_profile_builtins.end()||locked->second==on,kSessionChange);
+    }
     check_frozen_save_profile(startup_order(enabled).order);
 }
 void check_session_profile(const Value& chosen) {
@@ -749,7 +753,11 @@ void unload(Live& item){if(item.initialized&&item.api.on_unload)item.api.on_unlo
 }item.library=nullptr;}
 void load(Live& item,const Record& record,const Value& configuration){
     item.kind=record.manifest.kind;item.context=std::make_unique<Context>();auto& c=*item.context;c.id=record.manifest.id;c.path=record.path.string();c.config=configuration;
-    if(item.kind=="settings"){for(const auto& [id,on]:record.manifest.settings){auto* e=manager::find(id);item.previous[id]=e->enabled();
+    if(item.kind=="settings"){
+        for(const auto& [id,on]:record.manifest.settings) {
+            std::string why;require(builtin_change_allowed(id,on,why),why);
+        }
+        for(const auto& [id,on]:record.manifest.settings){auto* e=manager::find(id);item.previous[id]=e->enabled();
         if(e->restart_required){std::lock_guard guard(mutex);const auto& saved=profile().get("builtins").get(id);if(saved.type==Value::Bool)item.previous[id]=saved.boolean;}
         e->apply(on);}return;}
     auto path=record.path/record.manifest.binary;
@@ -1085,6 +1093,7 @@ bool begin_setup_run(const std::string& id,const std::string& identity,
         const std::map<std::string,std::string>& choices,std::string& error) {
     return operation(error,[&]{
         require(records.contains(id),"Mod not found");
+        require_session_mutable(id);
         require(!identity.empty()&&identity==setup_identity_unlocked(id),"Package changed; review setup and confirm again");
         std::set<std::string> seen;
         std::function<void(const std::string&)> check=[&](const auto& current) {
@@ -1119,6 +1128,7 @@ bool begin_setup_run(const std::string& id,const std::string& identity,
 bool save_setup_run(const std::string& id,bool pending,std::string& error) {
     return operation(error,[&]{
         require(records.contains(id),"Mod not found");
+        require_session_mutable(id);
         auto previous=database;
         if(pending) {
             require_source(records.at(id).manifest);
@@ -1168,18 +1178,19 @@ bool set_game_source(const std::string& game,const std::string& path,std::string
         auto previous=database;
         if(sources.local_settings()==database.get("game_sources"))return;
         for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing the game source");
-        database["game_sources"]=sources.local_settings();
         std::set<std::string> affected;bool undone=false;
         auto shared=game.starts_with("gc_")?std::string("gc_wind_waker"):game;
-        for(const auto& [id,r]:records)if(std::any_of(r.manifest.setup.begin(),r.manifest.setup.end(),[&](const auto& step){return catalogue::uses_game_source(step,shared);})) {
-            affected.insert(id);
-            // something the player had (a finished preparation, a built code mod) is undone: worth a notice
+        auto uses_source=[&](const auto& record){return std::any_of(record.manifest.setup.begin(),record.manifest.setup.end(),[&](const auto& step){return catalogue::uses_game_source(step,shared);});};
+        for(const auto& [id,r]:records)if(uses_source(r))affected.insert(id);
+        // Check the whole affected closure before changing sources or receipts.
+        bool added=true;while(added){added=false;for(const auto& [id,r]:records)
+            for(const auto& dep:r.manifest.dependencies)if(affected.contains(dep.id)&&affected.insert(id).second)added=true;}
+        for(const auto& id:affected)require_session_mutable(id);
+        database["game_sources"]=sources.local_settings();
+        for(const auto& [id,r]:records)if(uses_source(r)) {
             if(database.get("setup_receipts").object.contains(id)||database.get("guest_prepared").object.contains(id))undone=true;
             database["setup_receipts"].object.erase(id);database["guest_prepared"].object.erase(id);
         }
-        // A preset or another mod may enable one of these as a dependency.
-        bool added=true;while(added){added=false;for(const auto& [id,r]:records)
-            for(const auto& dep:r.manifest.dependencies)if(affected.contains(dep.id)&&affected.insert(id).second)added=true;}
         for(auto& [name,p]:database["profiles"].object)for(const auto& id:affected){
             const auto& on=p.get("enabled").get(id);if(on.type==Value::Bool&&on.boolean)undone=true;
             p["enabled"][id]=false;p["code_mod_pending"].object.erase(id);p["setup_pending"].object.erase(id);}
@@ -1195,6 +1206,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
     try {
         {
             std::lock_guard guard(mutex);require(ready&&records.contains(id),"Mod is unavailable");auto& r=records.at(id);
+            require_session_mutable(id);
             require_source(r.manifest);
             require(!wanted(id)&&!r.active&&!r.loading,"Disable this mod and restart before preparing its files");
             require(confirmed(r),"Confirm this package's native code before running its preparation tool");

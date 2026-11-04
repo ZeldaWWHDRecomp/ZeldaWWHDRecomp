@@ -89,6 +89,11 @@ int main(int argc, char** argv) {
         else fs::copy_file(argv[3],dep/"fixture.dylib");
         auto db=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"seed":true,"dep":true}}}})");
         if(mode=="session"||mode=="ordinary-conflict")db["profiles"]["Default"]["builtins"]["jump-anywhere"]=true;
+        if(mode=="ordinary-conflict") {
+            env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_FF_RATE",nullptr);
+            db["profiles"]["Default"]["builtin_options"]["direct-camera.speed"]=1.5;
+            db["profiles"]["Default"]["builtin_options"]["fast-forward.rate"]=4;
+        }
         if(mode=="session")db["profiles"]["Other"]=mods::json::parse(R"({"enabled":{"seed":true,"dep":false}})");
         if(mode=="disabled")db["profiles"]["Default"]["enabled"]["seed"]=false;
         const auto original=mods::json::dump(db);
@@ -110,6 +115,7 @@ int main(int argc, char** argv) {
                 initialize();
                 assert(list().size()==2&&view("seed").id=="seed"&&view("dep").id=="dep");
                 assert(mods::manager::find("jump-anywhere")->enabled());
+                assert(mods::camera_speed()==1.5f&&mods::fast_forward_rate()==4);
                 std::string error;
                 assert(enable("seed",false,error));
                 frame(1);
@@ -125,12 +131,18 @@ int main(int argc, char** argv) {
                 assert(view("dep").active&&view("seed").active&&loaded);
                 if(mode=="session") {
                     auto bytes=[](const fs::path& path){std::ifstream f(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});};
-                    const auto saved=bytes(storage/"profiles.json"),native_manifest=bytes(dep/"manifest.json"),native_binary=bytes(dep/"fixture.dylib");
                     std::string error;
+                    const auto preset=root/"override-preset";fs::create_directories(preset);
+                    std::ofstream(preset/"manifest.json")<<R"({"format_version":1,"id":"override","name":"Override","version":"1.0.0","game_id":"wwhd","kind":"settings","settings":{"jump-anywhere":false}})";
+                    assert(install(preset.string(),error));
+                    const auto saved=bytes(storage/"profiles.json"),native_manifest=bytes(dep/"manifest.json"),native_binary=bytes(dep/"fixture.dylib");
+                    assert(!enable("override",true,error)&&error.find("restart")!=std::string::npos);
                     assert(view("seed").isolated_save_profile&&!view("dep").isolated_save_profile);
                     assert(!enable("seed",false,error)&&error.find("restart")!=std::string::npos);
                     assert(!enable("dep",false,error)&&error.find("restart")!=std::string::npos);
                     assert(!remove("dep",error)&&error.find("restart")!=std::string::npos);
+                    assert(!begin_setup_run("dep",setup_identity("dep"),{},error)&&error.find("restart")!=std::string::npos);
+                    assert(!save_setup_run("dep",true,error)&&error.find("restart")!=std::string::npos);
                     assert(!install(dep.string(),error)&&error.find("restart")!=std::string::npos);
                     assert(!select_profile("Other",error)&&current_profile()=="Default");
                     assert(!builtin_change_allowed("jump-anywhere",false,error));

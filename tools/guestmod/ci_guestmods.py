@@ -88,7 +88,7 @@ SDK_ASSERT(WWHD_PLAY_EVENT_RUNNING_OFFSET == 0x5292);
 SDK_ASSERT(WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET == 0x514C);
 """
     for language in ("c", "c++"):
-        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi", "-mstackrealign",
+        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
                    "-ffreestanding", "-fsyntax-only", "-x", language, "-"]
         for header in headers:
             command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]

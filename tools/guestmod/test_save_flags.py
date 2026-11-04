@@ -19,7 +19,7 @@ import guestmod
 from builds import by_name
 
 CLANG = os.environ.get('WWHD_PPC_CLANG') or shutil.which('clang')
-FLAGS = ['--target=powerpc-unknown-eabi', '-mcpu=750', '-mstackrealign', '-O2', '-ffreestanding', '-fno-builtin',
+FLAGS = ['--target=powerpc-unknown-eabi', '-mcpu=750', '-O2', '-ffreestanding', '-fno-builtin',
          '-fno-jump-tables', '-ffunction-sections', '-fdata-sections', '-nostdlib',
          '-I', str(ROOT/'runtime/guest/include')]
 

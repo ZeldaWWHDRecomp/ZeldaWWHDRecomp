@@ -583,6 +583,7 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
+    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -726,8 +727,9 @@ int main(int argc, char** argv) {
             save_policy.windows_budget=true;
 #endif
             mods::save_profile::check_budget(save_paths,save_policy.windows_budget);
-            // Preserve an explicit --save spelling and destination exactly.
-            if(!save_arg)config::save_dir=save_paths.save.string();
+            // Launchers also pass --save: it selects the ordinary root, never
+            // permission for a profile mod to use the player's normal save.
+            config::save_dir=save_paths.save.string();
         }
         save_paths.protected_roots=save_policy.protected_roots;
         ss::set_save_profile(save_profile,save_paths);
@@ -736,7 +738,7 @@ int main(int argc, char** argv) {
             host::android::prepare_game_save(std::filesystem::absolute(config::save_dir).string());
 #endif
     } catch(const std::exception& e) {
-        fatal("Cannot select save profile: %s",e.what());
+        fatal("Cannot select save profile: %s\nTo recover, launch with WWHD_CODE_MODS=0, disable the problematic mod in Settings > Mods, then restart.",e.what());
     }
 
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
@@ -820,10 +822,6 @@ int main(int argc, char** argv) {
     // into an editor session; set_launch_mode ran in the argument loop above, before any package loads
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
     guestmods::init();  // trusted manager packages, before guest threads start
-    // MCP reads live game globals. Publish its listener only after the RPX is mapped
-    // and package initialization is finished, so an early read_state cannot access
-    // unmapped memory or observe a partially initialized package registry.
-    editor_mcp::launch(start_mcp);  // --mcp still requires --editor
     // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
     for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package

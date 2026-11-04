@@ -22,6 +22,9 @@ class SaveNamespaceStartup(unittest.TestCase):
                           'guestmods::init();'):
             with self.subTest(operation=operation):
                 self.assertLess(stop,source.index(operation,selected))
+        # Launcher-supplied --save must not bypass the selected profile path.
+        self.assertIn("config::save_dir=save_paths.save.string();", source[selected:])
+        self.assertNotRegex(source[selected:], r"if\s*\(\s*!save_arg\s*\)\s*config::save_dir\s*=\s*save_paths.save")
         error_handler=source.index('catch(const std::exception& e)',stop)
         self.assertLess(error_handler,source.index('save_folder::startup(',stop))
         self.assertIn('fatal("Cannot select save profile:',source[error_handler:])

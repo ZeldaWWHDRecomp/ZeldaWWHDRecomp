@@ -32,6 +32,6 @@ For a Clang installation with the PowerPC target and LLVM LLD, run from this
 package directory (set `SDK` to the guest SDK include directory):
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections -I"$SDK" -c mod.c -o /tmp/creature.o
+clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections -I"$SDK" -c mod.c -o /tmp/creature.o
 ld.lld -m elf32ppc -r /tmp/creature.o -o mod.elf
 ```
