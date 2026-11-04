@@ -1,4 +1,6 @@
 #include "../src/gfx/gamepad_backdrop.h"
+#include "../src/gfx/vulkan/gamepad_backdrop_present.h"
+#include <vector>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -62,6 +64,21 @@ int main() {
     check_bars(16, 9, {-3, 2, 10, 14});
     check_bars(16, 9, {20, 20, 2, 2});
     for (const auto& r : bars(16, 9, {0, 0, -1, 9})) assert(r.w * r.h == 0);
+    struct Quad { void* image; Rect box; bool solid = false; };
+    int tv, drc;
+    std::vector<Quad> quads{{&tv, {0, 0, 0, 0}}, {nullptr, {0, 4, 31, 18}, true},
+                            {&drc, content}};
+    // Actual production selection helper: the retained zero-size TV placeholder
+    // must not hide the later full-output GamePad. Its exact fit rect is retained.
+    assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == 2);
+    assert(gfxvk::gamepad_backdrop_quad(quads, &drc, false) == quads.size()); // PiP
+    assert(quads[2].box.y == content.y && quads[2].box.h == content.h);
+    quads = {{&drc, content}};
+    assert(gfxvk::gamepad_backdrop_quad(quads, &drc, false) == 0); // DRC window
+    quads[0].box.w = 0;
+    assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == quads.size());
+    quads.clear();
+    assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == 0);
     ScanCache cache;
     cache.capture(1, 10); cache.capture(2, 20); // TV and DRC distinct surfaces.
     auto selected = cache.scan(2);

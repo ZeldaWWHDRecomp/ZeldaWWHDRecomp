@@ -1,4 +1,5 @@
 #include "gamepad_backdrop.h"
+#include "gamepad_backdrop_present.h"
 #include "../gamepad_backdrop.h"
 #ifdef __ANDROID__
 #include "android_driver.h"
@@ -820,13 +821,16 @@ std::vector<ComposeQuad> screen_quads_mono(Screen& screen,VkExtent2D target,int&
 }
 
 static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D target) {
- if(!gfx::gamepad_backdrop::enabled.load()||quads.empty()||!R.drc.scan||quads.front().image!=R.drc.scan.get())return;
- const auto box=quads.front().box;
+ if(!gfx::gamepad_backdrop::enabled.load())return;
+ const auto index=gamepad_backdrop_quad(quads,R.drc.scan.get(),currentPlan&&currentPlan->drc_only);
+ if(index==quads.size())return;
+ const auto content=quads[index];
+ const auto box=content.box;
  if(!gfx::gamepad_backdrop::has_bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h}))return;
  gfx::gamepad_backdrop::set_capture_requested(true);
  ComposeQuad backdrop;
  if(auto* captured=gamepad_backdrop_image()) {
-  backdrop.alpha=quads.front().alpha;backdrop.image=captured;backdrop.sourceLinear=R.drc.scanSrgb;backdrop.backdrop=1;
+  backdrop.alpha=content.alpha;backdrop.image=captured;backdrop.sourceLinear=R.drc.scanSrgb;backdrop.backdrop=1;
   const auto r=gfx::gamepad_backdrop::cover(float(target.width),float(target.height),float(captured->extent.width),float(captured->extent.height));
   backdrop.box={r.x,r.y,r.w,r.h};
  } else {
@@ -835,7 +839,7 @@ static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D targ
   const auto regions=gfx::gamepad_backdrop::bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h});
   for(unsigned edge=0;edge<regions.size();++edge) {
    const auto r=regions[edge];if(r.w<=0||r.h<=0)continue;
-   auto q=quads.front();q.box={r.x,r.y,r.w,r.h};q.backdrop=2+int(edge);bars.push_back(q);
+   auto q=content;q.box={r.x,r.y,r.w,r.h};q.backdrop=2+int(edge);bars.push_back(q);
   }
   quads.insert(quads.begin(),bars.begin(),bars.end());return;
  }
