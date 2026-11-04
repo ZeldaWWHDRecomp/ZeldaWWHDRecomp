@@ -37,6 +37,7 @@
 
 #include "gfx/renderer.h"
 #include "gfx/shader_prebuild.h"
+#include "gfx/gamepad_backdrop_options.h"
 #if defined(__APPLE__) && defined(WWHD_HAS_METAL)
 #include "gfx/player_question.h"
 #endif
@@ -588,6 +589,7 @@ int main(int argc, char** argv) {
         // Settings > Graphics > Detailed performance profiling (render_prof.h; WWHD_PROFILE wins)
         std::string saved;
         rprof::start(hostui::get(rprof::kSettingKey, saved) && saved == "1");
+        gfx::gamepad_backdrop::load_options();
         // Settings > Graphics > Shader compile: off (default) / fast (background_shaders.h;
         // WWHD_BG_SHADERS wins)
         bgshaders::start(bgshaders::parse_level(hostui::get(bgshaders::kSettingKey, saved) ? saved.c_str() : nullptr));
