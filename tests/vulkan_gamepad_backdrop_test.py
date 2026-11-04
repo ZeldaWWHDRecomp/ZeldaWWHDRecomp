@@ -175,6 +175,32 @@ int main() {
         self.assertIn('if (replay) {\n    topology = replay->topology;',draw)
         self.assertIn('bindIndex(replay->indexBuffer, replay->indexOffset, replay->indexType)',draw)
 
+    def test_demand_published_once_after_both_windows(self):
+        source=r'''#include <cassert>
+#include "gamepad_backdrop_demand.h"
+int main() {
+ gfxvk::GamepadBackdropDemand demand;bool published=true,next=false;
+ demand.begin();assert(published); // Previous demand survives the prefix/current draws.
+ demand.request();assert(published); // First window cannot publish an intermediate result.
+ demand.request();assert(published); // Both windows aggregate with OR.
+ assert(demand.finish(next)&&next);published=next;
+ assert(!demand.finish(next)); // Exactly one publication per scope.
+ demand.begin();assert(published); // Disabling bars is not visible until end either.
+ assert(demand.finish(next)&&!next);published=next;assert(!published);
+ demand.begin();demand.request();demand.cancel();assert(!demand.finish(next));
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'demand.cpp';path.write_text(source)
+            exe=Path(directory)/'demand'
+            subprocess.run([os.environ.get('CXX','clang++'),'-std=c++20','-Wall','-Wextra','-Werror','-I',str(CPP.parent),str(path),'-o',str(exe)],check=True)
+            subprocess.run([str(exe)],check=True)
+        backend=(CPP.parent/'backend.cpp').read_text()
+        swap=backend[backend.index('void swap() {'):]
+        self.assertNotIn('set_capture_requested(false)',swap)
+        self.assertLess(swap.index('publish_or_finish_present_prefix'),swap.index('GamepadBackdropDemandFrame backdropDemandFrame'))
+        self.assertGreater(swap.index('backdropDemandFrame.publish()'),swap.index('present(R.drc)'))
+
     def test_capture_coverage_not_squared(self):
         source = r'''#include <cassert>
 #include <cmath>

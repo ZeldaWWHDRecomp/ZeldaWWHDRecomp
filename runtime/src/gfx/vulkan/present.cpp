@@ -1,3 +1,4 @@
+#include "gamepad_backdrop_demand.h"
 #include "gamepad_backdrop.h"
 #include "gamepad_backdrop_present.h"
 #include "../gamepad_backdrop.h"
@@ -435,6 +436,7 @@ void reset_present_resources() {
 // ---------------------------------------------------------------- composition
 namespace {
 const gfx::PresentPlan* currentPlan=nullptr;
+GamepadBackdropDemand backdropDemand;
 bool linear_filtering(VkFormat format) {
  const auto& properties=format_properties(format);
  return properties.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
@@ -542,6 +544,13 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
 }  // namespace
 
 void set_present_plan(const gfx::PresentPlan* plan) { currentPlan=plan; }
+void begin_gamepad_backdrop_demand() { backdropDemand.begin(); }
+void cancel_gamepad_backdrop_demand() { backdropDemand.cancel(); }
+void publish_gamepad_backdrop_demand() {
+ bool needed=false;
+ if(backdropDemand.finish(needed))gfx::gamepad_backdrop::set_capture_requested(
+     gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed)&&needed);
+}
 void set_overlay_draw(overlay::window_target::DrawFrame frame) { overlayDraw=frame.draw; overlayFrame=frame; }
 static ImDrawData* screen_overlay(Screen& screen, uint32_t width, uint32_t height) {
  if(auto* draw=overlayFrame.for_window(&screen==&R.drc))return draw;
@@ -827,7 +836,7 @@ static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D targ
  const auto content=quads[index];
  const auto box=content.box;
  if(!gfx::gamepad_backdrop::has_bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h}))return;
- gfx::gamepad_backdrop::set_capture_requested(true);
+ backdropDemand.request();
  ComposeQuad backdrop;
  if(auto* captured=gamepad_backdrop_image()) {
   backdrop.alpha=content.alpha;backdrop.image=captured;backdrop.sourceLinear=R.drc.scanSrgb;backdrop.backdrop=1;

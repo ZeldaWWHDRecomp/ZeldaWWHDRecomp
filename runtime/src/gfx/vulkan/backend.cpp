@@ -3569,6 +3569,7 @@ void present_completed_frame_while_pipeline_pending() {
   // sampled here; buildingScan and all guest attachments remain untouched.
   end_encoder();
   const auto proof = begin_pending_picture_proof();
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&completedPresentPlan);
   bool presented = false;
   try {
@@ -3577,6 +3578,7 @@ void present_completed_frame_while_pipeline_pending() {
     flush_async();
   } catch (...) { set_present_plan(nullptr); throw; }
   set_present_plan(nullptr);
+  backdropDemandFrame.publish();
   finish_pending_picture_proof(proof, presented);
   const auto ended = stutter::now();
   nextPipelineRepeatNs = ended + 16666667; // At most 60 repeats/s, independent of guest progress.
@@ -3667,7 +3669,6 @@ static void trim_memory_step() {
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 }
 void swap() {
-  gfx::gamepad_backdrop::set_capture_requested(false);
   texture_budget_step();
   trim_memory_step();
   fallback_stats::begin_frame(R.frame);
@@ -3767,6 +3768,7 @@ void swap() {
   if (perf_hint::fps60_chosen())
     plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&plan);
   // Full SBS uses a half-width logical canvas before placing the two eyes.
   // Publish that same layout for GamePad hit testing and the software pointer.
@@ -3902,6 +3904,7 @@ void swap() {
   }
   set_present_plan(nullptr);
   service_screenshots();  // this frame's: the submission that holds them
+  backdropDemandFrame.publish();
   fallback_stats::complete_frame(R.frame);
   stutter::frame(R.frame);
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
