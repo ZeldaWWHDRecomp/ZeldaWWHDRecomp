@@ -25,6 +25,8 @@
 
 #include "recomp_table.h"
 #include "runtime.h"
+#include "guest_module_call.h"
+#include "mods/guest_mods.h"
 #include "native_text_startup_seal.h"
 
 bool g_trace_hle = false;
@@ -319,6 +321,10 @@ extern "C" void ppc_dispatch(Cpu* c) {
     if (c->pc - dispatch::kSlotBase < dispatch::kSlotSize ||
         c->pc - mem::kHleFuncBase < dispatch::kHostSize) {
         ppc_host_call(c, f);
+        return;
+    }
+    if (c->pc - guestmods::kRegionStart < guestmods::kRegionSize) {
+        guestmods::invoke_module(c, f);
         return;
     }
     MUSTTAIL return f(c);
