@@ -3,6 +3,10 @@
 #pragma once
 #include <string>
 namespace host::android {
+// Java lease/recovery support must be available before save_profile can activate.
+bool save_profile_preparation_available();
+// After native save selection, before any recovery/cloud/backup operation.
+void prepare_game_save(const std::string& absolute_directory);
 // guest-sdk.json for this app installation (AndroidGuestTools.java); raises with a message for the player
 std::string guest_build_tools();
 // where built guest modules are kept: the app's private storage (Android loads no library from the

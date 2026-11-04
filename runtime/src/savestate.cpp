@@ -100,6 +100,8 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "mods/guest_profile_state.h"
 #include "mods/mods.h"
 #include "mods/guest_state_section.h"
+#include "mods/save_profile.h"
+#include "mods/save_profile_state.h"
 #include "mods/story_chart.h"
 #include "quit_prompt.h"
 #include "rumble.h"
@@ -135,6 +137,14 @@ namespace interp { uint64_t logic_steps(); }
 namespace ss {
 namespace {
 
+mods::save_profile::Selection g_save_profile;
+mods::save_profile::Paths g_save_profile_paths;
+bool g_save_profile_configured=false,g_profile_state_dir_used=false;
+std::string g_profile_state_directory;
+mods::save_profile::StateIdentity current_profile_identity() {
+    return {g_save_profile.namespace_key(),g_save_profile.owner,g_save_profile.fingerprint};
+}
+
 constexpr char kMagic[8] = {'W', 'W', 'H', 'D', 'S', 'T', 'A', 'T'};
 constexpr uint32_t kVersion = kStreamVersion;
 #ifdef __APPLE__
@@ -158,6 +168,7 @@ enum : uint32_t {
     kSecMemory = 'MEM ',
     kSecGuestMods = 'GMOD',
     kSecGuestProfiles = 'GPRF',
+    kSecSaveProfile = 'SPID',
     kSecAspectParticles = 'APAR',
     kSecOsTime = 'OSTB',  // the calendar clock's bias (hle/os_time.h); absent in older states
 };
@@ -204,6 +215,9 @@ struct Snapshot {
         std::string fileWhy;
         if(!check_file_section(section(kSecFiles),fileWhy))return false;
         if(!guestmods::read_mod_set(section(kSecGuestMods),guest_mods))return false;
+        mods::save_profile::StateIdentity profile;
+        if(!mods::save_profile::read_state_identity(section(kSecSaveProfile),profile))return false;
+        if(!mods::save_profile::valid_state_requirement(h.reserved,profile))return false;
         Reader m=section(kSecMemory);
         if(!read_regions(m,regs,chunks))return false;
         // Never allow file-provided regions to select host-only/unmapped memory.
@@ -275,7 +289,11 @@ std::string state_dir() {
             d=host::config_dir()+"/states";
 #endif
         }
-        d = randomizer::seed_directory(d);
+        // Declarative SDK profiles already selected and validated their owned
+        // state location. Ordinary/translated seeds retain the existing layout.
+        if(!g_save_profile.empty())d=g_profile_state_directory;
+        else d=randomizer::seed_directory(d);
+        g_profile_state_dir_used=true;
         std::error_code ec; std::filesystem::create_directories(d,ec);
         return d;
     }();
@@ -599,6 +617,10 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     put_section(*payload,kSecGuestMods,w);
     w=Writer();w.str(native_actor_profiles::guest_identity());
     put_section(*payload,kSecGuestProfiles,w);
+    if(!g_save_profile.empty()) {
+        w=Writer();mods::save_profile::write_state_identity(w,current_profile_identity());
+        put_section(*payload,kSecSaveProfile,w);
+    }
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -615,6 +637,7 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kFastVersion;
+    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -727,6 +750,10 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     put_section(*payload,kSecGuestMods,w);
     w=Writer();w.str(native_actor_profiles::guest_identity());
     put_section(*payload,kSecGuestProfiles,w);
+    if(!g_save_profile.empty()) {
+        w=Writer();mods::save_profile::write_state_identity(w,current_profile_identity());
+        put_section(*payload,kSecSaveProfile,w);
+    }
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -734,6 +761,7 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
+    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -784,6 +812,10 @@ void cancel_portable_arrival(const std::string&);
 
 bool do_load(const std::shared_ptr<Snapshot>& s) {
     auto refused=[&](const std::string& why){s->load_result.complete(false,why);return true;};
+    if(!mods::save_profile::compatible_full_state(s->section(kSecSaveProfile),current_profile_identity())) {
+        message("%s: save profile or trusted package differs",slot_label(s->slot).c_str());
+        return refused("save profile or trusted package differs");
+    }
     for(uint32_t tag:{kSecThreads,kSecHeaps,kSecFiles,kSecAudio,kSecGx2,kSecAllocs,kSecDispatch})
         if(!s->sections.count(tag)){message("%s: incomplete state",slot_label(s->slot).c_str());return refused("incomplete state");}
     {
@@ -1133,6 +1165,7 @@ bool capture_portable(Cpu* c, pstate::State& s, std::string& why) {
     s.game_hash = hex64(game_id());
     s.runtime = std::string(build::version()) + " (" + build::commit() + ")";
     s.guest_mods=guestmods::enabled_mods();
+    s.save_profile=g_save_profile.namespace_key();
     s.created = now_text();
     s.file_slot = slot;
     s.controller = input::pro_controller() ? 2 : 1;
@@ -1169,6 +1202,9 @@ void apply_hd_sections(Cpu* c, const pstate::State& s) {
 
 // puts a portable state into the running game; false + retry when the game is not ready yet
 bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retry) {
+    if(!mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key())) {
+        why="portable state belongs to another save profile";retry=false;return false;
+    }
     mods::quick_use_reset();
     mods::item_ring_reset();
     mods::touch_talk_reset();
@@ -1270,6 +1306,9 @@ bool read_portable(const std::string& path, pstate::State& s, std::string& why) 
     if (!read_text(path, text, why)) return false;
     if (!pstate::read(text, s, why)) return false;
     if (s.title_id != title_id()) { why = "made with another game (title " + s.title_id + ")"; return false; }
+    if(!mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key())) {
+        why="portable state belongs to another save profile";return false;
+    }
     return true;
 }
 
@@ -1599,7 +1638,8 @@ SlotInfo portable_slot_info(int slot) {
     }
     info.used = true;
     pstate::State s;
-    info.compatible = pstate::read(text, s, why) && s.title_id == title_id();
+    info.compatible = pstate::read(text, s, why) && s.title_id == title_id() &&
+        mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key());
     if (info.compatible) {
         // "2026-10-08 14:03:11" -> "Oct 08 14:03:11" like the full states
         static const char* mon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -1842,6 +1882,44 @@ std::atomic<uint32_t> g_seeded_arrival_counter{0};
 uint64_t seeded_arrival_frame() { return g_seeded_arrival_frame.load(); }
 uint64_t seeded_arrival_step() { return g_seeded_arrival_step.load(); }
 uint32_t seeded_arrival_counter() { return g_seeded_arrival_counter.load(); }
+
+void set_save_profile(const mods::save_profile::Selection& selected,const mods::save_profile::Paths& paths) {
+    const mods::save_profile::StateIdentity identity{selected.namespace_key(),selected.owner,selected.fingerprint};
+    if(!identity.valid()||paths.namespace_key!=selected.namespace_key())
+        throw mods::save_profile::Error("Invalid frozen state save-profile identity");
+    if(g_save_profile_configured) {
+        if(selected!=g_save_profile)throw mods::save_profile::Error("State save profile cannot change during a session");
+        return;
+    }
+    if(g_profile_state_dir_used&&!selected.empty())
+        throw mods::save_profile::Error("Save profile must be selected before any state-slot access");
+    if(!selected.empty()) {
+        std::filesystem::path directory;
+        if(const char* configured=getenv("WWHD_STATE_DIR"))directory=configured;
+        else {
+#ifdef __APPLE__
+            directory=std::string(getenv("HOME")?getenv("HOME"):".")+"/Library/Application Support/wwhd/states";
+#else
+            directory=host::config_dir()+"/states";
+#endif
+        }
+        const auto key=selected.namespace_key();
+        if(!mods::save_profile::owned_basename(directory,key))
+            directory=mods::save_profile::sibling(directory,key);
+        auto protected_roots=paths.protected_roots;
+        protected_roots.push_back(paths.save);
+        protected_roots.push_back(paths.backups);
+        std::string why;
+        if(!mods::save_profile::owned_location(directory,key,protected_roots,why))
+            throw mods::save_profile::Error(why);
+#ifdef _WIN32
+        if(!mods::save_profile::windows_budget(mods::save_profile::path_units(directory),32))
+            throw mods::save_profile::Error("The state profile folder is too long for Windows; choose a shorter state location");
+#endif
+        g_profile_state_directory=directory.string();
+    }
+    g_save_profile=selected;g_save_profile_paths=paths;g_save_profile_configured=true;
+}
 
 std::string states_dir() { return state_dir(); }
 

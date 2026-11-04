@@ -4083,3 +4083,24 @@ add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test
 target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
 add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)
+# Declarative guest save ownership: native filesystem/cloud and state guards.
+add_executable(save_profile_test runtime/tools/save_profile_test.cpp)
+target_include_directories(save_profile_test PRIVATE runtime/src runtime/include)
+target_compile_options(save_profile_test PRIVATE -UNDEBUG)
+target_link_libraries(save_profile_test PRIVATE Threads::Threads)
+add_test(NAME save_profile COMMAND save_profile_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME save_namespace_startup_order COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
+endif()
+
+foreach(mode success malformed conflict disabled untrusted code-off unsupported native-failure compiler-failure graphics-failure changed ordinary-conflict session)
+  add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
+endforeach()
+
+
+foreach(mode format damaged size)
+  add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
+endforeach()
+
+add_test(NAME mod_game_build_constraint COMMAND mod_package_test --game-build-constraint)

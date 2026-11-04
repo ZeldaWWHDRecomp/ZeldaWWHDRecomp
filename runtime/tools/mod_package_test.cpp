@@ -4,6 +4,7 @@
 #include "mods/packages.h"
 #include "mods/mods.h"
 #include "mods/required.h"
+#include "mods/manager.h"
 #include <algorithm>
 #include "mods/content.h"
 #include "mods/cemu_pack.h"
@@ -50,6 +51,134 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     using namespace mods::packages;
     namespace fs=std::filesystem;
+    if(argc==4&&std::string(argv[1])=="--save-profile-startup") {
+        // Keep the fixture alive for the child's full runtime lifetime. Windows
+        // releases its loaded DLL only when that process exits.
+        const auto root=unique_temp("wwhd-profile-startup-");
+        const auto result=host::run_process({fs::absolute(argv[0]).string(),
+            "--save-profile-startup-child",argv[2],argv[3],root.string()});
+        if(result.code!=0)std::cerr<<result.output<<result.error;
+        fs::remove_all(root);
+        return result.code==0?0:1;
+    }
+    if(argc==5&&std::string(argv[1])=="--save-profile-startup-child") {
+        const std::string mode=argv[2];
+        const auto root=fs::path(argv[4]);
+        assert(fs::is_directory(root));
+        const auto storage=root/"manager";
+        env("WWHD_NO_HOST_INPUT","1");
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",mode=="untrusted"?nullptr:"seed,dep");
+        set_code_mod_support(mode!="code-off");
+        if(mode=="unsupported")set_save_profile_support(false,"Missing platform save bridge");
+        auto guest=mods::json::parse(R"({"format_version":1,"id":"seed","name":"Seed","version":"1.0.0","minimum_manager_version":"1.7.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1},"dependencies":[{"id":"dep"}],"save_profile":{"version":1,"provider":"fixture","identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}})");
+        if(mode=="malformed"||mode=="untrusted"||mode=="disabled"||mode=="code-off")
+            guest["save_profile"]["identity"]="bad";
+        if(mode=="ordinary-conflict")guest.object.erase("save_profile");
+        if(mode=="conflict"||mode=="ordinary-conflict")guest["conflicts"]=mods::json::parse(R"(["dep"])");
+        const auto seed=storage/"Mods/seed",dep=storage/"Mods/dep";
+        fs::create_directories(seed);fs::create_directories(dep);
+        std::ofstream(seed/"manifest.json")<<mods::json::dump(guest);
+        {std::ofstream elf(seed/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        auto native=mods::json::parse(R"({"format_version":1,"id":"dep","name":"Dependency","version":"1.0.0","game_id":"wwhd-usa","kind":"native","abi_version":1})");
+        native["binaries"][platform_key()]="fixture.dylib";
+        native["options"]=mods::json::parse(R"([{"id":"label","name":"Frame status","type":"enum","choices":["frame-ran"],"default":"frame-ran"}])");
+        if(mode=="session")native["dependencies"]=mods::json::parse(R"([{"id":"builtin:jump-anywhere"}])");
+        std::ofstream(dep/"manifest.json")<<mods::json::dump(native);
+        if(mode=="native-failure")std::ofstream(dep/"fixture.dylib")<<"not a library";
+        else fs::copy_file(argv[3],dep/"fixture.dylib");
+        auto db=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"seed":true,"dep":true}}}})");
+        if(mode=="session"||mode=="ordinary-conflict")db["profiles"]["Default"]["builtins"]["jump-anywhere"]=true;
+        if(mode=="ordinary-conflict") {
+            env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_FF_RATE",nullptr);
+            db["profiles"]["Default"]["builtin_options"]["direct-camera.speed"]=1.5;
+            db["profiles"]["Default"]["builtin_options"]["fast-forward.rate"]=4;
+        }
+        if(mode=="session")db["profiles"]["Other"]=mods::json::parse(R"({"enabled":{"seed":true,"dep":false}})");
+        if(mode=="graphics-failure") {
+            const auto pack=storage/"Mods/bad-graphics";fs::create_directories(pack);
+            std::ofstream(pack/"manifest.json")<<R"({"format_version":1,"id":"bad-graphics","name":"Bad graphics","version":"1.0.0","game_id":"wwhd-usa","kind":"cemu","cemu_dir":""})";
+            std::ofstream(pack/"rules.txt")<<"[Definition]\nname=Test\ntitleIds=0005000010143500\nversion=4\n[Preset]\nname=Good\n$scale=1\n[Preset]\nname=Broken\n$scale=0\n[TextureRedefine]\nwidth=1280\noverwriteWidth=1280/$scale\n";
+            db["profiles"]["Default"]["enabled"]["bad-graphics"]=true;
+            db["profiles"]["Default"]["config"]["bad-graphics"]["preset-0"]="Broken";
+        }
+        if(mode=="disabled")db["profiles"]["Default"]["enabled"]["seed"]=false;
+        const auto original=mods::json::dump(db);
+        std::ofstream(storage/"profiles.json")<<original;
+        bool rejected=false,loaded=false;
+        try {
+            const auto profile=startup_save_profile();
+            assert(!view("dep").active&&!view("seed").active);
+            {
+                std::ifstream input(storage/"profiles.json");
+                assert(std::string(std::istreambuf_iterator<char>(input),{})==original);
+            } // Release the Windows read handle before activation replaces the file.
+            assert(!fs::exists(root/"save"));
+            const bool absent=mode=="disabled"||mode=="untrusted"||mode=="code-off"||mode=="unsupported"||mode=="ordinary-conflict";
+            if(profile.empty()!=absent)for(const auto& item:list())std::cerr<<item.id<<": "<<item.reason<<" confirmed="<<item.native_confirmed<<"\n";
+            assert(profile.empty()==absent);
+            if(mode=="ordinary-conflict") {
+                initialize();
+                assert(list().size()==2&&view("seed").id=="seed"&&view("dep").id=="dep");
+                assert(mods::manager::find("jump-anywhere")->enabled());
+                assert(mods::camera_speed()==1.5f&&mods::fast_forward_rate()==4);
+                std::string error;
+                assert(enable("seed",false,error));
+                frame(1);
+                assert(!view("seed").enabled&&view("dep").active);
+            }
+            if(!absent) {
+                assert(profile.namespace_key()=="mod-fixture-"+std::string(64,'a'));
+                if(mode=="changed")std::ofstream(dep/"new-file")<<"changed after preflight";
+                initialize();
+                assert(!view("dep").active); // activation still loads no code
+                start_guests([&](const GuestPackage&){
+                        if(mode=="compiler-failure")throw std::runtime_error("Guest compiler is unavailable");
+                        return 65536u;
+                    },
+                    [&](const GuestPackage&,uint32_t){loaded=true;});
+                assert(view("dep").active&&view("seed").active&&loaded);
+                assert(view("dep").status!="frame-ran"); // Startup activates, never ticks native mods.
+                if(mode=="graphics-failure") {
+                    assert(!view("bad-graphics").active&&!view("bad-graphics").reason.empty());
+                }
+                frame(1);assert(view("dep").status=="frame-ran");
+                if(mode=="session") {
+                    auto bytes=[](const fs::path& path){std::ifstream f(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});};
+                    std::string error;
+                    const auto preset=root/"override-preset";fs::create_directories(preset);
+                    std::ofstream(preset/"manifest.json")<<R"({"format_version":1,"id":"override","name":"Override","version":"1.0.0","game_id":"wwhd","kind":"settings","settings":{"jump-anywhere":false}})";
+                    assert(install(preset.string(),error));
+                    const auto saved=bytes(storage/"profiles.json"),native_manifest=bytes(dep/"manifest.json"),native_binary=bytes(dep/"fixture.dylib");
+                    assert(!enable("override",true,error)&&error.find("restart")!=std::string::npos);
+                    assert(view("seed").isolated_save_profile&&!view("dep").isolated_save_profile);
+                    assert(!enable("seed",false,error)&&error.find("restart")!=std::string::npos);
+                    assert(!enable("dep",false,error)&&error.find("restart")!=std::string::npos);
+                    assert(!remove("dep",error)&&error.find("restart")!=std::string::npos);
+                    assert(!begin_setup_run("dep",setup_identity("dep"),{},error)&&error.find("restart")!=std::string::npos);
+                    assert(!save_setup_run("dep",true,error)&&error.find("restart")!=std::string::npos);
+                    assert(!install(dep.string(),error)&&error.find("restart")!=std::string::npos);
+                    assert(!select_profile("Other",error)&&current_profile()=="Default");
+                    assert(!builtin_change_allowed("jump-anywhere",false,error));
+                    assert(mods::manager::find("jump-anywhere")->enabled());
+                    disable_all();
+                    assert(view("seed").enabled&&view("dep").enabled&&!take_toasts().empty());
+                    assert(bytes(storage/"profiles.json")==saved);
+                    assert(bytes(dep/"manifest.json")==native_manifest&&bytes(dep/"fixture.dylib")==native_binary);
+                    // An external edit is checked next startup/load, never by the game-frame path.
+                    std::ofstream(dep/"external-edit")<<"changed after activation";
+                    remember_builtin("fast-forward",false);
+                    frame(2);
+                    assert(view("seed").active&&view("dep").active);
+                }
+
+            }
+        } catch(const mods::save_profile::Error&) {rejected=true;}
+        assert(rejected==(mode=="malformed"||mode=="conflict"||mode=="native-failure"||mode=="compiler-failure"||mode=="changed"));
+        if(rejected)assert(!loaded);
+        std::cout<<"save-profile metadata/startup "<<mode<<" passed\n";
+        return 0;
+    }
     if(argc==4&&std::string(argv[1])=="--quick-use-speed-startup") {
         // Numeric built-in profile options are separate from manifest option schemas.
         const std::string override=argv[2],saved=argv[3];
@@ -195,6 +324,31 @@ int main(int argc, char** argv) {
                      [&](const GuestPackage&,uint32_t){loaded=true;});
         fs::rename(moved,source);
         assert(!inspected&&!loaded&&!view("gc-guest").active);return 0;
+    }
+    if(argc==2&&std::string(argv[1])=="--game-build-constraint") {
+        auto root=unique_temp("wwhd-build-constraint-");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        initialize();std::string error;
+        auto candidate=[&](const std::string& id,const std::string& builds,const std::string& minimum) {
+            auto dir=root/id;fs::create_directories(dir);
+            std::ofstream(dir/"manifest.json")<<R"({"format_version":1,"id":")"+id+
+                R"(","name":")"+id+R"(","version":"1.0.0","game_id":"wwhd","kind":"settings","settings":{"wall-climb":true},"supported_game_builds":)"+builds+
+                (minimum.empty()?"":R"(,"minimum_manager_version":")"+minimum+R"(")")+"}";
+            return dir.string();
+        };
+        assert(install(candidate("usa",R"(["USA"])" ,"1.8.0"),error));
+        assert(view("usa").compatible);
+        assert(install(candidate("both",R"(["USA","EUR"])" ,"1.8.0"),error));
+        assert(view("both").compatible);
+        assert(!install(candidate("eur",R"(["EUR"])" ,"1.8.0"),error));
+        assert(error.find("EUR")!=std::string::npos&&error.find("USA")!=std::string::npos);
+        for(const auto& minimum:{std::string(),std::string("1.7.0")}) {
+            assert(!install(candidate("unguarded",R"(["USA"])" ,minimum),error));
+            assert(error.find("requires minimum_manager_version 1.8.0")!=std::string::npos);
+        }
+        fs::remove_all(root);
+        std::cout<<"Actual manifest parser accepts USA/multiple builds and rejects EUR/missing or old capability guard\n";
+        return 0;
     }
     // manifest game IDs: "wwhd" (any region, manager 1.5) and "wwhd-usa" (older manifests) are this game
     if(argc==2&&std::string(argv[1])=="--game-id") {
@@ -368,6 +522,24 @@ int main(int argc, char** argv) {
 
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==3&&std::string(argv[1])=="--profile-read-failure") {
+        const auto root=unique_temp("wwhd-profile-read-");fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        const std::string mode=argv[2];
+        const std::string bytes=mode=="format"?R"({"format_version":99,"profiles":{"private":{"native_trust":{"keep":"receipt"}}}})":
+                                mode=="size"?std::string(1024*1024+1,' '):"{damaged profile data";
+        {std::ofstream out(root/"profiles.json",std::ios::binary);out<<bytes;}
+        (void)startup_save_profile(); // Early selection must not leave writes enabled either.
+        initialize();
+        std::string error;
+        assert(!create_profile("Do not overwrite",error));
+        remember_builtin("jump-anywhere",true);remember_option("quick-use.speed",1.5);
+        disable_all();
+        {std::ifstream in(root/"profiles.json",std::ios::binary);
+         assert(std::string(std::istreambuf_iterator<char>(in),{})==bytes);}
+        assert(!fs::exists(root/"profiles.json.tmp"));
+        fs::remove_all(root);return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--lock-on-startup") {
         auto root=unique_temp("wwhd-lock-on-");
         fs::create_directories(root);
@@ -820,7 +992,8 @@ int main(int argc, char** argv) {
         mods::json::Value db;db["format_version"]=1;db["active"]="Default";db["profiles"]["Default"]=legacy;
         db["profiles"]["Legacy"]=legacy;db["profiles"]["Legacy"]["enabled_since"]["a"]=0;
         std::ofstream(storage/"profiles.json")<<mods::json::dump(db);
-        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());mods::cemu::set_vulkan(true);initialize();
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());mods::cemu::set_vulkan(true);
+        assert(startup_save_profile().empty());initialize();
         assert(!view("a").enabled&&view("b").enabled&&view("b").active&&view("c").active);
         auto messages=take_notices();assert(messages.size()==1&&messages[0]=="a was turned off: it conflicts with b");assert(take_notices().empty());
         assert(view("a").graphics_conflicts.size()==1&&view("a").graphics_conflicts[0].id=="b");

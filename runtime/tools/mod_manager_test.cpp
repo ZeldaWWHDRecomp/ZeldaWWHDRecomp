@@ -85,7 +85,12 @@ bool get(const char* k, std::string& value) {
 void set(const char* k, const std::string& value) { ++writes;preferences[k]=value; }
 }
 static std::map<std::string,double> remembered;
+static bool builtin_change_permitted = true;
 namespace mods::packages {
+bool builtin_change_allowed(const std::string&,bool,std::string& error) {
+    if (builtin_change_permitted) return true;
+    error = "Restart before changing a save-profile dependency"; return false;
+}
 void remember_builtin(const std::string&,bool) {}
 void remember_option(const std::string& id,double value) { remembered[id]=value; }
 void remember_option(const std::string&,const std::string&) {}
@@ -270,4 +275,13 @@ int main() {
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);
     assert(set_enabled("quick-use",true)&&mods::quick_use());assert(writes==prior);
+    // A frozen profile dependency is refused before live settings or preferences change.
+    env("WWHD_NO_HOST_INPUT", nullptr);
+    const bool before_guard = find("direct-camera")->enabled();
+    const int writes_before_guard = writes;
+    builtin_change_permitted = false;
+    assert(!set_enabled("direct-camera", !before_guard));
+    assert(find("direct-camera")->enabled() == before_guard);
+    assert(writes == writes_before_guard);
+
 }

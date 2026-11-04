@@ -10,7 +10,7 @@ namespace mods::packages {
 inline std::string game_build_constraint_problem(const json::Value& manifest, bool version_guard) {
     if (!manifest.object.contains("supported_game_builds")) return {};
     if (!version_guard)
-        throw std::invalid_argument("supported_game_builds requires minimum_manager_version 1.7.0 or newer");
+        throw std::invalid_argument("supported_game_builds requires minimum_manager_version 1.8.0 or newer");
     const auto& builds = manifest.get("supported_game_builds");
     if (builds.type != json::Value::Array || builds.array.empty() || builds.array.size() > 16)
         throw std::invalid_argument("supported_game_builds must contain 1 to 16 exact build names");
