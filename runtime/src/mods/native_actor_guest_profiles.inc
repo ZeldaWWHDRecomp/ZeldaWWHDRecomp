@@ -13,16 +13,18 @@ bool equal_name(uint32_t at,const uint8_t* name){for(unsigned i=0;i<8;++i){const
 void search_guest_name(Cpu*c){for(const auto&e:guest_entries)if(e.profile.address&&equal_name(c->r[3],e.bytes.data()+0x44)){c->r[3]=e.profile.address+0x44;return;}original(c,GC(0x025C109C));}
 void get_guest_name(Cpu*c){for(const auto&e:guest_entries)if(e.profile.address&&e.profile.id==c->r[3]){c->r[3]=e.profile.address+0x50;return;}original(c,GC(0x025C10E8));}
 }
-bool install_guest(uint32_t pool,const Owner&owner,const Replace&replace,std::string*why){
+bool install_guest(const Allocate&allocate,const Owner&owner,const Replace&replace,std::string*why){
     auto refuse=[&](const char*text){if(why)*why=text;return false;};
-    if(guest_enabled)return pool==guest_pool;
-    if(!valid_storage(pool)||pool>mem::kHostStart-kGuestCapacity*kGuestSlotBytes)return refuse("invalid guest profile pool");
+    if(guest_enabled)return true;
     // The mapped retail table must end at the known final process. Never index
     // extension IDs through retail fpcPf_Get, which has no bounds check.
     const uint32_t last=ld32(GD(0x101F3EE0)+0x1E3*4);
     if(last<0x10000000||last>0x50000000-0x30||ld16(last+8)!=0x1E3)return refuse("unsupported native profile table");
     if(!available(owner,why))return false;
     for(uint32_t a:{GC(0x025C109C),GC(0x025C10E8)})if(!owner(a).empty())return refuse("native actor name lookup already owned");
+    // Allocate last: a refused bridge leaves the startup allocator untouched.
+    const uint32_t pool=allocate();
+    if(!valid_storage(pool)||pool>mem::kHostStart-kGuestCapacity*kGuestSlotBytes)return refuse("invalid guest profile pool");
     guest_pool=pool;guest_enabled=true;
     if(!install(owner,replace,why)){guest_enabled=false;guest_pool=0;return false;}
     replace(GC(0x025C109C),search_guest_name);replace(GC(0x025C10E8),get_guest_name);

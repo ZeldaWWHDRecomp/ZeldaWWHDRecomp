@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0 */
 /* Checked access to the game's persistent event bits/registers. No story events are dispatched.
- * Layout: pinned public d_save.cpp (save prefix) and d_save_3.cpp (native event methods), CC0-1.0.
+ * Layout: generated save.h (save prefix and event offset) and pinned public d_save_3.cpp (native
+ * event methods), CC0-1.0.
  * This handwritten adapter is separate from the generated save.h and bindings.h. */
 #pragma once
 #include "save.h"
@@ -16,7 +17,7 @@
  * mask's original bit positions: selector 0x12F0 reads/writes 0x00, 0x10, ... 0xF0, not 0..15. */
 static inline u32 wwhd_save_flags_detail_event_object(void) {
     const u32 base = WWHD_GAME_DATA(WWHD_ADDR_save_info_pointer, u32);
-    const u32 offset = WWHD_OFFSET_save_info + 0x624;
+    const u32 offset = WWHD_OFFSET_save_info + WWHD_OFFSET_save_event;
     if (base < 0x10000 || (base & 3) || base > 0xFFFFFFFFu - offset - 0xFF) return 0;
     return base + offset;
 }
