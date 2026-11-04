@@ -146,14 +146,19 @@ int main() {
         g_controls.faceLayout.selectedSegment=4;[g_controls faceLayoutChanged:g_controls.faceLayout];
         assert(current()==presetBefore);
         input::ControllerInfo controller;controller.guid="gc-ui";controller.name="GameCube fixture";
-        fixtureControllers={controller};[g_controls syncOptions];
+        fixtureControllers={controller,controller};[g_controls syncOptions];
+        assert(g_controls.bindingTarget.numberOfItems==2); // shared +one editable adapter profile
         [g_controls.bindingTarget selectItemAtIndex:1];[g_controls bindingTargetChanged:g_controls.bindingTarget];
-        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(g_controls.faceLayout.segmentCount==4);
+        for(NSInteger i=0;i<g_controls.faceLayout.segmentCount;++i)
+            assert(![[g_controls.faceLayout labelForSegment:i] containsString:@"automatic"]);
+        g_controls.faceLayout.selectedSegment=2;[g_controls faceLayoutChanged:g_controls.faceLayout];
         assert(current().controllers.size()==1 && current().controllers[0].preset.gamecube);
         assert(current().pad==presetBefore.pad && !current().preset.gamecube);
-        g_controls.faceLayout.selectedSegment=4;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
         assert(current().controllers[0].pad==presetBefore.pad);
         [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+        assert(g_controls.faceLayout.segmentCount==5 && [g_controls.faceLayout isEnabledForSegment:3]);
         input_map::set_current(presetBefore,false);
         for (int i=0;i<3;++i) {
             NSButton* button = g_controls.cameraButtons[i];
