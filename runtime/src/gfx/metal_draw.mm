@@ -2214,9 +2214,9 @@ void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0)
     static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
     if(aspect::game_frame()<first)return;
     // Empty scanouts before a menu appears must not exhaust the pane quota.
-    static unsigned logged[7]{};
-    const char* phases[]={"begin","end","draw","blend","replay","clear","scan"};
-    unsigned slot=0;while(slot<6 && std::strcmp(phase,phases[slot]))++slot;
+    static unsigned logged[13]{};
+    const char* phases[]={"begin","end","draw","blend","replay","clear","scan","prepare","format-reject","existing-reject","pool-reject","texture-reject","encoder-reject"};
+    unsigned slot=0;while(slot<12 && std::strcmp(phase,phases[slot]))++slot;
     if(logged[slot]++ >= (slot>=5?16u:100u))return;
     LOG("[metal backdrop] phase=%s game=%llu render=%llu a=%llx b=%llx c=%llx",phase,
         (unsigned long long)aspect::game_frame(),(unsigned long long)R.frame,
@@ -2236,10 +2236,15 @@ unsigned capture_coverage(const uint32_t* regs) {
 }
 bool prepare_backdrop(Surface* source, unsigned coverage) {
     const auto pixel = source->tex.pixelFormat;
+    backdrop_trace("prepare",pixel,(uint64_t(source->tex.width)<<32)|source->tex.height,backdropPool.size());
     if (pixel != MTLPixelFormatRGBA8Unorm && pixel != MTLPixelFormatRGBA8Unorm_sRGB &&
         pixel != MTLPixelFormatBGRA8Unorm && pixel != MTLPixelFormatBGRA8Unorm_sRGB &&
-        pixel != MTLPixelFormatRGBA16Float) return false;
-    if (backdropCapture) return backdropCapture->source.matches(source->tex) && backdropCapture->coverage == coverage;
+        pixel != MTLPixelFormatRGBA16Float) {backdrop_trace("format-reject",pixel);return false;}
+    if (backdropCapture) {
+        const bool match=backdropCapture->source.matches(source->tex) && backdropCapture->coverage == coverage;
+        if(!match)backdrop_trace("existing-reject",backdropCapture->source.key(),metal_backdrop_source_key(source->tex),backdropCapture->coverage);
+        return match;
+    }
     auto capture = std::make_shared<BackdropCapture>();
     capture->source.texture = source->tex; capture->ticket = ++backdropTicket; capture->coverage = coverage;
     capture->surface = std::make_unique<Surface>(*source);
@@ -2257,7 +2262,11 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
         capture->storage = slot; break;
     }
     if (!capture->storage) {
-        if (backdropPool.size() >= 4) return false; // Edge-colour fallback, never wait on the GPU.
+        if (backdropPool.size() >= 4) {
+            uint64_t flags=0;unsigned index=0;
+            for(const auto& slot:backdropPool) { flags|=uint64_t(slot->complete.load())<<(index*2);flags|=uint64_t(slot->texture==R.drc.backdrop)<<(index*2+1);++index; }
+            backdrop_trace("pool-reject",flags,pendingBackdrops.size());return false;
+        } // Edge-colour fallback, never wait on the GPU.
         capture->storage = std::make_shared<BackdropStorage>();
         backdropPool.push_back(capture->storage);
     }
@@ -2265,7 +2274,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != pixel)
         storage->texture = [R.device newTextureWithDescriptor:d];
     surface.tex = storage->texture;
-    if (!surface.tex) return false;
+    if (!surface.tex) {backdrop_trace("texture-reject",pixel,d.width,d.height);return false;}
     end_encoder();
     MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = surface.tex;
@@ -2273,7 +2282,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, coverage == 2 ? 1 : 0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
-    if (!encoder) return false;
+    if (!encoder) {backdrop_trace("encoder-reject",pixel,d.width,d.height);return false;}
     [encoder endEncoding];
     storage->complete.store(false,std::memory_order_release);
     backdropCapture = std::move(capture);
