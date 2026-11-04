@@ -2281,7 +2281,9 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
                 capture->storage->complete.store(true,std::memory_order_release);
             }];
         }
-        if (backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid) {
+        const bool complete = backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid;
+        metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
+        if (complete) {
             if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
             backdropScans.capture(backdropCapture->source.key(), backdropCapture->ticket);
             pendingBackdrops.push_back(backdropCapture);
