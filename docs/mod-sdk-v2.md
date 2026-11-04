@@ -120,10 +120,11 @@ callee's frame preserves its local storage and stack-passed arguments at either
 entry alignment. This flag belongs to the PowerPC compile, not the host compiler
 that later builds the translated module.
 
-Recompile and relink existing guest ELFs with this flag. Installing a newer
-runtime or translating an old ELF again cannot add the missing realignment
-prologue. Stack alignment must be supplied by the guest compiler; a runtime ABI
-bridge cannot repair precompiled guest code.
+Recompile and relink existing guest ELFs with this flag. Current translation
+does not add the missing compiler-generated realignment prologue. An entry-time
+runtime wrapper is a possible additional protection for older modules, but it
+must preserve stack-passed arguments and by-reference data; simply rounding the
+stack pointer is not sufficient. This change supplies the compile-time fix.
 
 ### Package and install
 
