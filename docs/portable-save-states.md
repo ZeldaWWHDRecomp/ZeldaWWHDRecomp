@@ -50,6 +50,10 @@ names the reason (`[savestate] slot N: portable state refused: ...`). This cover
 and Shift+F1–F5. Full save states and Crash Recovery's automatic states can be made at any time.
 Loading is not affected.
 
+A state saved while crawling loads with Link still crawling, so loading inside a low tunnel
+no longer puts him standing in its ceiling. This works with existing portable states too.
+Standing and boat states load as before.
+
 ## Last session, auto saves and At start
 
 The Saves tab's **Last session and auto saves** section holds portable states in their own slots;

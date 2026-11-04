@@ -135,6 +135,10 @@ int main() {
         const float wide=aspect::game()/(16.f/9);
         assert(close(drawn[0],1.f/(640*wide)));
     }
+    // The 4:3 preset uses the same Vert+ projection and keeps HUD particles round and anchored.
+    mode(aspect::k4x3);pane_at(390,280);draw(7);
+    const float tall=(16.f/9)/(4.f/3);
+    assert(close(drawn[5],-1.f/(360*tall)) && close(drawn[7],(tall-1)/tall));
     mode(aspect::k16x10);pane_at(390,280);
     // HUD effects inherit the fade of their pane's ancestors, even at the original aspect.
     mode(aspect::kOriginal);pane_at(390,280);capture();

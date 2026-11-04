@@ -484,6 +484,7 @@ void install_menu(NSWindow* tv) {
     add(g, @"    16:9 (original)", @selector(setAspect:), @"", aspect::kOriginal);
     add(g, @"    Match window", @selector(setAspect:), @"", aspect::kWindow).toolTip =
         @"The picture takes the shape of the TV window (or the screen in full screen): wider shows more to the sides";
+    add(g, @"    4:3", @selector(setAspect:), @"", aspect::k4x3);
     add(g, @"    16:10", @selector(setAspect:), @"", aspect::k16x10);
     add(g, @"    21:9", @selector(setAspect:), @"", aspect::k21x9);
     add(g, @"    32:9", @selector(setAspect:), @"", aspect::k32x9);

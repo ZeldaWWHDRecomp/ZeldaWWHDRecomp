@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <utility>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -42,6 +44,25 @@ static Cpu camera() {
 }
 static bool close_enough(double a,double b) { return std::abs(a-b)<.0001; }
 int main() {
+    static_assert(aspect::kOriginal==0 && aspect::kWindow==1 && aspect::k16x10==2 &&
+                  aspect::k21x9==3 && aspect::k32x9==4 && aspect::kCustom==5);
+    static_assert(aspect::is_preset(aspect::k4x3) && !aspect::is_preset(aspect::kCustom));
+    assert(std::strcmp(aspect::mode_name(aspect::k4x3), "4:3")==0);
+    assert(close_enough(aspect::mode_value(aspect::k4x3),4.f/3));
+    if(const char* ratio=std::getenv("WWHD_ASPECT"); ratio && std::strcmp(ratio,"4:3")==0) {
+        assert(aspect::mode()==aspect::k4x3);
+        assert(close_enough(aspect::requested(),4.f/3));
+    }
+    // Match window agrees with the exact presets, including integer-pixel 4:3 dimensions.
+    aspect::set_mode(aspect::kWindow);
+    for (auto dimensions : {std::pair{1280.f,960.f}, std::pair{1280.f,800.f},
+                            std::pair{1920.f,1080.f}, std::pair{2560.f,1080.f}, std::pair{3840.f,1080.f}}) {
+        const float ratio = dimensions.first / dimensions.second;
+        aspect::set_window_aspect(ratio);
+        assert(close_enough(aspect::requested(),ratio));
+    }
+    aspect::set_window_aspect(1281.f/960.f);assert(close_enough(aspect::requested(),4.f/3));
+    aspect::set_window_aspect(1.431f);assert(close_enough(aspect::requested(),1.43f));
     for(uint32_t base:{0x101E0000u,0x10460000u}) {
         void* address=mem::ptr(base);
 #ifdef _WIN32
@@ -53,7 +74,7 @@ int main() {
     const uint32_t play=0x1046F0B0;
     std::strcpy((char*)mem::ptr(play+0x5134),"sea");
     st32(play+0x5B34,0x15000000);st32(play+0x5B2C,0x15000000);
-    for(int mode:{aspect::kOriginal,aspect::k16x10,aspect::k21x9,aspect::k32x9}) {
+    for(int mode:{aspect::kOriginal,aspect::k4x3,aspect::k16x10,aspect::k21x9,aspect::k32x9}) {
         aspect::set_mode(mode);aspect::set_fov_scale(1);aspect::on_swap();
         auto original=camera();site_024FFD60(&original);
         aspect::set_fov_scale(1.5f);aspect::on_swap();
@@ -97,7 +118,7 @@ int main() {
     auto stock=camera();site_024FFD60(&stock);assert(stock.f[1].ps0==45);
     aspect::set_fov_scale(std::numeric_limits<float>::quiet_NaN());assert(aspect::fov_scale()==1);
     aspect::set_fov_scale(100);assert(aspect::fov_scale()==2.5f);aspect::on_swap();
-    for(int mode:{aspect::kOriginal,aspect::k16x10,aspect::k21x9,aspect::k32x9}) {
+    for(int mode:{aspect::kOriginal,aspect::k4x3,aspect::k16x10,aspect::k21x9,aspect::k32x9}) {
         aspect::set_mode(mode);aspect::on_swap();
         for(float input:{30.f,45.f,60.f,90.f}) {
             auto wide=camera();wide.f[1].ps0=input;site_024FFD60(&wide);

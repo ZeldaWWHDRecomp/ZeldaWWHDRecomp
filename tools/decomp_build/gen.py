@@ -17,10 +17,13 @@ never the source tree or the submodule) and is rewritten only when it changes:
   glue/N.cpp        per unit: tools/decomp_build/glue.cpp with the unit's name
   functions.tsv     address, unit, name of every listed function
   excluded.txt      decompiled functions that stay recompiled, with the reason
+  skipped.txt       verify units that are not game code (a harness control/companion source, or a source
+                    that is not in the tree), with the reason
   glued/PATH        GameCube-style sources (a `/* WWHD glue` block) as the decompilation's harness compiles
                     them: rewritten by its tools/verify/autoglue.py (function entry glue, VERIFY marks, guest
                     views of static tables, guest copies of string literals)
-  include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py)
+  include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py; a decompilation
+                    without assets.py has none)
   verify/image.bin  the loaded sections of the game's code (tools/verify/mkimage.py)
 
 The last three are made from your own copy of the game (--game, cking.rpx of the USA game): the
@@ -28,11 +31,12 @@ decompilation does not contain the game's model data, and autoglue reads the con
 and checks the tables against the game's code. They are game data: they stay in OUT_DIR. Sources
 without a glue block need nothing from the game; a decompilation without any needs no --game.
 
-Game units: verify units (tools/verify/units/*.txt) that share source files with VERIFY marks form one
+Game units: verify units (tools/verify/units/*.txt; with the decompilation's tools/verify/specfile.py: the
+specs its own gates run, sub-folders and `include` lines too) that share source files with VERIFY marks form one
 game unit (connected components), named after its shortest verify-unit name. A shared source without
 marks (support code: guest-call stubs, the translation unit's gc_tu) is compiled into each game unit
 that lists it, as each verify unit is its own program in the decompilation's harness. Every
-`VERIFY(0xADDR, fn)` in its sources is a candidate for ADDR. Excluded here: addresses the runtime already hooks (hooks*.txt; the
+`VERIFY(0xADDR, fn)` in its sources is a candidate for ADDR. Excluded here: addresses the runtime already hooks (hooks*.txt, decomp_only_hooks_*.txt; the
 decompiled function would bypass that hook) and addresses verified in more than one game unit (the
 first unit by name keeps it). recomp.py excludes the rest, which needs the game's code: an address
 that is not a function entry, or a function containing an instruction-level hook ("@ADDR").
@@ -54,19 +58,59 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
 
 
-def read_units(src):
-    units = {}
-    for f in sorted(glob.glob(os.path.join(src, "tools/verify/units/*.txt"))):
-        u = os.path.basename(f)[:-4]
-        srcs = []
+def unit_specs(src):
+    """the verify-unit specs of the decompilation -> [(unit name, [spec lines])]. A decompilation with
+    tools/verify/specfile.py (unit specs with `include` lines and specs in sub-folders) is read as its own
+    gates read it: specfile.gated_specs (which leaves out units/shared/ and the units/_NAME/ self-tests and
+    diagnosis specs) and specfile.expanded_lines. Without it: units/*.txt, line by line. A spec in a
+    sub-folder is named with `__` for each `/` (game unit names become file names)."""
+    vdir = os.path.join(src, "tools", "verify")
+    if os.path.isfile(os.path.join(vdir, "specfile.py")):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("decomp_specfile", os.path.join(vdir, "specfile.py"))
+        specfile = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(specfile)
+        udir = os.path.join(vdir, "units")
+        return [(name.replace("\\", "/").replace("/", "__"), specfile.expanded_lines(os.path.join(udir, name + ".txt")))
+                for name in specfile.gated_specs(udir)]
+    out = []
+    for f in sorted(glob.glob(os.path.join(vdir, "units", "*.txt"))):
         with open(f, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                t = line.split("#")[0].split()
-                if t and t[0] == "src":
-                    srcs += t[1:]
-        if srcs:
+            out.append((os.path.basename(f)[:-4], fh.read().splitlines()))
+    return out
+
+
+def spec_files(src):
+    """every spec file (include fragments too): CMake configures again when one of them changes"""
+    return [p for p in glob.glob(os.path.join(src, "tools", "verify", "units", "**", "*.txt"), recursive=True)]
+
+
+VERIFY_ONLY = "tools/verify/units/"  # sources of the harness's control and companion variants
+
+
+def read_units(src):
+    """-> (units: name -> [sources], skipped: [(name, why)]). A spec is not game code when it compiles a source
+    of the verification harness itself (tools/verify/units/...: control and companion variants that define a
+    game function a second time) or when one of its sources is not in the tree (a spec of generated
+    sources); both are skipped and listed in skipped.txt."""
+    units, skipped = {}, []
+    for u, lines in unit_specs(src):
+        srcs = []
+        for line in lines:
+            t = line.split("#")[0].split()
+            if t and t[0] == "src":
+                srcs += [x for x in t[1:] if x not in srcs]
+        if not srcs:
+            continue
+        own = [x for x in srcs if x.replace("\\", "/").startswith(VERIFY_ONLY)]
+        missing = [x for x in srcs if not os.path.isfile(os.path.join(src, x))]
+        if own:
+            skipped.append((u, "verify-only source %s" % " ".join(own)))
+        elif missing:
+            skipped.append((u, "source not in the tree: %s" % " ".join(missing)))
+        else:
             units[u] = srcs
-    return units
+    return units, skipped
 
 
 def components(units, joins=None):
@@ -147,7 +191,11 @@ class Glue:
                 sys.exit("gen.py: mkimage.py failed:\n%s%s" % (r.stdout, r.stderr))
             os.replace(self.image + ".tmp", self.image)
         sys.path.insert(0, os.path.join(self.src, "tools", "verify"))
-        import assets
+        # the public snapshot has tools/verify/assets.py (model data headers from the game); a decompilation
+        # without it keeps that data in its sources and needs no headers
+        assets = None
+        if os.path.isfile(os.path.join(self.src, "tools", "verify", "assets.py")):
+            import assets
         import autoglue
         with open(self.image, "rb") as fh:
             d = fh.read()
@@ -157,7 +205,8 @@ class Glue:
             i += 8
             regs.append((a, d[i:i + n]))
             i += n
-        assets.IMAGE, assets.OUT, assets._image = self.image, os.path.join(self.include, "assets"), regs
+        if assets:
+            assets.IMAGE, assets.OUT, assets._image = self.image, os.path.join(self.include, "assets"), regs
         autoglue._image = regs
         self.mods = (assets, autoglue)
         return self.mods
@@ -165,6 +214,8 @@ class Glue:
     def assets(self):
         """every header of tools/verify/assets.txt (as verify.py prepare_shared does)"""
         assets, _ = self.load()
+        if not assets:
+            return 0
         try:
             man = assets.manifest()
             for h in man:
@@ -275,7 +326,8 @@ def _glue_worker(rel):
 
 def runtime_hooks():
     """The functions the runtime hooks itself (canonical addresses; instruction sites are left to recomp.py)."""
-    entries, _ = game_builds.read_hooks(game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")),
+    d = os.path.join(ROOT, "tools", "recomp")
+    entries, _ = game_builds.read_hooks(game_builds.hook_files(d) + game_builds.decomp_only_hook_files(d),
                                         game_builds.canonical_build())
     return {canon for site, canon, _, _ in entries if not site}
 
@@ -323,7 +375,8 @@ def main():
             sys.exit("gen.py: %s has no %s (run: git submodule update --init decomp)" % (src, need))
     os.makedirs(os.path.join(out, "glue"), exist_ok=True)
 
-    units = read_units(src)
+    units, skipped = read_units(src)
+    write_if_changed(os.path.join(out, "skipped.txt"), "".join("%-40s %s\n" % x for x in skipped))
     hooks = runtime_hooks()
     gluer = Glue(src, out, os.path.abspath(a.game) if a.game else None)
     texts = {}          # source (relative) -> its text as compiled
@@ -437,11 +490,15 @@ def main():
                 cm.append('set_property(SOURCE "%s" APPEND PROPERTY COMPILE_OPTIONS -iquote "%s")' % (
                     cmake_path(compiled[s]), cmake_path(os.path.dirname(os.path.join(src, s)))))
     # what the lists above depend on: CMake configures again when one of these changes
-    deps.update(cmake_path(p) for p in glob.glob(os.path.join(src, "tools/verify/units/*.txt")))
+    deps.update(cmake_path(p) for p in spec_files(src))
+    if os.path.isfile(os.path.join(src, "tools", "verify", "specfile.py")):
+        deps.add(cmake_path(os.path.join(src, "tools", "verify", "specfile.py")))
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
+    deps.update(cmake_path(p) for p in game_builds.decomp_only_hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
     if n_glued:
-        deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt"))
+        deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
+                    if os.path.isfile(os.path.join(src, "tools", "verify", f)))
         deps.add(cmake_path(gluer.rpx))
     cm.append("set(WWHD_DECOMP_GEN_DEPENDS\n  %s)" % "\n  ".join('"%s"' % d for d in sorted(deps)))
     write_if_changed(os.path.join(out, "units.cmake"), "\n".join(cm) + "\n")
@@ -450,6 +507,8 @@ def main():
     print("decomp: %d game units, %d functions decompiled, %d excluded (%s); %d of %d sources glued, %d model "
           "data headers" % (len(units_used), len(listed), len(excluded), os.path.join(out, "excluded.txt"),
                             n_glued, len(compiled), n_assets))
+    if skipped:
+        print("decomp: %d verify units skipped (not game code: %s)" % (len(skipped), os.path.join(out, "skipped.txt")))
 
 
 if __name__ == "__main__":

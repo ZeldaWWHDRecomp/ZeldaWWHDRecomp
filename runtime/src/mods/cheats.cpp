@@ -16,6 +16,9 @@
 // Infinite rupees / bait and spoils / swimming and "Fill the bags": idea and offsets from
 // GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0).
 // WWHD_CHEAT_SAVE_ADDR=hex overrides the address (another game version).
+// Explicit story-grant test aid: WWHD_STORY_ITEM=nayru,din,farore,sword requires
+// WWHD_STORY_ITEM_ACK=1; WWHD_STORY_ITEM_AT=logic_step delays it until a portable load settles.
+// It uses the same mandatory backup as the UI and never sets story event/placement flags.
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +32,7 @@
 #include "mods.h"
 #include "runtime.h"
 #include "savestate.h"
+#include "save_backup.h"
 
 namespace mods {
 namespace {
@@ -41,6 +45,7 @@ constexpr uint32_t kItems = 0x3C;       // u8[21] item number per inventory slot
 constexpr uint32_t kGetItems = 0x51;    // u8[21] "got" bits per slot (bow: 1 fire/ice, 2 light)
 constexpr uint32_t kArrowNum = 0x69, kBombNum = 0x6A, kArrowMax = 0x6F, kBombMax = 0x70;
 constexpr uint32_t kCollect = 0xB4;     // u8[8]: [0] swords, [1] shields, [2] bracelets
+constexpr uint32_t kSymbol = 0xBF;  // Nayru, Din, Farore: bits 0, 1, 2 (itemAcquireSymbol, 025B7CC0)
 constexpr uint32_t kTact = 0xBD, kTriforce = 0xBE;  // song bits (6), Triforce shard bits (8)
 constexpr uint32_t kSelectItems = 0x09;  // u8[3]: the item on X / Y / R (inventory slot; bait 36..43)
 // the bags (dSv_player_bag_item_c / _get_bag_item_c / _bag_item_record_c): the items in the spoils /
@@ -256,6 +261,58 @@ std::atomic<int> g_pending{parse_env("WWHD_CHEAT", {{"items", kCheatItems}, {"sw
                                                     {"songs", kCheatSongs}, {"triforce", kCheatTriforce},
                                                     {"dungeon", kCheatDungeon}, {"key", kCheatKey}, {"bags", kCheatBags},
                                                     {"figurines", kCheatFigurines}})};
+// Explicit test/CLI requests use the same backup gate and require a separate acknowledgement.
+std::atomic<int> g_story_pending{parse_env("WWHD_STORY_ITEM", {{"nayru", kStoryNayru}, {"din", kStoryDin},
+                                                          {"farore", kStoryFarore}, {"sword", kStorySword}})};
+std::atomic<bool> g_story_confirmed{[]{const char* e=getenv("WWHD_STORY_ITEM_ACK");return e && !strcmp(e,"1");}()};
+bool g_story_backed_up = false; // game thread, this process only; never saved as an enabled cheat
+
+void story_items(uint32_t s, int items) {
+    if (!g_story_confirmed.load(std::memory_order_acquire)) {
+        ss::notice("This can change or break the story's order. A save backup is made first. Confirm in Mods > More > Cheats.");
+        return;
+    }
+    if (!g_story_backed_up) {
+        std::lock_guard guard(saves::mutex());
+        auto& store = saves::store();
+        std::error_code error;
+        const auto saved_game = store.save_dir()/"user"/"cking.sav";
+        if (!store.configured() || !std::filesystem::is_regular_file(saved_game,error) ||
+            std::filesystem::file_size(saved_game,error)==0 || error) {
+            ss::notice("Save in the game first: story items require a save backup.");
+            return;
+        }
+        auto result = store.create("before-mod", "story-items", "Story item cheats");
+        if (!result.ok || !result.created) {
+            ss::notice(result.ok ? "Save in the game first: story items require a save backup."
+                                 : "Story item not granted: " + result.error);
+            return;
+        }
+        const auto backed_up = store.root()/result.name/"save"/"user"/"cking.sav";
+        if (!std::filesystem::is_regular_file(backed_up,error) ||
+            std::filesystem::file_size(backed_up,error)==0 || error) {
+            ss::notice("Story item not granted: the backup has no in-game save.");
+            return;
+        }
+        g_story_backed_up = true;
+    }
+    // Match the individual native inventory grants; never call cutscenes or set placement events.
+    uint8_t symbols = 0;
+    if (items & kStoryNayru) symbols |= 1;
+    if (items & kStoryDin) symbols |= 2;
+    if (items & kStoryFarore) symbols |= 4;
+    if (symbols) st8(s+kSymbol, ld8(s+kSymbol)|symbols);
+    if (items & kStorySword) {
+        // item_func_master_sword_ex sets only phase 3 (0254EFA8), not earlier phase 2.
+        // Phase 2 is the Medli-removal gate (#85); unrelated ownership and event bits stay intact.
+        st8(s+kCollect, ld8(s+kCollect)|8);
+        st8(s+kSelectEquip, 0x3E);
+    }
+    LOG("[cheats] story item grant %d; symbols=%02X sword ownership=%02X (backup completed)",
+        items, ld8(s+kSymbol), ld8(s+kCollect));
+    ss::notice("Story item granted. Save in game to keep it. Backup: Mods > More > Save backups.");
+}
+
 std::atomic<int> g_infinite{parse_env("WWHD_CHEAT_INFINITE", {{"health", kInfHealth}, {"magic", kInfMagic}, {"ammo", kInfAmmo}, {"moonjump", kMoonJump}, {"nofall", kMoonNoFall},
                                                                {"rupees", kInfRupees}, {"bags", kInfBags}, {"breath", kInfBreath}})};
 std::atomic<uint32_t> moon_buttons{0}, moon_camera{0};
@@ -279,6 +336,16 @@ constexpr uint32_t moon_ground_flags = 0x834, moon_fall_height = 0x6A48;
 }  // namespace
 
 void request_cheat(int which) { g_pending |= which; }
+bool story_item_confirmation_needed() { return !g_story_confirmed.load(std::memory_order_acquire); }
+void request_story_item(int which, bool confirmed) {
+    if (!(which & (kStoryNayru|kStoryDin|kStoryFarore|kStorySword))) return;
+    if (confirmed) g_story_confirmed.store(true, std::memory_order_release);
+    if (!g_story_confirmed.load(std::memory_order_acquire)) {
+        ss::notice("This can change or break the story's order. A save backup is made first. Confirm in Mods > More > Cheats.");
+        return;
+    }
+    g_story_pending.fetch_or(which & (kStoryNayru|kStoryDin|kStoryFarore|kStorySword), std::memory_order_release);
+}
 bool infinite(int which) { return g_infinite.load(std::memory_order_relaxed) & which; }
 void set_infinite(int which, bool on) {
     if (on) g_infinite |= which;
@@ -384,9 +451,24 @@ void cheats_service() {
     int inf = g_infinite.load(std::memory_order_relaxed) &
               (kInfHealth | kInfMagic | kInfAmmo | kInfRupees | kInfBags | kInfBreath);
     if (!(inf & kInfBags)) bag_memory.s = 0;  // switched on again: start from the bags as they are
-    if (!g_pending.load(std::memory_order_relaxed) && !inf) return;
+    int story = g_story_pending.exchange(0, std::memory_order_acq_rel);
+    if (story && getenv("WWHD_STORY_ITEM")) {
+        if (const char* at = getenv("WWHD_STORY_ITEM_AT"); at && step() < strtoull(at,nullptr,10)) {
+            g_story_pending.fetch_or(story,std::memory_order_relaxed);
+            story = 0;
+        }
+    }
+    if (!g_pending.load(std::memory_order_relaxed) && !inf && !story) return;
     uint32_t s = save_addr();
-    if (!save_loaded(s)) return;  // stays pending until a file is loaded
+    if (!save_loaded(s)) {
+        if (story) {
+            if (getenv("WWHD_STORY_ITEM")) g_story_pending.fetch_or(story, std::memory_order_relaxed);
+            else ss::notice("Load a Quest Log before granting story items.");
+        }
+        return;
+    }
+    if (story) story_items(s, story);
+    // Ordinary cheats keep their existing pending-until-load behavior.
     // ponytail: topped up once per frame, so a single hit bigger than your whole health still kills
     if (inf & kInfHealth) st16(s + kLife, ld16(s + kMaxLife));
     if (inf & kInfMagic) st8(s + kMagic, ld8(s + kMaxMagic));

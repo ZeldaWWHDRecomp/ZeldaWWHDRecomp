@@ -254,13 +254,13 @@ struct Ui {
     int language_region_at_start = 0;
     bool linearized = false;
     bool just_opened = false;
+    int controls_page = 0, select_controls_page = -1;
 #ifdef __ANDROID__
     bool list_view = true;
 #else
     bool list_view = false;
 #endif  // Controls: the table instead of the drawing
     int hover_action = -1;   // Controls: input under the cursor (status line)
-    float options_height = 0;  // Controls: the options under the drawing, last frame (they wrap when narrow)
 };
 Ui U;
 
@@ -1004,7 +1004,7 @@ void tab_graphics() {
 
     heading("Aspect ratio");
     int am = aspect::mode();
-    for (int i = aspect::kOriginal; i <= aspect::k32x9; i++) {
+    for (const auto i : aspect::kPresets) {
         if (i) flow::next(flow::check(aspect::mode_name(i)));
         if (radio(aspect::mode_name(i), am == i))
             post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
@@ -1926,6 +1926,41 @@ void cheats() {
         int bit = which;
         if (check(label, mods::infinite(bit), &v)) hostui::post([bit, v] { mods::set_infinite(bit, v); });
     }
+    static int story_item = 0;
+    if (ImGui::CollapsingHeader("Story items")) {
+        note("Inventory only. Place the pearls at the statues yourself.");
+        note("A backup of your last in-game save is made before the first grant this session.");
+        const std::pair<const char*,int> items[] = {{"Nayru's Pearl",mods::kStoryNayru},
+            {"Din's Pearl",mods::kStoryDin}, {"Farore's Pearl",mods::kStoryFarore},
+            {"Own the fully upgraded Master Sword",mods::kStorySword}};
+        bool first = true;
+        for (const auto& [label,item] : items) {
+            if (!first) modsui::same_line_if_fits(label);
+            first = false;
+            if (ImGui::Button(label)) {
+                if (mods::story_item_confirmation_needed()) {
+                    story_item = item;
+                    ImGui::OpenPopup("Story item warning");
+                } else mods::request_story_item(item);
+            }
+        }
+        help("Story checks can react to ownership alone. Sword upgrades can remove characters from earlier locations. "
+             "Restore a backup from Mods > More > Save backups if needed; loading an older save state can also restore old item flags.");
+    }
+    ImGui::SetNextWindowSize(ImVec2(std::min(460.f,ImGui::GetIO().DisplaySize.x-24.f),0.f),ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Story item warning",nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("This can change or break the story's order. A save backup is made first.");
+        ImGui::TextWrapped("The backup contains your last in-game save. No item is granted if the backup fails. "
+                            "Pearls still need placing at the statues. Upgraded sword ownership can change which characters appear.");
+        if (ImGui::Button("Back up and give item")) {
+            mods::request_story_item(story_item,true);
+            story_item = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        modsui::same_line_if_fits("Cancel");
+        if (ImGui::Button("Cancel")) { story_item = 0; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
     heading("Story cheats (can break story events; use a spare save file)");
     auto story = [first = true](const char* label, int which) mutable {
         if (!first) modsui::same_line_if_fits(label);
@@ -2199,7 +2234,7 @@ void load_gyro() {
         if (hostui::get(k, v)) saved.emplace_back(k, v);
     motion::set_settings(motion::from_saved(saved));
 }
-// the Gyro dialog (Controls tab > Gyro..., gyro_popup.h): what it changes is saved at once
+// the Gyro dialog (Controls > Controller > Gyro..., gyro_popup.h): what it changes is saved at once
 void gyro_window(bool& open) {
     motion::Settings g = motion::settings(), before = g;
     const bool back = navigation_pressed(input_map::face_input(input_map::kB));
@@ -2299,7 +2334,9 @@ void touch_question_check(bool open) {
     if (decided || render::frame_count() < 120) return;  // (the game's first pictures are up)
     decided = true;
 #ifdef __ANDROID__
-    const bool touch = true;
+    // test runs (WWHD_NO_HOST_INPUT, e.g. tools/android/bench_phone.py) read no settings.ini, so the question
+    // would open Settings over every run; they skip it unless the test asks for it
+    const bool touch = !getenv("WWHD_NO_HOST_INPUT") || getenv("WWHD_TEST_TOUCH_QUESTION");
 #else
     const bool touch = getenv("WWHD_TEST_TOUCH_QUESTION") != nullptr;
 #endif
@@ -2331,33 +2368,43 @@ void start_controller_setup(const std::string& guid, const std::string& name) {
     setup_state().begin(guid, name, false);
 }
 
-// Controls tab, top: which bindings the drawing edits, the setup, the details, L and the GamePad page
-void controller_row() {
+// Controls profile chooser, with optional setup and controller-details actions.
+void controller_row(bool tools = true) {
     const input_map::Mapping cur = input_map::current();
     const auto connected = controller_details::ordered(input::controllers());
-    struct Entry { std::string guid, name; bool connected; };
+    struct Entry {
+        std::string guid, name;
+        bool connected;
+    };
     std::vector<Entry> entries;
     for (const auto& c : connected)
-        if (!c.is_virtual) entries.push_back({c.guid, c.name, true});
+        if (!c.is_virtual)
+            entries.push_back({c.guid, c.name, true});
     for (const auto& p : cur.controllers) {
         bool seen = false;
-        for (const auto& e : entries) seen |= e.guid == p.guid && e.name == p.name;
-        if (!seen) entries.push_back({p.guid, p.name, false});
+        for (const auto& e : entries)
+            seen |= e.guid == p.guid && e.name == p.name;
+        if (!seen)
+            entries.push_back({p.guid, p.name, false});
     }
-    if (g_edit_controller) {  // still listed (connected or with bindings of its own)?
+    if (g_edit_controller) { // still listed (connected or with bindings of its own)?
         bool listed = false;
-        for (const auto& e : entries) listed |= e.guid == g_edit_guid && e.name == g_edit_name;
-        if (!listed) g_edit_controller = false;
+        for (const auto& e : entries)
+            listed |= e.guid == g_edit_guid && e.name == g_edit_name;
+        if (!listed)
+            g_edit_controller = false;
     }
     const bool own = g_edit_controller && edit_index(cur) >= 0;
-    const std::string preview = !g_edit_controller ? std::string("All controllers")
-                                                   : g_edit_name + (own ? " (its own)" : " (shared)");
+    const std::string preview =
+        !g_edit_controller ? std::string("All controllers") : g_edit_name + (own ? " (its own)" : " (shared)");
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Bindings for");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(std::min(ImGui::GetFontSize() * 16, std::max(ImGui::GetFontSize() * 8, ImGui::GetContentRegionAvail().x)));
+    ImGui::SetNextItemWidth(
+        std::min(ImGui::GetFontSize() * 16, std::max(ImGui::GetFontSize() * 8, ImGui::GetContentRegionAvail().x)));
     if (ImGui::BeginCombo("##bindings_for", preview.c_str())) {
-        if (selectable("All controllers (shared)", !g_edit_controller)) g_edit_controller = false;
+        if (selectable("All controllers (shared)", !g_edit_controller))
+            g_edit_controller = false;
         for (size_t i = 0; i < entries.size(); i++) {
             const auto& e = entries[i];
             const bool has = input_map::profile_index(cur, e.guid, e.name) >= 0;
@@ -2372,45 +2419,34 @@ void controller_row() {
         ImGui::EndCombo();
     }
     help("Each controller can keep its own buttons (Set up controller makes them). The others use the shared "
-         "ones. The drawing below edits the bindings chosen here; the keyboard is always shared.");
-    if (g_edit_controller) {
-        const char* label = own ? "Use the shared buttons" : "Give it its own buttons";
-        flow::next(flow::button(label));
-        if (ImGui::Button(label)) {
-            input_map::Mapping m = cur;
-            if (own) input_map::remove_profile(m, input_map::profile_index(m, g_edit_guid, g_edit_name));
-            else input_map::ensure_profile(m, g_edit_guid, g_edit_name);
-            input_map::set_current(m);
+         "ones. The options here edit the bindings chosen here; the keyboard is always shared.");
+    if (tools) {
+        if (g_edit_controller) {
+            const char* label = own ? "Use the shared buttons" : "Give it its own buttons";
+            flow::next(flow::button(label));
+            if (ImGui::Button(label)) {
+                input_map::Mapping m = cur;
+                if (own)
+                    input_map::remove_profile(m, input_map::profile_index(m, g_edit_guid, g_edit_name));
+                else
+                    input_map::ensure_profile(m, g_edit_guid, g_edit_name);
+                input_map::set_current(m);
+            }
         }
+        std::string guid, name;
+        const bool target = setup_target(guid, name);
+        flow::next(flow::button("Set up controller..."));
+        ImGui::BeginDisabled(!target);
+        if (ImGui::Button("Set up controller..."))
+            start_controller_setup(guid, name);
+        ImGui::EndDisabled();
+        help(target ? "Face buttons by position or by letters, where Jump anywhere goes, and a Try it screen."
+                    : "Connect a controller to set it up.");
+        flow::next(flow::button("Controller details..."));
+        if (ImGui::Button("Controller details..."))
+            g_details_open = true;
+        help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
     }
-    std::string guid, name;
-    const bool target = setup_target(guid, name);
-    flow::next(flow::button("Set up controller..."));
-    ImGui::BeginDisabled(!target);
-    if (ImGui::Button("Set up controller...")) start_controller_setup(guid, name);
-    ImGui::EndDisabled();
-    help(target ? "Face buttons by position or by letters, where Jump anywhere goes, and a Try it screen."
-                : "Connect a controller to set it up.");
-    flow::next(flow::button("Controller details..."));
-    if (ImGui::Button("Controller details...")) g_details_open = true;
-    help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
-    bool v;
-    flow::next(flow::check("Settings page in the pause menu"), 24);
-    if (check("Settings page in the pause menu", cur.settings_pause_page, &v)) {
-        input_map::Mapping m = cur;
-        m.settings_pause_page = v;
-        input_map::set_current(m);
-    }
-    help("Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.");
-    flow::next(flow::check("L turns the GamePad page"), 24);
-    if (check("L turns the GamePad page", cur.l_turns_page, &v)) {
-        input_map::Mapping m = cur;
-        m.l_turns_page = v;
-        input_map::set_current(m);
-    }
-    help("In play the game reads L only to turn the GamePad screen between Items and Map. Off (default): L "
-         "reaches the game only in menus, so L1 can jump without turning the page. On: as on the Wii U (for a "
-         "GamePad picture on a second screen).");
 }
 
 // Jump anywhere and the moon jump: their own inputs (they never press the game's L)
@@ -2486,7 +2522,7 @@ void camera_extra_rows() {
     help("While Link runs and you leave the camera alone for a second, it turns slowly to look over his shoulder.");
     if (mods::steer_mode() == 0) ImGui::EndDisabled();
     if (check("Direct camera as fast on the boat", mods::direct_boat_speed(), &v)) hostui::post([v] { mods::set_direct_boat_speed(v); });
-    help("With the direct camera (Gameplay), the right stick turns the camera as fast while sailing as on foot.");
+    help("With Direct camera enabled, the right stick turns the camera as fast while sailing as on foot.");
 #ifdef __ANDROID__
     if (check("Pinch changes the field of view", mods::pinch_fov_on(), &v)) hostui::post([v] { mods::set_pinch_fov_on(v); });
     help("Two fingers on the picture: apart for a closer view, together for a wider one (Graphics' field of view).");
@@ -2516,57 +2552,119 @@ void talk_rows() {
     if (check("Fast forward while a talk is held", mods::talk_hold_ff_on(), &v)) hostui::post([v] { mods::set_talk_hold_ff_on(v); });
     help("A talk held to go on (finger, mouse or A) also runs faster, as the fast forward button does.");
 }
-void tab_controls() {
+// Keep automatic-resolution hints beside their choices when there is room.
+void controls_resolved_note(const std::string& text) {
+    flow::next(flow::text(text.c_str()));
+    ImGui::TextDisabled("%s", text.c_str());
+}
+
+void controls_bindings_page(input_map::Mapping& m, bool pro) {
+    controller_row();
+    m = edit_current();
+    const bool compact = ImGui::GetContentRegionAvail().x < 900;
+    bool list_view = U.list_view || compact;
+    ImGui::BeginDisabled(compact);
+    if (ImGui::Checkbox("List view", &list_view))
+        U.list_view = list_view;
+    ImGui::EndDisabled();
+    help(compact ? "The list keeps every binding readable in this window. Widen it to use the controller drawing."
+                 : "A plain table of all inputs instead of the controller drawing.");
+    jump_row(m);
+    // status line: capture prompt > note > hovered input > duplicates > help
+    std::string status;
+    ImVec4 sc(0.70f, 0.78f, 0.84f, 1.0f);
+    if (U.cap_action >= 0) {
+        sc = ImVec4(1.0f, 0.85f, 0.35f, 1.0f);
+        status = std::string(input_map::action_label(U.cap_action)) + ": " +
+                 (U.cap_col == kColPad   ? "press a controller button or stick direction (the next input is recorded)"
+                  : U.cap_col == kColAny ? "press a key, mouse button or controller button (the next input is recorded)"
+                                         : "press a key or mouse button (the next input is recorded)");
+    } else if (!U.cap_note.empty()) {
+        status = U.cap_note;
+    } else if (U.hover_action >= 0) {
+        status = std::string(input_map::action_label(U.hover_action)) + "  -  " + summary(m, U.hover_action) +
+                 ".  A / Enter / click: rebind; X / Delete / right-click: clear.";
+    } else if (int n = input_map::conflict_count(m)) {
+        sc = ImVec4(1.0f, 0.62f, 0.20f, 1.0f);
+        status = std::to_string(n) + " input(s) are bound to more than one action (orange).";
+    } else {
+        status = "Select a controller button or a binding to change it. Changes are saved automatically.";
+    }
+    // The drawing owns a full page. Reserve the actual wrapped status height.
+    const float bottom = ImGui::CalcTextSize(status.c_str(), nullptr, false, ImGui::GetContentRegionAvail().x).y +
+                         ImGui::GetStyle().ItemSpacing.y;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const bool use_list = U.list_view || compact;
+    const float h = std::max(use_list ? ImGui::GetFrameHeightWithSpacing() * 3 : 360.0f, avail.y - bottom);
+    U.hover_action = -1;
+    if (use_list) {
+        controls_list(m, h);
+    } else {
+        ControlsView cv;
+        cv.m = m;
+        cv.pro = pro;
+        cv.cap_action = U.cap_action;
+        cv.cap_col = U.cap_col;
+        static float live[input_map::kPadCount];
+        std::copy(std::begin(U.values), std::end(U.values), live);
+        test_pad(live);
+        cv.pad = live;
+        cv.t = now_s();
+        // live display: pressed inputs and stick deflection through the current mapping, from the raw
+        // host state (as the Controls window's poll; camera inversion left out)
+        static bool keys[256];
+        for (int i = 0; i < 256; i++)
+            keys[i] = g_held_keys[i].load(std::memory_order_relaxed);
+        cv.keys = keys;
+        for (int a = 0; a < input_map::kScreenshot; a++) {
+            float x = 0;
+            for (int key : m.keys[a])
+                if (key != input_map::kNoKey && keys[key])
+                    x = 1;
+            if (int p = m.pad[a]; p != input_map::kPadNone)
+                x = std::max(x, live[p]);
+            cv.act[a] = x;
+        }
+        input::PadState ks = input_map::keyboard_state(m, keys), cs = input_map::controller_state(m, live);
+        const bool kl = ks.lx || ks.ly, kr = ks.rx || ks.ry;
+        cv.stick[0][0] = kl ? ks.lx : cs.lx;
+        cv.stick[0][1] = kl ? ks.ly : cs.ly;
+        cv.stick[1][0] = kr ? ks.rx : cs.rx;
+        cv.stick[1][1] = kr ? ks.ry : cs.ry;
+        draw_controls(cv, avail.x, h);
+        U.hover_action = cv.hover_action;
+        if (cv.start_action >= 0)
+            start_capture(cv.start_action, cv.start_col);
+        if (cv.clear_action >= 0)
+            clear_binding(cv.clear_action, cv.clear_col);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, sc);
+    ImGui::TextWrapped("%s", status.c_str());
+    ImGui::PopStyleColor();
+}
+
+void controls_controller_page(input_map::Mapping& m, bool pro) {
     bool v;
-    // a grey note after a row's choices: on the same line when it fits (flow_layout.h)
-    auto disabled_after = [](const std::string& text) {
-        flow::next(flow::text(text.c_str()));
-        ImGui::TextDisabled("%s", text.c_str());
-    };
-    input_map::Mapping m = edit_current();  // the shared bindings, or one controller's own (controller_row)
-    // top: which controller the keyboard and controllers act as (the drawing follows), view switch
-    const bool pro = input::pro_controller();
+    auto disabled_after = controls_resolved_note;
+    controller_row(false);
+    m = edit_current();
+    heading("Wii U controller");
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Keyboard and controllers act as");
     flow::next(flow::check("Wii U GamePad"));
     // the choice is saved (issue #26: every start went back to the GamePad and showed its screen)
     if (radio("Wii U GamePad", !pro))
-        hostui::post([] { hostui::set_pro_controller(false); hostui::set("proController", "0"); });
+        hostui::post([] {
+            hostui::set_pro_controller(false);
+            hostui::set("proController", "0");
+        });
     flow::next(flow::check("Wii U Pro Controller"));
     if (radio("Wii U Pro Controller", pro))
-        hostui::post([] { hostui::set_pro_controller(true); hostui::set("proController", "1"); });
-    // List view at the right edge, or on the next line when the row leaves no room (phones)
-    flow::next(flow::check("List view"));
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - flow::check("List view")));
-    ImGui::Checkbox("List view", &U.list_view);
-    help("A plain table of all inputs instead of the controller drawing");
-    controller_row();
-    m = edit_current();  // (the row may have chosen other bindings)
-    if (check("File select Quit button", m.file_select_quit, &v)) {
-        m.file_select_quit = v;
-        edit_set(m);
-    }
-    help("Show a Quit button on the file selection screen. Down from Quest Log 3 (or Up from Quest Log 1) selects it\n"
-         "like a Quest Log; X or a click works too.");
-    if (check("Skip controller selection", m.skip_controller_selection, &v)) {
-        m.skip_controller_selection = v;
-        edit_set(m);
-    }
-    help("At the title screen, automatically choose the configured Wii U controller.");
-#ifndef __ANDROID__
-    // issue #267 (not on Android: the app is in front or paused there). Saved with the controls; the host
-    // applies it at once (input_sdl.cpp, gfx/input.mm); beside Skip, or below it in a narrow window
-    flow::next(flow::check("Controller input when the game isn't focused"), 24);
-    if (check("Controller input when the game isn't focused", m.background_controllers, &v)) {
-        m.background_controllers = v;
-        edit_set(m);
-    }
-    help("For a second screen, streaming or remote play. Keyboard and mouse still only work while the "
-         "game is focused.");
-#endif
-    item_ring_rows();
-    talk_rows();
-    camera_extra_rows();
+        hostui::post([] {
+            hostui::set_pro_controller(true);
+            hostui::set("proController", "1");
+        });
+    heading("Face-button layout");
     // face-button preset (issue #78): which host face buttons drive A/B/X/Y
     const input_map::FaceLayout fl = input_map::face_layout(m);
     ImGui::AlignTextToFramePadding();
@@ -2590,18 +2688,20 @@ void tab_controls() {
     }
     help("Which physical button does each Wii U action. By position: right is A, bottom B, "
          "top X and left Y. By label: A does A, B does B, X does X and Y does Y. Automatic "
-         "reads the connected pad's labels. Button prompts below chooses how those buttons "
+         "reads the connected pad's labels. The Prompts page chooses how those buttons "
          "look in the game. Only the four face bindings change.");
     if (m.face_auto) {
-        disabled_after(std::string("(-> ") + input_map::face_layout_label(fl) + ")");
+        disabled_after(std::string("Using ") + input_map::face_layout_label(fl));
     } else if (!m.preset.gamecube && fl == input_map::FaceLayout::kCustom) {
-        disabled_after("(custom)");
+        disabled_after("Custom bindings");
     }
     bool legacy_gc_faces = false;
     std::string gc_guid = g_edit_guid, gc_name = g_edit_name;
-    if (!g_edit_controller) input_map::active_controller(gc_guid, gc_name);
+    if (!g_edit_controller)
+        input_map::active_controller(gc_guid, gc_name);
     for (const auto& c : input::controllers())
-        if (c.guid == gc_guid && c.name == gc_name) legacy_gc_faces = input_map::legacy_gamecube_faces(c);
+        if (c.guid == gc_guid && c.name == gc_name)
+            legacy_gc_faces = input_map::legacy_gamecube_faces(c);
     flow::next(flow::check("GameCube"));
     if (radio("GameCube", m.preset.gamecube)) {
         // A selected controller gets its own profile before applying the preset.
@@ -2612,7 +2712,10 @@ void tab_controls() {
             input_map::apply_gamecube(view, legacy_gc_faces);
             input_map::store_view(all, view, index);
             input_map::set_current(all);
-        } else { input_map::apply_gamecube(m, legacy_gc_faces); edit_set(m); }
+        } else {
+            input_map::apply_gamecube(m, legacy_gc_faces);
+            edit_set(m);
+        }
     }
     help("GameCube: A action, B sword, X/Y/Z items, L target, R shield (25% travel). Start opens "
          "items/map; Start + up looks in first person, + down is Minus, + left is L, + right opens "
@@ -2620,136 +2723,12 @@ void tab_controls() {
     flow::next(flow::button("Restore previous controller bindings"));
     ImGui::BeginDisabled(!m.preset.saved);
     if (ImGui::Button("Restore previous controller bindings")) {
-        input_map::restore_pad_preset(m); edit_set(m);
+        input_map::restore_pad_preset(m);
+        edit_set(m);
     }
     ImGui::EndDisabled();
-    // in-game button prompts (#110, #143): what the game's own button icons look like
-    {
-        using P = input_map::Mapping::Prompts;
-        using N = input_map::Mapping::ShoulderNames;
-        const input_map::PromptStyle look = input_map::prompt_style(m, input_map::pad_family());
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Button prompts");
-        ImGui::PushID("prompts");  // "automatic" is also a face-buttons choice
-        for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube}) {
-            flow::next(flow::check(input_map::prompts_label(p)));
-            if (radio(input_map::prompts_label(p), m.prompts == p)) {
-                m.prompts = p;
-                edit_set(m);
-            }
-        }
-        ImGui::PopID();
-        help("How the game's button icons look, with any face-button setting. Xbox and PlayStation show the button bound to each Wii U action. GameCube uses the classic coloured face buttons. By position on Xbox, "
-             "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
-             "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
-             "Original keeps the game's look. Custom bindings need four distinct face buttons; "
-             "otherwise the original icons are used.");
-        disabled_after(std::string("(-> ") + (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
-                                       : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
-                                       : look.face == input_map::FaceStyle::kGameCube  ? "GameCube"
-                                                                                       : "original") + ")");
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Shoulder names");
-        ImGui::PushID("shoulders");
-        for (N n : {N::kAuto, N::kNintendo, N::kNumbered, N::kXbox}) {
-            flow::next(flow::check(input_map::shoulder_names_label(n)));
-            if (radio(input_map::shoulder_names_label(n), m.shoulder_names == n)) {
-                m.shoulder_names = n;
-                edit_set(m);
-            }
-        }
-        ImGui::PopID();
-        help("How prompts name the shoulder buttons and triggers. Automatic follows the button "
-             "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
-             "shapes, L / R / Z with GameCube prompts, and the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face "
-             "buttons setting.");
-        disabled_after(std::string("(-> ") + (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
-                                       : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
-                                                                                               : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z" : "L / R / ZL / ZR") + ")");
-        bool colours = m.prompt_colours;
-        if (ImGui::Checkbox("Coloured face buttons", &colours)) {
-            m.prompt_colours = colours;
-            edit_set(m);
-        }
-        help("Green A, red B, blue X and yellow Y in the Xbox look; blue cross, red circle, pink "
-             "square and green triangle with the PlayStation shapes. Off: the game's white buttons, "
-             "still placed where the bound buttons sit on the pad.");
-        flow::next(flow::check("Coloured face button text"));
-        bool text_colours = m.prompt_text_colours;
-        if (ImGui::Checkbox("Coloured face button text", &text_colours)) {
-            m.prompt_text_colours = text_colours;
-            input_map::set_current(m);
-        }
-        help("Action text follows the mapped button's prompt colour, independently of icon colours. "
-             "Off: the game's own text colours (white).");
-    }
-    jump_row(m);
-    // status line: capture prompt > note > hovered input > duplicates > help
-    std::string status;
-    ImVec4 sc(0.70f, 0.78f, 0.84f, 1.0f);
-    if (U.cap_action >= 0) {
-        sc = ImVec4(1.0f, 0.85f, 0.35f, 1.0f);
-        status = std::string(input_map::action_label(U.cap_action)) + ": " +
-                 (U.cap_col == kColPad   ? "press a controller button or stick direction (the next input is recorded)"
-                  : U.cap_col == kColAny ? "press a key, mouse button or controller button (the next input is recorded)"
-                                         : "press a key or mouse button (the next input is recorded)");
-    } else if (!U.cap_note.empty()) {
-        status = U.cap_note;
-    } else if (U.hover_action >= 0) {
-        status = std::string(input_map::action_label(U.hover_action)) + "  -  " + summary(m, U.hover_action) +
-                 ".  A / Enter / click: rebind; X / Delete / right-click: clear.";
-    } else if (int n = input_map::conflict_count(m)) {
-        sc = ImVec4(1.0f, 0.62f, 0.20f, 1.0f);
-        status = std::to_string(n) + " input(s) are bound to more than one action (orange).";
-    } else {
-        status = "Select a button on the controller or a chip to rebind it. Changes are saved to controls.json.";
-    }
-    // status line and the options below (as tall as they came out last frame: more lines when they wrap)
-    const float bottom = ImGui::GetTextLineHeightWithSpacing() + std::max(U.options_height, ImGui::GetFrameHeightWithSpacing() * 2) + 4;
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float h = std::max(160.0f, avail.y - bottom);
-    U.hover_action = -1;
-    if (U.list_view) {
-        controls_list(m, h);
-    } else {
-        ControlsView cv;
-        cv.m = m;
-        cv.pro = pro;
-        cv.cap_action = U.cap_action;
-        cv.cap_col = U.cap_col;
-        static float live[input_map::kPadCount];
-        std::copy(std::begin(U.values), std::end(U.values), live);
-        test_pad(live);
-        cv.pad = live;
-        cv.t = now_s();
-        // live display: pressed inputs and stick deflection through the current mapping, from the raw
-        // host state (as the Controls window's poll; camera inversion left out)
-        static bool keys[256];
-        for (int i = 0; i < 256; i++) keys[i] = g_held_keys[i].load(std::memory_order_relaxed);
-        cv.keys = keys;
-        for (int a = 0; a < input_map::kScreenshot; a++) {
-            float x = 0;
-            for (int key : m.keys[a])
-                if (key != input_map::kNoKey && keys[key]) x = 1;
-            if (int p = m.pad[a]; p != input_map::kPadNone) x = std::max(x, live[p]);
-            cv.act[a] = x;
-        }
-        input::PadState ks = input_map::keyboard_state(m, keys), cs = input_map::controller_state(m, live);
-        const bool kl = ks.lx || ks.ly, kr = ks.rx || ks.ry;
-        cv.stick[0][0] = kl ? ks.lx : cs.lx;
-        cv.stick[0][1] = kl ? ks.ly : cs.ly;
-        cv.stick[1][0] = kr ? ks.rx : cs.rx;
-        cv.stick[1][1] = kr ? ks.ry : cs.ry;
-        draw_controls(cv, avail.x, h);
-        U.hover_action = cv.hover_action;
-        if (cv.start_action >= 0) start_capture(cv.start_action, cv.start_col);
-        if (cv.clear_action >= 0) clear_binding(cv.clear_action, cv.clear_col);
-    }
-    ImGui::PushStyleColor(ImGuiCol_Text, sc);
-    ImGui::TextUnformatted(status.c_str());
-    ImGui::PopStyleColor();
-    // the options below (controls_options.h): they wrap in a narrow window (phones)
-    const float optionsTop = ImGui::GetCursorPosY();
+    heading("Sticks, vibration and gyro");
+    // Device tuning (controls_options.h) wraps in a narrow window.
     controls_options::Values o;
     o.deadzone = m.deadzone;
     o.invert_camera_y = m.invert_camera_y;
@@ -2760,14 +2739,14 @@ void tab_controls() {
 #endif
     static bool gyro_open = false;
     const motion::Settings gs = motion::settings();
-    const std::string gyro_label = std::string("Gyro: ") + (gs.source == motion::kOff ? "off" : motion::source_label(gs.source)) + "...";
+    const std::string gyro_label =
+        std::string("Gyro: ") + (gs.source == motion::kOff ? "off" : motion::source_label(gs.source)) + "...";
     o.gyro_label = gyro_label.c_str();
     o.range[0] = m.left_range;
     o.range[1] = m.right_range;
     o.range_min = input_map::kMinStickRange;
     o.range_max = input_map::kMaxStickRange;
     const unsigned changed = controls_options::draw(o);
-    U.options_height = ImGui::GetCursorPosY() - optionsTop;
     if (changed & (controls_options::kDeadzone | controls_options::kInvert | controls_options::kRangeLeft |
                    controls_options::kRangeRight)) {
         m.deadzone = o.deadzone;
@@ -2788,7 +2767,8 @@ void tab_controls() {
         hostui::post([phone] { hostui::set("phoneRumble", std::to_string(phone)); });
     }
 #endif
-    if (changed & controls_options::kGyro) gyro_open = true;
+    if (changed & controls_options::kGyro)
+        gyro_open = true;
     gyro_window(gyro_open);
     if (changed & controls_options::kReset) {
         // the bindings shown: the shared ones (controllers keep their own) or this controller's
@@ -2803,15 +2783,223 @@ void tab_controls() {
     // a controller whose motion sensors or rumble Android doesn't hand to apps (no kernel driver)
     for (const auto& c : input::controllers()) {
         const std::string why = controller_details::missing_note(c, true);
-        if (!why.empty()) note("%s", why.c_str());
+        if (!why.empty())
+            note("%s", why.c_str());
     }
 #endif
+    heading("Menus and background input");
+    {
+        const auto cur = input_map::current();
+        bool v;
+        if (check("Settings page in the pause menu", cur.settings_pause_page, &v)) {
+            input_map::Mapping m = cur;
+            m.settings_pause_page = v;
+            input_map::set_current(m);
+        }
+        help("Show the settings page arrow in the pause menu. Esc / hold Select still opens Settings.");
+        if (check("L turns the GamePad page", cur.l_turns_page, &v)) {
+            input_map::Mapping m = cur;
+            m.l_turns_page = v;
+            input_map::set_current(m);
+        }
+        help("In play the game reads L only to turn the GamePad screen between Items and Map. Off (default): L "
+             "reaches the game only in menus, so L1 can jump without turning the page. On: as on the Wii U (for a "
+             "GamePad picture on a second screen).");
+    }
+    if (check("File select Quit button", m.file_select_quit, &v)) {
+        m.file_select_quit = v;
+        edit_set(m);
+    }
+    help("Show a Quit button on the file selection screen. Down from Quest Log 3 (or Up from Quest Log 1) selects it\n"
+         "like a Quest Log; X or a click works too.");
+    if (check("Skip controller selection", m.skip_controller_selection, &v)) {
+        m.skip_controller_selection = v;
+        edit_set(m);
+    }
+    help("At the title screen, automatically choose the configured Wii U controller.");
+#ifndef __ANDROID__
+    // issue #267 (not on Android: the app is in front or paused there). Saved with the controls; the host
+    // applies it at once (input_sdl.cpp, gfx/input.mm); beside Skip, or below it in a narrow window
+    flow::next(flow::check("Controller input when the game isn't focused"), 24);
+    if (check("Controller input when the game isn't focused", m.background_controllers, &v)) {
+        m.background_controllers = v;
+        edit_set(m);
+    }
+    help("For a second screen, streaming or remote play. Keyboard and mouse still only work while the "
+         "game is focused.");
+#endif
+}
+
+void controls_prompts_page(input_map::Mapping& m) {
+    auto disabled_after = controls_resolved_note;
+    m = edit_current();
+    heading("In-game button prompts");
+    using P = input_map::Mapping::Prompts;
+    using N = input_map::Mapping::ShoulderNames;
+    const input_map::PromptStyle look = input_map::prompt_style(m, input_map::pad_family());
+    ImGui::TextUnformatted("Button prompts");
+    ImGui::PushID("prompts"); // "automatic" is also a face-buttons choice
+    for (P p : {P::kAuto, P::kOriginal, P::kXbox, P::kPlayStation, P::kGameCube, P::kKeyboard}) {
+        flow::next(flow::check(input_map::prompts_label(p)));
+        if (radio(input_map::prompts_label(p), m.prompts == p)) {
+            m.prompts = p;
+            edit_set(m);
+        }
+    }
+    ImGui::PopID();
+    help("Keyboard / mouse shows the first bound keyboard or mouse input; M1-M5 are mouse buttons, Wh+/Wh- are wheel "
+         "directions, None means unbound. Xbox and PlayStation show the button bound to each Wii U action. GameCube "
+         "uses the classic coloured face buttons. By position on Xbox, "
+         "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
+         "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
+         "Original keeps the game's look. Custom bindings need four distinct face buttons; "
+         "otherwise the original icons are used.");
+    if (m.prompts == P::kAuto) disabled_after(std::string("Using ") +
+                   (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
+                    : look.face == input_map::FaceStyle::kXbox      ? "Xbox"
+                    : look.face == input_map::FaceStyle::kKeyboard  ? "Keyboard / mouse"
+                    : look.face == input_map::FaceStyle::kGameCube  ? "GameCube"
+                                                                    : "original"));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Shoulder names");
+    ImGui::PushID("shoulders");
+    for (N n : {N::kAuto, N::kNintendo, N::kNumbered, N::kXbox}) {
+        flow::next(flow::check(input_map::shoulder_names_label(n)));
+        if (radio(input_map::shoulder_names_label(n), m.shoulder_names == n)) {
+            m.shoulder_names = n;
+            edit_set(m);
+        }
+    }
+    ImGui::PopID();
+    help("How prompts name the shoulder buttons and triggers. Automatic follows the button "
+         "prompts: LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation "
+         "shapes, L / R / Z with GameCube prompts, and the game's L / R / ZL / ZR otherwise. A fixed choice applies "
+         "with any face "
+         "buttons setting.");
+    if (m.shoulder_names == N::kAuto) disabled_after(std::string("Using ") +
+                   (look.shoulders == input_map::ShoulderStyle::kXbox       ? "LB / RB / LT / RT"
+                    : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
+                    : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z"
+                                                                            : "L / R / ZL / ZR"));
+    bool colours = m.prompt_colours;
+    if (ImGui::Checkbox("Coloured face buttons", &colours)) {
+        m.prompt_colours = colours;
+        edit_set(m);
+    }
+    help("Green A, red B, blue X and yellow Y in the Xbox look; blue cross, red circle, pink "
+         "square and green triangle with the PlayStation shapes. Off: the game's white buttons, "
+         "still placed where the bound buttons sit on the pad.");
+    flow::next(flow::check("Coloured face button text"));
+    bool text_colours = m.prompt_text_colours;
+    if (ImGui::Checkbox("Coloured face button text", &text_colours)) {
+        m.prompt_text_colours = text_colours;
+        edit_set(m);
+    }
+    help("Action text follows the mapped button's prompt colour, independently of icon colours. "
+         "Off: the game's own text colours (white).");
+}
+
+void controls_camera_page() {
+    heading("Camera controls");
+    for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
+        const auto* entry = mods::manager::find(id);
+        bool enabled = entry->enabled();
+        if (ImGui::Checkbox(entry->name, &enabled)) {
+            const std::string key = id;
+            hostui::post([key, enabled] { mods::manager::set_enabled(key, enabled); });
+        }
+        help(entry->description);
+        if (enabled)
+            builtin_options(id);
+    }
+    heading("Movement and sailing");
+    camera_extra_rows();
+}
+
+void controls_gameplay_page() {
+    heading("Item selection");
+    item_ring_rows();
+    heading("Talks, answers and shops");
+    talk_rows();
+}
+
+// Pages hold presentation state only; no controls.json migration is needed.
+void tab_controls() {
+    input_map::Mapping m = edit_current();
+    const bool pro = input::pro_controller();
+    if (ImGui::BeginTabBar("controls_sections", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        if (ImGui::BeginTabItem("Bindings", nullptr, U.select_controls_page == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (U.controls_page != 0) {
+                U.cap_action = -1;
+                g_capturing_keys = false;
+                U.cap_note.clear();
+            }
+            U.controls_page = 0;
+            ImGui::BeginChild("BindingsPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            controls_bindings_page(m, pro);
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Controller", nullptr,
+                                U.select_controls_page == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (U.controls_page != 1) {
+                U.cap_action = -1;
+                g_capturing_keys = false;
+                U.cap_note.clear();
+            }
+            U.controls_page = 1;
+            ImGui::BeginChild("ControllerPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            controls_controller_page(m, pro);
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Prompts", nullptr, U.select_controls_page == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (U.controls_page != 2) {
+                U.cap_action = -1;
+                g_capturing_keys = false;
+                U.cap_note.clear();
+            }
+            U.controls_page = 2;
+            ImGui::BeginChild("PromptsPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            controls_prompts_page(m);
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Camera", nullptr, U.select_controls_page == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (U.controls_page != 3) {
+                U.cap_action = -1;
+                g_capturing_keys = false;
+                U.cap_note.clear();
+            }
+            U.controls_page = 3;
+            ImGui::BeginChild("CameraPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            controls_camera_page();
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Gameplay", nullptr, U.select_controls_page == 4 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (U.controls_page != 4) {
+                U.cap_action = -1;
+                g_capturing_keys = false;
+                U.cap_note.clear();
+            }
+            U.controls_page = 4;
+            ImGui::BeginChild("GameplayPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            controls_gameplay_page();
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        U.select_controls_page = -1;
+        ImGui::EndTabBar();
+    }
     // the question when Jump or the moon jump takes a game button, and Controller details
     const bool back = navigation_pressed(input_map::face_input(input_map::kB));
     if (g_displace.active()) {
         input_map::Mapping view = edit_current();
-        if (controller_setup::displace_dialog(g_displace, view, back)) edit_set(view);
-        if (back) g_pad_b_used = true;
+        if (controller_setup::displace_dialog(g_displace, view, back))
+            edit_set(view);
+        if (back)
+            g_pad_b_used = true;
     }
     if (controller_details::dialog(g_details_open, input::controllers(), input_map::current(),
 #ifdef __ANDROID__
@@ -3161,7 +3349,15 @@ void settings_window() {
         // L / R on a controller switch tabs
         if (U.cap_action < 0 && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
             // in Mods (or an added tab with sub-tabs), L / R move between its areas first
-            auto areas = [](int builtin, int direction) { return builtin == kMods && modsui::shoulder(direction); };
+            auto areas = [](int builtin, int direction) {
+                if (builtin == kControls) {
+                    const int next = U.controls_page + direction;
+                    if (next < 0 || next >= 5) return false;
+                    U.select_controls_page = next;
+                    return true;
+                }
+                return builtin == kMods && modsui::shoulder(direction);
+            };
             for (int direction : {-1, +1})
                 if (navigation_pressed(direction < 0 ? input_map::kPadLB : input_map::kPadRB))
                     if (const int t = ext::shoulder(U.tab, direction, areas); t >= 0) U.select_tab = t;
@@ -3524,7 +3720,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (!dynres::min_from_env() && hostui::get("dynResMin", v)) dynres::set_min(strtof(v.c_str(), nullptr));
         if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {
             const int m = atoi(v.c_str());
-            if (m >= aspect::kOriginal && m <= aspect::k32x9) aspect::set_mode(m);
+            if (aspect::is_preset(m)) aspect::set_mode(m);
         }
         // the saved gyro settings (WWHD_GYRO overrides the source)
         hostui::post([] { load_gyro(); });

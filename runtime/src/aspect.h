@@ -5,7 +5,13 @@
 namespace ss { struct Writer; struct Reader; }
 
 namespace aspect {
-enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, kModes };
+enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, k4x3, kModes };
+// Persisted IDs are stable; display order is independent of their numeric values.
+inline constexpr Mode kPresets[] = {kOriginal, kWindow, k4x3, k16x10, k21x9, k32x9};
+constexpr bool is_preset(int mode) {
+    for (Mode preset : kPresets) if (mode == preset) return true;
+    return false;
+}
 int mode();
 void set_mode(int m);
 const char* mode_name(int m);

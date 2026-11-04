@@ -135,7 +135,7 @@ struct Mapping {
     bool invert_camera_y = false;
     bool face_auto = false;         // Automatic face preset: follow the dominant pad's labels
     // In-game button prompts (issues #110, #141, #143; runtime/src/button_glyphs.cpp)
-    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation, kGameCube };
+    enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation, kGameCube, kKeyboard };
     enum class ShoulderNames : uint8_t { kAuto, kNintendo, kNumbered, kXbox };
     Prompts prompts = Prompts::kAuto;            // in-game face-button look
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
@@ -246,7 +246,7 @@ PadFamily pad_family();
 //     By label retains its existing Xbox fallback. Original never changes face prompts.
 //   shoulders: Automatic follows the face style (Xbox: LB/RB/LT/RT, PlayStation: L1/R1/L2/R2,
 //     GameCube: L/R/Z; Original: the game's L/R/ZL/ZR; a fixed choice applies with any face layout.
-enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation, kGameCube };
+enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation, kGameCube, kKeyboard };
 enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox, kGameCube };
 struct PromptStyle {
     FaceStyle face = FaceStyle::kOriginal;
@@ -284,6 +284,9 @@ bool has_conflict(const Mapping& m, int a);
 int conflict_count(const Mapping& m);
 // short labels for compact UI chips, e.g. "L ⇧", "Num 5" / "LB", "LS ↑"
 std::string key_short_label(int code);
+// ASCII labels for game-font keycaps; first bound slot, or an explicit unbound label.
+int prompt_key_code(const Mapping& m, int action);
+std::string prompt_key_label(const Mapping& m, int action);
 const char* pad_short_label(int p);
 
 // Evaluate a mapping. keys[code] = held (count entries, 256 for legacy keyboard callers).

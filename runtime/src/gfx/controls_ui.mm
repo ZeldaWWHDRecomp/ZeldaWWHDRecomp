@@ -23,6 +23,9 @@
 #include <vector>
 
 #include "../input.h"
+#include "../mods/manager.h"
+#include "../mods/mods.h"
+#include "../mods/game_settings.h"
 #include "../input_map.h"
 #include "../runtime.h"
 #include "../platform/host.h"
@@ -229,6 +232,9 @@ struct UIState {
 @property(strong) NSTextField* leftRangeValue;
 @property(strong) NSTextField* rightRangeValue;
 @property(strong) NSButton* invertY;
+@property(strong) NSArray<NSButton*>* cameraButtons;
+@property(strong) NSSlider* cameraSpeed;
+@property(strong) NSSlider* mouseSensitivity;
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
 @property(strong) NSPopUpButton* shoulderNames;
@@ -1018,7 +1024,7 @@ static NSTextField* label(NSString* s) {
 }
 
 - (void)build {
-    WWControlsWindow* w = [[WWControlsWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1060, 670)
+    WWControlsWindow* w = [[WWControlsWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1060, 750)
                                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                                                         NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                                                                 backing:NSBackingStoreBuffered
@@ -1027,7 +1033,7 @@ static NSTextField* label(NSString* s) {
     w.controls = self;
     w.delegate = self;
     w.releasedWhenClosed = NO;
-    w.contentMinSize = NSMakeSize(960, 664);
+    w.contentMinSize = NSMakeSize(960, 744);
     // remembered window frame (NSUserDefaults); not in portable mode, which keeps nothing outside its folder
     if (!getenv("WWHD_NO_HOST_INPUT") && !host::portable()) w.frameAutosaveName = @"WWHDControls2";  // test runs: always the default size
     self.window = w;
@@ -1126,14 +1132,14 @@ static NSTextField* label(NSString* s) {
     // in-game button prompts (#110, #143); the item tags are the Mapping enums
     NSTextField* ppl = label(@"Button prompts:");
     NSPopUpButton* pp = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube}) {
+    for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube, Mapping::Prompts::kKeyboard}) {
         NSString* t = [NSString stringWithUTF8String:prompts_label(p)];
         [pp addItemWithTitle:[[t substringToIndex:1].uppercaseString stringByAppendingString:[t substringFromIndex:1]]];
         pp.lastItem.tag = (NSInteger)p;
     }
     pp.target = self;
     pp.action = @selector(promptsChanged:);
-    pp.toolTip = @"How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
+    pp.toolTip = @"Keyboard / mouse displays the first bound key or mouse button (M1-M5, Wh+/Wh-; None if unbound). How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
                  @"Automatic follows the connected pad; recognized GameCube adapters use the GameCube look. By label keeps its "
                  @"existing Xbox fallback. Original keeps the game's look. Custom bindings need four "
                  @"distinct face buttons; otherwise the original icons are used.";
@@ -1160,13 +1166,38 @@ static NSTextField* label(NSString* s) {
     ptc.toolTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
                   @"Off: the game's own text colours (white).";
     self.promptTextColours = ptc;
-    for (NSView* v in @[bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc]) {
+    NSMutableArray<NSButton*>* cameraButtons = [NSMutableArray array];
+    for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
+        const auto* entry = mods::manager::find(id);
+        NSButton* button = [NSButton checkboxWithTitle:ns(entry->name) target:self action:@selector(cameraChanged:)];
+        button.tag = cameraButtons.count;
+        button.toolTip = ns(entry->description);
+        [cameraButtons addObject:button];
+    }
+    self.cameraButtons = cameraButtons;
+    NSStackView* cameras = [NSStackView stackViewWithViews:cameraButtons];
+    cameras.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    cameras.spacing = 24;
+    NSSlider* cameraSpeed = [NSSlider sliderWithValue:mods::camera_speed() minValue:.5 maxValue:2 target:self action:@selector(cameraSpeedChanged:)];
+    cameraSpeed.continuous = YES;
+    cameraSpeed.toolTip = @"Direct camera speed (0.5x to 2x).";
+    [cameraSpeed.widthAnchor constraintEqualToConstant:160].active = YES;
+    self.cameraSpeed = cameraSpeed;
+    NSSlider* mouseSensitivity = [NSSlider sliderWithValue:mods::mouse_sensitivity() minValue:.08 maxValue:.3 target:self action:@selector(mouseSensitivityChanged:)];
+    mouseSensitivity.continuous = YES;
+    mouseSensitivity.toolTip = @"Mouse camera sensitivity.";
+    [mouseSensitivity.widthAnchor constraintEqualToConstant:160].active = YES;
+    self.mouseSensitivity = mouseSensitivity;
+    NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
+    cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    cameraOptions.spacing = 12;
+    for (NSView* v in @[bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
     NSDictionary* v = NSDictionaryOfVariableBindings(bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
-                                                     ppl, pp, snl, sn, pc, ptc);
+                                                     ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
@@ -1179,7 +1210,9 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
-    C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-14-|");
+    C(@"H:|-16-[cameras]-(>=16)-|");
+    C(@"H:|-16-[cameraOptions]-(>=16)-|");
+    C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-14-|");
     [w center];
     [self syncOptions];
     [self syncWhich];
@@ -1218,6 +1251,11 @@ static NSTextField* label(NSString* s) {
     self.deadzone.doubleValue = _st.m.deadzone;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
     self.skipController.state = _st.m.skip_controller_selection ? NSControlStateValueOn : NSControlStateValueOff;
+    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
+    for (NSUInteger i=0;i<self.cameraButtons.count;++i)
+        self.cameraButtons[i].state = mods::manager::find(ids[i])->enabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    self.cameraSpeed.doubleValue = mods::camera_speed();
+    self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
     self.leftRange.doubleValue = _st.m.left_range;
     self.rightRange.doubleValue = _st.m.right_range;
@@ -1607,6 +1645,13 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
     [self commit];
 }
 
+- (void)cameraChanged:(NSButton*)b {
+    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
+    if (b.tag >= 0 && b.tag < 3) mods::manager::set_enabled(ids[b.tag], b.state == NSControlStateValueOn);
+}
+- (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
+- (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
+
 - (void)invertChanged:(NSButton*)b {
     _st.m.invert_camera_y = b.state == NSControlStateValueOn;
     [self commit];
@@ -1794,6 +1839,10 @@ static int self_test() {
     expect(current().prompts == Mapping::Prompts::kGameCube && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
                !current().prompt_colours && !current().prompt_text_colours,
            "button prompts: GameCube, LB/RB/LT/RT, no colours");
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kKeyboard];
+    [c promptsChanged:c.prompts];
+    expect(current().prompts == Mapping::Prompts::kKeyboard &&
+           active_prompt_style().face == FaceStyle::kKeyboard, "keyboard / mouse prompt selection");
     // 9. the file on disk follows
     Mapping disk;
     expect(load_file(default_path(), disk) && disk == current(), "controls.json matches the live mapping");

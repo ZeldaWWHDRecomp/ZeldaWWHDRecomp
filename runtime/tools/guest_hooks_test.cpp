@@ -824,6 +824,73 @@ bool guest_hooks_run_query(Cpu*c,const guestmods::NativeWaitNext&next){auto&t=*n
  assert(guestmods::native_camera_run_original_current(c,t));return true;
 }
 
+namespace observer_register_test {
+Cpu incoming{}, returned{};
+unsigned side_effects=0;
+void same_registers(const Cpu& actual,const Cpu& reference) {
+    Cpu expected=reference;
+    // Scheduler identity, LL/SC reservation and mod-skip bookkeeping are not
+    // architectural observer outputs; callbacks can advance that runtime state.
+    expected.core=actual.core;expected.thread=actual.thread;expected.main_thread=actual.main_thread;
+    expected.res_addr=actual.res_addr;expected.res_val=actual.res_val;expected.mod_skip=actual.mod_skip;
+    assert(!std::memcmp(&actual,&expected,sizeof(Cpu)));
+}
+void clobber(Cpu* c) {
+    ++side_effects;
+    for(unsigned i=0;i<32;++i){c->r[i]=0xBAD00000+i;c->f[i].ps0=-77.;c->f[i].ps1=-88.;c->cr[i]=1;}
+    c->lr=1;c->ctr=2;c->pc=3;c->fpscr=4;
+    c->xer_so=1;c->xer_ov=1;c->xer_ca=1;c->xer_bc=1;
+    for(auto& g:c->gqr)g=0xFFFFFFFF;
+    c->core=(c->core+1)%3;++c->res_val;
+}
+void before(Cpu* c){same_registers(*c,incoming);clobber(c);}
+void throwing(Cpu* c){clobber(c);throw std::runtime_error("observer register test");}
+void body(Cpu* c){
+    same_registers(*c,incoming);
+    c->mod_skip=0; // the original path consumes its one-shot skip, as generated code does
+    c->r[3]=11;c->r[4]=12;c->r[12]=0x10200000; // randomizer's non-EABI helper return
+    c->f[0].ps0=13.5;c->f[2].ps1=-0.;c->cr[2]=1;c->gqr[3]=0x1234;
+    c->lr=0x12345678;c->ctr=0xABCDEF00;c->fpscr=0x9988;c->xer_ca=1;
+    returned=*c;
+}
+void after(Cpu* c){
+    Cpu expected=returned;
+    // Return observers receive the original arguments, not r3/f1 return values.
+    for(unsigned i=0;i<8;++i){expected.r[3+i]=incoming.r[3+i];expected.f[1+i]=incoming.f[1+i];}
+    same_registers(*c,expected);
+    clobber(c);
+}
+void run(){
+    const auto chains=guestmods::g_chains;
+    std::array<PpcFunc,33>bodies{};std::copy_n(test_mod_bodies,bodies.size(),bodies.begin());bodies[0]=body;
+    ppc_mod_register(33,test_mod_flags,bodies.data());
+    auto& chain=guestmods::g_chains[0x02000000];chain={};chain.addr=0x02000000;chain.ordinal=0;
+    chain.entry={before,before};chain.ret={after,after};
+    for(bool replacement:{false,true}){
+        chain.replace=replacement?body:nullptr;
+        Cpu c{};c.pc=0x02000000;c.core=1;c.res_val=7;
+        for(unsigned i=0;i<32;++i){c.r[i]=0xCA000000+i;c.f[i].ps0=i+.25;c.f[i].ps1=i+.5;}
+        const uint64_t nan_payload=0x7FF0000000001234ull;
+        std::memcpy(&c.f[7].ps1,&nan_payload,sizeof nan_payload);
+        incoming=c;side_effects=0;
+        ppc_mod_run(&c);
+        same_registers(c,returned);
+        assert(side_effects==4&&c.core==2&&c.res_val==11); // callback effects outside registers remain
+    }
+    for(bool at_return:{false,true}){
+        chain.replace=nullptr;chain.entry.clear();chain.ret.clear();
+        (at_return?chain.ret:chain.entry).push_back(throwing);
+        Cpu c{};c.pc=0x02000000;c.r[12]=99;c.f[2].ps1=17.5;
+        incoming=c;side_effects=0;bool caught=false;
+        try{ppc_mod_run(&c);}catch(const std::runtime_error&){caught=true;}
+        assert(caught&&side_effects==1);
+        same_registers(c,at_return?returned:incoming);
+    }
+    guestmods::g_chains=chains;
+    ppc_mod_register(33,test_mod_flags,test_mod_bodies);
+}
+}
+
 #ifdef GUEST_HOOKS_TEST_NO_HOOKS
 // Game code translated without --mod-hooks (setup with code mods off): nothing calls ppc_mod_register, so the
 // hook-flag table stays null. An --editor start must not claim game functions (that wrote through the null
@@ -911,6 +978,7 @@ int main() {
     // ORIGINAL bypasses both mods and the port wrapper, and consumes the skip token.
     calls.clear(); c.r[3] = 20; guestmods::call_original(&c, 0x02000000);
     assert((calls == std::vector<int>{3})); assert(c.r[3] == 21); assert(c.mod_skip == 0);
+    observer_register_test::run();
     native_observer_test::run();
     stage_owner_pass_through_test();
     stage_owner_observer_test::run();

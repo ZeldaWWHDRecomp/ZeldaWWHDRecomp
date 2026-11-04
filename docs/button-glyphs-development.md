@@ -5,7 +5,7 @@ guide remains in [button-glyphs.md](button-glyphs.md); this file keeps hook, ada
 
 ## Player-facing prompt behavior
 
-**Controls → Face buttons** chooses which physical button performs each Wii U action.
+**Controls → Controller → Face buttons** chooses which physical button performs each Wii U action.
 **Button prompts** chooses how the game's icons look. They work together with both presets
 and custom face bindings. Original always keeps the game's icons.
 

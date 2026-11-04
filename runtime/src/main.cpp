@@ -17,6 +17,8 @@
 #include "guest_addr.h"
 #include "mods/guest_mods.h"
 #include "mods/code_mods.h"
+#include "mods/mod_hash.h"
+#include "randomizer_identity.h"
 #include "platform/host.h"
 #include "platform/appimage_notice.h"
 #include "platform/start_folder.h"
@@ -654,14 +656,42 @@ int main(int argc, char** argv) {
         return result;
     }
 #endif
+    if (randomizer::compiled_seed()) {
+        // The generator can replace a seed in place. Check before touching any save files.
+        const std::string rpx = config::game_dir + "/code/cking.rpx";
+        bool matches = false;
+        try {
+            matches = randomizer::valid_identity() && mods::hash::sha256_file(rpx) == g_guest_build_rpx_sha256;
+        } catch (const std::exception& error) {
+            LOG("[randomizer] cannot check %s: %s", rpx.c_str(), error.what());
+        }
+        if (!matches) {
+            const std::string message = "This randomized game does not match the prepared executable. "
+                                        "Run setup again and select the complete output folder for this seed.";
+            LOG("[randomizer] %s", message.c_str());
+            ask_player("Wind Waker HD: prepare this seed", message, {"Quit"});
+            return 1;
+        }
+    }
+    if (randomizer_paths::legacy_preflight_required(randomizer::compiled_seed(), warm_shaders)) {
+        std::string why;
+        if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
+            LOG("[save-folder] %s", why.c_str());
+            ask_player("Wind Waker HD: separate randomized saves", why, {"Quit"});
+            return 1;
+        }
+    }
+    config::save_dir = randomizer::save_directory(config::save_dir, save_arg);
+    const std::string seed_namespace = randomizer::compiled_seed() ?
+        std::string("randomizer-") + g_guest_build_rpx_sha256 : std::string();
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
     // A shader warm-up run (setup, Android's preparation activity) never touches saves.
 #ifndef __ANDROID__
     // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
     // a change made there is applied now, and the folder is checked before the game reads its save.
     if (!save_arg && !warm_shaders) {
-        const auto chosen = save_folder::startup(config::save_dir, host::config_dir(), ask_player,
-                                                 [](const std::string& line) { LOG("%s", line.c_str()); });
+        const auto chosen = save_folder::startup(config::save_dir, randomizer::config_directory(host::config_dir()), ask_player,
+                                                 [](const std::string& line) { LOG("%s", line.c_str()); }, seed_namespace);
         if (chosen.quit) {
             fflush(stderr);
             _Exit(0);
@@ -669,8 +699,11 @@ int main(int argc, char** argv) {
         config::save_dir = chosen.save_dir.string();
     }
 #endif
+    std::filesystem::path backup_dir = save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path();
+    if (randomizer::compiled_seed() && backup_dir.empty())
+        backup_dir = randomizer_paths::backups(config::save_dir, seed_namespace);
     mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders,
-                         save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path());
+                         backup_dir);
     mods::manager::load_saved();  // player choices, before the game starts
     mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
     mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path

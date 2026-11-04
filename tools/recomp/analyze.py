@@ -21,14 +21,13 @@ def sext(v, bits):
 
 
 class Program:
-    def __init__(self, path):
-        self.rpx = r = Rpx(path)
+    def __init__(self, path, rpx_limits=None):
+        self.rpx = r = Rpx(path, limits=rpx_limits)
         self.text = r.by_name[".text"]
         self.text_lo = self.text.addr
         self.text_hi = self.text.addr + self.text.size
         self.words = struct.unpack(">%dI" % (self.text.size // 4), self.text.data)
-        d = open(path, "rb").read()
-        self.entry, = struct.unpack_from(">I", d, 0x18)
+        self.entry = r.entry
 
         # imports: call sites (REL24 into an import section) -> (lib, name)
         self.import_calls = {}

@@ -19,6 +19,7 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "../guest_module_call.h"
 #include "../model_probe.h"
 #include "story_native_refresh_dispatch_audit.h"
 #include "story_native_manager_cancel_dispatch_audit.h"
@@ -1319,6 +1320,30 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
     return true;
 }
 
+// Observer callbacks may themselves call guest functions and clobber any EABI
+// scratch register. None of that is an output of an entry/return observer: in
+// patched assembly even r12, f0 or CR0 may carry a value across the boundary.
+// Restore register bits, including on exceptions, but keep memory effects,
+// reservation changes and scheduler/dispatch bookkeeping from callback work.
+class ObserverRegisters {
+    Cpu* cpu;
+    Cpu saved;
+public:
+    explicit ObserverRegisters(Cpu* c) : cpu(c), saved(*c) {}
+    ObserverRegisters(const ObserverRegisters&) = delete;
+    ObserverRegisters& operator=(const ObserverRegisters&) = delete;
+    ~ObserverRegisters() {
+        std::memcpy(cpu->r,saved.r,sizeof saved.r);
+        std::memcpy(cpu->f,saved.f,sizeof saved.f);
+        std::memcpy(cpu->cr,saved.cr,sizeof saved.cr);
+        std::memcpy(cpu->gqr,saved.gqr,sizeof saved.gqr);
+        cpu->lr=saved.lr;cpu->ctr=saved.ctr;cpu->pc=saved.pc;
+        cpu->fpscr=saved.fpscr;
+        cpu->xer_so=saved.xer_so;cpu->xer_ov=saved.xer_ov;
+        cpu->xer_ca=saved.xer_ca;cpu->xer_bc=saved.xer_bc;
+    }
+};
+
 struct Args {
     uint32_t r[8];
     double f[8][2];
@@ -2110,7 +2135,8 @@ using namespace guestmods;
 
 // A hooked or replaced game function. The calling convention is the game's: hooks get the function's
 // arguments (r3..r10, f1..f8 are restored for every hook), a return hook also leaves the return value
-// (r3, r4, f1) as the function produced it. r1/r2/r13 are preserved by every callee (ABI).
+// as the function produced it, including non-EABI assembly returns. Observer
+// register writes are discarded; their memory and runtime scheduling effects remain.
 extern "C" void ppc_mod_run(Cpu* c) {
     uint32_t addr = c->pc;
     auto it = g_chains.find(addr);
@@ -2121,19 +2147,15 @@ extern "C" void ppc_mod_run(Cpu* c) {
     Args a;
     a.save(c);
     for (PpcFunc h : ch.entry) {
+        ObserverRegisters preserve(c);
         h(c);
-        a.load(c);
     }
-    if (ch.replace) ch.replace(c);
+    if (ch.replace) guestmods::invoke_module(c, ch.replace);
     else { c->mod_skip = addr; story_native_stage_owner_hooks::invoke_original(c,addr,[&]{guestmods::original_started(c,addr);g_mod_bodies[ch.ordinal](c);guestmods::original_completed(c,addr);}); }
-    if (!ch.ret.empty()) {
-        uint32_t r3 = c->r[3], r4 = c->r[4];
-        double f1a = c->f[1].ps0, f1b = c->f[1].ps1;
-        for (PpcFunc h : ch.ret) {
-            a.load(c);
-            h(c);
-        }
-        c->r[3] = r3; c->r[4] = r4; c->f[1].ps0 = f1a; c->f[1].ps1 = f1b;
+    for (PpcFunc h : ch.ret) {
+        ObserverRegisters preserve(c); // save the body's result before restoring arguments
+        a.load(c);
+        h(c);
     }
     });
     });

@@ -1,5 +1,7 @@
 # The Legend of Zelda: The Wind Waker HD — native port (macOS, Linux, Windows, Android)
 
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/zZzkNhWQ)
+
 A static recompilation of the Wii U version (USA or European) that runs natively on **macOS** (Apple Silicon),
 **Linux**, **Windows** and **Android** (arm64; the setup app builds the game on the phone, see
 [Android](#android-build-it-yourself)). The
@@ -557,6 +559,8 @@ plays the recorded input back to reproduce the crash. Automatic states can also 
 
 Game controllers (Xbox, PlayStation, Switch Pro, MFi) work too; by default buttons map by
 position (the bottom face button is the Wii U's B), and they can be remapped in the Controls window.
+On macOS the app also reads generic HID gamepads through IOKit (for example a Steam Controller as
+Steam Input's virtual pad), which GameController.framework does not surface.
 **Face buttons** in the settings overlay (F1 → Controls) or the Input menu switches that preset:
 *by position (Nintendo)* is the default; *by label (Xbox)* makes the button named A drive the Wii
 U's A instead — on an Xbox pad that means A accepts/acts and B goes back (issue #78), and the X/Y
@@ -614,12 +618,12 @@ Rumble works too: what the game asks its controller's motor to do is passed to t
 controllers that have one, which includes the Pro Controller's. A host controller has a single
 motor, so a GamePad rumble pattern plays as on/off (or half strength where it alternates), and the
 motors stay still while the settings overlay is open, while no game window has focus and once the
-app quits. **Controls > Rumble** in the settings overlay (F1) turns it off and is
+app quits. **Controls > Controller > Rumble** in the settings overlay (F1) turns it off and is
 remembered (`WWHD_RUMBLE=0` starts with it off). On macOS the motors are driven through
 GameController haptics, so any pad the framework reports haptics for rumbles (the Steam Controller
 on macOS 27 and newer, a DualSense, and others).
 
-**Gyro aiming** (settings overlay → **Controls** → **Gyro…**, off by default): in first person the
+**Gyro aiming** (settings overlay → **Controls** → **Controller** → **Gyro…**, off by default): in first person the
 game turns the camera when the GamePad moves. The port turns its virtual GamePad with a host
 controller's gyro (SDL3; on the macOS app through GameController.framework), a Cemuhook (DSU) server
 or the mouse (Steam Input "gyro to mouse": while the game aims, the pointer is captured and the mouse
@@ -705,7 +709,7 @@ The SDK reference is [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md), the mod manager i
   console's 1024x1024 and uses much less GPU memory at 2x/3x, useful on weaker hardware; `WWHD_STATE_DIR=<dir>`
   stores save states elsewhere; `WWHD_FULL_SAVE_STATES=0|1` full or portable save states for this
   start; `WWHD_PORTABLE_LOAD=<file.wwstate>` loads that portable state (e.g. from a bug report) as
-  soon as a Quest Log is being played; `WWHD_RUMBLE=0|1` (all hosts) start value for Controls > Rumble (overrides the remembered
+  soon as a Quest Log is being played; `WWHD_RUMBLE=0|1` (all hosts) start value for Controls > Controller > Rumble (overrides the remembered
   choice); `WWHD_LOG_RUMBLE=1` logs the game's motor requests and what the motors do.
   `WWHD_STRICT_MUL=0` turns off the GPU's 0×anything=0 multiply rule in shaders (on by default, as in
   Cemu; off only for performance comparisons, it brings back e.g. the black letter in the Rito mail sorting game).

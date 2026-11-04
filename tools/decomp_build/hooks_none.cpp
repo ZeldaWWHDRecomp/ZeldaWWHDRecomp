@@ -4,9 +4,12 @@
 // recomp.py --decomp-hooks (which also defines g_recomp_decomp_kept).
 #include "decomp/decomp.h"
 
+// Weak: a placeholder translation (tools/recomp/stubgen.py --decomp-hooks) may define the same tables.
 extern "C" {
-extern const uint32_t g_recomp_decomp_kept[] = {0u};
-extern const unsigned g_recomp_decomp_kept_count = 0;
+__attribute__((weak)) extern const uint32_t g_recomp_decomp_kept[] = {0u};
+__attribute__((weak)) extern const unsigned g_recomp_decomp_kept_count = 0;
+__attribute__((weak)) extern const uint32_t g_recomp_decomp_import_calls[][2] = {{0u, 0u}};
+__attribute__((weak)) extern const unsigned g_recomp_decomp_import_call_count = 0;
 }
 
 namespace decomp {

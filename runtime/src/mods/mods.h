@@ -284,6 +284,10 @@ enum Cheat {
     kCheatFigurines = 256,  // every Nintendo Gallery figurine (Carlov then leaves, as in the game's ending)
 };
 void request_cheat(int which);  // any thread
+// Explicit, one-shot inventory grants. The first request needs consent; no grant precedes a backup.
+enum StoryItem { kStoryNayru = 1, kStoryDin = 2, kStoryFarore = 4, kStorySword = 8 };
+bool story_item_confirmation_needed();
+void request_story_item(int which, bool confirmed = false);
 enum Infinite {
     kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4, kMoonJump = 8, kMoonNoFall = 16,
     kInfRupees = 32, kInfBags = 64, kInfBreath = 128,
