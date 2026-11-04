@@ -522,6 +522,43 @@ int main(int argc, char** argv) {
             subprocess.run(command, check=True)
             subprocess.run([str(executable), result['module']], check=True)
 
+    def test_nonvolatile_paired_single_module_boundaries(self):
+        # Eighteen scalar float values force ordinary Clang C to use f14..f31.
+        # Native callers can instead keep a live pair in those registers.
+        values = "\n".join(f"f32 v{i}=source[{i}];" for i in range(18))
+        src = ('#include "wwhd/bindings.h"\n'
+               'WWHD_GAME_FUNC(0x02000010,void,native_call,(void));\n'
+               'volatile f32 source[18]={' + ','.join(str(i+1) for i in range(18)) + '};\n'
+               'WWHD_REPLACE(0x02000000,f32,pair_test,(void)){' + values +
+               '\nnative_call();return ' + '+'.join(f'v{i}' for i in range(18)) + ';}\n')
+        import shlex
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(sys.modules[__name__], 'FLAGS', FLAGS + ['-mstackrealign']):
+                self.build_elf(src, d)
+            Path(d, 'manifest.json').write_text(json.dumps({'kind':'guest','id':'paired-single',
+                                                          'guest':{'api_version':1}}))
+            result = builder.build(d, str(Path(d, 'cache')), 0x7F000000,
+                                   builder.default_cc(), str(Path(REPO, 'runtime/include')))
+            cc = builder.default_cc()
+            if os.environ.get('CXX'):
+                cxx = shlex.split(os.environ['CXX'])
+            elif len(cc) > 1 and cc[-1] == 'cc':
+                cxx = cc[:-1] + ['c++']  # setup's zig cc
+            else:
+                compiler = Path(cc[0])
+                name = compiler.name.replace('clang', 'clang++').replace('gcc', 'g++')
+                if name == compiler.name and name in ('cc', 'cc.exe'):
+                    name = name.replace('cc', 'c++')
+                cxx = [str(compiler.with_name(name))] + cc[1:]
+            executable = Path(d, 'driver.exe' if os.name == 'nt' else 'driver')
+            command = cxx + ['-std=c++17', '-O2', '-I', str(Path(REPO, 'runtime/include')),
+                             '-I', str(Path(REPO, 'runtime/src')),
+                             str(Path(HERE, 'fixtures/nonvolatile_ps1.cpp')), '-o', str(executable)]
+            if sys.platform.startswith('linux'):
+                command.append('-ldl')
+            subprocess.run(command, check=True)
+            subprocess.run([str(executable), result['module']], check=True)
+
     def test_errors(self):
         with self.assertRaises(guestmod.ModError):
             guestmod.Elf(b"not an elf at all" * 4)
