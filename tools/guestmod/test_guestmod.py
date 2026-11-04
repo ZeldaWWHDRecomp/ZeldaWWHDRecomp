@@ -28,6 +28,21 @@ FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding", 
          "-I", os.path.join(REPO, "runtime", "guest", "include")]
 
 
+def cxx_command(cc):
+    """Keep setup's launcher/target arguments while selecting its C++ driver."""
+    command = list(cc)
+    for i, value in enumerate(command):
+        compiler = Path(value)
+        name = compiler.name
+        suffix = '.exe' if name.endswith('.exe') else ''
+        stem = name[:-4] if suffix else name
+        for c, cpp in (('clang', 'clang++'), ('gcc', 'g++'), ('cc', 'c++')):
+            if stem == c or stem.endswith('-' + c):
+                command[i] = str(compiler.with_name(stem[:-len(c)] + cpp + suffix))
+                return command
+    raise ValueError('Cannot select a C++ compiler from CC; set CXX explicitly')
+
+
 def ppc_ok():
     if not CLANG or not LLD or not shutil.which(CLANG) or not shutil.which(LLD):
         return False
@@ -505,12 +520,56 @@ int main(int argc, char** argv) {
             subprocess.run(command, check=True)
             subprocess.run([str(executable), result['module']], check=True)
 
+    def test_nonvolatile_paired_single_module_boundaries(self):
+        # Eighteen scalar float values force ordinary Clang C to use f14..f31.
+        # Native callers can instead keep a live pair in those registers.
+        values = "\n".join(f"f32 v{i}=source[{i}];" for i in range(18))
+        src = ('#include "wwhd/bindings.h"\n'
+               'WWHD_GAME_FUNC(0x02000010,void,native_call,(void));\n'
+               'volatile f32 source[18]={' + ','.join(str(i+1) for i in range(18)) + '};\n'
+               'WWHD_REPLACE(0x02000000,f32,pair_test,(void)){' + values +
+               '\nnative_call();return ' + '+'.join(f'v{i}' for i in range(18)) + ';}\n')
+        import shlex
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(sys.modules[__name__], 'FLAGS', FLAGS + ['-mstackrealign']):
+                self.build_elf(src, d)
+            Path(d, 'manifest.json').write_text(json.dumps({'kind':'guest','id':'paired-single',
+                                                          'guest':{'api_version':1}}))
+            result = builder.build(d, str(Path(d, 'cache')), 0x7F000000,
+                                   builder.default_cc(), str(Path(REPO, 'runtime/include')))
+            cc = builder.default_cc()
+            if os.environ.get('CXX'):
+                cxx = shlex.split(os.environ['CXX'])
+            else:
+                cxx = cxx_command(cc)
+            executable = Path(d, 'driver.exe' if os.name == 'nt' else 'driver')
+            command = cxx + ['-std=c++17', '-O2', '-I', str(Path(REPO, 'runtime/include')),
+                             '-I', str(Path(REPO, 'runtime/src')),
+                             str(Path(HERE, 'fixtures/nonvolatile_ps1.cpp')), '-o', str(executable)]
+            if sys.platform.startswith('linux'):
+                command.append('-ldl')
+            subprocess.run(command, check=True)
+            subprocess.run([str(executable), result['module']], check=True)
+
     def test_errors(self):
         with self.assertRaises(guestmod.ModError):
             guestmod.Elf(b"not an elf at all" * 4)
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_cxx_driver_keeps_setup_launcher_and_target(self):
+        for cc, expected in (
+            (['xcrun', 'clang'], ['xcrun', 'clang++']),
+            (['/tool/zig', 'cc', '-target', 'x86_64-linux-gnu.2.35'],
+             ['/tool/zig', 'c++', '-target', 'x86_64-linux-gnu.2.35']),
+            (['/tool/clang.exe', '-fuse-ld=lld'], ['/tool/clang++.exe', '-fuse-ld=lld']),
+            (['ccache', '/tool/aarch64-linux-gnu-gcc'], ['ccache', '/tool/aarch64-linux-gnu-g++']),
+        ):
+            with self.subTest(cc=cc):
+                self.assertEqual(cxx_command(cc), expected)
+        with self.assertRaisesRegex(ValueError, 'set CXX'):
+            cxx_command(['unknown-driver'])
+
     def test_source_and_release_include_roots(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(builder, "REPO", d):
             self.assertEqual(builder.default_include(), os.path.join(d, "runtime", "include"))

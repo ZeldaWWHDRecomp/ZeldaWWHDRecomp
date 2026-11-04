@@ -19,6 +19,7 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "../guest_module_call.h"
 #include "../model_probe.h"
 #include "story_native_refresh_dispatch_audit.h"
 #include "story_native_manager_cancel_dispatch_audit.h"
@@ -2149,7 +2150,7 @@ extern "C" void ppc_mod_run(Cpu* c) {
         ObserverRegisters preserve(c);
         h(c);
     }
-    if (ch.replace) ch.replace(c);
+    if (ch.replace) guestmods::invoke_module(c, ch.replace);
     else { c->mod_skip = addr; story_native_stage_owner_hooks::invoke_original(c,addr,[&]{guestmods::original_started(c,addr);g_mod_bodies[ch.ordinal](c);guestmods::original_completed(c,addr);}); }
     for (PpcFunc h : ch.ret) {
         ObserverRegisters preserve(c); // save the body's result before restoring arguments
