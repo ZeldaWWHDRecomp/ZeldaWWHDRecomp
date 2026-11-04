@@ -28,6 +28,21 @@ FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-mstackrealign", "-O2", 
          "-I", os.path.join(REPO, "runtime", "guest", "include")]
 
 
+def cxx_command(cc):
+    """Keep setup's launcher/target arguments while selecting its C++ driver."""
+    command = list(cc)
+    for i, value in enumerate(command):
+        compiler = Path(value)
+        name = compiler.name
+        suffix = '.exe' if name.endswith('.exe') else ''
+        stem = name[:-4] if suffix else name
+        for c, cpp in (('clang', 'clang++'), ('gcc', 'g++'), ('cc', 'c++')):
+            if stem == c or stem.endswith('-' + c):
+                command[i] = str(compiler.with_name(stem[:-len(c)] + cpp + suffix))
+                return command
+    raise ValueError('Cannot select a C++ compiler from CC; set CXX explicitly')
+
+
 def ppc_ok():
     if not CLANG or not LLD or not shutil.which(CLANG) or not shutil.which(LLD):
         return False
@@ -542,14 +557,8 @@ int main(int argc, char** argv) {
             cc = builder.default_cc()
             if os.environ.get('CXX'):
                 cxx = shlex.split(os.environ['CXX'])
-            elif len(cc) > 1 and cc[-1] == 'cc':
-                cxx = cc[:-1] + ['c++']  # setup's zig cc
             else:
-                compiler = Path(cc[0])
-                name = compiler.name.replace('clang', 'clang++').replace('gcc', 'g++')
-                if name == compiler.name and name in ('cc', 'cc.exe'):
-                    name = name.replace('cc', 'c++')
-                cxx = [str(compiler.with_name(name))] + cc[1:]
+                cxx = cxx_command(cc)
             executable = Path(d, 'driver.exe' if os.name == 'nt' else 'driver')
             command = cxx + ['-std=c++17', '-O2', '-I', str(Path(REPO, 'runtime/include')),
                              '-I', str(Path(REPO, 'runtime/src')),
@@ -565,6 +574,19 @@ int main(int argc, char** argv) {
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_cxx_driver_keeps_setup_launcher_and_target(self):
+        for cc, expected in (
+            (['xcrun', 'clang'], ['xcrun', 'clang++']),
+            (['/tool/zig', 'cc', '-target', 'x86_64-linux-gnu.2.35'],
+             ['/tool/zig', 'c++', '-target', 'x86_64-linux-gnu.2.35']),
+            (['/tool/clang.exe', '-fuse-ld=lld'], ['/tool/clang++.exe', '-fuse-ld=lld']),
+            (['ccache', '/tool/aarch64-linux-gnu-gcc'], ['ccache', '/tool/aarch64-linux-gnu-g++']),
+        ):
+            with self.subTest(cc=cc):
+                self.assertEqual(cxx_command(cc), expected)
+        with self.assertRaisesRegex(ValueError, 'set CXX'):
+            cxx_command(['unknown-driver'])
+
     def test_source_and_release_include_roots(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(builder, "REPO", d):
             self.assertEqual(builder.default_include(), os.path.join(d, "runtime", "include"))
