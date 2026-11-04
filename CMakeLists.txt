@@ -4079,6 +4079,16 @@ add_executable(gamepad_backdrop_options_test runtime/tools/gamepad_backdrop_opti
 target_include_directories(gamepad_backdrop_options_test PRIVATE runtime/src runtime/include)
 target_compile_options(gamepad_backdrop_options_test PRIVATE -UNDEBUG)
 add_test(NAME gamepad_backdrop_options COMMAND gamepad_backdrop_options_test)
+if(APPLE)
+  add_executable(metal_gamepad_backdrop_test
+    runtime/tools/metal_gamepad_backdrop_test.mm
+    runtime/src/gfx/metal_gamepad_backdrop.mm)
+  target_compile_options(metal_gamepad_backdrop_test PRIVATE -fobjc-arc -UNDEBUG)
+  target_include_directories(metal_gamepad_backdrop_test PRIVATE runtime/third_party/fmt/include)
+  target_link_libraries(metal_gamepad_backdrop_test PRIVATE "-framework Metal" "-framework Foundation")
+  add_test(NAME metal_gamepad_backdrop COMMAND metal_gamepad_backdrop_test)
+  set_tests_properties(metal_gamepad_backdrop PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 if(Python3_Interpreter_FOUND)
   add_test(NAME vulkan_gamepad_backdrop_policy
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/vulkan_gamepad_backdrop_test.py")
