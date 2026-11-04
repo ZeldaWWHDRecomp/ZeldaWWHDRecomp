@@ -102,7 +102,7 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, on_link_step, (void* link)) {
 ### Build
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding \
+clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding \
   -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections \
   -I<sdk>/include -c mod.c -o mod.o
 ld.lld -m elf32ppc -r mod.o -o mod.elf
@@ -112,6 +112,19 @@ ld.lld -m elf32ppc -r mod.o -o mod.elf
 source checkout. `-mcpu=750` keeps to the game CPU's instructions. Link with `-r` only: the
 ELF must stay relocatable (the port picks its address). `-m elf32ppc` is needed on Windows,
 where MSYS2's lld defaults to PE. The same `mod.elf` works on every desktop platform.
+
+`-mstackrealign` is required for every PowerPC guest translation unit, including
+separately compiled helpers. Native game callers can supply an 8-byte-aligned
+stack, while Clang normally assumes 16-byte alignment. Realigning the guest
+callee's frame preserves its local storage and stack-passed arguments at either
+entry alignment. This flag belongs to the PowerPC compile, not the host compiler
+that later builds the translated module.
+
+Recompile and relink existing guest ELFs with this flag. Current translation
+does not add the missing compiler-generated realignment prologue. An entry-time
+runtime wrapper is a possible additional protection for older modules, but it
+must preserve stack-passed arguments and by-reference data; simply rounding the
+stack pointer is not sufficient. This change supplies the compile-time fix.
 
 ### Package and install
 
@@ -194,6 +207,20 @@ with their content:
 - Calls into a guest module preserve both lanes of nonvolatile FPRs f14–f31,
   including when native code calls a module function pointer. This bridges the
   scalar compiler ABI to the game's paired-single calling convention.
+- The runtime also offers a best-effort stack bridge for old mods compiled without
+  `-mstackrealign`. At an 8-modulo-16 entry, it copies the complete ordinary EABI
+  caller frame into a disjoint aligned stack area, preserving original pointer
+  arguments and the parent backchain. It never copies stale frame contents back
+  over writes through pointers into the caller's original frame. Writes to
+  by-value stack-argument slots stay in the shadow; writes through original
+  pointer arguments remain in caller RAM.
+  This requires a host-verified current-thread stack receipt, a valid bounded
+  caller backchain, and at least 64 KiB left below the shadow frame for callees.
+  Missing receipts (including some restored threads), invalid frames, or low
+  headroom retain the original call without stack relocation and log one warning.
+  This is not a guarantee for arbitrary dynamic stack use, custom assembly stack
+  layouts, or nonlocal guest unwinding. Keep using `-mstackrealign` when building
+  mods; the bridge is a second layer for older binaries.
 - Observer hooks preserve the game's register state, including scratch registers, paired
   floating-point values and condition bits. Return hooks receive the original argument
   registers, while the game's result (including nonstandard assembly returns) is kept.

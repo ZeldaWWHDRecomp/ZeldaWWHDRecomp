@@ -7,6 +7,25 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
+  that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
+  pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK
+  docs, example Makefile and tests use it). Rebuild existing C mods from source to get the fix. Older mods that
+  aren't rebuilt get a best-effort safeguard: when the port can check the game's stack, it moves the mod's frame to
+  an aligned spot before the mod runs. Rebuilding is still the real fix.
+- **Fixed: GameCube controllers set up right away** (#392, for #356, thanks @itsarahtonin for the report). A recognized
+  GameCube controller now gets the full GameCube layout without going through the generic new-controller setup, and
+  L targets at a quarter of its travel or at the digital click. Existing controller profiles and shared bindings are
+  kept, and adapter ports that share one name show up as a single editable profile. Single bindings no longer offer
+  "Automatic". Not yet tested with a physical adapter; reports from Windows adapter users are welcome.
+- **Randomizer: more seeds accepted** (#390, fixes #383, thanks @KaitoCrisHub for the report). Seeds from TWWHD
+  Randomizer 1.2.0 with Quiet Swift Sail or any entrance shuffle were refused by setup's compatibility check; both are
+  now reviewed and accepted. Every option of 1.2.0 that patches game code has been checked, and five seeds (including
+  everything-on) were booted into the game. Seeds from 1.1.1 and older are still refused.
+- **For mod authors: native actors from C mods** (#375). A C mod can now register its own native actors (profile,
+  callbacks and name) in the game's shared actor table with `wwhd_native_actor_profile_register`, from a hook on the
+  game's main loop entry before the first actor is created. Retail and port IDs, duplicate names and foreign callbacks
+  are refused, and full save states record which mod actors were active. Nothing changes for players without such mods.
 - **For mod authors: story flags in the SDK** (#369). The new `wwhd/save_flags.h` reads and changes the game's story
   flags (its persistent event bits) through the game's own functions, with checked inputs. A value outside a flag
   group's mask is refused instead of changing the neighbouring flags, and the helpers report when no save is loaded.
