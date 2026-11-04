@@ -191,6 +191,9 @@ with their content:
 | `WWHD_GAME_ORIGINAL(...)` | the game's own code, below all mod hooks |
 
 - Every game function can be hooked, including calls through function pointers.
+- Calls into a guest module preserve both lanes of nonvolatile FPRs f14–f31,
+  including when native code calls a module function pointer. This bridges the
+  scalar compiler ABI to the game's paired-single calling convention.
 - Observer hooks preserve the game's register state, including scratch registers, paired
   floating-point values and condition bits. Return hooks receive the original argument
   registers, while the game's result (including nonstandard assembly returns) is kept.
