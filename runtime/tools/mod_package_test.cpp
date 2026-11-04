@@ -79,8 +79,19 @@ int main(int argc, char** argv) {
         return 0;
     }
     if(argc==4&&std::string(argv[1])=="--save-profile-startup") {
-        const std::string mode=argv[2];
+        // Keep the fixture alive for the child's full runtime lifetime. Windows
+        // releases its loaded DLL only when that process exits.
         const auto root=unique_temp("wwhd-profile-startup-");
+        const auto result=host::run_process({fs::absolute(argv[0]).string(),
+            "--save-profile-startup-child",argv[2],argv[3],root.string()});
+        if(result.code!=0)std::cerr<<result.output<<result.error;
+        fs::remove_all(root);
+        return result.code==0?0:1;
+    }
+    if(argc==5&&std::string(argv[1])=="--save-profile-startup-child") {
+        const std::string mode=argv[2];
+        const auto root=fs::path(argv[4]);
+        assert(fs::is_directory(root));
         const auto storage=root/"manager";
         env("WWHD_NO_HOST_INPUT","1");
         env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
@@ -130,7 +141,6 @@ int main(int argc, char** argv) {
         } catch(const mods::save_profile::Error&) {rejected=true;}
         assert(rejected==(mode=="malformed"||mode=="conflict"||mode=="native-failure"||mode=="changed"));
         if(rejected)assert(!loaded);
-        fs::remove_all(root);
         std::cout<<"save-profile metadata/startup "<<mode<<" passed\n";
         return 0;
     }
