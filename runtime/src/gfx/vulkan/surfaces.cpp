@@ -1,3 +1,4 @@
+#include "vulkan_error.h"
 #include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "pass.h"
@@ -90,7 +91,11 @@ static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uin
     return cached.info;
 }
 static void check_vk(VkResult result, const char* what) {
-    if (result != VK_SUCCESS) exception_report::raise(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
+    if (result != VK_SUCCESS) {
+        VulkanFailure failure(result,(std::string("Vulkan surfaces: ")+what).c_str());
+        exception_report::record(failure.what());
+        throw failure;
+    }
 }
 static uint64_t content_hash(const uint8_t* p, size_t n) {
     // Full-byte coverage, including unaligned guest ranges and the final tail.

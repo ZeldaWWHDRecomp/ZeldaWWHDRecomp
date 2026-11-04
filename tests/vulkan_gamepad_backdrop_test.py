@@ -17,6 +17,7 @@ SHIM = r'''
 #include <memory>
 #include <vector>
 #include <utility>
+#include <stdexcept>
 using VkImageLayout=int;using VkPipelineStageFlags=int;using VkAccessFlags=int;
 constexpr int VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL=1,VK_PIPELINE_STAGE_TRANSFER_BIT=2,VK_ACCESS_TRANSFER_WRITE_BIT=4,VK_IMAGE_ASPECT_COLOR_BIT=8;
 struct VkClearColorValue { float float32[4]{}; };
@@ -28,9 +29,15 @@ struct Surface {
 };
 static unsigned created=0,retired=0,clears=0,allocationAttempts=0;
 static bool failAllocation=false;
+static bool failDevice=false,failHost=false;
+class VulkanFailure:public std::runtime_error {
+ bool allocation;
+public:explicit VulkanFailure(bool isAllocation):std::runtime_error("fake driver failure"),allocation(isAllocation){}
+ bool allocation_failure()const{return allocation;}
+};
 void end_encoder() {}
 void destroy_surface_image(Surface* s) { if(s->image){++retired;s->image=0;} }
-void create_surface_image(Surface* s,bool) { ++allocationAttempts;if(failAllocation)throw 1;s->image=++created;s->extent={s->width,s->height,1};s->allocationBytes=uint64_t(s->width)*s->height*4; }
+void create_surface_image(Surface* s,bool) { ++allocationAttempts;if(failHost)throw std::bad_alloc();if(failAllocation)throw VulkanFailure(true);if(failDevice)throw VulkanFailure(false);s->image=++created;s->extent={s->width,s->height,1};s->allocationBytes=uint64_t(s->width)*s->height*4; }
 void transition_image(Surface* s,int layout,int,int) { s->layout=layout; }
 int command_buffer() { return 1; }
 void mark_gpu_written(Surface*) {}
@@ -97,6 +104,11 @@ int main() {
  gamepad_backdrop_reset();policy::set_capture_requested(true);failAllocation=true;
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
  gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());failAllocation=false;
+ failHost=true;gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);failHost=false;
+ // Device loss is not an optional capture miss: propagate to normal backend handling.
+ failDevice=true;bool propagated=false;gamepad_backdrop_scope(nullptr,true);
+ try { gamepad_backdrop_begin_replay(&a,true); } catch(const VulkanFailure&) { propagated=true; }
+ assert(propagated);failDevice=false;gamepad_backdrop_scope(nullptr,false);
  gamepad_backdrop_reset();assert(!gamepad_backdrop_image()&&!policy::capture_enabled()&&retired==created);
 }
 '''
@@ -152,6 +164,7 @@ int main() {
         source = CPP.read_text()
         source = source.replace('#include "backend.h"', SHIM)
         source = source.replace('#include "deferred_dispatch.h"', '')
+        source = source.replace('#include "vulkan_error.h"', '')
         source = source.replace('#include "gamepad_backdrop.h"', '#include "' + str(CPP.with_suffix('.h')) + '"')
         source = source.replace('#include "../gamepad_backdrop.h"', '#include "' + str(CPP.parent.parent / 'gamepad_backdrop.h') + '"')
         with tempfile.TemporaryDirectory() as directory:

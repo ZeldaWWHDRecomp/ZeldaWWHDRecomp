@@ -30,6 +30,7 @@
 #include "platform/quest_theater.h"
 #endif
 #include "backend.h"
+#include "vulkan_error.h"
 #include "../../dsweep.h"
 #include "../hidden_presentation.h"
 #include "pass.h"
@@ -668,12 +669,6 @@ void save_pipeline_cache(bool shutdown) try {
 } catch (const std::exception& error) {
   LOG("[vulkan cache] save skipped after error: %s",error.what());
 }
-class VulkanFailure : public std::runtime_error {
-public:
-  VkResult result;
-  VulkanFailure(VkResult value,const char* operation)
-      : std::runtime_error(std::string(operation)+": Vulkan result "+std::to_string(value)),result(value) {}
-};
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS) {
 #ifdef __ANDROID__

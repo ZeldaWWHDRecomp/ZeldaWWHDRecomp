@@ -2,6 +2,7 @@
 #include "gamepad_backdrop.h"
 #include "../gamepad_backdrop.h"
 #include "backend.h"
+#include "vulkan_error.h"
 #include "deferred_dispatch.h"
 #include <utility>
 #include <cstring>
@@ -46,14 +47,17 @@ std::unique_ptr<Image> acquire(Surface* source) {
  const uint64_t estimate=uint64_t(source->extent.width)*source->extent.height*
      std::max(1u,source->fmt.hostBytesPerBlock?source->fmt.hostBytesPerBlock:source->fmt.bytesPerBlock);
  if(!estimate||estimate>kCaptureBytes||imageCount>=kCaptureImages||estimate>kCaptureBytes-imageBytes)return {};
- auto image=std::make_unique<Image>();image->surface=std::make_unique<Surface>();
- auto* s=image->surface.get();s->width=source->extent.width;s->height=source->extent.height;
- s->format=source->format;s->fmt=source->fmt;s->scale=1;
- try { create_surface_image(s,false); } catch (...) { return {}; }
- const uint64_t bytes=s->allocationBytes;
- if(!bytes||bytes>kCaptureBytes-imageBytes)return {};
- image->bytes=bytes;++imageCount;imageBytes+=bytes;
- return image;
+ try {
+  auto image=std::make_unique<Image>();image->surface=std::make_unique<Surface>();
+  auto* s=image->surface.get();s->width=source->extent.width;s->height=source->extent.height;
+  s->format=source->format;s->fmt=source->fmt;s->scale=1;
+  create_surface_image(s,false);
+  const uint64_t bytes=s->allocationBytes;
+  if(!bytes||bytes>kCaptureBytes-imageBytes)return {};
+  image->bytes=bytes;++imageCount;imageBytes+=bytes;
+  return image;
+ } catch(const std::bad_alloc&) { return {}; }
+ catch(const VulkanFailure& failure) { if(failure.allocation_failure())return {};throw; }
 }
 uint64_t identity(Surface* s) {
  uint64_t value=0;
@@ -93,7 +97,7 @@ bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) 
  if(failed) return false;
  if(!active) {
   captureOpaque=opaque;sourceIdentity=identity(source);end_encoder();
-  try { active=acquire(source); } catch (...) { active.reset(); }
+  active=acquire(source);
   if(!active){failed=true;discard_pending(sourceIdentity);return false;}
   auto* s=active->surface.get();sourceIdentity=identity(source);
   transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
