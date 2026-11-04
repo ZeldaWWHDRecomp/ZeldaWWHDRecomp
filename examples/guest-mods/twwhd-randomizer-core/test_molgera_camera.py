@@ -7,6 +7,30 @@ import tempfile
 import unittest
 
 class MolgeraCamera(unittest.TestCase):
+    def test_optimized_typed_local_copy(self):
+        source=(Path(__file__).parent/'molgera_camera.h').read_text()
+        start=source.index('static void rmc_copy_vector(')
+        end=source.index('}',start)+1
+        helper=source[start:end]
+        code=r'''#include <stdint.h>
+#include <assert.h>
+#include <string.h>
+typedef uintptr_t u32;typedef unsigned char u8;
+#define T_u32 unsigned int
+#define T_u8 u8
+#define R_MC(t,a) (*(volatile T_##t*)(a))
+'''+helper+r'''
+__attribute__((noinline)) static float tracked_y(u32 source){float local[3];rmc_copy_vector((u32)local,source);local[1]+=100.0f;return local[1];}
+int main(void){float input[3]={-12.5f,203.25f,47};assert(tracked_y((u32)input)==303.25f);
+ unsigned int bits[3]={0x80000000u,0x7FC12345u,0x3F800000u},output[3];float local[3];
+ rmc_copy_vector((u32)local,(u32)bits);memcpy(output,local,sizeof output);assert(!memcmp(bits,output,sizeof bits));
+ rmc_copy_vector((u32)local,(u32)local);memcpy(output,local,sizeof output);assert(!memcmp(bits,output,sizeof bits));return 0;}
+'''
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'copy.c';exe=Path(temporary)/'copy';path.write_text(code)
+            subprocess.run([os.environ.get('CC','cc'),'-O2','-fstrict-aliasing','-Wall','-Wextra','-Werror',str(path),'-o',str(exe)],check=True)
+            subprocess.run([str(exe)],check=True)
+
     def test_consumer(self):
         root=Path(__file__).parent
         prefix='''#include <stdint.h>\n#include <string.h>\n#include <assert.h>\n#include <math.h>\n#include <stdio.h>\n#include <stdarg.h>\ntypedef uintptr_t u32;typedef int32_t s32;typedef int16_t s16;typedef uint16_t u16;typedef int8_t s8;typedef uint8_t u8;typedef float f32;typedef double f64;\n#define WWHD_GAME_FUNC(a,r,n,p) r n p\n#define WWHD_REPLACE(a,r,n,p) r n p\n'''
@@ -67,6 +91,7 @@ int main(void){unsigned cases=0;
  const s16 modes[]={0,1,2,3,50,51,52,53,60,100,101,102,104,105,106,150,-1,777};
  for(unsigned m=0;m<sizeof modes/sizeof*modes;m++)for(s16 count=0;count<700;count+=7){reset();W(s16,actor+0x3E96)=modes[m];W(s16,actor+0x3E98)=count;W(s16,actor+0x3E9A)=count;randomizer_molgera_camera(actor);assert(contexts>=3&&randomizer_boss_factory_active==3&&randomizer_boss_factory_item==0x99);cases++;}
  for(unsigned i=0;i<3;i++){reset();W(s16,actor+0x3E96)=i==0?1:i==1?50:100;W(u16,actor+0xF8)=0;randomizer_molgera_camera(actor);assert(randomizer_boss_factory_active==3&&randomizer_boss_factory_item==0x99);assert(orders==1&&W(u16,actor+0xFA)==0x42&&!sets&&!grounds&&!stops);cases++;}
+ reset();W(s16,actor+0x3E96)=3;W(f32,player+0x314)=-12.5f;W(f32,player+0x318)=203.25f;W(f32,player+0x31C)=47;randomizer_molgera_camera(actor);assert(calcs==3&&sets==1&&isfinite(last_center[1])&&last_center[0]==-12.5f&&last_center[1]==303.25f&&last_center[2]==47);cases++;
  reset();entry_mode=100;randomizer_molgera_camera(actor);assert(sqrts==1&&grounds==1&&destructs==1&&last_position[0]==0&&last_position[1]==42&&last_position[2]==777&&W(s16,actor+0x3E96)==101);cases++;
  reset();W(s16,actor+0x3E96)=100;entry_mode=150;randomizer_molgera_camera(actor);assert(!sqrts&&!grounds&&resets==1&&starts==1&&W(s16,actor+0x3E96)==0);cases++;
  for(unsigned outside=0;outside<2;outside++){reset();W(s16,actor+0x3E96)=100;W(f32,actor+0x314)=123;W(f32,actor+0x31C)=456;sqrt_result=outside?450.0000001:450;mutate_sqrt=1;randomizer_molgera_camera(actor);assert(grounds==1&&destructs==1&&!sets&&last_position[0]==(outside?23:0)&&last_position[2]==(outside?1233:777)&&W(s16,actor+0x3E96)==0);cases++;}

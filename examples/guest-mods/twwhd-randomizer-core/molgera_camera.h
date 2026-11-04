@@ -68,8 +68,11 @@ static u32 rmc_matrix(void) { return WWHD_GAME_DATA(0x1018C7B0, u32); }
 static u32 rmc_target(void) { return (u32)&WWHD_GAME_DATA(0x10462AE8, u8); }
 static f32 rmc_hio_height(void) { return WWHD_GAME_DATA(0x10462A8C, f32); }
 static void rmc_copy_vector(u32 to, u32 from) {
-  for (u32 i = 0; i < 3; i++)
-    R_MC(u32, to + 4 * i) = R_MC(u32, from + 4 * i);
+  /* Character access preserves the representation and may alias typed local
+   * f32 arrays. Word stores followed by float reads violate C aliasing and
+   * LLVM23 materializes a NaN for the tracking-camera Y calculation. */
+  for (u32 i = 0; i < 12; i++)
+    R_MC(u8, to + i) = R_MC(u8, from + i);
 }
 static void rmc_set_vector(u32 vector, f32 x, f32 y, f32 z) {
   R_MC(f32, vector) = x;
