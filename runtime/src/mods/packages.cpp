@@ -79,6 +79,7 @@ bool ready=false,guests_started=false,code_mod_support=false;
 bool metadata_ready=false, activation_ready=false, metadata_needs_save=false;
 std::vector<std::string> metadata_sequence;
 std::map<std::string,std::string> save_profile_inventory;
+std::set<std::string> save_profile_session_enabled;
 std::map<std::string,bool> save_profile_builtins;
 std::vector<std::string> guest_startup_ids;
 save_profile::Selection planned_save_profile, frozen_save_profile;
@@ -612,6 +613,11 @@ std::vector<std::string> order(const std::set<std::string>& enabled,bool check_s
     for(const auto& id:enabled)visit(id);return result;
 }
 std::set<std::string> enabled_set(){std::set<std::string> result;for(const auto& [id,r]:records)if(wanted(id))result.insert(id);return result;}
+// Saved choices may change for the next launch. The loaded save-profile session
+// keeps its original package set until the process exits.
+std::set<std::string> activation_enabled_set() {
+    return frozen_save_profile.empty()?enabled_set():save_profile_session_enabled;
+}
 std::string graphics_conflict(const std::string& a,const std::string& b){
     const auto& x=records.at(a).manifest;const auto& y=records.at(b).manifest;
     if(!x.graphics||!y.graphics)return {};
@@ -663,7 +669,7 @@ void check_frozen_save_profile(const std::vector<std::string>& sequence) {
     if(save_profile_frozen&&save_selection(sequence)!=frozen_save_profile)
         throw save_profile::Error("The active save profile changed after save startup; restart before activating this mod");
 }
-const char* kSessionChange = "This package belongs to the running game's save profile. Close the game and restart with code mods off before changing it.";
+const char* kSessionChange = "This package belongs to the current save profile. Turn off the profile mod in Settings > Mods and restart before changing its files or options. Switching mods off now takes effect at the next launch.";
 void require_session_mutable(const std::string& id) {
     require(!save_profile_inventory.contains(id),kSessionChange);
 }
@@ -889,7 +895,7 @@ void prepare_metadata_unlocked() {
         }
     }
 
-    auto plan = startup_order(enabled_set());
+    auto plan = startup_order(activation_enabled_set());
     metadata_sequence = plan.order;
     // Preserve candidate ownership before any other validation can fail.
     planned_save_profile = save_selection(metadata_sequence);
@@ -1054,6 +1060,7 @@ save_profile::Selection startup_save_profile() {
     frozen_save_profile = planned_save_profile;
     save_profile_frozen = true;
     if (!frozen_save_profile.empty()) {
+        save_profile_session_enabled=enabled_set();
         std::set<std::string> seen;
         std::function<void(const std::string &)> snapshot = [&](const std::string &id) {
             if (!seen.insert(id).second)
@@ -1284,7 +1291,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
         return false;
     }
 }
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.isolated_save_profile=m.kind=="guest"&&m.save_profile.present&&m.save_profile.error.empty();v.reason=!m.save_profile.error.empty()?m.save_profile.error:(m.problem.empty()?r.error:m.problem);if(!m.save_profile.error.empty())v.compatible=false;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest"||!frozen_save_profile.empty();v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.isolated_save_profile=m.kind=="guest"&&m.save_profile.present&&m.save_profile.error.empty();v.reason=!m.save_profile.error.empty()?m.save_profile.error:(m.problem.empty()?r.error:m.problem);if(!m.save_profile.error.empty())v.compatible=false;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 // fresh: a new package only (install_new): refused when the ID is installed or its folder exists
 static bool install_package(const std::string& source,std::string& error,std::string* installed_id_out,bool fresh){return operation(error,[&]{
@@ -1338,23 +1345,39 @@ bool enable_after_code_rebuild(const std::string& id,std::string& error){return 
     auto previous=database;profile()["code_mod_pending"][id]=records.at(id).manifest.trust_fingerprint;
     try{save();}catch(...){database=previous;throw;}
 });}
-bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");if(wanted(id)!=on)require_session_mutable(id);auto enabled=enabled_set();if(on){
+bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){bool deferred=false;std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");deferred=!frozen_save_profile.empty();auto enabled=enabled_set();if(on){
     std::set<std::string> visiting;
     std::function<void(const std::string&)> add=[&](const std::string& current){require(!visiting.contains(current),"Dependency cycle at "+current);require(records.contains(current),missing(current));require(!records.at(current).loading,"Wait for mod preparation to finish: "+current);require(records.at(current).manifest.kind!="guest"||code_mod_support,"This mod needs code-mod support. Enable code mods in Settings > Mods, rebuild and restart first");const auto& graphics=records.at(current).manifest.graphics;if(graphics&&!graphics->shaders.empty())require(cemu::vulkan(),"GLSL shader packs require Vulkan; choose it in Graphics and restart");if(enabled.contains(current))return;visiting.insert(current);for(const auto& d:records.at(current).manifest.dependencies){if(d.id.starts_with("builtin:"))builtin_dependencies.push_back(d.id.substr(8));else add(d.id);}visiting.erase(current);require(confirmed(records.at(current)),records.at(current).manifest.name+" contains native code that has not been confirmed");enabled.insert(current);};add(id);
     require_experimental_ack(id);experimental_ids=newly_experimental(id);
     if(switch_conflicts)for(auto it=enabled.begin();it!=enabled.end();){if(*it!=id&&!graphics_conflict(id,*it).empty())it=enabled.erase(it);else ++it;}
-    }else{require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to turn it off");enabled.erase(id);}order(enabled,on);auto planned=profile().get("builtins");for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;validate_conflicts(enabled,&planned);check_session_enabled(enabled);auto previous=database;profile()["builtins"]=planned;
+    }else{require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to turn it off");enabled.erase(id);
+        if(deferred) {
+            bool changed=true;
+            while(changed){changed=false;for(auto it=enabled.begin();it!=enabled.end();) {
+                const auto& dependencies=records.at(*it).manifest.dependencies;
+                if(std::any_of(dependencies.begin(),dependencies.end(),[&](const auto& dep){return !dep.id.starts_with("builtin:")&&!enabled.contains(dep.id);})) {it=enabled.erase(it);changed=true;}
+                else ++it;
+            }}
+        }
+    }
+    if(deferred&&on)for(const auto& current:enabled)for(const auto& [setting,value]:records.at(current).manifest.settings){auto locked=save_profile_builtins.find(setting);require(locked==save_profile_builtins.end()||locked->second==value,kSessionChange);}
+    if(!(deferred&&!on))order(enabled,on);auto planned=profile().get("builtins");if(!deferred)for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;
+    if(!(deferred&&!on))validate_conflicts(enabled,&planned);
+    auto previous=database;profile()["builtins"]=planned;
     double serial=profile().get("enable_serial").number;
     for(const auto& [key,r]:records){if(enabled.contains(key)&&!wanted(key))profile()["enabled_since"][key]=++serial;profile()["enabled"][key]=enabled.contains(key);}profile()["enable_serial"]=serial;
     for(const auto& key:experimental_ids)database["experimental_ack"].object.erase(key); // the confirmation is used up
-    try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();dirty=true;});if(ok)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);return ok;}
+    try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();if(!deferred)dirty=true;});
+    if(ok&&!deferred)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);
+    if(ok&&deferred)post_toast("Mod changes will apply after restarting the game. The current save profile stays active until then.");
+    return ok;}
 // The guest packages of this start again (required.h installed or enabled one after initialize()),
 // while the guest mods haven't started yet
 void refresh_guest_startup() {
     std::lock_guard guard(mutex);
     if(!ready||guests_started)return;
     try {
-        auto plan=startup_order(enabled_set());
+        auto plan=startup_order(activation_enabled_set());
         const auto& sequence=plan.order;
         validate_conflicts(started(plan));
         check_frozen_save_profile(sequence);
@@ -1410,7 +1433,21 @@ namespace {std::mutex g_toast_mutex;std::vector<std::string> g_toasts;}
 void post_toast(const std::string& text){std::lock_guard guard(g_toast_mutex);if(g_toasts.size()<8)g_toasts.push_back(text);}
 std::vector<std::string> take_toasts(){std::lock_guard guard(g_toast_mutex);auto result=std::move(g_toasts);g_toasts.clear();return result;}
 std::vector<std::string> take_notices(){std::lock_guard guard(mutex);auto result=std::move(notices);notices.clear();return result;}
-void disable_all(){std::string error;const bool ok=operation(error,[&]{require(frozen_save_profile.empty(),kSessionChange);auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;profile()["setup_pending"].object.clear();try{save();}catch(...){database=previous;throw;}dirty=true;});if(ok)manager::disable_all();else post_toast(error);}
+void disable_all(){
+    std::string error;bool deferred=false;
+    const bool ok=operation(error,[&]{
+        deferred=!frozen_save_profile.empty();
+        auto previous=database;
+        for(const auto& [id,r]:records)profile()["enabled"][id]=false;
+        profile()["setup_pending"].object.clear();
+        if(deferred)for(const auto& entry:manager::entries())profile()["builtins"][entry.id]=false;
+        try{save();}catch(...){database=previous;throw;}
+        if(!deferred)dirty=true;
+    });
+    if(ok&&!deferred)manager::disable_all();
+    else if(ok)post_toast("Mods will be disabled after restarting the game. The current save profile stays active until then.");
+    else post_toast(error);
+}
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
 bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
@@ -1498,7 +1535,7 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
     std::lock_guard guard(mutex);
     if(!ready||guests_started)return;
     if(!save_profile_problem.empty())throw save_profile::Error(save_profile_problem);
-    check_frozen_save_profile(startup_order(enabled_set()).order);
+    check_frozen_save_profile(startup_order(activation_enabled_set()).order);
     guests_started=true;
     auto files=startup_content;
     for(const auto& id:guest_startup_ids) {
@@ -1543,7 +1580,7 @@ void activate_live_mods(){
     if(!activation_ready)return;
     if(dirty.exchange(false)){
         std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline;bool switching=false;
-        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
+        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(activation_enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
         for(auto it=live_order.rbegin();it!=live_order.rend();++it)if(!desired.contains(*it)||(switching&&live.at(*it).kind=="settings")){auto found=live.find(*it);if(found!=live.end()){unload(found->second);live.erase(found);}std::lock_guard guard(mutex);if(records.contains(*it)){records.at(*it).active=false;records.at(*it).status.clear();}}
         if(switching)for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
         live_order.clear();
