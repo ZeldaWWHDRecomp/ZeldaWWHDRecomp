@@ -27,6 +27,7 @@ struct Surface {
  uint64_t image=0;unsigned width=0,height=0,format=0;struct {int pixel=1;unsigned hostBytesPerBlock=4,bytesPerBlock=4;} fmt;float scale=0;int layout=0;uint64_t allocationBytes=0;
  struct { unsigned width=0,height=0,depth=1; } extent;
 };
+static struct {uint64_t frame=0;} R;
 static unsigned created=0,retired=0,clears=0,allocationAttempts=0;
 static bool failAllocation=false;
 static bool failDevice=false,failHost=false;

@@ -3954,6 +3954,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   bool compatible = shadersOut && shadersOut->replay && shadersOut->rasterReady &&
       shadersOut->submission==R.submissionGeneration && captureBlend.supported && colors[0] && slices[0] == 0 && !(r[REGADDR::DB_DEPTH_CONTROL] & 7);
   for (unsigned i=1;i<8;++i) compatible &= colors[i] == nullptr;
+  const uint64_t snapshotFlags=uint64_t(bool(shadersOut))|(uint64_t(shadersOut&&shadersOut->replay)<<1)|
+      (uint64_t(shadersOut&&shadersOut->rasterReady)<<2)|(uint64_t(shadersOut&&shadersOut->submission==R.submissionGeneration)<<3)|
+      (uint64_t(captureBlend.supported)<<4)|(uint64_t(bool(colors[0]))<<5)|(uint64_t(slices[0]==0)<<6)|(uint64_t(compatible)<<7);
+  gamepad_backdrop_debug("draw-gate",snapshotFlags,(uint64_t(r[REGADDR::CB_BLEND0_CONTROL])<<32)|r[REGADDR::CB_COLOR_CONTROL],
+      (uint64_t(r[REGADDR::DB_DEPTH_CONTROL])<<32)|r[REGADDR::CB_TARGET_MASK],R.submissionGeneration);
   if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {
     const auto before=R.drawCount;
     // A private register snapshot makes the coverage-only alpha override part

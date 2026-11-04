@@ -4,6 +4,7 @@ namespace gfxvk {
 struct Surface;
 void gamepad_backdrop_scope(const uint32_t*, bool begin);
 void gamepad_backdrop_reset();
+void gamepad_backdrop_debug(const char* event,uint64_t a=0,uint64_t b=0,uint64_t c=0,uint64_t d=0);
 void gamepad_backdrop_invalidate(Surface* source);
 // Draw replay remains private: it never enters the normal surface cache.
 bool gamepad_backdrop_replaying();

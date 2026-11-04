@@ -6,6 +6,8 @@
 #include "deferred_dispatch.h"
 #include <utility>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 namespace gfxvk {
 namespace {
 constexpr unsigned kCaptureImages=6;
@@ -65,6 +67,14 @@ uint64_t identity(Surface* s) {
  return value;
 }
 }
+void gamepad_backdrop_debug(const char* event,uint64_t a,uint64_t b,uint64_t c,uint64_t d) {
+ static const uint64_t first=[] {const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG");return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0};}();
+ static unsigned emitted=0;
+ if(R.frame<first||emitted>=100)return;
+ ++emitted;
+ std::fprintf(stderr,"[vk backdrop] frame=%llu event=%s a=%llx b=%llx c=%llx d=%llx\n",
+  (unsigned long long)R.frame,event,(unsigned long long)a,(unsigned long long)b,(unsigned long long)c,(unsigned long long)d);
+}
 void gamepad_backdrop_reset() {
  end_encoder();active.reset();building.reset();published.reset();pending.clear();for(auto& slot:spare)slot.reset();cache.reset();
  gfx::gamepad_backdrop::set_capture_requested(false);
@@ -76,9 +86,11 @@ void gamepad_backdrop_invalidate(Surface* source) {
  discard_pending(id);
 }
 void gamepad_backdrop_scope(const uint32_t*,bool begin) {
+ gamepad_backdrop_debug(begin?"scope-begin":"scope-end",scopeDepth,gfx::gamepad_backdrop::capture_enabled(),sourceIdentity,uint64_t(drawn)|(uint64_t(failed)<<1));
  if(begin) { if(scopeDepth++==0) { recycle(active);sourceIdentity=0;failed=drawn=false; } return; }
  if(!scopeDepth || --scopeDepth) return;
  if(failed)discard_pending(sourceIdentity);
+ gamepad_backdrop_debug("scope-result",sourceIdentity,drawn,failed,active?identity(active->surface.get()):0);
  if(active && drawn && !failed && gfx::gamepad_backdrop::enabled.load()) {
   const uint64_t ticket=++nextTicket;
   cache.capture(sourceIdentity,ticket);
@@ -91,6 +103,7 @@ bool gamepad_backdrop_replaying() { return replaying; }
 bool gamepad_backdrop_capture_active() { return scopeDepth&&!replaying&&gfx::gamepad_backdrop::capture_enabled(); }
 Surface* gamepad_backdrop_replay_target() { return replaying&&active ? active->surface.get():nullptr; }
 bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) {
+ gamepad_backdrop_debug("begin-replay",identity(source),compatible,uint64_t(replaying)|(uint64_t(failed)<<1),scopeDepth);
  if(replaying||!scopeDepth||!gfx::gamepad_backdrop::capture_enabled()) return false;
  if(!compatible || !source || !source->image || (sourceIdentity&&sourceIdentity!=identity(source))) { failed=true;discard_pending(identity(source));return false; }
  if(active&&captureOpaque!=opaque)failed=true;
@@ -106,12 +119,14 @@ bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) 
  }
  end_encoder();replaying=true;return true;
 }
-void gamepad_backdrop_end_replay(bool success) { end_encoder();replaying=false;drawn|=success;if(!success)failed=true; }
+void gamepad_backdrop_end_replay(bool success) { gamepad_backdrop_debug("end-replay",success,sourceIdentity,active?identity(active->surface.get()):0); end_encoder();replaying=false;drawn|=success;if(!success)failed=true; }
 void gamepad_backdrop_scan(Surface* source) {
- auto selection=cache.scan(identity(source));recycle(building);
+ auto selection=cache.scan(identity(source));
+ if(selection.ticket||!pending.empty())gamepad_backdrop_debug("scan",identity(source),selection.ticket,pending.size(),selection.generation);
+ recycle(building);
  for(auto& p:pending) if(p.ticket==selection.ticket) { building=std::move(p.image);break; }
  recycle_pending();buildingDirty=true;
 }
-void gamepad_backdrop_publish() { if(buildingDirty) { published.swap(building);buildingDirty=false; } }
+void gamepad_backdrop_publish() { if(buildingDirty) { if(building||published)gamepad_backdrop_debug("publish",building?identity(building->surface.get()):0,published?identity(published->surface.get()):0); published.swap(building);buildingDirty=false; } }
 Surface* gamepad_backdrop_image() { return gfx::gamepad_backdrop::enabled.load()&&published ? published->surface.get():nullptr; }
 }
