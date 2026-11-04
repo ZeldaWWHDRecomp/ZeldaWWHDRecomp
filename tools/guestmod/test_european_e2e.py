@@ -39,7 +39,7 @@ def main():
     package = manager / "Mods/heart-ticker"
     package.mkdir(parents=True)
     shutil.copy2(args.heart_ticker / "manifest.json", package / "manifest.json")
-    subprocess.run([args.ppc_clang, "--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding",
+    subprocess.run([args.ppc_clang, "--target=powerpc-unknown-eabi", "-mcpu=750", "-mstackrealign", "-O2", "-ffreestanding",
                     "-fno-builtin", "-nostdlib", "-fno-jump-tables", "-ffunction-sections", "-fdata-sections",
                     "-I" + str(ROOT / "runtime/guest/include"), "-c",
                     str(args.heart_ticker / "mod.c"), "-o", str(package / "mod.o")], check=True)
