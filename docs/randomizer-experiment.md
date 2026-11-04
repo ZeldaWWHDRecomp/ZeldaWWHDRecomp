@@ -139,9 +139,10 @@ file through name entry and new-save initialization as well as existing saves.
 
 ## Evidence and limits
 
-Compatibility has been checked with TWWHD Randomizer **1.2.0**. Two default-option
-seeds and one swordless seed have been built and reached playable Outset on
-macOS Metal. Fresh saves contained the expected starting equipment, songs and
+Compatibility has been checked with TWWHD Randomizer **1.2.0**. Through normal
+setup on macOS Metal, default-option, swordless, Quiet Swift Sail and door-entrance
+seeds reached playable Outset, and a seed with every code-patching option on
+(random starting island) reached its starting island. Fresh saves contained the expected starting equipment, songs and
 visited islands. These are initialization and boot checks, not full playthroughs.
 Windows builds pass CI; Windows gameplay remains untested.
 
