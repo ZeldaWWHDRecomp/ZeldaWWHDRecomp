@@ -4,6 +4,7 @@
 #include "mods/packages.h"
 #include "mods/mods.h"
 #include "mods/required.h"
+#include "mods/manager.h"
 #include <algorithm>
 #include "mods/content.h"
 #include "mods/cemu_pack.h"
@@ -74,17 +75,21 @@ int main(int argc, char** argv) {
         if(mode=="malformed"||mode=="untrusted"||mode=="disabled"||mode=="code-off")
             guest["save_profile"]["identity"]="bad";
         if(mode=="blocked-build")guest["supported_game_builds"]=mods::json::parse(R"(["EUR"])" );
-        if(mode=="conflict")guest["conflicts"]=mods::json::parse(R"(["dep"])");
+        if(mode=="ordinary-conflict")guest.object.erase("save_profile");
+        if(mode=="conflict"||mode=="ordinary-conflict")guest["conflicts"]=mods::json::parse(R"(["dep"])");
         const auto seed=storage/"Mods/seed",dep=storage/"Mods/dep";
         fs::create_directories(seed);fs::create_directories(dep);
         std::ofstream(seed/"manifest.json")<<mods::json::dump(guest);
         {std::ofstream elf(seed/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
         auto native=mods::json::parse(R"({"format_version":1,"id":"dep","name":"Dependency","version":"1.0.0","game_id":"wwhd-usa","kind":"native","abi_version":1})");
         native["binaries"][platform_key()]="fixture.dylib";
+        if(mode=="session")native["dependencies"]=mods::json::parse(R"([{"id":"builtin:jump-anywhere"}])");
         std::ofstream(dep/"manifest.json")<<mods::json::dump(native);
         if(mode=="native-failure")std::ofstream(dep/"fixture.dylib")<<"not a library";
         else fs::copy_file(argv[3],dep/"fixture.dylib");
         auto db=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"seed":true,"dep":true}}}})");
+        if(mode=="session"||mode=="ordinary-conflict")db["profiles"]["Default"]["builtins"]["jump-anywhere"]=true;
+        if(mode=="session")db["profiles"]["Other"]=mods::json::parse(R"({"enabled":{"seed":true,"dep":false}})");
         if(mode=="disabled")db["profiles"]["Default"]["enabled"]["seed"]=false;
         const auto original=mods::json::dump(db);
         std::ofstream(storage/"profiles.json")<<original;
@@ -97,10 +102,19 @@ int main(int argc, char** argv) {
                 assert(std::string(std::istreambuf_iterator<char>(input),{})==original);
             } // Release the Windows read handle before activation replaces the file.
             assert(!fs::exists(root/"save"));
-            const bool absent=mode=="disabled"||mode=="untrusted"||mode=="code-off"||mode=="unsupported"||mode=="blocked-build";
+            const bool absent=mode=="disabled"||mode=="untrusted"||mode=="code-off"||mode=="unsupported"||mode=="blocked-build"||mode=="ordinary-conflict";
             if(profile.empty()!=absent)for(const auto& item:list())std::cerr<<item.id<<": "<<item.reason<<" confirmed="<<item.native_confirmed<<"\n";
             assert(profile.empty()==absent);
             if(mode=="blocked-build")assert(view("seed").reason.find("EUR")!=std::string::npos);
+            if(mode=="ordinary-conflict") {
+                initialize();
+                assert(list().size()==2&&view("seed").id=="seed"&&view("dep").id=="dep");
+                assert(mods::manager::find("jump-anywhere")->enabled());
+                std::string error;
+                assert(enable("seed",false,error));
+                frame(1);
+                assert(!view("seed").enabled&&view("dep").active);
+            }
             if(!absent) {
                 assert(profile.namespace_key()=="mod-fixture-"+std::string(64,'a'));
                 if(mode=="changed")std::ofstream(dep/"new-file")<<"changed after preflight";
@@ -109,6 +123,29 @@ int main(int argc, char** argv) {
                 start_guests([](const GuestPackage&){return 65536u;},
                     [&](const GuestPackage&,uint32_t){loaded=true;});
                 assert(view("dep").active&&view("seed").active&&loaded);
+                if(mode=="session") {
+                    auto bytes=[](const fs::path& path){std::ifstream f(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});};
+                    const auto saved=bytes(storage/"profiles.json"),native_manifest=bytes(dep/"manifest.json"),native_binary=bytes(dep/"fixture.dylib");
+                    std::string error;
+                    assert(view("seed").isolated_save_profile&&!view("dep").isolated_save_profile);
+                    assert(!enable("seed",false,error)&&error.find("restart")!=std::string::npos);
+                    assert(!enable("dep",false,error)&&error.find("restart")!=std::string::npos);
+                    assert(!remove("dep",error)&&error.find("restart")!=std::string::npos);
+                    assert(!install(dep.string(),error)&&error.find("restart")!=std::string::npos);
+                    assert(!select_profile("Other",error)&&current_profile()=="Default");
+                    assert(!builtin_change_allowed("jump-anywhere",false,error));
+                    assert(mods::manager::find("jump-anywhere")->enabled());
+                    disable_all();
+                    assert(view("seed").enabled&&view("dep").enabled&&!take_toasts().empty());
+                    assert(bytes(storage/"profiles.json")==saved);
+                    assert(bytes(dep/"manifest.json")==native_manifest&&bytes(dep/"fixture.dylib")==native_binary);
+                    // An external edit is checked next startup/load, never by the game-frame path.
+                    std::ofstream(dep/"external-edit")<<"changed after activation";
+                    remember_builtin("fast-forward",false);
+                    frame(2);
+                    assert(view("seed").active&&view("dep").active);
+                }
+
             }
         } catch(const mods::save_profile::Error&) {rejected=true;}
         assert(rejected==(mode=="malformed"||mode=="conflict"||mode=="native-failure"||mode=="changed"));
