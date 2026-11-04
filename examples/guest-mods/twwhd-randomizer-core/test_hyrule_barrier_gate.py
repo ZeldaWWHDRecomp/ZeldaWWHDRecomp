@@ -1,4 +1,5 @@
 """Barrier cutscene gate keeps full native geometry, callbacks and signed shard check."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class HyruleBarrierGate(unittest.TestCase):
@@ -44,6 +45,6 @@ printf("Hyrule barrier gate: %u cases passed\n",cases);}
 '''
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);(root/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

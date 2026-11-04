@@ -4,8 +4,14 @@
 #include <string.h>
 typedef uintptr_t u32;typedef uint16_t u16;typedef uint8_t u8;typedef int8_t s8;typedef int16_t s16;typedef int32_t s32;typedef float f32;
 static unsigned char mem[0x100000];
+#if WWHD_RANDOMIZER_CLASSIC_MODE
 static unsigned z_accesses;
-static __attribute__((unused)) void *at(u32 a){if(a==0x7031C)z_accesses++;return mem+(a&0xFFFFF);}
+#endif
+static __attribute__((unused)) void *at(u32 a){
+#if WWHD_RANDOMIZER_CLASSIC_MODE
+if(a==0x7031C)z_accesses++;
+#endif
+return mem+(a&0xFFFFF);}
 typedef uint32_t m_u32;typedef uint16_t m_u16;typedef uint8_t m_u8;typedef int8_t m_s8;typedef int16_t m_s16;typedef float m_f32;
 #define R_CLASSIC_UI(t,a) (*(volatile m_##t*)at(a))
 #define R_CLASSIC_ABE(t,a) R_CLASSIC_UI(t,a)

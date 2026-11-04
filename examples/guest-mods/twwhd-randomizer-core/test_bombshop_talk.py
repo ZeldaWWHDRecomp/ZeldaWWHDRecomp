@@ -1,4 +1,5 @@
 """Bomb shop talk keeps cursor/message lifecycle with patched ownership path."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class BombShopTalk(unittest.TestCase):
@@ -26,10 +27,11 @@ int main(void){u32 states[]={0,1,14,15,18,19,0x1000E,0x1000F,0xFFFFFFFF};u32 che
  status=states[s];recheck=checks[r];nextcalls=setcalls=messagecalls=democalls=statuscalls=0;assert(randomizer_bombshop_talk((u32)actor)==(status&65535));unsigned st=status&65535,advance=(st==14||st==15)&&!trigger&&!handled&&!sent;
  assert(nextcalls==advance&&messagecalls==(advance&&recheck==15));assert(statuscalls==1+advance);assert(setcalls==advance+(st==18));assert(democalls==(st==1));
  if(st==14||st==15)assert(actor[0x918]==0);if(st==18)assert(*(u16*)(actor+0x9B8)==65535);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

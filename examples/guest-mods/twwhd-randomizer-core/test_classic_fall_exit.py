@@ -1,4 +1,5 @@
 """Classic exits retain scene gates and native precision around the death check."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -55,5 +56,5 @@ printf("classic fall exit: %u cases passed\n",cases);return 0;}
 '''
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory);(p/'test.c').write_text(code)
-            subprocess.run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)

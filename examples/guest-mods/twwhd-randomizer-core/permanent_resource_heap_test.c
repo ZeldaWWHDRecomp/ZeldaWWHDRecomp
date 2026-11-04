@@ -17,9 +17,9 @@ static u32 call1(u32,u32);static u32 call2(u32,u32,u32);static u32 call3(u32,u32
 #include "permanent_resource_heap.h"
 static const u32 self=0x80000;
 static unsigned mode,trace[256],count,heaps,archives,appends,mounts,phases,tasks,finds,constructs;
-static u32 config_frame;
+
 static void record(unsigned n){assert(count<256);trace[count++]=n;}
-static u32 call3(u32 t,u32 a,u32 b,u32 c){assert(t==0xAA01&&a==0xA000&&b==self);config_frame=c-0x70;assert(R_PERM_HEAP(u32,c)==0x104612BC&&!R_PERM_HEAP(u32,c+8)&&!R_PERM_HEAP(u32,c+12));R_PERM_HEAP(u32,self+0x5C)=0x9100;record(100);return 0;}
+static u32 call3(u32 t,u32 a,u32 b,u32 c){assert(t==0xAA01&&a==0xA000&&b==self);assert(R_PERM_HEAP(u32,c)==0x104612BC&&!R_PERM_HEAP(u32,c+8)&&!R_PERM_HEAP(u32,c+12));R_PERM_HEAP(u32,self+0x5C)=0x9100;record(100);return 0;}
 static u32 call1(u32 t,u32 a){assert(t==0xAA04&&a==0xB800);record(101);return 0xDEAD;}
 static u32 call2(u32 t,u32 a,u32 b){assert(t==0xAA03&&a==0xE000+tasks*0x100);assert(b==(tasks==1?0x101FD9D4:0x101FD9D8));record(102);return 0;}
 void perm_hdRootProcessInitialize(void){record(1);}

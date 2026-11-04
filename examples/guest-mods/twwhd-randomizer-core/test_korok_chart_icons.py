@@ -1,4 +1,5 @@
 """Korok chart frames retain marker ordering, guards and callback reloads."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class KorokChart(unittest.TestCase):
@@ -28,10 +29,11 @@ int main(void){for(bits=0;bits<256;bits++)for(busy=0;busy<2;busy++)for(complete=
  graphicsptr=(u32)graphics;*(u32*)(graphics+0x218)=0x123456;owner=0;*(u32*)(actor+0x44)=(u32)owners[0];*(u32*)(owners[0]+0xD4)=0x1000;*(u32*)(owners[1]+0xD4)=0x1001;collected=20;available=10;missing=0;frames=operations=hides=queries=gets=0;
  randomizer_korok_chart_icons((u32)actor);
  if(busy){assert(hides==1&&!queries&&!frames&&!operations);}else if(complete){assert(operations==8&&!frames&&queries==1);}else if(!marked){assert(!frames&&!operations&&queries==2);}else{assert(frames==8&&!operations&&queries==10&&gets==(mutation?1:8));}
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

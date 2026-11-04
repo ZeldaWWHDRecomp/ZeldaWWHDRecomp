@@ -20,9 +20,9 @@ static u32* cell(u32 key){for(unsigned i=0;i<nc;i++)if(cells[i].key==key)return&
 #define RBCPTR(a,o) (*cell((a)+(o)))
 static u32 wwhd_dComIfG_getGameInfo(void);
 #include "bluechu_hookshot_shock.h"
-static unsigned hit_present,object_present,sound_mutation;static u32 attacker;static unsigned calls,status_calls,hit_calls,objects,actors,attacks,particles,sounds,monsters,ended,fires;static unsigned char trace[256];static unsigned nt;
+static unsigned hit_present,object_present,sound_mutation;static u32 attacker;static unsigned status_calls,hit_calls,objects,actors,attacks,particles,sounds,monsters,ended,fires;static unsigned char trace[256];static unsigned nt;
 static void log_call(unsigned c){assert(nt<256);trace[nt++]=c;}
-static u32 wwhd_dComIfG_getGameInfo(void){++calls;log_call(1);return(u32)play;}
+static u32 wwhd_dComIfG_getGameInfo(void){log_call(1);return(u32)play;}
 s16 rbc_atan(f64 y,f64 x){(void)y;(void)x;log_call(2);return 123;}
 void rbc_fire_remove(u32 fire){assert(fire==(u32)actor+0xCDC);++fires;log_call(3);}
 void rbc_electric_end(u32 a){assert(a==(u32)actor);++ended;log_call(4);}
@@ -35,7 +35,7 @@ s32 rbc_reverb(s32 room){assert(room==-4);log_call(10);return 9;}
 u32 rbc_particle_native(u32 controller,u32 group,u32 id,u32 position,u32 angle,u32 scale,u32 alpha,u32 callback,s32 room,u32 color,u32 color2,u32 scale2){assert(controller==42&&!group&&alpha==255&&!callback&&room==-1&&!color&&!color2&&!scale2);assert(RBC32(position,0)==0x7FC00123u&&RBC32(position,4)==0x80000000u&&RBC32(position,8)==0x40400000u);if(id==0x10)assert(!angle&&!scale);else{assert(angle==(u32)player+0x328);if(id==0xF)assert(RBCF(scale,0)==2&&RBCF(scale,4)==2&&RBCF(scale,8)==2);else assert(id==0xD&&!scale);}++particles;log_call(11);return 0;}
 void rbc_sound_native(u32 id,u32 position,u32 parameter,s32 reverb){(void)id;(void)parameter;assert(position==(u32)actor+0x37C&&reverb==9);if(sound_mutation)RBC32((u32)actor,0x7C4)=0x13579BDFu;++sounds;log_call(12);}
 void rbc_monster_native(u32 id,u32 position,u32 process,u32 parameter,s32 reverb){assert(id==0x4863&&position==(u32)actor+0x37C&&process==7&&!parameter&&reverb==9);++monsters;log_call(13);}
-static void reset(void){memset(actor,0,sizeof actor);memset(player,0,sizeof player);memset(other,0,sizeof other);memset(play,0,sizeof play);memset(regs,0,sizeof regs);memset(object,0,sizeof object);nc=0;nt=0;calls=status_calls=hit_calls=objects=actors=attacks=particles=sounds=monsters=ended=fires=0;hit_present=object_present=1;sound_mutation=0;attacker=(u32)player;RBCPTR((u32)play,0x5B2C)=(u32)player;RBCPTR((u32)play,0x5AB0)=42;RBCS8((u32)actor,0x326)=-4;RBCS8((u32)actor,0x3A1)=4;RBC32((u32)actor,4)=7;RBC32((u32)actor,0x890)=0x7FC00123u;RBC32((u32)actor,0x894)=0x80000000u;RBC32((u32)actor,0x898)=0x40400000u;}
+static void reset(void){memset(actor,0,sizeof actor);memset(player,0,sizeof player);memset(other,0,sizeof other);memset(play,0,sizeof play);memset(regs,0,sizeof regs);memset(object,0,sizeof object);nc=0;nt=0;status_calls=hit_calls=objects=actors=attacks=particles=sounds=monsters=ended=fires=0;hit_present=object_present=1;sound_mutation=0;attacker=(u32)player;RBCPTR((u32)play,0x5B2C)=(u32)player;RBCPTR((u32)play,0x5AB0)=42;RBCS8((u32)actor,0x326)=-4;RBCS8((u32)actor,0x3A1)=4;RBC32((u32)actor,4)=7;RBC32((u32)actor,0x890)=0x7FC00123u;RBC32((u32)actor,0x894)=0x80000000u;RBC32((u32)actor,0x898)=0x40400000u;}
 int main(void){unsigned cases=0;
 /* Full hookshot consumer matrix: AtSet is unchanged, even after a sound callback. */
 for(unsigned color=0;color<5;color++)for(unsigned action=0;action<8;action++)for(unsigned state=0;state<256;state++)for(unsigned bit=0;bit<2;bit++){

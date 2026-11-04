@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import re,subprocess,tempfile,unittest
 
@@ -79,6 +80,6 @@ int main(void){
 '''
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);(root/'people_sail_dialogue.h').write_text(header);(root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-lm','-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-lm','-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

@@ -61,7 +61,7 @@ int main(void){
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root/'test.c').write_text(source)
-            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).resolve().parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).resolve().parent),str(root/'test.c'),'-lm','-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 
 

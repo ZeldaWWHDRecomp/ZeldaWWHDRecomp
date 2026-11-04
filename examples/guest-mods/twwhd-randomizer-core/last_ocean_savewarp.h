@@ -36,7 +36,9 @@ static int randomizer_savewarp_equal(u32 left,u32 right,int direct) {
     u32 first=a[0];
     for(u32 count=0x40001;count;count--) {
         const u8 c1=*(volatile u8*)first,c2=*(volatile u8*)second;
-        if(c1!=c2)return 0;if(!c1)return 1;first++;second++;
+        if(c1!=c2)return 0;
+        if(!c1)return 1;
+        first++;second++;
     }
     return 0;
 }

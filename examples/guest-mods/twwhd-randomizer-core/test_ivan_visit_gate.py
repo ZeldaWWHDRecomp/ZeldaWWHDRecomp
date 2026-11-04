@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import re,subprocess,tempfile,unittest
 class IvanVisitGate(unittest.TestCase):
@@ -58,5 +59,5 @@ int main(void){
   source=source.replace('actor[0x834]=0x80','bytes[0x834]=0x80').replace('static u8* actor=bytes;','')
   with tempfile.TemporaryDirectory() as d:
    root=Path(d);(root/'npc_replacement_cutscene_gates.h').write_text(header);(root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter',str(root/'test.c'),'-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter',str(root/'test.c'),'-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

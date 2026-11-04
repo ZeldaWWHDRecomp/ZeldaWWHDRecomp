@@ -1,4 +1,5 @@
 """Complete camera state machine and callback-visible safe-position seam."""
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -97,7 +98,7 @@ int main(void){unsigned cases=0;
             tmp=Path(tmp)
             (tmp/'test.c').write_text(code)
             (tmp/'weak.c').write_text(prefix+'\n'.join(weak))
-            subprocess.run(['clang','-O2','-ffp-contract=off','-I',str(root),str(tmp/'test.c'),str(tmp/'weak.c'),'-lm','-o',str(tmp/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-ffp-contract=off','-I',str(root),str(tmp/'test.c'),str(tmp/'weak.c'),'-lm','-o',str(tmp/'test')],check=True)
             subprocess.run([str(tmp/'test')],check=True)
 
 if __name__=='__main__':

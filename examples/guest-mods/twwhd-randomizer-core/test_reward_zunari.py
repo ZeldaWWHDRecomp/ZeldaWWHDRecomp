@@ -12,12 +12,26 @@ class ZunariReward(unittest.TestCase):
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-typedef uintptr_t u32;typedef int32_t s32;typedef uint16_t u16;typedef int16_t s16;typedef uint8_t u8;typedef int8_t s8;typedef float f32;
+#include "test_host_memory.h"
+#ifdef __APPLE__
+/* macOS arm64 reserves the low 4 GiB. Other hosts use exact guest field widths. */
+typedef uintptr_t u32;
+#else
+typedef uint32_t u32;
+#endif
+typedef int32_t s32;typedef uint16_t u16;typedef int16_t s16;typedef uint8_t u8;typedef int8_t s8;typedef float f32;
 #define WWHD_GAME_FUNC(a,r,n,p) r n p
 #define WWHD_GAME_ORIGINAL(a,r,n,p) r n p
 #define WWHD_REPLACE(a,r,n,p) r n p
 #define WWHD_ADDR_save_info_pointer 1
+#ifdef __APPLE__
 static _Alignas(16) u8 save[0x1300],play[0x6000],link[0x400],actor[0xB00],other[0xB00],morf[0xC0],cursor[0xC0];
+#else
+static u8 *const save=(u8*)(uintptr_t)0x20000000,*const play=(u8*)(uintptr_t)0x20002000,
+ *const link=(u8*)(uintptr_t)0x20009000,*const actor=(u8*)(uintptr_t)0x2000A000,
+ *const other=(u8*)(uintptr_t)0x2000B000,*const morf=(u8*)(uintptr_t)0x2000C000,
+ *const cursor=(u8*)(uintptr_t)0x2000D000;
+#endif
 #define WWHD_GAME_DATA(a,t) ((u32)save)
 static u8 init_reward_zunari[1];static const u8 init_reward_ivan=0,init_reward_battlesquid[3]={0};
 static u32 randomizer_ivan_actor,randomizer_battlesquid_actor;
@@ -45,8 +59,11 @@ s32 randomizer_zunari_owned(u32 item){assert(item==0x78||item==0x30);return 1;}
 s32 randomizer_zunari_event_query(u32 object,u32 flag){assert(object==(u32)save+0x644);(void)flag;return 0;}
 s32 randomizer_zunari_shop_count(void){return 3;}
 
-static void reset(void){memset(actor,0,sizeof(actor));memset(save,0,sizeof(save));memset(play,0,sizeof(play));memset(morf,0,sizeof(morf));memset(cursor,0,sizeof(cursor));*(u32*)(actor+0x3B4)=(u32)morf;*(u32*)(actor+0xABC)=(u32)cursor;*(u32*)(play+0x5B34)=(u32)link;*(u32*)(actor+0x978)=0x1234;*(u8*)(actor+0x326)=(u8)-3;*(f32*)(morf+0xB0)=0.5f;*(u16*)(play+0x52B8)=0x20;*(u8*)(actor+0xAC5)=7;*(u32*)(link+0x3B8)=0xFFFFFFFF;mode=step=present_calls=flag_calls=query_calls=fail_present=0;randomizer_zunari_actor=randomizer_zunari_query=0;}
+static void reset(void){memset(actor,0,0xB00);memset(save,0,0x1300);memset(play,0,0x6000);memset(morf,0,0xC0);memset(cursor,0,0xC0);*(u32*)(actor+0x3B4)=(u32)morf;*(u32*)(actor+0xABC)=(u32)cursor;*(u32*)(play+0x5B34)=(u32)link;*(u32*)(actor+0x978)=0x1234;*(u8*)(actor+0x326)=(u8)-3;*(f32*)(morf+0xB0)=0.5f;*(u16*)(play+0x52B8)=0x20;*(u8*)(actor+0xAC5)=7;*(u32*)(link+0x3B8)=0xFFFFFFFF;mode=step=present_calls=flag_calls=query_calls=fail_present=0;randomizer_zunari_actor=randomizer_zunari_query=0;}
 int main(void){
+#ifndef __APPLE__
+ test_map_guest(0x20000000,0x20000);
+#endif
  for(unsigned reward=0;reward<256;reward++){
   init_reward_zunari[0]=reward;
   for(mode=0;mode<4;){unsigned scenario=mode;reset();mode=scenario;status=0x12;*(u32*)(actor+0x8EC)=mode?0x1111:0x285F;assert(randomizer_zunari_talk01((u32)actor)==1);if(mode==0||mode>=2){assert(*(u8*)(actor+0xACB)==reward&&*(u8*)(actor+0xAC3)==4);}assert(step==3);assert((*(u32*)(link+0x3B8)&0x8000000)==0);assert(*(u16*)(play+0x52B8)==0x28);mode=scenario+1;}
@@ -67,7 +84,7 @@ int main(void){
 '''
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'test.c').write_text(source)
-            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).resolve().parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-int-to-pointer-cast','-Wno-pointer-to-int-cast','-I',str(Path(__file__).resolve().parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 
 

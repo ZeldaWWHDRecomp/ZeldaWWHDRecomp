@@ -1,4 +1,5 @@
 """Pond switch gating, fivefold speeds, callback timing and frame transition."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class DrcPondSpeed(unittest.TestCase):
@@ -32,6 +33,6 @@ printf("DRC pond speeds: %u cases passed\n",cases);}
 '''
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);(root/'test.c').write_text(source)
-   subprocess.run(['clang','-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(root/'test.c'),'-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

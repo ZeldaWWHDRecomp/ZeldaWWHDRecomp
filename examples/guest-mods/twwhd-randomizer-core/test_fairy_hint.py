@@ -1,4 +1,5 @@
 """Fairy item hint is independent of bow tier without touching other messages."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class FairyHint(unittest.TestCase):
@@ -29,6 +30,6 @@ int main(void){
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(source)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

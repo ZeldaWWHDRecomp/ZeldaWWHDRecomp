@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import re,subprocess,tempfile,unittest
 
@@ -108,6 +109,6 @@ int main(void){
 '''
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);(root/'tower_servant_execute.h').write_text(header);(root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter',str(root/'test.c'),'-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter',str(root/'test.c'),'-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

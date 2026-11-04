@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -27,7 +28,7 @@ int main(void){for(room=0;room<64;room++)for(event=0;event<2;event++)for(boss=0;
  memset(actor,0,sizeof(actor));*(uint32_t*)(actor+0xB0)=room;*(uint32_t*)(actor+0x3F0)=77;names_called=resources=event_calls=boss_calls=0;
  unsigned selected=mutate?13:room;unsigned extra=selected==11||(selected==1&&!event)||(selected==13&&!boss);
  assert(randomizer_drc_lod_models((u32)actor)==(s32)(primary?(extra?secondary:1):0));
- assert(resources==1+(primary&&extra)&&names_called==resources);
+ assert(resources==1u+(unsigned)(primary&&extra)&&names_called==resources);
  assert(*(uint32_t*)(actor+0x3EC)==primary&&*(uint32_t*)(actor+0x3F0)==(primary&&extra?secondary:77));
  assert(event_calls==(primary&&selected==1)&&boss_calls==(primary&&selected==13));
  }}
@@ -37,6 +38,6 @@ int main(void){for(room=0;room<64;room++)for(event=0;event<2;event++)for(boss=0;
             header=Path(__file__).with_name('drc_lod.h').read_text().replace('volatile u32*','volatile uint32_t*')
             (root/'drc_lod.h').write_text(header)
             (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

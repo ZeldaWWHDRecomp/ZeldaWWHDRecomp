@@ -1,4 +1,5 @@
 """Local Molgera target safety helper; full camera consumer integration pending."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class MolgeraWarpPosition(unittest.TestCase):
@@ -25,6 +26,6 @@ printf("Molgera safe target helper: %u cases passed\n",cases);}
 '''
   with tempfile.TemporaryDirectory() as directory:
    root=Path(directory);(root/'test.c').write_text(source)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-Wno-logical-op-parentheses','-I',str(Path(__file__).parent),str(root/'test.c'),'-lm','-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-Wno-logical-op-parentheses','-I',str(Path(__file__).parent),str(root/'test.c'),'-lm','-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

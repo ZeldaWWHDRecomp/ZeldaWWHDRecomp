@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import tempfile
@@ -409,7 +410,7 @@ int main(void) {
             directory = Path(temporary)
             source = directory / 'test.c'
             source.write_text(prefix + '\n'.join(definitions) + suffix)
-            subprocess.run(['clang', '-O2', '-ffp-contract=off', '-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=signed-integer-overflow', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
+            subprocess.run([os.environ.get("CC", "cc"), '-O2', '-ffp-contract=off', '-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=signed-integer-overflow', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
             subprocess.run([str(directory / 'test')], check=True)
 
 

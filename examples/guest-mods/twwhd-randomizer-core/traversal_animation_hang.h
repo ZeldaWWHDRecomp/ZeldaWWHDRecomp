@@ -32,9 +32,15 @@ static f32 rtah_morph(f64 parameter) {
 #endif
 }
 static f32 rtah_fnmsub(f32 a, f32 b, f32 c) {
+#if defined(__powerpc__)
 #pragma clang fp contract(fast)
   volatile f32 difference = a * b - c;
   return -difference;
+#else
+  /* Host fixtures must retain PPC fusion on machines without hardware FMA. */
+  volatile f32 difference = __builtin_fmaf(a, b, -c);
+  return -difference;
+#endif
 }
 WWHD_REPLACE(0x02418B48, s32, randomizer_hang_wall_catch_initialize,
              (u32 player)) {

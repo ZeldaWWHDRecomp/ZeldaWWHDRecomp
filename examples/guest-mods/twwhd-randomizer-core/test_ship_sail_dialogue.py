@@ -22,7 +22,7 @@ static u32 init_use_different_korl_hyrule_text;
 static unsigned late_queries;
 static unsigned callback_count,owned,bombs,symbols,songs,triforce,assures,assure_mode,in_init;
 static u32 event_flags[256],first_string;
-static s16 angle;
+
 static u32 wwhd_dComIfG_getGameInfo(void);
 #include "ship_sail_dialogue.h"
 static void callback(void){if(in_init)assert(!randomizer_ship_boarding_scope);++callback_count;assert(owned==(*(u8*)(savedata+0x72)&1));}
@@ -71,7 +71,7 @@ int main(void){
   reset(sail);flag(0x3A02);songs=16;expect_init(0xD73);
   reset(sail);songs=8;expect_init(0xD73);
   reset(sail);flag(0x1980);flag(0x0A80);expect_init(0xD73);
-  reset(sail);flag(0x0A80);angle=-0x1000;expect_init(0xD73);
+  reset(sail);flag(0x0A80);expect_init(0xD73);
   reset(sail);flag(0x1E40);*(u32*)(stageinfo+12)=1<<16;expect_init(0xD73);*(u32*)(stageinfo+12)=0;
 
  }

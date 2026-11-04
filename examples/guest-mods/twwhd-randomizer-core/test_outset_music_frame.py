@@ -174,5 +174,5 @@ int main(void){unsigned cases=0;
         with tempfile.TemporaryDirectory() as directory:
             c, exe = Path(directory)/'test.c', Path(directory)/'test'
             c.write_text(source)
-            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(c),'-o',str(exe)],check=True)
+            subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(c),'-lm','-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)

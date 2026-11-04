@@ -1,4 +1,5 @@
 """Visit events preserve first-story behavior and skip picto ownership paths."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class PictoVisits(unittest.TestCase):
@@ -30,10 +31,11 @@ int main(void){s32 values[]={0,1,-1,2};for(method=0;method<4;method++)for(unsign
  if(method==0)assert(randomizer_mk_visit_talk((u32)actor)==(special?12:1));else if(method==1)assert(randomizer_uk_visit_talk((u32)actor)==(special?4:1));else if(method==2)randomizer_mk_visit_event((u32)actor);else randomizer_uk_visit_event((u32)actor);
  assert(queries==(special?2:(a?3:2)));assert(sets==(special&&method<2)&&demos==(special&&method<2));assert(names==(method>=2));assert(partners==(special&&method==1)&&searches==(special&&method==1&&!noid));
  if(!special)assert(actor[0x835]==0xA5&&actor[0x82D]==0xA5);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(source)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

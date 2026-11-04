@@ -18,10 +18,10 @@ static u32 save_pointer;
 u32 wwhd_dComIfG_getGameInfo(void){return (u32)info;}
 static u8 init_reward_boss[6];
 #include "boss_rewards.h"
-static unsigned cloud_calls,native_factory_calls,item_calls,cloud_execute_calls,respawn_calls,nested;
+static unsigned native_factory_calls,item_calls,nested;
 static u32 last_bit,return_id=0xFEDC,expected_item,last_args[8];
 u32 randomizer_native_boss_cloud(u32 a,u32 pos,u32 scale,u32 drop,u32 bit){
- assert(a==(u32)actor && pos==0x111 && scale==15);assert(drop==2 || drop==10);cloud_calls++;last_bit=bit;return return_id;
+ assert(a==(u32)actor && pos==0x111 && scale==15);assert(drop==2 || drop==10);last_bit=bit;return return_id;
 }
 static void native_cloud_source(u32 a,unsigned source){
  const u32 old=randomizer_boss_source;assert(old==source);
@@ -43,12 +43,12 @@ static void check_item(u32 p,u32 room,u32 angle,u32 scale,u32 action){
 }
 void randomizer_boss_gohdan_native(u32 a){assert(a==(u32)actor);expected_item=init_reward_boss[2];assert(randomizer_boss_factory(1,0,0xFFFFFFFF,0,3,0)==return_id);check_item(1,0xFFFFFFFF,0,3,5);}
 u32 randomizer_native_boss_cloud_execute(u32 a){
- cloud_execute_calls++;assert(a==(u32)actor);
+ assert(a==(u32)actor);
  s16* timer=(s16*)(a+0x3B8);if(*timer){--*timer;if(!*timer && actor[0x3A1]==2){
   assert(randomizer_boss_factory(a+0x314,0,5,a+0x320,0,0)==return_id);
  }}return 1;
 }
-u32 randomizer_native_boss_respawn(u32 a){respawn_calls++;assert(a==(u32)actor);assert(randomizer_boss_factory(a+0x314,1,5,a+0x320,0,1)==return_id);return 5;}
+u32 randomizer_native_boss_respawn(u32 a){assert(a==(u32)actor);assert(randomizer_boss_factory(a+0x314,1,5,a+0x320,0,1)==return_id);return 5;}
 int main(void){
  save_pointer=(u32)save;
  for(unsigned item=0;item<256;item++){

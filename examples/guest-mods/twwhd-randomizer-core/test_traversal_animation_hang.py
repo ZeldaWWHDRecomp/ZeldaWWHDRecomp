@@ -1,5 +1,6 @@
 """Complete hanging and sidle consumers: native math, callbacks and tails."""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
@@ -59,7 +60,7 @@ int main(void){unsigned cases=0;
 '''
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);(path/'test.c').write_text(code)
-            subprocess.run(['clang','-O2','-ffp-contract=off','-Wall','-Wextra','-Werror','-Wno-logical-op-parentheses','-I',str(Path(__file__).parent),str(path/'test.c'),'-lm','-o',str(path/'test')],check=True)
+            subprocess.run([os.environ.get('CC','clang'),'-O2','-ffp-contract=off','-Wall','-Wextra','-Werror','-Wno-logical-op-parentheses','-I',str(Path(__file__).parent),str(path/'test.c'),'-lm','-o',str(path/'test')],check=True)
             subprocess.run([str(path/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

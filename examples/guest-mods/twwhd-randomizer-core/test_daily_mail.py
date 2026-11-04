@@ -1,4 +1,5 @@
 """Daily mail eligibility and unchanged daily register/flag work."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class DailyMail(unittest.TestCase):
@@ -45,10 +46,11 @@ int main(void){const unsigned letters[]={0xAC03,0xAE03,0xB003,0xAF03,0x9D03};
   assert(regs[0xC407]==(v==6?7:v));assert(regs[0xB907]==((v&1)?(u8)(v+1):v));
   assert(regs[0xBB07]==((mask&128)&&v!=7?(v>=7?7:v+1):v));assert(flags[0x1F08]==((mask&128)&&v==7));
   assert(regs[0xA60F]==((mask&128)?(v>=3?3:v+1):v));assert(flags[0x3080]==!!(mask&128));
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(source)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

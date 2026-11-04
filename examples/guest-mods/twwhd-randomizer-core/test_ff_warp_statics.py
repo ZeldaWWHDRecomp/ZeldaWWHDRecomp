@@ -1,4 +1,5 @@
 """Full sea-menu static initialization, all354 names and exact FF coordinates."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -47,7 +48,7 @@ int main(void){unsigned cases=0;
 '''
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);(path/'test.c').write_text(source)
-            subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(path/'test.c'),'-o',str(path/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(path/'test.c'),'-o',str(path/'test')],check=True)
             subprocess.run([str(path/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

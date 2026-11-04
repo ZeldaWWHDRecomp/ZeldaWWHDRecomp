@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -40,6 +41,6 @@ int main(void){for(initialized=0;initialized<2;initialized++)for(reload=0;reload
             root=Path(directory)
             (root/'drc_cloud.h').write_text(Path(__file__).with_name('drc_cloud.h').read_text().replace('volatile u32*','volatile uint32_t*'))
             (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

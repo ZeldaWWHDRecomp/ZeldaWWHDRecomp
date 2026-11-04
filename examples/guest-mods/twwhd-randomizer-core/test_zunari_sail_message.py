@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class ZunariSailMessage(unittest.TestCase):
@@ -47,5 +48,5 @@ int main(void){
 '''
   with tempfile.TemporaryDirectory() as d:
    root=Path(d);(root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

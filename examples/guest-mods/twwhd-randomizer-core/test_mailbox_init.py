@@ -1,4 +1,5 @@
 """Mailbox initialization: independent mail gates and native setup callbacks."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class Mailbox(unittest.TestCase):
@@ -36,10 +37,11 @@ int main(void){for(mask=0;mask<64;mask++)for(wallet=0;wallet<256;wallet++){
  memset(actor,0,sizeof actor);seq=stockcount=bosscount=0;save[0x32]=wallet;randomizer_mailbox_init((u32)actor);assert(seq==10);
  unsigned n=0;if(mask&1)assert(stocks[n++]==0xB503);if(mask&2)assert(stocks[n++]==0x7D03);if((mask&4)&&(mask&8))assert(stocks[n++]==0x7C03);if(mask&16)assert(stocks[n++]==0x7B03);if(wallet==1||wallet==2)assert(stocks[n++]==0x7A03);assert(n==stockcount);
  assert(bosscount==1+!!(mask&4));if(mask&4)assert(bosses[0]==6);assert(bosses[bosscount-1]==4);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

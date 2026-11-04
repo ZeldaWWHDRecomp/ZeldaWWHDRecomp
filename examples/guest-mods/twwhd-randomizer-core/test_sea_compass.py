@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -134,7 +135,7 @@ int main(void) {
             directory = Path(temporary)
             source = directory / 'test.c'
             source.write_text(code)
-            subprocess.run(['clang', '-O2', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
+            subprocess.run([os.environ.get("CC", "cc"), '-O2', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
             subprocess.run([str(directory / 'test')], check=True)
 
     def test_disabled_has_no_descriptors_and_flag_is_mandatory(self):
@@ -145,7 +146,7 @@ int main(void) {
                                   '#define WWHD_REPLACE(...) _Static_assert(0,"unexpected replacement");\n'
                                   '#define WWHD_GAME_FUNC(...) _Static_assert(0,"unexpected import");\n'
                                   '#include "sea_compass.h"\nint main(void){return 0;}\n')
-                result = subprocess.run(['clang', '-fsyntax-only', '-I', str(Path(__file__).parent), str(source)], text=True, capture_output=True)
+                result = subprocess.run([os.environ.get("CC", "cc"), '-fsyntax-only', '-I', str(Path(__file__).parent), str(source)], text=True, capture_output=True)
                 if expected_error:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(expected_error, result.stderr)

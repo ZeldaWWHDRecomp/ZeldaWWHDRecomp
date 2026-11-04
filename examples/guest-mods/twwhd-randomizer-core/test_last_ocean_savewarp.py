@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -65,7 +66,7 @@ int main(void){
             header=header.replace('u32 position[3]','uint32_t position[3]')
             (root/'last_ocean_savewarp.h').write_text(header)
             (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
     def test_string_capture_reload_and_bound(self):
         header=Path(__file__).with_name('last_ocean_savewarp.h').read_text()
@@ -86,6 +87,6 @@ int main(void){for(unsigned direct=0;direct<2;direct++)for(mode=1;mode<4;mode++)
 '''
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);(root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

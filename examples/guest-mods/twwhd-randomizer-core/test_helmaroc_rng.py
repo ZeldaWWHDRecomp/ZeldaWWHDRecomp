@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import tempfile
@@ -48,7 +49,7 @@ static f64 random_max[16];
 static unsigned trace[4096], nt;
 static int line_hit, land_area, mutation;
 static s16 player_angle;
-static u32 last_particle_group;
+
 static int last_animation, last_sound, expected_tail, last_external;
 static void hit(unsigned n) {
   assert(nt < 4096);
@@ -119,7 +120,7 @@ static void external_action(hrng_actor *a, int code) {
             'hrng_line_destroy_native': 'assert(a1==0);assert(*(unsigned int*)(a0->bytes+0x58)==0x10007F38&&*(unsigned int*)(a0->bytes+0x64)==0x10007E88&&*(unsigned int*)(a0->bytes+0x20)==0x10007E78);',
             'hrng_line_cross': 'assert(a0==game+0x12A0);lines++;return line_hit&&lines>=(unsigned)line_hit?0x80000000u:0;',
             'hrng_dBgS_LinChk_Set': 'assert(a3==&boss&&a0&&a1&&a2);if(mutation==9)assert(a1->y==173);',
-            'hrng_particle': 'assert(a0==0x4444&&(a1==0||a1==2)&&a3&&a11==0);particles++;last_particle_group=a1;return 0;',
+            'hrng_particle': 'assert(a0==0x4444&&(a1==0||a1==2)&&a3&&a11==0);particles++;return 0;',
             'hrng_shock': 'assert(a0==game+0x599C&&a2==-0x21&&a3->x==0&&a3->y==1&&a3->z==0);',
         }
         for name in ('fly_attack', 'wind_attack', 'kamen_demo', 'start', 'end', 't_fly', 't_lastattack', 't_down', 'BdkMove_afterFight'):
@@ -489,7 +490,7 @@ int main(void) {
             directory = Path(temporary)
             source = directory / 'test.c'
             source.write_text(source_code)
-            subprocess.run(['clang', '-O2', '-ffp-contract=off', '-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=signed-integer-overflow', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
+            subprocess.run([os.environ.get("CC", "cc"), '-O2', '-ffp-contract=off', '-fsanitize=signed-integer-overflow', '-fno-sanitize-recover=signed-integer-overflow', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
             subprocess.run([str(directory / 'test')], check=True)
 
     def test_runtime_condition_register_unordered_branches(self):
@@ -530,7 +531,7 @@ int main(void) {
             source = directory / 'cr.c'
             source.write_text(code)
             include = Path(__file__).resolve().parents[3] / 'runtime/include'
-            subprocess.run(['clang', '-O2', '-Wall', '-Wextra', '-Werror', '-I', str(include), str(source), '-o', str(directory / 'cr')], check=True)
+            subprocess.run([os.environ.get("CC", "cc"), '-O2', '-Wall', '-Wextra', '-Werror', '-I', str(include), str(source), '-o', str(directory / 'cr')], check=True)
             subprocess.run([str(directory / 'cr')], check=True)
 
     def test_disabled_has_no_source_owner(self):
@@ -541,7 +542,7 @@ int main(void) {
                                   '#define WWHD_GAME_FUNC(...) _Static_assert(0,"unexpected import");\n'
                                   '#define WWHD_REPLACE(...) _Static_assert(0,"unexpected owner");\n'
                                   '#include "helmaroc_rng.h"\nint main(void){return 0;}\n')
-                result = subprocess.run(['clang', '-fsyntax-only', '-I', str(Path(__file__).parent), str(source)], capture_output=True, text=True)
+                result = subprocess.run([os.environ.get("CC", "cc"), '-fsyntax-only', '-I', str(Path(__file__).parent), str(source)], capture_output=True, text=True)
                 if error:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(error, result.stderr)

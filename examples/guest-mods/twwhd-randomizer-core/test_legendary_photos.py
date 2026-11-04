@@ -1,4 +1,5 @@
 """Legendary photo day gates and unchanged ordered event short-circuit."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class LegendaryPhotos(unittest.TestCase):
@@ -22,10 +23,11 @@ int main(void){const s32 values[]={-2147483647-1,-1,0,1,2,7,8,9,2147483647};for(
  value=values[v];calls=0;const s32 result=randomizer_legendary_photo_available(0);unsigned n=0,want=0;
  if(day==2){for(unsigned i=0;i<7;i++){n++;if(mask&(1u<<i)){want=1;break;}}}else if(day>=0&&day<=6){n=1;want=day==0?value==8:value!=0;}
  assert(result==(s32)want&&calls==n);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

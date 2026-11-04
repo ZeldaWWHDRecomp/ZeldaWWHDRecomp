@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -23,6 +24,6 @@ int main(void){const u32 ends[]={0xD73,0xD74,0xD80,0x7FFFFFFF};for(unsigned n=0;
             root=Path(directory)
             (root/'korl_hint_messages.h').write_text(Path(__file__).with_name('korl_hint_messages.h').read_text().replace('volatile u32*','volatile uint32_t*'))
             (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

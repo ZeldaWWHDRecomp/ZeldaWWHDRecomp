@@ -1,4 +1,5 @@
 """Bomb shop full initializer: action ABI, callback order and mutated state."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,7 +11,6 @@ class BombShopInit(unittest.TestCase):
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <stdio.h>
 typedef uintptr_t u32;typedef int32_t s32;typedef int16_t s16;typedef uint16_t u16;typedef int8_t s8;typedef uint8_t u8;typedef float f32;
 #define WWHD_GAME_FUNC(a,r,n,p) r n p
@@ -44,7 +44,7 @@ printf("Bomb shop init: %u cases passed\n",cases);return 0;}
 '''
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'test.c').write_text(code)
-            subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-Wno-int-to-pointer-cast','-Wno-pointer-to-int-cast','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-Wno-int-to-pointer-cast','-Wno-pointer-to-int-cast','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

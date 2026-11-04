@@ -1,4 +1,5 @@
 """Related figurines retain source priority and captured selection count."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class GalleryFigures(unittest.TestCase):
@@ -21,10 +22,11 @@ int main(void){unsigned lengths[]={0,1,3,255,256,260};for(mode=0;mode<2;mode++)f
  unsigned extra[8],k=0;const unsigned source[]={0xBA,0x99,0xCE,0xC4,0x4A,0x88,0x8C};const unsigned dest[]={0xC6,0x9A,0xCA,0xC5,0x49,0,0x8D};
  for(unsigned j=0;j<7;j++)if(figure==low(source[j])){if(j==5){for(unsigned p=0x73;p<=0x78;p++)extra[k++]=low(p);extra[k++]=low(0x72);extra[k++]=low(0x87);}else extra[k++]=low(dest[j]);break;}
  assert(n==initial*(k+1));for(unsigned i=0;i<initial;i++){assert(granted[i*(k+1)]==figure);for(unsigned j=0;j<k;j++)assert(granted[i*(k+1)+1+j]==extra[j]);}
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

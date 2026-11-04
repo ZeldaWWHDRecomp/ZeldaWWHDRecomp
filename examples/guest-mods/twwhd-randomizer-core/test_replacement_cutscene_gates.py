@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class ReplacementCutsceneGates(unittest.TestCase):
@@ -48,7 +49,8 @@ int main(void){
   assert(randomizer_marie_get_message((u32)actor)==expected&&event_calls==(item?0u:!new_flag?1u:1u+!!registered+!!registered*!!heart+!!registered*!!heart*!pendant));
  }
  for(unsigned state=0;state<256;state++){
-  if(state==1||state==3)continue;reset(0);actor[0x81B]=state;*(uint32_t*)(actor+0x808)=0xF1234567;assert(randomizer_marie_get_message((u32)actor)==(state==4?0xF1234567u:0)&&n==0);
+  if(state==1||state==3){continue;}
+  reset(0);actor[0x81B]=state;*(uint32_t*)(actor+0x808)=0xF1234567;assert(randomizer_marie_get_message((u32)actor)==(state==4?0xF1234567u:0)&&n==0);
  }
  for(night=0;night<2;night++)for(first=0;first<2;first++)for(registered=0;registered<256;registered++){
   reset(0);actor[0x81B]=1;u32 expected=night?0x2722:!first?0x2711:registered?0x2713:0x2712;const unsigned was_first=first;assert(randomizer_marie_get_message((u32)actor)==expected&&night_calls==1&&on_calls==(!night&&!was_first));
@@ -69,5 +71,5 @@ int main(void){
 '''
   with tempfile.TemporaryDirectory() as d:
    root=Path(d);(root/'npc_replacement_cutscene_gates.h').write_text(header);(root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-lm','-o',str(root/'test')],check=True);subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

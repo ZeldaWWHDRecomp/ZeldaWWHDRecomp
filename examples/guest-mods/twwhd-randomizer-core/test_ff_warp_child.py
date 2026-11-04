@@ -1,4 +1,5 @@
 """Complete warp child factory and native SafeString callback/slot lifetimes."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,10 +25,10 @@ static void assure(u32 object);
 static int local(u32 o){return o>0xFFFFFFFFu&&!(o>=(u32)data&&o<(u32)data+sizeof data)&&!(o>=(u32)arena&&o<(u32)arena+sizeof arena);}
 #define RFF_STRING_TEXT(o) (local(o)?((const u32*)(o))[0]:(u32)W(u32,o))
 #include "ff_warp_child.h"
-static unsigned assures,allocations,constructs,setups,bases,mutation,allocation_fail,constructor_fail,expected_index,expected_resource;static u32 last_size,stored_slot;
+static unsigned assures,allocations,constructs,setups,bases,mutation,allocation_fail,constructor_fail,expected_index,expected_resource;
 static const char* names[11]={"L_Map_00","L_WarpArea_00","L_WarpArea_01","L_WarpArea_02","L_WarpArea_04","L_WarpArea_05","L_WarpArea_07","L_WarpArea_08","L_WarpArea_03","L_WarpArea_06","L_WarpArea_09"};
 static void assure(u32 object){assures++;if(local(object)){assert(((const u32*)object)[1]==(u32)&WWHD_GAME_DATA(0x1010394C,u8));assert(strcmp((const char*)((const u32*)object)[0],"L_WarpArea_09")==0);}if(mutation==1&&assures==1)W(u32,0x10400010)=999;if(mutation==2&&object==(u32)&WWHD_GAME_DATA(0x1049D634,u8))W(u32,description+0x14)=0x10403000;}
-u32 rff_allocate(u32 size,u32 heap,u32 align){assert(size==(expected_resource==0?0x164:0x50)&&heap==555&&align==4);allocations++;last_size=size;stored_slot=children+(expected_index<W(u32,self+0x48)?expected_index*4:0);if(mutation==3){W(u32,self+0x4C)=newchildren;W(u32,newchildren+expected_index*4)=child+4;}return allocation_fail?0:child;}
+u32 rff_allocate(u32 size,u32 heap,u32 align){assert(size==(expected_resource==0?0x164:0x50)&&heap==555&&align==4);allocations++;if(mutation==3){W(u32,self+0x4C)=newchildren;W(u32,newchildren+expected_index*4)=child+4;}return allocation_fail?0:child;}
 static u32 construct(u32 a){assert(a==child);constructs++;if(mutation==4){W(u32,self+0x48)=0;W(u32,children)=child+8;}return constructor_fail?0:child+12;}
 u32 rff_chart_construct(u32 a){assert(expected_resource==0);return construct(a);}
 u32 rff_area_construct(u32 a){assert(expected_resource==1);return construct(a);}
@@ -53,7 +54,7 @@ int main(void){unsigned cases=0;
 '''
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp);(path/'test.c').write_text(source)
-            subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(path/'test.c'),'-o',str(path/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(path/'test.c'),'-o',str(path/'test')],check=True)
             subprocess.run([str(path/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

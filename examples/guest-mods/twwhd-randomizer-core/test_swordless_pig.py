@@ -147,6 +147,6 @@ int main(void){unsigned cases=0;
   for classic in (0,1):
    with tempfile.TemporaryDirectory() as tmp:
     p=Path(tmp);(p/'test.c').write_text(code)
-    subprocess.run([os.environ.get('CC','clang'),f'-DWWHD_RANDOMIZER_CLASSIC_MODE={classic}','-std=c11','-O2','-ffp-contract=off','-Wall','-Wextra','-Werror','-I',str(Path(__file__).resolve().parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+    subprocess.run([os.environ.get('CC','clang'),f'-DWWHD_RANDOMIZER_CLASSIC_MODE={classic}','-std=c11','-O2','-ffp-contract=off','-Wall','-Wextra','-Werror','-I',str(Path(__file__).resolve().parent),str(p/'test.c'),'-lm','-o',str(p/'test')],check=True)
     subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

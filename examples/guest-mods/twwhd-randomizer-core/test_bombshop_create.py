@@ -1,4 +1,5 @@
 """Bomb-shop complete create: constructor order, phases, callback reloads."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -54,7 +55,7 @@ printf("Bomb shop create: %u cases passed\n",cases);return 0;}
 '''
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'test.c').write_text(code)
-            subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

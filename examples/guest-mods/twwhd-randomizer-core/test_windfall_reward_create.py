@@ -100,9 +100,9 @@ int old_main(void){
 return 0;
 }
 
-static u32 animation;static s32 animation_flag;static unsigned animations,photo_calls;
+static u32 animation;static s32 animation_flag;static unsigned animations;
 u32 rwq_animation(u32 self,u32 table,s32 flag){assert(self==(u32)actor);animation=table;animation_flag=flag;++animations;return 1;}
-s32 rwq_photo(u32 self,u32 item){assert(self==(u32)actor&&item<256);++photo_calls;return item==0x23;}
+s32 rwq_photo(u32 self,u32 item){assert(self==(u32)actor&&item<256);return item==0x23;}
 void rwq_assert(u32 file,s32 line,u32 condition){assert(file==0x1002047C&&line==0x24CB&&condition==0x10020448);}
 int queries_main(void){old_main();unsigned checks=0;
 for(unsigned npc=0;npc<256;npc++)for(unsigned night=0;night<2;night++)for(unsigned done=0;done<2;done++){
@@ -113,7 +113,7 @@ for(unsigned npc=0;npc<256;npc++)for(unsigned night=0;night<2;night++)for(unsign
 }
 for(unsigned done=0;done<256;done++){reset(0);events[0x6904]=done;items[0xEB]=!done;assert(randomizer_people_pompie_reward_done((u32)actor)==(done!=0));++checks;}
 for(unsigned npc=0;npc<256;npc++)for(unsigned night=0;night<2;night++)for(unsigned reward=0;reward<2;reward++)for(unsigned item=0;item<256;item++){
- reset(npc);actor[0x90F]=night;events[0x6910]=reward;events[0x2310]=events[0x2102]=events[0x2440]=1;play[0][0x5BBB]=item;photo_calls=0;
+ reset(npc);actor[0x90F]=night;events[0x6910]=reward;events[0x2310]=events[0x2102]=events[0x2440]=1;play[0][0x5BBB]=item;
  int expected=0;int photo=item==0x23;
  switch(npc){case 2:case 10:expected=photo;break;case 3:case 4:case 6:expected=photo||item==0x1F;break;case 5:expected=item==0x1F;break;case 11:expected=!night&&photo&&!reward;break;case 16:expected=!photo&&!night;break;}
  assert(randomizer_people_xy_check((u32)actor,0)==expected);++checks;

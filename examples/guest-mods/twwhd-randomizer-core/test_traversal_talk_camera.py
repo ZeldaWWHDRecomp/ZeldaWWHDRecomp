@@ -1,3 +1,4 @@
+import os
 import subprocess
 import tempfile
 import unittest
@@ -508,7 +509,7 @@ int main(void) {
             directory = Path(temporary)
             source = directory / 'test.c'
             source.write_text(code)
-            subprocess.run(['clang', '-O2', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
+            subprocess.run([os.environ.get("CC", "cc"), '-O2', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror', '-I', str(Path(__file__).parent), str(source), '-lm', '-o', str(directory / 'test')], check=True)
             subprocess.run([str(directory / 'test')], check=True)
 
 

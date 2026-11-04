@@ -1,4 +1,5 @@
 """Complete Moblin execution: lifecycle branches and native callback mutations."""
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -138,7 +139,7 @@ printf("Moblin execution: %u cases passed\n",cases);return 0;}
 '''
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'test.c').write_text(code);(p/'weak.c').write_text(prefix+'\n'.join(weak))
-            subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-function','-I',str(root),str(p/'test.c'),str(p/'weak.c'),'-o',str(p/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-function','-I',str(root),str(p/'test.c'),str(p/'weak.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)
 
 if __name__=='__main__':unittest.main()

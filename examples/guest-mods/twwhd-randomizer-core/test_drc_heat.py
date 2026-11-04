@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -44,7 +45,7 @@ int main(void){for(init=0;init<2;init++)for(type=0;type<16;type++)for(path_index
             root=Path(directory)
             (root/'drc_heat.h').write_text(Path(__file__).with_name('drc_heat.h').read_text().replace('(volatile u32*)(actor','(volatile uint32_t*)(actor').replace('(volatile u32*)(emitter','(volatile uint32_t*)(emitter'))
             (root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
     def test_stage_callback_pointer_capture_and_loop_reload(self):
         header=Path(__file__).with_name('drc_heat.h').read_text()
@@ -69,6 +70,6 @@ int main(void){*(u32*)(table+0x14)=(u32)resolve;
 '''
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);(root/'test.c').write_text(source)
-            subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+            subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
             subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

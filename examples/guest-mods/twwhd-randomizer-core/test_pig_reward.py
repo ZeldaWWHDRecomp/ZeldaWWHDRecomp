@@ -1,4 +1,5 @@
 """Buried reward uses async IDs and preserves request/switch lifecycle."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class PigReward(unittest.TestCase):
@@ -41,6 +42,6 @@ int main(void){for(mask=0;mask<128;mask++)for(item=0;item<256;item++){
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

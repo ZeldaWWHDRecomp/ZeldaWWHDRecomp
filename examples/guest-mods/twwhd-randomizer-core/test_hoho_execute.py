@@ -1,4 +1,5 @@
 """Ho Ho execution keeps dispatch and callback-driven position updates."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class HoHoExecute(unittest.TestCase):
@@ -44,10 +45,11 @@ int main(void){for(arg=0;arg<256;arg++)for(slotmode=0;slotmode<2;slotmode++)for(
  *(s16*)(entries+16)=4;*(s16*)(entries+18)=0;*(s16*)(entries+22)=16;
  *(u32*)(actor+20)=(u32)table;*(u32*)(table+4)=0x12345678;
  assert(randomizer_hoho_execute((u32)actor)==0);assert(seq==14&&sw==(arg==9));assert(dispatches==(!eventmode||command==1));
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class TowerServantEvents(unittest.TestCase):
@@ -43,6 +44,6 @@ int main(void){mode=0;for(arg=0;arg<256;arg++)for(room=0;room<3;room++)for(pendi
    for name in ['tower_servant_events.h','tower_tablet_delete.h']:
     (root/name).write_text(Path(__file__).with_name(name).read_text().replace('volatile u32*','volatile uint32_t*'))
    (root/'test.c').write_text(source)
-   subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-std=c11','-O2','-Wall','-Wextra','-Werror',str(root/'test.c'),'-o',str(root/'test')],check=True)
    subprocess.run([str(root/'test')],check=True)
 if __name__=='__main__':unittest.main()

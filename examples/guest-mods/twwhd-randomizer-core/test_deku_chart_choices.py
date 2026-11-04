@@ -1,4 +1,5 @@
 """Forest Water choices preserve the complete native dialogue table."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class DekuChoices(unittest.TestCase):
@@ -25,10 +26,11 @@ int main(void){const unsigned pairs[][2]={{0x139D,0x139E},{0x139F,0x13A0},{0x13A
  if(id==0x13B6){expected=eventresult?(boss?0x13C2:0x13C4):0x13C0;status=15;q=1;}
  if(id==0x13CA){expected=0xDEADBEEF;status=15;set=1;}
  assert(randomizer_deku_chart_choices(0,(u32)&message)==status);assert(message==expected&&queries==q&&sets==set);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

@@ -1,4 +1,5 @@
 """Warp initialization preserves callback reloads and does not force mail."""
+import os
 from pathlib import Path
 import subprocess,tempfile,unittest
 class HyruleWarp(unittest.TestCase):
@@ -30,10 +31,11 @@ int main(void){for(shards=0;shards<256;shards++)for(awakened=0;awakened<2;awaken
  memset(actor,0,sizeof actor);memset(constants,0,sizeof constants);constants[0]=1;constants[1]=0;constants[24]=-300;constants[25]=300;constants[26]=500;constants[27]=2000;constants[28]=-1000000000.0f;
  *(u32*)(actor+0x3B4)=(u32)model;*(float*)(actor+0x314)=1;*(float*)(actor+0x318)=2;*(float*)(actor+0x31C)=3;seq=ended=on=0;returned=sentinel?-1000000000.0f:42;
  randomizer_hyrule_warp_init((u32)actor);assert(seq==4&&ended==(shards>=8)&&on==awakened);assert(*(u16*)(actor+0x3EE)==(u16)-123);assert(*(unsigned*)(actor+0x3E4)==0);
- }return 0;}
+ }
+return 0;}
 '''
   with tempfile.TemporaryDirectory() as t:
    p=Path(t);(p/'test.c').write_text(code)
-   subprocess.run(['clang','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([os.environ.get("CC", "cc"),'-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

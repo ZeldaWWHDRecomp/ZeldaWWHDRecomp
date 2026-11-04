@@ -11,7 +11,6 @@ class SwordlessCombat(unittest.TestCase):
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-#include <sys/mman.h>
 typedef uint32_t u32;typedef uint16_t u16;typedef uint8_t u8;
 typedef int32_t s32;typedef int16_t s16;typedef int8_t s8;typedef float f32;
 #define WWHD_GAME_ORIGINAL(a,r,n,p) r n p

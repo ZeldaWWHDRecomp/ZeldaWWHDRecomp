@@ -63,8 +63,12 @@ static s32 pgm_integer(f64 value){if(value!=value||value<=-2147483648.0)return(s
  * unavailable libc service for clang's 750 target. Restrict contraction to
  * this single expression so other native rounding points remain separate. */
 static f32 pgm_fma(f32 a,f32 b,f32 c){
+#if defined(__powerpc__)
 #pragma clang fp contract(fast)
  return a*b+c;
+#else
+ return __builtin_fmaf(a,b,c);
+#endif
 }
 static s32 pgm_stopped(u32 actor){const u32 morf=R_PGM(u32,actor+0x3DC);return(R_PGM(u8,morf+0xA7)&1)||R_PGM(f32,morf+0x98)==0.0f;}
 static void pgm_voice(u32 actor,u32 id){if(actor+0x37C){const s32 room=R_PGM(s8,actor+0x326);const u32 process=actor?R_PGM(u32,actor+4):0xFFFFFFFFu;pgm_monster_sound(id,actor+0x37C,process,0,pgm_reverb(room));}}
