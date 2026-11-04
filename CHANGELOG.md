@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
+  the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **For mod authors: native actors from C mods** (#375). A C mod can now register its own native actors (profile,
   callbacks and name) in the game's shared actor table with `wwhd_native_actor_profile_register`, from a hook on the
   game's main loop entry before the first actor is created. Retail and port IDs, duplicate names and foreign callbacks
