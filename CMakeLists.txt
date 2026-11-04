@@ -4090,11 +4090,11 @@ if(Python3_Interpreter_FOUND)
     ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
 endif()
 
-foreach(mode success malformed conflict disabled untrusted code-off unsupported blocked-build native-failure changed ordinary-conflict session)
+foreach(mode success malformed conflict disabled untrusted code-off unsupported native-failure compiler-failure graphics-failure changed ordinary-conflict session)
   add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
 endforeach()
 
-add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test.cpp)
-target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
-target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
-add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)
+
+foreach(mode format damaged size)
+  add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
+endforeach()

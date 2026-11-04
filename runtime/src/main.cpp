@@ -688,13 +688,19 @@ int main(int argc, char** argv) {
     mods::packages::set_save_profile_support(host::android::save_profile_preparation_available(),
         "Update the Android app before activating a mod with a separate save profile");
 #endif
+
+#ifdef __ANDROID__
+    constexpr const char* mod_recovery = "To recover from a failed launch, return to setup, turn code mods off and rebuild. Then disable the problematic mod in Settings > Mods before turning code mods on again.";
+#else
+    constexpr const char* mod_recovery = "To recover, launch with WWHD_CODE_MODS=0, disable the problematic mod in Settings > Mods, then restart.";
+#endif
     mods::save_profile::Selection save_profile;
     mods::save_profile::Paths save_paths;
     save_folder::Policy save_policy;
     try {
         save_profile=mods::packages::startup_save_profile();
         if (randomizer::compiled_seed() && !save_profile.empty())
-            throw std::runtime_error("A randomized executable cannot also activate a mod with a separate save profile. Use the original game executable for this core mod.");
+            throw std::runtime_error("A randomized executable cannot also activate a mod with a separate save profile. Use the original game executable for this mod.");
         if (randomizer_paths::legacy_preflight_required(randomizer::compiled_seed(), warm_shaders)) {
             std::string why;
             if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
@@ -738,7 +744,7 @@ int main(int argc, char** argv) {
             host::android::prepare_game_save(std::filesystem::absolute(config::save_dir).string());
 #endif
     } catch(const std::exception& e) {
-        fatal("Cannot select save profile: %s\nTo recover, launch with WWHD_CODE_MODS=0, disable the problematic mod in Settings > Mods, then restart.",e.what());
+        fatal("Cannot select save profile: %s\n%s",e.what(),mod_recovery);
     }
 
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
@@ -765,7 +771,8 @@ int main(int argc, char** argv) {
     // hooked services (story mods, the editor's live edits) still run; without hooks guestmods::init says so
     if (guestmods::hooks_built() && !mods::code::enabled())
         LOG("[code mods] off (setting or WWHD_CODE_MODS): guest code mods are not loaded; the port's own services keep their hooks");
-    mods::packages::initialize();
+    try { mods::packages::initialize(); }
+    catch(const std::exception& e) { fatal("Cannot start mods: %s\n%s",e.what(),mod_recovery); }
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
         if (size > 1024 * 1024) return false;
@@ -821,7 +828,8 @@ int main(int argc, char** argv) {
     // the world editor's inspector: only with --editor (or WWHD_EDITOR=1), so a normal start copies no manifest
     // into an editor session; set_launch_mode ran in the argument loop above, before any package loads
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
-    guestmods::init();  // trusted manager packages, before guest threads start
+    try { guestmods::init(); }  // trusted manager packages, before guest threads start
+    catch(const std::exception& e) { fatal("Cannot load code mods: %s\n%s",e.what(),mod_recovery); }
     // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
     for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package

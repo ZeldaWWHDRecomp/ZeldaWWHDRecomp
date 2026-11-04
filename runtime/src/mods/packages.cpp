@@ -1,6 +1,5 @@
 #include "../exception_report.h"
 #include "packages.h"
-#include "build_constraint.h"
 #include "mod_stages_manifest.h"
 #include "story_game_objects_package.h"
 #include "manager.h"
@@ -179,9 +178,6 @@ Manifest manifest(const fs::path& path){
     if(!minimum.empty()&&version(minimum)>version(kManagerVersion))m.problem="This mod needs a newer version of the game (mod manager "+minimum+"; this one has "+std::string(kManagerVersion)+")";
     m.save_profile=save_profile::parse(v,m.kind=="guest",
         !minimum.empty()&&version(minimum)>=version(save_profile::kMinimumManagerVersion));
-    auto build_problem=game_build_constraint_problem(v,
-        !minimum.empty()&&version(minimum)>=version("1.7.0"));
-    if(m.problem.empty()&&!build_problem.empty())m.problem=std::move(build_problem);
     bool world_declarations = false;
     // The manifest's story sections (story_manifest.h, story_world_manifest.h): present, even as an empty list
     const bool story_sections=std::any_of(std::begin(kStorySections),std::end(kStorySections),[&](const char* key){return v.get(key).type!=Value::Null;});
@@ -561,6 +557,10 @@ std::string source_problem(const Manifest& m) {
 std::string own_problem(const Record& r) {
     const auto& m=r.manifest;
     if(!m.problem.empty())return m.name+": "+m.problem;
+    if(m.graphics) {
+        try { cemu::validate({cemu::Selection{m.id,*m.graphics,config(m)}}); }
+        catch(const std::exception& e) { return m.name+": "+e.what(); }
+    }
     if(m.save_profile.present&&!save_profile_supported)
         return m.name+": "+(save_profile_unsupported_reason.empty()?"Save profiles are unavailable on this platform":save_profile_unsupported_reason);
     if(auto problem=source_problem(m);!problem.empty())return problem;
@@ -621,7 +621,10 @@ std::vector<std::string> repair_graphics(){
         auto rank=[](const auto& id){return profile().get("enabled_since").get(id).number;};
         return rank(a)<rank(b);
     });
-    for(const auto& id:candidates){bool reject=false;for(const auto& other:kept)if(!graphics_conflict(id,other).empty()){
+    for(const auto& id:candidates){
+        // Invalid settings in one pack skip that pack, not an unrelated save owner.
+        if(records.at(id).manifest.graphics&&!own_problem(records.at(id)).empty())continue;
+        bool reject=false;for(const auto& other:kept)if(!graphics_conflict(id,other).empty()){
         profile()["enabled"][id]=false;messages.push_back(records.at(id).manifest.name+" was turned off: it conflicts with "+records.at(other).manifest.name);reject=true;break;
     }if(!reject)kept.push_back(id);}
     return messages;
@@ -806,7 +809,9 @@ void prepare_metadata_unlocked() {
     if (std::getenv("WWHD_NO_HOST_INPUT") && !override)
         return;
     root = override ? fs::path(override) : fs::path(host::config_dir()) / "ModManager";
-    ready = true;
+    // Defaults are only a candidate until existing profile data has been read
+    // and validated. A failed read must leave every persistence API disabled.
+    ready = false;
     defaults();
     if (fs::exists(root / "profiles.json")) {
         auto saved = json::parse(read_text(root / "profiles.json"));
@@ -821,9 +826,11 @@ void prepare_metadata_unlocked() {
                 "Invalid active profile");
         database = std::move(saved);
     }
+    ready = true;
     scan(false);
     auto messages = repair_graphics();
-    notices.insert(notices.end(), messages.begin(), messages.end());
+    for(const auto& message:messages)
+        if(std::find(notices.begin(),notices.end(),message)==notices.end())notices.push_back(message);
     metadata_needs_save=!messages.empty();
     // A rebuild offer queues an enable for this profile. Apply it only in a
     // new process whose generated code registered the actual hook marker.
@@ -963,7 +970,18 @@ void initialize() {
             if (record.manifest.graphics &&
                 (record.manifest.graphics->shaders.empty() || cemu::vulkan())) {
                 record.startup_config = config(record.manifest);
-                graphics.push_back({id, *record.manifest.graphics, record.startup_config});
+                cemu::Selection selected{id, *record.manifest.graphics, record.startup_config};
+                try {
+                    cemu::validate({selected});
+                } catch(const std::exception& e) {
+                    // An unrelated broken graphics pack cannot invalidate the
+                    // selected save owner. Its dependents will fail normally.
+                    record.error=e.what();
+                    skip_reasons[id]=record.error;
+                    fprintf(stderr,"[mod-manager] %s not loaded: %s\n",id.c_str(),e.what());
+                    continue;
+                }
+                graphics.push_back(std::move(selected));
                 record.active = true;
                 record.status =
                     std::to_string(record.manifest.graphics->textures.size()) + " texture rules, " +
@@ -1467,11 +1485,12 @@ bool prepare_guest(const std::string& id,std::string& error) {
         return false;
     }
 }
+namespace { void activate_live_mods(); }
 void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
     // Paths and guest memory have been configured before this entry. Native
     // dependencies are eligible metadata even while unloaded; now activate them
     // and require success before any save-profile owner may execute guest code.
-    if(!frozen_save_profile.empty())frame(0);
+    if(!frozen_save_profile.empty())activate_live_mods();
     std::lock_guard guard(mutex);
     if(!ready||guests_started)return;
     if(!save_profile_problem.empty())throw save_profile::Error(save_profile_problem);
@@ -1515,10 +1534,9 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
     content::activate(std::move(files));
 }
 void set_memory_access(ReadMemory read,WriteMemory write){read_memory=read;write_memory=write;}
-void frame(uint64_t step){
+namespace {
+void activate_live_mods(){
     if(!activation_ready)return;
-    if(!dirty.load(std::memory_order_relaxed)&&!running.load(std::memory_order_relaxed))return;
-    static uint64_t previous=~uint64_t(0);if(step==previous)return;previous=step;
     if(dirty.exchange(false)){
         std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline;bool switching=false;
         {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
@@ -1537,6 +1555,13 @@ void frame(uint64_t step){
         }
         running=!live.empty();
     }
+}
+} // namespace
+void frame(uint64_t step){
+    if(!activation_ready)return;
+    if(!dirty.load(std::memory_order_relaxed)&&!running.load(std::memory_order_relaxed))return;
+    static uint64_t previous=~uint64_t(0);if(step==previous)return;previous=step;
+    activate_live_mods();
     for(const auto& id:live_order){auto& item=live.at(id);if(item.api.on_frame)item.api.on_frame(item.api.instance,step);if(item.context){std::lock_guard guard(mutex);if(records.contains(id))records.at(id).status=item.context->status;}}
 }
 }

@@ -29,6 +29,19 @@ class SaveNamespaceStartup(unittest.TestCase):
         self.assertLess(error_handler,source.index('save_folder::startup(',stop))
         self.assertIn('fatal("Cannot select save profile:',source[error_handler:])
 
+    def test_activation_errors_are_caught_with_platform_recovery(self):
+        source=(Path(__file__).resolve().parents[1]/'src/main.cpp').read_text()
+        for call,message in [('mods::packages::initialize();','Cannot start mods:'),
+                             ('guestmods::init();','Cannot load code mods:')]:
+            at=source.index(call)
+            window=source[at-12:at+300]
+            self.assertIn('try {',window)
+            self.assertIn('catch(const std::exception& e)',window)
+            self.assertIn(message,window)
+            self.assertIn('mod_recovery',window)
+        self.assertIn('WWHD_CODE_MODS=0',source)
+        self.assertIn('return to setup, turn code mods off and rebuild',source)
+
 
 if __name__=='__main__':
     unittest.main()

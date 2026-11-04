@@ -426,7 +426,6 @@ Package manifest fields:
 | `game_id` | `wwhd`: this game, any region (manager 1.5; give `"minimum_manager_version": "1.5.0"` with it). `wwhd-usa` from older manifests is still accepted. Region checks stay where they apply: the title ID of Cemu and SDCafiine packs and the game build of code mods; the runtime also verifies its exact RPX entry |
 | `author`, `description` | Optional display metadata |
 | `minimum_manager_version` | Optional three-part minimum |
-| `supported_game_builds` | Optional array of 1–16 exact compiled build names, such as `["USA"]`; requires manager 1.7.0. Checked before save-profile selection and content activation; `game_id: "wwhd-usa"` alone remains an any-region legacy alias |
 | `save_profile` | Guest-only declarative save ownership; requires manager 1.7.0 (below) |
 | `experimental` | Optional `true` for untested mods: hidden by default, enabling backs up the saves first (manager 1.4) |
 | `kind` | `native`, `settings`, `content` or `cemu` |
