@@ -2213,8 +2213,11 @@ bool backdropScope = false, backdropFailed = false, backdropReplay = false, back
 void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
     static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
     if(aspect::game_frame()<first)return;
-    static unsigned logged=0;
-    if(logged++>=180)return;
+    // Empty scanouts before a menu appears must not exhaust the pane quota.
+    static unsigned logged[7]{};
+    const char* phases[]={"begin","end","draw","blend","replay","clear","scan"};
+    unsigned slot=0;while(slot<6 && std::strcmp(phase,phases[slot]))++slot;
+    if(logged[slot]++ >= (slot>=5?16u:100u))return;
     LOG("[metal backdrop] phase=%s game=%llu render=%llu a=%llx b=%llx c=%llx",phase,
         (unsigned long long)aspect::game_frame(),(unsigned long long)R.frame,
         (unsigned long long)a,(unsigned long long)b,(unsigned long long)c);
