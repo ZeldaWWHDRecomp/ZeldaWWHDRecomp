@@ -586,7 +586,8 @@ static void dominant_labels(input_map::FaceLabel out[4]){
 // outside g_pads_mu: input_map may write controls.json
 static void note_dominant_labels(){
  input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
- std::string guid,name;bool detected=false,pc=false;
+ struct Candidate {std::string guid,name;bool detected,pc;};
+ std::vector<Candidate> candidates;bool detected=false;
  {
   std::lock_guard lk(g_pads_mu);
   for(auto id:g_order){
@@ -594,16 +595,18 @@ static void note_dominant_labels(){
    auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
    auto* pad=it->second;
    const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;
-   detected=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   const bool gc=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   if(candidates.empty())detected=gc;
    // SDL's GameCube type uses AXBY positions. Older PC database entries use ABXY.
-   pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
-   if(auto who=g_ident.find(id);who!=g_ident.end()){guid=who->second.guid;name=who->second.name;}
-   break;
+   const bool pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
+   if(auto who=g_ident.find(id);who!=g_ident.end())candidates.push_back({who->second.guid,who->second.name,gc,pc});
   }
  }
  input_map::note_gamecube(detected);
  auto m=input_map::current();
- if(input_map::auto_gamecube(m,guid,name,detected,pc))input_map::set_current(m);
+ bool changed=false;
+ for(const auto& c:candidates)changed|=input_map::auto_gamecube(m,c.guid,c.name,c.detected,c.pc);
+ if(changed)input_map::set_current(m);
 }
 static void open_controller(SDL_JoystickID id){
 #ifdef __ANDROID__
