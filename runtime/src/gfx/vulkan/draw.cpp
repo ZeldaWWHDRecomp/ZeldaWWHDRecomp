@@ -3075,7 +3075,7 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
 bool clouds_skip_card();
 // the tall grass vertex programs (Graphics > Grass draw distance), by vk::vertex_program_hash
-// (the three of the Forest island's tall grass, 832, 1120 and 1648 bytes; logged with WWHD_VK_CULL_VS)
+// (the three of the islands' tall grass, 832, 1120 and 1648 bytes; logged with WWHD_VK_CULL_VS)
 constexpr uint64_t kGrassVs[] = {0x23CDD3D4D6BAAACDull, 0x042E089911FC3CC0ull, 0x7C8717CA596569B3ull};
 
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
@@ -3135,7 +3135,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     }
     return e.grass;
   };
-  if ((grassDistance > 0 || !cullVs.empty()) && is_grass()) {
+  // a patch is 108 vertices; the same programs also draw the small palms and plants (216), which stay
+  if ((grassDistance > 0 || !cullVs.empty()) && uint64_t(count) * instances == 108 && is_grass()) {
     static const float envDist = [] { const char* e = std::getenv("WWHD_VK_CULL_DIST"); return e ? float(std::atof(e)) : 0.f; }();
     const float cullDist = grassDistance > 0 ? float(grassDistance) : envDist > 0 ? envDist : 6000.f;
     static uint64_t linkFrame = ~0ull;
