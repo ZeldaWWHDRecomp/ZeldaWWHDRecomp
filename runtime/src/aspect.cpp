@@ -582,12 +582,33 @@ extern "C" void hook_028766CC(Cpu* c) {
     button_glyphs::calculate_pane(c, calculate_aspect_pane);
 }
 
+// Private bounded producer diagnostics: count Draw and DrawSelf separately so an
+// inherited-alpha skip remains visible without changing any selection/render gate.
+static void trace_gamepad_backdrop_pane(const char* stage, uint32_t pane) {
+    using namespace aspect;
+    static const uint64_t first = [] {
+        const char* e = std::getenv("WWHD_GAMEPAD_BACKDROP_LOG");
+        return e && *e ? std::strtoull(e, nullptr, 10) : ~uint64_t{0};
+    }();
+    if (game_frame() < first || name_of(pane) != "P_BgPattern_00") return;
+    static std::atomic<unsigned> count{0};
+    if (count.fetch_add(1, std::memory_order_relaxed) >= 100) return;
+    LOG("[backdrop producer] stage=%s game_frame=%llu pane=%08X flags=%02X alpha=%u inheritedAlpha=%u enabled=%d requested=%d capture=%d recording=%d size=%.3f,%.3f",
+        stage, (unsigned long long)game_frame(), pane, ld8(pane+0x44),
+        ld8(pane+0x45), ld8(pane+0x46),
+        int(gfx::gamepad_backdrop::enabled.load()),
+        int(gfx::gamepad_backdrop::capture_requested.load()),
+        int(gfx::gamepad_backdrop::capture_enabled()), int(gx2::recording_display_list()),
+        float(ldf32(pane+kPaneSize)), float(ldf32(pane+kPaneSize+4)));
+}
+
 // Pane::Draw(this, DrawInfo&): the render thread reports where each layout root is drawn. The
 // game thread can't tell: TV and GamePad layouts share DrawInfos and are recorded on threads that
 // don't bind the targets.
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    trace_gamepad_backdrop_pane("Draw", pane);
     if(guestmods::maphud::hide_pane(pane))return;
     static const uint64_t trace_frame = getenv("WWHD_ASPECT_TRACE_FRAME") ? strtoull(getenv("WWHD_ASPECT_TRACE_FRAME"), nullptr, 10) : 0;
     if (trace_frame && game_frame() == trace_frame) {
@@ -671,6 +692,7 @@ static thread_local std::vector<bool> t_layoutScopes;
 static thread_local std::vector<bool> t_backdropScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
+    trace_gamepad_backdrop_pane("DrawSelf", c->r[3]);
     // Scope only this Picture DrawSelf, never its children or the containing UI.
     // Record even while disabled: a cached list may later be replayed enabled.
     const bool backdrop = (gfx::gamepad_backdrop::capture_enabled() ||
