@@ -30,6 +30,40 @@
 #define WWHD_GUEST_HOOKS_STARTUP_FIXTURE 1
 // This entire harness constructs synthetic startup registries; production has no unseal.
 #include "mods/guest_mods.cpp"
+// These hook-runner fixtures have no native actor-profile lookup entries and
+// never import the actor-profile service. The real registry has its own
+// guest_actor_profiles_test; only its empty-state lifecycle belongs here.
+namespace native_actor_profiles {
+static unsigned configure_calls=0,install_calls=0,register_calls=0,restore_calls=0;
+void configure(void(*)(Cpu*,uint32_t),uint32_t(*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)) {
+    ++configure_calls;
+    assert(false && "hook fixture unexpectedly configured native actor profiles");
+}
+bool install_guest(uint32_t,const Owner&,const Replace&,std::string* why) {
+    ++install_calls;
+    assert(false && "hook fixture unexpectedly installed native actor profiles");
+    if(why)*why="synthetic hook fixture has no native profile lookup";
+    return false;
+}
+int32_t register_guest(const std::string&,const std::string&,uint32_t,const OwnRange&,const OwnFunction&,std::string*) {
+    ++register_calls;
+    assert(false && "hook fixture unexpectedly called actor-profile registration");
+    return -4; // unavailable, never pretend that a profile was admitted
+}
+void restore_guest_snapshots() {
+    ++restore_calls;
+    // Restoring an unconfigured, empty registry has no guest-memory effects.
+    assert(!configure_calls&&!install_calls&&!register_calls&&!guestmods::g_actor_profile_import);
+}
+}
+namespace mods {
+// Service dispatch must link on every platform even though these tests exercise
+// hooks, not traversal/quick-use gameplay. Any unexpected invocation is a failure.
+void ship_normal_sail_wind(Cpu*,uint32_t) {assert(false && "unexpected sail-wind service in hook fixture");}
+float ship_sail_target(float stock) {assert(false && "unexpected sail-target service in hook fixture");return stock;}
+void quick_use_item_action_dispatch(Cpu*,uint32_t,uint32_t) {assert(false && "unexpected item-action service in hook fixture");}
+uint32_t quick_use_ready_item_trigger(Cpu*,uint32_t,uint32_t trigger) {assert(false && "unexpected item-trigger service in hook fixture");return trigger;}
+}
 namespace story_native_wait_runtime {
 static unsigned startups=0;
 void startup(bool,LogicStep) {++startups;assert(story_native_scene_request::startup_window_current());}
@@ -905,6 +939,7 @@ int main() {
 #endif
     guestmods::init();
     assert(mods::packages::inspected);       // the package start still ran (a guest package is refused, not run)
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     assert(story_actors::installs==0);        // no port service claimed a game function
     assert(story_actors::live_kinds==0);      // so the editor has no live kinds
     assert(!g_mod_hook_flags&&guestmods::g_chains.empty()&&!guestmods::hooks_built());
@@ -928,6 +963,7 @@ int main() {
     setenv("WWHD_GUEST_BUILD_CONFIG",missing,1);
 #endif
     guestmods::init();
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     assert(story_scenes::scene_editor);                 // editor previews on
     assert(story_scenes::scene_scratch!=0);             // with the scene player's scratch
     assert(story_scenes::scene_installs==2);            // the declared-scenes install, then the editor's
@@ -955,6 +991,7 @@ int main() {
     guestmods::init();
     assert(!story_native_scene_request::startup_window_current());
     assert(mods::packages::inspected);
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     // Inert without mods: no guest runtime memory (the save-state layout of a start without mods), no
     // particle or held-model setup, no native scene startup, no game-thread binding and no package observer.
     assert(mem::fixture_runtime_allocs==0&&story_particles::configured==0&&story_item_models::configured==0);
@@ -1076,7 +1113,9 @@ int main() {
     assert(tv[0]->commands[0].rgba==0x12345678&&tv[0]->commands[0].w==20);
     guestmods::draw_frame(&c,4);assert(hud_calls==1);
     guestmods::draw_frame(&c,5);assert(hud_calls==2);
-    auto epoch=guestmods::hud::store().state_generation();guestmods::state_loaded();
+    auto epoch=guestmods::hud::store().state_generation();
+    const auto empty_profile_restores=native_actor_profiles::restore_calls;guestmods::state_loaded();
+    assert(native_actor_profiles::restore_calls==empty_profile_restores+1);
     assert(!guestmods::hud::store().active()&&guestmods::hud::store().state_generation()!=epoch);
     guestmods::draw_frame(&c,5);assert(hud_calls==3); // rebuilt even if restored clock repeats
     c.r[3]=0;c.r[4]=2;guestmods::svc_hud_register(&c);assert(c.r[3]==1);
