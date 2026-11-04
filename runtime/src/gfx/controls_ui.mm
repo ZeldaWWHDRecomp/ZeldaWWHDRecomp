@@ -1235,19 +1235,26 @@ static NSTextField* label(NSString* s) {
     [self.bindingTarget removeAllItems];
     [self.bindingTarget addItemWithTitle:@"All controllers (shared)"];
     auto all = current();
-    std::vector<std::pair<std::string,std::string>> targets;
-    for (auto& c : all.controllers) targets.emplace_back(c.guid,c.name);
-    for (auto& c : input::controllers()) {
-        auto key = std::pair{c.guid,c.name};
-        if (!c.is_virtual && std::find(targets.begin(),targets.end(),key)==targets.end()) targets.push_back(key);
-    }
-    for (auto& [guid,name] : targets) {
+    const auto targets = binding_targets(all, input::controllers());
+    for (const auto& target : targets) {
+        const auto& guid = target.guid;
+        const auto& name = target.name;
         [self.bindingTarget addItemWithTitle:ns(name)];
         self.bindingTarget.lastItem.representedObject = @{@"guid":ns(guid), @"name":ns(name)};
         if (_ownBindings && guid == _bindingGuid && name == _bindingName)
             [self.bindingTarget selectItem:self.bindingTarget.lastItem];
     }
-    [self.faceLayout setEnabled:_st.m.preset.saved forSegment:4];
+    // Automatic belongs to shared defaults, not fixed per-controller bindings.
+    const bool automatic = automatic_face_available(_ownBindings);
+    self.faceLayout.segmentCount = automatic ? 5 : 4;
+    NSArray<NSString*>* faceLabels = _ownBindings
+        ? @[@"Face by position", @"Face by label (Xbox)", @"GameCube", @"Restore previous"]
+        : @[@"Face by position", @"Face by label (Xbox)", @"Face automatic", @"GameCube", @"Restore previous"];
+    for (NSUInteger i = 0; i < faceLabels.count; ++i) {
+        [self.faceLayout setLabel:faceLabels[i] forSegment:i];
+        [self.faceLayout setEnabled:YES forSegment:i];
+    }
+    [self.faceLayout setEnabled:_st.m.preset.saved forSegment:(_ownBindings ? 3 : 4)];
     self.deadzone.doubleValue = _st.m.deadzone;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
     self.skipController.state = _st.m.skip_controller_selection ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1267,7 +1274,7 @@ static NSTextField* label(NSString* s) {
     self.promptTextColours.state = _st.m.prompt_text_colours ? NSControlStateValueOn : NSControlStateValueOff;
     // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
     // Automatic is segment 2 whatever the bindings resolved to (as the overlay's "(-> ...)").
-    if (_st.m.preset.gamecube) self.faceLayout.selectedSegment = 3;
+    if (_st.m.preset.gamecube) self.faceLayout.selectedSegment = _ownBindings ? 2 : 3;
     else if (_st.m.face_auto) self.faceLayout.selectedSegment = 2;
     else {
         FaceLayout fl = face_layout(_st.m);
@@ -1678,8 +1685,9 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 
 - (void)faceLayoutChanged:(NSSegmentedControl*)c {
     // the same as Input > Face buttons; rewrites the four face bindings only
-    if (c.selectedSegment == 4) restore_pad_preset(_st.m);
-    else if (c.selectedSegment == 3) {
+    const NSInteger choice = c.selectedSegment + (_ownBindings && c.selectedSegment >= 2 ? 1 : 0);
+    if (choice == 4) restore_pad_preset(_st.m);
+    else if (choice == 3) {
         bool legacy = false;
         std::string guid=_bindingGuid, name=_bindingName;
         if (!_ownBindings) active_controller(guid,name);
@@ -1688,7 +1696,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
                 legacy = legacy_gamecube_faces(pad);
         apply_gamecube(_st.m, legacy);
     }
-    else if (c.selectedSegment == 2) set_face_auto(_st.m, true);
+    else if (choice == 2 && !_ownBindings) set_face_auto(_st.m, true);
     else apply_face_layout(_st.m, c.selectedSegment == 1 ? FaceLayout::kLabels : FaceLayout::kPosition);
     [self commit];
     [self.padView invalidateGeo];

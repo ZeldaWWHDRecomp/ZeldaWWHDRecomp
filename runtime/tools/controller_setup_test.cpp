@@ -112,6 +112,13 @@ void pure() {
     auto r = cs::build(m, "g1", "Pad", cs::Face::kPosition, cs::Layout::kOriginal, kPadNone, xbox);
     assert(r.mapping.controllers.size() == 1 && r.mapping.controllers[0].pad == Mapping::defaults().pad && !r.jump_on);
     assert(r.mapping.pad == m.pad);
+    auto inherited_gc=m;apply_gamecube(inherited_gc);
+    for(auto face : {cs::Face::kPosition,cs::Face::kLetters}) {
+        auto fresh=cs::build(inherited_gc,"gc","GC",face,cs::Layout::kOriginal,kPadNone,xbox);
+        const auto view=view_for(fresh.mapping,profile_index(fresh.mapping,"gc","GC"));
+        assert(!view.preset.gamecube && !view.preset.saved);
+        assert(view.pad[kZL]==Mapping::defaults().pad[kZL]);
+    }
     // by letters: an Xbox pad's bottom A is the Wii U's A; a Nintendo pad's bottom B stays B (as by position)
     r = cs::build(m, "g1", "Pad", cs::Face::kLetters, cs::Layout::kOriginal, kPadNone, xbox);
     assert(r.mapping.controllers[0].pad[kA] == kPadA && r.mapping.controllers[0].pad[kB] == kPadB);

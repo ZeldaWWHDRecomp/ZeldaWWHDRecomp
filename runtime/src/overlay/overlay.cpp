@@ -2372,21 +2372,7 @@ void start_controller_setup(const std::string& guid, const std::string& name) {
 void controller_row(bool tools = true) {
     const input_map::Mapping cur = input_map::current();
     const auto connected = controller_details::ordered(input::controllers());
-    struct Entry {
-        std::string guid, name;
-        bool connected;
-    };
-    std::vector<Entry> entries;
-    for (const auto& c : connected)
-        if (!c.is_virtual)
-            entries.push_back({c.guid, c.name, true});
-    for (const auto& p : cur.controllers) {
-        bool seen = false;
-        for (const auto& e : entries)
-            seen |= e.guid == p.guid && e.name == p.name;
-        if (!seen)
-            entries.push_back({p.guid, p.name, false});
-    }
+    const auto entries = input_map::binding_targets(cur, connected);
     if (g_edit_controller) { // still listed (connected or with bindings of its own)?
         bool listed = false;
         for (const auto& e : entries)
@@ -2681,10 +2667,12 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
         input_map::apply_face_layout(m, input_map::FaceLayout::kLabels);
         edit_set(m);
     }
-    flow::next(flow::check("automatic"));
-    if (radio("automatic", m.face_auto)) {
-        input_map::set_face_auto(m, true);
-        edit_set(m);
+    if (input_map::automatic_face_available(g_edit_controller)) {
+        flow::next(flow::check("automatic"));
+        if (radio("automatic", m.face_auto)) {
+            input_map::set_face_auto(m, true);
+            edit_set(m);
+        }
     }
     help("Which physical button does each Wii U action. By position: right is A, bottom B, "
          "top X and left Y. By label: A does A, B does B, X does X and Y does Y. Automatic "
