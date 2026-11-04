@@ -49,7 +49,7 @@ static void pgm_fail(u32 actor){
   const u32 model=R_PGM(u32,R_PGM(u32,actor+0x3DC)+0x90);
   pgm_matrix_copy(pgm_joint_matrix(model,24),pgm_matrix());
   offset[0]=0.0f;offset[1]=0.0f;offset[2]=0.0f;pgm_transform((u32)offset,(u32)transformed);
-  if(pgm_line_cross(pgm_game()+0x12A0,(u32)line)){offset[0]=((f32*)line)[0x30/4];offset[1]=((f32*)line)[0x34/4];offset[2]=((f32*)line)[0x38/4];}
+  if(pgm_line_cross(pgm_game()+0x12A0,(u32)line))pgm_copy_vector((u32)offset,(u32)line+0x30);
   const s16 angle=(s16)pgm_atan(transformed[0]-offset[0],transformed[2]-offset[2]);
   R_PGM(s16,actor+0x8D4)=(s16)(R_PGM(s16,actor+0x32A)-angle+0x7058+WWHD_GAME_DATA(0x1047B698,s16));
   R_PGM(u32,actor+0x8DC)=100;R_PGM(s16,actor+0x8D8)=(s16)(pgm_reg_short(0,5)+0x80);
