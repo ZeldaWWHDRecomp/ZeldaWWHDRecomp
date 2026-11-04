@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed for mod authors: C mods keep the game's paired-single values** (#384). A C mod that replaces a game
+  function, or that the game calls through a function pointer, no longer changes the upper half of the game's saved
+  paired-single float registers (f14–f31). The compiler only keeps the lower half, while the game's own code relies on
+  both, so such a mod could silently change values in the code that called it. Mods built with the SDK need no change.
 - **For testers: scripted Android runs no longer open Settings** (#379). Runs started with `WWHD_NO_HOST_INPUT` (for
   example `tools/android/bench_phone.py`) skip the first-start touch-controls question, which had left the Settings
   window open over every scripted run. `WWHD_TEST_TOUCH_QUESTION=1` still asks it. Normal starts are unchanged.
