@@ -51,3 +51,10 @@ int32_t register_guest(const std::string& owner,const std::string& fingerprint,
 std::string guest_identity();
 void restore_guest_snapshots();
 }
+
+namespace native_actor_profiles {
+// Read-only diagnostic/classification lookup. Only the exact registered copied
+// table and profile ID are accepted, and the entire live slot must still match
+// its admitted immutable snapshot. This never admits or dispatches a function.
+uint32_t guest_execute_method(uint16_t profile,uint32_t submethod_table) noexcept;
+}
