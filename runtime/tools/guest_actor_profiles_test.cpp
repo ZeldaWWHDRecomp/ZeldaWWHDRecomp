@@ -62,13 +62,16 @@ int main(){
  auto reg=[&]{return register_guest("example",fingerprint,descriptor,range,function);};
  auto owner=[](uint32_t){return std::string();};auto replace=[](uint32_t a,void(*f)(Cpu*)){hooks[a]=f;};
  configure(original);
- assert(!install_guest(0x7F000000,owner,replace));
- assert(!install_guest(0x60000000,[](uint32_t){return std::string("foreign");},replace));assert(hooks.empty());
+ unsigned allocations=0;
+ auto pool=[&](uint32_t at){return [&allocations,at]{++allocations;return at;};};
+ assert(!install_guest(pool(0x7F000000),owner,replace));assert(allocations==1);
+ // A refused bridge must not take the profile pool from the startup allocator.
+ assert(!install_guest(pool(0x60000000),[](uint32_t){return std::string("foreign");},replace));assert(hooks.empty()&&allocations==1);
  // Port services install their listener/profile first, before the bridge.
  assert(add_before_delete_listener("existing-port-listener",retire));
  st16(0x60008008,0x7FFE);assert(add(0x7FFE,0x60008000));
  assert(install(owner,replace)&&hooks.size()==3);
- assert(install_guest(0x60000000,owner,replace)&&hooks.size()==5);
+ assert(install_guest(pool(0x60000000),owner,replace)&&hooks.size()==5&&allocations==2);
  assert(add_before_delete_listener("existing-port-listener",retire));
  // GameMain entry invokes registration before the original begins allocating
  // processes. Lookup queries do not close the window; first base create does.

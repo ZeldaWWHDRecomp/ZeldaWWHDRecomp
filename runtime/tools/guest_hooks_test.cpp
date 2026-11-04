@@ -39,7 +39,7 @@ void configure(void(*)(Cpu*,uint32_t),uint32_t(*)(Cpu*,uint32_t,std::initializer
     ++configure_calls;
     assert(false && "hook fixture unexpectedly configured native actor profiles");
 }
-bool install_guest(uint32_t,const Owner&,const Replace&,std::string* why) {
+bool install_guest(const Allocate&,const Owner&,const Replace&,std::string* why) {
     ++install_calls;
     assert(false && "hook fixture unexpectedly installed native actor profiles");
     if(why)*why="synthetic hook fixture has no native profile lookup";

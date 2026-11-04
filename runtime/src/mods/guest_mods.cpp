@@ -1861,7 +1861,7 @@ void init() {
     if(g_actor_profile_import){
         native_actor_profiles::configure(call_original,[](Cpu*c,uint32_t f,std::initializer_list<uint32_t>a){return guest_call(c,f,a);});
         std::string why;
-        const bool ok=native_actor_profiles::install_guest(mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16),
+        const bool ok=native_actor_profiles::install_guest([]{return mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16);},
             [](uint32_t a){auto it=g_chains.find(a);return it==g_chains.end()?std::string():it->second.replace_mod;},
             [](uint32_t a,PpcFunc fn){const int ordinal=ordinal_of(a);if(ordinal<0)fatal("[guestmods] native actor profile hook missing: %08X",a);
                 auto&ch=g_chains[a];ch.addr=a;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's native actor profiles";g_mod_hook_flags[ordinal]=1;},&why);
