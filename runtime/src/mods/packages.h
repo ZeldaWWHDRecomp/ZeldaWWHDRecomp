@@ -39,6 +39,7 @@ struct View {
     bool enabled=false,active=false,compatible=false,restart_required=false,pending_restart=false;
     std::string game_source_warning;
     bool native_confirmed=true; // false: code the player has not confirmed (native library or guest ELF)
+    bool isolated_save_profile=false; // valid guest claim: Android warns before enabling
     bool experimental=false;    // untested: enabling asks first and backs up the saves
     std::vector<Conflict> graphics_conflicts; // currently enabled packs, before enabling
     std::vector<Option> options;
@@ -129,6 +130,8 @@ std::string current_profile();
 bool create_profile(const std::string& name,std::string& error);
 bool select_profile(const std::string& name,std::string& error);
 bool delete_profile(const std::string& name,std::string& error);
+// Preflight before applying a built-in setting; posts a toast on refusal.
+bool builtin_change_allowed(const std::string& id,bool on,std::string& error);
 void remember_builtin(const std::string& id,bool on);
 void remember_option(const std::string& id,double value);
 void remember_option(const std::string& id,const std::string& value);
