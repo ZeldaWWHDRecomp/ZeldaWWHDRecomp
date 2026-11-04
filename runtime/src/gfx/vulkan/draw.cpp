@@ -1,3 +1,6 @@
+#include "gamepad_backdrop.h"
+#include "gamepad_backdrop_blend.h"
+#include "gx2/gx2_regs.h"
 #include "vertex_cpu_policy.h"
 #include <set>
 #include <tuple>
@@ -3093,7 +3096,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
   const auto& fastPath = fastpath_config();
   // a replayed eye 1 draw records no continuation of its own
-  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay;
+  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !gamepad_backdrop_replaying();
   if (replay) {
     continued.valid = false;
     continued.invalidReason = kNoState;
@@ -3347,6 +3350,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (fast) targets = continued.targets;
   else if (!(replay ? resolve_replay_targets(r, ps, targets) : resolve_targets(r, ps, targets)))
     return;
+  if (auto* backdrop = gamepad_backdrop_replay_target()) {
+    targets.colors[0] = backdrop;
+    targets.slices[0] = 0;
+  }
   auto& colors = targets.colors;
   auto& slices = targets.slices;
   Surface* depth = targets.depth;
@@ -3916,6 +3923,26 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ++drawBatchSubmissions;
   }
   rprof::mark(rprof::kSubmit);
+  // Original draw is complete. Replay exactly this pane draw with its own color
+  // attachment; no main-target pixels are copied and no target state escapes.
+  if(!gamepad_backdrop_capture_active()) return;
+  const auto captureBlend=backdrop_blend(r[REGADDR::CB_COLOR_CONTROL],r[REGADDR::CB_BLEND0_CONTROL],r[REGADDR::CB_TARGET_MASK]);
+  bool compatible = captureBlend.supported && colors[0] && slices[0] == 0 && !(r[REGADDR::DB_DEPTH_CONTROL] & 7);
+  for (unsigned i=1;i<8;++i) compatible &= colors[i] == nullptr;
+  if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {
+    const auto before=R.drawCount;
+    // A private register snapshot makes the coverage-only alpha override part
+    // of the ordinary pipeline key without changing guest/native draw state.
+    std::vector<uint32_t> captureRegs(r,r+gx2::kNumRegs);
+    captureRegs[REGADDR::CB_BLEND0_CONTROL]=captureBlend.control;
+    captureRegs[REGADDR::CB_COLOR_CONTROL]|=1u<<8;
+    captureRegs[REGADDR::CB_TARGET_MASK]|=8;
+    continued.valid=false;
+    try { draw(captureRegs.data(),prim,count,indexType,indexAddr,baseVertex,instances,nullptr); }
+    catch (...) { gamepad_backdrop_end_replay(false);continued.valid=false;throw; }
+    gamepad_backdrop_end_replay(R.drawCount!=before);
+    continued.valid=false;
+  }
 }
 // Setup's Vulkan preparation (headstart.cpp, the head start's Metal pipeline recipes): the recipe of the pipeline a
 // draw with these registers would make, by the live derivation: fetch shader, vertex and pixel translation, active

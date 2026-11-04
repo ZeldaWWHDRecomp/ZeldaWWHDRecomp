@@ -1,3 +1,5 @@
+#include "../gamepad_backdrop.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
 #include "dynres.h"
@@ -3239,6 +3241,7 @@ static bool present(Screen &s) {
 }
 void copy_to_scan(uint32_t cb, uint32_t target) {
   Surface *src = surface_from_color_buffer(cb);
+  if (target == 4 && !stereoEye) gamepad_backdrop_scan(src);
   if (!src)
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
@@ -3669,6 +3672,7 @@ static void trim_memory_step() {
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 }
 void swap() {
+  gfx::gamepad_backdrop::set_capture_requested(false);
   texture_budget_step();
   trim_memory_step();
   fallback_stats::begin_frame(R.frame);
@@ -3686,6 +3690,7 @@ void swap() {
     std::swap(s->scanDisplayExtent,s->buildingScanDisplayExtent);
     s->scanSrgb = s->buildingScanSrgb;
     s->buildingScanDirty = false;
+    if(s==&R.drc)gamepad_backdrop_publish();
   }
   service_screenshots();
   const auto swapPhaseStarted=std::chrono::steady_clock::now();
@@ -5257,6 +5262,7 @@ void shutdown_renderer_caches() {
   // Destructive teardown is reserved for orderly shutdown under execution lock.
   try {
     if (presentObservation || handoff_trace::enabled() || fallback_stats::storage) flush_present_observer();
+    gamepad_backdrop_reset();
     reset_feedback_images();
     wait_idle();
   } catch (...) {

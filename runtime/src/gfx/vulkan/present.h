@@ -18,6 +18,8 @@ Screen& presentation_source_screen(Screen& physical);
 struct ComposeQuad {
  Surface* image=nullptr; bool sourceLinear=false; gfx::Box box; float alpha=1;
  bool solid=false; float color[4]{};
+ // 1: premultiplied isolated backdrop; 2..5: top/bottom/left/right edge colours.
+ int backdrop=0;
 };
 // this frame's layout from gfx/display_modes.cpp, set by swap() (null: the picture scaled to fit)
 void set_present_plan(const gfx::PresentPlan* plan);

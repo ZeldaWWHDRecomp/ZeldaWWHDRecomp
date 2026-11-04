@@ -1,5 +1,6 @@
 // The Vulkan renderer's entry in the renderer table (gfx/renderer.h).
 #include "api.h"
+#include "gamepad_backdrop.h"
 #include "stereo.h"
 #include "buffer_cache.h"
 #include "settings.h"
@@ -48,6 +49,7 @@ const Backend& vulkan_backend() {
         b.run_main_loop = gfxvk::run_main_loop;
 #endif
         b.draw = gfxvk::draw_stereo;
+        b.gamepad_backdrop_scope = gfxvk::gamepad_backdrop_scope;
         b.clear_color = [](const uint32_t* r, uint32_t cb, const float* c) { gfxvk::stereo_pair([&] { gfxvk::clear_color(r, cb, c); }); };
         b.clear_depth_stencil = [](const uint32_t* r, uint32_t db, float d, uint32_t s, uint32_t f) { gfxvk::stereo_pair([&] { gfxvk::clear_depth_stencil(r, db, d, s, f); }); };
         b.copy_surface = [](uint32_t s, uint32_t sm, uint32_t sl, uint32_t d, uint32_t dm, uint32_t dl) { gfxvk::stereo_pair([&] { gfxvk::copy_surface(s, sm, sl, d, dm, dl); }); };
@@ -69,6 +71,7 @@ const Backend& vulkan_backend() {
         b.wait_idle = gfxvk::wait_idle;
         b.write_back = [] { gfxvk::stereo_select_eye(0); gfxvk::write_back_linear_targets(); };
         b.ss_reset = [] {
+            gfxvk::gamepad_backdrop_reset();
             gfxvk::stereo_pair([] { gfxvk::ss_reset_surfaces(); }, true);
             gfxvk::stereo_select_eye(0);
             gfxvk::buffer_cache_invalidate_all();  // restored memory: every cached range is re-read
