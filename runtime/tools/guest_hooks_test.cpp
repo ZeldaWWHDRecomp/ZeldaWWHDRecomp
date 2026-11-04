@@ -128,6 +128,8 @@ namespace input {PadState read() {return {};}}
 namespace render {uint64_t frame_count() {return 0;}}
 namespace hostui {void post(std::function<void()> fn) {fn();}}
 namespace true60 {float dt() {return 0.5f;}}
+// guest module entry alignment: no emulated threads here, so the stack bounds are unknown (call kept as is)
+namespace threads {bool current_stack_bounds(const Cpu*, uint32_t&, uint32_t&) {return false;}}
 namespace interp { uint32_t last_camera() { return 0; } }  // screen points (QoL M2): no camera here
 namespace aspect { float layout_scale(float) { return 1.0f; } }
 namespace mic {  // microphone (QoL M2): never opened by these fixtures
