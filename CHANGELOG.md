@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: GameCube controllers set up right away** (#392, for #356, thanks @itsarahtonin for the report). A recognized
+  GameCube controller now gets the full GameCube layout without going through the generic new-controller setup, and
+  L targets at a quarter of its travel or at the digital click. Existing controller profiles and shared bindings are
+  kept, and adapter ports that share one name show up as a single editable profile. Single bindings no longer offer
+  "Automatic". Not yet tested with a physical adapter; reports from Windows adapter users are welcome.
 - **Randomizer: more seeds accepted** (#390, fixes #383, thanks @KaitoCrisHub for the report). Seeds from TWWHD
   Randomizer 1.2.0 with Quiet Swift Sail or any entrance shuffle were refused by setup's compatibility check; both are
   now reviewed and accepted. Every option of 1.2.0 that patches game code has been checked, and five seeds (including
