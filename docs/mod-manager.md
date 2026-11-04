@@ -486,7 +486,15 @@ Portable restores require the same provider/seed. Full restores additionally
 require the same owner and trusted dependency fingerprints, before changing
 files, guest memory or threads. Profile full states carry a required header flag
 that older runtimes reject. Ordinary states retain their existing paths and
-legacy compatibility. A profile cannot change during a running session.
+legacy compatibility. The current save paths and loaded packages remain fixed until exit.
+
+You can switch off the profile mod, one of its dependencies, or **Switch all mods off**
+while playing. These choices are saved for the next launch and shown as requiring
+a restart; they do not unload the running mod or redirect its saves. Disabling a
+required dependency also disables its dependent mods for the next launch. Quit
+through **Settings > Quit Game**, then start again to apply the change. This
+works on Android without a code-mod rebuild. Package files and active-profile
+options stay protected until that restart.
 
 Android takes its app-wide game lease before native startup but defers save
 creation/import recovery until native metadata selects the directory. Import

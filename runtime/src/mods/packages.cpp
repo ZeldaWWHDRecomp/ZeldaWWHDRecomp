@@ -665,7 +665,7 @@ void check_frozen_save_profile(const std::vector<std::string>& sequence) {
     if(save_profile_frozen&&save_selection(sequence)!=frozen_save_profile)
         throw save_profile::Error("The active save profile changed after save startup; restart before activating this mod");
 }
-const char* kSessionChange = "This package belongs to the running game's save profile. Close the game and restart with code mods off before changing it.";
+const char* kSessionChange = "This package belongs to the current save profile. Turn off the profile mod in Settings > Mods and restart before changing its files or options. Switching mods off now takes effect at the next launch.";
 void require_session_mutable(const std::string& id) {
     require(!save_profile_inventory.contains(id),kSessionChange);
 }
@@ -1355,9 +1355,10 @@ bool enable(const std::string& id,bool on,std::string& error,bool switch_conflic
                 else ++it;
             }}
         }
-    }if(!(deferred&&!on))order(enabled,on);auto planned=profile().get("builtins");if(!deferred)for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;
-    if(!(deferred&&!on))validate_conflicts(enabled,&planned);
+    }
     if(deferred&&on)for(const auto& current:enabled)for(const auto& [setting,value]:records.at(current).manifest.settings){auto locked=save_profile_builtins.find(setting);require(locked==save_profile_builtins.end()||locked->second==value,kSessionChange);}
+    if(!(deferred&&!on))order(enabled,on);auto planned=profile().get("builtins");if(!deferred)for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;
+    if(!(deferred&&!on))validate_conflicts(enabled,&planned);
     auto previous=database;profile()["builtins"]=planned;
     double serial=profile().get("enable_serial").number;
     for(const auto& [key,r]:records){if(enabled.contains(key)&&!wanted(key))profile()["enabled_since"][key]=++serial;profile()["enabled"][key]=enabled.contains(key);}profile()["enable_serial"]=serial;

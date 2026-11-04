@@ -159,6 +159,11 @@ int main(int argc, char** argv) {
                     assert(!view("bad-graphics").active&&!view("bad-graphics").reason.empty());
                 }
                 frame(1);assert(view("dep").status=="frame-ran");
+                if(mode=="graphics-failure") {
+                    std::string error;assert(enable("seed",false,error));frame(2);
+                    assert(!view("seed").enabled&&view("seed").active&&view("dep").active);
+                    assert(current_save_profile()==profile&&guest_loads==1);
+                }
                 if(mode=="session") {
                     auto bytes=[](const fs::path& path){std::ifstream f(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(f),{});};
                     std::string error;
