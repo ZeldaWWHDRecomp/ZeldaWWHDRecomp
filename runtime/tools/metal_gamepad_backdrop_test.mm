@@ -1,5 +1,7 @@
 // Offscreen Metal-only regression. Synthetic textures/materials; no game or
 // window.
+#include "../src/gfx/metal_backdrop_source.h"
+#include "../src/gfx/metal_draw_replay.h"
 #include "../src/gfx/metal_gamepad_backdrop.h"
 #import <Metal/Metal.h>
 #include <cstdio>
@@ -81,6 +83,10 @@ int main() {
  using namespace metal;
  vertex float4 capture_vs(uint i [[vertex_id]]) {return float4(i==2?3:-1,i==1?3:-1,0,1);}
  fragment float4 capture_fs(){return float4(.8,0,0,.5);}
+fragment float4 binding_fs(constant float4& bytes [[buffer(0)]], constant float4* values [[buffer(1)]],
+ texture2d<float> image [[texture(0)]],sampler s [[sampler(0)]]) {
+ return float4(bytes.r,values[0].g,image.sample(s,float2(.5)).b,1);
+}
  )";
     NSError *error = nil;
     auto material = [d newLibraryWithSource:@(captureShader)
@@ -158,6 +164,88 @@ int main() {
     check(p[4 * (10 * 310 + 155)] == 0, "disabled unchanged");
     p = run(bg, true, {0, 0, 310, 270});
     check(p[4 * (10 * 310 + 155)] == 0, "no bars unchanged");
+    // One draw exercises exact replay of copied inline bytes and strongly held
+    // buffer/texture/sampler bindings after their caller-owned handles
+    // disappear.
+    MetalDrawBindings bindings;
+    float inlineColor[4] = {.2f, 0, 0, 0}, bufferColor[4] = {0, .3f, 0, 0};
+    auto buffer = [d newBufferWithBytes:bufferColor
+                                 length:sizeof bufferColor
+                                options:MTLResourceStorageModeShared];
+    auto image = tex(16, 9);
+    std::vector<unsigned char> blue(16 * 9 * 4, 0);
+    for (unsigned i = 0; i < 16 * 9; ++i) {
+      blue[i * 4 + 2] = 102;
+      blue[i * 4 + 3] = 255;
+    }
+    [image replaceRegion:MTLRegionMake2D(0, 0, 16, 9)
+             mipmapLevel:0
+               withBytes:blue.data()
+             bytesPerRow:64];
+    auto sd = [MTLSamplerDescriptor new];
+    sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear;
+    auto sample = [d newSamplerStateWithDescriptor:sd];
+    bindings.bytes(false, inlineColor, sizeof inlineColor, 0);
+    bindings.buffer(false, buffer, 0, 1);
+    bindings.texture(false, image, 0);
+    bindings.sampler(false, sample, 0);
+    inlineColor[0] = .9f;
+    buffer = nil;
+    image = nil;
+    sample = nil;
+    auto pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [material newFunctionWithName:@"capture_vs"];
+    pd.fragmentFunction = [material newFunctionWithName:@"binding_fs"];
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    NSError *pipelineError = nil;
+    auto replayPipeline =
+        [d newRenderPipelineStateWithDescriptor:pd error:&pipelineError];
+    check(replayPipeline != nil, "binding replay pipeline compiled");
+    auto replayTarget = tex(16, 9);
+    auto cb = [q commandBuffer];
+    auto rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = replayTarget;
+    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    auto encoder = [cb renderCommandEncoderWithDescriptor:rp];
+    [encoder setRenderPipelineState:replayPipeline];
+    [encoder setFragmentTexture:scan
+                        atIndex:0]; // A different existing binding must be
+                                    // overwritten.
+    bindings.apply(encoder);
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                vertexStart:0
+                vertexCount:3];
+    [encoder endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    check(cb.status == MTLCommandBufferStatusCompleted,
+          "binding replay command completed");
+    auto result = readPixel(replayTarget);
+    check(abs(int(result[0]) - 51) <= 1,
+          "inline bytes survive source mutation after recording");
+    check(abs(int(result[1]) - 77) <= 1,
+          "bound buffer reused after caller release");
+    check(result[2] == 102,
+          "bound texture and sampler reused after caller release");
+    // A Surface's texture replacement must not match the old pending pane.
+    // The source holder pins the old actual object, preventing address reuse.
+    MetalBackdropSource oldSource;
+    auto originalSource = tex(16, 9);
+    oldSource.texture = originalSource;
+    const auto oldIdentity = oldSource.key();
+    originalSource = nil;
+    auto replacementSource = tex(16, 9);
+    check(oldSource.texture != nil && oldSource.key() == oldIdentity,
+          "pending capture retains actual source texture");
+    check(!oldSource.matches(replacementSource) &&
+              oldIdentity != metal_backdrop_source_key(replacementSource),
+          "replaced texture cannot satisfy pending scan identity");
+    check(!oldSource.clear(replacementSource) && oldSource.valid,
+          "unrelated clear leaves capture valid");
+    check(oldSource.clear(oldSource.texture) && !oldSource.valid &&
+              !oldSource.matches(oldSource.texture),
+          "clear invalidates active as well as pending source");
     reset_gamepad_bar_pipelines();
     puts("Metal offscreen checks passed");
   }
