@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed on Android: save transfers keep the game out** (#382). Starting a second save import or export while one is
+  still running no longer releases the first transfer's lock, so the game can no longer start in the middle of that
+  transfer. The second one is turned away with "Another save transfer is in progress" as before.
 - **Fixed for mod authors: C mods keep the game's paired-single values** (#384). A C mod that replaces a game
   function, or that the game calls through a function pointer, no longer changes the upper half of the game's saved
   paired-single float registers (f14–f31). The compiler only keeps the lower half, while the game's own code relies on
