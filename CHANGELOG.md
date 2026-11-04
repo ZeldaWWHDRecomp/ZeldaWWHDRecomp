@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For mod authors: quick-use and traversal services** (#389). Source mods get four new guest services: triggering
+  the game's quick-use item actions and ready-item checks, and the normal boat sail-wind and target calculation. The
+  game's own helpers still carry out the actions, with their usual checks. Native actors that a C mod registers now
+  also run at the right rate with True 60.
 - **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
   that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
   pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK
