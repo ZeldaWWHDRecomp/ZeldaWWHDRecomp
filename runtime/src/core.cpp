@@ -25,7 +25,7 @@
 
 #include "recomp_table.h"
 #include "runtime.h"
-#include "guest_module_call.h"
+#include "guest_module_entry.h"
 #include "mods/guest_mods.h"
 #include "native_text_startup_seal.h"
 
@@ -324,7 +324,7 @@ extern "C" void ppc_dispatch(Cpu* c) {
         return;
     }
     if (c->pc - guestmods::kRegionStart < guestmods::kRegionSize) {
-        guestmods::invoke_module(c, f);
+        guestmods::invoke_module_entry(c, f);
         return;
     }
     MUSTTAIL return f(c);
