@@ -1,3 +1,4 @@
+#include "metal_gamepad_backdrop.h"
 #include "platform/present_observer.h"
 // Display: the TV and GamePad windows, full screen, and the final composition of the TV and GamePad
 // images onto the screen (scale to fit with letterbox/pillarbox, scaling filter, GamePad screen as a
@@ -892,6 +893,9 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
         float op = L.drc_only ? 1.0f : g_pip_opacity.load(), bw = std::max(1.0f, roundf(L.pip.w / 200.0f));
         float frame[4] = {0, 0, 0, 0.6f * op};
         draw_solid(e, fmt, dw, dh, {L.pip.x - bw, L.pip.y - bw, L.pip.w + 2 * bw, L.pip.h + 2 * bw}, frame);
+        if (L.drc_only)
+            gamepad_draw_bars(R.device, e, fmt, unsigned(dw), unsigned(dh), {0,0,dw,dh},
+                             {L.pip.x,L.pip.y,L.pip.w,L.pip.h}, R.drc.tex, R.drc.backdrop, R.drc.srgb, op);
         draw_image(e, fmt, dw, dh, R.drc.tex, R.drc.srgb, L.pip, op, R.drc.dyn);
         if(auto* draw=overlay::guesthud::gamepad_region(dw,dh,L.pip.x,L.pip.y,L.pip.w,L.pip.h,op)) {
             if(is_srgb(fmt))overlay::linearize_colors(draw,true);
@@ -916,6 +920,9 @@ static void compose_drc(id<MTLTexture> target) {
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
     Layout L = layout(target.width, target.height, nominal_w(R.drc), nominal_h(R.drc), 0, 0, false);
+    gamepad_draw_bars(R.device,e,target.pixelFormat,unsigned(target.width),unsigned(target.height),
+                     {0,0,float(target.width),float(target.height)}, {L.tv.x,L.tv.y,L.tv.w,L.tv.h},
+                     R.drc.tex,R.drc.backdrop,R.drc.srgb,1);
     draw_image(e, target.pixelFormat, target.width, target.height, R.drc.tex, R.drc.srgb, L.tv, 1.0f, R.drc.dyn);
     if (auto* draw = overlay::guesthud::gamepad_region(target.width,target.height,L.tv.x,L.tv.y,L.tv.w,L.tv.h,1)) {
         if (is_srgb(target.pixelFormat)) overlay::linearize_colors(draw, true);
@@ -1009,6 +1016,22 @@ void present_screens() {
     CGSize ls = R.tv.layer ? R.tv.layer.drawableSize : CGSizeMake(0, 0);
     PresentPlan P = display_plan(R.tv.tex != nil, nominal_w(R.tv), nominal_h(R.tv), R.drc.tex != nil, nominal_w(R.drc), nominal_h(R.drc),
                                  ls.width, ls.height, R.frame);
+    bool backdropNeeded = false;
+    if (P.drc_only && P.pip_on && R.drc.tex && R.tv.layer && R.tv.visible) {
+        if (P.sim) {
+            const auto actual = layout(ls.width,ls.height,nominal_w(R.tv),nominal_h(R.tv),
+                                       nominal_w(R.drc),nominal_h(R.drc),P.pip_wanted,P.drc_only);
+            backdropNeeded = gamepad_backdrop::has_bars(ls.width,ls.height,
+                {actual.pip.x,actual.pip.y,actual.pip.w,actual.pip.h});
+        } else backdropNeeded = gamepad_backdrop::has_bars(P.dw,P.dh,{P.pip.x,P.pip.y,P.pip.w,P.pip.h});
+    }
+    if (P.drc_window && R.drc.tex && R.drc.layer && R.drc.visible) {
+        const CGSize size = R.drc.layer.drawableSize;
+        const auto drcLayout = layout(size.width,size.height,nominal_w(R.drc),nominal_h(R.drc),0,0,false);
+        backdropNeeded |= gamepad_backdrop::has_bars(size.width,size.height,
+            {drcLayout.tv.x,drcLayout.tv.y,drcLayout.tv.w,drcLayout.tv.h});
+    }
+    gamepad_backdrop::set_capture_requested(gamepad_backdrop::enabled.load(std::memory_order_relaxed) && backdropNeeded);
     Layout L;
     L.tv = P.tv;
     L.pip = P.pip;

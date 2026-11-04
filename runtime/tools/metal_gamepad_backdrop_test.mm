@@ -1,0 +1,164 @@
+// Offscreen Metal-only regression. Synthetic textures/materials; no game or
+// window.
+#include "../src/gfx/metal_gamepad_backdrop.h"
+#import <Metal/Metal.h>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+using namespace gfx;
+int main() {
+  @autoreleasepool {
+    auto d = MTLCreateSystemDefaultDevice();
+    if (!d) {
+      puts("NO METAL DEVICE");
+      return 77;
+    }
+    auto q = [d newCommandQueue];
+    auto tex = [&](unsigned w, unsigned h) {
+      auto td = [MTLTextureDescriptor
+          texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                       width:w
+                                      height:h
+                                   mipmapped:NO];
+      td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+      td.storageMode = MTLStorageModeShared;
+      return [d newTextureWithDescriptor:td];
+    };
+    auto scan = tex(16, 9), bg = tex(16, 9), out = tex(310, 270);
+    std::vector<unsigned char> s(16 * 9 * 4, 255), b(16 * 9 * 4);
+    for (unsigned i = 0; i < 16 * 9; i++) {
+      s[i * 4] = 20;
+      s[i * 4 + 1] = 40;
+      s[i * 4 + 2] = 60;
+      b[i * 4] = 100;
+      b[i * 4 + 1] = 0;
+      b[i * 4 + 2] = 0;
+      b[i * 4 + 3] = 128;
+    }
+    [scan replaceRegion:MTLRegionMake2D(0, 0, 16, 9)
+            mipmapLevel:0
+              withBytes:s.data()
+            bytesPerRow:64];
+    [bg replaceRegion:MTLRegionMake2D(0, 0, 16, 9)
+          mipmapLevel:0
+            withBytes:b.data()
+          bytesPerRow:64];
+    auto run = [&](id<MTLTexture> backdrop, bool on,
+                   gamepad_backdrop::Rect content) {
+      gamepad_backdrop::enabled.store(on);
+      auto cb = [q commandBuffer];
+      auto rp = [MTLRenderPassDescriptor renderPassDescriptor];
+      rp.colorAttachments[0].texture = out;
+      rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+      rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+      auto e = [cb renderCommandEncoderWithDescriptor:rp];
+      gamepad_draw_bars(d, e, MTLPixelFormatRGBA8Unorm, 310, 270,
+                        {0, 0, 310, 270}, content, scan, backdrop, false, 1);
+      [e endEncoding];
+      [cb commit];
+      [cb waitUntilCompleted];
+      if (cb.status != MTLCommandBufferStatusCompleted)
+        exit(2);
+      std::vector<unsigned char> p(310 * 270 * 4);
+      [out getBytes:p.data()
+          bytesPerRow:1240
+           fromRegion:MTLRegionMake2D(0, 0, 310, 270)
+          mipmapLevel:0];
+      return p;
+    };
+    auto check = [](bool ok, const char *name) {
+      if (!ok) {
+        printf("FAIL %s\n", name);
+        exit(1);
+      }
+      printf("PASS %s\n", name);
+    };
+    // Exercise the production capture-alpha policy with an actual Metal blend,
+    // not only a texture that was premultiplied by the fixture.
+    const char *captureShader = R"(
+ #include <metal_stdlib>
+ using namespace metal;
+ vertex float4 capture_vs(uint i [[vertex_id]]) {return float4(i==2?3:-1,i==1?3:-1,0,1);}
+ fragment float4 capture_fs(){return float4(.8,0,0,.5);}
+ )";
+    NSError *error = nil;
+    auto material = [d newLibraryWithSource:@(captureShader)
+                                    options:nil
+                                      error:&error];
+    check(material != nil, "capture material compiled");
+    auto capture = [&](bool opaque, bool policy) {
+      auto image = tex(16, 9);
+      auto pd = [MTLRenderPipelineDescriptor new];
+      pd.vertexFunction = [material newFunctionWithName:@"capture_vs"];
+      pd.fragmentFunction = [material newFunctionWithName:@"capture_fs"];
+      auto attachment = pd.colorAttachments[0];
+      attachment.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      attachment.blendingEnabled = !opaque;
+      attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor =
+          MTLBlendFactorSourceAlpha;
+      attachment.destinationRGBBlendFactor =
+          attachment.destinationAlphaBlendFactor =
+              MTLBlendFactorOneMinusSourceAlpha;
+      if (policy)
+        gamepad_capture_coverage(attachment, opaque);
+      NSError *e = nil;
+      auto pipeline = [d newRenderPipelineStateWithDescriptor:pd error:&e];
+      check(pipeline != nil, "capture pipeline compiled");
+      auto cb = [q commandBuffer];
+      auto rp = [MTLRenderPassDescriptor renderPassDescriptor];
+      rp.colorAttachments[0].texture = image;
+      rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+      rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+      rp.colorAttachments[0].clearColor =
+          MTLClearColorMake(0, 0, 0, opaque ? 1 : 0);
+      auto encoder = [cb renderCommandEncoderWithDescriptor:rp];
+      [encoder setRenderPipelineState:pipeline];
+      [encoder drawPrimitives:MTLPrimitiveTypeTriangle
+                  vertexStart:0
+                  vertexCount:3];
+      [encoder endEncoding];
+      [cb commit];
+      [cb waitUntilCompleted];
+      check(cb.status == MTLCommandBufferStatusCompleted,
+            "capture command completed");
+      return image;
+    };
+    auto readPixel = [&](id<MTLTexture> texture) {
+      std::vector<unsigned char> p(4);
+      [texture getBytes:p.data()
+            bytesPerRow:4
+             fromRegion:MTLRegionMake2D(8, 4, 1, 1)
+            mipmapLevel:0];
+      return p;
+    };
+    auto baseline = readPixel(capture(false, false));
+    check(abs(int(baseline[3]) - 64) <= 1,
+          "negative control exposes alpha squared");
+    auto captured = capture(false, true);
+    auto coverage = readPixel(captured);
+    check(abs(int(coverage[0]) - 102) <= 1 && abs(int(coverage[3]) - 128) <= 1,
+          "production source-over stores half coverage not quarter");
+    auto opaque = readPixel(capture(true, true));
+    check(abs(int(opaque[0]) - 204) <= 1 && opaque[3] == 255,
+          "opaque RGB capture keeps alpha one");
+    gamepad_backdrop::Rect content{0, 48, 310, 174};
+    auto p = run(bg, true, content);
+    check(abs(int(p[4 * (10 * 310 + 155)]) - 100) <= 1,
+          "captured premultiplied coverage survives composition");
+    check(p[4 * (135 * 310 + 155)] == 0, "content untouched");
+    check(abs(int(p[4 * (260 * 310 + 155)]) - 100) <= 1, "bottom bar captured");
+    p = run(captured, true, content);
+    check(abs(int(p[4 * (10 * 310 + 155)]) - 102) <= 1,
+          "actual captured half-alpha material composes once");
+    p = run(nil, true, content);
+    check(p[4 * (10 * 310 + 155)] == 20 && p[4 * (10 * 310 + 155) + 1] == 40,
+          "edge-only fallback");
+    p = run(bg, false, content);
+    check(p[4 * (10 * 310 + 155)] == 0, "disabled unchanged");
+    p = run(bg, true, {0, 0, 310, 270});
+    check(p[4 * (10 * 310 + 155)] == 0, "no bars unchanged");
+    reset_gamepad_bar_pipelines();
+    puts("Metal offscreen checks passed");
+  }
+}
