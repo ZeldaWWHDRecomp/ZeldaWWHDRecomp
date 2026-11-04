@@ -834,6 +834,8 @@ void prepare_metadata_unlocked() {
         require(saved.get("active").type == Value::String &&
                     saved.get("profiles").object.contains(saved.get("active").text),
                 "Invalid active profile");
+        for(const auto& [name, value]:saved.get("profiles").object)
+            require(value.type==Value::Object,"Invalid profile data: "+name);
         database = std::move(saved);
     }
     ready = true;

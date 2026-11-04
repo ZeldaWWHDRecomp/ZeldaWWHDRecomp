@@ -4099,7 +4099,7 @@ foreach(mode success malformed conflict disabled untrusted code-off unsupported 
 endforeach()
 
 
-foreach(mode format damaged size)
+foreach(mode format damaged shape size)
   add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
 endforeach()
 
