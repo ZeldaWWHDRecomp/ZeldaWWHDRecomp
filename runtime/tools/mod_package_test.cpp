@@ -549,6 +549,7 @@ int main(int argc, char** argv) {
         env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
         const std::string mode=argv[2];
         const std::string bytes=mode=="format"?R"({"format_version":99,"profiles":{"private":{"native_trust":{"keep":"receipt"}}}})":
+                                mode=="shape"?R"({"format_version":1,"active":"Default","profiles":{"Default":["preserve damaged fields"],"Other":{}}})":
                                 mode=="size"?std::string(1024*1024+1,' '):"{damaged profile data";
         {std::ofstream out(root/"profiles.json",std::ios::binary);out<<bytes;}
         (void)startup_save_profile(); // Early selection must not leave writes enabled either.
