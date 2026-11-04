@@ -3,7 +3,7 @@
  * Guest mods are C compiled for the console CPU (32-bit big-endian PowerPC, the game's ABI) with a
  * freely available clang:
  *
- *   clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -G0 -ffreestanding -fno-builtin -nostdlib
+ *   clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding -fno-builtin -nostdlib
  *         -fno-jump-tables -ffunction-sections -fdata-sections -I<sdk>/include -c mod.c -o mod.o
  *   ld.lld -m elf32ppc -r mod.o [more.o ...] -o mod.elf          (one relocatable ELF per mod)
  *
