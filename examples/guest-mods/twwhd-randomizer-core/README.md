@@ -180,10 +180,17 @@ also tests real compiled PPC at both eight- and sixteen-byte entry alignment,
 including stack arguments and caller-stack by-reference writes.
 
 Private macOS runs with the corrected compiler flags have reached active Link
-gameplay and exited cleanly for ordinary and official combined-option fixtures,
-with separate managers/users/caches/states and unchanged vanilla-save sentinels.
-These are bounded boot checks. They do not establish completion of a randomized
-seed, every encounter, every option, visible/audio behavior, or Windows support.
+gameplay and exited cleanly for ordinary, swordless, combined-option and
+required-dungeon fixtures, with isolated saves and unchanged vanilla sentinels.
+Additional bounded checks cover a real Bombs field pickup, the item-get demo,
+portable and ordinary saving, fresh-process restoration and inventory rendering.
+Custom switch actors execute in real dungeon rooms: a gate with no required
+dungeons opens, while a three-required-dungeon gate remains closed.
+
+These checks do not establish completion of a randomized seed, the physical
+source chest for that pickup, boss defeats, every option, all visible/audio
+behavior, or Windows gameplay. Game-free CI runs the core and SDK suites on
+Windows, Linux and macOS; it does not replace those gameplay checks.
 
 For development, run the focused `test_*.py` files for changed consumers and the
 source suite from this directory:
