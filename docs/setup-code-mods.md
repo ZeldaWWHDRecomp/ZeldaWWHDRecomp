@@ -39,3 +39,35 @@ The setup app has a **Code mods** switch under the setup buttons. It is off for 
 The first time a code mod is switched on, the app prepares its compiler for mods (a few seconds, once
 per app version). Each code mod is then built on your device when the game starts, like on a computer.
 A game built on a computer and installed over USB uses the choice made when it was built there.
+
+## Experimental randomizer core build worker
+
+On desktop, open **Settings → Mods → More → Import randomized game**. Choose
+an unmodified USA game folder and the complete official randomized output folder.
+A compatible PowerPC-capable Clang must already be available; this flow does
+not download one or convert a platform compiler command. The setup compiler is
+used only when its explicit executable passes the backend check. Commands such
+as macOS `xcrun clang` require choosing a PowerPC-capable Clang executable instead. **Build and import** works in the
+background. Cancel finishes the current step and discards the import. Compiler
+checks time out after a minute and compilation after five minutes; cancellation
+does not forcibly interrupt filesystem operations or compiler-wrapper children. The build
+is experimental and has not been verified by a full playthrough.
+
+A completed package enters the normal mod import/review flow. It stays off until
+the existing code-mod and experimental confirmations are accepted; enabling it
+requires a restart to select the seed's saves. Folder-based building is currently
+available on desktop; Android's file chooser cannot select these input folders.
+The game-free worker is also available for scripts:
+
+Run the release's Python with `tools/core_randomizer.py`, passing `--resources`
+(the release's `core-randomizer-resources.json`), `--original`, `--randomized`,
+`--output` (a new private directory), and `--compiler-json` (an argv JSON array
+whose first entry is an absolute PowerPC-capable compiler executable). The
+worker checks the compiler backend without running its output, validates the
+seed, and builds using the release's pinned public source and guest SDK headers.
+It needs neither Git nor a compiler lookup on PATH.
+
+The returned package is for the existing mod manager's Import flow. It does not
+install, enable or launch anything. Keep the experimental/code-mod confirmation
+and restart steps: the package selects its save profile at startup. Never share
+the generated package, which contains assets from the player's own game.

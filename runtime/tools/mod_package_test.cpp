@@ -50,6 +50,88 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     using namespace mods::packages;
     namespace fs=std::filesystem;
+    // Private end-to-end worker output: exercise the real transactional importer
+    // without executing guest code or acknowledging/enabling an experimental mod.
+    if(argc==3&&std::string(argv[1])=="--core-package-import") {
+        const auto root=unique_temp("wwhd-core-package-import-");
+        env("WWHD_NO_HOST_INPUT","1");
+        env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);
+        set_code_mod_support(true);initialize();
+        std::string error,id;
+        if(!install(argv[2],error,&id)) {
+            std::cerr<<"Core package import failed: "<<error<<"\n";
+            fs::remove_all(root);return 1;
+        }
+        const auto imported=view(id);
+        assert(id=="twwhd-randomizer-core"&&imported.kind=="guest");
+        assert(imported.compatible&&imported.restart_required&&imported.experimental);
+        assert(!imported.enabled&&!imported.active&&!imported.native_confirmed);
+        assert(!imported.content_hashes.empty());
+        assert(!unconfirmed_native(id).empty());
+        assert(!unacknowledged_experimental(id).empty());
+        assert(!enable(id,true,error));
+        assert(!view(id).enabled&&!view(id).active);
+        assert(remove(id,error));
+        assert(fs::is_regular_file(fs::path(argv[2])/"manifest.json"));
+        fs::remove_all(root);
+        std::cout<<"Private core package import passed; trust/experimental gates retained, no guest executed\n";
+        return 0;
+    }
+    if(argc==4&&std::string(argv[1])=="--save-profile-startup") {
+        const std::string mode=argv[2];
+        const auto root=unique_temp("wwhd-profile-startup-");
+        const auto storage=root/"manager";
+        env("WWHD_NO_HOST_INPUT","1");
+        env("WWHD_MOD_MANAGER_DIR",storage.string().c_str());
+        env("WWHD_TEST_TRUST_NATIVE_MODS",mode=="untrusted"?nullptr:"seed,dep");
+        set_code_mod_support(mode!="code-off");
+        if(mode=="unsupported")set_save_profile_support(false,"Missing platform save bridge");
+        auto guest=mods::json::parse(R"({"format_version":1,"id":"seed","name":"Seed","version":"1.0.0","minimum_manager_version":"1.7.0","game_id":"wwhd-usa","kind":"guest","guest":{"api_version":1},"dependencies":[{"id":"dep"}],"save_profile":{"version":1,"provider":"fixture","identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}})");
+        if(mode=="malformed"||mode=="untrusted"||mode=="disabled"||mode=="code-off")
+            guest["save_profile"]["identity"]="bad";
+        if(mode=="blocked-build")guest["supported_game_builds"]=mods::json::parse(R"(["EUR"])" );
+        if(mode=="conflict")guest["conflicts"]=mods::json::parse(R"(["dep"])");
+        const auto seed=storage/"Mods/seed",dep=storage/"Mods/dep";
+        fs::create_directories(seed);fs::create_directories(dep);
+        std::ofstream(seed/"manifest.json")<<mods::json::dump(guest);
+        {std::ofstream elf(seed/"mod.elf",std::ios::binary);elf.write("\x7f" "ELF\x01\x02",6);}
+        auto native=mods::json::parse(R"({"format_version":1,"id":"dep","name":"Dependency","version":"1.0.0","game_id":"wwhd-usa","kind":"native","abi_version":1})");
+        native["binaries"][platform_key()]="fixture.dylib";
+        std::ofstream(dep/"manifest.json")<<mods::json::dump(native);
+        if(mode=="native-failure")std::ofstream(dep/"fixture.dylib")<<"not a library";
+        else fs::copy_file(argv[3],dep/"fixture.dylib");
+        auto db=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"enabled":{"seed":true,"dep":true}}}})");
+        if(mode=="disabled")db["profiles"]["Default"]["enabled"]["seed"]=false;
+        const auto original=mods::json::dump(db);
+        std::ofstream(storage/"profiles.json")<<original;
+        bool rejected=false,loaded=false;
+        try {
+            const auto profile=startup_save_profile();
+            assert(!view("dep").active&&!view("seed").active);
+            std::ifstream input(storage/"profiles.json");
+            assert(std::string(std::istreambuf_iterator<char>(input),{})==original);
+            assert(!fs::exists(root/"save"));
+            const bool absent=mode=="disabled"||mode=="untrusted"||mode=="code-off"||mode=="unsupported"||mode=="blocked-build";
+            if(profile.empty()!=absent)for(const auto& item:list())std::cerr<<item.id<<": "<<item.reason<<" confirmed="<<item.native_confirmed<<"\n";
+            assert(profile.empty()==absent);
+            if(mode=="blocked-build")assert(view("seed").reason.find("EUR")!=std::string::npos);
+            if(!absent) {
+                assert(profile.namespace_key()=="mod-fixture-"+std::string(64,'a'));
+                if(mode=="changed")std::ofstream(dep/"new-file")<<"changed after preflight";
+                initialize();
+                assert(!view("dep").active); // activation still loads no code
+                start_guests([](const GuestPackage&){return 65536u;},
+                    [&](const GuestPackage&,uint32_t){loaded=true;});
+                assert(view("dep").active&&view("seed").active&&loaded);
+            }
+        } catch(const mods::save_profile::Error&) {rejected=true;}
+        assert(rejected==(mode=="malformed"||mode=="conflict"||mode=="native-failure"||mode=="changed"));
+        if(rejected)assert(!loaded);
+        fs::remove_all(root);
+        std::cout<<"save-profile metadata/startup "<<mode<<" passed\n";
+        return 0;
+    }
     if(argc==4&&std::string(argv[1])=="--quick-use-speed-startup") {
         // Numeric built-in profile options are separate from manifest option schemas.
         const std::string override=argv[2],saved=argv[3];

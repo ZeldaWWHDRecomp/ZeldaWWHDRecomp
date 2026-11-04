@@ -25,6 +25,7 @@
 #include "../randomizer_paths.h"
 #include "mod_json.h"
 #include "save_backup.h"
+#include "save_profile.h"
 
 #include <algorithm>
 #include <atomic>
@@ -328,7 +329,36 @@ inline bool held_elsewhere(const std::optional<Lock>& l, const std::string& me, 
 // (each question then takes its safe answer, written in the log and in the Saves tab).
 using Ask = std::function<int(const std::string& title, const std::string& text, const std::vector<std::string>& buttons)>;
 
+// Empty for ordinary startup. A declarative profile owns only paths bearing
+// its namespace and never nests inside normal save/backup roots.
+struct Policy {
+    std::string namespace_key;
+    fs::path backups;
+    std::vector<fs::path> protected_roots, actual_save_roots;
+    bool windows_budget=false;
+};
+inline bool inside(const fs::path&,const fs::path&);
+inline bool profile_location(const fs::path& path,const Policy& policy,std::string& why) {
+    if(!mods::save_profile::owned_location(path,policy.namespace_key,policy.protected_roots,why))return false;
+    if(!policy.namespace_key.empty()&&!policy.backups.empty()) {
+        std::error_code ec;
+        const auto target=fs::weakly_canonical(path,ec);
+        if(ec) {why="Cannot verify the save profile folder: "+ec.message();return false;}
+        const auto backups=fs::weakly_canonical(policy.backups,ec);
+        if(ec) {why="Cannot verify profile backups: "+ec.message();return false;}
+        if(mods::save_profile::contains_path(backups,target)||mods::save_profile::contains_path(target,backups)) {
+            why="The save folder and its backup folder must be separate";return false;
+        }
+    }
+    if(!policy.namespace_key.empty()&&policy.windows_budget&&
+       !mods::save_profile::windows_budget(mods::save_profile::path_units(path),48)) {
+        why="The save profile folder is too long for Windows; choose a shorter folder";return false;
+    }
+    return true;
+}
+
 struct State {
+    Policy policy;
     std::mutex mu;
     bool active = false;     // the game uses a chosen folder (safe writes, the lock)
     fs::path folder;         // the save folder in use
@@ -421,16 +451,18 @@ struct Startup {
 
 // main(), before the game reads any save. default_dir: config::save_dir without a choice.
 inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, const Ask& ask, std::function<void(const std::string&)> log,
-                       const std::string& seed_namespace = {}) {
+                       const Policy& policy = {}, const std::string& seed_namespace = {}) {
     auto& s = state();
     std::lock_guard guard(s.mu);
     Startup out;
     const fs::path def = fs::absolute(default_dir).lexically_normal();
     out.save_dir = default_dir;
     s.default_folder = def;
-    s.backups = def.parent_path() / "save-backups";
+    s.policy = policy;
+    s.backups = policy.backups.empty() ? def.parent_path() / "save-backups" : policy.backups;
     s.seed_namespace = seed_namespace;
-    if (!seed_namespace.empty()) s.backups = randomizer_paths::sibling(s.backups,seed_namespace);
+    if (!seed_namespace.empty() && policy.backups.empty())
+        s.backups = randomizer_paths::sibling(s.backups, seed_namespace);
     s.config_dir = config_dir;
     s.machine = machine_name();
     s.folder = def;
@@ -440,10 +472,43 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
     auto question = [&](const std::string& title, const std::string& text, const std::vector<std::string>& buttons) {
         return ask ? ask(title, text, buttons) : -1;
     };
+    auto refuse_profile = [&](const std::string& why) {
+        s.notice=why;say(why);question("Save profile",why,{"Quit Game"});out.quit=true;return out;
+    };
     const fs::path file = choice_file(config_dir);
+    if(!policy.namespace_key.empty()) {
+        std::string why;
+        if(!profile_location(def,policy,why))return refuse_profile(why);
+        if(!profile_location(config_dir,policy,why))return refuse_profile(why);
+        if(!mods::save_profile::owned_location(s.backups,policy.namespace_key,policy.protected_roots,why))
+            return refuse_profile(why);
+        try {
+            mods::save_profile::Paths budget;
+            budget.save=def;budget.backups=s.backups;budget.preferences=config_dir;
+            budget.namespace_key=policy.namespace_key;
+            mods::save_profile::check_budget(budget,policy.windows_budget);
+        } catch(const std::exception& e) {return refuse_profile(e.what());}
+        std::error_code ec;
+        const auto status=fs::symlink_status(file,ec);
+        if(ec&&ec!=std::errc::no_such_file_or_directory)
+            return refuse_profile("Cannot read save profile preferences: "+file.string()+": "+ec.message());
+        if(status.type()!=fs::file_type::not_found) {
+            if(!fs::is_regular_file(status)||fs::is_symlink(status))
+                return refuse_profile("Save profile preferences must be a regular file: "+file.string());
+            const auto size=fs::file_size(file,ec);
+            if(ec||size>64*1024)return refuse_profile("Cannot read bounded save profile preferences: "+file.string());
+            if(!read_choice(file))return refuse_profile("Save profile preferences are invalid; keep the file and correct its folder choice: "+file.string());
+        }
+    }
     auto choice = read_choice(file);
     if (!choice) return out;
     const fs::path target = choice->folder.empty() ? def : fs::absolute(fs::path(choice->folder)).lexically_normal();
+    if(!policy.namespace_key.empty()) {
+        std::string why;
+        if(!profile_location(target,policy,why))return refuse_profile(why);
+        if(!choice->copy_from.empty()&&!profile_location(fs::absolute(choice->copy_from).lexically_normal(),policy,why))
+            return refuse_profile(why);
+    }
 
     // a change made in the Saves tab: bring the save along
     if (!choice->copy_from.empty()) {
@@ -772,6 +837,22 @@ inline fs::path save_folder_in(const fs::path& folder) {
     }
     return folder;
 }
+inline fs::path profile_folder_in(const fs::path& folder,const Policy& policy) {
+    if(policy.namespace_key.empty())return save_folder_in(folder);
+    for(const auto& save:policy.actual_save_roots)
+        if(same_folder(folder,save))return mods::save_profile::sibling(folder,policy.namespace_key);
+    if(mods::save_profile::owned_basename(folder,policy.namespace_key))return folder;
+    std::error_code ec;
+    if(fs::is_directory(folder/"user",ec))return mods::save_profile::sibling(folder,policy.namespace_key);
+    // A new/empty cloud container must keep this profile inside the selected synced root.
+    return folder/("Wind Waker HD-"+policy.namespace_key);
+}
+// Compatibility entry for executable-based seeds; declarative mod profiles use Policy.
+inline Startup startup(const fs::path& default_dir, const fs::path& config_dir,
+                       const Ask& ask, std::function<void(const std::string&)> log,
+                       const std::string& seed_namespace) {
+    return startup(default_dir, config_dir, ask, std::move(log), Policy{}, seed_namespace);
+}
 // Settings > Saves: a new folder (empty: back to the default one) for the next start. A failure is
 // shown as the Saves tab's notice.
 inline bool choose(const std::string& folder) {
@@ -782,7 +863,7 @@ inline bool choose(const std::string& folder) {
     fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
     if (same_folder(picked, current)) picked = current;  // the same folder, spelled another way
     else if (same_folder(picked, s.default_folder)) picked = s.default_folder;
-    fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
+    fs::path next = folder.empty() || picked == current ? picked : profile_folder_in(picked,s.policy);
     if (!s.seed_namespace.empty() && !folder.empty() && picked != current && next != s.default_folder) {
         std::error_code ec;
         if (fs::is_directory(picked / "user", ec)) {
@@ -793,6 +874,8 @@ inline bool choose(const std::string& folder) {
             next = picked / ("Wind Waker HD-" + s.seed_namespace);
         }
     }
+    std::string profile_error;
+    if(!profile_location(next,s.policy,profile_error))return s.notice=profile_error,false;
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
     Choice c;
@@ -800,9 +883,7 @@ inline bool choose(const std::string& folder) {
     if (next != current) c.copy_from = current.string();
     else if (auto old = read_choice(choice_file(s.config_dir))) c.had_save = old->had_save;
     if (!write_choice(choice_file(s.config_dir), c)) return s.notice = "The new save folder could not be remembered.", false;
-    if (next == picked) s.notice.clear();
-    else if (!s.seed_namespace.empty()) s.notice = "This seed's save goes in " + next.string() + ".";
-    else s.notice = "That folder already holds other files, so your save goes in " + next.string() + ".";
+    s.notice = next != picked ? (!s.seed_namespace.empty() ? "This seed's save goes in " : s.policy.namespace_key.empty() ? "That folder already holds other files, so your save goes in " : "This mod keeps a separate save in ") + next.string() + "." : std::string();
     return true;
 }
 }  // namespace save_folder

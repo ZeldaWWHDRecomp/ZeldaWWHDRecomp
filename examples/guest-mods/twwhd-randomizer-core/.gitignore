@@ -1,0 +1,9 @@
+seed_init_data.h
+seed-content/
+*.elf
+__pycache__/
+seed_reward_data.h
+seed_resources.h
+resource-data.json
+seed_boss_data.h
+seed-boss-config.json

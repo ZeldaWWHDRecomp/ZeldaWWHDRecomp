@@ -28,6 +28,7 @@
 #include "../mods/manager.h"
 #include "../mods/packages.h"
 #include "../mods/picked_source.h"
+#include "../mods/randomizer_import.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "popup.h"
@@ -50,6 +51,7 @@ using namespace modsmodel;
 // ---------------------------------------------------------------- what the host supplies
 struct Host {
     std::function<void(bool folder, std::function<void(std::string)>)> choose_game_source, choose_mod_source;
+    std::function<void(const char* title,bool folder,std::function<void(std::string)>)> choose_randomizer_source;
     mods::picked::CopyDocument copy_document;     // Android: a picked content:// document to a temporary file
     mods::catalogue::Fetch fetch;                 // HTTPS transport (empty: local catalogues only)
     std::function<bool()> can_restart;            // the game can relaunch itself
@@ -131,6 +133,8 @@ struct State {
     double toast_until = 0;
     std::mutex picker_mutex;
     std::string picked_package;  // More > Install from a file
+    mods::randomizer_import::Job core_import;
+    std::string core_original,core_seed,core_compiler;
     std::string source_error;
     char profile_name[65] = {};
     char url_edit[2049] = {};
@@ -1441,6 +1445,17 @@ inline void install_picked(Host& h) {
     auto& s = state();
     std::string picked;
     { std::lock_guard g(s.picker_mutex); picked = std::move(s.picked_package); s.picked_package.clear(); }
+    mods::randomizer_import::Completion core;
+    struct CoreCleanup {mods::randomizer_import::Completion& c;~CoreCleanup(){c.release();}} cleanup{core};
+    if(s.core_import.take(core)) {
+        using Action=mods::randomizer_import::CompletionAction;
+        switch(mods::randomizer_import::completion_action(core,current_profile())) {
+        case Action::Cancelled:s.message="Randomizer import cancelled. No mod was installed.";break;
+        case Action::Failed:s.error=core.error;break;
+        case Action::ProfileChanged:s.error="The mod profile changed during the build. Start the import again in the intended profile.";break;
+        case Action::Import:picked=mods::randomizer_import::path_text(core.package);break;
+        }
+    }
     static const char* test_local = h.test ? getenv("WWHD_TEST_MOD_INSTALL") : nullptr;
     if (test_local) { picked = test_local; test_local = nullptr; }
     if (!picked.empty()) {
@@ -1463,13 +1478,68 @@ inline void install_picked(Host& h) {
     }
 }
 
+// The experimental worker builds a private package; completion enters the same
+// install/review path as choosing a package above. It never enables code itself.
+inline void randomizer_import(Host& h,bool other_busy) {
+    auto& s=state();
+    if(!section("Import randomized game"))return;
+    ImGui::Indent();
+    if(h.android||!h.file_picker||!h.choose_randomizer_source) {
+        muted("Building from extracted game folders is available in the desktop version.");
+        ImGui::Unindent();return;
+    }
+    text("Experimental core mod. Not yet verified by a full playthrough. Your original game installation stays in place.");
+    muted("Choose your unmodified USA game and the complete output folder from the official TWWHD Randomizer. The private package must not be shared.");
+    const bool running=s.core_import.busy();
+    std::string original,seed,compiler;
+    {std::lock_guard g(s.picker_mutex);original=s.core_original;seed=s.core_seed;compiler=s.core_compiler;}
+    auto choose=[&h](int field,const char* title,bool folder){
+        h.choose_randomizer_source(title,folder,[field](std::string path){if(path.empty())return;auto& s=state();std::lock_guard g(s.picker_mutex);
+            (field==0?s.core_original:field==1?s.core_seed:s.core_compiler)=std::move(path);});
+    };
+    ImGui::BeginDisabled(running||other_busy||h.build_name!="USA"||!h.code_mods);
+    if(button("Original USA game…##randomizer"))choose(0,"Choose the unmodified USA game folder",true);
+    muted(original.empty()?"No original game folder selected":original);
+    if(button("Randomized game…##randomizer"))choose(1,"Choose the complete official randomized game folder",true);
+    muted(seed.empty()?"No randomized output folder selected":seed);
+    if(button("Choose PowerPC clang…##randomizer"))choose(2,"Choose a PowerPC-capable clang executable",false);
+    if(!compiler.empty()) {same_line_if_fits("Use setup compiler");if(button("Use setup compiler##randomizer")){std::lock_guard g(s.picker_mutex);s.core_compiler.clear();}}
+    muted(compiler.empty()?"Compiler: setup compiler, when compatible":"Compiler: "+compiler);
+    muted("A compatible PowerPC Clang must already be installed. Choose it above if the setup compiler is unsuitable. No game is launched during import.");
+    ImGui::BeginDisabled(original.empty()||seed.empty());
+    if(button("Build and import##randomizer")) {
+        try {
+            const auto manager=mods::packages::directory();
+            if(manager.empty())throw std::runtime_error("The mod manager is not ready.");
+            const auto cache=mods::randomizer_import::path_from_text(manager).parent_path()/"Cache"/"RandomizerImport";
+            const auto bridge=guestmods::BuildBridge::installed(mods::randomizer_import::path_text(cache),false);
+            auto plan=mods::randomizer_import::plan(bridge,cache,original,seed,compiler,mods::packages::current_profile());
+            const auto owned=plan.directory;
+            try{s.core_import.start(std::move(plan));}
+            catch(...){std::error_code ignored;fs::remove_all(owned,ignored);throw;}
+            s.error.clear();s.message.clear();
+        }catch(const std::exception& e){s.error=e.what();}
+    }
+    ImGui::EndDisabled();ImGui::EndDisabled();
+    if(!h.code_mods)muted("Code mods are unavailable on this host.");
+    if(h.build_name!="USA")muted("This import needs a port installation built from the original USA game.");
+    if(running) {
+        text(s.core_import.progress());
+        ImGui::BeginDisabled(s.core_import.stopping());
+        if(button("Cancel after current step##randomizer"))s.core_import.cancel();
+        ImGui::EndDisabled();
+    }
+    muted("After import, the normal code-mod and experimental confirmations apply. Enabling the seed requires a restart so it can select its own saves.");
+    ImGui::Unindent();
+}
+
 // ---------------------------------------------------------------- More
 inline void more(Host& h) {
     using namespace mods::packages;
     auto& s = state();
     if (button("Switch all mods off")) hostui::post([] { mods::packages::disable_all(); });
     muted("Switches off every mod, built-in ones included, in the current profile.");
-    bool busy = !setupflow::setup_run.id.empty() || s.job.flow.phase == Phase::Working;
+    bool busy = !setupflow::setup_run.id.empty() || s.job.flow.phase == Phase::Working || s.core_import.busy();
     if (section("Profiles")) {
         ImGui::Indent();
         muted("A profile remembers which mods are on and their options.");
@@ -1500,6 +1570,7 @@ inline void more(Host& h) {
         ImGui::EndDisabled();
         ImGui::Unindent();
     }
+    randomizer_import(h,!setupflow::setup_run.id.empty()||s.job.flow.phase==Phase::Working);
     if (h.file_picker && section(h.android ? "Install from a file" : "Install from a file or folder")) {
         ImGui::Indent();
         // Android's chooser has no folders (SDL answers a folder request with nothing)
@@ -1512,11 +1583,13 @@ inline void more(Host& h) {
                 state().picked_package = std::move(path);
             });
         };
+        ImGui::BeginDisabled(s.core_import.busy());
         if (button("Choose file…##package")) pick(false);
         if (!h.android) {
             same_line_if_fits("Choose folder…");
             if (button("Choose folder…##package")) pick(true);
         }
+        ImGui::EndDisabled();
         ImGui::Unindent();
     }
     if (h.file_picker && section("GameCube game for mods")) {  // (chosen with a file picker)

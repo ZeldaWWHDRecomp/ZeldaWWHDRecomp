@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Experimental randomizer core mod** (#117). Desktop Mods › More can convert your unmodified USA game and
+  an official TWWHD Randomizer output into a private SDK mod. Conversion needs a PowerPC-capable Clang compiler;
+  the usual code approval, save backup and restart steps apply. This source port still needs full-playthrough
+  and platform validation and is not a supported playable release.
+
 - **For testers: scripted Android runs no longer open Settings** (#379). Runs started with `WWHD_NO_HOST_INPUT` (for
   example `tools/android/bench_phone.py`) skip the first-start touch-controls question, which had left the Settings
   window open over every scripted run. `WWHD_TEST_TOUCH_QUESTION=1` still asks it. Normal starts are unchanged.
@@ -73,6 +78,10 @@ what is on `devel` and not released yet (also in the
 - **New: aim the boat cannon with the mouse** (#360, for #332, thanks @AnythingVocaloid for the idea). With Mouse
   camera on and the pointer captured, moving the mouse now aims the cannon on the King of Red Lions. Mouse sensitivity
   and invert-Y apply; the keyboard or a left stick still takes priority, and firing keeps its binding.
+- **Mod SDK: native actor profiles** can register their own stage names and actor callbacks at startup while sharing
+  the port's profile lookup. Conflicting IDs and names are refused, and full states require matching profile/code
+  fingerprints before they can load. Existing manifest actor behaviors are unchanged.
+
 - **Safer save import on Android** (#339, thanks @GenissonEmilio). An imported save is now checked completely before it
   replaces yours, and your previous save is kept as a backup. If the import is interrupted, your old save comes back.
   Oversized or damaged archives are refused, and import and export only run while the game is closed.

@@ -1,0 +1,75 @@
+"""Complete Aryll heap/wait consumers and unconditional pirate outfit."""
+from pathlib import Path
+import os,subprocess,tempfile,unittest
+class AryllOutfit(unittest.TestCase):
+ def test_consumers(self):
+  code=r'''
+
+#include <stdint.h>
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+typedef uintptr_t u32;typedef int32_t s32;typedef uint8_t u8;typedef int8_t s8;typedef uint16_t u16;typedef int16_t s16;typedef float f32;
+#define WWHD_GAME_FUNC(a,r,n,p) r n p
+#define WWHD_REPLACE(a,r,n,p) r n p
+static _Alignas(16) u8 actor[0xA40],save[0x900],model_data[0x100],header[0x60],header2[0x60],materials[2][0x39C],animation[2][0x80],morf[0x100],model[0x100],joint_data[0x40],joints[8*0x1C],joint_header[0x40],texture[0x40],images[130*0x24],source[0x24],eye_names[16],vtable[0x30],other_animation[0x80];static u32 resource_manager=42,saveptr=(u32)save;static unsigned save_accesses;
+static const char body_name[]="lsbody01",wrong_name[]="lsbody02";
+static void* guest_data(u32 a){switch(a){case 0x101F4F28:return&resource_manager;case 0x101F84DC:++save_accesses;return&saveptr;case 0x10467980:return eye_names;case 0x1001D218:return(void*)body_name;}assert(0);return 0;}
+#define WWHD_GAME_DATA(a,t) (*(t*)guest_data(a))
+static struct{u32 key,value;}cells[256];static unsigned nc;
+static u32* cell(u32 key){for(unsigned i=0;i<nc;i++)if(cells[i].key==key)return&cells[i].value;assert(nc<256);cells[nc].key=key;cells[nc].value=0;return&cells[nc++].value;}
+#define RAOPTR(a,o) (*cell((a)+(o)))
+#include "aryll_pirate_outfit.h"
+static unsigned resources,allocations,constructors,material_searches,joint_searches,texture_searches,initializations,deletes,assertions,create_failure,model_failure,animation_failure,return_other,live_header,texture_limit_change;static int matching_index,joint_index;static unsigned position_calls,state_calls,query_calls,wait_calls,attention_calls;static s32 query_result;static s32 state_value,wait_value,attention_value,mode_mutation;static unsigned ctor_mutation;static u32 expected_header,resource_source;static unsigned allocation_failure_mask,resource_mutation;
+static void terminate(u32 name){assert(name==(u32)eye_names||name==(u32)eye_names+8);assert(expected_header==(u32)header||expected_header==(u32)header2);if(live_header)RAOPTR((u32)model_data,0)=(u32)header2;}
+static void destructor(u32 object,s32 flag){assert(object==(u32)morf&&flag==3&&RAOPTR((u32)actor,0x44C)==object);++deletes;RAOPTR((u32)actor,0x44C)=123;}
+u32 rao_material_constructor(u32 value){assert(value==(u32)animation[0]||value==(u32)animation[1]);++constructors;return return_other?(u32)other_animation:value;}
+u32 rao_texture_animation(u32 a,s8 index,u32 reset){assert(a==(u32)actor&&index==0&&!reset);++initializations;return !animation_failure;}
+u32 rao_morf_constructor(u32 self,u32 md,u32 joint,u32 material,u32 anm,s32 loop,f32 speed,s32 start,s32 end,s32 play,u32 sound,u32 flags,u32 model_flags){assert(!self&&md==(u32)model_data&&!joint&&!material&&!anm&&loop==-1&&speed==1&&!start&&end==-1&&play==1&&!sound&&flags==0x80000&&model_flags==0x11020222);if(model_failure)RAOPTR((u32)morf,0x90)=0;return create_failure?0:(u32)morf;}
+u32 rao_resource_native(u32 control,u32 name,s32 resource){assert(control==(resource_mutation&&resources?43:42)&&RAOPTR(name,0)==(u32)actor+0x7F8&&RAO32(name,4)==0x1001D0CC);++resources;assert(resource==(resources==1?0xD:0x1D));if(resource_mutation&&resources==1)resource_manager=43;return resource==0xD?(u32)model_data:resource_source;}
+void rao_assert(u32 file,s32 line,u32 message){assert(file==0x1001D1B8&&line>=0xC7D&&line<=0xC83&&message);++assertions;}
+u32 rao_allocate(u32 size){assert(size==0x80&&allocations<2);unsigned index=allocations++;return allocation_failure_mask&(1u<<index)?0:(u32)animation[index];}
+s32 rao_name_index(u32 table,u32 name){if(material_searches<2){assert(table==expected_header+0x38&&name==(u32)body_name);unsigned current=material_searches++;expected_header=RAOPTR((u32)model_data,0);return current;}assert(table==(u32)joint_header+0x20);const unsigned strings[4]={0x1001D1B0,0x1001D238,0x1001D1A0,0x1001D1A8};assert(joint_searches<4&&name==strings[joint_searches]);++joint_searches;return joint_index;}
+u32 rao_texture_name(u32 table,u32 index){assert(table==123&&index<130);++texture_searches;if(texture_limit_change&&index==0)RAOU16((u32)texture,0)=3;return matching_index<0||index==(u32)matching_index?(u32)body_name:(u32)wrong_name;}
+u32 rao_joint_header(u32 md){assert(md==(u32)model_data);return(u32)joint_header;}
+void rao_set_state(u32 a,s32 state){assert(a==(u32)actor);++state_calls;state_value=state;}
+u8 rao_attention(u32 a){assert(a==(u32)actor);++attention_calls;if(mode_mutation>=0)RAOS8(a,0xA21)=mode_mutation;return attention_value;}
+void rao_event_position(u32 a,u32 position,s32 index){assert(a==(u32)actor&&index==(s32)position_calls);++position_calls;RAO32(position,0)=0x7FC00123u+index;RAO32(position,4)=0x80000000u+index;RAO32(position,8)=0x40400000u+index;if(ctor_mutation&&index==1)RAO8(a,0xA26)=255;}
+s32 rao_wait1(u32 a){assert(a==(u32)actor);++wait_calls;return wait_value+1;}
+s32 rao_wait2(u32 a){assert(a==(u32)actor);++wait_calls;return wait_value+2;}
+s32 rao_wait3(u32 a){assert(a==(u32)actor);++wait_calls;return wait_value+3;}
+s32 rao_wait4(u32 a){assert(a==(u32)actor);++wait_calls;return wait_value+4;}
+s32 rao_talk1(u32 a){assert(a==(u32)actor);++wait_calls;return wait_value+5;}
+s32 rao_event_query(u32 event,u32 flag){assert(event==(u32)save+0x644&&flag==0x2A80);++query_calls;return query_result;}
+static void reset(void){memset(actor,0,sizeof actor);memset(save,0,sizeof save);memset(model_data,0,sizeof model_data);memset(texture,0,sizeof texture);memset(images,0,sizeof images);memset(joints,0,sizeof joints);nc=0;save_accesses=resources=allocations=constructors=material_searches=joint_searches=texture_searches=initializations=deletes=assertions=create_failure=model_failure=animation_failure=return_other=live_header=texture_limit_change=0;resource_source=(u32)source;resource_manager=42;allocation_failure_mask=resource_mutation=0;matching_index=-1;joint_index=0;position_calls=state_calls=query_calls=wait_calls=attention_calls=ctor_mutation=0;query_result=0;state_value=-1;wait_value=100;attention_value=0xAB;mode_mutation=-1;expected_header=(u32)header;RAOPTR((u32)model_data,0)=(u32)header;RAO32((u32)header,0x18)=0x20;RAO32((u32)header2,0x18)=0x20;RAOPTR((u32)model_data,0x10)=(u32)materials;RAO32((u32)model_data,0xC)=2;RAOPTR((u32)model_data,0x30)=(u32)texture;RAOPTR((u32)model_data,0x34)=123;RAOPTR((u32)morf,0x90)=(u32)model;RAOPTR((u32)morf,0)=(u32)vtable;RAOPTR((u32)vtable,0xC)=(u32)destructor;RAOPTR((u32)model,0xAC)=(u32)joint_data;RAO32((u32)joint_data,4)=8;RAOPTR((u32)joint_data,8)=(u32)joints;RAO32((u32)joint_header,0x10)=0x10;RAOPTR((u32)texture,4)=(u32)images;for(unsigned i=0;i<2;i++){RAOPTR((u32)eye_names,i*8)=(u32)body_name;RAOPTR((u32)eye_names,i*8+4)=(u32)vtable;}RAOPTR((u32)vtable,0x14)=(u32)terminate;for(unsigned i=0;i<9;i++)RAO32((u32)source,4*i)=0xAABB0000u+i;}
+static const unsigned int expected_masks[130][4]={{0x80000000u,0x1u,0x0u,0x0u},{0x0u,0x2u,0x0u,0x0u},{0x0u,0x4u,0x0u,0x0u},{0x0u,0x8u,0x0u,0x0u},{0x0u,0x10u,0x0u,0x0u},{0x0u,0x20u,0x0u,0x0u},{0x0u,0x40u,0x0u,0x0u},{0x0u,0x80u,0x0u,0x0u},{0x0u,0x100u,0x0u,0x0u},{0x0u,0x200u,0x0u,0x0u},{0x0u,0x400u,0x0u,0x0u},{0x0u,0x800u,0x0u,0x0u},{0x0u,0x1000u,0x0u,0x0u},{0x0u,0x2000u,0x0u,0x0u},{0x0u,0x4000u,0x0u,0x0u},{0x0u,0x8000u,0x0u,0x0u},{0x0u,0x10000u,0x0u,0x0u},{0x0u,0x20000u,0x0u,0x0u},{0x0u,0x40000u,0x0u,0x0u},{0x0u,0x80000u,0x0u,0x0u},{0x0u,0x100000u,0x0u,0x0u},{0x0u,0x200000u,0x0u,0x0u},{0x0u,0x400000u,0x0u,0x0u},{0x0u,0x800000u,0x0u,0x0u},{0x0u,0x1000000u,0x0u,0x0u},{0x0u,0x2000000u,0x0u,0x0u},{0x0u,0x4000000u,0x0u,0x0u},{0x0u,0x8000000u,0x0u,0x0u},{0x0u,0x10000000u,0x0u,0x0u},{0x0u,0x20000000u,0x0u,0x0u},{0x0u,0x40000000u,0x0u,0x0u},{0x0u,0x80000000u,0x0u,0x0u},{0x1u,0x0u,0x0u,0x0u},{0x2u,0x0u,0x0u,0x0u},{0x4u,0x0u,0x0u,0x0u},{0x8u,0x0u,0x0u,0x0u},{0x10u,0x0u,0x0u,0x0u},{0x20u,0x0u,0x0u,0x0u},{0x40u,0x0u,0x0u,0x0u},{0x80u,0x0u,0x0u,0x0u},{0x100u,0x0u,0x0u,0x0u},{0x200u,0x0u,0x0u,0x0u},{0x400u,0x0u,0x0u,0x0u},{0x800u,0x0u,0x0u,0x0u},{0x1000u,0x0u,0x0u,0x0u},{0x2000u,0x0u,0x0u,0x0u},{0x4000u,0x0u,0x0u,0x0u},{0x8000u,0x0u,0x0u,0x0u},{0x10000u,0x0u,0x0u,0x0u},{0x20000u,0x0u,0x0u,0x0u},{0x40000u,0x0u,0x0u,0x0u},{0x80000u,0x0u,0x0u,0x0u},{0x100000u,0x0u,0x0u,0x0u},{0x200000u,0x0u,0x0u,0x0u},{0x400000u,0x0u,0x0u,0x0u},{0x800000u,0x0u,0x0u,0x0u},{0x1000000u,0x0u,0x0u,0x0u},{0x2000000u,0x0u,0x0u,0x0u},{0x4000000u,0x0u,0x0u,0x0u},{0x8000000u,0x0u,0x0u,0x0u},{0x10000000u,0x0u,0x0u,0x0u},{0x20000000u,0x0u,0x0u,0x0u},{0x40000000u,0x0u,0x0u,0x0u},{0x80000000u,0x0u,0x0u,0x0u},{0x0u,0x0u,0x80000000u,0x1u},{0x0u,0x0u,0x0u,0x2u},{0x0u,0x0u,0x0u,0x4u},{0x0u,0x0u,0x0u,0x8u},{0x0u,0x0u,0x0u,0x10u},{0x0u,0x0u,0x0u,0x20u},{0x0u,0x0u,0x0u,0x40u},{0x0u,0x0u,0x0u,0x80u},{0x0u,0x0u,0x0u,0x100u},{0x0u,0x0u,0x0u,0x200u},{0x0u,0x0u,0x0u,0x400u},{0x0u,0x0u,0x0u,0x800u},{0x0u,0x0u,0x0u,0x1000u},{0x0u,0x0u,0x0u,0x2000u},{0x0u,0x0u,0x0u,0x4000u},{0x0u,0x0u,0x0u,0x8000u},{0x0u,0x0u,0x0u,0x10000u},{0x0u,0x0u,0x0u,0x20000u},{0x0u,0x0u,0x0u,0x40000u},{0x0u,0x0u,0x0u,0x80000u},{0x0u,0x0u,0x0u,0x100000u},{0x0u,0x0u,0x0u,0x200000u},{0x0u,0x0u,0x0u,0x400000u},{0x0u,0x0u,0x0u,0x800000u},{0x0u,0x0u,0x0u,0x1000000u},{0x0u,0x0u,0x0u,0x2000000u},{0x0u,0x0u,0x0u,0x4000000u},{0x0u,0x0u,0x0u,0x8000000u},{0x0u,0x0u,0x0u,0x10000000u},{0x0u,0x0u,0x0u,0x20000000u},{0x0u,0x0u,0x0u,0x40000000u},{0x0u,0x0u,0x0u,0x80000000u},{0x0u,0x0u,0x1u,0x0u},{0x0u,0x0u,0x2u,0x0u},{0x0u,0x0u,0x4u,0x0u},{0x0u,0x0u,0x8u,0x0u},{0x0u,0x0u,0x10u,0x0u},{0x0u,0x0u,0x20u,0x0u},{0x0u,0x0u,0x40u,0x0u},{0x0u,0x0u,0x80u,0x0u},{0x0u,0x0u,0x100u,0x0u},{0x0u,0x0u,0x200u,0x0u},{0x0u,0x0u,0x400u,0x0u},{0x0u,0x0u,0x800u,0x0u},{0x0u,0x0u,0x1000u,0x0u},{0x0u,0x0u,0x2000u,0x0u},{0x0u,0x0u,0x4000u,0x0u},{0x0u,0x0u,0x8000u,0x0u},{0x0u,0x0u,0x10000u,0x0u},{0x0u,0x0u,0x20000u,0x0u},{0x0u,0x0u,0x40000u,0x0u},{0x0u,0x0u,0x80000u,0x0u},{0x0u,0x0u,0x100000u,0x0u},{0x0u,0x0u,0x200000u,0x0u},{0x0u,0x0u,0x400000u,0x0u},{0x0u,0x0u,0x800000u,0x0u},{0x0u,0x0u,0x1000000u,0x0u},{0x0u,0x0u,0x2000000u,0x0u},{0x0u,0x0u,0x4000000u,0x0u},{0x0u,0x0u,0x8000000u,0x0u},{0x0u,0x0u,0x10000000u,0x0u},{0x0u,0x0u,0x20000000u,0x0u},{0x0u,0x0u,0x40000000u,0x0u},{0x0u,0x0u,0x80000000u,0x0u},{0x0u,0x0u,0x80000000u,0x1u},{0x0u,0x0u,0x0u,0x2u}};
+int main(void){unsigned cases=0;
+/* Both outfits and every save byte now use the same texture path without changing save. */
+for(unsigned type=0;type<256;type++)for(unsigned clear=0;clear<256;clear++){
+ reset();RAO8((u32)actor,0xA25)=type;RAO8((u32)save,0x1C0)=clear;RAOU16((u32)texture,0)=1;assert(randomizer_aryll_body_heap((u32)actor)==1&&resources==2&&texture_searches==1&&joint_searches==4&&initializations==1);assert(RAO8((u32)save,0x1C0)==clear&&save_accesses==(type!=4));assert(RAOPTR((u32)materials[0],0x24)==(u32)animation[0]&&RAOPTR((u32)materials[1],0x24)==(u32)animation[1]);assert(RAOPTR((u32)model,0xB8)==(u32)actor);++cases;
+}
+/* Every texture index around the PPC mask boundaries; unchanged nonmatching entries. */
+for(unsigned match=0;match<130;match++){
+ reset();matching_index=match;RAOU16((u32)texture,0)=130;RAO32((u32)texture,0x18)=0x80000000;RAO32((u32)texture,0x1C)=1;assert(randomizer_aryll_body_heap((u32)actor)==1&&texture_searches==130);u32 entry=(u32)images+match*36;for(unsigned k=0;k<9;k++)if(k!=3&&k!=7)assert(RAO32(entry,4*k)==0xAABB0000u+k);assert(RAO32(entry,0xC)==0xAABB0003u+(unsigned)(u32)source-(unsigned)entry);assert(RAO32(entry,0x1C)==0xAABB0007u+(unsigned)(u32)source-(unsigned)entry);for(unsigned i=0;i<130;i++)if(i!=match)assert(RAO32((u32)images,36*i)==0);for(unsigned k=0;k<4;k++)assert(RAO32((u32)texture,8+4*k)==expected_masks[match][k]);++cases;
+}
+for(unsigned failure=0;failure<3;failure++){reset();create_failure=failure==0;model_failure=failure==1;animation_failure=failure==2;assert(!randomizer_aryll_body_heap((u32)actor)&&!RAOPTR((u32)actor,0x44C)&&deletes==(failure==1)&&resources==(failure==2?2:1)&&!joint_searches);++cases;}
+reset();live_header=1;return_other=1;texture_limit_change=1;RAOU16((u32)texture,0)=130;assert(randomizer_aryll_body_heap((u32)actor)==1&&texture_searches==3&&RAOPTR((u32)materials[0],0x24)==(u32)other_animation);++cases;
+for(unsigned state=0;state<256;state++)for(unsigned mode=0;mode<256;mode++){
+ reset();RAO8((u32)actor,0xA26)=state;RAO8((u32)actor,0xA21)=mode;RAO32((u32)actor,0x9DC)=0xDEADBEEF;assert(randomizer_aryll_wait_action((u32)actor,123)==1);if(!state){assert(position_calls==2&&query_calls==1&&state_calls==1&&state_value==4&&RAO8((u32)actor,0xA26)==1);assert(RAO32((u32)actor,0x99C)==0x7FC00123u&&RAO32((u32)actor,0x9A8)==0x7FC00124u);}else if(state<=3){assert(attention_calls==1&&RAO8((u32)actor,0xA0E)==0xAB&&wait_calls==(mode>=1&&mode<=5));assert(RAO32((u32)actor,0x9DC)==(mode>=1&&mode<=5?100+mode:0xDEADBEEFu));}else assert(!attention_calls&&!wait_calls&&!query_calls);++cases;
+}
+for(int result=-1;result<2;result++){reset();query_result=result;ctor_mutation=1;assert(randomizer_aryll_wait_action((u32)actor,0)==1&&RAO8((u32)actor,0xA26)==0&&state_value==4&&query_calls==1);++cases;}
+reset();RAO8((u32)actor,0xA26)=1;RAO8((u32)actor,0xA21)=0;mode_mutation=5;assert(randomizer_aryll_wait_action((u32)actor,0)==1&&wait_calls==1&&RAO32((u32)actor,0x9DC)==105);++cases;
+/* Partial material allocation and returned-constructor pointers are retained. */
+for(unsigned mask=0;mask<4;mask++){reset();allocation_failure_mask=mask;assert(randomizer_aryll_body_heap((u32)actor)==1&&constructors==2-((mask&1)!=0)-((mask&2)!=0));for(unsigned i=0;i<2;i++)assert(RAOPTR((u32)materials[i],0x24)==(mask&(1u<<i)?0:(u32)animation[i]));++cases;}
+/* Copy overlap is forward and the final HD word reload follows offset adjustments. */
+reset();RAOU16((u32)texture,0)=1;RAOPTR((u32)texture,4)=(u32)images+4;resource_source=(u32)images;unsigned int expected[10];for(unsigned i=0;i<10;i++)RAO32((u32)images,4*i)=expected[i]=0x11220000+i;for(unsigned i=0;i<9;i++)expected[i+1]=expected[i];expected[8]-=4;expected[4]-=4;expected[9]=expected[8];assert(randomizer_aryll_body_heap((u32)actor)==1);for(unsigned i=0;i<10;i++)assert(RAO32((u32)images,4*i)==expected[i]);++cases;
+for(unsigned joint=0;joint<256;joint++){reset();joint_index=joint;assert(randomizer_aryll_body_heap((u32)actor)==1&&assertions==((s8)joint<0?4:0));unsigned index=joint<8?joint:0;assert(RAO32((u32)joints,28*index+8)==0x0227DD70);++cases;}
+reset();resource_mutation=1;assert(randomizer_aryll_body_heap((u32)actor)==1&&resources==2&&resource_manager==43);++cases;
+printf("Aryll: %u complete heap/wait cases passed\n",cases);return 0;}
+
+'''
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d);(p/'test.c').write_text(code)
+   subprocess.run([os.environ.get('CC','clang'),'-std=c11','-O2','-Wall','-Wextra','-Werror','-I',str(Path(__file__).parent),str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run([str(p/'test')],check=True)
+if __name__=='__main__':unittest.main()

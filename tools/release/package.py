@@ -38,6 +38,12 @@ LIB_EXT = (".a", ".lib", ".tbd", ".dylib", ".so")
 # files shipped from the source tree (relative to ROOT -> relative to the package)
 TOOL_FILES = [
     "tools/rpx.py",
+    "tools/core_randomizer.py",
+    "tools/core_randomizer_resources.py",
+    "tools/recomp/randomizer_compat.py",
+    "tools/recomp/source_core_compat.py",
+    "tools/recomp/randomizer-usa.json",
+    "tools/recomp/source-core-usa.json",
     "tools/shaderprep.py",
     "tools/shaderprep_format.py",
     "tools/release/guard.py",  # shaderprep.py export/merge check templates with it (issue #162)
@@ -612,6 +618,10 @@ def main():
         if bp.endswith(".json"):
             copy(os.path.join(ROOT, "tools", "recomp", "builds", bp),
                  os.path.join(pkg, "tools", "recomp", "builds", bp))
+    # Public source/core tools only: player seed data/assets never enter a release.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from core_randomizer_resources import bundle as bundle_randomizer_core
+    bundle_randomizer_core(ROOT, pkg, a.version)
     # the extractor must be self-contained: zstd from the pinned source, linked statically (cmake/Zstd.cmake)
     try:
         with open(os.path.join(build, "wwhd-zstd.txt")) as f:

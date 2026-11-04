@@ -1976,6 +1976,7 @@ void cheats() {
 modsui::Host& mods_host() {
     static modsui::Host h = [] {
         modsui::Host h;
+        h.choose_randomizer_source = [](const char* title,bool folder,std::function<void(std::string)> chosen) {hostui::choose_file(title,"",folder,std::move(chosen));};
         h.choose_game_source = [](bool folder, std::function<void(std::string)> chosen) { hostui::choose_game_source(folder, std::move(chosen)); };
         h.choose_mod_source = [](bool folder, std::function<void(std::string)> chosen) { hostui::choose_mod_source(folder, std::move(chosen)); };
         h.fetch = host::download_https;

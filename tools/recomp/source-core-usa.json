@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "id": "source-core-twwhd-randomizer-usa-v1",
+  "base_profile_sha256": "68281fe2807fc488b8b9ba12168b01fd35412ff08d7f67c38769d5892ae06dbc",
+  "functions": [
+    {
+      "start": 38934520,
+      "end": 38936984,
+      "sha256": [
+        "14d4beff29fdbba5096725c26058e5412a962ad7e5ed11d5d50175be1e2605f7"
+      ],
+      "review": "TWWHD Randomizer 1.2.0 entrance_rando_features.asm: savewarp call at 025220C4 redirects to set_return_place_as_last_visited_ocean_sector; entire 2464-byte function differs from reviewed second seed at this one call only. Source-core reads data and executes vanilla code; this does not port or certify savewarp behavior."
+    },
+    {
+      "start": 38266964,
+      "end": 38268648,
+      "sha256": [
+        "993968e5c212e9f7374bfc197730518e66ca3ae07127d048b378d931b980c7b4"
+      ],
+      "review": "MIT TWWHD Randomizer quiet_swift_sail.asm: only three sound calls at 0247E9AC/0247EA20/0247EA2C become NOP. Complete 1684-byte procSteerMove hash; source-core executes its complete original-USA source consumer and extracts only this coherent option. All hook-word and aggregate guards remain enforced; no Route 2 execution extension."
+    }
+  ]
+}

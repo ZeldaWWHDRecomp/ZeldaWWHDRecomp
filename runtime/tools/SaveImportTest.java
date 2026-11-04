@@ -198,6 +198,27 @@ public final class SaveImportTest {
                 } finally { child.destroyForcibly().waitFor(); }
                 try (SessionLease lease = SessionLease.acquire(root.toFile())) { }
             });
+            test("native-selected profile leaves interrupted vanilla import untouched", () -> {
+                Path root = Files.createDirectory(temp.resolve("profile-startup"));
+                dataset(root.resolve(".wwhd-save-previous"), "old");
+                Path profile = root.resolve("save-mod-fixture-" + "a".repeat(64));
+                GameSavePreparation.prepare(root.toFile(), profile.toFile(), dir -> {});
+                check(Files.isDirectory(profile), "selected profile was not prepared");
+                check(!Files.exists(root.resolve("save")), "profile prepared an empty vanilla save");
+                consistent(root.resolve(".wwhd-save-previous"), "old");
+                GameSavePreparation.prepare(root.toFile(), root.resolve("save").toFile(), dir -> {});
+                consistent(root.resolve("save"), "old");
+                check(Files.isDirectory(profile), "vanilla recovery touched profile");
+            });
+            test("explicit selected save is exact and leaves vanilla untouched", () -> {
+                Path root = Files.createDirectory(temp.resolve("explicit-startup"));
+                dataset(root.resolve("save"), "old");
+                Path explicit = temp.resolve("exact-custom-save");
+                GameSavePreparation.prepare(root.toFile(), explicit.toFile(), dir -> {});
+                check(Files.isDirectory(explicit), "explicit root was not used");
+                consistent(root.resolve("save"), "old");
+                check(!Files.exists(explicit.resolve("save")), "explicit root was rewritten");
+            });
             System.out.println(tests + " safety contracts passed");
         } finally { TransactionalSaveStore.remove(temp.toFile()); }
     }

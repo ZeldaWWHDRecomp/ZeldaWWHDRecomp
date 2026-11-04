@@ -3,7 +3,7 @@
  * Guest mods are C compiled for the console CPU (32-bit big-endian PowerPC, the game's ABI) with a
  * freely available clang:
  *
- *   clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -G0 -ffreestanding -fno-builtin -nostdlib
+ *   clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -G0 -ffreestanding -fno-builtin -nostdlib
  *         -fno-jump-tables -ffunction-sections -fdata-sections -I<sdk>/include -c mod.c -o mod.o
  *   ld.lld -m elf32ppc -r mod.o [more.o ...] -o mod.elf          (one relocatable ELF per mod)
  *
@@ -105,6 +105,20 @@ void wwhd_input_read(wwhd_input_state* state);
  * The callback must be this mod's own function. Returns 1 when registered. */
 typedef void (*wwhd_input_filter_fn)(wwhd_input_state* state);
 int wwhd_input_filter_register(wwhd_input_filter_fn filter);
+/* After the native ready-item trigger query, preserve the port's accepted
+ * quick-use intent. Returns only a local predicate; no pad/equipment writes.
+ * Pass the current Link actor and the unmodified native query result. */
+u32 wwhd_item_ready_trigger(u32 actor, u32 native_trigger);
+/* Immediately before the native ready hookshot (2F), rope (25), or boomerang
+ * (2D) action call, preserve the port's quick-use dispatch bookkeeping. Call
+ * only after the original eligibility checks. Other item IDs are ignored. */
+void wwhd_item_action_dispatch(u32 actor, u32 item);
+/* Source-level sailing composition: call wind only on the normal-sail branch,
+ * before reading its transition flag. Scale the completed native wind target
+ * before obstacle/acceleration callbacks. Keep a local original/written pair
+ * and restore only an unchanged scaled target before jump checks. */
+void wwhd_ship_normal_sail_wind(u32 actor);
+f32 wwhd_ship_sail_target(f32 stock);
 /* Touches on the TV picture (the device's touch screen, or the mouse on the desktop): the mod claims rectangles
  * in layout units (1280 x 720 around the picture's centre, +y up; a wider picture extends x) with
  * wwhd_touch_claim; a finger landing in one goes to `callback` (down, moves, up or cancel) and to nothing else
@@ -191,6 +205,22 @@ typedef struct {
     u32 flags;
     char animation[36];
 } wwhd_actor_state_v1; /* size=80, version=1 */
+// Low-level native ACTR profile registration, startup only. Call from a
+// GameMain (028EA120) entry hook before any native process allocation. The
+// runtime copies the profile, five callbacks and name; the module stays loaded.
+// profile points to the 0x30-byte native actor profile, whose method table has
+// five caller-owned functions (create, delete, execute, isDelete, draw).
+// Native base method pointers may be zero (filled by the runtime).
+// IDs 01E4..7FCF only, no remapping/unregister; names 1..8 ASCII alnum/_ bytes.
+// Returns ID, or -1 invalid, -2 collision, -3 closed, -4 unavailable, -5 full.
+typedef struct {
+    u32 size,version; // sizeof(...), 1
+    const void* profile;
+    char name[8];
+    s32 argument; // -1..127
+    u32 gba_name; // 0..255
+} wwhd_native_actor_profile_v1;
+s32 wwhd_native_actor_profile_register(const wwhd_native_actor_profile_v1*);
 u32 wwhd_actor_register(const char* actor_id,const wwhd_actor_behavior_v1* behavior);
 wwhd_actor_handle wwhd_actor_find(const char* actor_id); /* zero until create dispatch */
 u32 wwhd_actor_get(wwhd_actor_handle,wwhd_actor_state_v1* state);

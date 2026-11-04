@@ -56,3 +56,15 @@ jobs:
           export WWHD_PPC_CLANG="$(cygpath -m /clang64/bin/clang.exe)"
           export WWHD_PPC_LLD="$(cygpath -m /clang64/bin/ld.lld.exe)"
           python tools/guestmod/ci_guestmods.py
+      - name: Test synthetic core randomizer (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: python tools/guestmod/ci_core_randomizer.py
+      - name: Test synthetic core randomizer (Windows CLANG64)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          export WWHD_PPC_CLANG="$(cygpath -m /clang64/bin/clang.exe)"
+          export WWHD_PPC_LLD="$(cygpath -m /clang64/bin/ld.lld.exe)"
+          export WWHD_CORE_HOST_CC="$(cygpath -m /clang64/bin/clang.exe)"
+          export WWHD_CORE_HOST_CXX="$(cygpath -m /clang64/bin/clang++.exe)"
+          python tools/guestmod/ci_core_randomizer.py

@@ -1,4 +1,4 @@
-"""Bound untrusted input and actual inflation without trusting the zlib prefix."""
+"""Bound RPX parsing, identity and child-translation inputs without trusting file prefixes."""
 from pathlib import Path
 import struct, tempfile, unittest, zlib
 import sys

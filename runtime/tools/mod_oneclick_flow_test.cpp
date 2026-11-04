@@ -39,6 +39,8 @@ bool review_open() {
     for(const auto& popup:GImGui->OpenPopupStack)if(popup.Window&&strstr(popup.Window->Name,"###mods_review"))return true;
     return false;
 }
+#include "core_import_ui_flow.h"
+
 // Two tabs as a port would add them (overlay/extensions.h): "test-platform" before Mods, with two sub-tabs
 // (L / R move between them first) and the widgets a platform page has, and "test-extra" right after Mods.
 void ext_tabs_for_test(int& area) {
@@ -81,6 +83,7 @@ int main(int argc,char** argv) {
     assert(getenv("WWHD_MOD_MANAGER_DIR")&&getenv("WWHD_TEST_MOD_SETUP")&&getenv("WWHD_TEST_GAME_SOURCES"));
     using namespace mods::packages;using namespace overlay::setupflow;namespace ui=overlay::modsui;
     fs::path root=fs::absolute(argv[1]);std::string mode=argv[2],id=getenv("WWHD_TEST_MOD_SETUP");
+    if(mode.starts_with("core-"))return core_import_ui_flow(root,mode);
     bool resumed=fs::weakly_canonical(fs::absolute(argv[0])).parent_path()==fs::weakly_canonical(root/"code-builds/synthetic/bin");
     // exp-*: an experimental mod (the review warns; switching it on backs up the saves once, first)
     bool experimental=mode.starts_with("exp-"),backup_fails=mode=="exp-backup-fails";

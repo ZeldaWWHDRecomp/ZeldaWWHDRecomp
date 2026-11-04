@@ -23,7 +23,7 @@ import build_guest_mod as builder  # noqa: E402
 
 CLANG = os.environ.get("WWHD_PPC_CLANG") or shutil.which("clang")
 LLD = os.environ.get("WWHD_PPC_LLD") or shutil.which("ld.lld")
-FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
+FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-mstackrealign", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
          "-fno-jump-tables", "-ffunction-sections", "-fdata-sections",
          "-I", os.path.join(REPO, "runtime", "guest", "include")]
 
@@ -31,7 +31,7 @@ FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding", 
 def ppc_ok():
     if not CLANG or not LLD or not shutil.which(CLANG) or not shutil.which(LLD):
         return False
-    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-x", "c", "-c", "-o", os.devnull, "-"],
+    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-mstackrealign", "-x", "c", "-c", "-o", os.devnull, "-"],
                        input="int x;", capture_output=True, text=True)
     if p.returncode:
         print("PowerPC compiler probe failed:", p.stderr, file=sys.stderr)
