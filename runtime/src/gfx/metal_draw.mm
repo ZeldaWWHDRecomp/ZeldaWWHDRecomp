@@ -2210,6 +2210,15 @@ std::shared_ptr<BackdropCapture> backdropCapture;
 uint64_t backdropTicket = 0;
 unsigned backdropExpected = 0, backdropFinished = 0;
 bool backdropScope = false, backdropFailed = false, backdropReplay = false, backdropEncoded = false;
+void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
+    static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
+    if(aspect::game_frame()<first)return;
+    static unsigned logged=0;
+    if(logged++>=180)return;
+    LOG("[metal backdrop] phase=%s game=%llu render=%llu a=%llx b=%llx c=%llx",phase,
+        (unsigned long long)aspect::game_frame(),(unsigned long long)R.frame,
+        (unsigned long long)a,(unsigned long long)b,(unsigned long long)c);
+}
 unsigned capture_coverage(const uint32_t* regs) {
     if (((regs[REGADDR::CB_TARGET_MASK] & 15) & 7) != 7 || (regs[REGADDR::DB_DEPTH_CONTROL] & 7)) return 0;
     if (!((regs[REGADDR::CB_COLOR_CONTROL] >> 8) & 1)) return 2;
@@ -2270,6 +2279,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
 }
 void gamepad_backdrop_scope(const uint32_t*, bool begin) {
     if (begin) {
+        backdrop_trace("begin",gamepad_backdrop::capture_enabled(),pendingBackdrops.size());
         backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = false;
         backdropScope = gamepad_backdrop::capture_enabled();
     } else {
@@ -2282,6 +2292,7 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
             }];
         }
         const bool complete = backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid;
+        backdrop_trace("end",complete,(uint64_t(backdropExpected)<<32)|backdropFinished, (uint64_t(backdropFailed)<<1)|bool(backdropCapture));
         metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
         if (complete) {
             if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
@@ -2293,12 +2304,14 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
 }
 void gamepad_backdrop_scan(Surface* source) {
     const auto selection = backdropScans.scan(metal_backdrop_source_key(source->tex));
+    backdrop_trace("scan",metal_backdrop_source_key(source->tex),selection.ticket,pendingBackdrops.size());
     R.drc.backdrop = nil;
     for (const auto& capture : pendingBackdrops)
         if (capture->ticket == selection.ticket) { R.drc.backdrop = capture->surface->tex; break; }
     pendingBackdrops.clear();
 }
 void gamepad_backdrop_clear(Surface* source) {
+    if(backdropCapture || !pendingBackdrops.empty())backdrop_trace("clear",metal_backdrop_source_key(source->tex),pendingBackdrops.size());
     if (backdropCapture && backdropCapture->source.clear(source->tex)) backdropFailed = true;
     std::erase_if(pendingBackdrops, [source](const auto& p) { return p->source.matches(source->tex); });
 }
@@ -2727,6 +2740,11 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     if (captureDraw) {
         ++backdropFinished;
         const unsigned coverage = capture_coverage(regs);
+        backdrop_trace("draw",(uint64_t(mask)<<32)|coverage,
+            (uint64_t(regs[REGADDR::DB_DEPTH_CONTROL])<<32)|regs[REGADDR::CB_TARGET_MASK],
+            colors[0]?metal_backdrop_source_key(colors[0]->tex):0);
+        backdrop_trace("blend",regs[REGADDR::CB_COLOR_CONTROL],regs[REGADDR::CB_BLEND0_CONTROL],
+            (uint64_t(colorSlices[0])<<32)|uint32_t(cloud_proto::g_active_seq));
         if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
             !prepare_backdrop(colors[0], coverage)) backdropFailed = true;
         if (!backdropFailed) {
@@ -2734,6 +2752,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
             backdropBindings = &*capturedBindings;
             draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
             backdropBindings = nullptr; backdropReplay = false;
+            backdrop_trace("replay",backdropEncoded,backdropFailed);
             if (!backdropEncoded) backdropFailed = true;
             // Replayed bindings/RTs never leak into the next ordinary draw.
             end_encoder();
