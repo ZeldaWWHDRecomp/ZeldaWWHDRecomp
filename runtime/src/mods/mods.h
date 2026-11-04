@@ -22,6 +22,8 @@ namespace mods {
 bool camera_directed_items();
 void set_camera_directed_items(bool on);
 bool direct_camera();
+int targeting_letterbox_mode(); // 0: On, 1: Off with enemies, 2: Always off during targeting
+void set_targeting_letterbox_mode(int mode);
 bool letterbox_while_targeting();
 void set_letterbox_while_targeting(bool on);
 void set_direct_camera(bool on);
