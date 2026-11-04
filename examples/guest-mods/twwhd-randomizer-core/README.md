@@ -187,6 +187,14 @@ portable and ordinary saving, fresh-process restoration and inventory rendering.
 Custom switch actors execute in real dungeon rooms: a gate with no required
 dungeons opens, while a three-required-dungeon gate remains closed.
 
+Native field-item fixtures also grant a DRC small key, its Big Key and a Tingle
+statue outside their source dungeon. The saved dungeon bank, Key Bag and statue
+count survive ordinary saving and a fresh process loading only the save file.
+Seed-switch checks keep those markers isolated and reject a portable state from
+another seed. Normal menu navigation selects and confirms the added Forsaken
+Fortress warp, arriving at its sea sector; that fixture places Link near the
+boat before normal boarding. These are bounded checks, not a continuous run.
+
 These checks do not establish completion of a randomized seed, the physical
 source chest for that pickup, boss defeats, every option, all visible/audio
 behavior, or Windows gameplay. Game-free CI runs the core and SDK suites on
