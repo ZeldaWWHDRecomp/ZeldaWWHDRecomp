@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
+  Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
+  console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most
+  often an antivirus program locking a file, or a full disk) and what to do next, instead of only writing it to
+  setup.log. A complete earlier download is reused, and `tools/installer/README.md` explains how to unpack the
+  compiler yourself.
 - **Fixed: GameCube controllers set up right away** (#392, for #356, thanks @itsarahtonin for the report). A recognized
   GameCube controller now gets the full GameCube layout without going through the generic new-controller setup, and
   L targets at a quarter of its travel or at the digital click. Existing controller profiles and shared bindings are
