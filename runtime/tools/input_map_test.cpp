@@ -1508,7 +1508,16 @@ static void test_gamecube() {
     CHECK(is_gamecube(true,0,0));CHECK(!is_gamecube(false,0x057e,0x2009));
     CHECK(!is_gamecube(false,0x2dc8,0x3106)); // 8BitDo is not a device identity
     CHECK(!is_gamecube(false,0x045e,0x02ea));
-    m=original;CHECK(!auto_gamecube(m,"gc","GC",true)); // manual preset is a choice
+    m=original;CHECK(auto_gamecube(m,"gc","GC",true)); // Recognized hardware works with fresh defaults.
+    CHECK(m.controllers[0].pad[kZL]==kPadGCL);
+    auto fresh_gc=view_for(m,0);
+    float click[kPadCount]{};click[kPadMisc3]=1;
+    CHECK(controller_state(fresh_gc,click).buttons==input::kZL);
+    click[kPadMisc3]=0;click[kPadLT]=.25f;
+    CHECK(controller_state(fresh_gc,click).buttons==input::kZL);
+    CHECK(!setup_offer_due(m,"gc","GC",false));
+    CHECK(m.pad==original.pad);
+    m=original;
     m.face_auto=true;auto shared=m;
     CHECK(auto_gamecube(m,"gc","GC",true));CHECK(m.pad==shared.pad && m.face_auto);
     CHECK(m.controllers.size()==1);auto view=view_for(m,0);CHECK(view.preset.gamecube);
@@ -1518,8 +1527,15 @@ static void test_gamecube() {
     CHECK(from_json(to_json(m),loaded));CHECK(loaded==m);
     view=view_for(loaded,0);CHECK(restore_pad_preset(view));store_view(loaded,view,0);
     CHECK(loaded.pad==shared.pad);CHECK(loaded.controllers[0].pad==shared.pad);
-    m=shared;m.pad[kZL]=kPadRB;CHECK(!auto_gamecube(m,"gc","GC",true));
+    m=shared;m.pad[kZL]=kPadRB;CHECK(auto_gamecube(m,"gc","GC",true));
+    CHECK(m.pad[kZL]==kPadRB && m.controllers[0].pad[kZL]==kPadGCL);
     m=shared;ensure_profile(m,"gc","GC");CHECK(!auto_gamecube(m,"gc","GC",true));
+    // Duplicate adapter ports edit one GUID/name profile, including saved entries.
+    input::ControllerInfo port;port.guid="gc";port.name="GC";
+    input::ControllerInfo virtual_pad=port;virtual_pad.is_virtual=true;virtual_pad.name="virtual";
+    auto targets=binding_targets(m,{port,port,virtual_pad});
+    CHECK(targets.size()==1 && targets[0].connected && targets[0].guid=="gc");
+    CHECK(automatic_face_available(false) && !automatic_face_available(true));
     input::ControllerInfo legacy;legacy.vendor=0x0079;legacy.product=0x1844;
     CHECK(legacy_gamecube_faces(legacy));legacy.type="gamecube";CHECK(!legacy_gamecube_faces(legacy));
     legacy.type="";legacy.vendor=0x057e;legacy.product=0x0337;CHECK(!legacy_gamecube_faces(legacy));

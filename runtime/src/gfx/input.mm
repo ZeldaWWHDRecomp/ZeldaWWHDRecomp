@@ -463,11 +463,12 @@ static void note_dominant_labels() {
 #endif
     input_map::note_face_labels(labels);
     input_map::note_gamecube(gamecube_controller(dominant));
-    if (dominant) {
-        auto m = input_map::current();
-        if (input_map::auto_gamecube(m, "", pad_name(dominant), gamecube_controller(dominant), true))
-            input_map::set_current(m);
-    }
+    auto mapping = input_map::current();
+    bool changed = false;
+    for (GCController* c in [g_connect_order copy])
+        if (c.extendedGamepad)
+            changed |= input_map::auto_gamecube(mapping, "", pad_name(c), gamecube_controller(c), true);
+    if (changed) input_map::set_current(mapping);
     if (dominant && input_map::apple_face_workaround(input_map::current(), controller_face_layout(dominant)))
         LOG("[input] Nintendo pad with by-label bindings: if these were the old macOS workaround, "
             "select Input > Face buttons > By position (Nintendo) or Automatic (#181). Saved bindings kept.");

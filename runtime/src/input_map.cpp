@@ -877,10 +877,8 @@ bool restore_pad_preset(Mapping& m) {
     return true;
 }
 bool auto_gamecube(Mapping& m, const std::string& guid, const std::string& name, bool detected, bool pc) {
-    if (!m.face_auto || !detected || (guid.empty() && name.empty()) || profile_index(m, guid, name) >= 0) return false;
-    // Automatic may follow face labels, but shared custom shoulders/sticks are intentional too.
-    auto defaults = Mapping::defaults();
-    for (int a = kL; a < kActionCount; ++a) if (m.pad[a] != defaults.pad[a]) return false;
+    if (!detected || (guid.empty() && name.empty()) || profile_index(m, guid, name) >= 0) return false;
+    // Make a private layout without changing shared or existing controller bindings.
     int index = ensure_profile(m, guid, name);
     auto view = view_for(m, index);
     apply_gamecube(view, pc);
@@ -908,6 +906,20 @@ int profile_index(const Mapping& m, const std::string& guid, const std::string& 
 const std::array<int, kActionCount>& pads_for(const Mapping& m, const std::string& guid, const std::string& name) {
     const int i = profile_index(m, guid, name);
     return i >= 0 ? m.controllers[i].pad : m.pad;
+}
+
+std::vector<BindingTarget> binding_targets(const Mapping& m, const std::vector<input::ControllerInfo>& connected) {
+    std::vector<BindingTarget> out;
+    auto add = [&](const std::string& guid, const std::string& name, bool live) {
+        for (auto& target : out) if (target.guid == guid && target.name == name) {
+            target.connected |= live;
+            return;
+        }
+        out.push_back({guid, name, live});
+    };
+    for (const auto& c : connected) if (!c.is_virtual) add(c.guid, c.name, true);
+    for (const auto& c : m.controllers) add(c.guid, c.name, false);
+    return out;
 }
 
 int ensure_profile(Mapping& m, const std::string& guid, const std::string& name) {
