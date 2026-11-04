@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For mod authors: native actors from C mods** (#375). A C mod can now register its own native actors (profile,
+  callbacks and name) in the game's shared actor table with `wwhd_native_actor_profile_register`, from a hook on the
+  game's main loop entry before the first actor is created. Retail and port IDs, duplicate names and foreign callbacks
+  are refused, and full save states record which mod actors were active. Nothing changes for players without such mods.
 - **For mod authors: story flags in the SDK** (#369). The new `wwhd/save_flags.h` reads and changes the game's story
   flags (its persistent event bits) through the game's own functions, with checked inputs. A value outside a flag
   group's mask is refused instead of changing the neighbouring flags, and the helpers report when no save is loaded.
